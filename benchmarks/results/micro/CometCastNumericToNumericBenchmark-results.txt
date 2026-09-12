@@ -1,0 +1,481 @@
+================================================================================================
+Numeric to Numeric casts
+================================================================================================
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+CAST BYTE to SHORT:                       Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+------------------------------------------------------------------------------------------------------------------------
+Spark                                                49             54           5         21.6          46.4       1.0X
+Comet                                                38             42           4         27.4          36.5       1.3X
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+CAST BYTE to INT:                         Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+------------------------------------------------------------------------------------------------------------------------
+Spark                                                42             45           2         25.1          39.8       1.0X
+Comet                                                34             37           2         30.5          32.8       1.2X
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+CAST BYTE to LONG:                        Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+------------------------------------------------------------------------------------------------------------------------
+Spark                                                39             42           2         27.0          37.1       1.0X
+Comet                                                34             37           3         31.2          32.1       1.2X
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+CAST SHORT to INT:                        Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+------------------------------------------------------------------------------------------------------------------------
+Spark                                                37             42           3         28.0          35.7       1.0X
+Comet                                                38             41           3         27.5          36.3       1.0X
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+CAST SHORT to LONG:                       Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+------------------------------------------------------------------------------------------------------------------------
+Spark                                                37             41           4         28.6          35.0       1.0X
+Comet                                                39             41           2         27.1          36.8       0.9X
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+CAST INT to LONG:                         Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+------------------------------------------------------------------------------------------------------------------------
+Spark                                                37             40           4         28.3          35.3       1.0X
+Comet                                                32             35           2         33.1          30.2       1.2X
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+TRY_CAST BYTE to SHORT:                   Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+------------------------------------------------------------------------------------------------------------------------
+Spark                                                36             39           2         29.3          34.2       1.0X
+Comet                                                30             33           2         34.5          29.0       1.2X
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+TRY_CAST BYTE to INT:                     Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+------------------------------------------------------------------------------------------------------------------------
+Spark                                                36             39           3         28.8          34.8       1.0X
+Comet                                                31             34           2         33.7          29.7       1.2X
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+TRY_CAST BYTE to LONG:                    Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+------------------------------------------------------------------------------------------------------------------------
+Spark                                                35             38           2         29.9          33.4       1.0X
+Comet                                                29             33           2         35.5          28.1       1.2X
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+TRY_CAST SHORT to INT:                    Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+------------------------------------------------------------------------------------------------------------------------
+Spark                                                36             40           3         29.0          34.5       1.0X
+Comet                                                37             39           1         28.3          35.4       1.0X
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+TRY_CAST SHORT to LONG:                   Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+------------------------------------------------------------------------------------------------------------------------
+Spark                                                35             37           1         29.9          33.4       1.0X
+Comet                                                36             39           2         29.2          34.2       1.0X
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+TRY_CAST INT to LONG:                     Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+------------------------------------------------------------------------------------------------------------------------
+Spark                                                35             38           2         30.0          33.4       1.0X
+Comet                                                30             34           2         34.7          28.8       1.2X
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+CAST LONG to INT:                         Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+------------------------------------------------------------------------------------------------------------------------
+Spark                                                39             41           3         27.2          36.7       1.0X
+Comet                                                32             35           4         33.2          30.1       1.2X
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+CAST LONG to SHORT:                       Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+------------------------------------------------------------------------------------------------------------------------
+Spark                                                39             43           3         26.8          37.3       1.0X
+Comet                                                31             33           2         33.9          29.5       1.3X
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+CAST LONG to BYTE:                        Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+------------------------------------------------------------------------------------------------------------------------
+Spark                                                38             41           3         27.8          36.0       1.0X
+Comet                                                30             33           3         34.7          28.8       1.2X
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+CAST INT to SHORT:                        Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+------------------------------------------------------------------------------------------------------------------------
+Spark                                                34             38           4         30.6          32.7       1.0X
+Comet                                                29             32           3         35.8          27.9       1.2X
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+CAST INT to BYTE:                         Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+------------------------------------------------------------------------------------------------------------------------
+Spark                                                35             38           3         29.9          33.5       1.0X
+Comet                                                29             32           2         35.7          28.0       1.2X
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+CAST SHORT to BYTE:                       Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+------------------------------------------------------------------------------------------------------------------------
+Spark                                                35             37           2         30.0          33.3       1.0X
+Comet                                                34             37           2         30.5          32.8       1.0X
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+TRY_CAST LONG to INT:                     Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+------------------------------------------------------------------------------------------------------------------------
+Spark                                              5258           5261           4          0.2        5014.0       1.0X
+Comet                                                31             34           2         34.3          29.1     172.1X
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+TRY_CAST LONG to SHORT:                   Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+------------------------------------------------------------------------------------------------------------------------
+Spark                                              5198           5205           9          0.2        4957.6       1.0X
+Comet                                                30             33           2         34.9          28.7     172.9X
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+TRY_CAST LONG to BYTE:                    Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+------------------------------------------------------------------------------------------------------------------------
+Spark                                              5211           5216           7          0.2        4969.6       1.0X
+Comet                                                30             33           2         35.0          28.6     173.8X
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+TRY_CAST INT to SHORT:                    Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+------------------------------------------------------------------------------------------------------------------------
+Spark                                              5183           5188           7          0.2        4942.8       1.0X
+Comet                                                29             31           1         36.1          27.7     178.6X
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+TRY_CAST INT to BYTE:                     Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+------------------------------------------------------------------------------------------------------------------------
+Spark                                              5192           5196           5          0.2        4951.8       1.0X
+Comet                                                30             32           2         35.2          28.4     174.1X
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+TRY_CAST SHORT to BYTE:                   Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+------------------------------------------------------------------------------------------------------------------------
+Spark                                              5157           5158           1          0.2        4918.3       1.0X
+Comet                                              5148           5157          14          0.2        4909.1       1.0X
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+CAST FLOAT to DOUBLE:                     Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+------------------------------------------------------------------------------------------------------------------------
+Spark                                                33             36           2         31.5          31.7       1.0X
+Comet                                                28             31           1         37.1          26.9       1.2X
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+CAST DOUBLE to FLOAT:                     Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+------------------------------------------------------------------------------------------------------------------------
+Spark                                                37             40           3         28.0          35.8       1.0X
+Comet                                                29             32           2         36.2          27.6       1.3X
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+TRY_CAST FLOAT to DOUBLE:                 Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+------------------------------------------------------------------------------------------------------------------------
+Spark                                                34             37           3         30.8          32.5       1.0X
+Comet                                                28             31           2         37.5          26.6       1.2X
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+TRY_CAST DOUBLE to FLOAT:                 Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+------------------------------------------------------------------------------------------------------------------------
+Spark                                                37             39           1         28.6          35.0       1.0X
+Comet                                                31             33           2         33.9          29.5       1.2X
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+CAST BYTE to FLOAT:                       Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+------------------------------------------------------------------------------------------------------------------------
+Spark                                                34             36           2         31.3          32.0       1.0X
+Comet                                                28             31           2         37.8          26.4       1.2X
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+CAST SHORT to FLOAT:                      Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+------------------------------------------------------------------------------------------------------------------------
+Spark                                                36             39           4         29.3          34.1       1.0X
+Comet                                                36             38           2         29.3          34.2       1.0X
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+CAST INT to FLOAT:                        Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+------------------------------------------------------------------------------------------------------------------------
+Spark                                                34             37           1         30.6          32.7       1.0X
+Comet                                                28             31           2         37.3          26.8       1.2X
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+CAST LONG to FLOAT:                       Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+------------------------------------------------------------------------------------------------------------------------
+Spark                                                38             39           1         27.8          36.0       1.0X
+Comet                                                30             33           1         34.5          29.0       1.2X
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+CAST INT to DOUBLE:                       Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+------------------------------------------------------------------------------------------------------------------------
+Spark                                                35             37           1         30.3          33.0       1.0X
+Comet                                                29             32           4         36.1          27.7       1.2X
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+CAST LONG to DOUBLE:                      Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+------------------------------------------------------------------------------------------------------------------------
+Spark                                                38             40           3         27.8          35.9       1.0X
+Comet                                                30             33           3         35.1          28.5       1.3X
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+TRY_CAST BYTE to FLOAT:                   Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+------------------------------------------------------------------------------------------------------------------------
+Spark                                                33             35           1         31.7          31.6       1.0X
+Comet                                                28             30           2         37.8          26.5       1.2X
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+TRY_CAST SHORT to FLOAT:                  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+------------------------------------------------------------------------------------------------------------------------
+Spark                                                33             35           1         31.4          31.9       1.0X
+Comet                                                34             36           2         30.7          32.5       1.0X
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+TRY_CAST INT to FLOAT:                    Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+------------------------------------------------------------------------------------------------------------------------
+Spark                                                33             35           1         31.4          31.8       1.0X
+Comet                                                28             30           1         37.6          26.6       1.2X
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+TRY_CAST LONG to FLOAT:                   Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+------------------------------------------------------------------------------------------------------------------------
+Spark                                                36             39           2         28.8          34.7       1.0X
+Comet                                                29             33           3         36.8          27.2       1.3X
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+TRY_CAST INT to DOUBLE:                   Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+------------------------------------------------------------------------------------------------------------------------
+Spark                                                34             36           2         31.3          32.0       1.0X
+Comet                                                28             31           1         37.4          26.7       1.2X
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+TRY_CAST LONG to DOUBLE:                  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+------------------------------------------------------------------------------------------------------------------------
+Spark                                                36             38           2         29.2          34.2       1.0X
+Comet                                                29             32           1         35.9          27.8       1.2X
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+CAST FLOAT to INT:                        Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+------------------------------------------------------------------------------------------------------------------------
+Spark                                                35             37           1         29.8          33.5       1.0X
+Comet                                                28             31           2         37.1          27.0       1.2X
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+CAST FLOAT to LONG:                       Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+------------------------------------------------------------------------------------------------------------------------
+Spark                                                33             35           1         31.6          31.6       1.0X
+Comet                                                27             30           2         38.3          26.1       1.2X
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+CAST DOUBLE to INT:                       Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+------------------------------------------------------------------------------------------------------------------------
+Spark                                                39             40           1         27.2          36.8       1.0X
+Comet                                                29             32           3         36.6          27.3       1.3X
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+CAST DOUBLE to LONG:                      Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+------------------------------------------------------------------------------------------------------------------------
+Spark                                                37             39           1         28.6          35.0       1.0X
+Comet                                                29             33           3         36.3          27.5       1.3X
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+TRY_CAST FLOAT to INT:                    Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+------------------------------------------------------------------------------------------------------------------------
+Spark                                              5111           5116           6          0.2        4874.5       1.0X
+Comet                                                28             31           1         37.9          26.4     185.0X
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+TRY_CAST FLOAT to LONG:                   Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+------------------------------------------------------------------------------------------------------------------------
+Spark                                               114            117           2          9.2         109.1       1.0X
+Comet                                                28             31           2         37.2          26.9       4.1X
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+TRY_CAST DOUBLE to INT:                   Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+------------------------------------------------------------------------------------------------------------------------
+Spark                                              5152           5153           1          0.2        4913.6       1.0X
+Comet                                                29             32           2         36.7          27.2     180.5X
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+TRY_CAST DOUBLE to LONG:                  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+------------------------------------------------------------------------------------------------------------------------
+Spark                                               119            122           2          8.8         113.9       1.0X
+Comet                                                29             32           1         35.7          28.0       4.1X
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+CAST INT to DECIMAL(10,2):                Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+------------------------------------------------------------------------------------------------------------------------
+Spark                                                46             48           2         23.0          43.5       1.0X
+Comet                                                31             36           4         34.4          29.1       1.5X
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+CAST LONG to DECIMAL(20,4):               Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+------------------------------------------------------------------------------------------------------------------------
+Spark                                                91             93           2         11.5          86.8       1.0X
+Comet                                                31             34           3         34.2          29.2       3.0X
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+CAST DOUBLE to DECIMAL(15,5):             Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+------------------------------------------------------------------------------------------------------------------------
+Spark                                               304            308           3          3.4         290.4       1.0X
+Comet                                                31             33           2         34.4          29.1      10.0X
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+CAST DECIMAL(10,2) to INT:                Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+------------------------------------------------------------------------------------------------------------------------
+Spark                                                30             32           1         35.2          28.4       1.0X
+Comet                                                26             29           1         39.8          25.1       1.1X
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+CAST DECIMAL(10,2) to LONG:               Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+------------------------------------------------------------------------------------------------------------------------
+Spark                                                30             32           1         35.1          28.5       1.0X
+Comet                                                28             31           2         37.4          26.7       1.1X
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+CAST DECIMAL(10,2) to DOUBLE:             Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+------------------------------------------------------------------------------------------------------------------------
+Spark                                                30             32           3         35.1          28.5       1.0X
+Comet                                                27             29           1         38.4          26.1       1.1X
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+TRY_CAST INT to DECIMAL(10,2):            Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+------------------------------------------------------------------------------------------------------------------------
+Spark                                              4963           4969           9          0.2        4733.0       1.0X
+Comet                                                31             34           1         33.4          30.0     157.9X
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+TRY_CAST LONG to DECIMAL(20,4):           Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+------------------------------------------------------------------------------------------------------------------------
+Spark                                              5322           5324           2          0.2        5075.4       1.0X
+Comet                                                30             35           4         34.6          28.9     175.8X
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+TRY_CAST DOUBLE to DECIMAL(15,5):         Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+------------------------------------------------------------------------------------------------------------------------
+Spark                                              5424           5431           9          0.2        5173.1       1.0X
+Comet                                                28             31           2         37.1          27.0     191.8X
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+TRY_CAST DECIMAL(10,2) to INT:            Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+------------------------------------------------------------------------------------------------------------------------
+Spark                                                30             31           1         35.2          28.4       1.0X
+Comet                                                27             30           2         39.3          25.4       1.1X
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+TRY_CAST DECIMAL(10,2) to LONG:           Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+------------------------------------------------------------------------------------------------------------------------
+Spark                                                29             33           4         35.6          28.1       1.0X
+Comet                                                27             30           2         38.9          25.7       1.1X
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+TRY_CAST DECIMAL(10,2) to DOUBLE:         Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+------------------------------------------------------------------------------------------------------------------------
+Spark                                                30             31           1         35.5          28.2       1.0X
+Comet                                                27             30           1         39.2          25.5       1.1X
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+CAST FLOAT to DECIMAL(10,2):              Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+------------------------------------------------------------------------------------------------------------------------
+Spark                                               285            287           2          3.7         272.0       1.0X
+Comet                                                29             33           2         36.1          27.7       9.8X
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+CAST FLOAT to DECIMAL(38,18):             Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+------------------------------------------------------------------------------------------------------------------------
+Spark                                               345            348           3          3.0         328.6       1.0X
+Comet                                               104            109          11         10.1          98.8       3.3X
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+CAST DOUBLE to DECIMAL(10,2):             Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+------------------------------------------------------------------------------------------------------------------------
+Spark                                               289            292           2          3.6         275.5       1.0X
+Comet                                                30             33           2         34.9          28.7       9.6X
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+CAST DOUBLE to DECIMAL(38,18):            Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+------------------------------------------------------------------------------------------------------------------------
+Spark                                               351            354           3          3.0         334.6       1.0X
+Comet                                               101            104           5         10.4          96.2       3.5X
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+TRY_CAST FLOAT to DECIMAL(10,2):          Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+------------------------------------------------------------------------------------------------------------------------
+Spark                                              5423           5427           6          0.2        5171.6       1.0X
+Comet                                                30             32           1         35.2          28.4     182.0X
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+TRY_CAST FLOAT to DECIMAL(38,18):         Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+------------------------------------------------------------------------------------------------------------------------
+Spark                                               347            350           2          3.0         331.3       1.0X
+Comet                                               104            107           5         10.0          99.6       3.3X
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+TRY_CAST DOUBLE to DECIMAL(10,2):         Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+------------------------------------------------------------------------------------------------------------------------
+Spark                                              5373           5377           6          0.2        5124.0       1.0X
+Comet                                                28             31           2         36.9          27.1     189.0X
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+TRY_CAST DOUBLE to DECIMAL(38,18):        Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+------------------------------------------------------------------------------------------------------------------------
+Spark                                               354            358           3          3.0         338.0       1.0X
+Comet                                               102            107          12         10.2          97.7       3.5X
+
+

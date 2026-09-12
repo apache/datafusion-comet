@@ -1,0 +1,38 @@
+================================================================================================
+Date to String casts
+================================================================================================
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+CAST Date to String:                      Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+------------------------------------------------------------------------------------------------------------------------
+Spark                                               181            189           4          5.8         173.1       1.0X
+Comet                                               103            109           4         10.2          98.2       1.8X
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+TRY_CAST Date to String:                  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+------------------------------------------------------------------------------------------------------------------------
+Spark                                               175            179           3          6.0         166.7       1.0X
+Comet                                               101            105           4         10.4          96.2       1.7X
+
+
+================================================================================================
+Timestamp to String casts
+================================================================================================
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+CAST Timestamp to String:                 Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+------------------------------------------------------------------------------------------------------------------------
+Spark                                               383            388           8          2.7         365.1       1.0X
+Comet                                               376            378           3          2.8         358.5       1.0X
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+TRY_CAST Timestamp to String:             Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+------------------------------------------------------------------------------------------------------------------------
+Spark                                               384            386           2          2.7         366.1       1.0X
+Comet                                               370            375           2          2.8         352.9       1.0X
+
+

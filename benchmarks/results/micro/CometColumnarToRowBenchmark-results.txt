@@ -1,0 +1,130 @@
+================================================================================================
+Columnar to Row Conversion - Fixed Width Only
+================================================================================================
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+Columnar to Row - Fixed Width Only (no strings):  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+-------------------------------------------------------------------------------------------------------------------------------
+Spark (ColumnarToRowExec)                                  128            141           7          8.2         121.8       1.0X
+Comet JVM (CometColumnarToRowExec)                         123            128           4          8.5         117.0       1.0X
+Comet Native (CometNativeColumnarToRowExec)                121            125           2          8.6         115.7       1.1X
+
+
+================================================================================================
+Columnar to Row Conversion - Primitive Types
+================================================================================================
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+Columnar to Row - Primitive Types:           Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+---------------------------------------------------------------------------------------------------------------------------
+Spark (ColumnarToRowExec)                              137            143           4          7.7         130.7       1.0X
+Comet JVM (CometColumnarToRowExec)                     138            143           5          7.6         132.1       1.0X
+Comet Native (CometNativeColumnarToRowExec)            138            142           4          7.6         131.6       1.0X
+
+
+================================================================================================
+Columnar to Row Conversion - String Types
+================================================================================================
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+Columnar to Row - String Types:              Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+---------------------------------------------------------------------------------------------------------------------------
+Spark (ColumnarToRowExec)                              230            236           7          4.6         219.8       1.0X
+Comet JVM (CometColumnarToRowExec)                     229            232           2          4.6         218.4       1.0X
+Comet Native (CometNativeColumnarToRowExec)            227            230           2          4.6         216.4       1.0X
+
+
+================================================================================================
+Columnar to Row Conversion - Struct Types
+================================================================================================
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+Columnar to Row - Struct Types:              Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+---------------------------------------------------------------------------------------------------------------------------
+Spark (ColumnarToRowExec)                              276            283           9          3.8         263.3       1.0X
+Comet JVM (CometColumnarToRowExec)                     278            284           7          3.8         265.1       1.0X
+Comet Native (CometNativeColumnarToRowExec)            273            282          13          3.8         260.5       1.0X
+
+
+================================================================================================
+Columnar to Row Conversion - Array Types
+================================================================================================
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+Columnar to Row - Array Types:               Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+---------------------------------------------------------------------------------------------------------------------------
+Spark (ColumnarToRowExec)                              308            311           2          3.4         293.5       1.0X
+Comet JVM (CometColumnarToRowExec)                     306            314          11          3.4         292.2       1.0X
+Comet Native (CometNativeColumnarToRowExec)            306            308           2          3.4         291.8       1.0X
+
+
+================================================================================================
+Columnar to Row Conversion - Map Types
+================================================================================================
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+Columnar to Row - Map Types:                 Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+---------------------------------------------------------------------------------------------------------------------------
+Spark (ColumnarToRowExec)                              560            563           3          1.9         533.9       1.0X
+Comet JVM (CometColumnarToRowExec)                     558            561           4          1.9         531.9       1.0X
+Comet Native (CometNativeColumnarToRowExec)            557            574          18          1.9         531.6       1.0X
+
+
+================================================================================================
+Columnar to Row Conversion - Complex Nested Types
+================================================================================================
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+Columnar to Row - Complex Nested Types:      Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+---------------------------------------------------------------------------------------------------------------------------
+Spark (ColumnarToRowExec)                              587            630          53          1.8         560.2       1.0X
+Comet JVM (CometColumnarToRowExec)                     585            620          49          1.8         558.2       1.0X
+Comet Native (CometNativeColumnarToRowExec)            587            610          34          1.8         559.6       1.0X
+
+
+================================================================================================
+Columnar to Row Conversion - Wide Rows
+================================================================================================
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+Columnar to Row - Wide Rows (50 columns):    Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+---------------------------------------------------------------------------------------------------------------------------
+Spark (ColumnarToRowExec)                             1173           1183          15          0.9        1118.5       1.0X
+Comet JVM (CometColumnarToRowExec)                    1165           1172          10          0.9        1111.0       1.0X
+Comet Native (CometNativeColumnarToRowExec)           1188           1192           6          0.9        1132.6       1.0X
+
+
+================================================================================================
+Columnar to Row Conversion - Dictionary Encoded
+================================================================================================
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+Columnar to Row - Dictionary-encoded strings:  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+----------------------------------------------------------------------------------------------------------------------------
+Spark (ColumnarToRowExec)                               168            175          15          6.2         160.6       1.0X
+Comet JVM (CometColumnarToRowExec)                      168            171           1          6.2         160.0       1.0X
+Comet Native (CometNativeColumnarToRowExec)             168            172           2          6.3         159.8       1.0X
+
+
+================================================================================================
+Columnar to Row Conversion - JVM UDF Consumer
+================================================================================================
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+Columnar to Row - JVM UDF consumer:          Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+---------------------------------------------------------------------------------------------------------------------------
+Spark (ColumnarToRowExec)                              228            238          15          4.6         217.9       1.0X
+Comet JVM (CometColumnarToRowExec)                     227            231           4          4.6         216.5       1.0X
+Comet Native (CometNativeColumnarToRowExec)            225            229           3          4.7         214.9       1.0X
+
+
