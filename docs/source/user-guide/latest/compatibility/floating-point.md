@@ -46,3 +46,33 @@ ordering. Nested keys can therefore produce different ordering or rank results f
 The existing `spark.comet.exec.strictFloatingPoint=true` fallback policy is unchanged, including
 its conservative fallback for scalar floating-point sort keys. Narrowing that scalar-sort
 admission policy is tracked in [#5506](https://github.com/apache/datafusion-comet/issues/5506).
+
+## Array distinct and union
+
+`array_distinct` and `array_union` fall back to Spark when their element type contains
+`FLOAT` or `DOUBLE` and the running Spark version predates SPARK-54918. Native execution
+is enabled for Spark 4.0.5+, 4.1.4+, and 4.2+, which normalize signed zeros in these
+functions. Spark 3.4 and 3.5 retain the fallback. Other element types remain native.
+
+The check is based on the element type, not the values. It also applies to NULL or empty
+floating-point arrays and columns that never contain negative zero. The entire projection
+falls back to Spark, introducing a `CometColumnarToRow` transition and moving unrelated
+expressions in the same projection out of Comet. For example,
+`SELECT id + 1, array_distinct(a), i[0] + 5` evaluates all three expressions in a Spark `Project`.
+
+This can have a substantial cost. In a [reviewer's local measurement on Spark 4.1.3](https://github.com/apache/datafusion-comet/pull/5750#pullrequestreview-5153510242)
+with a release build, `sum(cardinality(array_distinct(d)))` over two million rows of
+`array<double>` took 93 ms with native opt-in and 1355 ms with the default projection fallback
+(best of five runs, about 15 times slower). These are workload-specific measurements, not a
+general performance guarantee. Keeping the expression in Comet through the JVM codegen
+dispatcher was slower still in that measurement, so distinct and union use projection fallback.
+
+If signed zeros cannot occur in your data, setting
+`spark.comet.expression.ArrayDistinct.allowIncompatible=true` or
+`spark.comet.expression.ArrayUnion.allowIncompatible=true` restores native execution on older
+versions. These options accept the difference in deduplicating positive and negative zero.
+
+The gate uses the runtime Spark version. A vendor backport that retains an older version
+number may still fall back: checking only for a `KnownFloatingPointNormalized` wrapper would
+miss Spark's normalization of array constructors and conditional branches, which can lack
+that top-level wrapper.
