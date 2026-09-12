@@ -45,7 +45,7 @@ public final class CelebornShufflePartitionPusher implements ShufflePartitionPus
   private static final int CELEBORN_BATCH_HEADER_BYTES = 4 * Integer.BYTES;
   private static final int MINIMUM_COMET_FRAME_BYTES = 2 * Long.BYTES;
   private static final int MAX_JVM_ARRAY_BYTES = Integer.MAX_VALUE - 8;
-  private static final int DEFAULT_MAX_IN_FLIGHT_BYTES = 256 * 1024 * 1024;
+  private static final int DEFAULT_MAX_IN_FLIGHT_BYTES = 512 * 1024 * 1024;
   private static final long RECONCILIATION_INTERVAL_MILLIS = 10;
 
   // This daemon never owns client state: reconciliations are cancelled and removed once the

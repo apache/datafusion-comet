@@ -29,12 +29,20 @@ import org.apache.iceberg.hadoop.{HadoopConfigurable, HadoopFileIO}
 import org.apache.iceberg.io.{FileIO, InputFile, OutputFile}
 import org.apache.iceberg.util.SerializableSupplier
 import org.apache.spark.SparkConf
+import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.CometTestBase
-import org.apache.spark.sql.comet.IcebergWriteExec
+import org.apache.spark.sql.catalyst.InternalRow
+import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeReference}
+import org.apache.spark.sql.comet.{CometIcebergWriteExec, CometSparkToColumnarExec, IcebergWriteExec}
+import org.apache.spark.sql.execution.{ApplyColumnarRulesAndInsertTransitions, ColumnarToRowExec, LeafExecNode, SparkPlan}
+import org.apache.spark.sql.types.IntegerType
+import org.apache.spark.sql.vectorized.ColumnarBatch
 
 import org.apache.comet.CometSparkSessionExtensions.isSpark35Plus
 import org.apache.comet.iceberg.IcebergReflection
+import org.apache.comet.rules.EliminateRedundantTransitions
 import org.apache.comet.serde.{Compatible, SupportLevel, Unsupported}
+import org.apache.comet.serde.OperatorOuterClass.Operator
 import org.apache.comet.serde.operator.CometIcebergNativeWrite
 
 class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTestBase {
@@ -881,6 +889,71 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
         fail(s"expected Unsupported for $tableName, got $other")
     }
   }
+
+  /**
+   * Runs Spark's transition insertion followed by [[EliminateRedundantTransitions]] over a
+   * hand-built `CometIcebergWriteExec -> CometSparkToColumnarExec -> source` plan and returns the
+   * write's final child.
+   *
+   * Hand-built rather than driven through SQL because the shape depends on
+   * `spark.comet.sparkToColumnar.enabled` admitting the write's source operator, and the set of
+   * admitted operators is itself configurable. What matters is the rule's behaviour at that
+   * boundary, which this pins directly.
+   */
+  private def writeChildAfterTransitionRules(source: SparkPlan): SparkPlan = {
+    val write = CometIcebergWriteExec(
+      Operator.newBuilder().build(),
+      CometSparkToColumnarExec(source),
+      batchWrite = null,
+      table = null,
+      partitionSpecId = 0)
+    val withTransitions = ApplyColumnarRulesAndInsertTransitions(Seq.empty, false).apply(write)
+    // Spark must insert a columnar-to-row transition below the row-based write; if it stops doing
+    // so the rest of the assertion is vacuous.
+    assert(
+      withTransitions.asInstanceOf[CometIcebergWriteExec].child.isInstanceOf[ColumnarToRowExec],
+      s"expected an inserted ColumnarToRowExec below the write, got:\n$withTransitions")
+    EliminateRedundantTransitions(spark)
+      .apply(withTransitions)
+      .asInstanceOf[CometIcebergWriteExec]
+      .child
+  }
+
+  // https://github.com/apache/datafusion-comet/issues/5689: the write's input transition has to
+  // be stripped before the generic `ColumnarToRowExec(CometSparkToColumnarExec)` cancellation
+  // consumes it, otherwise that arm removes the Arrow bridge the write's FFI input depends on.
+  // Both source representations are covered because the cancellation treats them differently:
+  // over a row source it drops the bridge outright, over a Spark-columnar source it keeps a
+  // transition but leaves the write reading Spark `ColumnarVector`s instead of `CometVector`s.
+  test("row source keeps its Arrow bridge under the native Iceberg write") {
+    val source = TransitionProbeLeaf(columnar = false)
+    val child = writeChildAfterTransitionRules(source)
+    assert(
+      child == CometSparkToColumnarExec(source),
+      s"expected the write to sit directly on CometSparkToColumnarExec, got:\n$child")
+  }
+
+  test("Spark-columnar source keeps its Arrow bridge under the native Iceberg write") {
+    val source = TransitionProbeLeaf(columnar = true)
+    val child = writeChildAfterTransitionRules(source)
+    assert(
+      child == CometSparkToColumnarExec(source),
+      s"expected the write to sit directly on CometSparkToColumnarExec, got:\n$child")
+  }
+}
+
+/**
+ * Planning-only leaf used by the transition-boundary tests: `columnar` selects between the two
+ * source representations that can sit under a `CometSparkToColumnarExec`. Never executed.
+ */
+case class TransitionProbeLeaf(columnar: Boolean) extends LeafExecNode {
+  override def output: Seq[Attribute] = Seq(
+    AttributeReference("id", IntegerType, nullable = false)())
+  override def supportsColumnar: Boolean = columnar
+  override protected def doExecute(): RDD[InternalRow] =
+    throw new UnsupportedOperationException("planning-only node")
+  override protected def doExecuteColumnar(): RDD[ColumnarBatch] =
+    throw new UnsupportedOperationException("planning-only node")
 }
 
 /**

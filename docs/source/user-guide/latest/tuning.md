@@ -192,6 +192,26 @@ to test with both for your specific workloads.
 
 To configure Comet to convert `SortMergeJoin` to `ShuffledHashJoin`, set `spark.comet.exec.forceShuffledHashJoin=true`.
 
+### Join Runtime Filters
+
+Set `spark.comet.exec.join.dynamicFilter.enabled=true` to try experimental native hash join runtime
+filtering. It is disabled by default. Eligible joins are inner joins with one direct signed integer
+key (`TINYINT`, `SMALLINT`, `INT`, or `BIGINT`) and one native partition per input within each task.
+Both broadcast and shuffled hash joins support either Spark build side. Unsupported joins keep
+their existing execution path.
+
+Once the build completes, its key domain filters probe batches before the hash probe. Eligible
+native Parquet readers also use the domain to prune row groups. Reader attachment can pass through
+direct-column `IS NOT NULL` checks, including conjunctions, and remaps columns when the scan itself
+projects the file schema. The original null checks and residual runtime filter remain in place.
+The original join still verifies matches, including any hash collisions admitted by the filter.
+Standalone projections, other filter expressions, and limits prevent reader attachment.
+
+Filters stay within the task's native plan and do not propagate across Spark exchanges or JVM/Arrow
+boundaries. A shuffled hash join can still filter probe batches after shuffle, but it cannot send
+its filter back to an earlier scan stage. Compare the [runtime-filter and scan metrics](metrics.md#hash-joins)
+with the setting disabled to distinguish reduced hash-probe work from reader I/O savings.
+
 ## Shuffle
 
 Comet provides accelerated shuffle implementations that can be used to improve the performance of your queries.
@@ -257,7 +277,7 @@ even when both its parent and child are non-Comet operators.
 Applications using Apache Celeborn can use Comet's composite shuffle manager to retain ordinary
 Spark/Celeborn shuffle while accelerating other operators with Comet.
 
-Native shuffle requires reliable completion tracking for in-flight payloads. Released Celeborn
+Native shuffle also requires reliable completion tracking for in-flight payloads. Released Celeborn
 0.6.0 and 0.7.0 clients do not provide the required guarantee, so these versions retain ordinary
 Spark/Celeborn shuffle even when `spark.comet.shuffle.mode=native`. Native shuffle support for
 these clients requires a safe Celeborn push-completion API. The following settings request
@@ -302,8 +322,29 @@ Celeborn to prohibit local fallback for ordinary Spark shuffles.
 Native frames retain Comet's configured compression; the raw Celeborn client path bypasses
 Celeborn's additional row compression and decompression. Use
 `spark.comet.shuffle.rss.maxFrameBytes` and `spark.comet.shuffle.rss.maxInFlightBytes` to bound
-encoded frame size and executor-side push admission. These limits include framing and overlapping
-native/JNI/client copies; a frame that cannot fit is rejected rather than split across requests.
+encoded frame size and executor-side push admission. The defaults are 64 MiB and 512 MiB,
+respectively. Admission includes Arrow encoding workspace as well as overlapping native, JNI,
+and client frame copies. An uncompressed frame needs roughly seven times its size plus schema
+and codec overhead. Compression reduces the transmitted bytes but still needs uncompressed
+encoding workspace.
+
+Comet splits large batches between rows. If a single row, its schema, or its encoding workspace
+cannot fit the remote limits, Comet abandons the remote shuffle and materializes a replacement
+using its local shuffle writer before downstream tasks can consume the exchange. The replacement
+has a separate shuffle and scheduling identity, so late remote results cannot overwrite or skip
+local map output, and remote stage failures cannot abort the replacement. Independent exchanges
+can materialize concurrently; readers wait for their storage decisions before execution. Runtime
+output statistics count only the selected destination. All reads and retries for the replacement
+use local files and Spark's block transfer
+service, including normal recovery after later fetch failures. Native operators and Comet's
+Arrow shuffle format are preserved, and remote admission limits remain enforced. Once remote
+output has been published, subsequent failures use the existing Spark/Celeborn recovery path;
+Comet does not change that shuffle's destination. Local fallback uses executor disk. When `spark.dynamicAllocation.enabled=true`, native Celeborn shuffle requires
+`spark.shuffle.service.enabled=true` or `spark.dynamicAllocation.shuffleTracking.enabled=true`
+(the Spark default) so those files remain available. Applications using dynamic allocation with
+both settings disabled retain ordinary Spark/Celeborn shuffle, even if remote reliable storage or
+decommissioning enables dynamic allocation. Executor shutdown preserves fallback files for the
+external shuffle service; explicit shuffle unregister retains the normal local cleanup behavior.
 AQE reducer coalescing and mapper-range reads are supported, but Celeborn physical-skew chunk reads
 are not.
 
