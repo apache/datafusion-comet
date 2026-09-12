@@ -295,6 +295,34 @@ class CometInMemoryCacheSuite extends CometTestBase {
     }
   }
 
+  test("duplicate-name structs survive a cached native filter") {
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      CometConf.COMET_SHUFFLE_MODE.key -> "jvm",
+      SQLConf.CACHE_VECTORIZED_READER_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> "true",
+      CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "false",
+      "spark.comet.sparkToColumnar.enabled" -> "true") {
+
+      spark.catalog.clearCache()
+      spark
+        .sql("SELECT named_struct('x', id, 'x', id + 1) AS s, id AS k FROM range(4)")
+        .createOrReplaceTempView("duplicate_name_cache")
+
+      spark.catalog.cacheTable("duplicate_name_cache")
+      spark.table("duplicate_name_cache").count()
+
+      val df = spark.sql("SELECT s FROM duplicate_name_cache WHERE k > 1")
+      checkSparkAnswerAndOperator(df)
+
+      val plan = df.queryExecution.executedPlan.toString()
+      assert(plan.contains("CometInMemoryTableScan"))
+      assert(plan.contains("CometFilter"))
+
+      spark.catalog.clearCache()
+    }
+  }
+
   test("Comet cache serializer delegates unsupported types to Spark's cache format") {
     withSQLConf(
       SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",

@@ -624,8 +624,8 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 
 | Function | Status | Implementation | Notes |
 | --- | --- | --- | --- |
-| `named_struct` | ✅ | Native | Duplicate field names fall back |
-| `struct` | ✅ | Native |  |
+| `named_struct` | ✅ | Native | |
+| `struct` | ✅ | Native | |
 
 ---
 

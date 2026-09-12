@@ -67,14 +67,15 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
 
   setupTestData()
 
-  test("Fallback to Spark when shuffling on struct with duplicate field name") {
-    val df = sql("""
-        | SELECT max(struct(a, record.*, b)) as r FROM
-        |   (select a as a, b as b, struct(a,b) as record from testData2) tmp
-        | GROUP BY a
-      """.stripMargin).select($"r.*")
+  test("columnar shuffle on struct with duplicate field names") {
+    withSQLConf(CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "false") {
+      val df = sql("""
+          | SELECT /*+ REPARTITION(3) */ s FROM
+          |   (SELECT named_struct('x', a, 'x', b) AS s FROM testData2) shuffled
+        """.stripMargin)
 
-    checkSparkAnswer(df)
+      checkShuffleAnswer(df, 1)
+    }
   }
 
   test("Unsupported types for SinglePartition should fallback to Spark") {

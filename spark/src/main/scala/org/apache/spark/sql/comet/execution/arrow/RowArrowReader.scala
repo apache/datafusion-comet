@@ -19,10 +19,16 @@
 
 package org.apache.spark.sql.comet.execution.arrow
 
+import java.util
+
 import org.apache.arrow.memory.BufferAllocator
+import org.apache.arrow.vector.VectorSchemaRoot
+import org.apache.arrow.vector.dictionary.Dictionary
 import org.apache.arrow.vector.ipc.ArrowReader
 import org.apache.arrow.vector.types.pojo.Schema
 import org.apache.spark.sql.catalyst.InternalRow
+
+import org.apache.comet.vector.NativeUtil
 
 /**
  * `ArrowReader` over an iterator of Spark `InternalRow`s, writing up to `maxRecordsPerBatch` rows
@@ -43,11 +49,61 @@ private[comet] class RowArrowReader(
 
   require(maxRecordsPerBatch > 0, "Maximum records per batch must be positive")
 
+  private var cometInitialized = false
+  private var cometClosed = false
+  private var cometRoot: VectorSchemaRoot = _
+
   override protected def readSchema(): Schema = arrowSchema
+
+  override protected def initialize(): Unit = {
+    cometRoot = NativeUtil.createVectorSchemaRootForExport(readSchema(), allocator)
+    cometInitialized = true
+  }
+
+  override protected def ensureInitialized(): Unit = {
+    if (!cometInitialized) initialize()
+  }
+
+  override def getVectorSchemaRoot: VectorSchemaRoot = {
+    ensureInitialized()
+    cometRoot
+  }
+
+  override def getDictionaryVectors: util.Map[java.lang.Long, Dictionary] = {
+    ensureInitialized()
+    util.Collections.emptyMap()
+  }
+
+  override def lookup(id: Long): Dictionary = {
+    if (!cometInitialized) {
+      throw new IllegalStateException("Unable to lookup until reader has been initialized")
+    }
+    null
+  }
+
+  override def getDictionaryIds: util.Set[java.lang.Long] = {
+    ensureInitialized()
+    util.Collections.emptySet()
+  }
+
+  override protected def prepareLoadNextBatch(): Unit = {
+    ensureInitialized()
+    cometRoot.setRowCount(0)
+  }
 
   override def bytesRead(): Long = 0L
 
   override protected def closeReadSource(): Unit = ()
+
+  override def close(): Unit = close(closeReadSource = true)
+
+  override def close(closeReadSource: Boolean): Unit = {
+    if (!cometClosed) {
+      cometClosed = true
+      if (cometInitialized && cometRoot != null) cometRoot.close()
+      if (closeReadSource) this.closeReadSource()
+    }
+  }
 
   override def loadNextBatch(): Boolean = {
     prepareLoadNextBatch()
