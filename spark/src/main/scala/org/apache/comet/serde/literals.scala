@@ -245,6 +245,9 @@ object CometLiteral extends CometExpressionSerde[Literal] with CometTypeShim wit
         TimestampType | TimestampNTZType | FloatType | DoubleType | StringType | BinaryType =>
       true
     case _: DecimalType => true
+    // Matched as a type rather than a stable identifier: the start/end fields participate in
+    // `equals`, and every (start, end) pair is carried as the same month count.
+    case _: YearMonthIntervalType => true
     case ArrayType(elementType, _) => listLiteralElementSupported(elementType)
     case _ => false
   }

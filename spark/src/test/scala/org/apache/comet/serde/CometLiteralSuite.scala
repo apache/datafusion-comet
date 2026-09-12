@@ -123,4 +123,17 @@ class CometLiteralSuite extends CometTestBase with CometTypeShim {
     assert(!CometLiteral.listLiteralElementSupported(collated))
     assert(!encoderAcceptsElement(Array.empty, ArrayType(collated)))
   }
+
+  // A year-month interval rides in `int_values` as the month count `IntegerType` uses, and
+  // `literal_to_array_ref` reads those ints back as an `IntervalYearMonthArray`, so the whole
+  // array literal is serialized directly instead of sending the projection back to Spark.
+  // `needsExpansion` has no arm for it either, so declining it here is a fallback, not a rewrite.
+  test("a year-month interval array literal is serialized rather than declined") {
+    withParquetTable(Seq((1, 2), (3, 4)), "tbl") {
+      checkSparkAnswerAndOperator(
+        sql("SELECT array(INTERVAL '1-2' YEAR TO MONTH, INTERVAL '-3' MONTH, NULL) FROM tbl"))
+      checkSparkAnswerAndOperator(
+        sql("SELECT array(array(INTERVAL '2-1' YEAR TO MONTH), array()) FROM tbl"))
+    }
+  }
 }
