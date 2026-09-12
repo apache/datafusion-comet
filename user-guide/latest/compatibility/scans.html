@@ -857,6 +857,10 @@ and <code class="docutils literal notranslate"><span class="pre">INT32</span> <s
 is rejected by Spark 3.x but accepted by Spark 4.0+). Comet aims to follow the per-version Spark
 behavior.</p>
 <ul class="simple">
+<li><p><strong>List conversion error paths assume Spark’s standard encoding</strong>. Comet inserts <code class="docutils literal notranslate"><span class="pre">list</span></code>
+before the element name when reporting a rejected array element conversion. Arrow’s schema
+omits the repeated group name, so paths for legacy LIST encodings or custom group names may
+differ from Spark’s Parquet column path.</p></li>
 <li><p><strong><code class="docutils literal notranslate"><span class="pre">ParquetSchemaConvert</span></code> errors do not include the file path</strong>. The mismatch itself is detected and
 rejected correctly, but the resulting Spark error message reads
 <code class="docutils literal notranslate"><span class="pre">Encountered</span> <span class="pre">error</span> <span class="pre">while</span> <span class="pre">reading</span> <span class="pre">file</span> <span class="pre">.</span> <span class="pre">Data</span> <span class="pre">type</span> <span class="pre">mismatches…</span></code> (note the empty path). Behavior is
