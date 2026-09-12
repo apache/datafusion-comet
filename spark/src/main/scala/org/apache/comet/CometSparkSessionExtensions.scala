@@ -21,13 +21,14 @@ package org.apache.comet
 
 import java.nio.ByteOrder
 
-import org.apache.spark.SparkConf
+import org.apache.spark.{SparkConf, SparkEnv}
 import org.apache.spark.internal.Logging
 import org.apache.spark.network.util.ByteUnit
 import org.apache.spark.sql.{SparkSession, SparkSessionExtensions}
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.catalyst.trees.{TreeNode, TreeNodeTag}
 import org.apache.spark.sql.comet._
+import org.apache.spark.sql.comet.execution.shuffle.{CometCelebornShuffleManager, CometShuffleManager}
 import org.apache.spark.sql.execution._
 import org.apache.spark.sql.internal.SQLConf
 
@@ -120,6 +121,7 @@ class CometSparkSessionExtensions
 
 object CometSparkSessionExtensions extends Logging {
   lazy val isBigEndian: Boolean = ByteOrder.nativeOrder().equals(ByteOrder.BIG_ENDIAN)
+  private val SHUFFLE_MANAGER_KEY = "spark.shuffle.manager"
 
   /**
    * Checks whether Comet extension should be loaded for Spark.
@@ -137,7 +139,8 @@ object CometSparkSessionExtensions extends Logging {
     if (COMET_SHUFFLE_ENABLED.get(conf) && !isCometShuffleManagerEnabled(conf)) {
       logWarning(
         "Comet extension is disabled because spark.shuffle.manager is not set to " +
-          "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager. " +
+          s"${classOf[CometShuffleManager].getName} or " +
+          s"${classOf[CometCelebornShuffleManager].getName}. " +
           "Comet provides limited benefit without its shuffle manager. " +
           s"Set ${COMET_SHUFFLE_ENABLED.key}=false to keep Comet enabled with " +
           "Spark's default shuffle manager.")
@@ -173,16 +176,55 @@ object CometSparkSessionExtensions extends Logging {
     }
   }
 
-  // Check whether Comet shuffle is enabled:
-  // 1. `COMET_SHUFFLE_ENABLED` is true
-  // 2. `spark.shuffle.manager` is set to `CometShuffleManager`
-  // 3. Off-heap memory is enabled || Spark/Comet unit testing
+  // The shared gate also protects CollectLimit and TakeOrdered, which create single-partition
+  // dependencies without passing through ordinary exchange selection. Celeborn requires explicit
+  // native opt-in and compatible application settings; local Comet shuffle keeps its behavior.
   def isCometShuffleEnabled(conf: SQLConf): Boolean =
-    COMET_SHUFFLE_ENABLED.get(conf) && isCometShuffleManagerEnabled(conf)
+    COMET_SHUFFLE_ENABLED.get(conf) && isCometShuffleManagerEnabled(conf) &&
+      cometCelebornShuffleFallbackReason(conf, numPartitions = 1).isEmpty
+
+  private def activeCelebornShuffleManager: Option[CometCelebornShuffleManager] =
+    Option(SparkEnv.get).flatMap(env => Option(env.shuffleManager)).collect {
+      case manager: CometCelebornShuffleManager => manager
+    }
+
+  def isCometCelebornShuffleManagerEnabled(conf: SQLConf): Boolean =
+    activeCelebornShuffleManager.isDefined ||
+      conf.getConfString(SHUFFLE_MANAGER_KEY, "") ==
+      classOf[CometCelebornShuffleManager].getName
 
   def isCometShuffleManagerEnabled(conf: SQLConf): Boolean = {
-    conf.contains("spark.shuffle.manager") && conf.getConfString("spark.shuffle.manager") ==
-      "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager"
+    conf.contains(SHUFFLE_MANAGER_KEY) && {
+      val manager = conf.getConfString(SHUFFLE_MANAGER_KEY)
+      manager == classOf[CometShuffleManager].getName ||
+      manager == classOf[CometCelebornShuffleManager].getName ||
+      activeCelebornShuffleManager.isDefined
+    }
+  }
+
+  /**
+   * Native mode and execution can be chosen per query. Encryption, stage recovery, and Celeborn
+   * fallback policy belong to the application manager, so session SET commands cannot override
+   * their effective values. Inspect the actual manager even if a session changed its class name.
+   */
+  def cometCelebornShuffleFallbackReason(conf: SQLConf, numPartitions: Int): Option[String] = {
+    if (!isCometCelebornShuffleManagerEnabled(conf)) {
+      None
+    } else if (!COMET_EXEC_ENABLED.get(conf)) {
+      Some("Celeborn-backed Comet shuffle requires Comet native execution to be enabled")
+    } else if (COMET_SHUFFLE_MODE.get(conf) == "jvm") {
+      Some("Celeborn-backed Comet shuffle does not support spark.comet.shuffle.mode=jvm")
+    } else if (COMET_SHUFFLE_MODE.get(conf) != "native") {
+      Some("Celeborn-backed Comet shuffle requires spark.comet.shuffle.mode=native")
+    } else {
+      activeCelebornShuffleManager match {
+        case Some(manager) => manager.nativeShuffleFallbackReason(numPartitions)
+        case None =>
+          Some(
+            "Celeborn-backed Comet shuffle requires the application's " +
+              "CometCelebornShuffleManager")
+      }
+    }
   }
 
   def isCometScan(op: SparkPlan): Boolean = {

@@ -348,9 +348,9 @@ fn list_extract<O: OffsetSizeTrait>(
             &adjust_index,
             error_wrapper,
         )? {
-            RowAction::Gather(index) => mutable.extend(0, index, index + 1),
-            RowAction::Null => mutable.extend_nulls(1),
-            RowAction::Default => mutable.extend(1, 0, 1),
+            RowAction::Gather(index) => mutable.try_extend(0, index, index + 1)?,
+            RowAction::Null => mutable.try_extend_nulls(1)?,
+            RowAction::Default => mutable.try_extend(1, 0, 1)?,
         }
     }
 

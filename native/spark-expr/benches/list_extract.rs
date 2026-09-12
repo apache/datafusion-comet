@@ -15,17 +15,52 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use arrow::array::{Array, ArrayRef, Int32Array, ListArray, StringArray};
+use arrow::array::{Array, ArrayRef, Int32Array, ListArray, RecordBatch, StringArray};
 use arrow::buffer::{NullBuffer, OffsetBuffer};
 use arrow::datatypes::{DataType, Field, Schema};
-use arrow::record_batch::RecordBatch;
-use criterion::{criterion_group, criterion_main, Criterion};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use datafusion::common::ScalarValue;
 use datafusion::physical_expr::expressions::{Column, Literal};
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion_comet_spark_expr::{create_query_context_map, ListExtract};
 use std::hint::black_box;
 use std::sync::Arc;
+
+#[path = "common/mod.rs"]
+mod common;
+use common::{list_arrays, NULL_RATIOS, ROW_COUNTS};
+
+fn single_col_batch(col: ArrayRef) -> RecordBatch {
+    let schema = Schema::new(vec![Field::new("c0", col.data_type().clone(), true)]);
+    RecordBatch::try_new(Arc::new(schema), vec![col]).unwrap()
+}
+
+fn criterion_benchmark(c: &mut Criterion) {
+    // list_extract(list, ordinal = 2): one-based element access (Spark element_at), non-ANSI.
+    let expr = ListExtract::new(
+        Arc::new(Column::new("c0", 0)),
+        Arc::new(Literal::new(ScalarValue::Int32(Some(2)))),
+        None,
+        true,
+        false,
+        None,
+        create_query_context_map(),
+    );
+    let mut group = c.benchmark_group("list_extract");
+    for rows in ROW_COUNTS {
+        for (null_ratio, tag) in NULL_RATIOS {
+            for (ty, list, _) in list_arrays(rows, null_ratio, 8) {
+                let batch = single_col_batch(list);
+                group.bench_with_input(
+                    BenchmarkId::from_parameter(format!("{ty}/{rows}/{tag}")),
+                    &batch,
+                    |b, batch| b.iter(|| black_box(expr.evaluate(batch).unwrap())),
+                );
+            }
+        }
+    }
+    group.finish();
+}
 
 const ROWS: usize = 8192;
 const ELEMENTS_PER_ROW: usize = 5;
@@ -84,7 +119,9 @@ fn bench_case(
     });
 }
 
-fn criterion_benchmark(c: &mut Criterion) {
+/// Covers the axes the `take`-based fast path is sensitive to: whether a default is
+/// present, how often the ordinal falls out of bounds, and null lists/ordinals.
+fn bench_defaults(c: &mut Criterion) {
     let total = ROWS * ELEMENTS_PER_ROW;
     let int_values = Arc::new(Int32Array::from_iter_values(0..total as i32));
     let string_values = Arc::new(StringArray::from_iter_values(
@@ -99,7 +136,7 @@ fn criterion_benchmark(c: &mut Criterion) {
         let suffix = if oob { "50%-oob" } else { "0%-oob" };
         bench_case(
             c,
-            &format!("list_extract/int32/no-default/{suffix}"),
+            &format!("list_extract_defaults/int32/no-default/{suffix}"),
             Arc::clone(&ints),
             oob,
             None,
@@ -107,7 +144,7 @@ fn criterion_benchmark(c: &mut Criterion) {
         );
         bench_case(
             c,
-            &format!("list_extract/int32/null-default/{suffix}"),
+            &format!("list_extract_defaults/int32/null-default/{suffix}"),
             Arc::clone(&ints),
             oob,
             Some(ScalarValue::Int32(None)),
@@ -115,7 +152,7 @@ fn criterion_benchmark(c: &mut Criterion) {
         );
         bench_case(
             c,
-            &format!("list_extract/int32/non-null-default/{suffix}"),
+            &format!("list_extract_defaults/int32/non-null-default/{suffix}"),
             Arc::clone(&ints),
             oob,
             Some(ScalarValue::Int32(Some(0))),
@@ -123,7 +160,7 @@ fn criterion_benchmark(c: &mut Criterion) {
         );
         bench_case(
             c,
-            &format!("list_extract/utf8/no-default/{suffix}"),
+            &format!("list_extract_defaults/utf8/no-default/{suffix}"),
             Arc::clone(&strings),
             oob,
             None,
@@ -131,7 +168,7 @@ fn criterion_benchmark(c: &mut Criterion) {
         );
         bench_case(
             c,
-            &format!("list_extract/utf8/null-default/{suffix}"),
+            &format!("list_extract_defaults/utf8/null-default/{suffix}"),
             Arc::clone(&strings),
             oob,
             Some(ScalarValue::Utf8(None)),
@@ -139,7 +176,7 @@ fn criterion_benchmark(c: &mut Criterion) {
         );
         bench_case(
             c,
-            &format!("list_extract/utf8/non-null-default/{suffix}"),
+            &format!("list_extract_defaults/utf8/non-null-default/{suffix}"),
             Arc::clone(&strings),
             oob,
             Some(ScalarValue::Utf8(Some(String::new()))),
@@ -149,7 +186,7 @@ fn criterion_benchmark(c: &mut Criterion) {
 
     bench_case(
         c,
-        "list_extract/int32/no-default/25%-null-lists-25%-null-ordinals",
+        "list_extract_defaults/int32/no-default/25%-null-lists-25%-null-ordinals",
         Arc::clone(&nullable_ints),
         false,
         None,
@@ -157,7 +194,7 @@ fn criterion_benchmark(c: &mut Criterion) {
     );
     bench_case(
         c,
-        "list_extract/int32/non-null-default/25%-null-lists-25%-null-ordinals",
+        "list_extract_defaults/int32/non-null-default/25%-null-lists-25%-null-ordinals",
         nullable_ints,
         false,
         Some(ScalarValue::Int32(Some(0))),
@@ -165,7 +202,7 @@ fn criterion_benchmark(c: &mut Criterion) {
     );
     bench_case(
         c,
-        "list_extract/utf8/no-default/25%-null-lists-25%-null-ordinals",
+        "list_extract_defaults/utf8/no-default/25%-null-lists-25%-null-ordinals",
         Arc::clone(&nullable_strings),
         false,
         None,
@@ -173,7 +210,7 @@ fn criterion_benchmark(c: &mut Criterion) {
     );
     bench_case(
         c,
-        "list_extract/utf8/non-null-default/25%-null-lists-25%-null-ordinals",
+        "list_extract_defaults/utf8/non-null-default/25%-null-lists-25%-null-ordinals",
         nullable_strings,
         false,
         Some(ScalarValue::Utf8(Some(String::new()))),
@@ -181,5 +218,5 @@ fn criterion_benchmark(c: &mut Criterion) {
     );
 }
 
-criterion_group!(benches, criterion_benchmark);
+criterion_group!(benches, criterion_benchmark, bench_defaults);
 criterion_main!(benches);

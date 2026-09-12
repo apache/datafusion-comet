@@ -62,8 +62,9 @@ class CometFuzzTestBase extends CometTestBase with AdaptiveSparkPlanHelper {
       // override base date due to known issues with experimental scans
       baseDate = new SimpleDateFormat("YYYY-MM-DD hh:mm:ss").parse("2024-05-25 12:34:56").getTime)
 
-    // generate Parquet file with primitives, structs, and arrays, but no maps
-    // and no nested complex types
+    // generate Parquet file with primitives, structs, and arrays, but no maps. Note that
+    // `generateSchema` does add `struct<array<primitive>>` and `array<struct<primitive>>` when both
+    // `generateArray` and `generateStruct` are set, so nested complex types are present.
     filename = s"$tempDir/CometFuzzTestSuite_${System.currentTimeMillis()}.parquet"
     withSQLConf(
       CometConf.COMET_ENABLED.key -> "false",

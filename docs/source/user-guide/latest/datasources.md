@@ -216,6 +216,68 @@ Beyond credential providers, Comet's Parquet scan supports additional S3 configu
 
 All configuration options support bucket-specific overrides using the pattern `fs.s3a.bucket.{bucket-name}.{option}`.
 
+### S3-Compliant Filesystem Schemes
+
+Some environments front an S3-compatible service (MinIO, Ceph RGW, Cloudflare R2, Wasabi, and
+similar) with a vendor-branded Hadoop filesystem client that registers its own URL scheme, for
+example `blob://`, instead of `s3://` or `s3a://`. Comet can treat such schemes as aliases for
+`s3://` so the native Parquet and Iceberg scans read them directly, without the caller rewriting
+URLs.
+
+This is opt-in and disabled by default. Enable it by listing the schemes to treat as S3-compliant
+aliases in `spark.hadoop.fs.comet.s3Compliant.schemes` (Hadoop key
+`fs.comet.s3Compliant.schemes`), a comma-separated, case-insensitive list. This mirrors the
+existing `fs.comet.libhdfs.schemes` config.
+
+```shell
+--conf spark.hadoop.fs.comet.s3Compliant.schemes=blob
+```
+
+Multiple schemes can be listed together:
+
+```shell
+--conf spark.hadoop.fs.comet.s3Compliant.schemes=blob,minio,r2
+```
+
+With no configuration, Comet claims none of these aliases, so for example a `blob://` path falls
+back to Spark unchanged. The empty default is deliberate: short scheme names like `blob` are not
+unique to S3-compatible storage. Azure Blob Storage is the clearest example, so claiming `blob://`
+unconditionally would risk misrouting paths that were never meant for Comet's S3 client. Only add a
+scheme here if you intend Comet to treat it as S3-compatible.
+
+For each scheme `<s>` listed in `fs.comet.s3Compliant.schemes`, Comet also reads vendor-style,
+per-authority Hadoop keys of the form `fs.<s>.<authority>.<property>` (the authority is typically
+the bucket or account name from the URL) and translates them into the `fs.s3a.*` surface described
+above. The recognized vendor-style properties and their `fs.s3a.*` targets are:
+
+| Vendor property (`fs.<s>.<authority>.<property>`) | Translated `fs.s3a.*` suffix |
+| ------------------------------------------------- | ---------------------------- |
+| `awsAccessKeyId`                                  | `access.key`                 |
+| `awsSecretAccessKey`                              | `secret.key`                 |
+| `awsSessionToken`                                 | `session.token`              |
+| `endpoint`                                        | `endpoint`                   |
+| `region`                                          | `endpoint.region`            |
+| `pathStyleAccess`                                 | `path.style.access`          |
+
+Unrecognized `fs.<s>.<authority>.*` properties are ignored.
+
+A URL with no authority, such as the triple-slash `blob:///bucket/key` form, reports its authority
+as the literal string `default`. For that case, list the keys under `fs.<s>.default.<property>`.
+Comet resolves `default` to the bucket taken from the URL path (`bucket` here) and applies the
+translated settings at that bucket's scope, exactly as if they had been written under
+`fs.<s>.bucket.<property>`.
+
+When `fs.<s>.<authority>.endpoint` is set, Comet defaults path-style access to enabled for that
+bucket, since most non-AWS S3-compatible services require it. This is only a default: set
+`fs.s3a.bucket.<bucket>.path.style.access` (or the equivalent per-scheme key) explicitly to
+override it.
+
+Once translated, these values are applied at the same `fs.s3a.bucket.{bucket-name}.*` scope
+described in [Additional S3 Configuration Options](#additional-s3-configuration-options), so the
+credential providers and options documented above also apply to alias-scheme URLs. The same
+translation feeds the native Iceberg scan; see
+[Object store configuration (S3)](iceberg.md#object-store-configuration-s3) in the Iceberg guide.
+
 ### Examples
 
 The following examples demonstrate how to configure S3 access using different authentication methods.
