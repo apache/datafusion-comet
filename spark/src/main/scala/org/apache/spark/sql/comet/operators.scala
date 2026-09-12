@@ -2124,6 +2124,12 @@ case class CometHashAggregateExec(
 
 trait CometHashJoin {
 
+  // Only BroadcastHashJoinExec can be null-aware (NOT IN subqueries).
+  protected def isNullAware(join: HashJoin): Boolean = join match {
+    case bhj: BroadcastHashJoinExec => bhj.isNullAwareAntiJoin
+    case _ => false
+  }
+
   def doConvert(
       join: HashJoin,
       builder: Operator.Builder,
@@ -2138,11 +2144,7 @@ trait CometHashJoin {
       return None
     }
 
-    // Only BroadcastHashJoinExec can be null-aware (NOT IN subqueries).
-    val isNullAwareAntiJoin = join match {
-      case bhj: BroadcastHashJoinExec => bhj.isNullAwareAntiJoin
-      case _ => false
-    }
+    val isNullAwareAntiJoin = isNullAware(join)
 
     val joinKeys = join.leftKeys ++ join.rightKeys
     if (joinKeys.exists(key => isStringCollationType(key.dataType))) {
@@ -2386,10 +2388,7 @@ object CometBroadcastHashJoinExec extends CometOperatorSerde[HashJoin] with Come
       op.joinType,
       op.condition,
       op.buildSide,
-      op match {
-        case bhj: BroadcastHashJoinExec => bhj.isNullAwareAntiJoin
-        case _ => false
-      },
+      isNullAware(op),
       op.left,
       op.right,
       SerializedPlan(None))
