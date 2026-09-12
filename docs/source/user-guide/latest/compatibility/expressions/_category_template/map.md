@@ -23,12 +23,15 @@ under the License.
 
 Spark 4.0 inserts `MapSort` to normalize map values when they appear in shuffle hash partitioning
 keys, in `try_element_at`, and in other contexts where map ordering must be deterministic. Comet
-runs `MapSort` natively, so map shuffle and group-by-on-map stay on Comet under Spark 4.0.
+runs `MapSort` natively for supported scalar key types. Other orderable key types use Spark's own
+generated code through the JVM codegen dispatcher, so the enclosing operator stays in the Comet
+pipeline.
 
-When `spark.comet.exec.strictFloatingPoint=true`, `MapSort` falls back to Spark for maps whose
-keys contain `Float` or `Double` (consistent with `SortOrder` and `SortArray`). Arrow's sort uses
-IEEE total ordering for floating-point, which differs from Spark's `Double.compare` semantics for
-`NaN` and `-0.0`.
+When `spark.comet.exec.strictFloatingPoint=true`, maps whose keys contain `Float` or `Double` also
+use the dispatcher (consistent with `SortOrder` and `SortArray`). Arrow's sort uses IEEE total
+ordering for floating-point, which differs from Spark's `Double.compare` semantics for `NaN` and
+`-0.0`. If the dispatcher is disabled or cannot handle an expression, Comet safely falls back to
+Spark.
 
 <!--BEGIN:EXPR_COMPAT[map]-->
 <!--END:EXPR_COMPAT-->

@@ -43,12 +43,15 @@ import org.apache.spark.sql.functions.{col, count, sum}
 import org.apache.spark.sql.types.StructType
 import org.apache.spark.sql.vectorized.{ColumnarBatch, ColumnVector}
 
-import org.apache.comet.{CometConf, CometExecIterator, CometShuffleBlockIterator, CometShuffleSizeLimitException, Native}
+import org.apache.comet.{CometCodegenAssertions, CometConf, CometExecIterator, CometShuffleBlockIterator, CometShuffleSizeLimitException, Native}
 import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
 import org.apache.comet.serde.{OperatorOuterClass, PartitioningOuterClass}
 import org.apache.comet.shuffle.ShufflePartitionPusher
 
-class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper {
+class CometNativeShuffleSuite
+    extends CometTestBase
+    with AdaptiveSparkPlanHelper
+    with CometCodegenAssertions {
   override protected def test(testName: String, testTags: Tag*)(testFun: => Any)(implicit
       pos: Position): Unit = {
     super.test(testName, testTags: _*) {
@@ -792,7 +795,8 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
       // Map entry order carries no meaning, so equal maps must hash alike. Spark 4.0+ normalizes a
       // map shuffle key with `mapsort(...)`; earlier versions do not, so Comet must not hash a raw
       // map there. The gate therefore only admits map keys on Spark 4.0+, and only when the
-      // `mapsort` itself is convertible (CometMapSort supports scalar map keys only).
+      // `mapsort` itself can stay in the Comet pipeline, either natively or through the JVM
+      // codegen dispatcher.
       withParquetTable((0 until 50).map(i => (i, Map(i % 7 -> (i % 5)))), "tbl") {
         val df = sql("SELECT * FROM tbl").repartition(10, $"_2").sortWithinPartitions($"_1")
 
@@ -801,15 +805,28 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
     }
   }
 
-  test("native shuffle on map hash partitioning key with non-scalar map key falls back") {
-    // A map whose own key is nested cannot be `mapsort`ed by Comet (Arrow's sort_to_indices
-    // handles scalar keys only), so the normalization Spark 4.0+ requires is unavailable and the
-    // shuffle must fall back rather than hash an unnormalized map.
+  test("native shuffle on map hash partitioning key with non-scalar map key uses dispatcher") {
+    // Arrow's sort_to_indices only handles scalar keys, so Spark's MapSort.doGenCode performs the
+    // normalization through the JVM codegen dispatcher while the shuffle remains native.
     assume(isSpark40Plus, "map shuffle keys are only normalized with mapsort on Spark 4.0+")
-    withParquetTable((0 until 50).map(i => (i, Map(Seq(i % 7) -> (i % 5)))), "tbl") {
-      val df = sql("SELECT * FROM tbl").repartition(10, $"_2").sortWithinPartitions($"_1")
+    withNestedHashPartitioning {
+      withParquetTable((0 until 50).map(i => (i, Map(Seq(i % 7) -> (i % 5)))), "tbl") {
+        val df = sql("SELECT * FROM tbl").repartition(10, $"_2").sortWithinPartitions($"_1")
 
-      checkShuffleAnswer(df, 0)
+        assertCodegenRan {
+          checkShuffleAnswer(df, 1)
+        }
+      }
+
+      withParquetTable(
+        (0 until 50).map(i => (i, Map((i % 7, (i % 5).toString) -> (i % 3)))),
+        "tbl") {
+        val df = sql("SELECT * FROM tbl").repartition(10, $"_2").sortWithinPartitions($"_1")
+
+        assertCodegenRan {
+          checkShuffleAnswer(df, 1)
+        }
+      }
     }
   }
 
