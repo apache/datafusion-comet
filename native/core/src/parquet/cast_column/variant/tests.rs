@@ -39,6 +39,174 @@ fn target_field(nullable: bool) -> FieldRef {
     )
 }
 
+#[test]
+fn normalize_encoded_storage_and_unsigned_extremes() {
+    use arrow::array::{
+        DictionaryArray, Int8Array, UInt16Array, UInt32Array, UInt64Array, UInt8Array,
+    };
+    use arrow::datatypes::Int8Type;
+    let mut builder = VariantBuilder::new();
+    builder.append_value(Variant::Null);
+    let (metadata, _) = builder.finish();
+    let metadata: ArrayRef = Arc::new(BinaryArray::from(vec![metadata.as_slice()]));
+    let encoded_metadata: ArrayRef =
+        Arc::new(DictionaryArray::<Int8Type>::try_new(Int8Array::from(vec![0]), metadata).unwrap());
+    let cases: Vec<(ArrayRef, i128)> = vec![
+        (
+            Arc::new(UInt8Array::from(vec![u8::MAX])),
+            i128::from(u8::MAX),
+        ),
+        (
+            Arc::new(UInt16Array::from(vec![u16::MAX])),
+            i128::from(u16::MAX),
+        ),
+        (
+            Arc::new(UInt32Array::from(vec![u32::MAX])),
+            i128::from(u32::MAX),
+        ),
+        (
+            Arc::new(UInt64Array::from(vec![u64::MAX])),
+            i128::from(u64::MAX),
+        ),
+    ];
+    for (typed, expected) in cases {
+        let typed: ArrayRef = Arc::new(
+            DictionaryArray::<Int8Type>::try_new(Int8Array::from(vec![0]), typed).unwrap(),
+        );
+        let input: ArrayRef = Arc::new(StructArray::new(
+            vec![
+                Field::new("typed_value", typed.data_type().clone(), false),
+                Field::new("metadata", encoded_metadata.data_type().clone(), false),
+            ]
+            .into(),
+            vec![typed, Arc::clone(&encoded_metadata)],
+            None,
+        ));
+        let output = normalize_variant_array(&input, &target_field(false)).unwrap();
+        let output = VariantArray::try_new(output.as_ref()).unwrap();
+        let value = output.value(0);
+        if let Variant::Decimal16(decimal) = value {
+            assert_eq!(decimal.integer(), expected);
+            assert_eq!(decimal.scale(), 0);
+        } else {
+            assert_eq!(i128::from(value.as_int64().unwrap()), expected);
+        }
+    }
+
+    let mut builder = VariantArrayBuilder::new(1);
+    builder.append_variant(Variant::from(42_i64));
+    let base = builder.build();
+    let encoded_value: ArrayRef = Arc::new(
+        DictionaryArray::<Int8Type>::try_new(
+            Int8Array::from(vec![0]),
+            Arc::clone(base.value_column()),
+        )
+        .unwrap(),
+    );
+    let input: ArrayRef = Arc::new(StructArray::new(
+        vec![
+            Field::new("value", encoded_value.data_type().clone(), false),
+            Field::new("metadata", encoded_metadata.data_type().clone(), false),
+        ]
+        .into(),
+        vec![encoded_value, encoded_metadata],
+        None,
+    ));
+    let output = normalize_variant_array(&input, &target_field(false)).unwrap();
+    assert_eq!(
+        VariantArray::try_new(output.as_ref())
+            .unwrap()
+            .value(0)
+            .as_int64(),
+        Some(42)
+    );
+}
+
+#[test]
+fn normalize_fixed_storage_and_checked_timestamps() {
+    use arrow::array::{FixedSizeBinaryArray, TimestampMillisecondArray};
+    let mut builder = VariantBuilder::new();
+    builder.append_value(Variant::Null);
+    let (metadata, _) = builder.finish();
+    let normalize = |typed: ArrayRef| {
+        let input: ArrayRef = Arc::new(StructArray::new(
+            vec![
+                Field::new("metadata", DataType::Binary, false),
+                Field::new("typed_value", typed.data_type().clone(), false),
+            ]
+            .into(),
+            vec![
+                Arc::new(BinaryArray::from(vec![metadata.as_slice()])),
+                typed,
+            ],
+            None,
+        ));
+        normalize_variant_array(&input, &target_field(false))
+    };
+    for width in [3, 16] {
+        let bytes = vec![5; width];
+        let typed = FixedSizeBinaryArray::try_from_iter([bytes.as_slice()].into_iter()).unwrap();
+        let output = normalize(Arc::new(typed)).unwrap();
+        assert_eq!(
+            VariantArray::try_new(output.as_ref()).unwrap().value(0),
+            Variant::Binary(&bytes)
+        );
+    }
+    assert!(normalize(Arc::new(TimestampMillisecondArray::from(vec![i64::MAX]))).is_err());
+    assert!(normalize(Arc::new(TimestampMillisecondArray::from(vec![123]))).is_ok());
+}
+
+#[test]
+fn normalize_fixed_size_list_and_reject_uuid() {
+    use arrow::array::{FixedSizeBinaryArray, FixedSizeListArray, UInt16Array};
+    let mut builder = VariantBuilder::new();
+    builder.append_value(Variant::Null);
+    let (metadata, _) = builder.finish();
+    let wrap = |field: Field, typed: ArrayRef| -> ArrayRef {
+        Arc::new(StructArray::new(
+            vec![Field::new("metadata", DataType::Binary, false), field].into(),
+            vec![
+                Arc::new(BinaryArray::from(vec![metadata.as_slice()])),
+                typed,
+            ],
+            None,
+        ))
+    };
+    let elements: ArrayRef = Arc::new(StructArray::new(
+        vec![Field::new("typed_value", DataType::UInt16, false)].into(),
+        vec![Arc::new(UInt16Array::from(vec![1, u16::MAX]))],
+        None,
+    ));
+    let list: ArrayRef = Arc::new(FixedSizeListArray::new(
+        Arc::new(Field::new("item", elements.data_type().clone(), false)),
+        2,
+        elements,
+        None,
+    ));
+    let input = wrap(
+        Field::new("typed_value", list.data_type().clone(), false),
+        list,
+    );
+    let output = normalize_variant_array(&input, &target_field(false)).unwrap();
+    let output = VariantArray::try_new(output.as_ref()).unwrap();
+    let Variant::List(list) = output.value(0) else {
+        panic!("expected list")
+    };
+    assert_eq!(
+        list.iter()
+            .map(|value| value.as_int64().unwrap())
+            .collect::<Vec<_>>(),
+        vec![1, 65535]
+    );
+
+    let uuid: ArrayRef =
+        Arc::new(FixedSizeBinaryArray::try_from_iter([[0_u8; 16]].into_iter()).unwrap());
+    let field = Field::new("typed_value", uuid.data_type().clone(), false)
+        .with_metadata([("ARROW:extension:name".to_string(), "arrow.uuid".to_string())].into());
+    let error = normalize_variant_array(&wrap(field, uuid), &target_field(false)).unwrap_err();
+    assert!(error.to_string().contains("Parquet UUID"));
+}
+
 fn unicode_object_keys() -> Vec<String> {
     let mut keys = (0..30).map(|i| format!("k{i:02}")).collect::<Vec<_>>();
     keys.push("\u{e000}".to_string());

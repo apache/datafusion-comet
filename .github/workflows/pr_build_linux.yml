@@ -517,7 +517,7 @@ jobs:
           jdk-version: ${{ matrix.profile.java_version }}
 
       - name: Download native library
-        uses: actions/download-artifact@v8
+        uses: ./.github/actions/download-artifact-retry
         with:
           name: native-lib-linux
           # Download to release/ since Maven's -Prelease expects libcomet.so there
@@ -562,7 +562,7 @@ jobs:
           jdk-version: 17
 
       - name: Download native library
-        uses: actions/download-artifact@v8
+        uses: ./.github/actions/download-artifact-retry
         with:
           name: native-lib-linux
           path: native/target/release/
@@ -617,7 +617,7 @@ jobs:
           jdk-version: 17
 
       - name: Download native library
-        uses: actions/download-artifact@v8
+        uses: ./.github/actions/download-artifact-retry
         with:
           name: native-lib-linux
           path: native/target/release/
