@@ -85,6 +85,29 @@ class CometCodegenSuite
     }
   }
 
+  /**
+   * Whether `replace` was routed through the JVM codegen dispatcher. Inspects the expression
+   * collection rather than formatted explain text: `rollUpInfoMessages` concatenates sibling
+   * names alphabetically (`cast, divide, ..., replace`), so a substring `"JVM codegen dispatcher:
+   * replace"` misses the case where `replace` is not first.
+   */
+  private def replaceIsDispatched(
+      plan: org.apache.spark.sql.execution.SparkPlan): (Seq[String], String) = {
+    val info = new ExtendedExplainInfo()
+    (info.getCodegenDispatchExpressions(plan), info.generateExtendedInfo(plan))
+  }
+
+  private def assertReplaceDispatch(
+      df: org.apache.spark.sql.DataFrame,
+      expectDispatcher: Boolean,
+      clue: String): Unit = {
+    checkSparkAnswerAndOperator(df)
+    val (dispatched, explain) = replaceIsDispatched(df.queryExecution.executedPlan)
+    assert(
+      dispatched.contains("replace") == expectDispatcher,
+      s"$clue, got dispatched expressions: $dispatched\n$explain")
+  }
+
   test("codegen kernel round-trips CalendarIntervalType") {
     val input = new IntervalMonthDayNanoVector("in", CometArrowAllocator)
     val field =
@@ -522,20 +545,14 @@ class CometCodegenSuite
       CometConf.COMET_EXTENDED_EXPLAIN_FORMAT.key ->
         CometConf.COMET_EXTENDED_EXPLAIN_FORMAT_VERBOSE) {
 
-      def assertDispatcher(df: org.apache.spark.sql.DataFrame, clue: String): Unit = {
-        checkSparkAnswerAndOperator(df)
-        val explain =
-          new ExtendedExplainInfo().generateExtendedInfo(df.queryExecution.executedPlan)
-        assert(explain.contains("JVM codegen dispatcher: replace"), s"$clue, got:\n$explain")
-      }
-
       // Malformed search: CometLiteral would normalize 0xFF to U+FFFD, incorrectly matching
       // a well-formed U+FFFD in the source.
       withTable("t") {
         sql("CREATE TABLE t (s STRING) USING parquet")
         sql("INSERT INTO t VALUES ('\uFFFD'), ('ok')")
-        assertDispatcher(
+        assertReplaceDispatch(
           sql("SELECT replace(s, CAST(X'FF' AS STRING), 'x') FROM t"),
+          expectDispatcher = true,
           "expected dispatcher path for malformed search literal")
       }
 
@@ -543,8 +560,9 @@ class CometCodegenSuite
       withTable("t") {
         sql("CREATE TABLE t (s STRING) USING parquet")
         sql("INSERT INTO t VALUES ('a'), ('b')")
-        assertDispatcher(
+        assertReplaceDispatch(
           sql("SELECT replace(s, 'a', CAST(X'FF' AS STRING)) FROM t"),
+          expectDispatcher = true,
           "expected dispatcher path for malformed replacement literal")
       }
 
@@ -553,8 +571,9 @@ class CometCodegenSuite
         withTable("t") {
           sql("CREATE TABLE t (s STRING, n INT) USING parquet")
           sql("INSERT INTO t VALUES (NULL, 0), ('a', 1)")
-          assertDispatcher(
+          assertReplaceDispatch(
             sql("SELECT replace(s, 'a', CAST(1 / n AS STRING)) FROM t"),
+            expectDispatcher = true,
             "expected dispatcher path for throwing replacement expression")
         }
       }
@@ -563,8 +582,9 @@ class CometCodegenSuite
       withTable("t") {
         sql("CREATE TABLE t (s STRING) USING parquet")
         sql("INSERT INTO t VALUES ('hello')")
-        assertDispatcher(
+        assertReplaceDispatch(
           sql("SELECT replace(s, 'notfound', repeat('x', 262144)) FROM t"),
+          expectDispatcher = true,
           "expected dispatcher path for oversized replacement literal")
       }
 
@@ -573,8 +593,9 @@ class CometCodegenSuite
         withTable("t") {
           sql("CREATE TABLE t (s STRING, n INT) USING parquet")
           sql("INSERT INTO t VALUES (NULL, 0), ('a', 1)")
-          assertDispatcher(
+          assertReplaceDispatch(
             sql("SELECT replace(substring(s, 1, CAST(1 / n AS INT)), 'a', 'x') FROM t"),
+            expectDispatcher = true,
             "expected dispatcher path for throwing expression nested in source")
         }
       }
@@ -583,8 +604,9 @@ class CometCodegenSuite
       withTable("t") {
         sql("CREATE TABLE t (r STRING) USING parquet")
         sql("INSERT INTO t VALUES ('x')")
-        assertDispatcher(
+        assertReplaceDispatch(
           sql("SELECT replace(CAST(X'FF' AS STRING), 'a', r) FROM t"),
+          expectDispatcher = true,
           "expected dispatcher path for malformed source literal")
       }
 
@@ -592,8 +614,9 @@ class CometCodegenSuite
       withTable("t") {
         sql("CREATE TABLE t (r STRING) USING parquet")
         sql("INSERT INTO t VALUES ('x')")
-        assertDispatcher(
+        assertReplaceDispatch(
           sql("SELECT replace(concat(CAST(X'FF' AS STRING), r), 'a', 'x') FROM t"),
+          expectDispatcher = true,
           "expected dispatcher path for malformed literal nested in source")
       }
 
@@ -601,8 +624,9 @@ class CometCodegenSuite
       withTable("t") {
         sql("CREATE TABLE t (r STRING) USING parquet")
         sql("INSERT INTO t VALUES ('x')")
-        assertDispatcher(
+        assertReplaceDispatch(
           sql("SELECT replace(repeat('x', 262144), 'notfound', r) FROM t"),
+          expectDispatcher = true,
           "expected dispatcher path for oversized source literal")
       }
     }
