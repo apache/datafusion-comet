@@ -21,6 +21,8 @@ package org.apache.comet
 
 import scala.util.Random
 
+import org.scalatest.exceptions.TestFailedException
+
 import org.apache.arrow.vector._
 import org.apache.spark.{SparkConf, SparkEnv, TaskContext}
 import org.apache.spark.sql.CometTestBase
@@ -191,7 +193,7 @@ class CometCodegenSuite
           s"expected a [COMET-INFO: segment, got:\n$explain")
         // Names appear alphabetically via `.distinct.sorted` in rollUpInfoMessages.
         assert(
-          explain.contains("JVM codegen dispatcher: hypot, nanvl"),
+          dispatchedNames(explain).containsSlice(Seq("hypot", "nanvl")),
           s"expected combined codegen-dispatch info, got:\n$explain")
       }
 
@@ -211,6 +213,71 @@ class CometCodegenSuite
       }
     }
   }
+
+  test("checkSparkAnswerAndImpl pins the mechanism and fails when the claim is wrong") {
+    // The assertion helper is only worth having if it fails. `abs` lowers to a native DataFusion
+    // expression and `hypot` is a `CometCodegenDispatch`, so this query exercises both buckets at
+    // once and each wrong claim below must be rejected.
+    withTable("t") {
+      sql("CREATE TABLE t (a DOUBLE, b DOUBLE) USING parquet")
+      sql("INSERT INTO t VALUES (3.0, 4.0)")
+      val query = "SELECT abs(a), hypot(a, b) FROM t"
+
+      checkSparkAnswerAndImpl(sql(query), native = Seq("abs"), dispatched = Seq("hypot"))
+
+      // Claiming the wrong mechanism fails, in both directions.
+      intercept[TestFailedException] {
+        checkSparkAnswerAndImpl(sql(query), native = Seq("hypot"))
+      }
+      intercept[TestFailedException] {
+        checkSparkAnswerAndImpl(sql(query), dispatched = Seq("abs"))
+      }
+      // So does naming an expression the query does not contain, which is what a typo in a
+      // fixture looks like.
+      intercept[TestFailedException] {
+        checkSparkAnswerAndImpl(sql(query), native = Seq("no_such_expression"))
+      }
+      intercept[TestFailedException] {
+        checkSparkAnswerAndImpl(sql(query), dispatched = Seq("no_such_expression"))
+      }
+    }
+  }
+
+  test("an expression nested inside a dispatched subtree is classified as dispatched") {
+    // The whole of `hypot(abs(b), c)` is bound and closure-serialized into one JVM kernel, so the
+    // inner `abs` ran in the JVM even though the `abs(a)` next to it ran natively. Naming only
+    // the dispatched root would let `native = Seq("abs")` pass here while an `abs` was running in
+    // the kernel, which is the one claim this helper exists to make trustworthy.
+    withTable("t") {
+      sql("CREATE TABLE t (a DOUBLE, b DOUBLE, c DOUBLE) USING parquet")
+      sql("INSERT INTO t VALUES (3.0, 4.0, 5.0)")
+      val query = "SELECT abs(a), hypot(abs(b), c) FROM t"
+
+      // `abs` is genuinely on both sides of the fence, so neither claim about it alone holds.
+      intercept[TestFailedException] {
+        checkSparkAnswerAndImpl(sql(query), native = Seq("abs"))
+      }
+      intercept[TestFailedException] {
+        checkSparkAnswerAndImpl(sql(query), dispatched = Seq("abs"))
+      }
+      // `hypot` is unambiguous, and the same query still classifies it correctly.
+      checkSparkAnswerAndImpl(sql(query), dispatched = Seq("hypot"))
+    }
+  }
+
+  /**
+   * The expression names listed in the `[COMET-INFO: JVM codegen dispatcher: ...]` segment.
+   *
+   * Matching the whole segment rather than a `contains` on `"JVM codegen dispatcher: <name>"`,
+   * because the segment lists every dispatched expression in the operator sorted by name -
+   * including expressions nested inside a dispatched subtree - so a substring match pinned to one
+   * name breaks as soon as a query dispatches a second one.
+   */
+  private def dispatchedNames(explain: String): Seq[String] =
+    "JVM codegen dispatcher: ([^\\]]*)".r
+      .findFirstMatchIn(explain)
+      .map(_.group(1).split(",").map(_.trim).filter(_.nonEmpty).toSeq)
+      .getOrElse(Seq.empty)
 
   private def withSequenceTable(f: => Unit): Unit = {
     withTable("t") {
@@ -255,7 +322,7 @@ class CometCodegenSuite
       val explain =
         new ExtendedExplainInfo().generateExtendedInfo(df.queryExecution.executedPlan)
       assert(
-        explain.contains("JVM codegen dispatcher: sequence"),
+        dispatchedNames(explain).contains("sequence"),
         s"expected zero-arg-UDF sequence to route through the dispatcher, got:\n$explain")
     }
   }
@@ -271,7 +338,7 @@ class CometCodegenSuite
       val explain =
         new ExtendedExplainInfo().generateExtendedInfo(df.queryExecution.executedPlan)
       assert(
-        explain.contains("JVM codegen dispatcher: sequence"),
+        dispatchedNames(explain).contains("sequence"),
         s"expected composed-arg sequence to route through the dispatcher, got:\n$explain")
     }
   }
@@ -285,7 +352,7 @@ class CometCodegenSuite
       val explain =
         new ExtendedExplainInfo().generateExtendedInfo(df.queryExecution.executedPlan)
       assert(
-        explain.contains("JVM codegen dispatcher: sequence"),
+        dispatchedNames(explain).contains("sequence"),
         s"expected date sequence to route through the dispatcher, got:\n$explain")
     }
   }
@@ -355,13 +422,21 @@ class CometCodegenSuite
 
     // Promotion rebuilds Hypot as well as the Alias above it. Unlike the original Add, the
     // dispatched copy is not reachable from the original tree, so only the coverage lift can
-    // bring its name back to the projection owner.
+    // bring its names back to the projection owner.
+    //
+    // Every expression in the rebuilt subtree is named, not just the dispatched root: the whole
+    // subtree was bound into the one kernel, so all of it ran in the JVM. `checkoverflow` is the
+    // wrapper promotion added around the decimal `Add`, which is what makes the lifted set
+    // evidence that the promoted copy, rather than the original tree, was the one recorded.
     val proto = QueryPlanSerde.exprToProto(projection, Seq(decimal)).get
     assert(proto.hasJvmScalarUdf)
     assert(proto.getJvmScalarUdf.getClassName === classOf[CometScalaUDFCodegen].getName)
     assert(dispatched.getTagValue(CometExplainInfo.DISPATCHED_SELF).isEmpty)
     assert(dispatched.getTagValue(CometExplainInfo.CODEGEN_DISPATCH_EXPRS).isEmpty)
-    assert(projection.getTagValue(CometExplainInfo.CODEGEN_DISPATCH_EXPRS).contains(Set("hypot")))
+    assert(
+      projection
+        .getTagValue(CometExplainInfo.CODEGEN_DISPATCH_EXPRS)
+        .contains(Set("hypot", "cast", "checkoverflow", "add")))
   }
 
   test("tags copied onto the shared TrueLiteral do not leak into unrelated plans") {
