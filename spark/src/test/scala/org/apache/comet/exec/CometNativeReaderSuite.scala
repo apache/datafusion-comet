@@ -397,6 +397,40 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
     }
   }
 
+  test("duplicate Parquet field names outside a nested projection remain readable") {
+    withTempPath { path =>
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        spark
+          .range(3)
+          .coalesce(1)
+          .selectExpr("named_struct('dup', id, 'dup', id + 100, 'other', id + 900) as s")
+          .write
+          .parquet(path.toString)
+      }
+      Seq(true, false).foreach { caseSensitive =>
+        withSQLConf(SQLConf.CASE_SENSITIVE.key -> caseSensitive.toString) {
+          val name = "other"
+          val df = spark.read.schema(s"s struct<$name: bigint>").parquet(path.toString)
+          assert(
+            find(df.queryExecution.executedPlan)(_.isInstanceOf[CometNativeScanExec]).isDefined)
+          checkSparkAnswerAndOperator(df)
+          checkAnswer(df, Seq(Row(Row(900L)), Row(Row(901L)), Row(Row(902L))))
+          // Missing fields require Comet's cast, which decodes the complete physical struct.
+          val unpruned = spark.read
+            .schema(s"s struct<$name: bigint, missing: bigint>")
+            .parquet(path.toString)
+          val error = intercept[Exception](unpruned.collect())
+          val messages = Iterator
+            .iterate[Throwable](error)(_.getCause)
+            .takeWhile(_ != null)
+            .map(_.getMessage)
+            .mkString("\n")
+          assert(messages.contains("duplicate Parquet field name 'dup'"), messages)
+        }
+      }
+    }
+  }
+
   test("native reader - read simple STRUCT fields") {
     testSingleLineQuery(
       """
