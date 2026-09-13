@@ -37,11 +37,11 @@ thread_local! {
 }
 
 /// Executes a closure using scratch buffers.
-/// For sizes up to `MAX_RETAINED_CAPACITY`, reuses TLS buffers.
-/// For oversized rows, allocates temporary vectors to prevent TLS memory bloat.
-/// Executes a closure using scratch buffers.
-/// For sizes up to `MAX_RETAINED_CAPACITY`, reuses TLS buffers.
-/// For oversized rows, allocates temporary vectors to prevent TLS memory bloat.
+///
+/// For sizes up to `MAX_RETAINED_CAPACITY`, reuses TLS buffers (bounded to
+/// at most `2 * MAX_RETAINED_CAPACITY * 4` bytes per worker thread).
+/// For oversized rows, allocates temporary vectors in the call scope so the
+/// TLS buffers never grow beyond the cap.
 #[inline]
 fn with_scratch_buffers<F, R>(len: usize, default_val: i32, f: F) -> R
 where
