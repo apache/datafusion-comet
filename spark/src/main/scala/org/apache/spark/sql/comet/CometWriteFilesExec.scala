@@ -25,6 +25,7 @@ import scala.jdk.CollectionConverters._
 
 import org.apache.hadoop.mapreduce.{TaskAttemptContext, TaskAttemptID, TaskID, TaskType}
 import org.apache.hadoop.mapreduce.task.TaskAttemptContextImpl
+import org.apache.parquet.hadoop.codec.CodecConfig
 import org.apache.spark.TaskContext
 import org.apache.spark.internal.Logging
 import org.apache.spark.internal.io.{FileCommitProtocol, FileNameSpec, SparkHadoopWriterUtils}
@@ -35,7 +36,7 @@ import org.apache.spark.sql.comet.util.{Utils => CometUtils}
 import org.apache.spark.sql.connector.write.WriterCommitMessage
 import org.apache.spark.sql.execution.SparkPlan
 import org.apache.spark.sql.execution.datasources.{BasicWriteTaskStatsTracker, ExecutedWriteSummary, WriteFilesSpec, WriteJobDescription, WriteTaskResult, WriteTaskStatsTracker}
-import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
+import org.apache.spark.sql.execution.metric.SQLMetric
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.StructType
 import org.apache.spark.sql.vectorized.ColumnarBatch
@@ -43,7 +44,7 @@ import org.apache.spark.util.Utils
 
 import org.apache.comet.serde.OperatorOuterClass
 import org.apache.comet.serde.OperatorOuterClass.Operator
-import org.apache.comet.serde.operator.schema2Proto
+import org.apache.comet.serde.operator.{schema2Proto, NativeWriteUtils}
 import org.apache.comet.shims.ShimCometWriteFilesExec
 
 /**
@@ -87,10 +88,14 @@ case class CometWriteFilesExec(
 
   override def nodeName: String = "CometWriteFiles"
 
-  override lazy val metrics: Map[String, SQLMetric] = Map(
-    "files_written" -> SQLMetrics.createMetric(sparkContext, "number of written data files"),
-    "bytes_written" -> SQLMetrics.createSizeMetric(sparkContext, "written data"),
-    "rows_written" -> SQLMetrics.createMetric(sparkContext, "number of written rows"))
+  /**
+   * No metrics of its own. On this path `BasicWriteJobStatsTracker` is authoritative for the file
+   * count, byte count and row count, and reports them on the enclosing `Execute
+   * InsertIntoHadoopFsRelationCommand` node. Republishing the native writer's own counters here
+   * would only add a second, less trustworthy copy: its `bytes_written` comes from
+   * `std::fs::metadata`, which returns 0 for a file on HDFS.
+   */
+  override lazy val metrics: Map[String, SQLMetric] = Map.empty
 
   override def serializedPlanOpt: SerializedPlan =
     SerializedPlan(Some(CometExec.serializeNativePlan(nativeOp)))
@@ -101,6 +106,14 @@ case class CometWriteFilesExec(
    * Spark drives this node through `executeWrite`, never `execute`. `WriteFilesExecBase` already
    * throws for `doExecute`, but `CometExec` widens it to a public member that returns a
    * `ColumnarToRowExec` result, so the conflict has to be resolved explicitly here.
+   *
+   * Note that no `EliminateRedundantTransitions` arm is needed to keep a `ColumnarToRowExec` off
+   * this node, unlike `CometNativeWriteExec` on the Spark 3.x path. `CometExecRule` is a
+   * `preColumnarTransitions` rule, so `ApplyColumnarRulesAndInsertTransitions` would normally
+   * insert one above a columnar child - but for a `V1WriteCommand` under `plannedWriteEnabled` it
+   * passes `outputsColumnar = write.child.supportsColumnar` instead (`Columnar.scala`), which
+   * leaves this node alone. That is load-bearing: a transition here would not fail at planning
+   * but at execution, as a "has write support mismatch".
    */
   override def doExecute(): RDD[InternalRow] =
     throw new UnsupportedOperationException(s"$nodeName does not support doExecute")
@@ -131,9 +144,11 @@ case class CometWriteFilesExec(
     // capturing it would ship a redundant copy of the plan to every executor. Spark's own
     // WriteFilesExec.doExecuteWrite avoids this the same way, by delegating to a static
     // FileFormatWriter.executeTask.
-    // The write's target schema, not the query output's: for `INSERT INTO t SELECT ...` the query
-    // may name columns after the expressions that produced them, while the file must carry the
-    // target table's column names, nullability and Parquet field IDs.
+    // The write's target schema rather than the child's output. Spark's analyzer normally makes
+    // the two agree - `castAndRenameQueryOutput` aliases an INSERT's select list to the target's
+    // column names and casts nested structs to the target's field names - but `dataColumns` is
+    // what Spark itself treats as authoritative, and it is the one that stays correct when
+    // partitioned writes arrive, since `FileFormatWriter` excludes the partition columns from it.
     val dataSchema = CometUtils.fromAttributes(description.dataColumns)
 
     val taskWrite = NativeWriteTask(
@@ -197,9 +212,17 @@ object CometWriteFilesExec extends Logging {
       taskCtx.taskAttemptId().toInt & Integer.MAX_VALUE)
 
     committer.setupTask(taskAttemptContext)
-    val statsTrackers = description.statsTrackers.map(_.newTaskInstance())
 
-    try {
+    // Same guard FileFormatWriter.executeTask uses. A plain try/catch/finally would let a failure
+    // while aborting or cleaning up replace the failure that caused the abort; this keeps the
+    // original and attaches the rest as suppressed exceptions, and marks the task failed so
+    // Spark's failure listeners run.
+    Utils.tryWithSafeFinallyAndFailureCallbacks(block = {
+      // Inside the guard so that a tracker whose newTaskInstance throws still reaches abortTask.
+      // Spark gets this for free: its trackers are built by the FileFormatDataWriter constructor,
+      // which runs inside this same block.
+      val statsTrackers = description.statsTrackers.map(_.newTaskInstance())
+
       // Mirrors FileFormatWriter's EmptyDirectoryDataWriter case: an empty input still writes one
       // file from partition 0 so that the output carries the schema, but every other empty
       // partition produces no file at all.
@@ -209,15 +232,31 @@ object CometWriteFilesExec extends Logging {
         // naming. The file counter is always 0 until file rolling is supported.
         val filePath =
           committer.newTaskTempFile(taskAttemptContext, None, FileNameSpec("", "-c000" + ext))
+        // CometWriteFiles declines the destinations whose native spelling it can predict, but the
+        // path itself comes from the commit protocol, which is replaceable. Check the real thing
+        // before anything is created: a write that lands outside the committer's staging tree
+        // still commits successfully, so failing here is the only way the user finds out.
+        NativeWriteUtils.checkNativeWriteDestination(filePath)
+
+        // `ext` above is the codec's extension, so take the codec from the same place Parquet
+        // took it - `ParquetUtils.prepareWrite` resolved the write's options into the job
+        // configuration - rather than from the planning-time value. A file whose name says gzip
+        // and whose footer says snappy is worse than a write that never happened.
+        val codec = CodecConfig.from(taskAttemptContext).getCodec
+        val protoCodec = NativeWriteUtils
+          .protoCompressionCodec(codec.name())
+          .getOrElse(throw new UnsupportedOperationException(
+            s"Comet's native Parquet writer cannot write $codec"))
 
         statsTrackers.foreach(_.newFile(filePath))
-        val rowsWritten = writeNatively(taskWrite, filePath, batches, sparkPartitionId)
+        val rowsWritten =
+          writeNatively(taskWrite, filePath, protoCodec, batches, sparkPartitionId)
         recordRows(statsTrackers, filePath, rowsWritten)
         statsTrackers.foreach(_.closeFile(filePath))
         filePath
       } else {
-        // Drain so the child's native execution completes and releases its resources.
-        batches.foreach(_.close())
+        // `hasNext` already ran the child to completion, so there is nothing to drain or release
+        // here. Spark's EmptyDirectoryDataWriter writes nothing in this case either.
         "no file"
       }
 
@@ -234,12 +273,10 @@ object CometWriteFilesExec extends Logging {
             // added. Populating this is part of adding partitioned write support.
             updatedPartitions = Set.empty,
             stats = statsTrackers.map(_.getFinalStats(taskCommitTime)))))
-    } catch {
-      case t: Throwable =>
-        Utils.tryLogNonFatalError(committer.abortTask(taskAttemptContext))
-        logError(s"Task ${taskAttemptContext.getTaskAttemptID} aborted: ${t.getMessage}", t)
-        throw t
-    }
+    })(catchBlock = {
+      committer.abortTask(taskAttemptContext)
+      logError(s"Task ${taskAttemptContext.getTaskAttemptID} aborted")
+    })
   }
 
   /**
@@ -251,10 +288,12 @@ object CometWriteFilesExec extends Logging {
   private def writeNatively(
       taskWrite: NativeWriteTask,
       filePath: String,
+      codec: OperatorOuterClass.CompressionCodec,
       batches: Iterator[ColumnarBatch],
       partitionId: Int): Long = {
     val parquetWriter = taskWrite.nativeOp.getParquetWriter.toBuilder
       .setOutputPath(filePath)
+      .setCompression(codec)
       .clearColumnNames()
       .addAllColumnNames(taskWrite.dataColumnNames.asJava)
       .clearOutputSchema()
@@ -276,12 +315,14 @@ object CometWriteFilesExec extends Logging {
       broadcastedHadoopConfForEncryption = None,
       encryptedFilePaths = Seq.empty)
 
-    try {
+    // `close()` propagates teardown failures, including from the final native metrics update, so
+    // a plain `finally` would let a cleanup error replace the write error that caused it.
+    Utils.tryWithSafeFinally {
       // The native writer emits no batches; draining performs the write.
       while (execIterator.hasNext) {
         execIterator.next().close()
       }
-    } finally {
+    } {
       execIterator.close()
     }
 
@@ -300,8 +341,11 @@ object CometWriteFilesExec extends Logging {
    * The loop is per-tracker on the outside so the hot inner loop has a single receiver and no
    * per-row closure; the trackers are independent per-file counters, so their relative
    * interleaving carries no meaning.
+   *
+   * Visible for testing: nothing Spark ships lets a caller install a third-party tracker on a V1
+   * write, so this is the only way to exercise the warning.
    */
-  private def recordRows(
+  def recordRows(
       statsTrackers: Seq[WriteTaskStatsTracker],
       filePath: String,
       count: Long): Unit = {

@@ -21,22 +21,25 @@ package org.apache.comet.parquet
 
 import java.io.{File, IOException}
 
+import scala.collection.mutable.ArrayBuffer
 import scala.jdk.CollectionConverters._
 import scala.util.{Random, Using}
 
 import org.apache.hadoop.fs.{FileSystem, Path}
 import org.apache.hadoop.mapreduce.TaskAttemptContext
+import org.apache.logging.log4j.Level
 import org.apache.parquet.hadoop.ParquetFileReader
 import org.apache.parquet.hadoop.metadata.CompressionCodecName
 import org.apache.parquet.hadoop.util.HadoopInputFile
 import org.apache.parquet.schema.{MessageType, Type}
 import org.apache.spark.internal.io.FileCommitProtocol
 import org.apache.spark.sql.{AnalysisException, CometTestBase, DataFrame, Row, SaveMode}
+import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.comet.{CometBatchScanExec, CometNativeScanExec, CometNativeWriteExec, CometScanExec, CometWriteFilesExec}
 import org.apache.spark.sql.execution.{FileSourceScanExec, QueryExecution, SparkPlan}
 import org.apache.spark.sql.execution.command.DataWritingCommandExec
-import org.apache.spark.sql.execution.datasources.SQLHadoopMapReduceCommitProtocol
-import org.apache.spark.sql.functions.{array, map, struct, when}
+import org.apache.spark.sql.execution.datasources.{BasicWriteTaskStats, SQLHadoopMapReduceCommitProtocol, WriteTaskStats, WriteTaskStatsTracker}
+import org.apache.spark.sql.functions.{array, col, map, struct, when}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{ArrayType, LongType, MapType, Metadata, MetadataBuilder, StringType, StructField, StructType}
 
@@ -428,6 +431,66 @@ class CometParquetWriterSuite extends CometTestBase {
 
       checkAnswer(spark.read.parquet(outputPath), df.collect())
       assertParquetCodec(outputPath, CompressionCodecName.GZIP)
+    }
+  }
+
+  test("parquet write honors a mixed-case compression option") {
+    // Spark resolves write options through a CaseInsensitiveMap (ParquetOptions) and
+    // DataFrameWriter hands the caller's keys through verbatim, so `Compression` really does ask
+    // for gzip. Reading it case-sensitively would fall through to the SQLConf default and write
+    // SNAPPY into a file Spark had already named `...-c000.gz.parquet`.
+    withTempPath { dir =>
+      val outputPath = new File(dir, "output.parquet").getAbsolutePath
+      val df = spark.range(0, 100).selectExpr("id", "cast(id as string) as name")
+
+      withSQLConf(
+        CometConf.COMET_NATIVE_PARQUET_WRITE_ENABLED.key -> "true",
+        nativeWriteAllowIncompatKey -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        SQLConf.PARQUET_COMPRESSION.key -> "snappy") {
+
+        val plan = captureWritePlan(
+          path => df.write.option("Compression", "gzip").parquet(path),
+          outputPath)
+        assertHasCometNativeWriteExec(plan)
+      }
+
+      checkAnswer(spark.read.parquet(outputPath), df.collect())
+      assertParquetCodec(outputPath, CompressionCodecName.GZIP)
+      if (isSpark40Plus) {
+        // Spark names the file; Comet fills it. The extension is the only externally visible
+        // statement of the codec, so it has to agree with the footer. (On 3.x the native writer
+        // invents a name with no codec suffix, so there is nothing to compare.)
+        listPartFileNames(outputPath).foreach { name =>
+          assert(name.endsWith(".gz.parquet"), s"Expected a gzip file name, got '$name'")
+        }
+      }
+    }
+  }
+
+  test("parquet write with a mixed-case unsupported compression codec falls back to Spark") {
+    assume(isSpark35Plus, "lz4_raw was added in Spark 3.5")
+    // The other half of the case bug, and the dangerous half: a case-sensitive read misses the
+    // option entirely, finds `snappy` in the SQLConf, decides the codec is supported, and writes
+    // SNAPPY bytes into a file Spark named `...-c000.lz4raw.parquet`.
+    withTempPath { dir =>
+      val outputPath = new File(dir, "output.parquet").getAbsolutePath
+      val df = spark.range(0, 100).selectExpr("id", "cast(id as string) as name")
+
+      withSQLConf(
+        CometConf.COMET_NATIVE_PARQUET_WRITE_ENABLED.key -> "true",
+        nativeWriteAllowIncompatKey -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        SQLConf.PARQUET_COMPRESSION.key -> "snappy") {
+
+        val plan = captureWritePlan(
+          path => df.write.option("Compression", "lz4_raw").parquet(path),
+          outputPath)
+        assertNoCometNativeWriteExec(plan)
+      }
+
+      checkAnswer(spark.read.parquet(outputPath), df.collect())
+      assertParquetCodec(outputPath, CompressionCodecName.LZ4_RAW)
     }
   }
 
@@ -887,7 +950,7 @@ class CometParquetWriterSuite extends CometTestBase {
     }
   }
 
-  test("HDFS output paths needing URI escaping are declined at planning") {
+  test("HDFS destinations needing URI escaping are declined at planning") {
     // The local case above writes natively, but HDFS cannot: `create_hdfs_object_store` hands the
     // now-escaped `url.path()` to `object_store::path::Path::parse`, so the native writer would
     // create `dir%20with%20space` while Spark's committer commits `dir with space`. Job commit
@@ -924,7 +987,7 @@ class CometParquetWriterSuite extends CometTestBase {
       "hdfs://ns/back`tick/output.parquet",
       "hdfs://ns/brace{here}/output.parquet").foreach { path =>
       assert(
-        NativeWriteUtils.escapedHdfsDestination(path).isDefined,
+        NativeWriteUtils.escapedHdfsDestination(path, "part").isDefined,
         s"expected $path to be declined")
     }
 
@@ -940,8 +1003,41 @@ class CometParquetWriterSuite extends CometTestBase {
       "file:///tmp/dir%with%percent/output.parquet",
       s"file:///tmp/caf$eAcute/output.parquet").foreach { path =>
       assert(
-        NativeWriteUtils.escapedHdfsDestination(path).isEmpty,
+        NativeWriteUtils.escapedHdfsDestination(path, "part").isEmpty,
         s"expected $path to be accepted")
+    }
+
+    // The directory is only half of the committed path. `mapreduce.output.basename` puts
+    // caller-controlled text into every file name, and `?`/`#` are worse there than anywhere
+    // else: the native URL parser treats them as delimiters and truncates, so every task would
+    // write the same file name and they would overwrite each other during commit.
+    val plainHdfs = "hdfs://ns/plain/output.parquet"
+    Seq("part?x", "part#x", "part with space", s"caf$eAcute").foreach { basename =>
+      assert(
+        NativeWriteUtils.escapedHdfsDestination(plainHdfs, basename).isDefined,
+        s"expected basename '$basename' to be declined")
+    }
+    Seq("part", "out", "data_v2", "part-of-it").foreach { basename =>
+      assert(
+        NativeWriteUtils.escapedHdfsDestination(plainHdfs, basename).isEmpty,
+        s"expected basename '$basename' to be accepted")
+    }
+    assert(
+      NativeWriteUtils
+        .escapedHdfsDestination("file:///tmp/plain/output.parquet", "part?x")
+        .isEmpty,
+      "local writes use the path verbatim, so the basename cannot diverge there")
+
+    // Planning can only decline what it can predict. The path a task actually writes comes from
+    // FileCommitProtocol.newTaskTempFile, which a custom commit protocol owns, so the same check
+    // runs again at execution time - as a hard failure, because by then the only alternative is
+    // committing successfully with the data somewhere else.
+    NativeWriteUtils.checkNativeWriteDestination(
+      "hdfs://ns/out/_temporary/0/attempt_1_m_0_0/part-00000-abc-c000.snappy.parquet")
+    NativeWriteUtils.checkNativeWriteDestination("file:/tmp/out/part?x-00000.parquet")
+    intercept[UnsupportedOperationException] {
+      NativeWriteUtils.checkNativeWriteDestination(
+        "hdfs://ns/out/_temporary/0/attempt_1_m_0_0/part?x-00000-abc-c000.snappy.parquet")
     }
   }
 
@@ -1118,11 +1214,123 @@ class CometParquetWriterSuite extends CometTestBase {
     }
   }
 
-  test("a failing task aborts, cleans up its staging file, and the retry succeeds") {
+  test("INSERT INTO ... SELECT writes the target table's column names") {
+    assume(isSpark40Plus, "Requires the WriteFilesExec seam")
+    // https://github.com/apache/datafusion-comet/issues/3426, which is Spark's own
+    // `INSERT INTO TABLE - complex type but different names` (sql/core InsertSuite) with a
+    // top-level rename added. On the Spark 3.x writer this returns no rows at all (#3521), so
+    // the scenario is a regression test for the whole design rather than for one line: Comet
+    // takes the schema from `WriteJobDescription.dataColumns`, but Spark's
+    // `castAndRenameQueryOutput` has already aliased the query's output to the target's names
+    // and cast the struct to the target's nested names, so reading the child's output instead
+    // would produce the same file today. `dataColumns` is still the right source - it is what
+    // Spark guarantees, and it is the only one that stays correct once partitioned writes are
+    // supported, since those exclude the partition columns from the data schema.
+    withTempPath { dir =>
+      val targetPath = new File(dir, "target").getAbsolutePath
+      withTable("comet_rename_target", "comet_rename_source") {
+        withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+          sql(
+            "CREATE TABLE comet_rename_source(id bigint, s struct<a: string, b: string>) " +
+              "USING parquet")
+          sql(
+            "CREATE TABLE comet_rename_target(total bigint, p struct<c: string, d: string>) " +
+              s"USING parquet LOCATION '$targetPath'")
+          sql("INSERT INTO comet_rename_source SELECT 1, named_struct('a', 'x', 'b', 'y')")
+        }
+
+        withNativeWriter {
+          assertHasCometNativeWriteExec(
+            captureWritePlan(
+              sql("INSERT INTO comet_rename_target SELECT id + 1, s FROM comet_rename_source")))
+        }
+
+        // Read the names out of the file itself: the catalog would report the target's schema
+        // whatever the file said, which is exactly how this went unnoticed.
+        assertParquetSchemas(targetPath) { schema =>
+          assert(
+            schema.getFields.asScala.map(_.getName) == Seq("total", "p"),
+            s"Expected the target table's column names in the written file, got $schema")
+          val nested = schema.getFields.asScala.last.asGroupType()
+          assert(
+            nested.getFields.asScala.map(_.getName) == Seq("c", "d"),
+            s"Expected the target table's nested field names in the written file, got $schema")
+        }
+        checkAnswer(spark.table("comet_rename_target"), Row(2L, Row("x", "y")) :: Nil)
+      }
+    }
+  }
+
+  test("an empty partition writes no file and still commits") {
+    assume(isSpark40Plus, "Requires the WriteFilesExec seam")
+    // executeTask's `sparkPartitionId != 0 && !batches.hasNext` branch must skip newTaskTempFile
+    // altogether and still commit the task, matching FileFormatWriter's EmptyDirectoryDataWriter.
+    // Hash-partitioning into eight and keeping a single id leaves at most one partition with
+    // rows, so at most two files can appear: that one, plus partition 0's schema-only file when
+    // the row did not land there.
+    withTempPath { dir =>
+      val outputPath = new File(dir, "output.parquet").getAbsolutePath
+      val sourcePath = new File(dir, "source.parquet").getAbsolutePath
+      withNativeWriter {
+        // AQE would coalesce the eight partitions back down to one on data this small, which
+        // would remove the empty partitions the test is about.
+        withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
+          val df = materializeAsCometSource(
+            (1 to 100).map(i => (i, s"str_$i")).toDF("id", "name"),
+            sourcePath)
+            .repartition(8, col("id"))
+            .where("id = 7")
+
+          val plan = captureWritePlan(p => df.write.parquet(p), outputPath)
+          assertHasCometNativeWriteExec(plan)
+
+          val partFiles = listPartFileNames(outputPath)
+          assert(partFiles.nonEmpty, "The partition holding the row must have written a file")
+          assert(
+            partFiles.size <= 2,
+            s"Empty partitions must not write files, but got ${partFiles.size}: $partFiles")
+          checkAnswer(spark.read.parquet(outputPath), Row(7, "str_7") :: Nil)
+        }
+      }
+    }
+  }
+
+  test("a third-party WriteTaskStatsTracker is warned that it gets counts, not row contents") {
+    // The documented known limitation. `WriteTaskStatsTracker.newRow` is a per-row callback and
+    // Comet has columnar batches, so rather than materialize every row to hand it straight back
+    // it passes an empty one - exactly right for BasicWriteTaskStatsTracker, which ignores the
+    // row, and wrong for anything that inspects it. Nothing Spark ships lets a V1 write install a
+    // third-party tracker, so drive recordRows directly.
+    val tracker = new RecordingStatsTracker
+    val appender = new LogAppender("third-party WriteTaskStatsTracker warning")
+    withLogAppender(appender, Seq(classOf[CometWriteFilesExec].getName), Some(Level.WARN)) {
+      CometWriteFilesExec.recordRows(Seq(tracker), "/tmp/part-00000.parquet", 3)
+    }
+
+    assert(tracker.rows.size == 3, s"Expected 3 row callbacks, got ${tracker.rows.size}")
+    assert(
+      tracker.rows.forall(_._1 == "/tmp/part-00000.parquet"),
+      "Every callback must name the file being written")
+    assert(
+      tracker.rows.forall(_._2.numFields == 0),
+      "The known limitation is that the row is empty, so assert it rather than assume it")
+    assert(
+      appender.loggingEvents.exists(
+        _.getMessage.getFormattedMessage.contains(classOf[RecordingStatsTracker].getName)),
+      "A tracker that is not BasicWriteTaskStatsTracker must be warned by name, got: " +
+        appender.loggingEvents.map(_.getMessage.getFormattedMessage).mkString("\n"))
+  }
+
+  test("a failing task aborts and cleans up its staging file") {
     assume(isSpark40Plus, "Requires the WriteFilesExec seam")
     // CometWriteFilesExec.executeTask must call committer.abortTask and rethrow. Injecting the
     // failure through the commit protocol rather than the data lets the write get as far as
     // creating a staging file, so the cleanup is actually observable.
+    //
+    // The second write at the end is a fresh write of the same data, not an automatic task retry
+    // and not a speculative attempt: it only shows that the failed job left nothing behind that
+    // would break the next one. Task-attempt isolation itself is Spark's `newTaskTempFile`, and
+    // is still untested here.
     withTempPath { dir =>
       val outputPath = new File(dir, "output.parquet").getAbsolutePath
       val sourcePath = new File(dir, "source.parquet").getAbsolutePath
@@ -1576,4 +1784,21 @@ object FailingCommitProtocol {
     failOnCommitTask = false
     abortTaskCalled = false
   }
+}
+
+/**
+ * A `WriteTaskStatsTracker` that is not Spark's own, recording what Comet hands it.
+ *
+ * Stands in for a third-party tracker, which Comet cannot supply with row contents. See
+ * `CometWriteFilesExec.recordRows`.
+ */
+class RecordingStatsTracker extends WriteTaskStatsTracker {
+  val rows: ArrayBuffer[(String, InternalRow)] = ArrayBuffer.empty
+
+  override def newPartition(partitionValues: InternalRow): Unit = {}
+  override def newFile(filePath: String): Unit = {}
+  override def closeFile(filePath: String): Unit = {}
+  override def newRow(filePath: String, row: InternalRow): Unit = rows += ((filePath, row))
+  override def getFinalStats(taskCommitTime: Long): WriteTaskStats =
+    BasicWriteTaskStats(Seq.empty, 0, 0, rows.size)
 }

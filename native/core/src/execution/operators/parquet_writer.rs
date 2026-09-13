@@ -514,11 +514,11 @@ impl ExecutionPlan for ParquetWriterExec {
             Arc::new(Schema::new(fields))
         });
 
-        // Spark 4.0+ hands over the exact file to write, chosen by the JVM commit protocol.
-        // Spark 3.x hands over a working directory instead and expects the writer to name the
-        // file; that branch goes away with Spark 3.x support.
         let part_file = match &work_dir {
+            // Spark 4.0+ hands over the exact file to write, chosen by the JVM commit protocol.
             None => self.output_path.clone(),
+            // Spark 3.x hands over a working directory instead and expects the writer to name the
+            // file; that branch goes away with Spark 3.x support.
             Some(work_dir) => match task_attempt_id {
                 Some(attempt_id) => format!(
                     "{}/part-{:05}-{:05}.parquet",

@@ -19,10 +19,8 @@
 
 package org.apache.comet.serde.operator
 
-import java.util.Locale
-
+import org.apache.hadoop.conf.Configuration
 import org.apache.hadoop.fs.Path
-import org.apache.parquet.hadoop.ParquetOutputFormat
 import org.apache.spark.sql.catalyst.util.CaseInsensitiveMap
 import org.apache.spark.sql.comet.{CometNativeExec, CometWriteFilesExec}
 import org.apache.spark.sql.execution.datasources.WriteFilesExec
@@ -42,9 +40,6 @@ import org.apache.comet.serde.OperatorOuterClass.Operator
  * handling, `_SUCCESS`) to Spark. See [[CometWriteFilesExec]] for how the two fit together.
  */
 object CometWriteFiles extends CometOperatorSerde[WriteFilesExec] {
-
-  private val supportedCompressionCodecs =
-    Set("none", "uncompressed", "snappy", "lz4", "zstd", "gzip")
 
   override def enabledConfig: Option[ConfigEntry[Boolean]] =
     Some(CometConf.COMET_NATIVE_PARQUET_WRITE_ENABLED)
@@ -83,7 +78,7 @@ object CometWriteFiles extends CometOperatorSerde[WriteFilesExec] {
     }
 
     NativeWriteUtils
-      .escapedHdfsDestination(outputPath)
+      .escapedHdfsDestination(outputPath, fileNamePrefix(hadoopConf(op)))
       .foreach(reason => return Unsupported(Some(reason)))
 
     if (op.bucketSpec.isDefined) {
@@ -102,8 +97,8 @@ object CometWriteFiles extends CometOperatorSerde[WriteFilesExec] {
         Some("Writes with spark.sql.files.maxRecordsPerFile set are not supported"))
     }
 
-    val codec = parseCompressionCodec(op)
-    if (!supportedCompressionCodecs.contains(codec)) {
+    val codec = NativeWriteUtils.parseCompressionCodec(op.options)
+    if (!NativeWriteUtils.supportedCompressionCodecs.contains(codec)) {
       return Unsupported(Some(s"Unsupported compression codec: $codec"))
     }
 
@@ -124,14 +119,13 @@ object CometWriteFiles extends CometOperatorSerde[WriteFilesExec] {
         return None
     }
 
-    val codec = parseCompressionCodec(op) match {
-      case "snappy" => OperatorOuterClass.CompressionCodec.Snappy
-      case "lz4" => OperatorOuterClass.CompressionCodec.Lz4
-      case "zstd" => OperatorOuterClass.CompressionCodec.Zstd
-      case "gzip" => OperatorOuterClass.CompressionCodec.Gzip
-      case "none" | "uncompressed" => OperatorOuterClass.CompressionCodec.None
-      case other =>
-        withFallbackReason(op, s"Unsupported compression codec: $other")
+    // Planning-time value only, so that a plan can be inspected without a task context.
+    // CometWriteFilesExec replaces it per task with the codec Parquet names the file after.
+    val plannedCodec = NativeWriteUtils.parseCompressionCodec(op.options)
+    val codec = NativeWriteUtils.protoCompressionCodec(plannedCodec) match {
+      case Some(codec) => codec
+      case None =>
+        withFallbackReason(op, s"Unsupported compression codec: $plannedCodec")
         return None
     }
 
@@ -144,13 +138,12 @@ object CometWriteFiles extends CometOperatorSerde[WriteFilesExec] {
 
     // getSupportLevel already declined the write if the tag is absent, so this cannot be empty.
     outputPathOf(op).foreach { outputPath =>
-      val hadoopConf = op.session.sessionState.newHadoopConfWithOptions(op.options)
       // The tag holds `Path.toString`, which is not a valid URI string: it leaves spaces and
       // literal `%` unescaped, so `URI.create` would throw. Round-tripping through `Path` escapes
       // them again. Only the scheme and authority matter to `extractObjectStoreOptions`, but
       // parsing has to succeed to get at them.
       NativeConfig
-        .extractObjectStoreOptions(hadoopConf, new Path(outputPath).toUri)
+        .extractObjectStoreOptions(hadoopConf(op), new Path(outputPath).toUri)
         .foreach { case (key, value) => writerOpBuilder.putObjectStoreOptions(key, value) }
     }
 
@@ -170,6 +163,17 @@ object CometWriteFiles extends CometOperatorSerde[WriteFilesExec] {
   private def outputPathOf(op: WriteFilesExec): Option[String] =
     op.getTagValue(CometExecRule.WRITE_OUTPUT_PATH)
 
+  private def hadoopConf(op: WriteFilesExec): Configuration =
+    op.session.sessionState.newHadoopConfWithOptions(op.options)
+
+  /**
+   * The leading component of every file name this write will produce. Spark's
+   * `HadoopMapReduceCommitProtocol.getFilename` reads it from the task configuration, so a write
+   * option or a session-level Hadoop setting can replace the usual `part`.
+   */
+  private def fileNamePrefix(hadoopConf: Configuration): String =
+    hadoopConf.get(NativeWriteUtils.BASE_OUTPUT_NAME, NativeWriteUtils.DEFAULT_BASE_OUTPUT_NAME)
+
   /**
    * Whether Spark would roll to a new file every N rows within a task.
    *
@@ -187,19 +191,5 @@ object CometWriteFiles extends CometOperatorSerde[WriteFilesExec] {
       .map(_.toLong)
       .getOrElse(SQLConf.get.maxRecordsPerFile)
     maxRecordsPerFile > 0
-  }
-
-  private def parseCompressionCodec(op: WriteFilesExec): String = {
-    // `compression`, `parquet.compression` (i.e., ParquetOutputFormat.COMPRESSION), and
-    // `spark.sql.parquet.compression.codec` are in order of precedence from highest to
-    // lowest, matching Spark's own ParquetOptions.compressionCodecClassName.
-    op.options
-      .get("compression")
-      .orElse(op.options.get(ParquetOutputFormat.COMPRESSION))
-      .getOrElse(
-        SQLConf.get.getConfString(
-          SQLConf.PARQUET_COMPRESSION.key,
-          SQLConf.PARQUET_COMPRESSION.defaultValueString))
-      .toLowerCase(Locale.ROOT)
   }
 }
