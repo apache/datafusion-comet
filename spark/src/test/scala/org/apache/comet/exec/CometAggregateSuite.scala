@@ -205,18 +205,21 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           "spark.comet.datafusion.execution.sort_spill_reservation_bytes" -> "65536") {
           // The literal and coalesce create required fields after the Parquet scan, which
           // otherwise widens field nullability. Sorting removes collect order differences.
-          val (_, cometPlan) = checkSparkAnswerAndOperator(
-            sql("""
-            SELECT _1, sort_array(collect_list(s)), sort_array(collect_set(s))
-            FROM (
-              SELECT _1, named_struct('flag', true, 'id', coalesce(_2, 0), 'value', _3) AS s
-              FROM tbl
-            ) GROUP BY _1"""),
-            Seq(classOf[CometHashAggregateExec]))
-          val aggregates = collect(cometPlan) { case agg: CometHashAggregateExec => agg }
-          assert(
-            aggregates.map(_.metrics("spill_count").value).sum > 0L,
-            s"Expected the native collection aggregate to spill:\n$cometPlan")
+          val struct = "named_struct('flag', true, 'id', coalesce(_2, 0), 'value', _3)"
+          Seq(struct, s"array($struct)").foreach { value =>
+            val (_, cometPlan) = checkSparkAnswerAndOperator(
+              sql(s"""
+              SELECT _1, sort_array(collect_list(s)), sort_array(collect_set(s))
+              FROM (
+                SELECT _1, $value AS s
+                FROM tbl
+              ) GROUP BY _1"""),
+              Seq(classOf[CometHashAggregateExec]))
+            val aggregates = collect(cometPlan) { case agg: CometHashAggregateExec => agg }
+            assert(
+              aggregates.map(_.metrics("spill_count").value).sum > 0L,
+              s"Expected the native collection aggregate to spill:\n$cometPlan")
+          }
         }
       }
     }
