@@ -37,8 +37,12 @@ use datafusion::prelude::SessionContext;
 use datafusion::scalar::ScalarValue;
 use datafusion_comet_spark_expr::EvalMode;
 use datafusion_datasource::TableSchema;
+use parquet::variant::VariantType;
 use std::collections::HashMap;
 use std::sync::Arc;
+
+#[cfg(test)]
+mod variant_tests;
 
 /// Initializes a DataSourceExec plan with a ParquetSource for Comet's native Parquet scan.
 ///
@@ -147,6 +151,15 @@ pub(crate) fn init_datasource_exec(
         .with_table_parquet_options(table_parquet_options)
         .with_metadata_size_hint(512 * 1024); // Same as DataFusion's default
 
+    let projects_variant = required_schema
+        .fields()
+        .iter()
+        .any(|field| field.has_valid_extension_type::<VariantType>());
+    if projects_variant && encryption_enabled {
+        return Err(ExecutionError::GeneralError(
+            "Projected Variant with Parquet encryption requires Spark fallback".to_string(),
+        ));
+    }
     if encryption_enabled {
         parquet_source = parquet_source.with_encryption_factory(
             session_ctx
@@ -173,12 +186,15 @@ pub(crate) fn init_datasource_exec(
     let store = runtime_env.object_store(&object_store_url)?;
     let metadata_cache = runtime_env.cache_manager.get_file_metadata_cache();
     let scan_io_source = scan_io_source(object_store_backend);
-    let reader_factory = Arc::new(EagerPageIndexReaderFactory::new(
-        store,
-        metadata_cache,
-        scan_io_source,
-        parquet_source.metrics(),
-    ));
+    let reader_factory = Arc::new(
+        EagerPageIndexReaderFactory::new(
+            store,
+            metadata_cache,
+            scan_io_source,
+            parquet_source.metrics(),
+        )
+        .with_spark_variant_schema(projects_variant),
+    );
     parquet_source = parquet_source.with_parquet_file_reader_factory(reader_factory);
 
     // Route data filters through `try_pushdown_filters` rather than calling

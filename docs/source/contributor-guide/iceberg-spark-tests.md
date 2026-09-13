@@ -101,9 +101,11 @@ diff must be generated against its own tag.
 The `iceberg_spark_test_<version>.yml` workflows apply these diffs and run the three Gradle targets above
 against each Iceberg version. Iceberg 1.8.1 runs against Spark 3.4.3 with Java 11; Iceberg 1.9.1 and 1.10.0
 run against Spark 3.5.9 with Java 17; Iceberg 1.11.0 runs against Spark 4.1.3 with Java 17. Iceberg 1.11
-(the only version testing Spark 4.1) runs on every pull request and on pushes to main; the older versions
-(1.8, 1.9, 1.10) run only on pushes to main, or on a pull request labeled `run-iceberg-tests`. All caller
-workflows delegate to `iceberg_spark_test_reusable.yml`, which holds the build and test job logic.
+(the only version testing Spark 4.1) runs on every pull request and in the merge queue; the older versions
+(1.8, 1.9, 1.10) run only in the merge queue, or on a pull request labeled `run-iceberg-tests`. All caller
+workflows delegate to `iceberg_spark_test_reusable.yml`, which holds the build and test job logic. See
+[.github/workflows/README.md](https://github.com/apache/datafusion-comet/blob/main/.github/workflows/README.md)
+for how the pull-request and merge-queue tiers differ.
 
 The core Spark test target runs in four independent workers. The workflow passes
 `dev/ci/iceberg-test-shards.gradle` as a Gradle init script: one worker runs the long
