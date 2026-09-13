@@ -867,8 +867,8 @@ under the License.
       still report warnings that 2.12 does not raise at all, dominated by
       `-Xlint:nonlocal-return` (a `return` inside a closure, which the compiler
       implements by throwing) and non-exhaustive matches. Clearing those means
-      restructuring control flow rather than annotating it, so they are left for a
-      follow-up rather than silenced here.
+      restructuring control flow rather than annotating it, so they are tracked in
+      https://github.com/apache/datafusion-comet/issues/5893 rather than silenced here.
 
       `args` is configured per execution rather than on the plugin, because main and
       test sources warrant different flags (see `-Ywarn-value-discard` below). An
