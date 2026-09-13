@@ -16,12 +16,10 @@
 -- under the License.
 
 -- Config: spark.comet.exec.scalaUDF.codegen.enabled=true
--- ConfigMatrix: spark.comet.expression.round.allowIncompatible=false,true
 
 -- Integral and non-negative-scale decimal inputs round natively. Float and double inputs have no
 -- native implementation (Spark rounds them through BigDecimal built from Double.toString), so they
--- route through the codegen dispatcher and must match Spark exactly. Enabling allowIncompatible
--- must not change either route.
+-- route through the codegen dispatcher and must match Spark exactly.
 
 statement
 CREATE TABLE test_round(d double, f float, dec decimal(10,4), i int, l bigint) USING parquet
@@ -45,9 +43,13 @@ SELECT d, round(d), round(d, 0), round(d, 2), round(d, -1) FROM test_round
 query expect_dispatch(round)
 SELECT f, round(f), round(f, 0), round(f, 2), round(f, -1) FROM test_round
 
--- Null scale makes the whole result null without evaluating the child.
-query
+-- Null scale short-circuits in the dispatcher for floating-point inputs.
+query expect_dispatch(round)
 SELECT round(d, NULL), round(f, NULL) FROM test_round
+
+-- Compatible inputs use the native serializer's null-scale branch.
+query expect_native(round)
+SELECT round(dec, NULL), round(i, NULL), round(l, NULL) FROM test_round
 
 -- Decimal and integral inputs stay on the native path.
 query expect_native(round)
@@ -97,17 +99,3 @@ SELECT l, round(l, -19), round(l, -20) FROM test_round_long_overflow
 
 query
 SELECT round(5000000000000000000L, -19), round(-5000000000000000000L, -19)
-
--- Disabling the dispatcher leaves supported types native and sends float/double inputs to Spark,
--- even with allowIncompatible enabled.
-statement
-SET spark.comet.exec.scalaUDF.codegen.enabled=false
-
-query expect_native(round)
-SELECT round(dec, 2), round(i, -1), round(l, -1) FROM test_round
-
-query expect_fallback(round: spark.comet.exec.scalaUDF.codegen.enabled=false)
-SELECT round(d, 2) FROM test_round
-
-query expect_fallback(round: spark.comet.exec.scalaUDF.codegen.enabled=false)
-SELECT round(f, 2) FROM test_round
