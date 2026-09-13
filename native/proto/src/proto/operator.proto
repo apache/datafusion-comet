@@ -176,6 +176,9 @@ message NativeScanCommon {
   // SchemaColumnConvertNotSupportedException (Spark 3.x, SPARK-36182). Set
   // from Comet's per-Spark-version constant in ShimCometConf.
   bool allow_timestamp_ltz_to_ntz = 18;
+  // True when Spark supplied a Parquet data filter, including when Comet could
+  // not serialize any of those filters into data_filters.
+  bool has_data_filters = 19;
 }
 
 message NativeScan {
@@ -332,6 +335,12 @@ message IcebergScanCommon {
   // common message from growing with the number of references.
   repeated IcebergDeleteFile delete_file_pool = 14;
 
+  // Flat pool of unique delete-file paths, referenced by index from IcebergDeleteFile. A V3
+  // deletion vector's path is the Puffin file holding it, and every vector written by one commit
+  // shares that file, so the path would otherwise repeat once per data file: delete_file_pool
+  // cannot fold those entries together because each carries a distinct content offset.
+  repeated string delete_file_path_pool = 16;
+
   // Iceberg's SparkScan.hashCode() (folds in pushed filters, snapshot, branch, and read schema).
   // A self-join/self-merge can read the same table (same metadata_location) twice with different
   // projections or filters, so PlanDataInjector keys planning data by
@@ -392,8 +401,9 @@ message IcebergFileScanTask {
 // Positional: (file_path, row_position) pairs to skip
 // Equality: Column values to filter out (specified by equality_ids)
 message IcebergDeleteFile {
-  // Delete file path
-  string file_path = 1;
+  // Index into IcebergScanCommon.delete_file_path_pool.
+  uint32 file_path_idx = 11;
+  reserved 1;
 
   // POSITION_DELETES or EQUALITY_DELETES
   string content_type = 2;
@@ -404,14 +414,26 @@ message IcebergDeleteFile {
   // Equality field IDs (empty for positional deletes)
   repeated int32 equality_ids = 4;
 
-  // Fields 5-7 are reserved for the deletion-vector coordinates on the dv-read branch
-  // (referenced_data_file / content_offset / content_size_in_bytes) so the two features can merge
-  // in either order without a tag collision.
-  reserved 5, 6, 7;
+  // Deletion vector coordinates, set only when file_format is PUFFIN. referenced_data_file is the
+  // data file the vector applies to; content_offset and content_size_in_bytes locate the
+  // deletion-vector-v1 blob within its Puffin file. Iceberg also populates referencedDataFile on
+  // file-scoped Parquet position deletes, so file_format, not the presence of this field, is what
+  // identifies a deletion vector.
+  optional string referenced_data_file = 5;
+  optional int64 content_offset = 6;
+  optional int64 content_size_in_bytes = 7;
 
   // Serialized StandardKeyMetadata for an encrypted delete file, from DeleteFile.keyMetadata().
   // Absent for unencrypted tables. Decoded directly by iceberg-rust; no KMS unwrap needed.
   optional bytes key_metadata = 8;
+
+  // Delete-file record count. Required by iceberg-rust for deletion vectors, which check it
+  // against the cardinality decoded from the blob; unused for Parquet delete files.
+  optional int64 record_count = 9;
+
+  // "PARQUET" for a delete file, "PUFFIN" for a deletion vector. iceberg-rust selects its
+  // deletion-vector reader on this.
+  string file_format = 10;
 }
 
 // =====================================================================================
@@ -892,6 +914,9 @@ message HashJoin {
   // True for BroadcastHashJoinExec null-aware anti-joins (NOT IN subquery semantics).
   // When true, any null in the build side suppresses all left rows.
   bool null_aware_anti_join = 6;
+  // Opt-in completed-build filtering of probe batches and eligible native Parquet readers.
+  // Older serialized plans leave it false.
+  bool dynamic_filter_enabled = 10;
 }
 
 message SortMergeJoin {

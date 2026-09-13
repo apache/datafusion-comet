@@ -63,9 +63,28 @@ jobs:
         with:
           jvm: temurin:21
 
+      # Split the network from the lint. `cs launch` resolves and downloads the
+      # scalafix artifacts from Maven Central, which resets connections now and
+      # then, so the warm-up retries a no-op `--version` run. The real check then
+      # runs `--mode offline` against the populated cache: no network, and a
+      # nonzero exit can only mean a lint violation, never a download failure.
+      - name: Fetch scalafix
+        run: |
+          for attempt in 1 2 3; do
+            if cs launch scalafix:0.14.6 -- --version; then
+              break
+            fi
+            if [ "$attempt" = 3 ]; then
+              echo "::error::scalafix download failed after 3 attempts."
+              exit 1
+            fi
+            echo "::warning::scalafix download failed (attempt $attempt of 3); retrying in $((attempt * 15))s."
+            sleep $((attempt * 15))
+          done
+
       - name: Run syntactic scalafix check (no compile)
         run: |
-          cs launch scalafix:0.14.6 -- \
+          cs launch --mode offline scalafix:0.14.6 -- \
             --check \
             --syntactic \
             --config .scalafix-syntactic.conf \
@@ -118,6 +137,9 @@ jobs:
           key: ${{ runner.os }}-java-maven-${{ hashFiles('**/pom.xml') }}-lint
           restore-keys: |
             ${{ runner.os }}-java-maven-
+
+      - name: Bootstrap Maven
+        uses: ./.github/actions/maven-bootstrap
 
       - name: Run scalafix check
         run: |
@@ -173,6 +195,9 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-java-maven-
 
+      - name: Bootstrap Maven
+        uses: ./.github/actions/maven-bootstrap
+
       - name: Compile (skip tests)
         run: ./mvnw -B install -DskipTests -Dmaven.test.skip=true -Pspark-4.1
 
@@ -206,6 +231,9 @@ jobs:
           key: ${{ runner.os }}-java-maven-${{ hashFiles('**/pom.xml') }}-celeborn-${{ matrix.celeborn_version }}
           restore-keys: |
             ${{ runner.os }}-java-maven-
+
+      - name: Bootstrap Maven
+        uses: ./.github/actions/maven-bootstrap
 
       - name: Verify reflected Celeborn internals
         env:
@@ -255,7 +283,7 @@ jobs:
           RUSTFLAGS: "-Ctarget-cpu=x86-64-v3 -Clink-arg=-fuse-ld=bfd"
 
       - name: Upload native library
-        uses: actions/upload-artifact@v7
+        uses: ./.github/actions/upload-artifact-retry
         with:
           name: native-lib-linux
           path: native/target/ci/libcomet.so
@@ -359,6 +387,7 @@ jobs:
               org.apache.comet.CometIcebergRewriteActionSuite
               org.apache.comet.CometIcebergWriteActionSuite
               org.apache.comet.CometIcebergWriteDetectionSuite
+              org.apache.comet.CometIcebergSystemFunctionSuite
               org.apache.comet.iceberg.IcebergReflectionSuite
               org.apache.comet.serde.operator.IcebergWriteProtoTranslationSuite
               org.apache.comet.csv.CometCsvNativeReadSuite
@@ -374,6 +403,10 @@ jobs:
               org.apache.comet.shuffle.CelebornShufflePartitionPusherSuite
               org.apache.spark.sql.comet.execution.shuffle.CometCelebornShuffleManagerSuite
               org.apache.spark.sql.comet.execution.shuffle.CometCelebornNativeShuffleWriterSuite
+              org.apache.spark.sql.comet.execution.shuffle.CometCelebornShuffleFallbackSuite
+              org.apache.spark.sql.comet.execution.shuffle.CometCelebornConcurrentMaterializationSuite
+              org.apache.spark.sql.comet.execution.shuffle.CometCelebornShuffleStatisticsSuite
+              org.apache.spark.sql.comet.execution.shuffle.CometCelebornLocalFetchFailureSuite
               org.apache.spark.sql.comet.execution.shuffle.CometCelebornShuffleReaderSuite
               org.apache.spark.sql.comet.execution.shuffle.CometCelebornShufflePlanningSuite
               org.apache.spark.sql.comet.execution.shuffle.CometNativeShuffleInputRDDSuite
@@ -404,6 +437,7 @@ jobs:
               org.apache.comet.CometSetOpWithGroupBySuite
               org.apache.comet.CometSparkSessionExtensionsSuite
               org.apache.spark.CometPluginsSuite
+              org.apache.spark.CometRuntimeShutdownSuite
               org.apache.spark.CometTaskMemoryManagerSuite
               org.apache.spark.CometExecIteratorLifecycleSuite
               org.apache.spark.CometPluginsDefaultSuite
@@ -429,6 +463,7 @@ jobs:
               org.apache.spark.sql.comet.util.UtilsSuite
               org.apache.comet.vector.NativeUtilSuite
               org.apache.comet.objectstore.NativeConfigSuite
+              org.apache.comet.serde.operator.CometIcebergNativeScanSuite
               org.apache.comet.serde.operator.CometNativeScanSuite
               org.apache.spark.sql.CometToPrettyStringSuite
               org.apache.spark.sql.CometCollationSuite
@@ -439,7 +474,9 @@ jobs:
             value: |
               org.apache.comet.CometExpressionSuite
               org.apache.comet.CometSqlFileTestSuite
+              org.apache.comet.SqlFileTestParserSuite
               org.apache.comet.CometExpressionCoverageSuite
+              org.apache.comet.CometVariantTypeSuite
               org.apache.comet.CometHashExpressionSuite
               org.apache.comet.CometTemporalExpressionSuite
               org.apache.comet.CometArrayExpressionSuite
@@ -469,6 +506,7 @@ jobs:
               org.apache.comet.CometWidthBucketSuite
               org.apache.comet.CometUuidExpressionSuite
               org.apache.comet.serde.CometScalarFunctionSuite
+              org.apache.comet.serde.CometLiteralSuite
               org.apache.comet.CometFallbackInvarianceSuite
       fail-fast: false
     name: ${{ matrix.profile.name }} [${{ matrix.suite.name }}]
@@ -488,7 +526,7 @@ jobs:
           jdk-version: ${{ matrix.profile.java_version }}
 
       - name: Download native library
-        uses: actions/download-artifact@v8
+        uses: ./.github/actions/download-artifact-retry
         with:
           name: native-lib-linux
           # Download to release/ since Maven's -Prelease expects libcomet.so there
@@ -533,7 +571,7 @@ jobs:
           jdk-version: 17
 
       - name: Download native library
-        uses: actions/download-artifact@v8
+        uses: ./.github/actions/download-artifact-retry
         with:
           name: native-lib-linux
           path: native/target/release/
@@ -554,6 +592,11 @@ jobs:
         with:
           path: ./tpch
           key: tpch-${{ hashFiles('.github/workflows/pr_build_linux.yml') }}
+
+      # Without this, a transient repo.maven.apache.org blip fails the whole
+      # job before anything is compiled.
+      - name: Bootstrap Maven
+        uses: ./.github/actions/maven-bootstrap
 
       - name: Build project
         run: |
@@ -588,7 +631,7 @@ jobs:
           jdk-version: 17
 
       - name: Download native library
-        uses: actions/download-artifact@v8
+        uses: ./.github/actions/download-artifact-retry
         with:
           name: native-lib-linux
           path: native/target/release/
@@ -609,6 +652,11 @@ jobs:
         with:
           path: ./tpcds-sf-1
           key: tpcds-${{ hashFiles('.github/workflows/pr_build_linux.yml') }}
+
+      # Without this, a transient repo.maven.apache.org blip fails the whole
+      # job before anything is compiled.
+      - name: Bootstrap Maven
+        uses: ./.github/actions/maven-bootstrap
 
       - name: Build project
         run: |

@@ -22,11 +22,73 @@ package org.apache.comet
 import scala.util.Random
 
 import org.apache.spark.sql.CometTestBase
-import org.apache.spark.sql.types.{ArrayType, DataType, MapType, StructType}
+import org.apache.spark.sql.types.{ArrayType, DataType, DataTypes, MapType, StructField, StructType}
 
-import org.apache.comet.testing.{FuzzDataGenerator, SchemaGenOptions}
+import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator, SchemaGenOptions}
 
 class DataGeneratorSuite extends CometTestBase {
+
+  test("allowNull produces nulls in every type that honours it") {
+    // Decimal, Date, Timestamp and TimestampNTZ never consult `allowNull`, so they are excluded.
+    val types = SchemaGenOptions.defaultPrimitiveTypes.filterNot { dataType =>
+      dataType.isInstanceOf[org.apache.spark.sql.types.DecimalType] ||
+      dataType == DataTypes.DateType ||
+      dataType == DataTypes.TimestampType ||
+      dataType == DataTypes.TimestampNTZType
+    }
+    val schema = StructType(types.zipWithIndex.map { case (dataType, i) =>
+      StructField(s"c$i", dataType, nullable = true)
+    })
+
+    def rowsFor(allowNull: Boolean) =
+      FuzzDataGenerator
+        .generateDataFrame(
+          new Random(42),
+          spark,
+          schema,
+          numRows = 1000,
+          DataGenOptions(allowNull = allowNull))
+        .collect()
+
+    val withNulls = rowsFor(allowNull = true)
+    schema.fields.zipWithIndex.foreach { case (field, i) =>
+      assert(
+        withNulls.exists(_.isNullAt(i)),
+        s"no nulls generated for nullable ${field.dataType.catalogString} column")
+    }
+
+    val withoutNulls = rowsFor(allowNull = false)
+    schema.fields.zipWithIndex.foreach { case (field, i) =>
+      assert(
+        !withoutNulls.exists(_.isNullAt(i)),
+        s"nulls generated for ${field.dataType.catalogString} column with allowNull disabled")
+    }
+
+    val nestedSchema = StructType(
+      Seq(
+        StructField("array", ArrayType(DataTypes.IntegerType), nullable = true),
+        StructField(
+          "struct",
+          StructType(Seq(StructField("integer", DataTypes.IntegerType, nullable = true))),
+          nullable = true)))
+    val nestedRows = FuzzDataGenerator
+      .generateDataFrame(
+        new Random(42),
+        spark,
+        nestedSchema,
+        numRows = 1000,
+        DataGenOptions(allowNull = true))
+      .collect()
+    assert(
+      nestedRows.exists { row =>
+        val values = row.getAs[scala.collection.Seq[Any]]("array")
+        values != null && values.contains(null)
+      },
+      "no null generated in an array element")
+    assert(
+      nestedRows.exists(row => row.getStruct(row.fieldIndex("struct")).isNullAt(0)),
+      "no null generated in a struct field")
+  }
 
   test("generate nested schema has at least minDepth levels") {
     val minDepth = 3
