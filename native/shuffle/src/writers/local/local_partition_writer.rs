@@ -439,8 +439,10 @@ mod tests {
         let data = std::fs::read(dir.path().join("data.out")).unwrap();
         let index = std::fs::read(dir.path().join("index.out")).unwrap();
         let offsets: Vec<usize> = index
-            .chunks_exact(8)
-            .map(|c| i64::from_le_bytes(c.try_into().unwrap()) as usize)
+            .as_chunks::<8>()
+            .0
+            .iter()
+            .map(|c| i64::from_le_bytes(*c) as usize)
             .collect();
         assert_eq!(offsets.len(), 3);
         assert_eq!(offsets[0], 0);
