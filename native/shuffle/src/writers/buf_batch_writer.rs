@@ -27,13 +27,15 @@ use std::io::{Cursor, Seek, SeekFrom, Write};
 ///
 /// A shuffle task creates one short-lived `BufBatchWriter` per output partition per spill or
 /// finish cycle, so anything the writer owned would be rebuilt `partitions x cycles` times.
-/// Both members here are expensive to regrow from empty and cheap to keep:
+/// Both members here are cheap to keep and were previously rebuilt per writer:
 ///
 /// * `buffer` is the byte buffer blocks are serialized into before being handed to the
-///   underlying writer in `buffer_max_size` chunks.
-/// * `ipc_context` holds arrow-ipc's body scratch, flatbuffer builder and codec state. Arrow only
-///   retains capacity inside the context, so a fresh one regrows its scratch by doubling on the
-///   first block it encodes (one extra copy of the block plus a dozen reallocations).
+///   underlying writer in `buffer_max_size` chunks. It is capped back to `buffer_max_size`
+///   after every drain, so it never retains more than one block past that size.
+/// * `ipc_context` holds arrow-ipc's flatbuffer builder for record-batch metadata. With
+///   arrow's default `reserve_scratch = false`, which is what this uses, the context does not
+///   retain the block body between encodes (each block body is a fresh `Vec` that is dropped
+///   after the write), so sharing it costs one small metadata builder per task, not a block.
 ///
 /// The struct is borrowed per call rather than owned, so an error mid-partition cannot strand it
 /// inside a dropped writer and silently end recycling.
