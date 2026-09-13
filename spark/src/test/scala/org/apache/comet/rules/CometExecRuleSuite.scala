@@ -23,18 +23,21 @@ import scala.util.Random
 
 import org.apache.spark.sql._
 import org.apache.spark.sql.catalyst.FunctionIdentifier
-import org.apache.spark.sql.catalyst.expressions.{Expression, ExpressionInfo}
+import org.apache.spark.sql.catalyst.expressions.{AttributeReference, Expression, ExpressionInfo, In, InSet, KnownFloatingPointNormalized, Literal, Not}
 import org.apache.spark.sql.catalyst.expressions.aggregate.BloomFilterAggregate
+import org.apache.spark.sql.catalyst.optimizer.NormalizeNaNAndZero
 import org.apache.spark.sql.comet._
 import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
 import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.adaptive.QueryStageExec
 import org.apache.spark.sql.execution.aggregate.{HashAggregateExec, ObjectHashAggregateExec}
 import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ShuffleExchangeExec}
-import org.apache.spark.sql.types.{DataTypes, StructField, StructType}
+import org.apache.spark.sql.internal.SQLConf
+import org.apache.spark.sql.types.{DataTypes, DoubleType, FloatType, StructField, StructType}
 
 import org.apache.comet.{CometConf, CometExplainInfo}
 import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus, isSpark42Plus}
+import org.apache.comet.serde.QueryPlanSerde
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator}
 
 /**
@@ -106,6 +109,182 @@ class CometExecRuleSuite extends CometTestBase {
         assert(
           !reasons.exists(_.contains("is not supported")),
           s"a real reason was available but the generic message was used too: $reasons")
+      }
+    }
+  }
+
+  for (dataType <- Seq(FloatType, DoubleType)) {
+    test(s"floating ${dataType.sql} IN serialization preserves prunable literal lists") {
+      withSQLConf("spark.sql.legacy.nullInEmptyListBehavior" -> "false") {
+        val value = AttributeReference("value", dataType)()
+        val other = AttributeReference("other", dataType)()
+        def literal(v: Double): Literal = dataType match {
+          case FloatType => Literal(v.toFloat)
+          case DoubleType => Literal(v)
+        }
+        val ordinary = Seq(1.0d, 3.0d).map(literal)
+        val infinities = Seq(Double.PositiveInfinity, Double.NegativeInfinity).map(literal)
+        val nullLiteral = Literal.create(null, dataType)
+        val lists: Seq[(Seq[Expression], Boolean)] = Seq(
+          ordinary -> false,
+          (ordinary :+ nullLiteral) -> false,
+          infinities -> false,
+          (infinities :+ nullLiteral) -> false,
+          Seq(nullLiteral) -> false,
+          Seq(value, other) -> true) ++
+          Seq(Double.PositiveInfinity, Double.NegativeInfinity)
+            .map(v => (ordinary :+ literal(v)) -> false) ++
+          Seq(Double.NaN, 0.0d, -0.0d)
+            .flatMap(v => Seq(ordinary, infinities).map(list => (list :+ literal(v)) -> true)) ++
+          (if (isSpark35Plus) Seq(Seq.empty[Expression] -> false) else Nil)
+        for ((list, needsNormalization) <- lists;
+          asSet <- Seq(false, true) if !asSet || list.forall(_.isInstanceOf[Literal]);
+          negate <- Seq(false, true);
+          alreadyNormalized <- Seq(false, true)) {
+          withClue(s"list=$list, asSet=$asSet, negate=$negate, normalized=$alreadyNormalized: ") {
+            val needle = if (alreadyNormalized) {
+              KnownFloatingPointNormalized(NormalizeNaNAndZero(value))
+            } else {
+              value
+            }
+            val in = if (asSet) {
+              InSet(needle, list.collect { case l: Literal => l.value }.toSet)
+            } else {
+              In(needle, list)
+            }
+            val result = QueryPlanSerde
+              .exprToProto(if (negate) Not(in) else in, Seq(value, other))
+              .get
+            // NOT InSet uses a separate Not node; NOT In is fused into the membership node.
+            val serialized = if (result.hasNot) result.getNot.getChild else result
+            assert(serialized.hasIn)
+            assert(result.hasNot == (asSet && negate))
+            assert(serialized.getIn.getNegated == (negate && !asSet))
+            val serializedValue = serialized.getIn.getInValue
+            if (needsNormalization || alreadyNormalized) {
+              assert(serializedValue.hasNormalizeNanAndZero)
+              assert(serializedValue.getNormalizeNanAndZero.getChild.hasBound)
+            } else {
+              assert(serializedValue.hasBound)
+            }
+            assert(serialized.getIn.getListsCount == list.size)
+            for (i <- list.indices) {
+              val candidate = serialized.getIn.getLists(i)
+              if (list(i).isInstanceOf[Literal]) {
+                assert(candidate.hasLiteral)
+              } else {
+                assert(candidate.hasNormalizeNanAndZero)
+                assert(candidate.getNormalizeNanAndZero.getChild.hasBound)
+              }
+            }
+          }
+        }
+      }
+    }
+
+    test(
+      s"floating ${dataType.sql} IN serialization retains normalized operand fallback reasons") {
+      val expressionNames = Seq("Literal", "KnownFloatingPointNormalized")
+      for (disabled <- None +: expressionNames.map(Some(_));
+        literalValue <- Seq(false, true);
+        negate <- Seq(false, true)) {
+        val configs = expressionNames.map { name =>
+          CometConf.getExprEnabledConfigKey(name) -> (!disabled.contains(name)).toString
+        }
+        withSQLConf(configs: _*) {
+          withClue(s"disabled=$disabled, literalValue=$literalValue, negate=$negate: ") {
+            val value = AttributeReference("value", dataType)()
+            val other = AttributeReference("other", dataType)()
+            val literals = dataType match {
+              case FloatType => Seq(Literal(0.0f), Literal(3.0f))
+              case DoubleType => Seq(Literal(0.0d), Literal(3.0d))
+            }
+            // Exercise temporary literals and normalizers in both the value and the list.
+            val in =
+              if (literalValue) In(literals.head, Seq(value, other)) else In(value, literals)
+            val expr = if (negate) Not(in) else in
+            val result = QueryPlanSerde.exprToProto(expr, Seq(value, other))
+            val reasons = in
+              .getTagValue(CometExplainInfo.FALLBACK_REASONS)
+              .getOrElse(Set.empty[String])
+            disabled match {
+              case Some(name) =>
+                assert(result.isEmpty)
+                val key = CometConf.getExprEnabledConfigKey(name)
+                assert(
+                  reasons == Set(s"Expression support is disabled. Set $key=true to enable it."))
+              case None =>
+                assert(result.exists(_.hasIn))
+                assert(result.get.getIn.getNegated == negate)
+                assert(reasons.isEmpty)
+            }
+          }
+        }
+      }
+    }
+
+    test(s"floating ${dataType.sql} IN planning retains normalized operand fallback reasons") {
+      val expressionNames = Seq("Literal", "KnownFloatingPointNormalized")
+      for (disabled <- None +: expressionNames.map(Some(_));
+        strict <- Seq(false, true);
+        literalValue <- Seq(false, true);
+        negate <- Seq(false, true)) {
+        val configs = Seq(
+          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+          SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "false",
+          "spark.sql.optimizer.inSetConversionThreshold" -> "100",
+          CometConf.COMET_SPARK_TO_ARROW_ENABLED.key -> "true",
+          CometConf.COMET_SPARK_TO_ARROW_SUPPORTED_OPERATOR_LIST.key -> "Range",
+          CometConf.COMET_EXEC_TRANSITION_REVERT_ENABLED.key -> "false",
+          CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "false",
+          CometConf.COMET_STRICT_FALLBACK_REASONS.key -> strict.toString) ++
+          expressionNames.map { name =>
+            CometConf.getExprEnabledConfigKey(name) -> (!disabled.contains(name)).toString
+          }
+        withSQLConf(configs: _*) {
+          withClue(
+            s"disabled=$disabled, strict=$strict, literalValue=$literalValue, negate=$negate: ") {
+            val column = s"CAST(id AS ${dataType.sql})"
+            val predicate = if (literalValue) {
+              s"CAST(1 AS ${dataType.sql}) IN ($column, -$column)"
+            } else {
+              s"$column IN (CAST(0 AS ${dataType.sql}), CAST(3 AS ${dataType.sql}))"
+            }
+            val expression = if (negate) s"NOT ($predicate)" else predicate
+            val df = sql(s"SELECT $expression AS hit FROM range(0, 4, 1, 1)")
+            val optimized = df.queryExecution.optimizedPlan
+            val expressions = optimized.flatMap(_.expressions)
+            val membership = expressions.flatMap(_.collect { case in: In => in })
+            // A folded predicate, singleton equality, or InSet would miss this serializer.
+            assert(membership.size == 1 && membership.head.list.size == 2, optimized.toString)
+            assert(membership.head.value.isInstanceOf[Literal] == literalValue)
+            assert(expressions.exists(_.exists {
+              case Not(_: In) => true
+              case _ => false
+            }) == negate)
+
+            // Planning itself used to throw in strict mode, before a native task could run.
+            val plan = df.queryExecution.executedPlan
+            val projects = plan.collect { case p: ProjectExec => p }
+            disabled match {
+              case Some(name) =>
+                assert(projects.size == 1, plan.toString)
+                assert(plan.find(_.isInstanceOf[CometProjectExec]).isEmpty, plan.toString)
+                val key = CometConf.getExprEnabledConfigKey(name)
+                val reasons = projects.head
+                  .getTagValue(CometExplainInfo.FALLBACK_REASONS)
+                  .getOrElse(Set.empty[String])
+                assert(
+                  reasons == Set(s"Expression support is disabled. Set $key=true to enable it."))
+              case None =>
+                assert(projects.isEmpty, plan.toString)
+                assert(plan.find(_.isInstanceOf[CometProjectExec]).isDefined, plan.toString)
+                assert(
+                  !plan.exists(
+                    _.getTagValue(CometExplainInfo.FALLBACK_REASONS).exists(_.nonEmpty)))
+            }
+          }
+        }
       }
     }
   }
