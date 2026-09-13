@@ -27,14 +27,14 @@ import java.nio.file.{Files, Paths}
 
 import scala.collection.mutable.ArrayBuffer
 import scala.jdk.CollectionConverters._
-import scala.util.Random
+import scala.util.{Random, Using}
 
 import org.scalatest.funsuite.AnyFunSuite
 import org.scalatest.matchers.should.Matchers
 
 import org.apache.arrow.c.{ArrowArray, ArrowSchema, Data}
 import org.apache.arrow.memory.{BufferAllocator, RootAllocator}
-import org.apache.arrow.vector.{BigIntVector, FieldVector, IntVector, NullVector, VarBinaryVector, VarCharVector, VectorSchemaRoot}
+import org.apache.arrow.vector.{BaseVariableWidthVector, BigIntVector, FieldVector, IntVector, NullVector, VarBinaryVector, VarCharVector, VectorSchemaRoot}
 import org.apache.arrow.vector.complex.{ListVector, MapVector, StructVector}
 import org.apache.arrow.vector.dictionary.{Dictionary, DictionaryProvider}
 import org.apache.arrow.vector.ipc.{ArrowStreamReader, ArrowStreamWriter, WriteChannel}
@@ -43,7 +43,7 @@ import org.apache.arrow.vector.types.pojo.{ArrowType, DictionaryEncoding, Field,
 import org.apache.spark.{SparkConf, SparkEnv, TaskContext, TaskContextImpl}
 import org.apache.spark.api.python.{BasePythonRunner, ChainedPythonFunctions, PythonEvalType, SimplePythonFunction}
 import org.apache.spark.sql.execution.metric.SQLMetric
-import org.apache.spark.sql.execution.python.CometArrowPythonRunnerBase.{foreachInputBatch, hasCompatibleSchema, inputBatchRanges, serializeBatch, withMaterializedInputVectors}
+import org.apache.spark.sql.execution.python.CometArrowPythonRunnerBase.{hasCompatibleSchema, inputBatchRanges, serializeBatch, withInputBatchRange, withMaterializedInputVectors}
 import org.apache.spark.sql.types.{StringType, StructField, StructType}
 import org.apache.spark.sql.vectorized.{ColumnarBatch, ColumnVector}
 import org.apache.spark.util.DirectByteBufferOutputStream
@@ -74,17 +74,13 @@ class CometArrowPythonRunnerSuite extends AnyFunSuite with Matchers {
     override protected val arrowMaxRecordsPerBatch: Int = 1
     override protected val arrowMaxBytesPerBatch: Long = Long.MaxValue
 
-    /** Command serialization is unused because this fixture never opens a Python worker. */
     override protected def writeUDF(dataOut: DataOutputStream): Unit = ()
 
-    /** Create a production writer borrowing the input, with cleanup owned by the given task. */
     def inputWriter(input: Iterator[Iterator[ColumnarBatch]], context: TaskContext): Writer =
       newWriter(SparkEnv.get, null, input, 0, context)
 
-    /** Return the accumulated IPC byte metric without changing writer state. */
     def bytesSent: Long = pythonMetrics("pythonDataSent").value
 
-    /** Return Spark's byte threshold for filling the transport buffer between socket writes. */
     def transportBufferSize: Int = bufferSize
   }
 
@@ -160,150 +156,78 @@ class CometArrowPythonRunnerSuite extends AnyFunSuite with Matchers {
     }
   }
 
-  private case class LargeDictionaryInput(
-      columns: Seq[CometDecodedVector],
-      values: VarCharVector,
-      indices: IntVector,
-      expected: Seq[String],
-      allocator: BufferAllocator)
-      extends AutoCloseable {
-    override def close(): Unit = {
-      columns.foreach(_.close())
-      allocator.close()
-    }
-  }
-
-  private def largeDictionaryInput(): LargeDictionaryInput = {
-    val allocator = new RootAllocator(Long.MaxValue)
-    val intType = new ArrowType.Int(32, true)
-    val encoding = new DictionaryEncoding(21L, false, intType)
-    val values = new VarCharVector("text", allocator)
-    val indices =
-      new IntVector("text", new FieldType(true, intType, encoding), allocator)
-    val dictionary = new Dictionary(values, encoding)
-    val provider = new DictionaryProvider {
-      override def lookup(id: Long): Dictionary = {
-        require(id == encoding.getId)
-        dictionary
-      }
-
-      override def getDictionaryIds: java.util.Set[java.lang.Long] =
-        Set(java.lang.Long.valueOf(encoding.getId)).asJava
-    }
-
-    val dictionaryValues = Seq("a" * (64 * 1024), "b" * (64 * 1024))
-    values.allocateNew()
-    dictionaryValues.zipWithIndex.foreach { case (value, index) =>
-      values.setSafe(index, value.getBytes(StandardCharsets.UTF_8))
-    }
-    values.setValueCount(dictionaryValues.size)
-    indices.allocateNew()
-    val expected = (0 until 10).map { index =>
-      val valueIndex = index % dictionaryValues.size
-      indices.setSafe(index, valueIndex)
-      dictionaryValues(valueIndex)
-    }
-    indices.setValueCount(expected.size)
-
-    val columns = Seq[CometDecodedVector](
-      new CometDictionaryVector(
-        new CometPlainVector(indices),
-        new CometDictionary(new CometPlainVector(values)),
-        provider))
-    LargeDictionaryInput(columns, values, indices, expected, allocator)
-  }
-
-  /** Borrow an allocated index vector and count scalar reads without changing its values. */
   private class CountingIndices(vector: IntVector) extends CometPlainVector(vector) {
     var reads: Int = 0
-
-    /** Return the index at the zero-based row and increment the observable read count. */
     override def getInt(row: Int): Int = {
       reads += 1
       super.getInt(row)
     }
   }
 
-  /** Own one dictionary column and its allocator; callers must close the fixture after use. */
   private case class DictionaryInput(
       column: CometDictionaryVector,
-      values: VarCharVector,
+      values: BaseVariableWidthVector,
       indices: CountingIndices,
-      allocator: BufferAllocator)
+      allocator: BufferAllocator,
+      expected: Seq[String])
       extends AutoCloseable {
-
-    /** Release the index and dictionary buffers before closing their owning allocator. */
+    def columns: Seq[CometDecodedVector] = Seq(column)
+    def buffers: Seq[FieldVector] = Seq(values, indices.getValueVector.asInstanceOf[FieldVector])
     override def close(): Unit = {
       column.close()
       allocator.close()
     }
   }
 
-  /**
-   * Allocate an owned UTF-8 dictionary with nullable row indices. Optional reported byte lengths
-   * install synthetic offsets beyond the real payload, allowing range tests to read large lengths
-   * without allocating data. These fixtures must never be decoded or serialized; closing still
-   * releases the actual owned buffers normally. Reported lengths must match the dictionary size,
-   * be nonnegative, and sum to at most Int.MaxValue. The caller owns the returned fixture.
-   */
+  // Synthetic offsets exercise the 2 GiB guard without allocating that payload. Such fixtures
+  // must only be used for range planning, never decoding or IPC.
   private def dictionaryInput(
       dictionaryValues: Seq[String],
       rowIndices: Seq[Option[Int]],
-      reportedLengths: Option[Seq[Int]] = None): DictionaryInput = {
+      reportedLengths: Option[Seq[Int]] = None,
+      binaryValues: Option[Seq[Array[Byte]]] = None): DictionaryInput = {
     val allocator = new RootAllocator(Long.MaxValue)
-    val values = new VarCharVector("text", allocator)
-    val intType = new ArrowType.Int(32, true)
-    val encoding = new DictionaryEncoding(31L, false, intType)
-    val indices = new IntVector("text", new FieldType(true, intType, encoding), allocator)
-    val dictionary = new Dictionary(values, encoding)
-    val provider = new DictionaryProvider {
-
-      /** Return the fixture's borrowed dictionary, rejecting any unexpected dictionary ID. */
-      override def lookup(id: Long): Dictionary = {
-        require(id == encoding.getId)
-        dictionary
-      }
-
-      /** Return the single dictionary ID without transferring ownership of its buffers. */
-      override def getDictionaryIds: java.util.Set[java.lang.Long] =
-        Set(java.lang.Long.valueOf(encoding.getId)).asJava
+    val values: BaseVariableWidthVector = if (binaryValues.isDefined) {
+      new VarBinaryVector("data", allocator)
+    } else {
+      new VarCharVector("text", allocator)
     }
+    val encoding = new DictionaryEncoding(31L, false, new ArrowType.Int(32, true))
+    val indices = new IntVector(
+      values.getName,
+      new FieldType(true, encoding.getIndexType, encoding),
+      allocator)
+    val provider = new DictionaryProvider.MapDictionaryProvider(new Dictionary(values, encoding))
     try {
+      val payloads =
+        binaryValues.getOrElse(dictionaryValues.map(_.getBytes(StandardCharsets.UTF_8)))
       values.allocateNew()
-      dictionaryValues.zipWithIndex.foreach { case (value, index) =>
-        values.setSafe(index, value.getBytes(StandardCharsets.UTF_8))
-      }
-      values.setValueCount(dictionaryValues.size)
+      payloads.zipWithIndex.foreach { case (value, index) => values.setSafe(index, value) }
+      values.setValueCount(payloads.size)
       reportedLengths.foreach { lengths =>
-        require(lengths.size == dictionaryValues.size)
-        require(lengths.forall(_ >= 0))
+        require(lengths.size == payloads.size && lengths.forall(_ >= 0))
         require(lengths.map(_.toLong).sum <= Int.MaxValue.toLong)
-        // Planning reads offsets and validity only. Leave real payload capacity and ownership
-        // untouched, and never pass this deliberately synthetic layout to decoding or IPC.
-        var offset = 0
-        values.getOffsetBuffer.setInt(0L, offset)
-        lengths.zipWithIndex.foreach { case (length, index) =>
-          offset += length
-          values.getOffsetBuffer.setInt((index + 1L) * 4L, offset)
+        lengths.scanLeft(0)(_ + _).zipWithIndex.foreach { case (offset, index) =>
+          values.getOffsetBuffer.setInt(index * 4L, offset)
         }
       }
       indices.allocateNew(math.max(1, rowIndices.size))
-      rowIndices.zipWithIndex.foreach { case (value, row) =>
-        value match {
-          case Some(index) => indices.setSafe(row, index)
-          case None => indices.setNull(row)
-        }
+      rowIndices.zipWithIndex.foreach {
+        case (Some(index), row) => indices.setSafe(row, index)
+        case (None, row) => indices.setNull(row)
       }
       indices.setValueCount(rowIndices.size)
-      val countedIndices = new CountingIndices(indices)
+      val counted = new CountingIndices(indices)
       DictionaryInput(
         new CometDictionaryVector(
-          countedIndices,
+          counted,
           new CometDictionary(new CometPlainVector(values)),
           provider),
         values,
-        countedIndices,
-        allocator)
+        counted,
+        allocator,
+        rowIndices.map(
+          _.map(index => new String(payloads(index), StandardCharsets.UTF_8)).orNull))
     } catch {
       case error: Throwable =>
         indices.close()
@@ -311,6 +235,86 @@ class CometArrowPythonRunnerSuite extends AnyFunSuite with Matchers {
         allocator.close()
         throw error
     }
+  }
+
+  private def largeDictionaryInput(): DictionaryInput =
+    dictionaryInput(Seq("a" * (64 * 1024), "b" * (64 * 1024)), (0 until 10).map(i => Some(i % 2)))
+
+  private def unchanged(
+      allocators: Seq[BufferAllocator],
+      vectors: Seq[FieldVector]): () => Unit = {
+    val buffers = vectors.flatMap(_.getFieldBuffers.asScala)
+    val references = buffers.map(_.refCnt())
+    val bytes = allocators.map(_.getAllocatedMemory)
+    () => {
+      buffers.map(_.refCnt()) shouldBe references
+      allocators.map(_.getAllocatedMemory) shouldBe bytes
+    }
+  }
+
+  // Upstream hasNext may release/reuse the delivered batch. Check that pending slices have
+  // drained before permitting any access to the source iterator after delivery.
+  private def guardedSource(input: DictionaryInput)(
+      afterDelivery: => Unit): Iterator[ColumnarBatch] =
+    new Iterator[ColumnarBatch] {
+      private var delivered = false
+      override def hasNext: Boolean = {
+        if (delivered) afterDelivery
+        !delivered
+      }
+      override def next(): ColumnarBatch = {
+        assert(!delivered)
+        delivered = true
+        new ColumnarBatch(
+          Array[ColumnVector](input.column),
+          input.indices.getValueVector.getValueCount)
+      }
+    }
+
+  private def writeInput(
+      columns: Seq[CometDecodedVector],
+      rows: Int,
+      records: Int,
+      bytes: Long,
+      allocator: BufferAllocator,
+      failAt: Int = 0): Array[Byte] = {
+    var failWrites = false
+    val output = new ByteArrayOutputStream() {
+      override def write(bytes: Array[Byte], offset: Int, length: Int): Unit = {
+        if (failWrites) throw new IOException(s"injected failure at batch $failAt")
+        super.write(bytes, offset, length)
+      }
+    }
+    val fields = columns.map {
+      case dictionary: CometDictionaryVector => dictionary.getDictionary.getVector.getField
+      case plain => plain.getValueVector.getField
+    }
+    withWriter(fields, allocator, Channels.newChannel(output)) { channel =>
+      inputBatchRanges(columns, rows, records, bytes).zipWithIndex.foreach {
+        case ((offset, length), batch) =>
+          withInputBatchRange(columns, rows, offset, length, allocator) { (vectors, count) =>
+            failWrites = batch + 1 == failAt
+            try serializeBatch(new WriteChannel(channel), vectors, count, allocator)
+            finally failWrites = false
+          }
+      }
+    }
+    allocator.getAllocatedMemory shouldBe 0L
+    output.toByteArray
+  }
+
+  private def readInput(bytes: Array[Byte])(check: (StructVector, Int) => Unit): Seq[Int] = {
+    val sizes = ArrayBuffer.empty[Int]
+    var offset = 0
+    withReader(bytes) { reader =>
+      while (reader.loadNextBatch()) {
+        val root = reader.getVectorSchemaRoot
+        sizes += root.getRowCount
+        check(root.getVector(0).asInstanceOf[StructVector], offset)
+        offset += root.getRowCount
+      }
+    }
+    sizes.toSeq
   }
 
   /**
@@ -361,44 +365,15 @@ class CometArrowPythonRunnerSuite extends AnyFunSuite with Matchers {
         withInputWriterRunner { (runner, context) =>
           var emittedBatches = 0
 
-          /**
-           * Borrow one source until all its expected writer calls finish. Checking hasNext after
-           * delivery models an upstream iterator that can close/reuse the current batch there.
-           */
-          def guardedSource(
-              input: DictionaryInput,
-              rows: Int,
-              expectedCalls: Int): Iterator[ColumnarBatch] = new Iterator[ColumnarBatch] {
-            private var delivered = false
-
-            /** Report availability, rejecting source advancement while a slice is pending. */
-            override def hasNext: Boolean = {
-              if (delivered) {
-                emittedBatches shouldBe expectedCalls
-              }
-              !delivered
-            }
-
-            /** Return the borrowed batch once; the fixture retains ownership of its vectors. */
-            override def next(): ColumnarBatch = {
-              assert(!delivered)
-              delivered = true
-              new ColumnarBatch(Array[ColumnVector](input.column), rows)
-            }
-          }
-
           val input = Iterator(
             Iterator.empty,
-            guardedSource(first, firstRows, firstRows),
+            guardedSource(first) { emittedBatches shouldBe firstRows },
             Iterator.empty,
-            guardedSource(second, secondRows, firstRows + secondRows),
+            guardedSource(second) { emittedBatches shouldBe firstRows + secondRows },
             Iterator.empty)
           val writer = runner.inputWriter(input, context)
-          val sourceBytes = Seq(first, second).map(_.allocator.getAllocatedMemory)
-          val sourceBuffers = Seq(first, second).flatMap { source =>
-            Seq(source.indices.getValueVector.getDataBuffer, source.values.getDataBuffer)
-          }
-          val sourceRefs = sourceBuffers.map(_.refCnt())
+          val checkSource =
+            unchanged(Seq(first.allocator, second.allocator), first.buffers ++ second.buffers)
           val writerBytes = CometArrowAllocator.getAllocatedMemory
           var hasInput = true
           var peakPending = 0
@@ -418,8 +393,7 @@ class CometArrowPythonRunnerSuite extends AnyFunSuite with Matchers {
                 countedBytes += transport.size() - bytesBeforeCall
               }
               CometArrowAllocator.getAllocatedMemory shouldBe writerBytes
-              Seq(first, second).map(_.allocator.getAllocatedMemory) shouldBe sourceBytes
-              sourceBuffers.map(_.refCnt()) shouldBe sourceRefs
+              checkSource()
             }
             peakPending = math.max(peakPending, transport.size())
             maxCallsPerDrain = math.max(maxCallsPerDrain, emittedBatches - callsBeforeDrain)
@@ -436,19 +410,10 @@ class CometArrowPythonRunnerSuite extends AnyFunSuite with Matchers {
           if (valueBytes < runner.transportBufferSize) {
             maxCallsPerDrain should be > 1
           }
-          withReader(wireBytes.toByteArray) { reader =>
-            val root = reader.getVectorSchemaRoot
-            var rowsRead = 0
-            while (reader.loadNextBatch()) {
-              root.getRowCount shouldBe 1
-              val struct = root.getVector(0).asInstanceOf[StructVector]
-              val text = struct.getChild("text").asInstanceOf[VarCharVector]
-              val expected = if (rowsRead < firstRows) firstValue else secondValue
-              text.getObject(0).toString shouldBe expected
-              rowsRead += 1
-            }
-            rowsRead shouldBe firstRows + secondRows
-          }
+          readInput(wireBytes.toByteArray) { (result, offset) =>
+            result.getChild("text").getObject(0).toString shouldBe
+              (if (offset < firstRows) firstValue else secondValue)
+          } shouldBe Seq.fill(firstRows + secondRows)(1)
         }
       } finally {
         transport.close()
@@ -467,9 +432,6 @@ class CometArrowPythonRunnerSuite extends AnyFunSuite with Matchers {
       var rejectWrites = false
       val transport = new DirectByteBufferOutputStream() {
 
-        /**
-         * Fail an enabled IPC write before mutating the direct buffer; otherwise copy normally.
-         */
         override def write(bytes: Array[Byte], offset: Int, length: Int): Unit = {
           if (rejectWrites) {
             throw expectedFailure
@@ -479,32 +441,14 @@ class CometArrowPythonRunnerSuite extends AnyFunSuite with Matchers {
       }
       try {
         withInputWriterRunner { (runner, context) =>
-          var delivered = false
-          val source = new Iterator[ColumnarBatch] {
-
-            /**
-             * Reject any upstream access after delivery while the test's ranges remain pending.
-             */
-            override def hasNext: Boolean = {
-              assert(!delivered, "the source must stay borrowed while slices remain")
-              true
-            }
-
-            /** Return a borrowed eight-row source whose remaining slices outlive this test. */
-            override def next(): ColumnarBatch = {
-              assert(!delivered)
-              delivered = true
-              new ColumnarBatch(Array[ColumnVector](input.column), 8)
-            }
+          val source = guardedSource(input) {
+            fail("the source must stay borrowed while slices remain")
           }
           val initialChildren = CometArrowAllocator.getChildAllocators.asScala.toSet
           val writer = runner.inputWriter(Iterator(source), context)
           val childAllocator =
             (CometArrowAllocator.getChildAllocators.asScala.toSet -- initialChildren).head
-          val sourceBytes = input.allocator.getAllocatedMemory
-          val sourceBuffers =
-            Seq(input.indices.getValueVector.getDataBuffer, input.values.getDataBuffer)
-          val sourceRefs = sourceBuffers.map(_.refCnt())
+          val checkSource = unchanged(Seq(input.allocator), input.buffers)
           val dataOut = new DataOutputStream(transport)
           writer.writeNextInputToStream(dataOut) shouldBe true
           childAllocator.getAllocatedMemory shouldBe 0L
@@ -518,14 +462,12 @@ class CometArrowPythonRunnerSuite extends AnyFunSuite with Matchers {
             (failure eq expectedFailure) shouldBe true
           }
           childAllocator.getAllocatedMemory shouldBe 0L
-          input.allocator.getAllocatedMemory shouldBe sourceBytes
-          sourceBuffers.map(_.refCnt()) shouldBe sourceRefs
+          checkSource()
           context.markInterrupted("stop with pending Python input slices")
           context.markTaskCompleted(if (failWrite) Some(expectedFailure) else None)
           CometArrowAllocator.getChildAllocators.asScala.toSet shouldBe initialChildren
           // Task cleanup must release only writer-owned resources, including on a failed write.
-          input.allocator.getAllocatedMemory shouldBe sourceBytes
-          sourceBuffers.map(_.refCnt()) shouldBe sourceRefs
+          checkSource()
           input.column.getUTF8String(7).toString shouldBe value
         }
       } finally {
@@ -802,370 +744,156 @@ class CometArrowPythonRunnerSuite extends AnyFunSuite with Matchers {
 
   for (failSerialization <- Seq(false, true)) {
     test(s"dictionary inputs materialize logical values (failure: $failSerialization)") {
-      val sourceAllocator = new RootAllocator(Long.MaxValue)
-      val writerAllocator = new RootAllocator(Long.MaxValue)
-      val intType = new ArrowType.Int(32, true)
-      val textEncoding = new DictionaryEncoding(11L, false, intType)
-      val binaryEncoding = new DictionaryEncoding(12L, false, intType)
-      val textValues = new VarCharVector("text", sourceAllocator)
-      val binaryValues = new VarBinaryVector("data", sourceAllocator)
-      val textIndices =
-        new IntVector("text", new FieldType(true, intType, textEncoding), sourceAllocator)
-      val binaryIndices =
-        new IntVector("data", new FieldType(true, intType, binaryEncoding), sourceAllocator)
-      val dictionaries = Map(
-        textEncoding.getId -> new Dictionary(textValues, textEncoding),
-        binaryEncoding.getId -> new Dictionary(binaryValues, binaryEncoding))
-      val provider = new DictionaryProvider {
-        override def lookup(id: Long): Dictionary = dictionaries(id)
-
-        override def getDictionaryIds: java.util.Set[java.lang.Long] =
-          dictionaries.keys.map(id => java.lang.Long.valueOf(id)).toSet.asJava
-      }
-      val columns = Seq[CometDecodedVector](
-        new CometDictionaryVector(
-          new CometPlainVector(textIndices),
-          new CometDictionary(new CometPlainVector(textValues)),
-          provider),
-        new CometDictionaryVector(
-          new CometPlainVector(binaryIndices),
-          new CometDictionary(new CometPlainVector(binaryValues)),
-          provider))
-      var failWrites = false
-      val output = new ByteArrayOutputStream() {
-        override def write(bytes: Array[Byte], offset: Int, length: Int): Unit = {
-          if (failWrites) {
-            throw new IOException("injected dictionary IPC write failure")
-          }
-          super.write(bytes, offset, length)
+      Using.resources(
+        dictionaryInput(Seq("same", "", "λ中文"), Seq(Some(0), Some(1), None, Some(2))),
+        dictionaryInput(
+          Seq.empty,
+          Seq(Some(2), Some(0), None, Some(1)),
+          binaryValues = Some(Seq(Array[Byte](1, 2), Array.emptyByteArray, Array[Byte](0, -1)))),
+        new RootAllocator(Long.MaxValue)) { (text, binary, allocator) =>
+        val columns = text.columns ++ binary.columns
+        val checkSource =
+          unchanged(Seq(text.allocator, binary.allocator), text.buffers ++ binary.buffers)
+        def checkValues(vectors: Seq[FieldVector]): Unit = {
+          vectors.map(_.getField.getDictionary) shouldBe Seq(null, null)
+          vectors.map(_.getField.getType) shouldBe Seq(
+            ArrowType.Utf8.INSTANCE,
+            ArrowType.Binary.INSTANCE)
+          (0 until 4).map(i => Option(vectors.head.getObject(i)).map(_.toString)) shouldBe
+            Seq(Some("same"), Some(""), None, Some("λ中文"))
+          (0 until 4).map(i =>
+            Option(vectors(1).getObject(i)).map(_.asInstanceOf[Array[Byte]].toSeq)) shouldBe
+            Seq(Some(Seq[Byte](0, -1)), Some(Seq[Byte](1, 2)), None, Some(Seq.empty[Byte]))
         }
-      }
-      try {
-        textValues.allocateNew()
-        Seq("same", "", "λ中文").zipWithIndex.foreach { case (value, index) =>
-          textValues.setSafe(index, value.getBytes(StandardCharsets.UTF_8))
-        }
-        textValues.setValueCount(3)
-        binaryValues.allocateNew()
-        Seq(Array[Byte](1, 2), Array.emptyByteArray, Array[Byte](0, -1)).zipWithIndex.foreach {
-          case (value, index) => binaryValues.setSafe(index, value)
-        }
-        binaryValues.setValueCount(3)
-        textIndices.allocateNew()
-        Seq(0, 1, 0, 2).zipWithIndex.foreach { case (value, index) =>
-          textIndices.setSafe(index, value)
-        }
-        textIndices.setNull(2)
-        textIndices.setValueCount(4)
-        binaryIndices.allocateNew()
-        Seq(2, 0, 0, 1).zipWithIndex.foreach { case (value, index) =>
-          binaryIndices.setSafe(index, value)
-        }
-        binaryIndices.setNull(2)
-        binaryIndices.setValueCount(4)
-
-        val sourceVectors = Seq(textValues, binaryValues, textIndices, binaryIndices)
-        val sourceBuffers = sourceVectors.flatMap(_.getFieldBuffers.asScala)
-        val sourceRefs = sourceBuffers.map(_.refCnt())
-        val sourceBytes = sourceAllocator.getAllocatedMemory
-
-        def writeDictionaryBatch(): Unit =
-          withMaterializedInputVectors(columns, writerAllocator) { vectors =>
-            vectors.map(_.getField.getDictionary) shouldBe Seq(null, null)
-            vectors.head.getObject(0).toString shouldBe "same"
-            vectors.head.getObject(1).toString shouldBe ""
-            vectors.head.isNull(2) shouldBe true
-            vectors.head.getObject(3).toString shouldBe "λ中文"
-            vectors(1).getObject(0).asInstanceOf[Array[Byte]] shouldBe Array[Byte](0, -1)
-            vectors(1).isNull(2) shouldBe true
-
-            withWriter(vectors.map(_.getField), writerAllocator, Channels.newChannel(output)) {
-              channel =>
-                failWrites = failSerialization
-                try {
-                  serializeBatch(new WriteChannel(channel), vectors, 4, writerAllocator)
-                } finally {
-                  failWrites = false
-                }
-            }
-          }
-
+        withMaterializedInputVectors(columns, allocator)(checkValues)
         if (failSerialization) {
-          val error = intercept[IOException](writeDictionaryBatch())
-          error.getMessage shouldBe "injected dictionary IPC write failure"
+          intercept[IOException](
+            writeInput(
+              columns,
+              4,
+              0,
+              0,
+              allocator,
+              failAt = 1)).getMessage shouldBe "injected failure at batch 1"
         } else {
-          writeDictionaryBatch()
-          withReader(output.toByteArray) { reader =>
-            reader.loadNextBatch() shouldBe true
-            val struct = reader.getVectorSchemaRoot.getVector(0).asInstanceOf[StructVector]
-            val resultText = struct.getChild("text")
-            val resultData = struct.getChild("data")
-            resultText.getField.getType shouldBe ArrowType.Utf8.INSTANCE
-            resultData.getField.getType shouldBe ArrowType.Binary.INSTANCE
-            resultText.getObject(0).toString shouldBe "same"
-            resultText.getObject(1).toString shouldBe ""
-            resultText.isNull(2) shouldBe true
-            resultText.getObject(3).toString shouldBe "λ中文"
-            resultData.getObject(0).asInstanceOf[Array[Byte]] shouldBe Array[Byte](0, -1)
-            resultData.isNull(2) shouldBe true
-            reader.loadNextBatch() shouldBe false
-          }
+          readInput(writeInput(columns, 4, 0, 0, allocator)) { (result, _) =>
+            checkValues(result.getChildrenFromFields.asScala.toSeq)
+          } shouldBe Seq(4)
         }
-
-        writerAllocator.getAllocatedMemory shouldBe 0L
-        sourceAllocator.getAllocatedMemory shouldBe sourceBytes
-        sourceBuffers.map(_.refCnt()) shouldBe sourceRefs
-        textValues.getObject(0).toString shouldBe "same"
-        binaryValues.getObject(2).asInstanceOf[Array[Byte]] shouldBe Array[Byte](0, -1)
-      } finally {
-        columns.foreach(_.close())
-        writerAllocator.close()
-        sourceAllocator.close()
+        allocator.getAllocatedMemory shouldBe 0L
+        checkSource()
+        text.values.getObject(0).toString shouldBe "same"
+        binary.values.getObject(2).asInstanceOf[Array[Byte]] shouldBe Array[Byte](0, -1)
       }
     }
   }
 
-  test("dictionary inputs are sliced before decoding to the Arrow batch limits") {
-    val input = largeDictionaryInput()
-    val sourceVectors = Seq(input.values, input.indices)
-    val sourceBuffers = sourceVectors.flatMap(_.getFieldBuffers.asScala)
-    val sourceRefs = sourceBuffers.map(_.refCnt())
-    val sourceBytes = input.allocator.getAllocatedMemory
-    val fullDecodedDataBytes =
-      input.expected.map(_.getBytes(StandardCharsets.UTF_8).length.toLong).sum
-    try {
-      val cases = Seq(
-        (2, Int.MaxValue.toLong, Seq.fill(5)(2)),
-        (100, 100L * 1024L, Seq.fill(5)(2)),
-        (100, 4096L, Seq.fill(10)(1)))
-      cases.foreach { case (maxRecords, maxBytes, expectedBatchSizes) =>
-        val writerAllocator = new RootAllocator(256 * 1024)
-        val output = new ByteArrayOutputStream()
-        try {
-          withWriter(Seq(input.values.getField), writerAllocator, Channels.newChannel(output)) {
-            channel =>
-              foreachInputBatch(
-                input.columns,
-                input.expected.size,
-                maxRecords,
-                maxBytes,
-                writerAllocator) { (vectors, numRows) =>
-                serializeBatch(new WriteChannel(channel), vectors, numRows, writerAllocator)
-              }
-          }
-
-          val actualBatchSizes = ArrayBuffer.empty[Int]
-          val actualValues = ArrayBuffer.empty[String]
-          withReader(output.toByteArray) { reader =>
-            while (reader.loadNextBatch()) {
-              val root = reader.getVectorSchemaRoot
-              actualBatchSizes += root.getRowCount
-              val struct = root.getVector(0).asInstanceOf[StructVector]
-              val text = struct.getChild("text").asInstanceOf[VarCharVector]
-              (0 until root.getRowCount).foreach { row =>
-                actualValues += text.getObject(row).toString
-              }
+  Seq(
+    (2, Int.MaxValue.toLong, Seq.fill(5)(2), 0),
+    (100, 100L * 1024L, Seq.fill(5)(2), 0),
+    (100, 4096L, Seq.fill(10)(1), 0),
+    (2, Int.MaxValue.toLong, Seq.fill(5)(2), 2)).foreach {
+    case (records, bytes, expectedSizes, failAt) =>
+      test(s"dictionary slices bound decoding: records=$records, bytes=$bytes, failAt=$failAt") {
+        Using.resources(largeDictionaryInput(), new RootAllocator(256 * 1024)) {
+          (input, allocator) =>
+            val checkSource = unchanged(Seq(input.allocator), input.buffers)
+            val expected = input.expected
+            if (failAt > 0) {
+              intercept[IOException](
+                writeInput(
+                  input.columns,
+                  10,
+                  records,
+                  bytes,
+                  allocator,
+                  failAt)).getMessage shouldBe s"injected failure at batch $failAt"
+            } else {
+              readInput(writeInput(input.columns, 10, records, bytes, allocator)) {
+                (result, offset) =>
+                  (0 until result.getValueCount).foreach { row =>
+                    result.getChild("text").getObject(row).toString shouldBe expected(
+                      offset + row)
+                  }
+              } shouldBe expectedSizes
             }
-          }
-
-          actualBatchSizes.toSeq shouldBe expectedBatchSizes
-          actualValues.toSeq shouldBe input.expected
-          writerAllocator.getAllocatedMemory shouldBe 0L
-          writerAllocator.getPeakMemoryAllocation should be < fullDecodedDataBytes
-          input.allocator.getAllocatedMemory shouldBe sourceBytes
-          sourceBuffers.map(_.refCnt()) shouldBe sourceRefs
-          input.indices.get(9) shouldBe 1
-          input.values.getObject(0).toString shouldBe input.expected.head
-        } finally {
-          writerAllocator.close()
+            allocator.getAllocatedMemory shouldBe 0L
+            allocator.getPeakMemoryAllocation should be < expected.map(_.length.toLong).sum
+            checkSource()
+            input.column.getUTF8String(9).toString shouldBe expected(9)
         }
       }
-    } finally {
-      input.close()
-    }
-  }
-
-  test("dictionary input slices are released when a later write fails") {
-    val input = largeDictionaryInput()
-    val sourceVectors = Seq(input.values, input.indices)
-    val sourceBuffers = sourceVectors.flatMap(_.getFieldBuffers.asScala)
-    val sourceRefs = sourceBuffers.map(_.refCnt())
-    val sourceBytes = input.allocator.getAllocatedMemory
-    val writerAllocator = new RootAllocator(256 * 1024)
-    var failWrites = false
-    var slicesEntered = 0
-    val output = new ByteArrayOutputStream() {
-      override def write(bytes: Array[Byte], offset: Int, length: Int): Unit = {
-        if (failWrites) {
-          throw new IOException("injected sliced dictionary IPC write failure")
-        }
-        super.write(bytes, offset, length)
-      }
-    }
-    try {
-      val error = intercept[IOException] {
-        withWriter(Seq(input.values.getField), writerAllocator, Channels.newChannel(output)) {
-          channel =>
-            foreachInputBatch(
-              input.columns,
-              input.expected.size,
-              maxRecordsPerBatch = 2,
-              maxBytesPerBatch = Int.MaxValue.toLong,
-              allocator = writerAllocator) { (vectors, numRows) =>
-              slicesEntered += 1
-              failWrites = slicesEntered == 2
-              try {
-                serializeBatch(new WriteChannel(channel), vectors, numRows, writerAllocator)
-              } finally {
-                failWrites = false
-              }
-            }
-        }
-      }
-      error.getMessage shouldBe "injected sliced dictionary IPC write failure"
-      slicesEntered shouldBe 2
-      writerAllocator.getAllocatedMemory shouldBe 0L
-      input.allocator.getAllocatedMemory shouldBe sourceBytes
-      sourceBuffers.map(_.refCnt()) shouldBe sourceRefs
-      input.indices.get(8) shouldBe 0
-      input.values.getObject(1).toString shouldBe input.expected(1)
-    } finally {
-      failWrites = false
-      writerAllocator.close()
-      input.close()
-    }
   }
 
   test("dictionary slices keep plain nullable and nested columns aligned through IPC") {
-    val input = largeDictionaryInput()
-    val number = new BigIntVector("number", input.allocator)
-    val plainText = new VarCharVector("plain_text", input.allocator)
-    val details = StructVector.empty("details", input.allocator)
-    val writerAllocator = new RootAllocator(Long.MaxValue)
-    val output = new ByteArrayOutputStream()
-    try {
-      number.allocateNew(10)
-      plainText.allocateNew()
-      val structWriter = details.getWriter
-      (0 until 10).foreach { row =>
-        if (row % 3 == 0) number.setNull(row) else number.setSafe(row, 100L + row)
-        plainText.setSafe(row, s"plain-$row".getBytes(StandardCharsets.UTF_8))
-        structWriter.setPosition(row)
-        structWriter.start()
-        if (row == 7) structWriter.bigInt("child").writeNull()
-        else structWriter.bigInt("child").writeBigInt(1000L + row)
-        structWriter.end()
-      }
-      number.setValueCount(10)
-      plainText.setValueCount(10)
-      structWriter.setValueCount(10)
-      val plainColumns = Seq[CometDecodedVector](
-        new CometPlainVector(number),
-        new CometPlainVector(plainText),
-        new CometStructVector(details, null))
-      val fields =
-        Seq(input.values.getField, number.getField, plainText.getField, details.getField)
-      val sourceBuffers = Seq[FieldVector](
-        input.values,
-        input.indices,
-        number,
-        plainText,
-        details,
-        details.getChild("child")).flatMap(_.getFieldBuffers.asScala)
-      val sourceRefs = sourceBuffers.map(_.refCnt())
-      val sourceBytes = input.allocator.getAllocatedMemory
-
-      withWriter(fields, writerAllocator, Channels.newChannel(output)) { channel =>
-        foreachInputBatch(
-          input.columns ++ plainColumns,
-          10,
-          maxRecordsPerBatch = 3,
-          maxBytesPerBatch = Int.MaxValue.toLong,
-          allocator = writerAllocator) { (vectors, numRows) =>
-          serializeBatch(new WriteChannel(channel), vectors, numRows, writerAllocator)
-        }
-      }
-
-      val batchSizes = ArrayBuffer.empty[Int]
-      var offset = 0
-      withReader(output.toByteArray) { reader =>
-        while (reader.loadNextBatch()) {
-          val root = reader.getVectorSchemaRoot
-          val result = root.getVector(0).asInstanceOf[StructVector]
-          val resultNumber = result.getChild("number").asInstanceOf[BigIntVector]
-          val resultDetails = result.getChild("details").asInstanceOf[StructVector]
-          val resultChild = resultDetails.getChild("child").asInstanceOf[BigIntVector]
-          batchSizes += root.getRowCount
-          (0 until root.getRowCount).foreach { row =>
-            val sourceRow = offset + row
-            result.getChild("text").getObject(row).toString shouldBe input.expected(sourceRow)
-            resultNumber.isNull(row) shouldBe (sourceRow % 3 == 0)
-            if (sourceRow % 3 != 0) resultNumber.get(row) shouldBe 100L + sourceRow
-            result.getChild("plain_text").getObject(row).toString shouldBe s"plain-$sourceRow"
-            resultDetails.isNull(row) shouldBe false
-            resultChild.isNull(row) shouldBe (sourceRow == 7)
-            if (sourceRow != 7) resultChild.get(row) shouldBe 1000L + sourceRow
+    Using.resources(largeDictionaryInput(), new RootAllocator(Long.MaxValue)) {
+      (input, allocator) =>
+        Using.resources(
+          new BigIntVector("number", input.allocator),
+          new VarCharVector("plain_text", input.allocator),
+          StructVector.empty("details", input.allocator)) { (number, plainText, details) =>
+          number.allocateNew(10)
+          plainText.allocateNew()
+          val structWriter = details.getWriter
+          (0 until 10).foreach { row =>
+            if (row % 3 == 0) number.setNull(row) else number.setSafe(row, 100L + row)
+            plainText.setSafe(row, s"plain-$row".getBytes(StandardCharsets.UTF_8))
+            structWriter.setPosition(row)
+            structWriter.start()
+            if (row == 7) structWriter.bigInt("child").writeNull()
+            else structWriter.bigInt("child").writeBigInt(1000L + row)
+            structWriter.end()
           }
-          offset += root.getRowCount
+          number.setValueCount(10)
+          plainText.setValueCount(10)
+          structWriter.setValueCount(10)
+          val columns = input.columns ++ Seq(
+            new CometPlainVector(number),
+            new CometPlainVector(plainText),
+            new CometStructVector(details, null))
+          val checkSource = unchanged(
+            Seq(input.allocator),
+            input.buffers ++ Seq(number, plainText, details, details.getChild("child")))
+          val expected = input.expected
+          readInput(writeInput(columns, 10, 3, Int.MaxValue.toLong, allocator)) {
+            (result, offset) =>
+              val child = result.getChild("details").asInstanceOf[StructVector].getChild("child")
+              (0 until result.getValueCount).foreach { row =>
+                val sourceRow = offset + row
+                result.getChild("text").getObject(row).toString shouldBe expected(sourceRow)
+                Option(result.getChild("number").getObject(row)) shouldBe
+                  (if (sourceRow % 3 == 0) None else Some(100L + sourceRow))
+                result.getChild("plain_text").getObject(row).toString shouldBe s"plain-$sourceRow"
+                result.getChild("details").isNull(row) shouldBe false
+                Option(child.getObject(row)) shouldBe (if (sourceRow == 7) None
+                                                       else Some(1000L + sourceRow))
+              }
+          } shouldBe Seq(3, 3, 3, 1)
+          checkSource()
+          number.get(8) shouldBe 108L
+          details.getChild("child").asInstanceOf[BigIntVector].get(9) shouldBe 1009L
         }
-      }
-      batchSizes.toSeq shouldBe Seq(3, 3, 3, 1)
-      offset shouldBe 10
-      writerAllocator.getAllocatedMemory shouldBe 0L
-      input.allocator.getAllocatedMemory shouldBe sourceBytes
-      sourceBuffers.map(_.refCnt()) shouldBe sourceRefs
-      number.get(8) shouldBe 108L
-      details.getChild("child").asInstanceOf[BigIntVector].get(9) shouldBe 1009L
-    } finally {
-      details.close()
-      plainText.close()
-      number.close()
-      writerAllocator.close()
-      input.close()
     }
   }
 
   for (numRows <- Seq(0, 10)) {
     test(s"dictionary IPC preserves $numRows all-null rows without reading dictionary indices") {
-      val input = dictionaryInput(Seq("unused"), Seq.fill(numRows)(None))
-      val writerAllocator = new RootAllocator(Long.MaxValue)
-      val output = new ByteArrayOutputStream()
-      try {
-        val sizes = ArrayBuffer.empty[Int]
-        withWriter(Seq(input.values.getField), writerAllocator, Channels.newChannel(output)) {
-          channel =>
-            foreachInputBatch(
-              Seq(input.column),
-              numRows,
-              maxRecordsPerBatch = 3,
-              maxBytesPerBatch = 0,
-              allocator = writerAllocator) { (vectors, length) =>
-              serializeBatch(new WriteChannel(channel), vectors, length, writerAllocator)
-            }
-        }
-        withReader(output.toByteArray) { reader =>
-          while (reader.loadNextBatch()) {
-            val root = reader.getVectorSchemaRoot
-            val text = root.getVector(0).asInstanceOf[StructVector].getChild("text")
-            sizes += root.getRowCount
-            text.getField.getDictionary shouldBe null
-            text.getField.getType shouldBe ArrowType.Utf8.INSTANCE
-            text.getNullCount shouldBe root.getRowCount
-          }
-        }
-        sizes.toSeq shouldBe (if (numRows == 0) Seq(0) else Seq(3, 3, 3, 1))
+      Using.resources(
+        dictionaryInput(Seq("unused"), Seq.fill(numRows)(None)),
+        new RootAllocator(Long.MaxValue)) { (input, allocator) =>
+        readInput(writeInput(input.columns, numRows, 3, 0, allocator)) { (result, _) =>
+          val text = result.getChild("text")
+          text.getField.getDictionary shouldBe null
+          text.getField.getType shouldBe ArrowType.Utf8.INSTANCE
+          text.getNullCount shouldBe result.getValueCount
+        } shouldBe (if (numRows == 0) Seq(0) else Seq(3, 3, 3, 1))
         input.indices.reads shouldBe 0
-        writerAllocator.getAllocatedMemory shouldBe 0L
-      } finally {
-        writerAllocator.close()
-        input.close()
       }
     }
   }
 
   test("non-positive dictionary limits disable only their corresponding soft limit") {
-    val input = dictionaryInput(Seq("abcd"), Seq.fill(10)(Some(0)))
-    try {
+    Using.resource(dictionaryInput(Seq("abcd"), Seq.fill(10)(Some(0)))) { input =>
       for (records <- Seq(0, -1); bytes <- Seq(0L, -1L)) {
         inputBatchRanges(Seq(input.column), 10, records, bytes) shouldBe Seq(0 -> 10)
       }
@@ -1177,8 +905,6 @@ class CometArrowPythonRunnerSuite extends AnyFunSuite with Matchers {
         inputBatchRanges(Seq(input.column), 10, 3, bytes) shouldBe
           Seq(0 -> 3, 3 -> 3, 6 -> 3, 9 -> 1)
       }
-    } finally {
-      input.close()
     }
   }
 
@@ -1195,8 +921,7 @@ class CometArrowPythonRunnerSuite extends AnyFunSuite with Matchers {
       val maxBytes = Seq(0L, -1L, 1L, 4L, 9L, 64L, 257L, 10000L)(random.nextInt(8))
       val lengths = rowIndices.map(
         _.map(index => dictionaryValues(index).getBytes(StandardCharsets.UTF_8).length))
-      val input = dictionaryInput(dictionaryValues, rowIndices)
-      try {
+      Using.resource(dictionaryInput(dictionaryValues, rowIndices)) { input =>
         val ranges = inputBatchRanges(Seq(input.column), rowIndices.size, maxRecords, maxBytes)
         withClue(s"trial=$trial, records=$maxRecords, bytes=$maxBytes, lengths=$lengths: ") {
           ranges shouldBe expectedDictionaryRanges(lengths, maxRecords, maxBytes)
@@ -1209,23 +934,18 @@ class CometArrowPythonRunnerSuite extends AnyFunSuite with Matchers {
             }
           }
         }
-      } finally {
-        input.close()
       }
     }
   }
 
   test("a conservative dictionary bound accepts small batches without reading row indices") {
-    val input = dictionaryInput(Seq("", "λ", "longest"), Seq.fill(100)(Some(2)))
-    try {
+    Using.resource(dictionaryInput(Seq("", "λ", "longest"), Seq.fill(100)(Some(2)))) { input =>
       inputBatchRanges(Seq(input.column), 100, 100, 4096L) shouldBe Seq(0 -> 100)
       input.indices.reads shouldBe 0
 
       val ranges = inputBatchRanges(Seq(input.column), 100, 3, 4096L)
       ranges.map(_._2) shouldBe (Seq.fill(33)(3) :+ 1)
       input.indices.reads shouldBe 100
-    } finally {
-      input.close()
     }
   }
 
@@ -1281,13 +1001,7 @@ class CometArrowPythonRunnerSuite extends AnyFunSuite with Matchers {
       outer.setIndexDefined(0)
       outer.setValueCount(1)
       val nested = new CometStructVector(outer, input.column.getDictionaryProvider)
-      val sourceBuffers = Seq[FieldVector](
-        input.values,
-        input.column.getValueVector.asInstanceOf[FieldVector],
-        outer,
-        inner).flatMap(_.getFieldBuffers.asScala)
-      val sourceRefs = sourceBuffers.map(_.refCnt())
-      val sourceBytes = input.allocator.getAllocatedMemory
+      val checkSource = unchanged(Seq(input.allocator), input.buffers ++ Seq(outer, inner))
       var entered = false
       val error = intercept[IllegalArgumentException] {
         withMaterializedInputVectors(Seq(input.column, nested), writerAllocator) { _ =>
@@ -1297,8 +1011,7 @@ class CometArrowPythonRunnerSuite extends AnyFunSuite with Matchers {
       error.getMessage should include("outer.inner")
       entered shouldBe false
       writerAllocator.getAllocatedMemory shouldBe 0L
-      input.allocator.getAllocatedMemory shouldBe sourceBytes
-      sourceBuffers.map(_.refCnt()) shouldBe sourceRefs
+      checkSource()
       input.values.getObject(0).toString shouldBe "value"
     } finally {
       outer.close()

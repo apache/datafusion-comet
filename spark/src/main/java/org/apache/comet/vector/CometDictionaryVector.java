@@ -70,14 +70,7 @@ public class CometDictionaryVector extends CometDecodedVector {
     return this.provider;
   }
 
-  /**
-   * Return the borrowed Arrow dictionary referenced by this column's indices.
-   *
-   * <p>The caller must keep this column alive and must not close or mutate the returned dictionary.
-   * This method neither allocates buffers nor transfers ownership. Missing encoding metadata or a
-   * missing provider entry is an invalid column and raises {@link IllegalStateException}, naming
-   * the column instead of failing later inside Arrow serialization.
-   */
+  /** Returns the borrowed dictionary, diagnosing missing metadata or entries by column name. */
   public Dictionary getDictionary() {
     String name = getValueVector().getName();
     if (getValueVector().getField().getDictionary() == null || provider == null) {

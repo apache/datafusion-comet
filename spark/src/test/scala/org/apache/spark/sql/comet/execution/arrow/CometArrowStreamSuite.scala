@@ -23,6 +23,7 @@ import java.nio.ByteOrder
 import java.nio.charset.StandardCharsets
 
 import scala.jdk.CollectionConverters._
+import scala.util.Using
 
 import org.scalatest.funsuite.AnyFunSuite
 import org.scalatest.matchers.should.Matchers
@@ -425,8 +426,6 @@ class CometArrowStreamSuite extends AnyFunSuite with Matchers {
       new IntVector("compact_text", new FieldType(true, indexType, encoding), sourceAllocator)
     val plain = new BigIntVector("plain_id", sourceAllocator)
     var sourceClosed = false
-    var sourceBatch: ColumnarBatch = null
-    var reader: ColumnarBatchArrowReader = null
     try {
       values.allocateNew()
       values.setSafe(0, "alpha".getBytes(StandardCharsets.UTF_8))
@@ -447,12 +446,9 @@ class CometArrowStreamSuite extends AnyFunSuite with Matchers {
         new CometPlainVector(indices),
         new CometDictionary(new CometPlainVector(values)),
         new MapDictionaryProvider(new ArrowDictionary(values, encoding)))
-      sourceBatch =
+      val sourceBatch =
         new ColumnarBatch(Array[ColumnVector](dictionary, new CometPlainVector(plain)), 4) {
 
-          /**
-           * Record source ownership release, then close its indices, dictionary and plain vector.
-           */
           override def close(): Unit = {
             sourceClosed = true
             super.close()
@@ -468,42 +464,34 @@ class CometArrowStreamSuite extends AnyFunSuite with Matchers {
       schema.getFields.get(0).getDictionary shouldBe null
       sourceClosed shouldBe false
 
-      reader = new ColumnarBatchArrowReader(readerAllocator, schema, input)
-      reader.loadNextBatch() shouldBe true
-      sourceClosed shouldBe true
-      indices.getValueCount shouldBe 0
-      values.getValueCount shouldBe 0
-      plain.getValueCount shouldBe 0
+      Using.resource(new ColumnarBatchArrowReader(readerAllocator, schema, input)) { reader =>
+        reader.loadNextBatch() shouldBe true
+        sourceClosed shouldBe true
+        indices.getValueCount shouldBe 0
+        values.getValueCount shouldBe 0
+        plain.getValueCount shouldBe 0
 
-      // The stable reader root owns references to decoded and plain buffers after source close.
-      val root = reader.getVectorSchemaRoot
-      root.getSchema shouldBe expected
-      root.getRowCount shouldBe 4
-      val text = root.getVector("text").asInstanceOf[VarCharVector]
-      text.getObject(0).toString shouldBe "alpha"
-      text.isNull(1) shouldBe true
-      text.getObject(2).toString shouldBe "λ"
-      text.getObject(3).toString shouldBe "alpha"
-      val ids = root.getVector("id").asInstanceOf[BigIntVector]
-      ids.get(0) shouldBe 10L
-      ids.get(1) shouldBe 11L
-      ids.isNull(2) shouldBe true
-      ids.get(3) shouldBe 13L
-      reader.loadNextBatch() shouldBe false
-      reader.close()
-      reader = null
+        // The stable reader root owns references to decoded and plain buffers after source close.
+        val root = reader.getVectorSchemaRoot
+        root.getSchema shouldBe expected
+        root.getRowCount shouldBe 4
+        val text = root.getVector("text").asInstanceOf[VarCharVector]
+        text.getObject(0).toString shouldBe "alpha"
+        text.isNull(1) shouldBe true
+        text.getObject(2).toString shouldBe "λ"
+        text.getObject(3).toString shouldBe "alpha"
+        val ids = root.getVector("id").asInstanceOf[BigIntVector]
+        ids.get(0) shouldBe 10L
+        ids.get(1) shouldBe 11L
+        ids.isNull(2) shouldBe true
+        ids.get(3) shouldBe 13L
+        reader.loadNextBatch() shouldBe false
+      }
       readerAllocator.getAllocatedMemory shouldBe 0L
       sourceAllocator.getAllocatedMemory shouldBe 0L
       rootAllocator.getAllocatedMemory shouldBe 0L
     } finally {
-      if (reader != null) reader.close()
-      if (sourceBatch != null) {
-        if (!sourceClosed) sourceBatch.close()
-      } else {
-        plain.close()
-        indices.close()
-        values.close()
-      }
+      if (!sourceClosed) Seq(plain, indices, values).foreach(_.close())
       readerAllocator.close()
       sourceAllocator.close()
       rootAllocator.close()

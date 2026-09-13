@@ -58,8 +58,6 @@ Override defaults via environment variables:
     BENCHMARK_ROWS=2000000                rows per run
     BENCHMARK_WARMUP=2                    warmup iterations per case
     BENCHMARK_ITERS=5                     measured iterations per case
-    BENCHMARK_WORKLOAD='dictionary JVM shuffle'
-                                          run only the named workload
 """
 
 import contextlib
@@ -201,16 +199,6 @@ def main() -> None:
     rows = int(os.environ.get("BENCHMARK_ROWS", 1024 * 1024))
     warmup = int(os.environ.get("BENCHMARK_WARMUP", 2))
     iters = int(os.environ.get("BENCHMARK_ITERS", 5))
-    workload_name = os.environ.get("BENCHMARK_WORKLOAD")
-    workloads = WORKLOADS
-    if workload_name:
-        workloads = [workload for workload in WORKLOADS if workload[0] == workload_name]
-        if not workloads:
-            names = ", ".join(name for name, _, _ in WORKLOADS)
-            raise ValueError(
-                f"Unknown BENCHMARK_WORKLOAD {workload_name!r}; choose from: {names}"
-            )
-
     spark = _build_spark()
     spark.sparkContext.setLogLevel("WARN")
 
@@ -224,7 +212,7 @@ def main() -> None:
     print(header)
     print("  " + "-" * (len(header) - 2))
 
-    for name, build_df, shuffle_input in workloads:
+    for name, build_df, shuffle_input in WORKLOADS:
         print(f"\n=== {name} ===")
         with _temp_parquet(spark, build_df, rows) as parquet_path:
             for api in ("mapInArrow", "mapInPandas"):

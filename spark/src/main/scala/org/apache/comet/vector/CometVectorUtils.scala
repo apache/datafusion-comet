@@ -29,16 +29,9 @@ import org.apache.arrow.vector.dictionary.DictionaryEncoder
 object CometVectorUtils {
 
   /**
-   * Borrow `columns` in order and call `body` synchronously with their logical Arrow vectors.
-   * Top-level dictionaries are decoded into new buffers in `allocator`; plain vectors remain
-   * borrowed. The caller keeps the source columns, dictionaries and allocator alive, and `body`
-   * must not close or retain the supplied vectors beyond this call. The return value is `body`'s
-   * result and must not depend on those temporary vectors remaining open.
-   *
-   * All successfully decoded vectors are closed in reverse order, including when a later decode
-   * or `body` fails. Source vectors are never closed or mutated. The original error is propagated
-   * with cleanup errors suppressed; if only cleanup fails, its first error is propagated after
-   * every temporary has been visited. Nested dictionaries are not materialized by this helper.
+   * Borrow plain vectors and temporarily decode top-level dictionaries in `allocator`. The
+   * callback must not retain or close the vectors. Close all temporaries in reverse order,
+   * preserving the original failure with cleanup errors suppressed. Source columns stay borrowed.
    */
   def withDecodedVectors[T](columns: Seq[CometVector], allocator: BufferAllocator)(
       body: Seq[FieldVector] => T): T = {

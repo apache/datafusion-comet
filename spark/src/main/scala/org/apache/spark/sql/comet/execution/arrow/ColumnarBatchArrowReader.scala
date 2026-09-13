@@ -49,13 +49,7 @@ private[comet] class ColumnarBatchArrowReader(
 
   override protected def closeReadSource(): Unit = ()
 
-  /**
-   * Load one source batch into the reader's stable root, returning false at end of input.
-   * Dictionary columns are temporarily decoded in this reader's allocator; the shared helper
-   * releases them after `loadRecordBatch` retains its own buffer references. The consumed source
-   * batch is closed on success and failure. Decode/load errors propagate without leaving decoded
-   * vectors alive; plain source buffers remain valid through the root's independent references.
-   */
+  // The source is consumed; the reader retains its own buffers before decoded temporaries close.
   override def loadNextBatch(): Boolean = {
     prepareLoadNextBatch()
 

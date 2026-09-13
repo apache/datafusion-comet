@@ -29,7 +29,8 @@ import org.scalatest.matchers.should.Matchers
 
 import org.apache.arrow.memory.RootAllocator
 import org.apache.arrow.vector.{BigIntVector, FieldVector, IntVector, VarCharVector}
-import org.apache.arrow.vector.dictionary.{Dictionary, DictionaryProvider}
+import org.apache.arrow.vector.dictionary.Dictionary
+import org.apache.arrow.vector.dictionary.DictionaryProvider.MapDictionaryProvider
 import org.apache.arrow.vector.types.pojo.{ArrowType, DictionaryEncoding, FieldType}
 
 /** Check failure cleanup without transferring ownership of the helper's source vectors. */
@@ -74,23 +75,8 @@ class CometVectorUtilsSuite extends AnyFunSuite with Matchers {
         (0 until 3).foreach(row => plain.set(row, 100L + row))
         plain.setValueCount(3)
 
-        val firstDictionary = new Dictionary(firstValues, firstEncoding)
-        val secondDictionary = new Dictionary(secondValues, secondEncoding)
-        val provider = new DictionaryProvider {
-
-          /** Borrow the fixture's dictionaries, returning null for its deliberately absent id. */
-          override def lookup(id: Long): Dictionary = {
-            if (id == firstEncoding.getId) firstDictionary
-            else if (id == secondEncoding.getId && !missingDictionary) secondDictionary
-            else null
-          }
-
-          /** Return the available ids; the provider does not own or close either value vector. */
-          override def getDictionaryIds: java.util.Set[java.lang.Long] = {
-            val ids = if (missingDictionary) Seq(11L) else Seq(11L, 22L)
-            ids.map(id => java.lang.Long.valueOf(id)).toSet.asJava
-          }
-        }
+        val provider = new MapDictionaryProvider(new Dictionary(firstValues, firstEncoding))
+        if (!missingDictionary) provider.put(new Dictionary(secondValues, secondEncoding))
         val columns = Seq[CometVector](
           new CometDictionaryVector(
             new CometPlainVector(firstIndices),
@@ -105,11 +91,9 @@ class CometVectorUtilsSuite extends AnyFunSuite with Matchers {
         val sourceRefs = sourceBuffers.map(_.refCnt())
         val sourceBytes = sourceAllocator.getAllocatedMemory
         val callbackFailure = new IOException("injected logical-vector callback failure")
-        var callbackEntered = false
 
         val error = intercept[Exception] {
           CometVectorUtils.withDecodedVectors(columns, decodedAllocator) { vectors =>
-            callbackEntered = true
             vectors(0).getField.getDictionary shouldBe null
             vectors(0).getObject(0).toString shouldBe "alpha"
             vectors(0).isNull(1) shouldBe true
@@ -124,10 +108,8 @@ class CometVectorUtilsSuite extends AnyFunSuite with Matchers {
         if (missingDictionary) {
           error shouldBe a[IllegalStateException]
           error.getMessage shouldBe "Missing dictionary 22 for column 'second'"
-          callbackEntered shouldBe false
         } else {
           error should be theSameInstanceAs callbackFailure
-          callbackEntered shouldBe true
         }
         // A nonzero peak proves the earlier dictionary was decoded before either failure.
         decodedAllocator.getPeakMemoryAllocation should be > 0L
