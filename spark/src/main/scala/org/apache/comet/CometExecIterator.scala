@@ -332,17 +332,16 @@ class CometExecIterator(
 
 object CometExecIterator extends Logging {
 
-  private def cometSqlConfs: Map[String, String] =
-    SQLConf.get.getAllConfs.filter(_._1.startsWith(CometConf.COMET_PREFIX))
-
   def serializeCometSQLConfs(): Array[Byte] = {
     val builder = ConfigMap.newBuilder()
-    cometSqlConfs.foreach { case (k, v) =>
-      if (k.startsWith(s"${CometConf.COMET_PREFIX}.datafusion.")) {
-        if (CometConf.COMET_RESPECT_DATAFUSION_CONFIGS.get(SQLConf.get)) {
-          builder.putEntries(k, v)
-        }
-      } else {
+    // Resolved once: on an executor `SQLConf.get` builds a fresh ReadOnlySQLConf when the
+    // thread-local is unset, so re-reading it per entry allocates for every config key.
+    val sqlConf = SQLConf.get
+    val datafusionPrefix = s"${CometConf.COMET_PREFIX}.datafusion."
+    val respectDatafusionConfs = CometConf.COMET_RESPECT_DATAFUSION_CONFIGS.get(sqlConf)
+    sqlConf.getAllConfs.foreach { case (k, v) =>
+      if (k.startsWith(CometConf.COMET_PREFIX) &&
+        (respectDatafusionConfs || !k.startsWith(datafusionPrefix))) {
         builder.putEntries(k, v)
       }
     }
@@ -352,11 +351,18 @@ object CometExecIterator extends Logging {
     builder.putEntries("spark.executor.cores", executorCores.toString)
 
     // Any Comet config that the native side reads must be added here manually.
-    // `cometSqlConfs` only carries values that were explicitly set, so defaults
+    // `getAllConfs` only carries values that were explicitly set, so defaults
     // from `createWithDefault(...)` would otherwise not cross JNI.
     builder.putEntries(
       CometConf.COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED.key,
-      CometConf.COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED.get(SQLConf.get).toString)
+      CometConf.COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED.get(sqlConf).toString)
+
+    // `getAllConfs` carries the raw string the user set, but the native side parses a
+    // plain integer, so resolve `4g`-style sizes to a byte count. Overwrites the raw entry.
+    CometConf.COMET_EXEC_MEMORY_GUARD_SIZE
+      .get(sqlConf)
+      .foreach(bytes =>
+        builder.putEntries(CometConf.COMET_EXEC_MEMORY_GUARD_SIZE.key, bytes.toString))
 
     builder.build().toByteArray
   }
