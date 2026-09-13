@@ -21,6 +21,7 @@ pub mod logging_pool;
 mod task_shared;
 mod unified_pool;
 
+use crate::errors::CometResult;
 use datafusion::execution::memory_pool::{
     FairSpillPool, GreedyMemoryPool, MemoryPool, TrackConsumersPool, UnboundedMemoryPool,
 };
@@ -34,15 +35,15 @@ use unified_pool::CometUnifiedMemoryPool;
 pub(crate) use config::*;
 pub(crate) use task_shared::*;
 
-/// Creates the memory pool for a native plan.
-///
-/// Task-shared pools use their returned `Arc` as the RAII handle, so they remain registered for as
-/// long as the plan or any of its reservations retain the pool.
+/// Creates the memory pool for a native plan. Task-shared pools use their returned `Arc` as the
+/// RAII handle, so they remain registered for as long as the plan or any of its reservations
+/// retain the pool. The fair unified pool takes its anchor byte from Spark here, so this can
+/// block until the task's memory frees.
 pub(crate) fn create_memory_pool(
     memory_pool_config: &MemoryPoolConfig,
     comet_task_memory_manager: Arc<Global<JObject<'static>>>,
     task_attempt_id: i64,
-) -> Arc<dyn MemoryPool> {
+) -> CometResult<Arc<dyn MemoryPool>> {
     const NUM_TRACKED_CONSUMERS: usize = 10;
 
     fn tracked(pool: impl MemoryPool + 'static) -> Arc<dyn MemoryPool> {
@@ -55,25 +56,25 @@ pub(crate) fn create_memory_pool(
     let pool_type = memory_pool_config.pool_type;
     let pool_size = memory_pool_config.pool_size;
 
-    match pool_type {
+    let memory_pool = match pool_type {
         MemoryPoolType::GreedyUnified => acquire_task_shared_pool(task_attempt_id, || {
-            tracked(CometUnifiedMemoryPool::new(
+            Ok(tracked(CometUnifiedMemoryPool::new(
                 comet_task_memory_manager,
                 task_attempt_id,
-            ))
-        }),
+            )))
+        })?,
         MemoryPoolType::FairUnified => acquire_task_shared_pool(task_attempt_id, || {
-            tracked(CometFairMemoryPool::new(
+            Ok(tracked(CometFairMemoryPool::try_new(
                 comet_task_memory_manager,
                 pool_size,
-            ))
-        }),
+            )?))
+        })?,
         MemoryPoolType::GreedyTaskShared => acquire_task_shared_pool(task_attempt_id, || {
-            tracked(GreedyMemoryPool::new(pool_size))
-        }),
-        MemoryPoolType::FairSpillTaskShared => {
-            acquire_task_shared_pool(task_attempt_id, || tracked(FairSpillPool::new(pool_size)))
-        }
+            Ok(tracked(GreedyMemoryPool::new(pool_size)))
+        })?,
+        MemoryPoolType::FairSpillTaskShared => acquire_task_shared_pool(task_attempt_id, || {
+            Ok(tracked(FairSpillPool::new(pool_size)))
+        })?,
         MemoryPoolType::Greedy => tracked(GreedyMemoryPool::new(pool_size)),
         MemoryPoolType::FairSpill => tracked(FairSpillPool::new(pool_size)),
         MemoryPoolType::GreedyGlobal => {
@@ -89,5 +90,6 @@ pub(crate) fn create_memory_pool(
             Arc::clone(memory_pool)
         }
         MemoryPoolType::Unbounded => Arc::new(UnboundedMemoryPool::default()),
-    }
+    };
+    Ok(memory_pool)
 }

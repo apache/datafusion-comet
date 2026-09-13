@@ -517,7 +517,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
                 memory_limit_per_task,
             )?;
             let memory_pool =
-                create_memory_pool(&memory_pool_config, task_memory_manager, task_attempt_id);
+                create_memory_pool(&memory_pool_config, task_memory_manager, task_attempt_id)?;
 
             // Register the shared base pool before wrapping it for per-plan debug logging. The
             // guard removes the entry if any later plan setup step fails.
