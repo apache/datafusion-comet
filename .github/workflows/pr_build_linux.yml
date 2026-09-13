@@ -196,6 +196,9 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-java-maven-
 
+      - name: Bootstrap Maven
+        uses: ./.github/actions/maven-bootstrap
+
       - name: Compile with strict warnings
         run: ./mvnw -B test-compile -Pspark-3.5 -Pstrict-warnings -DskipTests
 

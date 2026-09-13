@@ -877,16 +877,16 @@ under the License.
 
       Two lints are deliberately absent from both lists:
 
-      `-Ywarn-unused:params` reports ~90-120 parameters per profile, and essentially
-      all of them are structurally unfixable rather than dead: `Native.scala` is 64
-      `@native` declarations whose parameters have no body to be used in, and the rest
-      are cross-version shims under `src/main/spark-3.x`, `spark-4.x` and friends that
-      take a parameter to satisfy the signature of the Spark version they shim. Nor can
-      those be annotated away one by one: the set differs between Scala 2.12 and 2.13
-      (`CometScanContrib.scala` warns under spark-3.5 but not spark-4.0, and vice versa
-      for `ShimSparkErrorConverter.scala`), so any `@nowarn` that silences one profile
-      is an unused annotation on the other, which `-Xlint:_` then reports via
-      `-Xlint:nowarn` and `-Xfatal-warnings` turns into a build failure.
+      `-Ywarn-unused:params` reports parameters that are unused because a signature
+      requires them rather than because they are dead: the `@native` declarations in
+      `Native.scala`, which have no body to use them in; cross-version shims under
+      `src/main/spark-*` that match the signature of the Spark version they shim; and
+      overridable defaults and serde helpers whose parameter is part of their public
+      shape. Suppressing these one by one with `@nowarn` does not work across profiles:
+      some shared sources warn under Scala 2.12 but not 2.13 (`CometScanContrib.scala`,
+      for example), so an annotation that silences one profile is unused on the other,
+      which `-Xlint:_` reports via `-Xlint:nowarn` and `-Xfatal-warnings` turns into a
+      build failure.
 
       `-Ywarn-value-discard` stays on for main sources, where a discarded result is
       usually a dropped builder or a swallowed return, but is off for test sources,
