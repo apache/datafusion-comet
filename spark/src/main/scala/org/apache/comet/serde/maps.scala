@@ -46,6 +46,9 @@ private[serde] object MapKeySupport {
       "cannot reproduce Spark's equality for a complex key type (for example a `NULL` inside the " +
       "lookup key aborts the cast against a non-nullable nested component)."
 
+  val unsupportedReasons: Seq[String] =
+    Seq(floatingPointReason, collationReason, complexKeyReason)
+
   /**
    * The `SupportLevel` for a map-consuming expression whose stored-key type is `keyType`. Spark
    * finds a key with `TypeUtils.getInterpretedOrdering` over the keys `ArrayBasedMapBuilder`
@@ -114,7 +117,9 @@ object CometMapValues extends CometExpressionSerde[MapValues] {
   }
 }
 
-object CometMapExtract extends CometExpressionSerde[GetMapValue] {
+object CometMapExtract extends CometExpressionSerde[GetMapValue] with CodegenDispatchFallback {
+
+  override def getUnsupportedReasons(): Seq[String] = MapKeySupport.unsupportedReasons
 
   override def getSupportLevel(expr: GetMapValue): SupportLevel = expr.child.dataType match {
     case MapType(keyType, _, _) => MapKeySupport.keySupport(keyType)

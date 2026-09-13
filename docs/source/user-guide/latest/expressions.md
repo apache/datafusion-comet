@@ -165,7 +165,7 @@ The tables below list every Spark built-in expression with its current status.
 | `array_union` | ✅ | Native | NaN/signed-zero handling may differ ([details](compatibility/floating-point.md)) |
 | `arrays_overlap` | ✅ | Native |  |
 | `arrays_zip` | ✅ | Native |  |
-| `element_at` | ✅ | Native |  |
+| `element_at` | ✅ | Hybrid | Native array lookup; ANSI-mode nullable nondeterministic operands use the JVM codegen dispatcher |
 | `flatten` | ✅ | Native | Binary/struct/map elements fall back |
 | `get` | ✅ | — |  |
 | `sequence` | ✅ | Hybrid | Integral types run natively; date/timestamp sequences use codegen dispatch |
@@ -395,7 +395,7 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 
 | Function | Status | Implementation | Notes |
 | --- | --- | --- | --- |
-| `element_at` | ✅ | Native |  |
+| `element_at` | ✅ | Hybrid | Floating-point, non-default collated and complex map keys use the JVM codegen dispatcher; other supported keys remain native |
 | `map` | ✅ | Codegen dispatch | Routed through the JVM codegen dispatcher |
 | `map_concat` | ✅ | Codegen dispatch |  |
 | `map_contains_key` | ✅ | — |  |
@@ -406,6 +406,12 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | `map_values` | ✅ | Native |  |
 | `str_to_map` | ✅ | Hybrid |  |
 | `try_element_at` | ✅ | — | Lowers to `element_at` |
+
+The map subscript syntax `map_col[key]` (`GetMapValue`) uses the same hybrid key-type
+routing as `element_at`. Spark's generated lookup preserves NaN/signed-zero equality,
+collation rules and structural comparison of complex keys inside Comet. If codegen
+dispatch is disabled or cannot support the expression's types, the operator still
+falls back to Spark; the native key-type restrictions are unchanged.
 
 ---
 
