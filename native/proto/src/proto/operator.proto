@@ -861,11 +861,22 @@ message ShuffleWriter {
 }
 
 message ParquetWriter {
+  // Where this task writes. Two shapes, selected by whether `work_dir` is set:
+  //
+  //  - Spark 4.0+ (CometWriteFilesExec): `work_dir` is unset and `output_path` is the
+  //    fully-qualified path of the Parquet file to write, set per task from
+  //    FileCommitProtocol.newTaskTempFile. Naming and staging are owned by Spark's commit
+  //    protocol so that task-attempt isolation, speculative execution, and committers that track
+  //    individual files (S3A magic, streaming manifest) all behave as they do for Spark's own
+  //    writer. The native writer uses this path verbatim.
+  //  - Spark 3.x (CometNativeWriteExec): `work_dir` is set and the native writer derives the file
+  //    name from it, the partition id and the task attempt id. `output_path` is the write's
+  //    output directory and is unused natively. Goes away with Spark 3.x support.
   string output_path = 1;
   CompressionCodec compression = 2;
   repeated string column_names = 4;
-  // Working directory for temporary files (used by FileCommitProtocol)
-  // If not set, files are written directly to output_path
+  // Working directory for temporary files (used by FileCommitProtocol). Spark 3.x only; see
+  // output_path above.
   optional string work_dir = 5;
   // Job ID for tracking this write operation
   optional string job_id = 6;
