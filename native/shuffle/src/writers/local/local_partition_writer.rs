@@ -18,7 +18,7 @@
 use crate::metrics::ShufflePartitionerMetrics;
 use crate::writers::local::spill::SpillWriter;
 use crate::writers::partition_writer::PartitionWriter;
-use crate::writers::BufBatchWriter;
+use crate::writers::{BufBatchWriter, ShuffleScratch};
 use crate::ShuffleBlockWriter;
 use arrow::array::RecordBatch;
 use datafusion::common::DataFusionError;
@@ -38,16 +38,18 @@ use std::sync::Arc;
 ///   [`PartitionWriter::finish_all`].
 /// * Multi-partition shuffles finalize one partition at a time in
 ///   [`PartitionWriter::finish_partition`], each with its own short-lived
-///   `BufBatchWriter`, so coalescing intentionally does not cross partition
-///   boundaries. They hold the raw output writer and block writer directly.
+///   passthrough `BufBatchWriter`: the batches for a partition arrive as maximal
+///   `batch_size` chunks plus one tail, so there is nothing to coalesce and each
+///   chunk is serialized verbatim as one block. They hold the raw output writer
+///   and block writer directly.
 #[allow(clippy::large_enum_variant)]
 enum DataOutput {
     /// Single-partition output: one long-lived writer streams all batches.
     Single {
         writer: BufBatchWriter<ShuffleBlockWriter, File>,
-        /// Task-scoped scratch byte buffer threaded through every call on the
-        /// long-lived writer, which borrows rather than owns its serialization buffer.
-        scratch: Vec<u8>,
+        /// Task-scoped serialization scratch threaded through every call on the
+        /// long-lived writer, which borrows rather than owns it.
+        scratch: ShuffleScratch,
     },
     /// Multi-partition output: batches are staged per partition and merged into
     /// `output_writer` one partition at a time during `finish_partition`.
@@ -59,11 +61,17 @@ enum DataOutput {
         spill_writers: Vec<SpillWriter>,
         /// Runtime used to allocate the temporary spill files.
         runtime: Arc<RuntimeEnv>,
-        /// Byte buffer recycled through the short-lived per-partition `BufBatchWriter`s.
-        /// Partitions are written strictly one at a time, so a single buffer keeps its
-        /// grown capacity across the whole task instead of every partition regrowing a
-        /// fresh allocation toward the write buffer size.
-        recycled_buffer: Vec<u8>,
+        /// Serialization scratch recycled through the short-lived per-partition
+        /// `BufBatchWriter`s. Partitions are written strictly one at a time, so a single
+        /// byte buffer keeps its grown capacity and a single IPC context keeps its
+        /// encoder state across the whole task, instead of every partition regrowing
+        /// fresh ones.
+        scratch: ShuffleScratch,
+        /// Bytes handed to `output_writer` so far. Partition offsets are derived from
+        /// this running total rather than from `stream_position()`, which would flush
+        /// the output buffer once per partition; the buffer is flushed once, in
+        /// `finish_all`, and the total is checked against the file position there.
+        bytes_written: u64,
     },
 }
 
@@ -79,7 +87,6 @@ pub(crate) struct LocalPartitionWriter {
     /// with the total length so partition sizes are simple offset differences.
     /// Has `num_output_partitions + 1` elements.
     offsets: Vec<u64>,
-    batch_size: usize,
     write_buffer_size: usize,
     num_output_partitions: usize,
     /// Id of the last partition passed to `finish_partition`, used to assert
@@ -112,32 +119,26 @@ impl LocalPartitionWriter {
                     write_buffer_size,
                     batch_size,
                 ),
-                scratch: Vec::new(),
+                scratch: ShuffleScratch::default(),
             }
         } else {
             let output_writer = BufWriter::with_capacity(write_buffer_size, output_file);
             let spill_writers = (0..num_output_partitions)
-                .map(|_| {
-                    SpillWriter::try_new(
-                        shuffle_block_writer.clone(),
-                        write_buffer_size,
-                        batch_size,
-                    )
-                })
+                .map(|_| SpillWriter::try_new(shuffle_block_writer.clone(), write_buffer_size))
                 .collect::<datafusion::common::Result<Vec<_>>>()?;
             DataOutput::Multi {
                 output_writer,
                 shuffle_block_writer,
                 spill_writers,
                 runtime,
-                recycled_buffer: Vec::new(),
+                scratch: ShuffleScratch::default(),
+                bytes_written: 0,
             }
         };
         Ok(Self {
             output_index_file,
             data_output,
             offsets: vec![0u64; num_output_partitions + 1],
-            batch_size,
             write_buffer_size,
             num_output_partitions,
             last_finish_pid: -1,
@@ -185,13 +186,13 @@ impl PartitionWriter for LocalPartitionWriter {
             DataOutput::Multi {
                 spill_writers,
                 runtime,
-                recycled_buffer,
+                scratch,
                 ..
             } => {
                 // Multi-partition output buffers each partition's batches into its own
                 // spill file. `finish_partition` later merges the spill files (and any
                 // remaining in-memory batches) into the shuffle output in partition order.
-                spill_writers[pid].write(iter, runtime, metrics, recycled_buffer)?;
+                spill_writers[pid].write(iter, runtime, metrics, scratch)?;
             }
         }
 
@@ -215,7 +216,6 @@ impl PartitionWriter for LocalPartitionWriter {
         self.last_finish_pid = pid as i32;
 
         let write_buffer_size = self.write_buffer_size;
-        let batch_size = self.batch_size;
 
         match &mut self.data_output {
             DataOutput::Single { writer, scratch } => {
@@ -232,10 +232,14 @@ impl PartitionWriter for LocalPartitionWriter {
                 output_writer,
                 shuffle_block_writer,
                 spill_writers,
-                recycled_buffer,
+                scratch,
+                bytes_written,
                 ..
             } => {
-                self.offsets[pid] = output_writer.stream_position()?;
+                // The offset is the running byte total, not `stream_position()`: asking a
+                // `BufWriter` for its position flushes it, which would turn every partition
+                // into its own write syscall and defeat the output buffer.
+                self.offsets[pid] = *bytes_written;
 
                 // if we wrote a spill file for this partition then copy the
                 // contents into the shuffle file
@@ -245,39 +249,39 @@ impl PartitionWriter for LocalPartitionWriter {
                         // can use copy_file_range/sendfile for zero-copy on Linux.
                         let mut spill_file = File::open(spill_path)?;
                         let mut write_timer = metrics.write_time.timer();
-                        std::io::copy(&mut spill_file, output_writer)?;
+                        *bytes_written += std::io::copy(&mut spill_file, output_writer)?;
                         write_timer.stop();
                     }
                 }
 
                 // Write in memory batches to output data file. Each partition uses its
-                // own writer so coalescing does not cross partition boundaries, but the
-                // scratch buffer is shared so its capacity carries over to the next one.
-                let mut buf_batch_writer = BufBatchWriter::new(
+                // own short-lived writer, but the scratch (byte buffer and IPC context) is
+                // shared so its capacity carries over to the next one. The batches arrive
+                // as maximal chunks plus one tail, so they pass through as their own blocks
+                // rather than being copied through a coalescer. `drain` rather than `flush`
+                // hands the bytes to `output_writer` without flushing it; the output is
+                // flushed once in `finish_all`.
+                let mut buf_batch_writer = BufBatchWriter::new_passthrough(
                     shuffle_block_writer,
-                    output_writer,
+                    &mut *output_writer,
                     write_buffer_size,
-                    batch_size,
                 );
                 let result: datafusion::common::Result<()> = (|| {
                     for batch in iter.by_ref() {
                         let batch = batch?;
                         buf_batch_writer.write(
                             &batch,
-                            recycled_buffer,
+                            scratch,
                             &metrics.encode_time,
                             &metrics.write_time,
                         )?;
                     }
-                    buf_batch_writer.flush(
-                        recycled_buffer,
-                        &metrics.encode_time,
-                        &metrics.write_time,
-                    )
+                    buf_batch_writer.drain(scratch, &metrics.encode_time, &metrics.write_time)
                 })();
                 // An errored partition must hand back a drained buffer, or its bytes
                 // leak into the next partition's block.
-                result.inspect_err(|_| recycled_buffer.clear())?;
+                result.inspect_err(|_| scratch.clear())?;
+                *bytes_written += buf_batch_writer.bytes_written();
             }
         }
         Ok(())
@@ -294,11 +298,23 @@ impl PartitionWriter for LocalPartitionWriter {
                 writer.flush(scratch, &metrics.encode_time, &metrics.write_time)?;
                 writer.writer_stream_position()?
             }
-            DataOutput::Multi { output_writer, .. } => {
+            DataOutput::Multi {
+                output_writer,
+                bytes_written,
+                ..
+            } => {
                 let mut write_timer = metrics.write_time.timer();
                 output_writer.flush()?;
                 let pos = output_writer.stream_position()?;
                 write_timer.stop();
+                // The offsets were derived from the running total; the file must agree,
+                // or the index would point readers at the wrong bytes.
+                if pos != *bytes_written {
+                    return Err(DataFusionError::Execution(format!(
+                        "shuffle write error: data file holds {pos} bytes but the partition \
+                         offsets account for {bytes_written}"
+                    )));
+                }
                 pos
             }
         };
@@ -383,15 +399,73 @@ mod tests {
 
         assert!(writer.finish_partition(0, &mut iter, &metrics).is_err());
         match &writer.data_output {
-            DataOutput::Multi {
-                recycled_buffer, ..
-            } => assert!(
-                recycled_buffer.is_empty(),
+            DataOutput::Multi { scratch, .. } => assert!(
+                scratch.buffer.is_empty(),
                 "errored partition left {} bytes in the recycled buffer",
-                recycled_buffer.len()
+                scratch.buffer.len()
             ),
             DataOutput::Single { .. } => unreachable!("two partitions use the multi output"),
         }
+    }
+
+    /// Partition offsets are tracked arithmetically instead of read back from the output
+    /// file, so the index must still describe the data file exactly: every offset lands on a
+    /// block boundary and each partition's blocks decode to the rows written for it, with a
+    /// spilled prefix and in-memory tail both accounted for.
+    #[test]
+    fn offsets_match_data_file_with_spilled_and_in_memory_batches() {
+        let batch = test_batch();
+        let dir = tempfile::tempdir().unwrap();
+        let mut writer = partition_writer(&batch, &dir, Arc::new(RuntimeEnv::default()));
+        let metrics = ShufflePartitionerMetrics::new(&ExecutionPlanMetricsSet::new(), 0);
+
+        // Partition 0 spills one batch, then finishes with two more in memory.
+        // Partition 1 has no spill and finishes with one batch.
+        writer
+            .write(0, &mut vec![Ok(batch.clone())].into_iter(), &metrics)
+            .unwrap();
+        writer
+            .finish_partition(
+                0,
+                &mut vec![Ok(batch.clone()), Ok(batch.clone())].into_iter(),
+                &metrics,
+            )
+            .unwrap();
+        writer
+            .finish_partition(1, &mut vec![Ok(batch.clone())].into_iter(), &metrics)
+            .unwrap();
+        writer.finish_all(&metrics).unwrap();
+
+        let data = std::fs::read(dir.path().join("data.out")).unwrap();
+        let index = std::fs::read(dir.path().join("index.out")).unwrap();
+        let offsets: Vec<usize> = index
+            .chunks_exact(8)
+            .map(|c| i64::from_le_bytes(c.try_into().unwrap()) as usize)
+            .collect();
+        assert_eq!(offsets.len(), 3);
+        assert_eq!(offsets[0], 0);
+        assert_eq!(offsets[2], data.len());
+
+        // Decode every block within a partition's byte range; a wrong offset would land
+        // mid-block and fail to parse.
+        let rows_in = |range: std::ops::Range<usize>| {
+            let mut pos = range.start;
+            let mut rows = 0;
+            while pos < range.end {
+                let len = u64::from_le_bytes(data[pos..pos + 8].try_into().unwrap()) as usize;
+                assert!(
+                    pos + 8 + len <= range.end,
+                    "block crosses a partition boundary"
+                );
+                rows += crate::read_ipc_compressed(&data[pos + 16..pos + 8 + len])
+                    .unwrap()
+                    .num_rows();
+                pos += 8 + len;
+            }
+            rows
+        };
+        assert_eq!(rows_in(offsets[0]..offsets[1]), 300);
+        assert_eq!(rows_in(offsets[1]..offsets[2]), 100);
     }
 
     /// Spilled bytes the writer cannot reach must fail the task. Skipping the copy the way

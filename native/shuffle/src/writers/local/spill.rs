@@ -16,7 +16,7 @@
 // under the License.
 
 use crate::metrics::ShufflePartitionerMetrics;
-use crate::writers::BufBatchWriter;
+use crate::writers::{BufBatchWriter, ShuffleScratch};
 use crate::ShuffleBlockWriter;
 use arrow::record_batch::RecordBatch;
 use datafusion::common::DataFusionError;
@@ -33,7 +33,6 @@ struct ActiveSpillFile {
 pub(crate) struct SpillWriter {
     shuffle_block_writer: ShuffleBlockWriter,
     write_buffer_size: usize,
-    batch_size: usize,
     spill_file: Option<ActiveSpillFile>,
 }
 
@@ -41,35 +40,35 @@ impl SpillWriter {
     pub(crate) fn try_new(
         shuffle_block_writer: ShuffleBlockWriter,
         write_buffer_size: usize,
-        batch_size: usize,
     ) -> datafusion::common::Result<Self> {
         Ok(Self {
             shuffle_block_writer,
             write_buffer_size,
-            batch_size,
             spill_file: None,
         })
     }
 
-    /// `recycled_buffer` is a scratch byte buffer shared by the sequential per-partition
-    /// spill writes; it is left drained on return so one buffer's capacity serves every
-    /// partition instead of each write regrowing its own.
+    /// `recycled_buffer` is the serialization scratch shared by the sequential per-partition
+    /// spill writes; it is left drained on return so one buffer's capacity and one IPC context
+    /// serve every partition instead of each write regrowing its own.
+    ///
+    /// `iter` comes from a `PartitionedBatchIterator`, which already emits maximal `batch_size`
+    /// chunks plus one tail, so the batches are written through verbatim rather than coalesced.
     pub(crate) fn write<I: Iterator<Item = datafusion::common::Result<RecordBatch>>>(
         &mut self,
         iter: &mut I,
         runtime: &RuntimeEnv,
         metrics: &ShufflePartitionerMetrics,
-        recycled_buffer: &mut Vec<u8>,
+        recycled_buffer: &mut ShuffleScratch,
     ) -> datafusion::common::Result<()> {
         if let Some(batch) = iter.next() {
             self.ensure_spill_file_created(runtime)?;
 
             let result = (|| {
-                let mut buf_batch_writer = BufBatchWriter::new(
+                let mut buf_batch_writer = BufBatchWriter::new_passthrough(
                     &mut self.shuffle_block_writer,
                     &mut self.spill_file.as_mut().unwrap().writer,
                     self.write_buffer_size,
-                    self.batch_size,
                 );
                 buf_batch_writer.write(
                     &batch?,
@@ -251,11 +250,11 @@ mod tests {
         .unwrap()
     }
 
-    fn spill_writer(batch: &RecordBatch, batch_size: usize) -> SpillWriter {
+    fn spill_writer(batch: &RecordBatch) -> SpillWriter {
         let block_writer =
             ShuffleBlockWriter::try_new(batch.schema_ref().as_ref(), CompressionCodec::None)
                 .unwrap();
-        SpillWriter::try_new(block_writer, 1 << 20, batch_size).unwrap()
+        SpillWriter::try_new(block_writer, 1 << 20).unwrap()
     }
 
     /// A spill whose batch iterator fails after a batch was already encoded must hand
@@ -263,11 +262,10 @@ mod tests {
     #[test]
     fn write_error_drains_recycled_buffer() {
         let batch = test_batch();
-        // batch_size below the row count so the first write serializes into the scratch.
-        let mut spill = spill_writer(&batch, 10);
+        let mut spill = spill_writer(&batch);
         let runtime = RuntimeEnv::default();
         let metrics = ShufflePartitionerMetrics::new(&ExecutionPlanMetricsSet::new(), 0);
-        let mut recycled = Vec::new();
+        let mut recycled = ShuffleScratch::default();
         let mut iter = vec![
             Ok(batch),
             Err(DataFusionError::Execution("injected failure".to_string())),
@@ -278,9 +276,9 @@ mod tests {
             .write(&mut iter, &runtime, &metrics, &mut recycled)
             .is_err());
         assert!(
-            recycled.is_empty(),
+            recycled.buffer.is_empty(),
             "errored spill left {} bytes in the recycled buffer",
-            recycled.len()
+            recycled.buffer.len()
         );
     }
 
@@ -288,7 +286,7 @@ mod tests {
     #[test]
     fn path_is_none_when_nothing_spilled() {
         let batch = test_batch();
-        let spill = spill_writer(&batch, 10);
+        let spill = spill_writer(&batch);
         assert!(!spill.has_spill_file());
         assert_eq!(spill.path().unwrap(), None);
     }
@@ -298,10 +296,10 @@ mod tests {
     #[test]
     fn path_errors_when_backend_has_no_local_path() {
         let batch = test_batch();
-        let mut spill = spill_writer(&batch, 10);
+        let mut spill = spill_writer(&batch);
         let runtime = pathless_backend::runtime();
         let metrics = ShufflePartitionerMetrics::new(&ExecutionPlanMetricsSet::new(), 0);
-        let mut recycled = Vec::new();
+        let mut recycled = ShuffleScratch::default();
         let mut iter = vec![Ok(batch)].into_iter();
 
         spill

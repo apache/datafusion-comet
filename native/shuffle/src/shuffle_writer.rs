@@ -1200,7 +1200,7 @@ mod test {
     #[test]
     #[cfg_attr(miri, ignore)]
     fn test_batch_coalescing_reduces_size() {
-        use crate::writers::BufBatchWriter;
+        use crate::writers::{BufBatchWriter, ShuffleScratch};
         use arrow::array::Int32Array;
 
         // Create a wide schema to amplify per-block schema overhead
@@ -1238,7 +1238,7 @@ mod test {
                 1024 * 1024,
                 8192,
             );
-            let mut scratch = Vec::new();
+            let mut scratch = ShuffleScratch::default();
             for batch in &small_batches {
                 buf_writer
                     .write(batch, &mut scratch, &encode_time, &write_time)
@@ -1259,7 +1259,7 @@ mod test {
                 1024 * 1024,
                 1,
             );
-            let mut scratch = Vec::new();
+            let mut scratch = ShuffleScratch::default();
             for batch in &small_batches {
                 buf_writer
                     .write(batch, &mut scratch, &encode_time, &write_time)
@@ -1326,7 +1326,7 @@ mod test {
     #[test]
     #[cfg_attr(miri, ignore)]
     fn test_full_batches_bypass_coalescer() {
-        use crate::writers::BufBatchWriter;
+        use crate::writers::{BufBatchWriter, ShuffleScratch};
         use arrow::array::Int32Array;
 
         let schema = Arc::new(Schema::new(vec![Field::new("v", DataType::Int32, false)]));
@@ -1368,7 +1368,7 @@ mod test {
                 1024 * 1024,
                 batch_size as usize,
             );
-            let mut scratch = Vec::new();
+            let mut scratch = ShuffleScratch::default();
             for batch in &inputs {
                 buf_writer
                     .write(batch, &mut scratch, &encode_time, &write_time)
