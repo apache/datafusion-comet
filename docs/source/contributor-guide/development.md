@@ -658,6 +658,17 @@ Choose the group that best matches the area your test covers:
 `*Suite.scala` files in the repository and verifies that each one appears in both workflow files.
 If any suite is missing, this check will fail and block the PR.
 
+A small number of suites are deliberately **not** run in CI, because they need infrastructure CI
+does not have or because running them there is not worth the cost. These are listed in the
+`ignore_list` in `dev/ci/check-suites.py`, and each one documents in its own scaladoc why it is
+excluded and how to run it. Run a manual suite with:
+
+```sh
+./mvnw test -Dtest=none -Dsuites="org.apache.comet.parquet.ParquetReadFromFakeHadoopFsSuite"
+```
+
+Only add a suite to that list with a good reason; the default is that a new suite runs in CI.
+
 The macOS suites only run in the merge queue by default. See
 [Continuous Integration](ci.md) for the two tiers and the labels that opt a pull request into a
 queue-only suite.
