@@ -41,7 +41,9 @@ object IcebergReflection extends Logging {
 
   case class ParquetPathResolution(
       pathByIcebergColumnName: Map[String, String],
-      renamedIcebergColumnNames: Set[String])
+      pathByFieldId: Map[Int, String],
+      physicalPaths: Set[String],
+      renamedPhysicalPaths: Set[String])
 
   /**
    * Iceberg class names used throughout Comet.
@@ -745,14 +747,16 @@ object IcebergReflection extends Logging {
                   }
               }
             }
-            (icebergName.asInstanceOf[String], parquetPathParts.mkString("."), renamed)
+            (fieldId, icebergName.asInstanceOf[String], parquetPathParts.mkString("."), renamed)
           }
         }
       }.toSeq
       Some(
         ParquetPathResolution(
-          resolved.map { case (name, path, _) => name -> path }.toMap,
-          resolved.collect { case (name, _, true) => name }.toSet))
+          resolved.map { case (_, name, path, _) => name -> path }.toMap,
+          resolved.map { case (fieldId, _, path, _) => fieldId -> path }.toMap,
+          resolved.map { case (_, _, path, _) => path }.toSet,
+          resolved.collect { case (_, _, path, true) => path }.toSet))
     } catch {
       case e: Exception =>
         logError(s"Iceberg reflection failure: Parquet column paths: ${e.getMessage}")
@@ -869,7 +873,34 @@ object IcebergReflection extends Logging {
   }
 
   /**
+<<<<<<< HEAD
    * The fields of `schema` at any depth, as id, name, and the type of a field with no children.
+=======
+   * Returns the field id resolved by Iceberg's name lookup, including runtime-supported aliases.
+   */
+  def findFieldIdByName(schema: Any, name: String): Option[Int] = {
+    try {
+      val findFieldMethod = getMethod(schema.getClass, "findField", classOf[String])
+      Option(findFieldMethod.invoke(schema, name)).map { field =>
+        getMethod(field.getClass, "fieldId").invoke(field).asInstanceOf[Int]
+      }
+    } catch {
+      case _: Exception => None
+    }
+  }
+
+  /**
+   * Returns a schema equal to `baseSchema` but guaranteed to contain `requiredFieldIds`. Any id
+   * not already present is resolved from the table's schema history (`table.schemas()`) and
+   * appended.
+   *
+   * Two callers need this: an equality delete may be keyed on a column since dropped from the
+   * current schema (mirroring Iceberg-Java's `DeleteFilter.fileProjection`), and a partition
+   * spec's source columns must be present for iceberg-rust to resolve `partition_type` when the
+   * query projects them out. Called at serialization time, so it throws on failure (a required id
+   * that cannot be resolved, or any reflection error) rather than silently degrading.
+   * CometScanRule is responsible for falling back before we get here.
+>>>>>>> eab9eb47e (fix: match Iceberg bloom path resolution by version)
    */
   private def fieldsAtAnyDepth(schema: Any): Seq[(Int, String, Option[Any])] = {
     import scala.jdk.CollectionConverters._
