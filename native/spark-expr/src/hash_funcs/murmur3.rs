@@ -194,6 +194,10 @@ pub fn create_murmur3_hashes<'a>(
 
 #[cfg(test)]
 mod tests {
+    /// Produced by the per-element `hash_list_array!` implementation. An empty list and a null
+    /// list both leave the seed untouched.
+    const EXPECTED_LIST_OF_STRUCT: [u32; 6] =
+        [262891156, 1206178823, 42, 42, 3798669693, 2032748937];
     use arrow::array::{Float32Array, Float64Array};
     use std::sync::Arc;
 
@@ -387,6 +391,365 @@ mod tests {
         );
     }
 
+    /// One `struct<a: Int32, b: Utf8>` element: `None` is a null struct, and the fields are
+    /// independently nullable.
+    type StructElem = Option<(Option<i32>, Option<&'static str>)>;
+    /// One `array<struct<..>>` row: `None` is a null list.
+    type ListRow = Option<Vec<StructElem>>;
+
+    /// Builds `array<struct<a: Int32, b: Utf8>>` from `rows`.
+    fn list_of_struct(rows: Vec<ListRow>) -> ArrayRef {
+        use arrow::array::{Int32Builder, ListBuilder, StringBuilder, StructBuilder};
+        use arrow::datatypes::{DataType, Field, Fields};
+
+        let fields: Fields = vec![
+            Arc::new(Field::new("a", DataType::Int32, true)),
+            Arc::new(Field::new("b", DataType::Utf8, true)),
+        ]
+        .into();
+        let struct_builder = StructBuilder::new(
+            fields.clone(),
+            vec![
+                Box::new(Int32Builder::new()),
+                Box::new(StringBuilder::new()),
+            ],
+        );
+        let mut lb = ListBuilder::new(struct_builder);
+        for row in rows {
+            match row {
+                None => lb.append(false),
+                Some(elems) => {
+                    for elem in elems {
+                        let sb = lb.values();
+                        match elem {
+                            None => {
+                                sb.field_builder::<Int32Builder>(0).unwrap().append_null();
+                                sb.field_builder::<StringBuilder>(1).unwrap().append_null();
+                                sb.append(false);
+                            }
+                            Some((a, b)) => {
+                                match a {
+                                    Some(v) => {
+                                        sb.field_builder::<Int32Builder>(0).unwrap().append_value(v)
+                                    }
+                                    None => {
+                                        sb.field_builder::<Int32Builder>(0).unwrap().append_null()
+                                    }
+                                }
+                                match b {
+                                    Some(v) => sb
+                                        .field_builder::<StringBuilder>(1)
+                                        .unwrap()
+                                        .append_value(v),
+                                    None => {
+                                        sb.field_builder::<StringBuilder>(1).unwrap().append_null()
+                                    }
+                                }
+                                sb.append(true);
+                            }
+                        }
+                    }
+                    lb.append(true);
+                }
+            }
+        }
+        Arc::new(lb.finish())
+    }
+
+    fn hash_of(array: ArrayRef, num_rows: usize) -> Vec<u32> {
+        let mut hashes = vec![42u32; num_rows];
+        create_murmur3_hashes(&[array], &mut hashes).unwrap();
+        hashes
+    }
+
+    /// `array<struct<..>>` is the shape that goes through `hash_list_array!`, the per-element path.
+    /// These values were produced by that implementation and pin it: the hash decides which
+    /// partition a row lands in, so any rewrite of that path has to reproduce them exactly.
+    #[test]
+    fn test_list_of_struct_hashes_are_stable() {
+        let rows = vec![
+            Some(vec![Some((Some(1), Some("x"))), Some((Some(2), Some("y")))]),
+            Some(vec![Some((Some(3), Some("z")))]),
+            // empty list: contributes nothing, so the seed survives
+            Some(vec![]),
+            // null list
+            None,
+            // null struct element, and elements with null fields
+            Some(vec![None, Some((None, Some("w"))), Some((Some(4), None))]),
+            // repeated element values, to catch an implementation that dedupes or reorders
+            Some(vec![Some((Some(5), Some("s"))), Some((Some(5), Some("s")))]),
+        ];
+        let n = rows.len();
+        assert_eq!(hash_of(list_of_struct(rows), n), EXPECTED_LIST_OF_STRUCT);
+    }
+
+    /// Element order must matter: Spark chains the element hashes in sequence.
+    #[test]
+    fn test_list_of_struct_is_order_sensitive() {
+        let forward = list_of_struct(vec![Some(vec![
+            Some((Some(1), Some("a"))),
+            Some((Some(2), Some("b"))),
+        ])]);
+        let reversed = list_of_struct(vec![Some(vec![
+            Some((Some(2), Some("b"))),
+            Some((Some(1), Some("a"))),
+        ])]);
+        assert_ne!(
+            hash_of(forward, 1),
+            hash_of(reversed, 1),
+            "element order must change the hash"
+        );
+    }
+
+    /// The batched implementation makes one pass per element position, so a single long list forces
+    /// as many passes as its length while every other row is already finished. Check that a skewed
+    /// batch still agrees with hashing each row on its own, which is what the per-element
+    /// implementation effectively did.
+    #[test]
+    fn test_list_of_struct_skewed_lengths() {
+        let mut rows: Vec<ListRow> = vec![Some(vec![Some((Some(1), Some("a")))]); 8];
+        // One row far longer than the rest.
+        rows.push(Some(
+            (0..64)
+                .map(|i| Some((Some(i), Some("long"))))
+                .collect::<Vec<_>>(),
+        ));
+        rows.push(Some(vec![]));
+
+        let batched = hash_of(list_of_struct(rows.clone()), rows.len());
+
+        // Hash each row as its own batch of one; the result must match position by position.
+        let per_row: Vec<u32> = rows
+            .into_iter()
+            .map(|row| hash_of(list_of_struct(vec![row]), 1)[0])
+            .collect();
+        assert_eq!(batched, per_row, "skewed batch must match per-row hashing");
+    }
+
+    /// `LargeList` reaches the same code path with 64-bit offsets. This pins that the two list
+    /// widths agree on the same data. It does not exercise the 64-bit gather itself: narrowing the
+    /// indices only goes wrong past `u32::MAX` elements, which is far larger than a test can build,
+    /// so the index width is chosen from the offset type rather than guarded by a test here.
+    #[test]
+    fn test_large_list_of_struct_matches_list() {
+        use arrow::array::{Int32Builder, LargeListBuilder, StringBuilder, StructBuilder};
+        use arrow::datatypes::{DataType, Field, Fields};
+
+        let fields: Fields = vec![
+            Arc::new(Field::new("a", DataType::Int32, true)),
+            Arc::new(Field::new("b", DataType::Utf8, true)),
+        ]
+        .into();
+        let sb = StructBuilder::new(
+            fields.clone(),
+            vec![
+                Box::new(Int32Builder::new()),
+                Box::new(StringBuilder::new()),
+            ],
+        );
+        let mut lb = LargeListBuilder::new(sb);
+        for row in [vec![1, 2], vec![3], vec![]] {
+            for v in row {
+                let s = lb.values();
+                s.field_builder::<Int32Builder>(0).unwrap().append_value(v);
+                s.field_builder::<StringBuilder>(1)
+                    .unwrap()
+                    .append_value(format!("s{v}"));
+                s.append(true);
+            }
+            lb.append(true);
+        }
+        let large: ArrayRef = Arc::new(lb.finish());
+
+        let small = list_of_struct(vec![
+            Some(vec![
+                Some((Some(1), Some("s1"))),
+                Some((Some(2), Some("s2"))),
+            ]),
+            Some(vec![Some((Some(3), Some("s3")))]),
+            Some(vec![]),
+        ]);
+
+        assert_eq!(
+            hash_of(large, 3),
+            hash_of(small, 3),
+            "LargeList and List must hash identically"
+        );
+    }
+
+    /// `array<array<int>>`: the element is a list rather than a struct, so it takes the same
+    /// non-primitive element path one level deeper.
+    #[test]
+    fn test_list_of_list_hashes_match_per_row() {
+        use arrow::array::{Int32Builder, ListBuilder};
+
+        let build = |rows: &[Vec<Vec<i32>>]| -> ArrayRef {
+            let mut lb = ListBuilder::new(ListBuilder::new(Int32Builder::new()));
+            for row in rows {
+                for inner in row {
+                    for v in inner {
+                        lb.values().values().append_value(*v);
+                    }
+                    lb.values().append(true);
+                }
+                lb.append(true);
+            }
+            Arc::new(lb.finish())
+        };
+
+        let rows = vec![
+            vec![vec![1, 2], vec![3]],
+            vec![vec![4]],
+            vec![],
+            vec![vec![5, 6, 7], vec![], vec![8]],
+        ];
+        let batched = hash_of(build(&rows), rows.len());
+        let per_row: Vec<u32> = rows
+            .iter()
+            .map(|row| hash_of(build(std::slice::from_ref(row)), 1)[0])
+            .collect();
+        assert_eq!(
+            batched, per_row,
+            "array<array<int>> must match per-row hashing"
+        );
+    }
+
+    /// The cursor drops a row once its elements run out, so rows finishing on different passes,
+    /// including ones in the middle of the batch, exercise the survivor bookkeeping. Compared
+    /// against hashing each row as its own batch.
+    #[test]
+    fn test_list_of_struct_rows_exhaust_on_different_passes() {
+        let rows: Vec<ListRow> = vec![
+            Some((0..5).map(|i| Some((Some(i), Some("a")))).collect()),
+            Some(vec![Some((Some(9), Some("b")))]),
+            Some((0..3).map(|i| Some((Some(i), Some("c")))).collect()),
+            Some(vec![]),
+            Some((0..7).map(|i| Some((Some(i), Some("d")))).collect()),
+            None,
+            Some(vec![Some((Some(1), Some("e"))), Some((Some(2), Some("f")))]),
+        ];
+        let batched = hash_of(list_of_struct(rows.clone()), rows.len());
+        let per_row: Vec<u32> = rows
+            .into_iter()
+            .map(|row| hash_of(list_of_struct(vec![row]), 1)[0])
+            .collect();
+        assert_eq!(
+            batched, per_row,
+            "rows exhausting on different passes must agree"
+        );
+    }
+
+    /// A sliced list has a non-zero first offset, and the cursor subtracts it when building gather
+    /// indices, so an off-by-one there would only show up on a slice.
+    #[test]
+    fn test_sliced_list_of_struct_matches_unsliced() {
+        let rows: Vec<ListRow> = vec![
+            Some(vec![Some((Some(1), Some("x")))]),
+            Some(vec![Some((Some(2), Some("y"))), Some((Some(3), Some("z")))]),
+            Some((0..4).map(|i| Some((Some(i), Some("w")))).collect()),
+            Some(vec![Some((Some(8), Some("v")))]),
+        ];
+        let full = list_of_struct(rows.clone());
+
+        // Hash rows 1..3 through a slice, and the same rows built on their own.
+        let sliced = full.slice(1, 2);
+        let mut from_slice = vec![42u32; 2];
+        create_murmur3_hashes(&[sliced], &mut from_slice).unwrap();
+
+        let standalone = list_of_struct(rows[1..3].to_vec());
+        let mut from_standalone = vec![42u32; 2];
+        create_murmur3_hashes(&[standalone], &mut from_standalone).unwrap();
+
+        assert_eq!(
+            from_slice, from_standalone,
+            "a sliced list must hash like the same rows built unsliced"
+        );
+    }
+
+    /// A null list can still cover a non-empty range of elements. Those elements must not be
+    /// hashed, and the row must not join the cursor.
+    #[test]
+    fn test_null_list_with_populated_range_is_skipped() {
+        use arrow::array::{Int32Builder, ListArray, StringBuilder, StructBuilder};
+        use arrow::buffer::{NullBuffer, OffsetBuffer};
+        use arrow::datatypes::{DataType, Field, Fields};
+
+        let fields: Fields = vec![
+            Arc::new(Field::new("a", DataType::Int32, true)),
+            Arc::new(Field::new("b", DataType::Utf8, true)),
+        ]
+        .into();
+        let mut sb = StructBuilder::new(
+            fields.clone(),
+            vec![
+                Box::new(Int32Builder::new()),
+                Box::new(StringBuilder::new()),
+            ],
+        );
+        for v in 0..3 {
+            sb.field_builder::<Int32Builder>(0).unwrap().append_value(v);
+            sb.field_builder::<StringBuilder>(1)
+                .unwrap()
+                .append_value("hidden");
+            sb.append(true);
+        }
+        let elements: ArrayRef = Arc::new(sb.finish());
+
+        // Row 0 covers elements 0..1, row 1 is null but still covers 1..3.
+        let list = ListArray::new(
+            Arc::new(Field::new("item", elements.data_type().clone(), true)),
+            OffsetBuffer::new(vec![0i32, 1, 3].into()),
+            elements,
+            Some(NullBuffer::from(vec![true, false])),
+        );
+        let mut hashes = vec![42u32; 2];
+        create_murmur3_hashes(&[Arc::new(list) as ArrayRef], &mut hashes).unwrap();
+        assert_eq!(hashes[1], 42, "a null list must leave the seed untouched");
+
+        // And it must not disturb the visible row either.
+        let only_visible = list_of_struct(vec![Some(vec![Some((Some(0), Some("hidden")))])]);
+        let mut expected = vec![42u32; 1];
+        create_murmur3_hashes(&[only_visible], &mut expected).unwrap();
+        assert_eq!(hashes[0], expected[0]);
+    }
+
+    /// Lengths that step down rather than being either all equal or one long outlier, so the
+    /// uniform-length gate is not taken and rows leave the cursor on consecutive passes.
+    #[test]
+    fn test_list_of_struct_descending_lengths() {
+        let rows: Vec<ListRow> = (1..=12)
+            .rev()
+            .map(|n| Some((0..n).map(|i| Some((Some(i), Some("s")))).collect()))
+            .collect();
+        let batched = hash_of(list_of_struct(rows.clone()), rows.len());
+        let per_row: Vec<u32> = rows
+            .into_iter()
+            .map(|row| hash_of(list_of_struct(vec![row]), 1)[0])
+            .collect();
+        assert_eq!(batched, per_row);
+    }
+
+    /// A lone-row list must not stop the caller hashing the remaining columns.
+    #[test]
+    fn test_single_row_list_then_another_column() {
+        let l = list_of_struct(vec![Some(vec![
+            Some((Some(1), Some("a"))),
+            Some((Some(2), Some("b"))),
+        ])]);
+        let other: ArrayRef = Arc::new(arrow::array::Int32Array::from(vec![7]));
+
+        // both columns together
+        let mut both = vec![42u32; 1];
+        create_murmur3_hashes(&[Arc::clone(&l), Arc::clone(&other)], &mut both).unwrap();
+
+        // chaining them by hand must agree
+        let mut step = vec![42u32; 1];
+        create_murmur3_hashes(&[l], &mut step).unwrap();
+        create_murmur3_hashes(&[other], &mut step).unwrap();
+
+        assert_eq!(both, step, "the second column must still be hashed");
+    }
+
     #[test]
     fn test_i8() {
         test_murmur3_hash::<i8, Int8Array>(
@@ -459,5 +822,134 @@ mod tests {
         ];
 
         test_murmur3_hash::<String, StringArray>(input.clone(), expected);
+    }
+    /// Both sides of the eligibility threshold must produce the same hashes, since the check only
+    /// decides which path runs. A struct of flat leaves under the size limit is batched; the same
+    /// data behind a child large enough to fail the limit is sliced. An off-by-one in either path's
+    /// element index shows up as a mismatch.
+    #[test]
+    fn eligible_and_ineligible_shapes_hash_alike() {
+        use crate::hash_funcs::utils::{gather_is_eligible, GATHER_ELIGIBLE_CHILD_BYTES};
+        use arrow::array::builder::{Int32Builder, ListBuilder, StringBuilder, StructBuilder};
+        use arrow::datatypes::{DataType, Field, Fields};
+
+        fn build(payload_len: usize) -> ArrayRef {
+            let fields: Fields = vec![
+                Arc::new(Field::new("a", DataType::Int32, true)),
+                Arc::new(Field::new("b", DataType::Utf8, true)),
+            ]
+            .into();
+            let mut lb = ListBuilder::new(StructBuilder::new(
+                fields,
+                vec![
+                    Box::new(Int32Builder::new()),
+                    Box::new(StringBuilder::new()),
+                ],
+            ));
+            // Uneven lengths with an empty row and a null row, so rows drop out on different passes.
+            let payload = "x".repeat(payload_len);
+            for (row, len) in [3usize, 0, 4, 1, 2].iter().enumerate() {
+                for i in 0..*len {
+                    let sb = lb.values();
+                    sb.field_builder::<Int32Builder>(0)
+                        .unwrap()
+                        .append_value((row * 10 + i) as i32);
+                    sb.field_builder::<StringBuilder>(1)
+                        .unwrap()
+                        .append_value(&payload);
+                    sb.append(i % 3 != 2);
+                }
+                lb.append(row != 1);
+            }
+            Arc::new(lb.finish())
+        }
+
+        let small = build(4);
+        let small_elements = small
+            .as_any()
+            .downcast_ref::<arrow::array::ListArray>()
+            .unwrap()
+            .values();
+        assert!(
+            gather_is_eligible(small_elements.as_ref()),
+            "a small flat struct should be batched"
+        );
+
+        // One wide value pushes the retained child past the limit, so the same shape is sliced.
+        let big = build(GATHER_ELIGIBLE_CHILD_BYTES);
+        let big_elements = big
+            .as_any()
+            .downcast_ref::<arrow::array::ListArray>()
+            .unwrap()
+            .values();
+        assert!(
+            !gather_is_eligible(big_elements.as_ref()),
+            "a child over the retained-size limit should not be batched"
+        );
+
+        // A following column, so leaving the pass loop must not skip it on either path.
+        let following: ArrayRef = Arc::new(Int32Array::from(vec![5, 6, 7, 8, 9]));
+        let seeds = [11u32, 22, 33, 44, 55];
+
+        for (name, array) in [("batched", &small), ("sliced", &big)] {
+            let mut got = seeds;
+            create_murmur3_hashes(&[Arc::clone(array), Arc::clone(&following)], &mut got).unwrap();
+
+            // Reference: hash each row alone, which cannot batch across rows at all.
+            let mut want = [0u32; 5];
+            for row in 0..5 {
+                let mut one = [seeds[row]];
+                create_murmur3_hashes(&[array.slice(row, 1), following.slice(row, 1)], &mut one)
+                    .unwrap();
+                want[row] = one[0];
+            }
+            assert_eq!(got, want, "{name}: must agree with hashing each row alone");
+        }
+    }
+
+    /// A nested element type is not eligible however small it is, so the shape that used to
+    /// accumulate a gather per nesting level keeps the per-element path.
+    #[test]
+    fn nested_and_dictionary_elements_are_not_eligible() {
+        use crate::hash_funcs::utils::gather_is_eligible;
+        use arrow::array::{DictionaryArray, Int32Array as I32, StringArray, StructArray};
+        use arrow::datatypes::{DataType, Field, Fields, Int32Type};
+
+        // struct<list<int>>: the child recurses, so each level would hold its own gather.
+        let inner: ArrayRef = Arc::new(I32::from(vec![1, 2, 3, 4]));
+        let offsets = arrow::buffer::OffsetBuffer::from_lengths([2usize, 2]);
+        let list_child: ArrayRef = Arc::new(arrow::array::ListArray::new(
+            Arc::new(Field::new("item", DataType::Int32, true)),
+            offsets,
+            inner,
+            None,
+        ));
+        let nested_fields: Fields = vec![Arc::new(Field::new(
+            "l",
+            list_child.data_type().clone(),
+            true,
+        ))]
+        .into();
+        let nested: ArrayRef = Arc::new(StructArray::new(nested_fields, vec![list_child], None));
+        assert!(
+            !gather_is_eligible(nested.as_ref()),
+            "a nested child must keep the per-element path"
+        );
+
+        // struct<dictionary<string>>: `take` shares the values, so batching is not modelled here.
+        let dict: ArrayRef = Arc::new(
+            DictionaryArray::<Int32Type>::try_new(
+                I32::from(vec![0, 0]),
+                Arc::new(StringArray::from(vec!["x"])),
+            )
+            .unwrap(),
+        );
+        let dict_fields: Fields =
+            vec![Arc::new(Field::new("d", dict.data_type().clone(), true))].into();
+        let with_dict: ArrayRef = Arc::new(StructArray::new(dict_fields, vec![dict], None));
+        assert!(
+            !gather_is_eligible(with_dict.as_ref()),
+            "a dictionary child must keep the per-element path"
+        );
     }
 }

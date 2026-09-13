@@ -15,11 +15,11 @@ Merging goes through GitHub's merge queue, configured by the `Merge Queue`
 ruleset in `.asf.yaml`. That splits CI into two tiers:
 
 - **PR tier** (`pr`): fast feedback while a change is being iterated on.
-  The Linux build, Spark 4.1 and Iceberg 1.11.
+  The Linux build, Spark 4.1 (catalyst and `sql_core` only) and Iceberg 1.11.
 - **Queue tier** (`queue`): the authoritative gate. Everything the PR tier
-  runs, plus the macOS build, the benchmark compile check, Spark 3.4/3.5/4.0
-  and Iceberg 1.8/1.9/1.10, evaluated against the merge result rather than
-  against the PR head.
+  runs, plus the macOS build, the benchmark compile check, the Spark 4.1
+  `sql_hive` shards, Spark 3.4/3.5/4.0 and Iceberg 1.8/1.9/1.10, evaluated
+  against the merge result rather than against the PR head.
 
 Every queue-only job has a `run-*` label that opts a pull request into it
 early, listed in the diagram below.
@@ -59,8 +59,9 @@ and TPC-H/TPC-DS caches on `main` stale until the next unrelated change.
   PR + queue tier                     push to main only         queue tier, or PR with label
   ---------------                     -----------------         ---------------------------
   pr_build_linux (+ push, for cache)  docs                      pr_build_macos      run-macos-tests
-  spark_4_1                                                     pr_benchmark_check  run-benchmark-check
-  iceberg_1_11                                                  spark_3_4           run-spark-3.4-tests
+  spark_4_1 (catalyst + sql_core)                               pr_benchmark_check  run-benchmark-check
+  iceberg_1_11                                                  spark_4_1 sql_hive  run-spark-4.1-hive-tests
+                                                                spark_3_4           run-spark-3.4-tests
                                                                 spark_3_5           run-spark-3.5-tests
                                                                 spark_4_0           run-spark-4.0-tests
                                                                 iceberg_1_8         run-iceberg-tests
@@ -85,23 +86,23 @@ and TPC-H/TPC-DS caches on `main` stale until the next unrelated change.
 
 ## What runs when
 
-| Job in `ci.yml`      | Triggered by                                      | Routing rule                        |
-| -------------------- | ------------------------------------------------- | ----------------------------------- |
-| `preflight`          | every PR / merge group / push / dispatch / label  | none (always runs)                  |
-| `changes`            | every PR / merge group / push / dispatch / label  | runs `dev/ci/compute-changes.py`    |
-| `pr_build_linux`     | PR, merge group or push to main, paths matched    | `dev/ci/compute-changes.py`         |
-| `pr_build_macos`     | merge group, **or** PR with `run-macos-tests`     | `dev/ci/compute-changes.py`         |
-| `pr_benchmark_check` | merge group, **or** PR with `run-benchmark-check` | benchmark sources only              |
-| `docs`               | push to main, paths matched                       | `.asf.yaml`, `docs/**`, `docs.yaml` |
-| `spark_3_5`          | merge group, **or** PR with `run-spark-3.5-tests` | Spark 3.5 sources                   |
-| `spark_4_1`          | PR or merge group, paths matched                  | Spark 4.1 sources                   |
-| `spark_3_4`          | merge group, **or** PR with `run-spark-3.4-tests` | Spark 3.4 sources                   |
-| `spark_4_0`          | merge group, **or** PR with `run-spark-4.0-tests` | Spark 4.0 sources                   |
-| `iceberg_1_11`       | PR or merge group, paths matched                  | Iceberg sources                     |
-| `iceberg_1_8`        | merge group, **or** PR with `run-iceberg-tests`   | Iceberg sources                     |
-| `iceberg_1_9`        | merge group, **or** PR with `run-iceberg-tests`   | Iceberg sources                     |
-| `iceberg_1_10`       | merge group, **or** PR with `run-iceberg-tests`   | Iceberg sources                     |
-| `required_checks`    | always, after every job above except `docs`       | none (always runs)                  |
+| Job in `ci.yml`      | Triggered by                                                                                                           | Routing rule                        |
+| -------------------- | ---------------------------------------------------------------------------------------------------------------------- | ----------------------------------- |
+| `preflight`          | every PR / merge group / push / dispatch / label                                                                       | none (always runs)                  |
+| `changes`            | every PR / merge group / push / dispatch / label                                                                       | runs `dev/ci/compute-changes.py`    |
+| `pr_build_linux`     | PR, merge group or push to main, paths matched                                                                         | `dev/ci/compute-changes.py`         |
+| `pr_build_macos`     | merge group, **or** PR with `run-macos-tests`                                                                          | `dev/ci/compute-changes.py`         |
+| `pr_benchmark_check` | merge group, **or** PR with `run-benchmark-check`                                                                      | benchmark sources only              |
+| `docs`               | push to main, paths matched                                                                                            | `.asf.yaml`, `docs/**`, `docs.yaml` |
+| `spark_3_5`          | merge group, **or** PR with `run-spark-3.5-tests`                                                                      | Spark 3.5 sources                   |
+| `spark_4_1`          | PR or merge group, paths matched; the `sql_hive` shards only in the merge group **or** with `run-spark-4.1-hive-tests` | Spark 4.1 sources                   |
+| `spark_3_4`          | merge group, **or** PR with `run-spark-3.4-tests`                                                                      | Spark 3.4 sources                   |
+| `spark_4_0`          | merge group, **or** PR with `run-spark-4.0-tests`                                                                      | Spark 4.0 sources                   |
+| `iceberg_1_11`       | PR or merge group, paths matched                                                                                       | Iceberg sources                     |
+| `iceberg_1_8`        | merge group, **or** PR with `run-iceberg-tests`                                                                        | Iceberg sources                     |
+| `iceberg_1_9`        | merge group, **or** PR with `run-iceberg-tests`                                                                        | Iceberg sources                     |
+| `iceberg_1_10`       | merge group, **or** PR with `run-iceberg-tests`                                                                        | Iceberg sources                     |
+| `required_checks`    | always, after every job above except `docs`                                                                            | none (always runs)                  |
 
 A heavy job appears in the PR's checks list as a `skipped` entry whenever
 its path filter or event criteria don't match. Skipped checks count as
@@ -280,9 +281,18 @@ before any test has started. Once `Required Checks` is a required context
 which is why plain network flakes are worth retrying rather than re-running
 the whole pipeline by hand.
 
-**Maven wrapper bootstrap.** `./.github/actions/java-test` retries
-`./mvnw --version` with exponential backoff, so a failed download of the Maven
-distribution does not surface as a test failure.
+**Maven wrapper bootstrap.** `./mvnw` downloads the Maven distribution itself on
+a cold runner, and a blip from `repo.maven.apache.org` fails the job before
+anything is compiled. `./.github/actions/maven-bootstrap` caches that
+distribution under `~/.m2/wrapper/dists` (keyed on
+`.mvn/wrapper/maven-wrapper.properties`, not `pom.xml`) and retries
+`./mvnw --version` four times with exponential backoff. It retries only the
+bootstrap, never compilation or test execution.
+
+Any job whose first Maven use is a bare `./mvnw` needs this step before it.
+`./.github/actions/java-test` carries its own inline copy rather than calling
+the composite, because a local action invoking another local action is
+deliberately avoided here (see the artifact-upload note above).
 
 ## Merge queue
 
