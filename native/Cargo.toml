@@ -17,7 +17,10 @@
 
 [workspace]
 default-members = ["core", "spark-expr", "common", "proto", "jni-bridge", "shuffle"]
-members = ["core", "spark-expr", "common", "proto", "jni-bridge", "shuffle"]
+# `hdfs-sys` is a member so that `cargo fmt --all` and `cargo clippy --workspace` cover it, but
+# deliberately not a default member: it is only reached through `[patch.crates-io]` when the
+# `hdfs-opendal` feature is on, and building it needs a JDK and a C compiler.
+members = ["core", "spark-expr", "common", "proto", "jni-bridge", "shuffle", "hdfs-sys"]
 # The contrib crate at ../contrib/delta/native is intentionally NOT a workspace member
 # (workspace members must live hierarchically under the workspace root). It's pulled in
 # as a path dep by `core/Cargo.toml` when the `contrib-delta` feature is enabled.
@@ -82,3 +85,17 @@ codegen-units = 16   # Parallel codegen (faster compile, slightly larger binary)
 debug-assertions = true
 panic = "unwind"     # Allow panics to be caught and logged across FFI boundary
 # overflow-checks inherited as false from release
+
+# `hdfs-sys` 0.3.0, the only release, ships a libhdfs whose pthread TLS
+# destructor detaches threads it did not attach, dereferencing a freed JNIEnv and
+# crashing the JVM (apache/datafusion-comet#5023). `hdfs-sys` is reached through
+# `opendal`'s `services-hdfs` -> `hdrs`, so there is no version of the dependency
+# to move to and no upstream release to wait for. `hdfs-sys/` vendors the Hadoop
+# sources with the fix applied; see its README.md for the removal condition.
+#
+# Note that `[patch]` applies only to builds of this workspace. Comet's native
+# crates are not published, so nothing downstream is affected today, but a
+# published crate would silently resolve the unpatched `hdfs-sys`.
+[patch.crates-io]
+hdfs-sys = { path = "hdfs-sys" }
+
