@@ -483,31 +483,6 @@ object IcebergReflection extends Logging {
     }
 
   /**
-   * Gets the filter expressions from a SparkScan.
-   *
-   * `filterExpressions()` is declared on SparkPartitioningAwareScan but absent from plain
-   * SparkScan. SparkStagedScan (used by RewriteDataFiles) extends SparkScan directly and never
-   * pushes filters, so we short-circuit with an empty list rather than reflectively probing for a
-   * method we know isn't there.
-   */
-  def getFilterExpressions(scan: Any): Option[java.util.List[_]] =
-    if (isStagedScan(scan)) {
-      Some(java.util.Collections.emptyList[AnyRef]())
-    } else {
-      // Iceberg 1.11 renamed SparkScan.filterExpressions() to filters(); 1.8-1.10 use the old name.
-      findMethodInHierarchy(scan.getClass, "filters")
-        .orElse(findMethodInHierarchy(scan.getClass, "filterExpressions")) match {
-        case Some(method) =>
-          Some(method.invoke(scan).asInstanceOf[java.util.List[_]])
-        case None =>
-          logError(
-            "Iceberg reflection failure: Failed to get filter expressions from SparkScan: " +
-              s"filters()/filterExpressions() not found on ${scan.getClass.getName}")
-          None
-      }
-    }
-
-  /**
    * Gets the Iceberg table format version.
    *
    * Tries to get formatVersion() directly from table, falling back to

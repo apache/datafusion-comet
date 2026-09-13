@@ -238,6 +238,19 @@ class CometFuzzIcebergSuite extends CometFuzzIcebergBase {
     }
   }
 
+  test("filter pushdown - IS NULL/IS NOT NULL on nested fuzz columns stays native") {
+    val df = spark.table(icebergTableName)
+    val complexColumns = df.schema.fields.filter(f => isComplexType(f.dataType)).map(_.name)
+    assert(complexColumns.nonEmpty, "expected complex columns in the fuzz schema")
+
+    for (name <- complexColumns; predicate <- Seq(col(name).isNull, col(name).isNotNull)) {
+      withClue(predicate.toString) {
+        val (_, cometPlan) = checkSparkAnswer(df.where(predicate))
+        assert(collectIcebergNativeScans(cometPlan).length == 1, s"$cometPlan")
+      }
+    }
+  }
+
   test("filter pushdown - IS NULL/IS NOT NULL on list, map and struct columns stays native") {
     val tableName = "hadoop_catalog.db.null_check_test"
     try {
@@ -261,7 +274,15 @@ class CometFuzzIcebergSuite extends CometFuzzIcebergBase {
           val (_, cometPlan) = checkSparkAnswer(query)
           val expected = if (predicate == "IS NULL") Seq(Row(2)) else Seq(1, 3, 4, 5).map(Row(_))
           checkAnswer(spark.sql(query), expected)
-          assert(collectIcebergNativeScans(cometPlan).length == 1, s"$cometPlan")
+          val scans = collectIcebergNativeScans(cometPlan)
+          assert(scans.length == 1, s"$cometPlan")
+          // Planning commonData leaks manifest streams on Iceberg versions before 1.8.0.
+          if (!isIcebergVersionLessThan("1.8.0")) {
+            val common = OperatorOuterClass.IcebergScanCommon.parseFrom(scans.head.commonData)
+            assert(
+              common.getResidualPoolCount == 0,
+              s"unexpected complex-column residual: $query")
+          }
         }
       }
 
