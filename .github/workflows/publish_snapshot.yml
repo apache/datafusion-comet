@@ -236,9 +236,11 @@ jobs:
           # spark/target/classes, so re-copy them after each clean; the release
           # script (dev/release/build-release-comet.sh) places them the same way.
           mkdir -p jars
+          # Maven reads stdin, so it must not see the heredoc that feeds the
+          # loop or it swallows the remaining variants.
           while read -r jdk profiles; do
             echo "::group::Build with $profiles"
-            ./mvnw -B -q clean
+            ./mvnw -B -q clean < /dev/null
             lib_dir=spark/target/classes/org/apache/comet/linux
             mkdir -p "$lib_dir/amd64" "$lib_dir/aarch64"
             cp native-libs/libcomet-linux-amd64/libcomet.so "$lib_dir/amd64/"
@@ -248,7 +250,7 @@ jobs:
             # property overrides every module's setting. $profiles is a
             # space-separated list of -P flags, so it must word-split.
             # shellcheck disable=SC2086
-            JAVA_HOME="$jdk" ./mvnw -B "$GOAL" -DskipTests -Dmaven.deploy.skip=false $profiles
+            JAVA_HOME="$jdk" ./mvnw -B "$GOAL" -DskipTests -Dmaven.deploy.skip=false $profiles < /dev/null
             # Only the shaded plugin jar, not the sources or unshaded jars.
             cp spark/target/comet-spark-spark*_*-"$version".jar jars/
             echo "::endgroup::"
@@ -262,6 +264,12 @@ jobs:
         run: |
           set -euo pipefail
           status=0
+          expected=4
+          actual=$(find jars -name '*.jar' | wc -l)
+          if [ "$actual" -ne "$expected" ]; then
+            echo "Expected $expected jars, found $actual"
+            status=1
+          fi
           for jar in jars/*.jar; do
             for lib in linux/amd64 linux/aarch64; do
               if ! unzip -l "$jar" | grep -q "org/apache/comet/$lib/libcomet.so"; then
