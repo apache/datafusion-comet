@@ -792,8 +792,6 @@ abstract class CometTestBase
       .builder(path)
       .withDictionaryEncoding(dictionaryEnabled)
       .withType(schema)
-      // TODO we need to shim this and use withRowGroupSize(Long) with later parquet-hadoop versions to remove
-      // the deprecated warning here
       .withRowGroupSize(rowGroupSize)
       .withPageSize(pageSize)
       .withDictionaryPageSize(dictionaryPageSize)

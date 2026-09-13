@@ -353,7 +353,7 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
           val equalityIds = equalityIdsMethod
             .invoke(deleteFile)
             .asInstanceOf[java.util.List[Integer]]
-          equalityIds.forEach(id => { val _ = deleteBuilder.addEqualityIds(id) })
+          deleteBuilder.addAllEqualityIds(equalityIds)
         } catch {
           case _: Exception =>
         }

@@ -436,13 +436,13 @@ object IcebergReflection extends Logging {
    * `taskGroups()`, so for staged scans we flatten the groups instead. Both methods are protected
    * and require reflection.
    */
-  def getTasks(scan: Any): Option[java.util.List[_]] =
+  def getTasks(scan: Any): Option[java.util.List[AnyRef]] =
     if (isStagedScan(scan)) tasksFromTaskGroups(scan) else tasksFromTasksAccessor(scan)
 
-  private def tasksFromTasksAccessor(scan: Any): Option[java.util.List[_]] =
+  private def tasksFromTasksAccessor(scan: Any): Option[java.util.List[AnyRef]] =
     findMethodInHierarchy(scan.getClass, "tasks") match {
       case Some(method) =>
-        Some(method.invoke(scan).asInstanceOf[java.util.List[_]])
+        Some(method.invoke(scan).asInstanceOf[java.util.List[AnyRef]])
       case None =>
         logError(
           "Iceberg reflection failure: Failed to get tasks from SparkScan: " +
@@ -450,7 +450,7 @@ object IcebergReflection extends Logging {
         None
     }
 
-  private def tasksFromTaskGroups(scan: Any): Option[java.util.List[_]] =
+  private def tasksFromTaskGroups(scan: Any): Option[java.util.List[AnyRef]] =
     findMethodInHierarchy(scan.getClass, "taskGroups") match {
       case Some(method) =>
         try {

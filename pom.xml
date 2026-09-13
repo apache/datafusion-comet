@@ -889,11 +889,10 @@ under the License.
       `-Xlint:nowarn` and `-Xfatal-warnings` turns into a build failure.
 
       `-Ywarn-value-discard` stays on for main sources, where a discarded result is
-      usually a dropped builder or a swallowed return, but is off for test sources.
-      Under it a ScalaTest suite reports ~1,250-1,450 warnings, and the two largest
-      groups are the idiom itself: an `assert(...)` in trailing position discards an
-      `org.scalatest.Assertion`, and `checkSparkAnswerAndOperator` discards the
-      `(SparkPlan, SparkPlan)` it returns at all but 30 of its ~1,300 call sites.
+      usually a dropped builder or a swallowed return, but is off for test sources,
+      where what it reports is the testing idiom itself: an `assert(...)` in trailing
+      position discards an `org.scalatest.Assertion`, and helpers such as
+      `checkSparkAnswerAndOperator` return plans that most callers ignore.
     -->
     <profile>
       <id>strict-warnings</id>

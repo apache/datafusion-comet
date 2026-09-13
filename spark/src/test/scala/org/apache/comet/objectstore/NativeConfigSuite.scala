@@ -30,6 +30,14 @@ import org.apache.comet.CometConf.COMET_S3_COMPLIANT_SCHEMES_KEY
 
 class NativeConfigSuite extends AnyFunSuite with Matchers {
 
+  /**
+   * A Hadoop `Configuration` variable reference to `key`, as `Configuration#get` expands it.
+   * Built by concatenation: written as a literal, it reads to scalac as a string missing its `s`
+   * interpolator, and adding the `s` (escaping the dollar) is then flagged by scalafix as
+   * redundant.
+   */
+  private def varRef(key: String): String = "${" + key + "}"
+
   test("extractObjectStoreOptions - multiple cloud provider configurations") {
     val hadoopConf = new Configuration()
     // S3A configs
@@ -108,13 +116,15 @@ class NativeConfigSuite extends AnyFunSuite with Matchers {
     }
   }
 
-  test(s"extractObjectStoreOptions - forwards the substituted value of a $${...} reference") {
+  test(
+    "extractObjectStoreOptions - forwards the substituted value of a " +
+      s"${varRef("...")} reference") {
     // Hadoop's own consumers read values through Configuration#get, which expands a ${...}
     // reference against another conf entry. Forwarding the raw, unexpanded literal here would
     // give native a different credential than every Hadoop-side consumer sees.
     val hadoopConf = new Configuration()
     hadoopConf.set("my.custom.access.key", "expanded-access-key")
-    hadoopConf.set("fs.s3a.access.key", s"$${my.custom.access.key}")
+    hadoopConf.set("fs.s3a.access.key", varRef("my.custom.access.key"))
 
     val options =
       NativeConfig.extractObjectStoreOptions(hadoopConf, new URI("s3a://test-bucket/test-object"))
@@ -122,19 +132,19 @@ class NativeConfigSuite extends AnyFunSuite with Matchers {
   }
 
   test(
-    s"extractObjectStoreOptions - a cyclic $${...} reference falls back to the raw value " +
-      "instead of throwing") {
+    s"extractObjectStoreOptions - a cyclic ${varRef("...")} reference falls back to the raw " +
+      "value instead of throwing") {
     // Configuration#get raises IllegalStateException once ${...} expansion recurses past
     // Hadoop's MAX_SUBST bound; a two-key mutual cycle triggers this on every call. Extraction
     // must still return a full options map rather than aborting for the whole object store.
     val hadoopConf = new Configuration()
-    hadoopConf.set("fs.s3a.access.key", s"$${fs.s3a.secret.key}")
-    hadoopConf.set("fs.s3a.secret.key", s"$${fs.s3a.access.key}")
+    hadoopConf.set("fs.s3a.access.key", varRef("fs.s3a.secret.key"))
+    hadoopConf.set("fs.s3a.secret.key", varRef("fs.s3a.access.key"))
 
     val options =
       NativeConfig.extractObjectStoreOptions(hadoopConf, new URI("s3a://test-bucket/test-object"))
-    assert(options("fs.s3a.access.key") == s"$${fs.s3a.secret.key}")
-    assert(options("fs.s3a.secret.key") == s"$${fs.s3a.access.key}")
+    assert(options("fs.s3a.access.key") == varRef("fs.s3a.secret.key"))
+    assert(options("fs.s3a.secret.key") == varRef("fs.s3a.access.key"))
   }
 
   test(

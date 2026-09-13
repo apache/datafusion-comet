@@ -486,17 +486,11 @@ case class CometScanRule(session: SparkSession)
         // which bucket's per-bucket S3 settings the single native FileIO consumes (see
         // catalogProperties below), so this must run before we build them. The task list is
         // handed to `extract` below so the reflective accessor runs once per scan.
-        // The task list is cast to `java.util.List[AnyRef]` rather than left at the
-        // `java.util.List[_]` that `getTasks` returns: a wildcard element type makes this
-        // pair infer a top-level existential, which `-Xlint:existential` rejects. The list
-        // is erased at runtime, so the cast costs nothing.
         val (icebergTasks, taskValidation) =
           try {
             IcebergReflection.getTasks(scanExec.scan) match {
               case Some(tasks) =>
-                (
-                  tasks.asInstanceOf[java.util.List[AnyRef]],
-                  CometScanRule.validateIcebergFileScanTasks(tasks, s3CompliantSchemes))
+                (tasks, CometScanRule.validateIcebergFileScanTasks(tasks, s3CompliantSchemes))
               case None =>
                 fallbackReasons += "Iceberg reflection failure: Could not extract FileScanTasks"
                 return withFallbackReasons(scanExec, fallbackReasons.toSet)
