@@ -61,6 +61,20 @@ Comet supports most standard storage systems, such as local file system and obje
 
 The Apache DataFusion Comet Rust-based reader seamlessly scans files from remote HDFS for [supported formats](#supported-spark-data-sources)
 
+```{warning}
+HDFS support is experimental and is not covered by continuous integration. Comet reads HDFS through
+`libhdfs`, which registers a thread-local destructor that detaches the calling thread from the JVM
+regardless of which component attached it
+([HDFS-16021](https://issues.apache.org/jira/browse/HDFS-16021), still open upstream). Comet
+attaches its own worker threads, so a worker that has read from HDFS can crash the JVM with a
+`SIGSEGV` when it later exits
+([#5023](https://github.com/apache/datafusion-comet/issues/5023)). The crash surfaces well after
+the HDFS read itself, typically while an unrelated query is running.
+```
+
+Native Iceberg scans do not support HDFS-backed tables; those scans fall back to Spark. See the
+[Comet and Iceberg Guide](iceberg.md).
+
 ### Building Comet with HDFS support
 
 To build Comet with remote HDFS support it is required to have a JDK installed.
@@ -164,6 +178,14 @@ JAVA_HOME="/opt/homebrew/opt/openjdk@17" make release PROFILES="-Pspark-4.1" RUS
 ```
 
 Or use `spark-shell` with HDFS support as described [above](#building-comet-with-hdfs-support)
+
+Comet also has a test suite that exercises a native scan through `libhdfs` against a fake Hadoop
+filesystem, so it needs no cluster. Because of the crash described above it is excluded from CI and
+run by hand:
+
+```shell
+./mvnw test -Dtest=none -Dsuites="org.apache.comet.parquet.ParquetReadFromFakeHadoopFsSuite"
+```
 
 ## S3
 

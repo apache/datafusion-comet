@@ -1183,6 +1183,14 @@ appropriate group. For example, if you add a new expression test suite, add it t
 <code class="docutils literal notranslate"><span class="pre">.github/workflows/ci.yml</span></code> runs <code class="docutils literal notranslate"><span class="pre">dev/ci/check-suites.py</span></code> on every pull request. It scans for all
 <code class="docutils literal notranslate"><span class="pre">*Suite.scala</span></code> files in the repository and verifies that each one appears in both workflow files.
 If any suite is missing, this check will fail and block the PR.</p>
+<p>A small number of suites are deliberately <strong>not</strong> run in CI, because they need infrastructure CI
+does not have or because running them there is not worth the cost. These are listed in the
+<code class="docutils literal notranslate"><span class="pre">ignore_list</span></code> in <code class="docutils literal notranslate"><span class="pre">dev/ci/check-suites.py</span></code>, and each one documents in its own scaladoc why it is
+excluded and how to run it. Run a manual suite with:</p>
+<div class="highlight-sh notranslate"><div class="highlight"><pre><span></span>./mvnw<span class="w"> </span><span class="nb">test</span><span class="w"> </span>-Dtest<span class="o">=</span>none<span class="w"> </span>-Dsuites<span class="o">=</span><span class="s2">"org.apache.comet.parquet.ParquetReadFromFakeHadoopFsSuite"</span>
+</pre></div>
+</div>
+<p>Only add a suite to that list with a good reason; the default is that a new suite runs in CI.</p>
 <p>The macOS suites only run in the merge queue by default. See
 <a class="reference internal" href="ci.html"><span class="std std-doc">Continuous Integration</span></a> for the two tiers and the labels that opt a pull request into a
 queue-only suite.</p>

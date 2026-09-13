@@ -861,9 +861,10 @@ Spark (no AES-192-GCM in the underlying crypto).</p></li>
 <p><strong>Storage:</strong></p>
 <ul class="simple">
 <li><p>Local filesystem</p></li>
-<li><p>Hadoop Distributed File System (HDFS)</p></li>
 <li><p>S3-compatible storage (AWS S3, MinIO)</p></li>
+<li><p>Google Cloud Storage (<code class="docutils literal notranslate"><span class="pre">gs</span></code>) and Alibaba Cloud OSS (<code class="docutils literal notranslate"><span class="pre">oss</span></code>)</p></li>
 </ul>
+<p>HDFS-backed tables are not supported by the native Iceberg reader and fall back to Spark.</p>
 </section>
 <section id="rest-catalog">
 <h3>REST Catalog<a class="headerlink" href="#rest-catalog" title="Link to this heading">#</a></h3>

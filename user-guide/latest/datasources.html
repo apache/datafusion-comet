@@ -815,6 +815,19 @@ converted into Arrow format, allowing the Comet pipeline to take over after that
 <section id="hdfs">
 <h3>HDFS<a class="headerlink" href="#hdfs" title="Link to this heading">#</a></h3>
 <p>The Apache DataFusion Comet Rust-based reader seamlessly scans files from remote HDFS for <a class="reference internal" href="#supported-spark-data-sources">supported formats</a></p>
+<div class="admonition warning">
+<p class="admonition-title">Warning</p>
+<p>HDFS support is experimental and is not covered by continuous integration. Comet reads HDFS through
+<code class="docutils literal notranslate"><span class="pre">libhdfs</span></code>, which registers a thread-local destructor that detaches the calling thread from the JVM
+regardless of which component attached it
+(<a class="reference external" href="https://issues.apache.org/jira/browse/HDFS-16021">HDFS-16021</a>, still open upstream). Comet
+attaches its own worker threads, so a worker that has read from HDFS can crash the JVM with a
+<code class="docutils literal notranslate"><span class="pre">SIGSEGV</span></code> when it later exits
+(<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/5023">#5023</a>). The crash surfaces well after
+the HDFS read itself, typically while an unrelated query is running.</p>
+</div>
+<p>Native Iceberg scans do not support HDFS-backed tables; those scans fall back to Spark. See the
+<a class="reference internal" href="iceberg.html"><span class="std std-doc">Comet and Iceberg Guide</span></a>.</p>
 </section>
 <section id="building-comet-with-hdfs-support">
 <h3>Building Comet with HDFS support<a class="headerlink" href="#building-comet-with-hdfs-support" title="Link to this heading">#</a></h3>
@@ -908,6 +921,12 @@ Input<span class="w"> </span><span class="o">[</span><span class="m">3</span><sp
 </pre></div>
 </div>
 <p>Or use <code class="docutils literal notranslate"><span class="pre">spark-shell</span></code> with HDFS support as described <a class="reference internal" href="#building-comet-with-hdfs-support">above</a></p>
+<p>Comet also has a test suite that exercises a native scan through <code class="docutils literal notranslate"><span class="pre">libhdfs</span></code> against a fake Hadoop
+filesystem, so it needs no cluster. Because of the crash described above it is excluded from CI and
+run by hand:</p>
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>./mvnw<span class="w"> </span><span class="nb">test</span><span class="w"> </span>-Dtest<span class="o">=</span>none<span class="w"> </span>-Dsuites<span class="o">=</span><span class="s2">"org.apache.comet.parquet.ParquetReadFromFakeHadoopFsSuite"</span>
+</pre></div>
+</div>
 </section>
 </section>
 <section id="s3">
