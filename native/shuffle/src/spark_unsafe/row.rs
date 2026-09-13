@@ -572,6 +572,11 @@ fn append_nested_struct_fields_field_major(
                     }
                 }
             }
+            // A Null field carries no data: every row is null, whether or not the struct is.
+            DataType::Null => {
+                let field_builder = get_field_builder!(struct_builder, NullBuilder, field_idx);
+                field_builder.append_nulls(num_rows);
+            }
             _ => {
                 unreachable!(
                     "Unsupported data type of struct field: {:?}",
@@ -1020,6 +1025,11 @@ fn append_struct_fields_field_major(
                     }
                 }
             }
+            // A Null field carries no data: every row is null, whether or not the struct is.
+            DataType::Null => {
+                let field_builder = get_field_builder!(struct_builder, NullBuilder, field_idx);
+                field_builder.append_nulls(row_end - row_start);
+            }
             _ => {
                 unreachable!(
                     "Unsupported data type of struct field: {:?}",
@@ -1179,9 +1189,7 @@ fn append_columns(
         }
         DataType::Null => {
             let null_builder = downcast_builder_ref!(NullBuilder, builder);
-            for _ in row_start..row_end {
-                null_builder.append_null();
-            }
+            null_builder.append_nulls(row_end - row_start);
         }
         DataType::Timestamp(TimeUnit::Microsecond, _) => {
             append_column_to_builder!(
@@ -1418,6 +1426,14 @@ pub fn process_sorted_row_partition(
             .collect();
         let batch = make_batch(array_refs?, n)?;
 
+        // A finished `NullBuilder` keeps its length; see `recreate_null_type_builders`.
+        recreate_null_type_builders(
+            &mut data_builders,
+            schema,
+            batch_size,
+            prefer_dictionary_ratio,
+        )?;
+
         frozen.clear();
         let mut cursor = Cursor::new(&mut frozen);
 
@@ -1438,6 +1454,37 @@ pub fn process_sorted_row_partition(
         current_checksum.map(|c| c.finalize()),
         ipc_time.value() as i64,
     ))
+}
+
+/// Whether `dt` is `Null` or nests a `Null` anywhere below a list, struct or map.
+fn contains_null_type(dt: &DataType) -> bool {
+    match dt {
+        DataType::Null => true,
+        DataType::List(field) | DataType::LargeList(field) | DataType::Map(field, _) => {
+            contains_null_type(field.data_type())
+        }
+        DataType::Struct(fields) => fields.iter().any(|f| contains_null_type(f.data_type())),
+        _ => false,
+    }
+}
+
+/// Replaces every builder whose type holds a `Null` somewhere, after its batch has been
+/// finished. `NullBuilder::finish` keeps its length (a `NullArray` owns no buffers to hand
+/// over), so such a builder would carry this batch's rows into the next: a top-level Null column
+/// comes out longer than the batch, and a Null struct field longer than its parent panics in
+/// `StructBuilder::finish`. Every other builder resets on finish and is kept.
+fn recreate_null_type_builders(
+    builders: &mut [Box<dyn ArrayBuilder>],
+    schema: &[DataType],
+    batch_size: usize,
+    prefer_dictionary_ratio: f64,
+) -> Result<(), CometError> {
+    for (builder, datatype) in builders.iter_mut().zip(schema.iter()) {
+        if contains_null_type(datatype) {
+            *builder = make_builders(datatype, batch_size, prefer_dictionary_ratio)?;
+        }
+    }
+    Ok(())
 }
 
 fn builder_to_array(
@@ -1503,9 +1550,97 @@ fn make_batch(arrays: Vec<ArrayRef>, row_count: usize) -> Result<RecordBatch, Ar
 
 #[cfg(test)]
 mod test {
+    use arrow::array::StructArray;
     use arrow::datatypes::Fields;
 
     use super::*;
+
+    // The batch loop in `process_sorted_row_partition` reuses its builders. A `NullBuilder`
+    // keeps its length across `finish`, so without `recreate_null_type_builders` the second
+    // batch's Null struct field is twice as long as its parent (a panic in `StructBuilder::
+    // finish`) and a top-level Null column is twice as long as the batch.
+    #[test]
+    fn null_type_builders_start_every_batch_empty() {
+        let struct_type = DataType::Struct(Fields::from(vec![
+            Field::new("v", DataType::Int64, true),
+            Field::new("n", DataType::Null, true),
+        ]));
+        let nested_type = DataType::Struct(Fields::from(vec![Field::new(
+            "s",
+            struct_type.clone(),
+            true,
+        )]));
+        let schema = vec![struct_type.clone(), nested_type.clone(), DataType::Null];
+        assert!(schema.iter().all(contains_null_type));
+        assert!(!contains_null_type(&DataType::List(Arc::new(Field::new(
+            "item",
+            DataType::Int64,
+            true
+        )))));
+
+        let batch_size = 2;
+        let mut builders: Vec<Box<dyn ArrayBuilder>> = schema
+            .iter()
+            .map(|dt| make_builders(dt, batch_size, 1.0).unwrap())
+            .collect();
+
+        for batch in 0..2 {
+            let struct_builder = builders[0]
+                .as_any_mut()
+                .downcast_mut::<StructBuilder>()
+                .unwrap();
+            for row in 0..batch_size {
+                struct_builder
+                    .field_builder::<Int64Builder>(0)
+                    .unwrap()
+                    .append_value(row as i64);
+                struct_builder
+                    .field_builder::<NullBuilder>(1)
+                    .unwrap()
+                    .append_null();
+                struct_builder.append(true);
+            }
+            let nested_builder = builders[1]
+                .as_any_mut()
+                .downcast_mut::<StructBuilder>()
+                .unwrap();
+            for _ in 0..batch_size {
+                let inner = nested_builder.field_builder::<StructBuilder>(0).unwrap();
+                inner
+                    .field_builder::<Int64Builder>(0)
+                    .unwrap()
+                    .append_null();
+                inner.field_builder::<NullBuilder>(1).unwrap().append_null();
+                inner.append(true);
+                nested_builder.append(true);
+            }
+            builders[2]
+                .as_any_mut()
+                .downcast_mut::<NullBuilder>()
+                .unwrap()
+                .append_nulls(batch_size);
+
+            let arrays: Vec<ArrayRef> = builders
+                .iter_mut()
+                .zip(schema.iter())
+                .map(|(builder, dt)| builder_to_array(builder, dt, 1.0).unwrap())
+                .collect();
+            for (array, dt) in arrays.iter().zip(schema.iter()) {
+                assert_eq!(array.len(), batch_size, "batch {batch} of {dt}");
+            }
+            let outer = arrays[0].as_any().downcast_ref::<StructArray>().unwrap();
+            assert_eq!(
+                outer.column(1).len(),
+                batch_size,
+                "batch {batch} Null field"
+            );
+
+            recreate_null_type_builders(&mut builders, &schema, batch_size, 1.0).unwrap();
+            for (builder, dt) in builders.iter().zip(schema.iter()) {
+                assert_eq!(builder.len(), 0, "builder for {dt} after batch {batch}");
+            }
+        }
+    }
 
     #[test]
     fn test_append_null_row_to_struct_builder() {

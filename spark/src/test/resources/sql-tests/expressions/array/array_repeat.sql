@@ -118,3 +118,27 @@ SELECT array_repeat(CAST(NULL AS INT), cnt) FROM test_array_repeat
 
 query
 SELECT array_repeat(CAST(NULL AS STRING), cnt) FROM test_array_repeat
+
+-- A NullType element built by the JVM codegen dispatcher (containsNull=false in Spark) reaches
+-- native declared nullable; the kernel's result must still match the planned type
+query
+SELECT array_repeat(filter(array(), x -> true), 2) FROM test_array_repeat
+
+-- map_entries produces a list whose non-NullType item is declared non-nullable; native
+-- array_repeat rebuilds that item as nullable, so the serde declines it and the JVM codegen
+-- dispatcher runs it inside the Comet pipeline (the plan stays fully native).
+query
+SELECT array_repeat(map_entries(map(coalesce(long_v, 0), NULL)), 2) FROM test_array_repeat
+
+-- Same mismatch with no NullType anywhere, so the guard is not a NullType-specific workaround:
+-- any list whose item Spark declares non-nullable hits it. This one fails on main as well.
+query
+SELECT array_repeat(map_entries(map(coalesce(long_v, 0), long_v)), 2) FROM test_array_repeat
+
+-- array(c) over a non-nullable c has containsNull = false too, but native make_array emits a
+-- nullable item whatever Spark says, so the serde keeps this one on the native kernel.
+query
+SELECT array_repeat(array(coalesce(int_v, 0)), 2) FROM test_array_repeat
+
+query
+SELECT array_repeat(array(coalesce(int_v, 0), coalesce(cnt, 0)), cnt) FROM test_array_repeat

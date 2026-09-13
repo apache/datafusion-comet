@@ -26,3 +26,9 @@ SELECT s.name, s.age, s.score FROM test_struct
 
 query
 SELECT s.name, s.age + 1, s.score * 2 FROM test_struct
+
+-- A struct row that a kernel grew through MutableArrayData (element_at on an out-of-range index)
+-- can carry a Null-typed child with a validity bitmap; projecting that child rebuilds a clean
+-- NullArray instead of failing validation. The typed sibling is the control.
+query
+SELECT try_element_at(array(named_struct('n', s.name, 'z', NULL)), CAST(s.age % 2 + 1 AS INT)).z, try_element_at(array(named_struct('n', s.name, 'z', NULL)), CAST(s.age % 2 + 1 AS INT)).n FROM test_struct
