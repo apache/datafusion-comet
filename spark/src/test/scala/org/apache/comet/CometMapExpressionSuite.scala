@@ -299,30 +299,33 @@ class CometMapExpressionSuite extends CometTestBase {
 
   // Finding E: a map nested inside a map value is handed to the JVM dispatcher whole, so its double
   // keys never revisit `CometLiteral`. The guard has to live on the lookup instead. The outer key
-  // type is INT, so inspecting only the outermost map would admit the query; the fallback comes
-  // from the inner `element_at`, whose child is `MapType(DoubleType, IntegerType)`. Constant folding
-  // is on here, which is the only configuration where the inner map becomes such a literal, so this
-  // regression cannot be expressed in a SQL fixture (the harness disables folding). The direct
-  // single-level double-key lookups live in `element_at_map.sql` / `get_map_value.sql`.
-  test("nested map lookup with floating-point keys falls back") {
+  // type is INT, so inspecting only the outermost map would admit the query; the dispatch comes
+  // from the `element_at` whose child is `MapType(DoubleType, IntegerType)`, which takes the whole
+  // nested lookup with it. Constant folding is on here, which is the only configuration where the
+  // inner map becomes such a literal, so this regression cannot be expressed in a SQL fixture (the
+  // harness disables folding). The direct single-level double-key lookups live in
+  // `element_at_map.sql` / `get_map_value.sql`.
+  test("nested map lookup with floating-point keys is dispatched") {
     withParquetTable((1 until 4).map(i => (i, i.toLong)), "tbl") {
       val negZero = "CAST(concat('-', CAST(_1 - 1 AS STRING), '.0') AS DOUBLE)"
-      checkSparkAnswerAndFallbackReason(
+      checkSparkAnswerAndImpl(
         "SELECT _1 AS id, element_at(element_at(map(1, map(CAST(0 AS DOUBLE), 7)), _1), " +
           s"$negZero) AS v FROM tbl",
-        "Spark normalizes floating-point map keys")
+        native = Seq.empty,
+        dispatched = Seq("element_at"))
     }
   }
 
   // Finding E for a collated inner key. Same folding-on-only bypass as the double-key case above;
   // the direct single-level collated lookup lives in `element_at_map_collation.sql`.
-  test("nested map lookup with collated string keys falls back") {
+  test("nested map lookup with collated string keys is dispatched") {
     assume(isSpark40Plus)
     withParquetTable(Seq(("a1", 0)), "tbl") {
-      checkSparkAnswerAndFallbackReason(
+      checkSparkAnswerAndImpl(
         "SELECT element_at(element_at(map(1, map(CAST('A1' AS STRING COLLATE UTF8_LCASE), 7)), 1), " +
           "CAST(_1 AS STRING COLLATE UTF8_LCASE)) AS v FROM tbl",
-        "cannot honour a non-default collation")
+        native = Seq.empty,
+        dispatched = Seq("element_at"))
     }
   }
 
@@ -395,39 +398,45 @@ class CometMapExpressionSuite extends CometTestBase {
 
   // Direct single-level folded map with floating-point keys: `map(CAST(0 AS DOUBLE), 7)` folds to a
   // literal and `element_at` with a dynamic `-0.0` lookup must match Spark's `+0.0`-normalized key.
-  // Native `map_extract` compares raw Arrow values, so `MapKeySupport` declines it at `element_at`.
-  // Spark returns 7, NULL, NULL. (`element_at_map.sql` covers the folding-off constructor form.)
-  test("folded map literal with floating-point keys in element_at falls back (multirow)") {
+  // Native `map_extract` compares raw Arrow values, so `MapKeySupport` declines it at `element_at`
+  // and the lookup runs through the JVM codegen dispatcher. Spark returns 7, NULL, NULL.
+  // (`element_at_map.sql` covers the folding-off constructor form.)
+  test("folded map literal with floating-point keys in element_at is dispatched (multirow)") {
     withParquetTable((1 until 4).map(i => (i, i.toLong)), "tbl") {
       val lookup = "CAST(concat('-', CAST(_1 - 1 AS STRING), '.0') AS DOUBLE)"
-      checkSparkAnswerAndFallbackReason(
+      checkSparkAnswerAndImpl(
         s"SELECT _1 AS id, element_at(map(CAST(0 AS DOUBLE), 7), $lookup) AS v FROM tbl",
-        "Spark normalizes floating-point map keys")
+        native = Seq.empty,
+        dispatched = Seq("element_at"))
     }
   }
 
   // Direct single-level folded map with collated string keys. Native lookup is bytewise, so a
-  // case-insensitive `a1` lookup against a stored `A1` cannot match; `MapKeySupport` declines it.
-  test("folded map literal with collated string keys in element_at falls back (multirow)") {
+  // case-insensitive `a1` lookup against a stored `A1` cannot match; `MapKeySupport` declines it
+  // and the dispatcher compares under the declared collation.
+  test("folded map literal with collated string keys in element_at is dispatched (multirow)") {
     assume(isSpark40Plus)
     withParquetTable(Seq(("a1", 0)), "tbl") {
-      checkSparkAnswerAndFallbackReason(
+      checkSparkAnswerAndImpl(
         "SELECT element_at(map(CAST('A1' AS STRING COLLATE UTF8_LCASE), 7), " +
           "CAST(_1 AS STRING COLLATE UTF8_LCASE)) AS v FROM tbl",
-        "cannot honour a non-default collation")
+        native = Seq.empty,
+        dispatched = Seq("element_at"))
     }
   }
 
   // Folded map with a complex (array) key. Spark permits a dynamic lookup array containing a NULL
   // element; native `map_extract` casts the lookup to the key's exact Arrow type and cannot
-  // reproduce Spark's equality, so `MapKeySupport` declines every complex key type. Spark returns
-  // 7, NULL, NULL. (`element_at_map.sql` covers the constructor form with a non-null lookup.)
-  test("folded map literal with complex array key in element_at falls back (multirow)") {
+  // reproduce Spark's equality, so `MapKeySupport` declines every complex key type and the lookup
+  // is dispatched. Spark returns 7, NULL, NULL. (`element_at_map.sql` covers the constructor form
+  // with a non-null lookup.)
+  test("folded map literal with complex array key in element_at is dispatched (multirow)") {
     withParquetTable((1 until 4).map(i => (i, i.toLong)), "tbl") {
-      checkSparkAnswerAndFallbackReason(
+      checkSparkAnswerAndImpl(
         "SELECT _1 AS id, element_at(map(array(1), 7), " +
           "array(IF(_1 = 2, CAST(NULL AS INT), _1))) AS v FROM tbl",
-        "casts the lookup key to the map's exact Arrow key type")
+        native = Seq.empty,
+        dispatched = Seq("element_at"))
     }
   }
 

@@ -51,7 +51,37 @@ object CometArrayRemove
   }
 }
 
-object CometArrayAppend extends CometExpressionSerde[ArrayAppend] with ArraysBase {
+/**
+ * Shared gate for serdes whose native NULL guard (`CASE WHEN child IS NOT NULL`) serializes the
+ * child twice: a stateful child drifts between the two copies, so it is declined and runs through
+ * the JVM codegen dispatcher, where Spark evaluates it once. Nullability is not consulted: a
+ * non-nullable stateful child only stays in step because DataFusion skips the filter when the
+ * guard matches every row, which is not a contract to lean on.
+ */
+private[serde] object NullGuardSupport {
+
+  val nondeterministicReason: String =
+    "a nondeterministic operand: the native NULL guard serializes the operand twice, " +
+      "and the two copies of a stateful operand drift apart"
+
+  /** `Unsupported` when any of `children` is nondeterministic, otherwise `None`. */
+  def nondeterministicChild(children: Seq[Expression]): Option[SupportLevel] =
+    children
+      .find(child => !child.deterministic)
+      .map(_ => Unsupported(Some(nondeterministicReason)))
+}
+
+object CometArrayAppend
+    extends CometExpressionSerde[ArrayAppend]
+    with ArraysBase
+    with CodegenDispatchFallback {
+
+  override def getUnsupportedReasons(): Seq[String] =
+    Seq(NullGuardSupport.nondeterministicReason)
+
+  // Only the array operand sits under the NULL guard, so only it needs the decline.
+  override def getSupportLevel(expr: ArrayAppend): SupportLevel =
+    NullGuardSupport.nondeterministicChild(Seq(expr.children.head)).getOrElse(Compatible())
 
   override def convert(
       expr: ArrayAppend,
@@ -614,7 +644,7 @@ object CometArrayReverse extends CometExpressionSerde[Reverse] with ArraysBase {
 
 }
 
-object CometElementAt extends CometExpressionSerde[ElementAt] {
+object CometElementAt extends CometExpressionSerde[ElementAt] with CodegenDispatchFallback {
 
   /**
    * Under ANSI, neither native shape reproduces Spark for a nullable nondeterministic operand.
@@ -623,8 +653,9 @@ object CometElementAt extends CometExpressionSerde[ElementAt] {
    * whole batch first, so a throwing index fires on rows whose operand is NULL. `convert`
    * reproduces the short-circuit with a `CASE WHEN <operand> IS NOT NULL` guard, but that guard
    * serializes the operand twice, which a stateful operand cannot survive: the two copies advance
-   * its state independently and silently move values and NULLs. Declining leaves the lookup on
-   * Spark. Lifting this needs a native lookup that evaluates the operand once and masks the index
+   * its state independently and silently move values and NULLs. Declining routes the lookup
+   * through the JVM codegen dispatcher, where Spark's own `doGenCode` evaluates the operand once.
+   * Lifting this needs a native lookup that evaluates the operand once and masks the index
    * evaluation with the result, at which point the guard becomes unnecessary for every operand.
    */
   private val eagerIndexReason: String =
@@ -634,6 +665,8 @@ object CometElementAt extends CometExpressionSerde[ElementAt] {
   /** True when `convert` has to wrap the lookup to reproduce Spark's NULL short-circuit. */
   private def needsNullGuard(expr: ElementAt): Boolean =
     expr.failOnError && expr.left.nullable
+
+  override def getUnsupportedReasons(): Seq[String] = eagerIndexReason +: MapKeySupport.reasons
 
   override def getSupportLevel(expr: ElementAt): SupportLevel = {
     if (needsNullGuard(expr) && !expr.left.deterministic) {
@@ -764,14 +797,19 @@ object CometArrayFilter extends CometExpressionSerde[ArrayFilter] {
   }
 }
 
-object CometSize extends CometExpressionSerde[Size] {
+object CometSize extends CometExpressionSerde[Size] with CodegenDispatchFallback {
+
+  override def getUnsupportedReasons(): Seq[String] =
+    Seq(NullGuardSupport.nondeterministicReason)
 
   override def getSupportLevel(expr: Size): SupportLevel = {
-    expr.child.dataType match {
-      case _: ArrayType => Compatible()
-      case _: MapType => Compatible()
-      case other =>
-        Unsupported(Some(s"Unsupported child data type: $other"))
+    NullGuardSupport.nondeterministicChild(Seq(expr.child)).getOrElse {
+      expr.child.dataType match {
+        case _: ArrayType => Compatible()
+        case _: MapType => Compatible()
+        case other =>
+          Unsupported(Some(s"Unsupported child data type: $other"))
+      }
     }
   }
 
@@ -843,10 +881,12 @@ object CometArrayPosition extends CometExpressionSerde[ArrayPosition] with Array
   }
 }
 
-object CometArraysZip extends CometExpressionSerde[ArraysZip] {
+object CometArraysZip extends CometExpressionSerde[ArraysZip] with CodegenDispatchFallback {
 
   override def getUnsupportedReasons(): Seq[String] = Seq(
-    "Not all input data types are supported; falls back to Spark for unsupported types")
+    "Not all input data types are supported; unsupported types run through the JVM codegen " +
+      "dispatcher",
+    NullGuardSupport.nondeterministicReason)
 
   private def isTypeSupported(dt: DataType): Boolean = {
     import DataTypes._
@@ -862,13 +902,13 @@ object CometArraysZip extends CometExpressionSerde[ArraysZip] {
   }
 
   override def getSupportLevel(expr: ArraysZip): SupportLevel = {
-    val inputTypes = expr.children.map(_.dataType).toSet
-    for (dt <- inputTypes) {
-      if (!isTypeSupported(dt)) {
-        return Unsupported(Some(s"Unsupported child data type: $dt"))
-      }
+    NullGuardSupport.nondeterministicChild(expr.children).getOrElse {
+      expr.children
+        .map(_.dataType)
+        .collectFirst { case dt if !isTypeSupported(dt) => dt }
+        .map(dt => Unsupported(Some(s"Unsupported child data type: $dt")))
+        .getOrElse(Compatible())
     }
-    Compatible()
   }
 
   override def convert(
