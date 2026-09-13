@@ -604,21 +604,19 @@ mod test {
 
         repartitioner.insert_batch(batch.clone()).await.unwrap();
 
-        {
-            let spill_writers = repartitioner.partition_writer().get_spill_writers();
-            assert_eq!(spill_writers.len(), 2);
-
-            assert!(!spill_writers[0].has_spill_file());
-            assert!(!spill_writers[1].has_spill_file());
-        }
+        assert!(!repartitioner
+            .partition_writer()
+            .get_spill()
+            .has_spill_file());
 
         repartitioner.spill(0).unwrap();
 
-        // after spill, there should be spill files
+        // after spill, both partitions' blocks are in the one spill file
         {
-            let spill_writers = repartitioner.partition_writer().get_spill_writers();
-            assert!(spill_writers[0].has_spill_file());
-            assert!(spill_writers[1].has_spill_file());
+            let spill = repartitioner.partition_writer().get_spill();
+            assert!(spill.has_spill_file());
+            assert!(!spill.ranges(0).unwrap().is_empty());
+            assert!(!spill.ranges(1).unwrap().is_empty());
         }
 
         // insert another batch after spilling
@@ -884,13 +882,14 @@ mod test {
         }
         repartitioner.shuffle_write().unwrap();
 
-        let actual_spilled_bytes: usize = repartitioner
+        let actual_spilled_bytes = repartitioner
             .partition_writer()
-            .get_spill_writers()
-            .iter()
-            .filter_map(|writer| writer.path().unwrap())
-            .map(|path| usize::try_from(std::fs::metadata(path).unwrap().len()).unwrap())
-            .sum();
+            .get_spill()
+            .path()
+            .unwrap()
+            .map_or(0, |path| {
+                usize::try_from(std::fs::metadata(path).unwrap().len()).unwrap()
+            });
         assert_eq!(
             spilled_bytes.value(),
             actual_spilled_bytes,

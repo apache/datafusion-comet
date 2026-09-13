@@ -23,6 +23,7 @@ use datafusion::common::DataFusionError;
 use datafusion::execution::runtime_env::RuntimeEnv;
 use datafusion::execution::SpillFile as DfSpillFile;
 use datafusion::execution::SpillWriter as DfSpillWriter;
+use std::ops::Range;
 use std::sync::Arc;
 
 struct ActiveSpillFile {
@@ -30,108 +31,120 @@ struct ActiveSpillFile {
     writer: Box<dyn DfSpillWriter>,
 }
 
-pub(crate) struct SpillWriter {
+/// One spill file shared by every output partition of a task, with the ranges each partition's
+/// blocks occupy.
+pub(crate) struct PartitionedSpill {
     shuffle_block_writer: ShuffleBlockWriter,
     write_buffer_size: usize,
     batch_size: usize,
     spill_file: Option<ActiveSpillFile>,
+    /// Bytes appended to the spill file so far.
+    len: u64,
+    /// Per partition, the spill file ranges holding its blocks, in write order.
+    ranges: Vec<Vec<Range<u64>>>,
+    /// Set when a write fails partway, after which `len` may not match the file.
+    failed: bool,
 }
 
-impl SpillWriter {
-    pub(crate) fn try_new(
+impl PartitionedSpill {
+    pub(crate) fn new(
         shuffle_block_writer: ShuffleBlockWriter,
         write_buffer_size: usize,
         batch_size: usize,
-    ) -> datafusion::common::Result<Self> {
-        Ok(Self {
+        num_partitions: usize,
+    ) -> Self {
+        Self {
             shuffle_block_writer,
             write_buffer_size,
             batch_size,
             spill_file: None,
-        })
+            len: 0,
+            ranges: vec![Vec::new(); num_partitions],
+            failed: false,
+        }
     }
 
-    /// `recycled_buffer` is a scratch byte buffer shared by the sequential per-partition
-    /// spill writes; it is left drained on return so one buffer's capacity serves every
-    /// partition instead of each write regrowing its own.
+    /// Appends partition `pid`'s batches to the spill file. `recycled_buffer` is left drained,
+    /// including on error.
     pub(crate) fn write<I: Iterator<Item = datafusion::common::Result<RecordBatch>>>(
         &mut self,
+        pid: usize,
         iter: &mut I,
         runtime: &RuntimeEnv,
         metrics: &ShufflePartitionerMetrics,
         recycled_buffer: &mut Vec<u8>,
     ) -> datafusion::common::Result<()> {
-        if let Some(batch) = iter.next() {
-            self.ensure_spill_file_created(runtime)?;
+        self.check_usable()?;
+        let Some(batch) = iter.next() else {
+            return Ok(());
+        };
+        self.ensure_spill_file_created(runtime)?;
 
-            let result = (|| {
-                let mut buf_batch_writer = BufBatchWriter::new(
-                    &mut self.shuffle_block_writer,
-                    &mut self.spill_file.as_mut().unwrap().writer,
-                    self.write_buffer_size,
-                    self.batch_size,
-                );
+        let result = (|| {
+            let mut buf_batch_writer = BufBatchWriter::new(
+                &mut self.shuffle_block_writer,
+                &mut self.spill_file.as_mut().unwrap().writer,
+                self.write_buffer_size,
+                self.batch_size,
+            );
+            buf_batch_writer.write(
+                &batch?,
+                recycled_buffer,
+                &metrics.encode_time,
+                &metrics.write_time,
+            )?;
+            for batch in iter.by_ref() {
+                let batch = batch?;
                 buf_batch_writer.write(
-                    &batch?,
+                    &batch,
                     recycled_buffer,
                     &metrics.encode_time,
                     &metrics.write_time,
                 )?;
-                for batch in iter.by_ref() {
-                    let batch = batch?;
-                    buf_batch_writer.write(
-                        &batch,
-                        recycled_buffer,
-                        &metrics.encode_time,
-                        &metrics.write_time,
-                    )?;
-                }
-                buf_batch_writer.flush(
-                    recycled_buffer,
-                    &metrics.encode_time,
-                    &metrics.write_time,
-                )?;
-                // `SpillWriter` is not `Seek`, so bytes are tracked by the writer itself rather
-                // than measured via stream position.
-                let bytes_written = buf_batch_writer.bytes_written();
-                usize::try_from(bytes_written).map_err(|_| {
-                    DataFusionError::Execution(format!(
-                        "Spill file byte count exceeds platform capacity: {bytes_written}"
-                    ))
-                })
-            })();
-            // An errored spill must hand back a drained buffer, or its bytes leak into
-            // the next partition's block.
-            let total_bytes_written = result.inspect_err(|_| recycled_buffer.clear())?;
-            metrics.spilled_bytes.add(total_bytes_written);
+            }
+            buf_batch_writer.flush(recycled_buffer, &metrics.encode_time, &metrics.write_time)?;
+            Ok::<_, DataFusionError>(buf_batch_writer.bytes_written())
+        })();
+
+        let bytes_written = match result {
+            Ok(bytes_written) => bytes_written,
+            Err(error) => {
+                // bytes may already be in the file, so later ranges could not be trusted
+                self.failed = true;
+                recycled_buffer.clear();
+                return Err(error);
+            }
+        };
+
+        if bytes_written > 0 {
+            let start = self.len;
+            self.len += bytes_written;
+            self.ranges[pid].push(start..self.len);
         }
+        metrics
+            .spilled_bytes
+            .add(usize::try_from(bytes_written).map_err(|_| {
+                DataFusionError::Execution(format!(
+                    "Spill file byte count exceeds platform capacity: {bytes_written}"
+                ))
+            })?);
         Ok(())
     }
 
-    fn ensure_spill_file_created(
-        &mut self,
-        runtime: &RuntimeEnv,
-    ) -> datafusion::common::Result<()> {
-        if self.spill_file.is_none() {
-            // Spill file is not yet created, create it
-            let temp_file = runtime
-                .disk_manager
-                .create_tmp_file("shuffle writer spill")?;
-            let writer = temp_file.open_writer()?;
-            self.spill_file = Some(ActiveSpillFile { temp_file, writer });
-        }
-        Ok(())
+    /// The spill file ranges holding partition `pid`'s blocks, in write order.
+    pub(crate) fn ranges(&self, pid: usize) -> datafusion::common::Result<&[Range<u64>]> {
+        self.check_usable()?;
+        Ok(&self.ranges[pid])
     }
 
-    /// Local filesystem path holding this partition's spilled bytes.
+    /// Local filesystem path of the spill file.
     ///
-    /// * `Ok(None)` — nothing was spilled for this partition.
+    /// * `Ok(None)` — nothing was spilled.
     /// * `Ok(Some(path))` — the spilled bytes live at `path`.
     /// * `Err(..)` — bytes were spilled but the backend exposes no local path.
     ///
-    /// The last case must stay distinct from `Ok(None)`: a caller that treated it as
-    /// "nothing to copy" would drop the spilled bytes while still recording the
-    /// partition offsets, silently truncating the partition in the shuffle file.
+    /// The last case must stay distinct from `Ok(None)`, or spilled bytes would be dropped while
+    /// partition offsets still counted them.
     pub(crate) fn path(&self) -> datafusion::common::Result<Option<&std::path::Path>> {
         match self.spill_file.as_ref() {
             None => Ok(None),
@@ -144,6 +157,29 @@ impl SpillWriter {
                 )),
             },
         }
+    }
+
+    fn check_usable(&self) -> datafusion::common::Result<()> {
+        if self.failed {
+            return Err(DataFusionError::Execution(
+                "Shuffle spill file is unusable after a failed write".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn ensure_spill_file_created(
+        &mut self,
+        runtime: &RuntimeEnv,
+    ) -> datafusion::common::Result<()> {
+        if self.spill_file.is_none() {
+            let temp_file = runtime
+                .disk_manager
+                .create_tmp_file("shuffle writer spill")?;
+            let writer = temp_file.open_writer()?;
+            self.spill_file = Some(ActiveSpillFile { temp_file, writer });
+        }
+        Ok(())
     }
 
     #[cfg(test)]
@@ -251,32 +287,34 @@ mod tests {
         .unwrap()
     }
 
-    fn spill_writer(batch: &RecordBatch, batch_size: usize) -> SpillWriter {
+    fn partitioned_spill(batch: &RecordBatch, num_partitions: usize) -> PartitionedSpill {
         let block_writer =
             ShuffleBlockWriter::try_new(batch.schema_ref().as_ref(), CompressionCodec::None)
                 .unwrap();
-        SpillWriter::try_new(block_writer, 1 << 20, batch_size).unwrap()
+        // batch_size below the row count so a write serializes into the scratch
+        PartitionedSpill::new(block_writer, 1 << 20, 10, num_partitions)
     }
 
-    /// A spill whose batch iterator fails after a batch was already encoded must hand
-    /// back a drained scratch; leftover bytes would land in the next partition's block.
-    #[test]
-    fn write_error_drains_recycled_buffer() {
-        let batch = test_batch();
-        // batch_size below the row count so the first write serializes into the scratch.
-        let mut spill = spill_writer(&batch, 10);
-        let runtime = RuntimeEnv::default();
-        let metrics = ShufflePartitionerMetrics::new(&ExecutionPlanMetricsSet::new(), 0);
-        let mut recycled = Vec::new();
+    fn metrics() -> ShufflePartitionerMetrics {
+        ShufflePartitionerMetrics::new(&ExecutionPlanMetricsSet::new(), 0)
+    }
+
+    fn failing_write(spill: &mut PartitionedSpill, recycled: &mut Vec<u8>) {
         let mut iter = vec![
-            Ok(batch),
+            Ok(test_batch()),
             Err(DataFusionError::Execution("injected failure".to_string())),
         ]
         .into_iter();
-
         assert!(spill
-            .write(&mut iter, &runtime, &metrics, &mut recycled)
+            .write(0, &mut iter, &RuntimeEnv::default(), &metrics(), recycled)
             .is_err());
+    }
+
+    #[test]
+    fn write_error_drains_recycled_buffer() {
+        let mut spill = partitioned_spill(&test_batch(), 2);
+        let mut recycled = Vec::new();
+        failing_write(&mut spill, &mut recycled);
         assert!(
             recycled.is_empty(),
             "errored spill left {} bytes in the recycled buffer",
@@ -284,34 +322,94 @@ mod tests {
         );
     }
 
-    /// A partition that never spilled has no path, and that is not an error.
+    #[test]
+    fn failed_write_makes_spill_unusable() {
+        let mut spill = partitioned_spill(&test_batch(), 2);
+        let mut recycled = Vec::new();
+        failing_write(&mut spill, &mut recycled);
+
+        let err = spill
+            .write(
+                1,
+                &mut vec![Ok(test_batch())].into_iter(),
+                &RuntimeEnv::default(),
+                &metrics(),
+                &mut recycled,
+            )
+            .expect_err("write after a failed write");
+        assert!(
+            err.to_string().contains("unusable"),
+            "unexpected error: {err}"
+        );
+        assert!(spill.ranges(1).is_err());
+    }
+
+    #[test]
+    fn partitions_share_one_file_in_write_order() {
+        let mut spill = partitioned_spill(&test_batch(), 2);
+        let runtime = RuntimeEnv::default();
+        let mut recycled = Vec::new();
+        for pid in [1, 0, 1] {
+            spill
+                .write(
+                    pid,
+                    &mut vec![Ok(test_batch())].into_iter(),
+                    &runtime,
+                    &metrics(),
+                    &mut recycled,
+                )
+                .unwrap();
+        }
+
+        let first = spill.ranges(1).unwrap().to_vec();
+        let second = spill.ranges(0).unwrap().to_vec();
+        assert_eq!(first.len(), 2);
+        assert_eq!(second.len(), 1);
+        assert_eq!(first[0].start, 0);
+        assert_eq!(second[0].start, first[0].end);
+        assert_eq!(first[1].start, second[0].end);
+    }
+
+    #[test]
+    fn empty_write_records_no_range() {
+        let mut spill = partitioned_spill(&test_batch(), 2);
+        spill
+            .write(
+                0,
+                &mut std::iter::empty(),
+                &RuntimeEnv::default(),
+                &metrics(),
+                &mut Vec::new(),
+            )
+            .unwrap();
+        assert!(!spill.has_spill_file());
+        assert!(spill.ranges(0).unwrap().is_empty());
+    }
+
     #[test]
     fn path_is_none_when_nothing_spilled() {
-        let batch = test_batch();
-        let spill = spill_writer(&batch, 10);
+        let spill = partitioned_spill(&test_batch(), 2);
         assert!(!spill.has_spill_file());
         assert_eq!(spill.path().unwrap(), None);
     }
 
-    /// Spilling to a backend with no local path must report an error rather than the
-    /// `None` that means "nothing spilled" — see `path`'s doc comment.
     #[test]
     fn path_errors_when_backend_has_no_local_path() {
-        let batch = test_batch();
-        let mut spill = spill_writer(&batch, 10);
-        let runtime = pathless_backend::runtime();
-        let metrics = ShufflePartitionerMetrics::new(&ExecutionPlanMetricsSet::new(), 0);
-        let mut recycled = Vec::new();
-        let mut iter = vec![Ok(batch)].into_iter();
-
+        let mut spill = partitioned_spill(&test_batch(), 2);
         spill
-            .write(&mut iter, &runtime, &metrics, &mut recycled)
+            .write(
+                0,
+                &mut vec![Ok(test_batch())].into_iter(),
+                &pathless_backend::runtime(),
+                &metrics(),
+                &mut Vec::new(),
+            )
             .unwrap();
         assert!(spill.has_spill_file());
 
         let err = spill
             .path()
-            .expect_err("a spill file with no local path must not look like an empty partition");
+            .expect_err("a spill file with no local path must not look like nothing spilled");
         assert!(
             err.to_string().contains("no local path"),
             "unexpected error: {err}"
