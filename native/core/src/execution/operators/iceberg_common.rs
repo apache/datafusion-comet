@@ -36,7 +36,13 @@ const ICEBERG_PROVIDER_CLASS_PROPERTY: &str = "s3.comet.credential.provider.clas
 /// Key prefixes forwarded to iceberg-rust's `FileIO`. The full unfiltered catalog bag (catalog
 /// URI, OAuth tokens, credentials.uri, tenant-id, etc.) is kept upstream so
 /// `CometS3CredentialBridge` can read whatever the vendor needs.
-const STORAGE_PROPERTY_PREFIXES: &[&str] = &["s3.", "gcs.", "adls.", "client."];
+///
+/// `hdfs.` carries `hdfs.name-node` (the NameNode endpoint list, comma-separated for HA) and
+/// `hadoop.` carries per-key HDFS client overrides; both are read by iceberg-rust's hdfs-native
+/// config parser. Dropping them here would leave an HA table with only the path authority, which
+/// is a logical nameservice and not a routable host -- see `hadoopToIcebergHdfsProperties` on the
+/// JVM side for where the endpoints come from.
+const STORAGE_PROPERTY_PREFIXES: &[&str] = &["s3.", "gcs.", "adls.", "client.", "hdfs.", "hadoop."];
 
 /// Pick an OpenDAL storage backend from a URI's scheme. `file` (or no scheme) falls through to
 /// the local file system. `memory` is used by the write path to assemble manifest bytes that
@@ -59,6 +65,13 @@ pub(crate) fn storage_factory_for(
         "file" => Ok(Arc::new(OpenDalStorageFactory::Fs)),
         "memory" => Ok(Arc::new(OpenDalStorageFactory::Memory)),
         "gs" => Ok(Arc::new(OpenDalStorageFactory::Gcs)),
+        // HDFS through iceberg-rust's pure-Rust `hdfs-native` backend -- NOT the libhdfs/JNI
+        // client the plain-Parquet path uses (`fs.comet.libhdfs.schemes`). Both may be linked
+        // into the same `libcomet`, but they are separate clients with separate connections and
+        // separate Kerberos state. The NameNode comes from the `hdfs.name-node` property when
+        // set (forwarded by `STORAGE_PROPERTY_PREFIXES`) and otherwise from the path authority,
+        // which is only routable on a single-NameNode cluster.
+        "hdfs" => Ok(Arc::new(OpenDalStorageFactory::HdfsNative)),
         // Reads keep the OSS backend they have always had (CometScanRule admits `oss` scan
         // locations through HadoopFileIO). Writes fail closed: Comet does not forward `oss.*`
         // properties into the FileIO and no test covers the write path, so OSS-specific
@@ -269,11 +282,51 @@ mod tests {
 
     #[test]
     fn unknown_scheme_is_rejected() {
-        let err = factory_result("hdfs://nn/db/table", AccessMode::Read).unwrap_err();
+        // object_store recognizes abfss, but iceberg-rust's OpenDAL storage factory has no arm
+        // for it, so the JVM gate must decline rather than fail here at execution time.
+        let err = factory_result("abfss://c@acct/db/table", AccessMode::Read).unwrap_err();
         assert!(
             err.contains("Unsupported storage scheme"),
             "unexpected error: {err}"
         );
+    }
+
+    #[test]
+    fn hdfs_scheme_resolves_for_both_modes() {
+        // Reads and writes both route to the hdfs-native backend. Unlike `oss`, nothing is
+        // silently dropped: `hdfs.`/`hadoop.` properties are forwarded to the FileIO below.
+        for mode in [AccessMode::Read, AccessMode::Write] {
+            assert!(factory_result("hdfs://nn:8020/warehouse/db/t", mode).is_ok());
+            assert!(factory_result("hdfs://nameservice1/warehouse/db/t", mode).is_ok());
+        }
+    }
+
+    #[test]
+    fn hdfs_properties_reach_the_file_io() {
+        // The NameNode list and the `hadoop.*` client overrides are the whole HDFS configuration
+        // surface; if the prefix filter drops them an HA table connects to a nameservice name as
+        // if it were a host, and fails only once a task opens a file.
+        let props = HashMap::from([
+            (
+                "hdfs.name-node".to_string(),
+                "hdfs://nn1:8020,hdfs://nn2:8020".to_string(),
+            ),
+            (
+                "hadoop.dfs.client.failover.random.order".to_string(),
+                "true".to_string(),
+            ),
+            // Must not survive the narrowing: the unfiltered bag also carries catalog identity
+            // and OAuth material that iceberg-rust's FileIO has no business seeing.
+            ("uri".to_string(), "thrift://metastore:9083".to_string()),
+        ]);
+
+        let forwarded: Vec<&String> = props
+            .keys()
+            .filter(|k| STORAGE_PROPERTY_PREFIXES.iter().any(|p| k.starts_with(p)))
+            .collect();
+
+        assert_eq!(forwarded.len(), 2, "forwarded: {forwarded:?}");
+        assert!(load_file_io(&props, "hdfs://nameservice1/db/t", "cat", AccessMode::Read).is_ok());
     }
 
     #[test]

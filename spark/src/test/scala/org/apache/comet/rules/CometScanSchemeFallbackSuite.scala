@@ -129,7 +129,11 @@ class CometScanSchemeFallbackSuite extends CometTestBase {
       "s3://bucket/key.parquet",
       "s3a://bucket/key.parquet",
       "gs://bucket/key.parquet",
-      "oss://bucket/key.parquet").foreach { u =>
+      "oss://bucket/key.parquet",
+      // Routes to iceberg-rust's pure-Rust hdfs-native backend, not to the libhdfs/JNI client
+      // the plain-Parquet path uses.
+      "hdfs://nn:8020/warehouse/db/t/key.parquet",
+      "hdfs://nameservice1/warehouse/db/t/key.parquet").foreach { u =>
       assert(
         CometScanRule.isIcebergReadableScheme(new URI(u), Set.empty),
         s"$u must be iceberg-readable; icebergReadableSchemes has regressed")
@@ -216,6 +220,14 @@ class CometScanSchemeFallbackSuite extends CometTestBase {
     assert(
       !openable("blob:///bucket/k.parquet", Set.empty),
       "without opt-in, blob gets no bucket promotion, so a hostless blob location is unopenable")
+    // hdfs: the authority is the NameNode (or the nameservice `hdfs.name-node` resolves), and
+    // opendal's hdfs-native builder rejects an empty `name_node`. This gate runs before the
+    // catalog property bag exists, so a hostless location declines rather than guess.
+    assert(openable("hdfs://nn:8020/warehouse/db/t/k.parquet"))
+    assert(openable("hdfs://nameservice1/warehouse/db/t/k.parquet"))
+    assert(
+      !openable("hdfs:///warehouse/db/t/k.parquet"),
+      "authorityless hdfs:/// carries no NameNode and gets no promotion")
   }
 
   test("native scan claims hdfs:// when libhdfs.schemes is unset (native-default lockstep)") {

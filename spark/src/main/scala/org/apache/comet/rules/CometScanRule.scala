@@ -515,6 +515,23 @@ case class CometScanRule(session: SparkSession)
         }
         val icebergDataBucket: Option[String] = taskValidation.dataFileBuckets.headOption
 
+        // The HDFS analogue of the multi-bucket check above: one `hdfs.name-node` per scan, and
+        // it wins over every path authority, so a second nameservice would be read from the
+        // first one's NameNode at the same relative path.
+        if (taskValidation.dataFileHdfsAuthorities.size > 1) {
+          fallbackReasons +=
+            "Iceberg scan reads data/delete files across multiple HDFS authorities " +
+              s"(${taskValidation.dataFileHdfsAuthorities.toSeq.sorted.mkString(", ")}); " +
+              "Comet's native reader resolves a single NameNode per scan"
+          return withFallbackReasons(scanExec, fallbackReasons.toSet)
+        }
+        // The NameNode that matters is the one holding the DATA and DELETE files the native
+        // FileIO opens, which Iceberg allows to differ from the metadata location
+        // (`write.data.path`). Fall back to the metadata location when no data file contributed
+        // one (an empty scan, or a non-HDFS table where this stays None either way).
+        val icebergDataHdfsAuthority: Option[String] =
+          taskValidation.dataFileHdfsAuthorities.headOption
+
         // Extract all Iceberg metadata once using reflection.
         // If any required reflection fails, this returns None, and we fall back to Spark.
         // First get metadataLocation and catalogProperties which are needed by the factory.
@@ -583,7 +600,17 @@ case class CometScanRule(session: SparkSession)
             // iceberg-rust's FileIO, so the alias key never reaches FileIO -- but it is still
             // handed, unfiltered, to CometS3CredentialBridge, so a custom credential provider sees
             // it. That is intended: the provider gets the full property bag.
-            val catalogProperties = hadoopDerivedProperties ++ fileIOProperties ++
+            // HA NameNode endpoints for an `hdfs://<nameservice>/...` location, resolved against
+            // the DATA authority when the tasks yielded one and the metadata location otherwise.
+            // Listed before `fileIOProperties` so an explicit catalog `hdfs.name-node` still wins.
+            val hdfsAuthorityUri = icebergDataHdfsAuthority
+              .map(authority => new java.net.URI(s"hdfs://$authority/"))
+              .getOrElse(effectiveUri)
+            val hadoopDerivedHdfsProperties =
+              CometIcebergNativeScan.hadoopToIcebergHdfsProperties(hdfsAuthorityUri, hadoopConf)
+
+            val catalogProperties = hadoopDerivedProperties ++ hadoopDerivedHdfsProperties ++
+              fileIOProperties ++
               hadoopS3Options
                 .get(COMET_S3_COMPLIANT_SCHEMES_KEY)
                 .map(COMET_S3_COMPLIANT_SCHEMES_KEY -> _)
@@ -1221,15 +1248,21 @@ object CometScanRule extends Logging {
    * NOT delegated to `isNativelyReadableScheme`: object_store recognizes schemes (http/https,
    * azure, memory) that iceberg-rust's OpenDAL storage factory cannot build, and admitting them
    * here turns a clean JVM fallback into a native runtime "Unsupported storage scheme" error. Add
-   * here what you add to `storage_factory_for` (currently Aliyun `oss` and GCS `gs`).
+   * here what you add to `storage_factory_for` (currently Aliyun `oss`, GCS `gs` and `hdfs`).
    * S3-compliant aliases like `blob` are opt-in via `fs.comet.s3Compliant.schemes` (see
    * `isIcebergReadableScheme`), not hardcoded, since the native planner opens them via S3. The
    * write path keeps its own list (`CometIcebergNativeWrite.SupportedStorageSchemes`), which
    * differs deliberately: it excludes `oss` (fails closed, see `storage_factory_for`) and
    * includes `memory`.
+   *
+   * `hdfs` routes to iceberg-rust's pure-Rust `hdfs-native` backend, NOT to the libhdfs/JNI
+   * backend the plain-Parquet path uses (`fs.comet.libhdfs.schemes`). The two clients read the
+   * same `$HADOOP_CONF_DIR` XML but authenticate independently; see
+   * `CometIcebergNativeScan.hadoopToIcebergHdfsProperties` for how the NameNode endpoints are
+   * resolved. Only `hdfs` itself is admitted: a libhdfs alias scheme has no iceberg-rust arm.
    */
   private val icebergReadableSchemes: Set[String] =
-    Set("file", "s3", "s3a", "gs", "oss")
+    Set("file", "s3", "s3a", "gs", "oss", "hdfs")
 
   /**
    * "Supported schemes: ..." suffix shared by the Iceberg scheme-fallback messages. Lists the
@@ -1265,6 +1298,12 @@ object CometScanRule extends Logging {
    * The one exception is an opt-in S3-compliant alias, which the native reader opens by promoting
    * the bucket from the first path segment (`s3_blob_fs_support.rs`), so a hostless
    * `blob:///bucket/key.parquet` IS openable when it carries a promotable bucket segment.
+   *
+   * `hdfs` follows the general rule for the same reason in different clothing: the authority is
+   * the NameNode (or the logical nameservice that `hdfs.name-node` resolves), and opendal's
+   * hdfs-native builder rejects an empty `name_node`. A hostless `hdfs:///path` could in
+   * principle be opened from a configured `hdfs.name-node` alone, but this gate runs before the
+   * catalog property bag is assembled, so it declines rather than guess.
    */
   private[rules] def hasOpenableAuthority(uri: URI, s3CompliantSchemes: Set[String]): Boolean = {
     val scheme = NativeConfig.lowerScheme(uri)
@@ -1309,6 +1348,13 @@ object CometScanRule extends Logging {
     // Buckets the native FileIO must read (data + delete files), for the single-config check in
     // CometScanRule; only S3-family locations contribute (see NativeConfig.bucketForUri).
     val dataFileBuckets = mutable.Set[String]()
+    // Distinct `hdfs://` authorities across data and delete files. A single scan carries one
+    // `hdfs.name-node` property, and when that property is set it overrides the authority of
+    // EVERY path the FileIO opens (opendal builds one client against a synthetic authority; see
+    // `hadoopToIcebergHdfsProperties`). Files under a second nameservice would then be read from
+    // the first one at the same relative path -- silently wrong data rather than an error -- so a
+    // scan spanning more than one authority must fall back.
+    val dataFileHdfsAuthorities = mutable.Set[String]()
     // First data/delete location with a readable scheme but no URL host (see
     // hasOpenableAuthority); non-empty => decline. One example suffices for the message.
     var hostlessLocation: Option[String] = None
@@ -1331,6 +1377,12 @@ object CometScanRule extends Logging {
         unsupportedSchemes += lower
       } else if (!hasOpenableAuthority(uri, s3CompliantSchemes)) {
         if (hostlessLocation.isEmpty) hostlessLocation = Some(rawPath)
+      } else if (lower == "hdfs") {
+        // hasOpenableAuthority already rejected the hostless form, so the authority is present.
+        // Read the RAW authority, not getHost: a nameservice is a registry name rather than a
+        // hostname, and `getHost` answers null for one carrying an underscore, which would drop
+        // it from this set and quietly weaken the single-NameNode check below.
+        Option(uri.getRawAuthority).filter(_.nonEmpty).foreach(dataFileHdfsAuthorities += _)
       } else {
         // bucketForUri yields None for non-S3-family URIs, so no scheme re-check is needed here.
         NativeConfig.bucketForUri(uri, s3CompliantSchemes).foreach(dataFileBuckets += _)
@@ -1390,6 +1442,7 @@ object CometScanRule extends Logging {
       nonIdentityTransform,
       deleteFiles,
       dataFileBuckets.toSet,
+      dataFileHdfsAuthorities.toSet,
       hostlessLocation)
   }
 }
@@ -1403,4 +1456,5 @@ case class IcebergTaskValidationResult(
     nonIdentityTransform: Option[String],
     deleteFiles: java.util.List[_],
     dataFileBuckets: Set[String],
+    dataFileHdfsAuthorities: Set[String],
     hostlessLocation: Option[String])

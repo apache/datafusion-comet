@@ -137,4 +137,59 @@ class CometIcebergNativeScanSuite extends AnyFunSuite with Matchers {
     out("s3.endpoint") shouldBe "https://global.example.com"
     out.values.toSet should not contain "https://some.example.com"
   }
+
+  // --- hadoopToIcebergHdfsProperties -------------------------------------------------------
+  //
+  // opendal's hdfs-native builder never dials the path authority: it synthesizes the HA config
+  // from the comma-separated `hdfs.name-node` value. iceberg-rust falls back to the path
+  // authority when the property is absent, which only works when that authority is a real
+  // `host:port`. These cases pin the HA translation that makes `hdfs://<nameservice>/...` work.
+
+  private def hdfsProps(location: String, conf: Map[String, String]): Map[String, String] = {
+    val hadoopConf = new org.apache.hadoop.conf.Configuration(false)
+    conf.foreach { case (k, v) => hadoopConf.set(k, v) }
+    CometIcebergNativeScan.hadoopToIcebergHdfsProperties(new java.net.URI(location), hadoopConf)
+  }
+
+  test("HA nameservice resolves to the comma-separated NameNode list, in declaration order") {
+    val out = hdfsProps(
+      "hdfs://nameservice1/warehouse/db/t/metadata.json",
+      Map(
+        "dfs.ha.namenodes.nameservice1" -> "nn1,nn2",
+        "dfs.namenode.rpc-address.nameservice1.nn1" -> "host-a.example.com:8020",
+        "dfs.namenode.rpc-address.nameservice1.nn2" -> "host-b.example.com:8020"))
+
+    out shouldBe Map(
+      "hdfs.name-node" -> "hdfs://host-a.example.com:8020,hdfs://host-b.example.com:8020")
+  }
+
+  test("a plain host:port authority needs no mapping") {
+    // The path authority is already a routable NameNode; emitting a property would only pin the
+    // scan to one endpoint.
+    hdfsProps("hdfs://nn.example.com:8020/warehouse/db/t", Map.empty) shouldBe Map.empty
+  }
+
+  test("a partially resolved HA list yields nothing rather than a short failover list") {
+    // Dropping nn2 would silently turn a failover into an outage; fall through to the path
+    // authority, which fails loudly instead.
+    hdfsProps(
+      "hdfs://nameservice1/warehouse",
+      Map(
+        "dfs.ha.namenodes.nameservice1" -> "nn1,nn2",
+        "dfs.namenode.rpc-address.nameservice1.nn1" -> "host-a.example.com:8020")) shouldBe Map.empty
+  }
+
+  test("rpc-address already carrying the hdfs:// prefix is not double-prefixed") {
+    hdfsProps(
+      "hdfs://ns/warehouse",
+      Map(
+        "dfs.ha.namenodes.ns" -> "nn1",
+        "dfs.namenode.rpc-address.ns.nn1" -> "hdfs://host-a.example.com:8020")) shouldBe
+      Map("hdfs.name-node" -> "hdfs://host-a.example.com:8020")
+  }
+
+  test("non-hdfs and authority-less locations are ignored") {
+    hdfsProps("s3://bucket/key", Map("dfs.ha.namenodes.bucket" -> "nn1")) shouldBe Map.empty
+    hdfsProps("hdfs:///warehouse/db/t", Map.empty) shouldBe Map.empty
+  }
 }

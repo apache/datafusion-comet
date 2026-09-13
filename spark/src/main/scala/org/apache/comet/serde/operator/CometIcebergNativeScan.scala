@@ -595,6 +595,66 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
   }
 
   /**
+   * Resolves the `hdfs.name-node` property iceberg-rust's `hdfs-native` backend needs to open an
+   * `hdfs://` location, from the session Hadoop configuration.
+   *
+   * Why this is not optional. opendal's `HdfsNativeBuilder` never dials the authority written in
+   * the path: it builds its client against a synthetic authority and synthesizes
+   * `dfs.ha.namenodes.<synthetic>` / `dfs.namenode.rpc-address.<synthetic>.nnN` from the
+   * comma-separated `name_node` value (see `init_hdfs_config` in `opendal-service-hdfs-native`).
+   * iceberg-rust falls back to the path authority when the property is absent, which is correct
+   * only when that authority is a real `host:port`. On an HA cluster the location reads
+   * `hdfs://<nameservice>/...`, and the nameservice is not a routable host, so without this
+   * mapping every HA table would fail to connect at execution time, after the planner had already
+   * committed to the native scan.
+   *
+   * Spark already knows the answer: `dfs.ha.namenodes.<ns>` lists the NameNode ids and
+   * `dfs.namenode.rpc-address.<ns>.<id>` gives each endpoint. Join them in declaration order and
+   * hand iceberg-rust the same failover list the JVM client would use. A non-HA authority (a real
+   * `host:port`) yields nothing: the path authority is already correct, and emitting a property
+   * would only pin the scan to one endpoint.
+   *
+   * Catalog properties win over this map at the call site, so an explicit
+   * `spark.sql.catalog.<cat>.hdfs.name-node` always overrides what the Hadoop config implies.
+   *
+   * @param uri
+   *   the metadata (scan) or data (write) location whose authority names the nameservice
+   * @param hadoopConf
+   *   the session Hadoop configuration, already carrying any `spark.hadoop.*` overrides
+   */
+  def hadoopToIcebergHdfsProperties(
+      uri: java.net.URI,
+      hadoopConf: org.apache.hadoop.conf.Configuration): Map[String, String] = {
+    if (!NativeConfig.lowerScheme(uri).contains("hdfs")) return Map.empty
+    // The RAW authority, not `getHost`: a nameservice is a registry name rather than a hostname,
+    // and `getHost` answers null for one carrying an underscore. A `host:port` authority yields
+    // no `dfs.ha.namenodes.<host:port>` key and falls through to `Map.empty` below, which is the
+    // right answer for a non-HA cluster anyway.
+    val nameservice = Option(uri.getRawAuthority).filter(_.nonEmpty).getOrElse(return Map.empty)
+
+    // `dfs.ha.namenodes.<ns>` is absent for a plain `host:port` authority, which needs no mapping.
+    val nnIds = Option(hadoopConf.getTrimmedStrings(s"dfs.ha.namenodes.$nameservice"))
+      .map(_.toSeq)
+      .getOrElse(Seq.empty)
+      .filter(_.nonEmpty)
+
+    val endpoints = nnIds.flatMap { nnId =>
+      Option(hadoopConf.getTrimmed(s"dfs.namenode.rpc-address.$nameservice.$nnId"))
+        .filter(_.nonEmpty)
+        .map(addr => if (addr.startsWith("hdfs://")) addr else s"hdfs://$addr")
+    }
+
+    // All-or-nothing: a partially resolved list would silently drop a NameNode and turn a
+    // failover into an outage. Fall through to the path authority instead, which at least fails
+    // loudly and identically to the pre-mapping behavior.
+    if (endpoints.nonEmpty && endpoints.size == nnIds.size) {
+      Map("hdfs.name-node" -> endpoints.mkString(","))
+    } else {
+      Map.empty
+    }
+  }
+
+  /**
    * Transforms Hadoop S3A configuration keys to Iceberg FileIO property keys.
    *
    * Iceberg-rust's FileIO expects Iceberg-format keys (e.g., s3.access-key-id), not Hadoop keys
