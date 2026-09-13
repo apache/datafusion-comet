@@ -237,6 +237,9 @@ impl PartitionWriter for LocalPartitionWriter {
             } => {
                 self.offsets[pid] = output_writer.stream_position()?;
 
+                let mut flush_timer = metrics.write_time.timer();
+                spill.flush()?;
+                flush_timer.stop();
                 let ranges = spill.ranges(pid)?;
                 if !ranges.is_empty() {
                     if spill_reader.is_none() {
@@ -599,8 +602,14 @@ mod tests {
                 Arc::new(RuntimeEnv::default()),
             );
             let metrics = ShufflePartitionerMetrics::new(&ExecutionPlanMetricsSet::new(), 0);
+            for pid in 0..2 {
+                writer
+                    .write(pid, &mut vec![Ok(test_batch())].into_iter(), &metrics)
+                    .unwrap();
+            }
+            // finishing partition 0 flushes the buffered spill bytes before the file is cut
             writer
-                .write(0, &mut vec![Ok(test_batch())].into_iter(), &metrics)
+                .finish_partition(0, &mut std::iter::empty(), &metrics)
                 .unwrap();
 
             let path = writer.get_spill().path().unwrap().unwrap().to_path_buf();
@@ -612,7 +621,7 @@ mod tests {
                 .unwrap();
 
             let err = writer
-                .finish_partition(0, &mut std::iter::empty(), &metrics)
+                .finish_partition(1, &mut std::iter::empty(), &metrics)
                 .expect_err("a truncated spill file must fail the partition");
             assert!(
                 err.to_string().contains("truncated"),

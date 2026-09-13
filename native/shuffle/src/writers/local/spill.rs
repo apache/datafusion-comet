@@ -23,12 +23,33 @@ use datafusion::common::DataFusionError;
 use datafusion::execution::runtime_env::RuntimeEnv;
 use datafusion::execution::SpillFile as DfSpillFile;
 use datafusion::execution::SpillWriter as DfSpillWriter;
+use std::io::{BufWriter, Write};
 use std::ops::Range;
 use std::sync::Arc;
 
 struct ActiveSpillFile {
     temp_file: Arc<dyn DfSpillFile>,
-    writer: Box<dyn DfSpillWriter>,
+    /// Shared by every partition; bytes reach the file when it fills or on
+    /// [`PartitionedSpill::flush`].
+    writer: BufWriter<Box<dyn DfSpillWriter>>,
+}
+
+/// Forwards writes but ignores `flush`, so `BufBatchWriter`'s flush at the end of each partition
+/// leaves the bytes buffered.
+struct DeferFlush<'a, W: Write>(&'a mut W);
+
+impl<W: Write> Write for DeferFlush<'_, W> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.write(buf)
+    }
+
+    fn write_all(&mut self, buf: &[u8]) -> std::io::Result<()> {
+        self.0.write_all(buf)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
 }
 
 /// One spill file shared by every output partition of a task, with the ranges each partition's
@@ -83,7 +104,7 @@ impl PartitionedSpill {
         let result = (|| {
             let mut buf_batch_writer = BufBatchWriter::new(
                 &mut self.shuffle_block_writer,
-                &mut self.spill_file.as_mut().unwrap().writer,
+                DeferFlush(&mut self.spill_file.as_mut().unwrap().writer),
                 self.write_buffer_size,
                 self.batch_size,
             );
@@ -137,6 +158,19 @@ impl PartitionedSpill {
         Ok(&self.ranges[pid])
     }
 
+    /// Writes buffered spill bytes to the spill file.
+    pub(crate) fn flush(&mut self) -> datafusion::common::Result<()> {
+        self.check_usable()?;
+        if let Some(spill_file) = self.spill_file.as_mut() {
+            if let Err(error) = spill_file.writer.flush() {
+                // the file holds an unknown prefix of the buffered bytes
+                self.failed = true;
+                return Err(error.into());
+            }
+        }
+        Ok(())
+    }
+
     /// Local filesystem path of the spill file.
     ///
     /// * `Ok(None)` — nothing was spilled.
@@ -176,7 +210,7 @@ impl PartitionedSpill {
             let temp_file = runtime
                 .disk_manager
                 .create_tmp_file("shuffle writer spill")?;
-            let writer = temp_file.open_writer()?;
+            let writer = BufWriter::with_capacity(self.write_buffer_size, temp_file.open_writer()?);
             self.spill_file = Some(ActiveSpillFile { temp_file, writer });
         }
         Ok(())
@@ -368,6 +402,30 @@ mod tests {
         assert_eq!(first[0].start, 0);
         assert_eq!(second[0].start, first[0].end);
         assert_eq!(first[1].start, second[0].end);
+    }
+
+    #[test]
+    fn writes_stay_buffered_until_flush() {
+        let mut spill = partitioned_spill(&test_batch(), 2);
+        let runtime = RuntimeEnv::default();
+        let mut recycled = Vec::new();
+        for pid in [0, 1] {
+            spill
+                .write(
+                    pid,
+                    &mut vec![Ok(test_batch())].into_iter(),
+                    &runtime,
+                    &metrics(),
+                    &mut recycled,
+                )
+                .unwrap();
+        }
+        let path = spill.path().unwrap().unwrap().to_path_buf();
+        let spilled = spill.ranges(1).unwrap()[0].end;
+
+        assert_eq!(std::fs::metadata(&path).unwrap().len(), 0);
+        spill.flush().unwrap();
+        assert_eq!(std::fs::metadata(&path).unwrap().len(), spilled);
     }
 
     #[test]
