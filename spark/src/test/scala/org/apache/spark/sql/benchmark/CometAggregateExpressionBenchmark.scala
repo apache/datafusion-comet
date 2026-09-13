@@ -104,7 +104,7 @@ object CometAggregateExpressionBenchmark extends CometBenchmarkBase {
               benchmark.out.println(s"Grouped ANSI AVG allowIncompatible=$optIn, rows=$rows, " +
                 s"groups=$groups, inputPartitions=$inputPartitions, shufflePartitions=$partitions, " +
                 s"filePartitionBytes=$filePartitionBytes, fileOpenCostBytes=$filePartitionBytes, " +
-                s"ansi=true, aqe=false, nativeScan=true, shuffleMode=auto, " +
+                "ansi=true, aqe=false, nativeScan=true, shuffleMode=auto, " +
                 s"master=${spark.sparkContext.master}, " +
                 s"sparkVersion=${spark.version}, resultMatchesSpark=true, " +
                 s"nativeAggregates=$nativeAggregates, sparkAggregates=$sparkAggregates")
