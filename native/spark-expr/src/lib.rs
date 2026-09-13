@@ -47,7 +47,9 @@ pub mod hash_funcs;
 mod string_funcs;
 
 mod datetime_funcs;
+mod iceberg_funcs;
 pub use agg_funcs::*;
+pub use iceberg_funcs::{SparkIcebergBucket, SparkIcebergTemporalTransform, SparkIcebergTruncate};
 
 pub use cast::{spark_cast, Cast, SparkCastOptions};
 
@@ -59,7 +61,7 @@ pub mod jvm_udf;
 mod conditional_funcs;
 mod conversion_funcs;
 mod map_funcs;
-pub use map_funcs::spark_map_sort;
+pub use map_funcs::{spark_map_sort, SparkMapExtract};
 mod math_funcs;
 mod nondetermenistic_funcs;
 pub mod url_funcs;
@@ -86,9 +88,9 @@ pub use json_funcs::{FromJson, ToJson};
 pub use math_funcs::{
     abs, checked_add, checked_div, checked_mul, checked_sub, create_modulo_expr,
     create_negate_expr, spark_ceil, spark_decimal_div, spark_decimal_integral_div, spark_floor,
-    spark_log, spark_make_decimal, spark_pow, spark_round, spark_unhex, spark_unscaled_value,
-    CheckOverflow, DecimalRescaleCheckOverflow, NegativeExpr, NormalizeNaNAndZero,
-    WideDecimalBinaryExpr, WideDecimalOp,
+    spark_log, spark_make_decimal, spark_modulo, spark_pow, spark_round, spark_sqrt, spark_unhex,
+    spark_unscaled_value, CheckOverflow, DecimalRescaleCheckOverflow, NegativeExpr,
+    NormalizeNaNAndZero, WideDecimalBinaryExpr, WideDecimalOp,
 };
 pub use query_context::{create_query_context_map, QueryContext, QueryContextMap};
 pub use string_funcs::*;

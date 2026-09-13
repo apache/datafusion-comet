@@ -189,6 +189,8 @@ impl<'a> TryFrom<JValueOwned<'a>> for BinaryWrapper<'a> {
 
 mod comet_exec;
 pub use comet_exec::*;
+mod comet_schema_utils;
+pub use comet_schema_utils::CometSchemaUtils;
 mod arrow_array_stream;
 mod comet_metric_node;
 mod comet_s3_credential_dispatcher;
@@ -240,6 +242,10 @@ pub struct JVMClasses<'a> {
     pub comet_udf_bridge: Option<CometUdfBridge<'a>>,
     /// JNI handles for the CometS3CredentialDispatcher SPI and the CometS3Credentials POJO.
     pub comet_s3_credential_dispatcher: CometS3CredentialDispatcher<'a>,
+    /// The CometSchemaUtils class. Used to fold Parquet field names via the JVM's
+    /// `String.toLowerCase(Locale.ROOT)` for Spark-compatible case-insensitive resolution.
+    /// Holds a global class reference, so unlike the sibling fields it carries no `'a`.
+    pub comet_schema_utils: CometSchemaUtils,
 }
 
 unsafe impl Send for JVMClasses<'_> {}
@@ -318,6 +324,7 @@ impl JVMClasses<'_> {
                     bridge
                 },
                 comet_s3_credential_dispatcher: CometS3CredentialDispatcher::new(env).unwrap(),
+                comet_schema_utils: CometSchemaUtils::new(env).unwrap(),
             }
         });
     }

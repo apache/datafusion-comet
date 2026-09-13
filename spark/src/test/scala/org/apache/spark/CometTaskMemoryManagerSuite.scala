@@ -29,6 +29,82 @@ import org.apache.spark.memory.{MemoryConsumer, TaskMemoryManager, TestMemoryMan
 class CometTaskMemoryManagerSuite extends AnyFunSuite {
 
   test("native memory usage is visible to Spark's memory consumer") {
+    withTaskMemoryManager { taskMemoryManager =>
+      val manager = new CometTaskMemoryManager(1L, 0L)
+      val consumer = nativeMemoryConsumer(manager)
+
+      assert(manager.getUsed == 0L)
+      assert(consumer.getUsed == 0L)
+
+      assert(manager.acquireMemory(128L) == 128L)
+      assert(manager.getUsed == 128L)
+      assert(consumer.getUsed == 128L)
+      assert(taskMemoryManager.getMemoryConsumptionForThisTask == 128L)
+
+      manager.releaseMemory(128L)
+      assert(manager.getUsed == 0L)
+      assert(consumer.getUsed == 0L)
+      assert(taskMemoryManager.getMemoryConsumptionForThisTask == 0L)
+    }
+  }
+
+  test("partial and zero grants account only for acquired memory") {
+    withTaskMemoryManager { taskMemoryManager =>
+      val manager = new CometTaskMemoryManager(1L, 0L)
+      val consumer = nativeMemoryConsumer(manager)
+
+      def checkUsage(expected: Long): Unit = {
+        assert(manager.getUsed == expected)
+        assert(consumer.getUsed == expected)
+        assert(taskMemoryManager.getMemoryConsumptionForThisTask == expected)
+      }
+
+      assert(manager.acquireMemory(768L) == 768L)
+      checkUsage(768L)
+      assert(manager.acquireMemory(512L) == 256L)
+      checkUsage(1024L)
+      assert(manager.acquireMemory(128L) == 0L)
+      checkUsage(1024L)
+
+      manager.releaseMemory(256L)
+      checkUsage(768L)
+      assert(manager.acquireMemory(128L) == 128L)
+      checkUsage(896L)
+      manager.releaseMemory(896L)
+      checkUsage(0L)
+    }
+  }
+
+  test("managers in the same task retain separate memory accounting") {
+    withTaskMemoryManager { taskMemoryManager =>
+      val first = new CometTaskMemoryManager(1L, 0L)
+      val second = new CometTaskMemoryManager(2L, 0L)
+      val firstConsumer = nativeMemoryConsumer(first)
+      val secondConsumer = nativeMemoryConsumer(second)
+
+      def checkUsage(firstBytes: Long, secondBytes: Long): Unit = {
+        assert(first.getUsed == firstBytes)
+        assert(firstConsumer.getUsed == firstBytes)
+        assert(second.getUsed == secondBytes)
+        assert(secondConsumer.getUsed == secondBytes)
+        assert(taskMemoryManager.getMemoryConsumptionForThisTask == firstBytes + secondBytes)
+      }
+
+      checkUsage(0L, 0L)
+      assert(first.acquireMemory(128L) == 128L)
+      checkUsage(128L, 0L)
+      assert(second.acquireMemory(256L) == 256L)
+      checkUsage(128L, 256L)
+      first.releaseMemory(64L)
+      checkUsage(64L, 256L)
+      second.releaseMemory(256L)
+      checkUsage(64L, 0L)
+      first.releaseMemory(64L)
+      checkUsage(0L, 0L)
+    }
+  }
+
+  private def withTaskMemoryManager(f: TaskMemoryManager => Unit): Unit = {
     val memoryManager = new TestMemoryManager(new SparkConf())
     memoryManager.limit(1024)
     val taskMemoryManager = new TaskMemoryManager(memoryManager, 0L)
@@ -48,24 +124,13 @@ class CometTaskMemoryManagerSuite extends AnyFunSuite {
 
     TaskContext.setTaskContext(taskContext)
     try {
-      val manager = new CometTaskMemoryManager(1L, 0L)
-      val consumer = nativeMemoryConsumer(manager)
-
-      assert(manager.getUsed == 0L)
-      assert(consumer.getUsed == 0L)
-
-      assert(manager.acquireMemory(128L) == 128L)
-      assert(manager.getUsed == 128L)
-      assert(consumer.getUsed == 128L)
-      assert(taskMemoryManager.getMemoryConsumptionForThisTask == 128L)
-
-      manager.releaseMemory(128L)
-      assert(manager.getUsed == 0L)
-      assert(consumer.getUsed == 0L)
-      assert(taskMemoryManager.getMemoryConsumptionForThisTask == 0L)
+      f(taskMemoryManager)
     } finally {
-      taskMemoryManager.cleanUpAllAllocatedMemory()
-      TaskContext.unset()
+      try {
+        taskMemoryManager.cleanUpAllAllocatedMemory()
+      } finally {
+        TaskContext.unset()
+      }
     }
   }
 

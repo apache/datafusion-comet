@@ -19,10 +19,17 @@
 
 package org.apache.comet.shims
 
+import org.apache.spark.sql.catalyst.expressions.aggregate.Mode
 import org.apache.spark.sql.execution.datasources.VariantMetadata
 import org.apache.spark.sql.types.{ArrayType, DataType, MapType, StringType, StructType, VariantType}
+import org.apache.spark.unsafe.types.UTF8String
 
 trait CometTypeShim {
+  // `reverseOpt` is set for `mode() WITHIN GROUP (ORDER BY col [DESC])` and the
+  // `mode(col, deterministic)` form, both of which carry ordered tie-breaking that Comet does not
+  // implement yet. The plain `mode(col)` form leaves it as `None`.
+  def modeHasUnsupportedOrdering(expr: Mode): Boolean = expr.reverseOpt.isDefined
+
   // A `StringType` carries collation metadata in Spark 4.0. Only non-default (non-UTF8_BINARY)
   // collations have semantics Comet's byte-level hashing/sorting/equality cannot honor. The
   // default `StringType` object is `StringType(UTF8_BINARY_COLLATION_ID)`, so comparing
@@ -60,8 +67,21 @@ trait CometTypeShim {
   // Spark 3.x where `VariantType` does not exist.
   def isVariantType(dt: DataType): Boolean = dt.isInstanceOf[VariantType]
 
+  def containsVariantType(dt: DataType): Boolean = dt match {
+    case dt if isVariantType(dt) => true
+    case StructType(fields) => fields.exists(field => containsVariantType(field.dataType))
+    case ArrayType(elementType, _) => containsVariantType(elementType)
+    case MapType(keyType, valueType, _) =>
+      containsVariantType(keyType) || containsVariantType(valueType)
+    case _ => false
+  }
+
+  def variantType: Option[DataType] = Some(VariantType)
+
   def isTimeType(dt: DataType): Boolean =
     dt.getClass.getSimpleName.startsWith("TimeType")
+
+  def isValidUtf8(s: UTF8String): Boolean = s.isValid
 
   def hasCollationSupport: Boolean = true
 }

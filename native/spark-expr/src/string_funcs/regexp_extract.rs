@@ -26,6 +26,7 @@ use datafusion::logical_expr::ColumnarValue;
 use regex::Regex;
 use std::sync::Arc;
 
+use super::pattern_cache::PatternCache;
 use super::regexp_extract_common::{parse_args, ParsedArgs};
 
 /// Spark-compatible `regexp_extract(subject, pattern, idx)`.
@@ -37,8 +38,11 @@ use super::regexp_extract_common::{parse_args, ParsedArgs};
 ///
 /// Note: this uses the Rust `regex` crate, whose syntax differs from Java's regex engine in
 /// some ways. The expression is therefore reported as Incompatible.
-pub fn spark_regexp_extract(args: &[ColumnarValue]) -> DataFusionResult<ColumnarValue> {
-    let (regex, group_idx, subject) = match parse_args("regexp_extract", args)? {
+pub fn spark_regexp_extract(
+    args: &[ColumnarValue],
+    regex_cache: &PatternCache,
+) -> DataFusionResult<ColumnarValue> {
+    let (regex, group_idx, subject) = match parse_args("regexp_extract", args, regex_cache)? {
         ParsedArgs::Parsed {
             regex,
             group_idx,
@@ -132,8 +136,12 @@ mod tests {
     use arrow::array::{LargeStringArray, StringArray};
     use datafusion::common::DataFusionError;
 
+    fn call_raw(args: &[ColumnarValue]) -> DataFusionResult<ColumnarValue> {
+        spark_regexp_extract(args, &PatternCache::new())
+    }
+
     fn run(args: Vec<ColumnarValue>) -> DataFusionResult<Vec<Option<String>>> {
-        let result = spark_regexp_extract(&args)?;
+        let result = call_raw(&args)?;
         match result {
             ColumnarValue::Array(arr) => {
                 let s = arr
@@ -240,7 +248,7 @@ mod tests {
 
     #[test]
     fn group_index_out_of_range_errors() {
-        let err = spark_regexp_extract(&[array(vec![Some("abc")]), pattern(r"(a)(b)"), idx(3)])
+        let err = call_raw(&[array(vec![Some("abc")]), pattern(r"(a)(b)"), idx(3)])
             .err()
             .unwrap();
         let msg = err.to_string();
@@ -250,7 +258,7 @@ mod tests {
 
     #[test]
     fn negative_index_errors() {
-        let err = spark_regexp_extract(&[array(vec![Some("abc")]), pattern(r"(a)"), idx(-1)])
+        let err = call_raw(&[array(vec![Some("abc")]), pattern(r"(a)"), idx(-1)])
             .err()
             .unwrap();
         let msg = err.to_string();
@@ -260,10 +268,34 @@ mod tests {
 
     #[test]
     fn invalid_regex_errors() {
-        let err = spark_regexp_extract(&[array(vec![Some("abc")]), pattern(r"(unclosed"), idx(0)])
+        let err = call_raw(&[array(vec![Some("abc")]), pattern(r"(unclosed"), idx(0)])
             .err()
             .unwrap();
         assert!(err.to_string().contains("`regexp`"));
+    }
+
+    /// One expression evaluates many batches; the pattern must compile once and results
+    /// must stay correct on every batch.
+    #[test]
+    fn compiles_regex_once_across_batches() {
+        let cache = PatternCache::new();
+        for batch in 0..4 {
+            let subject = format!("{batch}00-{batch}99");
+            let expected = format!("{batch}00");
+            let result = spark_regexp_extract(
+                &[array(vec![Some(&subject)]), pattern(r"(\d+)-(\d+)"), idx(1)],
+                &cache,
+            )
+            .unwrap();
+            match result {
+                ColumnarValue::Array(arr) => {
+                    let s = arr.as_any().downcast_ref::<StringArray>().unwrap();
+                    assert_eq!(s.value(0), expected);
+                }
+                other => panic!("unexpected result: {other:?}"),
+            }
+        }
+        assert_eq!(cache.compile_count(), 1);
     }
 
     /// `LargeUtf8` subject must still produce a `StringArray` (i32 offsets) so the result type
@@ -276,7 +308,7 @@ mod tests {
             None,
             Some("foo-bar"),
         ])));
-        let result = spark_regexp_extract(&[array, pattern(r"(\d+)-(\d+)"), idx(1)]).unwrap();
+        let result = call_raw(&[array, pattern(r"(\d+)-(\d+)"), idx(1)]).unwrap();
         match result {
             ColumnarValue::Array(arr) => {
                 arr.as_any()

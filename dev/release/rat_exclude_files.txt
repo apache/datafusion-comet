@@ -3,6 +3,8 @@
 .github/pull_request_template.md
 .github/workflows/README.md
 .gitmodules
+.claude/skills
+CLAUDE.md
 native/Cargo.lock
 native/jni-bridge/testdata/backtrace.txt
 native/jni-bridge/testdata/stacktrace.txt

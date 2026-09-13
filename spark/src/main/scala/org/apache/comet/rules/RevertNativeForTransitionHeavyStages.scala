@@ -21,14 +21,16 @@ package org.apache.comet.rules
 
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.SparkSession
+import org.apache.spark.sql.catalyst.expressions.aggregate.{Final, Partial, PartialMerge}
 import org.apache.spark.sql.catalyst.rules.Rule
-import org.apache.spark.sql.comet.{CometColumnarToRowExec, CometExec, CometNativeColumnarToRowExec, CometSparkToColumnarExec}
+import org.apache.spark.sql.comet.{CometColumnarToRowExec, CometExec, CometHashAggregateExec, CometNativeColumnarToRowExec, CometSparkToColumnarExec}
 import org.apache.spark.sql.execution.{ColumnarToRowExec, ColumnarToRowTransition, RowToColumnarExec, SparkPlan}
 import org.apache.spark.sql.execution.adaptive.QueryStageExec
 import org.apache.spark.sql.execution.exchange.{BroadcastExchangeLike, ShuffleExchangeLike}
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
+import org.apache.comet.serde.QueryPlanSerde
 
 /**
  * Reverts a query stage to Spark row-based execution when it has too many columnar-to-row (C2R)
@@ -85,6 +87,13 @@ case class RevertNativeForTransitionHeavyStages(session: SparkSession)
     val transitionCount = countTransitions(stagePlan)
     if (transitionCount <= maxTransitions) return None
 
+    // Reverting either side of a native aggregate boundary can make one engine consume the
+    // other's intermediate state. Typed imperative aggregates such as percentile expose a native
+    // array where Spark expects serialized binary; others, including COUNT, must remain in one
+    // engine for planner semantics even though their physical buffer types match. Keep both
+    // producer and consumer stages native when mixed execution is unsafe across a stage boundary.
+    if (hasUnsafeMixedAggregateAtStageBoundary(stagePlan)) return None
+
     val reason =
       s"Stage reverted: $transitionCount C2R transitions exceed threshold $maxTransitions"
 
@@ -103,6 +112,29 @@ case class RevertNativeForTransitionHeavyStages(session: SparkSession)
   private def isStageBoundary(plan: SparkPlan): Boolean = plan match {
     case _: QueryStageExec | _: ShuffleExchangeLike | _: BroadcastExchangeLike => true
     case _ => false
+  }
+
+  private def hasUnsafeMixedAggregateAtStageBoundary(stagePlan: SparkPlan): Boolean = {
+    def reachesBoundaryBeforeAggregate(plan: SparkPlan): Boolean = plan match {
+      case _ if isStageBoundary(plan) => true
+      case _: CometHashAggregateExec => false
+      case _ => plan.children.exists(reachesBoundaryBeforeAggregate)
+    }
+
+    def visit(plan: SparkPlan): Boolean = plan match {
+      case _ if isStageBoundary(plan) => false
+      case aggregate: CometHashAggregateExec
+          if !QueryPlanSerde.allAggsSupportMixedExecution(aggregate.aggregateExpressions) =>
+        val producesBuffer =
+          aggregate.modes.exists(mode => mode == Partial || mode == PartialMerge)
+        val consumesAcrossBoundary =
+          aggregate.modes.exists(mode => mode == Final || mode == PartialMerge) &&
+            reachesBoundaryBeforeAggregate(aggregate.child)
+        producesBuffer || consumesAcrossBoundary || aggregate.children.exists(visit)
+      case _ => plan.children.exists(visit)
+    }
+
+    visit(stagePlan)
   }
 
   /**

@@ -19,6 +19,9 @@ pub(crate) mod comet_partitioning;
 pub mod ipc;
 pub(crate) mod metrics;
 pub(crate) mod partitioners;
+mod remote_schema;
+#[cfg(test)]
+mod remote_schema_tests;
 #[cfg(test)]
 mod rss_execution_tests;
 mod schema_align;
@@ -28,7 +31,8 @@ pub mod spark_unsafe;
 pub(crate) mod writers;
 
 pub use comet_partitioning::CometPartitioning;
-pub use ipc::read_ipc_compressed;
+pub use ipc::{read_ipc_compressed, read_ipc_compressed_validated};
+pub use remote_schema::{decode_remote_shuffle_batch, validate_remote_schema};
 pub use schema_align::SchemaAlignExec;
 pub use shuffle_writer::{ShuffleWriterDestination, ShuffleWriterExec};
 pub use writers::{CompressionCodec, ShuffleBlockWriter};
