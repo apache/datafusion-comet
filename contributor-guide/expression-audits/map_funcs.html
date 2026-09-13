@@ -608,6 +608,12 @@ under the License.
 <li><p>Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.</p></li>
 </ul>
 </section>
+<section id="map-sort">
+<h2>map_sort<a class="headerlink" href="#map-sort" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p>Performance (tuned locally 2026-09-12; <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/5887">PR #5887</a>): skip Arrow sort dispatch for eligible flat singleton keys, with a batch check and specialized fallback loop for batches without singletons. In the local DataFusion 55.0.0 development cohort, matched singleton normalization measured 19–22x faster in the full run and 18.4x in an independent forward-order confirmation. Benchmarks: <code class="docutils literal notranslate"><span class="pre">native/spark-expr/benches/map_sort.rs</span></code>, <code class="docutils literal notranslate"><span class="pre">hash.rs</span></code>, and <code class="docutils literal notranslate"><span class="pre">common/matched_maps.rs</span></code>; 92 cases cover normalization, hashing, combined execution, nulls, slices, mixed cardinalities, and long Unicode values. Flagged regressions did not remain stable through independent and reversed-order confirmation.</p></li>
+</ul>
+</section>
 <section id="map-values">
 <h2>map_values<a class="headerlink" href="#map-values" title="Link to this heading">#</a></h2>
 <ul class="simple">
@@ -681,6 +687,7 @@ under the License.
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#map-from-arrays">map_from_arrays</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#map-from-entries">map_from_entries</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#map-keys">map_keys</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#map-sort">map_sort</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#map-values">map_values</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#str-to-map">str_to_map</a></li>
 </ul>
