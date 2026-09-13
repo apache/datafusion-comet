@@ -27,207 +27,17 @@
 //! it. The two share `create_hashes_internal!`, so the shape of the work is the same and a change
 //! to that macro shows up here.
 
-use arrow::array::builder::{Int32Builder, ListBuilder, MapBuilder, StringBuilder, StructBuilder};
-use arrow::array::{ArrayRef, Int32Array, ListArray, StringArray, StructArray};
-use arrow::buffer::OffsetBuffer;
-use arrow::datatypes::{DataType, Field, Fields};
 use criterion::{criterion_group, criterion_main, Criterion};
 use datafusion_comet_spark_expr::murmur3::create_murmur3_hashes;
 use std::hint::black_box;
-use std::sync::Arc;
+
+#[path = "common/hash_shapes.rs"]
+mod hash_shapes;
+use hash_shapes::*;
 
 mod common;
 #[path = "common/matched_maps.rs"]
 mod matched_maps;
-
-const NUM_ROWS: usize = 8192;
-
-fn struct_fields() -> Fields {
-    vec![
-        Arc::new(Field::new("a", DataType::Int32, true)),
-        Arc::new(Field::new("b", DataType::Utf8, true)),
-    ]
-    .into()
-}
-
-fn struct_builder() -> StructBuilder {
-    StructBuilder::new(
-        struct_fields(),
-        vec![
-            Box::new(Int32Builder::new()),
-            Box::new(StringBuilder::new()),
-        ],
-    )
-}
-
-fn append_struct(sb: &mut StructBuilder, i: usize) {
-    sb.field_builder::<Int32Builder>(0)
-        .unwrap()
-        .append_value(i as i32);
-    sb.field_builder::<StringBuilder>(1)
-        .unwrap()
-        .append_value(format!("v{}", i % 97));
-    sb.append(true);
-}
-
-/// `int32`, the cheapest leaf, as a reference point for the nested shapes.
-fn primitive(num_rows: usize) -> ArrayRef {
-    Arc::new(Int32Array::from((0..num_rows as i32).collect::<Vec<_>>()))
-}
-
-/// `utf8`: variable-width, so the hash reads from the values buffer per row.
-fn string(num_rows: usize) -> ArrayRef {
-    Arc::new(StringArray::from(
-        (0..num_rows)
-            .map(|i| format!("v{}", i % 97))
-            .collect::<Vec<_>>(),
-    ))
-}
-
-/// `struct<a: int32, b: utf8>`: hashed field by field across the whole batch.
-fn structs(num_rows: usize) -> ArrayRef {
-    let mut sb = struct_builder();
-    for i in 0..num_rows {
-        append_struct(&mut sb, i);
-    }
-    Arc::new(sb.finish())
-}
-
-/// `array<int32>`: elements are primitives, so this takes the vectorized element path.
-fn list_of_primitive(num_rows: usize, elems: usize) -> ArrayRef {
-    let mut lb = ListBuilder::new(Int32Builder::new());
-    for i in 0..num_rows {
-        for j in 0..elems {
-            lb.values().append_value((i * 31 + j) as i32);
-        }
-        lb.append(true);
-    }
-    Arc::new(lb.finish())
-}
-
-/// `array<struct<..>>`: elements are nested, so this takes the per-element path.
-fn list_of_struct(num_rows: usize, elems: usize) -> ArrayRef {
-    let mut lb = ListBuilder::new(struct_builder());
-    for i in 0..num_rows {
-        for j in 0..elems {
-            append_struct(lb.values(), i * 31 + j);
-        }
-        lb.append(true);
-    }
-    Arc::new(lb.finish())
-}
-
-/// `array<struct<..>>` where one row is far longer than the rest, so the element count is spread
-/// very unevenly across rows rather than uniformly. The per-element path slices and re-dispatches
-/// once per element, so a batch dominated by a single long list has the same total work in a very
-/// different distribution, which a uniform shape cannot show.
-fn skewed_list_of_struct(num_rows: usize, long_len: usize) -> ArrayRef {
-    let mut lb = ListBuilder::new(struct_builder());
-    for i in 0..num_rows {
-        let len = if i == 0 { long_len } else { 1 };
-        for j in 0..len {
-            append_struct(lb.values(), i * 31 + j);
-        }
-        lb.append(true);
-    }
-    Arc::new(lb.finish())
-}
-
-/// `map<utf8, int32>`: keys and values are hashed entry by entry.
-fn maps(num_rows: usize, entries: usize) -> ArrayRef {
-    let mut mb = MapBuilder::new(
-        Some(common::map_field_names()),
-        StringBuilder::new(),
-        Int32Builder::new(),
-    );
-    for i in 0..num_rows {
-        for j in 0..entries {
-            mb.keys().append_value(format!("k{}", (i + j) % 97));
-            mb.values().append_value((i * 31 + j) as i32);
-        }
-        mb.append(true).unwrap();
-    }
-    Arc::new(mb.finish())
-}
-
-/// `struct<a: int32, m: map<utf8, int32>>`: a map inside a struct, so the struct branch recurses
-/// into the map specialization rather than into a leaf.
-fn struct_of_map(num_rows: usize, entries: usize) -> ArrayRef {
-    let fields: Fields = vec![
-        Arc::new(Field::new("a", DataType::Int32, true)),
-        Arc::new(Field::new(
-            "m",
-            DataType::Map(
-                Arc::new(Field::new(
-                    "entries",
-                    DataType::Struct(
-                        vec![
-                            Arc::new(Field::new("key", DataType::Utf8, false)),
-                            Arc::new(Field::new("value", DataType::Int32, true)),
-                        ]
-                        .into(),
-                    ),
-                    false,
-                )),
-                false,
-            ),
-            true,
-        )),
-    ]
-    .into();
-    let ints = primitive(num_rows);
-    let ms = maps(num_rows, entries);
-    Arc::new(StructArray::new(fields, vec![ints, ms], None))
-}
-
-/// `array<array<int32>>`: the element is a list, so the non-primitive element path recurses into
-/// the vectorized leaf loop one level down.
-fn list_of_list(num_rows: usize, outer: usize, inner: usize) -> ArrayRef {
-    let mut lb = ListBuilder::new(ListBuilder::new(Int32Builder::new()));
-    for i in 0..num_rows {
-        for j in 0..outer {
-            for k in 0..inner {
-                lb.values()
-                    .values()
-                    .append_value((i * 31 + j * 7 + k) as i32);
-            }
-            lb.values().append(true);
-        }
-        lb.append(true);
-    }
-    Arc::new(lb.finish())
-}
-
-/// `map<utf8, struct<..>>`: a struct as the map value, which the key/value specializations do not
-/// cover, so the value array is hashed recursively instead.
-fn map_of_struct(num_rows: usize, entries: usize) -> ArrayRef {
-    let mut mb = MapBuilder::new(
-        Some(common::map_field_names()),
-        StringBuilder::new(),
-        struct_builder(),
-    );
-    for i in 0..num_rows {
-        for j in 0..entries {
-            mb.keys().append_value(format!("k{}", (i + j) % 97));
-            append_struct(mb.values(), i * 31 + j);
-        }
-        mb.append(true).unwrap();
-    }
-    Arc::new(mb.finish())
-}
-
-/// `array<struct<a: int32, m: map<..>>>`: three levels, so the per-element path recurses through a
-/// struct into a map.
-fn list_of_struct_of_map(num_rows: usize, elems: usize, entries: usize) -> ArrayRef {
-    let inner = struct_of_map(num_rows * elems, entries);
-    let offsets: Vec<i32> = (0..=num_rows).map(|i| (i * elems) as i32).collect();
-    Arc::new(ListArray::new(
-        Arc::new(Field::new("item", inner.data_type().clone(), true)),
-        OffsetBuffer::new(offsets.into()),
-        inner,
-        None,
-    ))
-}
 
 fn bench(c: &mut Criterion) {
     let cases: Vec<(&str, ArrayRef)> = vec![
@@ -249,13 +59,51 @@ fn bench(c: &mut Criterion) {
             "list_of_struct_of_map_x5x5",
             list_of_struct_of_map(NUM_ROWS, 5, 5),
         ),
+        // Shapes where gathering could cost more than the dispatches it saves.
+        (
+            "list_of_struct_1kb_string_x4",
+            list_of_struct_big_string(2048, 4, 1024),
+        ),
+        (
+            "list_of_struct_half_null_x10",
+            list_of_struct_half_null(NUM_ROWS, 10),
+        ),
+        (
+            "list_of_struct_long_tail_x1024",
+            list_of_struct_long_tail(2, 1024),
+        ),
+        (
+            "struct_of_dict_unreferenced_8mb",
+            struct_of_dict_unreferenced_big_value(8192, 8 * 1024 * 1024),
+        ),
+        // Shapes deliberately left on the per-element path, so a change to the eligibility rule
+        // shows up as a timing move here and not only in the allocation table.
+        (
+            "null_parent_struct_64kb_x4",
+            null_parent_struct_big_string(128, 4, 65536),
+        ),
+        (
+            "deep_singleton_list_5_deep",
+            deep_singleton_list_of_struct_big_string(2048, 5, 4096),
+        ),
+        (
+            "width_skewed_8mb_first",
+            width_skewed_list_of_struct(8 * 1024 * 1024),
+        ),
+        (
+            "sliced_list_retaining_10m_ints",
+            sliced_list_retaining_big_child(2, 10_000_000),
+        ),
     ];
 
     let mut group = c.benchmark_group("murmur3");
     for (name, array) in &cases {
+        // Size the buffer from the array rather than assuming `NUM_ROWS`, since not every shape
+        // uses that row count.
+        let rows = array.len();
         group.bench_function(*name, |b| {
             b.iter(|| {
-                let mut hashes = vec![42u32; NUM_ROWS];
+                let mut hashes = vec![42u32; rows];
                 create_murmur3_hashes(std::slice::from_ref(array), &mut hashes).unwrap();
                 black_box(&hashes);
             })
