@@ -172,6 +172,18 @@ object CometScalaUDF extends CometExpressionSerde[ScalaUDF] {
     // their descendants' names.
     expr.setTagValue(CometExplainInfo.DISPATCHED_SELF, ())
     withCodegenDispatchExpr(expr, exprName)
+    // The whole subtree under `expr` was bound and closure-serialized into this one kernel, so
+    // every expression in it ran in the JVM, not just the root. Naming only the root understates
+    // that: for `hypot(abs(b), c)` the dispatched set would hold `hypot` alone, and a test could
+    // assert `abs` was native while an `abs` was in fact running inside the kernel. Attribute
+    // references and literals are the kernel's inputs rather than work it performed, so they are
+    // left out - which also keeps them from appearing in the coverage stats as "expressions".
+    target.foreach {
+      case _: AttributeReference | _: Literal =>
+      case node if !(node eq target) =>
+        withCodegenDispatchExpr(expr, CometExplainInfo.exprDisplayName(node))
+      case _ =>
+    }
     Some(
       ExprOuterClass.Expr
         .newBuilder()

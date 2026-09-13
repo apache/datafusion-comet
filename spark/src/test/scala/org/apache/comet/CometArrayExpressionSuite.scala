@@ -1127,15 +1127,9 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
         sql("CREATE TABLE test_array_get_item(arr ARRAY<INT>) USING parquet")
         sql("INSERT INTO test_array_get_item VALUES (array(1, 2, 3))")
         // Try to access array with out-of-bounds index
-        val exception = intercept[Exception] {
-          sql("select arr[5] from test_array_get_item").collect()
-        }
+        val exception =
+          checkSparkError(sql("select arr[5] from test_array_get_item"), "INVALID_ARRAY_INDEX")
         val errorMessage = exception.getMessage
-        // Verify error message contains the expected error code
-        assert(
-          errorMessage.contains("INVALID_ARRAY_INDEX"),
-          s"Error message should contain array index error: $errorMessage")
-
         assert(errorMessage.contains("The index 5 is out of bounds. The array has 3 elements." +
           " Use the SQL function `get()` to tolerate accessing element at invalid index and return NULL instead."))
 
@@ -1156,15 +1150,10 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
         sql("CREATE TABLE test_element_at_invalid(arr ARRAY<INT>) USING parquet")
         sql("INSERT INTO test_element_at_invalid VALUES (array(1, 2, 3))")
         // Try to access array with out-of-bounds index using element_at
-        val exception = intercept[Exception] {
-          sql("select element_at(arr, 10) from test_element_at_invalid").collect()
-        }
+        val exception = checkSparkError(
+          sql("select element_at(arr, 10) from test_element_at_invalid"),
+          "INVALID_ARRAY_INDEX_IN_ELEMENT_AT")
         val errorMessage = exception.getMessage
-        // Verify error message contains the expected error code
-        assert(
-          errorMessage.contains("INVALID_ARRAY_INDEX_IN_ELEMENT_AT"),
-          s"Error message should contain array index error: $errorMessage")
-
         assert(errorMessage.contains("The index 10 is out of bounds. The array has 3 elements." +
           " Use `try_element_at` to tolerate accessing element at invalid index and return NULL instead"))
 
@@ -1185,15 +1174,10 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
         sql("CREATE TABLE test_element_at_zero(arr ARRAY<INT>) USING parquet")
         sql("INSERT INTO test_element_at_zero VALUES (array(1, 2, 3))")
         // Try to access array with zero index (invalid in Spark)
-        val exception = intercept[Exception] {
-          sql("select element_at(arr, 0) from test_element_at_zero").collect()
-        }
+        val exception = checkSparkError(
+          sql("select element_at(arr, 0) from test_element_at_zero"),
+          "INVALID_INDEX_OF_ZERO")
         val errorMessage = exception.getMessage
-        // Verify error message contains the expected error code
-        assert(
-          errorMessage.contains("INVALID_INDEX_OF_ZERO"),
-          s"Error message should contain zero index error: $errorMessage")
-
         assert(
           errorMessage.contains("The index 0 is invalid. An index shall be either < 0 or > 0" +
             " (the first element has index 1)"))

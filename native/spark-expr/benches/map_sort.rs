@@ -18,28 +18,24 @@
 //! Benchmarks for spark_map_sort.
 
 use arrow::array::builder::{Int32Builder, MapBuilder, StringBuilder};
-use arrow::array::{ArrayRef, MapArray, MapFieldNames};
+use arrow::array::{ArrayRef, MapArray};
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use datafusion::physical_plan::ColumnarValue;
 use datafusion_comet_spark_expr::spark_map_sort;
 use std::hint::black_box;
 use std::sync::Arc;
 
-const BATCH_SIZE: usize = 8192;
+mod common;
+#[path = "common/matched_maps.rs"]
+mod matched_maps;
 
-fn map_field_names() -> MapFieldNames {
-    MapFieldNames {
-        entry: "entries".into(),
-        key: "key".into(),
-        value: "value".into(),
-    }
-}
+const BATCH_SIZE: usize = 8192;
 
 /// Build a MapArray with `BATCH_SIZE` rows where each map has `entries_per_map` entries.
 /// Keys are integers in reverse order so every map needs a real sort.
 fn build_int_key_map(entries_per_map: usize) -> MapArray {
     let mut builder = MapBuilder::new(
-        Some(map_field_names()),
+        Some(common::map_field_names()),
         Int32Builder::new(),
         Int32Builder::new(),
     );
@@ -59,7 +55,7 @@ fn build_int_key_map(entries_per_map: usize) -> MapArray {
 /// Same shape as `build_int_key_map` but with string keys.
 fn build_string_key_map(entries_per_map: usize) -> MapArray {
     let mut builder = MapBuilder::new(
-        Some(map_field_names()),
+        Some(common::map_field_names()),
         StringBuilder::new(),
         Int32Builder::new(),
     );
@@ -103,5 +99,9 @@ fn bench_map_sort(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_map_sort);
+fn bench_matched_maps(c: &mut Criterion) {
+    matched_maps::bench_maps(c, matched_maps::Stage::NormalizeOnly);
+}
+
+criterion_group!(benches, bench_map_sort, bench_matched_maps);
 criterion_main!(benches);
