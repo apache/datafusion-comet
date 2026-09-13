@@ -87,12 +87,16 @@ class CometMapInBatchSuite extends CometTestBase {
       profile = None)
   }
 
-  test("rule rewrites MapInArrowExec over Comet to CometMapInBatchExec") {
-    withSQLConf(CometConf.COMET_PYARROW_UDF_ENABLED.key -> "true") {
-      val rewritten = EliminateRedundantTransitions(spark).apply(buildPlan())
-      assert(
-        rewritten.exists(_.isInstanceOf[CometMapInBatchExec]),
-        s"expected CometMapInBatchExec in rewritten plan:\n$rewritten")
+  for (useLargeVarTypes <- Seq(false, true)) {
+    test(s"rule rewrites MapInArrowExec over Comet (large variable types: $useLargeVarTypes)") {
+      withSQLConf(
+        CometConf.COMET_PYARROW_UDF_ENABLED.key -> "true",
+        "spark.sql.execution.arrow.useLargeVarTypes" -> useLargeVarTypes.toString) {
+        val rewritten = EliminateRedundantTransitions(spark).apply(buildPlan())
+        assert(
+          rewritten.exists(_.isInstanceOf[CometMapInBatchExec]),
+          s"expected CometMapInBatchExec in rewritten plan:\n$rewritten")
+      }
     }
   }
 

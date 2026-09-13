@@ -32,7 +32,8 @@ optimization actually changes for users:
               (per-row InternalRow.getXXX() loop inside ArrowWriter.write)
   * optimized: CometScan -> CometMapInBatchExec -> CometArrowPythonRunner
               (Arrow IPC serialization directly from Comet's source vectors;
-              no row materialization or intermediate vector-buffer copy)
+              no row materialization or intermediate payload-buffer copy;
+              large variable types widen offsets when requested)
 
 Results are wall-clock seconds, so they include Python interpreter,
 Arrow IPC, and downstream count() costs. That's intentional: the
@@ -58,6 +59,7 @@ Override defaults via environment variables:
     BENCHMARK_ROWS=2000000                rows per run
     BENCHMARK_WARMUP=2                    warmup iterations per case
     BENCHMARK_ITERS=5                     measured iterations per case
+    BENCHMARK_LARGE_VAR_TYPES=true        request large Arrow strings/binary (default false)
 """
 
 import contextlib
@@ -84,6 +86,10 @@ def _build_spark() -> SparkSession:
         .config("spark.plugins", "org.apache.spark.CometPlugin")
         .config("spark.comet.enabled", "true")
         .config("spark.comet.exec.enabled", "true")
+        .config(
+            "spark.sql.execution.arrow.useLargeVarTypes",
+            os.environ.get("BENCHMARK_LARGE_VAR_TYPES", "false"),
+        )
         .config(
             "spark.shuffle.manager",
             "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager",
@@ -180,6 +186,8 @@ def main() -> None:
 
     print(f"\nrows per run: {rows:,}")
     print(f"warmup iters: {warmup}, measured iters: {iters}")
+    large_types = spark.conf.get("spark.sql.execution.arrow.useLargeVarTypes")
+    print(f"useLargeVarTypes: {large_types}")
     print(f"jar: {resolve_comet_jar()}\n")
 
     header = "  {:<14} {:<10} {:>10} {:>10} {:>10} {:>13} {:>9}".format(
