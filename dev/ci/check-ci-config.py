@@ -86,6 +86,7 @@ BUILD_JOBS = {
     "spark_3_5",
     "spark_4_0",
     "spark_4_1",
+    "spark_4_1_hive",
     "iceberg_1_8",
     "iceberg_1_9",
     "iceberg_1_10",
@@ -103,6 +104,8 @@ ROUTING_CASES = [
     # to nothing at all and merges having been exercised by no consumer.
     ([".github/actions/upload-artifact-retry/action.yaml"], BUILD_JOBS),
     ([".github/actions/download-artifact-retry/action.yaml"], BUILD_JOBS),
+    # The Maven bootstrap composite is called only from pr_build_linux.yml.
+    ([".github/actions/maven-bootstrap/action.yaml"], {"build_linux"}),
     # Spot checks that the additions above did not widen unrelated routes.
     (["docs/source/user-guide/overview.md"], {"docs"}),
     (["native/core/benches/parquet_read.rs"], {"benchmark"}),
@@ -113,7 +116,7 @@ ROUTING_CASES = [
 # derived from POLICY, so that a change to the routing has to be stated twice
 # and cannot be made by accident.
 PR_TIER = {"build_linux", "spark_4_1", "iceberg_1_11"}
-SPARK_OPT_IN = {"spark_3_5", "spark_4_0"}
+SPARK_OPT_IN = {"spark_3_5", "spark_4_0", "spark_4_1_hive"}
 # Spark 3.4 is deprecated and sits outside the queue tier entirely: a label on
 # a pull request, or a workflow_dispatch, and nothing else. Keeping it in its
 # own set is what makes the `merge_group` case below assert its absence rather
@@ -162,6 +165,21 @@ POLICY_CASES = [
             "labels": ["run-macos-tests"],
         },
         {"build_macos"},
+    ),
+    # The Spark 4.1 hive shards are queue-only with their own label. The label
+    # adds them to the PR tier's Spark 4.1 call rather than starting a second.
+    (
+        {"name": "pull_request", "action": "synchronize", "labels": ["run-spark-4.1-hive-tests"]},
+        PR_TIER | {"spark_4_1_hive"},
+    ),
+    (
+        {
+            "name": "pull_request",
+            "action": "labeled",
+            "label": "run-spark-4.1-hive-tests",
+            "labels": ["run-spark-4.1-hive-tests"],
+        },
+        {"spark_4_1_hive"},
     ),
     # An opt-in label present on a pushed commit adds just that suite. For the
     # deprecated Spark 3.4 suite the label is the *only* way it ever runs on a
@@ -245,6 +263,34 @@ def load_filters():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def check_spark_sql_modules():
+    """`--modules core` and `--modules hive` must partition `--modules all`.
+
+    ci.yml maps its two Spark 4.1 POLICY outputs onto these three values, so a
+    row that lands in no group, or in both, would either never run or run
+    twice in the queue, and nothing else would notice.
+    """
+    spec = importlib.util.spec_from_file_location("spark_sql_modules", "dev/ci/spark-sql-modules.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    failures = []
+    names = lambda rows: [row["name"] for row in rows]
+    everything = names(module.select("all"))
+    core, hive = names(module.select("core")), names(module.select("hive"))
+    if not core or not hive:
+        failures.append("a module group is empty (see MODULES in dev/ci/spark-sql-modules.py)")
+    if sorted(core + hive) != sorted(everything):
+        failures.append(
+            f"core {core} + hive {hive} does not partition all {everything} "
+            f"(see MODULES in dev/ci/spark-sql-modules.py)"
+        )
+    if len(set(everything)) != len(everything):
+        failures.append(f"duplicate module names in {everything}")
+    for failure in failures:
+        print(f"spark sql modules: {failure}")
+    return not failures
 
 
 def check_change_filters():
@@ -563,6 +609,7 @@ def check_required_checks():
 if __name__ == "__main__":
     ok = check_change_filters()
     ok = check_event_policy() and ok
+    ok = check_spark_sql_modules() and ok
     ok = check_artifact_names() and ok
     ok = check_local_actions_have_checkout() and ok
     ok = check_required_checks() and ok

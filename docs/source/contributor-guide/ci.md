@@ -35,7 +35,8 @@ Which jobs run also depends on the event:
 | Suite                                             | Pull request | Merge queue |
 | ------------------------------------------------- | ------------ | ----------- |
 | Linux build, lint, and Comet test suites          | yes          | yes         |
-| Spark SQL tests, Spark 4.1                        | yes          | yes         |
+| Spark SQL tests, Spark 4.1, catalyst and sql_core | yes          | yes         |
+| Spark SQL tests, Spark 4.1, sql_hive              | with label   | yes         |
 | Iceberg Spark SQL tests, Iceberg 1.11             | yes          | yes         |
 | macOS build and Comet test suites                 | with label   | yes         |
 | Benchmark compile and lint check                  | with label   | yes         |
@@ -70,14 +71,15 @@ cases that pin both down.
 
 Each suite outside the PR tier has a label that runs it on a pull request:
 
-| Label                 | Runs                                                 |
-| --------------------- | ---------------------------------------------------- |
-| `run-macos-tests`     | macOS build and Comet test suites                    |
-| `run-benchmark-check` | Benchmark compile and lint check                     |
-| `run-spark-3.4-tests` | Spark SQL tests against Spark 3.4                    |
-| `run-spark-3.5-tests` | Spark SQL tests against Spark 3.5                    |
-| `run-spark-4.0-tests` | Spark SQL tests against Spark 4.0                    |
-| `run-iceberg-tests`   | Iceberg Spark SQL tests against Iceberg 1.8/1.9/1.10 |
+| Label                      | Runs                                                 |
+| -------------------------- | ---------------------------------------------------- |
+| `run-macos-tests`          | macOS build and Comet test suites                    |
+| `run-benchmark-check`      | Benchmark compile and lint check                     |
+| `run-spark-4.1-hive-tests` | Spark SQL hive tests against Spark 4.1               |
+| `run-spark-3.4-tests`      | Spark SQL tests against Spark 3.4                    |
+| `run-spark-3.5-tests`      | Spark SQL tests against Spark 3.5                    |
+| `run-spark-4.0-tests`      | Spark SQL tests against Spark 4.0                    |
+| `run-iceberg-tests`        | Iceberg Spark SQL tests against Iceberg 1.8/1.9/1.10 |
 
 For every suite except Spark 3.4 the label only brings the run forward; the queue would have run
 it anyway before the change landed. For Spark 3.4 the label is the only way the suite runs on a
@@ -104,6 +106,8 @@ does not cover. Some examples:
 - code under `spark/src/main/spark-3.4/`, `spark-3.5/`, `spark-4.0/` or the shared `spark-3.x/`
   directory, or any change to `CometExprShim` and friends
 - a change to a Spark SQL diff under `dev/diffs/` for a version other than 4.1
+- anything that touches Hive table support, `InsertIntoHiveTable`, or the `sql/hive` parts of
+  the 4.1 diff
 - anything touching Iceberg reflection or the Iceberg diffs
 - native code with platform-specific behavior, or a dependency bump that changes what is
   compiled on macOS
