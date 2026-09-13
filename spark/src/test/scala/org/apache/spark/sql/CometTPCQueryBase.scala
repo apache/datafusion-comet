@@ -99,7 +99,7 @@ trait CometTPCQueryBase extends Logging {
         // Recover partitions but don't fail if a table is not partitioned.
         Try {
           cometSpark.sql(s"ALTER TABLE $tableName RECOVER PARTITIONS")
-        }.getOrElse {
+        }.failed.foreach { _ =>
           logInfo(s"Recovering partitions of table $tableName failed")
         }
       }

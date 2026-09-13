@@ -110,7 +110,9 @@ object CometShuffleBenchmark extends CometBenchmarkBase {
 
   def shuffleArrayBenchmark(values: Int, dataType: DataType, partitionNum: Int): Unit = {
     val benchmark =
-      microBenchmark(s"SQL ${dataType.sql} shuffle on array ($partitionNum Partition)", values)
+      microBenchmark(
+        s"SQL ${dataType.sql} shuffle on array ($partitionNum Partition)",
+        values.toLong)
 
     withTempPath { dir =>
       withTempTable("parquetV1Table") {
@@ -158,7 +160,9 @@ object CometShuffleBenchmark extends CometBenchmarkBase {
 
   def shuffleStructBenchmark(values: Int, dataType: DataType, partitionNum: Int): Unit = {
     val benchmark =
-      microBenchmark(s"SQL ${dataType.sql} shuffle on struct ($partitionNum Partition)", values)
+      microBenchmark(
+        s"SQL ${dataType.sql} shuffle on struct ($partitionNum Partition)",
+        values.toLong)
 
     withTempPath { dir =>
       withTempTable("parquetV1Table") {
@@ -213,7 +217,9 @@ object CometShuffleBenchmark extends CometBenchmarkBase {
 
   def shuffleDictionaryBenchmark(values: Int, dataType: DataType, partitionNum: Int): Unit = {
     val benchmark =
-      microBenchmark(s"SQL ${dataType.sql} Dictionary Shuffle($partitionNum Partition)", values)
+      microBenchmark(
+        s"SQL ${dataType.sql} Dictionary Shuffle($partitionNum Partition)",
+        values.toLong)
 
     withTempPath { dir =>
       withTempTable("parquetV1Table") {
@@ -298,7 +304,7 @@ object CometShuffleBenchmark extends CometBenchmarkBase {
     val benchmark =
       microBenchmark(
         s"SQL Wide ($width cols) ${dataType.sql} Shuffle($partitionNum Partition)",
-        values)
+        values.toLong)
 
     val projection = (1 to width)
       .map(i => s"CAST(CAST(RAND(1) * 100 AS INTEGER) AS ${dataType.sql}) AS c$i")
@@ -367,7 +373,7 @@ object CometShuffleBenchmark extends CometBenchmarkBase {
     val benchmark =
       microBenchmark(
         s"SQL Wide ($width cols) ${dataType.sql} Range Partition Shuffle($partitionNum Partition)",
-        values)
+        values.toLong)
 
     val projection = (1 to width)
       .map(i => s"CAST(CAST(RAND(1) * 100 AS INTEGER) AS ${dataType.sql}) AS c$i")
@@ -434,7 +440,7 @@ object CometShuffleBenchmark extends CometBenchmarkBase {
       numRows: Int,
       partitionNum: Int): Unit = {
     val benchmark =
-      microBenchmark(s"Shuffle with nested schema ($name)", numRows)
+      microBenchmark(s"Shuffle with nested schema ($name)", numRows.toLong)
     val df = spark.read.parquet(filename)
     withTempTable("deeplyNestedTable") {
       df.createOrReplaceTempView("deeplyNestedTable")
@@ -496,7 +502,7 @@ object CometShuffleBenchmark extends CometBenchmarkBase {
       values: Int,
       partitionNum: Int): Unit = {
     val benchmark =
-      microBenchmark(s"Nested hash key: $name ($partitionNum Partition)", values)
+      microBenchmark(s"Nested hash key: $name ($partitionNum Partition)", values.toLong)
 
     withTempPath { dir =>
       withTempTable("parquetV1Table") {

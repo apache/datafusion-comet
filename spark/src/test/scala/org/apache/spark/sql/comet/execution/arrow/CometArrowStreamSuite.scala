@@ -122,7 +122,7 @@ class CometArrowStreamSuite extends AnyFunSuite with Matchers {
         }
         requiredInput.putInt(i, -i)
         booleanInput.putBoolean(i, (i & 1) == 0)
-        val decimal = Decimal(i % 10000, decimalType.precision, decimalType.scale)
+        val decimal = Decimal((i % 10000).toLong, decimalType.precision, decimalType.scale)
         decimalInput.putDecimal(i, decimal, decimalType.precision)
         i += 1
       }
@@ -147,7 +147,7 @@ class CometArrowStreamSuite extends AnyFunSuite with Matchers {
         requiredArrow.get(i) shouldBe -i
         booleanArrow.get(i) shouldBe (if ((i & 1) == 0) 1 else 0)
         decimalArrow.getObject(i) shouldBe
-          Decimal(i % 10000, decimalType.precision, decimalType.scale).toJavaBigDecimal
+          Decimal((i % 10000).toLong, decimalType.precision, decimalType.scale).toJavaBigDecimal
         i += 1
       }
       // A realloc frees the old buffers, so cumulative allocations would exceed live memory.

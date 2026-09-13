@@ -181,7 +181,7 @@ object CometScalaUDF extends CometExpressionSerde[ScalaUDF] {
     target.foreach {
       case _: AttributeReference | _: Literal =>
       case node if !(node eq target) =>
-        withCodegenDispatchExpr(expr, CometExplainInfo.exprDisplayName(node))
+        val _ = withCodegenDispatchExpr(expr, CometExplainInfo.exprDisplayName(node))
       case _ =>
     }
     Some(

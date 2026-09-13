@@ -63,7 +63,7 @@ object CometCsvExpressionBenchmark extends CometBenchmarkBase {
           CometConf.getExprAllowIncompatConfigKey(
             classOf[CsvToStructs]) -> "true") ++ config.extraCometConfigs
 
-        runExpressionBenchmark(config.name, values, config.query, extraConfigs)
+        runExpressionBenchmark(config.name, values.toLong, config.query, extraConfigs)
       }
     }
   }

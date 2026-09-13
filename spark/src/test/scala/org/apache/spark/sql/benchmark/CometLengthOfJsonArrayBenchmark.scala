@@ -41,7 +41,7 @@ object CometLengthOfJsonArrayBenchmark extends CometBenchmarkBase {
           prepareTable(
             dir,
             spark
-              .range(numRows)
+              .range(numRows.toLong)
               .map { i =>
                 val arrayLength = (i % 100).toInt
                 (0 until arrayLength)
@@ -61,7 +61,11 @@ object CometLengthOfJsonArrayBenchmark extends CometBenchmarkBase {
 
           benchmarks.foreach { config =>
             runBenchmark(config.name) {
-              runExpressionBenchmark(config.name, v, config.query, config.extraCometConfigs)
+              runExpressionBenchmark(
+                config.name,
+                v.toLong,
+                config.query,
+                config.extraCometConfigs)
             }
           }
         }

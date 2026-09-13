@@ -88,7 +88,7 @@ object CometUnBase64Benchmark extends CometBenchmarkBase {
           shapes.foreach { s =>
             val query = s"select unbase64(${s.column}) from parquetV1Table"
             runBenchmark(s.name) {
-              runUnBase64Modes(s.name, v, query)
+              runUnBase64Modes(s.name, v.toLong, query)
             }
           }
         }

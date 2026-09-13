@@ -166,6 +166,39 @@ jobs:
         run: |
           ./dev/ci/check-working-tree-clean.sh
 
+  # Compiles main and test sources with -Pstrict-warnings, which promotes scalac warnings to
+  # errors, so a change that reintroduces a cleared warning (an Int widened into a Long metric,
+  # a discarded builder result) fails here rather than accumulating. Spark 3.5 only: the profile
+  # passes on the Scala 2.12 profiles, and the Scala 2.13 remainder is tracked separately (see
+  # the strict-warnings profile in pom.xml).
+  strict-scala-warnings:
+    needs: lint
+    name: Strict Scala warnings (Spark 3.5, JDK 17)
+    runs-on: ubuntu-24.04
+    container:
+      image: amd64/rust
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup Rust & Java toolchain
+        uses: ./.github/actions/setup-builder
+        with:
+          rust-version: ${{ env.RUST_VERSION }}
+          jdk-version: 17
+
+      - name: Cache Maven dependencies
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.m2/repository
+            /root/.m2/repository
+          key: ${{ runner.os }}-java-maven-${{ hashFiles('**/pom.xml') }}-strict-warnings
+          restore-keys: |
+            ${{ runner.os }}-java-maven-
+
+      - name: Compile with strict warnings
+        run: ./mvnw -B test-compile -Pspark-3.5 -Pstrict-warnings -DskipTests
+
   # Compile-only verification for Spark 4.1. Tests are intentionally skipped: the spark-4.1
   # profile is currently a build target only, and several runtime/test failures are tracked
   # in follow-up PRs. Excluded from lint-java because semanticdb-scalac_2.13.17 is not yet

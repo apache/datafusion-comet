@@ -3385,19 +3385,11 @@ class CometExecSuite extends CometTestBase {
     val df2 =
       (0 until 50).map(i => (i % 7, i % 11, i.toString)).toDF("i", "j", "k").as("df2")
 
-    val BucketedTableTestSpec(
-      bucketSpecLeft,
-      numPartitionsLeft,
-      shuffleLeft,
-      sortLeft,
-      numOutputPartitionsLeft) = bucketedTableTestSpecLeft
+    val BucketedTableTestSpec(bucketSpecLeft, numPartitionsLeft, _, _, _) =
+      bucketedTableTestSpecLeft
 
-    val BucketedTableTestSpec(
-      bucketSpecRight,
-      numPartitionsRight,
-      shuffleRight,
-      sortRight,
-      numOutputPartitionsRight) = bucketedTableTestSpecRight
+    val BucketedTableTestSpec(bucketSpecRight, numPartitionsRight, _, _, _) =
+      bucketedTableTestSpecRight
 
     withTable("bucketed_table1", "bucketed_table2") {
       withBucket(df1.repartition(numPartitionsLeft).write.format("parquet"), bucketSpecLeft)
@@ -3585,7 +3577,7 @@ class CometExecSuite extends CometTestBase {
         withTable("t1") {
           val numRows = 10
           spark
-            .range(numRows)
+            .range(numRows.toLong)
             .selectExpr("if (id % 2 = 0, null, id) AS a", s"$numRows - id AS b")
             .repartition(3) // Move data across multiple partitions
             .write
@@ -3622,7 +3614,7 @@ class CometExecSuite extends CometTestBase {
         withTable("t1") {
           val numRows = 10
           spark
-            .range(numRows)
+            .range(numRows.toLong)
             .selectExpr("if (id % 2 = 0, null, id) AS a", s"$numRows - id AS b")
             .repartition(3) // Force repartition to test data will come to single partition
             .write
@@ -3653,7 +3645,7 @@ class CometExecSuite extends CometTestBase {
         withTable("t1") {
           val numRows = 10
           spark
-            .range(numRows)
+            .range(numRows.toLong)
             .selectExpr("if (id % 2 = 0, null, id) AS a", s"$numRows - id AS b")
             .repartition(3) // Force repartition to test data will come to single partition
             .write

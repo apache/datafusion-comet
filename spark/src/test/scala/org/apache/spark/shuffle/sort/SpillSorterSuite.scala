@@ -75,7 +75,8 @@ class SpillSorterSuite extends AnyFunSuite with BeforeAndAfterEach {
       spills: java.util.LinkedList[org.apache.spark.sql.comet.execution.shuffle.SpillInfo] =
         new java.util.LinkedList[org.apache.spark.sql.comet.execution.shuffle.SpillInfo](),
       partitionChecksums: Array[Long] = new Array[Long](10)): SpillSorter = {
-    val allocator = CometShuffleMemoryAllocator.getInstance(conf, taskMemoryManager, PAGE_SIZE)
+    val allocator =
+      CometShuffleMemoryAllocator.getInstance(conf, taskMemoryManager, PAGE_SIZE.toLong)
     val schema = createTestSchema()
     val writeMetrics = new ShuffleWriteMetrics()
     val taskContext = TaskContext.empty()
@@ -115,7 +116,11 @@ class SpillSorterSuite extends AnyFunSuite with BeforeAndAfterEach {
       val partitionId = 0
 
       sorter.initialCurrentPage(recordData.length + UAO_SIZE)
-      sorter.insertRecord(recordData, Platform.BYTE_ARRAY_OFFSET, recordData.length, partitionId)
+      sorter.insertRecord(
+        recordData,
+        Platform.BYTE_ARRAY_OFFSET.toLong,
+        recordData.length,
+        partitionId)
 
       assert(sorter.numRecords() === 1)
     } finally {
@@ -136,7 +141,7 @@ class SpillSorterSuite extends AnyFunSuite with BeforeAndAfterEach {
         val partitionId = i % 10
         sorter.insertRecord(
           recordData,
-          Platform.BYTE_ARRAY_OFFSET,
+          Platform.BYTE_ARRAY_OFFSET.toLong,
           recordData.length,
           partitionId)
       }
@@ -153,7 +158,7 @@ class SpillSorterSuite extends AnyFunSuite with BeforeAndAfterEach {
     try {
       val recordData = Array[Byte](1, 2, 3, 4)
       sorter.initialCurrentPage(recordData.length + UAO_SIZE)
-      sorter.insertRecord(recordData, Platform.BYTE_ARRAY_OFFSET, recordData.length, 0)
+      sorter.insertRecord(recordData, Platform.BYTE_ARRAY_OFFSET.toLong, recordData.length, 0)
 
       assert(sorter.numRecords() === 1)
 
@@ -190,7 +195,7 @@ class SpillSorterSuite extends AnyFunSuite with BeforeAndAfterEach {
     try {
       sorter.initialCurrentPage(1024)
       val recordData = Array[Byte](1, 2, 3, 4)
-      sorter.insertRecord(recordData, Platform.BYTE_ARRAY_OFFSET, recordData.length, 0)
+      sorter.insertRecord(recordData, Platform.BYTE_ARRAY_OFFSET.toLong, recordData.length, 0)
 
       assert(spillCount.get() === 0, "Spill callback should not be triggered during normal ops")
     } finally {
@@ -225,8 +230,9 @@ class SpillSorterSuite extends AnyFunSuite with BeforeAndAfterEach {
     val sorter = createSpillSorter()
     try {
       val initialMemory = sorter.getMemoryUsage()
-      val allocator = CometShuffleMemoryAllocator.getInstance(conf, taskMemoryManager, PAGE_SIZE)
-      val newArray = allocator.allocateArray(INITIAL_SIZE * 2)
+      val allocator =
+        CometShuffleMemoryAllocator.getInstance(conf, taskMemoryManager, PAGE_SIZE.toLong)
+      val newArray = allocator.allocateArray((INITIAL_SIZE * 2).toLong)
       sorter.expandPointerArray(newArray)
 
       assert(sorter.getMemoryUsage() >= initialMemory)
@@ -248,7 +254,7 @@ class SpillSorterSuite extends AnyFunSuite with BeforeAndAfterEach {
 
       for (p <- 0 until numPartitions) {
         for (_ <- 0 until recordsPerPartition) {
-          sorter.insertRecord(recordData, Platform.BYTE_ARRAY_OFFSET, recordData.length, p)
+          sorter.insertRecord(recordData, Platform.BYTE_ARRAY_OFFSET.toLong, recordData.length, p)
         }
       }
 

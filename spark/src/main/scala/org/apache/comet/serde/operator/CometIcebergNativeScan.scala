@@ -353,7 +353,7 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
           val equalityIds = equalityIdsMethod
             .invoke(deleteFile)
             .asInstanceOf[java.util.List[Integer]]
-          equalityIds.forEach(id => deleteBuilder.addEqualityIds(id))
+          deleteBuilder.addAllEqualityIds(equalityIds)
         } catch {
           case _: Exception =>
         }
@@ -515,7 +515,7 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
                 commonBuilder.addPartitionTypePool(partitionTypeJson)
                 idx
               })
-            taskBuilder.setPartitionSpecIdx(specIdx)
+            val _ = taskBuilder.setPartitionSpecIdx(specIdx)
           } catch {
             case e: Exception =>
               logWarning(s"Failed to serialize partition spec to JSON: ${e.getMessage}")
@@ -575,7 +575,7 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
               commonBuilder.addPartitionDataPool(partitionDataProto)
               idx
             })
-          taskBuilder.setPartitionDataIdx(partitionDataIdx)
+          val _ = taskBuilder.setPartitionDataIdx(partitionDataIdx)
         } else {
           // Defensive: ContentScanTask.partition() returns an empty struct (never null) for
           // unpartitioned tables in practice. If it is ever null we cannot compute values, so

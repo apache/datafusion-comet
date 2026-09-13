@@ -315,7 +315,9 @@ private[shuffle] class ConcurrentRemoteMapStarts {
   }
 }
 
-class CometCelebornConcurrentMaterializationTestManager(conf: SparkConf, isDriver: Boolean)
+private[shuffle] class CometCelebornConcurrentMaterializationTestManager(
+    conf: SparkConf,
+    isDriver: Boolean)
     extends CometCelebornFallbackTestShuffleManager(conf, isDriver) {
 
   @volatile private[shuffle] var remoteMapStarts: Option[ConcurrentRemoteMapStarts] = None
