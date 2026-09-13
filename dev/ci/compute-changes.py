@@ -17,10 +17,23 @@
 
 # Replacement for dorny/paths-filter, which is not on the apache org allow
 # list. Reads a list of changed files (one per line) and emits per-job
-# "<name>=true|false" lines suitable for $GITHUB_OUTPUT. Pattern semantics
-# match dorny/picomatch: "**" spans path segments, "*" stays within a
-# segment, and a leading "!" marks an exclude pattern.
+# "<name>=true|false" lines suitable for $GITHUB_OUTPUT.
+#
+# Each output folds together two independent questions:
+#
+#   1. Did the change touch files this job covers?  FILTERS, below. Pattern
+#      semantics match dorny/picomatch: "**" spans path segments, "*" stays
+#      within a segment, and a leading "!" marks an exclude pattern.
+#   2. Does this event permit the job to run at all?  POLICY, below.
+#
+# Question 2 used to live in ci.yml as a four-line `${{ }}` expression
+# repeated on every heavy job. Keeping it here instead means the whole
+# routing policy is in one place, is readable without evaluating GitHub
+# expression syntax in your head, and is covered by the cases in
+# dev/ci/check-ci-config.py, which YAML expressions never could be.
 
+import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -42,7 +55,10 @@ FILTERS = {
         ".github/workflows/pr_build_linux.yml",
         ".github/actions/setup-builder/**",
         ".github/actions/java-test/**",
+        ".github/actions/maven-bootstrap/**",
         ".github/actions/rust-test/**",
+        ".github/actions/upload-artifact-retry/**",
+        ".github/actions/download-artifact-retry/**",
         "!**.md",
         "!native/core/benches/**",
         "!native/spark-expr/benches/**",
@@ -65,6 +81,8 @@ FILTERS = {
         ".github/workflows/pr_build_macos.yml",
         ".github/actions/setup-macos-builder/**",
         ".github/actions/java-test/**",
+        ".github/actions/upload-artifact-retry/**",
+        ".github/actions/download-artifact-retry/**",
         "!**.md",
         "!native/core/benches/**",
         "!native/spark-expr/benches/**",
@@ -108,8 +126,13 @@ FILTERS = {
         "rust-toolchain.toml",
         ".github/workflows/ci.yml",
         ".github/workflows/spark_sql_test_reusable.yml",
+        "dev/ci/spark-sql-modules.py",
         ".github/actions/setup-builder/**",
         ".github/actions/setup-spark-builder/**",
+        ".github/actions/upload-artifact-retry/**",
+        ".github/actions/download-artifact-retry/**",
+        ".mvn/**",
+        "mvnw",
     ],
     "spark_3_5": [
         "native/**/src/**",
@@ -130,8 +153,13 @@ FILTERS = {
         "rust-toolchain.toml",
         ".github/workflows/ci.yml",
         ".github/workflows/spark_sql_test_reusable.yml",
+        "dev/ci/spark-sql-modules.py",
         ".github/actions/setup-builder/**",
         ".github/actions/setup-spark-builder/**",
+        ".github/actions/upload-artifact-retry/**",
+        ".github/actions/download-artifact-retry/**",
+        ".mvn/**",
+        "mvnw",
     ],
     "spark_4_0": [
         "native/**/src/**",
@@ -152,8 +180,13 @@ FILTERS = {
         "rust-toolchain.toml",
         ".github/workflows/ci.yml",
         ".github/workflows/spark_sql_test_reusable.yml",
+        "dev/ci/spark-sql-modules.py",
         ".github/actions/setup-builder/**",
         ".github/actions/setup-spark-builder/**",
+        ".github/actions/upload-artifact-retry/**",
+        ".github/actions/download-artifact-retry/**",
+        ".mvn/**",
+        "mvnw",
     ],
     "spark_4_1": [
         "native/**/src/**",
@@ -174,9 +207,19 @@ FILTERS = {
         "rust-toolchain.toml",
         ".github/workflows/ci.yml",
         ".github/workflows/spark_sql_test_reusable.yml",
+        "dev/ci/spark-sql-modules.py",
         ".github/actions/setup-builder/**",
         ".github/actions/setup-spark-builder/**",
+        ".github/actions/upload-artifact-retry/**",
+        ".github/actions/download-artifact-retry/**",
+        ".mvn/**",
+        "mvnw",
     ],
+    # Same inputs as spark_4_1: this is not a separate job but a second
+    # POLICY decision for the same call, selecting the sql_hive matrix rows.
+    # ci.yml folds the two outputs into the reusable workflow's `modules`
+    # input. Populated below, after the dict, so the two lists cannot drift.
+    "spark_4_1_hive": [],
     "iceberg_1_8": [
         "native/**/src/**",
         "native/**/Cargo.toml",
@@ -193,6 +236,13 @@ FILTERS = {
         ".github/workflows/iceberg_spark_test_reusable.yml",
         ".github/actions/setup-builder/**",
         ".github/actions/setup-iceberg-builder/**",
+        "dev/ci/iceberg-test-shards.gradle",
+        "dev/ci/check-iceberg-shards.py",
+        "dev/ci/test-iceberg-shards.py",
+        ".github/actions/upload-artifact-retry/**",
+        ".github/actions/download-artifact-retry/**",
+        ".mvn/**",
+        "mvnw",
     ],
     "iceberg_1_9": [
         "native/**/src/**",
@@ -210,6 +260,13 @@ FILTERS = {
         ".github/workflows/iceberg_spark_test_reusable.yml",
         ".github/actions/setup-builder/**",
         ".github/actions/setup-iceberg-builder/**",
+        "dev/ci/iceberg-test-shards.gradle",
+        "dev/ci/check-iceberg-shards.py",
+        "dev/ci/test-iceberg-shards.py",
+        ".github/actions/upload-artifact-retry/**",
+        ".github/actions/download-artifact-retry/**",
+        ".mvn/**",
+        "mvnw",
     ],
     "iceberg_1_10": [
         "native/**/src/**",
@@ -227,6 +284,13 @@ FILTERS = {
         ".github/workflows/iceberg_spark_test_reusable.yml",
         ".github/actions/setup-builder/**",
         ".github/actions/setup-iceberg-builder/**",
+        "dev/ci/iceberg-test-shards.gradle",
+        "dev/ci/check-iceberg-shards.py",
+        "dev/ci/test-iceberg-shards.py",
+        ".github/actions/upload-artifact-retry/**",
+        ".github/actions/download-artifact-retry/**",
+        ".mvn/**",
+        "mvnw",
     ],
     "iceberg_1_11": [
         "native/**/src/**",
@@ -244,8 +308,129 @@ FILTERS = {
         ".github/workflows/iceberg_spark_test_reusable.yml",
         ".github/actions/setup-builder/**",
         ".github/actions/setup-iceberg-builder/**",
+        "dev/ci/iceberg-test-shards.gradle",
+        "dev/ci/check-iceberg-shards.py",
+        "dev/ci/test-iceberg-shards.py",
+        ".github/actions/upload-artifact-retry/**",
+        ".github/actions/download-artifact-retry/**",
+        ".mvn/**",
+        "mvnw",
     ],
 }
+FILTERS["spark_4_1_hive"] = FILTERS["spark_4_1"]
+
+# Which events may run each job, independent of the path filters above.
+#
+#   "pr"              every pull request
+#   "queue"           the merge queue, i.e. a merge_group event
+#   "push"            push to main
+#   "label:<name>"    a pull request carrying that label
+#
+# workflow_dispatch always runs everything, so it is not listed. "pr" and
+# "label:" are mutually exclusive -- a job is either unconditional on pull
+# requests or opt-in, never both -- and check-ci-config.py rejects a job that
+# lists both rather than letting the label quietly win.
+#
+# Almost everything is "queue": the merge queue is the authoritative gate, and
+# it tests the merge result rather than the PR head. "push" is reserved for
+# work that can only happen once a commit is on main. Adding "push" back to a
+# test job would make every merge run it twice, once in the queue and once
+# after, which is the thing the queue was adopted to avoid.
+POLICY = {
+    # The one test job that also runs on push to main, and only because of
+    # actions/cache scoping: a pull request can restore caches saved on its
+    # own branch or on main, and nowhere else. The queue runs on a throwaway
+    # gh-readonly-queue/* branch, so whatever it saves is deleted with that
+    # branch. Without a push run, a Cargo.lock or pom.xml change would leave
+    # main's cargo-registry, Maven and TPC-H/TPC-DS caches stale forever, and
+    # every later pull request would pay the delta on top of the restore-keys
+    # prefix match.
+    "build_linux": ["pr", "queue", "push"],
+    # macOS runners are the scarcest capacity we have, and the Linux build
+    # already covers rustfmt and the Rust/JVM compile on every PR. The label
+    # is for a change that touches platform-specific code.
+    "build_macos": ["queue", "label:run-macos-tests"],
+    # Benchmark sources are compiled and linted, never run, so a break there
+    # cannot affect a PR's correctness verdict; the queue catches it.
+    "benchmark": ["queue", "label:run-benchmark-check"],
+    # docs deploys to asf-site, so it must not run from a pull request or from
+    # the queue's throwaway branch.
+    "docs": ["push"],
+    "spark_3_4": ["queue", "label:run-spark-3.4-tests"],
+    "spark_3_5": ["queue", "label:run-spark-3.5-tests"],
+    "spark_4_0": ["queue", "label:run-spark-4.0-tests"],
+    # Spark 4.1 is the default build profile, so it is the cheapest early
+    # warning that a change is wrong and stays in the PR tier. Only the
+    # catalyst and sql_core shards, though: over Aug 12 to Sep 11 2026 the
+    # three sql_hive shards cost about 65 runner-hours a day on pull requests
+    # and were the only failing job on 7 PR runs, against 33 for sql_core, and
+    # their 67-minute shard set the PR tier's wall clock. See issue #5870.
+    "spark_4_1": ["pr", "queue"],
+    "spark_4_1_hive": ["queue", "label:run-spark-4.1-hive-tests"],
+    "iceberg_1_8": ["queue", "label:run-iceberg-tests"],
+    "iceberg_1_9": ["queue", "label:run-iceberg-tests"],
+    "iceberg_1_10": ["queue", "label:run-iceberg-tests"],
+    # Iceberg 1.11 is our only Spark 4.1 Iceberg coverage, so it is not opt-in.
+    "iceberg_1_11": ["pr", "queue"],
+}
+
+
+def gating_labels(job):
+    return [t[len("label:"):] for t in POLICY[job] if t.startswith("label:")]
+
+
+def event_allows(job, event):
+    """Does `event` permit `job` to run, ignoring which files changed?
+
+    `event` is {"name", "action", "label", "labels"}: the workflow event name,
+    the pull_request action, the label just added on a `labeled` event, and the
+    labels currently on the pull request.
+    """
+    tiers = POLICY[job]
+    name = event.get("name")
+
+    if name == "workflow_dispatch":
+        return True
+    if name == "push":
+        return "push" in tiers
+    if name == "merge_group":
+        return "queue" in tiers
+    if name != "pull_request":
+        return False
+
+    gates = gating_labels(job)
+    if gates:
+        if not any(label in event.get("labels", []) for label in gates):
+            return False
+    elif "pr" not in tiers:
+        return False
+
+    # A `labeled` event fires at the same commit as the opened/synchronize run
+    # that already tested it, and GitHub cannot filter a pull_request trigger
+    # by label name. So on `labeled`, run only the job the new label gates;
+    # everything else would be duplicating a pipeline. See issue #5007 for what
+    # happens when this is expressed as a job-level `if:` instead.
+    if event.get("action") == "labeled":
+        return event.get("label") in gates
+    return True
+
+
+def compute(files, event):
+    """Return {job: bool}, folding the path filter and the event policy."""
+    return {
+        name: event_allows(name, event) and matches(patterns, files)
+        for name, patterns in FILTERS.items()
+    }
+
+
+def event_from_env():
+    labels = os.environ.get("PR_LABELS", "")
+    return {
+        "name": os.environ.get("EVENT_NAME", ""),
+        "action": os.environ.get("EVENT_ACTION", ""),
+        "label": os.environ.get("LABEL_NAME", ""),
+        "labels": json.loads(labels) if labels.strip() else [],
+    }
 
 
 def glob_to_regex(pat):
@@ -288,8 +473,14 @@ def matches(patterns, files):
 
 
 if __name__ == "__main__":
+    event = event_from_env()
+    # workflow_dispatch has no meaningful base to diff against, so the caller
+    # passes an empty list and every path filter is treated as matched.
+    if event["name"] == "workflow_dispatch":
+        for name in FILTERS:
+            print(f"{name}=true")
+        sys.exit(0)
     files_path = Path(sys.argv[1])
     files = [line.strip() for line in files_path.read_text().splitlines() if line.strip()]
-    for name, patterns in FILTERS.items():
-        flag = "true" if matches(patterns, files) else "false"
-        print(f"{name}={flag}")
+    for name, flag in compute(files, event).items():
+        print(f"{name}={'true' if flag else 'false'}")

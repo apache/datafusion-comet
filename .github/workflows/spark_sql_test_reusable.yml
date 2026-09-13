@@ -41,6 +41,17 @@ on:
         required: false
         default: false
         type: boolean
+      modules:
+        # Which matrix rows to run. `core` is catalyst plus the three sql_core
+        # shards, `hive` is the three sql_hive shards, `all` is both. The
+        # umbrella uses this to keep the Spark 4.1 hive shards out of the PR
+        # tier without a second call (and a second 40-minute build) for the
+        # queue: one call, and the rows the tier does not want are left out
+        # of the matrix by dev/ci/spark-sql-modules.py.
+        description: 'Which test modules to run: all, core (catalyst + sql_core) or hive (sql_hive)'
+        required: false
+        default: 'all'
+        type: string
 
 env:
   RUST_VERSION: stable
@@ -54,20 +65,31 @@ jobs:
 
   # Build the native library AND pre-compile Spark sources + Test classes in a
   # single runner, then publish two artifacts the matrix consumes:
-  #   - native-lib-linux:                    libcomet.so (~50 MB)
+  #   - native-lib-spark-<full>-jdk<N>:      libcomet.so (~50 MB)
   #   - jvm-compiled-spark-<full>-jdk<N>:    apache-spark.tar.gz (sources +
   #                                          target/ + Zinc state, ~500 MB-1 GB)
   # Combining them avoids a second runner cold-start and an extra inter-job
   # artifact round-trip for the native lib, since the JVM build already
   # depends on it (the Comet Maven install bundles libcomet.so into the
   # Comet JAR before SBT resolves Spark's classpath).
+  #
+  # Both names carry the Spark/JDK version because ci.yml calls this workflow
+  # once per Spark version inside a single run, and artifact names are scoped
+  # to the run, not to the calling workflow. See "Artifact names must be unique
+  # per producer" in .github/workflows/README.md.
   build:
     name: Build Native + JVM Test Classes
     runs-on: ubuntu-24.04
     container:
       image: amd64/rust
+    outputs:
+      module-matrix: ${{ steps.modules.outputs.matrix }}
     steps:
       - uses: actions/checkout@v7
+
+      - name: Select test modules
+        id: modules
+        run: python3 dev/ci/spark-sql-modules.py --modules "${{ inputs.modules }}" --github-output "$GITHUB_OUTPUT"
 
       - name: Setup Rust & Java toolchain
         uses: ./.github/actions/setup-builder
@@ -104,9 +126,9 @@ jobs:
           key: ${{ runner.os }}-cargo-ci-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}-${{ hashFiles('native/**/*.rs') }}
 
       - name: Upload native library
-        uses: actions/upload-artifact@v7
+        uses: ./.github/actions/upload-artifact-retry
         with:
-          name: native-lib-linux
+          name: native-lib-spark-${{ inputs.spark-full }}-jdk${{ inputs.java }}
           path: native/target/ci/libcomet.so
           retention-days: 1
 
@@ -156,25 +178,23 @@ jobs:
             apache-spark
 
       - name: Upload JVM compile artifact
-        uses: actions/upload-artifact@v7
+        uses: ./.github/actions/upload-artifact-retry
         with:
           name: jvm-compiled-spark-${{ inputs.spark-full }}-jdk${{ inputs.java }}
           path: apache-spark.tar.gz
           retention-days: 1
+          # Already gzipped: re-deflating ~1 GB at level 6 costs minutes for no
+          # size win, and a shorter upload is a smaller window for the flake.
+          compression-level: 0
 
   spark-sql-test:
     needs: build
     strategy:
-      matrix:
-        module:
-          - {name: "catalyst", args1: "catalyst/test", args2: ""}
-          # sql_core-* set HEAP_SIZE / METASPACE_SIZE so SparkBuild.scala caps
-          - {name: "sql_core-1", args1: "", args2: "sql/testOnly * -- -l org.apache.spark.tags.ExtendedSQLTest -l org.apache.spark.tags.SlowSQLTest", heap: "3g", metaspace: "1g"}
-          - {name: "sql_core-2", args1: "", args2: "sql/testOnly * -- -n org.apache.spark.tags.ExtendedSQLTest", heap: "3g", metaspace: "1g"}
-          - {name: "sql_core-3", args1: "", args2: "sql/testOnly * -- -n org.apache.spark.tags.SlowSQLTest", heap: "3g", metaspace: "1g"}
-          - {name: "sql_hive-1", args1: "", args2: "hive/testOnly * -- -l org.apache.spark.tags.ExtendedHiveTest -l org.apache.spark.tags.SlowHiveTest"}
-          - {name: "sql_hive-2", args1: "", args2: "hive/testOnly * -- -n org.apache.spark.tags.ExtendedHiveTest"}
-          - {name: "sql_hive-3", args1: "", args2: "hive/testOnly * -- -n org.apache.spark.tags.SlowHiveTest"}
+      # The rows are defined in dev/ci/spark-sql-modules.py and selected by
+      # the `modules` input; the build job runs the script and publishes the
+      # result. A job-level `if:` cannot read `matrix`, so a row the caller
+      # does not want has to be left out of the matrix rather than skipped.
+      matrix: ${{ fromJSON(needs.build.outputs.module-matrix) }}
       fail-fast: false
     name: spark-sql-${{ matrix.module.name }}/spark-${{ inputs.spark-full }}-jdk${{ inputs.java }}
     runs-on: ubuntu-24.04
@@ -188,12 +208,12 @@ jobs:
           rust-version: ${{env.RUST_VERSION}}
           jdk-version: ${{ inputs.java }}
       - name: Download native library
-        uses: actions/download-artifact@v8
+        uses: ./.github/actions/download-artifact-retry
         with:
-          name: native-lib-linux
+          name: native-lib-spark-${{ inputs.spark-full }}-jdk${{ inputs.java }}
           path: native/target/release/
       - name: Download JVM compile artifact
-        uses: actions/download-artifact@v8
+        uses: ./.github/actions/download-artifact-retry
         with:
           name: jvm-compiled-spark-${{ inputs.spark-full }}-jdk${{ inputs.java }}
       - name: Extract apache-spark/ (sources + compiled output)
@@ -265,7 +285,7 @@ jobs:
           DEDICATED_JVM_SBT_TESTS: ${{ inputs.spark-short == '4.0' && 'org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormatV1Suite,org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormatV2Suite,org.apache.spark.sql.execution.datasources.orc.OrcSourceV1Suite,org.apache.spark.sql.execution.datasources.orc.OrcSourceV2Suite' || '' }}
       - name: Upload fallback log
         if: ${{ inputs.collect-fallback-logs }}
-        uses: actions/upload-artifact@v7
+        uses: ./.github/actions/upload-artifact-retry
         with:
           name: fallback-log-spark-sql-${{ matrix.module.name }}-spark-${{ inputs.spark-full }}-jdk${{ inputs.java }}
           path: "**/fallback.log"
@@ -277,6 +297,8 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - name: Download fallback log artifacts
+        # Not wrapped in download-artifact-retry: that local action needs a
+        # checkout, which this job deliberately skips.
         uses: actions/download-artifact@v8
         with:
           path: fallback-logs/
@@ -284,6 +306,8 @@ jobs:
         run: |
           find ./fallback-logs/ -type f -name "fallback.log" -print0 | xargs -0 cat | sort -u > all_fallback.log
       - name: Upload merged fallback log
+        # Not wrapped in upload-artifact-retry: that local action needs a
+        # checkout, which this job deliberately skips.
         uses: actions/upload-artifact@v7
         with:
           name: all-fallback-log-spark-${{ inputs.spark-full }}-jdk${{ inputs.java }}

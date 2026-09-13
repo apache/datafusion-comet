@@ -16,18 +16,24 @@
 // under the License.
 
 mod base64;
+mod concat_ws;
 mod contains;
 mod get_json_object;
 mod levenshtein;
+mod pattern_cache;
 mod regexp_extract;
 mod regexp_extract_all;
 mod regexp_extract_common;
 mod split;
+mod unbase64;
 
 pub use base64::spark_base64;
+pub use concat_ws::CometConcatWs;
 pub use contains::SparkContains;
 pub use get_json_object::spark_get_json_object;
 pub use levenshtein::spark_levenshtein;
+pub use pattern_cache::PatternCache;
 pub use regexp_extract::spark_regexp_extract;
 pub use regexp_extract_all::spark_regexp_extract_all;
 pub use split::{spark_split, spark_split_sql};
+pub use unbase64::spark_unbase64;
