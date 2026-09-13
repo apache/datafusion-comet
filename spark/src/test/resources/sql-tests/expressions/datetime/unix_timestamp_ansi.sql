@@ -35,8 +35,8 @@ query expect_error(could not be parsed)
 SELECT unix_timestamp('2024-13-99', 'yyyy-MM-dd')
 
 -- Valid queries require Comet execution, so fallback cannot hide an error-path regression.
-query
+query expect_dispatch(unix_timestamp)
 SELECT unix_timestamp('2024-06-15', 'yyyy-MM-dd'), unix_timestamp(CAST(NULL AS STRING))
 
-query
+query expect_dispatch(unix_timestamp)
 SELECT unix_timestamp('2024-06-15', fmt) FROM test_unix_ts_ansi

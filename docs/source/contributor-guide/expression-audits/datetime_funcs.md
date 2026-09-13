@@ -97,10 +97,11 @@
 
 ## unix_timestamp
 
-- Spark 3.4.3 (audited 2026-09-09): string input uses Spark's generated parser through codegen dispatch. Literal and column formats preserve null handling, ANSI errors, parser policy, and session time zone.
-- Spark 3.5.8 (audited 2026-09-09): same dispatch path, with Spark's structured timestamp parsing errors.
-- Spark 4.0.1 (audited 2026-09-09): collated string inputs and formats also use dispatch, including when native incompatibilities are allowed.
-- Spark 4.1.1 (audited 2026-09-09): same input types and parsing behavior as Spark 4.0.1.
-- Date, timestamp, and timestamp without time zone inputs retain native execution. String input stays unsupported by the native serializer so `allowIncompatible=true` cannot send it to the native kernel.
+- Spark 3.4.3 (audited 2026-09-13): baseline. String inputs accept literal or column formats. Date, timestamp, and timestamp without time zone inputs ignore the format argument.
+- Spark 3.5.8 (audited 2026-09-13): parsing failures use structured timestamp parsing errors.
+- Spark 4.0.1 (audited 2026-09-13): `inputTypes` widened to `StringTypeWithCollation` for the input and format arguments.
+- Spark 4.1.1 (audited 2026-09-13): same input types and parsing behavior as Spark 4.0.1.
+- String inputs use Spark's generated parser through codegen dispatch, including collated strings and formats. Literal and column formats preserve null handling, ANSI errors, parser policy, and session time zone.
+- Date, timestamp, and timestamp without time zone inputs retain native execution and ignore the format, including its collation. String input stays unsupported by the native serializer so `allowIncompatible=true` cannot send it to the native kernel.
 
 [Spark Expression Support]: ../../user-guide/latest/expressions.md

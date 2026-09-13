@@ -52,6 +52,15 @@ object CometUnixTimestampBenchmark extends CometBenchmarkBase {
               s"SELECT unix_timestamp($arguments) FROM parquetV1Table")
           }
         }
+        for ((shape, arguments) <- Seq("default format" -> "s", "column format" -> "s, fmt")) {
+          val name = s"unix_timestamp ($shape, grouped aggregation)"
+          runBenchmark(name) {
+            runExpressionBenchmark(
+              name,
+              rows,
+              s"SELECT unix_timestamp($arguments) AS u, count(*) FROM parquetV1Table GROUP BY u")
+          }
+        }
       }
     }
   }

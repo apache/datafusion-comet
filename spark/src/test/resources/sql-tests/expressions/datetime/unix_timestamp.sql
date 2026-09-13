@@ -15,15 +15,37 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
+-- Config: spark.sql.session.timeZone=UTC
+
 statement
 CREATE TABLE test_unix_ts(ts timestamp) USING parquet
 
 statement
 INSERT INTO test_unix_ts VALUES (timestamp('1970-01-01 00:00:00')), (timestamp('2024-06-15 10:30:45')), (NULL)
 
-query
+query expect_native(unix_timestamp)
 SELECT unix_timestamp(ts) FROM test_unix_ts
 
 -- literal arguments
 query ignore(https://github.com/apache/datafusion-comet/issues/3336)
 SELECT unix_timestamp(timestamp('1970-01-01 00:00:00')), unix_timestamp(timestamp('2024-06-15 10:30:45'))
+
+-- Native timestamp conversion truncates fractional seconds toward zero, including before epoch.
+statement
+CREATE TABLE test_unix_ts_fractional(ts timestamp, ntz timestamp_ntz) USING parquet
+
+statement
+INSERT INTO test_unix_ts_fractional VALUES
+  (CAST('1969-12-31 23:59:58.500000' AS TIMESTAMP), CAST('1969-12-31 23:59:58.500000' AS TIMESTAMP_NTZ)),
+  (CAST('1969-12-31 23:59:59.000000' AS TIMESTAMP), CAST('1969-12-31 23:59:59.000000' AS TIMESTAMP_NTZ)),
+  (CAST('1969-12-31 23:59:59.999999' AS TIMESTAMP), CAST('1969-12-31 23:59:59.999999' AS TIMESTAMP_NTZ)),
+  (CAST('1970-01-01 00:00:00.000000' AS TIMESTAMP), CAST('1970-01-01 00:00:00.000000' AS TIMESTAMP_NTZ)),
+  (CAST('1970-01-01 00:00:00.000001' AS TIMESTAMP), CAST('1970-01-01 00:00:00.000001' AS TIMESTAMP_NTZ)),
+  (CAST('1970-01-01 00:00:01.500000' AS TIMESTAMP), CAST('1970-01-01 00:00:01.500000' AS TIMESTAMP_NTZ)),
+  (NULL, NULL)
+
+query expect_native(unix_timestamp)
+SELECT unix_timestamp(ts), unix_timestamp(ntz) FROM test_unix_ts_fractional
+
+query expect_native(unix_timestamp)
+SELECT unix_timestamp(ts), unix_timestamp(ntz) FROM test_unix_ts_fractional WHERE ts IS NOT NULL

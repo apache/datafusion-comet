@@ -44,15 +44,22 @@ INSERT INTO test_unix_ts_strings VALUES
   (NULL, NULL)
 
 -- Exercise both the cached literal formatter and the per-row formatter.
-query
+query expect_dispatch(unix_timestamp)
 SELECT unix_timestamp(s), unix_timestamp(s, 'yyyy-MM-dd HH:mm:ss') FROM test_unix_ts_strings
 
-query
+query expect_dispatch(unix_timestamp)
 SELECT unix_timestamp(s, fmt) FROM test_unix_ts_strings
 
-query
+query expect_dispatch(unix_timestamp)
 SELECT unix_timestamp('2024-06-15', fmt) FROM test_unix_ts_strings
 
 -- Constant folding is disabled by the SQL test harness.
-query
+query expect_dispatch(unix_timestamp)
 SELECT unix_timestamp('2024-06-15', 'yyyy-MM-dd'), unix_timestamp(''), unix_timestamp(CAST(NULL AS STRING)), unix_timestamp('2024-06-15', CAST(NULL AS STRING))
+
+-- Parsing inside grouping must keep both the expression and aggregation in Comet.
+query expect_dispatch(unix_timestamp)
+SELECT unix_timestamp(s) AS u, count(*) FROM test_unix_ts_strings GROUP BY u
+
+query expect_dispatch(unix_timestamp)
+SELECT unix_timestamp(s, fmt) AS u, count(*) FROM test_unix_ts_strings GROUP BY u

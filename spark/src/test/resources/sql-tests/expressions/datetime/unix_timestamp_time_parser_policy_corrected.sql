@@ -32,8 +32,8 @@ INSERT INTO test_unix_ts_strict VALUES
   ('2024-01-01garbage', 'yyyy-MM-dd'),
   ('2024', 'yyyy-MM-dd')
 
-query
+query expect_dispatch(unix_timestamp)
 SELECT s, unix_timestamp(s, 'yyyy-MM-dd') FROM test_unix_ts_strict ORDER BY s
 
-query
+query expect_dispatch(unix_timestamp)
 SELECT s, unix_timestamp(s, fmt) FROM test_unix_ts_strict ORDER BY s

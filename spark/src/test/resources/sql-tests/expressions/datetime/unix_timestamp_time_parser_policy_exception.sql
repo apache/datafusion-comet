@@ -35,8 +35,8 @@ query expect_error(INCONSISTENT_BEHAVIOR_CROSS_VERSION)
 SELECT unix_timestamp(s, fmt) FROM test_unix_ts_exception
 
 -- Require Comet execution under EXCEPTION as well as checking the errors.
-query
+query expect_dispatch(unix_timestamp)
 SELECT unix_timestamp('2024-06-15', 'yyyy-MM-dd')
 
-query
+query expect_dispatch(unix_timestamp)
 SELECT unix_timestamp('2024-06-15', fmt) FROM test_unix_ts_exception

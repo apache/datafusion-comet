@@ -34,12 +34,8 @@ import org.apache.spark.sql.types.{DataTypes, StructField, StructType}
 import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
 import org.apache.comet.serde.{CometDateFormat, CometTruncDate, CometTruncTimestamp}
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator}
-import org.apache.comet.udf.codegen.CometScalaUDFCodegen
 
-class CometTemporalExpressionSuite
-    extends CometTestBase
-    with AdaptiveSparkPlanHelper
-    with CometCodegenAssertions {
+class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   /** Timezones used to verify that TimestampNTZ operations are timezone-independent. */
   private val crossTimezones =
@@ -408,9 +404,10 @@ class CometTemporalExpressionSuite
                 "SELECT unix_timestamp(ts_str) FROM string_tbl",
                 "SELECT unix_timestamp(ts_str, 'yyyy-MM-dd HH:mm:ss') FROM string_tbl",
                 "SELECT unix_timestamp('2024-06-15', 'yyyy-MM-dd') FROM string_tbl")) {
-              assertCodegenRan {
-                checkSparkAnswerAndOperator(query)
-              }
+              checkSparkAnswerAndImpl(
+                query,
+                native = Seq.empty,
+                dispatched = Seq("unix_timestamp"))
             }
           }
         }
@@ -427,7 +424,7 @@ class CometTemporalExpressionSuite
         .createDataFrame(spark.sparkContext.parallelize(data), schema)
         .createOrReplaceTempView("string_tbl")
 
-      // Strings have no native path, even when the collation gate is opted out of.
+      // Strings have no native path, even when incompatible expressions are allowed.
       for (allowIncompatible <- Seq("false", "true")) {
         withSQLConf(
           CometConf.getExprAllowIncompatConfigKey("UnixTimestamp") -> allowIncompatible) {
@@ -435,31 +432,37 @@ class CometTemporalExpressionSuite
               "SELECT unix_timestamp(ts_str, 'yyyy-MM-dd HH:mm:ss' COLLATE UTF8_LCASE) " +
                 "FROM string_tbl",
               "SELECT unix_timestamp(ts_str COLLATE UTF8_LCASE) FROM string_tbl")) {
-            assertCodegenRan {
-              checkSparkAnswerAndOperator(query)
-            }
+            checkSparkAnswerAndImpl(query, native = Seq.empty, dispatched = Seq("unix_timestamp"))
           }
         }
       }
     }
   }
 
-  test("unix_timestamp - collated formats dispatch date and timestamp inputs by default") {
+  test("unix_timestamp - date and timestamp inputs ignore collated formats and stay native") {
     assume(isSpark40Plus, "string collation requires Spark 4.0+")
     val data = Seq(
-      (java.sql.Date.valueOf("2024-06-15"), java.sql.Timestamp.valueOf("2024-06-15 10:30:45")))
+      (
+        java.sql.Date.valueOf("2024-06-15"),
+        java.sql.Timestamp.valueOf("2024-06-15 10:30:45"),
+        java.time.LocalDateTime.parse("2024-06-15T10:30:45")),
+      (
+        java.sql.Date.valueOf("1969-12-31"),
+        java.sql.Timestamp.valueOf("1969-12-31 23:59:59.500000"),
+        java.time.LocalDateTime.parse("1969-12-31T23:59:59.500000")),
+      (null, null, null))
     withParquetTable(data, "tbl") {
-      for (column <- Seq("_1", "_2")) {
-        val query = s"SELECT unix_timestamp($column, 'unused' COLLATE UTF8_LCASE) FROM tbl"
-        withSQLConf(CometConf.getExprAllowIncompatConfigKey("UnixTimestamp") -> "false") {
-          assertCodegenRan {
-            checkSparkAnswerAndOperator(query)
-          }
-        }
-        withSQLConf(CometConf.getExprAllowIncompatConfigKey("UnixTimestamp") -> "true") {
-          CometScalaUDFCodegen.resetStats()
-          checkSparkAnswerAndOperator(query)
-          assert(CometScalaUDFCodegen.stats().totalLookups == 0)
+      for {
+        column <- Seq("_1", "_2", "_3")
+        format <- Seq("'unused'", "CAST(NULL AS STRING)")
+        allowIncompatible <- Seq("false", "true")
+      } {
+        withSQLConf(
+          CometConf.getExprAllowIncompatConfigKey("UnixTimestamp") -> allowIncompatible) {
+          checkSparkAnswerAndImpl(
+            s"SELECT unix_timestamp($column, $format COLLATE UTF8_LCASE) FROM tbl",
+            native = Seq("unix_timestamp"),
+            dispatched = Seq.empty)
         }
       }
     }
