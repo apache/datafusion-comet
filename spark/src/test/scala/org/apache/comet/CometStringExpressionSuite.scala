@@ -26,9 +26,11 @@ import org.apache.spark.sql.{CometTestBase, DataFrame}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{DataTypes, StructField, StructType}
 
+import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator}
+import org.apache.comet.udf.codegen.CometScalaUDFCodegen
 
-class CometStringExpressionSuite extends CometTestBase {
+class CometStringExpressionSuite extends CometTestBase with CometCodegenAssertions {
   // scalastyle:off
   private val edgeCases = Seq(
     "é", // unicode 'e\\u{301}'
@@ -42,6 +44,74 @@ class CometStringExpressionSuite extends CometTestBase {
 
   test("rpad string") {
     testStringPadding("rpad")
+  }
+
+  for ((function, expressionName) <- Seq("lpad" -> "StringLPad", "rpad" -> "StringRPad")) {
+    test(s"$function dispatches unsupported argument shapes (issue #5579)") {
+      val data: Seq[(String, Option[Int], String)] = Seq(
+        ("hi", Some(5), "xy"),
+        ("hello", Some(3), "x"),
+        ("", Some(3), "a"),
+        ("hi", Some(5), ""),
+        (null, Some(5), "x"),
+        ("hi", None, "x"),
+        ("hi", Some(5), null),
+        (null, None, null))
+      withParquetTable(data, "tbl") {
+        withSQLConf(
+          SQLConf.OPTIMIZER_EXCLUDED_RULES.key ->
+            "org.apache.spark.sql.catalyst.optimizer.ConstantFolding") {
+          for (allowIncompatible <- Seq("false", "true")) {
+            withSQLConf(
+              CometConf.getExprAllowIncompatConfigKey(expressionName) -> allowIncompatible) {
+              for (query <- Seq(
+                  s"SELECT $function(_1, _2, _3) FROM tbl",
+                  s"SELECT $function('hi', _2, 'xy') FROM tbl",
+                  s"SELECT $function('hi', 5, 'xy') FROM tbl")) {
+                assertCodegenRan {
+                  checkSparkAnswerAndOperator(query)
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+
+    test(s"$function keeps supported argument shapes native") {
+      withParquetTable(Seq(("hi", 5), ("hello", 3), ("", 0)), "tbl") {
+        for (query <- Seq(
+            s"SELECT $function(_1, _2) FROM tbl",
+            s"SELECT $function(_1, _2, 'xy') FROM tbl")) {
+          CometScalaUDFCodegen.resetStats()
+          checkSparkAnswerAndOperator(query)
+          assert(
+            CometScalaUDFCodegen.stats().totalLookups == 0,
+            s"expected native execution for $query")
+        }
+      }
+    }
+  }
+
+  test("lpad/rpad with NULL length") {
+    // FuzzDataGenerator never generates NULL integers (#5389), so build the rows explicitly.
+    // Spark's StringLPad/StringRPad are null-intolerant: a NULL length yields a NULL row.
+    val data: Seq[(String, Option[Int])] = Seq(
+      ("abc", Some(5)),
+      ("abc", None),
+      (null, None),
+      (null, Some(5)),
+      ("abcdef", Some(2)),
+      ("abc", Some(-1)),
+      ("abc", Some(0))) ++ edgeCases.flatMap(s => Seq((s, None), (s, Some(4))))
+    withParquetTable(data, "tbl") {
+      for (expr <- Seq("lpad", "rpad")) {
+        // 2 args (default pad of ' ')
+        checkSparkAnswerAndOperator(s"SELECT _1, _2, $expr(_1, _2) FROM tbl")
+        // 3 args with a literal pad
+        checkSparkAnswerAndOperator(s"SELECT _1, _2, $expr(_1, _2, 'xy') FROM tbl")
+      }
+    }
   }
 
   test("lpad binary") {
@@ -86,14 +156,10 @@ class CometStringExpressionSuite extends CometTestBase {
             // all arguments are literal, so Spark constant folding will kick in
             // and pad function will not be evaluated by Comet
             checkSparkAnswerAndOperator(sql)
-          } else if (isLiteralStr) {
-            checkSparkAnswerAndFallbackReason(
-              sql,
-              "Scalar values are not supported for the `str` argument")
-          } else if (!isLiteralPad) {
-            checkSparkAnswerAndFallbackReason(
-              sql,
-              "Only scalar values are supported for the `pad` argument")
+          } else if (isLiteralStr || !isLiteralPad) {
+            assertCodegenRan {
+              checkSparkAnswerAndOperator(sql)
+            }
           } else {
             checkSparkAnswerAndOperator(sql)
           }
@@ -128,21 +194,12 @@ class CometStringExpressionSuite extends CometTestBase {
               s"SELECT $str, $len, $expr($str, $len) FROM t1 ORDER BY str, len, pad"
           }
 
-          val isLiteralStr = str != "str"
-          val isLiteralLen = !len.contains("len")
-          val isLiteralPad = !pad.contains("pad")
-
-          if (isLiteralStr && isLiteralLen && isLiteralPad) {
-            // all arguments are literal, so Spark constant folding will kick in
-            // and pad function will not be evaluated by Comet
-            checkSparkAnswerAndOperator(sql)
-          } else {
-            // Comet will fall back to Spark because the plan contains a staticinvoke instruction
-            // which is not supported
-            checkSparkAnswerAndFallbackReason(
-              sql,
-              s"Static invoke expression: $expr is not supported")
-          }
+          // `lpad` / `rpad` on binary input lowers to `StaticInvoke(ByteArray, funcName, ...)`,
+          // which has no native path and is not in `CometStaticInvoke`'s allowlist, so it routes
+          // through the JVM codegen dispatcher and the projection stays in the Comet pipeline.
+          // When every argument is a literal, Spark's constant folding evaluates the call before
+          // Comet ever sees it.
+          checkSparkAnswerAndOperator(sql)
         }
       }
     }
@@ -710,6 +767,85 @@ class CometStringExpressionSuite extends CometTestBase {
       }
     }
     // scalastyle:on
+  }
+
+  test("concat_ws with scalar subqueries over a multi-row batch") {
+    withSQLConf(CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "false") {
+      withParquetTable((1 to 32).map(i => (i, "row")), "fact") {
+        withParquetTable(Seq(Tuple1("a"), Tuple1("b")), "lookup") {
+          for (subquery <- Seq(
+              "(SELECT max(_1) FROM lookup)",
+              "(SELECT max(_1) FROM lookup WHERE _1 = 'missing')")) {
+            checkSparkAnswerAndOperator(s"SELECT _1, concat_ws($subquery) FROM fact")
+            checkSparkAnswerAndOperator(s"SELECT _1, concat_ws(',', $subquery) FROM fact")
+            checkSparkAnswerAndOperator(
+              s"SELECT _1, concat_ws(',', array('x', NULL, ''), $subquery) FROM fact")
+          }
+        }
+      }
+    }
+  }
+
+  test("concat_ws with array<string> arguments") {
+    val data: Seq[(Seq[String], String)] = Seq(
+      (Seq("a", "b"), "c d"),
+      (Seq("x", null, "y"), "z"),
+      (Seq("only"), ""),
+      (Seq.empty[String], "w"),
+      (null, "v"),
+      (Seq("p", "q"), null),
+      (Seq(null, "", "\u00e9"), "|"),
+      (Seq(null, null), ""),
+      (null, null))
+    withParquetTable(data, "tbl") {
+      val arrayArgQueries = Seq(
+        "SELECT concat_ws(',', _1, _2) FROM tbl",
+        "SELECT concat_ws(',', _2, _1) FROM tbl",
+        "SELECT concat_ws(',', _1) FROM tbl",
+        "SELECT concat_ws('-', _1, _2, _1) FROM tbl",
+        "SELECT concat_ws(',', split(_2, ' ')) FROM tbl",
+        "SELECT concat_ws(',', split(_2, ' '), _1) FROM tbl",
+        "SELECT concat_ws(_2, _1, 'tail', _1) FROM tbl",
+        "SELECT concat_ws('', _1, _2, array('x', NULL, 'y')) FROM tbl",
+        "SELECT concat_ws(NULL, _1, _2) FROM tbl",
+        "SELECT concat_ws(_2) FROM tbl")
+      withSQLConf(
+        CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "false",
+        "spark.comet.expression.StringSplit.allowIncompatible" -> "true") {
+        for (query <- arrayArgQueries) {
+          checkSparkAnswerAndOperator(query)
+        }
+      }
+      // A NULL separator produces NULL regardless of the argument types and stays native.
+      checkSparkAnswerAndOperator("SELECT concat_ws(NULL, _1, _2) FROM tbl")
+      // Plain string arguments keep using the native concat_ws path, not the dispatcher.
+      CometScalaUDFCodegen.resetStats()
+      checkSparkAnswerAndOperator("SELECT concat_ws(',', _2, 'lit', _2) FROM tbl")
+      assert(
+        CometScalaUDFCodegen.stats().totalLookups == 0,
+        "expected the native concat_ws path for string arguments, not codegen dispatch")
+    }
+  }
+
+  test("levenshtein routes collated strings through the codegen dispatcher (issue #5591)") {
+    assume(isSpark40Plus, "COLLATE requires Spark 4.0")
+    // The native levenshtein kernel compares raw bytes, so CometLevenshtein reports a collated
+    // argument as Unsupported and CodegenDispatchFallback runs Spark's own doGenCode inside the
+    // Comet pipeline. checkSparkAnswerAndOperator alone would also pass if the projection fell
+    // back to Spark on a shape this test did not intend, so assertCodegenRan pins that the
+    // dispatcher is what kept it native. Answer coverage, including the three-argument form and
+    // RTRIM collations, lives in sql-tests/expressions/string/levenshtein_collation.sql.
+    val data = Seq(("kitten", "sitting"), ("HELLO", "hello"), ("frog", "fog"), (null, "test"))
+    withParquetTable(data, "tbl") {
+      assertCodegenRan {
+        checkSparkAnswerAndOperator(
+          "SELECT levenshtein(_1 COLLATE utf8_lcase, _2 COLLATE utf8_lcase) FROM tbl")
+        checkSparkAnswerAndOperator(
+          "SELECT levenshtein(_1 COLLATE unicode_ci, _2 COLLATE unicode_ci) FROM tbl")
+        checkSparkAnswerAndOperator(
+          "SELECT levenshtein(_1 COLLATE utf8_lcase, _2 COLLATE utf8_lcase, 2) FROM tbl")
+      }
+    }
   }
 
 }

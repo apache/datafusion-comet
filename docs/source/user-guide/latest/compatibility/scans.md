@@ -100,6 +100,10 @@ and `INT32 → DOUBLE` widening that Spark 4.0+ accepts unconditionally; `Timest
 is rejected by Spark 3.x but accepted by Spark 4.0+). Comet aims to follow the per-version Spark
 behavior.
 
+- **List conversion error paths assume Spark's standard encoding**. Comet inserts `list`
+  before the element name when reporting a rejected array element conversion. Arrow's schema
+  omits the repeated group name, so paths for legacy LIST encodings or custom group names may
+  differ from Spark's Parquet column path.
 - **`ParquetSchemaConvert` errors do not include the file path**. The mismatch itself is detected and
   rejected correctly, but the resulting Spark error message reads
   `Encountered error while reading file . Data type mismatches…` (note the empty path). Behavior is
