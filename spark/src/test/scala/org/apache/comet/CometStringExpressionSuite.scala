@@ -23,8 +23,9 @@ import scala.util.Random
 
 import org.apache.parquet.hadoop.ParquetOutputFormat
 import org.apache.spark.sql.{CometTestBase, DataFrame}
+import org.apache.spark.sql.catalyst.expressions.{Concat, Literal, Reverse}
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{DataTypes, StructField, StructType}
+import org.apache.spark.sql.types.{DataType, DataTypes, StructField, StructType}
 
 import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator}
@@ -37,6 +38,30 @@ class CometStringExpressionSuite extends CometTestBase with CometCodegenAssertio
     "é", // unicode '\\u{e9}'
     "తెలుగు")
   // scalastyle:on
+
+  if (isSpark40Plus) {
+    test("collated strings preserve native opt-in routing") {
+      withParquetTable(Seq(("abc", 1), ("", 2), (null, 3)), "tbl") {
+        // Build typed literals directly: Collate and casts of columns are not native, while
+        // ordinary constant folding would remove the expression we want to test.
+        val text = Literal.create("abc", DataType.fromDDL("STRING COLLATE UTF8_LCASE"))
+        withSQLConf(
+          SQLConf.OPTIMIZER_EXCLUDED_RULES.key ->
+            "org.apache.spark.sql.catalyst.optimizer.ConstantFolding",
+          CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "false",
+          CometConf.getExprAllowIncompatConfigKey("Concat") -> "true",
+          CometConf.getExprAllowIncompatConfigKey("Reverse") -> "true") {
+          for ((name, expression) <- Seq(
+              "concat" -> Concat(Seq(text, text)),
+              "reverse" -> Reverse(text))) {
+            checkSparkAnswerAndImpl(
+              sql("SELECT _1 FROM tbl").select(getColumnFromExpression(expression)),
+              native = Seq(name))
+          }
+        }
+      }
+    }
+  }
 
   test("lpad string") {
     testStringPadding("lpad")
