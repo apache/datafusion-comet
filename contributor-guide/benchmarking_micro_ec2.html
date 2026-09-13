@@ -687,9 +687,8 @@ still missing afterwards it downloads the release archive and installs the binar
 javac<span class="w"> </span>-version
 </pre></div>
 </div>
-<p>JDK 17 or later is required. Comet targets Java 17 bytecode whenever the JDK in use is 17 or
-newer, through the <code class="docutils literal notranslate"><span class="pre">jdk17</span></code> profile in the pom, so no profile needs to be passed by hand. <code class="docutils literal notranslate"><span class="pre">run.py</span></code>
-detects <code class="docutils literal notranslate"><span class="pre">JAVA_HOME</span></code> when it is not set, preferring the newest JDK under <code class="docutils literal notranslate"><span class="pre">/usr/lib/jvm</span></code>, and refuses
+<p>JDK 17 or later is required. Comet targets Java 17 bytecode, so no JDK profile needs to be passed
+by hand. <code class="docutils literal notranslate"><span class="pre">run.py</span></code> detects <code class="docutils literal notranslate"><span class="pre">JAVA_HOME</span></code> when it is not set, preferring the newest JDK under <code class="docutils literal notranslate"><span class="pre">/usr/lib/jvm</span></code>, and refuses
 to run with anything older than 17.</p>
 </section>
 <section id="maven">
@@ -893,18 +892,13 @@ compiler. Install one and rerun <code class="docutils literal notranslate"><span
 <a class="reference internal" href="#protobuf-compiler">Protobuf Compiler</a> above, then rerun <code class="docutils literal notranslate"><span class="pre">make</span> <span class="pre">release</span></code>.</p>
 <p><strong><code class="docutils literal notranslate"><span class="pre">JAVA_HOME</span> <span class="pre">could</span> <span class="pre">not</span> <span class="pre">be</span> <span class="pre">determined</span></code>.</strong> Install a JDK and export <code class="docutils literal notranslate"><span class="pre">JAVA_HOME</span></code>, or pass a checkout
 that has one configured.</p>
-<p><strong><code class="docutils literal notranslate"><span class="pre">Class</span> <span class="pre">java.lang.Record</span> <span class="pre">not</span> <span class="pre">found</span> <span class="pre">-</span> <span class="pre">continuing</span> <span class="pre">with</span> <span class="pre">a</span> <span class="pre">stub</span></code>.</strong> The Scala compiler is targeting the
-Java 11 API, which has no <code class="docutils literal notranslate"><span class="pre">Record</span></code>, while the Spark 4.x sources need Java 17. This happens on a JDK
-older than 17, where the <code class="docutils literal notranslate"><span class="pre">jdk17</span></code> profile does not activate and <code class="docutils literal notranslate"><span class="pre">java.version</span></code> stays at its default
-of 11. Use JDK 17 or later:</p>
+<p><strong><code class="docutils literal notranslate"><span class="pre">Comet</span> <span class="pre">requires</span> <span class="pre">JDK</span> <span class="pre">17</span> <span class="pre">or</span> <span class="pre">later</span> <span class="pre">to</span> <span class="pre">build</span></code>.</strong> The Maven enforcer plugin rejects JDKs older than 17.
+Point <code class="docutils literal notranslate"><span class="pre">JAVA_HOME</span></code> at JDK 17 or later and rerun the build:</p>
 <div class="highlight-shell notranslate"><div class="highlight"><pre><span></span><span class="nb">export</span><span class="w"> </span><span class="nv">JAVA_HOME</span><span class="o">=</span>/usr/lib/jvm/java-17-amazon-corretto
 <span class="nb">export</span><span class="w"> </span><span class="nv">PATH</span><span class="o">=</span><span class="nv">$JAVA_HOME</span>/bin:<span class="nv">$PATH</span>
-./mvnw<span class="w"> </span>clean
 make<span class="w"> </span>release
 </pre></div>
 </div>
-<p>Run <code class="docutils literal notranslate"><span class="pre">./mvnw</span> <span class="pre">clean</span></code> first: classes compiled against the wrong API stay in <code class="docutils literal notranslate"><span class="pre">target/</span></code> and break the
-next build.</p>
 <p><strong><code class="docutils literal notranslate"><span class="pre">cargo:</span> <span class="pre">command</span> <span class="pre">not</span> <span class="pre">found</span></code> after <code class="docutils literal notranslate"><span class="pre">setup</span></code>.</strong> <code class="docutils literal notranslate"><span class="pre">rustup</span></code> installs into <code class="docutils literal notranslate"><span class="pre">~/.cargo/bin</span></code>. Run
 <code class="docutils literal notranslate"><span class="pre">source</span> <span class="pre">&quot;$HOME/.cargo/env&quot;</span></code>, or start a new shell.</p>
 <p><strong>A suite times out.</strong> Raise <code class="docutils literal notranslate"><span class="pre">--timeout</span></code>, or exclude the suite with <code class="docutils literal notranslate"><span class="pre">--skip</span></code> and note the exclusion

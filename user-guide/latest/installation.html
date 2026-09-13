@@ -813,10 +813,11 @@ users must <a class="reference internal" href="source.html"><span class="std std
 in the <a class="reference internal" href="compatibility/index.html"><span class="std std-doc">Compatibility Guide</span></a> for more information, such as known limitations per Spark version.</p>
 <p>We recommend only using Comet with Spark versions where we currently have both Comet and Spark tests enabled in CI.
 Other versions may work well enough for development and evaluation purposes.</p>
+<p>Comet requires JDK 17 or later. JDK 11 is no longer supported as of the 1.1.0 release.</p>
 <div class="admonition warning">
 <p class="admonition-title">Warning</p>
-<p>JDK 11 and Spark 3.4 support are deprecated as of the 1.0.0 release and will be removed in the 1.1.0 release.
-We recommend moving to JDK 17 or later and Spark 3.5 or later.</p>
+<p>Spark 3.4 support is deprecated as of the 1.0.0 release and will be removed in the 1.1.0 release.
+We recommend moving to Spark 3.5 or later.</p>
 </div>
 <div class="pst-scrollable-table-container"><table class="table">
 <thead>
@@ -829,13 +830,13 @@ We recommend moving to JDK 17 or later and Spark 3.5 or later.</p>
 </thead>
 <tbody>
 <tr class="row-even"><td><p>3.4.3</p></td>
-<td><p>11/17</p></td>
+<td><p>17</p></td>
 <td><p>2.12/2.13</p></td>
 <td><p>Yes</p></td>
 <td><p>Yes</p></td>
 </tr>
 <tr class="row-odd"><td><p>3.5.9</p></td>
-<td><p>11/17</p></td>
+<td><p>17</p></td>
 <td><p>2.12/2.13</p></td>
 <td><p>Yes</p></td>
 <td><p>Yes</p></td>

@@ -942,9 +942,8 @@ place:</p>
 <div class="highlight-sh notranslate"><div class="highlight"><pre><span></span><span class="nv">PROFILES</span><span class="o">=</span><span class="s2">"-Pspark-4.0"</span><span class="w"> </span>make<span class="w"> </span>release
 </pre></div>
 </div>
-<p>The <code class="docutils literal notranslate"><span class="pre">spark-4.0</span></code> profile sets Scala 2.13 and Java 17 properties. If you need to be explicit, use
-<code class="docutils literal notranslate"><span class="pre">PROFILES=&quot;-Pspark-4.0</span> <span class="pre">-Pscala-2.13</span> <span class="pre">-Pjdk17&quot;</span> <span class="pre">make</span> <span class="pre">release</span></code>.</p>
-<p>The Maven profile is named <code class="docutils literal notranslate"><span class="pre">jdk17</span></code> in this project.</p>
+<p>The <code class="docutils literal notranslate"><span class="pre">spark-4.0</span></code> profile sets the Scala 2.13 properties, and every profile targets Java 17. If you
+need to be explicit, use <code class="docutils literal notranslate"><span class="pre">PROFILES=&quot;-Pspark-4.0</span> <span class="pre">-Pscala-2.13&quot;</span> <span class="pre">make</span> <span class="pre">release</span></code>.</p>
 <p>If the native build previously used a different JDK, clear Cargo’s cached JNI link path before
 rebuilding:</p>
 <div class="highlight-sh notranslate"><div class="highlight"><pre><span></span><span class="nb">cd</span><span class="w"> </span>native<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>cargo<span class="w"> </span>clean
