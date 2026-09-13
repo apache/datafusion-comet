@@ -935,7 +935,26 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
    *   In the case where None is returned, the expression will be tagged with the reason(s) why it
    *   is not supported.
    */
+  /**
+   * Counts expressions that failed to convert on the current planning thread. Only the
+   * before/after difference across a single [[CometExpressionSerde.convert]] call is meaningful,
+   * so the counter is never reset; see [[warnCompatibleButDeclined]] for what it is used for.
+   * Thread-local because plan compilation for different queries can run concurrently.
+   */
+  private val conversionFailures: ThreadLocal[Long] = ThreadLocal.withInitial(() => 0L)
+
   def exprToProtoInternal(
+      expr: Expression,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[Expr] = {
+    val result = exprToProtoInternal0(expr, inputs, binding)
+    if (result.isEmpty) {
+      conversionFailures.set(conversionFailures.get + 1)
+    }
+    result
+  }
+
+  private def exprToProtoInternal0(
       expr: Expression,
       inputs: Seq[Attribute],
       binding: Boolean): Option[Expr] = {
@@ -1007,7 +1026,14 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
           nativeOptIn.foreach { optIn =>
             withInfo(expr, NativeOptIn.message(exprConfName, optIn.configKey))
           }
-          handler.convert(expr, inputs, binding)
+          // Snapshot immediately before `convert` so the comparison sees only failures that
+          // `convert` itself caused, not any recorded earlier while serializing a sibling.
+          val failuresBeforeConvert = conversionFailures.get
+          val converted = handler.convert(expr, inputs, binding)
+          if (converted.isEmpty && conversionFailures.get == failuresBeforeConvert) {
+            warnCompatibleButDeclined(expr, handler)
+          }
+          converted
       }
     }
 
@@ -1230,6 +1256,54 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
         return None
     }
     Some(ExprOuterClass.Expr.newBuilder().setScalarFunc(builder).build())
+  }
+
+  /**
+   * `getSupportLevel` returning `Compatible` is a promise that `convert` will succeed, so a
+   * `None` from `convert` breaks a serde invariant. It also costs the user real performance: the
+   * `Unsupported` and `Incompatible` arms give a `CodegenDispatchFallback` serde a chance to
+   * route the expression through the JVM codegen dispatcher, whereas a decline from inside
+   * `convert` bypasses that entirely and fails the whole enclosing operator back to Spark. Such
+   * cases belong in `getSupportLevel`. See
+   * https://github.com/apache/datafusion-comet/issues/5574.
+   *
+   * Declining because a *child* could not be serialized is not a violation -- `getSupportLevel`
+   * inspects the node, not the subtree. The caller screens that out by comparing
+   * [[conversionFailures]] across the `convert` call: any nested `exprToProtoInternal` that
+   * returned `None` bumps the counter, so an unchanged counter means the decline originated in
+   * this node. That is O(1), and it also catches children the serde synthesised inside `convert`
+   * (a `Cast` wrapper, say), which are not in `expr`'s subtree and so cannot be found by
+   * inspecting it.
+   *
+   * One case warns without being a serde bug: `getSupportLevel` is not given `inputs`, so a
+   * decline that depends on them cannot be moved there. `CometAttributeReference` is the only
+   * such serde today (it declines when `bindReference` cannot resolve the attribute). The warning
+   * is still worth having there -- an unresolvable attribute is a planning anomaly worth
+   * surfacing.
+   *
+   * The other recurring source is a real violation, just not one to fix here:
+   * `CometCodegenDispatch` reports `Compatible` without inspecting the expression at all and
+   * delegates `convert` straight to `emitJvmCodegenDispatch`. Every check the dispatcher makes
+   * therefore runs too late to be reported as `Unsupported`, so each one surfaces here: both the
+   * global `spark.comet.exec.scalaUDF.codegen.enabled=false` switch and, under the default
+   * configuration, per-expression declines such as an output type the dispatcher cannot write.
+   * Moving those checks up is tracked on the issue above.
+   */
+  private[serde] def warnCompatibleButDeclined(
+      expr: Expression,
+      handler: CometExpressionSerde[_]): Unit = {
+    // Serdes are Scala objects, so `getSimpleName` carries a trailing `$`.
+    val serdeName = handler.getClass.getSimpleName.stripSuffix("$")
+    val reasons = expr
+      .getTagValue(CometExplainInfo.FALLBACK_REASONS)
+      .map(_.mkString("; "))
+      .getOrElse("no reason recorded")
+    logWarning(
+      s"$serdeName reported Compatible for $expr but convert() " +
+        s"returned None ($reasons), so the enclosing operator falls back to Spark. This is a " +
+        "serde invariant violation: report the case from getSupportLevel as Unsupported or " +
+        "Incompatible instead, so that a CodegenDispatchFallback serde can route it through " +
+        "the JVM codegen dispatcher.")
   }
 
   /**
