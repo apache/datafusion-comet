@@ -15,107 +15,70 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use arrow::array::{ArrayRef, Int32Array, StringArray};
-use criterion::{criterion_group, criterion_main, Criterion};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use datafusion::physical_plan::ColumnarValue;
 use datafusion_comet_spark_expr::spark_levenshtein;
 use std::hint::black_box;
 use std::sync::Arc;
 
-/// ASCII dataset: exercises the `is_ascii()` fast path (byte-level DP).
-fn create_ascii_arrays(rows: usize) -> (ArrayRef, ArrayRef) {
-    let left_strings: Vec<String> = (0..rows)
-        .map(|i| format!("apache_datafusion_comet_{}", i % 100))
-        .collect();
-    let right_strings: Vec<String> = (0..rows)
-        .map(|i| format!("apache_comet_expr_{}", (i + 5) % 100))
-        .collect();
+#[path = "common/mod.rs"]
+mod common;
+use common::{string_array, NULL_RATIOS, ROW_COUNTS};
 
-    (
-        Arc::new(StringArray::from(
-            left_strings.iter().map(|s| s.as_str()).collect::<Vec<&str>>(),
-        )) as ArrayRef,
-        Arc::new(StringArray::from(
-            right_strings.iter().map(|s| s.as_str()).collect::<Vec<&str>>(),
-        )) as ArrayRef,
-    )
+/// Generator pair for one dataset: the invariant right side plus a left-side
+/// factory that takes the per-row index, so every dataset fills the same shape.
+struct Dataset {
+    label: &'static str,
+    right: fn(usize) -> String,
+    left: fn(usize) -> String,
 }
 
-/// Non-ASCII dataset: exercises the Unicode `chars()` fallback and pays the
-/// full-string `is_ascii()` scan before falling through. Both sides are
-/// non-ASCII so neither short-circuits into the byte path.
-fn create_non_ascii_arrays(rows: usize) -> (ArrayRef, ArrayRef) {
-    let left_strings: Vec<String> = (0..rows)
-        .map(|i| format!("apache_данные_融合_{}", i % 100))
-        .collect();
-    let right_strings: Vec<String> = (0..rows)
-        .map(|i| format!("apache_café_données_{}", (i + 5) % 100))
-        .collect();
+/// ASCII: both operands are ASCII, so `is_ascii() && is_ascii()` enables the
+/// byte-level fast path.
+const ASCII: Dataset = Dataset {
+    label: "ascii",
+    right: |_| "sitting".to_string(),
+    left: |_| "kitten".to_string(),
+};
 
-    (
-        Arc::new(StringArray::from(
-            left_strings.iter().map(|s| s.as_str()).collect::<Vec<&str>>(),
-        )) as ArrayRef,
-        Arc::new(StringArray::from(
-            right_strings.iter().map(|s| s.as_str()).collect::<Vec<&str>>(),
-        )) as ArrayRef,
-    )
-}
+/// Non-ASCII: both operands are non-ASCII, so the fast path is skipped and the
+/// Unicode `chars()` path runs. Both sides pay the `is_ascii()` scan.
+const NON_ASCII: Dataset = Dataset {
+    label: "non-ascii",
+    right: |_| "smörgås".to_string(),
+    left: |_| "naïve".to_string(),
+};
 
-/// Mixed dataset: one side ASCII, the other non-ASCII. `s.is_ascii() && t.is_ascii()`
-/// short-circuits on the second operand, so the fast path is skipped after only
-/// scanning `s`. This is the cheapest way for a mixed column to miss the byte path.
-fn create_mixed_arrays(rows: usize) -> (ArrayRef, ArrayRef) {
-    let left_strings: Vec<String> = (0..rows)
-        .map(|i| format!("apache_datafusion_comet_{}", i % 100))
-        .collect();
-    let right_strings: Vec<String> = (0..rows)
-        .map(|i| format!("apache_café_données_{}", (i + 5) % 100))
-        .collect();
+/// Mixed: right is non-ASCII, left is ASCII. `s.is_ascii() && t.is_ascii()`
+/// short-circuits on the second operand, so only the left scan is saved.
+const MIXED: Dataset = Dataset {
+    label: "mixed",
+    right: |_| "café".to_string(),
+    left: |_| "cafe".to_string(),
+};
 
-    (
-        Arc::new(StringArray::from(
-            left_strings.iter().map(|s| s.as_str()).collect::<Vec<&str>>(),
-        )) as ArrayRef,
-        Arc::new(StringArray::from(
-            right_strings.iter().map(|s| s.as_str()).collect::<Vec<&str>>(),
-        )) as ArrayRef,
-    )
-}
-
-/// Shared harness: times the 2-argument and 3-argument (threshold) forms for
-/// one dataset, so every dataset is measured identically.
-fn bench_pair(c: &mut Criterion, label: &str, left: ArrayRef, right: ArrayRef, rows: usize) {
-    c.bench_function(&format!("spark_levenshtein: {label} (no threshold)"), |b| {
-        let args = vec![
-            ColumnarValue::Array(Arc::clone(&left)),
-            ColumnarValue::Array(Arc::clone(&right)),
-        ];
-        b.iter(|| black_box(spark_levenshtein(black_box(&args)).unwrap()))
-    });
-
-    let threshold = Int32Array::from(vec![10; rows]);
-    c.bench_function(&format!("spark_levenshtein: {label} (with threshold)"), |b| {
-        let args = vec![
-            ColumnarValue::Array(Arc::clone(&left)),
-            ColumnarValue::Array(Arc::clone(&right)),
-            ColumnarValue::Array(Arc::new(threshold.clone()) as ArrayRef),
-        ];
-        b.iter(|| black_box(spark_levenshtein(black_box(&args)).unwrap()))
-    });
-}
+const DATASETS: [Dataset; 3] = [ASCII, NON_ASCII, MIXED];
 
 fn criterion_benchmark(c: &mut Criterion) {
-    let rows = 8192;
-
-    let (ascii_left, ascii_right) = create_ascii_arrays(rows);
-    bench_pair(c, "ascii", ascii_left, ascii_right, rows);
-
-    let (non_ascii_left, non_ascii_right) = create_non_ascii_arrays(rows);
-    bench_pair(c, "non-ascii", non_ascii_left, non_ascii_right, rows);
-
-    let (mixed_left, mixed_right) = create_mixed_arrays(rows);
-    bench_pair(c, "mixed", mixed_left, mixed_right, rows);
+    for dataset in &DATASETS {
+        let mut group = c.benchmark_group(format!("spark_levenshtein/{}", dataset.label));
+        for rows in ROW_COUNTS {
+            let right = string_array(rows, 0.0, |_| (dataset.right)(0));
+            for (null_ratio, tag) in NULL_RATIOS {
+                let left = string_array(rows, null_ratio, |_| (dataset.left)(0));
+                let args = vec![
+                    ColumnarValue::Array(left),
+                    ColumnarValue::Array(Arc::clone(&right)),
+                ];
+                group.bench_with_input(
+                    BenchmarkId::from_parameter(format!("{rows}/{tag}")),
+                    &args,
+                    |b, args| b.iter(|| black_box(spark_levenshtein(black_box(args)).unwrap())),
+                );
+            }
+        }
+        group.finish();
+    }
 }
 
 criterion_group!(benches, criterion_benchmark);
