@@ -47,8 +47,10 @@
 //! page-index load back into `FileMetadataCache` instead of bypassing it. Preserve the
 //! duplicate-field validation when replacing this factory.
 
-use crate::parquet::name_fold::{fold_name, fold_schema_names};
-use arrow::datatypes::{DataType, FieldRef, Schema, SchemaRef};
+use crate::parquet::name_fold::fold_name;
+use crate::parquet::parquet_support::SparkParquetOptions;
+use crate::parquet::schema_adapter::is_pure_structural_narrowing;
+use arrow::datatypes::{DataType, FieldRef, Fields, Schema, SchemaRef};
 use async_trait::async_trait;
 use bytes::Bytes;
 use datafusion::common::Result as DFResult;
@@ -166,8 +168,7 @@ pub struct EagerPageIndexReaderFactory {
     // Enable the footer workaround only for scans that project Variant.
     // https://github.com/apache/datafusion-comet/issues/5477
     spark_variant_schema: bool,
-    projected_fields: Option<Arc<HashSet<String>>>,
-    case_sensitive: bool,
+    projection: Option<(SchemaRef, SparkParquetOptions)>,
 }
 
 impl EagerPageIndexReaderFactory {
@@ -196,26 +197,17 @@ impl EagerPageIndexReaderFactory {
             metadata_cache,
             scan_io_metrics,
             spark_variant_schema: false,
-            projected_fields: None,
-            case_sensitive: true,
+            projection: None,
         }
     }
 
     pub(crate) fn with_required_schema(
         mut self,
         schema: &SchemaRef,
-        case_sensitive: bool,
-        use_field_id: bool,
+        options: &SparkParquetOptions,
     ) -> Self {
         // Field-ID projections can rename columns, so names cannot safely restrict the walk.
-        self.projected_fields = (!use_field_id).then(|| {
-            Arc::new(
-                fold_schema_names(schema, case_sensitive)
-                    .into_iter()
-                    .collect(),
-            )
-        });
-        self.case_sensitive = case_sensitive;
+        self.projection = (!options.use_field_id).then(|| (Arc::clone(schema), options.clone()));
         self
     }
 
@@ -250,8 +242,7 @@ impl ParquetFileReaderFactory for EagerPageIndexReaderFactory {
             metadata_cache: Arc::clone(&self.metadata_cache),
             metadata_size_hint,
             spark_variant_schema: self.spark_variant_schema,
-            projected_fields: self.projected_fields.clone(),
-            case_sensitive: self.case_sensitive,
+            projection: self.projection.clone(),
         }))
     }
 }
@@ -267,8 +258,7 @@ struct EagerPageIndexReader {
     metadata_cache: Arc<FileMetadataCache>,
     metadata_size_hint: Option<usize>,
     spark_variant_schema: bool,
-    projected_fields: Option<Arc<HashSet<String>>>,
-    case_sensitive: bool,
+    projection: Option<(SchemaRef, SparkParquetOptions)>,
 }
 
 // Arrow infers ENUM as Binary, losing the distinction from raw binary that Spark needs.
@@ -403,32 +393,76 @@ fn with_spark_arrow_schema(metadata: Arc<ParquetMetaData>) -> ParquetResult<Arc<
 
 // Duplicate sibling names can make the decoder combine distinct leaves into one column,
 // multiplying rows before schema adaptation can reject or resolve the duplicate (#5783).
-// Only selected top-level subtrees can reach the decoder. Recurse fully within each selected
-// subtree because nested projection does not safely separate duplicate leaves (#5884).
+// Only prune nested fields when the schema adapter leaves DataFusion's structural cast
+// in place. Other casts decode the full subtree, including unrequested siblings.
 fn validate_field_names(
     schema: &Type,
-    projected_fields: Option<&HashSet<String>>,
+    projected_fields: Option<&Fields>,
     case_sensitive: bool,
 ) -> parquet::errors::Result<()> {
     if let Type::GroupType { fields, .. } = schema {
         let mut names = HashSet::with_capacity(fields.len());
         for field in fields {
-            if projected_fields.is_some_and(|projected| {
-                !projected.contains(&fold_name(field.name(), case_sensitive))
-            }) {
+            let projected = projected_fields.and_then(|projected| {
+                projected.iter().find(|candidate| {
+                    fold_name(candidate.name(), case_sensitive)
+                        == fold_name(field.name(), case_sensitive)
+                })
+            });
+            if projected_fields.is_some() && projected.is_none() {
                 continue;
             }
             if !names.insert(field.name()) {
                 return Err(ParquetError::General(format!(
                     "Comet native scan does not support duplicate Parquet field name '{}' in group '{}'",
-                    field.name(),
-                    schema.name()
+                    field.name(), schema.name()
                 )));
             }
-            validate_field_names(field, None, case_sensitive)?;
+            validate_field_type(field, projected.map(|f| f.data_type()), case_sensitive)?;
         }
     }
     Ok(())
+}
+
+fn validate_field_type(
+    schema: &Type,
+    projected: Option<&DataType>,
+    case_sensitive: bool,
+) -> ParquetResult<()> {
+    match projected {
+        Some(DataType::Struct(fields)) => {
+            validate_field_names(schema, Some(fields), case_sensitive)
+        }
+        Some(
+            DataType::List(element)
+            | DataType::LargeList(element)
+            | DataType::FixedSizeList(element, _),
+        ) if schema.is_group() && schema.get_fields().len() == 1 => {
+            let wrapper = &schema.get_fields()[0];
+            // Standard three-level LIST. Legacy layouts retain full validation.
+            if wrapper.is_group()
+                && wrapper.get_fields().len() == 1
+                && wrapper.name() != "array"
+                && wrapper.name() != format!("{}_tuple", schema.name())
+            {
+                validate_field_type(
+                    &wrapper.get_fields()[0],
+                    Some(element.data_type()),
+                    case_sensitive,
+                )
+            } else {
+                validate_field_names(schema, None, case_sensitive)
+            }
+        }
+        Some(DataType::Map(entries, _)) if schema.is_group() && schema.get_fields().len() == 1 => {
+            validate_field_type(
+                &schema.get_fields()[0],
+                Some(entries.data_type()),
+                case_sensitive,
+            )
+        }
+        _ => validate_field_names(schema, None, case_sensitive),
+    }
 }
 
 impl AsyncFileReader for EagerPageIndexReader {
@@ -498,8 +532,7 @@ impl AsyncFileReader for EagerPageIndexReader {
         let metadata_size_hint = self.metadata_size_hint;
         let scan_io_metrics = Arc::clone(&self.scan_io_metrics);
         let spark_variant_schema = self.spark_variant_schema;
-        let projected_fields = self.projected_fields.clone();
-        let case_sensitive = self.case_sensitive;
+        let projection = self.projection.clone();
         async move {
             let file_decryption_properties = options
                 .and_then(|o| o.file_decryption_properties())
@@ -560,10 +593,69 @@ impl AsyncFileReader for EagerPageIndexReader {
 
             let metadata = metadata?;
             // Validate cache hits too, before Arrow constructs a decoder for any projection.
+            // ponytail: schema hints can change the later cast; validate full subtrees until
+            // this guard can share the opener's final schema (including Variant rewriting).
+            let schema_hints = spark_variant_schema
+                || metadata
+                    .file_metadata()
+                    .key_value_metadata()
+                    .is_some_and(|entries| {
+                        entries
+                            .iter()
+                            .any(|entry| entry.key == ARROW_SCHEMA_META_KEY)
+                    });
+            let physical_schema = if projection.is_some() {
+                Some(parquet_to_arrow_schema(
+                    metadata.file_metadata().schema_descr(),
+                    None,
+                )?)
+            } else {
+                None
+            };
+            let selected = projection.as_ref().zip(physical_schema.as_ref()).map(
+                |((required, options), physical)| {
+                    required
+                        .fields()
+                        .iter()
+                        .map(|field| {
+                            physical
+                                .fields()
+                                .iter()
+                                .find(|source| {
+                                    fold_name(source.name(), options.case_sensitive)
+                                        == fold_name(field.name(), options.case_sensitive)
+                                })
+                                .map_or_else(
+                                    || Arc::clone(field),
+                                    |source| {
+                                        if !schema_hints
+                                            && is_pure_structural_narrowing(
+                                                source.data_type(),
+                                                field.data_type(),
+                                                options,
+                                            )
+                                        {
+                                            Arc::clone(field)
+                                        } else {
+                                            Arc::new(
+                                                field
+                                                    .as_ref()
+                                                    .clone()
+                                                    .with_data_type(source.data_type().clone()),
+                                            )
+                                        }
+                                    },
+                                )
+                        })
+                        .collect::<Fields>()
+                },
+            );
             validate_field_names(
                 metadata.file_metadata().schema_descr().root_schema(),
-                projected_fields.as_deref(),
-                case_sensitive,
+                selected.as_ref(),
+                projection
+                    .as_ref()
+                    .is_none_or(|(_, options)| options.case_sensitive),
             )?;
             if spark_variant_schema {
                 with_spark_arrow_schema(metadata)
@@ -908,16 +1000,89 @@ mod tests {
         },
     };
 
+    #[tokio::test]
+    async fn projected_fields_with_arrow_hints_validate_full_subtree() {
+        use arrow::datatypes::Field;
+        let fields = Fields::from(vec![
+            Field::new("dup", DataType::Int64, true),
+            Field::new("dup", DataType::Int64, true),
+            Field::new(
+                "other",
+                DataType::Dictionary(Box::new(DataType::Int32), Box::new(DataType::Int64)),
+                true,
+            ),
+        ]);
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "s",
+            DataType::Struct(fields),
+            true,
+        )]));
+        let mut bytes = Vec::new();
+        ArrowWriter::try_new(&mut bytes, schema, None)
+            .unwrap()
+            .close()
+            .unwrap();
+        let size = bytes.len() as u64;
+        let store = Arc::new(InMemory::new());
+        let location = Path::from("arrow-hints.parquet");
+        store
+            .put(&location, Bytes::from(bytes).into())
+            .await
+            .unwrap();
+        let runtime = datafusion::execution::runtime_env::RuntimeEnv::default();
+        let metrics = ExecutionPlanMetricsSet::new();
+        let required = Arc::new(Schema::new(vec![Field::new(
+            "s",
+            DataType::Struct(Fields::from(vec![Field::new(
+                "other",
+                DataType::Int64,
+                true,
+            )])),
+            true,
+        )]));
+        let options = SparkParquetOptions::new_without_timezone(
+            datafusion_comet_spark_expr::EvalMode::Legacy,
+            false,
+        );
+        let factory = EagerPageIndexReaderFactory::new(
+            store,
+            runtime.cache_manager.get_file_metadata_cache(),
+            ScanIoSource::ObjectStore,
+            &metrics,
+        )
+        .with_required_schema(&required, &options);
+        let mut reader = factory
+            .create_reader(
+                0,
+                PartitionedFile::new(location.to_string(), size),
+                None,
+                &metrics,
+            )
+            .unwrap();
+        let error = reader.get_metadata(None).await.unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("duplicate Parquet field name 'dup'"));
+    }
+
     #[test]
     fn projected_fields_skip_unselected_roots() {
         let schema = parquet::schema::parser::parse_message_type(
             "message root { optional int64 a; optional int64 a; optional int64 b; }",
         )
         .unwrap();
-        let selected = HashSet::from(["b".to_string()]);
+        let selected = Fields::from(vec![arrow::datatypes::Field::new(
+            "b",
+            DataType::Int64,
+            true,
+        )]);
         validate_field_names(&schema, Some(&selected), true).unwrap();
-        validate_field_names(&schema, Some(&HashSet::new()), true).unwrap();
-        let selected = HashSet::from(["a".to_string()]);
+        validate_field_names(&schema, Some(&Fields::empty()), true).unwrap();
+        let selected = Fields::from(vec![arrow::datatypes::Field::new(
+            "a",
+            DataType::Int64,
+            true,
+        )]);
         assert!(validate_field_names(&schema, Some(&selected), true).is_err());
     }
 
@@ -929,10 +1094,52 @@ mod tests {
             } optional int64 unrelated; }",
         )
         .unwrap();
-        let selected = HashSet::from(["selected".to_string()]);
+        let selected = Fields::from(vec![arrow::datatypes::Field::new(
+            "selected",
+            DataType::Int64,
+            true,
+        )]);
         assert!(validate_field_names(&schema, Some(&selected), false).is_err());
-        let selected = HashSet::from(["unrelated".to_string()]);
+        let selected = Fields::from(vec![arrow::datatypes::Field::new(
+            "unrelated",
+            DataType::Int64,
+            true,
+        )]);
         validate_field_names(&schema, Some(&selected), false).unwrap();
+    }
+
+    #[test]
+    fn projected_fields_skip_unselected_nested_duplicates() {
+        let children = Fields::from(vec![arrow::datatypes::Field::new(
+            "other",
+            DataType::Int64,
+            true,
+        )]);
+        let item = Arc::new(arrow::datatypes::Field::new(
+            "element",
+            DataType::Struct(children.clone()),
+            true,
+        ));
+        let entries = Arc::new(arrow::datatypes::Field::new(
+            "entries",
+            DataType::Struct(Fields::from(vec![
+                arrow::datatypes::Field::new("key", DataType::Utf8, false),
+                arrow::datatypes::Field::new("value", DataType::Struct(children.clone()), true),
+            ])),
+            false,
+        ));
+        for (physical, projected) in [
+            ("optional group s { optional int64 dup; optional int64 dup; optional int64 other; }", DataType::Struct(children)),
+            ("optional group s (LIST) { repeated group list { optional group element { optional int64 dup; optional int64 dup; optional int64 other; } } }", DataType::List(item)),
+            ("optional group s (MAP) { repeated group key_value { required binary key (UTF8); optional group value { optional int64 dup; optional int64 dup; optional int64 other; } } }", DataType::Map(entries, false)),
+        ] {
+            let schema = parquet::schema::parser::parse_message_type(&format!("message root {{ {physical} }}")).unwrap();
+            for case_sensitive in [true, false] {
+                let selected = Fields::from(vec![arrow::datatypes::Field::new("s", projected.clone(), true)]);
+                validate_field_names(&schema, Some(&selected), case_sensitive).unwrap();
+                assert!(validate_field_names(&schema, None, case_sensitive).is_err());
+            }
+        }
     }
 
     #[test]

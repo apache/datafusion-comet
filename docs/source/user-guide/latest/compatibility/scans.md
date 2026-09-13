@@ -64,8 +64,10 @@ The following limitations raise an error at scan time rather than falling back t
 
 - Byte-identical sibling field names in selected top-level columns, including inside structs,
   arrays, and maps. Comet rejects these before decoding to prevent row multiplication and decoder
-  synchronization errors. Unselected top-level columns are skipped, except for field-ID reads,
-  which validate the entire file schema. The check applies in both case-sensitivity modes;
+  synchronization errors. Unselected columns and safely pruned nested fields are skipped.
+  Reads requiring a full-subtree cast still validate that subtree. Files with embedded Arrow
+  schema hints and Variant scans conservatively validate selected subtrees in full; field-ID
+  reads validate the entire file schema. The check applies in both case-sensitivity modes;
   names in separate groups do not collide. Disable Comet for the query to use Spark's duplicate-name
   resolution with an explicit read schema. Spark-compatible resolution is tracked in
   [#5884](https://github.com/apache/datafusion-comet/issues/5884).
