@@ -1,0 +1,271 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+# Publishes SNAPSHOT jars for the current development version to the ASF
+# snapshot repository at https://repository.apache.org/content/repositories/snapshots/
+#
+# The jars bundle native libraries for linux/amd64 and linux/aarch64, built
+# the same way the release builder does (see dev/release/comet-rm/Dockerfile):
+# inside an Ubuntu 20.04 container so the library links against glibc 2.31 and
+# loads on the older distributions that Spark container images are based on,
+# and with the same baseline CPU targets as the release (`make core-*-libs`).
+#
+# Credentials come from the NEXUS_USER / NEXUS_PW repository secrets that ASF
+# Infra provisions for snapshot publishing. The parent pom (org.apache:apache)
+# already maps SNAPSHOT deploys to the `apache.snapshots.https` server, so no
+# pom changes are needed.
+#
+# A `dry_run` dispatch builds everything, verifies the jars and uploads them as
+# workflow artifacts without touching Nexus. It also works on forks.
+
+name: Publish Snapshot
+
+concurrency:
+  # Never let two publishes of the same snapshot version race each other.
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+on:
+  schedule:
+    # 03:00 UTC daily, after the nightly Miri run and before most of the
+    # working day in the Americas and Europe.
+    - cron: '0 3 * * *'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Build and verify the jars, upload them as workflow artifacts, and skip the Nexus deploy'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+env:
+  PROTOC_VERSION: 30.2
+
+jobs:
+  changes:
+    name: Check for new commits
+    # The scheduled run must never publish from a fork. A dry run is allowed
+    # anywhere so the workflow can be exercised before it lands.
+    if: github.repository == 'apache/datafusion-comet' || inputs.dry_run
+    runs-on: ubuntu-slim
+    outputs:
+      publish: ${{ steps.check.outputs.publish }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Skip the scheduled run when main has not changed
+        id: check
+        run: |
+          # A manual dispatch always builds. The scheduled run skips when HEAD
+          # predates the previous run, which keeps Nexus from accumulating
+          # identical snapshots. The slack covers scheduling jitter. If a
+          # nightly fails for an infrastructure reason and nothing lands the
+          # next day, trigger it manually.
+          if [ "$GITHUB_EVENT_NAME" != "schedule" ]; then
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          head_ts=$(git log -1 --format=%ct)
+          age=$(( $(date +%s) - head_ts ))
+          if [ "$age" -gt $(( 24 * 3600 + 1800 )) ]; then
+            echo "HEAD is $(( age / 3600 ))h old; nothing new to publish"
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  native:
+    name: Build native library (linux/${{ matrix.arch }})
+    needs: changes
+    if: needs.changes.outputs.publish == 'true'
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+            make_target: core-amd64-libs
+            protoc_arch: x86_64
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+            make_target: core-arm64-libs
+            protoc_arch: aarch_64
+    runs-on: ${{ matrix.runner }}
+    # Same base image as dev/release/comet-rm/Dockerfile. See the header comment.
+    container: ubuntu:20.04
+    timeout-minutes: 90
+    env:
+      CC: gcc-10
+      CXX: g++-10
+    steps:
+      - name: Install build dependencies
+        run: |
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            ca-certificates curl unzip git build-essential gcc-10 g++-10 \
+            clang llvm cmake pkg-config libssl-dev
+      - uses: actions/checkout@v7
+      - name: Install protoc
+        run: |
+          curl -sSfL --retry 3 -o protoc.zip \
+            "https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-linux-${{ matrix.protoc_arch }}.zip"
+          unzip -q protoc.zip -d /usr/local
+          protoc --version
+      - name: Install Rust
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      - name: Cache Cargo registry
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: snapshot-cargo-${{ matrix.arch }}-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}
+          restore-keys: |
+            snapshot-cargo-${{ matrix.arch }}-
+      - name: Build
+        run: make ${{ matrix.make_target }}
+      - name: Check the library links against the release glibc baseline
+        run: |
+          # objdump lists every GLIBC_x.y version node the library needs. The
+          # release builder is Ubuntu 20.04 (glibc 2.31); anything newer means
+          # this job drifted away from the release image.
+          objdump -T native/target/release/libcomet.so \
+            | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1 | tee glibc.txt
+          if [ "$(sort -V glibc.txt <(echo GLIBC_2.31) | tail -1)" != "GLIBC_2.31" ]; then
+            echo "libcomet.so requires a glibc newer than the release baseline"
+            exit 1
+          fi
+      - uses: ./.github/actions/upload-artifact-retry
+        with:
+          name: libcomet-linux-${{ matrix.arch }}
+          path: native/target/release/libcomet.so
+          if-no-files-found: error
+          retention-days: 1
+
+  deploy:
+    name: ${{ inputs.dry_run && 'Build snapshot jars (dry run)' || 'Deploy snapshot jars' }}
+    needs: native
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install JDKs
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          # Spark 3.4 is built with JDK 11 and everything else with JDK 17,
+          # matching pr_build_linux.yml. setup-java exports JAVA_HOME_11_X64
+          # and JAVA_HOME_17_X64; the last entry is the default.
+          java-version: |
+            11
+            17
+      - name: Cache Maven dependencies
+        uses: actions/cache@v6
+        with:
+          path: ~/.m2/repository
+          key: snapshot-maven-${{ hashFiles('**/pom.xml') }}
+          restore-keys: |
+            snapshot-maven-
+      - name: Download native libraries
+        uses: ./.github/actions/download-artifact-retry
+        with:
+          pattern: libcomet-linux-*
+          path: native-libs
+      - name: Bootstrap Maven
+        uses: ./.github/actions/maven-bootstrap
+      - name: Configure Maven server credentials
+        if: ${{ !inputs.dry_run }}
+        run: |
+          # Credentials are read from the environment at deploy time rather
+          # than written into the file.
+          mkdir -p ~/.m2
+          cat > ~/.m2/settings.xml <<'EOF'
+          <settings>
+            <servers>
+              <server>
+                <id>apache.snapshots.https</id>
+                <username>${env.NEXUS_USER}</username>
+                <password>${env.NEXUS_PW}</password>
+              </server>
+            </servers>
+          </settings>
+          EOF
+      - name: Build and ${{ inputs.dry_run && 'install' || 'deploy' }}
+        env:
+          NEXUS_USER: ${{ secrets.NEXUS_USER }}
+          NEXUS_PW: ${{ secrets.NEXUS_PW }}
+          GOAL: ${{ inputs.dry_run && 'install' || 'deploy' }}
+        run: |
+          set -euo pipefail
+          version=$(./mvnw -B -q help:evaluate -Dexpression=project.version -DforceStdout)
+          case "$version" in
+            *-SNAPSHOT) ;;
+            *) echo "Refusing to publish non-SNAPSHOT version $version"; exit 1 ;;
+          esac
+          echo "Publishing $version from $(git rev-parse --short HEAD)"
+
+          # One build per published variant. The native libraries live in
+          # spark/target/classes, so re-copy them after each clean; the release
+          # script (dev/release/build-release-comet.sh) places them the same way.
+          mkdir -p jars
+          while read -r jdk profiles; do
+            echo "::group::Build with $profiles"
+            ./mvnw -B -q clean
+            lib_dir=spark/target/classes/org/apache/comet/linux
+            mkdir -p "$lib_dir/amd64" "$lib_dir/aarch64"
+            cp native-libs/libcomet-linux-amd64/libcomet.so "$lib_dir/amd64/"
+            cp native-libs/libcomet-linux-aarch64/libcomet.so "$lib_dir/aarch64/"
+            # The root pom skips deploying the parent pom, but consumers need it
+            # to resolve the child poms, and the release publishes it. The user
+            # property overrides every module's setting. $profiles is a
+            # space-separated list of -P flags, so it must word-split.
+            # shellcheck disable=SC2086
+            JAVA_HOME="$jdk" ./mvnw -B "$GOAL" -DskipTests -Dmaven.deploy.skip=false $profiles
+            cp spark/target/comet-spark-spark*.jar jars/
+            echo "::endgroup::"
+          done <<EOF
+          $JAVA_HOME_11_X64 -Pspark-3.4 -Pscala-2.12
+          $JAVA_HOME_17_X64 -Pspark-3.5 -Pscala-2.12
+          $JAVA_HOME_17_X64 -Pspark-4.0
+          $JAVA_HOME_17_X64 -Pspark-4.1
+          EOF
+      - name: Verify every jar bundles both native libraries
+        run: |
+          set -euo pipefail
+          status=0
+          for jar in jars/*.jar; do
+            for lib in linux/amd64 linux/aarch64; do
+              if ! unzip -l "$jar" | grep -q "org/apache/comet/$lib/libcomet.so"; then
+                echo "$jar is missing $lib/libcomet.so"
+                status=1
+              fi
+            done
+          done
+          ls -l jars
+          exit $status
+      - name: Upload jars
+        if: ${{ inputs.dry_run }}
+        uses: ./.github/actions/upload-artifact-retry
+        with:
+          name: comet-snapshot-jars
+          path: jars/*.jar
+          if-no-files-found: error
+          retention-days: 7

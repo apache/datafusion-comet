@@ -154,6 +154,7 @@ umbrella doesn't watch, or operate independently of the rest of CI:
 | `pr_title_check.yml`   | Fires on `pull_request.types: [edited]` so it re-runs when a PR title is edited without a code push. |
 | `codeql.yml`           | Security scanner; weekly schedule + on every push/PR.                                                |
 | `miri.yml`             | Nightly Miri safety checks.                                                                          |
+| `publish_snapshot.yml` | Nightly SNAPSHOT jars to repository.apache.org; skips when main has not changed. `dry_run` dispatch. |
 | `stale.yml`            | Daily stale-PR closer.                                                                               |
 | `take.yml`             | Issue-comment trigger for `take` / `untake`.                                                         |
 | `label_new_issues.yml` | Issue trigger to apply `requires-triage`.                                                            |

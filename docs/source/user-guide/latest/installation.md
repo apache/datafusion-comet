@@ -75,8 +75,45 @@ Cloud Service Providers.
 
 <!-- IF_SNAPSHOT -->
 
-This documentation is for the current development version of Comet. Published jar files are only available for released versions.
-To use this version of Comet, see [Building from source](source.md).
+This documentation is for the current development version of Comet, which has not been released. Nightly snapshot
+jar files for this version are published to the
+[ASF snapshot repository](https://repository.apache.org/content/repositories/snapshots/org/apache/datafusion/) for the
+amd64 and arm64 architectures for Linux. For Apple macOS, it is currently necessary to
+[build from source](source.md).
+
+Snapshots are unreleased development builds provided for testing and evaluation only. They are not Apache releases,
+have not been voted on, and should not be used in production. Older snapshots are removed from the repository
+periodically.
+
+A new snapshot is published each night that new commits land on the `main` branch. Every snapshot carries the same
+version, `$COMET_VERSION`, so Maven-based tooling resolves the most recent one automatically. The
+[Publish Snapshot](https://github.com/apache/datafusion-comet/actions/workflows/publish_snapshot.yml) workflow log
+records the commit each snapshot was built from.
+
+The following artifacts are published:
+
+- `comet-spark-spark3.4_2.12`
+- `comet-spark-spark3.5_2.12`
+- `comet-spark-spark4.0_2.13`
+- `comet-spark-spark4.1_2.13`
+
+To download a snapshot jar, browse to the artifact directory in the snapshot repository, for example
+[comet-spark-spark4.1_2.13/$COMET_VERSION](https://repository.apache.org/content/repositories/snapshots/org/apache/datafusion/comet-spark-spark4.1_2.13/$COMET_VERSION/),
+and pick the jar with the newest timestamp. Then use it as described in
+[Run Spark Shell with Comet enabled](#run-spark-shell-with-comet-enabled).
+
+Alternatively, let Spark resolve the newest snapshot directly:
+
+```shell
+$SPARK_HOME/bin/spark-shell \
+    --repositories https://repository.apache.org/content/repositories/snapshots/ \
+    --packages org.apache.datafusion:comet-spark-spark4.1_2.13:$COMET_VERSION \
+    --conf spark.plugins=org.apache.spark.CometPlugin \
+    --conf spark.shuffle.manager=org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager \
+    --conf spark.comet.explain.fallback.enabled=true \
+    --conf spark.memory.offHeap.enabled=true \
+    --conf spark.memory.offHeap.size=4g
+```
 
 <!-- ENDIF -->
 
