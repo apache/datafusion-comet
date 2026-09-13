@@ -31,7 +31,7 @@ import org.apache.hadoop.fs.Path
 import org.apache.spark.sql._
 import org.apache.spark.sql.catalyst.{FunctionIdentifier, TableIdentifier}
 import org.apache.spark.sql.catalyst.catalog.{BucketSpec, CatalogStatistics, CatalogTable}
-import org.apache.spark.sql.catalyst.expressions.{DynamicPruningExpression, Expression, ExpressionInfo, Hex, Literal}
+import org.apache.spark.sql.catalyst.expressions.{DynamicPruningExpression, Expression, ExpressionInfo, GetStructField, Hex, Literal, ScalarSubquery => LogicalScalarSubquery}
 import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateMode, BloomFilterAggregate}
 import org.apache.spark.sql.comet._
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometShuffleExchangeExec}
@@ -47,6 +47,7 @@ import org.apache.spark.sql.execution.window.WindowExec
 import org.apache.spark.sql.functions._
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.internal.SQLConf.SESSION_LOCAL_TIMEZONE
+import org.apache.spark.sql.types.StructType
 import org.apache.spark.unsafe.types.UTF8String
 
 import org.apache.comet.{CometConf, CometExecIterator, ExtendedExplainInfo}
@@ -2292,6 +2293,94 @@ class CometExecSuite extends CometTestBase {
           val df4 = sql(s"SELECT (SELECT $column1 FROM tbl LIMIT 1) AS a, _1, _2 FROM tbl")
           checkSparkAnswerAndOperator(df4)
         }
+      }
+    }
+  }
+
+  test("scalar subqueries merged into a struct") {
+    Seq(false, true).foreach { aqeEnabled =>
+      withSQLConf(
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqeEnabled.toString,
+        SQLConf.SUBQUERY_REUSE_ENABLED.key -> "true",
+        CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
+        withParquetTable((0 until 5).map(i => (i, i + 10)), "tbl") {
+          // MergeScalarSubqueries combines the aggregate results into one struct and reads its
+          // fields at each original scalar-subquery site. There is no explicit struct in the SQL.
+          val df = sql("""
+              |SELECT _1,
+              |       (SELECT max(_1) AS maximum FROM tbl) AS maximum,
+              |       (SELECT sum(_2) AS total FROM tbl) AS total,
+              |       (SELECT avg(_2) AS mean FROM tbl) AS mean
+              |FROM tbl
+              |""".stripMargin)
+          val mergedSubqueries = df.queryExecution.optimizedPlan.collect { case p =>
+            p.expressions.flatMap(_.collect {
+              case GetStructField(s: LogicalScalarSubquery, _, _)
+                  if s.dataType.isInstanceOf[StructType] =>
+                s
+            })
+          }.flatten
+          assert(
+            mergedSubqueries.nonEmpty,
+            s"Expected merged struct scalar subqueries:\n${df.queryExecution.optimizedPlan}")
+          assert(mergedSubqueries.exists(_.dataType.asInstanceOf[StructType].length == 3))
+
+          val (_, cometPlan) =
+            checkSparkAnswerAndOperator(df, Seq(classOf[CometProjectExec]))
+          val nativeStructSubqueries = stripAQEPlan(cometPlan).collect {
+            case p: CometProjectExec =>
+              p.projectList.flatMap(_.collect {
+                case GetStructField(s: ScalarSubquery, _, _)
+                    if s.dataType.isInstanceOf[StructType] =>
+                  s
+              })
+          }.flatten
+          assert(
+            nativeStructSubqueries.nonEmpty,
+            s"Expected CometProjectExec to consume a struct scalar subquery:\n$cometPlan")
+        }
+      }
+    }
+  }
+
+  test("merged one-row aggregate subplans retain native projection and union") {
+    assume(isSpark42Plus, "MergeSubplans merges bare aggregate subplans in Spark 4.2+")
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.SUBQUERY_REUSE_ENABLED.key -> "true") {
+      withParquetTable((0 until 100).map(i => (i, i * 2)), "tbl") {
+        // Regression for #5834: this SQL has no scalar subqueries. MergeSubplans introduces
+        // them, and a Spark projection at either site also prevents native union execution.
+        // Distinct aliases keep the merged struct outside the duplicate-name limitation.
+        val df = sql("""
+            |SELECT sum(s) FROM (
+            |  SELECT max(_1) AS s FROM tbl
+            |  UNION ALL
+            |  SELECT min(_2) AS t FROM tbl)
+            |""".stripMargin)
+        val mergedSubqueries = df.queryExecution.optimizedPlan.collect { case p =>
+          p.expressions.flatMap(_.collect {
+            case s: LogicalScalarSubquery if s.dataType.isInstanceOf[StructType] => s
+          })
+        }.flatten
+        assert(
+          mergedSubqueries.exists(_.dataType.asInstanceOf[StructType].length == 2),
+          s"Expected MergeSubplans to introduce a struct scalar:\n${df.queryExecution.optimizedPlan}")
+
+        val (_, cometPlan) = checkSparkAnswerAndOperator(
+          df,
+          Seq(
+            classOf[CometProjectExec],
+            classOf[CometUnionExec],
+            classOf[CometHashAggregateExec]))
+        val nativeStructSubqueries = stripAQEPlan(cometPlan).collect { case p: CometProjectExec =>
+          p.projectList.flatMap(_.collect {
+            case s: ScalarSubquery if s.dataType.isInstanceOf[StructType] => s
+          })
+        }.flatten
+        assert(
+          nativeStructSubqueries.nonEmpty,
+          s"Expected CometProjectExec to consume the introduced struct scalar:\n$cometPlan")
       }
     }
   }

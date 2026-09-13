@@ -698,6 +698,8 @@ Comet also accelerates a number of Catalyst expressions that have no Spark SQL f
 
 This list is illustrative, not exhaustive: the per-function tables are not the complete set of expressions Comet can accelerate.
 
+Scalar subqueries can return structs, including those created when Spark merges multiple scalar subqueries. Struct results are transferred from Spark to native execution through Arrow IPC and cached for the native expression's execution context. Supported fields include booleans, numeric types, default-collation strings, binary, dates, timestamps, nulls, and nested structs. Decimal fields require a non-negative scale no greater than their precision. Structs must be non-empty and have distinct field names at each level; arrays, maps, intervals, and other unsupported field types still cause fallback to Spark. Existing non-struct scalar-subquery paths are unchanged.
+
 ## See also
 
 - [Comet Compatibility Guide](compatibility/index.md) - known incompatibilities and edge cases for supported expressions.
