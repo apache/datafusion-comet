@@ -85,8 +85,7 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
   // `oss.*` catalog properties to it and no functional test covers the path, so an OSS write
   // could silently drop endpoint/credential configuration. Fail closed until it is covered.
   //
-  // `hdfs` IS present: the NameNode endpoints a write needs are forwarded below (see
-  // `CometIcebergNativeScan.hadoopToIcebergHdfsProperties`), so nothing is silently dropped.
+  // `hdfs` IS present: its NameNode endpoints are forwarded below, so nothing is dropped.
   private val SupportedStorageSchemes: Set[String] =
     Set("file", "memory", "s3", "s3a", "gs", "hdfs")
   private val MinUnsupportedFormatVersion = 3
@@ -654,8 +653,7 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
     val hadoopDerivedProperties = CometIcebergNativeScan.hadoopToIcebergS3Properties(
       NativeConfig.extractObjectStoreOptions(writeHadoopConf, dataUri),
       dataBucket)
-    // HA NameNode endpoints for an `hdfs://<nameservice>/...` data location; see the scan path.
-    // Ordered before `fileIOProperties` so an explicit catalog `hdfs.name-node` still wins.
+    // Before `fileIOProperties` so an explicit catalog `hdfs.name-node` wins, as on the scan path.
     val hadoopDerivedHdfsProperties =
       CometIcebergNativeScan.hadoopToIcebergHdfsProperties(dataUri, writeHadoopConf)
     val catalogProperties =

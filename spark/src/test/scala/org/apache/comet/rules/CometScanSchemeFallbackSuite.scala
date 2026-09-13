@@ -130,8 +130,7 @@ class CometScanSchemeFallbackSuite extends CometTestBase {
       "s3a://bucket/key.parquet",
       "gs://bucket/key.parquet",
       "oss://bucket/key.parquet",
-      // Routes to iceberg-rust's pure-Rust hdfs-native backend, not to the libhdfs/JNI client
-      // the plain-Parquet path uses.
+      // hdfs-native backend, not the libhdfs/JNI client the plain-Parquet path uses.
       "hdfs://nn:8020/warehouse/db/t/key.parquet",
       "hdfs://nameservice1/warehouse/db/t/key.parquet").foreach { u =>
       assert(
@@ -220,9 +219,8 @@ class CometScanSchemeFallbackSuite extends CometTestBase {
     assert(
       !openable("blob:///bucket/k.parquet", Set.empty),
       "without opt-in, blob gets no bucket promotion, so a hostless blob location is unopenable")
-    // hdfs: the authority is the NameNode (or the nameservice `hdfs.name-node` resolves), and
-    // opendal's hdfs-native builder rejects an empty `name_node`. This gate runs before the
-    // catalog property bag exists, so a hostless location declines rather than guess.
+    // hdfs: the authority is the NameNode, and the gate runs before the catalog properties that
+    // could supply one, so a hostless location declines rather than guess.
     assert(openable("hdfs://nn:8020/warehouse/db/t/k.parquet"))
     assert(openable("hdfs://nameservice1/warehouse/db/t/k.parquet"))
     assert(

@@ -37,11 +37,9 @@ const ICEBERG_PROVIDER_CLASS_PROPERTY: &str = "s3.comet.credential.provider.clas
 /// URI, OAuth tokens, credentials.uri, tenant-id, etc.) is kept upstream so
 /// `CometS3CredentialBridge` can read whatever the vendor needs.
 ///
-/// `hdfs.` carries `hdfs.name-node` (the NameNode endpoint list, comma-separated for HA) and
-/// `hadoop.` carries per-key HDFS client overrides; both are read by iceberg-rust's hdfs-native
-/// config parser. Dropping them here would leave an HA table with only the path authority, which
-/// is a logical nameservice and not a routable host -- see `hadoopToIcebergHdfsProperties` on the
-/// JVM side for where the endpoints come from.
+/// `hdfs.` carries the NameNode list and `hadoop.` the HDFS client overrides; dropping them would
+/// leave an HA table with only its nameservice authority, which is not a routable host (see
+/// `CometIcebergNativeScan.hadoopToIcebergHdfsProperties`).
 const STORAGE_PROPERTY_PREFIXES: &[&str] = &["s3.", "gcs.", "adls.", "client.", "hdfs.", "hadoop."];
 
 /// Pick an OpenDAL storage backend from a URI's scheme. `file` (or no scheme) falls through to
@@ -65,12 +63,9 @@ pub(crate) fn storage_factory_for(
         "file" => Ok(Arc::new(OpenDalStorageFactory::Fs)),
         "memory" => Ok(Arc::new(OpenDalStorageFactory::Memory)),
         "gs" => Ok(Arc::new(OpenDalStorageFactory::Gcs)),
-        // HDFS through iceberg-rust's pure-Rust `hdfs-native` backend -- NOT the libhdfs/JNI
-        // client the plain-Parquet path uses (`fs.comet.libhdfs.schemes`). Both may be linked
-        // into the same `libcomet`, but they are separate clients with separate connections and
-        // separate Kerberos state. The NameNode comes from the `hdfs.name-node` property when
-        // set (forwarded by `STORAGE_PROPERTY_PREFIXES`) and otherwise from the path authority,
-        // which is only routable on a single-NameNode cluster.
+        // iceberg-rust's pure-Rust `hdfs-native` backend -- NOT the libhdfs/JNI client the
+        // plain-Parquet path uses (`fs.comet.libhdfs.schemes`). Both link into the same
+        // `libcomet`, but they are separate clients with separate connections and Kerberos state.
         "hdfs" => Ok(Arc::new(OpenDalStorageFactory::HdfsNative)),
         // Reads keep the OSS backend they have always had (CometScanRule admits `oss` scan
         // locations through HadoopFileIO). Writes fail closed: Comet does not forward `oss.*`
@@ -293,8 +288,8 @@ mod tests {
 
     #[test]
     fn hdfs_scheme_resolves_for_both_modes() {
-        // Reads and writes both route to the hdfs-native backend. Unlike `oss`, nothing is
-        // silently dropped: `hdfs.`/`hadoop.` properties are forwarded to the FileIO below.
+        // Unlike `oss`, writes are admitted: `hdfs.`/`hadoop.` properties are forwarded, so
+        // nothing is silently dropped.
         for mode in [AccessMode::Read, AccessMode::Write] {
             assert!(factory_result("hdfs://nn:8020/warehouse/db/t", mode).is_ok());
             assert!(factory_result("hdfs://nameservice1/warehouse/db/t", mode).is_ok());
@@ -303,9 +298,8 @@ mod tests {
 
     #[test]
     fn hdfs_properties_reach_the_file_io() {
-        // The NameNode list and the `hadoop.*` client overrides are the whole HDFS configuration
-        // surface; if the prefix filter drops them an HA table connects to a nameservice name as
-        // if it were a host, and fails only once a task opens a file.
+        // If the prefix filter drops these, an HA table connects to its nameservice as if it were
+        // a host and fails only once a task opens a file.
         let props = HashMap::from([
             (
                 "hdfs.name-node".to_string(),

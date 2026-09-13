@@ -140,10 +140,8 @@ class CometIcebergNativeScanSuite extends AnyFunSuite with Matchers {
 
   // --- hadoopToIcebergHdfsProperties -------------------------------------------------------
   //
-  // opendal's hdfs-native builder never dials the path authority: it synthesizes the HA config
-  // from the comma-separated `hdfs.name-node` value. iceberg-rust falls back to the path
-  // authority when the property is absent, which only works when that authority is a real
-  // `host:port`. These cases pin the HA translation that makes `hdfs://<nameservice>/...` work.
+  // These pin the HA translation that makes `hdfs://<nameservice>/...` reachable; see that
+  // method's scaladoc for why the property is required rather than optional.
 
   private def hdfsProps(location: String, conf: Map[String, String]): Map[String, String] = {
     val hadoopConf = new org.apache.hadoop.conf.Configuration(false)
@@ -164,14 +162,12 @@ class CometIcebergNativeScanSuite extends AnyFunSuite with Matchers {
   }
 
   test("a plain host:port authority needs no mapping") {
-    // The path authority is already a routable NameNode; emitting a property would only pin the
-    // scan to one endpoint.
+    // A property would only pin the scan to one endpoint.
     hdfsProps("hdfs://nn.example.com:8020/warehouse/db/t", Map.empty) shouldBe Map.empty
   }
 
   test("a partially resolved HA list yields nothing rather than a short failover list") {
-    // Dropping nn2 would silently turn a failover into an outage; fall through to the path
-    // authority, which fails loudly instead.
+    // Dropping nn2 would silently turn a failover into an outage.
     hdfsProps(
       "hdfs://nameservice1/warehouse",
       Map(
