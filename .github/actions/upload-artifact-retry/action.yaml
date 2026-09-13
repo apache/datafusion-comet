@@ -1,0 +1,145 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+name: "Upload Artifact (with retry)"
+description: >
+  Drop-in replacement for actions/upload-artifact that retries the upload three
+  times. The artifact client only retries 429/500/502/503/504, so a
+  FinalizeArtifact answered "(403) Forbidden: Error from intermediary" fails the
+  step even though the content uploaded fine. There is no input to widen that
+  list, Actions has no built-in step retry, and third-party retry wrappers are
+  not on the Apache allowed-actions list. See .github/workflows/README.md.
+
+  Retries force overwrite, which deletes the newest artifact carrying the name
+  before re-uploading. `name` must therefore identify exactly one producer in
+  the run: a reusable workflow ci.yml calls more than once has to qualify the
+  name with its version inputs. dev/ci/check-ci-config.py enforces that.
+
+# Inputs mirror actions/upload-artifact@v7 one for one. The boolean defaults
+# have to be real 'true'/'false' strings because core.getBooleanInput() throws
+# on an empty value; the numeric ones default to '' so "unset" round-trips.
+inputs:
+  name:
+    description: 'Artifact name'
+    required: false
+    default: 'artifact'
+  path:
+    description: 'A file, directory or wildcard pattern that describes what to upload'
+    required: true
+  if-no-files-found:
+    description: "Behavior if no files are found: warn, error or ignore"
+    required: false
+    default: 'warn'
+  retention-days:
+    description: 'Days before the artifact expires (empty means repository default)'
+    required: false
+    default: ''
+  compression-level:
+    description: 'Zlib compression level 0-9 (empty means the action default)'
+    required: false
+    default: ''
+  overwrite:
+    description: 'Delete an existing artifact with the same name before uploading'
+    required: false
+    default: 'false'
+  include-hidden-files:
+    description: 'Include hidden files in the artifact'
+    required: false
+    default: 'false'
+  archive:
+    description: 'Zip the content before uploading'
+    required: false
+    default: 'true'
+
+# `||` yields the first non-empty operand, so this picks whichever attempt ran.
+outputs:
+  artifact-id:
+    description: 'ID of the uploaded artifact'
+    value: ${{ steps.attempt-1.outputs.artifact-id || steps.attempt-2.outputs.artifact-id || steps.attempt-3.outputs.artifact-id }}
+  artifact-url:
+    description: 'Download URL of the uploaded artifact'
+    value: ${{ steps.attempt-1.outputs.artifact-url || steps.attempt-2.outputs.artifact-url || steps.attempt-3.outputs.artifact-url }}
+  artifact-digest:
+    description: 'SHA-256 digest of the uploaded artifact'
+    value: ${{ steps.attempt-1.outputs.artifact-digest || steps.attempt-2.outputs.artifact-digest || steps.attempt-3.outputs.artifact-digest }}
+
+runs:
+  using: "composite"
+  steps:
+    # continue-on-error keeps a failed attempt from failing the job while still
+    # recording outcome == 'failure', which the later attempts gate on. The last
+    # attempt omits it so a genuinely broken upload still fails loudly.
+    - name: Upload ${{ inputs.name }} (attempt 1 of 3)
+      id: attempt-1
+      uses: actions/upload-artifact@v7
+      continue-on-error: true
+      with:
+        name: ${{ inputs.name }}
+        path: ${{ inputs.path }}
+        if-no-files-found: ${{ inputs.if-no-files-found }}
+        retention-days: ${{ inputs.retention-days }}
+        compression-level: ${{ inputs.compression-level }}
+        overwrite: ${{ inputs.overwrite }}
+        include-hidden-files: ${{ inputs.include-hidden-files }}
+        archive: ${{ inputs.archive }}
+
+    - name: Wait before retrying ${{ inputs.name }}
+      if: ${{ steps.attempt-1.outcome == 'failure' }}
+      shell: bash
+      run: |
+        echo "::warning::Upload of '${{ inputs.name }}' failed; retrying in 15s (attempt 2 of 3)."
+        sleep 15
+
+    # Retries force overwrite: attempt 1 may have created the server-side record
+    # before failing, and CreateArtifact rejects a duplicate name. The delete is
+    # best effort inside upload-artifact, so it no-ops when nothing exists, and
+    # the per-producer naming rule keeps the record it does find our own.
+    - name: Upload ${{ inputs.name }} (attempt 2 of 3)
+      id: attempt-2
+      if: ${{ steps.attempt-1.outcome == 'failure' }}
+      uses: actions/upload-artifact@v7
+      continue-on-error: true
+      with:
+        name: ${{ inputs.name }}
+        path: ${{ inputs.path }}
+        if-no-files-found: ${{ inputs.if-no-files-found }}
+        retention-days: ${{ inputs.retention-days }}
+        compression-level: ${{ inputs.compression-level }}
+        overwrite: 'true'
+        include-hidden-files: ${{ inputs.include-hidden-files }}
+        archive: ${{ inputs.archive }}
+
+    - name: Wait before final retry of ${{ inputs.name }}
+      if: ${{ steps.attempt-1.outcome == 'failure' && steps.attempt-2.outcome == 'failure' }}
+      shell: bash
+      run: |
+        echo "::warning::Upload of '${{ inputs.name }}' failed again; retrying in 45s (attempt 3 of 3)."
+        sleep 45
+
+    - name: Upload ${{ inputs.name }} (attempt 3 of 3)
+      id: attempt-3
+      if: ${{ steps.attempt-1.outcome == 'failure' && steps.attempt-2.outcome == 'failure' }}
+      uses: actions/upload-artifact@v7
+      with:
+        name: ${{ inputs.name }}
+        path: ${{ inputs.path }}
+        if-no-files-found: ${{ inputs.if-no-files-found }}
+        retention-days: ${{ inputs.retention-days }}
+        compression-level: ${{ inputs.compression-level }}
+        overwrite: 'true'
+        include-hidden-files: ${{ inputs.include-hidden-files }}
+        archive: ${{ inputs.archive }}

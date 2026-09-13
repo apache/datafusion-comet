@@ -311,7 +311,8 @@ object CometExplainInfo {
   }
 
   /**
-   * Union of a `Set`-valued tag over `exprs`, skipping nodes the serde never tags.
+   * Union of a coverage or info tag over `exprs`, skipping nodes the serde never tags for those
+   * purposes. This filter must not be used for `FALLBACK_REASONS`, which literals can carry.
    *
    * Catalyst copies a rewritten node's tags onto its replacement (`TreeNode.copyTagsFrom`, which
    * copies whenever the replacement has no tags of its own). Rewriting a tagged expression into a
@@ -328,10 +329,10 @@ object CometExplainInfo {
   }
 
   /**
-   * Nodes that never carry a Comet tag of their own, so anything found on one arrived by the
-   * copying described in [[collectExprTagValues]]. `Literal` is the node that matters, being the
-   * only one with JVM-wide singletons (`Literal.TrueLiteral`, `Literal.FalseLiteral`); the other
-   * two are listed because nothing legitimate can live on them either.
+   * Nodes that never carry their own coverage or info tags, so those tags can only arrive by the
+   * copying described in [[collectExprTagValues]]. This set must match
+   * `QueryPlanSerde.isStructuralExpr` minus `Alias`; changing either set requires checking the
+   * other. This invariant does not apply to `FALLBACK_REASONS`.
    *
    * `Alias` is deliberately absent even though the serde does not tag one directly:
    * `QueryPlanSerde.liftCoverageTags` lands names on whichever node the operator holds, and for a

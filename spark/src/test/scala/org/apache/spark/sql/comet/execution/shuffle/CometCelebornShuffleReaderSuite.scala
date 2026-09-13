@@ -1442,6 +1442,25 @@ class CometCelebornShuffleReaderSuite extends CometTestBase {
     }
   }
 
+  test("JVM reader decodes multiple remote frames with the same expected Spark types") {
+    val frame = intFrame()
+    val attributes = Seq(AttributeReference("value", IntegerType)())
+    val (rows, failure, reports) =
+      readRemoteFrame(frame ++ frame ++ frame, attributes, raw = false)
+    assert(failure.isEmpty)
+    assert(rows.map(_.getInt(0)) == Seq.fill(3)(Seq(-1, 0, 1)).flatten)
+    assert(reports == 0)
+  }
+
+  test("JVM reader validates later frames against the retained expected Spark types") {
+    val attributes = Seq(AttributeReference("value", IntegerType)())
+    val (rows, failure, reports) =
+      readRemoteFrame(intFrame() ++ dictionaryFrame(), attributes, raw = false)
+    assert(rows.map(_.getInt(0)) == Seq(-1, 0, 1))
+    assert(failure.exists(_.toLowerCase(java.util.Locale.ROOT).contains("type mismatch")))
+    assert(reports == 1)
+  }
+
   test("both remote consumption paths validate Arrow offsets before exposing decoded arrays") {
     val allocator = new RootAllocator(Long.MaxValue)
     val strings = new VarCharVector("value", allocator)
@@ -1552,8 +1571,16 @@ class CometCelebornShuffleReaderSuite extends CometTestBase {
       classOf[Native]
         .getDeclaredMethod(
           "decodeShuffleBlockWithValidation",
-          (parameters :+ classOf[Array[Byte]]): _*)
+          (parameters :+ java.lang.Long.TYPE): _*)
         .getReturnType == java.lang.Long.TYPE)
+    assert(
+      classOf[Native]
+        .getDeclaredMethod("createRemoteShuffleDecoder", classOf[Array[Byte]])
+        .getReturnType == java.lang.Long.TYPE)
+    assert(
+      classOf[Native]
+        .getDeclaredMethod("releaseRemoteShuffleDecoder", java.lang.Long.TYPE)
+        .getReturnType == java.lang.Void.TYPE)
 
     val local = new CometShuffleBlockIterator(new ByteArrayInputStream(Array.empty[Byte]))
     assert(!local.requiresValidation())
@@ -1608,6 +1635,26 @@ class CometCelebornShuffleReaderSuite extends CometTestBase {
     NativeBatchDecoderIteratorLifecycleChecks.closesDeliveredBatch()
   }
 
+  test("decoder cleanup waits for native decoder creation") {
+    NativeBatchDecoderIteratorConcurrencyChecks.closeWaitsForDecoderCreation()
+  }
+
+  test("decoder cleanup waits for active native decoding even when interrupted") {
+    NativeBatchDecoderIteratorConcurrencyChecks.closeWaitsForNativeDecoding()
+  }
+
+  test("decoder cleanup waits for Arrow import and releases the resulting batch") {
+    NativeBatchDecoderIteratorConcurrencyChecks.closeWaitsForBatchImportAndPublication()
+  }
+
+  test("decoder cleanup can close a blocked transport without decoding its returned block") {
+    NativeBatchDecoderIteratorConcurrencyChecks.closeUnblocksTransportAndPreventsDecoding()
+  }
+
+  test("decoder unwinds Arrow import before reporting failures without blocking cleanup") {
+    NativeBatchDecoderIteratorConcurrencyChecks.closeProceedsDuringFailureReporting()
+  }
+
   test("decoder cleanup releases remaining resources and preserves suppressed failures") {
     NativeBatchDecoderIteratorLifecycleChecks.preservesCleanupFailures()
   }
@@ -1627,6 +1674,18 @@ class CometCelebornShuffleReaderSuite extends CometTestBase {
 
   test("decoder validates remote Arrow payloads without changing the local decode path") {
     NativeBatchDecoderIteratorLifecycleChecks.selectsValidationOnlyForRemoteStreams()
+  }
+
+  test("decoder does not allocate native state for empty or unused remote streams") {
+    NativeBatchDecoderIteratorLifecycleChecks.doesNotAllocateUnusedRemoteDecoder()
+  }
+
+  test("decoder releases remote native state once and preserves cleanup failures") {
+    NativeBatchDecoderIteratorLifecycleChecks.preservesRemoteDecoderCleanupFailures()
+  }
+
+  test("decoder does not report native decoder creation failures as remote data corruption") {
+    NativeBatchDecoderIteratorLifecycleChecks.doesNotReportRemoteDecoderCreationFailures()
   }
 
   test("decoder rejects a missing remote schema before consuming or reporting persisted data") {
