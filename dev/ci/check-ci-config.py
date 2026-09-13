@@ -56,6 +56,9 @@
 #   7. Independent Linux checks. Lint, compile-only checks and debug Rust
 #      tests must remain runnable without waiting for the native CI build.
 #
+#   7. Direct Maven wrapper invocations in the two Linux workflows must run
+#      after the retrying bootstrap, including checks moved between them.
+#
 # Run from the repository root: python3 dev/ci/check-ci-config.py
 
 import importlib.util
@@ -117,7 +120,8 @@ ROUTING_CASES = [
     # to nothing at all and merges having been exercised by no consumer.
     ([".github/actions/upload-artifact-retry/action.yaml"], BUILD_JOBS),
     ([".github/actions/download-artifact-retry/action.yaml"], BUILD_JOBS),
-    # The Maven bootstrap composite is called only from pr_build_linux.yml.
+    # Both Linux workflows call the Maven bootstrap composite. They share the
+    # build_linux route, so moving a caller between them keeps this route.
     (
         [".github/actions/maven-bootstrap/action.yaml"],
         {"build_linux", "build_linux_full", "build_linux_all_profiles"},
@@ -458,6 +462,8 @@ INDEPENDENT_LINUX_JOBS = {
     "lint", "scalafix-syntactic", "lint-java", "build-spark-4-1",
     "celeborn-reflection-compatibility", "linux-test-rust",
 }
+LINUX_MAVEN_WORKFLOWS = (LINUX_CHECKS_WORKFLOW, "pr_build_linux.yml")
+MAVEN_BOOTSTRAP_ACTION = "./.github/actions/maven-bootstrap"
 
 
 def load_filters():
@@ -794,13 +800,14 @@ def native_selection_failures(jobs):
     """Return errors when workflow gates diverge from the Python selector.
 
     `jobs` is the ci.yml job mapping returned by block_mapping, with each value
-    holding an inline scalar and indented body. Read the selector's consumer
-    keys and require a matching caller, direct output export, and simple gate
-    for each one, plus the producer. This checks wiring without evaluating YAML
-    expressions. Inputs and files are not mutated; import/read errors propagate.
+    holding an inline scalar and indented body. The selector maps actual caller
+    IDs to tuples of selection outputs; each caller must use exactly their OR
+    (a single comparison for one output), and export every output directly.
+    For example, spark_4_1 accepts either its core or Hive output, while the
+    producer has one derived output. Expressions are compared, not evaluated.
+    Inputs and files are not mutated; import/read errors propagate.
     """
-    consumers = {"pr_build_linux" if key == "build_linux" else key: key
-                 for key in load_filters().NATIVE_CONSUMERS}
+    consumers = load_filters().NATIVE_CONSUMERS
     actual_consumers = {
         job_id for job_id, (_, body) in jobs.items()
         if scalar(block_mapping(body, 4).get("uses", ("", ""))[0])
@@ -812,17 +819,72 @@ def native_selection_failures(jobs):
                         "in compute-changes.py")
     changes = block_mapping(jobs.get("changes", ("", ""))[1], 4)
     outputs = block_mapping(changes.get("outputs", ("", ""))[1], 6)
-    for job_id, output in {SHARED_NATIVE_JOB: SHARED_NATIVE_JOB, **consumers}.items():
+    selections = {SHARED_NATIVE_JOB: (SHARED_NATIVE_JOB,), **consumers}
+    for job_id, routes in selections.items():
         fields = block_mapping(jobs.get(job_id, ("", ""))[1], 4)
-        if fields.get("if", ("", ""))[0] != f"needs.changes.outputs.{output} == 'true'":
-            failures.append(f"ci.yml: {job_id} must select only changes.outputs.{output}")
-        if outputs.get(output, ("", ""))[0] != f"${{{{ steps.compute.outputs.{output} }}}}":
-            failures.append(f"ci.yml: changes must export steps.compute.outputs.{output}")
+        expected = " || ".join(f"needs.changes.outputs.{output} == 'true'" for output in routes)
+        if fields.get("if", ("", ""))[0] != expected:
+            failures.append(f"ci.yml: {job_id} must select exactly {expected}")
+        for output in routes:
+            if outputs.get(output, ("", ""))[0] != f"${{{{ steps.compute.outputs.{output} }}}}":
+                failures.append(f"ci.yml: changes must export steps.compute.outputs.{output}")
+    return failures
+
+
+def job_steps(job):
+    """Return ordered step mappings from a conventional workflow job body.
+
+    `job` is the indented text from block_mapping. Only the direct `steps:`
+    list at six spaces is read; each result uses block_mapping's (scalar,
+    body) values. Replacing each list marker with spaces lets that existing
+    parser read step keys at eight spaces without inspecting nested actions.
+    This reads a string, mutates nothing, and returns an empty list if absent;
+    actionlint remains responsible for other YAML layouts and syntax errors.
+    """
+    body = block_mapping(job, 4).get("steps", ("", ""))[1]
+    starts = list(re.finditer(r"^      - ", body, re.MULTILINE))
+    return [block_mapping("        " + body[start.end():
+                          starts[index + 1].start() if index + 1 < len(starts) else len(body)], 8)
+            for index, start in enumerate(starts)]
+
+
+def linux_maven_bootstrap_failures(workflows):
+    """Return errors for Linux Maven runs without a prior reliable bootstrap.
+
+    `workflows` is a directory Path. Read only the two Linux reusable workflows
+    and their direct job steps; composite actions own their internal bootstrap.
+    Each direct ./mvnw run needs an earlier maven-bootstrap step in the same job
+    with no `if` and with failures propagated. Comments and non-run fields do
+    not count as commands. No files or mappings are mutated; missing workflows
+    produce errors, other file-read errors propagate, and success returns [].
+    """
+    failures = []
+    for filename in LINUX_MAVEN_WORKFLOWS:
+        path = workflows / filename
+        if not path.exists():
+            failures.append(f"{path}: Linux Maven workflow is missing")
+            continue
+        jobs = block_mapping(block_mapping(path.read_text(encoding="utf-8"), 0)
+                             .get("jobs", ("", ""))[1], 2)
+        for job_id, (_, body) in jobs.items():
+            bootstrapped = False
+            for step in job_steps(body):
+                if (scalar(step.get("uses", ("", ""))[0]) == MAVEN_BOOTSTRAP_ACTION
+                        and "if" not in step
+                        and scalar(step.get("continue-on-error", ("false", ""))[0]) == "false"):
+                    bootstrapped = True
+                value, script = step.get("run", ("", ""))
+                script = script if value in {"|", ">", "|-", ">-", "|+", ">+"} else scalar(value)
+                commands = "\n".join(line for line in script.splitlines()
+                                     if not line.lstrip().startswith("#"))
+                if re.search(r"(?<![\w./])\./mvnw(?:\s|$)", commands) and not bootstrapped:
+                    failures.append(f"{path}: {job_id} must bootstrap Maven unconditionally "
+                                    "with failures propagated before running ./mvnw")
     return failures
 
 
 def artifact_failures(workflows):
-    """Read workflow files and return artifact, routing, and independence errors.
+    """Return artifact, routing, independence, and Linux Maven bootstrap errors.
 
     `workflows` is a directory Path containing ci.yml and the reusable workflows.
     Files and parsed mappings are read only. An empty list means all invariants
@@ -838,6 +900,7 @@ def artifact_failures(workflows):
     failures = shared_native_failures(workflows, jobs, artifacts)
     failures.extend(linux_checks_failures(workflows, jobs))
     failures.extend(native_selection_failures(jobs))
+    failures.extend(linux_maven_bootstrap_failures(workflows))
     shared_wiring_valid = not failures
     for filename, (uploads, downloads) in artifacts.items():
         path = workflows / filename

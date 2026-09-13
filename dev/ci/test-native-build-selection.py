@@ -35,19 +35,20 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 CONSUMERS = {
-    "pr_build_linux": "build_linux",
-    "spark_3_4": "spark_3_4",
-    "spark_3_5": "spark_3_5",
-    "spark_4_0": "spark_4_0",
-    "spark_4_1": "spark_4_1",
-    "iceberg_1_8": "iceberg_1_8",
-    "iceberg_1_9": "iceberg_1_9",
-    "iceberg_1_10": "iceberg_1_10",
-    "iceberg_1_11": "iceberg_1_11",
+    "pr_build_linux": ("build_linux",),
+    "spark_3_4": ("spark_3_4",),
+    "spark_3_5": ("spark_3_5",),
+    "spark_4_0": ("spark_4_0",),
+    "spark_4_1": ("spark_4_1", "spark_4_1_hive"),
+    "iceberg_1_8": ("iceberg_1_8",),
+    "iceberg_1_9": ("iceberg_1_9",),
+    "iceberg_1_10": ("iceberg_1_10",),
+    "iceberg_1_11": ("iceberg_1_11",),
 }
 DEFAULT = {"pr_build_linux", "spark_4_1", "iceberg_1_11"}
 OPT_IN = (
-    "run-spark-3.4-tests", "run-spark-3.5-tests", "run-spark-4.0-tests", "run-iceberg-tests"
+    "run-spark-3.4-tests", "run-spark-3.5-tests", "run-spark-4.0-tests",
+    "run-spark-4.1-hive-tests", "run-iceberg-tests",
 )
 
 
@@ -104,10 +105,14 @@ class NativeBuildSelectionTest(unittest.TestCase):
         """Assert consumer job IDs and producer selection without mutating inputs.
 
         `flags` is the complete output-to-bool mapping; `expected` contains CI
-        consumer job IDs, whose output keys are pinned in CONSUMERS. Return
+        consumer job IDs, whose possible output keys are pinned in CONSUMERS.
+        A caller is selected if any of its routes is true. Return
         None on success; any missing key or selection mismatch fails the test.
         """
-        self.assertEqual({job for job, key in CONSUMERS.items() if flags[key]}, expected)
+        self.assertEqual(
+            {job for job, routes in CONSUMERS.items() if any(flags[key] for key in routes)},
+            expected,
+        )
         self.assertEqual(flags["build_linux_native"], bool(expected))
 
     def assert_selection(
@@ -126,6 +131,45 @@ class NativeBuildSelectionTest(unittest.TestCase):
 
     def test_native_change_uses_default_pr_coverage(self):
         self.assert_selection(["native/core/src/lib.rs"], DEFAULT)
+
+    def test_consumer_mapping_matches_actual_caller_routes(self):
+        """Pin caller IDs and all of their routes independently of production data.
+
+        Compare ordered items with the reviewed fixture without mutating either
+        mapping. A missing, extra, reordered, or misassigned route fails the test.
+        """
+        self.assertEqual(list(self.filters.NATIVE_CONSUMERS.items()), list(CONSUMERS.items()))
+
+    def test_spark_4_1_core_and_hive_event_routes(self):
+        """Check both Spark 4.1 output flags and the producer through both APIs.
+
+        A Spark 4.1 patch isolates this caller. Ordinary PRs select core only,
+        the Hive label selects Hive only, and subsequent labeled-PR updates,
+        the queue, and manual dispatch select both. Fixtures remain unchanged;
+        CLI inputs are temporary, and any routing mismatch fails assertions.
+        """
+        files = ["dev/diffs/4.1.3.diff"]
+        hive_label = "run-spark-4.1-hive-tests"
+        cases = (
+            ({"name": "pull_request", "action": "synchronize"}, True, False),
+            ({"name": "pull_request", "action": "labeled", "label": hive_label,
+              "labels": [hive_label]}, False, True),
+            ({"name": "pull_request", "action": "synchronize", "labels": [hive_label]},
+             True, True),
+            ({"name": "merge_group"}, True, True),
+            ({"name": "workflow_dispatch"}, True, True),
+        )
+        for event, core, hive in cases:
+            for invoke in (self.filters.compute, self.cli_outputs):
+                with self.subTest(event=event, api=invoke.__name__):
+                    flags = invoke(files, event)
+                    self.assertEqual(flags["spark_4_1"], core)
+                    self.assertEqual(flags["spark_4_1_hive"], hive)
+                    self.assert_selected(
+                        flags,
+                        set(CONSUMERS) if event["name"] == "workflow_dispatch"
+                        else {"spark_4_1"},
+                    )
 
     def test_docs_and_benchmarks_do_not_build_native(self):
         for path in ("docs/source/user-guide/overview.md", "native/core/benches/parquet_read.rs"):
@@ -170,6 +214,7 @@ class NativeBuildSelectionTest(unittest.TestCase):
             ("spark_3_4", "run-spark-3.4-tests"),
             ("spark_3_5", "run-spark-3.5-tests"),
             ("spark_4_0", "run-spark-4.0-tests"),
+            ("spark_4_1", "run-spark-4.1-hive-tests"),
         ):
             with self.subTest(label=label):
                 self.assert_selection(
@@ -272,12 +317,13 @@ class NativeBuildSelectionTest(unittest.TestCase):
     def test_label_event_cli_uses_only_the_new_gating_label(self):
         """Assert the CLI derives native selection from the new label only.
 
-        Exercise Spark 3.5's queue opt-in, Iceberg's grouped opt-in, and an
-        unrelated label. cli_outputs() isolates and cleans up the child
+        Exercise Spark 3.5's queue opt-in, Spark 4.1's Hive-only route, Iceberg's
+        grouped opt-in, and an unrelated label. cli_outputs() cleans up the child
         environment and temporary file; routing tables remain unchanged.
         """
         for label, expected in (
             ("run-spark-3.5-tests", {"spark_3_5"}),
+            ("run-spark-4.1-hive-tests", {"spark_4_1"}),
             ("run-iceberg-tests", {"iceberg_1_8", "iceberg_1_9", "iceberg_1_10"}),
             ("dependencies", set()),
         ):
@@ -305,17 +351,19 @@ class NativeBuildSelectionTest(unittest.TestCase):
             )
 
     def test_producer_output_matches_all_consumer_combinations(self):
-        """Exhaust all 512 consumer path masks across event and label combinations.
+        """Exhaust all 1,024 output path masks across event and label combinations.
 
         Synthetic one-path filters exercise compute() without relying on real
         paths overlapping particular consumers. Unrelated routes also match,
         guarding against accidentally including them in the native union. Only
         FILTERS is patched, and it is restored on success or assertion failure;
         the actual event policy and native-output computation always execute.
+        Core and Hive use independent synthetic paths to exercise either route
+        alone, even though their real path filters are identical.
         Include every subset of native opt-in labels and the merge queue,
         cache-refresh push, manual dispatch, and unsupported schedule events.
         """
-        keys = list(CONSUMERS.values())
+        keys = [key for routes in CONSUMERS.values() for key in routes]
         label_sets = [
             tuple(label for label, selected in zip(OPT_IN, mask) if selected)
             for mask in itertools.product((False, True), repeat=len(OPT_IN))
@@ -341,9 +389,10 @@ class NativeBuildSelectionTest(unittest.TestCase):
                 for event in events:
                     flags = self.filters.compute(files, event)
                     expected = {
-                        job for job, key in CONSUMERS.items()
-                        if event["name"] == "workflow_dispatch" or (
+                        job for job, routes in CONSUMERS.items()
+                        if event["name"] == "workflow_dispatch" or any(
                             raw_flags[key] and self.filters.event_allows(key, event)
+                            for key in routes
                         )
                     }
                     self.assert_selected(flags, expected)
