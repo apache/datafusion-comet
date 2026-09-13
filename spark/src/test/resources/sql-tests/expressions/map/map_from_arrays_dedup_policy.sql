@@ -15,10 +15,10 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- Verifies that `map_from_arrays` falls back to Spark when `spark.sql.mapKeyDedupPolicy` is set
--- to `LAST_WIN`. Spark's ArrayBasedMapBuilder keeps the last occurrence of each duplicate key;
--- Comet's native `map` scalar has no LAST_WIN path, so it must fall back. The default `EXCEPTION`
--- mode agrees with Comet and is covered by `map_from_arrays.sql`.
+-- Verifies that `map_from_arrays` follows `spark.sql.mapKeyDedupPolicy` = `LAST_WIN`, keeping
+-- the last value for each duplicate key. Comet forwards the policy to the native builder as
+-- `datafusion.spark.map_key_dedup_policy`, so the query stays native rather than falling back.
+-- The default `EXCEPTION` mode is covered by `map_from_arrays.sql`.
 
 -- Config: spark.sql.mapKeyDedupPolicy=LAST_WIN
 
@@ -29,13 +29,22 @@ statement
 INSERT INTO test_map_from_arrays_dedup VALUES
   (array('a', 'b', 'c'), array(1, 2, 3)),
   (array('a', 'a', 'b'), array(1, 2, 3)),
-  (array('x', 'x'), array(10, 20))
+  (array('x', 'x'), array(10, 20)),
+  (array(), array()),
+  (NULL, array(99))
 
--- literal duplicate keys under LAST_WIN: Spark keeps the last value; Comet must fall back.
-query expect_fallback(mapKeyDedupPolicy)
+-- literal duplicate keys: the last value wins
+query
 SELECT map_from_arrays(array('a', 'a', 'b'), array(1, 2, 3))
 
--- column input falls back the same way; the incompat branch is triggered by the SQLConf value,
--- not per-row content.
-query expect_fallback(mapKeyDedupPolicy)
+-- three occurrences of the same key collapse to the last one
+query
+SELECT map_from_arrays(array('a', 'a', 'a'), array(1, 2, 3))
+
+-- column input, including rows without duplicates and a NULL row
+query
 SELECT map_from_arrays(k, v) FROM test_map_from_arrays_dedup
+
+-- LAST_WIN does not weaken the NULL key check
+query expect_error(NULL_MAP_KEY)
+SELECT map_from_arrays(array('a', NULL), array(1, 2))

@@ -61,7 +61,9 @@ pub mod jvm_udf;
 mod conditional_funcs;
 mod conversion_funcs;
 mod map_funcs;
-pub use map_funcs::{spark_map_sort, SparkMapExtract};
+pub use map_funcs::{
+    spark_map_sort, SparkMapExtract, SparkMapFromArrays, SparkMapFromEntries, SparkStrToMap,
+};
 mod math_funcs;
 mod nondetermenistic_funcs;
 pub mod url_funcs;

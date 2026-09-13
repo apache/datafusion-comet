@@ -25,6 +25,8 @@ pub(crate) const COMET_DEBUG_MEMORY: &str = "spark.comet.debug.memory";
 pub(crate) const COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED: &str =
     "spark.comet.parquet.rowFilterPushdown.enabled";
 pub(crate) const SPARK_EXECUTOR_CORES: &str = "spark.executor.cores";
+/// Spark's duplicate map key policy, forwarded to `datafusion.spark.map_key_dedup_policy`.
+pub(crate) const SPARK_MAP_KEY_DEDUP_POLICY: &str = "spark.sql.mapKeyDedupPolicy";
 
 pub(crate) trait SparkConfig {
     fn get_bool(&self, name: &str) -> bool;
