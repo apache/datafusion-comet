@@ -1718,7 +1718,6 @@ class CometInMemoryCacheSuite extends CometTestBase {
         for ((native, vectorized) <- Seq((true, true), (false, true), (false, false))) {
           withSQLConf(
             CometConf.COMET_EXEC_ENABLED.key -> native.toString,
-            CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> native.toString,
             SQLConf.CACHE_VECTORIZED_READER_ENABLED.key -> vectorized.toString) {
             val projected =
               cached.selectExpr("random", "seq", "nullable", "seq AS repeated", "text")
