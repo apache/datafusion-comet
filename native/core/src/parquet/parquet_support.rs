@@ -26,7 +26,7 @@ use arrow::datatypes::{FieldRef, Fields};
 use arrow::{
     array::{
         cast::AsArray, new_null_array, types::TimestampMicrosecondType,
-        types::TimestampMillisecondType, Array, ArrayRef, ArrowNativeTypeOp, StructArray,
+        types::TimestampMillisecondType, Array, ArrayRef, StructArray,
     },
     compute::{cast_with_options, CastOptions},
     datatypes::{DataType, TimeUnit},
@@ -269,7 +269,9 @@ fn parquet_convert_array_impl(
             // Restore the original child validity: required fields must remain non-null.
             let micros = arrow::array::TimestampMillisecondArray::new(
                 millis.values().clone(), visible)
-                .try_unary::<_, TimestampMicrosecondType, _>(|value| value.mul_checked(1_000))?;
+                .try_unary::<_, TimestampMicrosecondType, _>(|value| {
+                    value.checked_mul(1_000).ok_or(SparkError::LongOverflow)
+                })?;
             let micros = arrow::array::TimestampMicrosecondArray::new(
                 micros.values().clone(), millis.nulls().cloned())
                 .with_timezone_opt(target_tz.clone());
@@ -1325,6 +1327,8 @@ mod tests {
         use crate::parquet::parquet_support::{parquet_convert_array, SparkParquetOptions};
         use arrow::array::{Array, ArrayRef, StructArray, TimestampMillisecondArray};
         use arrow::datatypes::{DataType, Field, Fields, TimeUnit};
+        use datafusion::error::DataFusionError;
+        use datafusion_comet_common::SparkError;
         use datafusion_comet_spark_expr::EvalMode;
         use std::sync::Arc;
 
@@ -1339,10 +1343,8 @@ mod tests {
         // Top-level: checked, matching Spark's `millisToMicros` (`Math.multiplyExact`).
         let err = parquet_convert_array(Arc::clone(&millis), &micros_type, &options)
             .expect_err("top-level overflow must error");
-        assert!(
-            err.to_string().to_lowercase().contains("overflow"),
-            "unexpected error: {err}"
-        );
+        assert!(matches!(err, DataFusionError::External(ref source)
+            if matches!(source.downcast_ref::<SparkError>(), Some(SparkError::LongOverflow))));
 
         // Filtered scans disable checked conversion because Spark may prune values before
         // conversion through paths DataFusion cannot fully mirror.
@@ -1370,7 +1372,10 @@ mod tests {
             micros_type.clone(),
             true,
         ))]));
-        assert!(parquet_convert_array(Arc::clone(&strukt), &target, &options).is_err());
+        let err = parquet_convert_array(Arc::clone(&strukt), &target, &options)
+            .expect_err("nested overflow must error");
+        assert!(matches!(err, DataFusionError::External(ref source)
+            if matches!(source.downcast_ref::<SparkError>(), Some(SparkError::LongOverflow))));
         let converted = parquet_convert_array(strukt, &target, &unchecked_options)
             .expect("filtered nested overflow must not error");
         let converted_child = Arc::clone(

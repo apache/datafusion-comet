@@ -271,11 +271,12 @@ abstract class ParquetReadSuite extends CometTestBase {
     // https://github.com/apache/spark/blob/v4.2.0/sql/core/src/main/java/org/apache/spark/sql/execution/datasources/parquet/ParquetVectorUpdaterFactory.java#L800-L833
     // Matches Spark's positive and negative overflow cases:
     // https://github.com/apache/spark/blob/v4.2.0/sql/core/src/test/resources/sql-tests/inputs/timestamp.sql#L74-L83
-    def isOverflow(error: Throwable): Boolean =
+    def isLongOverflow(error: Throwable): Boolean =
       Iterator
         .iterate(error)(_.getCause)
         .takeWhile(_ != null)
-        .exists(cause => Option(cause.getMessage).exists(_.toLowerCase.contains("overflow")))
+        .exists(cause =>
+          cause.getClass == classOf[ArithmeticException] && cause.getMessage == "long overflow")
 
     Seq(false, true).foreach { dictionaryEnabled =>
       Seq(92233720368547758L, -92233720368547758L).foreach { millis =>
@@ -347,7 +348,7 @@ abstract class ParquetReadSuite extends CometTestBase {
                   }.nonEmpty)
 
                   val (sparkError, cometError) = checkSparkAnswerMaybeThrows(selected)
-                  assert(Seq(sparkError, cometError).forall(_.exists(isOverflow)))
+                  assert(Seq(sparkError, cometError).forall(_.exists(isLongOverflow)))
                 }
               }
             }
