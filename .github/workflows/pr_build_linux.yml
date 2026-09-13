@@ -98,12 +98,12 @@ jobs:
     container:
       image: amd64/rust
       env:
-        JAVA_TOOL_OPTIONS: ${{ (matrix.profile.java_version == '17' || matrix.profile.java_version == '21') && '--add-exports=java.base/sun.nio.ch=ALL-UNNAMED --add-exports=java.base/sun.util.calendar=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/java.lang=ALL-UNNAMED' || '' }}
+        JAVA_TOOL_OPTIONS: '--add-exports=java.base/sun.nio.ch=ALL-UNNAMED --add-exports=java.base/sun.util.calendar=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/java.lang=ALL-UNNAMED'
     strategy:
       matrix:
         profile:
-          - name: "Spark 3.4, JDK 11, Scala 2.12"
-            java_version: "11"
+          - name: "Spark 3.4, JDK 17, Scala 2.12"
+            java_version: "17"
             maven_opts: "-Pspark-3.4 -Pscala-2.12"
           - name: "Spark 3.5, JDK 17, Scala 2.12"
             java_version: "17"
@@ -347,8 +347,8 @@ jobs:
         # the goal with these profiles is to get coverage of all Java, Scala, and Spark
         # versions without testing all possible combinations, which would be overkill
         profile:
-          - name: "Spark 3.4, JDK 11, Scala 2.12"
-            java_version: "11"
+          - name: "Spark 3.4, JDK 17, Scala 2.12"
+            java_version: "17"
             maven_opts: "-Pspark-3.4 -Pscala-2.12"
 
           - name: "Spark 3.5, JDK 17, Scala 2.13"
@@ -513,7 +513,7 @@ jobs:
     container:
       image: amd64/rust
       env:
-        JAVA_TOOL_OPTIONS: ${{ (matrix.profile.java_version == '17' || matrix.profile.java_version == '21') && '--add-exports=java.base/sun.nio.ch=ALL-UNNAMED --add-exports=java.base/sun.util.calendar=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/java.lang=ALL-UNNAMED' || '' }}
+        JAVA_TOOL_OPTIONS: '--add-exports=java.base/sun.nio.ch=ALL-UNNAMED --add-exports=java.base/sun.util.calendar=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/java.lang=ALL-UNNAMED'
 
     steps:
       - uses: actions/checkout@v7
