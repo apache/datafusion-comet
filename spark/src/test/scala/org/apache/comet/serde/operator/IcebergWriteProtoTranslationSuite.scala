@@ -19,6 +19,8 @@
 
 package org.apache.comet.serde.operator
 
+import scala.jdk.CollectionConverters._
+
 import org.scalatest.funsuite.AnyFunSuite
 
 import org.apache.comet.serde.OperatorOuterClass.{CompressionCodec, IcebergWriterMode}
@@ -186,13 +188,15 @@ class IcebergWriteProtoTranslationSuite extends AnyFunSuite {
         s"${Keys.ParquetBloomFilterColumnFppPrefix}region" -> "0.02",
         s"${Keys.ParquetBloomFilterColumnNdvPrefix}id" -> "1234"),
       TestCreatedBy)
-    assert(settings.getBloomFilterEnabledColumnsList == java.util.Arrays.asList("id", "region"))
+    assert(settings.getBloomFiltersList.asScala.map(_.getParquetPath) == Seq("id", "region"))
+    val bloomFilters = settings.getBloomFiltersList.asScala.map(p => p.getParquetPath -> p).toMap
+    assert(bloomFilters.keySet == Set("id", "region"))
     assert(settings.getBloomFilterMaxBytes == 1024L * 1024L)
-    assert(settings.getBloomFilterFppByColumnMap.get("id") == 0.01d)
-    assert(settings.getBloomFilterFppByColumnMap.get("region") == 0.02d)
-    assert(settings.getBloomFilterNdvByColumnMap.get("id") == 1234L)
-    assert(!settings.getBloomFilterNdvByColumnMap.containsKey("region"))
-    assert(!settings.getBloomFilterFppByColumnMap.containsKey("amount"))
+    assert(bloomFilters("id").getFpp == 0.01d)
+    assert(bloomFilters("region").getFpp == 0.02d)
+    assert(bloomFilters("id").getNdv == 1234L)
+    assert(!bloomFilters("region").hasNdv)
+    assert(!bloomFilters.contains("amount"))
   }
 
   test("an explicit NDV re-enables a bloom filter after enabled=false") {
@@ -206,9 +210,10 @@ class IcebergWriteProtoTranslationSuite extends AnyFunSuite {
         s"${Keys.ParquetBloomFilterColumnNdvPrefix}id" -> configuredNdv.toString),
       TestCreatedBy)
 
-    assert(settings.getBloomFilterEnabledColumnsList == java.util.Arrays.asList("id"))
-    assert(settings.getBloomFilterFppByColumnMap.get("id") == configuredFpp)
-    assert(settings.getBloomFilterNdvByColumnMap.get("id") == configuredNdv)
+    val bloomFilter = settings.getBloomFilters(0)
+    assert(bloomFilter.getParquetPath == "id")
+    assert(bloomFilter.getFpp == configuredFpp)
+    assert(bloomFilter.getNdv == configuredNdv)
   }
 
   test("bloom filter properties use physical Parquet paths for list and map leaves") {
@@ -227,12 +232,13 @@ class IcebergWriteProtoTranslationSuite extends AnyFunSuite {
         "attrs.key" -> "attrs.key_value.key",
         "attrs.value" -> "attrs.key_value.value"))
 
+    val bloomFilters = settings.getBloomFiltersList.asScala.map(p => p.getParquetPath -> p).toMap
     assert(
-      settings.getBloomFilterEnabledColumnsList == java.util.Arrays
-        .asList("attrs.key_value.key", "attrs.key_value.value", "tags.list.element"))
-    assert(settings.getBloomFilterFppByColumnMap.get("tags.list.element") == 0.02d)
-    assert(settings.getBloomFilterNdvByColumnMap.get("attrs.key_value.value") == 1234L)
-    assert(!settings.getBloomFilterEnabledColumnsList.contains("missing"))
+      bloomFilters.keySet ==
+        Set("attrs.key_value.key", "attrs.key_value.value", "tags.list.element"))
+    assert(bloomFilters("tags.list.element").getFpp == 0.02d)
+    assert(bloomFilters("attrs.key_value.value").getNdv == 1234L)
+    assert(!bloomFilters.contains("missing"))
   }
 
   test("Iceberg bloom filter defaults and explicit max are translated exactly") {
@@ -240,7 +246,7 @@ class IcebergWriteProtoTranslationSuite extends AnyFunSuite {
     val defaults = buildParquetSettings(Map(enabled -> "true"), TestCreatedBy)
     assert(defaults.getBloomFilterMaxBytes == Defaults.BloomFilterMaxBytes)
     assert(Defaults.BloomFilterMaxBytes == 1024 * 1024)
-    assert(defaults.getBloomFilterFppByColumnMap.get("id") == Defaults.BloomFilterFpp)
+    assert(defaults.getBloomFilters(0).getFpp == Defaults.BloomFilterFpp)
     assert(Defaults.BloomFilterFpp == 0.01d)
 
     val explicit = buildParquetSettings(

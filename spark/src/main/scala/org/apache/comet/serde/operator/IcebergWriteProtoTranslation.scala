@@ -169,21 +169,22 @@ object IcebergWriteProtoTranslation {
         parquetPathByIcebergColumnName.get(icebergName).map(icebergName -> _)
       }
       .sortBy(_._2)
-    val bloomFilterEnabledColumns = bloomFilterColumns.map(_._2)
     val bloomFilterMaxBytes =
       parseJavaInt(props, Keys.ParquetBloomFilterMaxBytes, Defaults.BloomFilterMaxBytes).toLong
-    val bloomFilterFppByColumn = bloomFilterColumns.map { case (icebergName, parquetPath) =>
-      val value = props
-        .get(Keys.ParquetBloomFilterColumnFppPrefix + icebergName)
-        .map(java.lang.Double.parseDouble)
-        .getOrElse(Defaults.BloomFilterFpp)
-      parquetPath -> value
-    }.toMap
-    val bloomFilterNdvByColumn = bloomFilterColumns.flatMap { case (icebergName, parquetPath) =>
+    val bloomFilters = bloomFilterColumns.map { case (icebergName, parquetPath) =>
+      val builder = IcebergColumnBloomFilterProps
+        .newBuilder()
+        .setParquetPath(parquetPath)
+        .setFpp(
+          props
+            .get(Keys.ParquetBloomFilterColumnFppPrefix + icebergName)
+            .map(java.lang.Double.parseDouble)
+            .getOrElse(Defaults.BloomFilterFpp))
       props
         .get(Keys.ParquetBloomFilterColumnNdvPrefix + icebergName)
-        .map(value => parquetPath -> java.lang.Long.parseLong(value))
-    }.toMap
+        .foreach(value => builder.setNdv(java.lang.Long.parseLong(value)))
+      builder.build()
+    }
     val builder = IcebergParquetWriteSettings
       .newBuilder()
       .setCompression(compression)
@@ -192,14 +193,8 @@ object IcebergWriteProtoTranslation {
       .setDictSizeBytes(dictSize)
       .setPageRowLimit(pageRowLimit)
       .setCreatedBy(createdBy)
-      .addAllBloomFilterEnabledColumns(bloomFilterEnabledColumns.asJava)
+      .addAllBloomFilters(bloomFilters.asJava)
       .setBloomFilterMaxBytes(bloomFilterMaxBytes)
-      .putAllBloomFilterFppByColumn(bloomFilterFppByColumn.map { case (k, v) =>
-        k -> Double.box(v)
-      }.asJava)
-      .putAllBloomFilterNdvByColumn(bloomFilterNdvByColumn.map { case (k, v) =>
-        k -> Long.box(v)
-      }.asJava)
 
     resolveCompressionLevel(props, compression).foreach(builder.setCompressionLevel)
 

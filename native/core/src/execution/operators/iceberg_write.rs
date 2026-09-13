@@ -81,6 +81,8 @@ use parquet::file::properties::{EnabledStatistics, WriterProperties};
 use parquet::schema::types::ColumnPath;
 use serde::{Deserialize, Serialize};
 
+#[cfg(test)]
+use datafusion_comet_proto::spark_operator::IcebergColumnBloomFilterProps;
 use datafusion_comet_proto::spark_operator::{
     CompressionCodec as ProtoCompressionCodec, IcebergParquetWriteSettings, IcebergWrite,
     IcebergWriteCommon, IcebergWriterMode as ProtoIcebergWriterMode,
@@ -2312,14 +2314,10 @@ fn build_writer_properties(settings: &IcebergParquetWriteSettings) -> DFResult<W
         .set_data_page_row_count_limit(settings.page_row_limit as usize)
         .set_statistics_enabled(EnabledStatistics::Page)
         .set_statistics_truncate_length(None);
-    for column in &settings.bloom_filter_enabled_columns {
-        let path = parquet_column_path(column);
-        let fpp = settings
-            .bloom_filter_fpp_by_column
-            .get(column)
-            .copied()
-            .unwrap_or(ICEBERG_DEFAULT_BLOOM_FILTER_FPP);
-        let ndv = settings.bloom_filter_ndv_by_column.get(column).copied();
+    for bloom_filter in &settings.bloom_filters {
+        let path = parquet_column_path(&bloom_filter.parquet_path);
+        let fpp = bloom_filter.fpp;
+        let ndv = bloom_filter.ndv;
         let max_bytes = settings.bloom_filter_max_bytes as usize;
         validate_bloom_filter_inputs(fpp, max_bytes)?;
         let target_bytes = parquet_mr_bloom_filter_bytes(ndv, fpp, max_bytes);
@@ -2343,6 +2341,7 @@ fn parquet_column_path(path: &str) -> ColumnPath {
 const BLOOM_FILTER_MIN_BYTES: usize = 32;
 const BLOOM_FILTER_MAX_BYTES: usize = 128 * 1024 * 1024;
 const BLOOM_FILTER_HASH_PROBES: f64 = 8.0;
+#[cfg(test)]
 const ICEBERG_DEFAULT_BLOOM_FILTER_FPP: f64 = 0.01;
 #[cfg(test)]
 const ICEBERG_DEFAULT_BLOOM_FILTER_MAX_BYTES: usize = 1024 * 1024;
@@ -2635,10 +2634,8 @@ mod tests {
             dict_size_bytes: 2 * 1024 * 1024,
             page_row_limit: 20_000,
             created_by: "Apache Iceberg (Comet test)".to_string(),
-            bloom_filter_enabled_columns: Vec::new(),
+            bloom_filters: Vec::new(),
             bloom_filter_max_bytes: ICEBERG_DEFAULT_BLOOM_FILTER_MAX_BYTES as u64,
-            bloom_filter_fpp_by_column: Default::default(),
-            bloom_filter_ndv_by_column: Default::default(),
         }
     }
 
@@ -2721,10 +2718,22 @@ mod tests {
     #[test]
     fn enables_bloom_filters_only_for_configured_columns() {
         let mut settings = base_settings();
-        settings.bloom_filter_enabled_columns = vec![
-            "id".to_string(),
-            "tags.list.element".to_string(),
-            "attrs.key_value.value".to_string(),
+        settings.bloom_filters = vec![
+            IcebergColumnBloomFilterProps {
+                parquet_path: "id".to_string(),
+                fpp: ICEBERG_DEFAULT_BLOOM_FILTER_FPP,
+                ndv: None,
+            },
+            IcebergColumnBloomFilterProps {
+                parquet_path: "tags.list.element".to_string(),
+                fpp: ICEBERG_DEFAULT_BLOOM_FILTER_FPP,
+                ndv: None,
+            },
+            IcebergColumnBloomFilterProps {
+                parquet_path: "attrs.key_value.value".to_string(),
+                fpp: ICEBERG_DEFAULT_BLOOM_FILTER_FPP,
+                ndv: None,
+            },
         ];
         let props = build_writer_properties(&settings).unwrap();
         assert!(props
@@ -2746,7 +2755,11 @@ mod tests {
         // Iceberg's documented write-property defaults:
         // https://iceberg.apache.org/docs/latest/configuration/#write-properties
         let mut settings = base_settings();
-        settings.bloom_filter_enabled_columns = vec!["id".to_string()];
+        settings.bloom_filters = vec![IcebergColumnBloomFilterProps {
+            parquet_path: "id".to_string(),
+            fpp: ICEBERG_DEFAULT_BLOOM_FILTER_FPP,
+            ndv: None,
+        }];
         let props = build_writer_properties(&settings).unwrap();
         let bloom = props.bloom_filter_properties(&"id".into()).unwrap();
         assert_eq!(bloom.fpp(), ICEBERG_DEFAULT_BLOOM_FILTER_FPP);
@@ -3340,10 +3353,8 @@ mod tests {
                 dict_size_bytes: 2 * 1024 * 1024,
                 page_row_limit: 20_000,
                 created_by: "Apache Iceberg (Comet integration test)".to_string(),
-                bloom_filter_enabled_columns: Vec::new(),
+                bloom_filters: Vec::new(),
                 bloom_filter_max_bytes: ICEBERG_DEFAULT_BLOOM_FILTER_MAX_BYTES as u64,
-                bloom_filter_fpp_by_column: Default::default(),
-                bloom_filter_ndv_by_column: Default::default(),
             };
             Arc::new(IcebergWriteCommon {
                 catalog_properties: HashMap::new(),
