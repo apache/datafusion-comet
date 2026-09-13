@@ -22,11 +22,12 @@
 # Merging goes through GitHub's merge queue (see `rulesets` in `.asf.yaml`), so
 # there are two tiers:
 #
-#   pull_request  fast feedback. Linux build + Spark 4.1 + Iceberg 1.11.
+#   pull_request  fast feedback. Linux build + Spark 4.1 (catalyst and
+#                 sql_core only) + Iceberg 1.11.
 #   merge_group   the authoritative gate. Everything the PR tier runs, plus
-#                 the macOS build, the benchmark compile check, Spark
-#                 3.4/3.5/4.0 and Iceberg 1.8/1.9/1.10, evaluated against
-#                 the merge result rather than the PR head.
+#                 the macOS build, the benchmark compile check, the Spark 4.1
+#                 sql_hive shards, Spark 3.4/3.5/4.0 and Iceberg 1.8/1.9/1.10,
+#                 evaluated against the merge result rather than the PR head.
 #
 # Which tier a job sits in is POLICY in dev/ci/compute-changes.py, not an
 # expression here. Heavy jobs deliberately have no `push` tier: the queue
@@ -160,6 +161,7 @@ jobs:
       spark_3_5:    ${{ steps.compute.outputs.spark_3_5 }}
       spark_4_0:    ${{ steps.compute.outputs.spark_4_0 }}
       spark_4_1:    ${{ steps.compute.outputs.spark_4_1 }}
+      spark_4_1_hive: ${{ steps.compute.outputs.spark_4_1_hive }}
       iceberg_1_8:  ${{ steps.compute.outputs.iceberg_1_8 }}
       iceberg_1_9:  ${{ steps.compute.outputs.iceberg_1_9 }}
       iceberg_1_10: ${{ steps.compute.outputs.iceberg_1_10 }}
@@ -288,12 +290,21 @@ jobs:
   spark_4_1:
     name: Spark SQL Tests (Spark 4.1)
     needs: changes
-    if: needs.changes.outputs.spark_4_1 == 'true'
+    # Two POLICY outputs feed one call, so the queue gets every module from a
+    # single 40-minute build instead of two. `spark_4_1` (PR tier) covers
+    # catalyst and the sql_core shards; `spark_4_1_hive` (queue-only, or the
+    # `run-spark-4.1-hive-tests` label) adds the sql_hive shards. A `labeled`
+    # run sets only the second, and then runs only the hive rows.
+    if: needs.changes.outputs.spark_4_1 == 'true' || needs.changes.outputs.spark_4_1_hive == 'true'
     uses: ./.github/workflows/spark_sql_test_reusable.yml
     with:
       spark-short: '4.1'
       spark-full: '4.1.3'
       java: 17
+      modules: >-
+        ${{ needs.changes.outputs.spark_4_1 != 'true' && 'hive'
+            || needs.changes.outputs.spark_4_1_hive != 'true' && 'core'
+            || 'all' }}
 
   iceberg_1_8:
     name: Iceberg Spark SQL Tests (Iceberg 1.8)
