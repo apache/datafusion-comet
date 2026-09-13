@@ -27,6 +27,9 @@ import org.apache.spark.sql.execution.{CodegenSupport, ColumnarToRowExec, Column
 import org.apache.spark.sql.execution.adaptive.QueryStageExec
 import org.apache.spark.sql.execution.columnar.InMemoryTableScanExec
 
+import org.apache.comet.CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED
+import org.apache.comet.CometSparkSessionExtensions.isCometLoaded
+
 /**
  * Lets Spark's generated consumers read cached Arrow vectors without an intermediate UnsafeRow.
  *
@@ -53,6 +56,7 @@ import org.apache.spark.sql.execution.columnar.InMemoryTableScanExec
  */
 object CometCacheColumnarRule extends Rule[SparkPlan] {
   override def apply(plan: SparkPlan): SparkPlan = {
+    if (!isCometLoaded(conf) || !COMET_EXEC_IN_MEMORY_CACHE_ENABLED.get(conf)) return plan
     if (!conf.wholeStageEnabled) return plan
 
     plan.transformUp {
@@ -79,8 +83,7 @@ object CometCacheColumnarRule extends Rule[SparkPlan] {
   private def isColumnarCometCache(plan: SparkPlan): Boolean = {
     plan.supportsColumnar && (plan match {
       case scan: InMemoryTableScanExec =>
-        // The materialized format is fixed even when Comet execution is later disabled. The
-        // serializer delegates unsupported schemas to Spark, whose cache keeps its own reader.
+        // The serializer delegates unsupported schemas to Spark, whose cache keeps its own reader.
         scan.relation.cacheBuilder.serializer.isInstanceOf[ArrowCachedBatchSerializer] &&
         ArrowCachedBatchSerializer.supportsSchema(scan.relation.output)
       case stage: QueryStageExec => isColumnarCometCache(stage.plan)

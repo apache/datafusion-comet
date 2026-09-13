@@ -377,13 +377,16 @@ class CometInMemoryCacheSuite extends CometTestBase {
     }
   }
 
-  test("Spark generated consumers read cold and warm Comet caches columnarly") {
+  test("Spark generated cache consumers respect runtime Comet disable switches") {
     for {
       adaptive <- Seq(false, true)
-      cometEnabled <- Seq(false, true)
+      enabledKey <- Seq(
+        CometConf.COMET_ENABLED.key,
+        CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key)
     } {
       withSQLConf(
-        CometConf.COMET_ENABLED.key -> cometEnabled.toString,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> "true",
         CometConf.COMET_EXEC_ENABLED.key -> "false",
         CometConf.COMET_SHUFFLE_ENABLED.key -> "false",
         SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString,
@@ -405,33 +408,38 @@ class CometInMemoryCacheSuite extends CometTestBase {
             .get
             .cachedRepresentation
             .cacheBuilder
-          Seq(true, false).foreach { cold =>
-            val df = query
-            val plan = df.queryExecution.executedPlan
-            // Planning must not materialize the cache or replace AQE's cache-stage metadata.
-            assert(builder.isCachedColumnBuffersLoaded != cold, plan.toString)
-            checkAnswer(df, expected)
-            assert(builder.isCachedColumnBuffersLoaded)
-            val transitions = collect(plan) {
-              case c: ColumnarToRowExec if collect(c.child) { case s: InMemoryTableScanExec =>
+          // Materialize with fusion enabled, then disable and re-enable it on the same cache.
+          Seq(true, false, true).zipWithIndex.foreach { case (enabled, index) =>
+            withSQLConf(enabledKey -> enabled.toString) {
+              val cold = index == 0
+              val df = query
+              val plan = df.queryExecution.executedPlan
+              // Planning must not materialize the cache or replace AQE's cache-stage metadata.
+              assert(builder.isCachedColumnBuffersLoaded != cold, plan.toString)
+              checkAnswer(df, expected)
+              assert(builder.isCachedColumnBuffersLoaded)
+              val transitions = collect(plan) {
+                case c: ColumnarToRowExec if collect(c.child) { case s: InMemoryTableScanExec =>
+                      s
+                    }.nonEmpty =>
+                  c
+              }
+              assert(transitions.size == (if (enabled) 1 else 0), plan.toString)
+              assert(collect(plan) { case s: CometInMemoryTableScanExec => s }.isEmpty)
+              if (adaptive && isSpark35Plus) {
+                assert(collect(plan) {
+                  case s: QueryStageExec
+                      if s.getClass.getSimpleName == "TableCacheQueryStageExec" =>
                     s
-                  }.nonEmpty =>
-                c
-            }
-            assert(transitions.size == 1, plan.toString)
-            assert(collect(plan) { case s: CometInMemoryTableScanExec => s }.isEmpty)
-            if (adaptive && isSpark35Plus) {
-              assert(collect(plan) {
-                case s: QueryStageExec
-                    if s.getClass.getSimpleName == "TableCacheQueryStageExec" =>
-                  s
-              }.size == 1)
-            }
-            val scan = collect(plan) { case s: InMemoryTableScanExec => s }.head
-            // A cache scan can also be the root of a columnar request or already have a
-            // transition. Applying the rule again must preserve those input/output contracts.
-            Seq(scan, ColumnarToRowExec(scan), RowToColumnarExec(scan)).foreach { boundary =>
-              assert(CometCacheColumnarRule(boundary).fastEquals(boundary))
+                }.size == 1)
+              }
+              val scan = collect(plan) { case s: InMemoryTableScanExec => s }.head
+              assert(scan.supportsColumnar)
+              // A cache scan can also be the root of a columnar request or already have a
+              // transition. Applying the rule again must preserve those input/output contracts.
+              Seq(scan, ColumnarToRowExec(scan), RowToColumnarExec(scan)).foreach { boundary =>
+                assert(CometCacheColumnarRule(boundary).fastEquals(boundary))
+              }
             }
           }
         } finally source.unpersist(blocking = true)
