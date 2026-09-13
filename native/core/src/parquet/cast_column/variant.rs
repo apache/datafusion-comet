@@ -583,9 +583,10 @@ fn prepare_variant_for_unshredding(
     }
 }
 
-/// Spark permits shredded object keys to be absent from the residual metadata dictionary.
-/// Arrow's unshredder uses a read-only dictionary, so supply those keys and let the existing
-/// residual rewrite remap field IDs. Remove when Arrow unshredding can extend metadata:
+/// Spark accepts shredded object keys absent from metadata, although Parquet requires them.
+/// Add the missing keys and use the existing residual rewrite to remap field IDs.
+/// Arrow's panic is tracked by https://github.com/apache/arrow-rs/issues/11069.
+/// Returning an error will still require this Spark compatibility repair. Removal policy:
 /// https://github.com/apache/datafusion-comet/issues/5477.
 fn extend_shredded_metadata(
     variant: &VariantArray,
