@@ -1303,10 +1303,36 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
           withFallbackReason(op, "Could not resolve physical Parquet paths for Bloom filters")
           return None
         }
-        val renamedColumns =
-          IcebergWriteProtoTranslation
-            .enabledBloomFilterColumnNames(effectiveProperties)
-            .filter(resolution.renamedIcebergColumnNames)
+        val configuredColumns =
+          IcebergWriteProtoTranslation.enabledBloomFilterColumnNames(effectiveProperties)
+        val icebergVersion = IcebergReflection.icebergVersion()
+        val versionParts = icebergVersion.split("[.-]", 3)
+        val version =
+          if (versionParts.length >= 2) {
+            scala.util.Try((versionParts(0).toInt, versionParts(1).toInt)).toOption
+          } else {
+            None
+          }
+        val resolvedPaths = version match {
+          case Some((1, minor)) if minor < 8 =>
+            // Iceberg 1.5 passes the configured name straight to parquet-mr.
+            configuredColumns.filter(resolution.physicalPaths).map(path => path -> path).toMap
+          case Some((1, minor)) if minor < 10 =>
+            // Iceberg 1.8 resolves canonical and short collection aliases through field ids.
+            configuredColumns.flatMap { configuredName =>
+              IcebergReflection
+                .findFieldIdByName(writeSchema, configuredName)
+                .flatMap(resolution.pathByFieldId.get)
+                .map(configuredName -> _)
+            }.toMap
+          case _ =>
+            // Iceberg 1.10+ keys writer properties by canonical findColumnName output.
+            resolution.pathByIcebergColumnName
+        }
+        val renamedColumns = resolvedPaths.collect {
+          case (configuredName, path) if resolution.renamedPhysicalPaths.contains(path) =>
+            configuredName
+        }
         if (renamedColumns.nonEmpty) {
           // Iceberg Java sanitizes these Parquet names, while the pinned iceberg-rust Arrow
           // conversion preserves them. Passing the Java path to parquet-rs would silently miss
@@ -1317,7 +1343,7 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
               renamedColumns.mkString(", "))
           return None
         }
-        resolution.pathByIcebergColumnName
+        resolvedPaths
       } else {
         Map.empty[String, String]
       }

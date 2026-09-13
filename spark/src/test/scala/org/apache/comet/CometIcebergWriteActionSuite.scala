@@ -32,6 +32,7 @@ import scala.concurrent.duration.DurationInt
 import scala.jdk.CollectionConverters._
 import scala.util.control.NonFatal
 
+<<<<<<< HEAD
 import org.json4s.{DefaultFormats, Formats}
 import org.json4s.jackson.JsonMethods.parse
 
@@ -40,6 +41,12 @@ import org.apache.parquet.hadoop.ParquetFileReader
 import org.apache.parquet.hadoop.util.HadoopInputFile
 import org.apache.spark.{CometListenerBusUtils, SparkConf, SparkException, SparkThrowable, Success, TaskContext}
 import org.apache.spark.rdd.RDD
+=======
+import org.apache.hadoop.fs.Path
+import org.apache.parquet.hadoop.ParquetFileReader
+import org.apache.parquet.hadoop.util.HadoopInputFile
+import org.apache.spark.{SparkConf, Success}
+>>>>>>> eab9eb47e (fix: match Iceberg bloom path resolution by version)
 import org.apache.spark.scheduler.{SparkListener, SparkListenerTaskEnd}
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.DataFrame
@@ -1393,30 +1400,130 @@ class CometIcebergWriteActionSuite
   test("native bloom filters resolve list and map leaves to physical Parquet paths") {
     assumeNativeAcceleration()
     withIcebergCatalog { _ =>
-      spark.sql(s"""
-        CREATE TABLE $catalog.$ns.native_nested_bloom (
-          id INT,
-          tags ARRAY<STRING>,
-          attrs MAP<STRING, INT>
-        ) USING iceberg
-        TBLPROPERTIES (
-          'write.parquet.bloom-filter-enabled.column.tags.element'='true',
-          'write.parquet.bloom-filter-enabled.column.attrs.key'='true',
-          'write.parquet.bloom-filter-enabled.column.attrs.value'='true'
-        )
-      """)
-
-      assertNativeWriteEngages("native_nested_bloom", Seq(1, 2)) {
-        spark.sql("""
-          INSERT INTO cat.db.native_nested_bloom VALUES
-            (1, array('red', 'green'), map('small', 10, 'large', 20)),
-            (2, array('blue'), map('medium', 30))
+      Seq("native_nested_bloom", "native_nested_bloom_jvm").foreach { table =>
+        spark.sql(s"""
+          CREATE TABLE $catalog.$ns.$table (
+            id INT,
+            tags ARRAY<STRUCT<a: INT>>,
+            attrs MAP<STRING, STRUCT<b: INT>>
+          ) USING iceberg
+          TBLPROPERTIES (
+            'write.parquet.bloom-filter-enabled.column.tags.element.a'='true',
+            'write.parquet.bloom-filter-enabled.column.attrs.key'='true',
+            'write.parquet.bloom-filter-enabled.column.attrs.value.b'='true'
+          )
         """)
       }
 
-      assertParquetBloomFilters(
-        "native_nested_bloom",
-        enabledColumns = Set("tags.list.element", "attrs.key_value.key", "attrs.key_value.value"))
+      def insert(table: String): Unit = spark.sql(s"""
+        INSERT INTO $catalog.$ns.$table VALUES
+          (1, array(named_struct('a', 10), named_struct('a', 20)),
+            map('small', named_struct('b', 30), 'large', named_struct('b', 40))),
+          (2, array(named_struct('a', 50)), map('medium', named_struct('b', 60)))
+      """)
+
+      assertNativeWriteEngages("native_nested_bloom", Seq(1, 2)) {
+        insert("native_nested_bloom")
+      }
+      withSQLConf(CometConf.COMET_ICEBERG_NATIVE_WRITE_ENABLED.key -> "false") {
+        insert("native_nested_bloom_jvm")
+      }
+
+      val physicalColumns =
+        Set("tags.list.element.a", "attrs.key_value.key", "attrs.key_value.value.b")
+      // Iceberg 1.5 passes the configured logical names directly to Parquet Java, where they do
+      // not match these physical list/map paths. Iceberg 1.8+ resolves canonical names first.
+      val expectedColumns =
+        if (icebergVersionAtLeast(1, 8)) physicalColumns else Set.empty[String]
+      assertParquetBloomFilters("native_nested_bloom", enabledColumns = expectedColumns)
+      assertParquetBloomFilters("native_nested_bloom_jvm", enabledColumns = expectedColumns)
+    }
+  }
+
+  test("short nested bloom aliases match the Iceberg runtime footer") {
+    assumeNativeAcceleration()
+    withIcebergCatalog { _ =>
+      Seq("nested_alias_native", "nested_alias_jvm").foreach { table =>
+        spark.sql(s"""
+          CREATE TABLE $catalog.$ns.$table (
+            id INT,
+            tags ARRAY<STRUCT<a: INT>>,
+            attrs MAP<STRING, STRUCT<b: INT>>
+          ) USING iceberg
+          TBLPROPERTIES (
+            'write.parquet.bloom-filter-enabled.column.tags.a'='true',
+            'write.parquet.bloom-filter-enabled.column.attrs.b'='true'
+          )
+        """)
+      }
+
+      def insert(table: String): Unit = spark.sql(s"""
+        INSERT INTO $catalog.$ns.$table VALUES
+          (1, array(named_struct('a', 10)), map('first', named_struct('b', 20))),
+          (2, array(named_struct('a', 30)), map('second', named_struct('b', 40)))
+      """)
+
+      assertNativeWriteEngages("nested_alias_native", Seq(1, 2)) {
+        insert("nested_alias_native")
+      }
+      withSQLConf(CometConf.COMET_ICEBERG_NATIVE_WRITE_ENABLED.key -> "false") {
+        insert("nested_alias_jvm")
+      }
+
+      val icebergUsesFieldIdResolution =
+        icebergVersionAtLeast(1, 8) && !icebergVersionAtLeast(1, 10)
+      Seq("tags.list.element.a", "attrs.key_value.value.b").foreach { physicalColumn =>
+        val nativeHasBloom = parquetBloomFilterPresent("nested_alias_native", physicalColumn)
+        val jvmHasBloom = parquetBloomFilterPresent("nested_alias_jvm", physicalColumn)
+        assert(nativeHasBloom == jvmHasBloom, s"native and JVM footer differ for $physicalColumn")
+        assert(
+          jvmHasBloom == icebergUsesFieldIdResolution,
+          s"unexpected short-alias behavior for $physicalColumn on this Iceberg runtime")
+      }
+    }
+  }
+
+  test("Iceberg 1.5 physical nested bloom paths execute natively and match the JVM footer") {
+    assumeNativeAcceleration()
+    assume(
+      !icebergVersionAtLeast(1, 8),
+      "physical-path Bloom properties are specific to Iceberg 1.5")
+    withIcebergCatalog { _ =>
+      Seq("physical_path_native", "physical_path_jvm").foreach { table =>
+        spark.sql(s"""
+          CREATE TABLE $catalog.$ns.$table (
+            id INT,
+            tags ARRAY<STRUCT<a: INT>>,
+            attrs MAP<STRING, STRUCT<b: INT>>
+          ) USING iceberg
+          TBLPROPERTIES (
+            'write.parquet.bloom-filter-enabled.column.tags.list.element.a'='true',
+            'write.parquet.bloom-filter-enabled.column.attrs.key_value.value.b'='true'
+          )
+        """)
+      }
+
+      def insert(table: String): Unit = spark.sql(s"""
+        INSERT INTO $catalog.$ns.$table VALUES
+          (1, array(named_struct('a', 10)), map('first', named_struct('b', 20))),
+          (2, array(named_struct('a', 30)), map('second', named_struct('b', 40)))
+      """)
+
+      assertNativeWriteEngages("physical_path_native", Seq(1, 2)) {
+        insert("physical_path_native")
+      }
+      withSQLConf(CometConf.COMET_ICEBERG_NATIVE_WRITE_ENABLED.key -> "false") {
+        insert("physical_path_jvm")
+      }
+
+      Seq("tags.list.element.a", "attrs.key_value.value.b").foreach { physicalColumn =>
+        assert(
+          parquetBloomFilterPresent("physical_path_native", physicalColumn),
+          s"expected native Bloom filter for $physicalColumn")
+        assert(
+          parquetBloomFilterPresent("physical_path_jvm", physicalColumn),
+          s"expected JVM Bloom filter for $physicalColumn")
+      }
     }
   }
 
