@@ -138,6 +138,9 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-java-maven-
 
+      - name: Bootstrap Maven
+        uses: ./.github/actions/maven-bootstrap
+
       - name: Run scalafix check
         run: |
           ./mvnw -B package -DskipTests scalafix:scalafix -Dscalafix.mode=CHECK -Psemanticdb ${{ matrix.profile.maven_opts }}
@@ -192,6 +195,9 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-java-maven-
 
+      - name: Bootstrap Maven
+        uses: ./.github/actions/maven-bootstrap
+
       - name: Compile (skip tests)
         run: ./mvnw -B install -DskipTests -Dmaven.test.skip=true -Pspark-4.1
 
@@ -225,6 +231,9 @@ jobs:
           key: ${{ runner.os }}-java-maven-${{ hashFiles('**/pom.xml') }}-celeborn-${{ matrix.celeborn_version }}
           restore-keys: |
             ${{ runner.os }}-java-maven-
+
+      - name: Bootstrap Maven
+        uses: ./.github/actions/maven-bootstrap
 
       - name: Verify reflected Celeborn internals
         env:
@@ -517,7 +526,7 @@ jobs:
           jdk-version: ${{ matrix.profile.java_version }}
 
       - name: Download native library
-        uses: actions/download-artifact@v8
+        uses: ./.github/actions/download-artifact-retry
         with:
           name: native-lib-linux
           # Download to release/ since Maven's -Prelease expects libcomet.so there
@@ -562,7 +571,7 @@ jobs:
           jdk-version: 17
 
       - name: Download native library
-        uses: actions/download-artifact@v8
+        uses: ./.github/actions/download-artifact-retry
         with:
           name: native-lib-linux
           path: native/target/release/
@@ -583,6 +592,11 @@ jobs:
         with:
           path: ./tpch
           key: tpch-${{ hashFiles('.github/workflows/pr_build_linux.yml') }}
+
+      # Without this, a transient repo.maven.apache.org blip fails the whole
+      # job before anything is compiled.
+      - name: Bootstrap Maven
+        uses: ./.github/actions/maven-bootstrap
 
       - name: Build project
         run: |
@@ -617,7 +631,7 @@ jobs:
           jdk-version: 17
 
       - name: Download native library
-        uses: actions/download-artifact@v8
+        uses: ./.github/actions/download-artifact-retry
         with:
           name: native-lib-linux
           path: native/target/release/
@@ -638,6 +652,11 @@ jobs:
         with:
           path: ./tpcds-sf-1
           key: tpcds-${{ hashFiles('.github/workflows/pr_build_linux.yml') }}
+
+      # Without this, a transient repo.maven.apache.org blip fails the whole
+      # job before anything is compiled.
+      - name: Bootstrap Maven
+        uses: ./.github/actions/maven-bootstrap
 
       - name: Build project
         run: |
