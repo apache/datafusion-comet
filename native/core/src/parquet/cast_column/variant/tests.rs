@@ -317,6 +317,121 @@ fn normalize_fully_shredded_object_orders_for_spark() {
 }
 
 #[test]
+fn normalize_shredded_objects_extend_metadata_and_preserve_missing_fields() {
+    let mut builder = VariantBuilder::new();
+    builder.new_object().with_field("z", 9_i64).finish();
+    let (metadata, residual) = builder.finish();
+    let empty_metadata = [1, 0, 0];
+    let field_a: ArrayRef = Arc::new(StructArray::new(
+        vec![
+            Field::new("value", DataType::Binary, true),
+            Field::new("typed_value", DataType::Int64, true),
+        ]
+        .into(),
+        vec![
+            Arc::new(BinaryArray::from(vec![None, None, None, Some(&[0_u8][..])])),
+            Arc::new(Int64Array::from(vec![None, None, Some(1), None])),
+        ],
+        None,
+    ));
+    let field_b: ArrayRef = Arc::new(StructArray::new(
+        vec![Field::new("typed_value", DataType::Int64, true)].into(),
+        vec![Arc::new(Int64Array::from(vec![None, None, None, Some(2)]))],
+        None,
+    ));
+    let typed: ArrayRef = Arc::new(StructArray::new(
+        vec![
+            Field::new("a", field_a.data_type().clone(), false),
+            Field::new("b", field_b.data_type().clone(), false),
+        ]
+        .into(),
+        vec![field_a, field_b],
+        None,
+    ));
+    let input: ArrayRef = Arc::new(StructArray::new(
+        vec![
+            Field::new("metadata", DataType::Binary, true),
+            Field::new("value", DataType::Binary, true),
+            Field::new("typed_value", typed.data_type().clone(), false),
+        ]
+        .into(),
+        vec![
+            Arc::new(BinaryArray::from(vec![
+                None,
+                Some(empty_metadata.as_slice()),
+                Some(metadata.as_slice()),
+                Some(empty_metadata.as_slice()),
+            ])),
+            Arc::new(BinaryArray::from(vec![
+                None,
+                None,
+                Some(residual.as_slice()),
+                None,
+            ])),
+            typed,
+        ],
+        Some(NullBuffer::from(vec![false, true, true, true])),
+    ));
+    let output = normalize_variant_array(&input, &target_field(true)).unwrap();
+    let output = VariantArray::try_new(output.as_ref()).unwrap();
+    assert!(output.is_null(0));
+    for (row, expected) in [
+        (1, vec![]),
+        (
+            2,
+            vec![("a", Variant::from(1_i64)), ("z", Variant::from(9_i64))],
+        ),
+        (3, vec![("a", Variant::Null), ("b", Variant::from(2_i64))]),
+    ] {
+        let Variant::Object(object) = output.value(row) else {
+            panic!("expected object")
+        };
+        assert_eq!(object.iter().collect::<Vec<_>>(), expected);
+    }
+}
+
+#[test]
+fn normalize_rejects_missing_required_shredding_states() {
+    let wrap = |typed: ArrayRef| -> ArrayRef {
+        Arc::new(StructArray::new(
+            vec![
+                Field::new("metadata", DataType::Binary, false),
+                Field::new("typed_value", typed.data_type().clone(), true),
+            ]
+            .into(),
+            vec![Arc::new(BinaryArray::from(vec![&[1_u8, 0, 0][..]])), typed],
+            None,
+        ))
+    };
+    let missing: ArrayRef = Arc::new(Int64Array::from(vec![None]));
+    let mut inputs = vec![wrap(Arc::clone(&missing))];
+    for nulls in [None, Some(NullBuffer::new_null(1))] {
+        let state: ArrayRef = Arc::new(StructArray::new(
+            vec![Field::new("typed_value", DataType::Int64, true)].into(),
+            vec![Arc::clone(&missing)],
+            nulls.clone(),
+        ));
+        inputs.push(wrap(Arc::new(ListArray::new(
+            Arc::new(Field::new("item", state.data_type().clone(), true)),
+            OffsetBuffer::from_lengths([1]),
+            Arc::clone(&state),
+            None,
+        ))));
+        if nulls.is_some() {
+            inputs.push(wrap(Arc::new(StructArray::new(
+                vec![Field::new("a", state.data_type().clone(), true)].into(),
+                vec![state],
+                None,
+            ))));
+        }
+    }
+    for input in inputs {
+        let error = normalize_variant_array(&input, &target_field(false)).unwrap_err();
+        assert!(error.to_string().contains("MALFORMED_VARIANT"), "{error}");
+    }
+}
+
+#[test]
 fn canonical_and_shredded_values_normalize_equally() {
     let mut builder = VariantArrayBuilder::new(6);
     builder.new_object().with_field("known", 1_i64).finish();
@@ -344,7 +459,7 @@ fn canonical_and_shredded_values_normalize_equally() {
     )
     .unwrap();
 
-    let prepared = prepare_variant_for_unshredding(&shredded).unwrap();
+    let prepared = prepare_variant_for_unshredding(&shredded, None).unwrap();
     assert!(Arc::ptr_eq(
         shredded.value_column(),
         prepared.value_column()
@@ -459,7 +574,8 @@ fn unchanged_values_reuse_buffers_and_still_validate() {
         );
     }
     let (output, changed) =
-        rewrite_residual_values(&values, metadata.as_binary::<i32>(), &[Some(0), None]).unwrap();
+        rewrite_residual_values(&values, metadata.as_binary::<i32>(), None, &[Some(0), None])
+            .unwrap();
     assert!(!changed);
     assert!(Arc::ptr_eq(&values, &output));
 
@@ -478,6 +594,7 @@ fn unchanged_values_reuse_buffers_and_still_validate() {
     assert!(rewrite_residual_values(
         &values,
         missing_metadata.as_binary::<i32>(),
+        None,
         &[Some(0), Some(1)],
     )
     .is_err());
@@ -511,6 +628,7 @@ fn lazy_rewrites_preserve_prefix_nulls_and_suffix() {
     let (output, changed) = rewrite_residual_values(
         &mixed,
         metadata.as_binary::<i32>(),
+        None,
         &[Some(0), None, Some(2), None],
     )
     .unwrap();
@@ -638,14 +756,21 @@ fn normalize_nested_list_residuals_use_their_root_metadata() {
         }
         object.finish();
         let (metadata, value) = builder.finish();
-        let metadata_array: ArrayRef = Arc::new(BinaryArray::from(vec![Some(metadata.as_slice())]));
-        let value: ArrayRef = Arc::new(BinaryArray::from(vec![Some(value.as_slice())]));
-        let value = reorder_variant_values(&value, &metadata_array, None).unwrap();
-        (metadata, value.as_binary::<i32>().value(0).to_vec())
+        let mut spark_metadata = WritableMetadataBuilder::from_iter(keys.iter().copied());
+        spark_metadata.finish();
+        let mut spark_metadata = spark_metadata.into_inner();
+        spark_metadata[0] &= !0x10;
+        let value = variant_bytes(
+            &VariantMetadata::new(&spark_metadata),
+            Variant::new(&metadata, &value),
+            VariantObjectKeyOrder::SparkUtf16,
+        )
+        .unwrap();
+        (spark_metadata, value)
     }
 
-    let (metadata0, value0) = legacy_row(&["a", "\u{e000}", "😀"]);
-    let (metadata1, value1) = legacy_row(&["b", "zz", "\u{ffff}", "𐀀"]);
+    let (metadata0, value0) = legacy_row(&["a", "\u{e000}", "😀", ""]);
+    let (metadata1, value1) = legacy_row(&["b", "zz", "\u{ffff}", "𐀀", ""]);
     let states: ArrayRef = Arc::new(
         StructArray::try_new(
             Fields::from(vec![Field::new("value", DataType::Binary, true)]),
@@ -691,7 +816,61 @@ fn normalize_nested_list_residuals_use_their_root_metadata() {
         let Variant::Object(object) = list.get(0).unwrap() else {
             panic!("expected object")
         };
-        assert_eq!(object.get(key).unwrap().as_int64(), Some(index as i64 + 2));
+        // Output slots follow Spark UTF-16 ordering, so Arrow's UTF-8 binary search cannot
+        // be used to look up supplementary characters in the normalized object.
+        let fields = object.iter().collect::<std::collections::HashMap<_, _>>();
+        assert_eq!(fields[key].as_int64(), Some(index as i64 + 2));
+        assert_eq!(fields[""].as_int64(), Some(index as i64 + 3));
+    }
+}
+
+#[test]
+fn normalize_spark_empty_key_metadata_rejects_other_malformed_encodings() {
+    // Spark dictionary ["z", "", "a"], deliberately requiring field ID remapping.
+    let metadata = [1, 3, 0, 1, 1, 2, b'z', b'a'];
+    let mut builder = VariantBuilder::new();
+    let mut object = builder.new_object();
+    object.insert("z", 1_i64);
+    object.insert("", 2_i64);
+    object.insert("a", 3_i64);
+    object.finish();
+    let (canonical_metadata, canonical_value) = builder.finish();
+    let value = variant_bytes(
+        &VariantMetadata::new(&metadata),
+        Variant::new(&canonical_metadata, &canonical_value),
+        VariantObjectKeyOrder::ArrowUtf8,
+    )
+    .unwrap();
+    let normalize = |metadata: &[u8]| {
+        let physical: ArrayRef = Arc::new(StructArray::new(
+            vec![
+                Field::new("value", DataType::Binary, false),
+                Field::new("metadata", DataType::Binary, false),
+            ]
+            .into(),
+            vec![
+                Arc::new(BinaryArray::from(vec![value.as_slice()])),
+                Arc::new(BinaryArray::from(vec![metadata])),
+            ],
+            None,
+        ));
+        normalize_variant_array(&physical, &target_field(false))
+    };
+    let output = normalize(&metadata).unwrap();
+    let output = VariantArray::try_new(output.as_ref()).unwrap();
+    assert_eq!(
+        output.value(0),
+        Variant::new(&canonical_metadata, &canonical_value)
+    );
+
+    for malformed in [
+        vec![1, 3, 0, 1, 1, 2, 0xff, b'a'],    // Invalid UTF-8.
+        vec![1, 3, 0, 2, 1, 2, b'z', b'a'],    // Decreasing offsets.
+        vec![1, 3, 0, 1, 1, 2, b'z', b'z'],    // Duplicate dictionary keys.
+        vec![1, 3, 0, 1, 1, 3, b'z', b'a'],    // Out-of-bounds offset.
+        vec![1, 3, 0, 1, 1, 2, b'z', b'a', 0], // Unexpected trailing bytes.
+    ] {
+        assert!(normalize(&malformed).is_err(), "accepted {malformed:?}");
     }
 }
 

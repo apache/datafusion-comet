@@ -55,6 +55,7 @@ use arrow::datatypes::{
     DataType, Field, FieldRef, Fields, Schema, TimeUnit, DECIMAL128_MAX_PRECISION,
 };
 use arrow::ffi_stream::FFI_ArrowArrayStream;
+use arrow::record_batch::RecordBatch;
 use datafusion::functions_aggregate::bit_and_or_xor::{bit_and_udaf, bit_or_udaf, bit_xor_udaf};
 use datafusion::functions_aggregate::count::count_udaf;
 use datafusion::functions_aggregate::min_max::max_udaf;
@@ -109,8 +110,8 @@ use datafusion::datasource::listing::PartitionedFile;
 use datafusion::logical_expr::type_coercion::functions::fields_with_udf;
 use datafusion::logical_expr::type_coercion::other::get_coerce_type_for_case_expression;
 use datafusion::logical_expr::{
-    AggregateUDF, ReturnFieldArgs, ScalarUDF, TypeSignature, WindowFrame, WindowFrameBound,
-    WindowFrameUnits, WindowFunctionDefinition,
+    AggregateUDF, ColumnarValue, ReturnFieldArgs, ScalarUDF, TypeSignature, WindowFrame,
+    WindowFrameBound, WindowFrameUnits, WindowFunctionDefinition,
 };
 use datafusion::physical_expr::expressions::{Literal, StatsType};
 use datafusion::physical_expr::window::WindowExpr;
@@ -157,6 +158,7 @@ use jni::objects::{Global, JObject};
 use log::warn;
 use num::{BigInt, ToPrimitive};
 use object_store::path::Path;
+use parquet::variant::VariantType;
 use std::cmp::max;
 use std::{collections::HashMap, sync::Arc};
 
@@ -989,6 +991,39 @@ impl PhysicalPlanner {
         }
     }
 
+    /// Scan defaults are literals, except Variant's constant [value, metadata] storage struct.
+    /// Keep that exception here so general Variant expressions remain unsupported.
+    fn create_default_value(
+        &self,
+        spark_expr: &Expr,
+        input_schema: SchemaRef,
+        field: &Field,
+    ) -> Result<ScalarValue, ExecutionError> {
+        let expr = self.create_expr(spark_expr, Arc::clone(&input_schema))?;
+        if let Some(literal) = expr.downcast_ref::<DataFusionLiteral>() {
+            return Ok(literal.value().clone());
+        }
+        if !field.has_valid_extension_type::<VariantType>()
+            || expr.downcast_ref::<CreateNamedStruct>().is_none()
+            || expr.children().len() != 2
+            || !expr.children().iter().all(|child| {
+                child
+                    .downcast_ref::<DataFusionLiteral>()
+                    .is_some_and(|literal| matches!(literal.value(), ScalarValue::Binary(Some(_))))
+            })
+            || expr.data_type(&input_schema)? != *field.data_type()
+        {
+            return Err(GeneralError(
+                "Expected a literal or constant Variant storage struct for scan default"
+                    .to_string(),
+            ));
+        }
+        match expr.evaluate(&RecordBatch::new_empty(input_schema))? {
+            ColumnarValue::Scalar(value) => Ok(value),
+            _ => Err(GeneralError("Expected a scalar scan default".to_string())),
+        }
+    }
+
     /// Create a DataFusion physical sort expression from Spark physical expression
     fn create_sort_expr<'a>(
         &'a self,
@@ -1647,43 +1682,37 @@ impl PhysicalPlanner {
                             .collect()
                     };
 
-                let default_values: Option<HashMap<Column, ScalarValue>> = if !common
-                    .default_values
-                    .is_empty()
-                {
-                    // We have default values. Extract the two lists (same length) of values and
-                    // indexes in the schema, and then create a HashMap to use in the SchemaMapper.
-                    let default_values: Result<Vec<ScalarValue>, DataFusionError> = common
-                        .default_values
-                        .iter()
-                        .map(|expr| {
-                            let literal = self.create_expr(expr, Arc::clone(&required_schema))?;
-                            let df_literal =
-                                literal.downcast_ref::<DataFusionLiteral>().ok_or_else(|| {
-                                    GeneralError("Expected literal of default value.".to_string())
-                                })?;
-                            Ok(df_literal.value().clone())
-                        })
-                        .collect();
-                    let default_values = default_values?;
-                    let default_values_indexes: Vec<usize> = common
-                        .default_values_indexes
-                        .iter()
-                        .map(|offset| *offset as usize)
-                        .collect();
-                    Some(
-                        default_values_indexes
-                            .into_iter()
-                            .zip(default_values)
-                            .map(|(idx, scalar_value)| {
-                                let field = required_schema.field(idx);
-                                let column = Column::new(field.name().as_str(), idx);
-                                (column, scalar_value)
-                            })
-                            .collect(),
-                    )
-                } else {
+                if common.default_values.len() != common.default_values_indexes.len() {
+                    return Err(GeneralError(
+                        "Scan default values and indexes have different lengths".to_string(),
+                    ));
+                }
+                let default_values = if common.default_values.is_empty() {
                     None
+                } else {
+                    Some(
+                        common
+                            .default_values
+                            .iter()
+                            .zip(&common.default_values_indexes)
+                            .map(|(expr, offset)| {
+                                let idx = usize::try_from(*offset).map_err(|_| {
+                                    GeneralError(format!("Invalid scan default index {offset}"))
+                                })?;
+                                let field = required_schema.fields().get(idx).ok_or_else(|| {
+                                    GeneralError(format!(
+                                        "Scan default index {idx} is outside schema"
+                                    ))
+                                })?;
+                                let value = self.create_default_value(
+                                    expr,
+                                    Arc::clone(&required_schema),
+                                    field,
+                                )?;
+                                Ok((Column::new(field.name(), idx), value))
+                            })
+                            .collect::<Result<HashMap<_, _>, ExecutionError>>()?,
+                    )
                 };
 
                 // Get one file from this partition (we know it's not empty due to early return above)
@@ -5171,6 +5200,63 @@ mod tests {
 
     struct BoundedShufflePartitionPusher {
         max_frame_size: usize,
+    }
+
+    #[test]
+    fn variant_scan_default_requires_constant_storage() {
+        let planner = PhysicalPlanner::new(Arc::new(SessionContext::new()), 0);
+        let storage = DataType::Struct(Fields::from(vec![
+            Field::new("value", DataType::Binary, false),
+            Field::new("metadata", DataType::Binary, false),
+        ]));
+        let field = Field::new("v", storage.clone(), true).with_extension_type(VariantType);
+        let schema = Arc::new(Schema::new(vec![field.clone()]));
+        let bytes = |value| Expr {
+            expr_struct: Some(ExprStruct::Literal(spark_expression::Literal {
+                value: Some(literal::Value::BytesVal(value)),
+                datatype: Some(spark_expression::DataType {
+                    type_id: spark_expression::data_type::DataTypeId::Bytes as i32,
+                    type_info: None,
+                }),
+                is_null: false,
+            })),
+            ..Default::default()
+        };
+        let mut value = spark_expression::CreateNamedStruct {
+            names: vec!["value".to_string(), "metadata".to_string()],
+            values: vec![bytes(vec![0]), bytes(vec![1, 0, 0])],
+        };
+        let default_expr = |value| Expr {
+            expr_struct: Some(ExprStruct::CreateNamedStruct(value)),
+            ..Default::default()
+        };
+        let scalar = planner
+            .create_default_value(&default_expr(value.clone()), Arc::clone(&schema), &field)
+            .unwrap();
+        let ScalarValue::Struct(array) = scalar else {
+            panic!("expected a Variant storage scalar")
+        };
+        assert_eq!(array.data_type(), &storage);
+        assert_eq!(array.len(), 1);
+        assert_eq!(
+            ScalarValue::try_from_array(array.column(0).as_ref(), 0).unwrap(),
+            ScalarValue::Binary(Some(vec![0]))
+        );
+
+        // A struct expression is only a scan default for a marked Variant field.
+        let unmarked = Field::new("v", storage, true);
+        assert!(planner
+            .create_default_value(&default_expr(value.clone()), Arc::clone(&schema), &unmarked)
+            .is_err());
+        value.names.swap(0, 1);
+        assert!(planner
+            .create_default_value(&default_expr(value.clone()), Arc::clone(&schema), &field)
+            .is_err());
+        value.names.swap(0, 1);
+        value.values[0] = create_bound_reference(0);
+        assert!(planner
+            .create_default_value(&default_expr(value), schema, &field)
+            .is_err());
     }
 
     #[test]
