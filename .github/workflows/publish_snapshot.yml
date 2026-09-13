@@ -150,13 +150,16 @@ jobs:
       - name: Build
         run: make ${{ matrix.make_target }}
       - name: Check the library links against the release glibc baseline
+        # The container's default shell is sh, not bash.
+        shell: bash
         run: |
           # objdump lists every GLIBC_x.y version node the library needs. The
           # release builder is Ubuntu 20.04 (glibc 2.31); anything newer means
           # this job drifted away from the release image.
-          objdump -T native/target/release/libcomet.so \
-            | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1 | tee glibc.txt
-          if [ "$(sort -V glibc.txt <(echo GLIBC_2.31) | tail -1)" != "GLIBC_2.31" ]; then
+          max=$(objdump -T native/target/release/libcomet.so \
+            | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1)
+          echo "Highest glibc symbol version required: $max"
+          if [ "$(printf '%s\n' "$max" GLIBC_2.31 | sort -V | tail -1)" != "GLIBC_2.31" ]; then
             echo "libcomet.so requires a glibc newer than the release baseline"
             exit 1
           fi
