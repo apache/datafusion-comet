@@ -680,6 +680,13 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
             None
           } else {
             operation match {
+              // iceberg-rust has accessors only for primitive fields, not containers. Keep
+              // the post-scan filter without sending residuals that would warn on every task.
+              case IS_NULL | IS_NOT_NULL | NOT_NULL
+                  if attribute.dataType.isInstanceOf[ArrayType] ||
+                    attribute.dataType.isInstanceOf[MapType] ||
+                    attribute.dataType.isInstanceOf[StructType] =>
+                None
               case IS_NULL => Some(unaryPredicate(columnName, IcebergPredicateOperator.IsNull))
               case IS_NOT_NULL | NOT_NULL =>
                 Some(unaryPredicate(columnName, IcebergPredicateOperator.NotNull))

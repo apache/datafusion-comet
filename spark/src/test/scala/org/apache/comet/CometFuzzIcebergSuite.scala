@@ -21,7 +21,8 @@ package org.apache.comet
 
 import scala.util.Random
 
-import org.apache.spark.sql.Column
+import org.apache.spark.sql.{Column, Row}
+import org.apache.spark.sql.comet.CometProjectExec
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanExec
 import org.apache.spark.sql.functions.{col, lit}
 import org.apache.spark.sql.types._
@@ -234,6 +235,93 @@ class CometFuzzIcebergSuite extends CometFuzzIcebergBase {
             s"expected no residual pushdown for gated column '$name' (${field.dataType})")
         }
       }
+    }
+  }
+
+  test("filter pushdown - IS NULL/IS NOT NULL on list, map and struct columns stays native") {
+    val tableName = "hadoop_catalog.db.null_check_test"
+    try {
+      spark.sql(s"""
+        CREATE TABLE $tableName (
+          id INT, l ARRAY<STRUCT<a: INT>>, m MAP<STRING, STRUCT<a: INT>>, s STRUCT<a: INT>
+        ) USING iceberg
+      """)
+      // Container nullness is distinct from emptiness, null elements and null struct fields.
+      spark.sql(s"""
+        INSERT INTO $tableName VALUES
+          (1, array(named_struct('a', 1)), map('k', named_struct('a', 1)), named_struct('a', 1)),
+          (2, NULL, NULL, NULL),
+          (3, array(), map(), named_struct('a', NULL)),
+          (4, array(NULL), map('k', NULL), named_struct('a', NULL)),
+          (5, array(named_struct('a', NULL)), map('k', named_struct('a', NULL)), named_struct('a', NULL))
+      """)
+      for (column <- Seq("l", "m", "s"); predicate <- Seq("IS NULL", "IS NOT NULL")) {
+        val query = s"SELECT id FROM $tableName WHERE $column $predicate"
+        withClue(query) {
+          val (_, cometPlan) = checkSparkAnswer(query)
+          val expected = if (predicate == "IS NULL") Seq(Row(2)) else Seq(1, 3, 4, 5).map(Row(_))
+          checkAnswer(spark.sql(query), expected)
+          assert(collectIcebergNativeScans(cometPlan).length == 1, s"$cometPlan")
+        }
+      }
+
+      // Spark infers IS NOT NULL below ordinary generators, but not outer generators.
+      // Compare complete rows to preserve null elements and distinguish null struct parents
+      // from non-null structs with null fields. Native scanning does not imply residual pushdown.
+      for (column <- Seq("l", "m"); generator <- Seq("explode", "explode_outer")) {
+        val query = s"SELECT id, $generator($column) FROM $tableName"
+        withClue(query) {
+          val (_, cometPlan) = checkSparkAnswer(query)
+          assert(collectIcebergNativeScans(cometPlan).length == 1, s"$cometPlan")
+        }
+      }
+    } finally {
+      spark.sql(s"DROP TABLE IF EXISTS $tableName")
+    }
+  }
+  test("filter pushdown - required field projection preserves null array elements") {
+    import org.apache.iceberg.Schema
+    import org.apache.iceberg.catalog.TableIdentifier
+    import org.apache.iceberg.spark.SparkCatalog
+    import org.apache.iceberg.types.Types
+
+    val tableName = "hadoop_catalog.db.required_array_field_test"
+    val catalog = spark.sessionState.catalogManager
+      .catalog("hadoop_catalog")
+      .asInstanceOf[SparkCatalog]
+    val element = Types.StructType.of(Types.NestedField.required(4, "a", Types.IntegerType.get()))
+    val schema = new Schema(
+      Types.NestedField.required(1, "id", Types.IntegerType.get()),
+      Types.NestedField.optional(2, "l", Types.ListType.ofOptional(3, element)))
+    try {
+      catalog.icebergCatalog.createTable(
+        TableIdentifier.of("db", "required_array_field_test"),
+        schema)
+      spark.sql(s"""
+        INSERT INTO $tableName VALUES
+          (1, array(named_struct('a', 1))),
+          (2, NULL),
+          (3, array()),
+          (4, array(NULL)),
+          (5, array(NULL, named_struct('a', 2)))
+      """)
+      assert(
+        catalog.icebergCatalog
+          .loadTable(TableIdentifier.of("db", "required_array_field_test"))
+          .schema()
+          .findField("l.element.a")
+          .isRequired)
+      val query = s"SELECT id, l.a FROM $tableName WHERE l IS NOT NULL"
+      val (_, cometPlan) = checkSparkAnswer(query)
+      assert(collectIcebergNativeScans(cometPlan).length == 1, s"$cometPlan")
+      assert(
+        collect(cometPlan) { case project: CometProjectExec => project }.nonEmpty,
+        s"$cometPlan")
+      checkAnswer(
+        spark.sql(query),
+        Seq(Row(1, Seq(1)), Row(3, Seq.empty[Int]), Row(4, Seq(null)), Row(5, Seq(null, 2))))
+    } finally {
+      spark.sql(s"DROP TABLE IF EXISTS $tableName")
     }
   }
 
