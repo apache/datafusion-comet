@@ -260,8 +260,17 @@ jobs:
     needs: changes
     # Spark 3.4 is deprecated, so this is the one test job the merge queue does
     # not run: it needs the `run-spark-3.4-tests` label on a pull request, or a
-    # manual workflow_dispatch. It stays in `required_checks.needs` so that a
-    # labelled run still gates the pull request it was asked for.
+    # manual workflow_dispatch.
+    #
+    # It is still in `required_checks.needs`, but be precise about what that
+    # buys. Adding the label fires a `labeled` event, and on that event the
+    # aggregator deliberately publishes the advisory `Required Checks (label
+    # run)` name instead of the required one (see its comment below), so a red
+    # 3.4 there leaves the commit's existing verdict alone. 3.4 only counts
+    # toward the required `Required Checks` on a pull_request event that is not
+    # `labeled` -- a push with the label already applied. With no queue run left
+    # to catch it, that push is the only thing that turns a 3.4 failure into a
+    # merge blocker.
     if: needs.changes.outputs.spark_3_4 == 'true'
     uses: ./.github/workflows/spark_sql_test_reusable.yml
     with:

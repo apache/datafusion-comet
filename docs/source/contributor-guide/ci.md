@@ -55,9 +55,12 @@ temporary branch takes its caches with it when it is deleted.
 Spark 3.4 is the one suite in neither tier. [Spark 3.4 support is deprecated](../user-guide/latest/compatibility/spark-versions.md#spark-34),
 so its Spark SQL suite no longer gates a merge. It remains available on demand: apply the
 `run-spark-3.4-tests` label to run it against a pull request, or trigger `ci.yml` from the Actions
-page with **Run workflow**, which runs every suite regardless of tier. A labelled run gates that
-pull request like any other, so a contributor touching Spark 3.4 code can still get a verdict
-before merging.
+page with **Run workflow**, which runs every suite regardless of tier. A contributor touching Spark
+3.4 code can still get a verdict before merging, but applying the label is only half of that: the
+run it starts is advisory. Label the pull request and then push, and Spark 3.4 joins the required
+verdict like any other suite. See
+[Opting a pull request into a suite the PR tier skips](#opting-a-pull-request-into-a-suite-the-pr-tier-skips)
+for the mechanics.
 
 Every job's result feeds one flat job named `Required Checks`, and that is the only status check
 `main` requires. A job that is skipped because the change did not touch its inputs counts as a
@@ -95,6 +98,14 @@ Applying a label starts a new run immediately at the pull request's current comm
 executes only the suite the label gates; the PR tier already ran at that commit and is not
 repeated. Its aggregate verdict is published as `Required Checks (label run)` rather than
 `Required Checks`, so it can be read alongside the commit run without replacing it.
+
+For every suite except Spark 3.4, that separate name costs nothing: the merge queue runs the suite
+again before the change lands, so a failure a label run surfaced still blocks the merge later.
+Spark 3.4 has no queue run behind it. A red `Required Checks (label run)` leaves an earlier green
+`Required Checks` in place and the pull request mergeable, so treat a label run as feedback to read,
+not as a gate. For Spark 3.4 to count toward the required verdict the label has to already be on
+the pull request when a commit is pushed — which is what the next push gives you, since the label
+stays applied.
 
 The label stays on the pull request, so every later push runs the suite as part of the normal PR
 run. Remove the label once it has served its purpose. To re-run the suite at the same commit,

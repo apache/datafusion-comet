@@ -27,8 +27,12 @@ early, listed in the diagram below.
 `spark_3_4` is in neither tier. Spark 3.4 is deprecated, so its Spark SQL
 suite no longer gates a merge; it runs only when a pull request carries
 `run-spark-3.4-tests`, or from a `workflow_dispatch`. Anyone who wants to
-check a change against 3.4 can still do so, and a labelled run gates that
-pull request normally.
+check a change against 3.4 can still do so, but note when that result starts
+to block a merge. Adding the label fires a `labeled` event, and those runs
+publish the advisory `Required Checks (label run)` name rather than the
+required one, so a red 3.4 there changes nothing. It is the next push with
+the label still applied that runs 3.4 under `Required Checks`, and with the
+queue run gone that push is the only thing that makes a 3.4 failure blocking.
 
 Heavy jobs have no `push` tier. The queue already tested the exact tree that
 lands, so re-running them on push to main would double the cost of every

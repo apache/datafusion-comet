@@ -181,6 +181,12 @@ shared code whose Spark 3.4 behavior you are unsure of:
 gh pr edit <number> --add-label run-spark-3.4-tests
 ```
 
+The run that command starts is advisory: it reports under `Required Checks (label run)`, not the
+`Required Checks` status `main` requires, so a Spark 3.4 failure there does not block the merge on
+its own. The label stays applied, so the next push you make runs Spark 3.4 as part of the required
+verdict. Read the label run's result before merging — with Spark 3.4 out of the merge queue,
+nothing else will.
+
 See [Continuous Integration](ci.md) for how the tiers and labels work. When bringing up a new Spark
 version, the version needs its own job in `.github/workflows/ci.yml` plus entries in `FILTERS` and
 `POLICY` in `dev/ci/compute-changes.py`.
