@@ -15,9 +15,10 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! Helpers shared by the cast-from-string benchmarks, pulled in with
+//! Helpers shared by expression benchmarks, pulled in with
 //! `#[path = "common/mod.rs"] mod common;`. This lives in a subdirectory so that Cargo's bench
 //! auto-discovery, which only looks at `benches/*.rs`, does not treat it as a bench target.
+//! This directory also holds standalone modules such as `matched_maps.rs`, included directly.
 #![allow(dead_code)]
 
 use arrow::array::{
@@ -283,4 +284,13 @@ pub fn list_arrays(
             ScalarValue::Utf8(Some("k500".to_string())),
         ),
     ]
+}
+
+/// Field names shared by the hash and map-sort benchmark inputs.
+pub fn map_field_names() -> arrow::array::MapFieldNames {
+    arrow::array::MapFieldNames {
+        entry: "entries".into(),
+        key: "key".into(),
+        value: "value".into(),
+    }
 }

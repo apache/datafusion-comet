@@ -64,6 +64,10 @@ name = "hash"
 harness = false
 
 [[bench]]
+name = "hash_alloc"
+harness = false
+
+[[bench]]
 name = "cast_from_string"
 harness = false
 
@@ -217,6 +221,10 @@ harness = false
 
 [[bench]]
 name = "map_sort"
+harness = false
+
+[[bench]]
+name = "map_extract"
 harness = false
 
 [[bench]]
