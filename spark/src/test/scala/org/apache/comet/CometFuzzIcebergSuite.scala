@@ -238,8 +238,7 @@ class CometFuzzIcebergSuite extends CometFuzzIcebergBase {
     }
   }
 
-  test(
-    "filter pushdown - IS NULL/IS NOT NULL on list and map columns stays native, struct falls back") {
+  test("filter pushdown - IS NULL/IS NOT NULL on list, map and struct columns stays native") {
     val tableName = "hadoop_catalog.db.null_check_test"
     try {
       spark.sql(s"""
@@ -262,8 +261,7 @@ class CometFuzzIcebergSuite extends CometFuzzIcebergBase {
           val (_, cometPlan) = checkSparkAnswer(query)
           val expected = if (predicate == "IS NULL") Seq(Row(2)) else Seq(1, 3, 4, 5).map(Row(_))
           checkAnswer(spark.sql(query), expected)
-          val expectedScans = if (column == "s") 0 else 1
-          assert(collectIcebergNativeScans(cometPlan).length == expectedScans, s"$cometPlan")
+          assert(collectIcebergNativeScans(cometPlan).length == 1, s"$cometPlan")
         }
       }
 
