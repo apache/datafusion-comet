@@ -251,6 +251,11 @@ pub enum SparkError {
         spark_type: String,
     },
 
+    /// Overflow in Parquet's millis-to-micros conversion. Unlike a cast's LongOverflow, the JVM
+    /// wraps this in cannotReadFilesError, using the per-task file list for the path.
+    #[error("long overflow")]
+    ParquetTimestampOverflow,
+
     /// A per-file read failure (corrupt footer/page, truncated/empty file, deleted file) raised by
     /// the native parquet reader / object_store. Classified by typed `DataFusionError` variant (no
     /// message matching) and translated by the JVM shim into Spark's `FAILED_READ_FILE`
@@ -354,6 +359,7 @@ impl SparkError {
             SparkError::DuplicateFieldByFieldId { .. } => "DuplicateFieldByFieldId",
             SparkError::ParquetMissingFieldIds => "ParquetMissingFieldIds",
             SparkError::ParquetSchemaConvert { .. } => "ParquetSchemaConvert",
+            SparkError::ParquetTimestampOverflow => "ParquetTimestampOverflow",
             SparkError::CannotReadFile { .. } => "CannotReadFile",
             SparkError::Arrow(_) => "Arrow",
             SparkError::Internal(_) => "Internal",
@@ -721,9 +727,10 @@ impl SparkError {
                 "org/apache/spark/sql/execution/datasources/SchemaColumnConvertNotSupportedException"
             }
 
-            // CannotReadFile - converted to a FAILED_READ_FILE SparkException by the shim
-            // (QueryExecutionErrors.cannotReadFilesError).
-            SparkError::CannotReadFile { .. } => "org/apache/spark/SparkException",
+            // File-read failures are wrapped by QueryExecutionErrors.cannotReadFilesError.
+            SparkError::CannotReadFile { .. } | SparkError::ParquetTimestampOverflow => {
+                "org/apache/spark/SparkException"
+            }
 
             // Generic errors
             SparkError::Arrow(_) | SparkError::Internal(_) => "org/apache/spark/SparkException",
@@ -822,9 +829,8 @@ impl SparkError {
             // SparkException error class, so no error class is exposed here.
             SparkError::ParquetSchemaConvert { .. } => None,
 
-            // CannotReadFile — the JVM shim wraps it via cannotReadFilesError, which supplies the
-            // FAILED_READ_FILE error class, so none is exposed here.
-            SparkError::CannotReadFile { .. } => None,
+            // The JVM's cannotReadFilesError supplies the version-appropriate error class.
+            SparkError::CannotReadFile { .. } | SparkError::ParquetTimestampOverflow => None,
 
             // Generic errors (no error class)
             SparkError::Arrow(_) | SparkError::Internal(_) => None,
@@ -969,18 +975,30 @@ mod tests {
 
     #[test]
     fn test_long_overflow_json() {
-        let error = SparkError::LongOverflow;
-        let parsed: serde_json::Value = serde_json::from_str(&error.to_json()).unwrap();
-        assert_eq!(
-            parsed,
-            serde_json::json!({
-                "errorType": "LongOverflow",
-                "errorClass": "",
-                "params": {},
-            })
-        );
-        assert_eq!(error.exception_class(), "java/lang/ArithmeticException");
-        assert_eq!(error.to_string(), "long overflow");
+        for (error, error_type, exception_class) in [
+            (
+                SparkError::LongOverflow,
+                "LongOverflow",
+                "java/lang/ArithmeticException",
+            ),
+            (
+                SparkError::ParquetTimestampOverflow,
+                "ParquetTimestampOverflow",
+                "org/apache/spark/SparkException",
+            ),
+        ] {
+            let parsed: serde_json::Value = serde_json::from_str(&error.to_json()).unwrap();
+            assert_eq!(
+                parsed,
+                serde_json::json!({
+                    "errorType": error_type,
+                    "errorClass": "",
+                    "params": {},
+                })
+            );
+            assert_eq!(error.exception_class(), exception_class);
+            assert_eq!(error.to_string(), "long overflow");
+        }
     }
 
     #[test]
