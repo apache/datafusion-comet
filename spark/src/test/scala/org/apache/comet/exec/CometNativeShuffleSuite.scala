@@ -23,6 +23,7 @@ import java.io.{ByteArrayInputStream, IOException}
 import java.nio.{ByteBuffer, ByteOrder}
 
 import scala.collection.mutable
+import scala.collection.mutable.ListBuffer
 import scala.concurrent.duration.DurationInt
 import scala.util.Random
 
@@ -35,15 +36,20 @@ import org.apache.arrow.vector.types.pojo.{Field, Schema}
 import org.apache.hadoop.fs.Path
 import org.apache.spark.SparkEnv
 import org.apache.spark.sql.{CometTestBase, DataFrame, Dataset, Row}
-import org.apache.spark.sql.comet.{CometExec, CometMetricNode, CometTakeOrderedAndProjectExec}
+import org.apache.spark.sql.catalyst.expressions.AttributeReference
+import org.apache.spark.sql.catalyst.plans.logical.LocalRelation
+import org.apache.spark.sql.catalyst.plans.physical.HashPartitioning
+import org.apache.spark.sql.comet.{CometExec, CometLocalTableScanExec, CometMetricNode, CometScanWrapper, CometSparkToColumnarExec, CometTakeOrderedAndProjectExec}
 import org.apache.spark.sql.comet.execution.arrow.CometArrowStream
-import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
+import org.apache.spark.sql.comet.execution.shuffle.{CometNativeShuffle, CometShuffleExchangeExec}
+import org.apache.spark.sql.execution.LocalTableScanExec
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
+import org.apache.spark.sql.execution.exchange.ShuffleExchangeExec
 import org.apache.spark.sql.functions.{col, count, sum}
-import org.apache.spark.sql.types.StructType
+import org.apache.spark.sql.types.{ArrayType, DataType, LongType, MapType, StructField, StructType}
 import org.apache.spark.sql.vectorized.{ColumnarBatch, ColumnVector}
 
-import org.apache.comet.{CometConf, CometExecIterator, CometShuffleBlockIterator, CometShuffleSizeLimitException, Native}
+import org.apache.comet.{CometConf, CometExecIterator, CometExplainInfo, CometShuffleBlockIterator, CometShuffleSizeLimitException, Native}
 import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
 import org.apache.comet.serde.{OperatorOuterClass, PartitioningOuterClass}
 import org.apache.comet.shuffle.ShufflePartitionPusher
@@ -686,6 +692,86 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
           "FROM VALUES (1), (2), (3) AS t(id)")
       val shuffled = df.repartition(2, $"id")
       checkShuffleAnswer(shuffled, 1)
+    }
+  }
+
+  test("native shuffle declines a struct data column with duplicate field names") {
+    // Java Arrow keys a struct vector's children by name, so a struct with two same-named
+    // fields cannot be imported back across the C data interface after a native shuffle, and
+    // a local table scan cannot build it either. Both must decline the shape.
+    withSQLConf(CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+      val df = spark.sql(
+        "SELECT id, named_struct('a', id, 'a', id + 1) AS st " +
+          "FROM VALUES (1), (2), (3) AS t(id)")
+      val shuffled = df.repartition(2, $"id")
+      checkCometExchange(shuffled, 0, native = true)
+      checkSparkAnswerAndFallbackReason(shuffled, "struct with duplicate field names")
+    }
+  }
+
+  test("row conversion sinks decline a struct with duplicate field names") {
+    // The shared type gate is what keeps a local table scan and row-to-columnar from
+    // building the struct through Java Arrow, where same-named children collapse into one.
+    val duplicate = StructType(Seq(StructField("a", LongType), StructField("a", LongType)))
+    def schemaWith(dt: DataType): StructType =
+      StructType(Seq(StructField("id", LongType), StructField("col", dt)))
+    for (sink <- Seq(CometLocalTableScanExec, CometSparkToColumnarExec)) {
+      val reasons = ListBuffer.empty[String]
+      assert(
+        !sink.isSchemaSupported(schemaWith(duplicate), reasons),
+        s"$sink accepted duplicate field names")
+      assert(reasons.exists(_.contains("struct with duplicate field names")), reasons.toString)
+    }
+    // The gate recurses, so a duplicate struct nested in an array or map is declined too.
+    for (nested <- Seq(ArrayType(duplicate), MapType(LongType, duplicate))) {
+      val reasons = ListBuffer.empty[String]
+      assert(!CometLocalTableScanExec.isSchemaSupported(schemaWith(nested), reasons), s"$nested")
+      assert(reasons.exists(_.contains("struct with duplicate field names")), reasons.toString)
+    }
+    // Names that differ only by case are distinct to Java Arrow and stay supported.
+    val distinctCase = StructType(Seq(StructField("a", LongType), StructField("A", LongType)))
+    assert(CometLocalTableScanExec.isSchemaSupported(schemaWith(distinctCase), ListBuffer.empty))
+  }
+
+  test("native shuffle predicate declines a struct with duplicate field names") {
+    // A synthetic native child bypasses the sinks that decline the shape earlier, so this
+    // reaches the native shuffle predicate itself.
+    withSQLConf(CometConf.COMET_SHUFFLE_MODE.key -> "native") {
+      def exchange(structType: StructType): ShuffleExchangeExec = {
+        val attrs =
+          Seq(AttributeReference("id", LongType)(), AttributeReference("st", structType)())
+        val leaf = spark.sessionState.planner
+          .plan(LocalRelation(attrs))
+          .next()
+          .asInstanceOf[LocalTableScanExec]
+        val child = CometScanWrapper(OperatorOuterClass.Operator.getDefaultInstance, leaf)
+        ShuffleExchangeExec(HashPartitioning(Seq(child.output.head), 2), child)
+      }
+      val duplicate =
+        exchange(StructType(Seq(StructField("a", LongType), StructField("a", LongType))))
+      assert(CometShuffleExchangeExec.shuffleSupported(duplicate).isEmpty)
+      val reasons =
+        duplicate.getTagValue(CometExplainInfo.FALLBACK_REASONS).getOrElse(Set.empty[String])
+      assert(reasons.exists(_.contains("unsupported shuffle data type")), reasons.toString)
+
+      val distinct =
+        exchange(StructType(Seq(StructField("a", LongType), StructField("A", LongType))))
+      assert(CometShuffleExchangeExec.shuffleSupported(distinct).contains(CometNativeShuffle))
+    }
+  }
+
+  test("native shuffle declines duplicate struct field names from a cached relation") {
+    // A cached relation would reach native shuffle through CometSparkRowToColumnar under the
+    // default configuration; the row-to-columnar type gate declines the shape first, so the
+    // exchange stays on Spark.
+    val base = spark.range(50).selectExpr("id", "named_struct('a', id, 'a', id + 1) AS st")
+    base.cache()
+    try {
+      val shuffled = base.repartition(4, $"id")
+      checkCometExchange(shuffled, 0, native = true)
+      checkSparkAnswer(shuffled)
+    } finally {
+      base.unpersist()
     }
   }
 

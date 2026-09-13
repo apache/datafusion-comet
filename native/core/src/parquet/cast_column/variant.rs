@@ -21,8 +21,8 @@ use arrow::{
         StructArray,
     },
     buffer::NullBuffer,
-    compute::cast,
-    datatypes::{DataType, FieldRef},
+    compute::{cast, cast_with_options},
+    datatypes::{DataType, FieldRef, TimeUnit, DECIMAL128_MAX_PRECISION},
     error::ArrowError,
 };
 use datafusion::common::{DataFusionError, Result as DataFusionResult};
@@ -59,6 +59,7 @@ pub(super) fn normalize_variant_array(
     // VariantArray resolves metadata/value/typed_value by name, so the reader's child order is
     // irrelevant. Legacy Spark residuals must be put in Arrow order before the single upstream
     // unshred call; the whole output is then put back in the order expected by released Spark 4.
+    let array = normalize_variant_storage(array)?;
     let variant = VariantArray::try_new(array.as_ref())?;
     let prepared = prepare_variant_for_unshredding(&variant)?;
     let unshredded = unshred_variant(&prepared)?;
@@ -72,6 +73,102 @@ pub(super) fn normalize_variant_array(
         vec![value, metadata],
         unshredded.inner().nulls().cloned(),
     )?))
+}
+
+/// Arrow Variant compute rejects some storage types that Spark's Parquet reader accepts.
+/// Choose supported types recursively for encoded, unsigned, decimal, timestamp, and fixed
+/// binary/list children before reconstructing the whole value.
+/// https://github.com/apache/datafusion-comet/issues/5477
+fn normalize_variant_type(data_type: &DataType) -> Option<DataType> {
+    fn normalize_field(field: &FieldRef) -> Option<FieldRef> {
+        normalize_variant_type(field.data_type())
+            .map(|data_type| Arc::new(field.as_ref().clone().with_data_type(data_type)))
+    }
+
+    match data_type {
+        DataType::Dictionary(_, value_type) => {
+            Some(normalize_variant_type(value_type).unwrap_or_else(|| value_type.as_ref().clone()))
+        }
+        DataType::UInt8 => Some(DataType::Int16),
+        DataType::UInt16 => Some(DataType::Int32),
+        DataType::UInt32 => Some(DataType::Int64),
+        // Spark reads Parquet UINT_64 as Decimal(20, 0). This is lossless for the full range and
+        // preserves values larger than i64::MAX for Variant decimal encoding.
+        DataType::UInt64 => Some(DataType::Decimal128(20, 0)),
+        // Arrow chooses Decimal256 from the physical byte width, but Spark's DecimalType is
+        // precision-based and stores every supported precision (<= 38) in 128 bits.
+        DataType::Decimal256(precision, scale) if *precision <= DECIMAL128_MAX_PRECISION => {
+            Some(DataType::Decimal128(*precision, *scale))
+        }
+        DataType::Timestamp(TimeUnit::Millisecond, timezone) => {
+            Some(DataType::Timestamp(TimeUnit::Microsecond, timezone.clone()))
+        }
+        DataType::FixedSizeBinary(_) => Some(DataType::Binary),
+        DataType::FixedSizeList(field, _) => Some(DataType::List(
+            normalize_field(field).unwrap_or_else(|| Arc::clone(field)),
+        )),
+        DataType::List(field) => normalize_field(field).map(DataType::List),
+        DataType::LargeList(field) => normalize_field(field).map(DataType::LargeList),
+        DataType::ListView(field) => normalize_field(field).map(DataType::ListView),
+        DataType::LargeListView(field) => normalize_field(field).map(DataType::LargeListView),
+        DataType::Struct(fields) => {
+            let mut changed = false;
+            let fields = fields
+                .iter()
+                .map(|field| match normalize_field(field) {
+                    Some(field) => {
+                        changed = true;
+                        field
+                    }
+                    None => Arc::clone(field),
+                })
+                .collect::<Vec<_>>();
+            changed.then(|| DataType::Struct(fields.into()))
+        }
+        _ => None,
+    }
+}
+
+fn contains_uuid_extension(data_type: &DataType) -> bool {
+    fn field_contains_uuid(field: &FieldRef) -> bool {
+        (field.data_type() == &DataType::FixedSizeBinary(16)
+            && field.extension_type_name() == Some("arrow.uuid"))
+            || contains_uuid_extension(field.data_type())
+    }
+
+    match data_type {
+        DataType::Struct(fields) => fields.iter().any(field_contains_uuid),
+        DataType::List(field)
+        | DataType::LargeList(field)
+        | DataType::ListView(field)
+        | DataType::LargeListView(field)
+        | DataType::FixedSizeList(field, _)
+        | DataType::Map(field, _) => field_contains_uuid(field),
+        DataType::Dictionary(_, value_type) => contains_uuid_extension(value_type),
+        _ => false,
+    }
+}
+
+/// Arrow Variant compute cannot consume every storage type Spark reads. Decode and cast those
+/// children before validation, preserving UUID rejection and reporting conversion overflow.
+/// https://github.com/apache/datafusion-comet/issues/5477
+fn normalize_variant_storage(array: &ArrayRef) -> DataFusionResult<ArrayRef> {
+    if contains_uuid_extension(array.data_type()) {
+        return Err(DataFusionError::Execution(
+            "Parquet UUID is not supported as a shredded Variant child".to_string(),
+        ));
+    }
+    let Some(data_type) = normalize_variant_type(array.data_type()) else {
+        return Ok(Arc::clone(array));
+    };
+    Ok(cast_with_options(
+        array.as_ref(),
+        &data_type,
+        &arrow::compute::CastOptions {
+            safe: false,
+            ..Default::default()
+        },
+    )?)
 }
 
 /// Arrow validates every residual `value` while unshredding. Spark versions before SPARK-58949

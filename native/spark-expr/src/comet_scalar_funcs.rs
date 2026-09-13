@@ -31,7 +31,7 @@ use crate::{
     EvalMode, SparkArrayPositionFunc, SparkArraySlice, SparkArraysOverlap, SparkContains,
     SparkDateDiff, SparkDateFromUnixDate, SparkDateTrunc, SparkFlatten, SparkIcebergBucket,
     SparkIcebergTemporalTransform, SparkIcebergTruncate, SparkMakeDate, SparkMakeInterval,
-    SparkMakeTime, SparkNextDay, SparkSecondsToTimestamp, SparkSizeFunc,
+    SparkMakeTime, SparkMapExtract, SparkNextDay, SparkSecondsToTimestamp, SparkSizeFunc,
 };
 use arrow::datatypes::DataType;
 use datafusion::common::{DataFusionError, Result as DataFusionResult};
@@ -234,7 +234,11 @@ pub fn create_comet_physical_fun_with_eval_mode(
             make_comet_scalar_udf!("unbase64", func, without data_type)
         }
         "split" => {
-            let func = Arc::new(crate::string_funcs::spark_split);
+            // One cache per planned expression: the pattern is a literal, so the regex
+            // compiles on the first batch and is reused for the rest.
+            let cache = crate::string_funcs::PatternCache::new();
+            let func: ScalarFunctionImplementation =
+                Arc::new(move |args| crate::string_funcs::spark_split(args, &cache));
             make_comet_scalar_udf!("split", func, without data_type)
         }
         "split_sql" => {
@@ -242,11 +246,15 @@ pub fn create_comet_physical_fun_with_eval_mode(
             make_comet_scalar_udf!("split_sql", func, without data_type)
         }
         "regexp_extract" => {
-            let func = Arc::new(crate::string_funcs::spark_regexp_extract);
+            let cache = crate::string_funcs::PatternCache::new();
+            let func: ScalarFunctionImplementation =
+                Arc::new(move |args| crate::string_funcs::spark_regexp_extract(args, &cache));
             make_comet_scalar_udf!("regexp_extract", func, without data_type)
         }
         "regexp_extract_all" => {
-            let func = Arc::new(crate::string_funcs::spark_regexp_extract_all);
+            let cache = crate::string_funcs::PatternCache::new();
+            let func: ScalarFunctionImplementation =
+                Arc::new(move |args| crate::string_funcs::spark_regexp_extract_all(args, &cache));
             make_comet_scalar_udf!("regexp_extract_all", func, without data_type)
         }
         "get_json_object" => {
@@ -321,6 +329,10 @@ fn all_scalar_functions() -> Vec<Arc<ScalarUDF>> {
         )),
         Arc::new(ScalarUDF::new_from_impl(SparkMakeDate::default())),
         Arc::new(ScalarUDF::new_from_impl(SparkMakeTime::default())),
+        // Overrides datafusion-functions-nested' `map_extract` with a vectorized lookup that
+        // returns the value itself rather than a one-element list (#5795). It carries the same
+        // `element_at` alias so both registry entries the override replaces point here.
+        Arc::new(ScalarUDF::new_from_impl(SparkMapExtract::default())),
         Arc::new(ScalarUDF::new_from_impl(SparkNextDay::default())),
         Arc::new(ScalarUDF::new_from_impl(SparkSecondsToTimestamp::default())),
         Arc::new(ScalarUDF::new_from_impl(SparkSizeFunc::default())),
