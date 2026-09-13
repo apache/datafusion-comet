@@ -118,6 +118,9 @@ pub fn create_comet_physical_fun_with_eval_mode(
 ) -> Result<Arc<ScalarUDF>, DataFusionError> {
     let fail_on_error = fail_on_error.unwrap_or(false);
     match fun_name {
+        "spark_concat_ws" => Ok(Arc::new(ScalarUDF::new_from_impl(
+            crate::string_funcs::CometConcatWs::default(),
+        ))),
         "ceil" => {
             make_comet_scalar_udf!("ceil", spark_ceil, data_type)
         }

@@ -39,7 +39,7 @@ index 6c51bd4ff2e..e72ec1d26e2 100644
        withSpark(sc) { sc =>
          TestUtils.waitUntilExecutorsUp(sc, 2, 60000)
 diff --git a/pom.xml b/pom.xml
-index 046f357ff79..02dffbf9510 100644
+index 046f357ff79..817a06b9f21 100644
 --- a/pom.xml
 +++ b/pom.xml
 @@ -148,6 +148,8 @@
@@ -2899,20 +2899,6 @@ index 6080a5e8e4b..23a451d5bcf 100644
  
          case _ => assert(false, "Can not match ParquetTable in the query.")
        }
-diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetIOSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetIOSuite.scala
-index 6e74b6162ab..0ccc543ce97 100644
---- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetIOSuite.scala
-+++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetIOSuite.scala
-@@ -1344,7 +1344,8 @@ class ParquetIOSuite extends QueryTest with ParquetTest with SharedSparkSession
-     }
-   }
- 
--  test("SPARK-40128 read DELTA_LENGTH_BYTE_ARRAY encoded strings") {
-+  test("SPARK-40128 read DELTA_LENGTH_BYTE_ARRAY encoded strings",
-+      IgnoreComet("Comet doesn't support DELTA encoding yet")) {
-     withAllParquetReaders {
-       checkAnswer(
-         // "fruit" column in this file is encoded using DELTA_LENGTH_BYTE_ARRAY.
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetQuerySuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetQuerySuite.scala
 index 68410dbedb7..160b385c503 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetQuerySuite.scala
@@ -3066,30 +3052,10 @@ index 0acb21f3e6f..15bd866d8aa 100644
        val e = testSchemaMismatch(dir.getCanonicalPath, vectorizedReaderEnabled = true)
        assert(e.getCause.isInstanceOf[SchemaColumnConvertNotSupportedException])
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetTypeWideningSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetTypeWideningSuite.scala
-index 09ed6955a51..236a4e99824 100644
+index 09ed6955a51..52d998aab46 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetTypeWideningSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetTypeWideningSuite.scala
-@@ -65,7 +65,9 @@ class ParquetTypeWideningSuite
-     withClue(
-       s"with dictionary encoding '$dictionaryEnabled' with timestamp rebase mode " +
-         s"'$timestampRebaseMode''") {
--      withAllParquetWriters {
-+      // TODO: Comet cannot read DELTA_BINARY_PACKED created by V2 writer
-+      // https://github.com/apache/datafusion-comet/issues/574
-+      // withAllParquetWriters {
-         withTempDir { dir =>
-           val expected =
-             writeParquetFiles(dir, values, fromType, dictionaryEnabled, timestampRebaseMode)
-@@ -86,7 +88,7 @@ class ParquetTypeWideningSuite
-             }
-           }
-         }
--      }
-+      // }
-     }
-   }
- 
-@@ -190,7 +192,8 @@ class ParquetTypeWideningSuite
+@@ -190,7 +190,8 @@ class ParquetTypeWideningSuite
        (Seq("1", "2", Short.MinValue.toString), ShortType, DoubleType),
        (Seq("1", "2", Int.MinValue.toString), IntegerType, DoubleType),
        (Seq("1.23", "10.34"), FloatType, DoubleType),

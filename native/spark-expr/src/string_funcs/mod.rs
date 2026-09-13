@@ -16,6 +16,7 @@
 // under the License.
 
 mod base64;
+mod concat_ws;
 mod contains;
 mod get_json_object;
 mod levenshtein;
@@ -26,6 +27,7 @@ mod split;
 mod unbase64;
 
 pub use base64::spark_base64;
+pub use concat_ws::CometConcatWs;
 pub use contains::SparkContains;
 pub use get_json_object::spark_get_json_object;
 pub use levenshtein::spark_levenshtein;

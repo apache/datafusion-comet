@@ -285,6 +285,21 @@ abstract class ParquetReadSuite extends CometTestBase {
             |message root {
             |  optional int64 ts(TIMESTAMP_MILLIS);
             |  optional int64 ts_ntz(TIMESTAMP(MILLIS,false));
+            |  optional group s {
+            |    optional int64 ts(TIMESTAMP_MILLIS);
+            |    optional int64 ts_ntz(TIMESTAMP(MILLIS,false));
+            |  }
+            |  optional group a (LIST) {
+            |    repeated group list {
+            |      optional int64 element(TIMESTAMP_MILLIS);
+            |    }
+            |  }
+            |  optional group m (MAP) {
+            |    repeated group key_value {
+            |      required int64 key(TIMESTAMP_MILLIS);
+            |      optional int64 value(TIMESTAMP(MILLIS,false));
+            |    }
+            |  }
             |}
             |""".stripMargin)
           val writer = createParquetWriter(schema, path, dictionaryEnabled)
@@ -295,6 +310,13 @@ abstract class ParquetReadSuite extends CometTestBase {
             val record = new SimpleGroup(schema)
             record.add(0, millis)
             record.add(1, millis)
+            val nested = record.addGroup(2)
+            nested.add(0, millis)
+            nested.add(1, millis)
+            record.addGroup(3).addGroup(0).add(0, millis)
+            val entry = record.addGroup(4).addGroup(0)
+            entry.add(0, millis)
+            entry.add(1, millis)
             writer.write(record)
           }
           writer.close()
@@ -318,7 +340,7 @@ abstract class ParquetReadSuite extends CometTestBase {
           Seq(false, true).foreach { ansiEnabled =>
             withSQLConf(SQLConf.ANSI_ENABLED.key -> ansiEnabled.toString) {
               readParquetFile(path.toString) { df =>
-                Seq("ts", "ts_ntz").foreach { column =>
+                Seq("ts", "ts_ntz", "s", "s.ts", "s.ts_ntz", "a", "m").foreach { column =>
                   val selected = df.select(column)
                   assert(collect(selected.queryExecution.executedPlan) {
                     case _: CometNativeScanExec => true

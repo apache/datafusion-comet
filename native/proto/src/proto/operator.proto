@@ -895,6 +895,9 @@ message HashJoin {
   // True for BroadcastHashJoinExec null-aware anti-joins (NOT IN subquery semantics).
   // When true, any null in the build side suppresses all left rows.
   bool null_aware_anti_join = 6;
+  // Opt-in completed-build filtering of probe batches and eligible native Parquet readers.
+  // Older serialized plans leave it false.
+  bool dynamic_filter_enabled = 10;
 }
 
 message SortMergeJoin {

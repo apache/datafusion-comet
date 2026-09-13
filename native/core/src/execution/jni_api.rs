@@ -116,7 +116,7 @@ use crate::execution::spark_config::{
 };
 use crate::parquet::encryption_support::{CometEncryptionFactory, ENCRYPTION_FACTORY_ID};
 use datafusion_comet_proto::spark_operator::operator::OpStruct;
-use log::info;
+use log::{info, warn};
 use std::sync::OnceLock;
 #[cfg(feature = "jemalloc")]
 use tikv_jemalloc_ctl::{epoch, stats};
@@ -238,8 +238,47 @@ fn build_runtime(default_worker_threads: Option<usize>) -> Runtime {
     }
     builder
         .enable_all()
+        .on_thread_start(attach_thread_as_daemon)
+        .on_thread_stop(detach_thread)
         .build()
         .expect("Failed to create Tokio runtime")
+}
+
+/// Attaches a runtime thread to the JVM as a daemon thread.
+///
+/// jni-rs attaches threads lazily with `AttachCurrentThread`, which makes them non-daemon JVM
+/// threads. `DestroyJavaVM` waits for all non-daemon threads to exit before it runs shutdown
+/// hooks, but runtime threads only exit once the shutdown hook has called `SparkContext.stop()`
+/// and [`release_runtime`]. An application that returns from `main` without calling
+/// `SparkContext.stop()` would therefore never exit. Daemon threads are not waited for, and
+/// jni-rs reuses an existing attachment rather than attaching again.
+fn attach_thread_as_daemon() {
+    let Some(vm) = crate::JAVA_VM.get() else {
+        return;
+    };
+    let vm = vm.get_raw();
+    let mut env: *mut std::ffi::c_void = std::ptr::null_mut();
+    // SAFETY: `vm` is the JavaVM stored by `NativeBase.init` and outlives the runtime. Null
+    // attach args select the default JNI version, thread name and thread group.
+    let rc =
+        unsafe { ((**vm).v1_4.AttachCurrentThreadAsDaemon)(vm, &mut env, std::ptr::null_mut()) };
+    if rc != jni::sys::JNI_OK {
+        warn!("Failed to attach tokio runtime thread to the JVM as a daemon thread: {rc}");
+    }
+}
+
+/// Detaches a thread attached by [`attach_thread_as_daemon`] before it exits. jni-rs only
+/// detaches threads it attached itself.
+fn detach_thread() {
+    let Some(vm) = crate::JAVA_VM.get() else {
+        return;
+    };
+    let vm = vm.get_raw();
+    // SAFETY: see `attach_thread_as_daemon`. Detaching an unattached thread is a JNI error,
+    // not undefined behavior.
+    unsafe {
+        ((**vm).v1_1.DetachCurrentThread)(vm);
+    }
 }
 
 /// Initialize the global Tokio runtime with the given default worker thread count.
@@ -1253,9 +1292,55 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_decodeShuffleBlock(
 }
 
 #[no_mangle]
+/// Parse the expected schema once for a remote shuffle iterator.
+///
+/// The iterator owns the returned decoder and releases it when the input is closed.
+pub extern "system" fn Java_org_apache_comet_Native_createRemoteShuffleDecoder(
+    e: EnvUnowned,
+    _class: JClass,
+    expected_schema: JByteArray,
+) -> jlong {
+    try_unwrap_or_throw(&e, |env| {
+        let bytes = env.convert_byte_array(expected_schema)?;
+        let schema = ShuffleScan::decode(bytes.as_slice()).map_err(|error| {
+            CometError::Internal(format!("Invalid expected remote shuffle schema: {error}"))
+        })?;
+        let decoder = RemoteShuffleDecoder {
+            expected_types: schema.fields.iter().map(to_arrow_datatype).collect(),
+        };
+        Ok(Box::into_raw(Box::new(decoder)) as jlong)
+    })
+}
+
+/// Immutable decoding state owned by one JVM remote shuffle iterator, not shared across tasks.
+struct RemoteShuffleDecoder {
+    expected_types: Vec<ArrowDataType>,
+}
+
+#[no_mangle]
+/// Release a remote shuffle iterator's decoder.
+///
+/// # Safety
+/// A nonzero handle must have been returned by `createRemoteShuffleDecoder`, must not have
+/// been released, and must not be in use by a concurrent decode call.
+pub unsafe extern "system" fn Java_org_apache_comet_Native_releaseRemoteShuffleDecoder(
+    e: EnvUnowned,
+    _class: JClass,
+    decoder_handle: jlong,
+) {
+    try_unwrap_or_throw(&e, |_| {
+        if decoder_handle != 0 {
+            drop(unsafe { Box::from_raw(decoder_handle as *mut RemoteShuffleDecoder) });
+        }
+        Ok(())
+    })
+}
+
+#[no_mangle]
 /// Decode a remote native shuffle block with Arrow array and logical type validation enabled.
 /// # Safety
-/// This function is inherently unsafe since it deals with raw pointers passed from JNI.
+/// Buffer and output pointers must be valid. The decoder handle must have been returned by
+/// `createRemoteShuffleDecoder` and must remain alive for the duration of this call.
 pub unsafe extern "system" fn Java_org_apache_comet_Native_decodeShuffleBlockWithValidation(
     e: EnvUnowned,
     _class: JClass,
@@ -1264,22 +1349,21 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_decodeShuffleBlockWit
     array_addrs: JLongArray,
     schema_addrs: JLongArray,
     tracing_enabled: jboolean,
-    expected_schema: JByteArray,
+    decoder_handle: jlong,
 ) -> jlong {
     try_unwrap_or_throw(&e, |env| {
         with_trace("decodeShuffleBlock", tracing_enabled != JNI_FALSE, || {
-            let bytes = env.convert_byte_array(expected_schema)?;
-            let schema = ShuffleScan::decode(bytes.as_slice()).map_err(|error| {
-                CometError::Internal(format!("Invalid expected remote shuffle schema: {error}"))
-            })?;
-            let expected_types: Vec<_> = schema.fields.iter().map(to_arrow_datatype).collect();
+            let decoder = unsafe { (decoder_handle as *const RemoteShuffleDecoder).as_ref() }
+                .ok_or_else(|| {
+                    CometError::Internal("Remote shuffle decoder is not initialized".to_owned())
+                })?;
             decode_shuffle_block(
                 env,
                 byte_buffer,
                 length,
                 array_addrs,
                 schema_addrs,
-                Some(&expected_types),
+                Some(&decoder.expected_types),
             )
         })
     })
