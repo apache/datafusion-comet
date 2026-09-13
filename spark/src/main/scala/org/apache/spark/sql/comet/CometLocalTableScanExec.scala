@@ -143,7 +143,10 @@ object CometLocalTableScanExec extends CometSink[LocalTableScanExec] with DataTy
       allowComplex = true,
       allowIntervals = true,
       allowTimeType = false,
-      allowAnyStringType = false)
+      allowAnyStringType = false,
+      // Java Arrow keys struct children by name; declining here hands the struct to
+      // DataTypeSupport, which records the duplicate-field-name fallback reason.
+      allowDuplicateStructFieldNames = false)
     // DataTypeSupport accepts no type that supportedDataType rejects here, so the super call
     // cannot widen the accepted set; it only records the fallback reason for rejected types.
     if (supported) true else super.isTypeSupported(dt, name, fallbackReasons)

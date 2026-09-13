@@ -475,7 +475,10 @@ object CometShuffleExchangeExec
       if (!QueryPlanSerde.supportedDataType(
           input.dataType,
           allowComplex = true,
-          allowIntervals = true)) {
+          allowIntervals = true,
+          // Java Arrow keys struct children by name, so the FFI import of a decoded batch
+          // fails on duplicate field names.
+          allowDuplicateStructFieldNames = false)) {
         reasons += s"unsupported shuffle data type ${input.dataType} for input $input"
         return reasons.toSeq
       }

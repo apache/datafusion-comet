@@ -1432,11 +1432,7 @@ class CometNativeCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("cast StringType to TimestampType") {
     withSQLConf((SQLConf.SESSION_LOCAL_TIMEZONE.key, "UTC")) {
-      // Spark accepts explicit positive years; Comet does not yet (#5716).
-      // Keep the wider alphabet, excluding only the known bare-year mismatch.
-      val fuzzValues = gen
-        .generateStrings(dataSize, timestampPattern, 8)
-        .filterNot(_.trim.matches("\\+[0-9]{4,6}"))
+      val fuzzValues = gen.generateStrings(dataSize, timestampPattern, 8)
       val values = Seq("2020-01-01T12:34:56.123456", "T2") ++ fuzzValues
       castTest(values.toDF("a"), DataTypes.TimestampType)
     }

@@ -29,6 +29,8 @@ use datafusion::logical_expr::ColumnarValue;
 use regex::Regex;
 use std::sync::Arc;
 
+use super::pattern_cache::PatternCache;
+
 /// Spark-compatible split function
 /// Splits a string around matches of a regex pattern with optional limit
 ///
@@ -39,7 +41,10 @@ use std::sync::Arc;
 ///   - limit > 0: At most limit-1 splits, array length <= limit
 ///   - limit = 0: As many splits as possible, trailing empty strings removed
 ///   - limit < 0: As many splits as possible, trailing empty strings kept
-pub fn spark_split(args: &[ColumnarValue]) -> DataFusionResult<ColumnarValue> {
+pub fn spark_split(
+    args: &[ColumnarValue],
+    regex_cache: &PatternCache,
+) -> DataFusionResult<ColumnarValue> {
     if args.len() < 2 || args.len() > 3 {
         return exec_err!(
             "split expects 2 or 3 arguments (string, pattern, [limit]), got {}",
@@ -76,7 +81,7 @@ pub fn spark_split(args: &[ColumnarValue]) -> DataFusionResult<ColumnarValue> {
             }
 
             let pattern_str = pattern.as_ref().unwrap();
-            split_array(string_array.as_ref(), pattern_str, limit)
+            split_array(string_array.as_ref(), pattern_str, limit, regex_cache)
         }
         (ColumnarValue::Scalar(ScalarValue::Utf8(string)), ColumnarValue::Scalar(pattern_val))
         | (
@@ -97,7 +102,7 @@ pub fn spark_split(args: &[ColumnarValue]) -> DataFusionResult<ColumnarValue> {
                 }
             };
 
-            let result = split_string(string.as_ref().unwrap(), pattern_str, limit)?;
+            let result = split_string(string.as_ref().unwrap(), pattern_str, limit, regex_cache)?;
             let string_array = GenericStringArray::<i32>::from(result);
             let list_array = create_list_array(Arc::new(string_array));
 
@@ -176,9 +181,11 @@ fn split_array(
     string_array: &dyn arrow::array::Array,
     pattern: &str,
     limit: i32,
+    regex_cache: &PatternCache,
 ) -> DataFusionResult<ColumnarValue> {
-    // Compile regex once for the entire array
-    let regex = Regex::new(pattern).map_err(|e| {
+    // The pattern is a plan-time literal, so the cache makes this compile a one-time cost
+    // for the expression instead of a per-batch cost.
+    let regex = regex_cache.get_or_compile(pattern).map_err(|e| {
         DataFusionError::Execution(format!("Invalid regex pattern '{}': {}", pattern, e))
     })?;
 
@@ -485,8 +492,13 @@ fn push_split_sql_parts<O: OffsetSizeTrait>(
     }
 }
 
-fn split_string(string: &str, pattern: &str, limit: i32) -> DataFusionResult<Vec<String>> {
-    let regex = Regex::new(pattern).map_err(|e| {
+fn split_string(
+    string: &str,
+    pattern: &str,
+    limit: i32,
+    regex_cache: &PatternCache,
+) -> DataFusionResult<Vec<String>> {
+    let regex = regex_cache.get_or_compile(pattern).map_err(|e| {
         DataFusionError::Execution(format!("Invalid regex pattern '{}': {}", pattern, e))
     })?;
 
@@ -592,13 +604,21 @@ mod tests {
     use super::*;
     use arrow::array::StringArray;
 
+    fn run_split(args: &[ColumnarValue]) -> DataFusionResult<ColumnarValue> {
+        spark_split(args, &PatternCache::new())
+    }
+
+    fn run_split_string(string: &str, pattern: &str, limit: i32) -> DataFusionResult<Vec<String>> {
+        split_string(string, pattern, limit, &PatternCache::new())
+    }
+
     #[test]
     fn test_split_basic() {
         let string_array = Arc::new(StringArray::from(vec!["a,b,c", "x,y,z"])) as ArrayRef;
         let pattern = ColumnarValue::Scalar(ScalarValue::Utf8(Some(",".to_string())));
         let args = vec![ColumnarValue::Array(string_array), pattern];
 
-        let result = spark_split(&args).unwrap();
+        let result = run_split(&args).unwrap();
         // Should produce [["a", "b", "c"], ["x", "y", "z"]]
         assert!(matches!(result, ColumnarValue::Array(_)));
     }
@@ -610,32 +630,32 @@ mod tests {
         let limit = ColumnarValue::Scalar(ScalarValue::Int32(Some(2)));
         let args = vec![ColumnarValue::Array(string_array), pattern, limit];
 
-        let result = spark_split(&args).unwrap();
+        let result = run_split(&args).unwrap();
         // Should produce [["a", "b,c,d"]]
         assert!(matches!(result, ColumnarValue::Array(_)));
     }
 
     #[test]
     fn test_split_regex() {
-        let parts = split_string("foo123bar456baz", r"\d+", -1).unwrap();
+        let parts = run_split_string("foo123bar456baz", r"\d+", -1).unwrap();
         assert_eq!(parts, vec!["foo", "bar", "baz"]);
     }
 
     #[test]
     fn test_split_limit_positive() {
-        let parts = split_string("a,b,c,d,e", ",", 3).unwrap();
+        let parts = run_split_string("a,b,c,d,e", ",", 3).unwrap();
         assert_eq!(parts, vec!["a", "b", "c,d,e"]);
     }
 
     #[test]
     fn test_split_limit_zero() {
-        let parts = split_string("a,b,c,,", ",", 0).unwrap();
+        let parts = run_split_string("a,b,c,,", ",", 0).unwrap();
         assert_eq!(parts, vec!["a", "b", "c"]);
     }
 
     #[test]
     fn test_split_limit_negative() {
-        let parts = split_string("a,b,c,,", ",", -1).unwrap();
+        let parts = run_split_string("a,b,c,,", ",", -1).unwrap();
         assert_eq!(parts, vec!["a", "b", "c", "", ""]);
     }
 
@@ -651,7 +671,7 @@ mod tests {
         let pattern = ColumnarValue::Scalar(ScalarValue::Utf8(Some(",".to_string())));
         let args = vec![ColumnarValue::Array(string_array), pattern];
 
-        let result = spark_split(&args).unwrap();
+        let result = run_split(&args).unwrap();
         match result {
             ColumnarValue::Array(arr) => {
                 let list_array = arr.as_any().downcast_ref::<ListArray>().unwrap();
@@ -672,7 +692,7 @@ mod tests {
     #[test]
     fn test_split_empty_string() {
         // Test that empty string input produces array with single empty string
-        let parts = split_string("", ",", -1).unwrap();
+        let parts = run_split_string("", ",", -1).unwrap();
         assert_eq!(parts, vec![""]);
     }
 
@@ -752,6 +772,42 @@ mod tests {
             }
             _ => panic!("Expected Array result"),
         }
+    }
+
+    /// One expression evaluates many batches; the pattern must compile once and results
+    /// must stay correct on every batch.
+    #[test]
+    fn test_split_compiles_regex_once_across_batches() {
+        let cache = PatternCache::new();
+        let pattern = ColumnarValue::Scalar(ScalarValue::Utf8(Some(r"\d+".to_string())));
+
+        for batch in 0..4 {
+            let input = format!("foo{batch}bar{batch}baz");
+            let string_array = Arc::new(StringArray::from(vec![input.as_str()])) as ArrayRef;
+            let args = vec![ColumnarValue::Array(string_array), pattern.clone()];
+
+            let result = spark_split(&args, &cache).unwrap();
+            match result {
+                ColumnarValue::Array(arr) => {
+                    let list_array = arr.as_any().downcast_ref::<ListArray>().unwrap();
+                    assert_list_value(list_array, 0, &["foo", "bar", "baz"]);
+                }
+                _ => panic!("Expected Array result"),
+            }
+        }
+
+        assert_eq!(cache.compile_count(), 1);
+    }
+
+    #[test]
+    fn test_split_invalid_pattern_errors_at_evaluation() {
+        let string_array = Arc::new(StringArray::from(vec!["abc"])) as ArrayRef;
+        let pattern = ColumnarValue::Scalar(ScalarValue::Utf8(Some("(unclosed".to_string())));
+        let args = vec![ColumnarValue::Array(string_array), pattern];
+
+        let err = run_split(&args).err().unwrap();
+        let msg = err.to_string();
+        assert!(msg.contains("Invalid regex pattern '(unclosed'"), "{msg}");
     }
 
     fn assert_list_value(list_array: &ListArray, row: usize, expected: &[&str]) {
