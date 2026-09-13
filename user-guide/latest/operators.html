@@ -923,7 +923,7 @@ omitted from the tables below and may be reconsidered based on demand:</p>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">ObjectHashAggregateExec</span></code></p></td>
 <td><p>✅</p></td>
-<td><p>Supports a limited set of aggregates, such as <code class="docutils literal notranslate"><span class="pre">bloom_filter_agg</span></code>.</p></td>
+<td><p>Supports a limited set of aggregates, such as <code class="docutils literal notranslate"><span class="pre">bloom_filter_agg</span></code>. Falls back when Comet shuffle is disabled, which would otherwise split the aggregate across Comet and Spark. See the <a class="reference internal" href="tuning.html"><span class="std std-doc">Tuning Guide</span></a>.</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">SortAggregateExec</span></code></p></td>
 <td><p>🔜</p></td>
