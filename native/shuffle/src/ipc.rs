@@ -15,52 +15,312 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use arrow::array::RecordBatch;
-use arrow::ipc::reader::StreamReader;
+use arrow::array::{ArrayRef, RecordBatch};
+use arrow::buffer::MutableBuffer;
+use arrow::datatypes::SchemaRef;
+use arrow::ipc::convert::fb_to_schema;
+use arrow::ipc::reader::{read_dictionary_impl, RecordBatchDecoder};
+use arrow::ipc::{root_as_message, MessageHeader};
+use arrow_data::UnsafeFlag;
 use datafusion::common::DataFusionError;
 use datafusion::error::Result;
+use std::collections::HashMap;
 use std::io::{Error, ErrorKind, Read};
+use std::sync::Arc;
 
 /// Decode trusted local Comet output without revalidating every Arrow array value or offset.
+///
+/// Convenience wrapper around a throwaway [`ShuffleBlockDecoder`]; callers that decode more than
+/// one block should hold a decoder so the schema message is parsed once rather than per block.
 pub fn read_ipc_compressed(bytes: &[u8]) -> Result<RecordBatch> {
-    read_ipc_compressed_impl(bytes, false)
+    ShuffleBlockDecoder::new().decode(bytes)
 }
 
 /// Decode remotely fetched Comet output, including Arrow buffer and offset validation.
+///
+/// See [`read_ipc_compressed`] for when to hold a [`ShuffleBlockDecoder`] instead.
 pub fn read_ipc_compressed_validated(bytes: &[u8]) -> Result<RecordBatch> {
-    read_ipc_compressed_impl(bytes, true)
+    ShuffleBlockDecoder::new().decode_validated(bytes)
 }
 
-fn read_ipc_compressed_impl(bytes: &[u8], validate: bool) -> Result<RecordBatch> {
-    let codec = bytes.get(..4).ok_or_else(|| {
-        DataFusionError::Execution("Failed to decode batch: truncated compression codec".to_owned())
-    })?;
-    let mut encoded = &bytes[4..];
-    let batch = match codec {
-        b"SNAP" => read_single_batch(snap::read::FrameDecoder::new(&mut encoded), validate)?,
-        b"LZ4_" => read_single_batch(
-            lz4_flex::frame::FrameDecoder::new(RequireLz4EndMark(&mut encoded)),
-            validate,
-        )?,
-        // The slice already implements BufRead. Adding another BufReader would let read-ahead
-        // conceal compressed bytes left over after the decoder reaches its end marker.
-        b"ZSTD" => read_single_batch(zstd::Decoder::with_buffer(&mut encoded)?, validate)?,
-        b"NONE" => read_single_batch(&mut encoded, validate)?,
-        other => {
-            return Err(DataFusionError::Execution(format!(
-                "Failed to decode batch: invalid compression codec: {other:?}"
-            )))
-        }
-    };
-    // LZ4 returns EOF at the end of one compressed frame without consuming the next one. Check
-    // the encoded source as well as the decoded IPC tail so an oversized outer frame cannot
-    // silently swallow another native frame's bytes.
-    if !encoded.is_empty() {
-        return Err(DataFusionError::Execution(
-            "Failed to decode batch: trailing data after compressed stream".to_owned(),
-        ));
+/// The largest message metadata length a block may carry. Arrow encodes it as an `i32`, so
+/// anything beyond this is corruption rather than a large message.
+const MAX_METADATA_LEN: usize = i32::MAX as usize;
+
+/// Decodes Comet shuffle blocks, caching the IPC schema across blocks.
+///
+/// Every block is a complete Arrow IPC stream: a schema message, any dictionary batches, one
+/// record batch, and the end-of-stream marker. `ShuffleBlockWriter` pre-encodes the schema
+/// message once and writes it verbatim into every block, so consecutive blocks from the same
+/// writer carry byte-identical schema messages. Parsing that message per block (a flatbuffer
+/// verification plus one `Arc<Field>` and `String` per column) is a fixed cost that dominates the
+/// decode of small blocks, which is exactly what high partition counts produce.
+///
+/// The decoder keeps the raw bytes of the last schema message it parsed together with the parsed
+/// [`SchemaRef`]. On each block it compares the incoming schema message bytes against the cached
+/// ones and, on a match, reuses the schema without parsing. A mismatch (a different writer, a
+/// different Comet version, or a block of a different shape) parses the new message and replaces
+/// the cache, so correctness never depends on the cache: a block is decoded against the schema it
+/// actually carries.
+///
+/// A decoder is meant to be held for the life of a reader (one per `ShuffleScanExec`, one per JNI
+/// decoder handle) and is not thread-safe.
+#[derive(Debug, Default)]
+pub struct ShuffleBlockDecoder {
+    /// Raw flatbuffer bytes of the last schema message and the schema parsed from them.
+    cached_schema: Option<(Vec<u8>, SchemaRef)>,
+    /// Scratch for message metadata so it is not reallocated per message.
+    metadata: Vec<u8>,
+    /// Number of schema messages actually parsed, i.e. cache misses. One per distinct schema
+    /// encoding seen; exposed so tests and metrics can confirm the cache is doing its job.
+    schema_parses: usize,
+}
+
+impl ShuffleBlockDecoder {
+    pub fn new() -> Self {
+        Self::default()
     }
-    Ok(batch)
+
+    /// Decode a trusted local block without revalidating array values or offsets.
+    pub fn decode(&mut self, bytes: &[u8]) -> Result<RecordBatch> {
+        self.decode_impl(bytes, false)
+    }
+
+    /// Decode a remotely fetched block, including Arrow buffer and offset validation.
+    pub fn decode_validated(&mut self, bytes: &[u8]) -> Result<RecordBatch> {
+        self.decode_impl(bytes, true)
+    }
+
+    /// How many schema messages this decoder has parsed so far. Every block whose schema message
+    /// is byte-identical to the previous block's reuses the cached schema and does not count.
+    pub fn schema_parses(&self) -> usize {
+        self.schema_parses
+    }
+
+    fn decode_impl(&mut self, bytes: &[u8], validate: bool) -> Result<RecordBatch> {
+        let codec = bytes.get(..4).ok_or_else(|| {
+            DataFusionError::Execution(
+                "Failed to decode batch: truncated compression codec".to_owned(),
+            )
+        })?;
+        let mut encoded = &bytes[4..];
+        let batch = match codec {
+            b"SNAP" => {
+                self.read_single_batch(snap::read::FrameDecoder::new(&mut encoded), validate)?
+            }
+            b"LZ4_" => self.read_single_batch(
+                lz4_flex::frame::FrameDecoder::new(RequireLz4EndMark(&mut encoded)),
+                validate,
+            )?,
+            // The slice already implements BufRead. Adding another BufReader would let
+            // read-ahead conceal compressed bytes left over after the decoder reaches its end
+            // marker.
+            b"ZSTD" => {
+                self.read_single_batch(zstd::Decoder::with_buffer(&mut encoded)?, validate)?
+            }
+            b"NONE" => self.read_single_batch(&mut encoded, validate)?,
+            other => {
+                return Err(DataFusionError::Execution(format!(
+                    "Failed to decode batch: invalid compression codec: {other:?}"
+                )))
+            }
+        };
+        // LZ4 returns EOF at the end of one compressed frame without consuming the next one.
+        // Check the encoded source as well as the decoded IPC tail so an oversized outer frame
+        // cannot silently swallow another native frame's bytes.
+        if !encoded.is_empty() {
+            return Err(DataFusionError::Execution(
+                "Failed to decode batch: trailing data after compressed stream".to_owned(),
+            ));
+        }
+        Ok(batch)
+    }
+
+    /// Reads one complete IPC stream holding exactly one record batch, mirroring what
+    /// `arrow::ipc::reader::StreamReader` does message by message but with the schema message
+    /// served from the cache when its bytes match.
+    fn read_single_batch<R: Read>(&mut self, mut input: R, validate: bool) -> Result<RecordBatch> {
+        let mut skip_validation = UnsafeFlag::new();
+        if !validate {
+            // SAFETY: local blocks were written by this Comet version's ShuffleBlockWriter from
+            // arrays that were valid when encoded, which is the same trust the previous
+            // StreamReader-based path placed in them. Remote data keeps full validation.
+            unsafe { skip_validation.set(true) };
+        }
+
+        // Schema message: served from the cache on a byte match, parsed otherwise.
+        let schema = match self.read_metadata(&mut input)? {
+            None => {
+                return Err(DataFusionError::Execution(
+                    "Failed to decode batch: empty IPC stream".to_owned(),
+                ))
+            }
+            Some(()) => self.schema_for_current_metadata()?,
+        };
+
+        let mut dictionaries_by_id: HashMap<i64, ArrayRef> = HashMap::new();
+        let mut decoded: Option<RecordBatch> = None;
+        while self.read_metadata(&mut input)?.is_some() {
+            let message = root_as_message(&self.metadata).map_err(|err| {
+                DataFusionError::Execution(format!(
+                    "Failed to decode batch: unable to get root as message: {err:?}"
+                ))
+            })?;
+            let version = message.version();
+            let body = read_body(&mut input, message.bodyLength())?;
+            match message.header_type() {
+                MessageHeader::DictionaryBatch => {
+                    let dictionary = message.header_as_dictionary_batch().ok_or_else(|| {
+                        DataFusionError::Execution(
+                            "Failed to decode batch: unable to read dictionary batch".to_owned(),
+                        )
+                    })?;
+                    read_dictionary_impl(
+                        &body.into(),
+                        dictionary,
+                        &schema,
+                        &mut dictionaries_by_id,
+                        &version,
+                        false,
+                        skip_validation.clone(),
+                    )?;
+                }
+                MessageHeader::RecordBatch => {
+                    // Each Comet frame contains one complete IPC stream with exactly one record
+                    // batch. Stopping after that batch would skip codec footer/checksum
+                    // validation and could silently discard further frames swallowed by a
+                    // corrupt outer length prefix, so keep reading until the end-of-stream
+                    // marker and reject a second batch.
+                    if decoded.is_some() {
+                        return Err(DataFusionError::Execution(
+                            "Failed to decode batch: multiple record batches in one shuffle frame"
+                                .to_owned(),
+                        ));
+                    }
+                    let batch = message.header_as_record_batch().ok_or_else(|| {
+                        DataFusionError::Execution(
+                            "Failed to decode batch: unable to read record batch".to_owned(),
+                        )
+                    })?;
+                    let body = body.into();
+                    decoded = Some(
+                        RecordBatchDecoder::try_new(
+                            &body,
+                            batch,
+                            Arc::clone(&schema),
+                            &dictionaries_by_id,
+                            &version,
+                        )?
+                        .with_require_alignment(false)
+                        .with_skip_validation(skip_validation.clone())
+                        .read_record_batch()?,
+                    );
+                }
+                MessageHeader::Schema => {
+                    return Err(DataFusionError::Execution(
+                        "Failed to decode batch: expected a record batch, but found a schema"
+                            .to_owned(),
+                    ));
+                }
+                other => {
+                    return Err(DataFusionError::Execution(format!(
+                        "Failed to decode batch: unsupported message header type in IPC \
+                         stream: '{other:?}'"
+                    )));
+                }
+            }
+        }
+
+        let batch = decoded.ok_or_else(|| {
+            DataFusionError::Execution("Failed to decode batch: empty IPC stream".to_owned())
+        })?;
+        if input.read(&mut [0])? != 0 {
+            return Err(DataFusionError::Execution(
+                "Failed to decode batch: trailing data after IPC stream".to_owned(),
+            ));
+        }
+        Ok(batch)
+    }
+
+    /// Reads the next message's metadata length prefix and flatbuffer into `self.metadata`.
+    /// Returns `None` at the end of the stream, whether marked (a zero length, optionally after
+    /// a continuation marker) or a clean EOF before any length bytes.
+    fn read_metadata<R: Read>(&mut self, input: &mut R) -> Result<Option<()>> {
+        let mut prefix = [0u8; 4];
+        match input.read_exact(&mut prefix) {
+            Ok(()) => {}
+            Err(e) if e.kind() == ErrorKind::UnexpectedEof => return Ok(None),
+            Err(e) => return Err(e.into()),
+        }
+        if prefix == [0xff; 4] {
+            input.read_exact(&mut prefix)?;
+        }
+        let len = i32::from_le_bytes(prefix);
+        if len == 0 {
+            return Ok(None);
+        }
+        let len = usize::try_from(len)
+            .ok()
+            .filter(|len| *len <= MAX_METADATA_LEN)
+            .ok_or_else(|| {
+                DataFusionError::Execution(format!(
+                    "Failed to decode batch: invalid metadata length: {len}"
+                ))
+            })?;
+        self.metadata.resize(len, 0);
+        input.read_exact(&mut self.metadata)?;
+        Ok(Some(()))
+    }
+
+    /// Resolves the schema for the schema message currently in `self.metadata`, reusing the
+    /// cached schema when the bytes match and parsing (and caching) otherwise. A schema message
+    /// has no body, which the parse path checks, so a byte-identical message needs nothing read.
+    fn schema_for_current_metadata(&mut self) -> Result<SchemaRef> {
+        if let Some((cached_bytes, cached_schema)) = &self.cached_schema {
+            if *cached_bytes == self.metadata {
+                return Ok(Arc::clone(cached_schema));
+            }
+        }
+
+        let message = root_as_message(&self.metadata).map_err(|err| {
+            DataFusionError::Execution(format!(
+                "Failed to decode batch: unable to get root as message: {err:?}"
+            ))
+        })?;
+        if message.header_type() != MessageHeader::Schema {
+            return Err(DataFusionError::Execution(format!(
+                "Failed to decode batch: expected a schema as the first message in the \
+                 stream, got: {:?}",
+                message.header_type()
+            )));
+        }
+        if message.bodyLength() != 0 {
+            return Err(DataFusionError::Execution(
+                "Failed to decode batch: schema message with a non-empty body".to_owned(),
+            ));
+        }
+        let schema = message.header_as_schema().ok_or_else(|| {
+            DataFusionError::Execution(
+                "Failed to decode batch: failed to parse schema from message header".to_owned(),
+            )
+        })?;
+        let schema = Arc::new(fb_to_schema(schema));
+        self.schema_parses += 1;
+        self.cached_schema = Some((self.metadata.clone(), Arc::clone(&schema)));
+        Ok(schema)
+    }
+}
+
+/// Reads a message body of `len` bytes into a fresh buffer, as `StreamReader` does.
+fn read_body<R: Read>(input: &mut R, len: i64) -> Result<MutableBuffer> {
+    let len = usize::try_from(len).map_err(|_| {
+        DataFusionError::Execution(format!(
+            "Failed to decode batch: invalid message body length: {len}"
+        ))
+    })?;
+    let mut body = MutableBuffer::from_len_zeroed(len);
+    input.read_exact(&mut body)?;
+    Ok(body)
 }
 
 // lz4_flex treats physical EOF (including a partial block header) as a clean end of frame.
@@ -83,38 +343,9 @@ impl<R: Read> Read for RequireLz4EndMark<R> {
     }
 }
 
-fn read_single_batch<R: Read>(input: R, validate: bool) -> Result<RecordBatch> {
-    let reader = StreamReader::try_new(input, None)?;
-    let mut reader = if validate {
-        // Remote data must not escape as unchecked arrays and fail later in a native operator.
-        reader
-    } else {
-        // Preserve the existing local-shuffle fast path for trusted Comet-written arrays.
-        unsafe { reader.with_skip_validation(true) }
-    };
-    let batch = reader.next().transpose()?.ok_or_else(|| {
-        DataFusionError::Execution("Failed to decode batch: empty IPC stream".to_owned())
-    })?;
-
-    // Each Comet frame contains one complete IPC stream with exactly one record batch.
-    // Stopping after that batch would skip codec footer/checksum validation and could silently
-    // discard further frames swallowed by a corrupt outer length prefix.
-    if reader.next().transpose()?.is_some() {
-        return Err(DataFusionError::Execution(
-            "Failed to decode batch: multiple record batches in one shuffle frame".to_owned(),
-        ));
-    }
-    if reader.get_mut().read(&mut [0])? != 0 {
-        return Err(DataFusionError::Execution(
-            "Failed to decode batch: trailing data after IPC stream".to_owned(),
-        ));
-    }
-    Ok(batch)
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{read_ipc_compressed, read_ipc_compressed_validated};
+    use super::{read_ipc_compressed, read_ipc_compressed_validated, ShuffleBlockDecoder};
     use arrow::array::{Int32Array, RecordBatch, StringArray};
     use arrow::datatypes::{DataType, Field, Schema};
     use arrow::ipc::writer::StreamWriter;
@@ -159,6 +390,119 @@ mod tests {
             _ => unreachable!(),
         }
         bytes
+    }
+
+    /// Blocks that repeat the same schema message must be decoded against the cached schema
+    /// (one parse for the whole run), and a block carrying a different schema must be decoded
+    /// against its own schema and replace the cache, never against the stale one.
+    #[test]
+    #[cfg_attr(miri, ignore)] // Miri cannot call Zstd's C FFI.
+    fn schema_cache_hits_identical_messages_and_misses_different_ones() {
+        let int_stream = ipc_stream(1);
+        let utf8_stream = {
+            let schema = Arc::new(Schema::new(vec![Field::new("s", DataType::Utf8, false)]));
+            let batch = RecordBatch::try_new(
+                Arc::clone(&schema),
+                vec![Arc::new(StringArray::from(vec!["abc", "de"]))],
+            )
+            .unwrap();
+            let mut bytes = Vec::new();
+            let mut writer = StreamWriter::try_new(&mut bytes, &schema).unwrap();
+            writer.write(&batch).unwrap();
+            writer.finish().unwrap();
+            bytes
+        };
+
+        for codec in [b"NONE", b"SNAP", b"LZ4_", b"ZSTD"] {
+            let int_frame = encode(codec, &int_stream);
+            let utf8_frame = encode(codec, &utf8_stream);
+            let fresh_int = read_ipc_compressed(&int_frame).unwrap();
+            let fresh_utf8 = read_ipc_compressed(&utf8_frame).unwrap();
+
+            for validate in [false, true] {
+                let mut decoder = ShuffleBlockDecoder::new();
+                let decode = |decoder: &mut ShuffleBlockDecoder, frame: &[u8]| {
+                    if validate {
+                        decoder.decode_validated(frame).unwrap()
+                    } else {
+                        decoder.decode(frame).unwrap()
+                    }
+                };
+
+                for _ in 0..3 {
+                    assert_eq!(decode(&mut decoder, &int_frame), fresh_int, "{codec:?}");
+                }
+                assert_eq!(
+                    decoder.schema_parses(),
+                    1,
+                    "{codec:?}: repeats must hit the cache"
+                );
+
+                let utf8 = decode(&mut decoder, &utf8_frame);
+                assert_eq!(utf8, fresh_utf8, "{codec:?}");
+                assert_eq!(utf8.schema().field(0).data_type(), &DataType::Utf8);
+                assert_eq!(
+                    decoder.schema_parses(),
+                    2,
+                    "{codec:?}: new schema must parse"
+                );
+
+                assert_eq!(decode(&mut decoder, &int_frame), fresh_int, "{codec:?}");
+                assert_eq!(
+                    decoder.schema_parses(),
+                    3,
+                    "{codec:?}: switching back is a new encoding, not a stale hit"
+                );
+                assert_eq!(decode(&mut decoder, &int_frame), fresh_int, "{codec:?}");
+                assert_eq!(decoder.schema_parses(), 3, "{codec:?}");
+            }
+        }
+    }
+
+    /// Dictionary-encoded columns arrive as a dictionary batch before the record batch, the
+    /// layout the JVM columnar shuffle produces for strings. Both must decode through the
+    /// cached-schema path, with dictionaries scoped to their own block.
+    #[test]
+    fn dictionary_blocks_decode_with_cached_schema() {
+        use arrow::array::{DictionaryArray, Int32Array};
+        use arrow::datatypes::Int32Type;
+
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "d",
+            DataType::Dictionary(Box::new(DataType::Int32), Box::new(DataType::Utf8)),
+            true,
+        )]));
+        let frame = |values: Vec<&str>| {
+            let keys = Int32Array::from((0..values.len() as i32).collect::<Vec<_>>());
+            let dictionary =
+                DictionaryArray::<Int32Type>::try_new(keys, Arc::new(StringArray::from(values)))
+                    .unwrap();
+            let batch =
+                RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(dictionary)]).unwrap();
+            let mut bytes = Vec::new();
+            let mut writer = StreamWriter::try_new(&mut bytes, &schema).unwrap();
+            writer.write(&batch).unwrap();
+            writer.finish().unwrap();
+            encode(b"NONE", &bytes)
+        };
+        let first = frame(vec!["a", "b"]);
+        let second = frame(vec!["x", "y", "z"]);
+
+        let mut decoder = ShuffleBlockDecoder::new();
+        for validate in [false, true] {
+            for (block, expected) in [(&first, vec!["a", "b"]), (&second, vec!["x", "y", "z"])] {
+                let batch = if validate {
+                    decoder.decode_validated(block).unwrap()
+                } else {
+                    decoder.decode(block).unwrap()
+                };
+                let values = arrow::compute::cast(batch.column(0), &DataType::Utf8).unwrap();
+                let values = values.as_any().downcast_ref::<StringArray>().unwrap();
+                let got: Vec<&str> = values.iter().map(|v| v.unwrap()).collect();
+                assert_eq!(got, expected);
+            }
+        }
+        assert_eq!(decoder.schema_parses(), 1);
     }
 
     #[test]

@@ -101,7 +101,7 @@ use tokio::sync::mpsc;
 use crate::execution::memory_pools::{create_memory_pool, parse_memory_pool_config};
 use crate::execution::operators::{ScanExec, ShuffleScanExec};
 use crate::execution::shuffle::{
-    decode_remote_shuffle_batch, read_ipc_compressed, CompressionCodec,
+    decode_remote_shuffle_batch_with, CompressionCodec, ShuffleBlockDecoder,
 };
 use crate::execution::spark_plan::SparkPlan;
 
@@ -1317,9 +1317,29 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_decodeShuffleBlock(
 ) -> jlong {
     try_unwrap_or_throw(&e, |env| {
         with_trace("decodeShuffleBlock", tracing_enabled != JNI_FALSE, || {
-            decode_shuffle_block(env, byte_buffer, length, array_addrs, schema_addrs, None)
+            // This entry point carries no native handle, so the schema cache lives in a
+            // thread-local decoder. Spark runs one task per thread at a time and the decoder
+            // compares the schema message bytes before reusing a cached schema, so a decoder
+            // last used by a different task on this thread simply misses and re-parses.
+            LOCAL_SHUFFLE_BLOCK_DECODER.with_borrow_mut(|decoder| {
+                decode_shuffle_block(
+                    env,
+                    decoder,
+                    byte_buffer,
+                    length,
+                    array_addrs,
+                    schema_addrs,
+                    None,
+                )
+            })
         })
     })
+}
+
+thread_local! {
+    /// Schema-caching decoder for the handle-less local `decodeShuffleBlock` entry point.
+    static LOCAL_SHUFFLE_BLOCK_DECODER: std::cell::RefCell<ShuffleBlockDecoder> =
+        std::cell::RefCell::new(ShuffleBlockDecoder::new());
 }
 
 #[no_mangle]
@@ -1338,14 +1358,19 @@ pub extern "system" fn Java_org_apache_comet_Native_createRemoteShuffleDecoder(
         })?;
         let decoder = RemoteShuffleDecoder {
             expected_types: schema.fields.iter().map(to_arrow_datatype).collect(),
+            decoder: ShuffleBlockDecoder::new(),
         };
         Ok(Box::into_raw(Box::new(decoder)) as jlong)
     })
 }
 
-/// Immutable decoding state owned by one JVM remote shuffle iterator, not shared across tasks.
+/// Decoding state owned by one JVM remote shuffle iterator, not shared across tasks. The JVM
+/// side serializes decode calls on a handle, which is what the schema cache relies on.
 struct RemoteShuffleDecoder {
     expected_types: Vec<ArrowDataType>,
+    /// Lives as long as the JVM-side reader holds the handle, so the IPC schema message is
+    /// parsed once per distinct schema encoding rather than once per block.
+    decoder: ShuffleBlockDecoder,
 }
 
 #[no_mangle]
@@ -1384,17 +1409,21 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_decodeShuffleBlockWit
 ) -> jlong {
     try_unwrap_or_throw(&e, |env| {
         with_trace("decodeShuffleBlock", tracing_enabled != JNI_FALSE, || {
-            let decoder = unsafe { (decoder_handle as *const RemoteShuffleDecoder).as_ref() }
+            // SAFETY: the handle was returned by `createRemoteShuffleDecoder`, has not been
+            // released, and the JVM side does not decode concurrently on one handle, so this
+            // is the only live reference for the duration of the call.
+            let remote = unsafe { (decoder_handle as *mut RemoteShuffleDecoder).as_mut() }
                 .ok_or_else(|| {
                     CometError::Internal("Remote shuffle decoder is not initialized".to_owned())
                 })?;
             decode_shuffle_block(
                 env,
+                &mut remote.decoder,
                 byte_buffer,
                 length,
                 array_addrs,
                 schema_addrs,
-                Some(&decoder.expected_types),
+                Some(&remote.expected_types),
             )
         })
     })
@@ -1402,6 +1431,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_decodeShuffleBlockWit
 
 fn decode_shuffle_block(
     env: &mut Env,
+    decoder: &mut ShuffleBlockDecoder,
     byte_buffer: JByteBuffer,
     length: jint,
     array_addrs: JLongArray,
@@ -1414,9 +1444,9 @@ fn decode_shuffle_block(
     let batch = if let Some(expected_types) = expected_types {
         // Reject incompatible logical types, then decode dictionaries before JVM import. The
         // JVM importer supports fewer dictionary key/value layouts than the shuffle writer.
-        decode_remote_shuffle_batch(slice, expected_types)?
+        decode_remote_shuffle_batch_with(decoder, slice, expected_types)?
     } else {
-        read_ipc_compressed(slice)?
+        decoder.decode(slice)?
     };
     prepare_output(env, array_addrs, schema_addrs, batch, false)
 }
