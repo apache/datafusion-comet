@@ -56,10 +56,9 @@ INSERT INTO test_abs_iv_overflow VALUES (1, 2, 3, 4.5), (-106751991, -4, 0, -54.
 query expect_error(overflow)
 SELECT abs(make_dt_interval(d, h, m, s)) FROM test_abs_iv_overflow
 
--- pinned fallback: NullPropagation folds the ym null into a bare typed literal that CometLiteral
--- does not admit (it special-cases only DayTimeIntervalType, literals.scala:63), so the whole
--- projection falls back. Pre-existing gap (#5061); this flips to a failure when it is fixed.
-query expect_fallback(Unsupported data type YearMonthIntervalType)
+-- NullPropagation folds the ym null into a bare typed literal. CometLiteral admits
+-- YearMonthIntervalType literals (one of the gaps tracked in #5061), so it stays native.
+query
 SELECT abs(CAST(NULL AS INTERVAL YEAR TO MONTH))
 
 query
