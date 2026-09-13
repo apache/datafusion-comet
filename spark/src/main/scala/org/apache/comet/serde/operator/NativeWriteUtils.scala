@@ -157,7 +157,7 @@ object NativeWriteUtils {
       .orElse {
         if (needsNativeUrlEscaping(fileNamePrefix)) {
           Some(
-            s"HDFS output file names needing URI escaping are not supported: " +
+            "HDFS output file names needing URI escaping are not supported: " +
               s"$BASE_OUTPUT_NAME=$fileNamePrefix would make the native writer create a " +
               "different file from the one Spark commits")
         } else {
