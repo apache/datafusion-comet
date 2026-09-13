@@ -570,27 +570,31 @@ Which jobs run also depends on the event:</p>
 <td><p>yes</p></td>
 <td><p>yes</p></td>
 </tr>
-<tr class="row-odd"><td><p>Spark SQL tests, Spark 4.1</p></td>
+<tr class="row-odd"><td><p>Spark SQL tests, Spark 4.1, catalyst and sql_core</p></td>
 <td><p>yes</p></td>
 <td><p>yes</p></td>
 </tr>
-<tr class="row-even"><td><p>Iceberg Spark SQL tests, Iceberg 1.11</p></td>
-<td><p>yes</p></td>
-<td><p>yes</p></td>
-</tr>
-<tr class="row-odd"><td><p>macOS build and Comet test suites</p></td>
+<tr class="row-even"><td><p>Spark SQL tests, Spark 4.1, sql_hive</p></td>
 <td><p>with label</p></td>
 <td><p>yes</p></td>
 </tr>
-<tr class="row-even"><td><p>Benchmark compile and lint check</p></td>
+<tr class="row-odd"><td><p>Iceberg Spark SQL tests, Iceberg 1.11</p></td>
+<td><p>yes</p></td>
+<td><p>yes</p></td>
+</tr>
+<tr class="row-even"><td><p>macOS build and Comet test suites</p></td>
 <td><p>with label</p></td>
 <td><p>yes</p></td>
 </tr>
-<tr class="row-odd"><td><p>Spark SQL tests, Spark 3.4 / 3.5 / 4.0</p></td>
+<tr class="row-odd"><td><p>Benchmark compile and lint check</p></td>
 <td><p>with label</p></td>
 <td><p>yes</p></td>
 </tr>
-<tr class="row-even"><td><p>Iceberg Spark SQL tests, Iceberg 1.8 / 1.9 / 1.10</p></td>
+<tr class="row-even"><td><p>Spark SQL tests, Spark 3.4 / 3.5 / 4.0</p></td>
+<td><p>with label</p></td>
+<td><p>yes</p></td>
+</tr>
+<tr class="row-odd"><td><p>Iceberg Spark SQL tests, Iceberg 1.8 / 1.9 / 1.10</p></td>
 <td><p>with label</p></td>
 <td><p>yes</p></td>
 </tr>
@@ -627,16 +631,19 @@ cases that pin both down.</p>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">run-benchmark-check</span></code></p></td>
 <td><p>Benchmark compile and lint check</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">run-spark-3.4-tests</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">run-spark-4.1-hive-tests</span></code></p></td>
+<td><p>Spark SQL hive tests against Spark 4.1</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">run-spark-3.4-tests</span></code></p></td>
 <td><p>Spark SQL tests against Spark 3.4</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">run-spark-3.5-tests</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">run-spark-3.5-tests</span></code></p></td>
 <td><p>Spark SQL tests against Spark 3.5</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">run-spark-4.0-tests</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">run-spark-4.0-tests</span></code></p></td>
 <td><p>Spark SQL tests against Spark 4.0</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">run-iceberg-tests</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">run-iceberg-tests</span></code></p></td>
 <td><p>Iceberg Spark SQL tests against Iceberg 1.8/1.9/1.10</p></td>
 </tr>
 </tbody>
@@ -659,6 +666,8 @@ does not cover. Some examples:</p>
 <li><p>code under <code class="docutils literal notranslate"><span class="pre">spark/src/main/spark-3.4/</span></code>, <code class="docutils literal notranslate"><span class="pre">spark-3.5/</span></code>, <code class="docutils literal notranslate"><span class="pre">spark-4.0/</span></code> or the shared <code class="docutils literal notranslate"><span class="pre">spark-3.x/</span></code>
 directory, or any change to <code class="docutils literal notranslate"><span class="pre">CometExprShim</span></code> and friends</p></li>
 <li><p>a change to a Spark SQL diff under <code class="docutils literal notranslate"><span class="pre">dev/diffs/</span></code> for a version other than 4.1</p></li>
+<li><p>anything that touches Hive table support, <code class="docutils literal notranslate"><span class="pre">InsertIntoHiveTable</span></code>, or the <code class="docutils literal notranslate"><span class="pre">sql/hive</span></code> parts of
+the 4.1 diff</p></li>
 <li><p>anything touching Iceberg reflection or the Iceberg diffs</p></li>
 <li><p>native code with platform-specific behavior, or a dependency bump that changes what is
 compiled on macOS</p></li>
