@@ -20,7 +20,7 @@
 //! Optimized for scalar pattern case by passing scalar directly to arrow_contains
 //! instead of expanding to arrays like DataFusion's built-in contains.
 
-use arrow::array::{Array, ArrayRef, BooleanArray, StringArray};
+use arrow::array::{Array, ArrayRef, BooleanArray, Scalar};
 use arrow::compute::kernels::comparison::contains as arrow_contains;
 use arrow::datatypes::DataType;
 use datafusion::common::{exec_err, Result, ScalarValue};
@@ -83,15 +83,14 @@ fn spark_contains(haystack: &ColumnarValue, needle: &ColumnarValue) -> Result<Co
 
         // Array haystack, scalar needle - OPTIMIZED PATH
         (ColumnarValue::Array(haystack_array), ColumnarValue::Scalar(needle_scalar)) => {
-            let result = contains_with_arrow_scalar(haystack_array, needle_scalar)?;
+            let result = contains_array_scalar(haystack_array, needle_scalar)?;
             Ok(ColumnarValue::Array(result))
         }
 
         // Scalar haystack, array needle - less common
         (ColumnarValue::Scalar(haystack_scalar), ColumnarValue::Array(needle_array)) => {
-            let haystack_array = haystack_scalar.to_array_of_size(needle_array.len())?;
-            let result = arrow_contains(&haystack_array, needle_array)?;
-            Ok(ColumnarValue::Array(Arc::new(result)))
+            let result = contains_scalar_array(haystack_scalar, needle_array)?;
+            Ok(ColumnarValue::Array(result))
         }
 
         // Both scalars - compute single result
@@ -102,9 +101,24 @@ fn spark_contains(haystack: &ColumnarValue, needle: &ColumnarValue) -> Result<Co
     }
 }
 
+/// Helper to safely extract string reference from ScalarValue
+#[inline]
+fn get_string_scalar_value<'a>(scalar: &'a ScalarValue, arg_name: &str) -> Result<&'a str> {
+    match scalar {
+        ScalarValue::Utf8(Some(s))
+        | ScalarValue::LargeUtf8(Some(s))
+        | ScalarValue::Utf8View(Some(s)) => Ok(s.as_str()),
+        _ => exec_err!(
+            "contains function requires string type for {}, got {:?}",
+            arg_name,
+            scalar.data_type()
+        ),
+    }
+}
+
 /// Optimized contains for array haystack with scalar needle.
 /// Uses Arrow's native scalar handling for better performance.
-fn contains_with_arrow_scalar(
+fn contains_array_scalar(
     haystack_array: &ArrayRef,
     needle_scalar: &ScalarValue,
 ) -> Result<ArrayRef> {
@@ -113,24 +127,25 @@ fn contains_with_arrow_scalar(
         return Ok(Arc::new(BooleanArray::new_null(haystack_array.len())));
     }
 
-    // Extract the needle string
-    let needle_str = match needle_scalar {
-        ScalarValue::Utf8(Some(s))
-        | ScalarValue::LargeUtf8(Some(s))
-        | ScalarValue::Utf8View(Some(s)) => s.clone(),
-        _ => {
-            return exec_err!(
-                "contains function requires string type for needle, got {:?}",
-                needle_scalar.data_type()
-            )
-        }
-    };
+    let _ = get_string_scalar_value(needle_scalar, "needle")?;
 
-    // Create scalar array for needle - tells Arrow to use optimized paths
-    let needle_scalar_array = StringArray::new_scalar(needle_str);
-
-    // Use Arrow's contains which detects scalar case and uses optimized paths
+    let needle_scalar_array = Scalar::new(needle_scalar.to_array()?);
     let result = arrow_contains(haystack_array, &needle_scalar_array)?;
+    Ok(Arc::new(result))
+}
+
+fn contains_scalar_array(
+    haystack_scalar: &ScalarValue,
+    needle_array: &ArrayRef,
+) -> Result<ArrayRef> {
+    if haystack_scalar.is_null() {
+        return Ok(Arc::new(BooleanArray::new_null(needle_array.len())));
+    }
+
+    let _ = get_string_scalar_value(haystack_scalar, "haystack")?;
+
+    let haystack_scalar_array = Scalar::new(haystack_scalar.to_array()?);
+    let result = arrow_contains(&haystack_scalar_array, needle_array)?;
     Ok(Arc::new(result))
 }
 
@@ -144,29 +159,8 @@ fn contains_scalar_scalar(
         return Ok(ScalarValue::Boolean(None));
     }
 
-    let haystack_str = match haystack_scalar {
-        ScalarValue::Utf8(Some(s))
-        | ScalarValue::LargeUtf8(Some(s))
-        | ScalarValue::Utf8View(Some(s)) => s.as_str(),
-        _ => {
-            return exec_err!(
-                "contains function requires string type for haystack, got {:?}",
-                haystack_scalar.data_type()
-            )
-        }
-    };
-
-    let needle_str = match needle_scalar {
-        ScalarValue::Utf8(Some(s))
-        | ScalarValue::LargeUtf8(Some(s))
-        | ScalarValue::Utf8View(Some(s)) => s.as_str(),
-        _ => {
-            return exec_err!(
-                "contains function requires string type for needle, got {:?}",
-                needle_scalar.data_type()
-            )
-        }
-    };
+    let haystack_str = get_string_scalar_value(haystack_scalar, "haystack")?;
+    let needle_str = get_string_scalar_value(needle_scalar, "needle")?;
 
     Ok(ScalarValue::Boolean(Some(
         haystack_str.contains(needle_str),
@@ -176,7 +170,7 @@ fn contains_scalar_scalar(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow::array::StringArray;
+    use arrow::array::{LargeStringArray, StringArray, StringViewArray};
 
     #[test]
     fn test_contains_array_scalar() {
@@ -188,7 +182,7 @@ mod tests {
         ])) as ArrayRef;
         let needle = ScalarValue::Utf8(Some("world".to_string()));
 
-        let result = contains_with_arrow_scalar(&haystack, &needle).unwrap();
+        let result = contains_array_scalar(&haystack, &needle).unwrap();
         let bool_array = result.as_any().downcast_ref::<BooleanArray>().unwrap();
 
         assert!(bool_array.value(0)); // "hello world" contains "world"
@@ -218,7 +212,7 @@ mod tests {
         ])) as ArrayRef;
         let needle = ScalarValue::Utf8(None);
 
-        let result = contains_with_arrow_scalar(&haystack, &needle).unwrap();
+        let result = contains_array_scalar(&haystack, &needle).unwrap();
         let bool_array = result.as_any().downcast_ref::<BooleanArray>().unwrap();
 
         // Null needle should produce null results
@@ -231,11 +225,128 @@ mod tests {
         let haystack = Arc::new(StringArray::from(vec![Some("hello world"), Some("")])) as ArrayRef;
         let needle = ScalarValue::Utf8(Some("".to_string()));
 
-        let result = contains_with_arrow_scalar(&haystack, &needle).unwrap();
+        let result = contains_array_scalar(&haystack, &needle).unwrap();
         let bool_array = result.as_any().downcast_ref::<BooleanArray>().unwrap();
 
         // Empty string is contained in any string
         assert!(bool_array.value(0));
         assert!(bool_array.value(1));
+    }
+
+    #[test]
+    fn test_contains_scalar_array_null_haystack() {
+        let haystack = ScalarValue::Utf8(None);
+        let needle = Arc::new(StringArray::from(vec![
+            Some("hello world"),
+            Some("foo bar"),
+        ])) as ArrayRef;
+
+        let result = contains_scalar_array(&haystack, &needle).unwrap();
+        let bool_array = result.as_any().downcast_ref::<BooleanArray>().unwrap();
+
+        // Null haystack should produce null results for all array elements
+        assert!(bool_array.is_null(0));
+        assert!(bool_array.is_null(1));
+    }
+
+    #[test]
+    fn test_spark_contains_dispatcher_scalar_array() {
+        let haystack = ColumnarValue::Scalar(ScalarValue::Utf8(Some("abc".to_string())));
+        let needle =
+            ColumnarValue::Array(
+                Arc::new(StringArray::from(vec![Some("a"), Some("bc"), Some("d")])) as ArrayRef,
+            );
+
+        let result = spark_contains(&haystack, &needle).unwrap();
+        let array = match result {
+            ColumnarValue::Array(arr) => arr,
+            _ => panic!("Expected ColumnarValue::Array"),
+        };
+        let bool_array = array.as_any().downcast_ref::<BooleanArray>().unwrap();
+
+        assert!(bool_array.value(0));
+        assert!(bool_array.value(1));
+        assert!(!bool_array.value(2));
+    }
+
+    #[test]
+    fn test_contains_scalar_large_utf8() {
+        let haystack = ScalarValue::LargeUtf8(Some("abc".to_string()));
+        let needle = Arc::new(LargeStringArray::from(vec![
+            Some("a"),
+            Some("bc"),
+            None,
+            Some(""),
+            Some("d"),
+        ])) as ArrayRef;
+
+        let res = contains_scalar_array(&haystack, &needle).unwrap();
+        let res = res.as_any().downcast_ref::<BooleanArray>().unwrap();
+
+        let expected =
+            BooleanArray::from(vec![Some(true), Some(true), None, Some(true), Some(false)]);
+
+        assert_eq!(res, &expected);
+    }
+
+    #[test]
+    fn test_contains_scalar_utf8_view() {
+        let haystack = ScalarValue::Utf8View(Some("abc".to_string()));
+        let needle = Arc::new(StringViewArray::from(vec![
+            Some("a"),
+            Some("bc"),
+            None,
+            Some(""),
+            Some("d"),
+        ])) as ArrayRef;
+
+        let res = contains_scalar_array(&haystack, &needle).unwrap();
+        let res = res.as_any().downcast_ref::<BooleanArray>().unwrap();
+
+        let expected =
+            BooleanArray::from(vec![Some(true), Some(true), None, Some(true), Some(false)]);
+
+        assert_eq!(res, &expected);
+    }
+
+    #[test]
+    fn test_contains_scalar_array_all_cases() {
+        let haystack = ScalarValue::Utf8(Some("hello world".to_string()));
+        let needle = Arc::new(StringArray::from(vec![
+            Some("hello"),
+            Some("world"),
+            Some("foo"),
+            None,
+        ])) as ArrayRef;
+
+        let res = contains_scalar_array(&haystack, &needle).unwrap();
+        let bool_arr = res.as_any().downcast_ref::<BooleanArray>().unwrap();
+
+        assert_eq!(
+            bool_arr,
+            &BooleanArray::from(vec![Some(true), Some(true), Some(false), None])
+        );
+    }
+
+    #[test]
+    fn test_contains_scalar_array_empty_needle() {
+        let haystack = ScalarValue::Utf8(Some("hello world".to_string()));
+        let needle = Arc::new(StringArray::from(Vec::<Option<&str>>::new())) as ArrayRef;
+
+        let res = contains_scalar_array(&haystack, &needle).unwrap();
+        assert_eq!(res.len(), 0);
+    }
+
+    #[test]
+    fn test_contains_scalar_array_invalid_type_error() {
+        let haystack = ScalarValue::Int32(Some(123));
+        let needle = Arc::new(StringArray::from(vec![Some("1")])) as ArrayRef;
+
+        let err = contains_scalar_array(&haystack, &needle).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("contains function requires string type for haystack, got Int32"),
+            "Actual error: {err}"
+        );
     }
 }
