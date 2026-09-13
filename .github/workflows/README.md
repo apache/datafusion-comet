@@ -128,8 +128,9 @@ safe to make a required check.
 
 `ci.yml` also fires on `pull_request.types: [labeled]`, so applying
 `run-spark-3.4-tests`, `run-spark-3.5-tests`, `run-spark-4.0-tests`,
-`run-iceberg-tests`, `run-macos-tests`, or `run-benchmark-check` starts the
-jobs that label gates without needing a new push. GitHub cannot filter a
+`run-spark-4.1-hive-tests`, `run-iceberg-tests`, `run-macos-tests`, or
+`run-benchmark-check` starts the jobs that label gates without needing a new
+push. GitHub cannot filter a
 `pull_request` trigger by label name, so **every** label added to a PR starts a
 run, including labels that gate nothing.
 
@@ -190,15 +191,26 @@ umbrella doesn't watch, or operate independently of the rest of CI:
 
 ## Changing what runs when
 
-Consumer jobs in `ci.yml` use a single routing output, for example:
+Consumer jobs in `ci.yml` use their routing outputs, for example:
 
 ```yaml
 if: needs.changes.outputs.spark_3_5 == 'true'
 ```
 
-The shared native producer runs when any of its consumers' outputs is true.
+Spark 4.1 has separate core and Hive outputs selecting the same caller:
 
-That single boolean folds together two separate decisions, both of which live
+```yaml
+if: needs.changes.outputs.spark_4_1 == 'true' || needs.changes.outputs.spark_4_1_hive == 'true'
+```
+
+`NATIVE_CONSUMERS` in `dev/ci/compute-changes.py` maps each native consumer
+job to all outputs that can select it. The shared native producer runs when
+any of those outputs is true. A Hive-only label event has `spark_4_1=false`
+and `spark_4_1_hive=true`, so it still starts the native producer. The
+configuration guard checks the exact callers, output exports, dependencies,
+and gates against this mapping.
+
+Each routing output folds together two separate decisions, both of which live
 in `dev/ci/compute-changes.py`:
 
 - **`FILTERS`** — which files the job covers. Pattern semantics match
@@ -315,6 +327,12 @@ Any job whose first Maven use is a bare `./mvnw` needs this step before it.
 `./.github/actions/java-test` carries its own inline copy rather than calling
 the composite, because a local action invoking another local action is
 deliberately avoided here (see the artifact-upload note above).
+
+The independent Java lint, Spark 4.1 compile, and Celeborn compatibility jobs
+in `pr_build_linux_checks.yml` each bootstrap Maven, as do the two TPC jobs
+in `pr_build_linux.yml`. The configuration guard scans both workflows and
+requires an earlier unconditional bootstrap step for every direct `./mvnw`
+command; a bootstrap that ignores failure does not satisfy the guard.
 
 ## Merge queue
 

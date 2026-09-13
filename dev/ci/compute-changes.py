@@ -388,20 +388,22 @@ POLICY = {
     "iceberg_1_11": ["pr", "queue"],
 }
 
-# Output keys for callers that download the shared Linux native library.
+# Map each caller job that downloads the shared Linux native library to every
+# output key that can select it. Insertion order follows the callers in ci.yml.
+# Spark 4.1 has two routes into one caller: core shards and opt-in Hive shards.
 # The producer has no independent path or event policy: it runs exactly when
-# at least one of these consumers is selected after FILTERS and POLICY apply.
-NATIVE_CONSUMERS = (
-    "build_linux",
-    "spark_3_4",
-    "spark_3_5",
-    "spark_4_0",
-    "spark_4_1",
-    "iceberg_1_8",
-    "iceberg_1_9",
-    "iceberg_1_10",
-    "iceberg_1_11",
-)
+# any route of at least one consumer is selected after FILTERS and POLICY apply.
+NATIVE_CONSUMERS = {
+    "pr_build_linux": ("build_linux",),
+    "spark_3_4": ("spark_3_4",),
+    "spark_3_5": ("spark_3_5",),
+    "spark_4_0": ("spark_4_0",),
+    "spark_4_1": ("spark_4_1", "spark_4_1_hive"),
+    "iceberg_1_8": ("iceberg_1_8",),
+    "iceberg_1_9": ("iceberg_1_9",),
+    "iceberg_1_10": ("iceberg_1_10",),
+    "iceberg_1_11": ("iceberg_1_11",),
+}
 
 
 def gating_labels(job):
@@ -451,8 +453,9 @@ def compute(files, event):
     `event` has the fields described by event_allows(). Neither input is
     mutated. Manual dispatch selects every route even with no changed files;
     other events require both path and event matches. The shared native build
-    is selected only after those decisions, so a denied opt-in consumer cannot
-    start an unused producer. Unknown events select nothing. Configuration
+    is selected only after those decisions, taking the union of every caller's
+    routes, so Hive alone can start its producer and a denied opt-in route
+    cannot start an unused producer. Unknown events select nothing. Configuration
     lookup failures propagate as KeyError rather than returning partial output.
     """
     manual = event.get("name") == "workflow_dispatch"
@@ -460,7 +463,9 @@ def compute(files, event):
         name: event_allows(name, event) and (manual or matches(patterns, files))
         for name, patterns in FILTERS.items()
     }
-    outputs["build_linux_native"] = any(outputs[name] for name in NATIVE_CONSUMERS)
+    outputs["build_linux_native"] = any(
+        outputs[name] for routes in NATIVE_CONSUMERS.values() for name in routes
+    )
     return outputs
 
 
