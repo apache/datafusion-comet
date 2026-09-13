@@ -28,6 +28,7 @@ INSERT INTO routing_csv VALUES ('abc', 1, array(1, 2)), ('', 0, array()), (NULL,
 query expect_dispatch(to_csv)
 SELECT to_csv(named_struct('s', s, 'i', i)) FROM routing_csv
 
+-- Spark 3.x renders complex CSV fields as identity strings; compare non-nullness instead.
 -- Keep the complex field non-null so Spark can produce the baseline.
 query expect_dispatch(to_csv)
-SELECT to_csv(named_struct('a', a)) FROM routing_csv WHERE a IS NOT NULL
+SELECT to_csv(named_struct('a', a)) IS NOT NULL FROM routing_csv WHERE a IS NOT NULL
