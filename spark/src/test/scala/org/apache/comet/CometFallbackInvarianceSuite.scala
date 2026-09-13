@@ -41,9 +41,9 @@ import org.apache.spark.sql.internal.SQLConf
  *      exception on the other is a failure with a named witness, not an error in the harness --
  *      exception parity is where several historical divergences have lived.
  *
- * 2. Every comparison is gated on evidence that the config flip actually moved execution. A query
- * whose executed plan proves nothing is reported SKIPPED-VACUOUS and never counted as a pass.
- * Without that gate an invariance sweep silently overstates its own coverage.
+ * 2. Every comparison is gated on evidence that the config flip actually moved execution.
+ * Unexpected binding gaps fail the test instead of silently reducing coverage. Only the known
+ * non-native-by-default StringTranslate value case is SKIPPED-VACUOUS, never counted as a pass.
  *
  * Queries deliberately avoid `ORDER BY`: a shuffle roots the executed plan at
  * `AdaptiveSparkPlanExec`, whose `children` is empty, so plan inspection would read zero for
@@ -152,19 +152,24 @@ class CometFallbackInvarianceSuite extends CometFuzzTestBase {
       tally: mutable.Map[String, Int],
       findings: mutable.ArrayBuffer[String]): Unit = {
     def bump(key: String): Unit = tally(key) = tally.getOrElse(key, 0) + 1
-    def skip(why: String): Unit = {
-      bump("vacuous")
-      findings += s"SKIPPED-VACUOUS [$label] $expr $why " +
+    def recordBindingGap(why: String): Unit = {
+      // StringTranslate is incompatible by default. Other gaps lose expected corpus coverage.
+      val expectedSkip = label == "values" && expr == "StringTranslate" &&
+        why == "not-native-by-default"
+      val (key, verdict) =
+        if (expectedSkip) ("vacuous", "SKIPPED-VACUOUS") else ("fail", "FAIL-BIND")
+      bump(key)
+      findings += s"$verdict [$label] $expr $why " +
         s"(default: ${base.presence}) (forced: ${forced.presence})"
     }
 
     if (base.presence.opaque || forced.presence.opaque) {
       // Neither "ran natively" nor "fell back" can be established from this plan.
-      skip("bind-unprovable-opaque-plan")
+      recordBindingGap("bind-unprovable-opaque-plan")
     } else if (!base.presence.ranNatively) {
-      skip("not-native-by-default")
+      recordBindingGap("not-native-by-default")
     } else if (!forced.presence.fellBack) {
-      skip("flip-did-not-force-fallback")
+      recordBindingGap("flip-did-not-force-fallback")
     } else {
       (base.outcome, forced.outcome) match {
         case (Rows(a), Rows(b)) =>
@@ -225,6 +230,35 @@ class CometFallbackInvarianceSuite extends CometFuzzTestBase {
       val forced = runLegForced(expr, sql)
       compare(label, expr, base, forced, tally, findings)
     }
+
+  test("binding coverage allows only the known non-native StringTranslate case") {
+    val rows = Rows(Seq("same"))
+    val native = Leg(rows, Presence(1, 1, 0))
+    val fallback = Leg(rows, Presence(1, 0, 1))
+    val opaque = Leg(rows, Presence(0, 0, 0))
+
+    Seq(
+      ("values", "Add", opaque, fallback, "fail", "FAIL-BIND"),
+      ("values", "Add", native, opaque, "fail", "FAIL-BIND"),
+      ("values", "Add", fallback, fallback, "fail", "FAIL-BIND"),
+      ("errors", "AddMonths", fallback, fallback, "fail", "FAIL-BIND"),
+      ("values", "Add", native, native, "fail", "FAIL-BIND"),
+      ("values", "StringTranslate", opaque, fallback, "fail", "FAIL-BIND"),
+      ("values", "StringTranslate", native, native, "fail", "FAIL-BIND"),
+      ("errors", "StringTranslate", fallback, fallback, "fail", "FAIL-BIND"),
+      ("values", "StringTranslate", fallback, fallback, "vacuous", "SKIPPED-VACUOUS"),
+      ("values", "StringTranslate", native, fallback, "pass", "")).foreach {
+      case (label, expr, base, forced, expectedTally, expectedVerdict) =>
+        withClue(s"[$label] $expr default=${base.presence} forced=${forced.presence}: ") {
+          val tally = mutable.Map[String, Int]()
+          val findings = mutable.ArrayBuffer[String]()
+          compare(label, expr, base, forced, tally, findings)
+          assert(tally.toMap == Map(expectedTally -> 1))
+          val verdicts = findings.map(_.takeWhile(_ != ' ')).toSeq
+          assert(verdicts == (if (expectedVerdict.isEmpty) Seq.empty else Seq(expectedVerdict)))
+        }
+    }
+  }
 
   test("outcome is invariant under forced per-expression fallback") {
     val tally = mutable.Map[String, Int]()
@@ -304,8 +338,7 @@ class CometFallbackInvarianceSuite extends CometFuzzTestBase {
     val failures = findings.filter(_.startsWith("FAIL"))
     assert(
       failures.isEmpty,
-      s"forced fallback changed the outcome of ${failures.length} quer" +
-        s"${if (failures.length == 1) "y" else "ies"} ($summary):\n" +
+      s"fallback invariance checks failed ($summary):\n" +
         failures.mkString("\n"))
   }
 }

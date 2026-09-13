@@ -27,17 +27,20 @@ import scala.util.Random
 import org.apache.spark.SparkConf
 import org.apache.spark.benchmark.Benchmark
 import org.apache.spark.sql.{Column, SaveMode, SparkSession}
+import org.apache.spark.sql.comet.execution.shuffle.{CometNativeShuffle, CometShuffleExchangeExec}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions
+import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator, SchemaGenOptions}
 
 // spotless:off
 /**
  * Benchmark to measure Comet shuffle performance. To run this benchmark:
  * `SPARK_GENERATE_BENCHMARK_FILES=1 make benchmark-org.apache.spark.sql.benchmark.CometShuffleBenchmark`
+ * Add `-- --nested-hash-only` to run just the nested hash key cases.
  * Results will be written to "spark/benchmarks/CometShuffleBenchmark-**results.txt".
  */
 // spotless:on
@@ -475,7 +478,142 @@ object CometShuffleBenchmark extends CometBenchmarkBase {
     }
   }
 
+  /**
+   * Nested hash partitioning keys, which native shuffle admits only when
+   * `spark.comet.shuffle.native.partitioning.hash.nested.enabled` is on.
+   *
+   * Primitive arrays use the typed element path; arrays of structs exercise recursive hashing.
+   * Map cases include a singleton control and variable cardinalities in both input key orders,
+   * covering normalization as well as the specialized scalar key/value hash loop.
+   *
+   * Compare native with Comet JVM shuffle to evaluate the default `auto` mode with nested hashing
+   * disabled. The all-Spark arm also changes scan and projection execution. These are end-to-end
+   * shuffle measurements, not isolated hash-kernel timings.
+   */
+  def shuffleNestedHashKeyBenchmark(
+      name: String,
+      keyExpr: String,
+      values: Int,
+      partitionNum: Int): Unit = {
+    val benchmark =
+      microBenchmark(s"Nested hash key: $name ($partitionNum Partition)", values)
+
+    withTempPath { dir =>
+      withTempTable("parquetV1Table") {
+        // `tbl`'s `value` spans the full Long range, so a direct cast to INT overflows under ANSI
+        // mode. `pmod` keeps the key varied (a constant would hash every row alike, which would
+        // not measure partitioning at all) while staying in range.
+        prepareTable(dir, spark.sql(s"SELECT CAST(pmod(value, 1000000) AS INT) AS c1 FROM $tbl"))
+        val query = s"SELECT $keyExpr AS k, c1 FROM parquetV1Table"
+
+        benchmark.addCase("Spark") { _ =>
+          withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+            spark.sql(query).repartition(partitionNum, Column("k")).noop()
+          }
+        }
+
+        benchmark.addCase("Comet (Spark Shuffle)") { _ =>
+          withSQLConf(
+            CometConf.COMET_ENABLED.key -> "true",
+            CometConf.COMET_EXEC_ENABLED.key -> "true",
+            CometConf.COMET_SHUFFLE_ENABLED.key -> "false") {
+            spark.sql(query).repartition(partitionNum, Column("k")).noop()
+          }
+        }
+
+        benchmark.addCase("Comet (JVM Shuffle)") { _ =>
+          withSQLConf(
+            CometConf.COMET_ENABLED.key -> "true",
+            CometConf.COMET_EXEC_ENABLED.key -> "true",
+            CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
+            CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
+            spark.sql(query).repartition(partitionNum, Column("k")).noop()
+          }
+        }
+
+        def containsMap(dataType: DataType): Boolean = dataType match {
+          case _: MapType => true
+          case ArrayType(elementType, _) => containsMap(elementType)
+          case StructType(fields) => fields.exists(f => containsMap(f.dataType))
+          case _ => false
+        }
+
+        // Spark 3.x does not normalize map partitioning keys for native hashing.
+        if (containsMap(spark.sql(query).schema("k").dataType) && !isSpark40Plus) {
+          val message = s"Skipping native shuffle for $name: map keys require Spark 4.0+"
+          benchmark.out.println(message)
+        } else {
+          val nativeConfigs = Seq(
+            CometConf.COMET_ENABLED.key -> "true",
+            CometConf.COMET_EXEC_ENABLED.key -> "true",
+            CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
+            CometConf.COMET_SHUFFLE_MODE.key -> "native",
+            CometConf.COMET_SHUFFLE_NATIVE_HASH_PARTITIONING_NESTED_ENABLED.key -> "true")
+          // Check outside the timer: enabling the gate alone does not prove native admission.
+          withSQLConf(nativeConfigs: _*) {
+            val plan =
+              spark.sql(query).repartition(partitionNum, Column("k")).queryExecution.executedPlan
+            val nativeExchanges = collect(plan) {
+              case exchange: CometShuffleExchangeExec
+                  if exchange.shuffleType == CometNativeShuffle =>
+                exchange
+            }
+            require(
+              nativeExchanges.size == 1,
+              s"Expected one native shuffle for $name, found ${nativeExchanges.size}:\n$plan")
+            benchmark.out.println(
+              s"Verified native exchange for $name ($partitionNum partitions):")
+            benchmark.out.println(plan.treeString)
+          }
+          benchmark.addCase("Comet (Native Shuffle)") { _ =>
+            withSQLConf(nativeConfigs: _*) {
+              spark.sql(query).repartition(partitionNum, Column("k")).noop()
+            }
+          }
+        }
+
+        benchmark.run()
+      }
+    }
+  }
+
+  private def runNestedHashKeyBenchmarks(): Unit = {
+    runBenchmarkWithTable("Nested hash partitioning key", 1024 * 1024 * 1) { v =>
+      val shapes = Seq(
+        "struct<int, string>" -> "named_struct('a', c1, 'b', CAST(c1 AS STRING))",
+        "array<int>" -> "ARRAY_REPEAT(c1, 10)",
+        "struct<array<int>, string>" ->
+          "named_struct('a', ARRAY_REPEAT(c1, 10), 'b', CAST(c1 AS STRING))",
+        "array<struct<int, string>>" ->
+          "ARRAY_REPEAT(named_struct('a', c1, 'b', CAST(c1 AS STRING)), 10)",
+        "struct<map<string, int>, int>" ->
+          "named_struct('m', MAP(CAST(c1 AS STRING), c1), 'i', c1)")
+      // Distinct keys, variable entry counts, and opposite input orders exercise map sorting.
+      val mapShapes = for {
+        maxEntries <- Seq(10, 50)
+        reverse <- Seq(false, true)
+      } yield {
+        val indices = s"sequence(1, 2 + pmod(c1, ${maxEntries - 1}))"
+        val ordered = if (reverse) s"reverse($indices)" else indices
+        val map = s"map_from_arrays(transform($ordered, x -> CAST(c1 + x AS STRING)), " +
+          s"transform($ordered, x -> c1 + x))"
+        val order = if (reverse) "reversed" else "forward"
+        s"struct<map<string, int>, int> (2-$maxEntries entries, $order)" ->
+          s"named_struct('m', $map, 'i', c1)"
+      }
+      (shapes ++ mapShapes).foreach { case (name, keyExpr) =>
+        Seq(5, manyPartitions).foreach { partitionNum =>
+          shuffleNestedHashKeyBenchmark(name, keyExpr, v, partitionNum)
+        }
+      }
+    }
+  }
+
   override def runCometBenchmark(mainArgs: Array[String]): Unit = {
+    if (mainArgs.contains("--nested-hash-only")) {
+      runNestedHashKeyBenchmarks()
+      return
+    }
 
     // nested type shuffle
     val numRows = 1000
@@ -491,6 +629,8 @@ object CometShuffleBenchmark extends CometBenchmarkBase {
         new java.io.File(filename).delete()
       }
     }
+
+    runNestedHashKeyBenchmarks()
 
     runBenchmarkWithTable("Shuffle on array", 1024 * 1024 * 1) { v =>
       benchmarkTypes.foreach { dataType =>

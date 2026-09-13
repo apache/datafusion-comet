@@ -52,6 +52,8 @@ under the License.
       property without an error.
     -->
     <delta.version>4.1.0</delta.version>
+    <!-- Used only to verify reflected Celeborn internals; never bundled with Comet. -->
+    <celeborn.version>0.7.0</celeborn.version>
     <maven.compiler.source>${java.version}</maven.compiler.source>
     <maven.compiler.target>${java.version}</maven.compiler.target>
     <maven-compiler-plugin.version>3.11.0</maven-compiler-plugin.version>
@@ -1046,6 +1048,7 @@ under the License.
               <includes>
                 <include>src/main/scala/**/*.scala</include>
                 <include>src/test/scala/**/*.scala</include>
+                <include>src/test/celeborn-reflection-compatibility/**/*.scala</include>
                 <!-- Include spark shim sources -->
                 <include>src/main/spark-*/**/*.scala</include>
                 <include>src/test/spark-*/**/*.scala</include>
@@ -1196,6 +1199,7 @@ under the License.
             <exclude>native/proto/src/generated/**</exclude>
             <exclude>benchmarks/tpc/queries/**</exclude>
             <exclude>benchmarks/results/**/*.txt</exclude>
+            <exclude>.ai/**</exclude>
             <exclude>.claude/**</exclude>
             <exclude>docs/superpowers/**</exclude>
           </excludes>
