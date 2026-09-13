@@ -103,5 +103,6 @@
 - Spark 4.1.1 (audited 2026-09-13): same input types and parsing behavior as Spark 4.0.1.
 - String inputs use Spark's generated parser through codegen dispatch, including collated strings and formats. Literal and column formats preserve null handling, ANSI errors, parser policy, and session time zone.
 - Date, timestamp, and timestamp without time zone inputs retain native execution and ignore the format, including its collation. String input stays unsupported by the native serializer so `allowIncompatible=true` cannot send it to the native kernel.
+- Native timestamp conversion truncates fractional seconds toward zero, matching Spark's `ToTimestamp`. This fixes the previous use of floor division for negative fractional timestamps: at UTC, `1969-12-31 23:59:58.5` produces `-1`, not `-2`. Casting a timestamp to `BIGINT` deliberately uses floor division in Spark and Comet, so that cast still produces `-2`.
 
 [Spark Expression Support]: ../../user-guide/latest/expressions.md

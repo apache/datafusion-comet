@@ -38,6 +38,7 @@ statement
 INSERT INTO test_unix_ts_fractional VALUES
   (CAST('1969-12-31 23:59:58.500000' AS TIMESTAMP), CAST('1969-12-31 23:59:58.500000' AS TIMESTAMP_NTZ)),
   (CAST('1969-12-31 23:59:59.000000' AS TIMESTAMP), CAST('1969-12-31 23:59:59.000000' AS TIMESTAMP_NTZ)),
+  (CAST('1969-12-31 23:59:59.500000' AS TIMESTAMP), CAST('1969-12-31 23:59:59.500000' AS TIMESTAMP_NTZ)),
   (CAST('1969-12-31 23:59:59.999999' AS TIMESTAMP), CAST('1969-12-31 23:59:59.999999' AS TIMESTAMP_NTZ)),
   (CAST('1970-01-01 00:00:00.000000' AS TIMESTAMP), CAST('1970-01-01 00:00:00.000000' AS TIMESTAMP_NTZ)),
   (CAST('1970-01-01 00:00:00.000001' AS TIMESTAMP), CAST('1970-01-01 00:00:00.000001' AS TIMESTAMP_NTZ)),
@@ -49,3 +50,11 @@ SELECT unix_timestamp(ts), unix_timestamp(ntz) FROM test_unix_ts_fractional
 
 query expect_native(unix_timestamp)
 SELECT unix_timestamp(ts), unix_timestamp(ntz) FROM test_unix_ts_fractional WHERE ts IS NOT NULL
+
+-- unix_timestamp truncates toward zero, while casting a timestamp to BIGINT floors.
+-- At -1.5 seconds the results are -1 and -2; at -0.5 seconds they are 0 and -1.
+query expect_native(unix_timestamp, cast)
+SELECT unix_timestamp(ts), CAST(ts AS BIGINT) FROM test_unix_ts_fractional
+
+query expect_native(unix_timestamp, cast)
+SELECT unix_timestamp(ts), CAST(ts AS BIGINT) FROM test_unix_ts_fractional WHERE ts IS NOT NULL

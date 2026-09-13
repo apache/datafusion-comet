@@ -295,7 +295,7 @@ object CometUnixTimestamp
     with CodegenDispatchFallback {
 
   override def getUnsupportedReasons(): Seq[String] = Seq(
-    "Native execution only supports `DateType`, `TimestampType`, and `TimestampNTZType` inputs.")
+    "String inputs, including collated strings, have no native implementation.")
 
   private def isSupportedInputType(expr: UnixTimestamp): Boolean = {
     expr.children.head.dataType match {
