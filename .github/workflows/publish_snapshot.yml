@@ -112,6 +112,13 @@ jobs:
     env:
       CC: gcc-10
       CXX: g++-10
+      # Inside the container HOME is /github/home while root's passwd entry
+      # says /root, and rustup refuses to guess between them. Pin both homes so
+      # rustup, cargo and the cache below agree on one location.
+      CARGO_HOME: /github/home/.cargo
+      RUSTUP_HOME: /github/home/.rustup
+      # The hdfs-sys crate's build script locates a JDK.
+      JAVA_HOME: /usr/lib/jvm/default-java
     steps:
       - name: Install build dependencies
         run: |
@@ -119,7 +126,7 @@ jobs:
           apt-get update
           apt-get install -y --no-install-recommends \
             ca-certificates curl unzip git build-essential gcc-10 g++-10 \
-            clang llvm cmake pkg-config libssl-dev
+            clang llvm cmake pkg-config libssl-dev default-jdk-headless
       - uses: actions/checkout@v7
       - name: Install protoc
         run: |
@@ -130,13 +137,13 @@ jobs:
       - name: Install Rust
         run: |
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
-          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          echo "$CARGO_HOME/bin" >> "$GITHUB_PATH"
       - name: Cache Cargo registry
         uses: actions/cache@v6
         with:
           path: |
-            ~/.cargo/registry
-            ~/.cargo/git
+            ${{ env.CARGO_HOME }}/registry
+            ${{ env.CARGO_HOME }}/git
           key: snapshot-cargo-${{ matrix.arch }}-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}
           restore-keys: |
             snapshot-cargo-${{ matrix.arch }}-
@@ -161,7 +168,7 @@ jobs:
           retention-days: 1
 
   deploy:
-    name: ${{ inputs.dry_run && 'Build snapshot jars (dry run)' || 'Deploy snapshot jars' }}
+    name: Build and deploy snapshot jars
     needs: native
     runs-on: ubuntu-24.04
     timeout-minutes: 90
@@ -239,7 +246,8 @@ jobs:
             # space-separated list of -P flags, so it must word-split.
             # shellcheck disable=SC2086
             JAVA_HOME="$jdk" ./mvnw -B "$GOAL" -DskipTests -Dmaven.deploy.skip=false $profiles
-            cp spark/target/comet-spark-spark*.jar jars/
+            # Only the shaded plugin jar, not the sources or unshaded jars.
+            cp spark/target/comet-spark-spark*_*-"$version".jar jars/
             echo "::endgroup::"
           done <<EOF
           $JAVA_HOME_11_X64 -Pspark-3.4 -Pscala-2.12
