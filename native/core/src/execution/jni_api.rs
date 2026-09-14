@@ -31,7 +31,7 @@ use std::collections::HashSet;
 use arrow::array::{Array, RecordBatch, UInt32Array};
 use arrow::compute::{take, TakeOptions};
 use arrow::datatypes::DataType as ArrowDataType;
-use datafusion::common::{DataFusionError, Result as DataFusionResult, ScalarValue};
+use datafusion::common::{DataFusionError, Result as DataFusionResult};
 use datafusion::execution::disk_manager::DiskManagerMode;
 use datafusion::execution::memory_pool::MemoryPool;
 use datafusion::execution::runtime_env::RuntimeEnvBuilder;
@@ -41,7 +41,8 @@ use datafusion::{
     physical_plan::{display::DisplayableExecutionPlan, SendableRecordBatchStream},
     prelude::{SessionConfig, SessionContext},
 };
-use datafusion_comet_proto::spark_operator::{Operator, ShuffleScan};
+use datafusion_comet_proto::spark_expression::agg_expr::ExprStruct as AggExprStruct;
+use datafusion_comet_proto::spark_operator::{AggregateMode, Operator, ShuffleScan};
 use datafusion_comet_spark_expr::url_funcs::{CometParseUrl, CometTryParseUrl};
 use datafusion_spark::function::array::array_contains::SparkArrayContains;
 use datafusion_spark::function::array::repeat::SparkArrayRepeat;
@@ -552,6 +553,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
                 max_temp_directory_size,
                 task_cpus as usize,
                 &spark_config,
+                &spark_plan,
             )?;
 
             let plan_creation_time = start.elapsed();
@@ -669,6 +671,42 @@ pub extern "system" fn Java_org_apache_comet_Native_setShufflePartitionPusher(
     })
 }
 
+/// Only admit the validated native-shuffle path. A session belongs to one fused Spark plan,
+/// so an unsafe partial aggregate disables skipping for the whole plan, including its children.
+/// This deliberately gives up some opportunities rather than changing execution contexts per op.
+fn configure_skip_partial_aggregation(config: &mut SessionConfig, plan: &Operator) {
+    fn supported(plan: &Operator) -> bool {
+        let supported_aggregate = match &plan.op_struct {
+            Some(OpStruct::HashAgg(agg)) => match AggregateMode::try_from(agg.mode) {
+                // Final never skips. Still inspect its children below.
+                Ok(AggregateMode::Final) => true,
+                Ok(AggregateMode::Partial) => {
+                    agg.expr_modes
+                        .iter()
+                        .all(|mode| *mode == AggregateMode::Partial as i32)
+                        && agg.agg_exprs.iter().all(|expr| {
+                            matches!(&expr.expr_struct, Some(AggExprStruct::Count(count))
+                                if count.children.len() == 1)
+                        })
+                }
+                // PartialMerge is represented as native Partial, but consumes states, not rows.
+                _ => false,
+            },
+            _ => true,
+        };
+        supported_aggregate && plan.children.iter().all(supported)
+    }
+
+    if !matches!(&plan.op_struct, Some(OpStruct::ShuffleWriter(_))) || !supported(plan) {
+        // Enforce safety after config pass-through: a testing override cannot make unsupported
+        // accumulators convertible. DF 55 removed supports_convert_to_state().
+        config
+            .options_mut()
+            .execution
+            .skip_partial_aggregation_probe_ratio_threshold = 1.1;
+    }
+}
+
 /// Configure DataFusion session context.
 fn prepare_datafusion_session_context(
     batch_size: usize,
@@ -677,6 +715,7 @@ fn prepare_datafusion_session_context(
     max_temp_directory_size: u64,
     task_cpus: usize,
     spark_config: &HashMap<String, String>,
+    spark_plan: &Operator,
 ) -> CometResult<SessionContext> {
     let paths = local_dirs.into_iter().map(PathBuf::from).collect();
     let disk_manager = DiskManagerBuilder::default()
@@ -690,17 +729,7 @@ fn prepare_datafusion_session_context(
         // This DataFusion context is within the scope of an executing Spark Task. We want to set
         // its internal parallelism to the number of CPUs allocated to Spark Tasks. This can be
         // modified by changing spark.task.cpus in the Spark config.
-        .with_batch_size(batch_size)
-        // DataFusion partial aggregates can emit duplicate rows so we disable the
-        // skip partial aggregation feature because this is not compatible with Spark's
-        // use of partial aggregates.
-        .set(
-            "datafusion.execution.skip_partial_aggregation_probe_ratio_threshold",
-            // this is the threshold of number of groups / number of rows and the
-            // maximum value is 1.0, so we set the threshold a little higher just
-            // to be safe
-            &ScalarValue::Float64(Some(1.1)),
-        );
+        .with_batch_size(batch_size);
 
     // Translate the Comet-namespaced row-level pushdown flag into the equivalent
     // DataFusion session options. `pushdown_filters` enables the parquet reader's
@@ -726,6 +755,8 @@ fn prepare_datafusion_session_context(
             session_config = session_config.set_str(&df_key, value);
         }
     }
+
+    configure_skip_partial_aggregation(&mut session_config, spark_plan);
 
     let runtime = rt_config.build()?;
 
@@ -776,6 +807,10 @@ fn register_datafusion_spark_function(session_ctx: &SessionContext) {
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkBitShift::right_unsigned()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkSoundex::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkSubstring::default()));
+    // Serves length, char_length, character_length and len. SparkLengthFunc does not unwrap
+    // dictionary arrays and its uniform signature gets no planner coercion, so it relies on
+    // every input reaching expressions as plain Utf8 or Binary: ScanExec and the shuffle scan
+    // unpack dictionaries and the Parquet adapter casts to the required Spark type.
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkLengthFunc::default()));
 }
 
@@ -1591,11 +1626,125 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_columnarToRowClose(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow::datatypes::{DataType, Field};
+    use arrow::datatypes::{DataType, Field, Schema};
     use datafusion::execution::memory_pool::{MemoryConsumer, UnboundedMemoryPool};
     use datafusion::execution::FunctionRegistry;
-    use datafusion::logical_expr::type_coercion::functions::fields_with_udf;
     use datafusion::logical_expr::ReturnFieldArgs;
+    use datafusion_comet_proto::spark_expression;
+    use datafusion_comet_proto::spark_expression::{AggExpr, Count, Expr, Sum};
+    use datafusion_comet_proto::spark_operator::{HashAggregate, ShuffleWriter};
+
+    #[test]
+    fn skip_partial_eligibility_is_fail_closed() {
+        let count = AggExpr {
+            expr_struct: Some(AggExprStruct::Count(Count {
+                children: vec![Expr::default()],
+            })),
+            ..Default::default()
+        };
+        let sum = AggExpr {
+            expr_struct: Some(AggExprStruct::Sum(Sum::default())),
+            ..Default::default()
+        };
+        let partial = HashAggregate {
+            grouping_exprs: vec![Expr::default()],
+            agg_exprs: vec![count.clone()],
+            mode: AggregateMode::Partial as i32,
+            ..Default::default()
+        };
+        let writer = |agg: HashAggregate| Operator {
+            op_struct: Some(OpStruct::ShuffleWriter(ShuffleWriter::default())),
+            children: vec![Operator {
+                op_struct: Some(OpStruct::HashAgg(agg)),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let ratio = |plan: &Operator, requested: f64| {
+            let mut config = SessionConfig::new();
+            config
+                .options_mut()
+                .execution
+                .skip_partial_aggregation_probe_rows_threshold = 37;
+            config
+                .options_mut()
+                .execution
+                .skip_partial_aggregation_probe_ratio_threshold = requested;
+            configure_skip_partial_aggregation(&mut config, plan);
+            assert_eq!(
+                config
+                    .options()
+                    .execution
+                    .skip_partial_aggregation_probe_rows_threshold,
+                37
+            );
+            config
+                .options()
+                .execution
+                .skip_partial_aggregation_probe_ratio_threshold
+        };
+
+        for agg in [
+            partial.clone(),
+            HashAggregate {
+                agg_exprs: vec![],
+                ..partial.clone()
+            },
+            HashAggregate {
+                agg_exprs: vec![count.clone(), count],
+                ..partial.clone()
+            },
+        ] {
+            let plan = writer(agg);
+            assert_eq!(ratio(&plan, 0.8), 0.8);
+            assert_eq!(ratio(&plan, 0.5), 0.5);
+            assert_eq!(ratio(&plan, 1.1), 1.1);
+            // Non-native shuffle / standalone native blocks stay disabled.
+            assert_eq!(ratio(&plan.children[0], 0.8), 1.1);
+        }
+
+        for agg in [
+            HashAggregate {
+                agg_exprs: vec![sum],
+                ..partial.clone()
+            },
+            HashAggregate {
+                agg_exprs: vec![AggExpr::default()],
+                ..partial.clone()
+            },
+            HashAggregate {
+                agg_exprs: vec![AggExpr {
+                    expr_struct: Some(AggExprStruct::Count(Count {
+                        children: vec![Expr::default(), Expr::default()],
+                    })),
+                    ..Default::default()
+                }],
+                ..partial.clone()
+            },
+            HashAggregate {
+                mode: AggregateMode::PartialMerge as i32,
+                ..partial.clone()
+            },
+            HashAggregate {
+                expr_modes: vec![AggregateMode::PartialMerge as i32],
+                ..partial.clone()
+            },
+            HashAggregate {
+                mode: 99,
+                ..partial.clone()
+            },
+        ] {
+            let plan = writer(agg);
+            assert_eq!(ratio(&plan, 0.8), 1.1);
+            // An eligible sibling or a Final parent must not hide the unsafe child.
+            let mut nested = writer(HashAggregate {
+                mode: AggregateMode::Final as i32,
+                ..partial.clone()
+            });
+            nested.children[0].children = plan.children;
+            assert_eq!(ratio(&nested, 0.8), 1.1);
+        }
+    }
 
     fn entry_count(thread_id: u64) -> usize {
         get_thread_memory_pools()
@@ -1659,31 +1808,79 @@ mod tests {
 
     #[test]
     fn length_resolves_to_spark_length_for_string_and_binary() {
-        let ctx = SessionContext::new();
+        use datafusion::physical_expr::expressions::{CastExpr, Column};
+        use datafusion::physical_expr::ScalarFunctionExpr;
+        use datafusion_comet_proto::spark_expression::data_type::DataTypeId;
+        use datafusion_comet_proto::spark_expression::expr::ExprStruct;
+        use datafusion_comet_proto::spark_expression::{BoundReference, ScalarFunc};
+
+        let ctx = Arc::new(SessionContext::new());
         register_datafusion_spark_function(&ctx);
-        for name in ["length", "char_length", "character_length"] {
-            let udf = ctx.udf(name).unwrap();
-            for input in [
-                DataType::Utf8,
-                DataType::LargeUtf8,
-                DataType::Utf8View,
-                DataType::Binary,
-                DataType::LargeBinary,
-                DataType::BinaryView,
-            ] {
-                let arg = Arc::new(Field::new("arg0", input.clone(), true));
-                // The Spark signature accepts the type as-is, so no cast is injected.
-                let coerced = fields_with_udf(std::slice::from_ref(&arg), udf.as_ref())
-                    .unwrap_or_else(|e| panic!("{name}({input}) rejected: {e}"));
-                assert_eq!(coerced[0].data_type(), &input);
-                let ret = udf
-                    .return_field_from_args(ReturnFieldArgs {
-                        arg_fields: &[arg],
-                        scalar_arguments: &[None],
-                    })
-                    .unwrap();
-                assert_eq!(ret.data_type(), &DataType::Int32, "{name}({input})");
+        let planner = PhysicalPlanner::new(Arc::clone(&ctx), 0);
+        // The planner path: a uniform signature gets no coercion, so the input reaches the
+        // kernel exactly as the scan produced it.
+        for (type_id, input) in [
+            (DataTypeId::String, DataType::Utf8),
+            (DataTypeId::Bytes, DataType::Binary),
+        ] {
+            let schema = Arc::new(Schema::new(vec![Field::new("arg0", input.clone(), true)]));
+            for name in ["length", "char_length", "character_length"] {
+                let expr = Expr {
+                    expr_struct: Some(ExprStruct::ScalarFunc(ScalarFunc {
+                        func: name.to_string(),
+                        args: vec![Expr {
+                            expr_struct: Some(ExprStruct::Bound(BoundReference {
+                                index: 0,
+                                datatype: Some(spark_expression::DataType {
+                                    type_id: type_id as i32,
+                                    type_info: None,
+                                }),
+                            })),
+                            query_context: None,
+                            expr_id: None,
+                        }],
+                        return_type: None,
+                        fail_on_error: false,
+                    })),
+                    query_context: None,
+                    expr_id: None,
+                };
+                let physical = planner
+                    .create_expr(&expr, Arc::clone(&schema))
+                    .unwrap_or_else(|e| panic!("{name}({input}) failed to plan: {e}"));
+                assert_eq!(
+                    physical.data_type(&schema).unwrap(),
+                    DataType::Int32,
+                    "{name}({input})"
+                );
+                let func = physical
+                    .downcast_ref::<ScalarFunctionExpr>()
+                    .unwrap_or_else(|| panic!("{name}({input}) is not a scalar function"));
+                assert_eq!(func.fun().name(), "length", "{name}({input})");
+                assert!(
+                    func.args()[0].downcast_ref::<Column>().is_some()
+                        && func.args()[0].downcast_ref::<CastExpr>().is_none(),
+                    "{name}({input}) should take the column without a cast"
+                );
             }
+        }
+        // Wider and view encodings never come out of a Comet scan, but the kernel accepts them
+        // with the same Int32 result should a future input path produce them.
+        let udf = ctx.udf("length").unwrap();
+        for input in [
+            DataType::LargeUtf8,
+            DataType::Utf8View,
+            DataType::LargeBinary,
+            DataType::BinaryView,
+        ] {
+            let arg = Arc::new(Field::new("arg0", input.clone(), true));
+            let ret = udf
+                .return_field_from_args(ReturnFieldArgs {
+                    arg_fields: &[arg],
+                    scalar_arguments: &[None],
+                })
+                .unwrap();
+            assert_eq!(ret.data_type(), &DataType::Int32, "length({input})");
         }
     }
 }
