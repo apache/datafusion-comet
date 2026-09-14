@@ -109,7 +109,12 @@ object CometOctetLength extends CometScalarFunction[OctetLength]("octet_length")
   }
 }
 
-object CometStringTranslate extends CometScalarFunction[StringTranslate]("translate") {
+// Routes through the JVM codegen dispatcher by default via `CodegenDispatchFallback`: the
+// `Incompatible` result below reaches the dispatcher (Spark's own `doGenCode`, bit-exact) instead
+// of falling the projection back to Spark. The native path stays available via `allowIncompatible`.
+object CometStringTranslate
+    extends CometScalarFunction[StringTranslate]("translate")
+    with CodegenDispatchFallback {
   private val incompatReason =
     "DataFusion's translate iterates over Unicode graphemes (Spark uses code points) and" +
       " substitutes U+0000 instead of treating it as a deletion sentinel"

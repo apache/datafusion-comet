@@ -385,4 +385,66 @@ mod tests {
             ],
         )
     }
+    /// The nested-element list scheduler is shared between murmur3 and xxhash64 through
+    /// `create_hashes_internal!`, but its regressions live in the murmur3 tests. This covers the
+    /// combination that the scheduling is most likely to get wrong, on the other algorithm and the
+    /// wider hash width: rows whose lists have different lengths (so rows drop out on different
+    /// passes and the batch narrows to a single survivor), distinct incoming seeds per row (so a
+    /// mis-mapped slot shows up rather than being masked by a uniform seed), and a second column
+    /// hashed after the list (so breaking out of the pass loop must not skip it).
+    #[test]
+    fn xxhash64_list_of_struct_survivor_transition_with_seeds_and_following_column() {
+        use arrow::array::builder::{Int32Builder, ListBuilder, StringBuilder, StructBuilder};
+        use arrow::datatypes::{DataType, Field, Fields};
+
+        let fields: Fields = vec![
+            Arc::new(Field::new("a", DataType::Int32, true)),
+            Arc::new(Field::new("b", DataType::Utf8, true)),
+        ]
+        .into();
+        let mut lb = ListBuilder::new(StructBuilder::new(
+            fields,
+            vec![
+                Box::new(Int32Builder::new()),
+                Box::new(StringBuilder::new()),
+            ],
+        ));
+        // Descending lengths, so the uniform-length path is not taken and the batch narrows to one
+        // surviving row before the longest row is finished.
+        for (row, len) in [4usize, 2, 1, 3].iter().enumerate() {
+            for i in 0..*len {
+                let sb = lb.values();
+                sb.field_builder::<Int32Builder>(0)
+                    .unwrap()
+                    .append_value((row * 10 + i) as i32);
+                sb.field_builder::<StringBuilder>(1)
+                    .unwrap()
+                    .append_value(format!("r{row}e{i}"));
+                sb.append(true);
+            }
+            lb.append(true);
+        }
+        let list: ArrayRef = Arc::new(lb.finish());
+        let following: ArrayRef = Arc::new(Int32Array::from(vec![7, 8, 9, 10]));
+
+        // Distinct seeds: a slot written back to the wrong row changes the result.
+        let seeds = [1u64, 2, 3, 4];
+
+        let mut batched = seeds;
+        create_xxhash64_hashes(&[Arc::clone(&list), Arc::clone(&following)], &mut batched).unwrap();
+
+        // Reference: hash each row on its own, which cannot batch across rows at all.
+        let mut per_row = [0u64; 4];
+        for row in 0..4 {
+            let mut one = [seeds[row]];
+            create_xxhash64_hashes(&[list.slice(row, 1), following.slice(row, 1)], &mut one)
+                .unwrap();
+            per_row[row] = one[0];
+        }
+
+        assert_eq!(
+            batched, per_row,
+            "batched scheduling must agree with hashing each row alone"
+        );
+    }
 }
