@@ -1315,9 +1315,17 @@ fn compression_from_proto(codec: i32, level: Option<i32>) -> DFResult<Compressio
 #[cfg(test)]
 mod tests {
     use super::*;
-    use iceberg::io::FileIOBuilder;
+    use async_trait::async_trait;
+    use bytes::Bytes;
+    use futures::stream::BoxStream;
+    use iceberg::io::{
+        FileIOBuilder, FileMetadata, FileRead, FileWrite, InputFile, OutputFile, Storage,
+        StorageConfig, StorageFactory,
+    };
     use iceberg::spec::{NestedField, PrimitiveType, Type};
+    use iceberg::Result as IcebergResult;
     use iceberg_storage_opendal::OpenDalStorageFactory;
+    use serde::{Deserialize, Serialize};
 
     /// Tracking generator over an unpartitioned spec, the layout every tracking test writes to.
     fn tracking_generator(data_location: &str) -> TrackingLocationGenerator {
@@ -2896,21 +2904,97 @@ mod tests {
         }
     }
 
+    /// Test-only [`StorageFactory`] whose storage yields to the runtime once before every
+    /// delete, so a future that deletes through it is guaranteed to be `Pending` on its first
+    /// poll. That is the precondition [`cancelling_abort_keeps_the_guard_armed`] needs, and no
+    /// real backend provides it deterministically: the memory backend finishes every delete
+    /// inside one poll, and the filesystem backend only *usually* yields. Its deletes are
+    /// `spawn_blocking` calls whose join handles are ready immediately whenever the blocking
+    /// thread beats the first poll, which under CPU contention on Linux happens for all of them
+    /// in a row often enough to fail CI.
+    #[derive(Debug, Serialize, Deserialize)]
+    struct YieldBeforeDeleteStorageFactory;
+
+    #[typetag::serde(name = "CometTestYieldBeforeDeleteStorageFactory")]
+    impl StorageFactory for YieldBeforeDeleteStorageFactory {
+        fn build(&self, config: &StorageConfig) -> IcebergResult<Arc<dyn Storage>> {
+            let inner = OpenDalStorageFactory::Memory.build(config)?;
+            Ok(Arc::new(YieldBeforeDeleteStorage { inner }))
+        }
+    }
+
+    /// The [`Storage`] built by [`YieldBeforeDeleteStorageFactory`]: an in-memory store that
+    /// yields once before each delete and delegates everything else untouched.
+    #[derive(Debug, Serialize, Deserialize)]
+    struct YieldBeforeDeleteStorage {
+        inner: Arc<dyn Storage>,
+    }
+
+    #[async_trait]
+    #[typetag::serde(name = "CometTestYieldBeforeDeleteStorage")]
+    impl Storage for YieldBeforeDeleteStorage {
+        async fn exists(&self, path: &str) -> IcebergResult<bool> {
+            self.inner.exists(path).await
+        }
+
+        async fn metadata(&self, path: &str) -> IcebergResult<FileMetadata> {
+            self.inner.metadata(path).await
+        }
+
+        async fn read(&self, path: &str) -> IcebergResult<Bytes> {
+            self.inner.read(path).await
+        }
+
+        async fn reader(&self, path: &str) -> IcebergResult<Box<dyn FileRead>> {
+            self.inner.reader(path).await
+        }
+
+        async fn write(&self, path: &str, bs: Bytes) -> IcebergResult<()> {
+            self.inner.write(path, bs).await
+        }
+
+        async fn writer(&self, path: &str) -> IcebergResult<Box<dyn FileWrite>> {
+            self.inner.writer(path).await
+        }
+
+        async fn delete(&self, path: &str) -> IcebergResult<()> {
+            tokio::task::yield_now().await;
+            self.inner.delete(path).await
+        }
+
+        async fn delete_prefix(&self, path: &str) -> IcebergResult<()> {
+            tokio::task::yield_now().await;
+            self.inner.delete_prefix(path).await
+        }
+
+        async fn delete_stream(&self, paths: BoxStream<'static, String>) -> IcebergResult<()> {
+            tokio::task::yield_now().await;
+            self.inner.delete_stream(paths).await
+        }
+
+        fn new_input(&self, path: &str) -> IcebergResult<InputFile> {
+            self.inner.new_input(path)
+        }
+
+        fn new_output(&self, path: &str) -> IcebergResult<OutputFile> {
+            self.inner.new_output(path)
+        }
+    }
+
     /// Cancelling `abort()` part way through must leave the guard armed, so `Drop` still owns
     /// the files the cancelled run did not reach. Clearing `armed` before the await made `Drop`
     /// return immediately and orphaned the remainder.
     ///
-    /// This uses the filesystem `FileIO` rather than the in-memory one on purpose: the memory
-    /// backend completes every delete inside a single poll (measured: one poll, zero pendings),
-    /// so a mid-deletion cancellation cannot be constructed against it.
+    /// The storage yields before every delete (see [`YieldBeforeDeleteStorageFactory`]), which
+    /// makes the mid-deletion cancellation constructible on every run rather than only when a
+    /// real backend happens to yield.
     #[tokio::test]
     async fn cancelling_abort_keeps_the_guard_armed() {
         use std::future::Future;
         use std::task::Context;
 
-        let dir = tempfile::tempdir().unwrap();
-        let file_io = FileIOBuilder::new(Arc::new(OpenDalStorageFactory::Fs)).build();
-        let generator = tracking_generator(&format!("file://{}", dir.path().display()));
+        let file_io = FileIOBuilder::new(Arc::new(YieldBeforeDeleteStorageFactory)).build();
+        let generator = tracking_generator("memory:/warehouse/data");
         let mut locations = Vec::new();
         for i in 0..4 {
             let location = generator.generate_location(None, &format!("{i}.parquet"));
