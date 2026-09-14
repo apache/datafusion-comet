@@ -59,9 +59,11 @@ in the operator struct or be shared via `Arc`.
 **JNI calls work from any thread, but have overhead.** `JVMClasses::get_env()` calls
 `AttachCurrentThread`, which acquires JVM internal locks. The attachment is cached in
 thread-local storage and is only released when the worker thread itself exits, not when the
-`AttachGuard` is dropped. This is why the tokio runtime has to be shut down (releasing its
-worker threads) for the JVM to be able to exit. Acquiring the JVM locks on each `get_env()`
-call adds overhead, so avoid calling into the JVM on hot paths during stream execution.
+`AttachGuard` is dropped. Tokio runtime threads are attached as JVM daemon threads when they
+start (see `build_runtime`), so they do not prevent the JVM from exiting when an application
+returns from `main` without calling `SparkContext.stop()`. Acquiring the JVM locks on each
+`get_env()` call adds overhead, so avoid calling into the JVM on hot paths during stream
+execution.
 
 **Do not call `TaskContext.get()` from JVM callbacks during execution.** Spark's `TaskContext` is
 a `ThreadLocal` on the executor task thread. JVM methods invoked from tokio worker threads will
@@ -405,10 +407,8 @@ from a clean IntelliJ configuration:
    PROFILES="-Pspark-4.0" make release
    ```
 
-   The `spark-4.0` profile sets Scala 2.13 and Java 17 properties. If you need to be explicit, use
-   `PROFILES="-Pspark-4.0 -Pscala-2.13 -Pjdk17" make release`.
-
-   The Maven profile is named `jdk17` in this project.
+   The `spark-4.0` profile sets the Scala 2.13 properties, and every profile targets Java 17. If you
+   need to be explicit, use `PROFILES="-Pspark-4.0 -Pscala-2.13" make release`.
 
    If the native build previously used a different JDK, clear Cargo's cached JNI link path before
    rebuilding:
@@ -651,10 +651,25 @@ Choose the group that best matches the area your test covers:
 | `expressions` | Expression evaluation, casts, and Comet SQL Tests          |
 | `sql`         | SQL-level behavior tests                                   |
 
-**Important:** The suite lists in both workflow files must stay in sync. A separate CI check
-(`.github/workflows/pr_missing_suites.yml`) runs `dev/ci/check-suites.py` on every pull request.
-It scans for all `*Suite.scala` files in the repository and verifies that each one appears in both
-workflow files. If any suite is missing, this check will fail and block the PR.
+**Important:** The suite lists in both workflow files must stay in sync. The `preflight` job in
+`.github/workflows/ci.yml` runs `dev/ci/check-suites.py` on every pull request. It scans for all
+`*Suite.scala` files in the repository and verifies that each one appears in both workflow files.
+If any suite is missing, this check will fail and block the PR.
+
+A small number of suites are deliberately **not** run in CI, because they need infrastructure CI
+does not have or because running them there is not worth the cost. These are listed in the
+`ignore_list` in `dev/ci/check-suites.py`, and each one documents in its own scaladoc why it is
+excluded and how to run it. Run a manual suite with:
+
+```sh
+./mvnw test -Dtest=none -Dsuites="org.apache.comet.parquet.ParquetReadFromFakeHadoopFsSuite"
+```
+
+Only add a suite to that list with a good reason; the default is that a new suite runs in CI.
+
+The macOS suites only run in the merge queue by default. See
+[Continuous Integration](ci.md) for the two tiers and the labels that opt a pull request into a
+queue-only suite.
 
 ### Pre-PR Summary
 

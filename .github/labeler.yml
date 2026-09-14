@@ -1,0 +1,137 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+# Path rules for the pull request labeler (.github/workflows/label_prs.yml).
+# A label is added when a changed file matches one of its globs; labels are never removed,
+# so hand-applied labels stay. area:ci and documentation apply only when every changed file
+# matches, since most PRs touch a workflow or a doc in passing.
+
+area:shuffle:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'native/shuffle/**'
+          - 'spark/src/main/**/shuffle/**'
+          - 'spark/src/main/scala/org/apache/comet/shuffle/**'
+          - 'common/src/main/**/*Shuffle*'
+
+area:scan:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'native/core/src/parquet/**'
+          - 'native/core/src/cloud/**'
+          - 'native/core/src/execution/operators/scan.rs'
+          - 'native/core/src/execution/operators/csv_scan.rs'
+          - 'native/core/src/execution/operators/iceberg_scan.rs'
+          - 'native/core/src/execution/operators/iceberg_common.rs'
+          - 'spark/src/main/**/parquet/**'
+          - 'common/src/main/**/parquet/**'
+          - 'spark/src/main/scala/org/apache/comet/rules/CometScanRule.scala'
+          - 'spark/src/main/scala/org/apache/comet/rules/CometScanContrib.scala'
+          - 'spark/src/main/scala/org/apache/spark/sql/comet/*Scan*.scala'
+          - 'spark/src/main/scala/org/apache/comet/objectstore/**'
+          - 'spark/src/main/scala/org/apache/comet/serde/operator/*Scan*.scala'
+          - 'contrib/**'
+
+area:writer:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'native/core/src/execution/operators/parquet_writer.rs'
+          - 'native/core/src/execution/operators/iceberg_write.rs'
+          - 'spark/src/main/scala/org/apache/spark/sql/comet/*Write*.scala'
+          - 'spark/src/main/scala/org/apache/spark/sql/comet/*Commit*.scala'
+          - 'spark/src/main/scala/org/apache/comet/serde/operator/*Writ*.scala'
+          - 'spark/src/main/scala/org/apache/comet/serde/operator/CometSink.scala'
+          - 'spark/src/main/scala/org/apache/comet/serde/operator/CometDataWritingCommand.scala'
+          - 'spark/src/main/**/*WriteFiles*'
+
+area:aggregation:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'native/spark-expr/src/agg_funcs/**'
+          - 'spark/src/main/scala/org/apache/comet/serde/aggregates.scala'
+          - 'spark/src/main/scala/org/apache/comet/serde/CometAggregateExpressionSerde.scala'
+          - 'native/core/src/execution/merge_as_partial.rs'
+
+area:expressions:
+  - changed-files:
+      - all-globs-to-any-file:
+          - 'native/spark-expr/src/**'
+          - '!native/spark-expr/src/agg_funcs/**'
+          - '!native/spark-expr/src/jvm_udf/**'
+  - changed-files:
+      - all-globs-to-any-file:
+          - 'spark/src/main/scala/org/apache/comet/serde/*.scala'
+          - '!spark/src/main/scala/org/apache/comet/serde/aggregates.scala'
+          - '!spark/src/main/scala/org/apache/comet/serde/CometAggregateExpressionSerde.scala'
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'native/core/src/execution/expressions/**'
+          - 'spark/src/main/scala/org/apache/comet/expressions/**'
+          - 'spark/src/main/scala/org/apache/comet/codegen/**'
+
+area:joins:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'native/core/src/execution/operators/dynamic_filter.rs'
+          - 'native/core/src/execution/operators/dynamic_filter/**'
+          - 'spark/src/main/scala/org/apache/comet/rules/RewriteJoin.scala'
+          - 'spark/src/main/scala/org/apache/comet/rules/CometPlanAdaptiveDynamicPruningFilters.scala'
+          - 'spark/src/main/**/*Join*'
+
+area:ffi:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'native/jni-bridge/**'
+          - 'native/core/src/execution/columnar_to_row.rs'
+          - 'spark/src/main/**/vector/**'
+          - 'common/src/main/**/vector/**'
+          - 'spark/src/main/scala/org/apache/comet/NativeColumnarToRowConverter.scala'
+          - 'spark/src/main/scala/org/apache/spark/sql/comet/CometColumnarToRowExec.scala'
+          - 'spark/src/main/scala/org/apache/spark/sql/comet/CometNativeColumnarToRowExec.scala'
+          - 'spark/src/main/scala/org/apache/spark/sql/comet/CometSparkToColumnarExec.scala'
+
+area:memory:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'native/core/src/execution/memory_pools/**'
+          - 'spark/src/main/**/*MemoryManager*'
+          - 'spark/src/main/**/*MemoryAllocator*'
+          - 'common/src/main/**/*MemoryAllocator*'
+          - 'common/src/main/**/*OutOfMemory*'
+
+area:udf:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'native/spark-expr/src/jvm_udf/**'
+          - 'spark/src/main/scala/org/apache/comet/udf/**'
+          - 'spark/src/main/**/python/**'
+          - 'spark/src/main/**/*MapInBatch*'
+          - '.github/workflows/pyarrow_udf_test.yml'
+
+area:Iceberg:
+  - changed-files:
+      - any-glob-to-any-file:
+          - '**/*[Ii]ceberg*'
+          - '**/*[Ii]ceberg*/**'
+
+area:ci:
+  - changed-files:
+      - any-glob-to-all-files: '{.github/**,dev/ci/**,dev/release/**,dev/*.sh,dev/*.py,dev/*.xml,dev/*.toml}'
+
+documentation:
+  - changed-files:
+      - any-glob-to-all-files: '{docs/**,**/*.md}'
