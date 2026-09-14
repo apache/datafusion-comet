@@ -470,7 +470,9 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
       () => op.session.sessionState.newHadoopConf(),
       sessionConf => effectiveHadoopConf(op, table, sessionConf))
     val context =
-      TriggerContext(table, tableProperties ++ writeProperties, sparkWrite, hadoopConfs)
+      TriggerContext(
+        table, tableProperties ++ writeProperties, sparkWrite, hadoopConfs,
+        CometConf.COMET_ICEBERG_NATIVE_WRITE_BLOOM_FILTER_FOLDING_ENABLED.get(op.conf))
     triggers.iterator.map(rule => rule(context)).collectFirst { case Some(reason) => reason }
   }
 
@@ -478,7 +480,8 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
       table: Any,
       properties: Map[String, String],
       sparkWrite: Any,
-      hadoopConfs: LazyHadoopConfs) {
+      hadoopConfs: LazyHadoopConfs,
+      bloomFilterFoldingEnabled: Boolean) {
     def hadoopConf: Configuration = hadoopConfs.session
     def s3HadoopConf: Configuration = hadoopConfs.effective
     lazy val fileIOProperties: Map[String, String] =
@@ -572,6 +575,7 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
     requireNativeSupportedCompressionLevel,
     requireLoadableBrotliCodec,
     requireNativeSupportedBloomFilterProperties,
+    requireBloomFilterFoldingOptIn,
     requireOnlyVettedParquetWriteProperties,
     requirePropertyAbsent(
       PropertyKeys.ParquetEnableDictionary,
@@ -872,6 +876,18 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
           .toSeq
           .headOption
       }
+    }
+  }
+
+  private val requireBloomFilterFoldingOptIn: TriggerRule = ctx => {
+    val properties = interpretedBloomFilterProperties(ctx.properties)
+    if (IcebergWriteProtoTranslation.hasEnabledBloomFilters(properties) &&
+      !ctx.bloomFilterFoldingEnabled) {
+      Some(
+        s"${CometConf.COMET_ICEBERG_NATIVE_WRITE_BLOOM_FILTER_FOLDING_ENABLED.key}=false " +
+          "(native Parquet Bloom-filter folding is not enabled)")
+    } else {
+      None
     }
   }
 
