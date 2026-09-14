@@ -521,7 +521,12 @@ fn push_unrequested_leaves(
                 .chain(requested_fields.iter())
                 .map(|f| f.name().as_str())
                 .collect();
-            let folded = fold_names(&names, matching.case_sensitive);
+            // A fold failure means the names could not be compared at all; keeping every leaf
+            // requested is the safe superset, the same as the pass-through pairings below.
+            let Ok(folded) = fold_names(&names, matching.case_sensitive) else {
+                *next_leaf += leaf_count(physical);
+                return;
+            };
             let (physical_folded, requested_folded) = folded.split_at(physical_fields.len());
             for (i, child) in physical_fields.iter().enumerate() {
                 let child_id = if matching.use_field_id {
