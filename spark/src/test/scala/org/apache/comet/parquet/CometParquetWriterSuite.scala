@@ -1042,16 +1042,13 @@ class CometParquetWriterSuite extends CometTestBase {
   }
 
   // ---------------------------------------------------------------------------------------------
-  // Spark 4.0+ only. These cover behavior that comes from leaving Spark's write framework in
-  // place, which is only possible where `V1WritesUtils.getWriteFilesOpt` matches the
-  // `WriteFilesExecBase` trait. See CometWriteFilesExec.
+  // Commit-protocol checks run on both writers. Tests requiring the surrounding Spark write
+  // command are gated to Spark 4.0+, where Comet replaces only WriteFilesExec.
   // ---------------------------------------------------------------------------------------------
 
   test("write creates a _SUCCESS marker") {
-    assume(isSpark40Plus, "Requires the WriteFilesExec seam")
     // https://github.com/apache/datafusion-comet/issues/2985 - the marker comes from
-    // HadoopMapReduceCommitProtocol.commitJob, which only runs because Comet leaves
-    // InsertIntoHadoopFsRelationCommand in the plan.
+    // HadoopMapReduceCommitProtocol.commitJob on both native writer paths.
     withTempPath { dir =>
       val outputPath = new File(dir, "output.parquet").getAbsolutePath
       withTempPath { srcDir =>
@@ -1071,7 +1068,6 @@ class CometParquetWriterSuite extends CometTestBase {
   }
 
   test("written file names follow Spark's naming convention") {
-    assume(isSpark40Plus, "Requires the WriteFilesExec seam")
     // The file name comes from FileCommitProtocol.newTaskTempFile and must be used verbatim:
     // part-<partition>-<uuid>-c<counter>.<codec>.parquet. Committers that track individual files
     // and tools that parse these names depend on it.
@@ -1322,8 +1318,7 @@ class CometParquetWriterSuite extends CometTestBase {
   }
 
   test("a failing task aborts and cleans up its staging file") {
-    assume(isSpark40Plus, "Requires the WriteFilesExec seam")
-    // CometWriteFilesExec.executeTask must call committer.abortTask and rethrow. Injecting the
+    // Both native writers must call committer.abortTask and rethrow. Injecting the
     // failure through the commit protocol rather than the data lets the write get as far as
     // creating a staging file, so the cleanup is actually observable.
     //

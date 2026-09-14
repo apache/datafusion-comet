@@ -19,14 +19,21 @@
 
 package org.apache.comet.serde.operator
 
+import java.util.UUID
+
 import scala.jdk.CollectionConverters._
 
-import org.apache.spark.SparkException
+import org.apache.hadoop.mapreduce.Job
+import org.apache.hadoop.mapreduce.lib.output.FileOutputFormat
+import org.apache.spark.internal.io.FileCommitProtocol
+import org.apache.spark.sql.catalyst.InternalRow
+import org.apache.spark.sql.catalyst.util.CaseInsensitiveMap
 import org.apache.spark.sql.comet.{CometNativeExec, CometNativeWriteExec}
 import org.apache.spark.sql.execution.command.DataWritingCommandExec
 import org.apache.spark.sql.execution.datasources.{InsertIntoHadoopFsRelationCommand, WriteFilesExec}
 import org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormat
 import org.apache.spark.sql.internal.SQLConf
+import org.apache.spark.util.SerializableConfiguration
 
 import org.apache.comet.{CometConf, ConfigEntry}
 import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
@@ -57,10 +64,11 @@ object CometDataWritingCommand extends CometOperatorSerde[DataWritingCommandExec
               return Unsupported(Some("Supported output filesystems: local, HDFS"))
             }
 
+            val hadoopConf = op.session.sessionState.newHadoopConfWithOptions(cmd.options)
             NativeWriteUtils
-              // This writer names its own files `part-<partition>-<attempt>.parquet`, so the
-              // prefix is fixed rather than read from `mapreduce.output.basename`.
-              .escapedHdfsDestination(cmd.outputPath.toString, "part")
+              .escapedHdfsDestination(
+                cmd.outputPath.toString,
+                hadoopConf.get(NativeWriteUtils.BASE_OUTPUT_NAME, "part"))
               .foreach(reason => return Unsupported(Some(reason)))
 
             if (cmd.bucketSpec.isDefined) {
@@ -119,8 +127,8 @@ object CometDataWritingCommand extends CometOperatorSerde[DataWritingCommandExec
           cmd.query.schema.fields.toIndexedSeq,
           Some(
             op.session.sessionState.conf.getConf(SQLConf.PARQUET_FIELD_ID_WRITE_ENABLED))).asJava)
-      // Note: work_dir, job_id, and task_attempt_id will be set at execution time
-      // in CometNativeWriteExec, as they depend on the Spark task context
+      // CometNativeWriteExec replaces output_path with the committer's exact task filename
+      // at execution time, leaving work_dir unset.
 
       // Collect S3/cloud storage configurations
       val session = op.session
@@ -168,29 +176,29 @@ object CometDataWritingCommand extends CometOperatorSerde[DataWritingCommandExec
         other
     }
 
-    // Create FileCommitProtocol for atomic writes
-    val jobId = java.util.UUID.randomUUID().toString
-    val committer =
-      try {
-        // Use Spark's SQLHadoopMapReduceCommitProtocol
-        val committerClass =
-          classOf[org.apache.spark.sql.execution.datasources.SQLHadoopMapReduceCommitProtocol]
-        val constructor =
-          committerClass.getConstructor(classOf[String], classOf[String], classOf[Boolean])
-        Some(
-          constructor
-            .newInstance(
-              jobId,
-              outputPath,
-              java.lang.Boolean.FALSE // dynamicPartitionOverwrite = false for now
-            )
-            .asInstanceOf[org.apache.spark.internal.io.FileCommitProtocol])
-      } catch {
-        case e: Exception =>
-          throw new SparkException(s"Could not instantiate FileCommitProtocol: ${e.getMessage}")
-      }
+    val session = op.session
+    val job = Job.getInstance(session.sessionState.newHadoopConfWithOptions(cmd.options))
+    job.setOutputKeyClass(classOf[Void])
+    job.setOutputValueClass(classOf[InternalRow])
+    FileOutputFormat.setOutputPath(job, cmd.outputPath)
+    val outputWriterFactory =
+      cmd.fileFormat.prepareWrite(session, job, CaseInsensitiveMap(cmd.options), cmd.query.schema)
 
-    CometNativeWriteExec(nativeOp, childPlan, outputPath, cmd.mode, committer, jobId)
+    val committer = FileCommitProtocol.instantiate(
+      session.sessionState.conf.fileCommitProtocolClass,
+      UUID.randomUUID().toString,
+      outputPath,
+      dynamicPartitionOverwrite = false)
+    job.getConfiguration.set("spark.sql.sources.writeJobUUID", UUID.randomUUID().toString)
+
+    CometNativeWriteExec(
+      nativeOp,
+      childPlan,
+      outputPath,
+      cmd.mode,
+      committer,
+      new SerializableConfiguration(job.getConfiguration),
+      outputWriterFactory)
   }
 
 }
