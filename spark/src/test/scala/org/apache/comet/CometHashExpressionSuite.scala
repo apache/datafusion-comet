@@ -172,6 +172,30 @@ class CometHashExpressionSuite
     }
   }
 
+  test("hash - multiple columns with a wide decimal uses split dispatcher codegen") {
+    withMultiArgumentWideDecimalTable {
+      // Spark checks the accumulated source length before adding each child to a code block.
+      // With threshold 1, the first materialized child already exceeds the threshold, so four
+      // children force HashExpression.doGenCode to emit helper methods that take InternalRow row.
+      // Scope the setting to this SELECT so fixture creation uses normal Spark codegen settings.
+      withSQLConf("spark.sql.codegen.methodSplitThreshold" -> "1") {
+        assertDispatchedHash(
+          "SELECT hash(c_str, c_int, c_ts, c_wide_dec) FROM multi_arg_wide_decimal_t")
+      }
+    }
+  }
+
+  test("xxhash64 - multiple columns with a wide decimal uses split dispatcher codegen") {
+    withMultiArgumentWideDecimalTable {
+      // See the hash test above. Successful execution also proves Janino compiled the split
+      // helpers with the dispatcher's `row` alias in both Spark 3.x and Spark 4.x profiles.
+      withSQLConf("spark.sql.codegen.methodSplitThreshold" -> "1") {
+        assertDispatchedHash(
+          "SELECT xxhash64(c_str, c_int, c_ts, c_wide_dec) FROM multi_arg_wide_decimal_t")
+      }
+    }
+  }
+
   test("hash - array of decimal (precision > 18) routes through the codegen dispatcher") {
     withTable("t") {
       sql("CREATE TABLE t(c ARRAY<DECIMAL(20, 2)>) USING parquet")
@@ -701,6 +725,26 @@ class CometHashExpressionSuite
   private def assertDispatchedHash(query: String): Unit = {
     assertCodegenRan {
       checkSparkAnswerAndOperator(query)
+    }
+  }
+
+  private def withMultiArgumentWideDecimalTable(f: => Unit): Unit = {
+    withTable("multi_arg_wide_decimal_t") {
+      sql("""CREATE TABLE multi_arg_wide_decimal_t(
+            c_str STRING,
+            c_int INT,
+            c_ts TIMESTAMP,
+            c_wide_dec DECIMAL(38, 10))
+            USING parquet""")
+      sql("""INSERT INTO multi_arg_wide_decimal_t VALUES
+            ('alpha', 1, TIMESTAMP '2023-01-01 12:00:00',
+              CAST('9999999999999999999999999999.9999999999' AS DECIMAL(38, 10))),
+            ('beta', -7, TIMESTAMP '1970-01-01 00:00:01',
+              CAST('-9999999999999999999999999999.9999999999' AS DECIMAL(38, 10))),
+            ('gamma', 42, TIMESTAMP '2000-12-31 23:59:59',
+              CAST('12345678901234567890.1234567890' AS DECIMAL(38, 10))),
+            (NULL, NULL, NULL, NULL)""")
+      f
     }
   }
 }

@@ -351,8 +351,8 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | `crc32` | ✅ | Native |  |
 | `hash` | ✅ | Hybrid | Decimal precision > 18 (including nested) routes through the JVM codegen dispatcher ([audit](../../contributor-guide/expression-audits/hash_funcs.md#hash)) |
 | `md5` | ✅ | Native |  |
-| `sha` | ✅ | Hybrid | Alias of `sha1` |
-| `sha1` | ✅ | Hybrid |  |
+| `sha` | ✅ | Native | Alias of `sha1` |
+| `sha1` | ✅ | Native |  |
 | `sha2` | ✅ | Hybrid | Non-foldable `numBits` routes through the JVM codegen dispatcher ([audit](../../contributor-guide/expression-audits/hash_funcs.md#sha2)) |
 | `xxhash64` | ✅ | Hybrid | Decimal precision > 18 (including nested) routes through the JVM codegen dispatcher ([audit](../../contributor-guide/expression-audits/hash_funcs.md#hash)) |
 

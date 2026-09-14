@@ -27,9 +27,9 @@ import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, isTimeType, s
 
 // Native-unsupported, Spark-codegen-compatible cases (`DecimalType` precision > 18, including
 // nested, and `sha2` with a non-foldable `numBits`) stay in the Comet pipeline via
-// `CodegenDispatchFallback` on the four hash serdes below. `TimeType` is out of scope for that
-// dispatcher enrollment: `getSupportLevel` reports `Compatible` so the mixin does not intercept,
-// and `convert` declines the native path so the projection falls back to Spark.
+// `CodegenDispatchFallback` on the applicable hash serdes below. `TimeType` is out of scope for
+// that dispatcher enrollment: `getSupportLevel` reports `Compatible` so the mixin does not
+// intercept, and `convert` declines the native path so the projection falls back to Spark.
 object CometXxHash64 extends CometExpressionSerde[XxHash64] with CodegenDispatchFallback {
 
   override def getUnsupportedReasons(): Seq[String] = HashUtils.unsupportedReasons
@@ -114,9 +114,7 @@ object CometSha2 extends CometExpressionSerde[Sha2] with CodegenDispatchFallback
   }
 }
 
-object CometSha1 extends CometExpressionSerde[Sha1] with CodegenDispatchFallback {
-
-  override def getUnsupportedReasons(): Seq[String] = HashUtils.unsupportedReasons
+object CometSha1 extends CometExpressionSerde[Sha1] {
 
   override def getSupportLevel(expr: Sha1): SupportLevel =
     HashUtils.supportLevelForChildren(expr)
@@ -125,10 +123,8 @@ object CometSha1 extends CometExpressionSerde[Sha1] with CodegenDispatchFallback
       expr: Sha1,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    HashUtils.convertNativeOrSparkFallback(expr) {
-      val childExpr = exprToProtoInternal(expr.child, inputs, binding)
-      scalarFunctionExprToProtoWithReturnType("sha1", StringType, false, childExpr)
-    }
+    val childExpr = exprToProtoInternal(expr.child, inputs, binding)
+    scalarFunctionExprToProtoWithReturnType("sha1", StringType, false, childExpr)
   }
 }
 

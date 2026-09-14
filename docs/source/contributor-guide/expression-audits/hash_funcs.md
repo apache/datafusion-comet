@@ -34,7 +34,7 @@
 - Spark 3.5.8 (audited 2026-05-27): baseline. `Murmur3Hash(children, seed) extends HashExpression[Int]`; produces a Murmur3 hash with a configurable Int seed and `IntegerType` result. Comet routes via `CometMurmur3Hash` to the native `murmur3_hash` UDF.
 - Spark 4.0.1 (audited 2026-05-27): semantics unchanged; some inner helper refactors only.
 - Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.
-- Known limitation: the native kernel does not hash `DecimalType` children with precision > 18 (Spark hashes them through Java `BigDecimal`), including when nested in array, struct, or map. With the JVM codegen dispatcher enabled (the default), `CodegenDispatchFallback` runs Spark's `HashExpression.doGenCode` inside the Comet pipeline so the enclosing operator stays native. The projection falls back to Spark only when the dispatcher is disabled or refuses the tree. `TimeType` is out of scope for that dispatcher enrollment: `getSupportLevel` reports `Compatible` so the mixin does not intercept it, and `convert` declines the native path so the projection falls back to Spark. The same `HashUtils` type walk applies to `xxhash64`, `sha1`, and `sha2`.
+- Known limitation: the native kernel does not hash `DecimalType` children with precision > 18 (Spark hashes them through Java `BigDecimal`), including when nested in array, struct, or map. With the JVM codegen dispatcher enabled (the default), `CodegenDispatchFallback` runs Spark's `HashExpression.doGenCode` inside the Comet pipeline so the enclosing operator stays native. The projection falls back to Spark only when the dispatcher is disabled or refuses the tree. `TimeType` is out of scope for that dispatcher enrollment: `getSupportLevel` reports `Compatible` so the mixin does not intercept it, and `convert` declines the native path so the projection falls back to Spark. The same wide-decimal routing applies to `xxhash64`.
 
 ## md5
 
@@ -53,7 +53,7 @@
 ## sha1
 
 - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
-- Spark 3.5.8 (audited 2026-05-27): baseline. `Sha1(child) extends UnaryExpression with NullIntolerant`; `inputTypes = Seq(BinaryType) -> StringType`. Comet routes via `CometSha1` to the native `sha1` UDF. Mixes in `CodegenDispatchFallback` for the shared `HashUtils` walk (wide decimal); `TimeType` is excluded from that enrollment. Typical calls coerce to binary before that walk is reached.
+- Spark 3.5.8 (audited 2026-05-27): baseline. `Sha1(child) extends UnaryExpression with NullIntolerant`; `inputTypes = Seq(BinaryType) -> StringType`. The Analyzer casts accepted inputs to `BinaryType` before Comet serde, and `CometSha1` routes the resulting binary child to the native `sha1` UDF.
 - Spark 4.0.1 (audited 2026-05-27): trait set gains `DefaultStringProducingExpression` and `NullIntolerant` is replaced by `nullIntolerant: Boolean`. Runtime unchanged.
 - Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.
 
