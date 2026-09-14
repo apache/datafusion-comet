@@ -268,6 +268,12 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with CometTypeS
       commonBuilder.setIgnoreMissingFieldId(
         scan.conf.getConf(SQLConf.IGNORE_MISSING_PARQUET_FIELD_ID))
 
+      // Spark rejects reading a VARIANT-annotated Parquet field as anything but VariantType
+      // unless this conf is on; the native reader enforces the same rule from the file's
+      // annotation, which is the only place that annotation is visible.
+      commonBuilder.setIgnoreVariantAnnotation(
+        CometParquetUtils.ignoreVariantAnnotation(scan.conf))
+
       commonBuilder.setAllowTypePromotion(CometConf.COMET_SCHEMA_EVOLUTION_ENABLED)
       commonBuilder.setAllowTimestampLtzToNtz(CometConf.COMET_ALLOW_TIMESTAMP_LTZ_AS_NTZ)
 

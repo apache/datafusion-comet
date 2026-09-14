@@ -1734,6 +1734,7 @@ impl PhysicalPlanner {
                     common.encryption_enabled,
                     common.use_field_id,
                     common.ignore_missing_field_id,
+                    common.ignore_variant_annotation,
                 )?;
                 Ok((
                     vec![],
