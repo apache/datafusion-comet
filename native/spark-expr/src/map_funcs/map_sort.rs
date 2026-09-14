@@ -55,34 +55,34 @@ pub fn spark_map_sort(args: &[ColumnarValue]) -> Result<ColumnarValue, DataFusio
     let maps_arg_entries = maps_arg.entries();
     let maps_arg_offsets = maps_arg.offsets();
 
-    let sort_options = SortOptions {
-        descending: false,
-        nulls_first: true,
+    // Arrow rejects some key types even for a singleton (e.g. Struct), and nested sorts
+    // can fail while ranking child values. Only skip dispatch for flat types whose sort
+    // is infallible; all other types must retain Arrow's original validation/error path.
+    let key_type = maps_arg_entries.column(0).data_type();
+    let can_skip_singleton_sort = key_type.is_primitive()
+        || matches!(
+            key_type,
+            DataType::Boolean
+                | DataType::Utf8
+                | DataType::LargeUtf8
+                | DataType::Utf8View
+                | DataType::Binary
+                | DataType::LargeBinary
+                | DataType::BinaryView
+                | DataType::FixedSizeBinary(_)
+        );
+
+    // Keep the original loop for batches without eligible singletons. Specializing the
+    // loop avoids adding a per-row branch to wide maps. All-empty visible slices need
+    // no scan, including slices whose entries array still contains an unused prefix.
+    let has_singletons = can_skip_singleton_sort
+        && maps_arg_offsets[maps_arg.len()] > maps_arg_offsets[0]
+        && maps_arg_offsets.windows(2).any(|w| w[1] - w[0] == 1);
+    let (global_indices, rebased_offsets) = if has_singletons {
+        map_sort_indices::<true>(maps_arg_entries, maps_arg_offsets)?
+    } else {
+        map_sort_indices::<false>(maps_arg_entries, maps_arg_offsets)?
     };
-
-    // Build one global permutation over the full entries struct, respecting per-map boundaries,
-    // then issue a single `take`. This avoids per-map struct copies and a final `concat`.
-    //
-    // `take` produces exactly the entries the visible maps refer to, so the result is indexed from
-    // zero. A sliced MapArray keeps its original entry offsets (a slice of two two-entry maps that
-    // drops the first has offsets `[2, 4]`), so the input offsets cannot be reused here -- they
-    // would overrun the taken entries. Rebuild them from the per-map lengths instead.
-    let mut global_indices: Vec<u32> = Vec::with_capacity(maps_arg_entries.len());
-    let mut rebased_offsets: Vec<i32> = Vec::with_capacity(maps_arg.len() + 1);
-    rebased_offsets.push(0);
-
-    for idx in 0..maps_arg.len() {
-        let map_start = maps_arg_offsets[idx] as usize;
-        let map_end = maps_arg_offsets[idx + 1] as usize;
-        if map_end > map_start {
-            let map_keys = maps_arg_entries
-                .column(0)
-                .slice(map_start, map_end - map_start);
-            let local_indices = sort_to_indices(&map_keys, Some(sort_options), None)?;
-            global_indices.extend(local_indices.values().iter().map(|i| map_start as u32 + *i));
-        }
-        rebased_offsets.push(global_indices.len() as i32);
-    }
 
     let indices = UInt32Array::from(global_indices);
     let sorted_entries = take(maps_arg_entries, &indices, None)?;
@@ -101,6 +101,45 @@ pub fn spark_map_sort(args: &[ColumnarValue]) -> Result<ColumnarValue, DataFusio
     )?);
 
     Ok(ColumnarValue::Array(sorted_map_arr))
+}
+
+// The const parameter removes the singleton branch entirely from the fallback loop.
+fn map_sort_indices<const SKIP_SINGLETON: bool>(
+    entries: &StructArray,
+    offsets: &[i32],
+) -> Result<(Vec<u32>, Vec<i32>), DataFusionError> {
+    let sort_options = SortOptions {
+        descending: false,
+        nulls_first: true,
+    };
+
+    // Build one global permutation over the full entries struct, respecting per-map boundaries,
+    // then issue a single `take`. This avoids per-map struct copies and a final `concat`.
+    //
+    // `take` produces exactly the entries the visible maps refer to, so the result is indexed from
+    // zero. A sliced MapArray keeps its original entry offsets (a slice of two two-entry maps that
+    // drops the first has offsets `[2, 4]`), so the input offsets cannot be reused here -- they
+    // would overrun the taken entries. Rebuild them from the per-map lengths instead.
+    let mut global_indices: Vec<u32> = Vec::with_capacity(entries.len());
+    let mut rebased_offsets: Vec<i32> = Vec::with_capacity(offsets.len());
+    rebased_offsets.push(0);
+
+    for idx in 0..offsets.len() - 1 {
+        let map_start = offsets[idx] as usize;
+        let map_end = offsets[idx + 1] as usize;
+        if map_end > map_start {
+            if SKIP_SINGLETON && map_end == map_start + 1 {
+                global_indices.push(map_start as u32);
+            } else {
+                let map_keys = entries.column(0).slice(map_start, map_end - map_start);
+                let local_indices = sort_to_indices(&map_keys, Some(sort_options), None)?;
+                global_indices.extend(local_indices.values().iter().map(|i| map_start as u32 + *i));
+            }
+        }
+        rebased_offsets.push(global_indices.len() as i32);
+    }
+
+    Ok((global_indices, rebased_offsets))
 }
 
 #[cfg(test)]
@@ -768,5 +807,227 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("spark_map_sort expects Map type as argument"));
+    }
+    // A non-default schema makes metadata/field-name preservation observable.
+    fn map_with_keys(
+        keys: ArrayRef,
+        offsets: Vec<i32>,
+        nulls: Option<arrow::buffer::NullBuffer>,
+        sorted: bool,
+    ) -> MapArray {
+        use arrow::datatypes::Field;
+        let values: ArrayRef = Arc::new(Int32Array::from_iter((0..keys.len()).map(|i| {
+            if i % 2 == 0 {
+                None
+            } else {
+                Some(i as i32)
+            }
+        })));
+        let entries = StructArray::new(
+            vec![
+                Arc::new(Field::new("custom_key", keys.data_type().clone(), false)),
+                Arc::new(Field::new("custom_value", DataType::Int32, true)),
+            ]
+            .into(),
+            vec![keys, values],
+            None,
+        );
+        MapArray::new(
+            Arc::new(
+                Field::new("custom_entries", entries.data_type().clone(), false).with_metadata(
+                    std::collections::HashMap::from([("source".into(), "test".into())]),
+                ),
+            ),
+            OffsetBuffer::new(offsets.into()),
+            entries,
+            nulls,
+            sorted,
+        )
+    }
+
+    fn assert_map_permutation(map: MapArray, permutation: Vec<u32>, offsets: Vec<i32>) {
+        let expected = take(map.entries(), &UInt32Array::from(permutation), None).unwrap();
+        let result = spark_map_sort(&[ColumnarValue::Array(Arc::new(map.clone()))]).unwrap();
+        let ColumnarValue::Array(result) = result else {
+            panic!("expected array")
+        };
+        let actual = result.as_any().downcast_ref::<MapArray>().unwrap();
+        assert_eq!(actual.entries().to_data(), expected.to_data());
+        assert_eq!(actual.value_offsets(), offsets);
+        assert_eq!(actual.nulls(), map.nulls());
+        if let Some(expected_nulls) = map.nulls() {
+            let actual_nulls = actual.nulls().unwrap();
+            assert_eq!(actual_nulls.offset(), expected_nulls.offset());
+            assert_eq!(
+                actual_nulls.buffer().as_ptr(),
+                expected_nulls.buffer().as_ptr()
+            );
+        }
+        assert_eq!(actual.data_type(), map.data_type());
+    }
+
+    #[test]
+    fn test_singletons_and_mixed_sliced_maps_preserve_buffers_and_schema() {
+        use arrow::array::{Float64Array, LargeStringArray, StringViewArray};
+        use arrow::buffer::NullBuffer;
+        let numbers = vec![99, 98, 5, 9, 1, 7, 4, 3, 2];
+        let strings: Vec<_> = numbers.iter().map(i32::to_string).collect();
+        let mut lists = ListBuilder::new(Int32Builder::new());
+        for n in &numbers {
+            lists.values().append_value(*n);
+            lists.append(true);
+        }
+        let mut string_lists = ListBuilder::new(StringBuilder::new());
+        for text in &strings {
+            string_lists.values().append_value(text);
+            string_lists.append(true);
+        }
+        for keys in [
+            Arc::new(Int32Array::from(numbers.clone())) as ArrayRef,
+            Arc::new(Float64Array::from_iter_values(
+                numbers.iter().map(|n| *n as f64),
+            )),
+            Arc::new(StringArray::from(strings.clone())),
+            Arc::new(LargeStringArray::from(strings.clone())),
+            Arc::new(StringViewArray::from(strings)),
+            Arc::new(lists.finish()),
+            Arc::new(string_lists.finish()),
+        ] {
+            let map = map_with_keys(
+                Arc::clone(&keys),
+                vec![0, 2, 2, 3, 5, 6, 6, 7, 9],
+                Some(NullBuffer::from(vec![
+                    true, true, true, false, false, false, true, true,
+                ])),
+                false,
+            );
+            let sliced = map.slice(1, 7);
+            assert_eq!(sliced.value_offsets()[0], 2);
+            assert_map_permutation(
+                sliced,
+                vec![2, 4, 3, 5, 6, 8, 7],
+                vec![0, 0, 1, 3, 4, 4, 5, 7],
+            );
+            // Singleton-only batches include a valid map with a null value.
+            let singleton = map_with_keys(keys, (0..=9).collect(), None, false).slice(2, 5);
+            assert_map_permutation(singleton, vec![2, 3, 4, 5, 6], vec![0, 1, 2, 3, 4, 5]);
+        }
+    }
+
+    #[test]
+    fn test_unsupported_singleton_keys_keep_arrow_errors_and_early_returns() {
+        use arrow::buffer::NullBuffer;
+        use arrow::datatypes::Field;
+        let structs: ArrayRef = Arc::new(StructArray::new(
+            vec![Arc::new(Field::new("x", DataType::Int32, false))].into(),
+            vec![Arc::new(Int32Array::from(vec![1]))],
+            None,
+        ));
+        let lists: ArrayRef = Arc::new(arrow::array::ListArray::new(
+            Arc::new(Field::new("item", structs.data_type().clone(), true)),
+            OffsetBuffer::new(vec![0, 1].into()),
+            Arc::clone(&structs),
+            None,
+        ));
+        let maps: ArrayRef = Arc::new(map_with_keys(
+            Arc::new(Int32Array::from(vec![1])),
+            vec![0, 1],
+            None,
+            false,
+        ));
+        for keys in [structs, lists, maps] {
+            let arrow_error = sort_to_indices(
+                keys.as_ref(),
+                Some(SortOptions {
+                    descending: false,
+                    nulls_first: true,
+                }),
+                None,
+            )
+            .unwrap_err();
+            let expected_error = DataFusionError::from(arrow_error).to_string();
+            for validity in [None, Some(NullBuffer::from(vec![true, false]))] {
+                // The first row is empty; the second singleton may be null. Its physical
+                // entry must still produce the original error when the batch isn't all null.
+                let map = map_with_keys(Arc::clone(&keys), vec![0, 0, 1], validity, false);
+                assert_eq!(
+                    spark_map_sort(&[ColumnarValue::Array(Arc::new(map))])
+                        .unwrap_err()
+                        .to_string(),
+                    expected_error
+                );
+            }
+            for map in [
+                map_with_keys(Arc::clone(&keys), vec![0], None, false),
+                map_with_keys(Arc::clone(&keys), vec![0, 0], None, false),
+                map_with_keys(
+                    Arc::clone(&keys),
+                    vec![0, 1],
+                    Some(NullBuffer::from(vec![false])),
+                    false,
+                ),
+                map_with_keys(Arc::clone(&keys), vec![0, 1], None, true),
+            ] {
+                let result =
+                    spark_map_sort(&[ColumnarValue::Array(Arc::new(map.clone()))]).unwrap();
+                let ColumnarValue::Array(result) = result else {
+                    panic!("expected array")
+                };
+                // Empty non-null maps rebase/take, while the other cases return early.
+                if map.len() == 1 && map.value_length(0) == 0 && map.null_count() == 0 {
+                    assert_eq!(result.data_type(), map.data_type());
+                    assert_eq!(result.len(), 1);
+                } else {
+                    assert_eq!(result.to_data(), map.to_data());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_singleton_float_bits_and_binary_keys() {
+        use arrow::array::{
+            BinaryArray, BinaryViewArray, BooleanArray, FixedSizeBinaryArray, Float64Array,
+            LargeBinaryArray,
+        };
+        let bytes: Vec<&[u8]> = vec![b"z", b"a", b"x", b"q"];
+        let floats = [
+            f64::from_bits(0x7ff8000000000042),
+            -0.0,
+            0.0,
+            f64::NEG_INFINITY,
+        ];
+        for keys in [
+            Arc::new(Float64Array::from(floats.to_vec())) as ArrayRef,
+            Arc::new(BooleanArray::from(vec![true, false, false, true])),
+            Arc::new(BinaryArray::from_vec(bytes.clone())),
+            Arc::new(LargeBinaryArray::from_vec(bytes.clone())),
+            Arc::new(BinaryViewArray::from_iter_values(bytes.clone())),
+            Arc::new(FixedSizeBinaryArray::try_from_iter(bytes.into_iter()).unwrap()),
+        ] {
+            let map = map_with_keys(keys, vec![0, 1, 2, 3, 4], None, false);
+            assert_map_permutation(map.clone(), vec![0, 1, 2, 3], vec![0, 1, 2, 3, 4]);
+            if matches!(map.key_type(), DataType::Float64) {
+                let ColumnarValue::Array(result) =
+                    spark_map_sort(&[ColumnarValue::Array(Arc::new(map))]).unwrap()
+                else {
+                    panic!("expected array")
+                };
+                let actual = result.as_any().downcast_ref::<MapArray>().unwrap();
+                let actual = actual
+                    .keys()
+                    .as_any()
+                    .downcast_ref::<Float64Array>()
+                    .unwrap();
+                assert_eq!(
+                    actual
+                        .values()
+                        .iter()
+                        .map(|x| x.to_bits())
+                        .collect::<Vec<_>>(),
+                    floats.iter().map(|x| x.to_bits()).collect::<Vec<_>>()
+                );
+            }
+        }
     }
 }
