@@ -156,11 +156,14 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim with Come
     // instance with a single `init(partitionIndex)` call, so `Rand` / `MonotonicallyIncreasingID`
     // state advances correctly across batches.
     //
-    // `ExecSubqueryExpression` (`ScalarSubquery`, `InSubqueryExec`) is accepted: the surrounding
-    // Comet operator's inherited `SparkPlan.waitForSubqueries` populates the subquery's
-    // `result` field before evaluation. The closure serializer captures that value into the
-    // arg-0 bytes, and the dispatcher keys its compile cache on those bytes, so distinct subquery
-    // results produce distinct cache entries.
+    // `ExecSubqueryExpression` (`ScalarSubquery`, `InSubqueryExec`) is rejected. Its `result` field
+    // is populated by the surrounding operator's `SparkPlan.waitForSubqueries` at *execution* time,
+    // whereas the dispatcher closure-serializes the tree into the arg-0 bytes during planning. The
+    // deserialized copy on the executor therefore still has an unset `result`, and
+    // `ScalarSubquery.doGenCode` fails the kernel compile with "Subquery ... has not finished".
+    // Refusing here turns that runtime failure into a plan-time Spark fallback. Note this only
+    // concerns a subquery *inside* the dispatched subtree: one that is merely a sibling under a
+    // native parent (`udf(x) + (SELECT ...)`) is evaluated natively and never reaches a kernel.
     //
     // `Unevaluable`: rejected by default. `isCodegenInertUnevaluable` exempts version-specific
     // leaves that are `Unevaluable` but never invoked by codegen (e.g. Spark 4.0's
@@ -168,6 +171,7 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim with Come
     boundExpr.find {
       case _: org.apache.spark.sql.catalyst.expressions.aggregate.AggregateFunction => true
       case _: org.apache.spark.sql.catalyst.expressions.Generator => true
+      case _: org.apache.spark.sql.execution.ExecSubqueryExpression => true
       case u: Unevaluable if isCodegenInertUnevaluable(u) => false
       case _: Unevaluable => true
       case _ => false
@@ -175,7 +179,7 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim with Come
       case Some(bad) =>
         return Some(
           s"codegen dispatch: expression ${bad.getClass.getSimpleName} not supported " +
-            "(aggregate, generator, or unevaluable)")
+            "(aggregate, generator, subquery, or unevaluable)")
       case None =>
     }
     val badRef = boundExpr.collectFirst {
