@@ -44,6 +44,45 @@ heap and to Spark's own off-heap accounting, yet they land squarely in container
 therefore maintains its own budget that is meant to shadow the physical one, and the accuracy of
 that shadow is the central problem this page is about.
 
+## Who allocates what
+
+Enabling Comet does not add one new memory consumer, it adds several, and they are not all
+accounted by the same party. This inventory is worth internalizing before reading the rest of the
+page:
+
+| Allocator                               | Lives in    | Bounded by                                                          | Visible to Spark? |
+| --------------------------------------- | ----------- | ------------------------------------------------------------------- | ----------------- |
+| Spark execution + storage (on-heap)     | JVM heap    | `spark.executor.memory` and the unified memory manager              | Yes               |
+| Spark Tungsten (off-heap)               | Off-heap    | `spark.memory.offHeap.size` via `TaskMemoryManager`                 | Yes               |
+| Comet native (Rust global allocator)    | Native heap | `memory_limit` (see below), enforced only via the memory pool       | No                |
+| Comet JVM Arrow (`CometArrowAllocator`) | Off-heap    | **Nothing** — a `RootAllocator(Long.MaxValue)`                      | No                |
+| Comet JVM shuffle pages (off-heap mode) | Off-heap    | `spark.memory.offHeap.size` via `TaskMemoryManager`                 | Yes               |
+| Comet JVM shuffle pages (on-heap mode)  | Off-heap    | `spark.comet.shuffle.jvm.memoryFactor * spark.comet.memoryOverhead` | No                |
+
+Three observations follow.
+
+**Comet's JVM-side Arrow allocator is unbounded and accounted by nobody.** `CometArrowAllocator`
+(`spark/src/main/scala/org/apache/comet/package.scala`) is a single process-wide
+`new RootAllocator(Long.MaxValue)`. Child allocators are cut from it for FFI stream export
+(`CometNativeArrowSource`), broadcast coalescing, and `CometSparkToColumnarExec`. These are real
+off-heap bytes in container RSS that neither Spark's `TaskMemoryManager` nor Comet's native pool nor
+the `oom-guard` allocator sees. In practice the volume is modest — a batch at a time per stream —
+but there is no ceiling and no backpressure.
+
+**The JVM shuffle allocator switches accounting model with the memory mode.**
+`CometShuffleMemoryAllocator.getInstance` returns `CometUnifiedShuffleMemoryAllocator` when Tungsten
+is off-heap, which is a proper Spark `MemoryConsumer` drawing from `spark.memory.offHeap.size`. In
+on-heap mode it returns `CometBoundedShuffleMemoryAllocator`, which calls `UnsafeMemoryAllocator`
+directly and bounds itself with its own counter. Only the first is arbitrated against Spark's other
+consumers.
+
+**On-heap mode double-counts `spark.comet.memoryOverhead`.** The native pool is sized at
+`memory_limit = spark.comet.memoryOverhead`, and the JVM shuffle allocator is _separately_ sized at
+`spark.comet.shuffle.jvm.memoryFactor * spark.comet.memoryOverhead`, with the factor defaulting to
+`1.0`. They are distinct allocations from the same number, so on-heap Comet can occupy up to roughly
+twice `spark.comet.memoryOverhead` in off-heap RSS, before counting `CometArrowAllocator`. Off-heap
+mode does not have this problem, which is one more reason it is the recommended configuration.
+
 ## Where Comet's budget comes from
 
 `CometExecIterator.getMemoryConfig` computes the budget once per executor and passes it across JNI
@@ -153,6 +192,34 @@ Native operators reserve through DataFusion's `MemoryConsumer` / `MemoryReservat
 
 An operator that never calls `try_grow` is invisible to the pool no matter how much memory it uses.
 
+## Crossing the FFI boundary
+
+Batches move between the JVM and native over the Arrow C Data and C Stream interfaces, which are
+zero-copy. Nothing is copied, so the _allocator_ that produced a batch and the _runtime_ that
+decides when it dies can be on opposite sides of the boundary. See [Arrow FFI](ffi.md) for the
+mechanics; what matters here is who is charged and who controls the lifetime.
+
+**JVM → native (`ScanExec`).** The JVM allocates the Arrow buffers from a child of
+`CometArrowAllocator` and exports the whole per-partition iterator once as an `ArrowArrayStream`.
+Native takes ownership by reference through `AlignedArrowStreamReader`. The bytes were allocated by
+Java Arrow, so the Rust global allocator never sees them: they are absent from `BALANCE`, absent
+from the memory pool, and absent from Spark's `TaskMemoryManager` — but present in container RSS,
+and pinned for as long as the native side holds the imported batch. A native operator that buffers
+many input batches is therefore pinning JVM-allocated off-heap memory that none of Comet's
+accounting can observe.
+
+**Native → JVM (`CometExecIterator`).** DataFusion produces the batch in Rust, so those bytes _are_
+counted in `BALANCE` and may also be reserved in the pool. The batch is exported as an
+`ArrowArray`/`ArrowSchema` pair, the JVM wraps the pointers in `ArrowBuf`s, and the memory is only
+freed when the JVM calls `close()` and the release callback runs. The lifetime of native,
+pool-charged memory is thus controlled by JVM code. A slow or backed-up JVM consumer keeps
+`BALANCE` elevated for memory the native side has logically finished with, which means the guard can
+trip on a backlog rather than on genuine native demand.
+
+The asymmetry is the point: **the direction of data flow determines which accounting layer, if any,
+charges for a batch.** Neither direction charges both, and the JVM → native direction charges
+nothing at all.
+
 ## The accounting gap
 
 The pool tracks _declared reservations_. Container RSS counts _pages the process touched_. The two
@@ -170,6 +237,9 @@ diverge for several structural reasons:
   Freeing memory does not necessarily return pages to the OS.
 - **Non-Rust allocations.** Memory allocated by C dependencies through libc `malloc`, and anything
   `mmap`ed, never passes through Rust's `GlobalAlloc`.
+- **FFI-imported buffers.** Batches arriving from the JVM were allocated by Java Arrow, so they
+  belong to no Comet budget at all while native code holds them (see
+  [Crossing the FFI boundary](#crossing-the-ffi-boundary)).
 
 The practical consequence is that `reserved()` is a lower bound on Comet's real footprint, and the
 gap is workload-dependent. `spark.comet.exec.memoryPool.fraction` exists purely so operators can
@@ -198,6 +268,7 @@ hard ceiling on the sum of everything in the container. That cgroup counts, amon
 - JVM non-heap: metaspace, code cache, thread stacks, GC structures, Netty direct buffers,
 - Spark's own off-heap allocations,
 - **all of Comet's native allocations**,
+- Comet's JVM-side Arrow buffers (`CometArrowAllocator`) and, in on-heap mode, its JVM shuffle pages,
 - page cache charged to the cgroup by the container's file I/O, including spill files.
 
 Only the first and a portion of the third are visible to Spark's accounting. When the total crosses
@@ -375,6 +446,10 @@ These are known and mostly inherent to the prototype:
 - **Panicking from inside the global allocator** unwinds through code that was mid-allocation. It is
   memory-safe in the cases exercised so far, but a guard panic raised while another panic is already
   unwinding is a double panic and aborts the process.
+- **The FFI boundary is accounted asymmetrically.** Batches imported from the JVM are absent from
+  `BALANCE` even though native code pins them, so the guard under-reports on scan-heavy plans.
+  Batches exported to the JVM stay in `BALANCE` until the JVM closes them, so a backed-up consumer
+  can trip the guard on memory the native side is already done with. Neither is corrected for.
 - **The budget is not auto-sized.** The gate reacts to real usage but does not yet adjust the pool
   budget or deprecate `spark.comet.exec.memoryPool.fraction`.
 
