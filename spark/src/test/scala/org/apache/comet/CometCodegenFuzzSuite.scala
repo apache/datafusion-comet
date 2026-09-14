@@ -299,7 +299,7 @@ class CometCodegenFuzzSuite
       case _ => false
     }
     spark.udf.register("id_int_arrdistinct", (i: Int) => i)
-    // beforeAll disables negative zero generation, so the native opt-in is safe on older Spark.
+    // Inputs omit negative zeros and use Parquet-canonicalized NaNs for native opt-in coverage.
     withSQLConf(CometConf.getExprAllowIncompatConfigKey(classOf[ArrayDistinct]) -> "true") {
       for (field <- arrayStructFields) {
         val q = s"SELECT id_int_arrdistinct(cardinality(array_distinct(${field.name}))) FROM t1"

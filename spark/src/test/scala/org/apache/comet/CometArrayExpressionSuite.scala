@@ -55,7 +55,7 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
       .foreach { elementType =>
         val child = AttributeReference("a", ArrayType(elementType))()
         val expected =
-          if (fixed) Compatible() else Incompatible(Some(ArraySetSupport.signedZeroReason))
+          if (fixed) Compatible() else Incompatible(Some(ArraySetSupport.floatingPointReason))
         assert(CometArrayDistinct.getSupportLevel(ArrayDistinct(child)) == expected)
         assert(CometArrayUnion.getSupportLevel(ArrayUnion(child, child)) == expected)
       }
@@ -91,6 +91,28 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
             "SELECT array_union(array(double('1.0')), array(double('1.0')))"
           }
           checkSparkAnswerAndOperator(query)
+        }
+      }
+    }
+  }
+
+  test("array set noncanonical NaN normalization") {
+    withTempDir { dir =>
+      withTempView("array_set_nan") {
+        sql("SELECT float('NaN') AS f, double('NaN') AS d").write.parquet(dir + "/data")
+        spark.read.parquet(dir + "/data").createOrReplaceTempView("array_set_nan")
+        // Negate scanned values because Parquet canonicalizes NaNs on write.
+        Seq("f", "d").foreach { column =>
+          Seq(
+            s"array_distinct(array($column, -$column))",
+            s"array_union(array($column), array(-$column))").foreach { expression =>
+            val query = s"SELECT size($expression) FROM array_set_nan"
+            if (ArraySetSupport.normalizesSignedZero(org.apache.spark.SPARK_VERSION)) {
+              checkSparkAnswerAndOperator(query)
+            } else {
+              checkSparkAnswerAndFallbackReason(query, "SPARK-54918")
+            }
+          }
         }
       }
     }

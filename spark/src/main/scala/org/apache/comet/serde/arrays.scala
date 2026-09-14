@@ -519,9 +519,9 @@ object CometSlice extends CometExpressionSerde[Slice] {
 }
 
 private[comet] object ArraySetSupport {
-  val signedZeroReason: String =
+  val floatingPointReason: String =
     "Floating-point array elements require Spark with SPARK-54918 " +
-      "(4.0.5+, 4.1.4+, or 4.2+) for matching signed-zero semantics"
+      "(4.0.5+, 4.1.4+, or 4.2+) for matching signed-zero and NaN semantics"
 
   // A top-level KnownFloatingPointNormalized marker is insufficient: Spark also normalizes
   // CreateArray, If, CaseWhen, and Coalesce recursively without wrapping the resulting array.
@@ -536,25 +536,24 @@ private[comet] object ArraySetSupport {
   def supportLevel(dataType: DataType): SupportLevel = {
     if (SupportLevel.containsType(dataType, classOf[FloatType], classOf[DoubleType]) &&
       !normalizesSignedZero(SPARK_VERSION)) {
-      Incompatible(Some(signedZeroReason))
+      Incompatible(Some(floatingPointReason))
     } else {
       Compatible()
     }
   }
 }
 
-// Distinct and union use Spark projection fallback instead of CodegenDispatchFallback.
-// PR #5750's measurements found codegen dispatch slower than projection fallback for these
-// array-valued results. The native implementation remains available through opt-in.
+// Use projection fallback to avoid codegen dispatch overhead for array-valued results.
+// The native implementation remains available through opt-in.
 object CometArrayDistinct extends CometScalarFunction[ArrayDistinct]("array_distinct") {
-  override def getIncompatibleReasons(): Seq[String] = Seq(ArraySetSupport.signedZeroReason)
+  override def getIncompatibleReasons(): Seq[String] = Seq(ArraySetSupport.floatingPointReason)
 
   override def getSupportLevel(expr: ArrayDistinct): SupportLevel =
     ArraySetSupport.supportLevel(expr.dataType)
 }
 
 object CometArrayUnion extends CometExpressionSerde[ArrayUnion] {
-  override def getIncompatibleReasons(): Seq[String] = Seq(ArraySetSupport.signedZeroReason)
+  override def getIncompatibleReasons(): Seq[String] = Seq(ArraySetSupport.floatingPointReason)
 
   override def getSupportLevel(expr: ArrayUnion): SupportLevel =
     ArraySetSupport.supportLevel(expr.dataType)
