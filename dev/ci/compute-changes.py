@@ -94,6 +94,62 @@ FILTERS = {
         "native/spark-expr/benches/**",
         "spark/src/test/scala/org/apache/spark/sql/benchmark/**",
     ],
+    # dev/verify-contrib-delta-gate.sh proves the default cargo, Maven and
+    # libcomet builds carry no Delta surface and that the gated build does.
+    # It reads the cargo tree, the effective pom, the compiled classes and the
+    # dylib symbol table: main sources and build inputs, never tests.
+    "delta_gate": [
+        "native/**",
+        "common/src/main/**",
+        "spark/src/main/**",
+        "contrib/delta/**",
+        "pom.xml",
+        "**/pom.xml",
+        ".mvn/**",
+        "mvnw",
+        "Makefile",
+        "rust-toolchain.toml",
+        "dev/verify-contrib-delta-gate.sh",
+        ".github/workflows/ci.yml",
+        ".github/workflows/delta_build_gate.yml",
+        ".github/actions/setup-builder/**",
+        "!**.md",
+        "!native/core/benches/**",
+        "!native/spark-expr/benches/**",
+        "!spark/src/main/scala/org/apache/comet/GenerateDocs.scala",
+    ],
+    # A real Python worker against each Spark 4.x Arrow runner. The list is
+    # deliberately narrow: the suite builds Comet three times, once per Spark
+    # version, and only the map-in-batch wiring can change its verdict.
+    "pyarrow_udf": [
+        "pom.xml",
+        "common/pom.xml",
+        "common/src/main/scala/org/apache/comet/CometConf.scala",
+        "spark/pom.xml",
+        "spark/src/main/scala/org/apache/comet/rules/EliminateRedundantTransitions.scala",
+        "spark/src/main/scala/org/apache/spark/sql/comet/CometMapInBatchExec.scala",
+        "spark/src/main/scala/org/apache/spark/sql/comet/shims/MapInBatchInfo.scala",
+        "spark/src/main/spark-3.4/org/apache/spark/sql/comet/shims/ShimCometMapInBatch.scala",
+        "spark/src/main/spark-3.5/org/apache/spark/sql/comet/shims/ShimCometMapInBatch.scala",
+        "spark/src/main/spark-4.0/org/apache/spark/sql/comet/shims/ShimCometMapInBatch.scala",
+        "spark/src/main/spark-4.1/org/apache/spark/sql/comet/shims/ShimCometMapInBatch.scala",
+        "spark/src/main/spark-4.2/org/apache/spark/sql/comet/shims/ShimCometMapInBatch.scala",
+        "spark/src/main/spark-4.0/org/apache/spark/sql/execution/python/CometArrowPythonRunner.scala",
+        "spark/src/main/spark-4.1/org/apache/spark/sql/execution/python/CometArrowPythonRunner.scala",
+        "spark/src/main/spark-4.2/org/apache/spark/sql/execution/python/CometArrowPythonRunner.scala",
+        "spark/src/main/spark-4.x/org/apache/spark/sql/comet/shims/Spark4xMapInBatchSupport.scala",
+        "spark/src/main/spark-4.x/org/apache/spark/sql/execution/python/CometArrowPythonRunnerBase.scala",
+        "spark/src/test/resources/pyspark/conftest.py",
+        "spark/src/test/resources/pyspark/test_pyarrow_udf.py",
+        "spark/src/test/spark-3.5/org/apache/spark/sql/comet/CometMapInBatchSuite.scala",
+        "spark/src/test/spark-4.x/org/apache/spark/sql/comet/CometMapInBatchSuite.scala",
+        "spark/src/test/spark-4.x/org/apache/spark/sql/execution/python/CometArrowPythonRunnerSuite.scala",
+        ".mvn/**",
+        "mvnw",
+        ".github/workflows/ci.yml",
+        ".github/workflows/pyarrow_udf_test.yml",
+        ".github/actions/setup-builder/**",
+    ],
     "docs": [
         ".asf.yaml",
         ".github/workflows/docs.yaml",
@@ -353,6 +409,13 @@ POLICY = {
     # Benchmark sources are compiled and linted, never run, so a break there
     # cannot affect a PR's correctness verdict; the queue catches it.
     "benchmark": ["queue", "label:run-benchmark-check"],
+    # The Delta build gate only proves a build-system property, and the
+    # PyArrow suite builds Comet once per Spark 4.x version to drive a real
+    # Python worker. Neither changes often enough to earn a PR-tier slot; the
+    # queue catches a regression before it lands, and the label is the escape
+    # hatch for a change to the surface they cover.
+    "delta_gate": ["queue", "label:run-delta-build-gate"],
+    "pyarrow_udf": ["queue", "label:run-pyarrow-udf-tests"],
     # docs deploys to asf-site, so it must not run from a pull request or from
     # the queue's throwaway branch.
     "docs": ["push"],

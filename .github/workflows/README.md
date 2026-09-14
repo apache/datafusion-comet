@@ -17,9 +17,10 @@ ruleset in `.asf.yaml`. That splits CI into two tiers:
 - **PR tier** (`pr`): fast feedback while a change is being iterated on.
   The Linux build, Spark 4.1 (catalyst and `sql_core` only) and Iceberg 1.11.
 - **Queue tier** (`queue`): the authoritative gate. Everything the PR tier
-  runs, plus the macOS build, the benchmark compile check, the Spark 4.1
-  `sql_hive` shards, Spark 3.4/3.5/4.0 and Iceberg 1.8/1.9/1.10, evaluated
-  against the merge result rather than against the PR head.
+  runs, plus the macOS build, the benchmark compile check, the Delta contrib
+  build gate, the PyArrow UDF suite, the Spark 4.1 `sql_hive` shards, Spark
+  3.4/3.5/4.0 and Iceberg 1.8/1.9/1.10, evaluated against the merge result
+  rather than against the PR head.
 
 Every queue-only job has a `run-*` label that opts a pull request into it
 early, listed in the diagram below.
@@ -60,7 +61,9 @@ and TPC-H/TPC-DS caches on `main` stale until the next unrelated change.
   ---------------                     -----------------         ---------------------------
   pr_build_linux (+ push, for cache)  docs                      pr_build_macos      run-macos-tests
   spark_4_1 (catalyst + sql_core)                               pr_benchmark_check  run-benchmark-check
-  iceberg_1_11                                                  spark_4_1 sql_hive  run-spark-4.1-hive-tests
+  iceberg_1_11                                                  delta_build_gate    run-delta-build-gate
+                                                                pyarrow_udf_test    run-pyarrow-udf-tests
+                                                                spark_4_1 sql_hive  run-spark-4.1-hive-tests
                                                                 spark_3_4           run-spark-3.4-tests
                                                                 spark_3_5           run-spark-3.5-tests
                                                                 spark_4_0           run-spark-4.0-tests
@@ -80,8 +83,8 @@ and TPC-H/TPC-DS caches on `main` stale until the next unrelated change.
   reusable workflows invoked via `uses:`:
     pr_build_linux.yml         spark_sql_test_reusable.yml
     pr_build_macos.yml         iceberg_spark_test_reusable.yml
-    pr_benchmark_check.yml
-    docs.yaml
+    pr_benchmark_check.yml     delta_build_gate.yml
+    docs.yaml                  pyarrow_udf_test.yml
 ```
 
 ## What runs when
@@ -93,6 +96,8 @@ and TPC-H/TPC-DS caches on `main` stale until the next unrelated change.
 | `pr_build_linux`     | PR, merge group or push to main, paths matched                                                                         | `dev/ci/compute-changes.py`         |
 | `pr_build_macos`     | merge group, **or** PR with `run-macos-tests`                                                                          | `dev/ci/compute-changes.py`         |
 | `pr_benchmark_check` | merge group, **or** PR with `run-benchmark-check`                                                                      | benchmark sources only              |
+| `delta_build_gate`   | merge group, **or** PR with `run-delta-build-gate`                                                                     | main sources, poms, `contrib/delta` |
+| `pyarrow_udf_test`   | merge group, **or** PR with `run-pyarrow-udf-tests`                                                                    | map-in-batch and Python runner code |
 | `docs`               | push to main, paths matched                                                                                            | `.asf.yaml`, `docs/**`, `docs.yaml` |
 | `spark_3_5`          | merge group, **or** PR with `run-spark-3.5-tests`                                                                      | Spark 3.5 sources                   |
 | `spark_4_1`          | PR or merge group, paths matched; the `sql_hive` shards only in the merge group **or** with `run-spark-4.1-hive-tests` | Spark 4.1 sources                   |
@@ -166,6 +171,8 @@ umbrella doesn't watch, or operate independently of the rest of CI:
 | `pr_build_linux.yml`              | `pr_build_linux`                                             |
 | `pr_build_macos.yml`              | `pr_build_macos`                                             |
 | `pr_benchmark_check.yml`          | `pr_benchmark_check`                                         |
+| `delta_build_gate.yml`            | `delta_build_gate`                                           |
+| `pyarrow_udf_test.yml`            | `pyarrow_udf_test`                                           |
 | `docs.yaml`                       | `docs`                                                       |
 | `spark_sql_test_reusable.yml`     | `spark_3_4`, `spark_3_5`, `spark_4_0`, `spark_4_1`           |
 | `iceberg_spark_test_reusable.yml` | `iceberg_1_8`, `iceberg_1_9`, `iceberg_1_10`, `iceberg_1_11` |
