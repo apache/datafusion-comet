@@ -25,24 +25,60 @@ use std::sync::Arc;
 mod common;
 use common::{string_array, NULL_RATIOS, ROW_COUNTS};
 
+/// Generator pair for one dataset: the invariant right side plus a left-side
+/// factory that takes the per-row index, so every dataset fills the same shape.
+struct Dataset {
+    label: &'static str,
+    right: fn(usize) -> String,
+    left: fn(usize) -> String,
+}
+
+/// ASCII: both operands are ASCII, so `is_ascii() && is_ascii()` enables the
+/// byte-level fast path.
+const ASCII: Dataset = Dataset {
+    label: "ascii",
+    right: |_| "sitting".to_string(),
+    left: |_| "kitten".to_string(),
+};
+
+/// Non-ASCII: both operands are non-ASCII, so the fast path is skipped and the
+/// Unicode `chars()` path runs. Both sides pay the `is_ascii()` scan.
+const NON_ASCII: Dataset = Dataset {
+    label: "non-ascii",
+    right: |_| "smörgås".to_string(),
+    left: |_| "naïve".to_string(),
+};
+
+/// Mixed: right is non-ASCII, left is ASCII. `s.is_ascii() && t.is_ascii()`
+/// short-circuits on the second operand, so only the left scan is saved.
+const MIXED: Dataset = Dataset {
+    label: "mixed",
+    right: |_| "café".to_string(),
+    left: |_| "cafe".to_string(),
+};
+
+const DATASETS: [Dataset; 3] = [ASCII, NON_ASCII, MIXED];
+
 fn criterion_benchmark(c: &mut Criterion) {
-    let mut group = c.benchmark_group("spark_levenshtein");
-    for rows in ROW_COUNTS {
-        let right = string_array(rows, 0.0, |_| "sitting".to_string());
-        for (null_ratio, tag) in NULL_RATIOS {
-            let left = string_array(rows, null_ratio, |_| "kitten".to_string());
-            let args = vec![
-                ColumnarValue::Array(left),
-                ColumnarValue::Array(Arc::clone(&right)),
-            ];
-            group.bench_with_input(
-                BenchmarkId::from_parameter(format!("{rows}/{tag}")),
-                &args,
-                |b, args| b.iter(|| black_box(spark_levenshtein(black_box(args)).unwrap())),
-            );
+    for dataset in &DATASETS {
+        let mut group = c.benchmark_group(format!("spark_levenshtein/{}", dataset.label));
+        for rows in ROW_COUNTS {
+            let right = string_array(rows, 0.0, |_| (dataset.right)(0));
+            for (null_ratio, tag) in NULL_RATIOS {
+                let left = string_array(rows, null_ratio, |_| (dataset.left)(0));
+                let args = vec![
+                    ColumnarValue::Array(left),
+                    ColumnarValue::Array(Arc::clone(&right)),
+                ];
+                group.bench_with_input(
+                    BenchmarkId::from_parameter(format!("{rows}/{tag}")),
+                    &args,
+                    |b, args| b.iter(|| black_box(spark_levenshtein(black_box(args)).unwrap())),
+                );
+            }
         }
+        group.finish();
     }
-    group.finish();
 }
 
 criterion_group!(benches, criterion_benchmark);
