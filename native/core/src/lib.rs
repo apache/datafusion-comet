@@ -65,6 +65,7 @@ pub mod jvm_bridge {
 
 use errors::{try_unwrap_or_throw, CometError, CometResult};
 
+pub mod alloc_accounting;
 pub mod cloud;
 pub mod execution;
 pub mod parquet;
@@ -72,20 +73,57 @@ pub mod parquet;
 #[cfg(debug_assertions)]
 pub mod debug;
 
+// The global allocator is the selected backend (jemalloc, mimalloc, or the system allocator),
+// optionally wrapped in `AccountingAllocator` when the `alloc-accounting` feature is on. The cfgs
+// below are mutually exclusive so exactly one `#[global_allocator]` is defined; a build without
+// the feature is byte-for-byte the previous arrangement, with no wrapper and no per-allocation
+// work.
+
 #[cfg(all(
     not(target_env = "msvc"),
     feature = "jemalloc",
-    not(feature = "mimalloc")
+    not(feature = "mimalloc"),
+    not(feature = "alloc-accounting")
 ))]
 #[global_allocator]
 static GLOBAL: Jemalloc = Jemalloc;
 
 #[cfg(all(
     feature = "mimalloc",
-    not(all(not(target_env = "msvc"), feature = "jemalloc"))
+    not(all(not(target_env = "msvc"), feature = "jemalloc")),
+    not(feature = "alloc-accounting")
 ))]
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
+
+#[cfg(all(
+    not(target_env = "msvc"),
+    feature = "jemalloc",
+    not(feature = "mimalloc"),
+    feature = "alloc-accounting"
+))]
+#[global_allocator]
+static GLOBAL: alloc_accounting::AccountingAllocator<Jemalloc> =
+    alloc_accounting::AccountingAllocator::new(Jemalloc);
+
+#[cfg(all(
+    feature = "mimalloc",
+    not(all(not(target_env = "msvc"), feature = "jemalloc")),
+    feature = "alloc-accounting"
+))]
+#[global_allocator]
+static GLOBAL: alloc_accounting::AccountingAllocator<MiMalloc> =
+    alloc_accounting::AccountingAllocator::new(MiMalloc);
+
+// Accounting over the system allocator: neither mimalloc nor a usable jemalloc.
+#[cfg(all(
+    feature = "alloc-accounting",
+    not(feature = "mimalloc"),
+    any(target_env = "msvc", not(feature = "jemalloc"))
+))]
+#[global_allocator]
+static GLOBAL: alloc_accounting::AccountingAllocator<std::alloc::System> =
+    alloc_accounting::AccountingAllocator::new(std::alloc::System);
 
 #[no_mangle]
 pub extern "system" fn Java_org_apache_comet_NativeBase_init(

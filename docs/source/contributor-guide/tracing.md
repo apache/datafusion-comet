@@ -33,6 +33,16 @@ Additionally, enabling the `jemalloc` feature will enable tracing of native memo
 make release COMET_FEATURES="jemalloc"
 ```
 
+The `alloc-accounting` feature adds a second, allocator-independent measure of native memory. It
+wraps whichever global allocator the build selected and reports the bytes it has handed out as
+`native_allocated`. Unlike `jemalloc_allocated` it does not require jemalloc, and it counts only
+what Rust code allocated, so it can be compared against the memory pool's reservations without the
+allocator's own caching in the way. The two features are independent and can be combined:
+
+```shell
+make release COMET_FEATURES="jemalloc,alloc-accounting"
+```
+
 Example output:
 
 ```json
@@ -111,5 +121,6 @@ Large or growing excess may indicate memory that is not being tracked by the poo
 | -------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
 | jvm_heap_used                    | JVM heap memory usage of live objects for the executor process                                                           |
 | jemalloc_allocated               | Native memory usage for the executor process (requires `jemalloc` feature)                                               |
+| native_allocated                 | Bytes handed out by the Rust global allocator, process-wide (requires `alloc-accounting` feature)                        |
 | thread_NNN_comet_memory_reserved | Memory reserved by Comet's DataFusion memory pool (summed across all contexts on the thread). NNN is the Rust thread ID. |
 | thread_NNN_comet_jvm_shuffle     | Off-heap memory allocated by Comet for columnar shuffle. NNN is the Rust thread ID.                                      |
