@@ -19,14 +19,67 @@
 
 package org.apache.comet.exec
 
+import org.apache.spark.SparkConf
 import org.apache.spark.sql.{CometTestBase, Row}
 import org.apache.spark.sql.comet.{CometBroadcastHashJoinExec, CometEmptyRelationExec, CometHashAggregateExec}
+import org.apache.spark.sql.execution.EmptyRelationExec
+import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanExec
 import org.apache.spark.sql.execution.joins.BroadcastHashJoinExec
 import org.apache.spark.sql.internal.SQLConf
 
 import org.apache.comet.CometConf
 
 class CometEmptyRelationExecSuite extends CometTestBase {
+
+  // CometTestBase enables the Spark-to-Arrow bridge; use its production default here.
+  override protected def sparkConf: SparkConf =
+    super.sparkConf.remove(CometConf.COMET_SPARK_TO_ARROW_ENABLED.key)
+
+  test(
+    "EmptyRelationExec is discovered by AQE for joins with default Comet conversion settings") {
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
+      SQLConf.SHUFFLE_PARTITIONS.key -> "2") {
+      withParquetTable(Seq((1, 2), (2, 3)), "aqe_empty_join_left") {
+        withParquetTable(Seq((1, 4), (2, 5)), "aqe_empty_join_right") {
+          for (joinType <- Seq("INNER JOIN", "LEFT SEMI JOIN")) {
+            // Filter a non-key column so the left input stays nonempty. A grouped right input
+            // has a separate AQE row-count inference gap for CometHashAggregateExec.
+            val query = s"""
+                |SELECT count(*), sum(l._2)
+                |FROM aqe_empty_join_left l
+                |$joinType (
+                |  SELECT _1
+                |  FROM aqe_empty_join_right
+                |  WHERE _2 < 0
+                |) r ON l._1 = r._1
+                |""".stripMargin
+            val df = sql(query)
+            val adaptive = df.queryExecution.executedPlan.asInstanceOf[AdaptiveSparkPlanExec]
+            withClue(s"$joinType\n") {
+              // The Parquet-backed join becomes empty during execution, not static planning.
+              assert(!adaptive.isFinalPlan)
+              assert(collect(adaptive.initialPlan) {
+                case _: EmptyRelationExec | _: CometEmptyRelationExec => true
+              }.isEmpty)
+
+              withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+                checkAnswer(sql(query), Seq(Row(0L, null)))
+              }
+              checkAnswer(df, Seq(Row(0L, null)))
+              assert(adaptive.isFinalPlan)
+              assert(
+                collect(adaptive.executedPlan) { case e: CometEmptyRelationExec => e }.nonEmpty,
+                adaptive.toString)
+              assert(
+                collect(adaptive.executedPlan) { case a: CometHashAggregateExec => a }.nonEmpty,
+                adaptive.toString)
+            }
+          }
+        }
+      }
+    }
+  }
 
   test("EmptyRelationExec discovered by AQE feeds native aggregates and Spark existence joins") {
     withSQLConf(
