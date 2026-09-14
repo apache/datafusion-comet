@@ -18,8 +18,10 @@
 -- `CometArrayAppend` reproduces Spark's NULL propagation with a `CASE WHEN array IS NOT NULL`
 -- guard that serializes the array twice. A stateful array advances each copy independently, so
 -- the guard and the `array_append` see different rows and the result silently drifts from Spark.
--- The serde declines a nondeterministic array and routes it through the JVM codegen
--- dispatcher, which evaluates it once. A deterministic nullable array keeps the native guard.
+-- The item sits inside the guard's THEN branch, which DataFusion evaluates only on the selected
+-- rows while Spark evaluates it on every row, so a stateful item drifts too. The serde declines
+-- either nondeterministic operand and routes it through the JVM codegen dispatcher, which
+-- evaluates each once. A deterministic nullable array keeps the native guard.
 --
 -- Spark 4.0 rewrites `array_append` to `array_insert(-1)` before serde, so `CometArrayAppend` is
 -- only reachable on Spark 3.x.
@@ -38,18 +40,25 @@ query expect_dispatch(array_append)
 SELECT _1, array_append(IF(monotonically_increasing_id() % 2 = 0, array(1), CAST(NULL AS ARRAY<INT>)), 2) AS a
 FROM test_array_append_nondet
 
--- A deterministic nullable array stays on the native guarded path.
 -- A non-nullable stateful array is declined too, rather than relying on the guard matching
 -- every row.
 query expect_dispatch(array_append)
 SELECT _1, array_append(array(monotonically_increasing_id()), 2) AS a
 FROM test_array_append_nondet
 
--- Only the array operand sits under the guard; a stateful item stays native.
-query expect_native(array_append)
+-- A stateful item over a nullable array: Spark advances the counter on all 16 rows, so the
+-- even rows carry [1, 0], [1, 2], [1, 4] and so on, which the filtered native branch cannot
+-- reproduce.
+query expect_dispatch(array_append)
+SELECT _1, array_append(IF(_1 % 2 = 0, array(1), CAST(NULL AS ARRAY<INT>)), monotonically_increasing_id()) AS a
+FROM test_array_append_nondet
+
+-- A stateful item over a non-nullable array is declined the same way.
+query expect_dispatch(array_append)
 SELECT _1, array_append(array(1), monotonically_increasing_id()) AS a
 FROM test_array_append_nondet
 
+-- A deterministic nullable array stays on the native guarded path.
 query expect_native(array_append)
 SELECT _1, array_append(IF(_1 % 2 = 0, array(1), CAST(NULL AS ARRAY<INT>)), 2) AS a
 FROM test_array_append_nondet

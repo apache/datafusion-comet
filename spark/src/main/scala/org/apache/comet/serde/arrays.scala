@@ -79,9 +79,11 @@ object CometArrayAppend
   override def getUnsupportedReasons(): Seq[String] =
     Seq(NullGuardSupport.nondeterministicReason)
 
-  // Only the array operand sits under the NULL guard, so only it needs the decline.
+  // The item sits inside the guard's THEN branch, and DataFusion's CaseExpr evaluates that
+  // branch only on the rows the guard selects, while Spark's codegen evaluates the item on
+  // every row. A stateful item therefore drifts the same way a stateful array does.
   override def getSupportLevel(expr: ArrayAppend): SupportLevel =
-    NullGuardSupport.nondeterministicChild(Seq(expr.children.head)).getOrElse(Compatible())
+    NullGuardSupport.nondeterministicChild(expr.children).getOrElse(Compatible())
 
   override def convert(
       expr: ArrayAppend,
