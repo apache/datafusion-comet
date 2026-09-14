@@ -27,7 +27,6 @@ use datafusion::common::{exec_err, Result, ScalarValue};
 use datafusion::logical_expr::{
     ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl, Signature, Volatility,
 };
-use std::any::Any;
 use std::sync::Arc;
 
 /// Spark-optimized contains function.
@@ -53,10 +52,6 @@ impl SparkContains {
 }
 
 impl ScalarUDFImpl for SparkContains {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn name(&self) -> &str {
         "contains"
     }

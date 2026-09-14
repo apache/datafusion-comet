@@ -17,7 +17,6 @@
 
 //! Native Iceberg table scan operator using iceberg-rust
 
-use std::any::Any;
 use std::collections::HashMap;
 use std::fmt;
 use std::pin::Pin;
@@ -26,6 +25,7 @@ use std::task::{Context, Poll};
 
 use arrow::array::{ArrayRef, RecordBatch, RecordBatchOptions};
 use arrow::datatypes::SchemaRef;
+use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::common::{DataFusionError, Result as DFResult};
 use datafusion::execution::{RecordBatchStream, SendableRecordBatchStream, TaskContext};
 use datafusion::physical_expr::expressions::Column;
@@ -39,21 +39,28 @@ use datafusion::physical_plan::{
 };
 use futures::{Stream, StreamExt, TryStreamExt};
 use iceberg::arrow::ScanMetrics;
-use iceberg::io::{FileIO, FileIOBuilder, StorageFactory};
-use iceberg_storage_opendal::CustomAwsCredentialLoader;
-use iceberg_storage_opendal::OpenDalStorageFactory;
+use iceberg::io::FileIO;
+use iceberg::Runtime as IcebergRuntime;
+use iceberg::{Error, ErrorKind};
 
-use crate::cloud::s3::credential_bridge::{AccessMode, CometS3CredentialBridge};
+use crate::cloud::s3::credential_bridge::AccessMode;
+use crate::execution::jni_api::get_runtime;
+use crate::execution::operators::iceberg_common::load_file_io;
 use crate::execution::operators::ExecutionError;
 use crate::parquet::parquet_support::SparkParquetOptions;
 use crate::parquet::schema_adapter::SparkPhysicalExprAdapterFactory;
 use datafusion_comet_spark_expr::EvalMode;
 use datafusion_physical_expr_adapter::{PhysicalExprAdapter, PhysicalExprAdapterFactory};
-use iceberg::scan::FileScanTask;
+use iceberg::scan::{FileScanTask, FileScanTaskDeleteFile};
+use iceberg::spec::DataFileFormat;
 
-/// Activation key for the `CometS3CredentialProvider` SPI on the Iceberg path, read from a Spark
-/// catalog's `s3.*` property bag.
-const ICEBERG_PROVIDER_CLASS_PROPERTY: &str = "s3.comet.credential.provider.class";
+/// A valid Parquet file ends with at least an 8-byte footer (4-byte metadata length + "PAR1").
+/// A delete file that stats below this cannot be read, so we reject it in the fill step. opendal
+/// returns size 0 from a successful HEAD whose response carries no Content-Length header (some
+/// S3-compatible endpoints/proxies, or a path-style mismatch), and for a genuinely empty object;
+/// neither errors at the stat layer, so without this floor the 0 would flow into the Parquet
+/// reader and surface as an opaque "file size of 0 is less than footer".
+const MIN_PARQUET_FILE_SIZE: u64 = 8;
 
 /// Iceberg table scan operator that uses iceberg-rust to read Iceberg tables.
 ///
@@ -121,10 +128,6 @@ impl ExecutionPlan for IcebergScanExec {
         "IcebergScanExec"
     }
 
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn schema(&self) -> SchemaRef {
         Arc::clone(&self.output_schema)
     }
@@ -135,6 +138,15 @@ impl ExecutionPlan for IcebergScanExec {
 
     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
         vec![]
+    }
+
+    /// The projection expressions are derived per data file inside the stream, not held on the
+    /// node, so there is nothing to visit here.
+    fn apply_expressions(
+        &self,
+        _f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> DFResult<TreeNodeRecursion>,
+    ) -> DFResult<TreeNodeRecursion> {
+        Ok(TreeNodeRecursion::Continue)
     }
 
     fn with_new_children(
@@ -166,20 +178,43 @@ impl IcebergScanExec {
         context: Arc<TaskContext>,
     ) -> DFResult<SendableRecordBatchStream> {
         let output_schema = Arc::clone(&self.output_schema);
-        let file_io = Self::load_file_io(
+        let file_io = load_file_io(
             &self.catalog_properties,
             &self.metadata_location,
             &self.catalog_name,
+            AccessMode::Read,
         )?;
         let batch_size = context.session_config().batch_size();
 
         let metrics = IcebergScanMetrics::new(&self.metrics);
-        let num_tasks = tasks.len();
-        metrics.num_splits.add(num_tasks);
+        metrics.num_splits.add(tasks.len());
 
-        let task_stream = futures::stream::iter(tasks.into_iter().map(Ok)).boxed();
+        // Fill delete-file sizes as the first step of the task stream so the stats run on the
+        // iceberg runtime alongside the reads, not on the calling executor thread (see
+        // fill_delete_file_sizes).
+        let fill_io = file_io.clone();
+        let concurrency_limit = self.data_file_concurrency_limit;
+        let task_stream = futures::stream::once(async move {
+            let mut tasks = tasks;
+            Self::fill_delete_file_sizes(&mut tasks, &fill_io, concurrency_limit).await?;
+            Ok::<_, Error>(futures::stream::iter(tasks.into_iter().map(Ok::<_, Error>)))
+        })
+        .try_flatten()
+        .boxed();
 
-        let reader = iceberg::arrow::ArrowReaderBuilder::new(file_io)
+        // iceberg-rust's ArrowReader spawns IO/CPU work onto an iceberg::Runtime, which only needs
+        // a tokio handle. execute() runs on the JVM-called thread outside any tokio context, so we
+        // enter Comet's global runtime to capture its handle (this is where the stream is later
+        // polled). Capturing the handle rather than borrowing the runtime keeps it tear-downable
+        // via release_runtime.
+        let iceberg_runtime = {
+            let handle = get_runtime();
+            let _guard = handle.enter();
+            IcebergRuntime::try_current().map_err(|e| {
+                DataFusionError::Execution(format!("Failed to build Iceberg runtime: {e}"))
+            })?
+        };
+        let reader = iceberg::arrow::ArrowReaderBuilder::new(file_io, iceberg_runtime)
             .with_batch_size(batch_size)
             .with_data_file_concurrency_limit(self.data_file_concurrency_limit)
             .with_row_selection_enabled(true)
@@ -215,94 +250,134 @@ impl IcebergScanExec {
         Ok(Box::pin(wrapped_stream))
     }
 
-    fn storage_factory_for(
-        path: &str,
-        catalog_properties: &HashMap<String, String>,
-        catalog_name: &str,
-    ) -> Result<Arc<dyn StorageFactory>, DataFusionError> {
-        let scheme = if path.contains("://") {
-            path.split("://").next().unwrap_or("file")
-        } else {
-            "file"
-        };
-        match scheme {
-            "file" => Ok(Arc::new(OpenDalStorageFactory::Fs)),
-            "s3" | "s3a" => {
-                let customized_credential_load =
-                    build_s3_credential_loader(path, catalog_properties, catalog_name);
-                Ok(Arc::new(OpenDalStorageFactory::S3 {
-                    customized_credential_load,
-                }))
-            }
-            "gs" => Ok(Arc::new(OpenDalStorageFactory::Gcs)),
-            "oss" => Ok(Arc::new(OpenDalStorageFactory::Oss)),
-            _ => Err(DataFusionError::Execution(format!(
-                "Unsupported storage scheme: {scheme}"
-            ))),
-        }
-    }
+    /// Stats each unique delete file to fill its `file_size_in_bytes` (0 on arrival, since it is
+    /// not serialized).
+    ///
+    /// iceberg-rust seeks the Parquet footer from this size, so it must be correct. A stat failure
+    /// is fatal: reading with missing deletes would silently leak deleted rows.
+    async fn fill_delete_file_sizes(
+        tasks: &mut [FileScanTask],
+        file_io: &FileIO,
+        concurrency_limit: usize,
+    ) -> Result<(), Error> {
+        use datafusion::common::{HashMap, HashSet};
+        use futures::TryStreamExt;
 
-    fn load_file_io(
-        catalog_properties: &HashMap<String, String>,
-        metadata_location: &str,
-        catalog_name: &str,
-    ) -> Result<FileIO, DataFusionError> {
-        let factory =
-            Self::storage_factory_for(metadata_location, catalog_properties, catalog_name)?;
-        let mut file_io_builder = FileIOBuilder::new(factory);
-
-        // Narrow to storage-prefix keys before forwarding to iceberg-rust's FileIO. The full
-        // unfiltered bag (catalog URI, OAuth tokens, credentials.uri, tenant-id, etc.) is kept
-        // upstream so CometS3CredentialBridge can read whatever the vendor needs.
-        for (key, value) in catalog_properties {
-            if STORAGE_PROPERTY_PREFIXES.iter().any(|p| key.starts_with(p)) {
-                file_io_builder = file_io_builder.with_prop(key, value);
+        // Dedup: the JVM pools delete-file lists, not individual files, so the same delete file
+        // recurs across the tasks that share it. Owning the paths also avoids holding a borrow of
+        // `tasks` into the mutable write-back below.
+        let mut needed: HashSet<String> = HashSet::new();
+        for task in tasks.iter() {
+            for delete in task.deletes() {
+                // Delete-file sizes are never serialized, so they always arrive as 0. If we ever
+                // trust manifest sizes (pending the unreleased apache/iceberg#12554 fix), skip
+                // already-sized files here instead of asserting.
+                debug_assert_eq!(delete.file_size_in_bytes, 0);
+                // A deletion vector is range-read from content_offset, and iceberg-rust consults
+                // file_size_in_bytes only on the Parquet delete path. Statting the Puffin file
+                // would be one HEAD per file per Spark partition for a value nothing reads.
+                if delete.file_format == DataFileFormat::Puffin {
+                    continue;
+                }
+                needed.insert(delete.file_path.clone());
             }
         }
-
-        Ok(file_io_builder.build())
-    }
-}
-
-const STORAGE_PROPERTY_PREFIXES: &[&str] = &["s3.", "gcs.", "adls.", "client."];
-
-/// Wires the configured Comet credential provider into opendal's S3 service, or returns `None`
-/// so opendal falls back to its default credential chain.
-fn build_s3_credential_loader(
-    metadata_location: &str,
-    catalog_properties: &HashMap<String, String>,
-    catalog_name: &str,
-) -> Option<CustomAwsCredentialLoader> {
-    let url = url::Url::parse(metadata_location).ok()?;
-    let bucket = url.host_str()?;
-    let provider_class = catalog_properties
-        .get(ICEBERG_PROVIDER_CLASS_PROPERTY)
-        .map(|s| s.trim())
-        .filter(|s| !s.is_empty())?;
-    // Fall back to the bucket when the table has no catalog identity (e.g. HadoopTables loaded by
-    // raw path).
-    let dispatch_key: &str = if catalog_name.is_empty() {
-        bucket
-    } else {
-        catalog_name
-    };
-    let bridge = CometS3CredentialBridge::new(
-        provider_class,
-        dispatch_key,
-        bucket,
-        url.path(),
-        AccessMode::Read,
-        catalog_properties,
-    );
-    match bridge {
-        Ok(b) => Some(CustomAwsCredentialLoader::new(b)),
-        Err(e) => {
-            log::warn!(
-                "Failed to initialize CometS3CredentialBridge for {provider_class}: {e}; \
-                 falling back to default opendal credential chain"
-            );
-            None
+        if needed.is_empty() {
+            return Ok(());
         }
+
+        // Bound the in-flight stats to match the downstream read concurrency (iceberg-rust uses
+        // try_buffer_unordered at the same limit for delete-file loads). An unbounded fan-out
+        // would burst N HEAD requests at once for no gain, since the reads are throttled anyway.
+        // Guaranteed > 0 by COMET_ICEBERG_DATA_FILE_CONCURRENCY_LIMIT; buffer_unordered(0) would
+        // never poll.
+        debug_assert!(concurrency_limit > 0);
+        let sizes: Vec<(String, u64)> = futures::stream::iter(needed.into_iter().map(|path| {
+            let file_io = file_io.clone();
+            async move {
+                let size = file_io
+                    .new_input(&path)?
+                    .metadata()
+                    .await
+                    .map_err(|e| {
+                        Error::new(
+                            ErrorKind::Unexpected,
+                            format!("Failed to stat delete file '{path}'"),
+                        )
+                        .with_source(e)
+                    })?
+                    .size;
+                if size < MIN_PARQUET_FILE_SIZE {
+                    return Err(Error::new(
+                        ErrorKind::Unexpected,
+                        format!(
+                            "Delete file '{path}' statted to {size} bytes, below the \
+                             {MIN_PARQUET_FILE_SIZE}-byte Parquet minimum. The object is empty or \
+                             truncated, or the stat returned no Content-Length (check the object \
+                             store endpoint, TLS, and path-style config)."
+                        ),
+                    ));
+                }
+                Ok::<(String, u64), Error>((path, size))
+            }
+        }))
+        .buffer_unordered(concurrency_limit)
+        .try_collect()
+        .await?;
+
+        let size_map: HashMap<String, u64> = sizes.into_iter().collect();
+        // iceberg-rust 665c64e made `FileScanTask::deletes` a private field exposed only through
+        // a read-only accessor, so a task's delete files can no longer be sized in place. Rebuild
+        // each task that carries deletes with sized copies; tasks without deletes are untouched.
+        for task in tasks.iter_mut() {
+            if task.deletes().is_empty() {
+                continue;
+            }
+            let deletes = task
+                .deletes()
+                .iter()
+                .map(|delete| {
+                    let mut delete = delete.clone();
+                    if let Some(&size) = size_map.get(&delete.file_path) {
+                        delete.file_size_in_bytes = size;
+                    }
+                    delete
+                })
+                .collect::<Vec<_>>();
+            *task = Self::rebuild_task_with_deletes(task, deletes)?;
+        }
+        Ok(())
+    }
+
+    /// Rebuilds a [`FileScanTask`] carrying a new set of delete files.
+    ///
+    /// `FileScanTask::deletes` is private with no mutator, so the only way to change a task's
+    /// delete files is to construct a fresh task via the builder, forwarding every other field
+    /// through its public accessors. The builder runs `FileScanTask`'s validation on `build()`.
+    fn rebuild_task_with_deletes(
+        task: &FileScanTask,
+        deletes: Vec<FileScanTaskDeleteFile>,
+    ) -> Result<FileScanTask, Error> {
+        FileScanTask::builder()
+            .with_file_size_in_bytes(task.file_size_in_bytes())
+            .with_start(task.start())
+            .with_length(task.length())
+            .with_record_count(task.record_count())
+            .with_first_row_id(task.first_row_id())
+            .with_data_sequence_number(task.data_sequence_number())
+            .with_data_file_path(task.data_file_path().to_string())
+            .with_data_file_format(task.data_file_format())
+            .with_schema(task.schema_ref())
+            .with_project_field_ids(task.project_field_ids().to_vec())
+            .with_predicate(task.predicate().cloned())
+            .with_deletes(deletes)
+            .with_partition(task.partition().cloned())
+            .with_partition_spec(task.partition_spec().cloned())
+            .with_name_mapping(task.name_mapping().cloned())
+            .with_unified_partition_type(task.unified_partition_type().cloned())
+            .with_case_sensitive(task.case_sensitive())
+            .with_key_metadata(task.key_metadata().map(Box::from))
+            .build()
     }
 }
 
@@ -518,4 +593,173 @@ fn adapt_batch_with_expressions(
         .collect::<DFResult<Vec<_>>>()?;
 
     RecordBatch::try_new(Arc::clone(target_schema), columns).map_err(|e| e.into())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::Write;
+    use std::sync::Arc;
+
+    use iceberg::encryption::StandardKeyMetadata;
+    use iceberg::io::{FileIO, FileIOBuilder};
+    use iceberg::scan::{FileScanTask, FileScanTaskDeleteFile};
+    use iceberg::spec::{DataContentType, DataFileFormat, Schema};
+    use iceberg_storage_opendal::OpenDalStorageFactory;
+
+    use super::IcebergScanExec;
+
+    fn fs_file_io() -> FileIO {
+        FileIOBuilder::new(Arc::new(OpenDalStorageFactory::Fs)).build()
+    }
+
+    fn task_with_deletes(deletes: Vec<FileScanTaskDeleteFile>) -> FileScanTask {
+        FileScanTask::builder()
+            .with_file_size_in_bytes(0)
+            .with_start(0)
+            .with_length(0)
+            .with_data_file_path("data.parquet".to_string())
+            .with_data_file_format(DataFileFormat::Parquet)
+            .with_schema(Arc::new(Schema::builder().build().unwrap()))
+            .with_project_field_ids(vec![])
+            .with_deletes(deletes)
+            .with_case_sensitive(false)
+            .build()
+            .unwrap()
+    }
+
+    fn delete_file(path: &str) -> FileScanTaskDeleteFile {
+        FileScanTaskDeleteFile {
+            file_path: path.to_string(),
+            file_type: DataContentType::PositionDeletes,
+            file_format: DataFileFormat::Parquet,
+            file_size_in_bytes: 0,
+            partition_spec_id: 0,
+            equality_ids: None,
+            referenced_data_file: None,
+            content_offset: None,
+            content_size_in_bytes: None,
+            record_count: None,
+            key_metadata: None,
+        }
+    }
+
+    // A delete file we cannot stat must fail the scan, not be silently read with a missing/0 size.
+    #[tokio::test]
+    async fn fill_delete_file_sizes_errors_on_unreadable_delete_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("missing-delete.parquet");
+        let mut tasks = vec![task_with_deletes(vec![delete_file(
+            missing.to_str().unwrap(),
+        )])];
+
+        let result = IcebergScanExec::fill_delete_file_sizes(&mut tasks, &fs_file_io(), 4).await;
+
+        assert!(
+            result.is_err(),
+            "expected an error when a delete file cannot be statted"
+        );
+        assert_eq!(tasks[0].deletes()[0].file_size_in_bytes, 0);
+    }
+
+    // The real on-disk size is filled in from the FileIO, replacing the 0 placeholder.
+    #[tokio::test]
+    async fn fill_delete_file_sizes_populates_real_size() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("delete.parquet");
+        let bytes = b"these bytes stand in for a delete file";
+        let mut f = std::fs::File::create(&path).unwrap();
+        f.write_all(bytes).unwrap();
+        f.flush().unwrap();
+
+        let mut tasks = vec![task_with_deletes(vec![delete_file(path.to_str().unwrap())])];
+        IcebergScanExec::fill_delete_file_sizes(&mut tasks, &fs_file_io(), 4)
+            .await
+            .unwrap();
+
+        assert_eq!(tasks[0].deletes()[0].file_size_in_bytes, bytes.len() as u64);
+    }
+
+    // A present-but-undersized delete file (0-byte object, truncated write, or a HEAD with no
+    // Content-Length that opendal reports as size 0) must fail loudly rather than passing a
+    // sub-footer size into the Parquet reader.
+    #[tokio::test]
+    async fn fill_delete_file_sizes_errors_on_subfooter_delete_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("empty-delete.parquet");
+        std::fs::File::create(&path).unwrap(); // 0 bytes on disk
+
+        let mut tasks = vec![task_with_deletes(vec![delete_file(path.to_str().unwrap())])];
+        let result = IcebergScanExec::fill_delete_file_sizes(&mut tasks, &fs_file_io(), 4).await;
+
+        assert!(
+            result.is_err(),
+            "expected an error when a delete file is below the Parquet footer minimum"
+        );
+        assert_eq!(tasks[0].deletes()[0].file_size_in_bytes, 0);
+    }
+
+    // No deletes means no stats and no error.
+    #[tokio::test]
+    async fn fill_delete_file_sizes_noop_without_deletes() {
+        let mut tasks = vec![task_with_deletes(vec![])];
+        IcebergScanExec::fill_delete_file_sizes(&mut tasks, &fs_file_io(), 4)
+            .await
+            .unwrap();
+    }
+
+    fn from_hex(s: &str) -> Vec<u8> {
+        assert!(s.len().is_multiple_of(2), "odd-length hex string");
+        (0..s.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&s[i..i + 2], 16).expect("invalid hex"))
+            .collect()
+    }
+
+    // iceberg-rust encodes and decodes its own StandardKeyMetadata identically. Confirms the API
+    // is present after the rev bump and the [version byte][Avro datum] format round-trips.
+    #[test]
+    fn standard_key_metadata_roundtrips() {
+        let key: Vec<u8> = (0u8..16).collect();
+        let aad: &[u8] = b"comet-aad-prefix";
+        let km = StandardKeyMetadata::try_new(&key)
+            .unwrap()
+            .with_aad_prefix(aad);
+
+        let encoded = km.encode().unwrap();
+        assert_eq!(encoded[0], 0x01, "expected StandardKeyMetadata V1 marker");
+
+        let decoded = StandardKeyMetadata::decode(&encoded).unwrap();
+        assert_eq!(decoded.encryption_key().as_bytes(), key.as_slice());
+        assert_eq!(decoded.aad_prefix(), Some(aad));
+    }
+
+    // Cross-language gate for the encrypted-read passthrough plan: iceberg-rust must decode the
+    // exact StandardKeyMetadata bytes that Iceberg-Java writes into a data file's key_metadata,
+    // because Comet forwards those bytes verbatim (no re-encoding, no KMS) into
+    // FileScanTask::key_metadata. This fixture is a real Iceberg-Java blob produced by
+    // StandardEncryptionManager. To regenerate (e.g. after a wire-format change), print the bytes
+    // from CometIcebergEncryptionSuite's plaintext-DEK test and paste them here.
+    const JAVA_KEY_METADATA_HEX: &str =
+        "012084f49fba77f8ff1da0c115d1e46563cc0220f1d31d62b68808b469eb99fe9c57096000";
+    const JAVA_DEK_HEX: &str = "84f49fba77f8ff1da0c115d1e46563cc";
+
+    #[test]
+    fn decodes_java_produced_key_metadata() {
+        let blob = from_hex(JAVA_KEY_METADATA_HEX);
+        let expected_dek = from_hex(JAVA_DEK_HEX);
+
+        let decoded = StandardKeyMetadata::decode(&blob)
+            .expect("iceberg-rust failed to decode a Java-produced StandardKeyMetadata blob");
+        assert_eq!(
+            decoded.encryption_key().as_bytes(),
+            expected_dek.as_slice(),
+            "DEK recovered by Rust differs from the Java plaintext DEK"
+        );
+        // The Java blob carries a 16-byte AAD prefix; confirm the optional-field union decodes too.
+        assert_eq!(
+            decoded.aad_prefix().map(|a| a.len()),
+            Some(16),
+            "expected a 16-byte AAD prefix from the Java blob"
+        );
+    }
 }

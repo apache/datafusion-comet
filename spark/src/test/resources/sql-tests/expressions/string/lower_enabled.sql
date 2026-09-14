@@ -15,7 +15,8 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- Test lower() with case conversion enabled (happy path)
+-- Covers the native case-conversion path for lower(), not the codegen
+-- dispatcher used by lower.sql. ASCII inputs only.
 -- Config: spark.comet.caseConversion.enabled=true
 
 statement

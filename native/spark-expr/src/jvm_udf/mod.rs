@@ -15,7 +15,6 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use std::any::Any;
 use std::fmt::{Display, Formatter};
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
@@ -49,6 +48,11 @@ pub struct JvmScalarUdfExpr {
     /// Spark task is available; the bridge then leaves whatever `TaskContext.get()` already
     /// returns in place.
     task_context: Option<Arc<Global<JObject<'static>>>>,
+    /// Context `ClassLoader` of the driving Spark task thread, captured at `createPlan` time and
+    /// threaded here by the planner. See `CometUdfBridge.evaluate`, which installs it for the
+    /// duration of the call. `None` when no driving Spark task is available (unit tests, direct
+    /// native driver runs); the bridge then installs nothing.
+    class_loader: Option<Arc<Global<JObject<'static>>>>,
 }
 
 impl JvmScalarUdfExpr {
@@ -58,6 +62,7 @@ impl JvmScalarUdfExpr {
         return_type: DataType,
         return_nullable: bool,
         task_context: Option<Arc<Global<JObject<'static>>>>,
+        class_loader: Option<Arc<Global<JObject<'static>>>>,
     ) -> Self {
         debug_assert!(
             !class_name.is_empty(),
@@ -69,6 +74,7 @@ impl JvmScalarUdfExpr {
             return_type,
             return_nullable,
             task_context,
+            class_loader,
         }
     }
 }
@@ -107,10 +113,6 @@ impl PartialEq for JvmScalarUdfExpr {
 impl Eq for JvmScalarUdfExpr {}
 
 impl PhysicalExpr for JvmScalarUdfExpr {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn fmt_sql(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         Display::fmt(self, f)
     }
@@ -202,14 +204,17 @@ impl PhysicalExpr for JvmScalarUdfExpr {
                 .set_region(env, 0, &in_sch_ptrs)
                 .map_err(|e| CometError::JNI { source: e })?;
 
-            // Resolve the TaskContext reference once before building the arg array so the
-            // borrow lives until `call_static_method_unchecked` returns. When no TaskContext
-            // was propagated, pass a null object so the bridge's null-guard leaves the thread-
-            // local alone.
-            let null_task_context = JObject::null();
+            // Resolve the TaskContext and ClassLoader references once before building the arg
+            // array so the borrows live until `call_static_method_unchecked` returns. Absent
+            // values are passed as a null object, which the bridge's null-guards skip.
+            let null_obj = JObject::null();
             let task_context_ref: &JObject = match &self.task_context {
                 Some(gref) => gref.as_obj(),
-                None => &null_task_context,
+                None => &null_obj,
+            };
+            let class_loader_ref: &JObject = match &self.class_loader {
+                Some(gref) => gref.as_obj(),
+                None => &null_obj,
             };
             let ret = unsafe {
                 env.call_static_method_unchecked(
@@ -224,6 +229,7 @@ impl PhysicalExpr for JvmScalarUdfExpr {
                         JValue::Long(out_sch_ptr).as_jni(),
                         JValue::Int(batch.num_rows() as i32).as_jni(),
                         JValue::Object(task_context_ref).as_jni(),
+                        JValue::Object(class_loader_ref).as_jni(),
                     ],
                 )
             };
@@ -260,6 +266,7 @@ impl PhysicalExpr for JvmScalarUdfExpr {
             self.return_type.clone(),
             self.return_nullable,
             self.task_context.clone(),
+            self.class_loader.clone(),
         )))
     }
 }

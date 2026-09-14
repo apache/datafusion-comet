@@ -22,7 +22,6 @@ use datafusion::common::{utils::take_function_args, DataFusionError, Result};
 use datafusion::logical_expr::{
     ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl, Signature, Volatility,
 };
-use std::any::Any;
 use std::sync::Arc;
 
 const MICROS_PER_SECOND: i128 = 1_000_000;
@@ -89,10 +88,6 @@ fn make_time(hours: i32, minutes: i32, secs_and_micros_unscaled: i128) -> Result
 }
 
 impl ScalarUDFImpl for SparkMakeTime {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn name(&self) -> &str {
         "make_time"
     }

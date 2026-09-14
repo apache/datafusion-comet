@@ -23,6 +23,5 @@ mod traits;
 
 pub(crate) use empty_schema::EmptySchemaShufflePartitioner;
 pub(crate) use multi_partition::MultiPartitionShuffleRepartitioner;
-pub(crate) use partitioned_batch_iterator::PartitionedBatchIterator;
 pub(crate) use single_partition::SinglePartitionShufflePartitioner;
 pub(crate) use traits::ShufflePartitioner;

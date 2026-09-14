@@ -80,7 +80,19 @@ macro_rules! binary_expr_builder {
                     expr.left.as_ref().unwrap(),
                     std::sync::Arc::clone(&input_schema),
                 )?;
-                let right = planner.create_expr(expr.right.as_ref().unwrap(), input_schema)?;
+                let right = planner.create_expr(
+                    expr.right.as_ref().unwrap(),
+                    std::sync::Arc::clone(&input_schema),
+                )?;
+                // Reconcile nested operand nullability for comparisons (Spark ignores nullability,
+                // DataFusion's nested comparison kernel does not).
+                let (left, right) =
+                    $crate::execution::planner::PhysicalPlanner::reconcile_nested_comparison_types(
+                        left,
+                        right,
+                        &$operator,
+                        &input_schema,
+                    );
                 Ok(std::sync::Arc::new(
                     datafusion::physical_expr::expressions::BinaryExpr::new(left, $operator, right),
                 ))

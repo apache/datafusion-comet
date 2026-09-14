@@ -19,9 +19,17 @@
 
 package org.apache.comet.shims
 
-import org.apache.spark.sql.internal.LegacyBehaviorPolicy
+import org.apache.spark.sql.internal.{LegacyBehaviorPolicy, SQLConf}
 
 trait ShimSQLConf {
   protected val LEGACY = LegacyBehaviorPolicy.LEGACY
   protected val CORRECTED = LegacyBehaviorPolicy.CORRECTED
+
+  /**
+   * Reads `spark.sql.execution.arrow.useLargeVarTypes`. Spark 4.x exposes a typed accessor; 3.4
+   * lacks it (a 3.5 backport added it, but Comet's 3.x shim collapses both into a single string
+   * fallback). Forward to the accessor here so callers do not depend on which version they're
+   * compiled against.
+   */
+  protected def arrowUseLargeVarTypes(conf: SQLConf): Boolean = conf.arrowUseLargeVarTypes
 }

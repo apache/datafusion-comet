@@ -29,6 +29,25 @@ public final class ClassLoaders {
    * ClassLoader. Spark wires user JARs onto the context ClassLoader, so vendor classes named in
    * Spark configs are reachable through this path.
    */
+  /**
+   * The ClassLoader to use for {@link java.util.ServiceLoader} discovery of optional, out-of-tree
+   * contribs.
+   *
+   * <p>Comet is typically installed on {@code spark.driver.extraClassPath} while a contrib is
+   * supplied through {@code --jars}, which puts the contrib on Spark's user-jar loader -- a CHILD
+   * of the loader that defined Comet. Passing Comet's own defining loader would therefore make a
+   * separately-shipped contrib invisible and the registry would silently ignore it. The thread
+   * context ClassLoader is the one Spark wires user jars onto, so discovery must start there and
+   * fall back to {@code fallback} only when no context loader is set.
+   *
+   * @param fallback loader to use when the thread has no context ClassLoader, normally the calling
+   *     class's own defining loader
+   */
+  public static ClassLoader contextOrDefault(ClassLoader fallback) {
+    ClassLoader contextLoader = Thread.currentThread().getContextClassLoader();
+    return contextLoader != null ? contextLoader : fallback;
+  }
+
   public static Class<?> loadClass(String className) throws ClassNotFoundException {
     ClassLoader classLoader = Thread.currentThread().getContextClassLoader();
     if (classLoader != null) {

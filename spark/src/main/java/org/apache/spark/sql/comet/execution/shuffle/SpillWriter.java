@@ -165,11 +165,13 @@ public abstract class SpillWriter {
     return true;
   }
 
-  /** Allocates initial memory page */
+  /** Allocates initial memory page. Only called after `spill()` has flushed this writer's data. */
   public void initialCurrentPage(int required) {
     assert (currentPage == null);
     try {
-      currentPage = allocator.allocate(required);
+      // This writer has already spilled its own data, so on a shared pool it may wait for other
+      // tasks to free memory instead of failing right away.
+      currentPage = allocator.allocateBlocking(required);
     } catch (SparkOutOfMemoryError e) {
       logger.error("Unable to acquire {} bytes of memory", required);
       throw e;
@@ -196,7 +198,7 @@ public abstract class SpillWriter {
     long currentChecksum = checksumEnabled ? checksum : 0L;
 
     long start = System.nanoTime();
-    int batchSize = (int) CometConf.COMET_COLUMNAR_SHUFFLE_BATCH_SIZE().get();
+    int batchSize = (int) CometConf.COMET_SHUFFLE_JVM_BATCH_SIZE().get();
     long[] results =
         nativeLib.writeSortedFileNative(
             addresses,

@@ -69,7 +69,9 @@ object SparkErrorConverter extends ShimSparkErrorConverter {
    * @return
    *   the corresponding Spark exception, or the original exception if parsing fails
    */
-  def convertToSparkException(e: CometQueryExecutionException): Throwable = {
+  def convertToSparkException(
+      e: CometQueryExecutionException,
+      taskFilePaths: Seq[String] = Seq.empty): Throwable = {
     try {
       if (!e.isJsonMessage()) {
         // Not JSON, return original exception
@@ -83,7 +85,18 @@ object SparkErrorConverter extends ShimSparkErrorConverter {
 
     val json = parse(e.getMessage)
     val errorJson = json.extract[ErrorJson]
-    val params = errorJson.params.getOrElse(Map.empty)
+    val rawParams = errorJson.params.getOrElse(Map.empty)
+    // CannotReadFile carries the offending file path natively only for the object_store NotFound
+    // case; for corrupt/truncated parquet the native error has no path, so fall back to the
+    // per-task file list threaded in from CometExecIterator.
+    val params =
+      if (errorJson.errorType == "CannotReadFile"
+        && rawParams.get("filePath").forall(p => p == null || p.toString.isEmpty)
+        && taskFilePaths.nonEmpty) {
+        rawParams + ("filePath" -> taskFilePaths.mkString(","))
+      } else {
+        rawParams
+      }
     val errorClass =
       errorJson.errorClass.map(_.trim).filter(_.nonEmpty).getOrElse(UNKNOWN_ERROR)
 

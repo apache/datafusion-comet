@@ -15,11 +15,30 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
+-- Routes InitCap through the codegen dispatcher so behavior matches Spark exactly,
+-- including the hyphen-as-word-separator case where the Rust scalar function diverges
+-- (see https://github.com/apache/datafusion-comet/issues/1052).
+-- Config: spark.comet.exec.scalaUDF.codegen.enabled=true
+
 statement
 CREATE TABLE test_initcap(s string) USING parquet
 
 statement
 INSERT INTO test_initcap VALUES ('hello world'), ('HELLO WORLD'), (''), (NULL), ('hello-world'), ('123abc'), ('  spaces  ')
 
-query expect_fallback(not fully compatible with Spark)
+query
 SELECT initcap(s) FROM test_initcap
+
+-- literal arguments
+query
+SELECT initcap('hello world'), initcap(''), initcap(NULL)
+
+-- hyphen and other word separators - the divergence the codegen dispatcher fixes
+statement
+CREATE TABLE test_initcap_separators(s string) USING parquet
+
+statement
+INSERT INTO test_initcap_separators VALUES ('robert rose-smith'), ('foo.bar'), ('a_b_c'), ("o'reilly")
+
+query
+SELECT initcap(s) FROM test_initcap_separators

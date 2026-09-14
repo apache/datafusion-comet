@@ -27,7 +27,7 @@ CREATE TABLE test_rint(v double) USING parquet
 statement
 INSERT INTO test_rint VALUES
   (0.0),
-  (-0.0),
+  (double('-0.0')),
   (1.0),
   (-1.0),
   (0.4),

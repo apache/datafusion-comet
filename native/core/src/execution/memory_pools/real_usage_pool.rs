@@ -107,7 +107,19 @@ fn should_reject_over_ceiling(reserved: usize, additional: usize, share: Option<
     }
 }
 
+impl std::fmt::Display for RealUsagePool {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "RealUsagePool(ceiling={}, inner=", self.ceiling)?;
+        std::fmt::Display::fmt(self.inner.as_ref(), f)?;
+        write!(f, ")")
+    }
+}
+
 impl MemoryPool for RealUsagePool {
+    fn name(&self) -> &str {
+        self.inner.name()
+    }
+
     fn register(&self, consumer: &MemoryConsumer) {
         self.inner.register(consumer)
     }

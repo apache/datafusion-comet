@@ -22,7 +22,6 @@ use datafusion::common::{utils::take_function_args, DataFusionError, Result};
 use datafusion::logical_expr::{
     ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl, Signature, Volatility,
 };
-use std::any::Any;
 use std::sync::Arc;
 
 /// Spark-compatible date_diff function.
@@ -52,10 +51,6 @@ impl Default for SparkDateDiff {
 }
 
 impl ScalarUDFImpl for SparkDateDiff {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn name(&self) -> &str {
         "date_diff"
     }
@@ -100,14 +95,67 @@ impl ScalarUDFImpl for SparkDateDiff {
                 )
             })?;
 
-        // Date32 stores days since epoch, so difference is just subtraction
-        let result: Int32Array =
-            binary(end_date_array, start_date_array, |end, start| end - start)?;
+        // Date32 stores days since epoch, so difference is just subtraction. Use wrapping_sub
+        // to match Spark, whose JVM int subtraction wraps on overflow; a plain `i32 -` would
+        // panic in debug builds on extreme inputs.
+        let result: Int32Array = binary(end_date_array, start_date_array, |end, start| {
+            end.wrapping_sub(start)
+        })?;
 
         Ok(ColumnarValue::Array(Arc::new(result)))
     }
 
     fn aliases(&self) -> &[String] {
         &self.aliases
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use arrow::datatypes::Field;
+    use datafusion::config::ConfigOptions;
+
+    fn date_diff(end: i32, start: i32) -> i32 {
+        let udf = SparkDateDiff::new();
+        let return_field = Arc::new(Field::new("date_diff", DataType::Int32, true));
+        let args = ScalarFunctionArgs {
+            args: vec![
+                ColumnarValue::Array(Arc::new(Date32Array::from(vec![Some(end)]))),
+                ColumnarValue::Array(Arc::new(Date32Array::from(vec![Some(start)]))),
+            ],
+            number_rows: 1,
+            return_field,
+            config_options: Arc::new(ConfigOptions::default()),
+            arg_fields: vec![],
+        };
+        match udf.invoke_with_args(args).unwrap() {
+            ColumnarValue::Array(array) => array
+                .as_any()
+                .downcast_ref::<Int32Array>()
+                .unwrap()
+                .value(0),
+            _ => panic!("expected array result"),
+        }
+    }
+
+    #[test]
+    fn test_date_diff_basic() {
+        // 2020-01-02 (18263) minus 2020-01-01 (18262) = 1 day
+        assert_eq!(date_diff(18263, 18262), 1);
+        assert_eq!(date_diff(18262, 18263), -1);
+    }
+
+    #[test]
+    fn test_date_diff_wraps_on_overflow() {
+        // Extreme inputs overflow i32; Spark's JVM int subtraction wraps rather than panicking.
+        assert_eq!(
+            date_diff(i32::MAX, i32::MIN),
+            i32::MAX.wrapping_sub(i32::MIN)
+        );
+        assert_eq!(
+            date_diff(i32::MIN, i32::MAX),
+            i32::MIN.wrapping_sub(i32::MAX)
+        );
     }
 }

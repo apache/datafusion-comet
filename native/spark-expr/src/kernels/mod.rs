@@ -17,5 +17,4 @@
 
 //! Kernels
 
-pub mod strings;
 pub mod temporal;

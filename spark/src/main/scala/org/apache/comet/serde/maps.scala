@@ -20,9 +20,63 @@
 package org.apache.comet.serde
 
 import org.apache.spark.sql.catalyst.expressions._
+import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
-import org.apache.comet.serde.QueryPlanSerde.{createBinaryExpr, exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProto}
+import org.apache.comet.DataTypeSupport.isComplexType
+import org.apache.comet.serde.QueryPlanSerde.{createBinaryExpr, exprToProtoInternal, hasNonDefaultStringCollation, scalarFunctionExprToProto}
+import org.apache.comet.shims.CometTypeShim
+
+/**
+ * Shared gate for the native map kernels that compare a lookup key against a map's stored keys
+ * (`map_extract`, reached from both `GetMapValue` and `ElementAt`).
+ */
+private[serde] object MapKeySupport {
+
+  private val floatingPointReason: String =
+    "Spark normalizes floating-point map keys, so `-0.0` matches a `+0.0` key and all `NaN`s " +
+      "match each other; Comet's native map lookup compares the raw Arrow values."
+
+  private val collationReason: String =
+    "Comet's native map lookup compares string keys as `UTF8_BINARY` and cannot honour a " +
+      "non-default collation."
+
+  private val complexKeyReason: String =
+    "Comet's native `map_extract` casts the lookup key to the map's exact Arrow key type, which " +
+      "cannot reproduce Spark's equality for a complex key type (for example a `NULL` inside the " +
+      "lookup key aborts the cast against a non-nullable nested component)."
+
+  /**
+   * The `SupportLevel` for a map-consuming expression whose stored-key type is `keyType`. Spark
+   * finds a key with `TypeUtils.getInterpretedOrdering` over the keys `ArrayBasedMapBuilder`
+   * stored, having first normalized them, while native `map_extract` compares the Arrow values as
+   * they are, so decline the key types where those disagree:
+   *   - `ArrayBasedMapBuilder` rewrites a `-0.0` key to `+0.0` and canonicalises `NaN`, and
+   *     `nanSafeCompareDoubles` treats `-0.0` and `+0.0` as equal, so Spark answers a `-0.0`
+   *     lookup from a `+0.0` key where native finds nothing.
+   *   - a non-default collation compares under rules native applies as `UTF8_BINARY`.
+   *   - for a complex key type, `map_extract`'s `coerce_types` returns the map's exact key field
+   *     type, so Comet's planner casts the lookup key to it. That cannot reproduce Spark's
+   *     interpreted-ordering equality, and a `NULL` inside the lookup key aborts the cast with
+   *     `Non-nullable field of ListArray "item" cannot contain nulls` rather than missing the
+   *     lookup. Declined for every complex key type, since which of these trips is a runtime
+   *     property of the lookup.
+   *
+   * `BinaryType` keys need no decline: Arrow compares them by content, as Spark's ordering does.
+   * The floating-point and collation checks walk every nesting level of the key type.
+   */
+  def keySupport(keyType: DataType): SupportLevel = {
+    if (SupportLevel.containsType(keyType, classOf[FloatType], classOf[DoubleType])) {
+      Unsupported(Some(floatingPointReason))
+    } else if (hasNonDefaultStringCollation(keyType)) {
+      Unsupported(Some(collationReason))
+    } else if (isComplexType(keyType)) {
+      Unsupported(Some(complexKeyReason))
+    } else {
+      Compatible()
+    }
+  }
+}
 
 object CometMapKeys extends CometExpressionSerde[MapKeys] {
 
@@ -32,7 +86,7 @@ object CometMapKeys extends CometExpressionSerde[MapKeys] {
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     val childExpr = exprToProtoInternal(expr.child, inputs, binding)
     val mapKeysScalarExpr = scalarFunctionExprToProto("map_keys", childExpr)
-    optExprWithInfo(mapKeysScalarExpr, expr, expr.children: _*)
+    mapKeysScalarExpr
   }
 }
 
@@ -44,7 +98,7 @@ object CometMapEntries extends CometExpressionSerde[MapEntries] {
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     val childExpr = exprToProtoInternal(expr.child, inputs, binding)
     val mapEntriesScalarExpr = scalarFunctionExprToProto("map_entries", childExpr)
-    optExprWithInfo(mapEntriesScalarExpr, expr, expr.children: _*)
+    mapEntriesScalarExpr
   }
 }
 
@@ -56,11 +110,16 @@ object CometMapValues extends CometExpressionSerde[MapValues] {
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     val childExpr = exprToProtoInternal(expr.child, inputs, binding)
     val mapValuesScalarExpr = scalarFunctionExprToProto("map_values", childExpr)
-    optExprWithInfo(mapValuesScalarExpr, expr, expr.children: _*)
+    mapValuesScalarExpr
   }
 }
 
 object CometMapExtract extends CometExpressionSerde[GetMapValue] {
+
+  override def getSupportLevel(expr: GetMapValue): SupportLevel = expr.child.dataType match {
+    case MapType(keyType, _, _) => MapKeySupport.keySupport(keyType)
+    case _ => Compatible()
+  }
 
   override def convert(
       expr: GetMapValue,
@@ -69,11 +128,44 @@ object CometMapExtract extends CometExpressionSerde[GetMapValue] {
     val mapExpr = exprToProtoInternal(expr.child, inputs, binding)
     val keyExpr = exprToProtoInternal(expr.key, inputs, binding)
     val mapExtractExpr = scalarFunctionExprToProto("map_extract", mapExpr, keyExpr)
-    optExprWithInfo(mapExtractExpr, expr, expr.children: _*)
+    mapExtractExpr
   }
 }
 
+private object MapKeyDedupPolicySupport {
+  val incompatibleReason: String =
+    s"`${SQLConf.MAP_KEY_DEDUP_POLICY.key}` is set to " +
+      s"`${SQLConf.MapKeyDedupPolicy.LAST_WIN}`; Comet's native map construction " +
+      "does not implement LAST_WIN dedup semantics."
+
+  val nullKeyReason: String =
+    "Spark rejects a `NULL` element inside the keys array with a `RuntimeException`" +
+      " (`Cannot use null as map key`); Comet's native `map_from_arrays` / `map_from_entries`" +
+      " does not detect a per-element `NULL` key and produces a map with a `NULL` key instead" +
+      " ([#4680](https://github.com/apache/datafusion-comet/issues/4680))."
+
+  def isLastWin: Boolean =
+    SQLConf.get
+      .getConf(SQLConf.MAP_KEY_DEDUP_POLICY)
+      .toString
+      .equalsIgnoreCase(SQLConf.MapKeyDedupPolicy.LAST_WIN.toString)
+}
+
 object CometMapFromArrays extends CometExpressionSerde[MapFromArrays] {
+
+  override def getIncompatibleReasons(): Seq[String] =
+    Seq(MapKeyDedupPolicySupport.incompatibleReason)
+
+  override def getCompatibleNotes(): Seq[String] =
+    Seq(MapKeyDedupPolicySupport.nullKeyReason)
+
+  override def getSupportLevel(expr: MapFromArrays): SupportLevel = {
+    if (MapKeyDedupPolicySupport.isLastWin) {
+      Incompatible(Some(MapKeyDedupPolicySupport.incompatibleReason))
+    } else {
+      Compatible(None)
+    }
+  }
 
   override def convert(
       expr: MapFromArrays,
@@ -116,53 +208,74 @@ object CometMapFromArrays extends CometExpressionSerde[MapFromArrays] {
   }
 }
 
-object CometMapContainsKey extends CometExpressionSerde[MapContainsKey] {
-
-  override def convert(
-      expr: MapContainsKey,
-      inputs: Seq[Attribute],
-      binding: Boolean): Option[ExprOuterClass.Expr] = {
-    // Replace with array_has(map_keys(map), key)
-    val mapExpr = exprToProtoInternal(expr.left, inputs, binding)
-    val keyExpr = exprToProtoInternal(expr.right, inputs, binding)
-
-    val mapKeysExpr = scalarFunctionExprToProto("map_keys", mapExpr)
-
-    val mapContainsKeyExpr = scalarFunctionExprToProto("array_has", mapKeysExpr, keyExpr)
-    optExprWithInfo(mapContainsKeyExpr, expr, expr.children: _*)
-  }
-}
-
-object CometMapFromEntries extends CometScalarFunction[MapFromEntries]("map_from_entries") {
-  val keyUnsupportedReason = "Using BinaryType as Map keys is not allowed in map_from_entries"
-  val valueUnsupportedReason = "Using BinaryType as Map values is not allowed in map_from_entries"
+object CometMapFromEntries
+    extends CometScalarFunction[MapFromEntries]("map_from_entries")
+    with CodegenDispatchFallback {
+  val keyUnsupportedReason =
+    "`BinaryType` is not supported as a map key in `map_from_entries`"
+  val valueUnsupportedReason =
+    "`BinaryType` is not supported as a map value in `map_from_entries`"
 
   override def getIncompatibleReasons(): Seq[String] =
-    Seq(keyUnsupportedReason, valueUnsupportedReason)
+    Seq(keyUnsupportedReason, valueUnsupportedReason, MapKeyDedupPolicySupport.incompatibleReason)
 
-  private def containsBinary(dataType: DataType): Boolean = {
-    dataType match {
-      case BinaryType => true
-      case StructType(fields) => fields.exists(field => containsBinary(field.dataType))
-      case ArrayType(elementType, _) => containsBinary(elementType)
-      case _ => false
-    }
-  }
+  override def getCompatibleNotes(): Seq[String] =
+    Seq(MapKeyDedupPolicySupport.nullKeyReason)
 
   override def getSupportLevel(expr: MapFromEntries): SupportLevel = {
-    if (containsBinary(expr.dataType.keyType)) {
-      return Incompatible(Some(keyUnsupportedReason))
+    if (SupportLevel.containsType(expr.dataType.keyType, classOf[BinaryType])) {
+      Incompatible(Some(keyUnsupportedReason))
+    } else if (SupportLevel.containsType(expr.dataType.valueType, classOf[BinaryType])) {
+      Incompatible(Some(valueUnsupportedReason))
+    } else if (MapKeyDedupPolicySupport.isLastWin) {
+      Incompatible(Some(MapKeyDedupPolicySupport.incompatibleReason))
+    } else {
+      Compatible(None)
     }
-    if (containsBinary(expr.dataType.valueType)) {
-      return Incompatible(Some(valueUnsupportedReason))
-    }
-    Compatible(None)
   }
 }
 
-object CometStrToMap extends CometScalarFunction[StringToMap]("str_to_map") {
+object CometStrToMap
+    extends CometScalarFunction[StringToMap]("str_to_map")
+    with CometTypeShim
+    with CodegenDispatchFallback {
+
+  // Spark 4.1.1+ honours spark.sql.legacy.truncateForEmptyRegexSplit by truncating trailing
+  // empty entries from the split result. Comet's native str_to_map always behaves as if the flag
+  // were false. When the flag is true, mark this Incompatible so the CodegenDispatchFallback
+  // trait routes the expression through the JVM codegen dispatcher (Spark's own doGenCode inside
+  // the Comet kernel) rather than falling the entire projection back to Spark. Read by string
+  // key so it resolves on older Spark versions where the config is not registered.
+  private val legacyTruncateConfig = "spark.sql.legacy.truncateForEmptyRegexSplit"
+
+  private val legacyTruncateReason =
+    s"`$legacyTruncateConfig` is enabled, so trailing empty split entries may differ from Spark."
+
+  private val collationReason =
+    "`str_to_map` does not support non-UTF8_BINARY collations on the input string or delimiters."
+
+  override def getIncompatibleReasons(): Seq[String] =
+    Seq(legacyTruncateReason, collationReason)
 
   override def getSupportLevel(expr: StringToMap): SupportLevel = {
-    Compatible(None)
+    if (SQLConf.get.getConfString(legacyTruncateConfig, "false").toBoolean) {
+      Incompatible(Some(legacyTruncateReason))
+    } else if (expr.children.exists(child => hasNonDefaultStringCollation(child.dataType))) {
+      Incompatible(Some(collationReason))
+    } else {
+      Compatible(None)
+    }
   }
 }
+
+object CometCreateMap extends CometCodegenDispatch[CreateMap]
+
+object CometMapFilter extends CometCodegenDispatch[MapFilter]
+
+object CometTransformKeys extends CometCodegenDispatch[TransformKeys]
+
+object CometTransformValues extends CometCodegenDispatch[TransformValues]
+
+object CometMapZipWith extends CometCodegenDispatch[MapZipWith]
+
+object CometMapConcat extends CometCodegenDispatch[MapConcat]

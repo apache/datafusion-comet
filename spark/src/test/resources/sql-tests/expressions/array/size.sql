@@ -15,15 +15,29 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
+-- ConfigMatrix: spark.sql.legacy.sizeOfNull=true,false
+
 statement
 CREATE TABLE test_size(arr array<int>, m map<string, int>) USING parquet
 
 statement
 INSERT INTO test_size VALUES (array(1, 2, 3), map('a', 1, 'b', 2)), (array(), map()), (NULL, NULL)
 
-query spark_answer_only
+query
 SELECT size(arr), size(m) FROM test_size
 
--- literal arguments
+-- literal array arguments
 query
 SELECT size(array(1, 2, 3)), size(array()), size(cast(NULL as array<int>))
+
+-- literal map via CreateMap (falls back: Comet has no CreateMap serde;
+-- cast(NULL as map) avoids CreateMap and goes through CometLiteral instead)
+query spark_answer_only
+SELECT size(map('a', 1, 'b', 2)), size(map())
+
+query
+SELECT size(cast(NULL as map<string,int>))
+
+-- cardinality is a SQL alias for size
+query
+SELECT cardinality(arr), cardinality(m) FROM test_size

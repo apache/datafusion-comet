@@ -28,4 +28,11 @@ trait ShimCometConf {
    * SQL conf were removed in favor of this per-version constant; see #4298.
    */
   val COMET_SCHEMA_EVOLUTION_ENABLED: Boolean = false
+
+  /**
+   * Whether reading a Parquet TimestampLTZ column as TimestampNTZ is permitted. Spark 3.x rejects
+   * this read (SPARK-36182), so Comet matches by defaulting to false on 3.x; Spark 4.0
+   * (SPARK-47447) lifted the restriction. See #4219.
+   */
+  val COMET_ALLOW_TIMESTAMP_LTZ_AS_NTZ: Boolean = false
 }

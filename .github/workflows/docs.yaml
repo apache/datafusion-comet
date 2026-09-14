@@ -15,39 +15,35 @@
 # specific language governing permissions and limitations
 # under the License.
 
-on:
-  push:
-    branches:
-      - main
-    paths:
-      - .asf.yaml
-      - .github/workflows/docs.yaml
-      - docs/**
-
 name: Deploy DataFusion Comet site
+
+# Reusable: invoked by ci.yml. Triggering and path filters live in the
+# umbrella workflow.
+on:
+  workflow_call:
 
 jobs:
   build-docs:
     name: Build docs
     if: ${{ startsWith(github.repository, 'apache/') }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout docs sources
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Checkout asf-site branch
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           ref: asf-site
           path: asf-site
 
       - name: Setup Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v7
         with:
           python-version: "3.10"
 
       - name: Setup Java
-        uses: actions/setup-java@v5
+        uses: actions/setup-java@v6
         with:
           distribution: 'temurin'
           java-version: '17'

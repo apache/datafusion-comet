@@ -19,11 +19,10 @@
 
 package org.apache.comet.serde
 
-import org.apache.spark.sql.catalyst.expressions.{Abs, Add, Atan2, Attribute, Ceil, CheckOverflow, Expression, Floor, Hex, If, LessThanOrEqual, Literal, Log, Log10, Log2, Logarithm, Unhex}
+import org.apache.spark.sql.catalyst.expressions.{Abs, Add, Atan2, Attribute, BRound, Ceil, CheckOverflow, Conv, Expression, Floor, Hex, Hypot, If, LessThanOrEqual, Literal, Log, Log10, Log1p, Log2, Logarithm, NaNvl, Pmod, Pow, Sqrt, UnaryPositive, Unhex, WidthBucket}
 import org.apache.spark.sql.types.{DecimalType, DoubleType, NumericType}
 
-import org.apache.comet.CometSparkSessionExtensions.withInfo
-import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProto, scalarFunctionExprToProtoWithReturnType, serializeDataType}
+import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, scalarFunctionExprToProto, scalarFunctionExprToProtoWithReturnType, serializeDataType}
 
 object CometAtan2 extends CometExpressionSerde[Atan2] {
   override def convert(
@@ -36,11 +35,18 @@ object CometAtan2 extends CometExpressionSerde[Atan2] {
     val leftExpr = exprToProtoInternal(left, inputs, binding)
     val rightExpr = exprToProtoInternal(right, inputs, binding)
     val optExpr = scalarFunctionExprToProto("atan2", leftExpr, rightExpr)
-    optExprWithInfo(optExpr, expr, expr.left, expr.right)
+    optExpr
   }
 }
 
 object CometCeil extends CometExpressionSerde[Ceil] {
+  override def getSupportLevel(expr: Ceil): SupportLevel = expr.child.dataType match {
+    case t: DecimalType if t.scale < 0 => // Spark disallows negative scale SPARK-30252
+      Unsupported(Some(s"Decimal type $t has negative scale"))
+    case _ =>
+      Compatible()
+  }
+
   override def convert(
       expr: Ceil,
       inputs: Seq[Attribute],
@@ -49,18 +55,22 @@ object CometCeil extends CometExpressionSerde[Ceil] {
     expr.child.dataType match {
       case t: DecimalType if t.scale == 0 => // zero scale is no-op
         childExpr
-      case t: DecimalType if t.scale < 0 => // Spark disallows negative scale SPARK-30252
-        withInfo(expr, s"Decimal type $t has negative scale")
-        None
       case _ =>
         val optExpr =
           scalarFunctionExprToProtoWithReturnType("ceil", expr.dataType, false, childExpr)
-        optExprWithInfo(optExpr, expr, expr.child)
+        optExpr
     }
   }
 }
 
 object CometFloor extends CometExpressionSerde[Floor] {
+  override def getSupportLevel(expr: Floor): SupportLevel = expr.child.dataType match {
+    case t: DecimalType if t.scale < 0 => // Spark disallows negative scale SPARK-30252
+      Unsupported(Some(s"Decimal type $t has negative scale"))
+    case _ =>
+      Compatible()
+  }
+
   override def convert(
       expr: Floor,
       inputs: Seq[Attribute],
@@ -69,13 +79,10 @@ object CometFloor extends CometExpressionSerde[Floor] {
     expr.child.dataType match {
       case t: DecimalType if t.scale == 0 => // zero scale is no-op
         childExpr
-      case t: DecimalType if t.scale < 0 => // Spark disallows negative scale SPARK-30252
-        withInfo(expr, s"Decimal type $t has negative scale")
-        None
       case _ =>
         val optExpr =
           scalarFunctionExprToProtoWithReturnType("floor", expr.dataType, false, childExpr)
-        optExprWithInfo(optExpr, expr, expr.child)
+        optExpr
     }
   }
 }
@@ -90,7 +97,7 @@ object CometLog extends CometExpressionSerde[Log] with MathExprBase {
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     val childExpr = exprToProtoInternal(nullIfNegative(expr.child), inputs, binding)
     val optExpr = scalarFunctionExprToProto("ln", childExpr)
-    optExprWithInfo(optExpr, expr, expr.child)
+    optExpr
   }
 }
 
@@ -101,7 +108,7 @@ object CometLog10 extends CometExpressionSerde[Log10] with MathExprBase {
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     val childExpr = exprToProtoInternal(nullIfNegative(expr.child), inputs, binding)
     val optExpr = scalarFunctionExprToProto("log10", childExpr)
-    optExprWithInfo(optExpr, expr, expr.child)
+    optExpr
   }
 }
 
@@ -112,7 +119,7 @@ object CometLog2 extends CometExpressionSerde[Log2] with MathExprBase {
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     val childExpr = exprToProtoInternal(nullIfNegative(expr.child), inputs, binding)
     val optExpr = scalarFunctionExprToProto("log2", childExpr)
-    optExprWithInfo(optExpr, expr, expr.child)
+    optExpr
 
   }
 }
@@ -128,7 +135,7 @@ object CometLogarithm extends CometExpressionSerde[Logarithm] {
     val rightExpr = exprToProtoInternal(expr.right, inputs, binding)
     val optExpr =
       scalarFunctionExprToProtoWithReturnType("spark_log", DoubleType, false, leftExpr, rightExpr)
-    optExprWithInfo(optExpr, expr, expr.left, expr.right)
+    optExpr
   }
 }
 
@@ -139,7 +146,7 @@ object CometHex extends CometExpressionSerde[Hex] with MathExprBase {
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     val childExpr = exprToProtoInternal(expr.child, inputs, binding)
     val optExpr = scalarFunctionExprToProtoWithReturnType("hex", expr.dataType, false, childExpr)
-    optExprWithInfo(optExpr, expr, expr.child)
+    optExpr
   }
 }
 
@@ -158,13 +165,19 @@ object CometUnhex extends CometExpressionSerde[Unhex] with MathExprBase {
         false,
         childExpr,
         failOnErrorExpr)
-    optExprWithInfo(optExpr, expr, expr.child)
+    optExpr
   }
 }
 
-object CometAbs extends CometExpressionSerde[Abs] with MathExprBase {
+/**
+ * `abs` lowers to the native `abs` kernel for numeric inputs. Interval inputs have no native
+ * implementation, so `CodegenDispatchFallback` keeps them in the Comet pipeline by running
+ * Spark's own `Abs.doGenCode` in the JVM codegen dispatcher, which matches Spark exactly.
+ */
+object CometAbs extends CometExpressionSerde[Abs] with MathExprBase with CodegenDispatchFallback {
 
-  val unsupportedReason: String = "Only integral, floating-point, and decimal types are supported"
+  private val unsupportedReason: String =
+    "`INTERVAL YEAR TO MONTH` and `INTERVAL DAY TO SECOND` inputs"
 
   override def getUnsupportedReasons(): Seq[String] = Seq(unsupportedReason)
 
@@ -192,7 +205,37 @@ object CometAbs extends CometExpressionSerde[Abs] with MathExprBase {
         false,
         childExpr,
         failOnErrorExpr)
-    optExprWithInfo(optExpr, expr, expr.child)
+    optExpr
+  }
+}
+
+object CometPow extends CometExpressionSerde[Pow] {
+
+  override def convert(
+      expr: Pow,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    val leftExpr = exprToProtoInternal(expr.left, inputs, binding)
+    val rightExpr = exprToProtoInternal(expr.right, inputs, binding)
+    val optExpr = scalarFunctionExprToProto("pow", leftExpr, rightExpr)
+    optExpr
+  }
+}
+
+// Uses a custom spark_sqrt UDF because DataFusion's own `sqrt` errors on negative
+// input, while Spark's Sqrt (a plain wrapper around java.lang.Math.sqrt) returns NaN.
+// spark_sqrt is a Comet-only name with no DataFusion builtin counterpart, so the
+// return type must be set explicitly here to skip the session registry lookup that
+// scalarFunctionExprToProto would otherwise trigger (see CometLogarithm/spark_log).
+object CometSqrt extends CometExpressionSerde[Sqrt] {
+  override def convert(
+      expr: Sqrt,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    val childExpr = exprToProtoInternal(expr.child, inputs, binding)
+    val optExpr =
+      scalarFunctionExprToProtoWithReturnType("spark_sqrt", DoubleType, false, childExpr)
+    optExpr
   }
 }
 
@@ -237,8 +280,23 @@ object CometCheckOverflow extends CometExpressionSerde[CheckOverflow] {
           .setCheckOverflow(builder)
           .build())
     } else {
-      withInfo(expr, expr.child)
       None
     }
   }
 }
+
+object CometHypot extends CometCodegenDispatch[Hypot]
+
+object CometNaNvl extends CometCodegenDispatch[NaNvl]
+
+object CometBRound extends CometCodegenDispatch[BRound]
+
+object CometConv extends CometCodegenDispatch[Conv]
+
+object CometLog1p extends CometCodegenDispatch[Log1p]
+
+object CometPmod extends CometCodegenDispatch[Pmod]
+
+object CometWidthBucket extends CometCodegenDispatch[WidthBucket]
+
+object CometUnaryPositive extends CometCodegenDispatch[UnaryPositive]

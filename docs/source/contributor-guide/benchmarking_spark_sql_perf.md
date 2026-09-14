@@ -240,10 +240,9 @@ $SPARK_HOME/bin/spark-shell \
     --conf spark.sql.extensions=org.apache.comet.CometSparkSessionExtensions \
     --conf spark.comet.enabled=true \
     --conf spark.comet.exec.enabled=true \
-    --conf spark.comet.exec.all.enabled=true \
     --conf spark.shuffle.manager=org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager \
-    --conf spark.comet.exec.shuffle.enabled=true \
-    --conf spark.comet.columnar.shuffle.enabled=true
+    --conf spark.comet.shuffle.enabled=true \
+    --conf spark.comet.shuffle.mode=jvm
 ```
 
 Then register tables and run the benchmark the same way as the Spark baseline, changing the tags and result

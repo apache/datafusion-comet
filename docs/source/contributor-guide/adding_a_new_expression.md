@@ -25,7 +25,10 @@ Before you start, have a look through [these slides](https://docs.google.com/pre
 
 ## Finding an Expression to Add
 
-You may have a specific expression in mind that you'd like to add, but if not, you can review the [expression coverage document](spark_expressions_support.md) to see which expressions are not yet supported.
+You may have a specific expression in mind that you'd like to add, but if not, you can review [Supported Spark Expressions](../user-guide/latest/expressions.md) in the user guide to see which expressions are not yet supported. For deep-dive audit notes on expressions that are already supported, see the [Expression Audits](expression-audits/index.md) section.
+
+When you add or change an expression, update its status in
+[Supported Spark Expressions](../user-guide/latest/expressions.md).
 
 ## Implementing the Expression
 
@@ -83,6 +86,37 @@ For simple scalar functions that map directly to a DataFusion function, you can 
 ```scala
 classOf[Cos] -> CometScalarFunction("cos")
 ```
+
+### ANSI / `fail_on_error` constraints
+
+`CometScalarFunction` uses `scalarFunctionExprToProto`, which always serializes
+`fail_on_error=false`.
+
+On the native side, `create_comet_physical_fun` delegates to
+`create_comet_physical_fun_with_eval_mode`, whose registry catch-all **fails
+closed**. If `fail_on_error=Some(true)` reaches a UDF that can only be resolved
+from the function registry—including functions registered by
+`datafusion-spark`—Comet returns an error instead of silently ignoring the flag.
+
+Follow these rules when wiring scalar expressions:
+
+- **Do not** register a Spark expression class that exposes `failOnError`,
+  `evalMode`, `nullOnOverflow`, `ansiEnabled`, or `evalContext` using plain
+  `CometScalarFunction`. `CometScalarFunction.convert` rejects such expressions
+  by returning `None`, allowing the planner to fall back to Spark.
+
+- **Prefer name-based ANSI and try variants** so that the error semantics are
+  encoded in the function name while the proto `fail_on_error` flag remains
+  `false`. Existing examples include `parse_url` / `try_parse_url`
+  (`CometParseUrl`) and `url_decode` / `try_url_decode`
+  (`CometUrlDecodeStaticInvoke`).
+
+- If a function must receive `fail_on_error` through the proto, use
+  `scalarFunctionExprToProtoWithReturnType(..., failOnError, ...)`. The function
+  must also have a dedicated match arm in
+  `create_comet_physical_fun_with_eval_mode` that actually consumes the flag;
+  it must not fall through to registry lookup. Existing native consumers
+  include `make_decimal`, `make_date`, `make_time`, and `next_day`.
 
 #### When to set the return type explicitly
 
@@ -142,7 +176,7 @@ A few things to note:
 The `SupportLevel` sealed trait has three possible values:
 
 - **`Compatible(notes: Option[String] = None)`** - Comet supports this expression with full compatibility with Spark, or may have known differences in specific edge cases unlikely to affect most users. This is the default if you don't override `getSupportLevel`.
-- **`Incompatible(notes: Option[String] = None)`** - Comet supports this expression but results can differ from Spark. The expression will only be used if `spark.comet.expr.allowIncompatible=true` or the expression-specific config `spark.comet.expr.<exprName>.allowIncompatible=true` is set.
+- **`Incompatible(notes: Option[String] = None)`** - Comet supports this expression but results can differ from Spark. The expression will only be used if the expression-specific config `spark.comet.expression.<exprName>.allowIncompatible=true` is set.
 - **`Unsupported(notes: Option[String] = None)`** - Comet does not support this expression under the current conditions. Spark will fall back to its native execution.
 
 All three accept an optional `notes` parameter to provide additional context that is logged for debugging.
@@ -237,11 +271,11 @@ This expression will only be used when users explicitly enable incompatible expr
 
 When the query planner encounters an expression:
 
-1. It first checks if the expression is explicitly disabled via `spark.comet.expr.<exprName>.enabled=false`
+1. It first checks if the expression is explicitly disabled via `spark.comet.expression.<exprName>.enabled=false`
 2. It then calls `getSupportLevel` on the expression handler
 3. Based on the result:
    - `Compatible()`: Expression proceeds to conversion
-   - `Incompatible()`: Expression is skipped unless `spark.comet.expr.allowIncompatible=true` or expression-specific allow config is set
+   - `Incompatible()`: Expression is skipped unless `spark.comet.expression.<exprName>.allowIncompatible=true` is set
    - `Unsupported()`: Expression is skipped and a fallback to Spark occurs
 
 Any notes provided will be logged to help with debugging and understanding why an expression was not used.
@@ -253,7 +287,9 @@ In addition to `getSupportLevel`, which governs runtime planning decisions, the 
 - `getIncompatibleReasons(): Seq[String]` - Reasons the expression may produce different results than Spark.
 - `getUnsupportedReasons(): Seq[String]` - Reasons the expression, or certain usages of it, may not be supported by Comet.
 
-These methods do not affect runtime behavior. They are called by `GenerateDocs` (`spark/src/main/scala/org/apache/comet/GenerateDocs.scala`) when building the user-facing Compatibility Guide pages under `docs/source/user-guide/latest/compatibility/expressions/` (for example, `math.md`, `datetime.md`, `array.md`, `aggregate.md`, `struct.md`). Each reason is rendered as a bullet in the corresponding page.
+These methods do not affect runtime behavior. They are called by `GenerateDocs` (`spark/src/main/scala/org/apache/comet/GenerateDocs.scala`) when building the user-facing Compatibility Guide pages. The Markdown templates live in `docs/source/user-guide/latest/compatibility/expressions/_category_template/` (for example, `math.md`, `datetime.md`, `array.md`, `aggregate.md`, `struct.md`); `docs/build.sh` copies them into per-Spark-version subdirectories (`spark-3.4/`, `spark-3.5/`, `spark-4.0/`, `spark-4.1/`) and runs `GenerateDocs` once per profile, so the published page reflects the expressions registered for that Spark version. Each reason is rendered as a bullet in the corresponding page.
+
+`GenerateDocs` also rewrites the **Implementation** column of every table in [`docs/source/user-guide/latest/expressions.md`](../user-guide/latest/expressions.md) based on the serde's trait mixins: `NativeOptInAvailable` (or its subtype `CodegenDispatchFallback`) is reported as `Hybrid`, a plain `CometCodegenDispatch` is reported as `Codegen dispatch`, and anything else is reported as `Native`. Rows whose function name is not registered in Spark's `FunctionRegistry` (or has no matching serde) get an em-dash placeholder.
 
 Key differences from `getSupportLevel`:
 
@@ -305,6 +341,25 @@ override def getUnsupportedReasons(): Seq[String] = Seq(
       .mkString("\n  - ", "\n  - ", ""))
 ```
 
+#### Updating the Supported Expressions Page
+
+The user-facing [Spark Expression Support](../user-guide/latest/expressions.md) page (`docs/source/user-guide/latest/expressions.md`) lists every Spark built-in with its status, implementation kind, and any notes. Unlike the compatibility pages, this file is committed to the repo, so you need to add a row for your new expression and commit it.
+
+Add the row to the correct category table (matching the section header, for example `## math_funcs`). Fill in the Function, Status, and Notes cells and leave the Implementation cell as `—`; the value is regenerated from the serde and does not need to be set by hand:
+
+```markdown
+| `myfunc` | ✅ | — | Some optional note |
+```
+
+To regenerate the Implementation column locally, run the `generate-docs` profile against any supported Spark version:
+
+```shell
+./mvnw -q -pl spark -am -Pspark-3.5 -Pgenerate-docs -DskipTests package \
+  -Dexec.arguments="$(pwd)/docs/source/user-guide/latest/,spark-3.5"
+```
+
+That run rewrites every Implementation cell in place, mapping SQL function names to Catalyst classes via Spark's `FunctionRegistry` and looking each class up in `QueryPlanSerde`. Commit the updated `expressions.md` alongside your serde change. If you forget, a reviewer or a subsequent doc regeneration will fill it in — an `—` in the column for a supported expression usually means the row is aliased or rewritten before Comet sees it (for example `to_date` → `Cast`), not that the row is broken.
+
 #### Adding Spark-side Tests for the New Expression
 
 It is important to verify that the new expression is correctly recognized by the native execution engine and matches the expected Spark behavior. The preferred way to add test coverage is to write a Comet SQL Test. This approach is simpler than writing Comet Scala Tests and makes it easy to cover many input combinations and edge cases.
@@ -354,6 +409,7 @@ For full documentation on the test file format, including directives like `Confi
 - **Cover both column references and literals.** Comet often uses different code paths for each. The Comet SQL Tests suite automatically disables constant folding, so all-literal queries are evaluated natively.
 - **Include edge cases** such as `NULL`, empty strings, boundary values, `NaN`, and multibyte UTF-8 characters.
 - **Keep one file per expression** to make failures easy to locate.
+- **Pin the mechanism when it depends on the input.** If your serde routes some input types natively and others through the JVM codegen dispatcher, say so with `expect_native(...)` and `expect_dispatch(...)`. A plain `query` cannot tell the two apart, so without these a later change that swaps one for the other passes silently. See [Comet SQL Tests](sql-file-tests.md).
 
 ##### Comet Scala Tests (alternative)
 
@@ -380,6 +436,34 @@ test("unhex") {
   }
 }
 ```
+
+`checkSparkAnswerAndOperator` verifies that results match Spark and that Comet did not fall back
+for the operator. It does not distinguish _how_ Comet evaluated the expression. Comet has two
+accelerated paths, a native DataFusion expression and the JVM codegen dispatcher (Spark's own
+`doGenCode` compiled into an Arrow batch kernel), and both produce Spark-matching results by
+construction.
+
+If your serde picks between them, for example returning `Unsupported` for one input type and
+relying on `CodegenDispatchFallback` to keep it in the pipeline, use `checkSparkAnswerAndImpl` so
+the choice is asserted rather than assumed:
+
+```scala
+test("bit_length dispatches on binary and stays native on string") {
+  withTable("t") {
+    sql("CREATE TABLE t (b BINARY, s STRING) USING parquet")
+    sql("INSERT INTO t VALUES (X'48656c6c6f', 'hello'), (NULL, NULL)")
+
+    checkSparkAnswerAndImpl(sql("SELECT bit_length(b) FROM t"), dispatched = Seq("bit_length"))
+    checkSparkAnswerAndImpl(sql("SELECT bit_length(s) FROM t"), native = Seq("bit_length"))
+  }
+}
+```
+
+Names are the expression's `prettyName` lowercased. Naming an expression asserts both that it ran
+through the expected mechanism and that it did not run through the other one, so a serde that
+later gains a native path (or loses its dispatcher route) fails here instead of passing unnoticed.
+Prefer the SQL file equivalents, `expect_native(...)` and `expect_dispatch(...)`, when the test
+fits in a fixture.
 
 When writing Comet Scala Tests with literal values (e.g., `SELECT my_func('literal')`), Spark's constant folding optimizer may evaluate the expression at planning time, bypassing Comet. To prevent this, disable constant folding:
 
@@ -474,6 +558,23 @@ pub fn spark_ceil(
     // Implementation
 }
 ```
+
+#### Producing strings from arbitrary bytes
+
+Spark's `StringType` may contain bytes that are not valid UTF-8 (Spark stores them verbatim), but
+Arrow's string arrays must be valid UTF-8. Any native code that turns arbitrary bytes into a string
+must therefore **decode** them, not reinterpret them. Building a Rust `String`/`&str` from non-UTF-8
+bytes is undefined behaviour, and an Arrow string array that holds invalid UTF-8 is unsound for the
+downstream kernels that read it via `StringArray::value` (which assumes the UTF-8 invariant).
+
+Use `datafusion_comet_common::decode_utf8_spark_lossy` (defined in `native/common/src/utils.rs`). It
+replaces each ill-formed sequence with `U+FFFD` exactly as the JVM's `new String(bytes, UTF_8)` does,
+so Comet's rendered output matches Spark (including the surrogate-range cases where
+`str::from_utf8_lossy` would differ). This is the decoder used by both `CAST(binary AS string)` and
+the native columnar shuffle. See the
+[strings with non-UTF-8 bytes](../user-guide/latest/compatibility/index.md) note in the
+compatibility guide for the user-visible behavior, including the cases where decoding diverges from
+Spark.
 
 ### API Differences Between Spark Versions
 

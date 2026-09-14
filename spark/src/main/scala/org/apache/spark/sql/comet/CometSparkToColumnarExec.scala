@@ -20,14 +20,17 @@
 package org.apache.spark.sql.comet
 
 import scala.collection.mutable.ListBuffer
+import scala.reflect.ClassTag
 
-import org.apache.spark.TaskContext
+import org.apache.arrow.memory.BufferAllocator
+import org.apache.arrow.vector.ipc.ArrowReader
 import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{Attribute, SortOrder}
 import org.apache.spark.sql.catalyst.plans.physical.Partitioning
-import org.apache.spark.sql.comet.execution.arrow.CometArrowConverters
+import org.apache.spark.sql.comet.execution.arrow.{CometArrowStream, CometNativeArrowSource, RowArrowReader, SparkColumnarArrowReader}
+import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.execution.{RowToColumnarTransition, SparkPlan}
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
 import org.apache.spark.sql.types._
@@ -39,7 +42,8 @@ import org.apache.comet.serde.operator.CometSink
 
 case class CometSparkToColumnarExec(child: SparkPlan)
     extends RowToColumnarTransition
-    with CometPlan {
+    with CometPlan
+    with CometNativeArrowSource {
   override def output: Seq[Attribute] = child.output
 
   override def outputPartitioning: Partitioning = child.outputPartitioning
@@ -69,72 +73,54 @@ case class CometSparkToColumnarExec(child: SparkPlan)
       sparkContext,
       "time converting Spark batches to Arrow batches"))
 
-  // The conversion happens in next(), so wrap the call to measure time spent.
-  private def createTimingIter(
-      iter: Iterator[ColumnarBatch],
-      numInputRows: SQLMetric,
-      numOutputBatches: SQLMetric,
-      conversionTime: SQLMetric): Iterator[ColumnarBatch] = {
-    new Iterator[ColumnarBatch] {
-
-      override def hasNext: Boolean = {
-        iter.hasNext
-      }
-
-      override def next(): ColumnarBatch = {
-        val startNs = System.nanoTime()
-        val batch = iter.next()
-        conversionTime += System.nanoTime() - startNs
-        numInputRows += batch.numRows()
-        numOutputBatches += 1
-        batch
-      }
-    }
-  }
-
-  override def doExecuteColumnar(): RDD[ColumnarBatch] = {
+  /**
+   * Build the per-partition `ArrowReader` (columnar or row, depending on the child); the trait
+   * routes it to the JVM or native consumer.
+   *
+   * `numOutputBatches` is incremented from the reader's per-produced-batch callback rather than
+   * by counting input batches, so it stays accurate on the native path too (native drives
+   * `loadNextBatch`) and counts produced Arrow batches, not Spark input batches.
+   */
+  override protected def mapToReaders[T: ClassTag](
+      consume: (String, BufferAllocator => ArrowReader) => Iterator[T]): RDD[T] = {
     val numInputRows = longMetric("numInputRows")
     val numOutputBatches = longMetric("numOutputBatches")
     val conversionTime = longMetric("conversionTime")
     val maxRecordsPerBatch = CometConf.COMET_BATCH_SIZE.get(conf)
-    // Use UTC for Arrow schema timezone to match the native side, which always
-    // deserializes Timestamp as Timestamp(Microsecond, Some("UTC")). Spark's internal
-    // timestamp representation is always UTC microseconds, so the timezone here is
-    // purely schema metadata. Using session timezone would cause Arrow RowConverter
-    // schema mismatch errors in non-UTC sessions. See COMET-2720.
-    val timeZoneId = "UTC"
-    val schema = child.schema
+    val sparkSchema = child.schema
+    val onConversionNs: Long => Unit = ns => {
+      conversionTime += ns
+      numOutputBatches += 1
+    }
 
     if (child.supportsColumnar) {
-      child
-        .executeColumnar()
-        .mapPartitionsInternal { sparkBatches =>
-          val arrowBatches =
-            sparkBatches.flatMap { sparkBatch =>
-              val context = TaskContext.get()
-              CometArrowConverters.columnarBatchToArrowBatchIter(
-                sparkBatch,
-                schema,
-                maxRecordsPerBatch,
-                timeZoneId,
-                context)
-            }
-          createTimingIter(arrowBatches, numInputRows, numOutputBatches, conversionTime)
-        }
+      val maxBatchInt = maxRecordsPerBatch.toInt
+      child.executeColumnar().mapPartitionsInternal { sparkBatches =>
+        val arrowSchema = Utils.toArrowSchema(sparkSchema, CometArrowStream.NATIVE_TIMEZONE)
+        consume(
+          "CometSparkColumnarToColumnar",
+          new SparkColumnarArrowReader(
+            _,
+            arrowSchema,
+            CometArrowStream
+              .countingIterator(
+                sparkBatches,
+                (b: ColumnarBatch) => numInputRows.add(b.numRows())),
+            maxBatchInt,
+            onConversionNs))
+      }
     } else {
-      child
-        .execute()
-        .mapPartitionsInternal { sparkBatches =>
-          val context = TaskContext.get()
-          val arrowBatches =
-            CometArrowConverters.rowToArrowBatchIter(
-              sparkBatches,
-              schema,
-              maxRecordsPerBatch,
-              timeZoneId,
-              context)
-          createTimingIter(arrowBatches, numInputRows, numOutputBatches, conversionTime)
-        }
+      child.execute().mapPartitionsInternal { rowIter =>
+        val arrowSchema = Utils.toArrowSchema(sparkSchema, CometArrowStream.NATIVE_TIMEZONE)
+        consume(
+          "CometSparkRowToColumnar",
+          new RowArrowReader(
+            _,
+            arrowSchema,
+            CometArrowStream.countingIterator(rowIter, (_: InternalRow) => numInputRows.add(1)),
+            maxRecordsPerBatch,
+            onConversionNs))
+      }
     }
   }
 
@@ -144,9 +130,6 @@ case class CometSparkToColumnarExec(child: SparkPlan)
 }
 
 object CometSparkToColumnarExec extends CometSink[SparkPlan] with DataTypeSupport {
-
-  // uses CometArrowConverters, which re-uses arrays
-  override def isFfiSafe: Boolean = false
 
   override def createExec(
       nativeOp: OperatorOuterClass.Operator,

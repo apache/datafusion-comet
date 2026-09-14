@@ -36,7 +36,9 @@ publish = false
 
 [dependencies]
 arrow = { workspace = true }
-parquet = { workspace = true, default-features = false, features = ["experimental", "arrow"] }
+base64 = "0.23.0"
+bytes = { workspace = true }
+parquet = { workspace = true, default-features = false, features = ["experimental", "arrow", "arrow_canonical_extension_types", "snap", "lz4", "zstd", "flate2-zlib-rs"] }
 futures = { workspace = true }
 mimalloc = { version = "*", default-features = false, optional = true }
 tikv-jemallocator = { version = "0.6.1", optional = true, features = ["disable_initial_exec_tls"] }
@@ -49,9 +51,8 @@ prost = "0.14.3"
 jni = "0.22.4"
 rand = { workspace = true }
 num = { workspace = true }
-bytes = { workspace = true }
 tempfile = "3.26.0"
-itertools = "0.14.0"
+itertools = "0.15.0"
 paste = "1.0.14"
 datafusion = { workspace = true, features = ["parquet_encryption", "sql"] }
 datafusion-physical-expr-adapter = { workspace = true }
@@ -68,16 +69,24 @@ url = { workspace = true }
 aws-config = { workspace = true }
 aws-credential-types = { workspace = true }
 parking_lot = "0.12.5"
-datafusion-comet-objectstore-hdfs = { path = "../hdfs", optional = true, default-features = false, features = ["hdfs"] }
+# Optional Delta Lake contrib (enabled by the `contrib-delta` feature). Source lives
+# under `contrib/delta/native/` so non-Delta committers can ignore it.
+comet-contrib-delta = { path = "../../contrib/delta/native", optional = true }
+# Optional Lance contrib. The native scan implementation lives outside core.
+comet-contrib-lance = { path = "../../contrib/lance/native", optional = true }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-native-roots", "http2"] }
-object_store_opendal = { version = "0.56.0", optional = true }
+object_store_opendal = { version = "0.58.0", optional = true }
 hdfs-sys = {version = "0.3", optional = true, features = ["hdfs_3_3"]}
-opendal = { version = "0.56.0", optional = true, features = ["services-hdfs"] }
+opendal = { version = "0.58.1", optional = true, features = ["services-hdfs"] }
 iceberg = { workspace = true }
 iceberg-storage-opendal = { workspace = true }
 reqsign-core = { workspace = true }
 serde_json = "1.0"
-uuid = "1.23.0"
+# serde derive + typetag are required to implement iceberg's `Storage`/`StorageFactory` traits,
+# which carry `typetag::Serialize`/`Deserialize` supertraits (see BlobHostPromotingS3Storage).
+serde = { version = "1.0", features = ["derive"] }
+typetag = "0.2"
+uuid = "1.23.3"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 procfs = "0.18.0"
@@ -90,16 +99,20 @@ pprof = { version = "0.15", features = ["flamegraph"] }
 criterion = { version = "0.7", features = ["async", "async_tokio", "async_std"] }
 jni = { version = "0.22.4", features = ["invocation"] }
 lazy_static = "1.4"
-assertables = "9"
+assertables = "10"
 hex = "0.4.3"
-datafusion-functions-nested = { version = "53.1.0" }
+datafusion-functions-nested = { version = "55.1.0" }
 
 [features]
 backtrace = ["datafusion/backtrace"]
 default = ["hdfs-opendal"]
-hdfs = ["datafusion-comet-objectstore-hdfs"]
+contrib-lance = ["dep:comet-contrib-lance"]
 hdfs-opendal = ["opendal", "object_store_opendal", "hdfs-sys"]
 jemalloc = ["tikv-jemallocator", "tikv-jemalloc-ctl"]
+# Delta Lake integration. When enabled, links the `comet-contrib-delta` crate
+# into `libcomet` and activates the `OpStruct::DeltaScan` dispatcher arm.
+# Default builds carry zero Delta surface.
+contrib-delta = ["dep:comet-contrib-delta"]
 
 # Allocator-level OOM circuit breaker. When enabled, the global allocator is
 # wrapped to track real allocated bytes and panic an over-budget query-worker
@@ -117,4 +130,12 @@ crate-type = ["cdylib", "rlib"]
 
 [[bench]]
 name = "array_element_append"
+harness = false
+
+[[bench]]
+name = "explode"
+harness = false
+
+[[bench]]
+name = "parquet_timestamp_conversion"
 harness = false

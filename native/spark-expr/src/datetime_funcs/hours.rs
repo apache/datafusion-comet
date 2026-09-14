@@ -32,7 +32,7 @@ use datafusion::logical_expr::{
     ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl, Signature, Volatility,
 };
 use num::integer::div_floor;
-use std::{any::Any, fmt::Debug, sync::Arc};
+use std::{fmt::Debug, sync::Arc};
 
 const MICROS_PER_HOUR: i64 = 3_600_000_000;
 
@@ -56,10 +56,6 @@ impl Default for SparkHoursTransform {
 }
 
 impl ScalarUDFImpl for SparkHoursTransform {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn name(&self) -> &str {
         "hours_transform"
     }

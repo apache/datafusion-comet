@@ -31,16 +31,6 @@ pub(crate) enum MemoryPoolType {
 }
 
 impl MemoryPoolType {
-    pub(crate) fn is_task_shared(&self) -> bool {
-        matches!(
-            self,
-            MemoryPoolType::GreedyTaskShared
-                | MemoryPoolType::FairSpillTaskShared
-                | MemoryPoolType::FairUnified
-                | MemoryPoolType::GreedyUnified
-        )
-    }
-
     /// True when this pool's `reserved()` reflects a single task's usage, so a
     /// per-task fair-share comparison is meaningful. False for process-wide pools
     /// whose `reserved()` is the aggregate across tasks. Note the non-shared

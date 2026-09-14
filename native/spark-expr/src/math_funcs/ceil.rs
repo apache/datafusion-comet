@@ -16,7 +16,9 @@
 // under the License.
 
 use crate::downcast_compute_op;
-use crate::math_funcs::utils::{get_precision_scale, make_decimal_array, make_decimal_scalar};
+use crate::math_funcs::utils::{
+    dispatch_pow10, get_precision_scale, make_decimal_array, make_decimal_scalar,
+};
 use arrow::array::{Array, ArrowNativeTypeOp};
 use arrow::array::{Float32Array, Float64Array, Int64Array};
 use arrow::datatypes::DataType;
@@ -45,10 +47,13 @@ pub fn spark_ceil(
                 let result = array.as_any().downcast_ref::<Int64Array>().unwrap();
                 Ok(ColumnarValue::Array(Arc::new(result.clone())))
             }
-            DataType::Decimal128(_, scale) if *scale > 0 => {
-                let f = decimal_ceil_f(scale);
+            DataType::Decimal128(_, input_scale) if *input_scale > 0 => {
                 let (precision, scale) = get_precision_scale(data_type);
-                make_decimal_array(array, precision, scale, &f)
+                dispatch_pow10!(
+                    *input_scale,
+                    EXP => make_decimal_array(array, precision, scale, decimal_ceil_pow10::<EXP>),
+                    make_decimal_array(array, precision, scale, decimal_ceil_f(*input_scale))
+                )
             }
             other => Err(DataFusionError::Internal(format!(
                 "Unsupported data type {other:?} for function ceil",
@@ -62,10 +67,10 @@ pub fn spark_ceil(
                 a.map(|x| x.ceil() as i64),
             ))),
             ScalarValue::Int64(a) => Ok(ColumnarValue::Scalar(ScalarValue::Int64(a.map(|x| x)))),
-            ScalarValue::Decimal128(a, _, scale) if *scale > 0 => {
-                let f = decimal_ceil_f(scale);
+            ScalarValue::Decimal128(a, _, input_scale) if *input_scale > 0 => {
+                let f = decimal_ceil_f(*input_scale);
                 let (precision, scale) = get_precision_scale(data_type);
-                make_decimal_scalar(a, precision, scale, &f)
+                make_decimal_scalar(a, precision, scale, f)
             }
             _ => Err(DataFusionError::Internal(format!(
                 "Unsupported data type {:?} for function ceil",
@@ -76,9 +81,30 @@ pub fn spark_ceil(
 }
 
 #[inline]
-fn decimal_ceil_f(scale: &i8) -> impl Fn(i128) -> i128 {
-    let div = 10_i128.pow_wrapping(*scale as u32);
+fn decimal_ceil_f(scale: i8) -> impl Fn(i128) -> i128 {
+    let div = 10_i128.pow_wrapping(scale as u32);
     move |x: i128| div_ceil(x, div)
+}
+
+/// Ceiling-divides an unscaled decimal by `10^EXP`.
+///
+/// `EXP` is a compile-time constant so that the divisor is folded in and the division lowered to a
+/// multiply-and-shift. A 128-bit division is always a libcall, even by a constant, so values that
+/// fit in 64 bits take a 64-bit path; unscaled decimals rarely exceed that range.
+#[inline]
+fn decimal_ceil_pow10<const EXP: u32>(x: i128) -> i128 {
+    match i64::try_from(x) {
+        Ok(x) => div_ceil(x, const { 10_i64.pow(EXP) }) as i128,
+        Err(_) => decimal_ceil_wide(x, const { 10_i128.pow(EXP) }),
+    }
+}
+
+/// Kept out of line so that the libcall and its stack frame stay out of the loop body of every
+/// [`decimal_ceil_pow10`] instantiation.
+#[cold]
+#[inline(never)]
+fn decimal_ceil_wide(x: i128, div: i128) -> i128 {
+    div_ceil(x, div)
 }
 
 #[cfg(test)]
@@ -182,6 +208,36 @@ mod test {
             None,
         ])
         .with_precision_and_scale(4, 0)?;
+        let actual = result.as_any().downcast_ref::<Decimal128Array>().unwrap();
+        assert_eq!(actual, &expected);
+        Ok(())
+    }
+
+    #[test]
+    fn test_ceil_decimal128_wide_array() -> Result<()> {
+        // Unscaled values that exceed i64::MAX (~9.22e18) exercise the wide fallback in
+        // decimal_ceil_pow10. Values chosen at scale 6 targeting Decimal128(38, 0):
+        //   20_000_000_000_000_000_000 / 10^6 = 20_000_000_000_000 (exact multiple)
+        //   20_000_000_000_000_000_001 / 10^6 -> ceil 20_000_000_000_001 (positive remainder)
+        //  -20_000_000_000_000_000_001 / 10^6 -> ceil -20_000_000_000_000 (negative remainder)
+        let array = Decimal128Array::from(vec![
+            Some(20_000_000_000_000_000_000_i128),
+            Some(20_000_000_000_000_000_001_i128),
+            Some(-20_000_000_000_000_000_001_i128),
+            None,
+        ])
+        .with_precision_and_scale(38, 6)?;
+        let args = vec![ColumnarValue::Array(Arc::new(array))];
+        let ColumnarValue::Array(result) = spark_ceil(&args, &DataType::Decimal128(38, 0))? else {
+            unreachable!()
+        };
+        let expected = Decimal128Array::from(vec![
+            Some(20_000_000_000_000_i128),
+            Some(20_000_000_000_001_i128),
+            Some(-20_000_000_000_000_i128),
+            None,
+        ])
+        .with_precision_and_scale(38, 0)?;
         let actual = result.as_any().downcast_ref::<Decimal128Array>().unwrap();
         assert_eq!(actual, &expected);
         Ok(())

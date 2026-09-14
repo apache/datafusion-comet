@@ -19,19 +19,24 @@
 
 package org.apache.spark.sql.comet
 
-import org.apache.spark.TaskContext
+import scala.collection.mutable.ListBuffer
+import scala.reflect.ClassTag
+
+import org.apache.arrow.memory.BufferAllocator
+import org.apache.arrow.vector.ipc.ArrowReader
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{Attribute, UnsafeProjection}
-import org.apache.spark.sql.comet.CometLocalTableScanExec.createMetricsIterator
-import org.apache.spark.sql.comet.execution.arrow.CometArrowConverters
+import org.apache.spark.sql.comet.execution.arrow.{CometArrowStream, CometNativeArrowSource, RowArrowReader}
+import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.execution.{LeafExecNode, LocalTableScanExec}
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
-import org.apache.spark.sql.vectorized.ColumnarBatch
+import org.apache.spark.sql.types.{DataType, DayTimeIntervalType, NullType, StructType, YearMonthIntervalType}
 
 import com.google.common.base.Objects
 
-import org.apache.comet.{CometConf, ConfigEntry}
+import org.apache.comet.{CometConf, ConfigEntry, DataTypeSupport}
+import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
 import org.apache.comet.serde.OperatorOuterClass.Operator
 import org.apache.comet.serde.operator.CometSink
 
@@ -40,17 +45,18 @@ case class CometLocalTableScanExec(
     @transient rows: Seq[InternalRow],
     override val output: Seq[Attribute])
     extends CometExec
-    with LeafExecNode {
+    with LeafExecNode
+    with CometNativeArrowSource {
 
   override lazy val metrics: Map[String, SQLMetric] = Map(
     "numOutputRows" -> SQLMetrics.createMetric(sparkContext, "number of output rows"))
 
-  @transient private lazy val unsafeRows: Array[InternalRow] = {
+  @transient private lazy val unsafeRows: IndexedSeq[InternalRow] = {
     if (rows.isEmpty) {
-      Array.empty
+      IndexedSeq.empty
     } else {
       val proj = UnsafeProjection.create(output, output)
-      rows.map(r => proj(r).copy()).toArray
+      rows.iterator.map(r => proj(r).copy()).toIndexedSeq
     }
   }
 
@@ -63,20 +69,31 @@ case class CometLocalTableScanExec(
     }
   }
 
-  override def doExecuteColumnar(): RDD[ColumnarBatch] = {
-    val numInputRows = longMetric("numOutputRows")
+  /**
+   * Build the per-partition `RowArrowReader`; the trait routes it to the JVM or native consumer.
+   */
+  override protected def mapToReaders[T: ClassTag](
+      consume: (String, BufferAllocator => ArrowReader) => Iterator[T]): RDD[T] = {
+    val numOutputRows = longMetric("numOutputRows")
     val maxRecordsPerBatch = CometConf.COMET_BATCH_SIZE.get(conf)
-    // Use UTC to match native side expectations. See CometSparkToColumnarExec.
-    val timeZoneId = "UTC"
-    rdd.mapPartitionsInternal { sparkBatches =>
-      val context = TaskContext.get()
-      val batches = CometArrowConverters.rowToArrowBatchIter(
-        sparkBatches,
-        originalPlan.schema,
-        maxRecordsPerBatch,
-        timeZoneId,
-        context)
-      createMetricsIterator(batches, numInputRows)
+    // Normalize nested child-field nullability. An in-memory Seq/Map encodes array elements and
+    // map values as non-null (containsNull=false / valueContainsNull=false), but Comet expression
+    // serdes promise nullable children, so feeding a non-null child from the local scan into a
+    // native kernel fails the planned-vs-actual type assertion (issue #4789). Widening children to
+    // nullable is always safe: the row data contains no nulls, and Arrow map keys stay non-null via
+    // Utils.toArrowField. This must agree with the widened scan schema declared in
+    // CometLocalTableScanExec.scanFieldType so the native ScanExec does not cast the batch back.
+    val sparkSchema =
+      StructType(originalPlan.schema.map(f => f.copy(dataType = f.dataType.asNullable)))
+    rdd.mapPartitionsInternal { rowIter =>
+      val arrowSchema = Utils.toArrowSchema(sparkSchema, CometArrowStream.NATIVE_TIMEZONE)
+      consume(
+        "CometLocalTableScan",
+        new RowArrowReader(
+          _,
+          arrowSchema,
+          CometArrowStream.countingIterator(rowIter, (_: InternalRow) => numOutputRows.add(1)),
+          maxRecordsPerBatch))
     }
   }
 
@@ -104,29 +121,41 @@ case class CometLocalTableScanExec(
   override def hashCode(): Int = Objects.hashCode(originalPlan, originalPlan.schema, output)
 }
 
-object CometLocalTableScanExec extends CometSink[LocalTableScanExec] {
-
-  // uses CometArrowConverters, which re-uses arrays
-  override def isFfiSafe: Boolean = false
+object CometLocalTableScanExec extends CometSink[LocalTableScanExec] with DataTypeSupport {
 
   override def enabledConfig: Option[ConfigEntry[Boolean]] = Some(
     CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED)
 
-  override def createExec(nativeOp: Operator, op: LocalTableScanExec): CometNativeExec = {
-    CometScanWrapper(nativeOp, CometLocalTableScanExec(op, op.rows, op.output))
+  // Widen nested child-field nullability in the declared scan schema so it matches both the widened
+  // Arrow batch produced by CometLocalTableScanExec and the nullable children promised by
+  // downstream expression serdes (issue #4789).
+  override protected def scanFieldType(dt: DataType): DataType = dt.asNullable
+
+  // ArrowWriter (used by RowArrowReader) handles NullType via Utils.toArrowType + NullWriter;
+  // other types off DataTypeSupport's allow list (TimeType, intervals, ...) have no ArrowWriter
+  // coverage and must fall back to Spark.
+  override def isTypeSupported(
+      dt: DataType,
+      name: String,
+      fallbackReasons: ListBuffer[String]): Boolean = dt match {
+    case _: NullType | _: YearMonthIntervalType | _: DayTimeIntervalType => true
+    case _ => super.isTypeSupported(dt, name, fallbackReasons)
   }
 
-  private def createMetricsIterator(
-      it: Iterator[ColumnarBatch],
-      numInputRows: SQLMetric): Iterator[ColumnarBatch] = {
-    new Iterator[ColumnarBatch] {
-      override def hasNext: Boolean = it.hasNext
-
-      override def next(): ColumnarBatch = {
-        val batch = it.next()
-        numInputRows.add(batch.numRows())
-        batch
-      }
+  override def convert(
+      op: LocalTableScanExec,
+      builder: Operator.Builder,
+      childOp: Operator*): Option[Operator] = {
+    val fallbackReasons = new ListBuffer[String]()
+    if (!isSchemaSupported(op.schema, fallbackReasons)) {
+      withFallbackReason(op, fallbackReasons.mkString("; "))
+      None
+    } else {
+      super.convert(op, builder, childOp: _*)
     }
+  }
+
+  override def createExec(nativeOp: Operator, op: LocalTableScanExec): CometNativeExec = {
+    CometScanWrapper(nativeOp, CometLocalTableScanExec(op, op.rows, op.output))
   }
 }

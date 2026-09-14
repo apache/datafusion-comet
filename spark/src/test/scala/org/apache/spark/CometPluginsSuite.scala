@@ -24,6 +24,8 @@ import java.io.File
 import org.apache.spark.sql.{CometTestBase, SaveMode}
 import org.apache.spark.sql.internal.StaticSQLConf
 
+import org.apache.comet.COMET_VERSION
+
 class CometPluginsSuite extends CometTestBase {
   override protected def sparkConf: SparkConf = {
     val conf = new SparkConf()
@@ -81,6 +83,13 @@ class CometPluginsSuite extends CometTestBase {
         "foo,bar,org.apache.comet.CometSparkSessionExtensions" == conf.get(
           StaticSQLConf.SPARK_SESSION_EXTENSIONS.key))
     }
+  }
+
+  test("Comet version is exposed as a Spark config") {
+    // The driver plugin sets spark.comet.version, which is then visible both on the SparkContext
+    // conf and through the session runtime config (SET / spark.conf.get).
+    assert(spark.sparkContext.conf.get(CometDriverPlugin.COMET_VERSION_CONFIG) == COMET_VERSION)
+    assert(spark.conf.get(CometDriverPlugin.COMET_VERSION_CONFIG) == COMET_VERSION)
   }
 
   test("CometSource metrics are recorded") {
@@ -142,7 +151,7 @@ class CometPluginsDefaultSuite extends CometTestBase {
     conf.set("spark.executor.memoryOverheadFactor", "0.5")
     conf.set("spark.plugins", "org.apache.spark.CometPlugin")
     conf.set("spark.comet.enabled", "true")
-    conf.set("spark.comet.exec.shuffle.enabled", "true")
+    conf.set("spark.comet.shuffle.enabled", "true")
     conf.set("spark.comet.exec.onHeap.enabled", "true")
     conf
   }
@@ -171,7 +180,7 @@ class CometPluginsNonOverrideSuite extends CometTestBase {
     conf.set("spark.executor.memoryOverheadFactor", "0.5")
     conf.set("spark.plugins", "org.apache.spark.CometPlugin")
     conf.set("spark.comet.enabled", "true")
-    conf.set("spark.comet.exec.shuffle.enabled", "false")
+    conf.set("spark.comet.shuffle.enabled", "false")
     conf.set("spark.comet.exec.enabled", "false")
     conf.set("spark.comet.exec.onHeap.enabled", "true")
     conf
@@ -200,7 +209,7 @@ class CometPluginsUnifiedModeOverrideSuite extends CometTestBase {
     conf.set("spark.comet.enabled", "true")
     conf.set("spark.memory.offHeap.enabled", "true")
     conf.set("spark.memory.offHeap.size", "2G")
-    conf.set("spark.comet.exec.shuffle.enabled", "true")
+    conf.set("spark.comet.shuffle.enabled", "true")
     conf.set("spark.comet.exec.enabled", "true")
     conf.set("spark.comet.memory.overhead.factor", "0.5")
     conf

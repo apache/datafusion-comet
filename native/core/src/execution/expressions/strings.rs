@@ -17,7 +17,6 @@
 
 //! String expression builders
 
-use std::cmp::max;
 use std::sync::Arc;
 
 use arrow::datatypes::SchemaRef;
@@ -25,7 +24,7 @@ use datafusion::common::ScalarValue;
 use datafusion::physical_expr::expressions::{LikeExpr, Literal};
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion_comet_proto::spark_expression::Expr;
-use datafusion_comet_spark_expr::{FromJson, RLike, SubstringExpr};
+use datafusion_comet_spark_expr::{FromJson, RLike};
 
 use crate::execution::{
     expressions::extract_expr,
@@ -33,31 +32,6 @@ use crate::execution::{
     planner::{expression_registry::ExpressionBuilder, PhysicalPlanner},
     serde::to_arrow_datatype,
 };
-
-/// Builder for Substring expressions
-pub struct SubstringBuilder;
-
-impl ExpressionBuilder for SubstringBuilder {
-    fn build(
-        &self,
-        spark_expr: &Expr,
-        input_schema: SchemaRef,
-        planner: &PhysicalPlanner,
-    ) -> Result<Arc<dyn PhysicalExpr>, ExecutionError> {
-        let expr = extract_expr!(spark_expr, Substring);
-        let child = planner.create_expr(expr.child.as_ref().unwrap(), input_schema)?;
-        // Spark Substring's start is 1-based when start > 0
-        let start = expr.start - i32::from(expr.start > 0);
-        // substring negative len is treated as 0 in Spark
-        let len = max(expr.len, 0);
-
-        Ok(Arc::new(SubstringExpr::new(
-            child,
-            start as i64,
-            len as u64,
-        )))
-    }
-}
 
 /// Builder for Like expressions
 pub struct LikeBuilder;
@@ -91,7 +65,7 @@ impl ExpressionBuilder for RlikeBuilder {
         let left = planner.create_expr(expr.left.as_ref().unwrap(), Arc::clone(&input_schema))?;
         let right = planner.create_expr(expr.right.as_ref().unwrap(), input_schema)?;
 
-        match right.as_any().downcast_ref::<Literal>().unwrap().value() {
+        match right.downcast_ref::<Literal>().unwrap().value() {
             ScalarValue::Utf8(Some(pattern)) => Ok(Arc::new(RLike::try_new(left, pattern)?)),
             _ => Err(ExecutionError::GeneralError(
                 "RLike only supports scalar patterns".to_string(),

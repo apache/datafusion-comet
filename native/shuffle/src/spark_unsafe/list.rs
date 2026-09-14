@@ -24,7 +24,8 @@ use arrow::array::{
     builder::{
         ArrayBuilder, BinaryBuilder, BooleanBuilder, Date32Builder, Decimal128Builder,
         Float32Builder, Float64Builder, Int16Builder, Int32Builder, Int64Builder, Int8Builder,
-        ListBuilder, StringBuilder, StructBuilder, TimestampMicrosecondBuilder,
+        ListBuilder, NullBuilder, StringBuilder, StructBuilder, Time64NanosecondBuilder,
+        TimestampMicrosecondBuilder,
     },
     MapBuilder,
 };
@@ -179,6 +180,7 @@ impl SparkUnsafeArray {
 
     impl_append_to_builder!(append_ints_to_builder, Int32Builder, i32);
     impl_append_to_builder!(append_longs_to_builder, Int64Builder, i64);
+    impl_append_to_builder!(append_time64s_to_builder, Time64NanosecondBuilder, i64);
     impl_append_to_builder!(append_shorts_to_builder, Int16Builder, i16);
     impl_append_to_builder!(append_bytes_to_builder, Int8Builder, i8);
     impl_append_to_builder!(append_floats_to_builder, Float32Builder, f32);
@@ -377,6 +379,10 @@ pub fn append_to_builder<const NULLABLE: bool>(
             let builder = downcast_builder_ref!(Int64Builder, builder);
             array.append_longs_to_builder::<NULLABLE>(builder);
         }
+        DataType::Time64(TimeUnit::Nanosecond) => {
+            let builder = downcast_builder_ref!(Time64NanosecondBuilder, builder);
+            array.append_time64s_to_builder::<NULLABLE>(builder);
+        }
         DataType::Float32 => {
             let builder = downcast_builder_ref!(Float32Builder, builder);
             array.append_floats_to_builder::<NULLABLE>(builder);
@@ -392,6 +398,12 @@ pub fn append_to_builder<const NULLABLE: bool>(
         DataType::Date32 => {
             let builder = downcast_builder_ref!(Date32Builder, builder);
             array.append_dates_to_builder::<NULLABLE>(builder);
+        }
+        DataType::Null => {
+            let builder = downcast_builder_ref!(NullBuilder, builder);
+            for _ in 0..array.get_num_elements() {
+                builder.append_null();
+            }
         }
         DataType::Binary => {
             add_values!(

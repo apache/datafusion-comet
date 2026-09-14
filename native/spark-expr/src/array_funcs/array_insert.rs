@@ -15,7 +15,9 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use arrow::array::{make_array, Array, ArrayRef, GenericListArray, Int32Array, OffsetSizeTrait};
+use arrow::array::{
+    make_array, Array, ArrayRef, BooleanArray, GenericListArray, Int32Array, OffsetSizeTrait,
+};
 use arrow::datatypes::{DataType, Schema};
 use arrow::{
     array::{as_primitive_array, Capacities, MutableArrayData},
@@ -30,7 +32,6 @@ use datafusion::logical_expr::ColumnarValue;
 use datafusion::physical_expr::PhysicalExpr;
 use std::hash::Hash;
 use std::{
-    any::Any,
     fmt::{Debug, Display, Formatter},
     sync::Arc,
 };
@@ -92,10 +93,6 @@ impl ArrayInsert {
 }
 
 impl PhysicalExpr for ArrayInsert {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn fmt_sql(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         Display::fmt(self, f)
     }
@@ -109,19 +106,10 @@ impl PhysicalExpr for ArrayInsert {
     }
 
     fn evaluate(&self, batch: &RecordBatch) -> DataFusionResult<ColumnarValue> {
-        let pos_value = self
-            .pos_expr
-            .evaluate(batch)?
-            .into_array(batch.num_rows())?;
-
-        // Spark supports only IntegerType (Int32):
-        // https://github.com/apache/spark/blob/branch-3.5/sql/catalyst/src/main/scala/org/apache/spark/sql/catalyst/expressions/collectionOperations.scala#L4737
-        if !matches!(pos_value.data_type(), DataType::Int32) {
-            return Err(DataFusionError::Internal(format!(
-                "Unexpected index data type in ArrayInsert: {:?}, expected type is Int32",
-                pos_value.data_type()
-            )));
-        }
+        // Spark evaluates arguments left-to-right:
+        //   1. src
+        //   2. pos only when src is non-null
+        //   3. item only when src and pos are non-null
 
         // Check that src array is actually an array and get it's value type
         let src_value = self
@@ -135,10 +123,36 @@ impl PhysicalExpr for ArrayInsert {
             _ => unreachable!(),
         };
 
+        let evaluate_pos = BooleanArray::from(
+            (0..batch.num_rows())
+                .map(|row| src_value.is_valid(row))
+                .collect::<Vec<_>>(),
+        );
+
+        let pos_value = self
+            .pos_expr
+            .evaluate_selection(batch, &evaluate_pos)?
+            .into_array(batch.num_rows())?;
+
+        // Spark supports only IntegerType (Int32):
+        // https://github.com/apache/spark/blob/branch-3.5/sql/catalyst/src/main/scala/org/apache/spark/sql/catalyst/expressions/collectionOperations.scala#L4737
+        if !matches!(pos_value.data_type(), DataType::Int32) {
+            return Err(DataFusionError::Internal(format!(
+                "Unexpected index data type in ArrayInsert: {:?}, expected type is Int32",
+                pos_value.data_type()
+            )));
+        }
+
+        let evaluate_item = BooleanArray::from(
+            (0..batch.num_rows())
+                .map(|row| src_value.is_valid(row) && pos_value.is_valid(row))
+                .collect::<Vec<_>>(),
+        );
+
         // Check that inserted value has the same type as an array
         let item_value = self
             .item_expr
-            .evaluate(batch)?
+            .evaluate_selection(batch, &evaluate_item)?
             .into_array(batch.num_rows())?;
         if item_value.data_type() != src_element_type {
             return Err(DataFusionError::Internal(format!(
@@ -252,17 +266,17 @@ fn array_insert<O: OffsetSizeTrait>(
             if pos1 <= len + 1 {
                 // In-range insertion (including appending to end)
                 let corrected = pos1 - 1; // 0-based insertion point
-                mutable_values.extend(0, start, start + corrected);
-                mutable_values.extend(1, row_index, row_index + 1);
-                mutable_values.extend(0, start + corrected, end);
+                mutable_values.try_extend(0, start, start + corrected)?;
+                mutable_values.try_extend(1, row_index, row_index + 1)?;
+                mutable_values.try_extend(0, start + corrected, end)?;
                 final_len = len + 1;
             } else {
                 // Beyond end: pad with nulls then insert
                 let corrected = pos1 - 1;
                 let padding = corrected - len;
-                mutable_values.extend(0, start, end);
-                mutable_values.extend_nulls(padding);
-                mutable_values.extend(1, row_index, row_index + 1);
+                mutable_values.try_extend(0, start, end)?;
+                mutable_values.try_extend_nulls(padding)?;
+                mutable_values.try_extend(1, row_index, row_index + 1)?;
                 final_len = corrected + 1; // equals pos1
             }
         } else {
@@ -275,9 +289,9 @@ fn array_insert<O: OffsetSizeTrait>(
                 // Legacy:     -1 behaves like insert before the last element (corrected = len - k)
                 let base_offset = if legacy_mode { 0 } else { 1 };
                 let corrected = len - k + base_offset;
-                mutable_values.extend(0, start, start + corrected);
-                mutable_values.extend(1, row_index, row_index + 1);
-                mutable_values.extend(0, start + corrected, end);
+                mutable_values.try_extend(0, start, start + corrected)?;
+                mutable_values.try_extend(1, row_index, row_index + 1)?;
+                mutable_values.try_extend(0, start + corrected, end)?;
                 final_len = len + 1;
             } else {
                 // Negative index beyond the start (Spark-specific behavior):
@@ -286,9 +300,9 @@ fn array_insert<O: OffsetSizeTrait>(
                 let base_offset = if legacy_mode { 1 } else { 0 };
                 let target_len = k + base_offset;
                 let padding = target_len.saturating_sub(len + 1);
-                mutable_values.extend(1, row_index, row_index + 1); // insert item first
-                mutable_values.extend_nulls(padding); // pad nulls
-                mutable_values.extend(0, start, end); // append original values
+                mutable_values.try_extend(1, row_index, row_index + 1)?; // insert item first
+                mutable_values.try_extend_nulls(padding)?; // pad nulls
+                mutable_values.try_extend(0, start, end)?; // append original values
                 final_len = target_len;
             }
         }

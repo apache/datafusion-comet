@@ -24,7 +24,9 @@ import org.apache.spark.rdd.{ParallelCollectionRDD, RDD}
 import org.apache.spark.serializer.Serializer
 import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeSet, NamedExpression, SortOrder}
 import org.apache.spark.sql.catalyst.util.truncatedString
+import org.apache.spark.sql.comet.execution.arrow.CometArrowStream
 import org.apache.spark.sql.comet.execution.shuffle.{CometShuffledBatchRDD, CometShuffleExchangeExec}
+import org.apache.spark.sql.comet.util.{Utils => CometUtils}
 import org.apache.spark.sql.execution.{SparkPlan, TakeOrderedAndProjectExec, UnaryExecNode, UnsafeRowSerializer}
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics, SQLShuffleReadMetricsReporter, SQLShuffleWriteMetricsReporter}
 import org.apache.spark.sql.vectorized.ColumnarBatch
@@ -140,8 +142,14 @@ case class CometTakeOrderedAndProjectExec(
               .get
           val serializedTopK = CometExec.serializeNativePlan(topK)
           val numOutputCols = child.output.length
+          val inputSchema = CometUtils.fromAttributes(child.output)
           childRDD.mapPartitionsWithIndexInternal { case (idx, iter) =>
-            CometExec.getCometIterator(Seq(iter), numOutputCols, serializedTopK, numParts, idx)
+            CometExec.getCometIterator(
+              CometArrowStream.inputObjects(iter, inputSchema, "CometTakeOrderedAndProject-topK"),
+              numOutputCols,
+              serializedTopK,
+              numParts,
+              idx)
           }
         }
 
@@ -163,9 +171,11 @@ case class CometTakeOrderedAndProjectExec(
         .get
       val serializedTopKAndProjection = CometExec.serializeNativePlan(topKAndProjection)
       val finalOutputLength = output.length
+      val finalInputSchema = CometUtils.fromAttributes(child.output)
       singlePartitionRDD.mapPartitionsInternal { iter =>
         val it = CometExec.getCometIterator(
-          Seq(iter),
+          CometArrowStream
+            .inputObjects(iter, finalInputSchema, "CometTakeOrderedAndProject-final"),
           finalOutputLength,
           serializedTopKAndProjection,
           1,

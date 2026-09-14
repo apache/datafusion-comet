@@ -40,6 +40,7 @@ import com.google.common.base.Objects
 import org.apache.comet.parquet.CometParquetUtils
 import org.apache.comet.serde.OperatorOuterClass.Operator
 import org.apache.comet.serde.QueryPlanSerde.exprToProto
+import org.apache.comet.shims.ShimFileFormat
 
 /**
  * Native scan operator for DataSource V1 Parquet files using DataFusion's ParquetExec.
@@ -71,7 +72,8 @@ case class CometNativeScanExec(
     sourceKey: String) // Key for PlanDataInjector to match common+partition data at runtime
     extends CometLeafExec
     with DataSourceScanExec
-    with ShimStreamSourceAwareSparkPlan {
+    with ShimStreamSourceAwareSparkPlan
+    with CometScanWithPlanData {
 
   override lazy val metadata: Map[String, String] =
     if (originalPlan != null) originalPlan.metadata else Map.empty
@@ -154,11 +156,12 @@ case class CometNativeScanExec(
    * all files for all partitions in the driver, we serialize only common metadata (once) and each
    * partition's files (lazily, as tasks are scheduled).
    */
-  @transient private lazy val serializedPartitionData: (Array[Byte], Array[Array[Byte]]) = {
+  @transient private lazy val serializedPartitionData
+      : (Array[Byte], Array[Array[Byte]], Array[Seq[String]]) = {
     // Outer partitionFilters (wrapper) DPP is resolved by Spark's standard
     // prepare -> waitForSubqueries lifecycle, triggered explicitly via
     // CometLeafExec.ensureSubqueriesResolved called from
-    // CometNativeExec.findAllPlanData before commonData is read.
+    // PlanDataInjector.findAllPlanData before commonData is read.
     //
     // Inner scan.partitionFilters holds a SEPARATE InSubqueryExec instance that
     // Spark's expressions walk does not see (scan is @transient and not a sibling
@@ -197,6 +200,7 @@ case class CometNativeScanExec(
         })
       if (resolvedFilters.nonEmpty) {
         val commonBuilder = base.toBuilder
+        commonBuilder.setHasDataFilters(true)
         for (filter <- resolvedFilters) {
           exprToProto(filter, output) match {
             case Some(proto) => commonBuilder.addDataFilters(proto)
@@ -216,7 +220,11 @@ case class CometNativeScanExec(
     // Serialize each partition's files
     import org.apache.comet.serde.operator.partition2Proto
     val perPartitionBytes = filePartitions.map { filePartition =>
-      val partitionProto = partition2Proto(filePartition, relation.partitionSchema)
+      val partitionProto = partition2Proto(
+        filePartition,
+        relation.partitionSchema,
+        originalPlan.fileConstantMetadataColumns,
+        ShimFileFormat.fileConstantMetadataExtractors(relation.fileFormat))
       val partitionNativeScan = org.apache.comet.serde.OperatorOuterClass.NativeScan
         .newBuilder()
         .setFilePartition(partitionProto)
@@ -225,12 +233,19 @@ case class CometNativeScanExec(
       partitionNativeScan.toByteArray
     }.toArray
 
-    (commonBytes, perPartitionBytes)
+    // File paths per partition -- threaded through CometExecRDD to CometExecIterator so a native
+    // CannotReadFile error that lacks a path (corrupt/truncated parquet) can be surfaced as
+    // FAILED_READ_FILE naming the actual file (see SparkErrorConverter.convertToSparkException).
+    val perPartitionPaths = filePartitions.map(_.files.map(_.filePath.toString).toSeq).toArray
+
+    (commonBytes, perPartitionBytes, perPartitionPaths)
   }
 
   def commonData: Array[Byte] = serializedPartitionData._1
 
   def perPartitionData: Array[Array[Byte]] = serializedPartitionData._2
+
+  def perPartitionFilePaths: Array[Seq[String]] = serializedPartitionData._3
 
   override def doExecuteColumnar(): RDD[ColumnarBatch] = {
     val nativeMetrics = CometMetricNode.fromCometPlan(this)
@@ -259,7 +274,8 @@ case class CometNativeScanExec(
       nativeMetrics,
       Seq.empty,
       broadcastedHadoopConfForEncryption,
-      encryptedFilePaths) {
+      encryptedFilePaths,
+      perPartitionFilePaths = perPartitionFilePaths) {
       override def compute(split: Partition, context: TaskContext): Iterator[ColumnarBatch] = {
         val res = super.compute(split, context)
 
@@ -332,13 +348,8 @@ case class CometNativeScanExec(
       "pruningTime")
 
   override lazy val metrics: Map[String, SQLMetric] = {
-    val nativeMetrics = CometMetricNode.nativeScanMetrics(session.sparkContext)
-    // Map native metric names to Spark metric names
-    val withAlias = nativeMetrics.get("output_rows") match {
-      case Some(metric) => nativeMetrics + ("numOutputRows" -> metric)
-      case None => nativeMetrics
-    }
-    withAlias ++ scan.metrics.filterKeys(driverMetricKeys)
+    CometMetricNode.nativeScanMetrics(session.sparkContext) ++
+      scan.metrics.filter { case (k, _) => driverMetricKeys.contains(k) }
   }
 
   /**
@@ -355,15 +366,8 @@ object CometNativeScanExec {
       scan: CometScanExec): CometNativeScanExec = {
     // Generate unique key for this scan so PlanDataInjector can match common+partition data.
     // Multiple scans of same table with different projections/filters get different keys.
-    val common = nativeOp.getNativeScan.getCommon
-    val source = common.getSource
-    val keyComponents = Seq(
-      common.getRequiredSchemaList.toString,
-      common.getDataFiltersList.toString,
-      common.getProjectionVectorList.toString,
-      common.getFieldsList.toString)
-    val hashCode = keyComponents.mkString("|").hashCode
-    val sourceKey = s"${source}_${hashCode}"
+    // Derived by the injector that will look it up, so the two sides cannot drift apart.
+    val sourceKey = NativeScanPlanDataInjector.sourceKey(nativeOp.getNativeScan.getCommon)
 
     val batchScanExec = CometNativeScanExec(
       nativeOp,

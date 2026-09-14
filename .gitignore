@@ -1,4 +1,3 @@
-CLAUDE.md
 target
 .idea
 *.iml
@@ -27,3 +26,4 @@ output
 docs/comet-*/
 docs/build/
 docs/temp/
+docs/superpowers/

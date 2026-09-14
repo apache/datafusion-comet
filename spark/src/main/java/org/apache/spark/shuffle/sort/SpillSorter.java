@@ -131,13 +131,28 @@ public class SpillSorter extends SpillWriter {
               + "https://github.com/apache/arrow-datafusion-comet?tab=readme-ov-file#enable-comet-shuffle",
           e);
     }
-    sorterArray = allocator.allocateArray(initialSize);
-    this.inMemSorter.expandPointerArray(sorterArray);
+    boolean adopted = false;
+    try {
+      sorterArray = allocator.allocateArray(initialSize);
+      this.inMemSorter.expandPointerArray(sorterArray);
+      adopted = true;
 
-    this.allocatedPages = new LinkedList<>();
+      this.allocatedPages = new LinkedList<>();
 
-    this.nativeLib = new Native();
-    this.dataTypes = serializeSchema(schema);
+      this.nativeLib = new Native();
+      this.dataTypes = serializeSchema(schema);
+    } catch (Throwable t) {
+      // This writer is never handed to Spark when its constructor fails, so nothing else could
+      // reclaim what was allocated so far; free it here to keep the shared pool leak-free.
+      // Before adoption the sorter still owns only its initial one-entry array; after adoption
+      // it owns `sorterArray`, and `free()` releases whichever it holds.
+      if (!adopted && sorterArray != null) {
+        allocator.freeArray(sorterArray);
+        sorterArray = null;
+      }
+      this.inMemSorter.free();
+      throw t;
+    }
   }
 
   /** Frees allocated memory pages of this writer */

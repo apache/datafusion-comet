@@ -19,7 +19,7 @@
 
 package org.apache.comet.serde
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression, Literal, MonotonicallyIncreasingID, Rand, Randn, SparkPartitionID}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression, Literal, MonotonicallyIncreasingID, Rand, Randn, SparkPartitionID, Uuid}
 
 object CometSparkPartitionId extends CometExpressionSerde[SparkPartitionID] {
   override def convert(
@@ -48,6 +48,17 @@ object CometMonotonicallyIncreasingId extends CometExpressionSerde[Monotonically
 }
 
 sealed abstract class CometRandCommonSerde[T <: Expression] extends CometExpressionSerde[T] {
+  protected val nonLiteralSeedReason = "The `seed` argument must be a literal value"
+
+  override def getUnsupportedReasons(): Seq[String] = Seq(nonLiteralSeedReason)
+
+  protected def seedExprOf(expr: T): Expression
+
+  override def getSupportLevel(expr: T): SupportLevel = seedExprOf(expr) match {
+    case _: Literal => Compatible()
+    case _ => Unsupported(Some(nonLiteralSeedReason))
+  }
+
   protected def extractSeedFromExpr(expr: Expression): Option[Long] = {
     expr match {
       case Literal(seed: Long, _) => Some(seed)
@@ -57,7 +68,36 @@ sealed abstract class CometRandCommonSerde[T <: Expression] extends CometExpress
   }
 }
 
+object CometUuid extends CometExpressionSerde[Uuid] {
+
+  private val unresolvedSeedReason = "uuid requires a resolved random seed"
+
+  override def getUnsupportedReasons(): Seq[String] = Seq(unresolvedSeedReason)
+
+  // In a resolved plan `randomSeed` is always defined (resolution requires it). Guard anyway,
+  // here rather than in `convert`, so the decline goes through the normal support-level path.
+  override def getSupportLevel(expr: Uuid): SupportLevel =
+    if (expr.randomSeed.isEmpty) Unsupported(Some(unresolvedSeedReason)) else Compatible()
+
+  // Comet reproduces Spark's UUIDs exactly: the resolved seed is combined with the partition index
+  // and seeds the same Commons Math3 MersenneTwister that drives
+  // org.apache.spark.sql.catalyst.util.RandomUUIDGenerator, so results match Spark bit for bit.
+  override def convert(
+      expr: Uuid,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    // getSupportLevel has already verified the seed is resolved.
+    Some(
+      ExprOuterClass.Expr
+        .newBuilder()
+        .setUuid(ExprOuterClass.Uuid.newBuilder().setSeed(expr.randomSeed.get))
+        .build())
+  }
+}
+
 object CometRand extends CometRandCommonSerde[Rand] {
+  override protected def seedExprOf(expr: Rand): Expression = expr.child
+
   override def convert(
       expr: Rand,
       inputs: Seq[Attribute],
@@ -72,6 +112,8 @@ object CometRand extends CometRandCommonSerde[Rand] {
 }
 
 object CometRandn extends CometRandCommonSerde[Randn] {
+  override protected def seedExprOf(expr: Randn): Expression = expr.child
+
   override def convert(
       expr: Randn,
       inputs: Seq[Attribute],

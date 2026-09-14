@@ -27,3 +27,14 @@ SELECT second(ts) FROM test_second
 -- literal arguments
 query ignore(https://github.com/apache/datafusion-comet/issues/3336)
 SELECT second(timestamp('2024-01-15 10:30:00')), second(timestamp('2024-01-15 10:30:30')), second(timestamp('2024-01-15 10:30:59'))
+
+-- TimestampNTZ: the native impl is Incompatible for TimestampNTZType (#3180), so this is routed
+-- through the codegen dispatcher and stays native while matching Spark.
+statement
+CREATE TABLE test_second_ntz(ts timestamp_ntz) USING parquet
+
+statement
+INSERT INTO test_second_ntz VALUES (cast('2024-01-15 00:00:00' as timestamp_ntz)), (cast('2024-01-15 12:30:45' as timestamp_ntz)), (cast('2024-01-15 23:59:59' as timestamp_ntz)), (NULL)
+
+query
+SELECT second(ts) FROM test_second_ntz

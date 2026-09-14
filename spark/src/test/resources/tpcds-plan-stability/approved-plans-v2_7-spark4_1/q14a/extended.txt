@@ -1,4 +1,4 @@
-CometNativeColumnarToRow
+CometColumnarToRow
 +- CometTakeOrderedAndProject
    +- CometHashAggregate
       +- CometExchange
@@ -9,7 +9,7 @@ CometNativeColumnarToRow
                :     +- CometUnion
                :        :- CometFilter
                :        :  :  +- Subquery
-               :        :  :     +- CometNativeColumnarToRow
+               :        :  :     +- CometColumnarToRow
                :        :  :        +- CometHashAggregate
                :        :  :           +- CometExchange
                :        :  :              +- CometHashAggregate
@@ -2170,4 +2170,4 @@ CometNativeColumnarToRow
                                                          +- CometFilter
                                                             +- CometNativeScan parquet spark_catalog.default.date_dim
 
-Comet accelerated 2046 out of 2169 eligible operators (94%). Final plan contains 2 transitions between Spark and Comet.
+Comet accelerated 2082 out of 2083 eligible operators (99%). Final plan contains 2 transitions between Spark and Comet. Accelerated expressions: 16 native, 0 codegen dispatch.

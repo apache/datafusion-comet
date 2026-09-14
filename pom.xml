@@ -30,7 +30,7 @@ under the License.
   </parent>
   <groupId>org.apache.datafusion</groupId>
   <artifactId>comet-parent-spark${spark.version.short}_${scala.binary.version}</artifactId>
-  <version>0.17.0-SNAPSHOT</version>
+  <version>1.1.0-SNAPSHOT</version>
   <packaging>pom</packaging>
   <name>Comet Project Parent POM</name>
 
@@ -43,7 +43,17 @@ under the License.
   <properties>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
-    <java.version>11</java.version>
+    <java.version>17</java.version>
+    <!--
+      Default Delta dep version (only consumed when `-Pcontrib-delta` is also
+      active). Spark profiles override this: spark-3.5 -> 3.3.2, spark-4.1 ->
+      4.1.0. The top-level default lets Maven invocations that don't activate a
+      Spark profile (e.g. `mvn -Pcontrib-delta spotless:apply`) resolve the
+      property without an error.
+    -->
+    <delta.version>4.1.0</delta.version>
+    <!-- Used only to verify reflected Celeborn internals; never bundled with Comet. -->
+    <celeborn.version>0.7.0</celeborn.version>
     <maven.compiler.source>${java.version}</maven.compiler.source>
     <maven.compiler.target>${java.version}</maven.compiler.target>
     <maven-compiler-plugin.version>3.11.0</maven-compiler-plugin.version>
@@ -69,7 +79,7 @@ under the License.
     <scala.plugin.version>4.9.6</scala.plugin.version>
     <scalatest.version>3.2.16</scalatest.version>
     <scalatest-maven-plugin.version>2.2.0</scalatest-maven-plugin.version>
-    <spark.version>4.1.1</spark.version>
+    <spark.version>4.1.3</spark.version>
     <spark.version.short>4.1</spark.version.short>
     <spark.maven.scope>provided</spark.maven.scope>
     <protobuf.version>3.25.5</protobuf.version>
@@ -117,6 +127,10 @@ under the License.
     <argLine>-ea -Xmx4g -Xss4m ${extraJavaTestArgs}</argLine>
     <shims.majorVerSrc>spark-4.x</shims.majorVerSrc>
     <shims.minorVerSrc>spark-4.1</shims.minorVerSrc>
+    <!-- Source root shared by Spark 4.1 and later. The default build targets Spark 4.1, so this
+         defaults to spark-4.1+; the spark-4.0 and 3.x profiles override it to an empty
+         placeholder (spark-none) so they do not compile these 4.1+ shims. -->
+    <shims.minorPlusVerSrc>spark-4.1+</shims.minorPlusVerSrc>
   </properties>
 
   <dependencyManagement>
@@ -659,7 +673,8 @@ under the License.
         <slf4j.version>2.0.6</slf4j.version>
         <shims.majorVerSrc>spark-3.x</shims.majorVerSrc>
         <shims.minorVerSrc>spark-3.4</shims.minorVerSrc>
-        <java.version>11</java.version>
+        <shims.minorPlusVerSrc>spark-none</shims.minorPlusVerSrc>
+        <java.version>17</java.version>
         <maven.compiler.source>${java.version}</maven.compiler.source>
         <maven.compiler.target>${java.version}</maven.compiler.target>
       </properties>
@@ -670,14 +685,15 @@ under the License.
       <properties>
         <scala.version>2.12.18</scala.version>
         <scala.binary.version>2.12</scala.binary.version>
-        <spark.version>3.5.8</spark.version>
+        <spark.version>3.5.9</spark.version>
         <spark.version.short>3.5</spark.version.short>
         <parquet.version>1.13.1</parquet.version>
         <semanticdb.version>4.8.8</semanticdb.version>
         <slf4j.version>2.0.7</slf4j.version>
         <shims.majorVerSrc>spark-3.x</shims.majorVerSrc>
         <shims.minorVerSrc>spark-3.5</shims.minorVerSrc>
-        <java.version>11</java.version>
+        <shims.minorPlusVerSrc>spark-none</shims.minorPlusVerSrc>
+        <java.version>17</java.version>
         <maven.compiler.source>${java.version}</maven.compiler.source>
         <maven.compiler.target>${java.version}</maven.compiler.target>
       </properties>
@@ -688,13 +704,14 @@ under the License.
       <properties>
         <scala.version>2.13.16</scala.version>
         <scala.binary.version>2.13</scala.binary.version>
-        <spark.version>4.0.2</spark.version>
+        <spark.version>4.0.4</spark.version>
         <spark.version.short>4.0</spark.version.short>
         <parquet.version>1.15.2</parquet.version>
         <semanticdb.version>4.13.6</semanticdb.version>
         <slf4j.version>2.0.16</slf4j.version>
         <shims.majorVerSrc>spark-4.x</shims.majorVerSrc>
         <shims.minorVerSrc>spark-4.0</shims.minorVerSrc>
+        <shims.minorPlusVerSrc>spark-none</shims.minorPlusVerSrc>
         <java.version>17</java.version>
         <maven.compiler.source>${java.version}</maven.compiler.source>
         <maven.compiler.target>${java.version}</maven.compiler.target>
@@ -704,18 +721,19 @@ under the License.
     <profile>
       <id>spark-4.1</id>
       <properties>
-        <!-- Spark 4.1.1 is compiled against Scala 2.13.17 and emits calls into stdlib methods
+        <!-- Spark 4.1 is compiled against Scala 2.13.17 and emits calls into stdlib methods
              added in that release (e.g. MurmurHash3$.caseClassHash$default$2()). Comet must
              match to avoid runtime NoSuchMethodError. Note: semanticdb-scalac_2.13.17 is not
              yet published, so the -Psemanticdb / scalafix lint job is skipped for spark-4.1. -->
         <scala.version>2.13.17</scala.version>
         <scala.binary.version>2.13</scala.binary.version>
-        <spark.version>4.1.1</spark.version>
+        <spark.version>4.1.3</spark.version>
         <spark.version.short>4.1</spark.version.short>
         <parquet.version>1.16.0</parquet.version>
         <semanticdb.version>4.13.6</semanticdb.version>
         <slf4j.version>2.0.17</slf4j.version>
         <shims.majorVerSrc>spark-4.x</shims.majorVerSrc>
+        <shims.minorPlusVerSrc>spark-4.1+</shims.minorPlusVerSrc>
         <shims.minorVerSrc>spark-4.1</shims.minorVerSrc>
         <java.version>17</java.version>
         <maven.compiler.source>${java.version}</maven.compiler.source>
@@ -724,18 +742,18 @@ under the License.
     </profile>
 
     <profile>
-      <!-- WIP: Spark 4.2 preview support. Targets the 4.2.0-preview4 release; tests are not
-           wired up yet, this profile only aims to compile main sources. -->
+      <!-- Experimental Spark 4.2 support, targeting the 4.2.0 release. -->
       <id>spark-4.2</id>
       <properties>
         <scala.version>2.13.18</scala.version>
         <scala.binary.version>2.13</scala.binary.version>
-        <spark.version>4.2.0-preview4</spark.version>
+        <spark.version>4.2.0</spark.version>
         <spark.version.short>4.2</spark.version.short>
         <parquet.version>1.17.0</parquet.version>
         <semanticdb.version>4.13.6</semanticdb.version>
         <slf4j.version>2.0.17</slf4j.version>
         <shims.majorVerSrc>spark-4.x</shims.majorVerSrc>
+        <shims.minorPlusVerSrc>spark-4.1+</shims.minorPlusVerSrc>
         <shims.minorVerSrc>spark-4.2</shims.minorVerSrc>
         <!-- Use jdk17 by default -->
         <java.version>17</java.version>
@@ -759,30 +777,6 @@ under the License.
         <scala.version>2.13.16</scala.version>
         <scala.binary.version>2.13</scala.binary.version>
         <semanticdb.version>4.13.6</semanticdb.version>
-      </properties>
-    </profile>
-
-    <profile>
-      <id>jdk11</id>
-      <activation>
-        <jdk>11</jdk>
-      </activation>
-      <properties>
-        <java.version>11</java.version>
-        <maven.compiler.source>${java.version}</maven.compiler.source>
-        <maven.compiler.target>${java.version}</maven.compiler.target>
-      </properties>
-    </profile>
-
-    <profile>
-      <id>jdk17</id>
-      <activation>
-        <jdk>17</jdk>
-      </activation>
-      <properties>
-        <java.version>17</java.version>
-        <maven.compiler.source>${java.version}</maven.compiler.source>
-        <maven.compiler.target>${java.version}</maven.compiler.target>
       </properties>
     </profile>
 
@@ -817,7 +811,7 @@ under the License.
                   <javacArg>${java.version}</javacArg>
                   <javacArg>-target</javacArg>
                   <javacArg>${java.version}</javacArg>
-                  <javacArg>-Xlint:all,-serial,-path,-try</javacArg>
+                  <javacArg>-Xlint:all,-serial,-path,-try,-processing</javacArg>
                 </javacArgs>
                 <compilerPlugins>
                   <compilerPlugin>
@@ -914,7 +908,7 @@ under the License.
               <javacArg>${maven.compiler.source}</javacArg>
               <javacArg>-target</javacArg>
               <javacArg>${maven.compiler.target}</javacArg>
-              <javacArg>-Xlint:all,-serial,-path,-try</javacArg>
+              <javacArg>-Xlint:all,-serial,-path,-try,-processing</javacArg>
             </javacArgs>
           </configuration>
         </plugin>
@@ -1026,6 +1020,7 @@ under the License.
               <includes>
                 <include>src/main/scala/**/*.scala</include>
                 <include>src/test/scala/**/*.scala</include>
+                <include>src/test/celeborn-reflection-compatibility/**/*.scala</include>
                 <!-- Include spark shim sources -->
                 <include>src/main/spark-*/**/*.scala</include>
                 <include>src/test/spark-*/**/*.scala</include>
@@ -1167,9 +1162,18 @@ under the License.
             <exclude>docs/source/contributor-guide/*.svg</exclude>
             <exclude>dev/release/rat_exclude_files.txt</exclude>
             <exclude>dev/release/requirements.txt</exclude>
+            <exclude>dev/release/venv/**</exclude>
+            <exclude>dev/release/comet-rm/workdir/**</exclude>
+            <exclude>dev/dist/**</exclude>
+            <exclude>dev/release/rat.txt</exclude>
+            <exclude>dev/release/filtered_rat.txt</exclude>
+            <exclude>dev/release/*.jar</exclude>
             <exclude>native/proto/src/generated/**</exclude>
             <exclude>benchmarks/tpc/queries/**</exclude>
+            <exclude>benchmarks/results/**/*.txt</exclude>
+            <exclude>.ai/**</exclude>
             <exclude>.claude/**</exclude>
+            <exclude>docs/superpowers/**</exclude>
           </excludes>
         </configuration>
       </plugin>
@@ -1178,6 +1182,20 @@ under the License.
         <artifactId>maven-enforcer-plugin</artifactId>
         <version>${maven-enforcer-plugin.version}</version>
         <executions>
+          <execution>
+            <id>require-java-17</id>
+            <goals>
+              <goal>enforce</goal>
+            </goals>
+            <configuration>
+              <rules>
+                <requireJavaVersion>
+                  <version>[17,)</version>
+                  <message>Comet requires JDK 17 or later to build.</message>
+                </requireJavaVersion>
+              </rules>
+            </configuration>
+          </execution>
           <execution>
             <id>no-duplicate-declared-dependencies</id>
             <goals>
@@ -1234,6 +1252,15 @@ under the License.
                         <ignoreClass>com.google.thirdparty.publicsuffix.TrieParser</ignoreClass>
                         <ignoreClass>com.google.thirdparty.publicsuffix.PublicSuffixPatterns</ignoreClass>
                         <ignoreClass>com.google.thirdparty.publicsuffix.PublicSuffixType</ignoreClass>
+                      </ignoreClasses>
+                    </dependency>
+                    <dependency>
+                      <groupId>org.apache.datasketches</groupId>
+                      <artifactId>datasketches-memory</artifactId>
+                      <ignoreClasses>
+                        <!-- Spark 4.2.0 bundles its own copy of this class in spark-catalyst,
+                             which collides with the transitive datasketches-memory jar. -->
+                        <ignoreClass>org.apache.datasketches.memory.internal.ResourceImpl</ignoreClass>
                       </ignoreClasses>
                     </dependency>
                   </dependencies>

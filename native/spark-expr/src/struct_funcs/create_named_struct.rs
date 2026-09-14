@@ -18,11 +18,10 @@
 use arrow::array::StructArray;
 use arrow::datatypes::{DataType, Field, Schema};
 use arrow::record_batch::RecordBatch;
-use datafusion::common::Result as DataFusionResult;
+use datafusion::common::{Result as DataFusionResult, ScalarValue};
 use datafusion::logical_expr::ColumnarValue;
 use datafusion::physical_expr::PhysicalExpr;
 use std::{
-    any::Any,
     fmt::{Display, Formatter},
     hash::Hash,
     sync::Arc,
@@ -53,10 +52,6 @@ impl CreateNamedStruct {
 }
 
 impl PhysicalExpr for CreateNamedStruct {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn fmt_sql(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         Display::fmt(self, f)
     }
@@ -76,13 +71,25 @@ impl PhysicalExpr for CreateNamedStruct {
             .iter()
             .map(|expr| expr.evaluate(batch))
             .collect::<datafusion::common::Result<Vec<_>>>()?;
+        // When every field value is a scalar (e.g. an all-literal `named_struct` that reaches native
+        // as a `CreateNamedStruct` because constant folding is disabled), return a scalar struct
+        // rather than a length-1 `StructArray`. A downstream consumer such as `make_array` then
+        // broadcasts the constant struct to the batch row count instead of failing with a
+        // mixed-length error when a sibling child is a full-length column. This matches what a
+        // constant-folded struct literal produces, and `GetStructField::evaluate` already handles a
+        // scalar struct input.
+        let all_scalar =
+            !values.is_empty() && values.iter().all(|v| matches!(v, ColumnarValue::Scalar(_)));
         let arrays = ColumnarValue::values_to_arrays(&values)?;
         let fields = self.fields(&batch.schema())?;
-        Ok(ColumnarValue::Array(Arc::new(StructArray::new(
-            fields.into(),
-            arrays,
-            None,
-        ))))
+        let struct_array = StructArray::new(fields.into(), arrays, None);
+        if all_scalar {
+            Ok(ColumnarValue::Scalar(ScalarValue::Struct(Arc::new(
+                struct_array,
+            ))))
+        } else {
+            Ok(ColumnarValue::Array(Arc::new(struct_array)))
+        }
     }
 
     fn children(&self) -> Vec<&Arc<dyn PhysicalExpr>> {

@@ -26,9 +26,10 @@ import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
 import org.apache.spark.sql.execution.SparkPlan
 import org.apache.spark.sql.execution.adaptive.ShuffleQueryStageExec
 import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
+import org.apache.spark.sql.types.{ArrayType, DataType, DayTimeIntervalType, MapType, StructType, YearMonthIntervalType}
 
 import org.apache.comet.CometConf
-import org.apache.comet.CometSparkSessionExtensions.withInfo
+import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
 import org.apache.comet.ConfigEntry
 import org.apache.comet.serde.{CometOperatorSerde, OperatorOuterClass}
 import org.apache.comet.serde.OperatorOuterClass.Operator
@@ -40,20 +41,33 @@ import org.apache.comet.serde.QueryPlanSerde.{serializeDataType, supportedDataTy
  */
 abstract class CometSink[T <: SparkPlan] extends CometOperatorSerde[T] {
 
-  /** Whether the data produced by the Comet operator is FFI safe */
-  def isFfiSafe: Boolean = true
-
   override def enabledConfig: Option[ConfigEntry[Boolean]] = None
+
+  protected final def supportedSinkDataType(dt: DataType): Boolean = dt match {
+    case _: YearMonthIntervalType | _: DayTimeIntervalType => true
+    case StructType(fields) =>
+      fields.nonEmpty && fields.forall(f => supportedSinkDataType(f.dataType))
+    case ArrayType(elementType, _) => supportedSinkDataType(elementType)
+    case MapType(keyType, valueType, _) =>
+      supportedSinkDataType(keyType) && supportedSinkDataType(valueType)
+    case _ => supportedDataType(dt)
+  }
+
+  /**
+   * The data type to declare for a scan output field. Overridden by sinks whose source carries
+   * non-null nested child fields that must be widened to match the planned kernel output types
+   * (see [[org.apache.spark.sql.comet.CometLocalTableScanExec]] and issue #4789).
+   */
+  protected def scanFieldType(dt: DataType): DataType = dt
 
   override def convert(
       op: T,
       builder: Operator.Builder,
       childOp: OperatorOuterClass.Operator*): Option[OperatorOuterClass.Operator] = {
-    val supportedTypes =
-      op.output.forall(a => supportedDataType(a.dataType, allowComplex = true))
+    val supportedTypes = op.output.forall(a => supportedSinkDataType(a.dataType))
 
     if (!supportedTypes) {
-      withInfo(op, "Unsupported data type")
+      withFallbackReason(op, "Unsupported data type")
       return None
     }
 
@@ -65,10 +79,9 @@ abstract class CometSink[T <: SparkPlan] extends CometOperatorSerde[T] {
     } else {
       scanBuilder.setSource(source)
     }
-    scanBuilder.setArrowFfiSafe(isFfiSafe)
 
     val scanTypes = op.output.flatten { attr =>
-      serializeDataType(attr.dataType)
+      serializeDataType(scanFieldType(attr.dataType))
     }
 
     if (scanTypes.length == op.output.length) {
@@ -80,7 +93,7 @@ abstract class CometSink[T <: SparkPlan] extends CometOperatorSerde[T] {
       Some(builder.setScan(scanBuilder).build())
     } else {
       // There are unsupported scan type
-      withInfo(
+      withFallbackReason(
         op,
         s"unsupported Comet operator: ${op.nodeName}, due to unsupported data types above")
       None
@@ -119,11 +132,10 @@ object CometExchangeSink extends CometSink[SparkPlan] {
   private def convertToShuffleScan(
       op: SparkPlan,
       builder: Operator.Builder): Option[OperatorOuterClass.Operator] = {
-    val supportedTypes =
-      op.output.forall(a => supportedDataType(a.dataType, allowComplex = true))
+    val supportedTypes = op.output.forall(a => supportedSinkDataType(a.dataType))
 
     if (!supportedTypes) {
-      withInfo(op, "Unsupported data type for shuffle direct read")
+      withFallbackReason(op, "Unsupported data type for shuffle direct read")
       return None
     }
 
@@ -144,7 +156,7 @@ object CometExchangeSink extends CometSink[SparkPlan] {
       builder.clearChildren()
       Some(builder.setShuffleScan(scanBuilder).build())
     } else {
-      withInfo(op, s"unsupported data types in ${op.nodeName} for shuffle direct read")
+      withFallbackReason(op, s"unsupported data types in ${op.nodeName} for shuffle direct read")
       None
     }
   }

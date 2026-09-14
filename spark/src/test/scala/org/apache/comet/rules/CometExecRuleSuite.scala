@@ -24,17 +24,19 @@ import scala.util.Random
 import org.apache.spark.sql._
 import org.apache.spark.sql.catalyst.FunctionIdentifier
 import org.apache.spark.sql.catalyst.expressions.{Expression, ExpressionInfo}
-import org.apache.spark.sql.catalyst.expressions.aggregate.BloomFilterAggregate
+import org.apache.spark.sql.catalyst.expressions.aggregate.{BloomFilterAggregate, Partial}
 import org.apache.spark.sql.comet._
 import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
 import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.adaptive.QueryStageExec
 import org.apache.spark.sql.execution.aggregate.{HashAggregateExec, ObjectHashAggregateExec}
 import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ShuffleExchangeExec}
+import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{DataTypes, StructField, StructType}
 
-import org.apache.comet.CometConf
-import org.apache.comet.CometSparkSessionExtensions.{isSpark40Plus, isSpark42Plus}
+import org.apache.comet.{CometConf, CometExplainInfo, ExtendedExplainInfo}
+import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus, isSpark42Plus}
+import org.apache.comet.serde.{Compatible, Unsupported}
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator}
 
 /**
@@ -75,6 +77,222 @@ class CometExecRuleSuite extends CometTestBase {
         countOperators(stage.plan, opClass)
       case op if op.getClass.isAssignableFrom(opClass) => 1
     }.sum
+  }
+
+  /**
+   * Build a Spark plan containing an `ObjectHashAggregateExec` and hand it to `f`. `collect_list`
+   * is a `TypedImperativeAggregate`, so Spark plans it as `ObjectHashAggregateExec` rather than
+   * `HashAggregateExec`. Each call builds a fresh plan, which matters because fallback reasons
+   * accumulate on plan-node tags.
+   */
+  private def withObjectHashAggPlan(f: SparkPlan => Unit): Unit = {
+    withSQLConf(SQLConf.USE_OBJECT_HASH_AGG.key -> "true") {
+      withTempView("test_data") {
+        createTestDataFrame.createOrReplaceTempView("test_data")
+        val sparkPlan =
+          createSparkPlan(spark, "SELECT id, collect_list(name) FROM test_data GROUP BY id")
+        assert(countOperators(sparkPlan, classOf[ObjectHashAggregateExec]) > 0)
+        f(sparkPlan)
+      }
+    }
+  }
+
+  /** The partial-mode `ObjectHashAggregateExec` in `plan`. */
+  private def partialObjectHashAgg(plan: SparkPlan): ObjectHashAggregateExec =
+    stripAQEPlan(plan).collectFirst {
+      case a: ObjectHashAggregateExec if a.aggregateExpressions.forall(_.mode == Partial) => a
+    }.get
+
+  test("expression-level fallback reasons are rolled up onto the operator that falls back") {
+    // Extended explain only walks plan nodes, so a reason recorded on a sub-expression is
+    // invisible unless CometExecRule lifts it onto the enclosing operator. Disabling a single
+    // expression makes the Project fall back with the reason living on the Multiply node.
+    // See https://github.com/apache/datafusion-comet/issues/5230.
+    // This also pins the ordering inside `convertToComet`: strict mode is on in CometTestBase, so
+    // if the roll-up stopped running before the strict check, planning here would throw.
+    withTempView("test_data") {
+      createTestDataFrame.createOrReplaceTempView("test_data")
+
+      val sparkPlan = createSparkPlan(spark, "SELECT id * 2 as doubled FROM test_data")
+      assert(countOperators(sparkPlan, classOf[ProjectExec]) == 1)
+
+      withSQLConf(
+        CometConf.getExprEnabledConfigKey("Multiply") -> "false",
+        CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+        val transformedPlan = applyCometExecRule(sparkPlan)
+        val project = stripAQEPlan(transformedPlan).collectFirst { case p: ProjectExec => p }.get
+
+        val reasons = project
+          .getTagValue(CometExplainInfo.FALLBACK_REASONS)
+          .getOrElse(Set.empty[String])
+        assert(
+          reasons.exists(_.contains("Multiply")),
+          s"expected the Multiply reason on the ProjectExec, got: $reasons")
+        // The generic catch-all message must not appear: a real reason was available.
+        assert(
+          !reasons.exists(_.contains("is not supported")),
+          s"a real reason was available but the generic message was used too: $reasons")
+      }
+    }
+  }
+
+  test("strict mode fails an operator that Comet declined without recording a reason") {
+    // The bug this guards against is a serde returning None and forgetting to say why, which the
+    // generic "<operator> is not supported" message used to hide. No serde in the tree is in that
+    // state (the whole test corpus runs with strict mode on, which is what enforces it), so drive
+    // the check directly with the shape such a serde produces: a handled operator whose children
+    // are all native and which carries no reason on itself or its expressions.
+    withTempView("test_data") {
+      createTestDataFrame.createOrReplaceTempView("test_data")
+
+      val sparkPlan = createSparkPlan(spark, "SELECT id * 2 as doubled FROM test_data")
+      withSQLConf(CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+        val nativeChild = stripAQEPlan(applyCometExecRule(sparkPlan)).collectFirst {
+          case op: CometNativeExec => op
+        }.get
+        val rule = CometExecRule(spark)
+
+        // ProjectExec has a registered serde, so Comet did attempt this operator.
+        val strictOp = ProjectExec(nativeChild.output, nativeChild)
+        assert(CometExecRule.allExecs.contains(strictOp.getClass))
+        val e = intercept[IllegalStateException] {
+          rule.reportUnexplainedFallback(strictOp)
+        }
+        assert(e.getMessage.contains("recorded no fallback reason"))
+        assert(e.getMessage.contains(strictOp.nodeName))
+
+        // Production default: no throw, and the generic message so users still see something.
+        withSQLConf(CometConf.COMET_STRICT_FALLBACK_REASONS.key -> "false") {
+          val lenientOp = ProjectExec(nativeChild.output, nativeChild)
+          rule.reportUnexplainedFallback(lenientOp)
+          val reasons = lenientOp
+            .getTagValue(CometExplainInfo.FALLBACK_REASONS)
+            .getOrElse(Set.empty[String])
+          assert(reasons == Set(s"${lenientOp.nodeName} is not supported"))
+        }
+      }
+    }
+  }
+
+  test("strict fallback reason checking is off by default and on for Comet's own suites") {
+    // The strict check turns "a serde returned None without saying why" into a hard failure. It
+    // must stay off in production, where the generic "<operator> is not supported" message is the
+    // right user-facing behaviour, and on for every Comet suite so the bug class cannot ship
+    // again. Enabling it in CometTestBase is what actually exercises it: the whole test corpus
+    // runs with it on. See https://github.com/apache/datafusion-comet/issues/5230.
+    assert(!CometConf.COMET_STRICT_FALLBACK_REASONS.defaultValue.get)
+    assert(CometConf.COMET_STRICT_FALLBACK_REASONS.get(spark.sessionState.conf))
+  }
+
+  test("strict mode does not fire for operators Comet never attempted to convert") {
+    // Strict mode must only fire when a serde actually attempted the operator and declined. An
+    // operator Comet has no handler for was never attempted, so demanding a specific reason
+    // would be wrong - it keeps the generic message.
+    withTempView("test_data") {
+      createTestDataFrame.createOrReplaceTempView("test_data")
+
+      val sparkPlan = createSparkPlan(spark, "SELECT id FROM test_data")
+      withSQLConf(CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "false") {
+        // With local table scan disabled the leaf has no Comet handler applied, and planning
+        // must complete rather than throw.
+        val transformedPlan = applyCometExecRule(sparkPlan)
+        assert(transformedPlan != null)
+      }
+    }
+  }
+
+  test("ObjectHashAggregate records a reason when it declines because Comet shuffle is off") {
+    // CometObjectHashAggregateExec deliberately declines when Comet shuffle is disabled, because
+    // converting it would leave a Comet partial aggregate feeding a Spark final aggregate. That
+    // decline used to return None from `convert` without recording why, so strict mode saw an
+    // unexplained fallback and the generic "<operator> is not supported" message hid the real
+    // cause. See https://github.com/apache/datafusion-comet/issues/5500.
+    //
+    // Both strict settings matter and are covered here: strict mode turns a missing reason into a
+    // hard failure, while the lenient production default is where the generic message used to
+    // stand in for the real cause, so it is the half a user actually sees.
+    Seq(true, false).foreach { strictFallbackReasons =>
+      // A fresh plan per iteration: fallback reasons accumulate on plan-node tags, so reusing
+      // one plan would let the first iteration's reasons satisfy the second.
+      withObjectHashAggPlan { sparkPlan =>
+        withSQLConf(
+          CometConf.COMET_SHUFFLE_ENABLED.key -> "false",
+          CometConf.COMET_STRICT_FALLBACK_REASONS.key -> strictFallbackReasons.toString,
+          CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+          val transformedPlan = applyCometExecRule(sparkPlan)
+          // Assert on the partial stage: its child is the Comet local table scan, so it is the
+          // node whose children are all native and which therefore reaches the strict
+          // unexplained-fallback check in CometExecRule.
+          val partialAgg = partialObjectHashAgg(transformedPlan)
+
+          val reasons = partialAgg
+            .getTagValue(CometExplainInfo.FALLBACK_REASONS)
+            .getOrElse(Set.empty[String])
+          assert(
+            reasons.exists(_.contains("Comet shuffle is not enabled")),
+            "expected the shuffle-disabled reason on the ObjectHashAggregateExec, " +
+              s"got: $reasons")
+          // The generic catch-all must not appear: a real reason was available.
+          assert(
+            !reasons.contains(s"${partialAgg.nodeName} is not supported"),
+            s"a real reason was available but the generic message was used too: $reasons")
+
+          // The reason must survive into the rendered extended-explain output, which is what
+          // the user actually reads.
+          val explained = new ExtendedExplainInfo().getFallbackReasons(transformedPlan)
+          // Match the tail, not the "Comet shuffle is not enabled" prefix: with shuffle off,
+          // CometShuffleExchangeExec.shuffleSupported tags the ShuffleExchangeExec with its own
+          // "Comet shuffle is not enabled: ..." reason, and getFallbackReasons flattens every
+          // node's tags into one unattributed set. The prefix alone would match that instead.
+          assert(
+            explained.exists(_.contains("would split the aggregate across Comet and Spark")),
+            s"expected the aggregate's own reason in extended explain output, got: $explained")
+        }
+      }
+    }
+  }
+
+  test("CometObjectHashAggregateExec reports the shuffle-disabled decline in getSupportLevel") {
+    // The decline belongs in getSupportLevel, not convert: that is where CometExecRule attaches
+    // the fallback reason centrally, and it matches CometCollectLimitExec and
+    // CometTakeOrderedAndProjectExec, which gate on the same shuffle predicate.
+    // See https://github.com/apache/datafusion-comet/issues/5500.
+    withObjectHashAggPlan { sparkPlan =>
+      val agg = partialObjectHashAgg(sparkPlan)
+
+      withSQLConf(CometConf.COMET_SHUFFLE_ENABLED.key -> "false") {
+        CometObjectHashAggregateExec.getSupportLevel(agg) match {
+          case Unsupported(Some(notes)) =>
+            // Assert the aggregate-specific tail, not the "Comet shuffle is not enabled"
+            // prefix: that prefix is shared with CometCollectLimitExec and
+            // CometTakeOrderedAndProjectExec, so matching it alone would not notice this
+            // message losing the half that explains the split.
+            assert(
+              notes.contains("would split the aggregate across Comet and Spark"),
+              s"expected the aggregate-specific shuffle-disabled reason, got: $notes")
+          case other =>
+            fail(s"expected Unsupported with a shuffle-disabled reason, got: $other")
+        }
+      }
+
+      // Enabling shuffle must leave eligibility untouched.
+      withSQLConf(CometConf.COMET_SHUFFLE_ENABLED.key -> "true") {
+        assert(CometObjectHashAggregateExec.getSupportLevel(agg).isInstanceOf[Compatible])
+      }
+    }
+  }
+
+  test("ObjectHashAggregate still converts when Comet shuffle is enabled") {
+    // Guards the other half of https://github.com/apache/datafusion-comet/issues/5500: adding the
+    // fallback reason must not change which aggregates Comet accepts.
+    withObjectHashAggPlan { sparkPlan =>
+      withSQLConf(
+        CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+        val transformedPlan = applyCometExecRule(sparkPlan)
+        assert(countOperators(transformedPlan, classOf[CometHashAggregateExec]) > 0)
+      }
+    }
   }
 
   test(
@@ -152,8 +370,8 @@ class CometExecRuleSuite extends CometTestBase {
         CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
         val transformedPlan = applyCometExecRule(sparkPlan)
 
-        // SUM has incompatible intermediate buffers, so if the final aggregate cannot
-        // be converted to Comet, neither should be
+        // COUNT is intentionally excluded from mixed execution (AQE / count-bug reasons), so if
+        // the final aggregate cannot be converted to Comet, neither should the partial.
         assert(
           countOperators(transformedPlan, classOf[HashAggregateExec]) == originalHashAggCount)
         assert(countOperators(transformedPlan, classOf[CometHashAggregateExec]) == 0)
@@ -177,7 +395,8 @@ class CometExecRuleSuite extends CometTestBase {
         CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
         val transformedPlan = applyCometExecRule(sparkPlan)
 
-        // if the partial aggregate cannot be converted to Comet, then neither should be
+        // COUNT blocks mixed execution, so if the partial cannot be converted, neither should
+        // the final.
         assert(
           countOperators(transformedPlan, classOf[HashAggregateExec]) == originalHashAggCount)
         assert(countOperators(transformedPlan, classOf[CometHashAggregateExec]) == 0)
@@ -226,6 +445,137 @@ class CometExecRuleSuite extends CometTestBase {
 
         // Safe aggregates allow mixed execution: partial stays Spark, final can be Comet
         assert(countOperators(transformedPlan, classOf[HashAggregateExec]) == 1) // partial only
+        assert(countOperators(transformedPlan, classOf[CometHashAggregateExec]) == 1) // final
+      }
+    }
+  }
+
+  test("CometExecRule should allow SUM mixed Comet partial and Spark final") {
+    withTempView("test_data") {
+      createTestDataFrame.createOrReplaceTempView("test_data")
+      val sparkPlan =
+        createSparkPlan(spark, "SELECT SUM(id) FROM test_data GROUP BY (id % 3)")
+      assert(countOperators(sparkPlan, classOf[HashAggregateExec]) == 2)
+      withSQLConf(
+        CometConf.COMET_ENABLE_FINAL_HASH_AGGREGATE.key -> "false",
+        CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+        val transformedPlan = applyCometExecRule(sparkPlan)
+        // SUM buffer matches Spark: partial converts to Comet, final stays Spark.
+        assert(countOperators(transformedPlan, classOf[HashAggregateExec]) == 1) // final
+        assert(countOperators(transformedPlan, classOf[CometHashAggregateExec]) == 1) // partial
+      }
+    }
+  }
+
+  test("CometExecRule should allow SUM mixed Spark partial and Comet final") {
+    withTempView("test_data") {
+      createTestDataFrame.createOrReplaceTempView("test_data")
+      val sparkPlan =
+        createSparkPlan(spark, "SELECT SUM(id) FROM test_data GROUP BY (id % 3)")
+      assert(countOperators(sparkPlan, classOf[HashAggregateExec]) == 2)
+      withSQLConf(
+        CometConf.COMET_ENABLE_PARTIAL_HASH_AGGREGATE.key -> "false",
+        CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+        val transformedPlan = applyCometExecRule(sparkPlan)
+        assert(countOperators(transformedPlan, classOf[HashAggregateExec]) == 1) // partial
+        assert(countOperators(transformedPlan, classOf[CometHashAggregateExec]) == 1) // final
+      }
+    }
+  }
+
+  test("CometExecRule should allow AVG mixed Comet partial and Spark final") {
+    withTempView("test_data") {
+      createTestDataFrame.createOrReplaceTempView("test_data")
+      val sparkPlan =
+        createSparkPlan(spark, "SELECT AVG(id) FROM test_data GROUP BY (id % 3)")
+      assert(countOperators(sparkPlan, classOf[HashAggregateExec]) == 2)
+      withSQLConf(
+        CometConf.COMET_ENABLE_FINAL_HASH_AGGREGATE.key -> "false",
+        CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+        val transformedPlan = applyCometExecRule(sparkPlan)
+        assert(countOperators(transformedPlan, classOf[HashAggregateExec]) == 1) // final
+        assert(countOperators(transformedPlan, classOf[CometHashAggregateExec]) == 1) // partial
+      }
+    }
+  }
+
+  test("CometExecRule should not allow try_sum mixed execution") {
+    assume(isSpark35Plus, "try_sum was added in Spark 3.5")
+    withTempView("test_data") {
+      createTestDataFrame.createOrReplaceTempView("test_data")
+      val sparkPlan =
+        createSparkPlan(spark, "SELECT try_sum(id) FROM test_data GROUP BY (id % 3)")
+      assert(countOperators(sparkPlan, classOf[HashAggregateExec]) == 2)
+      withSQLConf(
+        CometConf.COMET_ENABLE_FINAL_HASH_AGGREGATE.key -> "false",
+        CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+        val transformedPlan = applyCometExecRule(sparkPlan)
+        // TRY-mode SUM uses a Comet-internal buffer column, so mixing is unsafe:
+        // the partial must also fall back to Spark.
+        assert(countOperators(transformedPlan, classOf[HashAggregateExec]) == 2)
+        assert(countOperators(transformedPlan, classOf[CometHashAggregateExec]) == 0)
+      }
+    }
+  }
+
+  test("CometExecRule should not allow decimal AVG mixed execution") {
+    withTempView("test_data") {
+      createTestDataFrame.createOrReplaceTempView("test_data")
+      // Precision must be large enough (prec + 4 > 15) that Spark's own DecimalAggregates
+      // optimizer rule does not rewrite AVG to operate on the unscaled Long value, which would
+      // sidestep the decimal buffer path this test is meant to exercise.
+      val sparkPlan =
+        createSparkPlan(
+          spark,
+          "SELECT AVG(CAST(id AS DECIMAL(20, 2))) FROM test_data GROUP BY (id % 3)")
+      assert(countOperators(sparkPlan, classOf[HashAggregateExec]) == 2)
+      withSQLConf(
+        CometConf.COMET_ENABLE_FINAL_HASH_AGGREGATE.key -> "false",
+        CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+        val transformedPlan = applyCometExecRule(sparkPlan)
+        // Decimal AVG is deferred (its overflow path nulls count differently from Spark), so
+        // mixed execution is unsafe and the partial must also fall back to Spark.
+        assert(countOperators(transformedPlan, classOf[HashAggregateExec]) == 2)
+        assert(countOperators(transformedPlan, classOf[CometHashAggregateExec]) == 0)
+      }
+    }
+  }
+
+  test("CometExecRule should not allow decimal SUM mixed execution") {
+    withTempView("test_data") {
+      createTestDataFrame.createOrReplaceTempView("test_data")
+      // Precision must be large enough (prec + 4 > 15) that Spark's own DecimalAggregates
+      // optimizer rule does not rewrite SUM to operate on the unscaled Long value, which would
+      // sidestep the decimal buffer path this test is meant to exercise.
+      val sparkPlan =
+        createSparkPlan(
+          spark,
+          "SELECT SUM(CAST(id AS DECIMAL(20, 2))) FROM test_data GROUP BY (id % 3)")
+      assert(countOperators(sparkPlan, classOf[HashAggregateExec]) == 2)
+      withSQLConf(
+        CometConf.COMET_ENABLE_FINAL_HASH_AGGREGATE.key -> "false",
+        CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+        val transformedPlan = applyCometExecRule(sparkPlan)
+        // Decimal SUM overflow detection (ANSI throw / Legacy null) does not survive a
+        // Spark-partial / Comet-final split, so mixed execution is unsafe and the partial
+        // must also fall back to Spark.
+        assert(countOperators(transformedPlan, classOf[HashAggregateExec]) == 2)
+        assert(countOperators(transformedPlan, classOf[CometHashAggregateExec]) == 0)
+      }
+    }
+  }
+
+  test("CometExecRule should allow AVG mixed Spark partial and Comet final") {
+    withTempView("test_data") {
+      createTestDataFrame.createOrReplaceTempView("test_data")
+      val sparkPlan =
+        createSparkPlan(spark, "SELECT AVG(id) FROM test_data GROUP BY (id % 3)")
+      assert(countOperators(sparkPlan, classOf[HashAggregateExec]) == 2)
+      withSQLConf(
+        CometConf.COMET_ENABLE_PARTIAL_HASH_AGGREGATE.key -> "false",
+        CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+        val transformedPlan = applyCometExecRule(sparkPlan)
+        assert(countOperators(transformedPlan, classOf[HashAggregateExec]) == 1) // partial
         assert(countOperators(transformedPlan, classOf[CometHashAggregateExec]) == 1) // final
       }
     }
@@ -305,6 +655,106 @@ class CometExecRuleSuite extends CometTestBase {
       }
     } finally {
       spark.sessionState.functionRegistry.dropFunction(funcId)
+    }
+  }
+
+  // Regression tests for https://github.com/apache/datafusion-comet/issues/4813. An aggregate with
+  // an incompatible intermediate buffer (percentile_approx) combined with a distinct aggregate is
+  // rewritten by Spark into a multi-stage plan whose partial is separated from the final by
+  // intermediate PartialMerge stages. If part of that chain runs in Comet and part in Spark the
+  // incompatible buffer crosses the boundary and crashes, so the whole chain must fall back.
+  test(
+    "CometExecRule should not split distinct aggregate with incompatible buffer (Spark final)") {
+    withTempView("test_data") {
+      createTestDataFrame.createOrReplaceTempView("test_data")
+
+      val sparkPlan = createSparkPlan(
+        spark,
+        "SELECT percentile_approx(id, 0.5), COUNT(DISTINCT name) FROM test_data")
+
+      // The distinct rewrite produces a multi-stage ObjectHashAggregate chain.
+      assert(countOperators(sparkPlan, classOf[ObjectHashAggregateExec]) > 1)
+
+      withSQLConf(
+        CometConf.COMET_ENABLE_FINAL_HASH_AGGREGATE.key -> "false",
+        CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+        val transformedPlan = applyCometExecRule(sparkPlan)
+
+        // percentile_approx has an incompatible buffer, so with the final forced to Spark the
+        // entire partial/merge chain must also stay in Spark.
+        assert(countOperators(transformedPlan, classOf[CometHashAggregateExec]) == 0)
+      }
+    }
+  }
+
+  test(
+    "CometExecRule should not split distinct aggregate with incompatible buffer (Spark part)") {
+    withTempView("test_data") {
+      createTestDataFrame.createOrReplaceTempView("test_data")
+
+      val sparkPlan = createSparkPlan(
+        spark,
+        "SELECT percentile_approx(id, 0.5), COUNT(DISTINCT name) FROM test_data")
+
+      assert(countOperators(sparkPlan, classOf[ObjectHashAggregateExec]) > 1)
+
+      withSQLConf(
+        CometConf.COMET_ENABLE_PARTIAL_HASH_AGGREGATE.key -> "false",
+        CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+        val transformedPlan = applyCometExecRule(sparkPlan)
+
+        // With the partial/merge stages forced to Spark, no Comet aggregate may consume their
+        // incompatible buffers either.
+        assert(countOperators(transformedPlan, classOf[CometHashAggregateExec]) == 0)
+      }
+    }
+  }
+
+  test("CometExecRule should allow approx_count_distinct mixed Comet partial and Spark final") {
+    withTempView("test_data") {
+      createTestDataFrame.createOrReplaceTempView("test_data")
+
+      // approx_count_distinct stores its registers in Spark's identical packed-Long buffer, so
+      // it is mixed-safe: the Comet partial can feed a Spark final.
+      val sparkPlan =
+        createSparkPlan(
+          spark,
+          "SELECT approx_count_distinct(id) FROM test_data GROUP BY (id % 3)")
+
+      val originalHashAggCount = countOperators(sparkPlan, classOf[HashAggregateExec])
+      assert(originalHashAggCount == 2)
+
+      withSQLConf(
+        CometConf.COMET_ENABLE_FINAL_HASH_AGGREGATE.key -> "false",
+        CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+        val transformedPlan = applyCometExecRule(sparkPlan)
+
+        assert(countOperators(transformedPlan, classOf[HashAggregateExec]) == 1) // final only
+        assert(countOperators(transformedPlan, classOf[CometHashAggregateExec]) == 1) // partial
+      }
+    }
+  }
+
+  test("CometExecRule should allow approx_count_distinct mixed Spark partial and Comet final") {
+    withTempView("test_data") {
+      createTestDataFrame.createOrReplaceTempView("test_data")
+
+      val sparkPlan =
+        createSparkPlan(
+          spark,
+          "SELECT approx_count_distinct(id) FROM test_data GROUP BY (id % 3)")
+
+      val originalHashAggCount = countOperators(sparkPlan, classOf[HashAggregateExec])
+      assert(originalHashAggCount == 2)
+
+      withSQLConf(
+        CometConf.COMET_ENABLE_PARTIAL_HASH_AGGREGATE.key -> "false",
+        CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+        val transformedPlan = applyCometExecRule(sparkPlan)
+
+        assert(countOperators(transformedPlan, classOf[HashAggregateExec]) == 1) // partial only
+        assert(countOperators(transformedPlan, classOf[CometHashAggregateExec]) == 1) // final
+      }
     }
   }
 
@@ -428,7 +878,7 @@ class CometExecRuleSuite extends CometTestBase {
       // Both aggregates fall back to JVM as in the prior test, but the revert optimization is
       // disabled, so the shuffle should still be wrapped in CometColumnarShuffle.
       withSQLConf(
-        CometConf.COMET_EXEC_SHUFFLE_REVERT_REDUNDANT_COLUMNAR_ENABLED.key -> "false",
+        CometConf.COMET_SHUFFLE_REVERT_REDUNDANT_COLUMNAR_ENABLED.key -> "false",
         CometConf.COMET_ENABLE_PARTIAL_HASH_AGGREGATE.key -> "false",
         CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
         val transformedPlan = applyCometExecRule(sparkPlan)

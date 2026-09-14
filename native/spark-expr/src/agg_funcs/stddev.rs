@@ -15,14 +15,14 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use std::{any::Any, sync::Arc};
+use std::sync::Arc;
 
 use crate::agg_funcs::variance::{VarianceAccumulator, VarianceGroupsAccumulator};
 use arrow::array::{ArrayRef, AsArray, BooleanArray, Float64Array};
 use arrow::datatypes::FieldRef;
 use arrow::datatypes::{DataType, Field, Float64Type};
 use datafusion::common::types::NativeType;
-use datafusion::common::{internal_err, Result, ScalarValue};
+use datafusion::common::{internal_err, not_impl_err, Result, ScalarValue};
 use datafusion::logical_expr::function::{AccumulatorArgs, StateFieldsArgs};
 use datafusion::logical_expr::{
     Accumulator, AggregateUDFImpl, Coercion, EmitTo, GroupsAccumulator, Signature, Volatility,
@@ -78,11 +78,6 @@ impl Stddev {
 }
 
 impl AggregateUDFImpl for Stddev {
-    /// Return a reference to Any that can be used for downcasting
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn name(&self) -> &str {
         &self.name
     }
@@ -236,11 +231,10 @@ impl GroupsAccumulator for StddevGroupsAccumulator {
         &mut self,
         values: &[ArrayRef],
         group_indices: &[usize],
-        opt_filter: Option<&BooleanArray>,
         total_num_groups: usize,
     ) -> Result<()> {
         self.inner
-            .merge_batch(values, group_indices, opt_filter, total_num_groups)
+            .merge_batch(values, group_indices, total_num_groups)
     }
 
     fn evaluate(&mut self, emit_to: EmitTo) -> Result<ArrayRef> {
@@ -253,6 +247,14 @@ impl GroupsAccumulator for StddevGroupsAccumulator {
 
     fn state(&mut self, emit_to: EmitTo) -> Result<Vec<ArrayRef>> {
         self.inner.state(emit_to)
+    }
+
+    fn convert_to_state(
+        &self,
+        _values: &[ArrayRef],
+        _opt_filter: Option<&BooleanArray>,
+    ) -> Result<Vec<ArrayRef>> {
+        not_impl_err!("Input batch conversion to state not implemented")
     }
 
     fn size(&self) -> usize {

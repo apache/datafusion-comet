@@ -21,6 +21,7 @@ package org.apache.comet
 
 import scala.util.Random
 
+import org.apache.spark.SparkThrowable
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row, SaveMode}
 import org.apache.spark.sql.catalyst.analysis.UnresolvedAttribute
 import org.apache.spark.sql.catalyst.expressions.{Days, Hours, Literal}
@@ -30,6 +31,7 @@ import org.apache.spark.sql.functions.col
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{DataTypes, StructField, StructType}
 
+import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
 import org.apache.comet.serde.{CometDateFormat, CometTruncDate, CometTruncTimestamp}
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator}
 
@@ -38,6 +40,44 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
   /** Timezones used to verify that TimestampNTZ operations are timezone-independent. */
   private val crossTimezones =
     Seq("UTC", "America/Los_Angeles", "Europe/London", "Asia/Tokyo")
+
+  private def deepestSparkThrowable(error: Throwable): SparkThrowable with Throwable =
+    causeChain(error)
+      .collect { case e: SparkThrowable with Throwable => e }
+      .lastOption
+      .getOrElse(
+        fail(s"No SparkThrowable in cause chain: ${causeChain(error).map(_.getClass.getName)}"))
+
+  test("next_day and make_date ANSI errors match Spark exceptions") {
+    withSQLConf(
+      SQLConf.ANSI_ENABLED.key -> "true",
+      SQLConf.OPTIMIZER_EXCLUDED_RULES.key ->
+        "org.apache.spark.sql.catalyst.optimizer.ConstantFolding") {
+      Seq(
+        "SELECT next_day(date('2024-01-01'), 'NOT_A_DAY')",
+        "SELECT make_date(2024, 13, 1)",
+        // 999999999 instead overflows the epoch-day conversion as a plain ArithmeticException.
+        "SELECT make_date(1000000000, 1, 1)",
+        "SELECT make_date(1000000000, 13, 0)")
+        .foreach { query =>
+          val df = sql(query)
+          checkCometOperators(stripAQEPlan(df.queryExecution.executedPlan))
+
+          val (sparkError, cometError) = checkSparkAnswerMaybeThrows(df)
+          val sparkFailure = sparkError.getOrElse(fail(s"Spark did not fail for: $query"))
+          val cometFailure = cometError.getOrElse(fail(s"Comet did not fail for: $query"))
+          val expected = deepestSparkThrowable(sparkFailure)
+          val actual = deepestSparkThrowable(cometFailure)
+
+          assert(actual.getClass == expected.getClass)
+          assert(actual.getErrorClass == expected.getErrorClass)
+          assert(actual.getSqlState == expected.getSqlState)
+          assert(actual.getMessageParameters == expected.getMessageParameters)
+          assert(actual.getMessage == expected.getMessage)
+          assert(!causeChain(cometFailure).exists(_.isInstanceOf[CometNativeException]))
+        }
+    }
+  }
 
   test("trunc (TruncDate)") {
     val supportedFormats = CometTruncDate.supportedFormats
@@ -56,23 +96,23 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
       checkSparkAnswerAndOperator(s"SELECT c0, trunc(c0, '$format') from tbl order by c0, c1")
     }
     for (format <- unsupportedFormats) {
-      // Comet should fall back to Spark for unsupported or invalid formats
-      checkSparkAnswerAndFallbackReason(
-        s"SELECT c0, trunc(c0, '$format') from tbl order by c0, c1",
-        s"Format $format is not supported")
+      // Formats outside the native set have no native path, but TruncDate mixes in
+      // CodegenDispatchFallback, so they route through the JVM codegen dispatcher (Spark's own
+      // TruncDate.doGenCode inside the Comet pipeline) and stay native while matching Spark
+      // exactly (an invalid format yields null in both engines).
+      checkSparkAnswerAndOperator(s"SELECT c0, trunc(c0, '$format') from tbl order by c0, c1")
     }
 
-    // Comet should fall back to Spark if format is not a literal
-    checkSparkAnswerAndFallbackReason(
-      "SELECT c0, trunc(c0, c1) from tbl order by c0, c1",
-      "Invalid format strings will throw an exception instead of returning NULL")
+    // Non-literal format strings are Incompatible on the native path, so Comet routes them
+    // through the codegen dispatcher and still executes natively.
+    checkSparkAnswerAndOperator("SELECT c0, trunc(c0, c1) from tbl order by c0, c1")
   }
 
   test("date_trunc (TruncTimestamp) - reading from DataFrame") {
     val supportedFormats = CometTruncTimestamp.supportedFormats
     val unsupportedFormats = Seq("invalid")
 
-    createTimestampTestData.createOrReplaceTempView("tbl")
+    createTimestampTestData().createOrReplaceTempView("tbl")
 
     // TODO test fails with non-UTC timezone
     // https://github.com/apache/datafusion-comet/issues/2649
@@ -81,15 +121,15 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
         checkSparkAnswerAndOperator(s"SELECT c0, date_trunc('$format', c0) from tbl order by c0")
       }
       for (format <- unsupportedFormats) {
-        // Comet should fall back to Spark for unsupported or invalid formats
-        checkSparkAnswerAndFallbackReason(
-          s"SELECT c0, date_trunc('$format', c0) from tbl order by c0",
-          s"Format $format is not supported")
+        // Formats outside the native set have no native path, but TruncTimestamp mixes in
+        // CodegenDispatchFallback, so they route through the JVM codegen dispatcher (Spark's own
+        // TruncTimestamp.doGenCode inside the Comet pipeline) and stay native while matching
+        // Spark exactly (an invalid format yields null in both engines).
+        checkSparkAnswerAndOperator(s"SELECT c0, date_trunc('$format', c0) from tbl order by c0")
       }
-      // Comet should fall back to Spark if format is not a literal
-      checkSparkAnswerAndFallbackReason(
-        "SELECT c0, date_trunc(fmt, c0) from tbl order by c0, fmt",
-        "Invalid format strings will throw an exception instead of returning NULL")
+      // Non-literal format strings are Incompatible on the native path, so Comet routes them
+      // through the codegen dispatcher and still executes natively.
+      checkSparkAnswerAndOperator("SELECT c0, date_trunc(fmt, c0) from tbl order by c0, fmt")
     }
   }
 
@@ -98,7 +138,7 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
     val unsupportedFormats = Seq("invalid")
 
     withTempDir { path =>
-      createTimestampTestData.write.mode(SaveMode.Overwrite).parquet(path.toString)
+      createTimestampTestData().write.mode(SaveMode.Overwrite).parquet(path.toString)
       spark.read.parquet(path.toString).createOrReplaceTempView("tbl")
 
       // TODO test fails with non-UTC timezone
@@ -109,21 +149,81 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
             s"SELECT c0, date_trunc('$format', c0) from tbl order by c0")
         }
         for (format <- unsupportedFormats) {
-          // Comet should fall back to Spark for unsupported or invalid formats
-          checkSparkAnswerAndFallbackReason(
-            s"SELECT c0, date_trunc('$format', c0) from tbl order by c0",
-            s"Format $format is not supported")
+          // Formats outside the native set have no native path, but TruncTimestamp mixes in
+          // CodegenDispatchFallback, so they route through the JVM codegen dispatcher (Spark's
+          // own TruncTimestamp.doGenCode inside the Comet pipeline) and stay native while
+          // matching Spark exactly (an invalid format yields null in both engines).
+          checkSparkAnswerAndOperator(
+            s"SELECT c0, date_trunc('$format', c0) from tbl order by c0")
         }
-        // Comet should fall back to Spark if format is not a literal
+        // Non-literal format strings are Incompatible on the native path, so Comet routes them
+        // through the codegen dispatcher and still executes natively.
+        checkSparkAnswerAndOperator("SELECT c0, date_trunc(fmt, c0) from tbl order by c0, fmt")
+      }
+    }
+  }
+
+  test("date_trunc - non-UTC timezone routes via codegen dispatcher") {
+    // The native date_trunc is Incompatible in non-UTC sessions
+    // (https://github.com/apache/datafusion-comet/issues/2649), so with allowIncompatible=false
+    // the expression rides the codegen dispatcher (running Spark's own TruncTimestamp.doGenCode
+    // inside the Comet pipeline) and stays native while matching Spark exactly.
+    createTimestampTestData().createOrReplaceTempView("tbl")
+
+    val nonUtcTimezones = Seq("America/Los_Angeles", "Europe/London", "Asia/Tokyo")
+    for (tz <- nonUtcTimezones) {
+      withSQLConf(
+        SQLConf.SESSION_LOCAL_TIMEZONE.key -> tz,
+        CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "true") {
+        for (format <- CometTruncTimestamp.supportedFormats) {
+          checkSparkAnswerAndOperator(
+            s"SELECT c0, date_trunc('$format', c0) from tbl order by c0")
+        }
+      }
+    }
+  }
+
+  test("date_trunc - non-UTC timezone falls back when codegen dispatcher disabled") {
+    // With the dispatcher disabled, the Incompatible non-UTC case (#2649) has no native path
+    // and falls back to Spark.
+    createTimestampTestData().createOrReplaceTempView("tbl")
+
+    val nonUtcTimezones = Seq("America/New_York", "Europe/London")
+    for (tz <- nonUtcTimezones) {
+      withSQLConf(
+        SQLConf.SESSION_LOCAL_TIMEZONE.key -> tz,
+        CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "false") {
         checkSparkAnswerAndFallbackReason(
-          "SELECT c0, date_trunc(fmt, c0) from tbl order by c0, fmt",
-          "Invalid format strings will throw an exception instead of returning NULL")
+          "SELECT c0, date_trunc('HOUR', c0) from tbl order by c0",
+          CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key)
+      }
+    }
+  }
+
+  test("date_trunc - non-UTC timezone takes native path when allowIncompatible is enabled") {
+    // With the schema and DST fixes (#2649), the native path produces Spark-identical results
+    // for any non-UTC timezone whose DST transitions are 1-hour and whose dates fall within
+    // chrono-tz's precomputed DST horizon (currently ~year 2100). A base date in 2024 keeps the
+    // generator well inside that window.
+    val baseDate2024 =
+      new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss").parse("2024-06-15 12:00:00").getTime
+    createTimestampTestData(baseDate2024).createOrReplaceTempView("tbl")
+
+    val nonUtcTimezones = Seq("America/New_York", "Europe/London", "Asia/Tokyo")
+    for (tz <- nonUtcTimezones) {
+      withSQLConf(
+        SQLConf.SESSION_LOCAL_TIMEZONE.key -> tz,
+        "spark.comet.expression.TruncTimestamp.allowIncompatible" -> "true") {
+        for (format <- CometTruncTimestamp.supportedFormats) {
+          checkSparkAnswerAndOperator(
+            s"SELECT c0, date_trunc('$format', c0) from tbl order by c0")
+        }
       }
     }
   }
 
   test("unix_timestamp - timestamp input") {
-    createTimestampTestData.createOrReplaceTempView("tbl")
+    createTimestampTestData().createOrReplaceTempView("tbl")
     for (timezone <- Seq("UTC", "America/Los_Angeles")) {
       withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> timezone) {
         checkSparkAnswerAndOperator("SELECT c0, unix_timestamp(c0) from tbl order by c0")
@@ -160,18 +260,16 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
   }
 
   test("hour/minute/second - timestamp_ntz input") {
-    // TimestampNTZ extracts time components directly from the stored local time,
-    // so the result should be the same regardless of session timezone.
-    // Comet currently falls back to Spark for hour/minute/second on TimestampNTZ
-    // inputs (https://github.com/apache/datafusion-comet/issues/3180); we verify
-    // correctness (matching Spark's output) in all session timezones.
+    // TimestampNTZ extracts time components directly from the stored local time, so the native
+    // path applies no timezone conversion and the result is the same regardless of session
+    // timezone (https://github.com/apache/datafusion-comet/issues/3180).
     val r = new Random(42)
     val ntzSchema = StructType(Seq(StructField("ts_ntz", DataTypes.TimestampNTZType, true)))
     val ntzDF = FuzzDataGenerator.generateDataFrame(r, spark, ntzSchema, 100, DataGenOptions())
     ntzDF.createOrReplaceTempView("ntz_tbl")
     for (tz <- crossTimezones) {
       withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> tz) {
-        checkSparkAnswer(
+        checkSparkAnswerAndOperator(
           "SELECT ts_ntz, hour(ts_ntz), minute(ts_ntz), second(ts_ntz) from ntz_tbl order by ts_ntz")
       }
     }
@@ -180,10 +278,11 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
   test("date_trunc - timestamp_ntz input") {
     // TimestampNTZ truncation should be timezone-independent.
     // Verify the result is the same regardless of session timezone.
-    // Catalyst wraps the NTZ child in cast(ts_ntz as timestamp), so Comet runs
-    // date_trunc natively only when the session timezone is UTC (see
-    // https://github.com/apache/datafusion-comet/issues/2649); for non-UTC
-    // sessions it falls back to Spark but must still produce correct results.
+    // Catalyst wraps the NTZ child in cast(ts_ntz as timestamp). The native path is
+    // Compatible only when the session timezone is UTC; for non-UTC sessions it is
+    // Incompatible (https://github.com/apache/datafusion-comet/issues/2649), so Comet
+    // routes those through the codegen dispatcher. Either way the projection stays native
+    // and must match Spark.
     val r = new Random(42)
     val ntzSchema = StructType(Seq(StructField("ts_ntz", DataTypes.TimestampNTZType, true)))
     // Use a reasonable date range (around year 2024) to avoid chrono-tz DST calculation
@@ -201,13 +300,8 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
     for (tz <- crossTimezones) {
       withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> tz) {
         for (format <- CometTruncTimestamp.supportedFormats) {
-          val sql =
-            s"SELECT ts_ntz, date_trunc('$format', ts_ntz) from ntz_tbl order by ts_ntz"
-          if (tz == "UTC") {
-            checkSparkAnswerAndOperator(sql)
-          } else {
-            checkSparkAnswer(sql)
-          }
+          checkSparkAnswerAndOperator(
+            s"SELECT ts_ntz, date_trunc('$format', ts_ntz) from ntz_tbl order by ts_ntz")
         }
       }
     }
@@ -274,12 +368,12 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
               "SELECT ts_ntz, CAST(ts_ntz AS DATE) FROM ntz_cross_tz ORDER BY ts_ntz")
             checkSparkAnswerAndOperator(
               "SELECT ts_ntz, unix_timestamp(ts_ntz) FROM ntz_cross_tz ORDER BY ts_ntz")
-            // hour/minute/second fall back for NTZ (issue #3180); date_trunc falls
-            // back when the session timezone is non-UTC (issue #2649). Verify
-            // correctness only.
-            checkSparkAnswer(
+            // hour/minute/second run natively for NTZ without timezone conversion (issue #3180),
+            // and date_trunc is Incompatible when the session timezone is non-UTC (issue #2649),
+            // so the latter rides the codegen dispatcher; both stay native while matching Spark.
+            checkSparkAnswerAndOperator(
               "SELECT ts_ntz, hour(ts_ntz), minute(ts_ntz), second(ts_ntz) FROM ntz_cross_tz ORDER BY ts_ntz")
-            checkSparkAnswer(
+            checkSparkAnswerAndOperator(
               "SELECT ts_ntz, date_trunc('HOUR', ts_ntz) FROM ntz_cross_tz ORDER BY ts_ntz")
           }
         }
@@ -312,13 +406,44 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
     }
   }
 
-  private def createTimestampTestData = {
+  test("unix_timestamp - string input falls back even when a collated format opts into native") {
+    assume(isSpark40Plus, "string collation requires Spark 4.0+")
+    withTempView("string_tbl") {
+      val schema = StructType(Seq(StructField("ts_str", DataTypes.StringType, true)))
+      val data = Seq(Row("2020-01-01 00:00:00"), Row("2021-06-15 12:30:45"), Row(null))
+      spark
+        .createDataFrame(spark.sparkContext.parallelize(data), schema)
+        .createOrReplaceTempView("string_tbl")
+
+      // A collated format argument makes the expression `Incompatible`, which
+      // `allowIncompatible=true` waves straight through to `convert`. The input type has to be
+      // rejected ahead of that opt-in: the native kernel accepts only date/timestamp input, so
+      // serializing a string child raises an execution error instead of falling back to Spark.
+      withSQLConf(CometConf.getExprAllowIncompatConfigKey("UnixTimestamp") -> "true") {
+        checkSparkAnswerAndFallbackReason(
+          "SELECT ts_str, unix_timestamp(ts_str, 'yyyy-MM-dd HH:mm:ss' COLLATE UTF8_LCASE) " +
+            "from string_tbl order by ts_str",
+          "unix_timestamp does not support input type: StringType")
+      }
+    }
+  }
+
+  // Time-window grouping (PreciseTimestampConversion / KnownNullable) is covered by the SQL file
+  // test spark/src/test/resources/sql-tests/expressions/datetime/window.sql.
+
+  private def createTimestampTestData(
+      baseDate: Long = FuzzDataGenerator.defaultBaseDate): DataFrame = {
     val r = new Random(42)
     val schema = StructType(
       Seq(
         StructField("c0", DataTypes.TimestampType, true),
         StructField("fmt", DataTypes.StringType, true)))
-    FuzzDataGenerator.generateDataFrame(r, spark, schema, 1000, DataGenOptions())
+    FuzzDataGenerator.generateDataFrame(
+      r,
+      spark,
+      schema,
+      1000,
+      DataGenOptions(baseDate = baseDate))
   }
 
   test("last_day") {
@@ -401,7 +526,7 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
     val supportedFormats = CometDateFormat.supportedFormats.keys.toSeq
       .filterNot(_.contains("'"))
 
-    createTimestampTestData.createOrReplaceTempView("tbl")
+    createTimestampTestData().createOrReplaceTempView("tbl")
 
     withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> "UTC") {
       for (format <- supportedFormats) {
@@ -415,7 +540,7 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
 
   test("date_format with specific format strings") {
     // Test specific format strings with explicit timestamp data
-    createTimestampTestData.createOrReplaceTempView("tbl")
+    createTimestampTestData().createOrReplaceTempView("tbl")
 
     withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> "UTC") {
       // Date formats
@@ -472,7 +597,7 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
   }
 
   test("date_format unsupported format routes via codegen dispatcher") {
-    createTimestampTestData.createOrReplaceTempView("tbl")
+    createTimestampTestData().createOrReplaceTempView("tbl")
 
     withSQLConf(
       SQLConf.SESSION_LOCAL_TIMEZONE.key -> "UTC",
@@ -483,7 +608,7 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
   }
 
   test("date_format unsupported format falls back when codegen dispatcher disabled") {
-    createTimestampTestData.createOrReplaceTempView("tbl")
+    createTimestampTestData().createOrReplaceTempView("tbl")
 
     withSQLConf(
       SQLConf.SESSION_LOCAL_TIMEZONE.key -> "UTC",
@@ -495,7 +620,7 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
   }
 
   test("date_format with non-UTC timezone routes via codegen dispatcher") {
-    createTimestampTestData.createOrReplaceTempView("tbl")
+    createTimestampTestData().createOrReplaceTempView("tbl")
 
     val nonUtcTimezones =
       Seq("America/New_York", "America/Los_Angeles", "Europe/London", "Asia/Tokyo")
@@ -511,7 +636,7 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
   }
 
   test("date_format with non-UTC timezone falls back when codegen dispatcher disabled") {
-    createTimestampTestData.createOrReplaceTempView("tbl")
+    createTimestampTestData().createOrReplaceTempView("tbl")
 
     val nonUtcTimezones = Seq("America/New_York", "Europe/London")
 
@@ -527,7 +652,7 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
   }
 
   test("date_format with non-UTC timezone takes native path when allowIncompatible is enabled") {
-    createTimestampTestData.createOrReplaceTempView("tbl")
+    createTimestampTestData().createOrReplaceTempView("tbl")
 
     val nonUtcTimezones = Seq("America/New_York", "Europe/London", "Asia/Tokyo")
 

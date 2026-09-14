@@ -22,6 +22,51 @@ package org.apache.comet
 import org.scalatest.funsuite.AnyFunSuite
 
 class SparkErrorConverterSuite extends AnyFunSuite {
+
+  test("CannotReadFile converts to a FAILED_READ_FILE SparkException naming the file") {
+    val ex = SparkErrorConverter
+      .convertErrorType(
+        "CannotReadFile",
+        "",
+        Map(
+          "filePath" -> "file:/tmp/data/part-0.parquet",
+          "message" -> "Parquet error: bad footer"),
+        Array.empty,
+        null)
+      .getOrElse(fail("Expected CannotReadFile to be converted to a Spark exception"))
+    // `cannotReadFilesError` IS the FAILED_READ_FILE path. Assert on the version-stable message
+    // ("Encountered error while reading file ...") rather than the `FAILED_READ_FILE` literal,
+    // which only Spark 4.x prepends to getMessage as the error-class tag (3.4/3.5 do not).
+    assert(ex.getMessage.contains("Encountered error while reading file"))
+    assert(ex.getMessage.contains("part-0.parquet"))
+  }
+
+  test("CannotReadFile with empty native path falls back to the per-task file list") {
+    // The native error (e.g. corrupt parquet) carries no path; convertToSparkException must fill
+    // it from the per-task file list threaded in from CometExecIterator.
+    val json =
+      """{"errorType":"CannotReadFile","errorClass":"",""" +
+        """"params":{"filePath":"","message":"Parquet error: bad footer"}}"""
+    val ex = SparkErrorConverter.convertToSparkException(
+      new org.apache.comet.exceptions.CometQueryExecutionException(json),
+      taskFilePaths = Seq("file:/tmp/data/part-7.parquet"))
+    // Version-stable assertion (see above): only Spark 4.x renders the FAILED_READ_FILE class tag.
+    assert(ex.getMessage.contains("Encountered error while reading file"))
+    assert(ex.getMessage.contains("part-7.parquet"))
+  }
+
+  test("CannotReadFile prefers the native path over the per-task file list") {
+    // When the native error supplied a path, keep it rather than the fallback list.
+    val json =
+      """{"errorType":"CannotReadFile","errorClass":"",""" +
+        """"params":{"filePath":"file:/tmp/data/native.parquet","message":"Parquet error: corrupt footer"}}"""
+    val ex = SparkErrorConverter.convertToSparkException(
+      new org.apache.comet.exceptions.CometQueryExecutionException(json),
+      taskFilePaths = Seq("file:/tmp/data/fallback.parquet"))
+    assert(ex.getMessage.contains("native.parquet"))
+    assert(!ex.getMessage.contains("fallback.parquet"))
+  }
+
   private def castOverflowError(fromType: String, value: String): Throwable = {
     SparkErrorConverter
       .convertErrorType(

@@ -39,6 +39,39 @@ INSERT INTO test_array_insert VALUES
 query
 SELECT array_insert(arr, pos, val) FROM test_array_insert
 
+statement
+CREATE TABLE test_array_insert_short_circuit(
+  arr ARRAY<INT>,
+  idx INT
+) USING parquet
+
+statement
+INSERT INTO test_array_insert_short_circuit VALUES
+  (NULL, 0),
+  (array(1), 1)
+
+-- null source array short-circuits position evaluation
+query
+SELECT array_insert(arr, element_at(array(1), idx), 9)
+FROM test_array_insert_short_circuit
+
+statement
+CREATE TABLE test_array_insert_null_pos_short_circuit(
+  arr ARRAY<INT>,
+  idx INT
+) USING parquet
+
+statement
+INSERT INTO test_array_insert_null_pos_short_circuit VALUES
+  (array(1), 0),
+  (array(1), 1),
+  (array(1), 2)
+
+-- null position short-circuits item evaluation
+query
+SELECT array_insert(arr, CAST(NULL AS INT), element_at(array(1), idx))
+FROM test_array_insert_null_pos_short_circuit
+
 -- ============================================================
 -- Literal arguments (all-literal queries test native eval
 -- because CometSqlFileTestSuite disables constant folding)
@@ -218,7 +251,7 @@ SELECT array_insert(array(CAST(1.0 AS DOUBLE), CAST(2.0 AS DOUBLE)), 2, CAST('-I
 
 -- negative zero
 query
-SELECT array_insert(array(CAST(1.0 AS DOUBLE), CAST(2.0 AS DOUBLE)), 1, CAST(-0.0 AS DOUBLE))
+SELECT array_insert(array(CAST(1.0 AS DOUBLE), CAST(2.0 AS DOUBLE)), 1, double('-0.0'))
 
 -- ============================================================
 -- Long arrays
@@ -247,3 +280,20 @@ SELECT array_insert(array(CAST(1 AS TINYINT), CAST(2 AS TINYINT)), 2, CAST(3 AS 
 
 query
 SELECT array_insert(array(CAST(1.1 AS FLOAT), CAST(2.2 AS FLOAT)), 2, CAST(3.3 AS FLOAT))
+
+-- ============================================================
+-- Array of maps (complex element type)
+-- The source array's map value is widened to nullable by CometCreateArray, while the standalone
+-- item map keeps value non-null because coalesce(id, 0) is non-null. Native ArrayInsert requires
+-- the item Arrow type to equal the source element type exactly, so the serde casts both sides to a
+-- common deeply-nullable element type. id includes a NULL row (coalesce yields 0).
+-- ============================================================
+
+statement
+CREATE TABLE test_array_insert_map(id int) USING parquet
+
+statement
+INSERT INTO test_array_insert_map VALUES (1), (2), (NULL)
+
+query
+SELECT array_insert(array(map(1, coalesce(id, 0))), 2, map(2, coalesce(id, 0))) FROM test_array_insert_map

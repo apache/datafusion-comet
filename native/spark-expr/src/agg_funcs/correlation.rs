@@ -18,15 +18,14 @@
 use arrow::array::{Array, ArrayRef, BooleanArray, Float64Array};
 use arrow::compute::{and, is_not_null};
 use arrow::datatypes::{DataType, Field, FieldRef};
-use std::{any::Any, sync::Arc};
+use std::sync::Arc;
 
 use crate::agg_funcs::covariance::{CovarianceAccumulator, CovarianceGroupsAccumulator};
 use crate::agg_funcs::stddev::StddevAccumulator;
 use crate::agg_funcs::variance::VarianceGroupsAccumulator;
 use arrow::compute::filter;
-use datafusion::common::{Result, ScalarValue};
+use datafusion::common::{not_impl_err, Result, ScalarValue};
 use datafusion::logical_expr::function::{AccumulatorArgs, StateFieldsArgs};
-use datafusion::logical_expr::type_coercion::aggregates::NUMERICS;
 use datafusion::logical_expr::{
     Accumulator, AggregateUDFImpl, EmitTo, GroupsAccumulator, Signature, Volatility,
 };
@@ -51,18 +50,16 @@ impl Correlation {
         assert!(matches!(data_type, DataType::Float64));
         Self {
             name: name.into(),
-            signature: Signature::uniform(2, NUMERICS.to_vec(), Volatility::Immutable),
+            signature: Signature::exact(
+                vec![DataType::Float64, DataType::Float64],
+                Volatility::Immutable,
+            ),
             null_on_divide_by_zero,
         }
     }
 }
 
 impl AggregateUDFImpl for Correlation {
-    /// Return a reference to Any that can be used for downcasting
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn name(&self) -> &str {
         &self.name
     }
@@ -338,7 +335,6 @@ impl GroupsAccumulator for CorrelationGroupsAccumulator {
         &mut self,
         values: &[ArrayRef],
         group_indices: &[usize],
-        opt_filter: Option<&BooleanArray>,
         total_num_groups: usize,
     ) -> Result<()> {
         assert_eq!(values.len(), 6, "six state columns to merge_batch");
@@ -361,11 +357,11 @@ impl GroupsAccumulator for CorrelationGroupsAccumulator {
         ];
 
         self.covar
-            .merge_batch(&covar_state, group_indices, opt_filter, total_num_groups)?;
+            .merge_batch(&covar_state, group_indices, total_num_groups)?;
         self.var1
-            .merge_batch(&var1_state, group_indices, opt_filter, total_num_groups)?;
+            .merge_batch(&var1_state, group_indices, total_num_groups)?;
         self.var2
-            .merge_batch(&var2_state, group_indices, opt_filter, total_num_groups)?;
+            .merge_batch(&var2_state, group_indices, total_num_groups)?;
         Ok(())
     }
 
@@ -443,6 +439,14 @@ impl GroupsAccumulator for CorrelationGroupsAccumulator {
             Arc::clone(&var1_state[2]),
             Arc::clone(&var2_state[2]),
         ])
+    }
+
+    fn convert_to_state(
+        &self,
+        _values: &[ArrayRef],
+        _opt_filter: Option<&BooleanArray>,
+    ) -> Result<Vec<ArrayRef>> {
+        not_impl_err!("Input batch conversion to state not implemented")
     }
 
     fn size(&self) -> usize {

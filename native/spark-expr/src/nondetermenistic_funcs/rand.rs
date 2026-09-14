@@ -23,7 +23,6 @@ use arrow::datatypes::{DataType, Schema};
 use datafusion::common::Result;
 use datafusion::logical_expr::ColumnarValue;
 use datafusion::physical_expr::PhysicalExpr;
-use std::any::Any;
 use std::fmt::{Display, Formatter};
 use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex};
@@ -59,6 +58,12 @@ impl XorShiftRandom {
         let a = self.next(26) as i64;
         let b = self.next(27) as i64;
         ((a << 27) + b) as f64 * DOUBLE_UNIT
+    }
+
+    /// Equivalent to `java.util.Random.nextInt()` (`next(32)`), the draw Spark's
+    /// `ExpressionImplUtils.randStr` consumes per character.
+    pub(crate) fn next_i32(&mut self) -> i32 {
+        self.next(32)
     }
 }
 
@@ -120,10 +125,6 @@ impl Hash for RandExpr {
 }
 
 impl PhysicalExpr for RandExpr {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn data_type(&self, _input_schema: &Schema) -> Result<DataType> {
         Ok(DataType::Float64)
     }

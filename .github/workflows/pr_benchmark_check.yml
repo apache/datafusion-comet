@@ -20,24 +20,10 @@
 
 name: PR Benchmark Check
 
-concurrency:
-  group: ${{ github.repository }}-${{ github.head_ref || github.sha }}-${{ github.workflow }}
-  cancel-in-progress: true
-
+# Reusable: invoked by ci.yml. Triggering, path filters, and concurrency
+# live in the umbrella workflow.
 on:
-  push:
-    branches:
-      - main
-    paths:
-      - "native/core/benches/**"
-      - "native/spark-expr/benches/**"
-      - "spark/src/test/scala/org/apache/spark/sql/benchmark/**"
-  pull_request:
-    paths:
-      - "native/core/benches/**"
-      - "native/spark-expr/benches/**"
-      - "spark/src/test/scala/org/apache/spark/sql/benchmark/**"
-  workflow_dispatch:
+  workflow_call:
 
 env:
   RUST_VERSION: stable
@@ -50,7 +36,7 @@ jobs:
     container:
       image: amd64/rust
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Setup Rust & Java toolchain
         uses: ./.github/actions/setup-builder
@@ -74,7 +60,7 @@ jobs:
           cargo check --benches
 
       - name: Cache Maven dependencies
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: |
             ~/.m2/repository

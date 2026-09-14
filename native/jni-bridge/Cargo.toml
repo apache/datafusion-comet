@@ -43,4 +43,4 @@ datafusion-comet-common = { workspace = true }
 
 [dev-dependencies]
 jni = { version = "0.22.4", features = ["invocation"] }
-assertables = "9"
+assertables = "10"

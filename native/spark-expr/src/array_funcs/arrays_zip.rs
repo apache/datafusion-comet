@@ -27,7 +27,6 @@ use datafusion::common::cast::{as_fixed_size_list_array, as_large_list_array, as
 use datafusion::common::{exec_err, Result, ScalarValue};
 use datafusion::logical_expr::ColumnarValue;
 use datafusion::physical_expr::PhysicalExpr;
-use std::any::Any;
 use std::fmt::{Display, Formatter};
 use std::sync::Arc;
 // TODO: Reuse functions from DF
@@ -74,10 +73,6 @@ impl Display for SparkArraysZipFunc {
 }
 
 impl PhysicalExpr for SparkArraysZipFunc {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn data_type(&self, input_schema: &Schema) -> Result<DataType> {
         let fields = self.fields(input_schema)?;
         Ok(List(Arc::new(Field::new_list_field(
@@ -281,15 +276,15 @@ pub fn arrays_zip_inner(args: &[ArrayRef], names: Vec<String>) -> Result<ArrayRe
                     let end = v.offsets[row_idx + 1];
                     let len = end - start;
                     let builder = builders[col_idx].as_mut().unwrap();
-                    builder.extend(0, start, end);
+                    builder.try_extend(0, start, end)?;
                     if len < max_len {
-                        builder.extend_nulls(max_len - len);
+                        builder.try_extend_nulls(max_len - len)?;
                     }
                 }
                 _ => {
                     // Null list entry or None (Null-typed) arg — all nulls.
                     if let Some(builder) = builders[col_idx].as_mut() {
-                        builder.extend_nulls(max_len);
+                        builder.try_extend_nulls(max_len)?;
                     }
                 }
             }

@@ -189,19 +189,23 @@ impl<'a> TryFrom<JValueOwned<'a>> for BinaryWrapper<'a> {
 
 mod comet_exec;
 pub use comet_exec::*;
-mod batch_iterator;
+mod comet_schema_utils;
+pub use comet_schema_utils::CometSchemaUtils;
+mod arrow_array_stream;
 mod comet_metric_node;
 mod comet_s3_credential_dispatcher;
 mod comet_task_memory_manager;
 mod comet_udf_bridge;
 mod shuffle_block_iterator;
+mod shuffle_partition_pusher;
 
-use batch_iterator::CometBatchIterator;
+use arrow_array_stream::ArrowArrayStream;
 pub use comet_metric_node::*;
 pub use comet_s3_credential_dispatcher::CometS3CredentialDispatcher;
 pub use comet_task_memory_manager::*;
 use comet_udf_bridge::CometUdfBridge;
 use shuffle_block_iterator::CometShuffleBlockIterator;
+pub use shuffle_partition_pusher::{JavaShufflePartitionPusher, ShufflePartitionPusher};
 
 /// The JVM classes that are used in the JNI calls.
 #[allow(dead_code)] // we need to keep references to Java items to prevent GC
@@ -225,8 +229,9 @@ pub struct JVMClasses<'a> {
     pub comet_metric_node: CometMetricNode<'a>,
     /// The static CometExec class. Used for getting the subquery result.
     pub comet_exec: CometExec<'a>,
-    /// The CometBatchIterator class. Used for iterating over the batches.
-    pub comet_batch_iterator: CometBatchIterator<'a>,
+    /// The org.apache.arrow.c.ArrowArrayStream class. Used to get the C struct memory address
+    /// when importing a JVM-exported batch stream into native code.
+    pub arrow_array_stream: ArrowArrayStream<'a>,
     /// The CometShuffleBlockIterator class. Used for iterating over shuffle blocks.
     pub comet_shuffle_block_iterator: CometShuffleBlockIterator<'a>,
     /// The CometTaskMemoryManager used for interacting with JVM side to
@@ -237,6 +242,10 @@ pub struct JVMClasses<'a> {
     pub comet_udf_bridge: Option<CometUdfBridge<'a>>,
     /// JNI handles for the CometS3CredentialDispatcher SPI and the CometS3Credentials POJO.
     pub comet_s3_credential_dispatcher: CometS3CredentialDispatcher<'a>,
+    /// The CometSchemaUtils class. Used to fold Parquet field names via the JVM's
+    /// `String.toLowerCase(Locale.ROOT)` for Spark-compatible case-insensitive resolution.
+    /// Holds a global class reference, so unlike the sibling fields it carries no `'a`.
+    pub comet_schema_utils: CometSchemaUtils,
 }
 
 unsafe impl Send for JVMClasses<'_> {}
@@ -304,7 +313,7 @@ impl JVMClasses<'_> {
                 throwable_get_cause_method,
                 comet_metric_node: CometMetricNode::new(env).unwrap(),
                 comet_exec: CometExec::new(env).unwrap(),
-                comet_batch_iterator: CometBatchIterator::new(env).unwrap(),
+                arrow_array_stream: ArrowArrayStream::new(env).unwrap(),
                 comet_shuffle_block_iterator: CometShuffleBlockIterator::new(env).unwrap(),
                 comet_task_memory_manager: CometTaskMemoryManager::new(env).unwrap(),
                 comet_udf_bridge: {
@@ -315,6 +324,7 @@ impl JVMClasses<'_> {
                     bridge
                 },
                 comet_s3_credential_dispatcher: CometS3CredentialDispatcher::new(env).unwrap(),
+                comet_schema_utils: CometSchemaUtils::new(env).unwrap(),
             }
         });
     }

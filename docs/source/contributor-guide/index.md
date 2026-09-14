@@ -70,6 +70,7 @@ Adding a New Spark Version <adding_a_new_spark_version>
 Comet SQL Tests <sql-file-tests.md>
 Spark SQL Tests <spark-sql-tests.md>
 Iceberg Spark Tests <iceberg-spark-tests.md>
+Continuous Integration <ci>
 ```
 
 ```{toctree}
@@ -79,6 +80,7 @@ Iceberg Spark Tests <iceberg-spark-tests.md>
 
 Debugging Guide <debugging>
 Benchmarking Guide <benchmarking>
+Optimizing Scalar Expressions <optimizing_expressions>
 Profiling <profiling>
 Tracing <tracing>
 ```
@@ -88,8 +90,9 @@ Tracing <tracing>
 :caption: Reference
 :hidden:
 
-Supported Spark Expressions <spark_expressions_support>
+Expression Audits <expression-audits/index>
 Supported Spark Configurations <spark_configs_support>
+Configuration Conventions <config_conventions>
 ```
 
 ```{toctree}
