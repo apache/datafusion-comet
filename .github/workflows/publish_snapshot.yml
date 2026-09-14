@@ -228,54 +228,64 @@ jobs:
           esac
           echo "Publishing $version from $(git rev-parse --short HEAD)"
 
-          # One build per published variant. The native libraries live in
-          # spark/target/classes, so re-copy them after each clean; the release
-          # script (dev/release/build-release-comet.sh) places them the same way.
+          check_native_libs() {
+            local jar=$1 lib
+            for lib in linux/amd64 linux/aarch64; do
+              # grep has to read the whole listing. Stopping at the first match
+              # (grep -q) leaves unzip killed by SIGPIPE, which `pipefail` then
+              # reports as a missing library.
+              if ! unzip -l "$jar" | grep -F "org/apache/comet/$lib/libcomet.so" > /dev/null; then
+                echo "$jar is missing $lib/libcomet.so"
+                return 1
+              fi
+            done
+          }
+
+          # One build per published variant. Spark 3.4 and 3.5 are published for
+          # Scala 2.12, which downstream benchmarks still use; 4.0 and 4.1
+          # default to Scala 2.13.
+          variants=(
+            "-Pspark-3.4 -Pscala-2.12"
+            "-Pspark-3.5 -Pscala-2.12"
+            "-Pspark-4.0"
+            "-Pspark-4.1"
+          )
+          # The native libraries live in spark/target/classes, so re-copy them
+          # after each clean; the release script
+          # (dev/release/build-release-comet.sh) places them the same way.
           mkdir -p jars
-          # Maven reads stdin, so it must not see the heredoc that feeds the
-          # loop or it swallows the remaining variants.
-          while read -r profiles; do
+          for profiles in "${variants[@]}"; do
             echo "::group::Build with $profiles"
-            ./mvnw -B -q clean < /dev/null
+            ./mvnw -B -q clean
             lib_dir=spark/target/classes/org/apache/comet/linux
             mkdir -p "$lib_dir/amd64" "$lib_dir/aarch64"
             cp native-libs/libcomet-linux-amd64/libcomet.so "$lib_dir/amd64/"
             cp native-libs/libcomet-linux-aarch64/libcomet.so "$lib_dir/aarch64/"
+            # Package first so the jar can be checked before it is published.
+            # $profiles is a space-separated list of -P flags, so it must
+            # word-split.
+            # shellcheck disable=SC2086
+            ./mvnw -B package -DskipTests $profiles
+            # Only the shaded plugin jar, not the sources or unshaded jars.
+            built=(spark/target/comet-spark-spark*_*-"$version".jar)
+            if [ "${#built[@]}" -ne 1 ] || [ ! -f "${built[0]}" ]; then
+              echo "Expected one plugin jar for $profiles, found: ${built[*]}"
+              exit 1
+            fi
+            check_native_libs "${built[0]}"
+            cp "${built[0]}" jars/
+            # The jar passed the check, so publish it. This build reuses the
+            # target directory the check ran against, and the parent pom pins
+            # project.build.outputTimestamp, so it re-creates the same jar.
+            #
             # The root pom skips deploying the parent pom, but consumers need it
             # to resolve the child poms, and the release publishes it. The user
-            # property overrides every module's setting. $profiles is a
-            # space-separated list of -P flags, so it must word-split.
+            # property overrides every module's setting.
             # shellcheck disable=SC2086
-            ./mvnw -B "$GOAL" -DskipTests -Dmaven.deploy.skip=false $profiles < /dev/null
-            # Only the shaded plugin jar, not the sources or unshaded jars.
-            cp spark/target/comet-spark-spark*_*-"$version".jar jars/
+            ./mvnw -B "$GOAL" -DskipTests -Dmaven.deploy.skip=false $profiles
             echo "::endgroup::"
-          done <<EOF
-          -Pspark-3.4 -Pscala-2.12
-          -Pspark-3.5 -Pscala-2.12
-          -Pspark-4.0
-          -Pspark-4.1
-          EOF
-      - name: Verify every jar bundles both native libraries
-        run: |
-          set -euo pipefail
-          status=0
-          expected=4
-          actual=$(find jars -name '*.jar' | wc -l)
-          if [ "$actual" -ne "$expected" ]; then
-            echo "Expected $expected jars, found $actual"
-            status=1
-          fi
-          for jar in jars/*.jar; do
-            for lib in linux/amd64 linux/aarch64; do
-              if ! unzip -l "$jar" | grep -q "org/apache/comet/$lib/libcomet.so"; then
-                echo "$jar is missing $lib/libcomet.so"
-                status=1
-              fi
-            done
           done
           ls -l jars
-          exit $status
       - name: Upload jars
         if: ${{ inputs.dry_run }}
         uses: ./.github/actions/upload-artifact-retry
