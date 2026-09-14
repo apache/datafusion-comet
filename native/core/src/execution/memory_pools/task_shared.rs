@@ -143,6 +143,10 @@ mod tests {
     use super::*;
     use datafusion::execution::memory_pool::UnboundedMemoryPool;
 
+    /// `ACTIVE_TASK_COUNT` is process-wide, so the tests in this module (the only ones that move
+    /// it) run serially to keep the delta assertions deterministic.
+    static TEST_LOCK: Mutex<()> = Mutex::new(());
+
     /// Tests share the process-wide pool map, so each uses its own task attempt id.
     fn acquire(task_attempt_id: i64) -> Arc<dyn MemoryPool> {
         acquire_task_shared_pool(task_attempt_id, || Arc::new(UnboundedMemoryPool::default()))
@@ -156,6 +160,7 @@ mod tests {
 
     #[test]
     fn plans_in_the_same_task_share_one_pool() {
+        let _guard = TEST_LOCK.lock();
         let first = acquire(-1001);
         let second = acquire(-1001);
         assert!(Arc::ptr_eq(&first, &second));
@@ -163,6 +168,7 @@ mod tests {
 
     #[test]
     fn plans_in_different_tasks_get_different_pools() {
+        let _guard = TEST_LOCK.lock();
         let first = acquire(-1002);
         let second = acquire(-1003);
         assert!(!Arc::ptr_eq(&first, &second));
@@ -170,6 +176,7 @@ mod tests {
 
     #[test]
     fn pool_is_removed_only_after_the_last_reference_drops() {
+        let _guard = TEST_LOCK.lock();
         let first = acquire(-1004);
         let second = acquire(-1004);
 
@@ -185,6 +192,7 @@ mod tests {
 
     #[test]
     fn dropping_the_reference_releases_the_pool() {
+        let _guard = TEST_LOCK.lock();
         // Stands in for `createPlan` failing after the pool was acquired. The ordinary `Arc` drops
         // on unwind, so no explicit release path is needed.
         {
@@ -196,6 +204,7 @@ mod tests {
 
     #[test]
     fn an_old_pool_does_not_remove_its_replacement() {
+        let _guard = TEST_LOCK.lock();
         let old_pool = acquire(-1006);
         TASK_SHARED_MEMORY_POOLS.lock().remove(&-1006);
         let replacement = acquire(-1006);
@@ -212,6 +221,7 @@ mod tests {
     /// pool's `Drop` must not evict the replacement's entry.
     #[test]
     fn concurrent_acquire_and_drop_leaves_a_consistent_registry() {
+        let _guard = TEST_LOCK.lock();
         use std::thread;
 
         let threads: Vec<_> = (0..8)
@@ -235,5 +245,48 @@ mod tests {
         // The registry must still work for the task after the churn.
         let _pool = acquire(-1007);
         assert!(is_registered(-1007));
+    }
+
+    #[test]
+    fn active_task_count_tracks_live_pools() {
+        let _guard = TEST_LOCK.lock();
+        let base = active_task_count();
+
+        let first = acquire(-1008);
+        assert_eq!(active_task_count(), base + 1);
+
+        // A second plan in the same task shares the pool, so the task is still counted once.
+        let second = acquire(-1008);
+        assert_eq!(active_task_count(), base + 1);
+
+        let other_task = acquire(-1009);
+        assert_eq!(active_task_count(), base + 2);
+
+        drop(first);
+        assert_eq!(active_task_count(), base + 2);
+        drop(second);
+        assert_eq!(active_task_count(), base + 1);
+        drop(other_task);
+        assert_eq!(active_task_count(), base);
+    }
+
+    /// The increment pairs with the pool's `Drop`, not with registry membership, so the count must
+    /// stay exact through the acquire/drop race where a replacement pool shares a task attempt id.
+    #[test]
+    fn active_task_count_survives_a_replaced_registry_entry() {
+        let _guard = TEST_LOCK.lock();
+        let base = active_task_count();
+
+        let old_pool = acquire(-1010);
+        TASK_SHARED_MEMORY_POOLS.lock().remove(&-1010);
+        let replacement = acquire(-1010);
+        assert_eq!(active_task_count(), base + 2, "both pools are live");
+
+        // The old pool's drop does not remove the replacement's entry, but must still decrement.
+        drop(old_pool);
+        assert_eq!(active_task_count(), base + 1);
+
+        drop(replacement);
+        assert_eq!(active_task_count(), base);
     }
 }

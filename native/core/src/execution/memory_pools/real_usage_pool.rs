@@ -136,6 +136,11 @@ impl MemoryPool for RealUsagePool {
         self.inner.shrink(reservation, shrink)
     }
 
+    /// Gates growth on real allocator usage before delegating to the inner pool.
+    ///
+    /// `additional` is DataFusion's own parameter: the number of extra bytes the calling
+    /// `MemoryReservation` wants to hold. It is not a configured headroom or buffer — the gate
+    /// simply projects it onto the current real usage and compares against the ceiling.
     fn try_grow(
         &self,
         reservation: &MemoryReservation,
