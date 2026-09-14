@@ -291,15 +291,19 @@ The gate adds one relaxed atomic load per `try_grow`.
 
 ### Layer 3: the circuit breaker
 
-The breaker is the last resort. `createPlan` calls `oom_guard::arm(limit)`, and tokio worker threads
-plus the JNI caller thread are "stamped" as query-worker threads. When a stamped thread flushes a
-positive drift that pushes `BALANCE` past the limit, `AccountingAllocator` raises a typed
-`OomGuardPanic` via `panic_any` from inside the allocation call.
+The breaker is the last resort. `createPlan` calls `oom_guard::arm(limit)`, and query threads are
+"stamped" as eligible to trip it. Stamping happens in two places: `build_runtime` passes
+`stamp_current_thread` to tokio's `Builder::on_thread_start`, and `executePlan` stamps the JNI
+caller thread directly. Note that tokio runs `on_thread_start` on **every** thread the runtime
+spawns, both the multi-thread worker threads and the blocking pool, so the stamped set is wider
+than just the workers. When a stamped thread flushes a positive drift that pushes `BALANCE` past
+the limit, `AccountingAllocator` raises a typed `OomGuardPanic` via `panic_any` from inside the
+allocation call.
 
 Several details exist to make that survivable:
 
-- **Only stamped threads panic.** Allocations on unstamped threads (`spawn_blocking`, IO pools,
-  anything the JVM owns) are still counted but cannot themselves trip the breaker.
+- **Only stamped threads panic.** Allocations on threads Comet did not create are still counted but
+  cannot themselves trip the breaker.
 - **`realloc` panics before delegating.** If it panicked after `inner.realloc`, the old block may
   already have been freed or moved while the caller still holds the old pointer, and the unwind
   would free a dangling pointer.
@@ -363,8 +367,11 @@ These are known and mostly inherent to the prototype:
 - **Executor-global granularity.** The breaker fires on whichever stamped thread happens to allocate
   when the process crosses the limit, which need not be the task responsible for the usage. The
   fair-share test in the cooperative gate mitigates this for `try_grow`, but not for the breaker.
-- **Only tokio workers and the JNI caller thread are stamped**, so allocations elsewhere are tracked
-  but cannot trip the breaker.
+- **Not every stamped thread's panic reaches a catch site.** `executePlan` catches on the spawned
+  channel path and the busy-poll path, which covers the worker threads driving a plan. A panic
+  raised on a blocking-pool thread inside a `spawn_blocking` task is captured by tokio as a
+  `JoinError` instead, so it surfaces as a generic failure rather than the intended
+  `ResourcesExhausted`.
 - **Panicking from inside the global allocator** unwinds through code that was mid-allocation. It is
   memory-safe in the cases exercised so far, but a guard panic raised while another panic is already
   unwinding is a double panic and aborts the process.
