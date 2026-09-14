@@ -62,6 +62,8 @@ mod tests {
     struct LegacyShuffleWriter {
         #[prost(string, tag = "3")]
         output_data_file: String,
+        #[prost(string, tag = "4")]
+        output_index_file: String,
     }
 
     fn local_shuffle_writer() -> ShuffleWriter {
@@ -114,12 +116,17 @@ mod tests {
         let decoded = LegacyShuffleWriter::decode(encoded.as_slice()).unwrap();
 
         assert_eq!(decoded.output_data_file, "/tmp/shuffle.data");
+        // a new plan carries no index path, so a reader expecting tag 4 sees it unset
+        assert!(decoded.output_index_file.is_empty());
     }
 
+    /// A plan still carrying the retired index path decodes cleanly: tag 4 is reserved, so it is
+    /// skipped as an unknown field.
     #[test]
     fn new_shuffle_writer_decodes_legacy_plan_without_destination() {
         let legacy = LegacyShuffleWriter {
             output_data_file: "/tmp/legacy.data".to_string(),
+            output_index_file: "/tmp/legacy.index".to_string(),
         };
         let decoded = ShuffleWriter::decode(legacy.encode_to_vec().as_slice()).unwrap();
 

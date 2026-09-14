@@ -69,8 +69,8 @@ enum DataOutput {
 
 /// Local file-based [`PartitionWriter`] implementation.
 ///
-/// Writes shuffle output to a single data file plus an index file recording the
-/// byte offset where each partition begins. See [`DataOutput`] for how the
+/// Writes shuffle output to a single data file and publishes the byte offset where
+/// each partition begins through [`PartitionOffsets`]. See [`DataOutput`] for how the
 /// single- and multi-partition modes differ.
 pub(crate) struct LocalPartitionWriter {
     partition_offsets: Arc<PartitionOffsets>,

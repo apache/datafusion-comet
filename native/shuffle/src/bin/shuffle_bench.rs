@@ -98,7 +98,7 @@ struct Args {
     #[arg(long, default_value_t = 0)]
     warmup: usize,
 
-    /// Output directory for shuffle data/index files
+    /// Output directory for the shuffle data file
     #[arg(long, default_value = "/tmp/comet_shuffle_bench")]
     output_dir: PathBuf,
 
