@@ -85,25 +85,19 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-ci-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}-
 
-      - name: Build native library with the delta feature (CI profile)
+      - name: Build native library (CI profile)
         run: |
           cd native
-          cargo build --profile ci --features delta
+          # `delta` is in the default feature set, so no feature flag is needed.
+          cargo build --profile ci
         env:
           # Must match the flags spark_sql_test_reusable.yml builds with:
           # cargo folds RUSTFLAGS into its fingerprints, so any divergence
           # would make the shared cargo cache restore without ever hitting.
           RUSTFLAGS: "-Ctarget-cpu=x86-64-v3 -Clink-arg=-fuse-ld=bfd"
 
-      - name: Save Cargo cache
-        uses: actions/cache/save@v6
-        if: github.ref == 'refs/heads/main'
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            native/target
-          key: ${{ runner.os }}-cargo-ci-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}-${{ hashFiles('native/**/*.rs') }}
+      # No cache save: this workflow never runs on a push to main, so the restore above
+      # falls back to the cache build_linux saves there.
 
       - name: Stage native library at release path
         run: |
@@ -122,6 +116,62 @@ jobs:
         run: |
           SPARK_HOME=$(pwd) COMET_CONF_DIR=$(pwd)/conf ./mvnw -B -Prelease -Pspark-${{ matrix.profile.spark }},delta test -pl contrib/delta-spark
 
+  # The container jobs above have no Docker socket, so CometDeltaS3Suite cancels itself
+  # there. This job runs it on the plain runner, where Testcontainers can start MinIO.
+  contrib-delta-s3:
+    name: Delta contrib S3 suite (Spark 3.5, MinIO)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup Rust & Java toolchain
+        uses: ./.github/actions/setup-builder
+        with:
+          rust-version: ${{ env.RUST_VERSION }}
+          jdk-version: "17"
+
+      - name: Cache Maven dependencies
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.m2/repository
+            /root/.m2/repository
+          key: ${{ runner.os }}-java-maven-${{ hashFiles('**/pom.xml') }}-delta-3.5
+          restore-keys: |
+            ${{ runner.os }}-java-maven-
+
+      - name: Restore Cargo cache
+        uses: actions/cache/restore@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            native/target
+          key: ${{ runner.os }}-cargo-ci-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}-${{ hashFiles('native/**/*.rs') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-ci-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}-
+
+      - name: Build native library (CI profile)
+        run: |
+          cd native
+          cargo build --profile ci
+        env:
+          RUSTFLAGS: "-Ctarget-cpu=x86-64-v3 -Clink-arg=-fuse-ld=bfd"
+
+      - name: Stage native library at release path
+        run: |
+          mkdir -p native/target/release
+          cp native/target/ci/libcomet.so native/target/release/libcomet.so
+
+      - name: Install Comet core jars
+        run: |
+          ./mvnw -B -q -Prelease -Pspark-3.5 install -pl common,spark -DskipTests -Dspotless.check.skip=true
+
+      - name: Run the MinIO-backed S3 suite
+        run: |
+          docker info > /dev/null
+          SPARK_HOME=$(pwd) COMET_CONF_DIR=$(pwd)/conf ./mvnw -B -Prelease -Pspark-3.5,delta test -pl contrib/delta-spark -DwildcardSuites=org.apache.comet.contrib.delta.CometDeltaS3Suite
+
   # `delta` is in the default feature set, so no regular job builds without it;
   # this keeps the feature-off build and its "built without the delta feature"
   # error arm (planner.rs cfg(not(feature = "delta"))) from becoming dead code.
@@ -139,6 +189,17 @@ jobs:
           rust-version: ${{ env.RUST_VERSION }}
           jdk-version: "17"
 
+      - name: Restore Cargo cache
+        uses: actions/cache/restore@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            native/target
+          key: ${{ runner.os }}-cargo-ci-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}-${{ hashFiles('native/**/*.rs') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-ci-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}-
+
       - name: Test the delta-off error path
         run: |
           cd native
@@ -148,21 +209,17 @@ jobs:
           cargo test -p datafusion-comet --no-default-features --features hdfs-opendal delta_scan
 
   # The contrib's dev tooling (benchmark and regression-harness scripts) is
-  # Python; keep it import-clean across currently supported interpreters.
+  # Python; keep it import-clean on one supported interpreter.
   dev-scripts-python:
-    name: Delta dev scripts (Python ${{ matrix.python-version }})
+    name: Delta dev scripts (Python)
     runs-on: ubuntu-24.04
-    strategy:
-      matrix:
-        python-version: ["3.11", "3.12", "3.13", "3.14"]
-      fail-fast: false
     steps:
       - uses: actions/checkout@v7
 
       - name: Setup Python
         uses: actions/setup-python@v6
         with:
-          python-version: ${{ matrix.python-version }}
+          python-version: "3.12"
 
       - name: Byte-compile contrib dev scripts
         run: |

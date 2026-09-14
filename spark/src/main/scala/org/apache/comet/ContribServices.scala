@@ -95,13 +95,22 @@ object ContribServices extends Logging {
         if (iterator.hasNext) found += iterator.next()
         else done = true
       } catch {
-        // NonFatal covers ServiceConfigurationError; LinkageError/OOM still propagate.
+        // NonFatal covers ServiceConfigurationError; OOM and the like still propagate.
         case NonFatal(e) =>
           logWarning(
             s"Skipping an unusable ${service.getSimpleName} provider; the remaining providers " +
               "are unaffected. This usually means a contrib jar is misbuilt (its service file " +
               "names a class that is absent, does not implement the service, or cannot be " +
               "constructed).",
+            e)
+        // ServiceLoader raises NoClassDefFoundError while loading a provider whose superclass
+        // or interface is missing, the version-skewed-jar case. Contain it like a NonFatal
+        // failure so the remaining providers and every scan still work.
+        case e: LinkageError =>
+          logWarning(
+            s"Skipping a ${service.getSimpleName} provider that cannot link " +
+              s"(${e.getClass.getName}); the remaining providers are unaffected. This usually " +
+              "means a contrib jar was built against a different Comet or Spark version.",
             e)
       }
     }

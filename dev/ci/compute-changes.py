@@ -307,8 +307,8 @@ FILTERS = {
         "mvnw",
     ],
     "delta": [
-        "contrib/delta/**",
         "contrib/delta-spark/**",
+        "!**.md",
         "native/**/src/**",
         "native/**/Cargo.toml",
         "native/Cargo.lock",
@@ -316,6 +316,9 @@ FILTERS = {
         "common/pom.xml",
         "spark/src/main/**",
         "!spark/src/main/scala/org/apache/comet/GenerateDocs.scala",
+        # The contrib suites extend these through the spark test-jar.
+        "spark/src/test/scala/org/apache/spark/sql/CometTestBase.scala",
+        "spark/src/test/scala/org/apache/comet/CometS3TestBase.scala",
         "spark/pom.xml",
         "pom.xml",
         "rust-toolchain.toml",
@@ -373,8 +376,9 @@ POLICY = {
     "iceberg_1_10": ["queue", "label:run-iceberg-tests"],
     # Iceberg 1.11 is our only Spark 4.1 Iceberg coverage, so it is not opt-in.
     "iceberg_1_11": ["pr", "queue"],
-    # The Delta contrib suite runs against Spark 3.5, so it sits in the same
-    # tier as spark_3_5: the queue by default, a label on a pull request.
+    # The Delta contrib suites run against Spark 3.5, 4.0 and 4.1 in one
+    # workflow; it sits in the spark_3_5 tier: the queue by default, a label
+    # on a pull request.
     "delta": ["queue", "label:run-delta-tests"],
 }
 

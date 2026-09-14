@@ -378,6 +378,15 @@ object DeltaScanSupport {
       return rolePolicyReason
     }
 
+    // Zero-I/O, conf-only: Hadoop prefixes a scheme-less fs.s3a.endpoint with http:// when
+    // SSL is disabled, while native always prefixes https://, so the two sides would talk to
+    // different endpoints. Same shape for the STS endpoint keys, which native never reads.
+    val endpointReason =
+      hadoopOnlyEndpointGateReason(hadoopConf, dataFileUris ++ dvUris, propagatedConfCache)
+    if (endpointReason.isDefined) {
+      return endpointReason
+    }
+
     // Every fs.s3a.* option native's get_config (s3.rs) resolves must agree between what Hadoop
     // itself would use and what native would read from the forwarded, substituted conf (covers
     // long-form bucket credentials, JCEKS/credential-provider shadowing, and any other
@@ -1224,6 +1233,68 @@ object DeltaScanSupport {
         } catch {
           case e @ (_: IOException | _: RuntimeException) =>
             Some(unverifiableValueReason(bucket, S3AssumedRolePolicyKey, e))
+        }
+      }
+    }
+  }
+
+  /** Hadoop's S3A SSL switch; `S3AFileSystem` reads it via `Configuration#getBoolean`. */
+  private val S3SslEnabledKey = "fs.s3a.connection.ssl.enabled"
+  private val S3EndpointKey = "fs.s3a.endpoint"
+
+  /**
+   * Hadoop's assumed-role STS endpoint keys; `AssumedRoleCredentialProvider` sends AssumeRole to
+   * the configured endpoint, while native builds its provider with SDK defaults.
+   */
+  private val S3StsEndpointKeys =
+    Seq("fs.s3a.assumed.role.sts.endpoint", "fs.s3a.assumed.role.sts.endpoint.region")
+
+  private def insecureEndpointReason(bucket: String): String =
+    s"Native Delta scan does not support a scheme-less $S3EndpointKey with " +
+      s"$S3SslEnabledKey=false for $bucket (Hadoop addresses that endpoint over http://, " +
+      "while the native S3 client always assumes https://, so a claimed scan would fail at " +
+      "execution where Spark reads fine)"
+
+  private def stsEndpointReason(bucket: String, key: String): String =
+    s"Native Delta scan does not support $key configured for $bucket (Hadoop sends its " +
+      "AssumeRole request to the configured STS endpoint, while the native S3 client's " +
+      "assumed-role provider uses the SDK defaults, so the two sides would authenticate " +
+      "against different endpoints)"
+
+  /**
+   * First reason any bucket among `uris` configures an endpoint native would address differently
+   * from Hadoop: a scheme-less `fs.s3a.endpoint` with SSL disabled, or an assumed-role STS
+   * endpoint. Resolved like the keys' real consumers (plain reads on the propagated conf,
+   * mirroring [[proxyGateReason]]); the STS keys decline whenever set, since dead config can
+   * become live through a provider-chain change native never re-validates.
+   */
+  private[delta] def hadoopOnlyEndpointGateReason(
+      hadoopConf: Configuration,
+      uris: Seq[URI],
+      propagatedConfCache: MutableMap[String, Configuration] = MutableMap.empty)
+      : Option[String] = {
+    val buckets = uris.flatMap(s3Bucket).distinct
+    buckets.foldLeft(Option.empty[String]) { (declined, bucket) =>
+      if (declined.isDefined) {
+        declined
+      } else {
+        try {
+          val propagatedConf =
+            propagatedConfCache.getOrElseUpdate(
+              bucket,
+              propagateBucketOptions(hadoopConf, bucket))
+          val endpoint = propagatedConf.getTrimmed(S3EndpointKey, "")
+          val schemeless = endpoint.nonEmpty && !endpoint.contains("://")
+          if (schemeless && !propagatedConf.getBoolean(S3SslEnabledKey, true)) {
+            Some(insecureEndpointReason(bucket))
+          } else {
+            S3StsEndpointKeys
+              .find(key => propagatedConf.getTrimmed(key, "").nonEmpty)
+              .map(key => stsEndpointReason(bucket, key))
+          }
+        } catch {
+          case e @ (_: IOException | _: RuntimeException) =>
+            Some(unverifiableValueReason(bucket, S3EndpointKey, e))
         }
       }
     }

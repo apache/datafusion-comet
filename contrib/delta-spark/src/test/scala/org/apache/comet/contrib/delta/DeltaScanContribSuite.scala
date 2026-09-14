@@ -2093,6 +2093,89 @@ class DeltaScanContribSuite extends CometDeltaTestBase {
   }
 
   test(
+    "hadoopOnlyEndpointGateReason declines a scheme-less fs.s3a.endpoint with SSL disabled, " +
+      "since Hadoop addresses it over http:// and native assumes https://") {
+    val conf = new Configuration(false)
+    conf.set("fs.s3a.endpoint", "minio:9000")
+    conf.set("fs.s3a.connection.ssl.enabled", "false")
+    val reason = DeltaScanSupport.hadoopOnlyEndpointGateReason(
+      conf,
+      Seq(new URI("s3a://mybucket/part-0.parquet")))
+    assert(reason.isDefined)
+    assert(reason.get.contains("fs.s3a.connection.ssl.enabled"))
+    assert(reason.get.contains("mybucket"))
+  }
+
+  test("hadoopOnlyEndpointGateReason admits a scheme-less endpoint with SSL at its default") {
+    val conf = new Configuration(false)
+    conf.set("fs.s3a.endpoint", "minio:9000")
+    assert(
+      DeltaScanSupport
+        .hadoopOnlyEndpointGateReason(conf, Seq(new URI("s3a://mybucket/part-0.parquet")))
+        .isEmpty)
+  }
+
+  test(
+    "hadoopOnlyEndpointGateReason admits an endpoint that carries its own scheme even with " +
+      "SSL disabled, since Hadoop does not rewrite it") {
+    val conf = new Configuration(false)
+    conf.set("fs.s3a.endpoint", "http://minio:9000")
+    conf.set("fs.s3a.connection.ssl.enabled", "false")
+    assert(
+      DeltaScanSupport
+        .hadoopOnlyEndpointGateReason(conf, Seq(new URI("s3a://mybucket/part-0.parquet")))
+        .isEmpty)
+  }
+
+  test(
+    "hadoopOnlyEndpointGateReason declines via a short-form per-bucket " +
+      "fs.s3a.bucket.mybucket.connection.ssl.enabled=false") {
+    val conf = new Configuration(false)
+    conf.set("fs.s3a.endpoint", "minio:9000")
+    conf.set("fs.s3a.bucket.mybucket.connection.ssl.enabled", "false")
+    val reason = DeltaScanSupport.hadoopOnlyEndpointGateReason(
+      conf,
+      Seq(new URI("s3a://mybucket/part-0.parquet")))
+    assert(reason.isDefined)
+    assert(reason.get.contains("mybucket"))
+    assert(
+      DeltaScanSupport
+        .hadoopOnlyEndpointGateReason(conf, Seq(new URI("s3a://otherbucket/part-0.parquet")))
+        .isEmpty)
+  }
+
+  test("hadoopOnlyEndpointGateReason declines when an assumed-role STS endpoint is set") {
+    Seq("fs.s3a.assumed.role.sts.endpoint", "fs.s3a.assumed.role.sts.endpoint.region").foreach {
+      key =>
+        val conf = new Configuration(false)
+        conf.set(key, "sts.eu-west-1.amazonaws.com")
+        val reason = DeltaScanSupport.hadoopOnlyEndpointGateReason(
+          conf,
+          Seq(new URI("s3a://mybucket/part-0.parquet")))
+        assert(reason.isDefined, key)
+        assert(reason.get.contains(key))
+        assert(reason.get.contains("mybucket"))
+    }
+  }
+
+  test(
+    "hadoopOnlyEndpointGateReason declines a short-form per-bucket assumed-role STS endpoint " +
+      "and admits when nothing endpoint-related is configured") {
+    val conf = new Configuration(false)
+    conf.set("fs.s3a.bucket.mybucket.assumed.role.sts.endpoint", "sts.eu-west-1.amazonaws.com")
+    assert(
+      DeltaScanSupport
+        .hadoopOnlyEndpointGateReason(conf, Seq(new URI("s3a://mybucket/part-0.parquet")))
+        .isDefined)
+    assert(
+      DeltaScanSupport
+        .hadoopOnlyEndpointGateReason(
+          new Configuration(false),
+          Seq(new URI("s3a://mybucket/part-0.parquet")))
+        .isEmpty)
+  }
+
+  test(
     "proxyGateReason declines a bucket configured with a global fs.s3a.proxy.host, naming the " +
       "key and bucket but never any proxy credential") {
     val conf = new Configuration(false)

@@ -41,6 +41,7 @@ import org.apache.spark.sql.execution.{FileSourceScanExec, LeafExecNode, SparkPl
 import org.apache.spark.sql.execution.datasources.HadoopFsRelation
 import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
 
+import org.apache.comet.ContribServices
 import org.apache.comet.util.ClassLoaders
 
 /**
@@ -109,6 +110,35 @@ class CometScanContribSuite extends AnyFunSuite {
     // nulls are safe here -- and is the property that makes the hook free on a default build.
     assert(CometScanContrib.tryTransformV1(null, null, null, null).isEmpty)
     assert(CometScanContrib.tryTransformV2(null).isEmpty)
+  }
+
+  test("a provider whose class cannot link is skipped by discovery and the rest still load") {
+    // ServiceLoader raises NoClassDefFoundError straight out of Class.forName when a listed
+    // provider's superclass or interface is missing, the version-skewed-jar case. Discovery
+    // must log and skip it so the remaining providers are found and no scan throws.
+    val skewed = "org.apache.comet.rules.SkewedProvider"
+    withServiceFile(Seq(skewed, classOf[ClaimingScanContrib].getName)) { fileLoader =>
+      val loader = new ClassLoader(fileLoader) {
+        override def loadClass(name: String, resolve: Boolean): Class[_] = {
+          if (name == skewed) {
+            throw new NoClassDefFoundError("org/apache/comet/rules/MissingContribInterface")
+          }
+          super.loadClass(name, resolve)
+        }
+      }
+      val events = withCapturedLogEvents(ContribServices.getClass.getName.stripSuffix("$")) {
+        val discovered = CometScanContrib.loadContribs(loader)
+        assert(
+          discovered.exists(_.isInstanceOf[ClaimingScanContrib]),
+          s"the linkable provider should still be discovered, got: " +
+            discovered.map(_.getClass.getName))
+        assert(!discovered.exists(_.getClass.getName == skewed))
+      }
+      val messages = events.map(_.getMessage.getFormattedMessage)
+      assert(
+        messages.exists(m => m.contains(classOf[NoClassDefFoundError].getName)),
+        s"expected a warning naming the LinkageError subtype, got: $messages")
+    }
   }
 
   test("a contrib registered via META-INF/services is discovered and its claim is returned") {

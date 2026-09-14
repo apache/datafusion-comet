@@ -54,6 +54,22 @@ const PORTABLE_MAGIC: i32 = 1681511377;
 /// Unframe a DV blob read from `descriptor.offset` of a DV file:
 /// `[i32 BE size][data][i32 BE crc]`. Verifies both the size against the
 /// descriptor's `size_in_bytes` and the CRC32 checksum.
+/// An inline payload carries no framing, so its length is checked against the descriptor here,
+/// the way `unframe_dv_blob` checks an on-disk blob's size header.
+fn check_inline_payload_size(
+    file_path: &str,
+    payload: &[u8],
+    size_in_bytes: i32,
+) -> Result<(), ExecutionError> {
+    if payload.len() as i64 != i64::from(size_in_bytes) {
+        return Err(GeneralError(format!(
+            "Inline deletion vector for {file_path} has {} bytes but its descriptor says {size_in_bytes}",
+            payload.len()
+        )));
+    }
+    Ok(())
+}
+
 pub fn unframe_dv_blob(blob: &[u8], expected_size: usize) -> Result<&[u8], ExecutionError> {
     if blob.len() < 8 {
         return Err(GeneralError(format!(
@@ -167,7 +183,11 @@ pub fn build_access_plan(
             )));
         }
         let num_rows = num_rows as u64;
-        let group_end = group_start + num_rows;
+        let group_end = group_start.checked_add(num_rows).ok_or_else(|| {
+            GeneralError(format!(
+                "Parquet footer row counts overflow at row group {idx} ({group_start} + {num_rows})"
+            ))
+        })?;
         let mut selectors: Vec<RowSelector> = Vec::new();
         let mut cursor = group_start;
         let mut deleted_in_group = 0u64;
@@ -598,6 +618,7 @@ async fn attach_access_plan(
     }
 
     let data: Vec<u8> = if let Some(inline) = dv.inline_data {
+        check_inline_payload_size(&file_path, &inline, dv.size_in_bytes)?;
         inline
     } else if let Some(dv_path) = &dv.absolute_path {
         let offset = dv
@@ -834,12 +855,17 @@ mod tests {
         let inline_deleted: RoaringTreemap = [0u64].into_iter().collect();
         let inline_data = portable_bytes(&inline_deleted);
 
-        // On-disk DV file: 1 version byte, then the framed blob at offset 1.
+        // On-disk DV file: 1 version byte, then two framed blobs back to back, so the second
+        // one exercises the offset..offset+framed_len slice past the first.
         let ondisk_deleted: RoaringTreemap = [1u64].into_iter().collect();
         let ondisk_data = portable_bytes(&ondisk_deleted);
+        let second_deleted: RoaringTreemap = [3u64].into_iter().collect();
+        let second_data = portable_bytes(&second_deleted);
         let dv_file = dir.join("dv.bin");
         let mut dv_bytes = vec![1u8];
         dv_bytes.extend(frame(&ondisk_data));
+        let second_offset = dv_bytes.len() as i32;
+        dv_bytes.extend(frame(&second_data));
         std::fs::write(&dv_file, &dv_bytes).unwrap();
 
         let dv_for = |name: &str| match name {
@@ -859,6 +885,14 @@ mod tests {
                 size_in_bytes: ondisk_data.len() as i32,
                 cardinality: 1,
             }),
+            "f5" => Some(DeltaSparkDvDescriptor {
+                storage_type: "p".to_string(),
+                absolute_path: Some(format!("file://{}", dv_file.display())),
+                inline_data: None,
+                offset: Some(second_offset),
+                size_in_bytes: second_data.len() as i32,
+                cardinality: 1,
+            }),
             // Delta's `DeletionVectorDescriptor.EMPTY`: inline storage, empty
             // payload, size 0, cardinality 0. Must pass through unchanged
             // without attempting to decode the (empty) payload.
@@ -874,7 +908,7 @@ mod tests {
         };
 
         let runtime_env = Arc::new(RuntimeEnv::default());
-        let names = ["f0", "f1", "f2", "f3", "f4"];
+        let names = ["f0", "f1", "f2", "f3", "f4", "f5"];
         let files: Vec<DvScanFile> = names
             .iter()
             .map(|name| {
@@ -913,19 +947,23 @@ mod tests {
             );
             let plan = file.extensions.get::<ParquetAccessPlan>();
             match name {
-                "f0" | "f2" => {
+                "f0" | "f2" | "f5" => {
                     let plan = plan.unwrap_or_else(|| panic!("{name} should carry an access plan"));
-                    let skipped_row = if name == "f0" { 1 } else { 2 };
+                    let deleted_row = match name {
+                        "f0" => 0,
+                        "f2" => 1,
+                        _ => 3,
+                    };
                     match &plan.inner()[0] {
                         RowGroupAccess::Selection(sel) => {
                             let selectors: Vec<RowSelector> = sel.clone().into();
-                            let expected = if skipped_row == 1 {
+                            let expected = if deleted_row == 0 {
                                 vec![RowSelector::skip(1), RowSelector::select(9)]
                             } else {
                                 vec![
-                                    RowSelector::select(1),
+                                    RowSelector::select(deleted_row),
                                     RowSelector::skip(1),
-                                    RowSelector::select(8),
+                                    RowSelector::select(9 - deleted_row),
                                 ]
                             };
                             assert_eq!(selectors, expected, "{name}");
@@ -944,7 +982,7 @@ mod tests {
         for (file, name) in out.iter().zip(names) {
             let cached = cache.get(&file.object_meta.location);
             match name {
-                "f0" | "f2" => assert!(
+                "f0" | "f2" | "f5" => assert!(
                     cached.is_some(),
                     "{name}: DV footer read should populate the shared metadata cache"
                 ),
@@ -1843,6 +1881,64 @@ mod tests {
         let data = portable_bytes(&deleted);
         let blob = frame(&data);
         (blob, data)
+    }
+
+    /// An inline payload whose length disagrees with the descriptor's size must be rejected
+    /// before decoding; the JVM did the z85 decode, so this is native's only check point.
+    #[test]
+    fn inline_payload_length_must_match_descriptor_size() {
+        let (_blob, data) = valid_dv_fixture();
+        let err =
+            check_inline_payload_size("part-0.parquet", &data, data.len() as i32 + 1).unwrap_err();
+        let message = format!("{err}");
+        assert!(
+            message.contains(&format!("{}", data.len()))
+                && message.contains(&format!("{}", data.len() + 1)),
+            "expected both lengths in: {message}"
+        );
+        assert!(check_inline_payload_size("part-0.parquet", &data, data.len() as i32).is_ok());
+    }
+
+    /// Row counts that overflow when summed come from a corrupt footer; the sweep must fail
+    /// with the checked error rather than wrap and misfire the total-rows check.
+    #[test]
+    fn access_plan_rejects_row_counts_that_overflow_when_summed() {
+        let deleted: RoaringTreemap = [1u64].into_iter().collect();
+        let err = build_access_plan(&[i64::MAX, i64::MAX, i64::MAX], &deleted).unwrap_err();
+        assert!(
+            format!("{err}").contains("overflow"),
+            "expected an overflow error, got: {err}"
+        );
+    }
+
+    /// Deleting the last row of one group and the first row of the next lands one skip at
+    /// the tail of group k and one at the head of group k+1, with no selector crossing the
+    /// boundary.
+    #[test]
+    fn access_plan_handles_deleted_rows_on_a_row_group_boundary() {
+        let deleted: RoaringTreemap = [9u64, 10].into_iter().collect();
+        let plan = build_access_plan(&[10, 10, 10], &deleted).unwrap();
+        match &plan.inner()[0] {
+            RowGroupAccess::Selection(sel) => {
+                let selectors: Vec<RowSelector> = sel.clone().into();
+                assert_eq!(
+                    selectors,
+                    vec![RowSelector::select(9), RowSelector::skip(1)]
+                );
+            }
+            other => panic!("expected selection in group 0, got {other:?}"),
+        }
+        match &plan.inner()[1] {
+            RowGroupAccess::Selection(sel) => {
+                let selectors: Vec<RowSelector> = sel.clone().into();
+                assert_eq!(
+                    selectors,
+                    vec![RowSelector::skip(1), RowSelector::select(9)]
+                );
+            }
+            other => panic!("expected selection in group 1, got {other:?}"),
+        }
+        assert_eq!(&plan.inner()[2], &RowGroupAccess::Scan);
     }
 
     /// (1) Truncating a valid on-disk-framed blob at EVERY byte length from 0 to `len - 1` must

@@ -32,7 +32,7 @@ Support is experimental and explicitly opt-in. Two things are required:
    alone does nothing.
 
 Unsupported tables and features fall back to Spark's reader. See the
-[user guide](https://datafusion.apache.org/comet/user-guide/delta.html)
+[user guide](https://datafusion.apache.org/comet/user-guide/latest/delta.html)
 for configuration details.
 
 ## Supported versions
@@ -47,13 +47,18 @@ for configuration details.
 
 ## Building and testing
 
-The module builds under the `delta` Maven profile:
+The module builds under the `delta` Maven profile. It resolves `comet-spark`
+from the local Maven repository, so install `common` and `spark` from the same
+checkout immediately before, as CI does; a stale sibling install is the trap
+the contributor guide warns about:
 
 ```shell
+./mvnw -Pspark-3.5 install -pl common,spark -DskipTests
 ./mvnw -Pspark-3.5,delta install -pl contrib/delta-spark
 ```
 
-Run the test suites the same way (`test` instead of `install`). CI runs them
+Run the test suites the same way (`test` instead of `install` on the second
+line). CI runs them
 on Spark 3.5, 4.0, and 4.1 via `.github/workflows/delta_contrib_test.yml`.
 
 `dev/` contains a benchmark script (`bench_delta_comet.py`) and a harness for
