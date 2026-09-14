@@ -86,7 +86,7 @@ jobs:
         uses: actions/setup-java@v6
         with:
           distribution: temurin
-          java-version: 11
+          java-version: 17
 
       - name: Apache RAT license check
         run: ./mvnw -B -N apache-rat:check
@@ -261,7 +261,7 @@ jobs:
     with:
       spark-short: '3.4'
       spark-full: '3.4.3'
-      java: 11
+      java: 17
 
   spark_3_5:
     name: Spark SQL Tests (Spark 3.5)
@@ -317,7 +317,7 @@ jobs:
       iceberg-full: '1.8.1'
       spark-short: '3.4'
       spark-full: '3.4.3'
-      java: 11
+      java: 17
 
   iceberg_1_9:
     name: Iceberg Spark SQL Tests (Iceberg 1.9)
