@@ -32,22 +32,26 @@ object CometScalarSubquery extends CometExpressionSerde[ScalarSubquery] {
     "Not all data types are supported for scalar subquery results",
     "Struct fields must have supported types and distinct names at every nesting level")
 
-  // This is the value-transfer gate, not just a test that the type can be serialized to protobuf.
-  // Keep the scalar path unchanged; the Arrow IPC bridge only extends it to these struct shapes.
-  private def supportedStructField(dt: DataType): Boolean = dt match {
-    case s: StructType =>
-      s.nonEmpty && s.fieldNames.distinct.length == s.length &&
-      s.fields.forall(f => supportedStructField(f.dataType))
-    case BooleanType | ByteType | ShortType | IntegerType | LongType | FloatType | DoubleType |
-        StringType | BinaryType | DateType | TimestampType | TimestampNTZType | NullType =>
-      true
+  // The shared type gate handles general capabilities. Only the Arrow IPC scalar-subquery
+  // bridge's additional struct-only and decimal-scale restrictions belong here.
+  private def supportedStructShape(dt: DataType): Boolean = dt match {
+    case s: StructType => s.fields.forall(f => supportedStructShape(f.dataType))
+    case _: ArrayType | _: MapType => false
     case d: DecimalType => d.scale >= 0 && d.scale <= d.precision
-    case _ => false
+    case _ => true
   }
 
   override def getSupportLevel(expr: ScalarSubquery): SupportLevel = {
     val supported = expr.dataType match {
-      case s: StructType => supportedStructField(s)
+      case s: StructType =>
+        supportedDataType(
+          s,
+          allowComplex = true,
+          allowIntervals = false,
+          allowCalendarInterval = false,
+          allowTimeType = false,
+          allowAnyStringType = false,
+          allowDuplicateStructFieldNames = false) && supportedStructShape(s)
       case dt => supportedDataType(dt)
     }
     if (supported) {

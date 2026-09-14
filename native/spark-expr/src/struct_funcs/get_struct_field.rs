@@ -99,9 +99,13 @@ impl PhysicalExpr for GetStructField {
                     self.ordinal,
                 )?))
             }
-            ColumnarValue::Scalar(ScalarValue::Struct(struct_array)) => Ok(ColumnarValue::Array(
-                child_with_parent_nulls(&struct_array, self.ordinal)?,
-            )),
+            ColumnarValue::Scalar(ScalarValue::Struct(struct_array)) => {
+                let child = child_with_parent_nulls(&struct_array, self.ordinal)?;
+                Ok(ColumnarValue::Scalar(ScalarValue::try_from_array(
+                    child.as_ref(),
+                    0,
+                )?))
+            }
             value => Err(DataFusionError::Execution(format!(
                 "Expected a struct array, got {value:?}"
             ))),
@@ -139,7 +143,106 @@ mod tests {
     use arrow::array::{ArrayRef, Int64Array};
     use arrow::buffer::NullBuffer;
     use arrow::datatypes::Fields;
-    use datafusion::physical_expr::expressions::Column;
+    use datafusion::physical_expr::expressions::{Column, Literal};
+
+    fn assert_scalar_for_batch_sizes(expr: &GetStructField, expected: ScalarValue) {
+        for num_rows in [4, 1, 0] {
+            let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
+            let input = Arc::new(Int64Array::from_iter_values(0..num_rows as i64));
+            let batch = RecordBatch::try_new(schema, vec![input]).unwrap();
+            let result = expr.evaluate(&batch).unwrap();
+
+            // A projection materializes scalars to its input batch length. Returning the
+            // one-element struct child as an array fails this check for multi-row/empty batches.
+            let output = result.clone().into_array_of_size(num_rows).unwrap();
+            assert_eq!(output.len(), num_rows);
+            assert_eq!(
+                output.as_ref(),
+                expected.to_array_of_size(num_rows).unwrap().as_ref()
+            );
+            match result {
+                ColumnarValue::Scalar(value) => assert_eq!(value, expected),
+                other => panic!("expected a scalar struct field, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn scalar_field_is_broadcast_to_batch_length() {
+        let fields = Fields::from(vec![Field::new("value", DataType::Int64, false)]);
+        let child = Arc::new(Int64Array::from(vec![42_i64])) as ArrayRef;
+        let scalar = ScalarValue::Struct(Arc::new(StructArray::new(fields, vec![child], None)));
+        let expr = GetStructField::new(Arc::new(Literal::new(scalar)), 0);
+
+        assert_scalar_for_batch_sizes(&expr, ScalarValue::Int64(Some(42)));
+    }
+
+    #[test]
+    fn scalar_field_of_null_struct_is_null() {
+        let fields = Fields::from(vec![Field::new("value", DataType::Int64, false)]);
+        // The null parent hides a populated, non-nullable child buffer.
+        let child = Arc::new(Int64Array::from(vec![42_i64])) as ArrayRef;
+        let scalar = ScalarValue::Struct(Arc::new(StructArray::new(
+            fields,
+            vec![child],
+            Some(NullBuffer::from(vec![false])),
+        )));
+        let expr = GetStructField::new(Arc::new(Literal::new(scalar)), 0);
+
+        assert_scalar_for_batch_sizes(&expr, ScalarValue::Int64(None));
+    }
+
+    #[test]
+    fn scalar_null_field_is_null() {
+        let fields = Fields::from(vec![Field::new("value", DataType::Int64, true)]);
+        let child = Arc::new(Int64Array::from(vec![None::<i64>])) as ArrayRef;
+        let scalar = ScalarValue::Struct(Arc::new(StructArray::new(fields, vec![child], None)));
+        let expr = GetStructField::new(Arc::new(Literal::new(scalar)), 0);
+
+        assert_scalar_for_batch_sizes(&expr, ScalarValue::Int64(None));
+    }
+
+    #[test]
+    fn nested_scalar_field_retains_scalar_semantics() {
+        for outer_valid in [true, false] {
+            for inner_valid in [true, false] {
+                for value in [Some(42_i64), None] {
+                    let inner_fields =
+                        Fields::from(vec![Field::new("value", DataType::Int64, true)]);
+                    let inner = Arc::new(StructArray::new(
+                        inner_fields.clone(),
+                        vec![Arc::new(Int64Array::from(vec![value]))],
+                        Some(NullBuffer::from(vec![inner_valid])),
+                    ));
+                    let outer_fields = Fields::from(vec![Field::new(
+                        "nested",
+                        DataType::Struct(inner_fields.clone()),
+                        true,
+                    )]);
+                    let scalar = ScalarValue::Struct(Arc::new(StructArray::new(
+                        outer_fields,
+                        vec![Arc::clone(&inner) as ArrayRef],
+                        Some(NullBuffer::from(vec![outer_valid])),
+                    )));
+                    let nested = GetStructField::new(Arc::new(Literal::new(scalar)), 0);
+                    let expected_inner = if outer_valid {
+                        inner
+                    } else {
+                        Arc::new(StructArray::new_null(inner_fields, 1))
+                    };
+                    assert_scalar_for_batch_sizes(&nested, ScalarValue::Struct(expected_inner));
+
+                    let leaf = GetStructField::new(Arc::new(nested), 0);
+                    let expected_value = if outer_valid && inner_valid {
+                        value
+                    } else {
+                        None
+                    };
+                    assert_scalar_for_batch_sizes(&leaf, ScalarValue::Int64(expected_value));
+                }
+            }
+        }
+    }
 
     // A field of a NULL struct must be NULL (Spark semantics) even when the child buffer holds a
     // non-null value at that row -- Arrow stores child validity independently of the parent

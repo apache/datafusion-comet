@@ -32,12 +32,12 @@ use jni::{
 };
 use std::{
     fmt::{Display, Formatter},
-    hash::{Hash, Hasher},
     io::Cursor,
-    sync::{Arc, OnceLock},
+    sync::Arc,
 };
 
-#[derive(Debug)]
+/// Runtime lookup for non-struct scalar results. The planner resolves structs to owned literals.
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub struct Subquery {
     /// The ID of the execution context that owns this subquery. We use this ID to retrieve the
     /// subquery result.
@@ -46,10 +46,6 @@ pub struct Subquery {
     pub id: i64,
     /// The data type of the subquery result.
     pub data_type: DataType,
-    // Spark materializes a scalar subquery before native execution. Cache the owned struct
-    // result for this execution context so IPC serialization/decoding is not paid per batch.
-    // Do not include this execution state in expression equality or hashing.
-    struct_value: OnceLock<ScalarValue>,
 }
 
 impl Subquery {
@@ -58,31 +54,41 @@ impl Subquery {
             exec_context_id,
             id,
             data_type,
-            struct_value: OnceLock::new(),
         }
     }
-}
 
-impl PartialEq for Subquery {
-    fn eq(&self, other: &Self) -> bool {
-        self.exec_context_id == other.exec_context_id
-            && self.id == other.id
-            && self.data_type == other.data_type
+    /// Resolve Spark's already materialized struct result during native physical planning.
+    /// Registration precedes the first executePlan call, which creates the physical plan.
+    /// The planner stores the owned result in a Literal, so evaluation needs no JVM lookup or
+    /// mutable initialization state. Separate physical expressions may resolve the same ID.
+    pub fn resolve_struct(
+        exec_context_id: i64,
+        id: i64,
+        data_type: &DataType,
+    ) -> datafusion::common::Result<ScalarValue> {
+        if !matches!(data_type, DataType::Struct(_)) {
+            return internal_err!("Expected a struct scalar subquery, got {data_type:?}");
+        }
+        JVMClasses::with_env(|env| unsafe {
+            let is_null = jni_static_call!(env,
+                comet_exec.is_null(exec_context_id, id) -> jboolean
+            )?;
+            if is_null {
+                return ScalarValue::try_from(data_type);
+            }
+            let bytes = jni_static_call!(env,
+                comet_exec.get_struct(exec_context_id, id) -> BinaryWrapper
+            )?;
+            let bytes = JByteArray::from_raw(env, bytes.get().as_raw());
+            let bytes = env.convert_byte_array(bytes).map_err(CometError::from)?;
+            decode_struct_result(&bytes, data_type)
+        })
     }
 }
 
-impl Eq for Subquery {}
-
-impl Hash for Subquery {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.exec_context_id.hash(state);
-        self.id.hash(state);
-        self.data_type.hash(state);
-    }
-}
-
-/// The JVM bridge emits one row with one struct column. Validate the wire shape and type before
-/// creating the scalar; Arrow IPC validation also keeps malformed strings out of native arrays.
+/// serializeScalarSubquery emits one batch with one row and one struct column. Check the bounds
+/// needed for scalar extraction, but do not scan for additional batches from this internal
+/// producer. Arrow IPC and planned-type validation still apply to the returned value.
 fn decode_struct_result(
     bytes: &[u8],
     data_type: &DataType,
@@ -93,9 +99,6 @@ fn decode_struct_result(
     };
     if batch.num_rows() != 1 || batch.num_columns() != 1 {
         return internal_err!("Scalar subquery IPC result must contain one row and one column");
-    }
-    if reader.next().transpose()?.is_some() {
-        return internal_err!("Scalar subquery IPC result contains more than one batch");
     }
     let value = align_struct_metadata(batch.column(0), data_type)?;
     ScalarValue::try_from_array(&value, 0)
@@ -157,10 +160,7 @@ impl PhysicalExpr for Subquery {
     }
 
     fn evaluate(&self, _: &RecordBatch) -> datafusion::common::Result<ColumnarValue> {
-        if let Some(value) = self.struct_value.get() {
-            return Ok(ColumnarValue::Scalar(value.clone()));
-        }
-        let result = JVMClasses::with_env(|env| unsafe {
+        JVMClasses::with_env(|env| unsafe {
             let is_null = jni_static_call!(env,
                 comet_exec.is_null(self.exec_context_id, self.id) -> jboolean
             )?;
@@ -172,17 +172,6 @@ impl PhysicalExpr for Subquery {
             }
 
             match &self.data_type {
-                DataType::Struct(_) => {
-                    let bytes = jni_static_call!(env,
-                        comet_exec.get_struct(self.exec_context_id, self.id) -> BinaryWrapper
-                    )?;
-                    let bytes = JByteArray::from_raw(env, bytes.get().as_raw());
-                    let bytes = env.convert_byte_array(bytes).map_err(CometError::from)?;
-                    Ok(ColumnarValue::Scalar(decode_struct_result(
-                        &bytes,
-                        &self.data_type,
-                    )?))
-                }
                 DataType::Boolean => {
                     let r = jni_static_call!(env,
                         comet_exec.get_bool(self.exec_context_id, self.id) -> jboolean
@@ -277,15 +266,7 @@ impl PhysicalExpr for Subquery {
                 }
                 _ => internal_err!("Unsupported scalar subquery data type {:?}", self.data_type),
             }
-        })?;
-        if matches!(self.data_type, DataType::Struct(_)) {
-            if let ColumnarValue::Scalar(value) = &result {
-                // Concurrent first evaluations may both initialize the same immutable result.
-                // Failed evaluations are never cached.
-                let _ = self.struct_value.set(value.clone());
-            }
-        }
-        Ok(result)
+        })
     }
 
     fn children(&self) -> Vec<&Arc<dyn PhysicalExpr>> {
@@ -308,7 +289,7 @@ mod tests {
         datatypes::Field,
         ipc::writer::StreamWriter,
     };
-    use std::collections::hash_map::DefaultHasher;
+    use datafusion::physical_expr::expressions::Literal;
 
     fn encode(schema: &Schema, batches: &[RecordBatch]) -> Vec<u8> {
         let mut bytes = Vec::new();
@@ -428,10 +409,6 @@ mod tests {
         let data_type = batch.column(0).data_type();
         assert!(decode_struct_result(b"invalid IPC", data_type).is_err());
         assert!(decode_struct_result(&encode(&schema, &[]), data_type).is_err());
-        assert!(
-            decode_struct_result(&encode(&schema, &[batch.clone(), batch.clone()]), data_type)
-                .is_err()
-        );
         assert!(decode_struct_result(&encode(&schema, &[batch.slice(0, 0)]), data_type).is_err());
         let bytes = encode(&schema, std::slice::from_ref(&batch));
         let wrong_type = DataType::Struct(
@@ -445,26 +422,33 @@ mod tests {
     }
 
     #[test]
-    fn struct_cache_does_not_change_expression_identity() {
-        let value = ScalarValue::try_from_array(&struct_value(), 0).unwrap();
-        let cached = Subquery::new(1, 2, value.data_type());
-        let same = Subquery::new(1, 2, value.data_type());
-        let other_context = Subquery::new(3, 2, value.data_type());
-        let hash = |expr: &Subquery| {
-            let mut hasher = DefaultHasher::new();
-            expr.hash(&mut hasher);
-            hasher.finish()
+    fn resolved_struct_literal_owns_its_value() {
+        let expected = ScalarValue::try_from_array(&struct_value(), 0).unwrap();
+        let literal = {
+            let batch = batch(struct_value());
+            let bytes = encode(batch.schema().as_ref(), std::slice::from_ref(&batch));
+            Literal::new(decode_struct_result(&bytes, &expected.data_type()).unwrap())
         };
-        let before = hash(&cached);
-        cached.struct_value.set(value.clone()).unwrap();
-        assert_eq!(cached, same);
-        assert_eq!(hash(&cached), before);
-        assert_ne!(cached, other_context);
-        // A cached result is owned by the expression and needs no live JVM registry entry.
+        // The IPC bytes and input batch have been dropped, and no JVM registry is initialized.
         let input = RecordBatch::new_empty(Arc::new(Schema::empty()));
-        let ColumnarValue::Scalar(result) = cached.evaluate(&input).unwrap() else {
+        for _ in 0..64 {
+            let ColumnarValue::Scalar(result) = literal.evaluate(&input).unwrap() else {
+                panic!("Expected scalar result");
+            };
+            assert_eq!(result, expected);
+        }
+    }
+
+    #[test]
+    fn resolved_null_struct_literal_preserves_its_type() {
+        let data_type = struct_value().data_type().clone();
+        // This is the typed-NULL branch used when Spark reports no subquery result, before IPC.
+        let literal = Literal::new(ScalarValue::try_from(&data_type).unwrap());
+        let input = RecordBatch::new_empty(Arc::new(Schema::empty()));
+        let ColumnarValue::Scalar(result) = literal.evaluate(&input).unwrap() else {
             panic!("Expected scalar result");
         };
-        assert_eq!(result, value);
+        assert!(result.is_null());
+        assert_eq!(result.data_type(), data_type);
     }
 }

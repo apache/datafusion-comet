@@ -786,7 +786,15 @@ impl PhysicalPlanner {
             ExprStruct::Subquery(expr) => {
                 let id = expr.id;
                 let data_type = to_arrow_datatype(expr.datatype.as_ref().unwrap());
-                Ok(Arc::new(Subquery::new(self.exec_context_id, id, data_type)))
+                if matches!(data_type, DataType::Struct(_)) {
+                    // Spark has materialized and registered the result before this physical
+                    // plan is created in executePlan. Keep an owned constant in the plan rather
+                    // than initializing mutable state while evaluating input batches.
+                    let value = Subquery::resolve_struct(self.exec_context_id, id, &data_type)?;
+                    Ok(Arc::new(DataFusionLiteral::new(value)))
+                } else {
+                    Ok(Arc::new(Subquery::new(self.exec_context_id, id, data_type)))
+                }
             }
             ExprStruct::BloomFilterMightContain(expr) => {
                 let bloom_filter_expr = self.create_expr(
