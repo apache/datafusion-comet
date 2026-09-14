@@ -1,6 +1,6 @@
 CometColumnarToRow
-+-  CometTakeOrderedAndProject [COMET-INFO: JVM codegen dispatcher: round]
-   +-  CometProject [COMET-INFO: JVM codegen dispatcher: round]
++-  CometTakeOrderedAndProject [COMET-INFO: JVM codegen dispatcher: add, cast, coalesce, divide, round]
+   +-  CometProject [COMET-INFO: JVM codegen dispatcher: add, cast, coalesce, divide, knownfloatingpointnormalized, normalizenanandzero, round]
       +- CometSortMergeJoin
          :- CometProject
          :  +- CometSortMergeJoin
@@ -76,4 +76,4 @@ CometColumnarToRow
                                  +- CometFilter
                                     +- CometNativeScan parquet spark_catalog.default.date_dim
 
-Comet accelerated 74 out of 74 eligible operators (100%). Final plan contains 1 transitions between Spark and Comet. Accelerated expressions: 12 native, 1 codegen dispatch.
+Comet accelerated 74 out of 74 eligible operators (100%). Final plan contains 1 transitions between Spark and Comet. Accelerated expressions: 12 native, 7 codegen dispatch.
