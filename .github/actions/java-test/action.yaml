@@ -138,7 +138,10 @@ runs:
       if: failure()
       # These three stay on the plain action rather than
       # ../upload-artifact-retry: a local action calling another local action
-      # is untested in this repo, and these only run on already-failing jobs.
+      # is untested in this repo. The two failure-only uploads run on jobs that
+      # are already red. The test-report upload also runs on green jobs, so it
+      # is continue-on-error: a FinalizeArtifact 403 must not turn a passing test
+      # run into a red check, and nothing downstream consumes the reports.
       uses: actions/upload-artifact@v7
       with:
         name: crash-logs-${{ inputs.artifact_name }}
@@ -165,6 +168,7 @@ runs:
         if-no-files-found: ignore
     - name: Upload test results
       if: ${{ !cancelled() && inputs.upload-test-reports == 'true' }}
+      continue-on-error: true
       uses: actions/upload-artifact@v7
       with:
          name: java-test-reports-${{ inputs.artifact_name }}
