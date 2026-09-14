@@ -45,10 +45,9 @@ in the [Compatibility Guide] for more information, such as known limitations per
 We recommend only using Comet with Spark versions where we currently have both Comet and Spark tests enabled in CI.
 Other versions may work well enough for development and evaluation purposes.
 
-```{warning}
-JDK 11 support is deprecated as of the 1.0.0 release and will be removed in the 1.1.0 release. We
-recommend moving to JDK 17 or later.
+Comet requires JDK 17 or later. JDK 11 is no longer supported as of the 1.1.0 release.
 
+```{warning}
 Spark 3.4 support is deprecated as of the 1.0.0 release and will be removed in a future release.
 Apache Spark's own SQL test suite is no longer run against Spark 3.4 on every change; it runs only
 on demand. We recommend moving to Spark 3.5 or later.
@@ -56,8 +55,8 @@ on demand. We recommend moving to Spark 3.5 or later.
 
 | Spark Version | Java Version | Scala Version | Comet Tests in CI | Spark SQL Tests in CI |
 | ------------- | ------------ | ------------- | ----------------- | --------------------- |
-| 3.4.3         | 11/17        | 2.12/2.13     | Yes               | On demand             |
-| 3.5.9         | 11/17        | 2.12/2.13     | Yes               | Yes                   |
+| 3.4.3         | 17           | 2.12/2.13     | Yes               | On demand             |
+| 3.5.9         | 17           | 2.12/2.13     | Yes               | Yes                   |
 | 4.0.4         | 17/21        | 2.13          | Yes               | Yes                   |
 | 4.1.3         | 17/21        | 2.13          | Yes               | Yes                   |
 
