@@ -18,11 +18,21 @@ ruleset in `.asf.yaml`. That splits CI into two tiers:
   The Linux build, Spark 4.1 (catalyst and `sql_core` only) and Iceberg 1.11.
 - **Queue tier** (`queue`): the authoritative gate. Everything the PR tier
   runs, plus the macOS build, the benchmark compile check, the Spark 4.1
-  `sql_hive` shards, Spark 3.4/3.5/4.0 and Iceberg 1.8/1.9/1.10, evaluated
+  `sql_hive` shards, Spark 3.5/4.0 and Iceberg 1.8/1.9/1.10, evaluated
   against the merge result rather than against the PR head.
 
 Every queue-only job has a `run-*` label that opts a pull request into it
 early, listed in the diagram below.
+
+`spark_3_4` is in neither tier. Spark 3.4 is deprecated, so its Spark SQL
+suite no longer gates a merge; it runs only when a pull request carries
+`run-spark-3.4-tests`, or from a `workflow_dispatch`. Anyone who wants to
+check a change against 3.4 can still do so, but note when that result starts
+to block a merge. Adding the label fires a `labeled` event, and those runs
+publish the advisory `Required Checks (label run)` name rather than the
+required one, so a red 3.4 there changes nothing. It is the next push with
+the label still applied that runs 3.4 under `Required Checks`, and with the
+queue run gone that push is the only thing that makes a 3.4 failure blocking.
 
 Heavy jobs have no `push` tier. The queue already tested the exact tree that
 lands, so re-running them on push to main would double the cost of every
@@ -61,13 +71,12 @@ and TPC-H/TPC-DS caches on `main` stale until the next unrelated change.
   pr_build_linux (+ push, for cache)  docs                      pr_build_macos      run-macos-tests
   spark_4_1 (catalyst + sql_core)                               pr_benchmark_check  run-benchmark-check
   iceberg_1_11                                                  spark_4_1 sql_hive  run-spark-4.1-hive-tests
-                                                                spark_3_4           run-spark-3.4-tests
                                                                 spark_3_5           run-spark-3.5-tests
                                                                 delta_contrib       run-delta-tests
                                                                 spark_4_0           run-spark-4.0-tests
-                                                                iceberg_1_8         run-iceberg-tests
-                                                                iceberg_1_9         run-iceberg-tests
-                                                                iceberg_1_10        run-iceberg-tests
+  label or dispatch only                                        iceberg_1_8         run-iceberg-tests
+  ----------------------                                        iceberg_1_9         run-iceberg-tests
+  spark_3_4  run-spark-3.4-tests                                iceberg_1_10        run-iceberg-tests
 
         |                                   |                                   |
         +-----------------------------------+-----------------------------------+
@@ -98,7 +107,7 @@ and TPC-H/TPC-DS caches on `main` stale until the next unrelated change.
 | `spark_3_5`          | merge group, **or** PR with `run-spark-3.5-tests`                                                                      | Spark 3.5 sources                   |
 | `delta_contrib`      | merge group, **or** PR with `run-delta-tests`                                                                          | Delta contrib and native sources    |
 | `spark_4_1`          | PR or merge group, paths matched; the `sql_hive` shards only in the merge group **or** with `run-spark-4.1-hive-tests` | Spark 4.1 sources                   |
-| `spark_3_4`          | merge group, **or** PR with `run-spark-3.4-tests`                                                                      | Spark 3.4 sources                   |
+| `spark_3_4`          | PR with `run-spark-3.4-tests`, or dispatch                                                                             | Spark 3.4 sources                   |
 | `spark_4_0`          | merge group, **or** PR with `run-spark-4.0-tests`                                                                      | Spark 4.0 sources                   |
 | `iceberg_1_11`       | PR or merge group, paths matched                                                                                       | Iceberg sources                     |
 | `iceberg_1_8`        | merge group, **or** PR with `run-iceberg-tests`                                                                        | Iceberg sources                     |
