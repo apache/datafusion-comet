@@ -32,6 +32,8 @@ mod delta_scan;
 // JVM-planned Delta sibling of the kernel handler above; see delta_spark_scan.rs.
 #[cfg(feature = "delta")]
 mod delta_spark_scan;
+#[cfg(feature = "contrib-lance")]
+mod lance_scan;
 
 use crate::execution::operators::init_csv_datasource_exec;
 use crate::execution::operators::AlignedArrowStreamReader;
@@ -1937,12 +1939,14 @@ impl PhysicalPlanner {
                 {
                     return result;
                 }
+                #[cfg(feature = "contrib-lance")]
+                if let Some(result) = lance_scan::try_plan_contrib_scan(self, spark_plan, contrib) {
+                    return result;
+                }
                 Err(GeneralError(format!(
                     "Received a contrib_scan operator (type_url: {}) but core was built without a \
-                     contrib that handles it. Rebuild with the matching contrib feature -- e.g. \
-                     `-Pcontrib-delta` (Maven) + `--features contrib-delta` (Cargo) for the \
-                     kernel-planned Delta path, or `-Pdelta` + `--features delta` for the \
-                     JVM-planned Delta path.",
+                     contrib that handles it. Rebuild with the matching Maven profile and Cargo \
+                     feature.",
                     contrib.type_url
                 )))
             }

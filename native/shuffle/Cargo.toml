@@ -78,3 +78,7 @@ harness = false
 [[bench]]
 name = "row_columnar"
 harness = false
+
+[[bench]]
+name = "shuffle_reader"
+harness = false
