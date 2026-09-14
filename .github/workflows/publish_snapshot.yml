@@ -177,16 +177,12 @@ jobs:
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v7
-      - name: Install JDKs
+      - name: Install JDK
         uses: actions/setup-java@v4
         with:
           distribution: 'zulu'
-          # Spark 3.4 is built with JDK 11 and everything else with JDK 17,
-          # matching pr_build_linux.yml. setup-java exports JAVA_HOME_11_X64
-          # and JAVA_HOME_17_X64; the last entry is the default.
-          java-version: |
-            11
-            17
+          # Every variant is built with JDK 17, matching pr_build_linux.yml.
+          java-version: 17
       - name: Cache Maven dependencies
         uses: actions/cache@v6
         with:
@@ -238,7 +234,7 @@ jobs:
           mkdir -p jars
           # Maven reads stdin, so it must not see the heredoc that feeds the
           # loop or it swallows the remaining variants.
-          while read -r jdk profiles; do
+          while read -r profiles; do
             echo "::group::Build with $profiles"
             ./mvnw -B -q clean < /dev/null
             lib_dir=spark/target/classes/org/apache/comet/linux
@@ -250,15 +246,15 @@ jobs:
             # property overrides every module's setting. $profiles is a
             # space-separated list of -P flags, so it must word-split.
             # shellcheck disable=SC2086
-            JAVA_HOME="$jdk" ./mvnw -B "$GOAL" -DskipTests -Dmaven.deploy.skip=false $profiles < /dev/null
+            ./mvnw -B "$GOAL" -DskipTests -Dmaven.deploy.skip=false $profiles < /dev/null
             # Only the shaded plugin jar, not the sources or unshaded jars.
             cp spark/target/comet-spark-spark*_*-"$version".jar jars/
             echo "::endgroup::"
           done <<EOF
-          $JAVA_HOME_11_X64 -Pspark-3.4 -Pscala-2.12
-          $JAVA_HOME_17_X64 -Pspark-3.5 -Pscala-2.12
-          $JAVA_HOME_17_X64 -Pspark-4.0
-          $JAVA_HOME_17_X64 -Pspark-4.1
+          -Pspark-3.4 -Pscala-2.12
+          -Pspark-3.5 -Pscala-2.12
+          -Pspark-4.0
+          -Pspark-4.1
           EOF
       - name: Verify every jar bundles both native libraries
         run: |
