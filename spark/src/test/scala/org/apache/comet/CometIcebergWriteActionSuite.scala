@@ -32,7 +32,6 @@ import scala.concurrent.duration.DurationInt
 import scala.jdk.CollectionConverters._
 import scala.util.control.NonFatal
 
-<<<<<<< HEAD
 import org.json4s.{DefaultFormats, Formats}
 import org.json4s.jackson.JsonMethods.parse
 
@@ -41,12 +40,6 @@ import org.apache.parquet.hadoop.ParquetFileReader
 import org.apache.parquet.hadoop.util.HadoopInputFile
 import org.apache.spark.{CometListenerBusUtils, SparkConf, SparkException, SparkThrowable, Success, TaskContext}
 import org.apache.spark.rdd.RDD
-=======
-import org.apache.hadoop.fs.Path
-import org.apache.parquet.hadoop.ParquetFileReader
-import org.apache.parquet.hadoop.util.HadoopInputFile
-import org.apache.spark.{SparkConf, Success}
->>>>>>> eab9eb47e (fix: match Iceberg bloom path resolution by version)
 import org.apache.spark.scheduler.{SparkListener, SparkListenerTaskEnd}
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.DataFrame
@@ -1270,6 +1263,27 @@ class CometIcebergWriteActionSuite
     }
   }
 
+  test("Bloom-filter folding config selects the native or JVM Iceberg writer") {
+    assumeNativeAcceleration()
+    withIcebergCatalog { warehouseDir =>
+      val properties = Some("'write.parquet.bloom-filter-enabled.column.id'='true'")
+      createTable(warehouseDir, "bloom_folding_enabled", partitionSpec = "", properties)
+      createTable(warehouseDir, "bloom_folding_disabled", partitionSpec = "", properties)
+
+      assertNativeWriteEngages("bloom_folding_enabled", Seq(1)) {
+        spark.sql("INSERT INTO cat.db.bloom_folding_enabled VALUES (1, 'region', 1.0)")
+      }
+      assertNativeWriteDoesNotEngage(
+        "bloom_folding_disabled",
+        Seq(1),
+        bloomFilterFoldingEnabled = false) {
+        spark.sql("INSERT INTO cat.db.bloom_folding_disabled VALUES (1, 'region', 1.0)")
+      }
+      assertParquetBloomFilters("bloom_folding_enabled", enabledColumns = Set("id"))
+      assertParquetBloomFilters("bloom_folding_disabled", enabledColumns = Set("id"))
+    }
+  }
+
   test("enabled=false plus NDV matches JVM behavior for the Iceberg runtime") {
     assumeNativeAcceleration()
     withIcebergCatalog { warehouseDir =>
@@ -1718,14 +1732,20 @@ class CometIcebergWriteActionSuite
     }
   }
 
-  test("explicit NDV allocation folds to observed cardinality") {
+  test("overestimated explicit NDV folds and exposes the realized-FPP tradeoff") {
     assumeNativeAcceleration()
     assumeIcebergBloomShapeProperties()
     withIcebergCatalog { warehouseDir =>
-      val configuredNdv = 1000000L
-      val insertedIds = 0 until 2
+      val configuredNdv = 1000L
+      val configuredFpp = 0.01
+      val insertedIds = 0 until 100
+      val absentProbeValues = 10000000 until 11000000
+      val expectedNativeBytes = 128
+      val expectedJvmBytes = 2048
+      val expectedNativeFalsePositives = 9088L
       val properties = Some(
         "'write.parquet.bloom-filter-enabled.column.id'='true', " +
+          s"'write.parquet.bloom-filter-fpp.column.id'='$configuredFpp', " +
           s"'write.parquet.bloom-filter-ndv.column.id'='$configuredNdv'")
       createTable(warehouseDir, "bloom_explicit_ndv_fold_native", partitionSpec = "", properties)
       createTable(warehouseDir, "bloom_explicit_ndv_fold_jvm", partitionSpec = "", properties)
@@ -1746,11 +1766,22 @@ class CometIcebergWriteActionSuite
       val jvm = parquetBloomFilterBytes("bloom_explicit_ndv_fold_jvm", "id")
       assert(native.nonEmpty && native.size == jvm.size)
       assert(
-        native.zip(jvm).forall { case (nativeBytes, jvmBytes) =>
-          nativeBytes.length < jvmBytes.length
-        },
-        "expected parquet-rs to fold the explicit-NDV allocation after observing two values")
+        native.forall(_.length == expectedNativeBytes),
+        s"expected folded native filters of $expectedNativeBytes bytes")
+      assert(
+        jvm.forall(_.length == expectedJvmBytes),
+        s"expected Parquet Java filters of $expectedJvmBytes bytes")
       assertParquetBloomContainsInts("bloom_explicit_ndv_fold_native", "id", insertedIds)
+      assertParquetBloomContainsInts("bloom_explicit_ndv_fold_jvm", "id", insertedIds)
+
+      val nativeFalsePositives =
+        parquetBloomFalsePositiveCount("bloom_explicit_ndv_fold_native", "id", absentProbeValues)
+      val jvmFalsePositives =
+        parquetBloomFalsePositiveCount("bloom_explicit_ndv_fold_jvm", "id", absentProbeValues)
+      assert(nativeFalsePositives == expectedNativeFalsePositives)
+      assert(jvmFalsePositives == 0L)
+      assert(nativeFalsePositives > jvmFalsePositives)
+      assert(nativeFalsePositives.toDouble / absentProbeValues.size <= configuredFpp)
     }
   }
 
@@ -5506,6 +5537,36 @@ class CometIcebergWriteActionSuite
     present.forall(identity)
   }
 
+  private def parquetBloomFalsePositiveCount(
+      tableName: String,
+      columnName: String,
+      absentValues: Seq[Int]): Long = {
+    val paths = spark
+      .sql(s"SELECT file_path FROM $catalog.$ns.$tableName.data_files ORDER BY file_path")
+      .collect()
+      .map(_.getString(0))
+    val conf = spark.sparkContext.hadoopConfiguration
+    val counts = paths.toSeq.flatMap { path =>
+      val input = HadoopInputFile.fromPath(new Path(path.stripPrefix("file:")), conf)
+      val reader = ParquetFileReader.open(input)
+      try {
+        reader.getFooter.getBlocks.asScala.flatMap { block =>
+          block.getColumns.asScala
+            .filter(_.getPath.toDotString == columnName)
+            .map { column =>
+              val bloom = reader.readBloomFilter(column)
+              assert(bloom != null, s"expected Bloom filter for $columnName in $path")
+              absentValues.count(value => bloom.findHash(bloom.hash(value))).toLong
+            }
+        }
+      } finally {
+        reader.close()
+      }
+    }
+    assert(counts.size == 1, s"expected one Bloom filter for $columnName, got ${counts.size}")
+    counts.head
+  }
+
   private def assertParquetBloomContainsInts(
       tableName: String,
       columnName: String,
@@ -5595,10 +5656,12 @@ class CometIcebergWriteActionSuite
    * version / session-state combinations where `withSQLConf` loses the override before the rule
    * fires.
    */
-  private def withNativeEnabled[T](action: => T): T =
+  private def withNativeEnabled[T](action: => T, bloomFilterFoldingEnabled: Boolean = true): T =
     withSessionConf(
       CometConf.COMET_ICEBERG_NATIVE_WRITE_ENABLED.key -> Some("true"),
-      CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> Some("true"))(action)
+      CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> Some("true"),
+      CometConf.COMET_ICEBERG_NATIVE_WRITE_BLOOM_FILTER_FOLDING_ENABLED.key ->
+        Some(bloomFilterFoldingEnabled.toString))(action)
 
   /**
    * Sets each key to its value, or unsets it for `None`, for the duration of `action`, then puts
@@ -5826,7 +5889,15 @@ class CometIcebergWriteActionSuite
    */
   private def assertNativeWriteDoesNotEngage(tableName: String, expectedIds: Seq[Int])(
       action: => Unit): Unit = {
-    val snapshot = withNativeEnabled { captureWrite(tableName)(action) }
+    assertNativeWriteDoesNotEngage(tableName, expectedIds, bloomFilterFoldingEnabled = true)(
+      action)
+  }
+
+  private def assertNativeWriteDoesNotEngage(
+      tableName: String,
+      expectedIds: Seq[Int],
+      bloomFilterFoldingEnabled: Boolean)(action: => Unit): Unit = {
+    val snapshot = withNativeEnabled(captureWrite(tableName)(action), bloomFilterFoldingEnabled)
     assertExactlyOneCommit(snapshot)
     val nativeExecs = snapshot.plans.flatMap { p =>
       collectWithSubqueries(p) { case e: CometIcebergWriteExec => e }

@@ -265,6 +265,11 @@ writes the table instead. The same fallback applies when `max-bytes=32` would bi
 NDV/FPP request, because Parquet Java ignores exactly 32 bytes as a maximum, and when NDV is above
 `Long.MAX_VALUE / 8`, where Parquet Java's sizing multiplication can overflow.
 
+Bloom-filter-enabled writes also require
+`spark.comet.iceberg.write.bloomFilterFolding.enabled=true`. The option is off by default. When it
+is false, Comet leaves the write to Spark's default Iceberg Java writer because the Apache Arrow
+Rust `parquet` writer does not expose an option to disable its post-insert folding.
+
 For supported values, Apache Parquet Java applies the sizing properties as follows:
 
 - with no NDV, allocate the full `max-bytes` value;
@@ -276,9 +281,21 @@ For every write that is eligible for the native path, Comet applies exactly the 
 decision algorithm.
 
 After values are inserted, the Apache Arrow Rust `parquet` crate may fold a sparsely populated
-filter to a smaller power-of-two filter while preserving the requested FPP. Parquet Java's
-non-adaptive Iceberg path keeps its initial allocation. The native result can consequently use
-less file space while remaining safe for every Parquet reader.
+filter to a smaller power-of-two allocation. Sparse filters occur in ordinary workloads when NDV
+is overestimated, row-group cardinalities are uneven, or a final row group is only partly full.
+Parquet Java's non-adaptive Iceberg path retains its initial allocation: its realized FPP can be
+much lower than requested, at the cost of serializing the larger filter. The Rust writer folds
+until another fold would exceed the configured FPP, so it serializes fewer bytes but can have a
+higher realized FPP and weaker pruning than the Java writer. Unless `max-bytes` already makes the
+requested FPP impossible, the result remains within the configured target. Folding cannot
+introduce false negatives or incorrect query results.
+
+The option therefore controls a serialized-file-size versus pruning tradeoff. It does not imply
+lower peak writer memory: the Rust writer retains the original vector capacity while folding.
+The test `overestimated explicit NDV folds and exposes the realized-FPP tradeoff` pins this
+behavior with matching native/Java membership checks, serialized Bloom sizes, and measured false
+positives. `large representable max folds natively while adjacent non-power-of-two falls back`
+covers the extreme case of a 64-MiB configured maximum and only 256 distinct values.
 
 ### Physical file layout only (cosmetic)
 
