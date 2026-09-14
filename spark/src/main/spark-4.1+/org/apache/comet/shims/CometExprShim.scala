@@ -66,7 +66,7 @@ trait CometExprShim extends Spark4xCometExprShim {
           scalarFunctionExprToProtoWithReturnType("make_time", s.dataType, true, childExprs: _*)
         optExpr
 
-      // Spark 4.1 EXTRACT(SECOND FROM TIME) returns Decimal(8,6), even for TIME(p < 6).
+      // Spark 4.1 and 4.2 EXTRACT(SECOND FROM TIME) return Decimal(8,6), even for TIME(p < 6).
       case s: StaticInvoke
           if s.staticObject == classOf[DateTimeUtils.type] &&
             s.functionName == "getSecondsOfTimeWithFraction" &&

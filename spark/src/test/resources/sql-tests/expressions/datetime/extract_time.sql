@@ -16,11 +16,11 @@
 -- under the License.
 
 -- MinSparkVersion: 4.1
--- MaxSparkVersion: 4.1
+-- MaxSparkVersion: 4.2
 -- Config: spark.sql.timeType.enabled=true
 -- Config: spark.comet.exec.scalaUDF.codegen.enabled=false
 
--- Spark 4.1 returns Decimal(8,6); later releases use precision-dependent result types.
+-- Spark 4.1 and 4.2 return Decimal(8,6); Spark master uses precision-dependent result types.
 statement
 CREATE TABLE test_extract_time(s STRING) USING parquet
 
