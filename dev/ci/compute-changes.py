@@ -55,6 +55,7 @@ FILTERS = {
         ".github/workflows/pr_build_linux.yml",
         ".github/actions/setup-builder/**",
         ".github/actions/java-test/**",
+        ".github/actions/maven-bootstrap/**",
         ".github/actions/rust-test/**",
         ".github/actions/upload-artifact-retry/**",
         ".github/actions/download-artifact-retry/**",
@@ -125,6 +126,7 @@ FILTERS = {
         "rust-toolchain.toml",
         ".github/workflows/ci.yml",
         ".github/workflows/spark_sql_test_reusable.yml",
+        "dev/ci/spark-sql-modules.py",
         ".github/actions/setup-builder/**",
         ".github/actions/setup-spark-builder/**",
         ".github/actions/upload-artifact-retry/**",
@@ -151,6 +153,7 @@ FILTERS = {
         "rust-toolchain.toml",
         ".github/workflows/ci.yml",
         ".github/workflows/spark_sql_test_reusable.yml",
+        "dev/ci/spark-sql-modules.py",
         ".github/actions/setup-builder/**",
         ".github/actions/setup-spark-builder/**",
         ".github/actions/upload-artifact-retry/**",
@@ -177,6 +180,7 @@ FILTERS = {
         "rust-toolchain.toml",
         ".github/workflows/ci.yml",
         ".github/workflows/spark_sql_test_reusable.yml",
+        "dev/ci/spark-sql-modules.py",
         ".github/actions/setup-builder/**",
         ".github/actions/setup-spark-builder/**",
         ".github/actions/upload-artifact-retry/**",
@@ -203,6 +207,7 @@ FILTERS = {
         "rust-toolchain.toml",
         ".github/workflows/ci.yml",
         ".github/workflows/spark_sql_test_reusable.yml",
+        "dev/ci/spark-sql-modules.py",
         ".github/actions/setup-builder/**",
         ".github/actions/setup-spark-builder/**",
         ".github/actions/upload-artifact-retry/**",
@@ -210,6 +215,11 @@ FILTERS = {
         ".mvn/**",
         "mvnw",
     ],
+    # Same inputs as spark_4_1: this is not a separate job but a second
+    # POLICY decision for the same call, selecting the sql_hive matrix rows.
+    # ci.yml folds the two outputs into the reusable workflow's `modules`
+    # input. Populated below, after the dict, so the two lists cannot drift.
+    "spark_4_1_hive": [],
     "iceberg_1_8": [
         "native/**/src/**",
         "native/**/Cargo.toml",
@@ -307,6 +317,7 @@ FILTERS = {
         "mvnw",
     ],
 }
+FILTERS["spark_4_1_hive"] = FILTERS["spark_4_1"]
 
 # Which events may run each job, independent of the path filters above.
 #
@@ -349,8 +360,13 @@ POLICY = {
     "spark_3_5": ["queue", "label:run-spark-3.5-tests"],
     "spark_4_0": ["queue", "label:run-spark-4.0-tests"],
     # Spark 4.1 is the default build profile, so it is the cheapest early
-    # warning that a change is wrong and stays in the PR tier.
+    # warning that a change is wrong and stays in the PR tier. Only the
+    # catalyst and sql_core shards, though: over Aug 12 to Sep 11 2026 the
+    # three sql_hive shards cost about 65 runner-hours a day on pull requests
+    # and were the only failing job on 7 PR runs, against 33 for sql_core, and
+    # their 67-minute shard set the PR tier's wall clock. See issue #5870.
     "spark_4_1": ["pr", "queue"],
+    "spark_4_1_hive": ["queue", "label:run-spark-4.1-hive-tests"],
     "iceberg_1_8": ["queue", "label:run-iceberg-tests"],
     "iceberg_1_9": ["queue", "label:run-iceberg-tests"],
     "iceberg_1_10": ["queue", "label:run-iceberg-tests"],
