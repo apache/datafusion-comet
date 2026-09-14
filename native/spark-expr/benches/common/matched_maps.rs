@@ -256,3 +256,126 @@ pub fn bench_maps(c: &mut Criterion, stage: Stage) {
     }
     group.finish();
 }
+
+/// Additional regression shapes use the same rows and hash seed as the matched fixtures.
+/// Null maps retain physical entries, exercising normalization underneath null slots too.
+/// The leading row is sliced away to exercise nonzero entry offsets in every case.
+pub fn bench_regression_maps(c: &mut Criterion, stage: Stage) {
+    let ints: ArrayRef = Arc::new(Int32Array::from_iter_values((0..ROWS).map(c1)));
+    let mut group = c.benchmark_group(format!("regression_maps/{}", stage.name()));
+    group.throughput(Throughput::Elements(ROWS as u64));
+    for (name, null_every, mixed, long) in [
+        ("singleton_no_null", 0, false, false),
+        ("singleton_sparse_null", 100, false, false),
+        ("singleton_dense_null", 2, false, false),
+        ("mixed_no_null", 0, true, false),
+        ("mixed_sparse_null", 100, true, false),
+        ("mixed_dense_null", 2, true, false),
+        ("singleton_long_unicode", 0, false, true),
+        ("mixed_long_unicode_dense_null", 2, true, true),
+    ] {
+        let mut builder = MapBuilder::new(
+            Some(crate::common::map_field_names()),
+            StringBuilder::new(),
+            StringBuilder::new(),
+        );
+        let prefix = if long {
+            "資料é".repeat(128)
+        } else {
+            String::new()
+        };
+        for row in 0..=ROWS {
+            let count = if row == 0 {
+                3 // Sliced-away prefix must have entries, even for mixed cardinalities.
+            } else if mixed {
+                [0, 1, 1, 2, 10, 50][row % 6]
+            } else {
+                1
+            };
+            for entry in (0..count).rev() {
+                builder.keys().append_value(format!("{prefix}{entry:04}"));
+                if null_every != 0 && (row + entry + 1) % null_every == 0 {
+                    builder.values().append_null();
+                } else {
+                    builder
+                        .values()
+                        .append_value(format!("{prefix}{row}:{entry}"));
+                }
+            }
+            builder
+                .append(null_every == 0 || row % null_every != 0)
+                .unwrap();
+        }
+        let raw: ArrayRef = Arc::new(builder.finish().slice(1, ROWS));
+        let args = [ColumnarValue::Array(Arc::clone(&raw))];
+        let normalized = normalize(&args);
+        // Independent expected permutation checks values, child nulls, and schema as well
+        // as ordering; explicit checks cover map validity and rebased sliced offsets.
+        let map = raw.as_any().downcast_ref::<MapArray>().unwrap();
+        let keys = map
+            .keys()
+            .as_any()
+            .downcast_ref::<arrow::array::StringArray>()
+            .unwrap();
+        let mut permutation = Vec::new();
+        let mut offsets = vec![0i32];
+        for pair in map.value_offsets().windows(2) {
+            let mut indices: Vec<u32> = (pair[0] as u32..pair[1] as u32).collect();
+            indices.sort_by(|a, b| keys.value(*a as usize).cmp(keys.value(*b as usize)));
+            permutation.extend(indices);
+            offsets.push(permutation.len() as i32);
+        }
+        let expected_entries = arrow::compute::take(
+            map.entries(),
+            &arrow::array::UInt32Array::from(permutation),
+            None,
+        )
+        .unwrap();
+        let actual = normalized.as_any().downcast_ref::<MapArray>().unwrap();
+        assert_eq!(actual.entries().to_data(), expected_entries.to_data());
+        assert_eq!(actual.value_offsets(), offsets);
+        assert_eq!(actual.nulls(), map.nulls());
+        assert_eq!(actual.data_type(), map.data_type());
+        for shape in [Shape::Map, Shape::StructMapInt] {
+            if matches!((stage, shape), (Stage::NormalizeOnly, Shape::StructMapInt)) {
+                continue;
+            }
+            group.bench_function(BenchmarkId::new(shape.name(), name), |b| match stage {
+                Stage::NormalizeOnly => b.iter(|| black_box(normalize(black_box(&args)))),
+                Stage::HashOnly => {
+                    let input = match shape {
+                        Shape::Map => Arc::clone(&normalized),
+                        Shape::StructMapInt => wrap(Arc::clone(&normalized), &ints),
+                    };
+                    let mut buffer = vec![42; ROWS];
+                    b.iter(|| {
+                        buffer.fill(42);
+                        create_murmur3_hashes(std::slice::from_ref(black_box(&input)), &mut buffer)
+                            .unwrap();
+                        black_box(&buffer);
+                    });
+                }
+                Stage::NormalizeHash => {
+                    let mut buffer = vec![42; ROWS];
+                    match shape {
+                        Shape::Map => b.iter(|| {
+                            buffer.fill(42);
+                            let input = normalize(black_box(&args));
+                            create_murmur3_hashes(std::slice::from_ref(&input), &mut buffer)
+                                .unwrap();
+                            black_box(&buffer);
+                        }),
+                        Shape::StructMapInt => b.iter(|| {
+                            buffer.fill(42);
+                            let input = wrap(normalize(black_box(&args)), &ints);
+                            create_murmur3_hashes(std::slice::from_ref(&input), &mut buffer)
+                                .unwrap();
+                            black_box(&buffer);
+                        }),
+                    }
+                }
+            });
+        }
+    }
+    group.finish();
+}
