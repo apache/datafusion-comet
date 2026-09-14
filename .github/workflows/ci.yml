@@ -253,6 +253,9 @@ jobs:
     needs: changes
     # Queue-only by default; PRs need the `run-delta-build-gate` label.
     if: needs.changes.outputs.delta_gate == 'true'
+    # The called workflow needs only a checkout.
+    permissions:
+      contents: read
     uses: ./.github/workflows/delta_build_gate.yml
 
   pyarrow_udf_test:
@@ -260,6 +263,9 @@ jobs:
     needs: changes
     # Queue-only by default; PRs need the `run-pyarrow-udf-tests` label.
     if: needs.changes.outputs.pyarrow_udf == 'true'
+    # The called workflow needs only a checkout.
+    permissions:
+      contents: read
     uses: ./.github/workflows/pyarrow_udf_test.yml
 
   docs:
