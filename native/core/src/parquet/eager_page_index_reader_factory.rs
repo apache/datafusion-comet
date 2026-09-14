@@ -50,7 +50,7 @@
 //! factory validates requested Parquet field ids there; see [`FieldIdCheck`].
 
 use crate::parquet::parquet_support::{
-    schema_holds_field_ids, validate_field_mapping, SparkParquetOptions,
+    any_nested_field_has_id, validate_field_mapping, SparkParquetOptions,
 };
 use arrow::datatypes::{DataType, FieldRef, Schema, SchemaRef};
 use async_trait::async_trait;
@@ -217,7 +217,7 @@ impl EagerPageIndexReaderFactory {
         requested_schema: SchemaRef,
         parquet_options: &SparkParquetOptions,
     ) -> Self {
-        if parquet_options.use_field_id && schema_holds_field_ids(&requested_schema) {
+        if parquet_options.use_field_id && any_nested_field_has_id(&requested_schema) {
             self.field_id_check = Some(Arc::new(FieldIdCheck {
                 requested_schema,
                 parquet_options: parquet_options.clone(),

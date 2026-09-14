@@ -309,8 +309,9 @@ impl FieldMapping {
     }
 }
 
-/// True when a field of `schema`, at any nesting depth, carries a Parquet field id.
-pub(crate) fn schema_holds_field_ids(schema: &Schema) -> bool {
+/// True when a field of `schema`, at any nesting depth, carries a Parquet field id. The root-only
+/// check that gates the missing-ids rejection is `schema_has_field_ids` in the schema adapter.
+pub(crate) fn any_nested_field_has_id(schema: &Schema) -> bool {
     schema.fields().iter().any(|f| field_holds_id(f))
 }
 

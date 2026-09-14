@@ -2133,6 +2133,18 @@ abstract class ParquetReadSuite extends CometTestBase {
   // Spark's `clipParquetSchema` runs `matchIdField` at every nesting level while clipping the
   // file schema, so a struct child id duplicated in the file is rejected even when the read
   // schema is identical to the file schema and no column needs any conversion.
+  test("duplicate exact root names read the first column like Spark") {
+    // The file carries two root columns named `d`; Spark's reader binds the first one.
+    withSQLConf(SQLConf.CASE_SENSITIVE.key -> "true") {
+      val df = spark.read
+        .schema("d bigint")
+        .parquet(getResourceParquetFilePath("test-data/duplicate-root-names.parquet"))
+      df.createOrReplaceTempView("dup_root")
+      checkSparkAnswerAndOperator("SELECT d FROM dup_root ORDER BY d")
+      checkSparkAnswerAndOperator("SELECT d FROM dup_root WHERE d > 1 ORDER BY d")
+    }
+  }
+
   test("duplicate field id inside a struct is rejected without a cast") {
     withSQLConf(SQLConf.PARQUET_FIELD_ID_READ_ENABLED.key -> "true") {
       withTempPath { dir =>

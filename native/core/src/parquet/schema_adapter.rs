@@ -77,6 +77,8 @@ fn parse_field_id(field: &Field) -> Option<i32> {
         .and_then(|v| v.parse::<i32>().ok())
 }
 
+/// Root fields only, deliberately: this gates the missing-ids rejection at the top of
+/// `remap_physical_schema`. Nested ids are found by `any_nested_field_has_id`.
 fn schema_has_field_ids(schema: &SchemaRef) -> bool {
     schema.fields().iter().any(|f| parse_field_id(f).is_some())
 }
