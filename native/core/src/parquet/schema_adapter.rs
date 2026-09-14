@@ -200,11 +200,11 @@ fn has_duplicate_names(schema: &SchemaRef) -> bool {
         .any(|f| !seen.insert(f.name().as_str()))
 }
 
-/// Per root field of `schema`, whether a later field carries the same exact name.
-fn shadowed_by_later_duplicate(schema: &SchemaRef) -> Vec<bool> {
+/// Per root field of `schema`, whether an earlier field carries the same exact name.
+fn shadowed_by_earlier_duplicate(schema: &SchemaRef) -> Vec<bool> {
     let mut seen: HashSet<&str> = HashSet::with_capacity(schema.fields().len());
     let mut shadowed = vec![false; schema.fields().len()];
-    for (i, f) in schema.fields().iter().enumerate().rev() {
+    for (i, f) in schema.fields().iter().enumerate() {
         shadowed[i] = !seen.insert(f.name().as_str());
     }
     shadowed
@@ -317,10 +317,11 @@ fn remap_physical_schema(
         }
     };
 
-    // Physical fields whose exact name recurs later in the file. In case-sensitive mode the
-    // later one wins, as with Spark's `toMap`, so the earlier ones must not stay name-matchable.
+    // Physical fields whose exact name already occurred earlier in the file. In case-sensitive
+    // mode the first one wins, as Spark's reader binds the first file column for a requested
+    // name, so the later ones must not stay name-matchable.
     let shadowed = if case_sensitive {
-        shadowed_by_later_duplicate(physical_schema)
+        shadowed_by_earlier_duplicate(physical_schema)
     } else {
         Vec::new()
     };
@@ -351,8 +352,8 @@ fn remap_physical_schema(
                 }
             }
 
-            // A field shadowed by a later exact duplicate takes a fake name so the downstream
-            // exact-name lookup lands on the last one, matching Spark's `toMap`.
+            // A field shadowed by an earlier exact duplicate takes a fake name so the downstream
+            // exact-name lookup lands on the first one, matching Spark's reader.
             if shadowed.get(phys_idx).copied().unwrap_or(false) {
                 return Arc::new(
                     Field::new(
@@ -956,9 +957,9 @@ impl PhysicalExprAdapterFactory for SparkPhysicalExprAdapterFactory {
         let case_sensitive = self.parquet_options.case_sensitive;
         let should_match_by_id =
             self.parquet_options.use_field_id && schema_has_field_ids(&logical_file_schema);
-        // Duplicate exact root names need the remap too: the default adapter's `index_of`
-        // returns the first match, while Spark's root-level `caseSensitiveParquetFieldMap` is
-        // the same last-wins `toMap` used for nested groups.
+        // Duplicate exact root names need the remap too, so the later duplicates take fake
+        // names and nothing downstream can bind to them; Spark's reader binds the first file
+        // column, and the end-to-end comparison in ParquetReadSuite pins that.
         let needs_remap =
             !case_sensitive || should_match_by_id || has_duplicate_names(&physical_file_schema);
         let (
@@ -3266,11 +3267,10 @@ mod test {
         );
     }
 
-    /// Two root columns share the exact name `d` in case-sensitive mode. Spark's root-level
-    /// `caseSensitiveParquetFieldMap` is the same `toMap` used for nested groups, so the later
-    /// file column wins; the rewritten column must bind to it, as the nested rule already does.
+    /// Two root columns share the exact name `d` in case-sensitive mode. Spark's reader binds
+    /// the first file column for the requested name, so the rewritten column must bind to it.
     #[test]
-    fn duplicate_root_names_bind_to_the_last_column() -> Result<(), DataFusionError> {
+    fn duplicate_root_names_bind_to_the_first_column() -> Result<(), DataFusionError> {
         use datafusion::physical_expr::expressions::Column;
         let logical = Arc::new(Schema::new(vec![Field::new("d", DataType::Int32, false)]));
         let physical = Arc::new(Schema::new(vec![
@@ -3292,7 +3292,7 @@ mod test {
         let rewritten = adapter.rewrite(Arc::new(Column::new("d", 0)))?;
         let values = rewritten.evaluate(&batch)?.into_array(batch.num_rows())?;
         let values = values.as_any().downcast_ref::<Int32Array>().unwrap();
-        assert_eq!(values.values(), &[10, 20, 30]);
+        assert_eq!(values.values(), &[1, 2, 3]);
         Ok(())
     }
 
@@ -3416,10 +3416,10 @@ mod test {
         Ok(())
     }
 
-    /// Scan-level companion to `duplicate_root_names_bind_to_the_last_column`: a file whose
-    /// root holds two `d` columns reads the later one for a requested `d`.
+    /// Scan-level companion to `duplicate_root_names_bind_to_the_first_column`: a file whose
+    /// root holds two `d` columns reads the first one for a requested `d`.
     #[tokio::test]
-    async fn parquet_duplicate_root_names_read_the_last_column() -> Result<(), DataFusionError> {
+    async fn parquet_duplicate_root_names_read_the_first_column() -> Result<(), DataFusionError> {
         let file_schema = Arc::new(Schema::new(vec![
             Field::new("d", DataType::Int32, false),
             Field::new("d", DataType::Int32, false),
@@ -3461,7 +3461,7 @@ mod test {
             .as_any()
             .downcast_ref::<Int32Array>()
             .unwrap();
-        assert_eq!(values.values(), &[10, 20, 30]);
+        assert_eq!(values.values(), &[1, 2, 3]);
         Ok(())
     }
 
