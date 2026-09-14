@@ -168,8 +168,13 @@ unsafe impl<A: GlobalAlloc> GlobalAlloc for AccountingAllocator<A> {
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        self.inner.dealloc(ptr, layout);
+        // Settle before delegating. A free cannot fail, so there is nothing to wait for, and the
+        // inner free can be slow: jemalloc returns oversize blocks to the OS eagerly, and unmapping
+        // a few hundred megabytes takes milliseconds. Accounting afterwards would keep the block on
+        // the balance for that whole window, after the allocator's own statistics had already
+        // dropped it.
         track(-(layout.size() as isize));
+        self.inner.dealloc(ptr, layout);
     }
 
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
@@ -237,6 +242,60 @@ mod tests {
             "8 MiB allocation should raise the balance (before={before}, during={during})"
         );
         drop(held);
+    }
+
+    /// The balance must drop before the inner allocator is asked to free the block.
+    ///
+    /// jemalloc decrements its own `stats.allocated` at the start of a large free and then, for
+    /// blocks above its oversize threshold, unmaps the pages eagerly, which takes milliseconds for
+    /// a block of a few hundred megabytes. If the subtraction happened after delegating, the balance
+    /// would keep reporting a block the allocator had already given back for that whole window,
+    /// and `native_allocated` would read above `jemalloc_allocated`.
+    #[test]
+    fn dealloc_settles_before_delegating() {
+        use std::alloc::System;
+        use std::sync::atomic::AtomicUsize;
+
+        /// Records the reported balance at the moment the inner free is called.
+        struct Recording {
+            balance_at_dealloc: AtomicUsize,
+        }
+
+        unsafe impl GlobalAlloc for Recording {
+            unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+                System.alloc(layout)
+            }
+
+            unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+                self.balance_at_dealloc
+                    .store(current_balance(), Ordering::Relaxed);
+                System.dealloc(ptr, layout)
+            }
+        }
+
+        // Well above the settle threshold, so both the allocation and the free flush immediately.
+        const SIZE: usize = 64 * 1024 * 1024;
+        let allocator = AccountingAllocator::new(Recording {
+            balance_at_dealloc: AtomicUsize::new(usize::MAX),
+        });
+        let layout = Layout::from_size_align(SIZE, 8).unwrap();
+
+        // SAFETY: the layout is valid and non-zero, and the block is freed below through the same
+        // allocator that produced it.
+        let ptr = unsafe { allocator.alloc(layout) };
+        assert!(!ptr.is_null());
+        let after_alloc = current_balance();
+        unsafe { allocator.dealloc(ptr, layout) };
+
+        let seen = allocator.inner.balance_at_dealloc.load(Ordering::Relaxed);
+        // Half the block is a wide margin against parallel test noise while still being far
+        // outside anything the mutation (subtracting after delegating) could produce.
+        assert!(
+            seen + SIZE / 2 <= after_alloc,
+            "inner dealloc saw balance {seen}, expected at most {} (balance after alloc was \
+             {after_alloc})",
+            after_alloc - SIZE / 2
+        );
     }
 
     /// Threads must settle their remaining drift on exit.
