@@ -196,6 +196,7 @@ public final class CometShuffleExternalSorter implements CometShuffleChecksumSup
     activeSpillSorter.setSpillInfo(spillInfo);
 
     activeSpillSorter.writeSortedFileNative(false, tracingEnabled);
+    updatePeakMemoryUsed();
     final long spillSize = activeSpillSorter.freeMemory();
     activeSpillSorter.reset();
 

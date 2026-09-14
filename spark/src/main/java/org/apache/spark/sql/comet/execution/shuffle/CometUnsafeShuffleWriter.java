@@ -71,6 +71,7 @@ import org.apache.spark.sql.types.StructType;
 import org.apache.spark.storage.BlockManager;
 import org.apache.spark.storage.TimeTrackingOutputStream;
 import org.apache.spark.unsafe.Platform;
+import org.apache.spark.util.TaskCompletionListener;
 import org.apache.spark.util.Utils;
 
 import com.google.common.annotations.VisibleForTesting;
@@ -177,7 +178,19 @@ public class CometUnsafeShuffleWriter<K, V> extends ShuffleWriter<K, V> {
         (int) (long) sparkConf.get(package$.MODULE$.SHUFFLE_FILE_BUFFER_SIZE()) * 1024;
     this.tracingEnabled = (boolean) CometConf.COMET_TRACING_ENABLED().get();
     this.encodeTimeMetric = encodeTimeMetric;
-    open();
+    // Reclaim the sorter's memory at task completion if no other cleanup path ran first: Spark
+    // only calls stop() for exceptions, so a fatal error could otherwise orphan an allocation
+    // that Spark's task-memory cleanup does not own. cleanupResources() is idempotent, making
+    // this a no-op whenever write()/stop() already cleaned up.
+    if (taskContext != null) {
+      taskContext.addTaskCompletionListener(
+          (TaskCompletionListener)
+              context -> {
+                if (sorter != null) {
+                  sorter.cleanupResources();
+                }
+              });
+    }
   }
 
   private static OutputStream openStreamUnchecked(ShufflePartitionWriter writer) {
@@ -222,7 +235,19 @@ public class CometUnsafeShuffleWriter<K, V> extends ShuffleWriter<K, V> {
     String offheapMemKey = "thread_" + nativeLib.getRustThreadId() + "_comet_jvm_shuffle";
     try {
       while (records.hasNext()) {
+        // Allocate the sorter (and its pointer array) only after the input produced a record:
+        // both the evaluation of the input iterator (between constructing this writer and
+        // calling write()) and hasNext() on lazy input (e.g. a sort materializing its child)
+        // can block on Spark's execution-memory pool, and retaining Comet pool memory across
+        // that wait can form a cross-pool cycle with a task waiting on the Comet pool.
+        if (sorter == null) {
+          open();
+        }
         insertRecordIntoSorter(records.next());
+      }
+      if (sorter == null) {
+        // Empty input: the output path below still needs the sorter.
+        open();
       }
       if (tracingEnabled) {
         nativeLib.logMemoryUsage(offheapMemKey, this.allocator.getUsed());
@@ -247,7 +272,7 @@ public class CometUnsafeShuffleWriter<K, V> extends ShuffleWriter<K, V> {
           }
         }
       }
-      if (tracingEnabled) {
+      if (tracingEnabled && this.allocator != null) {
         nativeLib.logMemoryUsage(offheapMemKey, this.allocator.getUsed());
       }
     }

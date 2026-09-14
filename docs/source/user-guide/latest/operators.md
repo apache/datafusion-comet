@@ -76,11 +76,11 @@ omitted from the tables below and may be reconsidered based on demand:
 
 ## Aggregation
 
-| Operator                  | Status | Notes                                                             |
-| ------------------------- | ------ | ----------------------------------------------------------------- |
-| `HashAggregateExec`       | ✅     |                                                                   |
-| `ObjectHashAggregateExec` | ✅     | Supports a limited set of aggregates, such as `bloom_filter_agg`. |
-| `SortAggregateExec`       | 🔜     | Falls back today; Comet currently accelerates hash aggregates.    |
+| Operator                  | Status | Notes                                                                                                                                                                                                             |
+| ------------------------- | ------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `HashAggregateExec`       | ✅     |                                                                                                                                                                                                                   |
+| `ObjectHashAggregateExec` | ✅     | Supports a limited set of aggregates, such as `bloom_filter_agg`. Falls back when Comet shuffle is disabled, which would otherwise split the aggregate across Comet and Spark. See the [Tuning Guide](tuning.md). |
+| `SortAggregateExec`       | 🔜     | Falls back today; Comet currently accelerates hash aggregates.                                                                                                                                                    |
 
 ## Joins
 
@@ -103,7 +103,7 @@ omitted from the tables below and may be reconsidered based on demand:
 | Operator               | Status | Notes                                                                                                                                                                                            |
 | ---------------------- | ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `WindowExec`           | ⚠️     | Runs natively and is enabled by default. A broad set of window functions is accelerated; unsupported shapes fall back to Spark. See [window function compatibility](compatibility/operators.md). |
-| `WindowGroupLimitExec` | 🔜     | Window-based limit pushdown falls back today ([#4837](https://github.com/apache/datafusion-comet/issues/4837)).                                                                                  |
+| `WindowGroupLimitExec` | ✅     | Streaming per-partition top-K pushdown for `ROW_NUMBER`, `RANK`, and `DENSE_RANK`.                                                                                                               |
 
 ## Generators and set operations
 

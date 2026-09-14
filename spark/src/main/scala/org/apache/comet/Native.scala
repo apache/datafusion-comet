@@ -25,6 +25,7 @@ import org.apache.spark.{CometTaskMemoryManager, TaskContext}
 import org.apache.spark.sql.comet.CometMetricNode
 
 import org.apache.comet.parquet.CometFileKeyUnwrapper
+import org.apache.comet.shuffle.ShufflePartitionPusher
 
 class Native extends NativeBase {
 
@@ -78,6 +79,19 @@ class Native extends NativeBase {
       taskContext: TaskContext,
       classLoader: ClassLoader): Long
   // scalastyle:on
+
+  /**
+   * Bind a task-owned remote shuffle callback to an existing native query plan.
+   *
+   * The callback must be registered before the plan is executed. Its native global reference is
+   * released when the plan is released.
+   *
+   * @param plan
+   *   the address of the native query plan.
+   * @param pusher
+   *   the callback that receives complete encoded shuffle blocks.
+   */
+  @native def setShufflePartitionPusher(plan: Long, pusher: ShufflePartitionPusher): Unit
 
   /**
    * Execute a native query plan based on given input Arrow arrays.
@@ -185,6 +199,27 @@ class Native extends NativeBase {
       arrayAddrs: Array[Long],
       schemaAddrs: Array[Long],
       tracingEnabled: Boolean): Long
+
+  /**
+   * Create a remote shuffle decoder that retains the expected Spark types for one iterator. The
+   * expected schema is serialized as a ShuffleScan protobuf.
+   */
+  @native def createRemoteShuffleDecoder(expectedSchema: Array[Byte]): Long
+
+  /** Release a remote shuffle decoder after its iterator finishes reading or closes early. */
+  @native def releaseRemoteShuffleDecoder(decoderHandle: Long): Unit
+
+  /**
+   * Decode a remote shuffle block with Arrow buffer/offset and logical type validation, using the
+   * expected Spark types retained by the decoder.
+   */
+  @native def decodeShuffleBlockWithValidation(
+      shuffleBlock: ByteBuffer,
+      length: Int,
+      arrayAddrs: Array[Long],
+      schemaAddrs: Array[Long],
+      tracingEnabled: Boolean,
+      decoderHandle: Long): Long
 
   /**
    * Log the beginning of an event.

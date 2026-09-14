@@ -24,13 +24,25 @@ import java.io.File
 import org.scalactic.source.Position
 import org.scalatest.Tag
 
+import org.apache.hadoop.conf.Configuration
+import org.apache.iceberg.hadoop.{HadoopConfigurable, HadoopFileIO}
+import org.apache.iceberg.io.{FileIO, InputFile, OutputFile}
+import org.apache.iceberg.util.SerializableSupplier
 import org.apache.spark.SparkConf
+import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.CometTestBase
-import org.apache.spark.sql.comet.IcebergWriteExec
+import org.apache.spark.sql.catalyst.InternalRow
+import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeReference}
+import org.apache.spark.sql.comet.{CometIcebergWriteExec, CometSparkToColumnarExec, IcebergWriteExec}
+import org.apache.spark.sql.execution.{ApplyColumnarRulesAndInsertTransitions, ColumnarToRowExec, LeafExecNode, SparkPlan}
+import org.apache.spark.sql.types.IntegerType
+import org.apache.spark.sql.vectorized.ColumnarBatch
 
 import org.apache.comet.CometSparkSessionExtensions.isSpark35Plus
 import org.apache.comet.iceberg.IcebergReflection
+import org.apache.comet.rules.EliminateRedundantTransitions
 import org.apache.comet.serde.{Compatible, SupportLevel, Unsupported}
+import org.apache.comet.serde.OperatorOuterClass.Operator
 import org.apache.comet.serde.operator.CometIcebergNativeWrite
 
 class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTestBase {
@@ -77,10 +89,22 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
         .getTableFromSparkWrite(sparkWrite)
         .getOrElse(fail("SparkWrite.table reflection returned None"))
 
+      assert(IcebergReflection.getOperationIdFromSparkWrite(sparkWrite).isDefined, "queryId")
+      assert(
+        IcebergReflection.getTargetFileSizeFromSparkWrite(sparkWrite).isDefined,
+        "targetFileSize")
+      assert(
+        IcebergReflection.getUseFanoutWriterFromSparkWrite(sparkWrite).isDefined,
+        "useFanoutWriter")
+      assert(
+        IcebergReflection.getOutputSpecIdFromSparkWrite(sparkWrite).isDefined,
+        "outputSpecId")
+      assert(IcebergReflection.getWriteSchemaFromSparkWrite(sparkWrite).isDefined, "writeSchema")
       assert(IcebergReflection.getFormatFromSparkWrite(sparkWrite).isDefined, "format")
       assert(
         IcebergReflection.getWritePropertiesFromSparkWrite(sparkWrite).isDefined,
         "writeProperties")
+      assert(IcebergReflection.getMetadataLocation(table).isDefined, "metadataLocation")
       assert(IcebergReflection.getDataLocation(table).isDefined, "dataLocation")
       assert(IcebergReflection.getTableProperties(table).isDefined, "tableProperties")
     }
@@ -160,28 +184,80 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
     }
   }
 
-  test("fall-back: write.metadata.metrics.default=counts") {
+  // Metrics modes are not gated: manifest metrics are re-derived on the JVM with Iceberg's
+  // own MetricsConfig logic before commit, so every mode behaves as it does on the java path.
+  test("Compatible for every write.metadata.metrics mode") {
     withDetectionCatalog { dir =>
-      createTable(
-        dir,
-        "metrics_counts",
-        partitionSpec = "",
-        properties = Some("'write.metadata.metrics.default'='counts'"))
-      assertUnsupportedContains("metrics_counts", "write.metadata.metrics.default", "counts")
+      Seq("counts", "none", "full", "truncate(32)").zipWithIndex.foreach { case (mode, i) =>
+        createTable(
+          dir,
+          s"metrics_mode_$i",
+          partitionSpec = "",
+          properties = Some(s"'write.metadata.metrics.default'='$mode'"))
+        assertSupportLevelIs[Compatible](s"metrics_mode_$i")
+      }
     }
   }
 
-  test("fall-back: per-column metrics mode=counts") {
+  test("Compatible for per-column metrics modes") {
     withDetectionCatalog { dir =>
       createTable(
         dir,
-        "metrics_col_counts",
+        "metrics_col_modes",
         partitionSpec = "",
-        properties = Some("'write.metadata.metrics.column.id'='counts'"))
-      assertUnsupportedContains(
-        "metrics_col_counts",
-        "write.metadata.metrics.column.id",
-        "counts")
+        properties = Some(
+          "'write.metadata.metrics.column.id'='counts', " +
+            "'write.metadata.metrics.column.region'='none'"))
+      assertSupportLevelIs[Compatible]("metrics_col_modes")
+    }
+  }
+
+  // The JVM path fails such a write inside parquet-mr's codec setup, so allow the write failure
+  // and pin only the fall-back reason.
+  test("fall-back: non-integer write.parquet.compression-level") {
+    withDetectionCatalog { dir =>
+      createTable(
+        dir,
+        "bad_level",
+        partitionSpec = "",
+        properties = Some("'write.parquet.compression-level'='fast'"))
+      assertUnsupportedContainsAllowingWriteFailure(
+        "bad_level",
+        "write.parquet.compression-level",
+        "not a Java int")
+    }
+  }
+
+  test("fall-back: compression level outside the native writer's per-codec range") {
+    // iceberg-java does not validate the level at all -- the raw string flows into
+    // codec-specific parquet-mr writer properties -- so these values write fine on the stock
+    // path but parquet-rs rejects them at writer construction (zstd 1..=22, gzip 0..=9,
+    // brotli 0..=11). They must decline up front rather than fail the task.
+    withDetectionCatalog { dir =>
+      val cases =
+        Seq("zstd" -> "0", "zstd" -> "-3", "zstd" -> "23", "gzip" -> "-1", "brotli" -> "12")
+      cases.zipWithIndex.foreach { case ((codec, level), i) =>
+        val table = s"bad_level_range_$i"
+        createTable(
+          dir,
+          table,
+          partitionSpec = "",
+          properties = Some(
+            s"'write.parquet.compression-codec'='$codec', " +
+              s"'write.parquet.compression-level'='$level'"))
+        assertUnsupportedContainsAllowingWriteFailure(
+          table,
+          "write.parquet.compression-level",
+          codec)
+      }
+      // A boundary level parquet-rs accepts stays Compatible.
+      createTable(
+        dir,
+        "good_level",
+        partitionSpec = "",
+        properties = Some(
+          "'write.parquet.compression-codec'='zstd', 'write.parquet.compression-level'='22'"))
+      assertSupportLevelIs[Compatible]("good_level")
     }
   }
 
@@ -251,31 +327,6 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
         partitionSpec = "",
         properties = Some("'write.parquet.row-group-check-max-record-count'='50000'"))
       assertUnsupportedContains("rg_max", "write.parquet.row-group-check-max-record-count=50000")
-    }
-  }
-
-  test("fall-back: write.metadata.metrics.default=none") {
-    withDetectionCatalog { dir =>
-      createTable(
-        dir,
-        "metrics_none",
-        partitionSpec = "",
-        properties = Some("'write.metadata.metrics.default'='none'"))
-      assertUnsupportedContains("metrics_none", "write.metadata.metrics.default", "none")
-    }
-  }
-
-  test("fall-back: per-column metrics mode=none") {
-    withDetectionCatalog { dir =>
-      createTable(
-        dir,
-        "col_metrics_none",
-        partitionSpec = "",
-        properties = Some("'write.metadata.metrics.column.region'='none'"))
-      assertUnsupportedContains(
-        "col_metrics_none",
-        "write.metadata.metrics.column.region",
-        "none")
     }
   }
 
@@ -406,7 +457,7 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
 
   test("Compatible for the remaining supported data location schemes") {
     withDetectionCatalog { dir =>
-      Seq("gs", "oss", "memory").foreach { scheme =>
+      Seq("gs", "memory").foreach { scheme =>
         val table = s"${scheme}_scheme"
         createTable(
           dir,
@@ -414,6 +465,124 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
           partitionSpec = "",
           properties = Some(s"'write.data.path'='$scheme://nonexistent/iceberg/db/$table'"))
         assertSupportLevelIs[Compatible](table, allowWriteFailure = true)
+      }
+    }
+  }
+
+  test("fall-back: oss data location scheme (oss.* properties are not forwarded)") {
+    withDetectionCatalog { dir =>
+      createTable(
+        dir,
+        "oss_scheme",
+        partitionSpec = "",
+        properties = Some("'write.data.path'='oss://nonexistent/iceberg/db/oss_scheme'"))
+      assertUnsupportedContainsAllowingWriteFailure("oss_scheme", "storage scheme", "oss")
+    }
+  }
+
+  test("fall-back: parquet size/limit properties that are not positive Java ints") {
+    // iceberg-java parses these with Integer.parseInt (PropertyUtil.propertyAsInt): no trimming,
+    // no values past Int.MaxValue, and parquet-mr rejects non-positive results at write time.
+    // Each such value must fall back so the failure happens on the stock path, never be
+    // silently normalised by the native translation.
+    withDetectionCatalog { dir =>
+      val keys = Seq(
+        "write.parquet.row-group-size-bytes",
+        "write.parquet.page-size-bytes",
+        "write.parquet.page-row-limit",
+        "write.parquet.dict-size-bytes")
+      val badValues = Seq("garbage", "0", "-1", "2147483648", " 1024")
+      keys.zipWithIndex.foreach { case (key, ki) =>
+        badValues.zipWithIndex.foreach { case (value, vi) =>
+          val table = s"bad_int_${ki}_$vi"
+          createTable(dir, table, partitionSpec = "", properties = Some(s"'$key'='$value'"))
+          assertUnsupportedContainsAllowingWriteFailure(table, key)
+        }
+      }
+      // A positive Java int is Compatible, pinning that the gate is not over-broad.
+      createTable(
+        dir,
+        "good_int",
+        partitionSpec = "",
+        properties = Some("'write.parquet.page-size-bytes'='1048576'"))
+      assertSupportLevelIs[Compatible]("good_int")
+    }
+  }
+
+  test("write proto forwards fs.s3a.* Hadoop configuration as s3.* FileIO properties") {
+    // HadoopFileIO carries S3A credentials/endpoint/path-style through the Hadoop
+    // Configuration, not FileIO.properties(); the JVM writer honours them, so the native
+    // writer must receive them too (translated to the s3.* keys iceberg-rust consumes,
+    // mirroring the scan side). SQLConf entries are copied verbatim into
+    // sessionState.newHadoopConf(), so plain fs.s3a.* keys set here are what the gate and
+    // proto assembly see. LocalTableScan conversion is enabled the same way the write action
+    // suite does, so the VALUES insert converts and the built proto is inspectable.
+    withDetectionCatalog { dir =>
+      createTable(
+        dir,
+        "s3a_props",
+        partitionSpec = "",
+        properties = Some("'write.data.path'='s3a://probe-bucket/iceberg/db/s3a_props'"))
+      val conf = spark.sessionState.conf
+      conf.setConfString(CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key, "true")
+      conf.setConfString("fs.s3a.endpoint", "http://localhost:9000")
+      conf.setConfString("fs.s3a.access.key", "probe-access-key")
+      conf.setConfString("fs.s3a.path.style.access", "true")
+      try {
+        val plan = captureWritePlan("s3a_props", allowWriteFailure = true) {
+          spark.sql(s"INSERT INTO $catalog.$ns.s3a_props VALUES (1, 'us', 1.0)")
+        }
+        val cometWrite = findCometWriteExec(plan)
+          .getOrElse(fail(s"expected CometIcebergWriteExec in:\n$plan"))
+        val props = cometWrite.nativeOp.getIcebergWrite.getCommon.getCatalogPropertiesMap
+        assert(props.get("s3.endpoint") == "http://localhost:9000", props)
+        assert(props.get("s3.access-key-id") == "probe-access-key", props)
+        assert(props.get("s3.path-style-access") == "true", props)
+        // The exec's string rendering must never fall through to the protobuf's toString:
+        // Spark's argString redaction only covers Scala Maps, so the property bag -- now
+        // carrying credential-shaped values like the access key above -- would land verbatim
+        // in explain(), the SQL UI, and the event log.
+        val rendered = cometWrite.simpleString(Int.MaxValue)
+        assert(!rendered.contains("probe-access-key"), rendered)
+        assert(rendered.contains("s3a://probe-bucket"), rendered)
+      } finally {
+        conf.unsetConf("fs.s3a.path.style.access")
+        conf.unsetConf("fs.s3a.access.key")
+        conf.unsetConf("fs.s3a.endpoint")
+        conf.unsetConf(CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key)
+      }
+    }
+  }
+
+  test("fall-back: catalog-level custom FileIO that no property reveals") {
+    // `io-impl` set at the CATALOG level never appears in table or write properties, so the
+    // property rule cannot see it -- only inspecting the instantiated table.io() can. The test
+    // FileIO delegates to HadoopFileIO by composition (inheritance would pass the hierarchy
+    // check, by design), so the table itself works normally. A dedicated catalog name is
+    // required: Spark caches catalog instances per session, so adding `io-impl` to the shared
+    // detection catalog's conf would not reach an already-instantiated catalog.
+    withTempIcebergDir { warehouseDir =>
+      val ioCat = "io_probe_cat"
+      withSQLConf(
+        s"spark.sql.catalog.$ioCat" -> "org.apache.iceberg.spark.SparkCatalog",
+        s"spark.sql.catalog.$ioCat.type" -> "hadoop",
+        s"spark.sql.catalog.$ioCat.warehouse" -> warehouseDir.getAbsolutePath,
+        s"spark.sql.catalog.$ioCat.io-impl" -> classOf[DetectionDelegatingFileIO].getName) {
+        spark.sql(s"""
+          CREATE TABLE $ioCat.$ns.catalog_io (
+            id INT,
+            region STRING,
+            amount DOUBLE
+          ) USING iceberg
+        """)
+        val writeExec = captureWriteExec("catalog_io", allowWriteFailure = true) {
+          spark.sql(s"INSERT INTO $ioCat.$ns.catalog_io VALUES (1, 'us', 1.0)")
+        }
+        assertUnsupportedContains(
+          writeExec,
+          "catalog_io",
+          "table.io()",
+          classOf[DetectionDelegatingFileIO].getName)
       }
     }
   }
@@ -440,14 +609,17 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
     }
   }
 
-  test("fall-back: unparseable write.metadata.metrics.default") {
+  test("Compatible even for an unparseable write.metadata.metrics.default") {
+    // Iceberg-Java's MetricsConfig is lenient: it warns and falls back to the default mode on
+    // both paths, so the gate has nothing to protect; the JVM-side metrics assembly goes
+    // through the same lenient parse.
     withDetectionCatalog { dir =>
       createTable(
         dir,
         "metrics_typo",
         partitionSpec = "",
         properties = Some("'write.metadata.metrics.default'='truncat(16)'"))
-      assertUnsupportedContains("metrics_typo", "truncat(16)", "supported metrics modes")
+      assertSupportLevelIs[Compatible]("metrics_typo")
     }
   }
 
@@ -519,6 +691,23 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
     }
   }
 
+  test("fall-back: uuid column in the write schema") {
+    withDetectionCatalog { dir =>
+      // Spark DDL cannot declare `uuid`, so evolve the schema through the Iceberg API. Spark
+      // plans the column as StringType, but the native writer's target Arrow schema demands
+      // FixedSizeBinary(16) with no cast from Utf8 -- detection must decline before execution.
+      createTable(dir, "uuid_col", partitionSpec = "")
+      addIcebergColumn(loadIcebergTable(spark, catalog, ns, "uuid_col"), "u", icebergUuidType())
+      spark.sql(s"REFRESH TABLE $catalog.$ns.uuid_col")
+      val writeExec = captureWriteExec("uuid_col", allowWriteFailure = false) {
+        spark.sql(
+          s"INSERT INTO $catalog.$ns.uuid_col VALUES " +
+            "(1, 'us', 1.0, 'f47ac10b-58cc-4372-a567-0e02b2c3d479')")
+      }
+      assertUnsupportedContains(writeExec, "uuid_col", "column u has Iceberg type uuid")
+    }
+  }
+
   private val catalog = "cat"
   private val ns = "db"
 
@@ -567,7 +756,11 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
     }
 
   private def captureWriteExec(tableName: String, allowWriteFailure: Boolean)(
-      trigger: => Unit): IcebergWriteExec = {
+      trigger: => Unit): IcebergWriteExec =
+    findWriteExecOrFail(captureWritePlan(tableName, allowWriteFailure)(trigger))
+
+  private def captureWritePlan(tableName: String, allowWriteFailure: Boolean)(
+      trigger: => Unit): org.apache.spark.sql.execution.SparkPlan = {
     val captured =
       new java.util.concurrent.atomic.AtomicReference[org.apache.spark.sql.execution.SparkPlan]()
     val listener = new org.apache.spark.sql.util.QueryExecutionListener {
@@ -597,9 +790,8 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
     if (!allowWriteFailure) {
       failure.foreach(t => fail(s"write to $tableName failed unexpectedly", t))
     }
-    val plan = Option(captured.get())
+    Option(captured.get())
       .getOrElse(fail(s"No QueryExecution captured for $tableName"))
-    findWriteExecOrFail(plan)
   }
 
   private def findWriteExecOrFail(
@@ -633,13 +825,43 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
   private def assertSupportLevelIs[T <: SupportLevel: scala.reflect.ClassTag](
       tableName: String,
       allowWriteFailure: Boolean = false): Unit = {
-    val support =
-      CometIcebergNativeWrite.getSupportLevel(insertWriteExec(tableName, allowWriteFailure))
     val expected = scala.reflect.classTag[T].runtimeClass
-    assert(
-      expected.isInstance(support),
-      s"expected ${expected.getSimpleName} for $tableName, got $support")
+    val plan = captureWritePlan(tableName, allowWriteFailure) {
+      spark.sql(s"INSERT INTO $catalog.$ns.$tableName VALUES (1, 'us', 1.0)")
+    }
+    findWriteExec(plan) match {
+      case Some(writeExec) =>
+        val support = CometIcebergNativeWrite.getSupportLevel(writeExec)
+        assert(
+          expected.isInstance(support),
+          s"expected ${expected.getSimpleName} for $tableName, got $support")
+      case None =>
+        // The write was converted, which is only possible when the serde returned Compatible
+        // and the upstream plan was fully Comet-native.
+        assert(
+          containsCometWriteExec(plan),
+          s"no IcebergWriteExec or CometIcebergWriteExec found in:\n$plan")
+        assert(
+          expected.isInstance(Compatible()),
+          s"expected ${expected.getSimpleName} for $tableName, but the write was converted " +
+            "to CometIcebergWriteExec (implying Compatible)")
+    }
   }
+
+  private def containsCometWriteExec(plan: org.apache.spark.sql.execution.SparkPlan): Boolean =
+    plan.isInstanceOf[org.apache.spark.sql.comet.CometIcebergWriteExec] ||
+      (plan.children.iterator ++ wrappedChildren(plan).iterator).exists(containsCometWriteExec)
+
+  private def findCometWriteExec(plan: org.apache.spark.sql.execution.SparkPlan)
+      : Option[org.apache.spark.sql.comet.CometIcebergWriteExec] =
+    plan match {
+      case c: org.apache.spark.sql.comet.CometIcebergWriteExec => Some(c)
+      case other =>
+        (other.children.iterator ++ wrappedChildren(other).iterator)
+          .flatMap(findCometWriteExec)
+          .toSeq
+          .headOption
+    }
 
   private def assertUnsupportedContains(tableName: String, fragments: String*): Unit =
     assertUnsupportedContains(insertWriteExec(tableName), tableName, fragments: _*)
@@ -667,4 +889,94 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
         fail(s"expected Unsupported for $tableName, got $other")
     }
   }
+
+  /**
+   * Runs Spark's transition insertion followed by [[EliminateRedundantTransitions]] over a
+   * hand-built `CometIcebergWriteExec -> CometSparkToColumnarExec -> source` plan and returns the
+   * write's final child.
+   *
+   * Hand-built rather than driven through SQL because the shape depends on
+   * `spark.comet.sparkToColumnar.enabled` admitting the write's source operator, and the set of
+   * admitted operators is itself configurable. What matters is the rule's behaviour at that
+   * boundary, which this pins directly.
+   */
+  private def writeChildAfterTransitionRules(source: SparkPlan): SparkPlan = {
+    val write = CometIcebergWriteExec(
+      Operator.newBuilder().build(),
+      CometSparkToColumnarExec(source),
+      batchWrite = null,
+      table = null,
+      partitionSpecId = 0)
+    val withTransitions = ApplyColumnarRulesAndInsertTransitions(Seq.empty, false).apply(write)
+    // Spark must insert a columnar-to-row transition below the row-based write; if it stops doing
+    // so the rest of the assertion is vacuous.
+    assert(
+      withTransitions.asInstanceOf[CometIcebergWriteExec].child.isInstanceOf[ColumnarToRowExec],
+      s"expected an inserted ColumnarToRowExec below the write, got:\n$withTransitions")
+    EliminateRedundantTransitions(spark)
+      .apply(withTransitions)
+      .asInstanceOf[CometIcebergWriteExec]
+      .child
+  }
+
+  // https://github.com/apache/datafusion-comet/issues/5689: the write's input transition has to
+  // be stripped before the generic `ColumnarToRowExec(CometSparkToColumnarExec)` cancellation
+  // consumes it, otherwise that arm removes the Arrow bridge the write's FFI input depends on.
+  // Both source representations are covered because the cancellation treats them differently:
+  // over a row source it drops the bridge outright, over a Spark-columnar source it keeps a
+  // transition but leaves the write reading Spark `ColumnarVector`s instead of `CometVector`s.
+  test("row source keeps its Arrow bridge under the native Iceberg write") {
+    val source = TransitionProbeLeaf(columnar = false)
+    val child = writeChildAfterTransitionRules(source)
+    assert(
+      child == CometSparkToColumnarExec(source),
+      s"expected the write to sit directly on CometSparkToColumnarExec, got:\n$child")
+  }
+
+  test("Spark-columnar source keeps its Arrow bridge under the native Iceberg write") {
+    val source = TransitionProbeLeaf(columnar = true)
+    val child = writeChildAfterTransitionRules(source)
+    assert(
+      child == CometSparkToColumnarExec(source),
+      s"expected the write to sit directly on CometSparkToColumnarExec, got:\n$child")
+  }
+}
+
+/**
+ * Planning-only leaf used by the transition-boundary tests: `columnar` selects between the two
+ * source representations that can sit under a `CometSparkToColumnarExec`. Never executed.
+ */
+case class TransitionProbeLeaf(columnar: Boolean) extends LeafExecNode {
+  override def output: Seq[Attribute] = Seq(
+    AttributeReference("id", IntegerType, nullable = false)())
+  override def supportsColumnar: Boolean = columnar
+  override protected def doExecute(): RDD[InternalRow] =
+    throw new UnsupportedOperationException("planning-only node")
+  override protected def doExecuteColumnar(): RDD[ColumnarBatch] =
+    throw new UnsupportedOperationException("planning-only node")
+}
+
+/**
+ * A FileIO that works normally (delegating to HadoopFileIO) but whose class is not on Comet's
+ * recognized-FileIO allowlist. Composition rather than inheritance is the point: a HadoopFileIO
+ * SUBCLASS passes the hierarchy check by design, while this class must be declined. Instantiated
+ * reflectively by Iceberg's `CatalogUtil.loadFileIO`, hence top-level with a no-arg constructor.
+ */
+class DetectionDelegatingFileIO extends FileIO with HadoopConfigurable {
+  private val delegate = new HadoopFileIO()
+
+  override def newInputFile(path: String): InputFile = delegate.newInputFile(path)
+  override def newOutputFile(path: String): OutputFile = delegate.newOutputFile(path)
+  override def deleteFile(path: String): Unit = delegate.deleteFile(path)
+  override def initialize(properties: java.util.Map[String, String]): Unit =
+    delegate.initialize(properties)
+  override def setConf(conf: Configuration): Unit = delegate.setConf(conf)
+  // No `override` modifier: `Configurable.getConf` exists on some supported Iceberg versions
+  // (e.g. 1.8.1) and not others, and a plain def satisfies both shapes.
+  def getConf: Configuration = delegate.getConf
+  override def serializeConfWith(
+      confSerializer: java.util.function.Function[
+        Configuration,
+        SerializableSupplier[Configuration]]): Unit =
+    delegate.serializeConfWith(confSerializer)
 }

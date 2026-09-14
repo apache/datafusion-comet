@@ -158,7 +158,20 @@ object CometArrowStream extends Logging {
     val expectedFields = expected.getFields
     val actualFields = (0 until first.numCols()).map { i =>
       val col = first.column(i).asInstanceOf[CometVector]
-      actualFieldOf(col, expectedFields.get(i))
+
+      // The Arrow C Stream exports the producer's actual Arrow schema. If the
+      // consumer-declared schema has fewer fields, fall back to the producer's
+      // field and synthesize a non-null field name, since Arrow Field names cannot
+      // be null.
+      val expectedField =
+        if (i < expectedFields.size()) {
+          expectedFields.get(i)
+        } else {
+          val raw = col.getValueVector.getField
+          new Field(s"_c$i", raw.getFieldType, raw.getChildren)
+        }
+
+      actualFieldOf(col, expectedField)
     }
     val mismatches = actualFields.zip(expectedFields.asScala).zipWithIndex.collect {
       case ((actual, exp), idx) if actual.getType != exp.getType =>

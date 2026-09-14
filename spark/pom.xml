@@ -222,6 +222,41 @@ under the License.
   </dependencies>
 
   <profiles>
+    <profile>
+      <id>celeborn-reflection-compatibility</id>
+      <dependencies>
+        <dependency>
+          <!-- Verify reflection against a released client without adding a production dependency. -->
+          <groupId>org.apache.celeborn</groupId>
+          <artifactId>celeborn-client-spark-3-shaded_${scala.binary.version}</artifactId>
+          <version>${celeborn.version}</version>
+          <scope>test</scope>
+        </dependency>
+      </dependencies>
+      <build>
+        <plugins>
+          <plugin>
+            <groupId>org.codehaus.mojo</groupId>
+            <artifactId>build-helper-maven-plugin</artifactId>
+            <executions>
+              <execution>
+                <id>add-celeborn-reflection-compatibility-test-source</id>
+                <phase>generate-test-sources</phase>
+                <goals>
+                  <goal>add-test-source</goal>
+                </goals>
+                <configuration>
+                  <sources>
+                    <source>src/test/celeborn-reflection-compatibility</source>
+                  </sources>
+                </configuration>
+              </execution>
+            </executions>
+          </plugin>
+        </plugins>
+      </build>
+    </profile>
+
     <!-- Iceberg dependencies vary by Spark version (Iceberg 1.8.1 for Spark 3.x, 1.10.0 for Spark 4.0, 1.11.0 for Spark 4.1) -->
     <profile>
       <id>spark-3.4</id>

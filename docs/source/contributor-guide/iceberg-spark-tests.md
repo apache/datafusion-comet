@@ -31,8 +31,13 @@ Here is an overview of the changes that the diffs make to Iceberg:
   uses a native Iceberg scan, these classes fail to compile and must be removed.
 - Configure test base classes (`TestBase`, `ExtensionsTestBase`, `ScanTestBase`, etc.) to load the Comet Spark
   plugin and shuffle manager
+- Enable the Iceberg write split-operator plan (`spark.comet.write.iceberg.splitOperator.enabled`) alongside the
+  native scan in every Comet-configured session. The flag is off by default for users, so Iceberg's own suites
+  are the only place the split plan (`IcebergCommit -> IcebergWrite`) is exercised against Iceberg's write,
+  commit, and row-level-operation tests. See [#5259]
 
 [#3739]: https://github.com/apache/datafusion-comet/pull/3739
+[#5259]: https://github.com/apache/datafusion-comet/issues/5259
 [apache/iceberg#15674]: https://github.com/apache/iceberg/pull/15674
 
 ## 1. Install Comet
@@ -96,9 +101,33 @@ diff must be generated against its own tag.
 The `iceberg_spark_test_<version>.yml` workflows apply these diffs and run the three Gradle targets above
 against each Iceberg version. Iceberg 1.8.1 runs against Spark 3.4.3 with Java 11; Iceberg 1.9.1 and 1.10.0
 run against Spark 3.5.9 with Java 17; Iceberg 1.11.0 runs against Spark 4.1.3 with Java 17. Iceberg 1.11
-(the only version testing Spark 4.1) runs on every pull request and on pushes to main; the older versions
-(1.8, 1.9, 1.10) run only on pushes to main, or on a pull request labeled `run-iceberg-tests`. All caller
-workflows delegate to `iceberg_spark_test_reusable.yml`, which holds the build and test job logic.
+(the only version testing Spark 4.1) runs on every pull request and in the merge queue; the older versions
+(1.8, 1.9, 1.10) run only in the merge queue, or on a pull request labeled `run-iceberg-tests`. All caller
+workflows delegate to `iceberg_spark_test_reusable.yml`, which holds the build and test job logic. See
+[.github/workflows/README.md](https://github.com/apache/datafusion-comet/blob/main/.github/workflows/README.md)
+for how the pull-request and merge-queue tiers differ.
+
+The core Spark test target runs in four independent workers. The workflow passes
+`dev/ci/iceberg-test-shards.gradle` as a Gradle init script: one worker runs the long
+`TestStructuredStreamingRead` family, and the others hash the remaining class names into three
+buckets. New tests are assigned automatically. Nested classes and all parameterized cases stay
+with their enclosing class; Gradle's existing includes, exclusions, and JUnit configuration are
+unchanged. The extensions and shaded-runtime targets remain unsharded.
+
+The matrix and partition count come from the same definition in `dev/ci/check-iceberg-shards.py`;
+adding another matrix dimension does not change the partition count. Each worker records its
+unsharded candidate set with only the Comet shard predicate disabled, then restores the predicate
+before recording its selected set and executing tests. Both inventories and the JUnit XML reports
+are uploaded. A dependent coverage job requires all shard indices, matching unsharded inventories,
+and selected sets whose disjoint union equals that inventory. It downloads only artifacts for the
+same Iceberg/Spark/Scala/JDK configuration in the current workflow run and uses the latest available
+attempt per shard, so rerunning only failed jobs can reuse earlier successful shards' inventories.
+
+These candidate inventories include classes that JUnit may not execute, so the runtime job also
+runs `dev/ci/check-iceberg-shards.py`, a small Gradle/JUnit fixture that checks the four shards'
+combined candidate classes and executed test cases equal an unsharded run exactly once. It also
+checks nested, parameterized, inherited, and dynamically generated tests, existing exclusions,
+and failure propagation. The fixture does not compile Spark or Iceberg.
 
 Apply the `run-iceberg-tests` label to a pull request whenever it touches reflection code
 (`org.apache.comet.iceberg.IcebergReflection`) or other logic whose behavior can differ across Iceberg
