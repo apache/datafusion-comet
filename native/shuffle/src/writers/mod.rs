@@ -22,7 +22,7 @@ mod partition_writer;
 mod rss;
 mod shuffle_block_writer;
 
-pub(crate) use buf_batch_writer::BufBatchWriter;
+pub(crate) use buf_batch_writer::{BufBatchWriter, ShuffleScratch};
 pub(crate) use checksum::Checksum;
 pub(crate) use local::local_partition_writer::LocalPartitionWriter;
 pub(crate) use partition_writer::PartitionWriter;
