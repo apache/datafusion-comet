@@ -44,7 +44,7 @@ import org.apache.spark.sql.execution.aggregate.{BaseAggregateExec, HashAggregat
 import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
 import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, BroadcastNestedLoopJoinExec, HashJoin, ShuffledHashJoinExec, SortMergeJoinExec}
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
-import org.apache.spark.sql.types.{ArrayType, BooleanType, ByteType, DataType, DateType, DecimalType, DoubleType, FloatType, IntegerType, LongType, MapType, ShortType, StringType, StructField, StructType, TimestampNTZType, TimestampType}
+import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, ByteType, DataType, DateType, DecimalType, DoubleType, FloatType, IntegerType, LongType, MapType, ShortType, StringType, StructField, StructType, TimestampNTZType, TimestampType}
 import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.spark.util.SerializableConfiguration
 import org.apache.spark.util.io.ChunkedByteBuffer
@@ -2797,8 +2797,11 @@ object CometSortMergeJoinExec extends CometOperatorSerde[SortMergeJoinExec] {
    */
   private def supportedSortMergeJoinEqualType(dataType: DataType): Boolean = dataType match {
     case st: StringType if isStringCollationType(st) => false
+    // Spark orders binary by unsigned byte, which is also how Arrow orders `Binary`, so the
+    // sorted inputs Spark guarantees agree with DataFusion's SMJ key comparator.
     case _: ByteType | _: ShortType | _: IntegerType | _: LongType | _: FloatType |
-        _: DoubleType | _: StringType | _: DateType | _: DecimalType | _: BooleanType =>
+        _: DoubleType | _: StringType | _: BinaryType | _: DateType | _: DecimalType |
+        _: BooleanType =>
       true
     case TimestampNTZType | _: TimestampType => true
     case _ => false
