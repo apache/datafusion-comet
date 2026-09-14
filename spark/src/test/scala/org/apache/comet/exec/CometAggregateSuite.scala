@@ -185,6 +185,46 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       classOf[LocalTableScanExec])
   }
 
+  test("collect_list and collect_set over non-nullable nested fields survive spilling") {
+    withTempPath { path =>
+      // Keep every group in one input and final partition so aggregation outgrows its memory pool.
+      spark
+        .createDataFrame((0 until 32768).map { i =>
+          (i % 4096, i % 8192, s"${i % 8192}-" + "x" * 256)
+        })
+        .coalesce(1)
+        .write
+        .parquet(path.getAbsolutePath)
+      withParquetTable(path.getAbsolutePath, "tbl") {
+        withSQLConf(
+          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+          SQLConf.SHUFFLE_PARTITIONS.key -> "1",
+          CometConf.COMET_BATCH_SIZE.key -> "1024",
+          CometConf.COMET_OFFHEAP_MEMORY_POOL_FRACTION.key -> "0.002",
+          CometConf.COMET_RESPECT_DATAFUSION_CONFIGS.key -> "true",
+          "spark.comet.datafusion.execution.sort_spill_reservation_bytes" -> "65536") {
+          // The literal and coalesce create required fields after the Parquet scan, which
+          // otherwise widens field nullability. Sorting removes collect order differences.
+          val struct = "named_struct('flag', true, 'id', coalesce(_2, 0), 'value', _3)"
+          Seq(struct, s"array($struct)").foreach { value =>
+            val (_, cometPlan) = checkSparkAnswerAndOperator(
+              sql(s"""
+              SELECT _1, sort_array(collect_list(s)), sort_array(collect_set(s))
+              FROM (
+                SELECT _1, $value AS s
+                FROM tbl
+              ) GROUP BY _1"""),
+              Seq(classOf[CometHashAggregateExec]))
+            val aggregates = collect(cometPlan) { case agg: CometHashAggregateExec => agg }
+            assert(
+              aggregates.map(_.metrics("spill_count").value).sum > 0L,
+              s"Expected the native collection aggregate to spill:\n$cometPlan")
+          }
+        }
+      }
+    }
+  }
+
   test("grouped collect_list/collect_set over nulls, duplicates and several batches") {
     // Grouped collect_list/collect_set are served by a native GroupsAccumulator rather than one
     // boxed accumulator per group, so the group's identity travels with each row instead of being
