@@ -35,7 +35,9 @@
 # push to main would double the cost of every merge. Two exceptions: `docs`
 # deploys to asf-site and must run after the commit is on main, and the Linux
 # build runs on push so that main's actions/cache entries stay fresh (caches
-# saved on the queue's throwaway branch are deleted with it).
+# saved on the queue's throwaway branch are deleted with it). That second
+# exception runs in `cache-refresh-only` mode: the cache writers and nothing
+# else, because the queue has already tested the tree that landed.
 
 name: CI
 
@@ -154,6 +156,7 @@ jobs:
     runs-on: ubuntu-slim
     outputs:
       build_linux:  ${{ steps.compute.outputs.build_linux }}
+      build_linux_full: ${{ steps.compute.outputs.build_linux_full }}
       build_macos:  ${{ steps.compute.outputs.build_macos }}
       benchmark:    ${{ steps.compute.outputs.benchmark }}
       docs:         ${{ steps.compute.outputs.docs }}
@@ -230,6 +233,14 @@ jobs:
     needs: changes
     if: needs.changes.outputs.build_linux == 'true'
     uses: ./.github/workflows/pr_build_linux.yml
+    # Two POLICY outputs feed one call, the same shape as spark_4_1 below.
+    # `build_linux` decides whether the workflow runs at all; `build_linux_full`
+    # decides whether it runs the lints and the 5x4 test matrix as well as the
+    # jobs that populate main's actions/cache entries. Only push to main sets
+    # the first without the second, which is the whole point: the queue has
+    # already tested that tree, so the push run is there for the caches alone.
+    with:
+      cache-refresh-only: ${{ needs.changes.outputs.build_linux_full != 'true' }}
 
   pr_build_macos:
     name: PR Build (macOS)
