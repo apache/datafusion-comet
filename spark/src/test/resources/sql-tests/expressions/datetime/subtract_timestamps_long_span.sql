@@ -38,7 +38,7 @@ INSERT INTO test_subtract_timestamps_long_span VALUES
    timestamp_ntz'1970-01-01 00:00:00', timestamp_ntz'2300-01-01 00:00:00')
 
 -- TIMESTAMP columns in both operand orders
-query
+query expect_dispatch(subtracttimestamps)
 SELECT ts1, ts2, ts1 - ts2, ts2 - ts1 FROM test_subtract_timestamps_long_span
 
 -- TIMESTAMP_NTZ columns in both operand orders

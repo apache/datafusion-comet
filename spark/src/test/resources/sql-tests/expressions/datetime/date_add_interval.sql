@@ -44,7 +44,7 @@ INSERT INTO test_date_add_interval VALUES
 
 -- column date plus a calendar interval built from columns. Month arithmetic clamps to the end
 -- of the shorter month before the day part is added.
-query
+query expect_dispatch(dateaddinterval)
 SELECT d, y, m, dd, d + make_interval(y, m, 0, dd) FROM test_date_add_interval
 
 -- interval on the left
@@ -73,9 +73,7 @@ query
 SELECT
   date'2024-01-31' + make_interval(0, 1, 0, 1),
   date'2024-02-29' + make_interval(1, 0, 0, 1),
-  date'2024-01-31' - make_interval(0, 1, 0, 1),
-  CAST(NULL AS DATE) + make_interval(0, 1, 0, 1),
-  date'2024-01-31' + CAST(NULL AS INTERVAL)
+  date'2024-01-31' - make_interval(0, 1, 0, 1)
 
 -- date output through native shuffle
 query

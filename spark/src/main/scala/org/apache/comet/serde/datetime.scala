@@ -1006,6 +1006,9 @@ object CometDateAddYMInterval extends CometCodegenDispatch[DateAddYMInterval]
 
 object CometTimestampAddYMInterval extends CometCodegenDispatch[TimestampAddYMInterval]
 
+// DateTimeUtils.subtractDates always writes microseconds 0 into the calendar interval, so
+// the result fits the dispatcher's calendar-interval output in legacy mode as well and this
+// expression needs no legacy guard, unlike CometSubtractTimestamps below.
 object CometSubtractDates extends CometCodegenDispatch[SubtractDates]
 
 object CometSubtractTimestamps extends CometCodegenDispatch[SubtractTimestamps] {

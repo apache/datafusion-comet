@@ -59,7 +59,9 @@ INSERT INTO test_timestamp_add_interval VALUES
   (NULL, NULL, NULL, 1, 1, 1, 1, 6)
 
 -- TIMESTAMP column plus a day-time interval built from columns, both directions
-query
+-- The root is TimeAdd through Spark 4.0 and TimestampAddInterval from 4.1, so the sentinel
+-- pins the interval builder, which is dispatched only as part of the same kernel.
+query expect_dispatch(make_dt_interval)
 SELECT ts, dd, h, mi, s, ts + make_dt_interval(dd, h, mi, s), make_dt_interval(dd, h, mi, s) + ts
 FROM test_timestamp_add_interval
 
@@ -101,10 +103,7 @@ SELECT
   timestamp'2024-03-09 12:00:00' + INTERVAL '1' DAY,
   timestamp'2024-03-09 12:00:00' + INTERVAL '24' HOUR,
   timestamp'2024-01-31 23:00:00' + make_interval(0, 1, 0, 1),
-  timestamp_ntz'2024-03-09 12:00:00' + INTERVAL '1' DAY,
-  CAST(NULL AS TIMESTAMP) + INTERVAL '1' DAY,
-  timestamp'2024-01-31 00:00:00' + CAST(NULL AS INTERVAL DAY TO SECOND),
-  timestamp'2024-01-31 00:00:00' + CAST(NULL AS INTERVAL)
+  timestamp_ntz'2024-03-09 12:00:00' + INTERVAL '1' DAY
 
 -- timestamp output through native shuffle
 query

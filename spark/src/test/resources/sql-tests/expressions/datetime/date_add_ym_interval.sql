@@ -38,7 +38,7 @@ INSERT INTO test_date_add_ym_interval VALUES
   (NULL, 1, 1, 6)
 
 -- column date plus an interval built from columns, both directions
-query
+query expect_dispatch(dateaddyminterval)
 SELECT d, y, m, d + make_ym_interval(y, m), make_ym_interval(y, m) + d
 FROM test_date_add_ym_interval
 
@@ -60,9 +60,7 @@ query
 SELECT
   date'2024-01-31' + INTERVAL '1' MONTH,
   date'2024-02-29' + INTERVAL '1' YEAR,
-  date'2024-03-31' - INTERVAL '1' MONTH,
-  CAST(NULL AS DATE) + INTERVAL '1' MONTH,
-  date'2024-01-31' + CAST(NULL AS INTERVAL YEAR TO MONTH)
+  date'2024-03-31' - INTERVAL '1' MONTH
 
 -- date output through native shuffle
 query

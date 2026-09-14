@@ -63,7 +63,7 @@ INSERT INTO test_subtract_timestamps VALUES
 
 -- TIMESTAMP columns in both directions. Across a DST transition the default mode reports one
 -- calendar day rather than the elapsed 23 or 25 hours.
-query
+query expect_dispatch(subtracttimestamps)
 SELECT ts1, ts2, ts1 - ts2, ts2 - ts1 FROM test_subtract_timestamps
 
 -- TIMESTAMP_NTZ columns compile a separate kernel and never see the session time zone

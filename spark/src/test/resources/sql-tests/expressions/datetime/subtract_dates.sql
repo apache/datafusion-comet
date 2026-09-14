@@ -42,7 +42,7 @@ INSERT INTO test_subtract_dates VALUES
   (NULL, NULL, 5)
 
 -- column - column in both directions, covering negative and zero spans
-query
+query expect_dispatch(subtractdates)
 SELECT d1, d2, d1 - d2, d2 - d1 FROM test_subtract_dates
 
 -- literal on either side

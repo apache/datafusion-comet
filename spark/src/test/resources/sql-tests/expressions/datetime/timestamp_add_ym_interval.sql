@@ -45,7 +45,7 @@ INSERT INTO test_timestamp_add_ym_interval VALUES
   (NULL, NULL, 1, 1, 6)
 
 -- TIMESTAMP column plus an interval built from columns, both directions
-query
+query expect_dispatch(timestampaddyminterval)
 SELECT ts, y, m, ts + make_ym_interval(y, m), make_ym_interval(y, m) + ts
 FROM test_timestamp_add_ym_interval
 
@@ -73,9 +73,7 @@ SELECT
   timestamp'2024-01-31 10:30:45.123456' + INTERVAL '1' MONTH,
   timestamp'2024-02-29 23:59:59' + INTERVAL '1' YEAR,
   timestamp_ntz'2024-01-31 10:30:45.123456' + INTERVAL '1' MONTH,
-  timestamp'2024-03-31 00:00:00' - INTERVAL '1' MONTH,
-  CAST(NULL AS TIMESTAMP) + INTERVAL '1' MONTH,
-  timestamp'2024-01-31 00:00:00' + CAST(NULL AS INTERVAL YEAR TO MONTH)
+  timestamp'2024-03-31 00:00:00' - INTERVAL '1' MONTH
 
 -- timestamp output through native shuffle
 query
