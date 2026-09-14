@@ -298,14 +298,17 @@ Spark project. Once upstream ends maintenance for a Spark minor, Comet removes i
 1. **Deprecation.** The next Comet minor release after upstream maintenance ends marks the Spark
    minor as deprecated in the release notes and on the
    [Spark Version Compatibility](../user-guide/latest/compatibility/spark-versions.md) page.
-   Comet continues to build and publish binaries for the deprecated Spark minor during this
-   release cycle.
-2. **Removal.** The following Comet minor release removes the Spark minor and stops publishing
-   binaries for it.
+   Comet continues to build and publish binaries for the deprecated Spark minor, but stops
+   gating merges on Apache Spark's own SQL test suite for that version, so a regression specific
+   to it is more likely to reach a release.
+2. **Removal.** A later Comet minor release removes the Spark minor and stops publishing
+   binaries for it. Removal is not scheduled in advance; it happens once the remaining usage no
+   longer justifies the maintenance cost.
 
-This gives users at least one Comet minor release of prior notice before a Spark minor is
-dropped. For example, Spark 3.4 was deprecated in Comet 1.0.0 and will be removed in Comet
-1.1.0.
+This gives users at least one full Comet minor release of prior notice before a Spark minor is
+dropped, and in practice usually more. For example, Spark 3.4 was deprecated in Comet 1.0.0.
+Deprecation is the signal to plan a Spark upgrade; a deprecated version may be removed in any
+subsequent minor release without further warning.
 
 ### Patch Versions
 
