@@ -873,9 +873,6 @@ object IcebergReflection extends Logging {
   }
 
   /**
-<<<<<<< HEAD
-   * The fields of `schema` at any depth, as id, name, and the type of a field with no children.
-=======
    * Returns the field id resolved by Iceberg's name lookup, including runtime-supported aliases.
    */
   def findFieldIdByName(schema: Any, name: String): Option[Int] = {
@@ -890,17 +887,8 @@ object IcebergReflection extends Logging {
   }
 
   /**
-   * Returns a schema equal to `baseSchema` but guaranteed to contain `requiredFieldIds`. Any id
-   * not already present is resolved from the table's schema history (`table.schemas()`) and
-   * appended.
-   *
-   * Two callers need this: an equality delete may be keyed on a column since dropped from the
-   * current schema (mirroring Iceberg-Java's `DeleteFilter.fileProjection`), and a partition
-   * spec's source columns must be present for iceberg-rust to resolve `partition_type` when the
-   * query projects them out. Called at serialization time, so it throws on failure (a required id
-   * that cannot be resolved, or any reflection error) rather than silently degrading.
-   * CometScanRule is responsible for falling back before we get here.
->>>>>>> eab9eb47e (fix: match Iceberg bloom path resolution by version)
+   * The fields of `schema` at any depth, as id, name, and the type of a field with no children.
+
    */
   private def fieldsAtAnyDepth(schema: Any): Seq[(Int, String, Option[Any])] = {
     import scala.jdk.CollectionConverters._

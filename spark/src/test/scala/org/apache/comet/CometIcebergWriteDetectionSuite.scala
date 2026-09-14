@@ -54,6 +54,7 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
   override protected def sparkConf: SparkConf = {
     super.sparkConf
       .set(CometConf.COMET_ICEBERG_NATIVE_WRITE_ENABLED.key, "true")
+      .set(CometConf.COMET_ICEBERG_NATIVE_WRITE_BLOOM_FILTER_FOLDING_ENABLED.key, "true")
   }
 
   override protected def test(testName: String, testTags: Tag*)(testFun: => Any)(implicit
@@ -575,6 +576,22 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
         partitionSpec = "",
         properties = Some("'write.parquet.bloom-filter-enabled.column.id'='true'"))
       assertSupportLevelIs[Compatible]("bloom_col")
+    }
+  }
+
+  test("Bloom-filter folding must be explicitly enabled for native writes") {
+    withDetectionCatalog { dir =>
+      createTable(
+        dir,
+        "bloom_folding_opt_in",
+        partitionSpec = "",
+        properties = Some("'write.parquet.bloom-filter-enabled.column.id'='true'"))
+      withSQLConf(
+        CometConf.COMET_ICEBERG_NATIVE_WRITE_BLOOM_FILTER_FOLDING_ENABLED.key -> "false") {
+        assertUnsupportedContains(
+          "bloom_folding_opt_in",
+          CometConf.COMET_ICEBERG_NATIVE_WRITE_BLOOM_FILTER_FOLDING_ENABLED.key)
+      }
     }
   }
 
