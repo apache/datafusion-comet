@@ -248,8 +248,9 @@ case class CometScanRule(session: SparkSession)
     //
     // EXCEPT schemes the user routes through libhdfs via `spark.hadoop.fs.comet.libhdfs.schemes`
     // (e.g. `hdfs`, or a test `fake`): those ARE natively readable through the libhdfs object_store
-    // bridge, so they must NOT be declined here (regression guarded by
-    // ParquetReadFromFakeHadoopFsSuite).
+    // bridge, so they must NOT be declined here. The claim decision is guarded in CI by
+    // CometScanSchemeFallbackSuite; end-to-end execution through libhdfs is guarded by
+    // ParquetReadFromFakeHadoopFsSuite, which is a manual suite (see its scaladoc).
     //
     // The default mirrors the native side: when the config is unset, `is_hdfs_scheme`
     // (native/core/src/parquet/parquet_support.rs) treats `hdfs` as natively readable, and
