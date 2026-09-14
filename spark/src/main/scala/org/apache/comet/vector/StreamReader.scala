@@ -24,7 +24,7 @@ import java.nio.channels.ReadableByteChannel
 import scala.util.control.NonFatal
 
 import org.apache.arrow.vector.VectorSchemaRoot
-import org.apache.arrow.vector.ipc.{ArrowStreamReader, ReadChannel}
+import org.apache.arrow.vector.ipc.ReadChannel
 import org.apache.arrow.vector.ipc.message.MessageChannelReader
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
@@ -36,7 +36,7 @@ import org.apache.comet.CometArrowAllocator
 case class StreamReader(channel: ReadableByteChannel, source: String) extends AutoCloseable {
   private val channelReader =
     new MessageChannelReader(new ReadChannel(channel), CometArrowAllocator)
-  private var arrowReader = new ArrowStreamReader(channelReader, CometArrowAllocator)
+  private var arrowReader = new CometArrowStreamReader(channelReader, CometArrowAllocator)
 
   // Reading the schema allocates the root's vectors, so it can fail with buffers already taken.
   // No caller holds this reader until its constructor returns, so close it here or nothing will.
@@ -64,7 +64,6 @@ case class StreamReader(channel: ReadableByteChannel, source: String) extends Au
   override def close(): Unit = {
     if (root != null) {
       arrowReader.close()
-      root.close()
 
       arrowReader = null
       root = null

@@ -19,6 +19,8 @@
 
 package org.apache.arrow.c;
 
+import java.util.function.Function;
+
 import org.apache.arrow.memory.BufferAllocator;
 import org.apache.arrow.util.AutoCloseables;
 import org.apache.arrow.vector.FieldVector;
@@ -53,11 +55,19 @@ public class ArrowImporter {
 
   public FieldVector importVector(
       ArrowArray array, ArrowSchema schema, CDataDictionaryProvider provider) {
+    return importVector(array, schema, provider, field -> field.createVector(allocator));
+  }
+
+  public FieldVector importVector(
+      ArrowArray array,
+      ArrowSchema schema,
+      CDataDictionaryProvider provider,
+      Function<Field, FieldVector> vectorFactory) {
     Field field = null;
     FieldVector vector = null;
     try {
       field = importField(schema, provider);
-      vector = field.createVector(allocator);
+      vector = vectorFactory.apply(field);
       ArrayImporter importer = new ArrayImporter(allocator, vector, provider);
       importer.importArray(array);
       return vector;

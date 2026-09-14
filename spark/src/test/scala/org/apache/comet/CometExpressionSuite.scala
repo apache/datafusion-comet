@@ -121,6 +121,35 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("native CreateNamedStruct preserves duplicate field names") {
+    withParquetTable(Seq((1, "one"), (2, null.asInstanceOf[String])), "duplicate_named_struct") {
+      withSQLConf(CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "false") {
+        checkSparkAnswerAndOperator("""SELECT named_struct(
+            |  'x', _1 + 1,
+            |  'x', named_struct('y', _2, 'y', 7),
+            |  'x', 3.14D) AS s
+            |FROM duplicate_named_struct""".stripMargin)
+      }
+    }
+  }
+
+  test("named_struct with duplicate field names") {
+    withSQLConf(CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "false") {
+      Seq(true, false).foreach { dictionaryEnabled =>
+        withTempDir { dir =>
+          val path = new Path(dir.toURI.toString, "test.parquet")
+          makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
+          withParquetTable(path.toString, "tbl") {
+            checkSparkAnswerAndOperator("SELECT named_struct('a', _1, 'a', _2) FROM tbl")
+            checkSparkAnswerAndOperator("SELECT named_struct('a', _1, 'a', 2) FROM tbl")
+            checkSparkAnswerAndOperator(
+              "SELECT named_struct('a', named_struct('b', _1, 'b', _2)) FROM tbl")
+          }
+        }
+      }
+    }
+  }
+
   test("GetStructField: non-nullable field of a nullable struct (Delta action-frame shape)") {
     // Repro for the under-declared `GetStructField` nullability that crashed Comet's native
     // execution with "Column '...' is declared as non-nullable but contains null values".
@@ -2467,26 +2496,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           checkSparkAnswerAndOperator("SELECT named_struct('a', _1, 'b', 2) FROM tbl")
           checkSparkAnswerAndOperator(
             "SELECT named_struct('a', named_struct('b', _1, 'c', _2)) FROM tbl")
-        }
-      }
-    }
-  }
-
-  test("named_struct with duplicate field names") {
-    Seq(true, false).foreach { dictionaryEnabled =>
-      withTempDir { dir =>
-        val path = new Path(dir.toURI.toString, "test.parquet")
-        makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
-        withParquetTable(path.toString, "tbl") {
-          checkSparkAnswerAndOperator(
-            "SELECT named_struct('a', _1, 'a', _2) FROM tbl",
-            classOf[ProjectExec])
-          checkSparkAnswerAndOperator(
-            "SELECT named_struct('a', _1, 'a', 2) FROM tbl",
-            classOf[ProjectExec])
-          checkSparkAnswerAndOperator(
-            "SELECT named_struct('a', named_struct('b', _1, 'b', _2)) FROM tbl",
-            classOf[ProjectExec])
         }
       }
     }

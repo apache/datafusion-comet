@@ -19,14 +19,21 @@
 
 package org.apache.spark.sql.comet.util
 
+import java.util.{Arrays, Collections}
+
+import scala.collection.JavaConverters._
+
 import org.apache.arrow.c.CDataDictionaryProvider
+import org.apache.arrow.vector.IntVector
+import org.apache.arrow.vector.complex.StructVector
+import org.apache.arrow.vector.types.pojo.{ArrowType, Field, FieldType, Schema}
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.execution.vectorized.ConstantColumnVector
 import org.apache.spark.sql.types.{IntegerType, StringType, StructField, StructType, TimestampType}
 import org.apache.spark.sql.vectorized.{ColumnarBatch, ColumnVector}
 
 import org.apache.comet.CometArrowAllocator
-import org.apache.comet.vector.CometVector
+import org.apache.comet.vector.{CometVector, NativeUtil}
 
 class UtilsSuite extends CometTestBase {
 
@@ -56,6 +63,49 @@ class UtilsSuite extends CometTestBase {
 
     val decoded = coalesced.iterator.flatMap(b => Utils.decodeBatches(b, "test")).toSeq
     assert(decoded.map(_.numRows()).sum == expected)
+  }
+
+  test("coalesceBroadcastBatches preserves duplicate struct fields") {
+    val allocator =
+      CometArrowAllocator.newChildAllocator("duplicate-struct-broadcast", 0, Long.MaxValue)
+    try {
+      val intType = FieldType.nullable(new ArrowType.Int(32, true))
+      val children = Arrays.asList(
+        new Field("x", intType, Collections.emptyList[Field]()),
+        new Field("x", intType, Collections.emptyList[Field]()))
+      val field = new Field("s", FieldType.nullable(ArrowType.Struct.INSTANCE), children)
+      val root =
+        NativeUtil.createVectorSchemaRootForImport(new Schema(Seq(field).asJava), allocator)
+      val source = root.getVector(0).asInstanceOf[StructVector]
+      source.allocateNew()
+      source.getChildByOrdinal(0).asInstanceOf[IntVector].setSafe(0, 1)
+      source.getChildByOrdinal(1).asInstanceOf[IntVector].setSafe(0, 10)
+      source.setIndexDefined(0)
+      source.setValueCount(1)
+
+      val batch = new ColumnarBatch(Array(CometVector.getVector(source, null)), 1)
+      val serialized =
+        try Utils.serializeBatches(Iterator(batch)).map(_._2).toArray
+        finally batch.close()
+
+      val (coalesced, batchCount, totalRows) =
+        Utils.coalesceBroadcastBatches(serialized.iterator)
+      assert(batchCount == 1)
+      assert(totalRows == 1)
+
+      val decoded = coalesced.iterator.flatMap(Utils.decodeBatches(_, "test"))
+      assert(decoded.hasNext)
+      val output = decoded.next()
+      val value = output.column(0).asInstanceOf[CometVector]
+      val row = value.getStruct(0)
+      assert(row.getInt(0) == 1)
+      assert(row.getInt(1) == 10)
+      assert(value.getValueVector.getField.getChildren.get(0).getName == "x")
+      assert(value.getValueVector.getField.getChildren.get(1).getName == "x")
+      assert(!decoded.hasNext)
+    } finally {
+      allocator.close()
+    }
   }
 
   test("serializeBatches materializes ConstantColumnVector columns") {
