@@ -24,11 +24,11 @@
 -- ConfigMatrix: spark.sql.legacy.sizeOfNull=true,false
 
 statement
-CREATE TABLE test_size_nondet(_1 int) USING parquet
+CREATE TABLE test_size_nondet(_1 int, arr array<int>) USING parquet
 
 statement
-INSERT INTO test_size_nondet VALUES
-  (0), (1), (2), (3), (4), (5), (6), (7), (8), (9), (10), (11), (12), (13), (14), (15)
+INSERT INTO test_size_nondet
+SELECT id, IF(id % 4 = 3, NULL, array(id, id + 1)) FROM range(0, 16)
 
 -- Spark returns 1 on every row whose array is non-NULL and the sentinel on the rest.
 query expect_dispatch(size)
@@ -44,4 +44,10 @@ FROM test_size_nondet
 -- A deterministic nullable child stays on the native guarded path.
 query expect_native(size)
 SELECT _1, size(IF(_1 % 2 = 0, array(1), CAST(NULL AS ARRAY<INT>))) AS s
+FROM test_size_nondet
+
+-- The dispatched kernel reads the array from a column, so it copies a ListVector rather than
+-- building the array inline.
+query expect_dispatch(size)
+SELECT _1, size(IF(monotonically_increasing_id() % 2 = 0, arr, CAST(NULL AS ARRAY<INT>))) AS s
 FROM test_size_nondet

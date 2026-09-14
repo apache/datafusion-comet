@@ -199,7 +199,7 @@ The tables below list every Spark built-in expression with its current status.
 | Function | Status | Implementation | Notes |
 | --- | --- | --- | --- |
 | `array_size` | ✅ | — |  |
-| `cardinality` | ✅ | Native |  |
+| `cardinality` | ✅ | Hybrid |  |
 | `concat` | ✅ | Hybrid | Binary/array children fall back |
 | `reverse` | ✅ | Hybrid | Binary-element arrays fall back (Incompatible) ([details](compatibility/expressions/array.md)) |
 | `size` | ✅ | Hybrid |  |
