@@ -33,7 +33,7 @@ import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, ShuffledHash
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{ArrayType, BooleanType, DecimalType, IntegerType, StructType}
 
-import org.apache.comet.CometConf
+import org.apache.comet.{CometConf, CometCoverageStats, CometExplainInfo, ExtendedExplainInfo}
 
 class CometEmptyRelationExecRuleSuite extends CometTestBase {
 
@@ -101,6 +101,52 @@ class CometEmptyRelationExecRuleSuite extends CometTestBase {
     assert(explained.contains("LocalRelation"), explained)
     assert(converted.children.isEmpty)
     assert(converted.executeCollect().isEmpty)
+  }
+
+  test("EmptyRelationExec excludes its explanation-only plan from Comet reporting") {
+    val attributes = Seq(AttributeReference("id", IntegerType, nullable = false)())
+    val eliminated = Project(attributes, LocalRelation(attributes, Seq(InternalRow(1))))
+    val original = EmptyRelationExec(eliminated)
+    val converted = CometExecRule(spark).apply(original).asInstanceOf[CometEmptyRelationExec]
+
+    // Tag the preserved plan after conversion so only the explanation-only child carries these.
+    converted.originalPlan.setTagValue(
+      CometExplainInfo.FALLBACK_REASONS,
+      Set("eliminated plan fallback"))
+    converted.originalPlan.setTagValue(CometExplainInfo.NATIVE_EXPRS, Set("eliminated_native"))
+    converted.originalPlan.setTagValue(
+      CometExplainInfo.CODEGEN_DISPATCH_EXPRS,
+      Set("eliminated_codegen"))
+
+    val stats = CometCoverageStats.forPlan(converted)
+    assert(stats.cometOperators == 1)
+    assert(stats.sparkOperators == 0)
+    assert(stats.transitions == 0)
+    assert(stats.nativeExpressions.isEmpty)
+    assert(stats.codegenDispatchExpressions.isEmpty)
+
+    val explain = new ExtendedExplainInfo()
+    withSQLConf(CometConf.COMET_EXTENDED_EXPLAIN_FORMAT.key -> "verbose") {
+      val extended = explain.generateExtendedInfo(converted)
+      assert(extended.contains("CometEmptyRelation"), extended)
+      assert(!extended.contains("+- EmptyRelation"), extended)
+      assert(
+        extended.contains("Comet accelerated 1 out of 1 eligible operators (100%)"),
+        extended)
+    }
+    assert(explain.getFallbackReasons(converted).isEmpty)
+    assert(explain.getNativeExpressions(converted).isEmpty)
+    assert(explain.getCodegenDispatchExpressions(converted).isEmpty)
+
+    // Spark's own plan display still retains the logical subtree, and execution stays empty.
+    assert(converted.treeString.contains("Project"))
+    assert(converted.treeString.contains("LocalRelation"))
+    assert(converted.children.isEmpty)
+    assert(converted.executeCollect().isEmpty)
+
+    val sparkStats = CometCoverageStats.forPlan(original)
+    assert(sparkStats.sparkOperators == 1)
+    assert(sparkStats.cometOperators == 0)
   }
 
   test("EmptyRelationExec supports global and grouped COUNT and SUM") {
