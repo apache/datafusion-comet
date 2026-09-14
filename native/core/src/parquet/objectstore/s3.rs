@@ -402,6 +402,7 @@ const AWS_WEB_IDENTITY: &str =
 const AWS_WEB_IDENTITY_V1: &str = "com.amazonaws.auth.WebIdentityTokenCredentialsProvider";
 const AWS_PROFILE: &str = "software.amazon.awssdk.auth.credentials.ProfileCredentialsProvider";
 const AWS_PROFILE_V1: &str = "com.amazonaws.auth.profile.ProfileCredentialsProvider";
+const HADOOP_PROFILE: &str = "org.apache.hadoop.fs.s3a.auth.ProfileAWSCredentialsProvider";
 const AWS_ANONYMOUS: &str = "software.amazon.awssdk.auth.credentials.AnonymousCredentialsProvider";
 const AWS_ANONYMOUS_V1: &str = "com.amazonaws.auth.AnonymousAWSCredentials";
 
@@ -525,9 +526,16 @@ fn build_aws_credential_provider_metadata(
         }
         HADOOP_ASSUMED_ROLE => build_assume_role_credential_provider_metadata(configs, bucket),
         AWS_WEB_IDENTITY_V1 | AWS_WEB_IDENTITY => Ok(CredentialProviderMetadata::WebIdentity),
-        AWS_PROFILE_V1 | AWS_PROFILE => Ok(CredentialProviderMetadata::Profile {
+        // Only Hadoop's own provider reads the profile keys. Hadoop builds the SDK spellings
+        // through the SDK's static constructor without its configuration, so applying the keys
+        // to them here would authenticate the native side as a different identity.
+        HADOOP_PROFILE => Ok(CredentialProviderMetadata::Profile {
             name: get_non_empty_config(configs, bucket, "auth.profile.name"),
             file: get_non_empty_config(configs, bucket, "auth.profile.file"),
+        }),
+        AWS_PROFILE_V1 | AWS_PROFILE => Ok(CredentialProviderMetadata::Profile {
+            name: None,
+            file: None,
         }),
         _ => Err(object_store::Error::Generic {
             store: "S3",
@@ -1640,8 +1648,9 @@ mod tests {
                 Some("/etc/aws/credentials"),
             ),
         ];
-        for provider_name in [AWS_PROFILE, AWS_PROFILE_V1] {
-            for (name, file, expected_name, expected_file) in cases {
+        for (name, file, expected_name, expected_file) in cases {
+            {
+                let provider_name = HADOOP_PROFILE;
                 let mut builder = TestConfigBuilder::new().with_credential_provider(provider_name);
                 if let Some(name) = name {
                     builder = builder.with_property("auth.profile.name", name);
@@ -1672,11 +1681,39 @@ mod tests {
 
     #[tokio::test]
     #[cfg_attr(miri, ignore)] // AWS credential providers call foreign functions
+    async fn test_sdk_profile_provider_spellings_ignore_the_profile_keys() {
+        // Hadoop constructs these spellings without its configuration, so the native side must
+        // resolve the SDK default profile too, even when the keys are set.
+        for provider_name in [AWS_PROFILE, AWS_PROFILE_V1] {
+            let configs = TestConfigBuilder::new()
+                .with_credential_provider(provider_name)
+                .with_property("auth.profile.name", "analytics")
+                .with_property("auth.profile.file", "/etc/aws/credentials")
+                .build();
+            let test_provider =
+                build_credential_provider(&configs, "test-bucket", Duration::from_secs(300))
+                    .await
+                    .unwrap()
+                    .expect("Should return a credential provider")
+                    .metadata();
+            assert_eq!(
+                test_provider,
+                CredentialProviderMetadata::Profile {
+                    name: None,
+                    file: None,
+                },
+                "provider {provider_name}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    #[cfg_attr(miri, ignore)] // AWS credential providers call foreign functions
     async fn test_profile_credential_provider_per_bucket_override() {
         // Each key is overridden independently, so a bucket can replace just the name or just
         // the file while the other key keeps its global value
         let configs = TestConfigBuilder::new()
-            .with_credential_provider(AWS_PROFILE)
+            .with_credential_provider(HADOOP_PROFILE)
             .with_property("auth.profile.name", "global-profile")
             .with_property("auth.profile.file", "/etc/aws/global-credentials")
             .with_bucket_property("name-bucket", "auth.profile.name", "bucket-profile")
@@ -1727,7 +1764,7 @@ mod tests {
     async fn test_profile_credential_provider_in_chain() {
         let configs = TestConfigBuilder::new()
             .with_credential_provider(&format!(
-                "{AWS_ENVIRONMENT},{AWS_PROFILE},{AWS_INSTANCE_PROFILE}"
+                "{AWS_ENVIRONMENT},{HADOOP_PROFILE},{AWS_INSTANCE_PROFILE}"
             ))
             .with_property("auth.profile.name", "analytics")
             .with_property("auth.profile.file", "/etc/aws/credentials")

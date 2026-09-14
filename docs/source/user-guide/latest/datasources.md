@@ -199,7 +199,8 @@ AWS credential providers can be configured using the `fs.s3a.aws.credentials.pro
 | `com.amazonaws.auth.InstanceProfileCredentialsProvider`<br/>`software.amazon.awssdk.auth.credentials.InstanceProfileCredentialsProvider`                                                     | Access S3 using EC2 instance metadata service (IMDS)                                                            | None                                                                                                                            |
 | `com.amazonaws.auth.ContainerCredentialsProvider`<br/>`software.amazon.awssdk.auth.credentials.ContainerCredentialsProvider`<br/>`com.amazonaws.auth.EC2ContainerCredentialsProviderWrapper` | Access S3 using ECS task credentials                                                                            | None                                                                                                                            |
 | `com.amazonaws.auth.WebIdentityTokenCredentialsProvider`<br/>`software.amazon.awssdk.auth.credentials.WebIdentityTokenFileCredentialsProvider`                                               | Authenticate using web identity token file                                                                      | None                                                                                                                            |
-| `com.amazonaws.auth.profile.ProfileCredentialsProvider`<br/>`software.amazon.awssdk.auth.credentials.ProfileCredentialsProvider`                                                             | Authenticate using a named profile from the local AWS credentials file                                          | `fs.s3a.auth.profile.name` (optional), `fs.s3a.auth.profile.file` (optional); both apply only when this provider is configured  |
+| `org.apache.hadoop.fs.s3a.auth.ProfileAWSCredentialsProvider`                                                                                                                                 | Authenticate using a named profile from the local AWS credentials file                                          | `fs.s3a.auth.profile.name` (optional), `fs.s3a.auth.profile.file` (optional); Hadoop applies both only to this provider          |
+| `com.amazonaws.auth.profile.ProfileCredentialsProvider`<br/>`software.amazon.awssdk.auth.credentials.ProfileCredentialsProvider`                                                             | Authenticate using the SDK's default profile; Hadoop constructs these without its configuration, so the profile keys are not applied on either side | None                                                                                                                            |
 
 Multiple credential providers can be specified in a comma-separated list using the `fs.s3a.aws.credentials.provider` configuration, just as Hadoop AWS supports. If `fs.s3a.aws.credentials.provider` is not configured, Hadoop S3A's default credential provider chain will be used. All configuration options also support bucket-specific overrides using the pattern `fs.s3a.bucket.{bucket-name}.{option}`.
 
@@ -220,6 +221,9 @@ All configuration options support bucket-specific overrides using the pattern `f
 addressing (the default, `false`) sends requests to `https://<bucket>.<endpoint>`, while path-style
 (`true`) sends them to `https://<endpoint>/<bucket>`, which many S3-compatible services such as MinIO
 require. An endpoint whose host is an IP address is always addressed path-style, as the AWS SDK does.
+Earlier Comet releases addressed every custom `fs.s3a.endpoint` path-style whatever the flag said,
+so a MinIO or Ceph RGW deployment that never set the flag now sends requests to `<bucket>.<host>`
+and fails with a DNS error; set `fs.s3a.path.style.access=true` to keep the previous behavior.
 
 ### S3-Compliant Filesystem Schemes
 
