@@ -23,8 +23,9 @@ use zstd::zstd_safe::{CCtx, CParameter, ResetDirective};
 /// levels; higher levels (tens to hundreds of MiB of window) fall back to a fresh context
 /// per block, which is what per-block encoding paid anyway.
 ///
-/// Workspace sizes measured against zstd-sys 2.0.16+zstd.1.5.7 (`sizeof()` after one
-/// streaming frame, no pledged source size). Levels 7/8 sit ~3% under the cap, so a zstd
+/// Workspace sizes measured against zstd-sys 2.1.0+zstd.1.5.7 with zstd-safe 7.3.0
+/// (`sizeof()` after one streaming frame, no pledged source size); the 2.0.16 build vendors
+/// the same libzstd 1.5.7 and gives the same numbers. Levels 7/8 sit ~3% under the cap, so a zstd
 /// upgrade can silently flip them to release-per-block; re-measure on any dependency bump.
 ///
 /// | level | CCtx after encode |

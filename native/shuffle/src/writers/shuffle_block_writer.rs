@@ -525,7 +525,7 @@ mod tests {
         assert!(ctx.holds_zstd_cctx());
     }
 
-    /// Level 9's workspace measures 15,459,857 bytes (zstd-sys 2.0.16+zstd.1.5.7), past the
+    /// Level 9's workspace measures 15,459,857 bytes (zstd-sys 2.1.0+zstd.1.5.7), past the
     /// 8 MiB retention cap, so each block pays its own context creation and release.
     #[test]
     #[cfg_attr(miri, ignore)] // miri can't call foreign function `ZSTD_createCCtx`
@@ -553,7 +553,7 @@ mod tests {
         assert_eq!(ctx.creation_count(), 2);
     }
 
-    /// Level 8's workspace measures 8,119,825 bytes (zstd-sys 2.0.16+zstd.1.5.7) -- about 3%
+    /// Level 8's workspace measures 8,119,825 bytes (zstd-sys 2.1.0+zstd.1.5.7) -- about 3%
     /// under the retention cap. A zstd bump that grows it past the cap would turn off reuse
     /// at the highest still-retained level with no other symptom; fail loudly here instead.
     #[test]
