@@ -16,15 +16,17 @@
 // under the License.
 
 use arrow::array::{ArrayRef, RecordBatch};
-use arrow::buffer::Buffer;
+use arrow::buffer::{Buffer, MutableBuffer};
 use arrow::datatypes::SchemaRef;
-use arrow::ipc::reader::{RecordBatchDecoder, StreamReader};
-use arrow::ipc::{root_as_message, MessageHeader};
+use arrow::ipc::convert::fb_to_schema;
+use arrow::ipc::reader::{read_dictionary_impl, RecordBatchDecoder};
+use arrow::ipc::{root_as_message, Message, MessageHeader};
+use arrow_data::UnsafeFlag;
 use datafusion::common::DataFusionError;
 use datafusion::error::Result;
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::io::{Cursor, Error, ErrorKind, Read};
+use std::io::{Error, ErrorKind, Read};
 use std::sync::Arc;
 
 /// Decode trusted local Comet output without revalidating every Arrow array value or offset.
@@ -38,262 +40,141 @@ pub fn read_ipc_compressed_validated(bytes: &[u8]) -> Result<RecordBatch> {
 }
 
 /// Arrow IPC continuation marker introducing a message length.
-const CONTINUATION_MARKER: [u8; 4] = [0xff, 0xff, 0xff, 0xff];
+const CONTINUATION_MARKER: [u8; 4] = [0xff; 4];
 
 /// Distinct schemas cached per thread. More than one because a reduce task can interleave blocks
-/// from several shuffles. Keyed on the raw schema message, so a hit costs one memcmp.
+/// from several shuffles, and a single entry would thrash.
 const SCHEMA_CACHE_CAPACITY: usize = 4;
 
+/// Metadata scratch larger than this is released after the block rather than kept for the thread.
+/// Real metadata is a few KiB even for wide schemas; only a corrupt length gets anywhere near.
+const SCRATCH_RETAIN_LIMIT: usize = 1 << 20;
+
+/// Per-thread decoder state.
+///
+/// Every block is a complete IPC stream that opens with a schema message. `ShuffleBlockWriter`
+/// encodes that message once and writes it verbatim into every block, so consecutive blocks carry
+/// byte-identical schema messages. The cache is keyed on those bytes: a hit is one memcmp, and
+/// the schema message is neither verified nor parsed.
+#[derive(Default)]
+struct DecoderState {
+    /// Parsed schemas keyed on the raw schema message, most recently used first.
+    schemas: Vec<(Box<[u8]>, SchemaRef)>,
+    /// Message metadata read from a decompressor lands here, so it is not reallocated per block.
+    scratch: Vec<u8>,
+    #[cfg(test)]
+    stats: SchemaCacheStats,
+}
+
 thread_local! {
-    static SCHEMA_CACHE: RefCell<Vec<(Box<[u8]>, SchemaRef)>> =
-        const { RefCell::new(Vec::new()) };
-    /// Empty dictionary map; the fast path only runs for blocks with no dictionary messages.
-    static NO_DICTIONARIES: HashMap<i64, ArrayRef> = HashMap::new();
-}
-
-fn cached_schema(schema_message: &[u8]) -> Option<SchemaRef> {
-    SCHEMA_CACHE.with(|cache| {
-        let mut cache = cache.borrow_mut();
-        let hit = cache
-            .iter()
-            .position(|(message, _)| message.as_ref() == schema_message)?;
-        // most recently used first, so an alternating pair stays resident
-        if hit != 0 {
-            cache.swap(0, hit);
-        }
-        Some(Arc::clone(&cache[0].1))
-    })
-}
-
-fn cache_schema(schema_message: &[u8], schema: SchemaRef) {
-    SCHEMA_CACHE.with(|cache| {
-        let mut cache = cache.borrow_mut();
-        if cache
-            .iter()
-            .any(|(message, _)| message.as_ref() == schema_message)
-        {
-            return;
-        }
-        if cache.len() == SCHEMA_CACHE_CAPACITY {
-            cache.pop();
-        }
-        cache.insert(0, (schema_message.into(), schema));
-    });
+    static STATE: RefCell<DecoderState> = RefCell::new(DecoderState::default());
 }
 
 /// Empties this thread's schema cache, so the next decode re-parses its schema. For benchmarks
-/// comparing the cached and uncached paths; not part of the decode contract.
+/// and tests comparing the cold and warm paths; not part of the decode contract.
 #[doc(hidden)]
 pub fn reset_schema_cache() {
-    SCHEMA_CACHE.with(|cache| cache.borrow_mut().clear());
+    STATE.with_borrow_mut(|state| {
+        state.schemas.clear();
+        #[cfg(test)]
+        {
+            state.stats = SchemaCacheStats::default();
+        }
+    });
 }
 
-/// One Arrow IPC message located inside a decoded block.
-struct IpcMessage<'a> {
-    /// The flatbuffer metadata, without the continuation marker or length prefix.
-    metadata: &'a [u8],
-    /// Offset of the message body within the block.
-    body_start: usize,
-    /// Offset just past this message, where the next one begins.
-    end: usize,
+/// Schema cache hits and misses on this thread since the last [`reset_schema_cache`].
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct SchemaCacheStats {
+    hits: usize,
+    misses: usize,
 }
 
-/// Reads the message at `offset`. `Ok(None)` at a well-formed end, an end-of-stream marker or a
-/// clean message boundary; anything truncated or inconsistent is an error.
-fn read_message(block: &[u8], offset: usize) -> Result<Option<IpcMessage<'_>>> {
-    fn corrupt(what: &str) -> DataFusionError {
-        DataFusionError::Execution(format!("Failed to decode batch: {what}"))
-    }
-
-    // ending on a message boundary is the legacy stream ending, and is valid
-    if offset == block.len() {
-        return Ok(None);
-    }
-
-    let mut cursor = offset;
-    let first = block
-        .get(cursor..cursor + 4)
-        .ok_or_else(|| corrupt("truncated IPC message length"))?;
-    cursor += 4;
-
-    let length_bytes = if first == CONTINUATION_MARKER {
-        let bytes = block
-            .get(cursor..cursor + 4)
-            .ok_or_else(|| corrupt("truncated IPC message length"))?;
-        cursor += 4;
-        bytes
-    } else {
-        first
-    };
-
-    let metadata_len = i32::from_le_bytes(length_bytes.try_into().expect("four bytes"));
-    if metadata_len == 0 {
-        // End-of-stream marker.
-        return Ok(None);
-    }
-    let metadata_len =
-        usize::try_from(metadata_len).map_err(|_| corrupt("negative IPC metadata length"))?;
-
-    let metadata_end = cursor
-        .checked_add(metadata_len)
-        .ok_or_else(|| corrupt("IPC metadata length overflows the block"))?;
-    let metadata = block
-        .get(cursor..metadata_end)
-        .ok_or_else(|| corrupt("truncated IPC metadata"))?;
-
-    let message = root_as_message(metadata)
-        .map_err(|error| corrupt(&format!("invalid IPC metadata: {error}")))?;
-    let body_len =
-        usize::try_from(message.bodyLength()).map_err(|_| corrupt("negative IPC body length"))?;
-
-    let body_start = metadata_end;
-    let end = body_start
-        .checked_add(body_len)
-        .ok_or_else(|| corrupt("IPC body length overflows the block"))?;
-    if end > block.len() {
-        return Err(corrupt("truncated IPC body"));
-    }
-
-    Ok(Some(IpcMessage {
-        metadata,
-        body_start,
-        end,
-    }))
+#[cfg(test)]
+fn schema_cache_stats() -> SchemaCacheStats {
+    STATE.with_borrow(|state| state.stats)
 }
 
-/// Confirms nothing follows the record batch but a well-formed end of stream. `read_message`
-/// alone would not catch trailing bytes after an end-of-stream marker.
-fn expect_end_of_stream(block: &[u8], offset: usize) -> Result<()> {
-    let trailing = || {
-        DataFusionError::Execution(
-            "Failed to decode batch: trailing data after IPC stream".to_owned(),
-        )
-    };
-
-    if offset == block.len() {
-        return Ok(());
-    }
-
-    let mut cursor = offset;
-    let first = block.get(cursor..cursor + 4).ok_or_else(trailing)?;
-    cursor += 4;
-    let length_bytes = if first == CONTINUATION_MARKER {
-        let bytes = block.get(cursor..cursor + 4).ok_or_else(trailing)?;
-        cursor += 4;
-        bytes
-    } else {
-        first
-    };
-
-    if i32::from_le_bytes(length_bytes.try_into().expect("four bytes")) != 0 {
-        return Err(trailing());
-    }
-    if cursor != block.len() {
-        return Err(trailing());
-    }
-    Ok(())
+#[cfg(test)]
+fn scratch_capacity() -> usize {
+    STATE.with_borrow(|state| state.scratch.capacity())
 }
 
-/// Decodes a block whose schema is already known. `Ok(None)` if the block is not the simple
-/// `[schema][record batch][end]` shape, leaving it to the general decoder.
-fn decode_with_known_schema(
-    block: &Buffer,
+fn cached_schema(
+    schemas: &mut [(Box<[u8]>, SchemaRef)],
+    schema_message: &[u8],
+) -> Option<SchemaRef> {
+    let hit = schemas
+        .iter()
+        .position(|(message, _)| message.as_ref() == schema_message)?;
+    // most recently used first, so an alternating pair stays resident
+    if hit != 0 {
+        schemas.swap(0, hit);
+    }
+    Some(Arc::clone(&schemas[0].1))
+}
+
+fn cache_schema(
+    schemas: &mut Vec<(Box<[u8]>, SchemaRef)>,
+    schema_message: &[u8],
     schema: SchemaRef,
-    batch_message: &IpcMessage<'_>,
-    validate: bool,
-) -> Result<Option<RecordBatch>> {
-    let message = root_as_message(batch_message.metadata).map_err(|error| {
-        DataFusionError::Execution(format!(
-            "Failed to decode batch: invalid IPC metadata: {error}"
+) {
+    if schemas.len() == SCHEMA_CACHE_CAPACITY {
+        schemas.pop();
+    }
+    schemas.insert(0, (schema_message.into(), schema));
+}
+
+fn decode_error(what: &str) -> DataFusionError {
+    DataFusionError::Execution(format!("Failed to decode batch: {what}"))
+}
+
+fn parse_message(metadata: &[u8]) -> Result<Message<'_>> {
+    root_as_message(metadata)
+        .map_err(|error| decode_error(&format!("unable to get root as message: {error:?}")))
+}
+
+fn body_length(message: &Message<'_>) -> Result<usize> {
+    usize::try_from(message.bodyLength()).map_err(|_| {
+        decode_error(&format!(
+            "invalid message body length: {}",
+            message.bodyLength()
         ))
-    })?;
-    let Some(record_batch) = message.header_as_record_batch() else {
-        return Ok(None);
-    };
-
-    let body = block.slice_with_length(
-        batch_message.body_start,
-        batch_message.end - batch_message.body_start,
-    );
-
-    let version = message.version();
-    let batch = NO_DICTIONARIES.with(|dictionaries| {
-        let decoder =
-            RecordBatchDecoder::try_new(&body, record_batch, schema, dictionaries, &version)?;
-        let decoder = if validate {
-            decoder
-        } else {
-            // matches the trusted-local path the general decoder takes
-            let mut flag = arrow_data::UnsafeFlag::new();
-            unsafe { flag.set(true) };
-            decoder.with_skip_validation(flag)
-        };
-        decoder.read_record_batch()
-    })?;
-
-    Ok(Some(batch))
-}
-
-/// Decodes one decompressed block, reusing a cached schema when its schema message is known.
-fn decode_block(block: Buffer, validate: bool) -> Result<RecordBatch> {
-    if let Some(batch) = try_decode_with_cached_schema(&block, validate) {
-        return Ok(batch);
-    }
-
-    // general path: the only one that parses a schema, and it caches what it parsed
-    let (batch, schema, schema_message) = read_single_batch_cached(block.as_slice(), validate)?;
-    if let Some(schema_message) = schema_message {
-        cache_schema(schema_message, schema);
-    }
-    Ok(batch)
-}
-
-/// Decodes a block against an already-parsed schema, or `None` if it cannot.
-///
-/// Never reports an error of its own: anything it does not handle yields `None` and the general
-/// decoder runs instead, so validation and error messages are unchanged.
-fn try_decode_with_cached_schema(block: &Buffer, validate: bool) -> Option<RecordBatch> {
-    let bytes = block.as_slice();
-
-    let schema_message = read_message(bytes, 0).ok()??;
-    let is_schema = root_as_message(schema_message.metadata)
-        .map(|message| message.header_type() == MessageHeader::Schema)
-        .unwrap_or(false);
-    if !is_schema {
-        return None;
-    }
-
-    let schema = cached_schema(schema_message.metadata)?;
-
-    // the record batch must follow the schema directly; a dictionary message lands here instead
-    let batch_message = read_message(bytes, schema_message.end).ok()??;
-    expect_end_of_stream(bytes, batch_message.end).ok()?;
-
-    decode_with_known_schema(block, schema, &batch_message, validate).ok()?
+    })
 }
 
 fn read_ipc_compressed_impl(bytes: &[u8], validate: bool) -> Result<RecordBatch> {
-    let codec = bytes.get(..4).ok_or_else(|| {
-        DataFusionError::Execution("Failed to decode batch: truncated compression codec".to_owned())
-    })?;
+    let codec = bytes
+        .get(..4)
+        .ok_or_else(|| decode_error("truncated compression codec"))?;
     let mut encoded = &bytes[4..];
-    // materialized so messages can be walked in place; the decoded arrays borrow this buffer
-    let block = match codec {
-        b"SNAP" => decompress(snap::read::FrameDecoder::new(&mut encoded))?,
-        b"LZ4_" => decompress(lz4_flex::frame::FrameDecoder::new(RequireLz4EndMark(
-            &mut encoded,
-        )))?,
+    let batch = match codec {
+        b"SNAP" => decode(
+            Streamed(snap::read::FrameDecoder::new(&mut encoded)),
+            validate,
+        )?,
+        b"LZ4_" => decode(
+            Streamed(lz4_flex::frame::FrameDecoder::new(RequireLz4EndMark(
+                &mut encoded,
+            ))),
+            validate,
+        )?,
         // The slice already implements BufRead. Adding another BufReader would let read-ahead
         // conceal compressed bytes left over after the decoder reaches its end marker.
-        b"ZSTD" => decompress(zstd::Decoder::with_buffer(&mut encoded)?)?,
+        b"ZSTD" => decode(
+            Streamed(zstd::Decoder::with_buffer(&mut encoded)?),
+            validate,
+        )?,
+        // Uncompressed messages are located in place, so only bodies are copied.
         b"NONE" => {
-            let block = Buffer::from(encoded);
+            let batch = decode(Sliced::new(encoded), validate)?;
             encoded = &[];
-            block
+            batch
         }
         other => {
-            return Err(DataFusionError::Execution(format!(
-                "Failed to decode batch: invalid compression codec: {other:?}"
+            return Err(decode_error(&format!(
+                "invalid compression codec: {other:?}"
             )))
         }
     };
@@ -301,18 +182,289 @@ fn read_ipc_compressed_impl(bytes: &[u8], validate: bool) -> Result<RecordBatch>
     // the encoded source as well as the decoded IPC tail so an oversized outer frame cannot
     // silently swallow another native frame's bytes.
     if !encoded.is_empty() {
-        return Err(DataFusionError::Execution(
-            "Failed to decode batch: trailing data after compressed stream".to_owned(),
-        ));
+        return Err(decode_error("trailing data after compressed stream"));
     }
-    decode_block(block, validate)
+    Ok(batch)
 }
 
-/// Reads a decompressor to the end, yielding the decoded block.
-fn decompress<R: Read>(mut reader: R) -> Result<Buffer> {
-    let mut decoded = Vec::new();
-    reader.read_to_end(&mut decoded)?;
-    Ok(Buffer::from_vec(decoded))
+fn decode<'b, S: BlockSource<'b>>(source: S, validate: bool) -> Result<RecordBatch> {
+    STATE.with_borrow_mut(|state| {
+        let batch = read_single_batch(state, source, validate);
+        // a corrupt length can grow the scratch arbitrarily; do not pin that for the thread's life
+        if state.scratch.capacity() > SCRATCH_RETAIN_LIMIT {
+            state.scratch = Vec::new();
+        }
+        batch
+    })
+}
+
+/// Reads one complete IPC stream holding exactly one record batch. Mirrors what
+/// `arrow::ipc::reader::StreamReader` does message by message, except that the schema message is
+/// served from the cache when its bytes match one already parsed.
+fn read_single_batch<'b, S: BlockSource<'b>>(
+    state: &mut DecoderState,
+    mut source: S,
+    validate: bool,
+) -> Result<RecordBatch> {
+    let DecoderState {
+        schemas, scratch, ..
+    } = state;
+
+    let mut skip_validation = UnsafeFlag::new();
+    if !validate {
+        // SAFETY: local blocks were written by this Comet version's ShuffleBlockWriter from arrays
+        // that were valid when encoded, the same trust the StreamReader path placed in them.
+        // Remote blocks keep full validation.
+        unsafe { skip_validation.set(true) };
+    }
+
+    let Some(metadata) = source.next_metadata(scratch)? else {
+        return Err(decode_error("empty IPC stream"));
+    };
+    let schema = match cached_schema(schemas, metadata) {
+        Some(schema) => {
+            #[cfg(test)]
+            {
+                state.stats.hits += 1;
+            }
+            schema
+        }
+        None => {
+            #[cfg(test)]
+            {
+                state.stats.misses += 1;
+            }
+            let message = parse_message(metadata)?;
+            if message.header_type() != MessageHeader::Schema {
+                return Err(decode_error(&format!(
+                    "expected a schema as the first message in the stream, got: {:?}",
+                    message.header_type()
+                )));
+            }
+            let schema = message
+                .header_as_schema()
+                .ok_or_else(|| decode_error("failed to parse schema from message header"))?;
+            let schema = Arc::new(fb_to_schema(schema));
+            // A schema message has no body. Only bodiless ones are cached, so a hit never has a
+            // body to skip; anything else is read past as StreamReader does, without caching.
+            match body_length(&message)? {
+                0 => cache_schema(schemas, metadata, Arc::clone(&schema)),
+                len => {
+                    source.body(len)?;
+                }
+            }
+            schema
+        }
+    };
+
+    // dictionaries belong to the block that carries them, never to the cached schema
+    let mut dictionaries: HashMap<i64, ArrayRef> = HashMap::new();
+    let mut batch = None;
+    while let Some(metadata) = source.next_metadata(scratch)? {
+        let message = parse_message(metadata)?;
+        let version = message.version();
+        let body_len = body_length(&message)?;
+        match message.header_type() {
+            MessageHeader::DictionaryBatch => {
+                let dictionary = message
+                    .header_as_dictionary_batch()
+                    .ok_or_else(|| decode_error("unable to read dictionary batch"))?;
+                let body = source.body(body_len)?;
+                read_dictionary_impl(
+                    &body,
+                    dictionary,
+                    &schema,
+                    &mut dictionaries,
+                    &version,
+                    false,
+                    skip_validation.clone(),
+                )?;
+            }
+            MessageHeader::RecordBatch => {
+                // Each Comet frame contains one complete IPC stream with exactly one record
+                // batch. Stopping after that batch would skip codec footer/checksum validation
+                // and could silently discard further frames swallowed by a corrupt outer length
+                // prefix, so keep reading to the end-of-stream marker and reject a second batch.
+                if batch.is_some() {
+                    return Err(decode_error("multiple record batches in one shuffle frame"));
+                }
+                let record_batch = message
+                    .header_as_record_batch()
+                    .ok_or_else(|| decode_error("unable to read record batch"))?;
+                let body = source.body(body_len)?;
+                batch = Some(
+                    RecordBatchDecoder::try_new(
+                        &body,
+                        record_batch,
+                        Arc::clone(&schema),
+                        &dictionaries,
+                        &version,
+                    )?
+                    .with_require_alignment(false)
+                    .with_skip_validation(skip_validation.clone())
+                    .read_record_batch()?,
+                );
+            }
+            MessageHeader::Schema => {
+                return Err(decode_error("expected a record batch, but found a schema"));
+            }
+            other => {
+                return Err(decode_error(&format!(
+                    "unsupported message header type in IPC stream: '{other:?}'"
+                )));
+            }
+        }
+    }
+
+    let batch = batch.ok_or_else(|| decode_error("empty IPC stream"))?;
+    source.expect_exhausted()?;
+    Ok(batch)
+}
+
+/// Where a block's IPC messages come from. Metadata is borrowed one message at a time; bodies
+/// become exactly sized buffers that the decoded arrays keep.
+///
+/// `'b` is the lifetime of an in-memory block, so [`Sliced`] can hand out metadata without
+/// copying it; a streamed source uses `'static` and copies metadata into the caller's scratch.
+trait BlockSource<'b> {
+    /// The next message's metadata, or `None` at the end of the stream: an explicit
+    /// end-of-stream marker, or a clean EOF on a message boundary, which is the legacy ending.
+    fn next_metadata<'a>(&mut self, scratch: &'a mut Vec<u8>) -> Result<Option<&'a [u8]>>
+    where
+        'b: 'a;
+
+    /// The next message's body, `len` bytes long.
+    fn body(&mut self, len: usize) -> Result<Buffer>;
+
+    /// Errors unless every byte of the block has been consumed.
+    fn expect_exhausted(&mut self) -> Result<()>;
+}
+
+/// Decodes the metadata length a message starts with, from its first four bytes and a reader for
+/// four more should those be the continuation marker. `None` is the end-of-stream marker.
+fn metadata_length(
+    first: [u8; 4],
+    next: impl FnOnce() -> Result<[u8; 4]>,
+) -> Result<Option<usize>> {
+    let length_bytes = if first == CONTINUATION_MARKER {
+        next()?
+    } else {
+        first
+    };
+    match i32::from_le_bytes(length_bytes) {
+        0 => Ok(None),
+        len => usize::try_from(len)
+            .map(Some)
+            .map_err(|_| decode_error(&format!("invalid metadata length: {len}"))),
+    }
+}
+
+/// A block read through a decompressor.
+struct Streamed<R>(R);
+
+impl<R: Read> Streamed<R> {
+    fn read_exact(&mut self, buffer: &mut [u8], what: &str) -> Result<()> {
+        self.0.read_exact(buffer).map_err(|error| {
+            if error.kind() == ErrorKind::UnexpectedEof {
+                decode_error(what)
+            } else {
+                error.into()
+            }
+        })
+    }
+}
+
+impl<R: Read> BlockSource<'static> for Streamed<R> {
+    fn next_metadata<'a>(&mut self, scratch: &'a mut Vec<u8>) -> Result<Option<&'a [u8]>>
+    where
+        'static: 'a,
+    {
+        let mut prefix = [0u8; 4];
+        // EOF on a message boundary ends the stream; a partial length prefix does not
+        if self.0.read(&mut prefix[..1])? == 0 {
+            return Ok(None);
+        }
+        self.read_exact(&mut prefix[1..], "truncated IPC message length")?;
+        let Some(len) = metadata_length(prefix, || {
+            let mut bytes = [0u8; 4];
+            self.read_exact(&mut bytes, "truncated IPC message length")?;
+            Ok(bytes)
+        })?
+        else {
+            return Ok(None);
+        };
+        scratch.resize(len, 0);
+        self.read_exact(scratch, "truncated IPC metadata")?;
+        Ok(Some(scratch.as_slice()))
+    }
+
+    fn body(&mut self, len: usize) -> Result<Buffer> {
+        let mut body = MutableBuffer::from_len_zeroed(len);
+        self.read_exact(&mut body, "truncated IPC body")?;
+        Ok(body.into())
+    }
+
+    fn expect_exhausted(&mut self) -> Result<()> {
+        if self.0.read(&mut [0])? != 0 {
+            return Err(decode_error("trailing data after IPC stream"));
+        }
+        Ok(())
+    }
+}
+
+/// An uncompressed block, walked in place.
+struct Sliced<'b> {
+    block: &'b [u8],
+    offset: usize,
+}
+
+impl<'b> Sliced<'b> {
+    fn new(block: &'b [u8]) -> Self {
+        Self { block, offset: 0 }
+    }
+
+    fn take(&mut self, len: usize, what: &str) -> Result<&'b [u8]> {
+        let end = self
+            .offset
+            .checked_add(len)
+            .filter(|end| *end <= self.block.len())
+            .ok_or_else(|| decode_error(what))?;
+        let bytes = &self.block[self.offset..end];
+        self.offset = end;
+        Ok(bytes)
+    }
+}
+
+impl<'b> BlockSource<'b> for Sliced<'b> {
+    fn next_metadata<'a>(&mut self, _scratch: &'a mut Vec<u8>) -> Result<Option<&'a [u8]>>
+    where
+        'b: 'a,
+    {
+        if self.offset == self.block.len() {
+            return Ok(None);
+        }
+        let first = self.take(4, "truncated IPC message length")?;
+        let Some(len) = metadata_length(first.try_into().expect("four bytes"), || {
+            let bytes = self.take(4, "truncated IPC message length")?;
+            Ok(bytes.try_into().expect("four bytes"))
+        })?
+        else {
+            return Ok(None);
+        };
+        Ok(Some(self.take(len, "truncated IPC metadata")?))
+    }
+
+    fn body(&mut self, len: usize) -> Result<Buffer> {
+        // an exactly sized copy, with no zero fill before it
+        Ok(Buffer::from(self.take(len, "truncated IPC body")?))
+    }
+
+    fn expect_exhausted(&mut self) -> Result<()> {
+        if self.offset != self.block.len() {
+            return Err(decode_error("trailing data after IPC stream"));
+        }
+        Ok(())
+    }
 }
 
 // lz4_flex treats physical EOF (including a partial block header) as a clean end of frame.
@@ -335,59 +487,24 @@ impl<R: Read> Read for RequireLz4EndMark<R> {
     }
 }
 
-/// General decoder: the original `StreamReader` path. Also returns the parsed schema and the raw
-/// schema message it came from, for the caller to cache.
-fn read_single_batch_cached(
-    block: &[u8],
-    validate: bool,
-) -> Result<(RecordBatch, SchemaRef, Option<&[u8]>)> {
-    let mut input = Cursor::new(block);
-    let reader = StreamReader::try_new(&mut input, None)?;
-    let mut reader = if validate {
-        // Remote data must not escape as unchecked arrays and fail later in a native operator.
-        reader
-    } else {
-        // Preserve the existing local-shuffle fast path for trusted Comet-written arrays.
-        unsafe { reader.with_skip_validation(true) }
-    };
-    let schema = reader.schema();
-    let batch = reader.next().transpose()?.ok_or_else(|| {
-        DataFusionError::Execution("Failed to decode batch: empty IPC stream".to_owned())
-    })?;
-
-    // Each Comet frame contains one complete IPC stream with exactly one record batch.
-    // Stopping after that batch would skip codec footer/checksum validation and could silently
-    // discard further frames swallowed by a corrupt outer length prefix.
-    if reader.next().transpose()?.is_some() {
-        return Err(DataFusionError::Execution(
-            "Failed to decode batch: multiple record batches in one shuffle frame".to_owned(),
-        ));
-    }
-    if reader.get_mut().read(&mut [0])? != 0 {
-        return Err(DataFusionError::Execution(
-            "Failed to decode batch: trailing data after IPC stream".to_owned(),
-        ));
-    }
-
-    // only a leading schema message is a key the fast path can match
-    let schema_message = read_message(block, 0)?.and_then(|message| {
-        let is_schema = root_as_message(message.metadata)
-            .map(|parsed| parsed.header_type() == MessageHeader::Schema)
-            .unwrap_or(false);
-        is_schema.then_some(message.metadata)
-    });
-
-    Ok((batch, schema, schema_message))
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{read_ipc_compressed, read_ipc_compressed_validated};
-    use arrow::array::{Array, Int32Array, RecordBatch, StringArray};
-    use arrow::datatypes::{DataType, Field, Schema};
+    use super::{
+        read_ipc_compressed, read_ipc_compressed_validated, reset_schema_cache, schema_cache_stats,
+        scratch_capacity, SchemaCacheStats, SCHEMA_CACHE_CAPACITY, SCRATCH_RETAIN_LIMIT,
+    };
+    use arrow::array::{Array, DictionaryArray, Int32Array, RecordBatch, StringArray};
+    use arrow::datatypes::{DataType, Field, Int32Type, Schema};
+    use arrow::ipc::reader::StreamReader;
     use arrow::ipc::writer::StreamWriter;
-    use std::io::Write;
+    use std::io::{Cursor, Write};
     use std::sync::Arc;
+
+    const CODECS: [&[u8; 4]; 4] = [b"NONE", b"LZ4_", b"ZSTD", b"SNAP"];
+
+    fn stats(hits: usize, misses: usize) -> SchemaCacheStats {
+        SchemaCacheStats { hits, misses }
+    }
 
     fn ipc_stream(batch_count: usize) -> Vec<u8> {
         let schema = Arc::new(Schema::new(vec![Field::new("n", DataType::Int32, false)]));
@@ -429,13 +546,18 @@ mod tests {
         bytes
     }
 
-    /// One encoded block, without the 16-byte Comet header.
-    fn block_for(batch: &RecordBatch, codec: &[u8; 4]) -> Vec<u8> {
+    /// One batch as a complete IPC stream.
+    fn ipc_bytes(batch: &RecordBatch) -> Vec<u8> {
         let mut payload = Vec::new();
         let mut writer = StreamWriter::try_new(&mut payload, batch.schema_ref()).unwrap();
         writer.write(batch).unwrap();
         writer.finish().unwrap();
-        encode(codec, &payload)
+        payload
+    }
+
+    /// One encoded block, without the 16-byte Comet header.
+    fn block_for(batch: &RecordBatch, codec: &[u8; 4]) -> Vec<u8> {
+        encode(codec, &ipc_bytes(batch))
     }
 
     fn mixed_batch() -> RecordBatch {
@@ -455,69 +577,177 @@ mod tests {
         .unwrap()
     }
 
-    fn dictionary_batch() -> RecordBatch {
-        let values = StringArray::from(vec!["x", "y"]);
-        let keys = Int32Array::from(vec![0, 1, 0]);
-        let dictionary = arrow::array::DictionaryArray::try_new(
-            keys,
-            Arc::new(values) as arrow::array::ArrayRef,
-        )
-        .unwrap();
+    /// One dictionary-encoded string column; every call shares the same schema, so blocks built
+    /// from different values share a schema message but carry their own dictionary batch.
+    fn dictionary_batch(values: &[&str]) -> RecordBatch {
+        let dictionary: DictionaryArray<Int32Type> = values.iter().copied().collect();
         let schema = Arc::new(Schema::new(vec![Field::new(
             "d",
             dictionary.data_type().clone(),
-            false,
+            true,
         )]));
         RecordBatch::try_new(schema, vec![Arc::new(dictionary)]).unwrap()
     }
 
-    /// A warm decode must equal a cold one, on every codec and both entry points.
+    fn strings(batch: &RecordBatch) -> Vec<String> {
+        let values = arrow::compute::cast(batch.column(0), &DataType::Utf8).unwrap();
+        let values = values.as_any().downcast_ref::<StringArray>().unwrap();
+        values.iter().map(|v| v.unwrap().to_owned()).collect()
+    }
+
+    fn n_column_batch(num_columns: usize) -> RecordBatch {
+        let fields = (0..num_columns)
+            .map(|i| Field::new(format!("c{i}"), DataType::Int32, false))
+            .collect::<Vec<_>>();
+        let columns = (0..num_columns)
+            .map(|_| Arc::new(Int32Array::from(vec![1, 2])) as arrow::array::ArrayRef)
+            .collect();
+        RecordBatch::try_new(Arc::new(Schema::new(fields)), columns).unwrap()
+    }
+
+    /// After a cold decode, the same schema is served from the cache by both entry points, and
+    /// the warm decodes equal the cold one on every codec.
     #[test]
     #[cfg_attr(miri, ignore)] // Miri cannot call Zstd's C FFI.
-    fn cached_schema_decode_matches_the_first_decode() {
-        for batch in [mixed_batch(), dictionary_batch()] {
-            for codec in [b"NONE", b"LZ4_", b"ZSTD", b"SNAP"] {
+    fn warm_decodes_hit_the_cache_and_match_the_cold_one() {
+        for batch in [mixed_batch(), dictionary_batch(&["x", "y", "x"])] {
+            for codec in CODECS {
                 let block = block_for(&batch, codec);
+                reset_schema_cache();
 
                 let cold = read_ipc_compressed(&block).unwrap();
+                assert_eq!(schema_cache_stats(), stats(0, 1), "codec {codec:?}");
                 let warm = read_ipc_compressed(&block).unwrap();
-                assert_eq!(cold, batch, "cold decode differs, codec {codec:?}");
-                assert_eq!(warm, batch, "warm decode differs, codec {codec:?}");
-                assert_eq!(warm.schema(), batch.schema());
-
+                assert_eq!(schema_cache_stats(), stats(1, 1), "codec {codec:?}");
                 let validated = read_ipc_compressed_validated(&block).unwrap();
+                assert_eq!(schema_cache_stats(), stats(2, 1), "codec {codec:?}");
+
+                for decoded in [&cold, &warm, &validated] {
+                    assert_eq!(decoded, &batch, "codec {codec:?}");
+                    assert_eq!(decoded.schema(), batch.schema(), "codec {codec:?}");
+                }
+            }
+        }
+    }
+
+    /// Blocks that share a schema each carry their own dictionary batch. With the schema served
+    /// from the cache, a record batch must still be decoded against the dictionary in its own
+    /// block, never against a previous block's.
+    #[test]
+    #[cfg_attr(miri, ignore)] // Miri cannot call Zstd's C FFI.
+    fn dictionaries_are_scoped_to_their_block_under_a_cached_schema() {
+        let first = dictionary_batch(&["a", "b", "a"]);
+        let second = dictionary_batch(&["x", "y", "z"]);
+        assert_eq!(first.schema(), second.schema());
+
+        for codec in CODECS {
+            for validate in [false, true] {
+                let decode = |block: &[u8]| {
+                    if validate {
+                        read_ipc_compressed_validated(block).unwrap()
+                    } else {
+                        read_ipc_compressed(block).unwrap()
+                    }
+                };
+                reset_schema_cache();
+                assert_eq!(strings(&decode(&block_for(&first, codec))), ["a", "b", "a"]);
                 assert_eq!(
-                    validated, batch,
-                    "validated decode differs, codec {codec:?}"
+                    strings(&decode(&block_for(&second, codec))),
+                    ["x", "y", "z"]
+                );
+                assert_eq!(strings(&decode(&block_for(&first, codec))), ["a", "b", "a"]);
+                assert_eq!(
+                    schema_cache_stats(),
+                    stats(2, 1),
+                    "codec {codec:?}, validate {validate}"
                 );
             }
         }
     }
 
-    /// A dictionary block never takes the fast path, but must decode with a warm cache.
+    /// Each distinct schema misses once. The cache keeps several, so blocks from two shuffles
+    /// can alternate without evicting each other, and only the least recently used one goes
+    /// when the capacity is exceeded.
+    #[test]
+    fn distinct_schemas_miss_once_and_recent_ones_stay_cached() {
+        let blocks: Vec<Vec<u8>> = (1..=SCHEMA_CACHE_CAPACITY + 1)
+            .map(|num_columns| block_for(&n_column_batch(num_columns), b"NONE"))
+            .collect();
+        let decode = |block: &[u8]| read_ipc_compressed(block).unwrap();
+
+        reset_schema_cache();
+        decode(&blocks[0]);
+        decode(&blocks[1]);
+        decode(&blocks[0]);
+        decode(&blocks[1]);
+        assert_eq!(schema_cache_stats(), stats(2, 2));
+
+        // one more schema than the capacity evicts the least recently used one
+        for block in &blocks {
+            decode(block);
+        }
+        assert_eq!(schema_cache_stats(), stats(4, 5));
+        decode(&blocks[0]);
+        assert_eq!(schema_cache_stats(), stats(4, 6), "evicted");
+        decode(&blocks[SCHEMA_CACHE_CAPACITY]);
+        assert_eq!(schema_cache_stats(), stats(5, 6), "most recent stays");
+    }
+
+    /// Bodies read from a decompressor are allocated at exactly their length, as `StreamReader`
+    /// allocates them, so the arrays carry no growth slack and report the same memory size.
     #[test]
     #[cfg_attr(miri, ignore)] // Miri cannot call Zstd's C FFI.
-    fn dictionary_blocks_keep_decoding_with_a_warm_cache() {
-        let batch = dictionary_batch();
-        let block = block_for(&batch, b"ZSTD");
-        for _ in 0..3 {
-            assert_eq!(read_ipc_compressed(&block).unwrap(), batch);
+    fn decoded_arrays_report_the_same_memory_size_as_stream_reader() {
+        let num_rows = 100_000;
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("i", DataType::Int32, false),
+            Field::new("s", DataType::Utf8, false),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new((0..num_rows).collect::<Int32Array>()),
+                Arc::new(
+                    (0..num_rows)
+                        .map(|i| Some(format!("value_{i}")))
+                        .collect::<StringArray>(),
+                ),
+            ],
+        )
+        .unwrap();
+        let ipc = ipc_bytes(&batch);
+        let via_stream_reader = StreamReader::try_new(Cursor::new(&ipc), None)
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap();
+
+        for codec in CODECS {
+            reset_schema_cache();
+            // cold, then warm
+            for _ in 0..2 {
+                let decoded = read_ipc_compressed(&encode(codec, &ipc)).unwrap();
+                assert_eq!(decoded, batch);
+                assert_eq!(
+                    decoded.get_array_memory_size(),
+                    via_stream_reader.get_array_memory_size(),
+                    "codec {codec:?}"
+                );
+            }
         }
     }
 
     /// Trailing bytes after the end-of-stream marker must stay an error with a warm cache.
     #[test]
-    #[cfg_attr(miri, ignore)] // Miri cannot call Zstd's C FFI.
     fn trailing_data_still_fails_with_a_warm_cache() {
         let batch = mixed_batch();
-        let mut payload = Vec::new();
-        let mut writer = StreamWriter::try_new(&mut payload, batch.schema_ref()).unwrap();
-        writer.write(&batch).unwrap();
-        writer.finish().unwrap();
+        let payload = ipc_bytes(&batch);
 
-        // warm the cache with the well-formed block first
-        let good = encode(b"NONE", &payload);
-        assert_eq!(read_ipc_compressed(&good).unwrap(), batch);
+        reset_schema_cache();
+        assert_eq!(
+            read_ipc_compressed(&encode(b"NONE", &payload)).unwrap(),
+            batch
+        );
 
         let mut corrupted = payload.clone();
         corrupted.extend_from_slice(&[0u8; 8]);
@@ -526,29 +756,83 @@ mod tests {
             error.to_string().contains("trailing data"),
             "unexpected error: {error}"
         );
+        assert_eq!(schema_cache_stats(), stats(1, 1), "failed on the warm path");
     }
 
     /// A block truncated inside its body must fail cold and warm. Dropping only the
     /// end-of-stream marker is not truncation: a stream ending on a message boundary is valid.
     #[test]
-    #[cfg_attr(miri, ignore)] // Miri cannot call Zstd's C FFI.
     fn truncated_block_fails_with_a_warm_cache() {
         let batch = mixed_batch();
         let block = block_for(&batch, b"NONE");
+        reset_schema_cache();
 
-        // cold, before anything is cached
+        // cold: the schema parses and is cached before the truncation is reached
         let cut_into_body = &block[..block.len() - 24];
         assert!(read_ipc_compressed(cut_into_body).is_err());
+        assert_eq!(schema_cache_stats(), stats(0, 1));
 
         // warm, and the same truncation must still fail
         assert_eq!(read_ipc_compressed(&block).unwrap(), batch);
         assert!(read_ipc_compressed(cut_into_body).is_err());
+        assert_eq!(schema_cache_stats(), stats(2, 1));
 
         // dropping just the end-of-stream marker stays valid
         assert_eq!(
             read_ipc_compressed(&block[..block.len() - 8]).unwrap(),
             batch
         );
+    }
+
+    /// A partial message length after the record batch is an error on every codec, whether it
+    /// follows the end-of-stream marker or stands in for it.
+    #[test]
+    #[cfg_attr(miri, ignore)] // Miri cannot call Zstd's C FFI.
+    fn partial_length_prefix_is_an_error() {
+        let payload = ipc_stream(1);
+        for codec in CODECS {
+            let mut after_marker = payload.clone();
+            after_marker.extend_from_slice(&[0, 0]);
+            let error = read_ipc_compressed(&encode(codec, &after_marker))
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("trailing data"), "{codec:?}: {error}");
+
+            let mut instead_of_marker = payload[..payload.len() - 8].to_vec();
+            instead_of_marker.extend_from_slice(&[0, 0]);
+            let error = read_ipc_compressed(&encode(codec, &instead_of_marker))
+                .unwrap_err()
+                .to_string();
+            assert!(
+                error.contains("truncated IPC message length"),
+                "{codec:?}: {error}"
+            );
+        }
+    }
+
+    /// A corrupt metadata length makes the streamed reader grow its scratch before the read
+    /// fails. That growth must not stay pinned in the thread-local state afterwards.
+    #[test]
+    fn oversized_metadata_length_is_an_error_and_releases_the_scratch() {
+        let mut payload = ipc_stream(1);
+        // the record batch message follows the schema message: continuation marker, length, body
+        let schema_len = i32::from_le_bytes(payload[4..8].try_into().unwrap()) as usize;
+        let batch_message = 8 + schema_len;
+        assert_eq!(payload[batch_message..batch_message + 4], [0xff; 4]);
+        let forged = (2 * SCRATCH_RETAIN_LIMIT) as i32;
+        payload[batch_message + 4..batch_message + 8].copy_from_slice(&forged.to_le_bytes());
+
+        let error = read_ipc_compressed(&encode(b"LZ4_", &payload))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("truncated IPC metadata"), "{error}");
+        assert!(scratch_capacity() <= SCRATCH_RETAIN_LIMIT);
+
+        // the in-place reader rejects the same length without allocating anything
+        let error = read_ipc_compressed(&encode(b"NONE", &payload))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("truncated IPC metadata"), "{error}");
     }
 
     #[test]
@@ -562,7 +846,7 @@ mod tests {
     #[test]
     #[cfg_attr(miri, ignore)] // Miri cannot call Zstd's C FFI.
     fn empty_or_multiple_batch_stream_returns_error() {
-        for codec in [b"NONE", b"SNAP", b"LZ4_", b"ZSTD"] {
+        for codec in CODECS {
             for batch_count in [0, 2] {
                 let error = read_ipc_compressed(&encode(codec, &ipc_stream(batch_count)))
                     .unwrap_err()
@@ -584,7 +868,7 @@ mod tests {
     fn trailing_data_after_ipc_stream_returns_error() {
         let mut payload = ipc_stream(1);
         payload.extend_from_slice(b"another shuffle frame");
-        for codec in [b"NONE", b"SNAP", b"LZ4_", b"ZSTD"] {
+        for codec in CODECS {
             let error = read_ipc_compressed(&encode(codec, &payload))
                 .unwrap_err()
                 .to_string();
@@ -595,7 +879,7 @@ mod tests {
     #[test]
     #[cfg_attr(miri, ignore)] // Miri cannot call Zstd's C FFI.
     fn trailing_data_after_compressed_stream_returns_error() {
-        for codec in [b"NONE", b"SNAP", b"LZ4_", b"ZSTD"] {
+        for codec in CODECS {
             let mut frame = encode(codec, &ipc_stream(1));
             frame.extend_from_slice(&20_u64.to_le_bytes());
             frame.extend_from_slice(b"another native frame");
@@ -623,10 +907,7 @@ mod tests {
             vec![Arc::new(StringArray::from(vec!["abc", "def"]))],
         )
         .unwrap();
-        let mut payload = Vec::new();
-        let mut writer = StreamWriter::try_new(&mut payload, &schema).unwrap();
-        writer.write(&batch).unwrap();
-        writer.finish().unwrap();
+        let mut payload = ipc_bytes(&batch);
 
         let offsets: Vec<u8> = [0_i32, 3, 6]
             .into_iter()
@@ -640,7 +921,7 @@ mod tests {
         assert_eq!(positions.len(), 1);
         // Change [0, 3, 6] to [0, 3, 2]: the second string now has decreasing offsets.
         payload[positions[0] + 8..positions[0] + 12].copy_from_slice(&2_i32.to_le_bytes());
-        for codec in [b"NONE", b"SNAP", b"LZ4_", b"ZSTD"] {
+        for codec in CODECS {
             assert!(read_ipc_compressed_validated(&encode(codec, &payload)).is_err());
         }
     }
@@ -648,7 +929,7 @@ mod tests {
     #[test]
     #[cfg_attr(miri, ignore)] // Miri cannot call Zstd's C FFI.
     fn valid_single_batch_frames_decode_with_all_codecs() {
-        for codec in [b"NONE", b"SNAP", b"LZ4_", b"ZSTD"] {
+        for codec in CODECS {
             let frame = encode(codec, &ipc_stream(1));
             let batch = read_ipc_compressed(&frame).unwrap();
             let validated = read_ipc_compressed_validated(&frame).unwrap();
