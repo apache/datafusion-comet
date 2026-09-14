@@ -49,7 +49,7 @@ import org.apache.spark.sql.functions.{col, count, sum}
 import org.apache.spark.sql.types.{ArrayType, DataType, LongType, MapType, StructField, StructType}
 import org.apache.spark.sql.vectorized.{ColumnarBatch, ColumnVector}
 
-import org.apache.comet.{CometCodegenAssertions, CometConf, CometExecIterator, CometExplainInfo, CometShuffleBlockIterator, CometShuffleSizeLimitException, Native}
+import org.apache.comet.{CometCodegenAssertions, CometConf, CometExecIterator, CometExplainInfo, CometShuffleBlockIterator, CometShuffleSizeLimitException, ExtendedExplainInfo, Native}
 import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
 import org.apache.comet.serde.{OperatorOuterClass, PartitioningOuterClass}
 import org.apache.comet.shuffle.ShufflePartitionPusher
@@ -437,7 +437,7 @@ class CometNativeShuffleSuite
       withTempDir { dir =>
         val path = new Path(dir.toURI.toString, "test.parquet")
         makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = dictionaryEnabled, 1000)
-        var allTypes: Seq[Int] = (1 to 20)
+        val allTypes: Seq[Int] = (1 to 20)
         allTypes.map(i => s"_$i").foreach { c =>
           withSQLConf("parquet.enable.dictionary" -> dictionaryEnabled.toString) {
             readParquetFile(path.toString) { df =>
@@ -958,8 +958,6 @@ class CometNativeShuffleSuite
             "SELECT _1, spark_partition_id() AS pid FROM (" +
               s"SELECT /*+ REPARTITION(10, $keys) */ * FROM tbl)"
           val cometRows = sql(query).collect().map(r => (r.getInt(0), r.getInt(1))).sorted
-          // `withSQLConf` returns Unit, so capture the Spark-side rows via a var rather than
-          // relying on the block's value.
           // `SQLHelper.withSQLConf` returns T on Spark 4.x but Unit on Spark 3.x, so capture the
           // Spark-side rows via a var to keep this compiling on both.
           var sparkRows: Array[(Int, Int)] = Array.empty
@@ -973,6 +971,81 @@ class CometNativeShuffleSuite
           assert(
             cometRows === sparkRows,
             s"partition assignment differs from Spark for keys ($keys)")
+        }
+      }
+
+      if (isSpark40Plus) {
+        withTable("complex_map_partition_keys") {
+          withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+            sql("""CREATE TABLE complex_map_partition_keys USING parquet AS
+                  |SELECT CAST(id AS INT) AS id,
+                  |  CASE WHEN pmod(id, 2) = 0 THEN
+                  |    map(array(CAST(pmod(id, 13) AS INT), 1), CAST(pmod(id, 17) AS INT),
+                  |        array(CAST(pmod(id, 7) AS INT), 2), CAST(pmod(id, 19) AS INT))
+                  |  ELSE
+                  |    map(array(CAST(pmod(id, 7) AS INT), 2), CAST(pmod(id, 19) AS INT),
+                  |        array(CAST(pmod(id, 13) AS INT), 1), CAST(pmod(id, 17) AS INT))
+                  |  END AS array_map,
+                  |  CASE WHEN pmod(id, 2) = 0 THEN
+                  |    map(named_struct('a', CAST(pmod(id, 13) AS INT), 'b', 'x'),
+                  |          CAST(pmod(id, 17) AS INT),
+                  |        named_struct('a', CAST(pmod(id, 7) AS INT), 'b', 'y'),
+                  |          CAST(pmod(id, 19) AS INT))
+                  |  ELSE
+                  |    map(named_struct('a', CAST(pmod(id, 7) AS INT), 'b', 'y'),
+                  |          CAST(pmod(id, 19) AS INT),
+                  |        named_struct('a', CAST(pmod(id, 13) AS INT), 'b', 'x'),
+                  |          CAST(pmod(id, 17) AS INT))
+                  |  END AS struct_map
+                  |FROM range(200)""".stripMargin)
+          }
+
+          assert(
+            CometConf.COMET_SHUFFLE_NATIVE_HASH_PARTITIONING_NESTED_ENABLED
+              .get(spark.sessionState.conf),
+            "complex map-key parity requires nested hash partitioning to be enabled")
+
+          Seq("array_map", "struct_map").foreach { key =>
+            val query =
+              "SELECT id, spark_partition_id() AS pid FROM (" +
+                s"SELECT /*+ REPARTITION(10, $key) */ id, $key " +
+                "FROM complex_map_partition_keys)"
+            val cometDf = sql(query)
+            val cometRows = assertCodegenRan {
+              cometDf.collect().map(r => (r.getInt(0), r.getInt(1))).sorted
+            }
+            val cometPlan = stripAQEPlan(cometDf.queryExecution.executedPlan)
+            val cometExchanges = collect(cometPlan) { case e: CometShuffleExchangeExec => e }
+            assert(
+              cometExchanges.size == 1,
+              s"$key expected one CometShuffleExchangeExec:\n$cometPlan")
+            assert(
+              new ExtendedExplainInfo()
+                .getCodegenDispatchExpressions(cometPlan)
+                .contains("mapsort"),
+              s"$key expected MapSort on the JVM dispatcher path:\n$cometPlan")
+
+            var sparkRows: Array[(Int, Int)] = Array.empty
+            var sparkPartitions = -1
+            withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+              val sparkDf = sql(query)
+              sparkRows = sparkDf.collect().map(r => (r.getInt(0), r.getInt(1))).sorted
+              val sparkPlan = stripAQEPlan(sparkDf.queryExecution.executedPlan)
+              val sparkExchanges = collect(sparkPlan) { case e: ShuffleExchangeExec => e }
+              assert(
+                sparkExchanges.size == 1,
+                s"$key expected one Spark ShuffleExchangeExec:\n$sparkPlan")
+              sparkPartitions = sparkExchanges.head.outputPartitioning.numPartitions
+            }
+
+            assert(sparkRows.nonEmpty, s"Spark produced no rows for $key")
+            assert(
+              cometExchanges.head.outputPartitioning.numPartitions == sparkPartitions,
+              s"$key output partition count differs from Spark")
+            assert(
+              cometRows === sparkRows,
+              s"partition assignment differs from Spark for map key $key")
+          }
         }
       }
 
@@ -1034,23 +1107,69 @@ class CometNativeShuffleSuite
       // and assert both rows land in the same partition.
       assume(isSpark40Plus, "map shuffle keys are only normalized with mapsort on Spark 4.0+")
       withSQLConf(CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
-        val query = """
-          SELECT id, spark_partition_id() AS pid FROM (
-            SELECT /*+ REPARTITION(10, m) */ * FROM VALUES
-              (1, map('a', 1, 'b', 2)),
-              (2, map('b', 2, 'a', 1)),
-              (3, map('a', 1, 'b', 2, 'c', 3)),
-              (4, map('c', 3, 'b', 2, 'a', 1)) AS t(id, m))"""
-        val rows = sql(query).collect().map(r => (r.getInt(0), r.getInt(1))).toMap
-        assert(rows(1) == rows(2), "equal maps in different entry order must share a partition")
-        assert(rows(3) == rows(4), "equal maps in different entry order must share a partition")
+        val cases = Seq(
+          (
+            "scalar",
+            """(1, map('a', 1, 'b', 2)),
+              |(2, map('b', 2, 'a', 1)),
+              |(3, map('a', 1, 'b', 2, 'c', 3)),
+              |(4, map('c', 3, 'b', 2, 'a', 1))""".stripMargin,
+            false),
+          (
+            "array",
+            """(1, map(array(1, 2), 10, array(2, 1), 20)),
+              |(2, map(array(2, 1), 20, array(1, 2), 10)),
+              |(3, map(array(1), 10, array(2), 20, array(3), 30)),
+              |(4, map(array(3), 30, array(2), 20, array(1), 10))""".stripMargin,
+            true),
+          (
+            "struct",
+            """(1, map(named_struct('a', 1, 'b', 'x'), 10,
+              |            named_struct('a', 2, 'b', 'y'), 20)),
+              |(2, map(named_struct('a', 2, 'b', 'y'), 20,
+              |            named_struct('a', 1, 'b', 'x'), 10)),
+              |(3, map(named_struct('a', 1, 'b', 'x'), 10,
+              |            named_struct('a', 2, 'b', 'y'), 20,
+              |            named_struct('a', 3, 'b', 'z'), 30)),
+              |(4, map(named_struct('a', 3, 'b', 'z'), 30,
+              |            named_struct('a', 2, 'b', 'y'), 20,
+              |            named_struct('a', 1, 'b', 'x'), 10))""".stripMargin,
+            true))
 
-        var sparkRows: Map[Int, Int] = Map.empty
-        withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
-          sparkRows = sql(query).collect().map(r => (r.getInt(0), r.getInt(1))).toMap
+        cases.foreach { case (name, values, expectDispatch) =>
+          val query = s"""SELECT id, spark_partition_id() AS pid FROM (
+                         |  SELECT /*+ REPARTITION(10, m) */ * FROM VALUES
+                         |    $values AS t(id, m))""".stripMargin
+          val df = sql(query)
+          val rows = {
+            def collectRows(): Map[Int, Int] =
+              df.collect().map(r => (r.getInt(0), r.getInt(1))).toMap
+            if (expectDispatch) assertCodegenRan(collectRows()) else collectRows()
+          }
+          assert(
+            rows(1) == rows(2),
+            s"equal $name-keyed maps in different entry order must share a partition")
+          assert(
+            rows(3) == rows(4),
+            s"equal $name-keyed maps in different entry order must share a partition")
+
+          val cometPlan = stripAQEPlan(df.queryExecution.executedPlan)
+          assert(
+            collect(cometPlan) { case e: CometShuffleExchangeExec => e }.nonEmpty,
+            s"$name-keyed map did not retain native shuffle:\n$cometPlan")
+          val dispatched =
+            new ExtendedExplainInfo().getCodegenDispatchExpressions(cometPlan).contains("mapsort")
+          assert(
+            dispatched == expectDispatch,
+            s"unexpected mapsort dispatch route for $name-keyed map:\n$cometPlan")
+
+          var sparkRows: Map[Int, Int] = Map.empty
+          withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+            sparkRows = sql(query).collect().map(r => (r.getInt(0), r.getInt(1))).toMap
+          }
+          assert(sparkRows.nonEmpty)
+          assert(rows == sparkRows, s"$name-keyed map partition assignment differs from Spark")
         }
-        assert(sparkRows.nonEmpty)
-        assert(rows == sparkRows, "map key partition assignment differs from Spark")
       }
     }
   }

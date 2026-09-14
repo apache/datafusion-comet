@@ -30,6 +30,7 @@ import org.apache.spark.sql.types.BinaryType
 
 import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
 import org.apache.comet.testing.{DataGenOptions, ParquetGenerator, SchemaGenOptions}
+import org.apache.comet.udf.codegen.CometScalaUDFCodegen
 
 class CometMapExpressionSuite extends CometTestBase with CometCodegenAssertions {
 
@@ -325,40 +326,141 @@ class CometMapExpressionSuite extends CometTestBase with CometCodegenAssertions 
     }
   }
 
-  test("mapsort with complex keys falls back when codegen dispatcher is disabled") {
+  test("mapsort expression disable restores fallback while codegen dispatcher stays enabled") {
     assume(isSpark40Plus, "Spark 4.0 inserts MapSort for group-by on map keys")
     withTable("t_map_sort_dispatch_disabled") {
       sql("CREATE TABLE t_map_sort_dispatch_disabled (m MAP<ARRAY<INT>, INT>) USING parquet")
       sql("""INSERT INTO t_map_sort_dispatch_disabled VALUES
             |(map(array(2, 1), 20, array(1, 2), 10)),
             |(map(array(1, 2), 10, array(2, 1), 20))""".stripMargin)
-      withSQLConf(CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "false") {
+      withSQLConf(
+        CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "true",
+        CometConf.getExprEnabledConfigKey("MapSort") -> "false") {
         val df = sql("SELECT m, count(*) FROM t_map_sort_dispatch_disabled GROUP BY m")
 
         assertMapSortInPlan(df)
         assertCodegenDidNotRun {
           checkSparkAnswerAndFallbackReason(
             df,
-            CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key + "=false")
+            "Expression support is disabled. Set " +
+              s"${CometConf.getExprEnabledConfigKey("MapSort")}=true to enable it.")
         }
       }
     }
   }
 
-  // Spark rejects collated strings as map keys (`UNSUPPORTED_FEATURE.COLLATIONS_IN_MAP_KEYS`), so
-  // `MapSort` never sees that shape. `supportedScalarSortElementType` still excludes them, and the
-  // same `Unsupported` → dispatcher path is covered by the array/struct cases above.
+  test("mapsort routes collated-string keys through codegen dispatcher") {
+    assume(isSpark40Plus, "collated map keys and MapSort require Spark 4.0+")
+    withSQLConf(
+      "spark.sql.collation.allowInMapKeys" -> "true",
+      CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "true") {
+      withTable("t_map_sort_collated_key") {
+        sql(
+          "CREATE TABLE t_map_sort_collated_key " +
+            "(k1 STRING, v1 INT, k2 STRING, v2 INT) USING parquet")
+        sql("""INSERT INTO t_map_sort_collated_key VALUES
+              |('b', 20, 'A', 10),
+              |('a', 10, 'B', 20),
+              |('c', 30, 'd', 40)""".stripMargin)
+        val query =
+          """SELECT m, count(*) FROM (
+            |  SELECT map(CAST(k1 AS STRING COLLATE UTF8_LCASE), v1,
+            |             CAST(k2 AS STRING COLLATE UTF8_LCASE), v2) AS m
+            |  FROM t_map_sort_collated_key)
+            |GROUP BY m""".stripMargin
+        val df = sql(query)
+
+        assertMapSortInPlan(df)
+        CometScalaUDFCodegen.resetStats()
+        val cometRows = df.collect()
+        val cometPlan = df.queryExecution.executedPlan
+        val dispatcherStats = CometScalaUDFCodegen.stats()
+        assert(
+          dispatcherStats.totalLookups >= 1,
+          s"expected codegen dispatcher activity, got $dispatcherStats; " +
+            s"fallback reasons: ${new ExtendedExplainInfo().getFallbackReasons(cometPlan)}\n" +
+            cometPlan)
+
+        // UTF8_LCASE considers the first two maps equal but Spark and Comet may retain different
+        // byte-level representatives for the grouped key ("A" versus "a"). Compare the collected
+        // answers after canonicalizing keys in the test, leaving the executed SQL plan untouched.
+        def canonicalize(rows: Array[org.apache.spark.sql.Row]) =
+          rows
+            .map { row =>
+              val entries =
+                if (row.isNullAt(0)) {
+                  None
+                } else {
+                  Some(
+                    row
+                      .getMap[String, Int](0)
+                      .toSeq
+                      .map { case (key, value) =>
+                        key.toLowerCase(java.util.Locale.ROOT) -> value
+                      }
+                      .sortBy(_._1))
+                }
+              entries -> row.getLong(1)
+            }
+            .sortBy(_.toString)
+            .toSeq
+
+        var sparkRows: Array[org.apache.spark.sql.Row] = Array.empty
+        withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+          sparkRows = sql(query).collect()
+        }
+        assert(canonicalize(cometRows) === canonicalize(sparkRows))
+
+        val explain = new ExtendedExplainInfo()
+        assert(
+          explain.getCodegenDispatchExpressions(cometPlan).contains("mapsort"),
+          s"expected collated-key mapsort on codegen dispatch path:\n$cometPlan")
+        assert(
+          !explain.getNativeExpressions(cometPlan).contains("mapsort"),
+          s"collated-key mapsort must not use native map_sort:\n$cometPlan")
+
+        withSQLConf(CometConf.getExprEnabledConfigKey("MapSort") -> "false") {
+          val fallback = sql(query)
+          assertMapSortInPlan(fallback)
+          val fallbackRows = assertCodegenDidNotRun(fallback.collect())
+          val fallbackPlan = fallback.queryExecution.executedPlan
+          assert(canonicalize(fallbackRows) === canonicalize(sparkRows))
+          val expectedReason =
+            "Expression support is disabled. Set " +
+              s"${CometConf.getExprEnabledConfigKey("MapSort")}=true to enable it."
+          assert(
+            new ExtendedExplainInfo().getFallbackReasons(fallbackPlan).contains(expectedReason),
+            s"expected MapSort-specific fallback reason `$expectedReason` in:\n$fallbackPlan")
+        }
+      }
+    }
+  }
 
   test("mapsort routes strict floating-point keys through codegen dispatcher") {
     assume(isSpark40Plus, "Spark 4.0 inserts MapSort for group-by on map keys")
-    withSQLConf(CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key -> "true") {
+    withSQLConf(
+      CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key -> "true",
+      CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "true",
+      "spark.sql.legacy.disableMapKeyNormalization" -> "true") {
       withTable("t_map_sort_fp_key") {
-        sql("CREATE TABLE t_map_sort_fp_key (m MAP<DOUBLE, INT>) USING parquet")
+        sql("CREATE TABLE t_map_sort_fp_key (id INT, m MAP<DOUBLE, INT>) USING parquet")
         sql("""INSERT INTO t_map_sort_fp_key VALUES
-              |(map(CAST('NaN' AS DOUBLE), 1, CAST('-0.0' AS DOUBLE), 2, 1.0, 3)),
-              |(map(1.0, 3, CAST('-0.0' AS DOUBLE), 2, CAST('NaN' AS DOUBLE), 1)),
-              |(map(0.0, 4)),
-              |(NULL)""".stripMargin)
+              |(1, map(CAST('0.0' AS DOUBLE), 10, CAST('-0.0' AS DOUBLE), 20,
+              |        CAST('NaN' AS DOUBLE), 30)),
+              |(2, map(CAST('-0.0' AS DOUBLE), 20, CAST('0.0' AS DOUBLE), 10,
+              |        CAST('NaN' AS DOUBLE), 30)),
+              |(3, map(CAST('NaN' AS DOUBLE), 40, 1.0, 50)),
+              |(4, NULL)""".stripMargin)
+
+        val storedKeys = sql(
+          "SELECT k FROM t_map_sort_fp_key " +
+            "LATERAL VIEW explode(map_keys(m)) e AS k WHERE id = 1").collect().map(_.getDouble(0))
+        val storedBits = storedKeys.map(java.lang.Double.doubleToRawLongBits)
+        assert(
+          storedBits.take(2).sameElements(Array(0L, Long.MinValue)),
+          s"expected stored +0.0 then -0.0 raw bits, got ${storedBits.toSeq}")
+        assert(storedKeys.exists(java.lang.Double.isNaN), "strict fixture must retain a NaN key")
+
         val df = sql("SELECT m, count(*) FROM t_map_sort_fp_key GROUP BY m")
 
         assertMapSortInPlan(df)
@@ -369,6 +471,20 @@ class CometMapExpressionSuite extends CometTestBase with CometCodegenAssertions 
         assert(
           dispatched.contains("mapsort"),
           s"expected mapsort on codegen dispatch path, got $dispatched in:\n$cometPlan")
+        assert(
+          !new ExtendedExplainInfo().getNativeExpressions(cometPlan).contains("mapsort"),
+          s"strict floating-point mapsort must not use native map_sort:\n$cometPlan")
+
+        withSQLConf(CometConf.getExprEnabledConfigKey("MapSort") -> "false") {
+          val fallback = sql("SELECT m, count(*) FROM t_map_sort_fp_key GROUP BY m")
+          assertMapSortInPlan(fallback)
+          assertCodegenDidNotRun {
+            checkSparkAnswerAndFallbackReason(
+              fallback,
+              "Expression support is disabled. Set " +
+                s"${CometConf.getExprEnabledConfigKey("MapSort")}=true to enable it.")
+          }
+        }
       }
     }
   }

@@ -38,14 +38,15 @@ import org.apache.comet.udf.codegen.CometScalaUDFCodegen
  * Matched benchmark for the two routes Spark 4.x can take for `MapSort` shapes that Comet cannot
  * sort natively:
  *
- *   - with the JVM codegen dispatcher disabled, the enclosing projection or shuffle falls back to
- *     Spark; and
- *   - with it enabled, Spark's `MapSort.doGenCode` executes inside the Comet pipeline.
+ *   - with `spark.comet.expression.MapSort.enabled=false`, the enclosing projection or shuffle
+ *     falls back to Spark; and
+ *   - with MapSort enabled, Spark's `MapSort.doGenCode` executes inside the Comet pipeline.
  *
  * Every pair reads the same Parquet data and differs only in
- * `spark.comet.exec.scalaUDF.codegen.enabled`. Array and struct cases vary map size independently
- * from nested-key width; strict floating-point cases include NaN and signed zero. Input maps are
- * written in reverse key order and one row in 64 has a NULL map.
+ * `spark.comet.expression.MapSort.enabled`; the global codegen dispatcher remains enabled in both
+ * arms. Array and struct cases vary map size independently from nested-key width. Strict
+ * floating-point cases include NaN and both signed zeros in the same map. Input maps are written
+ * in reverse key order and one row in 64 has a NULL map.
  *
  * Spark 4.0 and 4.1 only insert `MapSort` for grouping and repartition expressions;
  * `try_element_at` itself does not insert one. To measure a projection without also timing an
@@ -159,12 +160,13 @@ object CometMapSortBenchmark extends CometBenchmarkBase {
       s"""CASE
          |  WHEN $entry = 0 THEN CAST('NaN' AS DOUBLE)
          |  WHEN $entry = 1 THEN CAST('-0.0' AS DOUBLE)
+         |  WHEN $entry = 2 THEN CAST('0.0' AS DOUBLE)
          |  ELSE CAST(id * 128 + CAST($entry AS BIGINT) + 1 AS DOUBLE)
          |END""".stripMargin.replace('\n', ' ')
   }
 
   private case class Shape(name: String, family: KeyFamily, mapSize: Int, keyWidth: Int) {
-    require(mapSize >= 2, "mapSize must leave room for NaN and -0.0")
+    require(mapSize >= 3, "mapSize must leave room for NaN, -0.0, and +0.0")
     require(keyWidth > 0, "keyWidth must be positive")
 
     def description: String =
@@ -639,8 +641,11 @@ object CometMapSortBenchmark extends CometBenchmarkBase {
     Seq(
       CometConf.COMET_ENABLED.key -> "true",
       CometConf.COMET_EXEC_ENABLED.key -> "true",
-      CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> dispatch.toString,
+      CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "true",
+      CometConf.getExprEnabledConfigKey("MapSort") -> dispatch.toString,
       CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key ->
+        (shape.family == StrictDoubleKey).toString,
+      "spark.sql.legacy.disableMapKeyNormalization" ->
         (shape.family == StrictDoubleKey).toString,
       CometConf.getExprAllowIncompatConfigKey("MapSort") -> "false",
       CometConf.COMET_SHUFFLE_ENABLED.key -> shuffle.toString,
@@ -712,9 +717,32 @@ object CometMapSortBenchmark extends CometBenchmarkBase {
         spark
           .range(0L, rows.toLong, 1L, InputPartitions)
           .createOrReplaceTempView(tbl)
-        prepareTable(dir, spark.sql(corpusQuery(shape)))
-        f
+        withSQLConf(
+          "spark.sql.legacy.disableMapKeyNormalization" ->
+            (shape.family == StrictDoubleKey).toString) {
+          prepareTable(dir, spark.sql(corpusQuery(shape)))
+          assertStrictDoubleCorpus(shape)
+          f
+        }
       }
+    }
+  }
+
+  private def assertStrictDoubleCorpus(shape: Shape): Unit = {
+    if (shape.family == StrictDoubleKey) {
+      val keys = spark
+        .sql(
+          "SELECT key FROM parquetV1Table " +
+            "LATERAL VIEW explode(map_keys(m)) e AS key WHERE id = 1")
+        .collect()
+        .map(_.getDouble(0))
+      val zeroBits = keys
+        .filter(_ == 0.0d)
+        .map(java.lang.Double.doubleToRawLongBits)
+      assert(
+        zeroBits.sameElements(Array(0L, Long.MinValue)),
+        s"${shape.description}: expected stored +0.0 then -0.0, got ${zeroBits.toSeq}")
+      assert(keys.exists(java.lang.Double.isNaN), s"${shape.description}: missing stored NaN key")
     }
   }
 
@@ -755,7 +783,8 @@ object CometMapSortBenchmark extends CometBenchmarkBase {
     emit(s"Correctness/routing prefix rows: $VerificationRows; NULL map density: 1/$NullMapEvery")
     emit(s"Mode: $Mode; steady-state case order: $CaseOrder")
     emit("Shuffle mode: native; AQE: disabled; nested hash partitioning: enabled")
-    emit(s"Only matched-arm difference: ${CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key}")
+    emit(s"Global dispatcher enabled: ${CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key}=true")
+    emit(s"Only matched-arm difference: ${CometConf.getExprEnabledConfigKey("MapSort")}")
     emit(s"Pinned: ${CometConf.getExprAllowIncompatConfigKey("MapSort")}=false")
     emit("Projection note: Spark 4.0/4.1 do not insert MapSort for try_element_at. This suite")
     emit("  executes the optimizer-inserted grouping MapSort Project alone; no aggregate is run.")
