@@ -81,6 +81,60 @@ SELECT element_at(map(named_struct('a', 1), 7), named_struct('a', 1))
 query
 SELECT element_at(map(CAST('a' AS BINARY), 1, CAST('b' AS BINARY), 2), CAST('b' AS BINARY))
 
+-- Every key type `MapKeySupport` admits reaches Arrow's `eq`, which is stricter about the exact
+-- Arrow type than the `ArrayData` equality it replaced: it distinguishes decimal precision and
+-- scale, timestamp time zone, and integer width. Comet's planner casts the lookup key to the type
+-- `coerce_types` reports, and the native lookup errors rather than comparing across encodings, so
+-- a disagreement between the two shows up as a query failure. Cover the admitted key types that
+-- the string/int fixtures above do not.
+statement
+CREATE TABLE test_element_at_map_keys(
+  mb map<boolean, int>,
+  mt map<tinyint, int>,
+  ms map<smallint, int>,
+  ml map<bigint, int>,
+  md map<decimal(10,2), int>,
+  mdate map<date, int>,
+  mts map<timestamp, int>,
+  mntz map<timestamp_ntz, int>) USING parquet
+
+statement
+INSERT INTO test_element_at_map_keys VALUES (
+  map(true, 1, false, 2),
+  map(CAST(1 AS TINYINT), 10, CAST(2 AS TINYINT), 20),
+  map(CAST(1 AS SMALLINT), 10, CAST(2 AS SMALLINT), 20),
+  map(CAST(1 AS BIGINT), 10, CAST(2 AS BIGINT), 20),
+  map(CAST(1.50 AS DECIMAL(10,2)), 10, CAST(2.25 AS DECIMAL(10,2)), 20),
+  map(DATE '2024-01-01', 10, DATE '2024-06-15', 20),
+  map(TIMESTAMP '2024-01-01 00:00:00', 10, TIMESTAMP '2024-06-15 12:30:45', 20),
+  map(CAST('2024-01-01 00:00:00' AS TIMESTAMP_NTZ), 10,
+      CAST('2024-06-15 12:30:45' AS TIMESTAMP_NTZ), 20))
+
+query
+SELECT element_at(mb, true), element_at(mb, false) FROM test_element_at_map_keys
+
+query
+SELECT element_at(mt, CAST(2 AS TINYINT)), element_at(ms, CAST(2 AS SMALLINT)),
+       element_at(ml, CAST(2 AS BIGINT)), element_at(ml, CAST(9 AS BIGINT))
+FROM test_element_at_map_keys
+
+-- Spark requires a decimal lookup key to have the map's exact precision and scale (a `DECIMAL(5,2)`
+-- key against a `MAP<DECIMAL(10,2), INT>` fails analysis with MAP_FUNCTION_DIFF_TYPES), so the
+-- planner hands the native lookup a `Decimal128(10, 2)` on both sides and Arrow's `eq` agrees.
+query
+SELECT element_at(md, CAST(2.25 AS DECIMAL(10,2))), element_at(md, CAST(9.99 AS DECIMAL(10,2)))
+FROM test_element_at_map_keys
+
+query
+SELECT element_at(mdate, DATE '2024-06-15'), element_at(mdate, DATE '2020-01-01')
+FROM test_element_at_map_keys
+
+query
+SELECT element_at(mts, TIMESTAMP '2024-06-15 12:30:45'),
+       element_at(mts, TIMESTAMP '2020-01-01 00:00:00'),
+       element_at(mntz, CAST('2024-06-15 12:30:45' AS TIMESTAMP_NTZ))
+FROM test_element_at_map_keys
+
 -- Nested INT-keyed map: the inner `element_at` returns NULL for ids not in the outer map (2, 3),
 -- and the outer `element_at` looks it up with a per-row key `id % (id - 2)`. This harness runs with
 -- ANSI disabled, so the remainder-by-zero at id = 2 evaluates to NULL rather than throwing, and

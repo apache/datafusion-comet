@@ -89,6 +89,7 @@ The native Iceberg reader supports the following features:
 - Positional deletes
 - Equality deletes
 - Mixed delete types
+- Deletion vectors (v3)
 
 **Filter pushdown:**
 
@@ -170,7 +171,7 @@ The following scenarios will fall back to the JVM Iceberg reader:
 - v3 tables with columns that declare an initial default value
 - v3 column types the native reader cannot read (`variant`, `geometry`, `geography`, `unknown`)
 - Encrypted tables with 192-bit data keys (no AES-192-GCM in the underlying crypto)
-- Deletion vectors (v3 Puffin deletes); positional and equality deletes in Parquet are supported
+- Delete files in a format other than Parquet or Puffin (Avro or ORC positional/equality deletes)
 - Iceberg writes (reads are accelerated, writes use Spark)
 - Tables backed by Avro or ORC data files (only Parquet is accelerated)
 - Tables partitioned on `BINARY` or `DECIMAL` (with precision >28) columns
