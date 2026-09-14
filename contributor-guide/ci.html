@@ -549,7 +549,7 @@ under the License.
 <h1>Continuous Integration<a class="headerlink" href="#continuous-integration" title="Link to this heading">#</a></h1>
 <p>Comet runs CI through GitHub Actions, and merges to <code class="docutils literal notranslate"><span class="pre">main</span></code> go through GitHub’s merge queue. This
 page is the contributor’s view of both: what runs on a pull request, what runs later in the queue,
-how to opt a pull request into a queue-only suite, and what to do when a run fails. The
+how to opt a pull request into a suite the PR tier skips, and what to do when a run fails. The
 mechanics behind the configuration are documented in
 <a class="reference external" href="https://github.com/apache/datafusion-comet/blob/main/.github/workflows/README.md">.github/workflows/README.md</a>.</p>
 <section id="two-tiers">
@@ -590,13 +590,17 @@ Which jobs run also depends on the event:</p>
 <td><p>with label</p></td>
 <td><p>yes</p></td>
 </tr>
-<tr class="row-even"><td><p>Spark SQL tests, Spark 3.4 / 3.5 / 4.0</p></td>
+<tr class="row-even"><td><p>Spark SQL tests, Spark 3.5 / 4.0</p></td>
 <td><p>with label</p></td>
 <td><p>yes</p></td>
 </tr>
 <tr class="row-odd"><td><p>Iceberg Spark SQL tests, Iceberg 1.8 / 1.9 / 1.10</p></td>
 <td><p>with label</p></td>
 <td><p>yes</p></td>
+</tr>
+<tr class="row-even"><td><p>Spark SQL tests, Spark 3.4</p></td>
+<td><p>with label</p></td>
+<td><p>no</p></td>
 </tr>
 </tbody>
 </table>
@@ -608,6 +612,15 @@ on push to <code class="docutils literal notranslate"><span class="pre">main</sp
 is the Linux build, which also runs on push so that the dependency caches on <code class="docutils literal notranslate"><span class="pre">main</span></code> stay fresh: a
 pull request can only restore caches saved on its own branch or on <code class="docutils literal notranslate"><span class="pre">main</span></code>, and the queue’s
 temporary branch takes its caches with it when it is deleted.</p>
+<p>Spark 3.4 is the one suite in neither tier. <a class="reference internal" href="../user-guide/latest/compatibility/spark-versions.html#spark-3-4"><span class="std std-ref">Spark 3.4 support is deprecated</span></a>,
+so its Spark SQL suite no longer gates a merge. It remains available on demand: apply the
+<code class="docutils literal notranslate"><span class="pre">run-spark-3.4-tests</span></code> label to run it against a pull request, or trigger <code class="docutils literal notranslate"><span class="pre">ci.yml</span></code> from the Actions
+page with <strong>Run workflow</strong>, which runs every suite regardless of tier. A contributor touching Spark
+3.4 code can still get a verdict before merging, but applying the label is only half of that: the
+run it starts is advisory. Label the pull request and then push, and Spark 3.4 joins the required
+verdict like any other suite. See
+<a class="reference internal" href="#opting-a-pull-request-into-a-suite-the-pr-tier-skips">Opting a pull request into a suite the PR tier skips</a>
+for the mechanics.</p>
 <p>Every job’s result feeds one flat job named <code class="docutils literal notranslate"><span class="pre">Required</span> <span class="pre">Checks</span></code>, and that is the only status check
 <code class="docutils literal notranslate"><span class="pre">main</span></code> requires. A job that is skipped because the change did not touch its inputs counts as a
 pass. A job that fails or is cancelled turns <code class="docutils literal notranslate"><span class="pre">Required</span> <span class="pre">Checks</span></code> red.</p>
@@ -615,9 +628,9 @@ pass. A job that fails or is cancelled turns <code class="docutils literal notra
 filters are the <code class="docutils literal notranslate"><span class="pre">FILTERS</span></code> table in the same file, and <code class="docutils literal notranslate"><span class="pre">dev/ci/check-ci-config.py</span></code> holds the test
 cases that pin both down.</p>
 </section>
-<section id="opting-a-pull-request-into-a-queue-only-suite">
-<h2>Opting a pull request into a queue-only suite<a class="headerlink" href="#opting-a-pull-request-into-a-queue-only-suite" title="Link to this heading">#</a></h2>
-<p>Each queue-only suite has a label that runs it on a pull request:</p>
+<section id="opting-a-pull-request-into-a-suite-the-pr-tier-skips">
+<h2>Opting a pull request into a suite the PR tier skips<a class="headerlink" href="#opting-a-pull-request-into-a-suite-the-pr-tier-skips" title="Link to this heading">#</a></h2>
+<p>Each suite outside the PR tier has a label that runs it on a pull request:</p>
 <div class="pst-scrollable-table-container"><table class="table">
 <thead>
 <tr class="row-odd"><th class="head"><p>Label</p></th>
@@ -649,6 +662,9 @@ cases that pin both down.</p>
 </tbody>
 </table>
 </div>
+<p>For every suite except Spark 3.4 the label only brings the run forward; the queue would have run
+it anyway before the change landed. For Spark 3.4 the label is the only way the suite runs on a
+pull request at all.</p>
 <p>Apply a label from the pull request sidebar, or from the command line:</p>
 <div class="highlight-sh notranslate"><div class="highlight"><pre><span></span>gh<span class="w"> </span>pr<span class="w"> </span>edit<span class="w"> </span>&lt;number&gt;<span class="w"> </span>--add-label<span class="w"> </span>run-spark-3.5-tests
 </pre></div>
@@ -657,6 +673,13 @@ cases that pin both down.</p>
 executes only the suite the label gates; the PR tier already ran at that commit and is not
 repeated. Its aggregate verdict is published as <code class="docutils literal notranslate"><span class="pre">Required</span> <span class="pre">Checks</span> <span class="pre">(label</span> <span class="pre">run)</span></code> rather than
 <code class="docutils literal notranslate"><span class="pre">Required</span> <span class="pre">Checks</span></code>, so it can be read alongside the commit run without replacing it.</p>
+<p>For every suite except Spark 3.4, that separate name costs nothing: the merge queue runs the suite
+again before the change lands, so a failure a label run surfaced still blocks the merge later.
+Spark 3.4 has no queue run behind it. A red <code class="docutils literal notranslate"><span class="pre">Required</span> <span class="pre">Checks</span> <span class="pre">(label</span> <span class="pre">run)</span></code> leaves an earlier green
+<code class="docutils literal notranslate"><span class="pre">Required</span> <span class="pre">Checks</span></code> in place and the pull request mergeable, so treat a label run as feedback to read,
+not as a gate. For Spark 3.4 to count toward the required verdict the label has to already be on
+the pull request when a commit is pushed — which is what the next push gives you, since the label
+stays applied.</p>
 <p>The label stays on the pull request, so every later push runs the suite as part of the normal PR
 run. Remove the label once it has served its purpose. To re-run the suite at the same commit,
 re-run the failed jobs from the Actions page, or remove and re-apply the label.</p>
@@ -674,6 +697,10 @@ compiled on macOS</p></li>
 <li><p>a change to the benchmark sources under <code class="docutils literal notranslate"><span class="pre">spark/src/test/scala/org/apache/spark/sql/benchmark</span></code>
 or to <code class="docutils literal notranslate"><span class="pre">native/*/benches</span></code></p></li>
 </ul>
+<p>Reach for <code class="docutils literal notranslate"><span class="pre">run-spark-3.4-tests</span></code> deliberately, since nothing else will run it: a change to
+<code class="docutils literal notranslate"><span class="pre">spark/src/main/spark-3.4/</span></code>, to <code class="docutils literal notranslate"><span class="pre">dev/diffs/3.4.3.diff</span></code>, or to shared code whose Spark 3.4 behavior
+you are unsure of. Without the label, a Spark 3.4 regression will not be caught before the change
+lands.</p>
 <p>Labels that gate nothing, such as <code class="docutils literal notranslate"><span class="pre">dependencies</span></code> or the type labels, also start a run. That run
 executes nothing and finishes in a minute. It is a consequence of GitHub firing the <code class="docutils literal notranslate"><span class="pre">labeled</span></code>
 event for every label; see the workflows README for why it is handled this way.</p>
@@ -727,11 +754,11 @@ re-armed automatically.</p>
 </section>
 <section id="reproducing-a-suite-failure-locally">
 <h2>Reproducing a suite failure locally<a class="headerlink" href="#reproducing-a-suite-failure-locally" title="Link to this heading">#</a></h2>
-<p>The queue-only Spark SQL suites run Spark’s own test suite against Comet, with the version’s diff
-from <code class="docutils literal notranslate"><span class="pre">dev/diffs/</span></code> applied. See <a class="reference internal" href="spark-sql-tests.html"><span class="std std-doc">Spark SQL Tests</span></a> for how to run one locally,
-and <a class="reference internal" href="iceberg-spark-tests.html"><span class="std std-doc">Iceberg Spark Tests</span></a> for the Iceberg equivalents. For the Comet test
-suites that run on macOS, <code class="docutils literal notranslate"><span class="pre">make</span> <span class="pre">test-jvm</span></code> on a Mac runs the same suites the workflow does; the
-macOS job differs from Linux only in the platform.</p>
+<p>The Spark SQL suites outside the PR tier run Spark’s own test suite against Comet, with the
+version’s diff from <code class="docutils literal notranslate"><span class="pre">dev/diffs/</span></code> applied. See <a class="reference internal" href="spark-sql-tests.html"><span class="std std-doc">Spark SQL Tests</span></a> for how to run
+one locally, and <a class="reference internal" href="iceberg-spark-tests.html"><span class="std std-doc">Iceberg Spark Tests</span></a> for the Iceberg equivalents. For the
+Comet test suites that run on macOS, <code class="docutils literal notranslate"><span class="pre">make</span> <span class="pre">test-jvm</span></code> on a Mac runs the same suites the workflow
+does; the macOS job differs from Linux only in the platform.</p>
 </section>
 <section id="changing-ci-itself">
 <h2>Changing CI itself<a class="headerlink" href="#changing-ci-itself" title="Link to this heading">#</a></h2>
@@ -803,7 +830,7 @@ list first.</p>
   <nav class="bd-toc-nav page-toc" aria-labelledby="pst-page-navigation-heading-2">
     <ul class="visible nav section-nav flex-column">
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#two-tiers">Two tiers</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#opting-a-pull-request-into-a-queue-only-suite">Opting a pull request into a queue-only suite</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#opting-a-pull-request-into-a-suite-the-pr-tier-skips">Opting a pull request into a suite the PR tier skips</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#merging-through-the-queue">Merging through the queue</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#when-a-queue-run-fails">When a queue run fails</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#reproducing-a-suite-failure-locally">Reproducing a suite failure locally</a></li>

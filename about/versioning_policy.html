@@ -751,14 +751,17 @@ Spark project. Once upstream ends maintenance for a Spark minor, Comet removes i
 <li><p><strong>Deprecation.</strong> The next Comet minor release after upstream maintenance ends marks the Spark
 minor as deprecated in the release notes and on the
 <a class="reference internal" href="../user-guide/latest/compatibility/spark-versions.html"><span class="std std-doc">Spark Version Compatibility</span></a> page.
-Comet continues to build and publish binaries for the deprecated Spark minor during this
-release cycle.</p></li>
-<li><p><strong>Removal.</strong> The following Comet minor release removes the Spark minor and stops publishing
-binaries for it.</p></li>
+Comet continues to build and publish binaries for the deprecated Spark minor, but stops
+gating merges on Apache Spark’s own SQL test suite for that version, so a regression specific
+to it is more likely to reach a release.</p></li>
+<li><p><strong>Removal.</strong> A later Comet minor release removes the Spark minor and stops publishing
+binaries for it. Removal is not scheduled in advance; it happens once the remaining usage no
+longer justifies the maintenance cost.</p></li>
 </ol>
-<p>This gives users at least one Comet minor release of prior notice before a Spark minor is
-dropped. For example, Spark 3.4 was deprecated in Comet 1.0.0 and will be removed in Comet
-1.1.0.</p>
+<p>This gives users at least one full Comet minor release of prior notice before a Spark minor is
+dropped, and in practice usually more. For example, Spark 3.4 was deprecated in Comet 1.0.0.
+Deprecation is the signal to plan a Spark upgrade; a deprecated version may be removed in any
+subsequent minor release without further warning.</p>
 </section>
 <section id="patch-versions">
 <h3>Patch Versions<a class="headerlink" href="#patch-versions" title="Link to this heading">#</a></h3>
