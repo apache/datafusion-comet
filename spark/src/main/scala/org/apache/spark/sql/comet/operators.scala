@@ -2797,8 +2797,6 @@ object CometSortMergeJoinExec extends CometOperatorSerde[SortMergeJoinExec] {
    */
   private def supportedSortMergeJoinEqualType(dataType: DataType): Boolean = dataType match {
     case st: StringType if isStringCollationType(st) => false
-    // Spark orders binary by unsigned byte, which is also how Arrow orders `Binary`, so the
-    // sorted inputs Spark guarantees agree with DataFusion's SMJ key comparator.
     case _: ByteType | _: ShortType | _: IntegerType | _: LongType | _: FloatType |
         _: DoubleType | _: StringType | _: BinaryType | _: DateType | _: DecimalType |
         _: BooleanType =>
