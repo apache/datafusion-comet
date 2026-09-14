@@ -26,7 +26,7 @@ import org.scalatest.Tag
 
 import org.apache.hadoop.conf.Configuration
 import org.apache.iceberg.hadoop.{HadoopConfigurable, HadoopFileIO}
-import org.apache.iceberg.io.{FileIO, InputFile, OutputFile}
+import org.apache.iceberg.io.{FileIO, InputFile, OutputFile, ResolvingFileIO}
 import org.apache.iceberg.util.SerializableSupplier
 import org.apache.spark.SparkConf
 import org.apache.spark.rdd.RDD
@@ -34,7 +34,7 @@ import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeReference}
 import org.apache.spark.sql.comet.{CometIcebergWriteExec, CometSparkToColumnarExec, IcebergWriteExec}
-import org.apache.spark.sql.execution.{ApplyColumnarRulesAndInsertTransitions, ColumnarToRowExec, LeafExecNode, SparkPlan}
+import org.apache.spark.sql.execution.{ApplyColumnarRulesAndInsertTransitions, ColumnarToRowExec, CommandExecutionMode, LeafExecNode, SparkPlan}
 import org.apache.spark.sql.types.IntegerType
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
@@ -455,16 +455,87 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
     }
   }
 
-  test("Compatible for the remaining supported data location schemes") {
+  test("Compatible when the data location scheme is memory") {
     withDetectionCatalog { dir =>
-      Seq("gs", "memory").foreach { scheme =>
-        val table = s"${scheme}_scheme"
-        createTable(
-          dir,
-          table,
-          partitionSpec = "",
-          properties = Some(s"'write.data.path'='$scheme://nonexistent/iceberg/db/$table'"))
-        assertSupportLevelIs[Compatible](table, allowWriteFailure = true)
+      createTable(
+        dir,
+        "memory_scheme",
+        partitionSpec = "",
+        properties = Some("'write.data.path'='memory://nonexistent/iceberg/db/memory_scheme'"))
+      assertSupportLevelIs[Compatible]("memory_scheme", allowWriteFailure = true)
+    }
+  }
+
+  test("fall-back: gs data location under HadoopFileIO (fs.gs.* is not forwarded)") {
+    // The hadoop catalog's table.io() is a HadoopFileIO. Planned only, never executed: running
+    // the write would have the Hadoop GCS connector look for credentials over the network.
+    withDetectionCatalog { dir =>
+      createTable(
+        dir,
+        "gs_hadoop_io",
+        partitionSpec = "",
+        properties = Some("'write.data.path'='gs://nonexistent/iceberg/db/gs_hadoop_io'"))
+      assertUnsupportedContains(
+        planInsertWriteExec(s"$catalog.$ns.gs_hadoop_io"),
+        "gs_hadoop_io",
+        "gs://",
+        classOf[HadoopFileIO].getName)
+    }
+  }
+
+  test("gs data location gate decides on the resolved FileIO class") {
+    // Deterministic coverage of every branch; the ResolvingFileIO test below depends on which
+    // delegate this classpath yields. GCSFileIO is loaded without initialization so the
+    // optional GCS client libraries are never touched.
+    val location = "gs://bucket/iceberg/db/t"
+    val gcsFileIO =
+      Class.forName(IcebergReflection.ClassNames.GCS_FILE_IO, false, getClass.getClassLoader)
+    assert(CometIcebergNativeWrite.gcsDataLocationRejection(location, Some(gcsFileIO)).isEmpty)
+    val hadoop =
+      CometIcebergNativeWrite.gcsDataLocationRejection(location, Some(classOf[HadoopFileIO]))
+    assert(
+      hadoop.exists(r => r.contains("gs://") && r.contains(classOf[HadoopFileIO].getName)),
+      hadoop)
+    val unresolved = CometIcebergNativeWrite.gcsDataLocationRejection(location, None)
+    assert(unresolved.exists(_.contains("gs://")), unresolved)
+  }
+
+  test("gs data location under ResolvingFileIO is judged by the resolved delegate") {
+    // ResolvingFileIO (the REST catalog default) picks GCSFileIO for gs:// when the GCS bundle
+    // loads and HadoopFileIO otherwise; the expectation follows whichever this classpath yields.
+    withTempIcebergDir { warehouseDir =>
+      val location = "gs://nonexistent/iceberg/db/gs_resolving"
+      val resolving = new ResolvingFileIO()
+      resolving.setConf(new Configuration())
+      resolving.initialize(java.util.Collections.emptyMap[String, String]())
+      val delegate =
+        try resolving.ioClass(location)
+        finally resolving.close()
+      logInfo(s"ResolvingFileIO delegate for $location on this classpath: ${delegate.getName}")
+      val resolvingCat = "resolving_io_cat"
+      withSQLConf(
+        s"spark.sql.catalog.$resolvingCat" -> "org.apache.iceberg.spark.SparkCatalog",
+        s"spark.sql.catalog.$resolvingCat.type" -> "hadoop",
+        s"spark.sql.catalog.$resolvingCat.warehouse" -> warehouseDir.getAbsolutePath,
+        s"spark.sql.catalog.$resolvingCat.io-impl" -> classOf[ResolvingFileIO].getName) {
+        spark.sql(s"""
+          CREATE TABLE $resolvingCat.$ns.gs_resolving (
+            id INT,
+            region STRING,
+            amount DOUBLE
+          ) USING iceberg
+          TBLPROPERTIES ('write.data.path'='$location')
+        """)
+        val writeExec = planInsertWriteExec(s"$resolvingCat.$ns.gs_resolving")
+        if (classOf[HadoopFileIO].isAssignableFrom(delegate)) {
+          assertUnsupportedContains(writeExec, "gs_resolving", "gs://", delegate.getName)
+        } else {
+          assert(delegate.getName == "org.apache.iceberg.gcp.gcs.GCSFileIO", delegate)
+          val support = CometIcebergNativeWrite.getSupportLevel(writeExec)
+          assert(
+            support.isInstanceOf[Compatible],
+            s"expected Compatible via GCSFileIO, got $support")
+        }
       }
     }
   }
@@ -743,6 +814,18 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
     captureWriteExec(tableName, allowWriteFailure) {
       spark.sql(s"INSERT INTO $catalog.$ns.$tableName VALUES (1, 'us', 1.0)")
     }
+
+  /**
+   * Plans an INSERT into `qualifiedTable` without executing it and returns its IcebergWriteExec.
+   * `CommandExecutionMode.SKIP` keeps `QueryExecution` from eagerly running the write command, so
+   * a data location no filesystem on this classpath can reach never triggers a write.
+   */
+  private def planInsertWriteExec(qualifiedTable: String): IcebergWriteExec = {
+    val plan =
+      spark.sessionState.sqlParser.parsePlan(s"INSERT INTO $qualifiedTable VALUES (1, 'us', 1.0)")
+    findWriteExecOrFail(
+      spark.sessionState.executePlan(plan, CommandExecutionMode.SKIP).executedPlan)
+  }
 
   private def dfWriteExec(tableName: String, options: (String, String)*): IcebergWriteExec =
     captureWriteExec(tableName, allowWriteFailure = false) {

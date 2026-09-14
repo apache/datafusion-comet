@@ -57,6 +57,8 @@ object IcebergReflection extends Logging {
     val SPARK_STAGED_SCAN = "org.apache.iceberg.spark.source.SparkStagedScan"
     val SPARK_SCHEMA_UTIL = "org.apache.iceberg.spark.SparkSchemaUtil"
     val TABLE = "org.apache.iceberg.Table"
+    val RESOLVING_FILE_IO = "org.apache.iceberg.io.ResolvingFileIO"
+    val GCS_FILE_IO = "org.apache.iceberg.gcp.gcs.GCSFileIO"
     val PARTITIONING = "org.apache.iceberg.Partitioning"
     val SPARK_WRITE = "org.apache.iceberg.spark.source.SparkWrite"
     val TABLE_PROPERTIES = "org.apache.iceberg.TableProperties"
@@ -559,6 +561,27 @@ object IcebergReflection extends Logging {
         None
     }
   }
+
+  /**
+   * The FileIO class that actually opens `location`: the delegate a `ResolvingFileIO` picks for
+   * it (`ResolvingFileIO.ioClass`), or the FileIO's own class otherwise. `None` on reflection
+   * failure; callers must fail closed.
+   */
+  def resolveFileIOClass(fileIO: Any, location: String): Option[Class[_]] =
+    if (!classNameInHierarchy(fileIO.getClass, Set(ClassNames.RESOLVING_FILE_IO))) {
+      Some(fileIO.getClass)
+    } else {
+      try {
+        val ioClassMethod = getMethod(fileIO.getClass, "ioClass", classOf[String])
+        Option(ioClassMethod.invoke(fileIO, location).asInstanceOf[Class[_]])
+      } catch {
+        case e: Exception =>
+          logError(
+            "Iceberg reflection failure: Failed to resolve the FileIO delegate for " +
+              s"$location: ${e.getMessage}")
+          None
+      }
+    }
 
   /**
    * The table's `EncryptionManager` (`table.encryption()`). Unlike the `encryption.*` property
