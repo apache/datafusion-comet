@@ -130,6 +130,10 @@ name = "comet"
 crate-type = ["cdylib", "rlib"]
 
 [[bench]]
+name = "alloc_overhead"
+harness = false
+
+[[bench]]
 name = "array_element_append"
 harness = false
 
