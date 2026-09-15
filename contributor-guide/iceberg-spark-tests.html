@@ -631,9 +631,9 @@ diff must be generated against its own tag.</p>
 <h2>Running Tests in CI<a class="headerlink" href="#running-tests-in-ci" title="Link to this heading">#</a></h2>
 <p>The <code class="docutils literal notranslate"><span class="pre">iceberg_spark_test_&lt;version&gt;.yml</span></code> workflows apply these diffs and run the three Gradle targets above
 against each Iceberg version, all with Java 17. Iceberg 1.8.1 runs against Spark 3.4.3; Iceberg 1.9.1 and 1.10.0
-run against Spark 3.5.9; Iceberg 1.11.0 runs against Spark 4.1.3. Iceberg 1.11
-(the only version testing Spark 4.1) runs on every pull request and in the merge queue; the older versions
-(1.8, 1.9, 1.10) run only in the merge queue, or on a pull request labeled <code class="docutils literal notranslate"><span class="pre">run-iceberg-tests</span></code>. All caller
+run against Spark 3.5.9; Iceberg 1.11.0 runs against Spark 4.1.3. All four versions run in the
+merge queue, or earlier on a pull request labeled <code class="docutils literal notranslate"><span class="pre">run-iceberg-tests</span></code>; none runs on an unlabeled
+pull request. All caller
 workflows delegate to <code class="docutils literal notranslate"><span class="pre">iceberg_spark_test_reusable.yml</span></code>, which holds the build and test job logic. See
 <a class="reference external" href="https://github.com/apache/datafusion-comet/blob/main/.github/workflows/README.md">.github/workflows/README.md</a>
 for how the pull-request and merge-queue tiers differ.</p>
@@ -656,9 +656,10 @@ runs <code class="docutils literal notranslate"><span class="pre">dev/ci/check-i
 combined candidate classes and executed test cases equal an unsharded run exactly once. It also
 checks nested, parameterized, inherited, and dynamically generated tests, existing exclusions,
 and failure propagation. The fixture does not compile Spark or Iceberg.</p>
-<p>Apply the <code class="docutils literal notranslate"><span class="pre">run-iceberg-tests</span></code> label to a pull request whenever it touches reflection code
-(<code class="docutils literal notranslate"><span class="pre">org.apache.comet.iceberg.IcebergReflection</span></code>) or other logic whose behavior can differ across Iceberg
-versions, since Iceberg 1.11 alone will not catch a regression that only affects 1.8, 1.9, or 1.10.</p>
+<p>Apply the <code class="docutils literal notranslate"><span class="pre">run-iceberg-tests</span></code> label to a pull request whenever it touches the Iceberg scan or write
+path, reflection code (<code class="docutils literal notranslate"><span class="pre">org.apache.comet.iceberg.IcebergReflection</span></code>), or other logic whose behavior
+can differ across Iceberg versions. The Comet test suites in the Linux build do not exercise Iceberg’s
+own Spark tests, so without the label the first Iceberg verdict is the merge queue’s.</p>
 </section>
 </section>
 

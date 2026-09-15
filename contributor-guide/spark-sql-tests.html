@@ -683,8 +683,9 @@ git<span class="w"> </span>diff<span class="w"> </span>v3.5.6<span class="w"> </
 <section id="running-tests-in-ci">
 <h2>Running Tests in CI<a class="headerlink" href="#running-tests-in-ci" title="Link to this heading">#</a></h2>
 <p>The easiest way to run the tests is to open a pull request against Comet and let CI run them. Spark
-4.1 runs on every pull request, and Spark 3.5 and 4.0 run in the merge queue or earlier with the
-<code class="docutils literal notranslate"><span class="pre">run-spark-3.5-tests</span></code> / <code class="docutils literal notranslate"><span class="pre">run-spark-4.0-tests</span></code> labels.</p>
+3.5, 4.0 and 4.1 all run in the merge queue, or earlier on a pull request carrying the
+<code class="docutils literal notranslate"><span class="pre">run-spark-3.5-tests</span></code> / <code class="docutils literal notranslate"><span class="pre">run-spark-4.0-tests</span></code> / <code class="docutils literal notranslate"><span class="pre">run-spark-4.1-tests</span></code> label. No Spark SQL suite
+runs on an unlabeled pull request.</p>
 <p>Spark 3.4 is deprecated and is not run by the merge queue. It runs only when a pull request carries
 the <code class="docutils literal notranslate"><span class="pre">run-spark-3.4-tests</span></code> label, or when <code class="docutils literal notranslate"><span class="pre">ci.yml</span></code> is dispatched manually from the Actions page.
 Apply the label if your change touches <code class="docutils literal notranslate"><span class="pre">spark/src/main/spark-3.4/</span></code>, <code class="docutils literal notranslate"><span class="pre">dev/diffs/3.4.3.diff</span></code>, or

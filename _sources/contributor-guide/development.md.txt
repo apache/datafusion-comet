@@ -667,9 +667,10 @@ excluded and how to run it. Run a manual suite with:
 
 Only add a suite to that list with a good reason; the default is that a new suite runs in CI.
 
-The macOS suites only run in the merge queue by default. See
-[Continuous Integration](ci.md) for the two tiers and the labels that opt a pull request into a
-queue-only suite.
+On a pull request the Linux build runs these suites against the default Spark profile (4.1) only;
+the merge queue runs them against every Spark profile, and the macOS suites only run in the merge
+queue by default. See [Continuous Integration](ci.md) for the two tiers and the labels that opt a
+pull request into a queue-only suite.
 
 ### Pre-PR Summary
 

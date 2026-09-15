@@ -566,12 +566,20 @@ Which jobs run also depends on the event:</p>
 </tr>
 </thead>
 <tbody>
-<tr class="row-even"><td><p>Linux build, lint, and Comet test suites</p></td>
+<tr class="row-even"><td><p>Linux build, lint, Rust tests, TPC-H/TPC-DS</p></td>
 <td><p>yes</p></td>
 <td><p>yes</p></td>
 </tr>
-<tr class="row-odd"><td><p>Spark SQL tests, Spark 4.1, catalyst and sql_core</p></td>
+<tr class="row-odd"><td><p>Comet test suites, Spark 4.1</p></td>
 <td><p>yes</p></td>
+<td><p>yes</p></td>
+</tr>
+<tr class="row-even"><td><p>Comet test suites, Spark 3.4 / 3.5 / 4.0 / 4.2</p></td>
+<td><p>with label</p></td>
+<td><p>yes</p></td>
+</tr>
+<tr class="row-odd"><td><p>Spark SQL tests, Spark 4.1, catalyst and sql_core</p></td>
+<td><p>with label</p></td>
 <td><p>yes</p></td>
 </tr>
 <tr class="row-even"><td><p>Spark SQL tests, Spark 4.1, sql_hive</p></td>
@@ -579,7 +587,7 @@ Which jobs run also depends on the event:</p>
 <td><p>yes</p></td>
 </tr>
 <tr class="row-odd"><td><p>Iceberg Spark SQL tests, Iceberg 1.11</p></td>
-<td><p>yes</p></td>
+<td><p>with label</p></td>
 <td><p>yes</p></td>
 </tr>
 <tr class="row-even"><td><p>macOS build and Comet test suites</p></td>
@@ -656,17 +664,23 @@ cases that pin both down.</p>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">run-macos-tests</span></code></p></td>
 <td><p>macOS build and Comet test suites</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">run-benchmark-check</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">run-all-spark-profiles</span></code></p></td>
+<td><p>Comet test suites against Spark 3.4 / 3.5 / 4.0 / 4.2</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">run-benchmark-check</span></code></p></td>
 <td><p>Benchmark compile and lint check</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">run-delta-build-gate</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">run-delta-build-gate</span></code></p></td>
 <td><p>Delta contrib build gate</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">run-pyarrow-udf-tests</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">run-pyarrow-udf-tests</span></code></p></td>
 <td><p>PyArrow UDF tests against Spark 4.0/4.1/4.2</p></td>
 </tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">run-spark-4.1-tests</span></code></p></td>
+<td><p>Spark SQL tests against Spark 4.1, every module</p></td>
+</tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">run-spark-4.1-hive-tests</span></code></p></td>
-<td><p>Spark SQL hive tests against Spark 4.1</p></td>
+<td><p>Spark SQL tests against Spark 4.1, sql_hive only</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">run-spark-3.4-tests</span></code></p></td>
 <td><p>Spark SQL tests against Spark 3.4</p></td>
@@ -678,7 +692,7 @@ cases that pin both down.</p>
 <td><p>Spark SQL tests against Spark 4.0</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">run-iceberg-tests</span></code></p></td>
-<td><p>Iceberg Spark SQL tests against Iceberg 1.8/1.9/1.10</p></td>
+<td><p>Iceberg Spark SQL tests against every Iceberg version</p></td>
 </tr>
 </tbody>
 </table>
@@ -707,12 +721,17 @@ re-run the failed jobs from the Actions page, or remove and re-apply the label.<
 <p>Use a label when a change is likely to behave differently on a version or platform the PR tier
 does not cover. Some examples:</p>
 <ul class="simple">
+<li><p>a change to the serde, the planner, or a native operator, where the Comet test suites pass but
+Spark’s own SQL suite is the thing that would catch a behavior difference; <code class="docutils literal notranslate"><span class="pre">run-spark-4.1-tests</span></code>
+runs it against the default profile</p></li>
 <li><p>code under <code class="docutils literal notranslate"><span class="pre">spark/src/main/spark-3.4/</span></code>, <code class="docutils literal notranslate"><span class="pre">spark-3.5/</span></code>, <code class="docutils literal notranslate"><span class="pre">spark-4.0/</span></code> or the shared <code class="docutils literal notranslate"><span class="pre">spark-3.x/</span></code>
-directory, or any change to <code class="docutils literal notranslate"><span class="pre">CometExprShim</span></code> and friends</p></li>
-<li><p>a change to a Spark SQL diff under <code class="docutils literal notranslate"><span class="pre">dev/diffs/</span></code> for a version other than 4.1</p></li>
+directory, or any change to <code class="docutils literal notranslate"><span class="pre">CometExprShim</span></code> and friends; <code class="docutils literal notranslate"><span class="pre">run-all-spark-profiles</span></code> runs the Comet
+test suites against every Spark version rather than 4.1 alone (the Lint Java matrix already
+compiles the 3.4/3.5/4.0 profiles on every pull request, so this is for runtime differences)</p></li>
+<li><p>a change to a Spark SQL diff under <code class="docutils literal notranslate"><span class="pre">dev/diffs/</span></code></p></li>
 <li><p>anything that touches Hive table support, <code class="docutils literal notranslate"><span class="pre">InsertIntoHiveTable</span></code>, or the <code class="docutils literal notranslate"><span class="pre">sql/hive</span></code> parts of
 the 4.1 diff</p></li>
-<li><p>anything touching Iceberg reflection or the Iceberg diffs</p></li>
+<li><p>anything touching Iceberg reflection, the Iceberg scan or write path, or the Iceberg diffs</p></li>
 <li><p>native code with platform-specific behavior, or a dependency bump that changes what is
 compiled on macOS</p></li>
 <li><p>a change to the benchmark sources under <code class="docutils literal notranslate"><span class="pre">spark/src/test/scala/org/apache/spark/sql/benchmark</span></code>
