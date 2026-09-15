@@ -605,6 +605,37 @@ class CometIcebergWriteActionSuite
     }
   }
 
+  for (adaptive <- Seq(false, true)) {
+    test(s"transition-heavy fallback preserves Iceberg writes with AQE=$adaptive") {
+      assumeNativeAcceleration()
+      withIcebergCatalog { warehouseDir =>
+        val suffix = if (adaptive) "aqe" else "no_aqe"
+        val nativeTable = s"transition_native_$suffix"
+        val fallbackTable = s"transition_fallback_$suffix"
+        createTable(warehouseDir, nativeTable, partitionSpec = "")
+        createTable(warehouseDir, fallbackTable, partitionSpec = "")
+        val values = "(1, 'us-east', 10.5), (2, 'us-west', 20.3), (3, 'eu', 30.7)"
+
+        withSQLConf(
+          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString,
+          CometConf.COMET_EXEC_TRANSITION_REVERT_ENABLED.key -> "false") {
+          assertNativeWriteEngages(nativeTable, Seq(1, 2, 3)) {
+            spark.sql(s"INSERT INTO $catalog.$ns.$nativeTable VALUES $values")
+          }
+        }
+
+        withSQLConf(
+          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString,
+          CometConf.COMET_EXEC_TRANSITION_REVERT_ENABLED.key -> "true",
+          CometConf.COMET_EXEC_TRANSITION_REVERT_MAX_TRANSITIONS.key -> "0") {
+          assertNativeWriteDoesNotEngage(fallbackTable, Seq(1, 2, 3)) {
+            spark.sql(s"INSERT INTO $catalog.$ns.$fallbackTable VALUES $values")
+          }
+        }
+      }
+    }
+  }
+
   // What Iceberg's Spark writer stamps for `sort_order_id` on appended files changed across
   // releases: through 1.10 `SparkWrite$WriterFactory` never wires the table sort order (files
   // get 0 even on a sorted table); 1.11 added `SparkWriteConf.outputSortOrderId` and stamps the

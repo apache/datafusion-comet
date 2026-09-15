@@ -29,10 +29,13 @@ import org.apache.spark.internal.io.{FileCommitProtocol, FileNameSpec}
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.SaveMode
 import org.apache.spark.sql.catalyst.InternalRow
+import org.apache.spark.sql.catalyst.expressions.Attribute
 import org.apache.spark.sql.comet.execution.arrow.CometArrowStream
 import org.apache.spark.sql.comet.util.{Utils => CometUtils}
 import org.apache.spark.sql.errors.{QueryCompilationErrors, QueryExecutionErrors}
 import org.apache.spark.sql.execution.{SparkPlan, UnaryExecNode}
+import org.apache.spark.sql.execution.command.DataWritingCommandExec
+import org.apache.spark.sql.execution.datasources.WriteFilesExec
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
 import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.spark.util.Utils
@@ -54,6 +57,8 @@ import org.apache.comet.serde.OperatorOuterClass.Operator
  *
  * @param nativeOp
  *   The native operator representing the write operation (template, will be modified per task)
+ * @param originalPlan
+ *   The JVM data-writing command restored when Comet reverts a transition-heavy stage
  * @param child
  *   The child operator providing the data to write
  * @param outputPath
@@ -69,6 +74,7 @@ import org.apache.comet.serde.OperatorOuterClass.Operator
  */
 case class CometNativeWriteExec(
     nativeOp: Operator,
+    @transient override val originalPlan: DataWritingCommandExec,
     child: SparkPlan,
     outputPath: String,
     mode: SaveMode,
@@ -77,7 +83,19 @@ case class CometNativeWriteExec(
     extends CometNativeExec
     with UnaryExecNode {
 
-  override def originalPlan: SparkPlan = child
+  override def output: Seq[Attribute] = child.output
+
+  override def sparkFallback(newChildren: Seq[SparkPlan]): SparkPlan = newChildren match {
+    case Seq(newInput) =>
+      val restoredCommandChild = originalPlan.child match {
+        case writeFiles: WriteFilesExec => writeFiles.withNewChildren(Seq(newInput))
+        case _ => newInput
+      }
+      originalPlan.withNewChildren(Seq(restoredCommandChild))
+    case _ =>
+      throw new CometExec.InvalidSparkFallbackException(
+        s"${getClass.getSimpleName} expected one reverted input but received ${newChildren.size}")
+  }
 
   // Accumulator to collect TaskCommitMessages from all tasks
   // Must be eagerly initialized on driver, not lazy
