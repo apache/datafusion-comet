@@ -358,6 +358,13 @@ object CometExecIterator extends Logging {
       CometConf.COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED.key,
       CometConf.COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED.get(SQLConf.get).toString)
 
+    // The native map constructors (map_from_arrays, map_from_entries, str_to_map) resolve
+    // duplicate keys with this policy, which the native side reads as
+    // `datafusion.spark.map_key_dedup_policy`.
+    builder.putEntries(
+      SQLConf.MAP_KEY_DEDUP_POLICY.key,
+      SQLConf.get.getConf(SQLConf.MAP_KEY_DEDUP_POLICY).toString)
+
     builder.build().toByteArray
   }
 

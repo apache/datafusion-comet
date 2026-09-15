@@ -30,5 +30,9 @@ INSERT INTO routing_map_legacy VALUES ('a:1,b:2', array(named_struct('key', 'a',
 query expect_fallback(str_to_map: spark.comet.exec.scalaUDF.codegen.enabled=false)
 SELECT str_to_map(s) FROM routing_map_legacy
 
-query expect_fallback(map_from_entries: spark.comet.exec.scalaUDF.codegen.enabled=false)
+-- `MapFromEntries` no longer declines under `LAST_WIN`: the native builder reads the policy from
+-- `datafusion.spark.map_key_dedup_policy`, so it stays native whatever the codegen flag says. Its
+-- dispatch and fallback routes are still covered by the `BinaryType` queries in
+-- `routing_maps_enabled.sql` and `routing_maps_disabled.sql`.
+query expect_native(map_from_entries)
 SELECT map_from_entries(e) FROM routing_map_legacy

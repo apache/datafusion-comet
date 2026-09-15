@@ -70,10 +70,10 @@ SELECT str_to_map('a')
 query
 SELECT str_to_map('a=1&b=2&c=3', '&', '=')
 
--- Duplicate keys: EXCEPTION policy (Spark 3.0+ default)
--- TODO: Add LAST_WIN policy tests when spark.sql.mapKeyDedupPolicy config is supported
--- query
--- SELECT str_to_map('a:1,b:2,a:3')
+-- Duplicate keys under the default EXCEPTION policy; `str_to_map_dedup_policy.sql` covers
+-- LAST_WIN.
+query expect_error(DUPLICATED_MAP_KEY)
+SELECT str_to_map('a:1,b:2,a:3')
 
 -- NULL input returns NULL
 query

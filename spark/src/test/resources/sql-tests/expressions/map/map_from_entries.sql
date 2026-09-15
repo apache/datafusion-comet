@@ -35,3 +35,17 @@ SELECT map_from_entries(array(struct(10, cast('x' as binary))))
 -- literal arguments
 query spark_answer_only
 SELECT map_from_entries(array(struct('x', 10), struct('y', 20), struct('z', 30)))
+
+-- Spark's ArrayBasedMapBuilder rejects a NULL key element outright, ahead of the duplicate-key
+-- check, and resolves duplicates by the default `spark.sql.mapKeyDedupPolicy` = `EXCEPTION`.
+-- `map_from_entries_dedup_policy.sql` covers `LAST_WIN`.
+
+query expect_error(NULL_MAP_KEY)
+SELECT map_from_entries(array(struct(CAST(NULL AS STRING), 1), struct('b', 2)))
+
+query expect_error(DUPLICATED_MAP_KEY)
+SELECT map_from_entries(array(struct('a', 1), struct('a', 2)))
+
+-- a NULL entry makes the whole map NULL, so its NULL key is never inserted
+query
+SELECT map_from_entries(array(CAST(NULL AS struct<key:string, value:int>), struct('b' AS key, 2 AS value)))
