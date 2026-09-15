@@ -74,7 +74,7 @@ fn build_string_key_map(entries_per_map: usize) -> MapArray {
 fn bench_map_sort(c: &mut Criterion) {
     let mut group = c.benchmark_group("spark_map_sort");
 
-    for entries in [4usize, 16, 64] {
+    for entries in [0usize, 1, 4, 16, 64] {
         let int_map: ArrayRef = Arc::new(build_int_key_map(entries));
         group.bench_with_input(
             BenchmarkId::new("int_keys", entries),
@@ -99,9 +99,58 @@ fn bench_map_sort(c: &mut Criterion) {
     group.finish();
 }
 
-fn bench_matched_maps(c: &mut Criterion) {
-    matched_maps::bench_maps(c, matched_maps::Stage::NormalizeOnly);
+// Struct keys are rejected by Arrow even when each map has just one entry.
+// Keep the fallible path in the baseline suite so type validation cannot disappear.
+fn bench_unsupported_singleton(c: &mut Criterion) {
+    use arrow::array::{Array, Int32Array, StructArray};
+    use arrow::buffer::OffsetBuffer;
+    use arrow::datatypes::{DataType, Field};
+
+    let keys = StructArray::new(
+        vec![Arc::new(Field::new("k", DataType::Int32, false))].into(),
+        vec![Arc::new(Int32Array::from_iter_values(0..BATCH_SIZE as i32))],
+        None,
+    );
+    let entries = StructArray::new(
+        vec![
+            Arc::new(Field::new("key", keys.data_type().clone(), false)),
+            Arc::new(Field::new("value", DataType::Int32, true)),
+        ]
+        .into(),
+        vec![
+            Arc::new(keys),
+            Arc::new(Int32Array::from(vec![1; BATCH_SIZE])),
+        ],
+        None,
+    );
+    let map = MapArray::new(
+        Arc::new(Field::new("entries", entries.data_type().clone(), false)),
+        OffsetBuffer::new((0..=BATCH_SIZE as i32).collect::<Vec<_>>().into()),
+        entries,
+        None,
+        false,
+    );
+    let args = [ColumnarValue::Array(Arc::new(map))];
+    assert!(spark_map_sort(&args)
+        .unwrap_err()
+        .to_string()
+        .contains("Sort not supported"));
+    // Input creation is untimed; error creation and drop are timed. Only the first
+    // nonempty row is visited, so this is not full-batch throughput.
+    c.bench_function("spark_map_sort/unsupported_singleton_struct_key", |b| {
+        b.iter(|| black_box(spark_map_sort(black_box(&args)).unwrap_err()));
+    });
 }
 
-criterion_group!(benches, bench_map_sort, bench_matched_maps);
+fn bench_matched_maps(c: &mut Criterion) {
+    matched_maps::bench_maps(c, matched_maps::Stage::NormalizeOnly);
+    matched_maps::bench_regression_maps(c, matched_maps::Stage::NormalizeOnly);
+}
+
+criterion_group!(
+    benches,
+    bench_map_sort,
+    bench_matched_maps,
+    bench_unsupported_singleton
+);
 criterion_main!(benches);
