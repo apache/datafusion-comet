@@ -25,9 +25,13 @@
 #   pull_request  fast feedback. Linux build + Spark 4.1 (catalyst and
 #                 sql_core only) + Iceberg 1.11.
 #   merge_group   the authoritative gate. Everything the PR tier runs, plus
-#                 the macOS build, the benchmark compile check, the Spark 4.1
-#                 sql_hive shards, Spark 3.4/3.5/4.0 and Iceberg 1.8/1.9/1.10,
+#                 the macOS build, the benchmark compile check, the Delta
+#                 contrib build gate, the PyArrow UDF suite, the Spark 4.1
+#                 sql_hive shards, Spark 3.5/4.0 and Iceberg 1.8/1.9/1.10,
 #                 evaluated against the merge result rather than the PR head.
+#
+# Spark 3.4 is deprecated and sits outside both tiers: it runs only when a
+# pull request carries `run-spark-3.4-tests`, or from a manual dispatch.
 #
 # Which tier a job sits in is POLICY in dev/ci/compute-changes.py, not an
 # expression here. Heavy jobs deliberately have no `push` tier: the queue
@@ -35,7 +39,9 @@
 # push to main would double the cost of every merge. Two exceptions: `docs`
 # deploys to asf-site and must run after the commit is on main, and the Linux
 # build runs on push so that main's actions/cache entries stay fresh (caches
-# saved on the queue's throwaway branch are deleted with it).
+# saved on the queue's throwaway branch are deleted with it). That second
+# exception runs in `cache-refresh-only` mode: the cache writers and nothing
+# else, because the queue has already tested the tree that landed.
 
 name: CI
 
@@ -159,8 +165,11 @@ jobs:
     runs-on: ubuntu-slim
     outputs:
       build_linux:  ${{ steps.compute.outputs.build_linux }}
+      build_linux_full: ${{ steps.compute.outputs.build_linux_full }}
       build_macos:  ${{ steps.compute.outputs.build_macos }}
       benchmark:    ${{ steps.compute.outputs.benchmark }}
+      delta_gate:   ${{ steps.compute.outputs.delta_gate }}
+      pyarrow_udf:  ${{ steps.compute.outputs.pyarrow_udf }}
       docs:         ${{ steps.compute.outputs.docs }}
       spark_3_4:    ${{ steps.compute.outputs.spark_3_4 }}
       spark_3_5:    ${{ steps.compute.outputs.spark_3_5 }}
@@ -235,6 +244,14 @@ jobs:
     needs: changes
     if: needs.changes.outputs.build_linux == 'true'
     uses: ./.github/workflows/pr_build_linux.yml
+    # Two POLICY outputs feed one call, the same shape as spark_4_1 below.
+    # `build_linux` decides whether the workflow runs at all; `build_linux_full`
+    # decides whether it runs the lints and the 5x4 test matrix as well as the
+    # jobs that populate main's actions/cache entries. Only push to main sets
+    # the first without the second, which is the whole point: the queue has
+    # already tested that tree, so the push run is there for the caches alone.
+    with:
+      cache-refresh-only: ${{ needs.changes.outputs.build_linux_full != 'true' }}
 
   pr_build_macos:
     name: PR Build (macOS)
@@ -250,6 +267,26 @@ jobs:
     if: needs.changes.outputs.benchmark == 'true'
     uses: ./.github/workflows/pr_benchmark_check.yml
 
+  delta_build_gate:
+    name: Delta Contrib Build Gate
+    needs: changes
+    # Queue-only by default; PRs need the `run-delta-build-gate` label.
+    if: needs.changes.outputs.delta_gate == 'true'
+    # The called workflow needs only a checkout.
+    permissions:
+      contents: read
+    uses: ./.github/workflows/delta_build_gate.yml
+
+  pyarrow_udf_test:
+    name: PyArrow UDF Tests
+    needs: changes
+    # Queue-only by default; PRs need the `run-pyarrow-udf-tests` label.
+    if: needs.changes.outputs.pyarrow_udf == 'true'
+    # The called workflow needs only a checkout.
+    permissions:
+      contents: read
+    uses: ./.github/workflows/pyarrow_udf_test.yml
+
   docs:
     name: Deploy Comet site
     needs: changes
@@ -260,7 +297,19 @@ jobs:
   spark_3_4:
     name: Spark SQL Tests (Spark 3.4)
     needs: changes
-    # Queue-only by default; PRs need the `run-spark-3.4-tests` label.
+    # Spark 3.4 is deprecated, so this is the one test job the merge queue does
+    # not run: it needs the `run-spark-3.4-tests` label on a pull request, or a
+    # manual workflow_dispatch.
+    #
+    # It is still in `required_checks.needs`, but be precise about what that
+    # buys. Adding the label fires a `labeled` event, and on that event the
+    # aggregator deliberately publishes the advisory `Required Checks (label
+    # run)` name instead of the required one (see its comment below), so a red
+    # 3.4 there leaves the commit's existing verdict alone. 3.4 only counts
+    # toward the required `Required Checks` on a pull_request event that is not
+    # `labeled` -- a push with the label already applied. With no queue run left
+    # to catch it, that push is the only thing that turns a 3.4 failure into a
+    # merge blocker.
     if: needs.changes.outputs.spark_3_4 == 'true'
     uses: ./.github/workflows/spark_sql_test_reusable.yml
     with:
@@ -406,6 +455,8 @@ jobs:
       - pr_build_linux
       - pr_build_macos
       - pr_benchmark_check
+      - delta_build_gate
+      - pyarrow_udf_test
       - spark_3_4
       - spark_3_5
       - spark_4_0
