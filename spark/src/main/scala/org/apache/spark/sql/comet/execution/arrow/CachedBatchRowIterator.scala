@@ -62,6 +62,7 @@ private[arrow] class CachedBatchRowIterator(attributes: Seq[Attribute])
       }
     }
     val projection = GenerateUnsafeProjection.createCode(ctx, fields)
+    val batchesRef = ctx.addReferenceObj("batches", batches, "scala.collection.Iterator")
     val bindColumns = columns.zipWithIndex
       .map { case (column, i) =>
         s"$column = batch.column($i);"
@@ -69,17 +70,19 @@ private[arrow] class CachedBatchRowIterator(attributes: Seq[Attribute])
       .mkString("\n")
     val code = s"""
       public Object generate(Object[] references) {
-        return new SpecificCachedBatchRowIterator((scala.collection.Iterator) references[0]);
+        return new SpecificCachedBatchRowIterator(references);
       }
 
       class SpecificCachedBatchRowIterator extends scala.collection.AbstractIterator {
+        private final Object[] references;
         private final scala.collection.Iterator batches;
         private int rowId = 0;
         private int numRows = 0;
         ${ctx.declareMutableStates()}
 
-        public SpecificCachedBatchRowIterator(scala.collection.Iterator batches) {
-          this.batches = batches;
+        public SpecificCachedBatchRowIterator(Object[] references) {
+          this.references = references;
+          this.batches = $batchesRef;
           ${ctx.initMutableStates()}
         }
 
@@ -106,7 +109,7 @@ private[arrow] class CachedBatchRowIterator(attributes: Seq[Attribute])
     """
     val (compiled, _) =
       CodeGenerator.compile(new CodeAndComment(code, ctx.getPlaceHolderToComments()))
-    compiled.generate(Array[Any](batches)).asInstanceOf[Iterator[InternalRow]]
+    compiled.generate(ctx.references.toArray).asInstanceOf[Iterator[InternalRow]]
   }
 
   override protected def createInterpretedObject(

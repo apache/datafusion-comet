@@ -26,6 +26,7 @@ import org.apache.spark.sql.comet.execution.arrow.ArrowCachedBatchSerializer
 import org.apache.spark.sql.execution.{CodegenSupport, ColumnarToRowExec, ColumnarToRowTransition, SparkPlan, WholeStageCodegenExec}
 import org.apache.spark.sql.execution.adaptive.QueryStageExec
 import org.apache.spark.sql.execution.columnar.InMemoryTableScanExec
+import org.apache.spark.sql.internal.SQLConf
 
 import org.apache.comet.CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED
 import org.apache.comet.CometSparkSessionExtensions.isCometLoaded
@@ -58,6 +59,7 @@ object CometCacheColumnarRule extends Rule[SparkPlan] {
   override def apply(plan: SparkPlan): SparkPlan = {
     if (!isCometLoaded(conf) || !COMET_EXEC_IN_MEMORY_CACHE_ENABLED.get(conf)) return plan
     if (!conf.wholeStageEnabled) return plan
+    if (conf.getConf(SQLConf.CODEGEN_FACTORY_MODE).toString == "NO_CODEGEN") return plan
 
     plan.transformUp {
       case parent: CodegenSupport

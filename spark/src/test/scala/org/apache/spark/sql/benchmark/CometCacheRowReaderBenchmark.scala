@@ -35,8 +35,9 @@ import org.apache.comet.{CometConf, CometSparkSessionExtensions}
  * Compare Spark consumers of Comet and Spark caches (issue #5485).
  *
  * Arguments: [spark|comet|comet-row|all] [rows] [iterations] [all|mixed|numeric]. Run one format
- * per JVM in alternating order on main and the patch. comet-row disables vectorized cache reading
- * to isolate the row iterator. Cache creation and validation are outside timing.
+ * per JVM in alternating order. comet requires the fused columnar reader; comet-row disables
+ * vectorized cache reading to isolate the row iterator. Cache creation and validation are outside
+ * timing.
  */
 object CometCacheRowReaderBenchmark extends BenchmarkBase {
   private val warmups = 5
@@ -167,7 +168,9 @@ object CometCacheRowReaderBenchmark extends BenchmarkBase {
         val scan = scans.head
         assert(scan.attributes.map(_.name).toSet == selected.toSet, s"Wrong projection:\n$plan")
         val columnar = plan.exists(_.isInstanceOf[ColumnarToRowExec])
-        if (format != "comet") {
+        if (format == "comet") {
+          assert(columnar, s"Expected the fused columnar cache reader:\n$plan")
+        } else {
           assert(!columnar, s"Expected the cache row reader:\n$plan")
         }
         assert(!plan.exists(_.getClass.getName.startsWith("org.apache.spark.sql.comet.")))

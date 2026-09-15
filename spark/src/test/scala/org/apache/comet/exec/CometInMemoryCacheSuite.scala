@@ -377,12 +377,14 @@ class CometInMemoryCacheSuite extends CometTestBase {
     }
   }
 
-  test("Spark generated cache consumers respect runtime Comet disable switches") {
+  test("Spark generated cache consumers respect runtime enable and codegen settings") {
     for {
       adaptive <- Seq(false, true)
-      enabledKey <- Seq(
-        CometConf.COMET_ENABLED.key,
-        CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key)
+      disabledSetting <- Seq(
+        CometConf.COMET_ENABLED.key -> "false",
+        CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> "false",
+        SQLConf.CODEGEN_FACTORY_MODE.key -> "NO_CODEGEN",
+        SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "false")
     } {
       withSQLConf(
         CometConf.COMET_ENABLED.key -> "true",
@@ -392,6 +394,7 @@ class CometInMemoryCacheSuite extends CometTestBase {
         SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString,
         SQLConf.CACHE_VECTORIZED_READER_ENABLED.key -> "true",
         SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "true",
+        SQLConf.CODEGEN_FACTORY_MODE.key -> "CODEGEN_ONLY",
         SQLConf.COLUMN_BATCH_SIZE.key -> "7",
         SQLConf.SHUFFLE_PARTITIONS.key -> "2") {
         val source = spark
@@ -410,7 +413,8 @@ class CometInMemoryCacheSuite extends CometTestBase {
             .cacheBuilder
           // Materialize with fusion enabled, then disable and re-enable it on the same cache.
           Seq(true, false, true).zipWithIndex.foreach { case (enabled, index) =>
-            withSQLConf(enabledKey -> enabled.toString) {
+            val settings = if (enabled) Seq.empty else Seq(disabledSetting)
+            withSQLConf(settings: _*) {
               val cold = index == 0
               val df = query
               val plan = df.queryExecution.executedPlan
