@@ -16,15 +16,17 @@
 // under the License.
 
 use crate::metrics::ShufflePartitionerMetrics;
-use crate::writers::local::spill::SpillWriter;
+use crate::writers::local::spill::PartitionedSpill;
 use crate::writers::partition_writer::PartitionWriter;
 use crate::writers::BufBatchWriter;
-use crate::ShuffleBlockWriter;
+use crate::{PartitionOffsets, ShuffleBlockWriter};
 use arrow::array::RecordBatch;
 use datafusion::common::DataFusionError;
 use datafusion::execution::runtime_env::RuntimeEnv;
 use std::fs::{File, OpenOptions};
-use std::io::{BufWriter, Seek, Write};
+use std::io::{BufWriter, ErrorKind, Read, Seek, SeekFrom, Write};
+use std::ops::Range;
+use std::os::unix::fs::FileExt;
 use std::sync::Arc;
 
 /// Output target for the shuffle data file.
@@ -54,10 +56,12 @@ enum DataOutput {
     Multi {
         output_writer: BufWriter<File>,
         shuffle_block_writer: ShuffleBlockWriter,
-        /// One spill file per output partition, buffered until `finish_partition`
-        /// merges them into the shuffle output.
-        spill_writers: Vec<SpillWriter>,
-        /// Runtime used to allocate the temporary spill files.
+        /// Spilled blocks for every partition, in one file.
+        spill: PartitionedSpill,
+        /// Read handle on the spill file and a write-buffer-sized scratch for its ranges,
+        /// opened on first use.
+        spill_reader: Option<(File, Vec<u8>)>,
+        /// Runtime used to allocate the temporary spill file.
         runtime: Arc<RuntimeEnv>,
         /// Byte buffer recycled through the short-lived per-partition `BufBatchWriter`s.
         /// Partitions are written strictly one at a time, so a single buffer keeps its
@@ -73,7 +77,7 @@ enum DataOutput {
 /// byte offset where each partition begins. See [`DataOutput`] for how the
 /// single- and multi-partition modes differ.
 pub(crate) struct LocalPartitionWriter {
-    output_index_file: String,
+    partition_offsets: Arc<PartitionOffsets>,
     data_output: DataOutput,
     /// Start offset of each partition in the data file, plus a trailing entry
     /// with the total length so partition sizes are simple offset differences.
@@ -90,7 +94,7 @@ pub(crate) struct LocalPartitionWriter {
 impl LocalPartitionWriter {
     pub(crate) fn try_new(
         output_data_file: String,
-        output_index_file: String,
+        partition_offsets: Arc<PartitionOffsets>,
         shuffle_block_writer: ShuffleBlockWriter,
         num_output_partitions: usize,
         batch_size: usize,
@@ -116,25 +120,23 @@ impl LocalPartitionWriter {
             }
         } else {
             let output_writer = BufWriter::with_capacity(write_buffer_size, output_file);
-            let spill_writers = (0..num_output_partitions)
-                .map(|_| {
-                    SpillWriter::try_new(
-                        shuffle_block_writer.clone(),
-                        write_buffer_size,
-                        batch_size,
-                    )
-                })
-                .collect::<datafusion::common::Result<Vec<_>>>()?;
+            let spill = PartitionedSpill::new(
+                shuffle_block_writer.clone(),
+                write_buffer_size,
+                batch_size,
+                num_output_partitions,
+            );
             DataOutput::Multi {
                 output_writer,
                 shuffle_block_writer,
-                spill_writers,
+                spill,
+                spill_reader: None,
                 runtime,
                 recycled_buffer: Vec::new(),
             }
         };
         Ok(Self {
-            output_index_file,
+            partition_offsets,
             data_output,
             offsets: vec![0u64; num_output_partitions + 1],
             batch_size,
@@ -145,10 +147,10 @@ impl LocalPartitionWriter {
     }
 
     #[cfg(test)]
-    pub(crate) fn get_spill_writers(&self) -> &Vec<SpillWriter> {
+    pub(crate) fn get_spill(&self) -> &PartitionedSpill {
         match &self.data_output {
-            DataOutput::Multi { spill_writers, .. } => spill_writers,
-            DataOutput::Single { .. } => panic!("single-partition output has no spill writers"),
+            DataOutput::Multi { spill, .. } => spill,
+            DataOutput::Single { .. } => panic!("single-partition output does not spill"),
         }
     }
 }
@@ -183,15 +185,12 @@ impl PartitionWriter for LocalPartitionWriter {
                 }
             }
             DataOutput::Multi {
-                spill_writers,
+                spill,
                 runtime,
                 recycled_buffer,
                 ..
             } => {
-                // Multi-partition output buffers each partition's batches into its own
-                // spill file. `finish_partition` later merges the spill files (and any
-                // remaining in-memory batches) into the shuffle output in partition order.
-                spill_writers[pid].write(iter, runtime, metrics, recycled_buffer)?;
+                spill.write(pid, iter, runtime, metrics, recycled_buffer)?;
             }
         }
 
@@ -231,23 +230,32 @@ impl PartitionWriter for LocalPartitionWriter {
             DataOutput::Multi {
                 output_writer,
                 shuffle_block_writer,
-                spill_writers,
+                spill,
+                spill_reader,
                 recycled_buffer,
                 ..
             } => {
                 self.offsets[pid] = output_writer.stream_position()?;
 
-                // if we wrote a spill file for this partition then copy the
-                // contents into the shuffle file
-                if let Some(writer) = spill_writers.get(pid) {
-                    if let Some(spill_path) = writer.path()? {
-                        // Use raw File handle (not BufReader) so that std::io::copy
-                        // can use copy_file_range/sendfile for zero-copy on Linux.
-                        let mut spill_file = File::open(spill_path)?;
-                        let mut write_timer = metrics.write_time.timer();
-                        std::io::copy(&mut spill_file, output_writer)?;
-                        write_timer.stop();
+                let mut flush_timer = metrics.write_time.timer();
+                spill.flush()?;
+                flush_timer.stop();
+                let ranges = spill.ranges(pid)?;
+                if !ranges.is_empty() {
+                    if spill_reader.is_none() {
+                        let path = spill.path()?.ok_or_else(|| {
+                            DataFusionError::Internal(
+                                "shuffle spill ranges recorded without a spill file".to_string(),
+                            )
+                        })?;
+                        *spill_reader = Some((File::open(path)?, vec![0; write_buffer_size]));
                     }
+                    let (spill_file, buffer) = spill_reader.as_mut().unwrap();
+                    let mut write_timer = metrics.write_time.timer();
+                    for range in ranges {
+                        copy_spill_range(spill_file, buffer, range, output_writer)?;
+                    }
+                    write_timer.stop();
                 }
 
                 // Write in memory batches to output data file. Each partition uses its
@@ -306,25 +314,60 @@ impl PartitionWriter for LocalPartitionWriter {
         // add one extra offset at last to ease partition length computation
         self.offsets[self.num_output_partitions] = final_offset;
 
-        let mut write_timer = metrics.write_time.timer();
-        let mut output_index = BufWriter::new(
-            File::create(self.output_index_file.clone())
-                .map_err(|e| DataFusionError::Execution(format!("shuffle write error: {e:?}")))?,
-        );
-
-        for offset in &self.offsets {
-            let offset_i64 = i64::try_from(*offset).map_err(|_| {
-                DataFusionError::Execution(format!(
-                    "shuffle write error: offset overflow ({offset})"
-                ))
-            })?;
-            output_index.write_all(&offset_i64.to_le_bytes())?;
-        }
-        output_index.flush()?;
-        write_timer.stop();
+        let offsets = self
+            .offsets
+            .iter()
+            .map(|offset| {
+                i64::try_from(*offset).map_err(|_| {
+                    DataFusionError::Execution(format!(
+                        "shuffle write error: offset overflow ({offset})"
+                    ))
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        self.partition_offsets.set(offsets)?;
 
         Ok(())
     }
+}
+
+/// Appends `range` of the spill file to `output`, reading it through `buffer` when it fits.
+fn copy_spill_range(
+    spill_file: &mut File,
+    buffer: &mut [u8],
+    range: &Range<u64>,
+    output: &mut BufWriter<File>,
+) -> datafusion::common::Result<()> {
+    let len = range.end - range.start;
+    let truncated = || {
+        DataFusionError::Execution(format!(
+            "shuffle spill file truncated: range {range:?} extends past its end"
+        ))
+    };
+    match usize::try_from(len)
+        .ok()
+        .and_then(|len| buffer.get_mut(..len))
+    {
+        // one pread instead of io::copy's lseek, two statx and copy_file_range
+        Some(chunk) => {
+            spill_file
+                .read_exact_at(chunk, range.start)
+                .map_err(|e| match e.kind() {
+                    ErrorKind::UnexpectedEof => truncated(),
+                    _ => e.into(),
+                })?;
+            output.write_all(chunk)?;
+        }
+        None => {
+            spill_file.seek(SeekFrom::Start(range.start))?;
+            // raw File, not BufReader, so the copy can use copy_file_range on Linux
+            let copied = std::io::copy(&mut Read::by_ref(spill_file).take(len), output)?;
+            if copied != len {
+                return Err(truncated());
+            }
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -333,7 +376,10 @@ mod tests {
     use crate::writers::local::spill::pathless_backend;
     use crate::CompressionCodec;
     use arrow::array::Int64Array;
+    use arrow::compute::concat_batches;
     use arrow::datatypes::{DataType, Field, Schema};
+    use datafusion::execution::disk_manager::{DiskManagerBuilder, DiskManagerMode};
+    use datafusion::execution::runtime_env::RuntimeEnvBuilder;
     use datafusion::physical_plan::metrics::ExecutionPlanMetricsSet;
 
     fn test_batch() -> RecordBatch {
@@ -350,17 +396,27 @@ mod tests {
         dir: &tempfile::TempDir,
         runtime: Arc<RuntimeEnv>,
     ) -> LocalPartitionWriter {
+        partition_writer_with(batch, 2, 1 << 20, dir, runtime)
+    }
+
+    fn partition_writer_with(
+        batch: &RecordBatch,
+        num_partitions: usize,
+        write_buffer_size: usize,
+        dir: &tempfile::TempDir,
+        runtime: Arc<RuntimeEnv>,
+    ) -> LocalPartitionWriter {
         let block_writer =
             ShuffleBlockWriter::try_new(batch.schema_ref().as_ref(), CompressionCodec::None)
                 .unwrap();
         LocalPartitionWriter::try_new(
             dir.path().join("data.out").to_str().unwrap().to_string(),
-            dir.path().join("index.out").to_str().unwrap().to_string(),
+            Arc::new(PartitionOffsets::default()),
             block_writer,
-            2,
+            num_partitions,
             // batch_size below the row count so the write serializes into the scratch.
             10,
-            1 << 20,
+            write_buffer_size,
             runtime,
         )
         .unwrap()
@@ -415,5 +471,162 @@ mod tests {
             err.to_string().contains("no local path"),
             "unexpected error: {err}"
         );
+    }
+
+    fn int_batch(values: std::ops::Range<i64>) -> RecordBatch {
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int64, false)]));
+        RecordBatch::try_new(schema, vec![Arc::new(Int64Array::from_iter_values(values))]).unwrap()
+    }
+
+    fn decode_blocks(bytes: &[u8]) -> Vec<RecordBatch> {
+        let mut batches = Vec::new();
+        let mut pos = 0;
+        while pos < bytes.len() {
+            let len = u64::from_le_bytes(bytes[pos..pos + 8].try_into().unwrap()) as usize;
+            batches.push(crate::read_ipc_compressed(&bytes[pos + 16..pos + 8 + len]).unwrap());
+            pos += 8 + len;
+        }
+        batches
+    }
+
+    fn count_files(dir: &std::path::Path) -> usize {
+        std::fs::read_dir(dir)
+            .unwrap()
+            .map(|entry| {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    count_files(&path)
+                } else {
+                    1
+                }
+            })
+            .sum()
+    }
+
+    /// Partition data spread over spill rounds written in different partition orders, plus a
+    /// final in-memory batch, reads back per partition in write order, whether the spilled
+    /// ranges are read through the scratch buffer or copied.
+    #[test]
+    fn spilled_partitions_read_back_in_write_order() {
+        // a 64-byte write buffer is smaller than one block, so every range is copied
+        for write_buffer_size in [1 << 20, 64] {
+            let dir = tempfile::tempdir().unwrap();
+            let schema = test_batch().schema();
+            let mut writer = partition_writer_with(
+                &test_batch(),
+                4,
+                write_buffer_size,
+                &dir,
+                Arc::new(RuntimeEnv::default()),
+            );
+            let metrics = ShufflePartitionerMetrics::new(&ExecutionPlanMetricsSet::new(), 0);
+            let mut expected: Vec<Vec<RecordBatch>> = vec![Vec::new(); 4];
+            let mut next = 0i64;
+            let mut batch = || {
+                let batch = int_batch(next..next + 10);
+                next += 10;
+                batch
+            };
+
+            for order in [[3, 2, 1, 0], [0, 1, 2, 3]] {
+                for pid in order {
+                    let b = batch();
+                    expected[pid].push(b.clone());
+                    writer
+                        .write(pid, &mut vec![Ok(b)].into_iter(), &metrics)
+                        .unwrap();
+                }
+            }
+            for (pid, rows) in expected.iter_mut().enumerate() {
+                let b = batch();
+                rows.push(b.clone());
+                writer
+                    .finish_partition(pid, &mut vec![Ok(b)].into_iter(), &metrics)
+                    .unwrap();
+            }
+            writer.finish_all(&metrics).unwrap();
+
+            let offsets = writer.partition_offsets.get().unwrap().to_vec();
+            let data = std::fs::read(dir.path().join("data.out")).unwrap();
+            for (pid, rows) in expected.iter().enumerate() {
+                let bytes = &data[offsets[pid] as usize..offsets[pid + 1] as usize];
+                let actual = concat_batches(&schema, &decode_blocks(bytes)).unwrap();
+                assert_eq!(
+                    actual,
+                    concat_batches(&schema, rows).unwrap(),
+                    "partition {pid}, write buffer {write_buffer_size}"
+                );
+            }
+        }
+    }
+
+    /// A task spills to one file however many partitions it has.
+    #[test]
+    fn spilling_every_partition_creates_one_file() {
+        let spill_dir = tempfile::tempdir().unwrap();
+        let output_dir = tempfile::tempdir().unwrap();
+        let runtime = Arc::new(
+            RuntimeEnvBuilder::new()
+                .with_disk_manager_builder(DiskManagerBuilder::default().with_mode(
+                    DiskManagerMode::Directories(vec![spill_dir.path().to_path_buf()]),
+                ))
+                .build()
+                .unwrap(),
+        );
+        let num_partitions = 64;
+        let mut writer =
+            partition_writer_with(&test_batch(), num_partitions, 1 << 20, &output_dir, runtime);
+        let metrics = ShufflePartitionerMetrics::new(&ExecutionPlanMetricsSet::new(), 0);
+
+        for _ in 0..3 {
+            for pid in 0..num_partitions {
+                writer
+                    .write(pid, &mut vec![Ok(test_batch())].into_iter(), &metrics)
+                    .unwrap();
+            }
+        }
+        assert_eq!(count_files(spill_dir.path()), 1);
+    }
+
+    /// A spill file shorter than its recorded ranges fails the task instead of writing a short
+    /// partition, whether the range is read through the scratch buffer or copied.
+    #[test]
+    fn finish_partition_fails_when_spill_file_is_truncated() {
+        for write_buffer_size in [1 << 20, 64] {
+            let dir = tempfile::tempdir().unwrap();
+            let mut writer = partition_writer_with(
+                &test_batch(),
+                2,
+                write_buffer_size,
+                &dir,
+                Arc::new(RuntimeEnv::default()),
+            );
+            let metrics = ShufflePartitionerMetrics::new(&ExecutionPlanMetricsSet::new(), 0);
+            for pid in 0..2 {
+                writer
+                    .write(pid, &mut vec![Ok(test_batch())].into_iter(), &metrics)
+                    .unwrap();
+            }
+            // finishing partition 0 flushes the buffered spill bytes before the file is cut
+            writer
+                .finish_partition(0, &mut std::iter::empty(), &metrics)
+                .unwrap();
+
+            let path = writer.get_spill().path().unwrap().unwrap().to_path_buf();
+            std::fs::OpenOptions::new()
+                .write(true)
+                .open(&path)
+                .unwrap()
+                .set_len(1)
+                .unwrap();
+
+            let err = writer
+                .finish_partition(1, &mut std::iter::empty(), &metrics)
+                .expect_err("a truncated spill file must fail the partition");
+            assert!(
+                err.to_string().contains("truncated"),
+                "write buffer {write_buffer_size}: unexpected error: {err}"
+            );
+        }
     }
 }
