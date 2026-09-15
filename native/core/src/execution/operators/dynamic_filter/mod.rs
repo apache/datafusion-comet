@@ -15,7 +15,12 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! Apply a live runtime predicate to decoded batches.
+//! Runtime-filter wiring and shared filtering of decoded batches.
+
+mod join;
+mod parquet_reader;
+
+pub(crate) use join::DynamicFilterJoinExec;
 
 use std::fmt::Formatter;
 use std::sync::Arc;

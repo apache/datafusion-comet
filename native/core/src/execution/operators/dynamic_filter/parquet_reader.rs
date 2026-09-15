@@ -30,7 +30,7 @@ use datafusion::physical_expr::expressions::{
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::ExecutionPlan;
 
-use super::CometFilterExec;
+use super::super::CometFilterExec;
 
 /// Recognize only direct-column null checks joined by AND, without evaluating
 /// or changing the predicate. Every accepted leaf is deterministic, infallible,

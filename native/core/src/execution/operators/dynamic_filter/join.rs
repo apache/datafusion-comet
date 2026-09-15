@@ -45,8 +45,8 @@ use datafusion::physical_plan::{
 };
 use futures::StreamExt;
 
-use super::dynamic_filter::DynamicFilterExec;
-use super::parquet_reader_filter::try_attach_parquet_reader_filter;
+use super::parquet_reader::try_attach_parquet_reader_filter;
+use super::DynamicFilterExec;
 
 /// A permanent plan must not own a completed join's filter or build accumulator:
 /// those can retain the hash map after its stream-owned reservation is released.
