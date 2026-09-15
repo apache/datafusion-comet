@@ -37,8 +37,8 @@ pub(crate) use task_shared::*;
 
 /// Creates the memory pool for a native plan. Task-shared pools use their returned `Arc` as the
 /// RAII handle, so they remain registered for as long as the plan or any of its reservations
-/// retain the pool. The fair unified pool takes its anchor byte from Spark here, so this can
-/// block until the task's memory frees.
+/// retain the pool. Creating a pool makes no JVM call; the fair unified pool takes its anchor
+/// byte from Spark on its first grow.
 pub(crate) fn create_memory_pool(
     memory_pool_config: &MemoryPoolConfig,
     comet_task_memory_manager: Arc<Global<JObject<'static>>>,
@@ -64,10 +64,10 @@ pub(crate) fn create_memory_pool(
             )))
         })?,
         MemoryPoolType::FairUnified => acquire_task_shared_pool(task_attempt_id, || {
-            Ok(tracked(CometFairMemoryPool::try_new(
+            Ok(tracked(CometFairMemoryPool::new(
                 comet_task_memory_manager,
                 pool_size,
-            )?))
+            )))
         })?,
         MemoryPoolType::GreedyTaskShared => acquire_task_shared_pool(task_attempt_id, || {
             Ok(tracked(GreedyMemoryPool::new(pool_size)))
