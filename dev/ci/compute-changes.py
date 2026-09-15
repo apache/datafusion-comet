@@ -449,19 +449,28 @@ POLICY = {
     "spark_3_4": ["label:run-spark-3.4-tests"],
     "spark_3_5": ["queue", "label:run-spark-3.5-tests"],
     "spark_4_0": ["queue", "label:run-spark-4.0-tests"],
-    # Spark 4.1 is the default build profile, so it is the cheapest early
-    # warning that a change is wrong and stays in the PR tier. Only the
-    # catalyst and sql_core shards, though: over Aug 12 to Sep 11 2026 the
-    # three sql_hive shards cost about 65 runner-hours a day on pull requests
-    # and were the only failing job on 7 PR runs, against 33 for sql_core, and
-    # their 67-minute shard set the PR tier's wall clock. See issue #5870.
-    "spark_4_1": ["pr", "queue"],
-    "spark_4_1_hive": ["queue", "label:run-spark-4.1-hive-tests"],
+    # No Spark SQL suite runs on a plain pull request. Spark 4.1 was the last
+    # one in the PR tier, first whole (issue #5870 pulled the sql_hive shards
+    # out) and then catalyst and sql_core alone. What changed is how often a
+    # pull request is pushed: with agent-driven review and agent-driven
+    # replies to review, a PR now goes through several more rounds before it
+    # is queued, and each round paid for the whole 4.1 build. The queue still
+    # runs every shard before anything lands; the two labels bring the run
+    # forward. `run-spark-4.1-tests` selects the whole suite, so it appears on
+    # both outputs; `run-spark-4.1-hive-tests` selects only the hive shards.
+    "spark_4_1": ["queue", "label:run-spark-4.1-tests"],
+    "spark_4_1_hive": [
+        "queue",
+        "label:run-spark-4.1-tests",
+        "label:run-spark-4.1-hive-tests",
+    ],
+    # Same for Iceberg: 1.11 was the PR-tier version because it is the only
+    # Spark 4.1 coverage, and it now waits for the queue with the other three.
+    # One label opts a pull request into all four.
     "iceberg_1_8": ["queue", "label:run-iceberg-tests"],
     "iceberg_1_9": ["queue", "label:run-iceberg-tests"],
     "iceberg_1_10": ["queue", "label:run-iceberg-tests"],
-    # Iceberg 1.11 is our only Spark 4.1 Iceberg coverage, so it is not opt-in.
-    "iceberg_1_11": ["pr", "queue"],
+    "iceberg_1_11": ["queue", "label:run-iceberg-tests"],
 }
 
 

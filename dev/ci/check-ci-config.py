@@ -136,14 +136,16 @@ ROUTING_CASES = [
 # where "allowed" ignores path filters. Written out longhand rather than
 # derived from POLICY, so that a change to the routing has to be stated twice
 # and cannot be made by accident.
-PR_TIER = {"build_linux", "build_linux_full", "spark_4_1", "iceberg_1_11"}
-SPARK_OPT_IN = {"spark_3_5", "spark_4_0", "spark_4_1_hive"}
+# The PR tier is the Linux build and nothing else. Every Spark SQL and Iceberg
+# suite waits for the queue, or for its label.
+PR_TIER = {"build_linux", "build_linux_full"}
+SPARK_OPT_IN = {"spark_3_5", "spark_4_0", "spark_4_1", "spark_4_1_hive"}
 # Spark 3.4 is deprecated and sits outside the queue tier entirely: a label on
 # a pull request, or a workflow_dispatch, and nothing else. Keeping it in its
 # own set is what makes the `merge_group` case below assert its absence rather
 # than quietly accept it coming back.
 SPARK_DEPRECATED = {"spark_3_4"}
-ICEBERG_OPT_IN = {"iceberg_1_8", "iceberg_1_9", "iceberg_1_10"}
+ICEBERG_OPT_IN = {"iceberg_1_8", "iceberg_1_9", "iceberg_1_10", "iceberg_1_11"}
 BUILD_OPT_IN = {"build_macos", "benchmark", "delta_gate", "pyarrow_udf"}
 QUEUE_TIER = PR_TIER | SPARK_OPT_IN | ICEBERG_OPT_IN | BUILD_OPT_IN
 ALL_JOBS = QUEUE_TIER | SPARK_DEPRECATED | {"docs"}
@@ -209,8 +211,22 @@ POLICY_CASES = [
         },
         {"build_macos"},
     ),
-    # The Spark 4.1 hive shards are queue-only with their own label. The label
-    # adds them to the PR tier's Spark 4.1 call rather than starting a second.
+    # Spark 4.1 is queue-only too. Two labels feed its one call: the suite
+    # label selects every module, the hive label only the sql_hive shards.
+    # Neither label pulls in any other Spark version.
+    (
+        {"name": "pull_request", "action": "synchronize", "labels": ["run-spark-4.1-tests"]},
+        PR_TIER | {"spark_4_1", "spark_4_1_hive"},
+    ),
+    (
+        {
+            "name": "pull_request",
+            "action": "labeled",
+            "label": "run-spark-4.1-tests",
+            "labels": ["run-spark-4.1-tests"],
+        },
+        {"spark_4_1", "spark_4_1_hive"},
+    ),
     (
         {"name": "pull_request", "action": "synchronize", "labels": ["run-spark-4.1-hive-tests"]},
         PR_TIER | {"spark_4_1_hive"},
@@ -221,6 +237,18 @@ POLICY_CASES = [
             "action": "labeled",
             "label": "run-spark-4.1-hive-tests",
             "labels": ["run-spark-4.1-hive-tests"],
+        },
+        {"spark_4_1_hive"},
+    ),
+    # Adding the hive label on top of the suite label re-runs only the hive
+    # rows: a `labeled` run selects what the new label gates, and the suite
+    # label's earlier run already covered every module at this commit.
+    (
+        {
+            "name": "pull_request",
+            "action": "labeled",
+            "label": "run-spark-4.1-hive-tests",
+            "labels": ["run-spark-4.1-tests", "run-spark-4.1-hive-tests"],
         },
         {"spark_4_1_hive"},
     ),

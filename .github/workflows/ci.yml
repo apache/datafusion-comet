@@ -22,13 +22,12 @@
 # Merging goes through GitHub's merge queue (see `rulesets` in `.asf.yaml`), so
 # there are two tiers:
 #
-#   pull_request  fast feedback. Linux build + Spark 4.1 (catalyst and
-#                 sql_core only) + Iceberg 1.11.
-#   merge_group   the authoritative gate. Everything the PR tier runs, plus
-#                 the macOS build, the benchmark compile check, the Delta
-#                 contrib build gate, the PyArrow UDF suite, the Spark 4.1
-#                 sql_hive shards, Spark 3.5/4.0 and Iceberg 1.8/1.9/1.10,
-#                 evaluated against the merge result rather than the PR head.
+#   pull_request  fast feedback. The Linux build only.
+#   merge_group   the authoritative gate. The Linux build plus the macOS
+#                 build, the benchmark compile check, the Delta contrib build
+#                 gate, the PyArrow UDF suite, Spark 3.5/4.0/4.1 and Iceberg
+#                 1.8/1.9/1.10/1.11, evaluated against the merge result
+#                 rather than the PR head.
 #
 # Spark 3.4 is deprecated and sits outside both tiers: it runs only when a
 # pull request carries `run-spark-3.4-tests`, or from a manual dispatch.
@@ -339,11 +338,12 @@ jobs:
   spark_4_1:
     name: Spark SQL Tests (Spark 4.1)
     needs: changes
-    # Two POLICY outputs feed one call, so the queue gets every module from a
-    # single 40-minute build instead of two. `spark_4_1` (PR tier) covers
-    # catalyst and the sql_core shards; `spark_4_1_hive` (queue-only, or the
-    # `run-spark-4.1-hive-tests` label) adds the sql_hive shards. A `labeled`
-    # run sets only the second, and then runs only the hive rows.
+    # Queue-only by default, like every other Spark SQL suite. Two POLICY
+    # outputs feed one call, so the queue gets every module from a single
+    # 40-minute build instead of two. `spark_4_1` covers catalyst and the
+    # sql_core shards; `spark_4_1_hive` adds the sql_hive shards. On a pull
+    # request `run-spark-4.1-tests` sets both, and `run-spark-4.1-hive-tests`
+    # sets only the second, which then runs only the hive rows.
     if: needs.changes.outputs.spark_4_1 == 'true' || needs.changes.outputs.spark_4_1_hive == 'true'
     uses: ./.github/workflows/spark_sql_test_reusable.yml
     with:
@@ -384,8 +384,7 @@ jobs:
   iceberg_1_10:
     name: Iceberg Spark SQL Tests (Iceberg 1.10)
     needs: changes
-    # Queue-only by default; PRs need the `run-iceberg-tests` label. Iceberg 1.11
-    # (Spark 4.1) is the PR-gated Iceberg job; 1.10 covers the Spark 3.5 path.
+    # Queue-only by default; PRs need the `run-iceberg-tests` label.
     if: needs.changes.outputs.iceberg_1_10 == 'true'
     uses: ./.github/workflows/iceberg_spark_test_reusable.yml
     with:
@@ -398,7 +397,9 @@ jobs:
   iceberg_1_11:
     name: Iceberg Spark SQL Tests (Iceberg 1.11)
     needs: changes
-    # Runs on every PR: Iceberg 1.11 is our only Spark 4.1 Iceberg coverage.
+    # Queue-only by default; PRs need the `run-iceberg-tests` label. Iceberg
+    # 1.11 is our only Spark 4.1 Iceberg coverage, and it was the PR-tier
+    # Iceberg job for that reason until every suite moved behind the queue.
     if: needs.changes.outputs.iceberg_1_11 == 'true'
     uses: ./.github/workflows/iceberg_spark_test_reusable.yml
     with:

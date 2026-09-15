@@ -35,9 +35,9 @@ Which jobs run also depends on the event:
 | Suite                                             | Pull request | Merge queue |
 | ------------------------------------------------- | ------------ | ----------- |
 | Linux build, lint, and Comet test suites          | yes          | yes         |
-| Spark SQL tests, Spark 4.1, catalyst and sql_core | yes          | yes         |
+| Spark SQL tests, Spark 4.1, catalyst and sql_core | with label   | yes         |
 | Spark SQL tests, Spark 4.1, sql_hive              | with label   | yes         |
-| Iceberg Spark SQL tests, Iceberg 1.11             | yes          | yes         |
+| Iceberg Spark SQL tests, Iceberg 1.11             | with label   | yes         |
 | macOS build and Comet test suites                 | with label   | yes         |
 | Benchmark compile and lint check                  | with label   | yes         |
 | Delta contrib build gate                          | with label   | yes         |
@@ -84,17 +84,18 @@ cases that pin both down.
 
 Each suite outside the PR tier has a label that runs it on a pull request:
 
-| Label                      | Runs                                                 |
-| -------------------------- | ---------------------------------------------------- |
-| `run-macos-tests`          | macOS build and Comet test suites                    |
-| `run-benchmark-check`      | Benchmark compile and lint check                     |
-| `run-delta-build-gate`     | Delta contrib build gate                             |
-| `run-pyarrow-udf-tests`    | PyArrow UDF tests against Spark 4.0/4.1/4.2          |
-| `run-spark-4.1-hive-tests` | Spark SQL hive tests against Spark 4.1               |
-| `run-spark-3.4-tests`      | Spark SQL tests against Spark 3.4                    |
-| `run-spark-3.5-tests`      | Spark SQL tests against Spark 3.5                    |
-| `run-spark-4.0-tests`      | Spark SQL tests against Spark 4.0                    |
-| `run-iceberg-tests`        | Iceberg Spark SQL tests against Iceberg 1.8/1.9/1.10 |
+| Label                      | Runs                                                  |
+| -------------------------- | ----------------------------------------------------- |
+| `run-macos-tests`          | macOS build and Comet test suites                     |
+| `run-benchmark-check`      | Benchmark compile and lint check                      |
+| `run-delta-build-gate`     | Delta contrib build gate                              |
+| `run-pyarrow-udf-tests`    | PyArrow UDF tests against Spark 4.0/4.1/4.2           |
+| `run-spark-4.1-tests`      | Spark SQL tests against Spark 4.1, every module       |
+| `run-spark-4.1-hive-tests` | Spark SQL tests against Spark 4.1, sql_hive only      |
+| `run-spark-3.4-tests`      | Spark SQL tests against Spark 3.4                     |
+| `run-spark-3.5-tests`      | Spark SQL tests against Spark 3.5                     |
+| `run-spark-4.0-tests`      | Spark SQL tests against Spark 4.0                     |
+| `run-iceberg-tests`        | Iceberg Spark SQL tests against every Iceberg version |
 
 For every suite except Spark 3.4 the label only brings the run forward; the queue would have run
 it anyway before the change landed. For Spark 3.4 the label is the only way the suite runs on a
@@ -126,12 +127,15 @@ re-run the failed jobs from the Actions page, or remove and re-apply the label.
 Use a label when a change is likely to behave differently on a version or platform the PR tier
 does not cover. Some examples:
 
+- a change to the serde, the planner, or a native operator, where the Comet test suites pass but
+  Spark's own SQL suite is the thing that would catch a behavior difference; `run-spark-4.1-tests`
+  runs it against the default profile
 - code under `spark/src/main/spark-3.4/`, `spark-3.5/`, `spark-4.0/` or the shared `spark-3.x/`
   directory, or any change to `CometExprShim` and friends
-- a change to a Spark SQL diff under `dev/diffs/` for a version other than 4.1
+- a change to a Spark SQL diff under `dev/diffs/`
 - anything that touches Hive table support, `InsertIntoHiveTable`, or the `sql/hive` parts of
   the 4.1 diff
-- anything touching Iceberg reflection or the Iceberg diffs
+- anything touching Iceberg reflection, the Iceberg scan or write path, or the Iceberg diffs
 - native code with platform-specific behavior, or a dependency bump that changes what is
   compiled on macOS
 - a change to the benchmark sources under `spark/src/test/scala/org/apache/spark/sql/benchmark`

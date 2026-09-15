@@ -15,15 +15,20 @@ Merging goes through GitHub's merge queue, configured by the `Merge Queue`
 ruleset in `.asf.yaml`. That splits CI into two tiers:
 
 - **PR tier** (`pr`): fast feedback while a change is being iterated on.
-  The Linux build, Spark 4.1 (catalyst and `sql_core` only) and Iceberg 1.11.
-- **Queue tier** (`queue`): the authoritative gate. Everything the PR tier
-  runs, plus the macOS build, the benchmark compile check, the Delta contrib
-  build gate, the PyArrow UDF suite, the Spark 4.1 `sql_hive` shards, Spark
-  3.5/4.0 and Iceberg 1.8/1.9/1.10, evaluated against the merge result
-  rather than against the PR head.
+  The Linux build, and nothing else.
+- **Queue tier** (`queue`): the authoritative gate. The Linux build plus the
+  macOS build, the benchmark compile check, the Delta contrib build gate, the
+  PyArrow UDF suite, Spark 3.5/4.0/4.1 and Iceberg 1.8/1.9/1.10/1.11,
+  evaluated against the merge result rather than against the PR head.
 
 Every queue-only job has a `run-*` label that opts a pull request into it
-early, listed in the diagram below.
+early, listed in the diagram below. The Spark SQL and Iceberg suites used to
+be split between the tiers, with Spark 4.1 (catalyst and `sql_core`) and
+Iceberg 1.11 on every pull request. They moved behind the queue once
+agent-driven review, and agent-driven replies to review, multiplied the
+number of pushes a pull request goes through before it is queued: every one
+of those pushes paid for the whole Spark 4.1 build and the Iceberg 1.11 run,
+and the queue was going to run both anyway.
 
 `spark_3_4` is in neither tier. Spark 3.4 is deprecated, so its Spark SQL
 suite no longer gates a merge; it runs only when a pull request carries
@@ -82,15 +87,17 @@ to `pr_build_linux.yml` without either the guard or an entry in
   PR + queue tier                     push to main only         queue tier, or PR with label
   ---------------                     -----------------         ---------------------------
   pr_build_linux (+ push, cache only) docs                      pr_build_macos      run-macos-tests
-  spark_4_1 (catalyst + sql_core)                               pr_benchmark_check  run-benchmark-check
-  iceberg_1_11                                                  delta_build_gate    run-delta-build-gate
+                                                                pr_benchmark_check  run-benchmark-check
+                                                                delta_build_gate    run-delta-build-gate
                                                                 pyarrow_udf_test    run-pyarrow-udf-tests
-                                                                spark_4_1 sql_hive  run-spark-4.1-hive-tests
                                                                 spark_3_5           run-spark-3.5-tests
                                                                 spark_4_0           run-spark-4.0-tests
-  label or dispatch only                                        iceberg_1_8         run-iceberg-tests
-  ----------------------                                        iceberg_1_9         run-iceberg-tests
-  spark_3_4  run-spark-3.4-tests                                iceberg_1_10        run-iceberg-tests
+                                                                spark_4_1           run-spark-4.1-tests
+  label or dispatch only                                        spark_4_1 sql_hive  run-spark-4.1-hive-tests
+  ----------------------                                        iceberg_1_8         run-iceberg-tests
+  spark_3_4  run-spark-3.4-tests                                iceberg_1_9         run-iceberg-tests
+                                                                iceberg_1_10        run-iceberg-tests
+                                                                iceberg_1_11        run-iceberg-tests
 
         |                                   |                                   |
         +-----------------------------------+-----------------------------------+
@@ -110,25 +117,25 @@ to `pr_build_linux.yml` without either the guard or an entry in
 
 ## What runs when
 
-| Job in `ci.yml`      | Triggered by                                                                                                           | Routing rule                        |
-| -------------------- | ---------------------------------------------------------------------------------------------------------------------- | ----------------------------------- |
-| `preflight`          | every PR / merge group / push / dispatch / label                                                                       | none (always runs)                  |
-| `changes`            | every PR / merge group / push / dispatch / label                                                                       | runs `dev/ci/compute-changes.py`    |
-| `pr_build_linux`     | PR, merge group or push to main, paths matched; on push only the cache-writing jobs, via `build_linux_full`            | `dev/ci/compute-changes.py`         |
-| `pr_build_macos`     | merge group, **or** PR with `run-macos-tests`                                                                          | `dev/ci/compute-changes.py`         |
-| `pr_benchmark_check` | merge group, **or** PR with `run-benchmark-check`                                                                      | benchmark sources only              |
-| `delta_build_gate`   | merge group, **or** PR with `run-delta-build-gate`                                                                     | main sources, poms, `contrib/delta` |
-| `pyarrow_udf_test`   | merge group, **or** PR with `run-pyarrow-udf-tests`                                                                    | map-in-batch and Python runner code |
-| `docs`               | push to main, paths matched                                                                                            | `.asf.yaml`, `docs/**`, `docs.yaml` |
-| `spark_3_5`          | merge group, **or** PR with `run-spark-3.5-tests`                                                                      | Spark 3.5 sources                   |
-| `spark_4_1`          | PR or merge group, paths matched; the `sql_hive` shards only in the merge group **or** with `run-spark-4.1-hive-tests` | Spark 4.1 sources                   |
-| `spark_3_4`          | PR with `run-spark-3.4-tests`, or dispatch                                                                             | Spark 3.4 sources                   |
-| `spark_4_0`          | merge group, **or** PR with `run-spark-4.0-tests`                                                                      | Spark 4.0 sources                   |
-| `iceberg_1_11`       | PR or merge group, paths matched                                                                                       | Iceberg sources                     |
-| `iceberg_1_8`        | merge group, **or** PR with `run-iceberg-tests`                                                                        | Iceberg sources                     |
-| `iceberg_1_9`        | merge group, **or** PR with `run-iceberg-tests`                                                                        | Iceberg sources                     |
-| `iceberg_1_10`       | merge group, **or** PR with `run-iceberg-tests`                                                                        | Iceberg sources                     |
-| `required_checks`    | always, after every job above except `docs`                                                                            | none (always runs)                  |
+| Job in `ci.yml`      | Triggered by                                                                                                   | Routing rule                        |
+| -------------------- | -------------------------------------------------------------------------------------------------------------- | ----------------------------------- |
+| `preflight`          | every PR / merge group / push / dispatch / label                                                               | none (always runs)                  |
+| `changes`            | every PR / merge group / push / dispatch / label                                                               | runs `dev/ci/compute-changes.py`    |
+| `pr_build_linux`     | PR, merge group or push to main, paths matched; on push only the cache-writing jobs, via `build_linux_full`    | `dev/ci/compute-changes.py`         |
+| `pr_build_macos`     | merge group, **or** PR with `run-macos-tests`                                                                  | `dev/ci/compute-changes.py`         |
+| `pr_benchmark_check` | merge group, **or** PR with `run-benchmark-check`                                                              | benchmark sources only              |
+| `delta_build_gate`   | merge group, **or** PR with `run-delta-build-gate`                                                             | main sources, poms, `contrib/delta` |
+| `pyarrow_udf_test`   | merge group, **or** PR with `run-pyarrow-udf-tests`                                                            | map-in-batch and Python runner code |
+| `docs`               | push to main, paths matched                                                                                    | `.asf.yaml`, `docs/**`, `docs.yaml` |
+| `spark_3_5`          | merge group, **or** PR with `run-spark-3.5-tests`                                                              | Spark 3.5 sources                   |
+| `spark_4_1`          | merge group, **or** PR with `run-spark-4.1-tests`; the `sql_hive` shards alone with `run-spark-4.1-hive-tests` | Spark 4.1 sources                   |
+| `spark_3_4`          | PR with `run-spark-3.4-tests`, or dispatch                                                                     | Spark 3.4 sources                   |
+| `spark_4_0`          | merge group, **or** PR with `run-spark-4.0-tests`                                                              | Spark 4.0 sources                   |
+| `iceberg_1_11`       | merge group, **or** PR with `run-iceberg-tests`                                                                | Iceberg sources                     |
+| `iceberg_1_8`        | merge group, **or** PR with `run-iceberg-tests`                                                                | Iceberg sources                     |
+| `iceberg_1_9`        | merge group, **or** PR with `run-iceberg-tests`                                                                | Iceberg sources                     |
+| `iceberg_1_10`       | merge group, **or** PR with `run-iceberg-tests`                                                                | Iceberg sources                     |
+| `required_checks`    | always, after every job above except `docs`                                                                    | none (always runs)                  |
 
 A heavy job appears in the PR's checks list as a `skipped` entry whenever
 its path filter or event criteria don't match. Skipped checks count as
@@ -164,7 +171,12 @@ Two rules keep those runs from corrupting the PR's status:
   still going. Skipping the job would not help either, since a skipped check
   run still carries the name and still counts as passing.
 
-`run-spark-4.1-tests` gates nothing: `spark_4_1` already runs on every PR.
+`run-spark-4.1-tests` and `run-spark-4.1-hive-tests` both feed the single
+`spark_4_1` call. The first sets both of its POLICY outputs and runs every
+module; the second sets only `spark_4_1_hive` and runs only the `sql_hive`
+shards. Adding the hive label to a pull request that already carries the suite
+label re-runs just the hive rows, since a `labeled` run selects what the new
+label gates.
 
 The opt-in labels have to exist in repository settings before they can be
 applied; `contains()` on a label nobody can add is simply always false, which
