@@ -824,7 +824,8 @@ object CometConf extends ShimCometConf {
       .category(CATEGORY_TUNING)
       .doc(
         "The type of memory pool to be used for Comet native execution when running Spark in " +
-          "off-heap mode. Available pool types are `greedy_unified` and `fair_unified`. " +
+          "off-heap mode. Available pool types are `greedy_unified`, `fair_unified`, and " +
+          "`greedy_unified_checked`. " +
           s"$TUNING_GUIDE.")
       .stringConf
       .createWithDefault("fair_unified")

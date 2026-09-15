@@ -194,8 +194,7 @@ unsafe impl<A: GlobalAlloc> GlobalAlloc for AccountingAllocator<A> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
+pub(crate) mod test_support {
     use std::sync::{Mutex, MutexGuard};
 
     /// `BALANCE` is process-wide and the crate's tests run in parallel, so a test that reads it
@@ -205,11 +204,17 @@ mod tests {
     /// allocates in that time.
     static SERIAL: Mutex<()> = Mutex::new(());
 
-    fn serial() -> MutexGuard<'static, ()> {
+    pub(crate) fn serial() -> MutexGuard<'static, ()> {
         SERIAL
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::test_support::serial;
+    use super::*;
 
     #[test]
     fn settle_accumulates_below_the_threshold() {

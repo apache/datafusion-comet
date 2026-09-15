@@ -17,9 +17,11 @@
 
 use crate::errors::{CometError, CometResult};
 
-#[derive(Copy, Clone, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub(crate) enum MemoryPoolType {
     GreedyUnified,
+    /// `GreedyUnified` behind a gate on the bytes the native allocator has actually handed out.
+    GreedyUnifiedChecked,
     FairUnified,
     Greedy,
     FairSpill,
@@ -30,6 +32,7 @@ pub(crate) enum MemoryPoolType {
     Unbounded,
 }
 
+#[derive(Debug)]
 pub(crate) struct MemoryPoolConfig {
     pub(crate) pool_type: MemoryPoolType,
     pub(crate) pool_size: usize,
@@ -59,6 +62,20 @@ pub(crate) fn parse_memory_pool_config(
                 // memory therefore does not need a size to be explicitly set. The pool size
                 // shared with Spark is set by `spark.memory.offHeap.size`.
                 MemoryPoolConfig::new(MemoryPoolType::GreedyUnified, 0)
+            }
+            // The checked pool gates on real native usage, so it needs the budget the balance is
+            // compared against: the same number `fair_unified` receives.
+            #[cfg(feature = "alloc-accounting")]
+            "greedy_unified_checked" => {
+                MemoryPoolConfig::new(MemoryPoolType::GreedyUnifiedChecked, pool_size)
+            }
+            #[cfg(not(feature = "alloc-accounting"))]
+            "greedy_unified_checked" => {
+                return Err(CometError::Config(
+                    "Memory pool type greedy_unified_checked requires the native library to be \
+                     built with the alloc-accounting cargo feature"
+                        .to_string(),
+                ))
             }
             _ => {
                 return Err(CometError::Config(format!(
@@ -91,4 +108,46 @@ pub(crate) fn parse_memory_pool_config(
         }
     };
     Ok(memory_pool_config)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[cfg(feature = "alloc-accounting")]
+    fn checked_pool_takes_the_off_heap_limit_as_its_budget() {
+        let config =
+            parse_memory_pool_config(true, "greedy_unified_checked".to_string(), 1 << 30, 1 << 20)
+                .unwrap();
+        assert_eq!(config.pool_type, MemoryPoolType::GreedyUnifiedChecked);
+        assert_eq!(config.pool_size, 1 << 30);
+    }
+
+    #[test]
+    #[cfg(not(feature = "alloc-accounting"))]
+    fn checked_pool_is_rejected_without_the_accounting_feature() {
+        let err =
+            parse_memory_pool_config(true, "greedy_unified_checked".to_string(), 1 << 30, 1 << 20)
+                .unwrap_err();
+        assert!(
+            err.to_string().contains("alloc-accounting"),
+            "error should name the missing feature: {err}"
+        );
+    }
+
+    #[test]
+    fn checked_pool_is_off_heap_only() {
+        let err = parse_memory_pool_config(
+            false,
+            "greedy_unified_checked".to_string(),
+            1 << 30,
+            1 << 20,
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("on-heap mode"),
+            "unexpected error: {err}"
+        );
+    }
 }
