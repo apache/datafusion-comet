@@ -224,9 +224,9 @@ fn make_all_fields_nullable(data_type: &DataType) -> DataType {
     }
 }
 
-/// Returns true when `actual` can be stamped as `expected` without changing a leaf type or
-/// narrowing nested nullability. Spark may declare a wider nullable output than an individual
-/// MERGE projection, so that one direction is intentionally accepted.
+/// Returns true when `actual` and `expected` have the same nested shape and leaf types.
+/// Nested field nullability is intentionally ignored: MergeRows normalizes runtime batches to
+/// Spark's declared output schema, validating any nullability narrowing against the actual data.
 fn merge_output_type_compatible(actual: &DataType, expected: &DataType) -> bool {
     match (actual, expected) {
         (DataType::Struct(actual_fields), DataType::Struct(expected_fields)) => {
@@ -234,7 +234,6 @@ fn merge_output_type_compatible(actual: &DataType, expected: &DataType) -> bool 
                 && actual_fields.iter().zip(expected_fields.iter()).all(
                     |(actual_field, expected_field)| {
                         actual_field.name() == expected_field.name()
-                            && (expected_field.is_nullable() || !actual_field.is_nullable())
                             && merge_output_type_compatible(
                                 actual_field.data_type(),
                                 expected_field.data_type(),
@@ -244,18 +243,13 @@ fn merge_output_type_compatible(actual: &DataType, expected: &DataType) -> bool 
         }
         (DataType::List(actual_field), DataType::List(expected_field))
         | (DataType::LargeList(actual_field), DataType::LargeList(expected_field)) => {
-            (expected_field.is_nullable() || !actual_field.is_nullable())
-                && merge_output_type_compatible(
-                    actual_field.data_type(),
-                    expected_field.data_type(),
-                )
+            merge_output_type_compatible(actual_field.data_type(), expected_field.data_type())
         }
         (
             DataType::FixedSizeList(actual_field, actual_size),
             DataType::FixedSizeList(expected_field, expected_size),
         ) => {
             actual_size == expected_size
-                && (expected_field.is_nullable() || !actual_field.is_nullable())
                 && merge_output_type_compatible(
                     actual_field.data_type(),
                     expected_field.data_type(),
@@ -266,7 +260,6 @@ fn merge_output_type_compatible(actual: &DataType, expected: &DataType) -> bool 
             DataType::Map(expected_entries, expected_sorted),
         ) => {
             actual_sorted == expected_sorted
-                && (expected_entries.is_nullable() || !actual_entries.is_nullable())
                 && merge_output_type_compatible(
                     actual_entries.data_type(),
                     expected_entries.data_type(),
