@@ -107,7 +107,7 @@ fn schema_has_field_ids(schema: &SchemaRef) -> bool {
 /// Arrow's, allow everything else) would fail open: a future addition to
 /// `parquet_convert_array` that this predicate does not know to also exclude would silently
 /// start producing wrong results instead of just missing an optimization.
-fn is_pure_structural_narrowing(
+pub(crate) fn is_pure_structural_narrowing(
     physical_type: &DataType,
     target_type: &DataType,
     parquet_options: &SparkParquetOptions,
