@@ -51,6 +51,8 @@ use std::hash::Hash;
 use std::ops::Range;
 use std::sync::Arc;
 
+use super::nested_float_normalize::{has_float_leaf, normalize_nested_floats};
+
 #[derive(Debug, PartialEq, Eq, Hash)]
 pub struct SparkArraysOverlap {
     signature: Signature,
@@ -395,11 +397,38 @@ where
     }
 }
 
+fn normalize_list_element_floats<OffsetSize: OffsetSizeTrait>(
+    list: &GenericListArray<OffsetSize>,
+) -> GenericListArray<OffsetSize> {
+    let field = match list.data_type() {
+        DataType::List(f) | DataType::LargeList(f) => Arc::clone(f),
+        _ => unreachable!("GenericListArray always has List or LargeList data type"),
+    };
+    let normalized_values = normalize_nested_floats(list.values());
+    GenericListArray::new(
+        field,
+        list.offsets().clone(),
+        normalized_values,
+        list.nulls().cloned(),
+    )
+}
+
 /// Fallback for nested and otherwise unhandled element types.
+///
+/// note: Spark's flat arrays_overlap (HashSet<Double>) treats -0.0 and 0.0 as different,
+/// only the nested path here treats them as equal. this normalization can't move into the
+/// flat fast path in arrays_overlap_list without breaking that difference.
 fn arrays_overlap_list_generic<OffsetSize: OffsetSizeTrait>(
     left: &GenericListArray<OffsetSize>,
     right: &GenericListArray<OffsetSize>,
 ) -> Result<ArrayRef> {
+    let left_owned =
+        has_float_leaf(left.values().data_type()).then(|| normalize_list_element_floats(left));
+    let left: &GenericListArray<OffsetSize> = left_owned.as_ref().unwrap_or(left);
+    let right_owned =
+        has_float_leaf(right.values().data_type()).then(|| normalize_list_element_floats(right));
+    let right: &GenericListArray<OffsetSize> = right_owned.as_ref().unwrap_or(right);
+
     let len = left.len();
     let mut builder = BooleanArray::builder(len);
 
@@ -838,9 +867,8 @@ mod tests {
     }
 
     #[test]
-    fn test_nested_float_total_order() -> Result<()> {
-        // Preserve the existing Arrow total-order behavior: NaN matches itself, while signed
-        // zeros are distinct.
+    fn test_nested_float_spark_equality() -> Result<()> {
+        // NaN matches itself, and signed zeros are equal, matching Spark.
         let left = make_nested_float_list(&[&[f64::NAN]]);
         let right = make_nested_float_list(&[&[f64::NAN]]);
         let result = arrays_overlap_list::<i32>(&left, &right)?;
@@ -851,7 +879,18 @@ mod tests {
         let right = make_nested_float_list(&[&[-0.0]]);
         let result = arrays_overlap_list::<i32>(&left, &right)?;
         let result = result.as_any().downcast_ref::<BooleanArray>().unwrap();
-        assert!(!result.value(0));
+        assert!(result.value(0));
+        Ok(())
+    }
+
+    #[test]
+    fn test_nested_float_signed_nan_spark_equality() -> Result<()> {
+        // [[-NaN]] vs [[NaN]] => true
+        let left = make_nested_float_list(&[&[-f64::NAN]]);
+        let right = make_nested_float_list(&[&[f64::NAN]]);
+        let result = arrays_overlap_list::<i32>(&left, &right)?;
+        let result = result.as_any().downcast_ref::<BooleanArray>().unwrap();
+        assert!(result.value(0));
         Ok(())
     }
 
@@ -1030,6 +1069,37 @@ mod tests {
         // [{1,2}, {1,NULL}] vs [{1,2}] => true (definite match on {1,2})
         let left = make_struct_list(vec![Some((Some(1), Some(2))), Some((Some(1), None))]);
         let right = make_struct_list(vec![Some((Some(1), Some(2)))]);
+
+        let result = arrays_overlap_list::<i32>(&left, &right)?;
+        let result = result.as_any().downcast_ref::<BooleanArray>().unwrap();
+        assert!(result.is_valid(0));
+        assert!(result.value(0));
+        Ok(())
+    }
+
+    /// Build a single-row ListArray of structs: List<Struct<a: Float64>>
+    fn make_struct_float_list(elements: Vec<Option<f64>>) -> ListArray {
+        let fields = vec![Arc::new(Field::new("a", DataType::Float64, true))];
+        let struct_builder =
+            StructBuilder::new(fields.clone(), vec![Box::new(Float64Builder::new())]);
+        let mut list_builder = ListBuilder::new(struct_builder);
+
+        for elem in &elements {
+            let sb = list_builder.values();
+            sb.field_builder::<Float64Builder>(0)
+                .unwrap()
+                .append_option(*elem);
+            sb.append(true);
+        }
+        list_builder.append(true);
+        list_builder.finish()
+    }
+
+    #[test]
+    fn test_struct_float_field_signed_zero_overlap() -> Result<()> {
+        // [{-0.0}] vs [{0.0}] => true, matching Spark
+        let left = make_struct_float_list(vec![Some(-0.0)]);
+        let right = make_struct_float_list(vec![Some(0.0)]);
 
         let result = arrays_overlap_list::<i32>(&left, &right)?;
         let result = result.as_any().downcast_ref::<BooleanArray>().unwrap();
