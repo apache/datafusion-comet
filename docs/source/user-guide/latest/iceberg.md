@@ -99,6 +99,13 @@ The native Iceberg reader supports the following features:
 - `IN` and `NOT IN` list operations
 - `BETWEEN` operations
 
+Native scanning does not imply that every predicate is evaluated inside iceberg-rust.
+List, map, and struct NULL checks can use native scans. Their residuals are omitted
+before native planning; the retained post-scan filter enforces them. Empty collections
+and collections containing null elements are non-null, matching Spark. A conjunction
+containing one of these residuals currently loses native row-group pruning for primitive conjuncts;
+safe partial pruning is tracked in [#5883](https://github.com/apache/datafusion-comet/issues/5883).
+
 **Partitioning:**
 
 - Standard partitioning with partition pruning
