@@ -19,6 +19,7 @@ use arrow::array::{Array, ArrayRef, BooleanArray, Int64Array, RecordBatch};
 use arrow::compute::kernels::boolean::{and, and_not, not};
 use arrow::compute::{filter_record_batch, prep_null_mask_filter};
 use arrow::datatypes::{DataType, SchemaRef};
+use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::common::utils::memory::estimate_memory_size;
 use datafusion::common::{DataFusionError, HashSet, ScalarValue};
 use datafusion::execution::memory_pool::{MemoryConsumer, MemoryReservation};
@@ -29,8 +30,9 @@ use datafusion::physical_plan::metrics::{BaselineMetrics, ExecutionPlanMetricsSe
 use datafusion::{
     execution::TaskContext,
     physical_plan::{
-        DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties,
-        RecordBatchStream, SendableRecordBatchStream,
+        apply_expression_roots, ChildrenPropertiesMode, DisplayAs, DisplayFormatType,
+        ExecutionPlan, Partitioning, PlanProperties, RecordBatchStream, ReplaceChildrenOptions,
+        SendableRecordBatchStream,
     },
 };
 use datafusion_comet_common::{cast_and_stamp_schema, SparkError};
@@ -180,9 +182,10 @@ impl ExecutionPlan for MergeRowsExec {
         vec![&self.child]
     }
 
-    fn with_new_children(
+    fn replace_children(
         self: Arc<Self>,
         children: Vec<Arc<dyn ExecutionPlan>>,
+        _options: ReplaceChildrenOptions,
     ) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
         let [child] = children.as_slice() else {
             return Err(DataFusionError::Internal(format!(
@@ -199,6 +202,42 @@ impl ExecutionPlan for MergeRowsExec {
             cache: Arc::clone(&self.cache),
             metrics: self.metrics.clone(),
         }))
+    }
+
+    fn apply_expressions(
+        &self,
+        f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> datafusion::common::Result<TreeNodeRecursion>,
+    ) -> datafusion::common::Result<TreeNodeRecursion> {
+        let instructions = self
+            .config
+            .matched_instructions
+            .iter()
+            .chain(self.config.not_matched_instructions.iter())
+            .chain(self.config.not_matched_by_source_instructions.iter());
+        let instruction_expressions = instructions.flat_map(|instruction| {
+            std::iter::once(&instruction.condition)
+                .chain(instruction.outputs.iter().flat_map(|output| output.iter()))
+        });
+
+        apply_expression_roots(
+            [
+                &self.config.is_source_row_present,
+                &self.config.is_target_row_present,
+            ]
+            .into_iter()
+            .chain(instruction_expressions),
+            f,
+        )
+    }
+
+    fn with_new_children(
+        self: Arc<Self>,
+        children: Vec<Arc<dyn ExecutionPlan>>,
+    ) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
+        self.replace_children(
+            children,
+            ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
+        )
     }
 
     fn execute(
@@ -1134,7 +1173,7 @@ mod tests {
     }
 
     #[test]
-    fn with_new_children_rejects_ordinal_out_of_range_for_new_child() {
+    fn replace_children_rejects_ordinal_out_of_range_for_new_child() {
         use datafusion::datasource::memory::MemorySourceConfig;
         let original_schema = Arc::new(Schema::new(vec![
             Field::new("a", DataType::Int32, true),
@@ -1166,7 +1205,12 @@ mod tests {
         )]));
         let narrow_child =
             MemorySourceConfig::try_new_exec(&[vec![]], narrow_schema, None).unwrap();
-        let err = exec.with_new_children(vec![narrow_child]).unwrap_err();
+        let err = exec
+            .replace_children(
+                vec![narrow_child],
+                ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
+            )
+            .unwrap_err();
         assert!(
             err.to_string().contains("out of range"),
             "expected an out-of-range ordinal error, got: {err}"
@@ -1174,7 +1218,7 @@ mod tests {
     }
 
     #[test]
-    fn with_new_children_rejects_wrong_arity() {
+    fn replace_children_rejects_wrong_arity() {
         use datafusion::datasource::memory::MemorySourceConfig;
         let source = MemorySourceConfig::try_new_exec(&[vec![]], test_schema(), None).unwrap();
         let exec = Arc::new(
@@ -1190,17 +1234,27 @@ mod tests {
             )
             .unwrap(),
         );
-        let no_children = Arc::clone(&exec).with_new_children(vec![]).unwrap_err();
+        let no_children = Arc::clone(&exec)
+            .replace_children(
+                vec![],
+                ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
+            )
+            .unwrap_err();
         assert!(no_children.to_string().contains("exactly one child"));
 
         let child_a = MemorySourceConfig::try_new_exec(&[vec![]], test_schema(), None).unwrap();
         let child_b = MemorySourceConfig::try_new_exec(&[vec![]], test_schema(), None).unwrap();
-        let two_children = exec.with_new_children(vec![child_a, child_b]).unwrap_err();
+        let two_children = exec
+            .replace_children(
+                vec![child_a, child_b],
+                ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
+            )
+            .unwrap_err();
         assert!(two_children.to_string().contains("exactly one child"));
     }
 
     #[test]
-    fn with_new_children_revalidates_row_id_schema() {
+    fn replace_children_revalidates_row_id_schema() {
         use datafusion::datasource::memory::MemorySourceConfig;
         let source = MemorySourceConfig::try_new_exec(&[vec![]], test_schema(), None).unwrap();
         let exec = Arc::new(
@@ -1224,7 +1278,12 @@ mod tests {
         )]));
         let narrow_child =
             MemorySourceConfig::try_new_exec(&[vec![]], narrow_schema, None).unwrap();
-        let err = exec.with_new_children(vec![narrow_child]).unwrap_err();
+        let err = exec
+            .replace_children(
+                vec![narrow_child],
+                ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
+            )
+            .unwrap_err();
         assert!(err.to_string().contains("must be Int64"));
     }
 
