@@ -39,8 +39,6 @@ import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator}
 class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   import testImplicits._
 
-  val ARITHMETIC_OVERFLOW_EXCEPTION_MSG =
-    """[ARITHMETIC_OVERFLOW] integer overflow. If necessary set "spark.sql.ansi.enabled" to "false" to bypass this error"""
   val DIVIDE_BY_ZERO_EXCEPTION_MSG =
     """Division by zero. Use `try_divide` to tolerate divisor being 0 and return NULL instead"""
 
@@ -2944,12 +2942,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
                               |  from tbl
                               |  """.stripMargin)
 
-        checkSparkAnswerMaybeThrows(res) match {
-          case (Some(sparkExc), Some(cometExc)) =>
-            assert(cometExc.getMessage.contains(ARITHMETIC_OVERFLOW_EXCEPTION_MSG))
-            assert(sparkExc.getMessage.contains("overflow"))
-          case _ => fail("Exception should be thrown")
-        }
+        checkSparkError(res, "ARITHMETIC_OVERFLOW")
       }
     }
   }
@@ -2964,12 +2957,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
                               |  _1 - _2
                               |  from tbl
                               |  """.stripMargin)
-        checkSparkAnswerMaybeThrows(res) match {
-          case (Some(sparkExc), Some(cometExc)) =>
-            assert(cometExc.getMessage.contains(ARITHMETIC_OVERFLOW_EXCEPTION_MSG))
-            assert(sparkExc.getMessage.contains("overflow"))
-          case _ => fail("Exception should be thrown")
-        }
+        checkSparkError(res, "ARITHMETIC_OVERFLOW")
       }
     }
   }
@@ -2985,12 +2973,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
                               |  from tbl
                               |  """.stripMargin)
 
-        checkSparkAnswerMaybeThrows(res) match {
-          case (Some(sparkExc), Some(cometExc)) =>
-            assert(cometExc.getMessage.contains(ARITHMETIC_OVERFLOW_EXCEPTION_MSG))
-            assert(sparkExc.getMessage.contains("overflow"))
-          case _ => fail("Exception should be thrown")
-        }
+        checkSparkError(res, "ARITHMETIC_OVERFLOW")
       }
     }
   }
@@ -3005,12 +2988,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
                               |  from tbl
                               |  """.stripMargin)
 
-        checkSparkAnswerMaybeThrows(res) match {
-          case (Some(sparkExc), Some(cometExc)) =>
-            assert(cometExc.getMessage.contains(DIVIDE_BY_ZERO_EXCEPTION_MSG))
-            assert(sparkExc.getMessage.contains("Division by zero"))
-          case _ => fail("Exception should be thrown")
-        }
+        checkSparkError(res, "DIVIDE_BY_ZERO")
       }
     }
   }
@@ -3025,12 +3003,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
                               |  from tbl
                               |  """.stripMargin)
 
-        checkSparkAnswerMaybeThrows(res) match {
-          case (Some(sparkExc), Some(cometExc)) =>
-            assert(cometExc.getMessage.contains(DIVIDE_BY_ZERO_EXCEPTION_MSG))
-            assert(sparkExc.getMessage.contains("Division by zero"))
-          case _ => fail("Exception should be thrown")
-        }
+        checkSparkError(res, "DIVIDE_BY_ZERO")
       }
     }
   }
@@ -3046,6 +3019,8 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
                 |  from tbl
                 |  """.stripMargin)
 
+          // Integral divide still raises an unconverted Arrow error under ANSI.
+          // https://github.com/apache/datafusion-comet/issues/5072
           checkSparkAnswerMaybeThrows(res) match {
             case (Some(sparkException), Some(cometException)) =>
               assert(sparkException.getMessage.contains(DIVIDE_BY_ZERO_EXCEPTION_MSG))
