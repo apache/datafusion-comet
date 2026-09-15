@@ -839,19 +839,29 @@ impl SparkDatetimeRebaseExpr {
             .ok_or_else(|| self.rebase_error("the rebased value overflows the timestamp range"))
     }
 
-    /// Whether every non-null value of `array` is at or after the Gregorian cutover, so no
-    /// rebase and no rejection applies and the batch can pass through untouched.
+    /// Whether `array` holds no null and no value before the Gregorian cutover, so no rebase
+    /// and no rejection applies and the batch can pass through untouched. The vectorised
+    /// minimum makes this one cheap pass on null-free values; arrays with nulls take the
+    /// per-value path below, which skips nulls without a second pass.
     fn all_modern<T: ArrowPrimitiveType<Native = i64>>(
         array: &PrimitiveArray<T>,
         cutover: i64,
     ) -> bool {
-        match array.nulls() {
-            None => array.values().iter().all(|&v| v >= cutover),
-            Some(nulls) => array
-                .values()
-                .iter()
-                .zip(nulls.iter())
-                .all(|(&v, valid)| !valid || v >= cutover),
+        array.null_count() == 0 && arrow::compute::min(array).is_none_or(|min| min >= cutover)
+    }
+
+    /// The refuse-ancient-values policy for timestamps: values at or after the cutover pass
+    /// through, anything earlier is an error naming `detail`.
+    fn check_ancient_timestamp(
+        &self,
+        v: i64,
+        units_per_second: i64,
+        detail: &str,
+    ) -> Result<i64, ArrowError> {
+        if v >= LAST_SWITCH_JULIAN_TS_SECONDS * units_per_second {
+            Ok(v)
+        } else {
+            Err(self.rebase_error(detail))
         }
     }
 
@@ -862,33 +872,34 @@ impl SparkDatetimeRebaseExpr {
         units_per_second: i64,
         original: &ArrayRef,
     ) -> DataFusionResult<ArrayRef> {
-        let cutover = LAST_SWITCH_JULIAN_TS_SECONDS * units_per_second;
-        // A batch with nothing before the cutover needs no new buffer under any policy: the
-        // legacy rebase is the identity there and the checking policies have nothing to reject.
-        if Self::all_modern(array, cutover) {
+        if policy == RebasePolicy::Corrected
+            || Self::all_modern(array, LAST_SWITCH_JULIAN_TS_SECONDS * units_per_second)
+        {
             return Ok(Arc::clone(original));
         }
         let tz = array.timezone().map(Arc::<str>::from);
         let rebased: PrimitiveArray<T> = match policy {
-            RebasePolicy::Corrected => return Ok(Arc::clone(original)),
+            RebasePolicy::Corrected => unreachable!("handled above"),
             RebasePolicy::Legacy(WriterTimeZone::Utc) => arrow::compute::try_unary(array, |v| {
                 self.rebase_timestamp_utc(v, units_per_second * 86_400)
             })?,
             RebasePolicy::Legacy(WriterTimeZone::OtherOrUnknown) => {
-                return Err(self
-                    .rebase_error(
+                arrow::compute::try_unary(array, |v| {
+                    self.check_ancient_timestamp(
+                        v,
+                        units_per_second,
                         "rebasing timestamps outside a fixed UTC writer zone needs the JVM's \
                          historical timezone tables, which are unavailable natively",
                     )
-                    .into());
+                })?
             }
-            RebasePolicy::CheckAncient => {
-                return Err(self
-                    .rebase_error(
-                        "the timestamp's calendar cannot be determined from the file's metadata",
-                    )
-                    .into());
-            }
+            RebasePolicy::CheckAncient => arrow::compute::try_unary(array, |v| {
+                self.check_ancient_timestamp(
+                    v,
+                    units_per_second,
+                    "the timestamp's calendar cannot be determined from the file's metadata",
+                )
+            })?,
         };
         Ok(Arc::new(rebased.with_timezone_opt(tz)))
     }
@@ -899,20 +910,13 @@ impl SparkDatetimeRebaseExpr {
         policy: RebasePolicy,
         original: &ArrayRef,
     ) -> DataFusionResult<ArrayRef> {
-        let all_modern = match dates.nulls() {
-            None => dates.values().iter().all(|&v| v >= LAST_SWITCH_JULIAN_DAY),
-            Some(nulls) => dates
-                .values()
-                .iter()
-                .zip(nulls.iter())
-                .all(|(&v, valid)| !valid || v >= LAST_SWITCH_JULIAN_DAY),
-        };
-        // Same shortcut as timestamps: nothing before the cutover means nothing to change.
-        if all_modern {
+        let all_modern = dates.null_count() == 0
+            && arrow::compute::min(dates).is_none_or(|min| min >= LAST_SWITCH_JULIAN_DAY);
+        if policy == RebasePolicy::Corrected || all_modern {
             return Ok(Arc::clone(original));
         }
         let rebased: Date32Array = match policy {
-            RebasePolicy::Corrected => return Ok(Arc::clone(original)),
+            RebasePolicy::Corrected => unreachable!("handled above"),
             // The day rebase is a pure calendar reinterpretation, independent of any timezone,
             // so every legacy writer zone rebases dates exactly.
             RebasePolicy::Legacy(_) => arrow::compute::unary::<Date32Type, _, Date32Type>(
@@ -920,11 +924,15 @@ impl SparkDatetimeRebaseExpr {
                 rebase_julian_to_gregorian_days,
             ),
             RebasePolicy::CheckAncient => {
-                return Err(self
-                    .rebase_error(
-                        "the date's calendar cannot be determined from the file's metadata",
-                    )
-                    .into());
+                arrow::compute::try_unary(dates, |v| -> Result<i32, ArrowError> {
+                    if v >= LAST_SWITCH_JULIAN_DAY {
+                        Ok(v)
+                    } else {
+                        Err(self.rebase_error(
+                            "the date's calendar cannot be determined from the file's metadata",
+                        ))
+                    }
+                })?
             }
         };
         Ok(Arc::new(rebased))
@@ -1737,10 +1745,10 @@ mod tests {
 
     #[test]
     fn modern_batches_pass_through_without_a_new_buffer() {
-        // Null slots may hold ancient garbage; validity decides, and a batch with nothing
-        // before the cutover is returned as the same Arc under every policy.
+        // A null-free batch with nothing before the cutover is returned as the same Arc under
+        // every policy; null slots may hold ancient garbage and validity still decides.
         let field = Field::new("d", DataType::Date32, true);
-        let dates: ArrayRef = Arc::new(Date32Array::from(vec![Some(0), None, Some(19876)]));
+        let dates: ArrayRef = Arc::new(Date32Array::from(vec![Some(0), Some(19876)]));
         let masked: ArrayRef = {
             let values = vec![0i32, -141428, 19876];
             let nulls = arrow::buffer::NullBuffer::from(vec![true, false, true]);
@@ -1752,26 +1760,36 @@ mod tests {
             true,
         );
         let ts: ArrayRef = Arc::new(
-            TimestampMicrosecondArray::from(vec![Some(1_700_000_000_000_000i64), None])
-                .with_timezone("UTC"),
+            TimestampMicrosecondArray::from(vec![
+                Some(1_700_000_000_000_000i64),
+                Some(1_700_000_000_000_001i64),
+            ])
+            .with_timezone("UTC"),
         );
         for policy in [
             RebasePolicy::CheckAncient,
             RebasePolicy::Legacy(WriterTimeZone::Utc),
             RebasePolicy::Legacy(WriterTimeZone::OtherOrUnknown),
         ] {
-            for input in [&dates, &masked] {
-                let out = eval_on(
-                    &rebase_expr(field.clone(), policy),
-                    Arc::clone(input),
-                    field.clone(),
-                )
-                .unwrap();
-                assert!(
-                    Arc::ptr_eq(&out, input),
-                    "{policy:?} should return the input array"
-                );
-            }
+            let out = eval_on(
+                &rebase_expr(field.clone(), policy),
+                Arc::clone(&dates),
+                field.clone(),
+            )
+            .unwrap();
+            assert!(
+                Arc::ptr_eq(&out, &dates),
+                "{policy:?} should return the input array"
+            );
+            // Null slots holding ancient values take the per-value path, which skips them and
+            // succeeds without rejecting.
+            let out = eval_on(
+                &rebase_expr(field.clone(), policy),
+                Arc::clone(&masked),
+                field.clone(),
+            )
+            .unwrap();
+            assert_eq!(out.null_count(), 1, "{policy:?} keeps the null");
             let out = eval_on(
                 &rebase_expr(ts_field.clone(), policy),
                 Arc::clone(&ts),
