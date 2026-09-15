@@ -119,7 +119,7 @@ support is tracked by [#4295](https://github.com/apache/datafusion-comet/issues/
 [#3983](https://github.com/apache/datafusion-comet/issues/3983).
 
 Shredded reconstruction can be slower than Spark's reader; see the
-[focused scan and allocation measurements](../../contributor-guide/benchmark-results/variant-projection.md).
+[focused scan and allocation measurements in PR #5868](https://github.com/apache/datafusion-comet/pull/5868).
 
 ## Other
 
