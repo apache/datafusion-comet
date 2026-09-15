@@ -87,6 +87,7 @@ async fn placeholder_updates_and_errors_are_not_hidden() {
         source,
         Arc::clone(&predicate),
         ExecutionPlanMetricsSet::new(),
+        "test_filter",
     ));
     let task = SessionContext::new().task_ctx();
     let mut stream = wrapper.execute(0, Arc::clone(&task)).unwrap();
@@ -104,9 +105,9 @@ async fn placeholder_updates_and_errors_are_not_hidden() {
     while let Some(batch) = stream.next().await {
         assert_eq!(batch.unwrap().num_rows(), 0);
     }
-    assert_eq!(metric(&wrapper, "dynamic_filter_rows_bypassed"), 2);
-    assert_eq!(metric(&wrapper, "dynamic_filter_rows_pruned"), 8);
-    assert_eq!(metric(&wrapper, "dynamic_filter_rows_evaluated"), 8);
+    assert_eq!(metric(&wrapper, "test_filter_rows_bypassed"), 2);
+    assert_eq!(metric(&wrapper, "test_filter_rows_pruned"), 8);
+    assert_eq!(metric(&wrapper, "test_filter_rows_evaluated"), 8);
 
     // Reset must not preserve an old condition, even while another owner
     // still holds the previous predicate.
@@ -115,8 +116,8 @@ async fn placeholder_updates_and_errors_are_not_hidden() {
         .await
         .unwrap();
     assert_eq!(row_count(&reset_output), 10);
-    assert_eq!(metric(&reset, "dynamic_filter_rows_pruned"), 0);
-    assert_eq!(metric(&reset, "dynamic_filter_rows_bypassed"), 10);
+    assert_eq!(metric(&reset, "test_filter_rows_pruned"), 0);
+    assert_eq!(metric(&reset, "test_filter_rows_bypassed"), 10);
 
     predicate.update(lit(42i32)).unwrap();
     let error = collect(wrapper, task).await.unwrap_err();

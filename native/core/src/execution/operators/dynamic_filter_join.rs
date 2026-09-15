@@ -99,6 +99,7 @@ impl DynamicFilterJoinExec {
             reader.unwrap_or_else(|| Arc::clone(self.template.right())),
             Arc::clone(&predicate),
             self.metrics.clone(),
+            "dynamic_filter_join",
         ));
         // In particular, do not share CollectLeft's cached build future with the
         // template, another execution, or a reset plan.
@@ -240,9 +241,9 @@ impl ExecutionPlan for DynamicFilterJoinExec {
     ) -> Result<SendableRecordBatchStream> {
         let runtime = self.build_runtime_join()?;
         let attachment_metric = if runtime.reader_filter_attached {
-            "dynamic_filter_reader_filters_attached"
+            "dynamic_filter_join_filters_attached"
         } else {
-            "dynamic_filter_reader_filters_skipped"
+            "dynamic_filter_join_filters_skipped"
         };
         MetricBuilder::new(&self.metrics)
             .counter(attachment_metric, partition)

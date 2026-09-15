@@ -288,6 +288,7 @@ async fn completed_filter_evaluates_only_the_shared_probe_key() {
         probe,
         predicate,
         ExecutionPlanMetricsSet::new(),
+        "dynamic_filter_join",
     ));
     let filtered = collect(consumer, session.task_ctx()).await.unwrap();
     let selected = BooleanArray::from(
@@ -353,9 +354,9 @@ async fn completed_build_filters_both_sides_and_session_inlist_settings() {
                             4,
                             "duplicates and late build keys must match"
                         );
-                        assert_eq!(metric(&attached, "dynamic_filter_rows_evaluated"), 202);
-                        assert!(metric(&attached, "dynamic_filter_rows_pruned") >= 199);
-                        assert_eq!(metric(&attached, "dynamic_filter_rows_bypassed"), 0);
+                        assert_eq!(metric(&attached, "dynamic_filter_join_rows_evaluated"), 202);
+                        assert!(metric(&attached, "dynamic_filter_join_rows_pruned") >= 199);
+                        assert_eq!(metric(&attached, "dynamic_filter_join_rows_bypassed"), 0);
                     } else {
                         assert_eq!(row_count(&actual), 0);
                     }
@@ -559,7 +560,7 @@ async fn independent_attempts_do_not_share_build_domains() {
             })
             .collect::<Vec<_>>();
         assert_eq!(keys, vec![build_key]);
-        assert_eq!(metric(&attached, "dynamic_filter_rows_pruned"), 1);
+        assert_eq!(metric(&attached, "dynamic_filter_join_rows_pruned"), 1);
     }
 }
 
@@ -840,7 +841,7 @@ async fn reader_filter_crosses_null_check_conjunction_and_retains_residual() {
             assert_eq!(
                 plan.metrics()
                     .unwrap()
-                    .sum_by_name("dynamic_filter_reader_filters_attached")
+                    .sum_by_name("dynamic_filter_join_filters_attached")
                     .unwrap()
                     .as_usize(),
                 1
@@ -887,7 +888,7 @@ async fn reader_filter_does_not_cross_fetch_limits() {
                 .unwrap();
             outputs.push(row_count(&output));
             if enabled {
-                assert_eq!(metric(&plan, "dynamic_filter_reader_filters_skipped"), 1);
+                assert_eq!(metric(&plan, "dynamic_filter_join_filters_skipped"), 1);
             }
         }
         assert_eq!(outputs, vec![0, 0]);
@@ -969,10 +970,10 @@ async fn reader_filter_does_not_cross_seeded_rand_probe_filter() {
                     .and_then(|metrics| metrics.sum_by_name(name))
                     .map_or(0, |value| value.as_usize())
             };
-            assert_eq!(dynamic_metric("dynamic_filter_reader_filters_attached"), 0);
-            assert_eq!(dynamic_metric("dynamic_filter_reader_filters_skipped"), 1);
-            assert_eq!(dynamic_metric("dynamic_filter_rows_evaluated"), 1);
-            assert_eq!(dynamic_metric("dynamic_filter_rows_pruned"), 0);
+            assert_eq!(dynamic_metric("dynamic_filter_join_filters_attached"), 0);
+            assert_eq!(dynamic_metric("dynamic_filter_join_filters_skipped"), 1);
+            assert_eq!(dynamic_metric("dynamic_filter_join_rows_evaluated"), 1);
+            assert_eq!(dynamic_metric("dynamic_filter_join_rows_pruned"), 0);
             assert_eq!(pruning_metric(&scan, "row_groups_pruned_statistics"), 0);
             assert_eq!(filter.metrics().unwrap().output_rows().unwrap(), 1);
         }
@@ -1037,7 +1038,7 @@ async fn run_parquet_join(values: Vec<i32>, enabled: bool) -> (usize, usize, usi
         .unwrap();
     let attached = plan
         .metrics()
-        .and_then(|metrics| metrics.sum_by_name("dynamic_filter_reader_filters_attached"))
+        .and_then(|metrics| metrics.sum_by_name("dynamic_filter_join_filters_attached"))
         .map_or(0, |metric| metric.as_usize());
     (
         row_count(&output),
@@ -1207,7 +1208,7 @@ async fn runtime_domains_release_with_streams_while_plans_remain_alive() {
                     assert_eq!(metrics.output_rows(), Some(1));
                     assert_eq!(
                         metrics
-                            .sum_by_name("dynamic_filter_rows_pruned")
+                            .sum_by_name("dynamic_filter_join_rows_pruned")
                             .unwrap()
                             .as_usize(),
                         1
@@ -1278,7 +1279,7 @@ async fn duplicate_heavy_builds_do_not_materialize_unreserved_inlists() {
         assert_eq!(
             plan.metrics()
                 .unwrap()
-                .sum_by_name("dynamic_filter_rows_pruned")
+                .sum_by_name("dynamic_filter_join_rows_pruned")
                 .unwrap()
                 .as_usize(),
             1
@@ -1392,14 +1393,14 @@ async fn child_replacement_rechecks_join_key_types() {
                 .unwrap();
             assert_eq!(row_count(&output), 1);
             if supported {
-                assert_eq!(metric(&rewritten, "dynamic_filter_rows_pruned"), 1);
+                assert_eq!(metric(&rewritten, "dynamic_filter_join_rows_pruned"), 1);
                 let reset = rewritten.reset_state().unwrap();
                 assert!(reset.is::<DynamicFilterJoinExec>());
                 let reset_output = collect(Arc::clone(&reset), session.task_ctx())
                     .await
                     .unwrap();
                 assert_eq!(row_count(&reset_output), 1);
-                assert_eq!(metric(&reset, "dynamic_filter_rows_pruned"), 1);
+                assert_eq!(metric(&reset, "dynamic_filter_join_rows_pruned"), 1);
             }
         }
     }

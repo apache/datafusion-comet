@@ -43,6 +43,7 @@ pub(crate) struct DynamicFilterExec {
     input: Arc<dyn ExecutionPlan>,
     predicate: Arc<DynamicFilterPhysicalExpr>,
     metrics: ExecutionPlanMetricsSet,
+    metric_prefix: &'static str,
 }
 
 impl DynamicFilterExec {
@@ -50,11 +51,13 @@ impl DynamicFilterExec {
         input: Arc<dyn ExecutionPlan>,
         predicate: Arc<DynamicFilterPhysicalExpr>,
         metrics: ExecutionPlanMetricsSet,
+        metric_prefix: &'static str,
     ) -> Self {
         Self {
             input,
             predicate,
             metrics,
+            metric_prefix,
         }
     }
 }
@@ -116,6 +119,7 @@ impl ExecutionPlan for DynamicFilterExec {
             children.remove(0),
             Arc::clone(&self.predicate),
             ExecutionPlanMetricsSet::new(),
+            self.metric_prefix,
         )))
     }
 
@@ -131,6 +135,7 @@ impl ExecutionPlan for DynamicFilterExec {
             Arc::clone(&self.input),
             predicate,
             ExecutionPlanMetricsSet::new(),
+            self.metric_prefix,
         )))
     }
 
@@ -150,16 +155,16 @@ impl ExecutionPlan for DynamicFilterExec {
         let predicate = Arc::clone(&self.predicate)
             .with_new_children(vec![Arc::new(Column::new(key.name(), 0))])?;
         let input = self.input.execute(partition, context)?;
-        let evaluated =
-            MetricBuilder::new(&self.metrics).counter("dynamic_filter_rows_evaluated", partition);
-        let pruned =
-            MetricBuilder::new(&self.metrics).counter("dynamic_filter_rows_pruned", partition);
-        let bypassed =
-            MetricBuilder::new(&self.metrics).counter("dynamic_filter_rows_bypassed", partition);
+        let evaluated = MetricBuilder::new(&self.metrics)
+            .counter(format!("{}_rows_evaluated", self.metric_prefix), partition);
+        let pruned = MetricBuilder::new(&self.metrics)
+            .counter(format!("{}_rows_pruned", self.metric_prefix), partition);
+        let bypassed = MetricBuilder::new(&self.metrics)
+            .counter(format!("{}_rows_bypassed", self.metric_prefix), partition);
         // Only dedicated metrics: merging this helper into the Spark join must not
         // add its input/output counts or elapsed time to the join's existing metrics.
-        let eval_time =
-            MetricBuilder::new(&self.metrics).subset_time("dynamic_filter_eval_time", partition);
+        let eval_time = MetricBuilder::new(&self.metrics)
+            .subset_time(format!("{}_eval_time", self.metric_prefix), partition);
         let stream = input.map(move |batch| {
             let batch = batch?;
             let _timer = eval_time.timer();
