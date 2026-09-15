@@ -22,9 +22,11 @@ package org.apache.comet.rules
 import scala.collection.mutable.ListBuffer
 
 import org.apache.spark.sql.SparkSession
-import org.apache.spark.sql.catalyst.expressions.{Divide, DoubleLiteral, EqualNullSafe, EqualTo, Expression, FloatLiteral, GreaterThan, GreaterThanOrEqual, KnownFloatingPointNormalized, LessThan, LessThanOrEqual, NamedExpression, Remainder}
+import org.apache.spark.sql.catalyst.expressions.{AttributeReference, AttributeSet, BinaryComparison, ConditionalExpression, DateAdd, Divide, DoubleLiteral, EqualNullSafe, EqualTo, Expression, FloatLiteral, GreaterThan, GreaterThanOrEqual, KnownFloatingPointNormalized, LeafExpression, LessThan, LessThanOrEqual, NamedExpression, NextDay, Remainder, SortOrder, TryEval, UnaryExpression}
 import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateMode, Final, Partial, PartialMerge}
+import org.apache.spark.sql.catalyst.expressions.codegen.CodegenFallback
 import org.apache.spark.sql.catalyst.optimizer.NormalizeNaNAndZero
+import org.apache.spark.sql.catalyst.plans.{JoinType, LeftExistence}
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.catalyst.trees.TreeNodeTag
 import org.apache.spark.sql.catalyst.util.sideBySide
@@ -46,7 +48,7 @@ import org.apache.spark.sql.execution.datasources.v2.csv.CSVScan
 import org.apache.spark.sql.execution.datasources.v2.json.JsonScan
 import org.apache.spark.sql.execution.datasources.v2.parquet.ParquetScan
 import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, BroadcastExchangeLike, ReusedExchangeExec, ShuffleExchangeExec, ShuffleExchangeLike}
-import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, BroadcastNestedLoopJoinExec, ShuffledHashJoinExec, SortMergeJoinExec}
+import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, BroadcastNestedLoopJoinExec, HashJoin, ShuffledHashJoinExec, SortMergeJoinExec}
 import org.apache.spark.sql.execution.window.WindowExec
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
@@ -68,6 +70,9 @@ object CometExecRule {
    */
   val COMET_UNSAFE_PARTIAL: TreeNodeTag[String] =
     TreeNodeTag[String]("comet.unsafePartialAgg")
+
+  private[rules] val UNSAFE_NEXT_DAY_EVALUATION: TreeNodeTag[String] =
+    TreeNodeTag[String]("comet.unsafeNextDayEvaluation")
 
   /**
    * Fully native operators.
@@ -317,6 +322,9 @@ case class CometExecRule(session: SparkSession)
   // spotless:on
   private def transform(plan: SparkPlan): SparkPlan = {
     def convertNode(op: SparkPlan): SparkPlan = op match {
+      case op if op.getTagValue(CometExecRule.UNSAFE_NEXT_DAY_EVALUATION).isDefined =>
+        withFallbackReason(op, op.getTagValue(CometExecRule.UNSAFE_NEXT_DAY_EVALUATION).get)
+
       // Scan marker produced by an optional, out-of-tree scan contrib (e.g. contrib/delta).
       // Matched by trait (no compile-time dependency on the contrib) and present only when that
       // contrib is on the classpath. The marker carries its own serde handler and typically wraps
@@ -699,13 +707,16 @@ case class CometExecRule(session: SparkSession)
       }
     } else {
       val normalizedPlan = normalizePlan(plan)
+      val planWithEvaluationMasks = preserveNextDayEvaluationMasks(normalizedPlan)
 
       val planWithJoinRewritten = if (CometConf.COMET_FORCE_SHJ.get()) {
-        normalizedPlan.transformUp { case p =>
-          RewriteJoin.rewrite(p)
+        planWithEvaluationMasks.transformUp {
+          // A protected path must execute Spark's original join, including its input sorts.
+          case p if p.getTagValue(CometExecRule.UNSAFE_NEXT_DAY_EVALUATION).isDefined => p
+          case p => RewriteJoin.rewrite(p)
         }
       } else {
-        normalizedPlan
+        planWithEvaluationMasks
       }
 
       // Tag Partial aggregates that must not be converted to Comet because a
@@ -812,6 +823,249 @@ case class CometExecRule(session: SparkSession)
           op
       }
     }
+  }
+
+  /** Keep ANSI next_day in Spark's row pipeline where consumers can skip or catch its errors. */
+  private def preserveNextDayEvaluationMasks(plan: SparkPlan): SparkPlan = {
+    def nextDayName(expr: Expression): Option[String] = expr.collectFirst {
+      // Both the native kernel and dispatcher can throw on rows that Spark skips.
+      case nextDay: NextDay if nextDay.failOnError => "next_day"
+    }
+
+    def firstMatch(joinType: JoinType): Boolean = joinType match {
+      case LeftExistence(_) => true
+      case _ => false
+    }
+
+    // Match Spark's whole-stage eligibility before relying on deferred generated expressions.
+    // In interpreted execution, or across an input adapter, a Project materializes every output.
+    def supportsWholeStage(node: SparkPlan): Boolean = node match {
+      case codegen: CodegenSupport
+          if conf.wholeStageEnabled &&
+            conf.getConf(SQLConf.CODEGEN_FACTORY_MODE).toString != "NO_CODEGEN" &&
+            codegen.supportCodegen =>
+        !node.expressions.exists(_.exists {
+          case _: LeafExpression => false
+          case _: CodegenFallback => true
+          case _ => false
+        }) && !WholeStageCodegenExec.isTooManyFields(conf, node.schema) &&
+        !node.children.exists(child => WholeStageCodegenExec.isTooManyFields(conf, child.schema))
+      case _ => false
+    }
+
+    // A deferred input is not necessarily skipped: date_add(x, 1), for example, always
+    // evaluates x when its output is consumed. Keep unknown multi-input expressions conservative;
+    // null intolerance alone does not guarantee operand order (division evaluates right first).
+    def eagerReferences(expr: Expression): AttributeSet = expr match {
+      case attribute: AttributeReference => AttributeSet(Seq(attribute))
+      case conditional: ConditionalExpression =>
+        AttributeSet(conditional.alwaysEvaluatedInputs.flatMap(eagerReferences))
+      // TryEval catches failures from deferred child code inside its generated try block.
+      case _: TryEval => AttributeSet.empty
+      case unary: UnaryExpression => eagerReferences(unary.child)
+      case _: DateAdd | _: BinaryComparison =>
+        // These generated expressions evaluate left first and skip right when left is null.
+        AttributeSet(
+          expr.children.take(if (expr.children.head.nullable) 1 else 2).flatMap(eagerReferences))
+      case _ => AttributeSet.empty
+    }
+
+    // A reused native Final may need to fall back along with its incompatible Partial buffer.
+    // Restore only that buffer-producing chain so tagUnsafePartialAggregates can protect it.
+    // Do not cross a materialized query stage or descend below the input of a pure Partial.
+    def restoreNativeAggregateBuffers(node: SparkPlan): Option[SparkPlan] = {
+      val original = node match {
+        case agg: CometHashAggregateExec => agg.originalPlan
+        case shuffle: CometShuffleExchangeExec => shuffle.originalPlan
+        case _ => node
+      }
+      def restore(children: Seq[SparkPlan]): SparkPlan = {
+        val restored = original.withNewChildren(children)
+        node.getTagValue(SparkPlan.LOGICAL_PLAN_TAG).foreach(restored.setLogicalLink)
+        restored
+      }
+      original match {
+        case agg: BaseAggregateExec
+            if agg.aggregateExpressions.nonEmpty &&
+              agg.aggregateExpressions.forall(_.mode == Partial) =>
+          if (original ne node) Some(restore(node.children)) else None
+        case agg: BaseAggregateExec
+            if agg.aggregateExpressions.forall(e =>
+              e.mode == Partial || e.mode == PartialMerge) =>
+          restoreNativeAggregateBuffers(node.children.head).map(child => restore(Seq(child)))
+        case _: ShuffleExchangeLike =>
+          restoreNativeAggregateBuffers(node.children.head).map(child => restore(Seq(child)))
+        case _ => None
+      }
+    }
+
+    def protect(
+        node: SparkPlan,
+        belowLimit: Boolean,
+        hasLimitAncestor: Boolean,
+        deferredInputs: AttributeSet): (SparkPlan, Option[String]) = {
+      val original = node match {
+        case scan: CometScanExec =>
+          scan.wrapped
+            .copy(partitionFilters = scan.partitionFilters, dataFilters = scan.dataFilters)
+        case comet: CometExec => comet.originalPlan
+        case shuffle: CometShuffleExchangeExec => shuffle.originalPlan
+        case broadcast: CometBroadcastExchangeExec => broadcast.originalPlan
+        case _ => node
+      }
+      val startsLimit = original match {
+        // Offset-only collection does not stop its input early.
+        case collect: CollectLimitExec => collect.limit >= 0
+        case _: LocalLimitExec | _: GlobalLimitExec => true
+        case topK: TakeOrderedAndProjectExec =>
+          SortOrder.orderingSatisfies(node.children.head.outputOrdering, topK.sortOrder)
+        case windowLimit
+            if ShimCometWindowGroupLimit.windowGroupLimitClass.exists(
+              _.isInstance(windowLimit)) =>
+          // Partitioned limits drain each group, but an outer LIMIT can still stop them.
+          // Keep the conservative behavior if a future rank function cannot be extracted.
+          ShimCometWindowGroupLimit.extract(windowLimit).forall(_.partitionSpec.isEmpty) &&
+          SortOrder.orderingSatisfies(
+            node.children.head.outputOrdering,
+            windowLimit.requiredChildOrdering.head)
+        case _ => false
+      }
+      // These operators consume their input before yielding rows. Still visit their children:
+      // an inner LocalLimit below an exchange must establish its own evaluation boundary.
+      val materializesInput = original match {
+        case _: SortExec | _: HashAggregateExec | _: ObjectHashAggregateExec |
+            _: ShuffleExchangeLike | _: BroadcastExchangeLike | _: QueryStageExec |
+            _: ReusedExchangeExec =>
+          true
+        case _ => false
+      }
+      // A top-K is still a LIMIT even when its current input requires sorting.
+      val limitAncestor = hasLimitAncestor || startsLimit ||
+        original.isInstanceOf[TakeOrderedAndProjectExec]
+      val childDeferredInputs = original match {
+        // AQE can present a previously converted subtree. Batch bridges must not hide
+        // the original Project from its Spark consumer's deferred-input contract.
+        case _: RowToColumnarExec | _: ColumnarToRowExec | _: CometColumnarToRowExec |
+            _: CometNativeColumnarToRowExec | _: CometSparkToColumnarExec =>
+          deferredInputs
+        // Spark gives both children of these joins separate generated stages. Stage roots
+        // and input adapters likewise materialize rows before handing them to a consumer.
+        case _: SortMergeJoinExec | _: ShuffledHashJoinExec | _: WholeStageCodegenExec |
+            _: InputAdapter =>
+          AttributeSet.empty
+        case project: ProjectExec if supportsWholeStage(project) =>
+          val eagerOutputs = project.projectList.filterNot(expr =>
+            expr.deterministic && deferredInputs.contains(expr.toAttribute))
+          project.inputSet -- project.usedInputs --
+            AttributeSet(eagerOutputs.flatMap(eagerReferences))
+        case codegen: CodegenSupport if !materializesInput && supportsWholeStage(original) =>
+          original.inputSet -- codegen.usedInputs
+        case _ => AttributeSet.empty
+      }
+      val protectedChildren = node.children.map { child =>
+        protect(
+          child,
+          startsLimit || (belowLimit && !materializesInput),
+          limitAncestor,
+          childDeferredInputs)
+      }
+      val childReason = protectedChildren.flatMap(_._2).headOption
+      val condition = original match {
+        case join: HashJoin if firstMatch(join.joinType) => join.condition
+        case join: SortMergeJoinExec if firstMatch(join.joinType) => join.condition
+        case join: BroadcastNestedLoopJoinExec if firstMatch(join.joinType) => join.condition
+        case _ => None
+      }
+      val finalAggregate = original match {
+        case agg: BaseAggregateExec
+            if (agg.isInstanceOf[HashAggregateExec] ||
+              agg.isInstanceOf[ObjectHashAggregateExec]) &&
+              agg.aggregateExpressions.map(_.mode).distinct == Seq(Final) =>
+          Some(agg)
+        case _ => None
+      }
+      val limitName = if (belowLimit) {
+        // Final merges buffers; it does not reevaluate the aggregate's original inputs.
+        val expressions = finalAggregate.map(_.resultExpressions).getOrElse(original.expressions)
+        expressions.iterator.flatMap(nextDayName).take(1).toSeq.headOption
+      } else {
+        None
+      }
+      // AQE can remove an intervening sort after a native Partial has materialized. Choose
+      // compatible buffers before that happens, even if a current operator drains its input.
+      val aggregateBufferName = if (hasLimitAncestor && conf.adaptiveExecutionEnabled) {
+        finalAggregate
+          .filterNot(agg => QueryPlanSerde.allAggsSupportMixedExecution(agg.aggregateExpressions))
+          .flatMap(_.resultExpressions.iterator.flatMap(nextDayName).take(1).toSeq.headOption)
+      } else {
+        None
+      }
+      val deferredOutputExpressions = original match {
+        case project: ProjectExec => project.projectList
+        // Grouped hash aggregation materializes its input but defers deterministic result
+        // expressions to its consumer. Ungrouped aggregation evaluates its results eagerly.
+        case aggregate: HashAggregateExec if aggregate.groupingExpressions.nonEmpty =>
+          aggregate.resultExpressions
+        case _ => Seq.empty
+      }
+      val deferredProjection =
+        if (deferredOutputExpressions.nonEmpty && supportsWholeStage(original)) {
+          deferredOutputExpressions
+            .filter(expr => expr.deterministic && deferredInputs.contains(expr.toAttribute))
+            .flatMap(nextDayName)
+            .headOption
+            .map(name => s"$name requires Spark evaluation in a deferred projection")
+        } else {
+          None
+        }
+      val ownReason = limitName
+        .map(name => s"$name requires Spark evaluation below LIMIT")
+        .orElse(aggregateBufferName.map(name =>
+          s"$name requires Spark aggregate buffers below LIMIT with AQE"))
+        .orElse(deferredProjection)
+        .orElse(
+          condition
+            .flatMap(nextDayName)
+            .map(name => s"$name requires Spark evaluation in first-match join conditions"))
+        .orElse(node.getTagValue(CometExecRule.UNSAFE_NEXT_DAY_EVALUATION))
+      // Exchanges can restart native execution after consuming a Spark row pipeline.
+      val restartsNative = original.isInstanceOf[ShuffleExchangeLike] ||
+        original.isInstanceOf[BroadcastExchangeLike]
+      val reason = ownReason.orElse(if (restartsNative) None else childReason)
+      val children = protectedChildren.map(_._1).map { child =>
+        original match {
+          case agg: BaseAggregateExec
+              if reason.isDefined && agg.aggregateExpressions.map(_.mode).distinct == Seq(
+                Final) &&
+                !QueryPlanSerde.allAggsSupportMixedExecution(agg.aggregateExpressions) =>
+            restoreNativeAggregateBuffers(child).getOrElse(child)
+          case _ => child
+        }
+      }
+      val prepared = node match {
+        // Do not refill a batch between the row expression and its short-circuiting consumer.
+        case _: RowToColumnarExec | _: CometSparkToColumnarExec if childReason.isDefined =>
+          children.head
+        case _: ColumnarToRowExec | _: CometColumnarToRowExec | _: CometNativeColumnarToRowExec
+            if childReason.isDefined && !children.head.supportsColumnar =>
+          children.head
+        case _ if (original ne node) && (reason.isDefined || children != node.children) =>
+          // AQE can reuse an existing native subtree. Rebuild affected ancestors as well so
+          // their serialized native plans do not retain the expression that just fell back.
+          val restored = original.withNewChildren(children)
+          node.getTagValue(SparkPlan.LOGICAL_PLAN_TAG).foreach(restored.setLogicalLink)
+          restored
+        case _ => node.withNewChildren(children)
+      }
+      reason.foreach(prepared.setTagValue(CometExecRule.UNSAFE_NEXT_DAY_EVALUATION, _))
+      (prepared, reason)
+    }
+
+    protect(
+      plan,
+      belowLimit = false,
+      hasLimitAncestor = false,
+      deferredInputs = AttributeSet.empty)._1
   }
 
   /** Convert a Spark plan to a Comet plan using the specified serde handler */
@@ -1168,6 +1422,8 @@ case class CometExecRule(session: SparkSession)
   private def canAggregateBeConverted(
       agg: BaseAggregateExec,
       expectedMode: AggregateMode): Boolean = {
+    if (agg.getTagValue(CometExecRule.UNSAFE_NEXT_DAY_EVALUATION).isDefined) return false
+
     val handler = allExecs.get(agg.getClass)
     if (handler.isEmpty) return false
     val serde = handler.get.asInstanceOf[CometOperatorSerde[SparkPlan]]
