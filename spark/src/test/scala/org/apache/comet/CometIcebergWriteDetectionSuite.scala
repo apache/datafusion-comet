@@ -500,11 +500,55 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
     assert(unresolved.exists(_.contains("gs://")), unresolved)
   }
 
+  test("fall-back: gs data location under ResolvingFileIO whose GCSFileIO fails to initialize") {
+    // ResolvingFileIO.ioClass maps gs:// to GCSFileIO, but the delegate it instantiates is a
+    // HadoopFileIO whenever loading or initializing GCSFileIO throws an IllegalArgumentException,
+    // so the gate must judge the instantiated delegate. An unparseable GCS chunk size makes
+    // GCSFileIO.initialize throw NumberFormatException where the GCS client libraries are
+    // present; where they are absent, loading fails earlier (or, when only some of them are
+    // present, construction fails with an error Iceberg does not fall back from, and the writer
+    // itself would fail). On every classpath the effective delegate is never GCSFileIO and the
+    // write must be declined.
+    withTempIcebergDir { warehouseDir =>
+      val location = "gs://nonexistent/iceberg/db/gs_resolving_bad"
+      val badProperty = "gcs.channel.read.chunk-size-bytes" -> "invalid"
+      val resolving = new ResolvingFileIO()
+      resolving.setConf(new Configuration())
+      resolving.initialize(java.util.Collections.singletonMap(badProperty._1, badProperty._2))
+      val delegate =
+        try IcebergReflection.resolveFileIOClass(resolving, location)
+        finally resolving.close()
+      logInfo(s"ResolvingFileIO delegate with $badProperty on this classpath: $delegate")
+      assert(delegate.forall(_ == classOf[HadoopFileIO]), delegate)
+      val badCat = "resolving_bad_io_cat"
+      withSQLConf(
+        s"spark.sql.catalog.$badCat" -> "org.apache.iceberg.spark.SparkCatalog",
+        s"spark.sql.catalog.$badCat.type" -> "hadoop",
+        s"spark.sql.catalog.$badCat.warehouse" -> warehouseDir.getAbsolutePath,
+        s"spark.sql.catalog.$badCat.io-impl" -> classOf[ResolvingFileIO].getName,
+        s"spark.sql.catalog.$badCat.${badProperty._1}" -> badProperty._2) {
+        spark.sql(s"""
+          CREATE TABLE $badCat.$ns.gs_resolving_bad (
+            id INT,
+            region STRING,
+            amount DOUBLE
+          ) USING iceberg
+          TBLPROPERTIES ('write.data.path'='$location')
+        """)
+        val writeExec = planInsertWriteExec(s"$badCat.$ns.gs_resolving_bad")
+        assertUnsupportedContains(writeExec, "gs_resolving_bad", "gs://")
+        CometIcebergNativeWrite.getSupportLevel(writeExec) match {
+          case Unsupported(Some(reason)) => assert(!reason.contains("GCSFileIO"), reason)
+          case other => fail(s"expected Unsupported with a reason, got $other")
+        }
+      }
+    }
+  }
+
   test("gs data location under ResolvingFileIO is judged by the resolved delegate") {
-    // ResolvingFileIO (the REST catalog default) picks GCSFileIO for gs:// when the GCS bundle
-    // loads and HadoopFileIO otherwise; the expectation follows whichever this classpath yields.
-    // Resolved through the gate's own helper: `ResolvingFileIO.ioClass` throws a
-    // NoClassDefFoundError (not an Exception) when the GCS client libraries are absent.
+    // ResolvingFileIO (the REST catalog default) instantiates GCSFileIO for gs:// when the GCS
+    // client libraries are present and HadoopFileIO otherwise; the expectation follows whichever
+    // this classpath yields.
     withTempIcebergDir { warehouseDir =>
       val location = "gs://nonexistent/iceberg/db/gs_resolving"
       val resolving = new ResolvingFileIO()

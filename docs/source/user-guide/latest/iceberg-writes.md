@@ -178,7 +178,8 @@ so an encrypting `FileIO` is rejected on the write side), and `table.encryption(
 Iceberg's `PlaintextEncryptionManager`. Anything else falls back.
 
 A `gs` data location additionally requires that the `FileIO` actually opening it is a
-`GCSFileIO` (for a `ResolvingFileIO`, the delegate it resolves for that location). A
+`GCSFileIO` (for a `ResolvingFileIO`, the delegate it instantiates for that location,
+which is a `HadoopFileIO` when the GCS `FileIO` cannot be loaded or initialized). A
 `HadoopFileIO` takes its GCS credentials, endpoint and project from `fs.gs.*` in the Hadoop
 Configuration, and only `fs.s3a.*` is translated into the native `FileIO`, so the native writer
 could resolve a different storage identity or endpoint than the JVM writer would. That
