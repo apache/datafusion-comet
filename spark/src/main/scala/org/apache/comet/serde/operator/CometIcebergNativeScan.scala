@@ -263,6 +263,22 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
     }
 
   /**
+   * A DeleteFile accessor added by Iceberg's deletion-vector support, or None when there is no
+   * value to forward.
+   *
+   * None covers the two benign cases: the method is absent, on an Iceberg version predating
+   * deletion vectors where no vector can be missed, or it returns null, which is how a delete
+   * file that is not a deletion vector answers. An invocation failure is deliberately left to
+   * propagate, like `keyMetadataBytes` above -- dropping a vector's coordinates would apply none
+   * of its deletes and silently return the deleted rows.
+   */
+  private def deletionVectorField(
+      clazz: Class[_],
+      methodName: String,
+      deleteFile: Any): Option[AnyRef] =
+    IcebergReflection.findMethod(clazz, methodName).flatMap(m => Option(m.invoke(deleteFile)))
+
+  /**
    * Extracts delete files from an Iceberg FileScanTask as a list (for deduplication).
    *
    * Delete-file size is not serialized; the native scan stats each file for it (see
@@ -273,7 +289,8 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
       task: Any,
       contentFileClass: Class[_],
       fileScanTaskClass: Class[_],
-      deleteFileClass: Class[_]): Seq[OperatorOuterClass.IcebergDeleteFile] = {
+      deleteFileClass: Class[_],
+      internPath: String => Int): Seq[OperatorOuterClass.IcebergDeleteFile] = {
     try {
       // keyMetadata() is declared on ContentFile; present across all supported Iceberg versions.
       val keyMetadataMethod = IcebergReflection.getMethod(contentFileClass, "keyMetadata")
@@ -291,7 +308,7 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
                 "ContentFile -- cannot extract delete file path from FileScanTask"))
 
         val deleteBuilder = OperatorOuterClass.IcebergDeleteFile.newBuilder()
-        deleteBuilder.setFilePath(deletePath)
+        deleteBuilder.setFilePathIdx(internPath(deletePath))
 
         val contentType =
           try {
@@ -309,6 +326,17 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
               IcebergReflection.ContentTypes.POSITION_DELETES
           }
         deleteBuilder.setContentType(contentType)
+
+        // "PARQUET", or "PUFFIN" for a V3 deletion vector. iceberg-rust selects its
+        // deletion-vector reader on this, and a wrong value reads a Puffin blob as Parquet, so an
+        // undeterminable format is fatal: by serde time there is no fallback left.
+        val fileFormat = IcebergReflection
+          .getFileFormat(contentFileClass, deleteFile)
+          .getOrElse(
+            throw new RuntimeException(
+              "ContentFile.format() is not declared on this Iceberg version -- cannot tell a " +
+                "deletion vector from a Parquet delete file"))
+        deleteBuilder.setFileFormat(fileFormat)
 
         val specId =
           try {
@@ -329,6 +357,30 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
         } catch {
           case _: Exception =>
         }
+
+        // Gated on the format, not on the accessors returning a value: Iceberg also sets
+        // referencedDataFile on file-scoped Parquet position deletes, where iceberg-rust ignores
+        // it. Forwarding it there would serialize a data-file path per delete file that nothing
+        // reads, and would invite keying deletion-vector detection on the field instead of on
+        // fileFormat, which is the only discriminator.
+        if (fileFormat.equalsIgnoreCase(IcebergReflection.FileFormats.PUFFIN)) {
+          deletionVectorField(deleteFileClass, "referencedDataFile", deleteFile)
+            .foreach(p => deleteBuilder.setReferencedDataFile(p.asInstanceOf[String]))
+          deletionVectorField(deleteFileClass, "contentOffset", deleteFile)
+            .foreach(o => deleteBuilder.setContentOffset(o.asInstanceOf[java.lang.Long]))
+          deletionVectorField(deleteFileClass, "contentSizeInBytes", deleteFile)
+            .foreach(s => deleteBuilder.setContentSizeInBytes(s.asInstanceOf[java.lang.Long]))
+        }
+
+        // recordCount is declared on ContentFile, so it is present on every supported Iceberg
+        // version and a lookup failure is a real defect rather than an old-version absence.
+        // iceberg-rust rejects a deletion vector without it, since it checks the count against
+        // the cardinality it decodes from the blob.
+        deleteBuilder.setRecordCount(
+          IcebergReflection
+            .getMethod(contentFileClass, "recordCount")
+            .invoke(deleteFile)
+            .asInstanceOf[java.lang.Long])
 
         // Encrypted delete files carry a plaintext StandardKeyMetadata blob; forward it verbatim.
         // Unencrypted delete files leave the field unset.
@@ -882,13 +934,26 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
     val nameMappingToPoolIndex = mutable.HashMap[String, Int]()
     val projectFieldIdsToPoolIndex = mutable.HashMap[Seq[Int], Int]()
     val partitionDataToPoolIndex = mutable.HashMap[String, Int]()
-    // Individual delete files are interned into a flat pool keyed by path (a delete file's path is
-    // its identity); deleteFilesToPoolIndex then dedups the per-task sets as lists of indices into
-    // that pool. One delete file applies to many data files under Iceberg's default partition
-    // delete granularity, so interning avoids re-serializing it once per referencing FileScanTask.
-    val deleteFileToPoolIndex = mutable.HashMap[String, Int]()
+    // Individual delete files are interned into a flat pool; deleteFilesToPoolIndex then dedups
+    // the per-task sets as lists of indices into it, so a delete file that applies to many data
+    // files (Iceberg's default partition delete granularity) is serialized once rather than once
+    // per referencing FileScanTask. Keyed on the whole message rather than the path: V3 deletion
+    // vectors for different data files share one Puffin file and differ only by content offset,
+    // so a path key would collapse them and drop every vector but the first.
+    val deleteFileToPoolIndex = mutable.HashMap[OperatorOuterClass.IcebergDeleteFile, Int]()
     val deleteFilesToPoolIndex =
       mutable.HashMap[Seq[Int], Int]()
+    // Delete-file paths are interned separately from the delete files themselves: every deletion
+    // vector in a commit lives in one Puffin file, so one path is shared by as many pool entries
+    // as there are data files.
+    val deleteFilePathToPoolIndex = mutable.HashMap[String, Int]()
+    def internDeleteFilePath(path: String): Int =
+      deleteFilePathToPoolIndex.getOrElseUpdate(
+        path, {
+          val idx = deleteFilePathToPoolIndex.size
+          commonBuilder.addDeleteFilePathPool(path)
+          idx
+        })
     val residualToPoolIndex = mutable.HashMap[OperatorOuterClass.IcebergPredicate, Int]()
     // Field-id mappings are read out of an Iceberg schema by reflection, one lookup per column, so
     // memoize them. Keyed like schemaToPoolIndex above: a task schema that Iceberg materializes
@@ -1100,13 +1165,14 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
                     task,
                     contentFileClass,
                     fileScanTaskClass,
-                    deleteFileClass)
+                    deleteFileClass,
+                    internDeleteFilePath)
                 if (deleteFilesList.nonEmpty) {
                   // Intern each delete file into the flat pool, then dedup this task's set as the
                   // resulting list of pool indices.
                   val deleteFileIndices = deleteFilesList.map { df =>
                     deleteFileToPoolIndex.getOrElseUpdate(
-                      df.getFilePath, {
+                      df, {
                         val idx = deleteFileToPoolIndex.size
                         commonBuilder.addDeleteFilePool(df)
                         idx
@@ -1200,6 +1266,7 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
       partitionDataToPoolIndex.size,
       deleteFileToPoolIndex.size,
       deleteFilesToPoolIndex.size,
+      deleteFilePathToPoolIndex.size,
       residualToPoolIndex.size)
 
     val avgDedup = if (totalTasks == 0) {
@@ -1217,7 +1284,7 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
     // Per-pool byte sizes to diagnose an oversized common message. Sizes sum as Long because a
     // single pool at or past protobuf's 2 GiB message limit overflows the int getSerializedSize,
     // and the logging runs before toByteArray so the breakdown survives even if that allocation
-    // fails. String pools carry JSON, whose serialized size is its UTF-8 length.
+    // fails. String pools carry JSON or file paths, whose serialized size is the UTF-8 length.
     def sumSizes(sizes: Iterator[Int]): Long = sizes.map(_.toLong).sum
     def sumStrBytes(strings: mutable.Buffer[String]): Long =
       strings.iterator.map(_.getBytes(UTF_8).length.toLong).sum
@@ -1252,6 +1319,10 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
         "delete_file",
         commonBuilder.getDeleteFilePoolCount,
         sumSizes(commonBuilder.getDeleteFilePoolList.asScala.iterator.map(_.getSerializedSize))),
+      (
+        "delete_file_path",
+        commonBuilder.getDeleteFilePathPoolCount,
+        sumStrBytes(commonBuilder.getDeleteFilePathPoolList.asScala)),
       (
         "delete_files_set",
         commonBuilder.getDeleteFilesPoolCount,

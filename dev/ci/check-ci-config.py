@@ -15,7 +15,7 @@
 # specific language governing permissions and limitations
 # under the License.
 
-# Guards four CI invariants that are silent when broken:
+# Guards six CI invariants that are silent when broken:
 #
 #   1. Change-filter routing. dev/ci/compute-changes.py decides which heavy
 #      jobs run. A file that a job depends on but that no filter lists makes
@@ -44,6 +44,17 @@
 #      name make `download-artifact` pick by highest artifact ID rather than
 #      by `needs`, and make the forced `overwrite` on an upload retry delete
 #      a sibling's finished artifact.
+#
+#   5. Local actions resolve from the workspace, so a `uses: ./.github/...`
+#      in a job that skipped the checkout cannot be loaded at all. Jobs that
+#      run only under an input or a label can carry that for a long time
+#      before anyone runs them.
+#
+#   6. Push-tier scope. On push to main, ci.yml calls pr_build_linux.yml with
+#      `cache-refresh-only`, which reduces it to the jobs that write an
+#      actions/cache entry; the merge queue already tested that tree. A job
+#      added to that workflow without the guard starts running on every push
+#      again and nothing fails, so nothing tells you.
 #
 # Run from the repository root: python3 dev/ci/check-ci-config.py
 
@@ -76,11 +87,13 @@ AGGREGATOR_EXEMPT = {AGGREGATOR_JOB, "docs"}
 # filter deletion cannot pass unnoticed.
 BUILD_JOBS = {
     "build_linux",
+    "build_linux_full",
     "build_macos",
     "spark_3_4",
     "spark_3_5",
     "spark_4_0",
     "spark_4_1",
+    "spark_4_1_hive",
     "iceberg_1_8",
     "iceberg_1_9",
     "iceberg_1_10",
@@ -93,35 +106,106 @@ ROUTING_CASES = [
     ([".mvn/maven.config"], BUILD_JOBS),
     ([".mvn/wrapper/maven-wrapper.properties"], BUILD_JOBS),
     (["mvnw"], BUILD_JOBS),
-    # The upload wrapper is used by every producer of a shared artifact.
+    # The artifact wrappers are used by every producer and consumer of a
+    # shared artifact. Without these, an edit confined to one of them routes
+    # to nothing at all and merges having been exercised by no consumer.
     ([".github/actions/upload-artifact-retry/action.yaml"], BUILD_JOBS),
+    ([".github/actions/download-artifact-retry/action.yaml"], BUILD_JOBS),
+    # The Maven bootstrap composite is called only from pr_build_linux.yml.
+    ([".github/actions/maven-bootstrap/action.yaml"], {"build_linux", "build_linux_full"}),
     # Spot checks that the additions above did not widen unrelated routes.
     (["docs/source/user-guide/overview.md"], {"docs"}),
     (["native/core/benches/parquet_read.rs"], {"benchmark"}),
 ]
 
 # Event policy. Each case is (event, expected set of jobs allowed to run),
-# where "allowed" ignores path filters. Transcribed from the `if:` expressions
-# ci.yml carried before POLICY moved into compute-changes.py, so these pin the
-# pre-refactor behaviour rather than restating the new code.
-PR_TIER = {"build_linux", "build_macos", "benchmark", "spark_3_5", "spark_4_1", "iceberg_1_11"}
+# where "allowed" ignores path filters. Written out longhand rather than
+# derived from POLICY, so that a change to the routing has to be stated twice
+# and cannot be made by accident.
+PR_TIER = {"build_linux", "build_linux_full", "spark_4_1", "iceberg_1_11"}
+SPARK_OPT_IN = {"spark_3_5", "spark_4_0", "spark_4_1_hive"}
+# Spark 3.4 is deprecated and sits outside the queue tier entirely: a label on
+# a pull request, or a workflow_dispatch, and nothing else. Keeping it in its
+# own set is what makes the `merge_group` case below assert its absence rather
+# than quietly accept it coming back.
+SPARK_DEPRECATED = {"spark_3_4"}
 ICEBERG_OPT_IN = {"iceberg_1_8", "iceberg_1_9", "iceberg_1_10"}
-ALL_JOBS = PR_TIER | ICEBERG_OPT_IN | {"docs", "spark_3_4", "spark_4_0"}
+BUILD_OPT_IN = {"build_macos", "benchmark"}
+QUEUE_TIER = PR_TIER | SPARK_OPT_IN | ICEBERG_OPT_IN | BUILD_OPT_IN
+ALL_JOBS = QUEUE_TIER | SPARK_DEPRECATED | {"docs"}
 
 POLICY_CASES = [
     # A manual run may exercise anything.
     ({"name": "workflow_dispatch"}, ALL_JOBS),
-    # Push to main runs every job, docs included: it is the only event that
-    # may deploy the site.
-    ({"name": "push"}, ALL_JOBS),
+    # The merge queue is the authoritative gate: everything except the site
+    # deploy, which can only run once the commit is actually on main, and the
+    # deprecated Spark 3.4 suite, which no longer gates a merge.
+    ({"name": "merge_group"}, QUEUE_TIER),
+    # Push to main is the site deploy plus the Linux build, which is there to
+    # refresh main's actions/cache entries (see POLICY). `build_linux_full`
+    # must stay out: it is what turns the lints and the test matrix back on,
+    # and the queue has already run those against the tree that landed. Any
+    # other test job showing up here means every merge is paying for it twice.
+    ({"name": "push"}, {"docs", "build_linux"}),
     # A plain pull request: the PR tier only. docs must never run here, and the
     # opt-in suites stay off without their label.
     ({"name": "pull_request", "action": "opened", "labels": []}, PR_TIER),
     ({"name": "pull_request", "action": "synchronize", "labels": []}, PR_TIER),
-    # An opt-in label present on a pushed commit adds just that suite.
+    # Spark 3.5 moved behind the queue; its label is the escape hatch.
+    (
+        {"name": "pull_request", "action": "synchronize", "labels": ["run-spark-3.5-tests"]},
+        PR_TIER | {"spark_3_5"},
+    ),
+    # So did the macOS build and the benchmark compile check, each with its
+    # own label. Neither label pulls in the other.
+    (
+        {"name": "pull_request", "action": "synchronize", "labels": ["run-macos-tests"]},
+        PR_TIER | {"build_macos"},
+    ),
+    (
+        {"name": "pull_request", "action": "synchronize", "labels": ["run-benchmark-check"]},
+        PR_TIER | {"benchmark"},
+    ),
+    (
+        {
+            "name": "pull_request",
+            "action": "labeled",
+            "label": "run-macos-tests",
+            "labels": ["run-macos-tests"],
+        },
+        {"build_macos"},
+    ),
+    # The Spark 4.1 hive shards are queue-only with their own label. The label
+    # adds them to the PR tier's Spark 4.1 call rather than starting a second.
+    (
+        {"name": "pull_request", "action": "synchronize", "labels": ["run-spark-4.1-hive-tests"]},
+        PR_TIER | {"spark_4_1_hive"},
+    ),
+    (
+        {
+            "name": "pull_request",
+            "action": "labeled",
+            "label": "run-spark-4.1-hive-tests",
+            "labels": ["run-spark-4.1-hive-tests"],
+        },
+        {"spark_4_1_hive"},
+    ),
+    # An opt-in label present on a pushed commit adds just that suite. For the
+    # deprecated Spark 3.4 suite the label is the *only* way it ever runs on a
+    # pull request or the queue, so this case and the `labeled` one below are
+    # what keep it reachable at all.
     (
         {"name": "pull_request", "action": "synchronize", "labels": ["run-spark-3.4-tests"]},
         PR_TIER | {"spark_3_4"},
+    ),
+    (
+        {
+            "name": "pull_request",
+            "action": "labeled",
+            "label": "run-spark-3.4-tests",
+            "labels": ["run-spark-3.4-tests"],
+        },
+        {"spark_3_4"},
     ),
     (
         {"name": "pull_request", "action": "synchronize", "labels": ["run-iceberg-tests"]},
@@ -168,11 +252,37 @@ POLICY_CASES = [
 
 # `uses:` values that publish an artifact, and the one that consumes it.
 UPLOAD_USES = re.compile(r"uses:\s*(\./\.github/actions/upload-artifact-retry|actions/upload-artifact@)")
-DOWNLOAD_USES = re.compile(r"uses:\s*actions/download-artifact@")
+DOWNLOAD_USES = re.compile(r"uses:\s*(\./\.github/actions/download-artifact-retry|actions/download-artifact@)")
 # The artifact name is the first `name:` key of the step's `with:` block. A
 # following step starts with `- `, which distinguishes it from a `with:` key.
 WITH_NAME = re.compile(r"^\s+name:\s*(\S.*?)\s*$")
 NEW_STEP = re.compile(r"^\s*-\s")
+
+# A job id in a workflow file, and the two `uses:` shapes the checkout guard
+# below cares about. `./.github/workflows/` is deliberately not matched: that
+# is a reusable-workflow call, which resolves from the repository rather than
+# from the runner's workspace and so needs no checkout.
+JOB_KEY = re.compile(r"^  ([A-Za-z0-9_-]+):\s*$")
+LOCAL_ACTION_USES = re.compile(r"uses:\s*(\./\.github/actions/\S+)")
+CHECKOUT_USES = re.compile(r"uses:\s*actions/checkout@")
+
+# pr_build_linux.yml runs in two modes; see its header. These are the jobs that
+# must survive `cache-refresh-only`, because each one writes an actions/cache
+# entry that main needs warm for the next pull request. Anything else in that
+# file has to carry the guard.
+CACHE_REFRESH_WORKFLOW = WORKFLOWS / "pr_build_linux.yml"
+CACHE_REFRESH_JOBS = {
+    "lint": "gates build-native and linux-test-rust, and costs 40 seconds",
+    "build-native": "writes the cargo-ci cache (native/target, CI profile)",
+    "linux-test-rust": "writes the cargo-debug cache (native/target, debug)",
+    "verify-benchmark-results-tpch": "writes the TPC-H SF=1 dataset and java-maven caches",
+    "verify-benchmark-results-tpcds": "writes the TPC-DS SF=1 dataset and java-maven caches",
+}
+# Job-level `if:` only: step-level guards inside the two verify jobs are
+# indented further, and those are expected rather than a reason to exempt the
+# whole job.
+CACHE_REFRESH_GUARD = re.compile(r"^    if:.*!\s*inputs\.cache-refresh-only")
+CACHE_REFRESH_INPUT = re.compile(r"^\s+cache-refresh-only:\s*\$\{\{")
 
 
 def load_filters():
@@ -180,6 +290,34 @@ def load_filters():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def check_spark_sql_modules():
+    """`--modules core` and `--modules hive` must partition `--modules all`.
+
+    ci.yml maps its two Spark 4.1 POLICY outputs onto these three values, so a
+    row that lands in no group, or in both, would either never run or run
+    twice in the queue, and nothing else would notice.
+    """
+    spec = importlib.util.spec_from_file_location("spark_sql_modules", "dev/ci/spark-sql-modules.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    failures = []
+    names = lambda rows: [row["name"] for row in rows]
+    everything = names(module.select("all"))
+    core, hive = names(module.select("core")), names(module.select("hive"))
+    if not core or not hive:
+        failures.append("a module group is empty (see MODULES in dev/ci/spark-sql-modules.py)")
+    if sorted(core + hive) != sorted(everything):
+        failures.append(
+            f"core {core} + hive {hive} does not partition all {everything} "
+            f"(see MODULES in dev/ci/spark-sql-modules.py)"
+        )
+    if len(set(everything)) != len(everything):
+        failures.append(f"duplicate module names in {everything}")
+    for failure in failures:
+        print(f"spark sql modules: {failure}")
+    return not failures
 
 
 def check_change_filters():
@@ -283,6 +421,41 @@ def check_artifact_names():
                 )
     for failure in failures:
         print(f"artifact name: {failure}")
+    return not failures
+
+
+def check_local_actions_have_checkout():
+    """Every `uses: ./.github/actions/...` needs a checkout earlier in its job.
+
+    A local action is loaded from the runner's workspace, not from the
+    repository, so a job that has not checked out simply cannot find it. The
+    failure is at step level and only on the jobs that skipped the checkout,
+    which is easy to miss when those jobs are conditional.
+    """
+    failures = []
+    for path in sorted(WORKFLOWS.glob("*.y*ml")):
+        job = None
+        checked_out = False
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if line.lstrip().startswith("#"):
+                continue
+            match = JOB_KEY.match(line)
+            if match:
+                job = match.group(1)
+                checked_out = False
+                continue
+            if CHECKOUT_USES.search(line):
+                checked_out = True
+                continue
+            match = LOCAL_ACTION_USES.search(line)
+            if match and not checked_out:
+                failures.append(
+                    f"{path}: job `{job}` uses the local action {match.group(1)} "
+                    f"with no preceding actions/checkout. Add the checkout, or "
+                    f"call the underlying published action directly"
+                )
+    for failure in failures:
+        print(f"local action: {failure}")
     return not failures
 
 
@@ -460,11 +633,83 @@ def check_required_checks():
     return not failures
 
 
+def check_cache_refresh_scope():
+    """Every job in pr_build_linux.yml is either a cache writer or guarded.
+
+    On push to main the merge queue has already tested the exact tree that
+    landed, so the only thing left for that run to do is leave main's
+    actions/cache entries warm -- a pull request can restore caches saved on
+    its own branch or on main and nowhere else, and the queue's throwaway
+    branch takes its own with it. ci.yml therefore calls the workflow with
+    `cache-refresh-only` on push, and every job that is not a cache writer
+    has to opt out with `if: ${{ !inputs.cache-refresh-only }}`.
+
+    A job added without the guard runs on every push again. Nothing fails when
+    that happens; the runner bill just quietly goes back up by up to ~500
+    minutes a push, which is what this check exists to notice.
+    """
+    failures = []
+    jobs, guarded, job, in_jobs = [], set(), None, False
+    for line in CACHE_REFRESH_WORKFLOW.read_text(encoding="utf-8").splitlines():
+        if line.startswith("jobs:"):
+            in_jobs = True
+            continue
+        if not in_jobs or line.lstrip().startswith("#"):
+            continue
+        match = JOB_KEY.match(line)
+        if match:
+            job = match.group(1)
+            jobs.append(job)
+            continue
+        if job and CACHE_REFRESH_GUARD.match(line):
+            guarded.add(job)
+
+    for stale in sorted(set(CACHE_REFRESH_JOBS) - set(jobs)):
+        failures.append(
+            f"CACHE_REFRESH_JOBS names `{stale}`, which no longer exists in "
+            f"{CACHE_REFRESH_WORKFLOW}; drop it here, or restore the job"
+        )
+    for name in jobs:
+        if name in CACHE_REFRESH_JOBS and name in guarded:
+            failures.append(
+                f"{CACHE_REFRESH_WORKFLOW}: job `{name}` is listed in "
+                f"CACHE_REFRESH_JOBS ({CACHE_REFRESH_JOBS[name]}) but carries "
+                f"the cache-refresh-only guard, so it is skipped on push and "
+                f"the cache it owns goes stale on main"
+            )
+        if name not in CACHE_REFRESH_JOBS and name not in guarded:
+            failures.append(
+                f"{CACHE_REFRESH_WORKFLOW}: job `{name}` has no "
+                f"`if: ${{{{ !inputs.cache-refresh-only }}}}`, so it runs on "
+                f"every push to main where the merge queue has already tested "
+                f"the same tree. Add the guard, or add the job to "
+                f"CACHE_REFRESH_JOBS with the cache entry it writes"
+            )
+
+    # The guards above do nothing unless the caller actually sets the input;
+    # its default is false, so a dropped `with:` block silently restores the
+    # full pipeline on push.
+    ci = (WORKFLOWS / "ci.yml").read_text(encoding="utf-8").splitlines()
+    if not any(CACHE_REFRESH_INPUT.match(line) for line in ci):
+        failures.append(
+            "ci.yml never passes `cache-refresh-only:` to pr_build_linux.yml. "
+            "The input defaults to false, so without it every push to main runs "
+            "the full pipeline again"
+        )
+
+    for failure in failures:
+        print(f"cache refresh scope: {failure}")
+    return not failures
+
+
 if __name__ == "__main__":
     ok = check_change_filters()
     ok = check_event_policy() and ok
+    ok = check_spark_sql_modules() and ok
     ok = check_artifact_names() and ok
+    ok = check_local_actions_have_checkout() and ok
     ok = check_required_checks() and ok
+    ok = check_cache_refresh_scope() and ok
     if not ok:
         sys.exit(1)
     print("CI config checks passed")

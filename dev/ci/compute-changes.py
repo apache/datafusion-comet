@@ -55,14 +55,22 @@ FILTERS = {
         ".github/workflows/pr_build_linux.yml",
         ".github/actions/setup-builder/**",
         ".github/actions/java-test/**",
+        ".github/actions/maven-bootstrap/**",
         ".github/actions/rust-test/**",
         ".github/actions/upload-artifact-retry/**",
+        ".github/actions/download-artifact-retry/**",
         "!**.md",
         "!native/core/benches/**",
         "!native/spark-expr/benches/**",
         "!spark/src/test/scala/org/apache/spark/sql/benchmark/**",
         "!spark/src/main/scala/org/apache/comet/GenerateDocs.scala",
     ],
+    # Same inputs as build_linux: not a separate job but a second POLICY
+    # decision for the same call, selecting the full pipeline rather than the
+    # cache-populating subset. ci.yml folds it into the reusable workflow's
+    # `cache-refresh-only` input. Populated below, after the dict, so the two
+    # lists cannot drift.
+    "build_linux_full": [],
     "build_macos": [
         "native/**",
         "common/**",
@@ -80,6 +88,7 @@ FILTERS = {
         ".github/actions/setup-macos-builder/**",
         ".github/actions/java-test/**",
         ".github/actions/upload-artifact-retry/**",
+        ".github/actions/download-artifact-retry/**",
         "!**.md",
         "!native/core/benches/**",
         "!native/spark-expr/benches/**",
@@ -123,9 +132,11 @@ FILTERS = {
         "rust-toolchain.toml",
         ".github/workflows/ci.yml",
         ".github/workflows/spark_sql_test_reusable.yml",
+        "dev/ci/spark-sql-modules.py",
         ".github/actions/setup-builder/**",
         ".github/actions/setup-spark-builder/**",
         ".github/actions/upload-artifact-retry/**",
+        ".github/actions/download-artifact-retry/**",
         ".mvn/**",
         "mvnw",
     ],
@@ -148,9 +159,11 @@ FILTERS = {
         "rust-toolchain.toml",
         ".github/workflows/ci.yml",
         ".github/workflows/spark_sql_test_reusable.yml",
+        "dev/ci/spark-sql-modules.py",
         ".github/actions/setup-builder/**",
         ".github/actions/setup-spark-builder/**",
         ".github/actions/upload-artifact-retry/**",
+        ".github/actions/download-artifact-retry/**",
         ".mvn/**",
         "mvnw",
     ],
@@ -173,9 +186,11 @@ FILTERS = {
         "rust-toolchain.toml",
         ".github/workflows/ci.yml",
         ".github/workflows/spark_sql_test_reusable.yml",
+        "dev/ci/spark-sql-modules.py",
         ".github/actions/setup-builder/**",
         ".github/actions/setup-spark-builder/**",
         ".github/actions/upload-artifact-retry/**",
+        ".github/actions/download-artifact-retry/**",
         ".mvn/**",
         "mvnw",
     ],
@@ -198,12 +213,19 @@ FILTERS = {
         "rust-toolchain.toml",
         ".github/workflows/ci.yml",
         ".github/workflows/spark_sql_test_reusable.yml",
+        "dev/ci/spark-sql-modules.py",
         ".github/actions/setup-builder/**",
         ".github/actions/setup-spark-builder/**",
         ".github/actions/upload-artifact-retry/**",
+        ".github/actions/download-artifact-retry/**",
         ".mvn/**",
         "mvnw",
     ],
+    # Same inputs as spark_4_1: this is not a separate job but a second
+    # POLICY decision for the same call, selecting the sql_hive matrix rows.
+    # ci.yml folds the two outputs into the reusable workflow's `modules`
+    # input. Populated below, after the dict, so the two lists cannot drift.
+    "spark_4_1_hive": [],
     "iceberg_1_8": [
         "native/**/src/**",
         "native/**/Cargo.toml",
@@ -224,6 +246,7 @@ FILTERS = {
         "dev/ci/check-iceberg-shards.py",
         "dev/ci/test-iceberg-shards.py",
         ".github/actions/upload-artifact-retry/**",
+        ".github/actions/download-artifact-retry/**",
         ".mvn/**",
         "mvnw",
     ],
@@ -247,6 +270,7 @@ FILTERS = {
         "dev/ci/check-iceberg-shards.py",
         "dev/ci/test-iceberg-shards.py",
         ".github/actions/upload-artifact-retry/**",
+        ".github/actions/download-artifact-retry/**",
         ".mvn/**",
         "mvnw",
     ],
@@ -270,6 +294,7 @@ FILTERS = {
         "dev/ci/check-iceberg-shards.py",
         "dev/ci/test-iceberg-shards.py",
         ".github/actions/upload-artifact-retry/**",
+        ".github/actions/download-artifact-retry/**",
         ".mvn/**",
         "mvnw",
     ],
@@ -293,14 +318,18 @@ FILTERS = {
         "dev/ci/check-iceberg-shards.py",
         "dev/ci/test-iceberg-shards.py",
         ".github/actions/upload-artifact-retry/**",
+        ".github/actions/download-artifact-retry/**",
         ".mvn/**",
         "mvnw",
     ],
 }
+FILTERS["spark_4_1_hive"] = FILTERS["spark_4_1"]
+FILTERS["build_linux_full"] = FILTERS["build_linux"]
 
 # Which events may run each job, independent of the path filters above.
 #
 #   "pr"              every pull request
+#   "queue"           the merge queue, i.e. a merge_group event
 #   "push"            push to main
 #   "label:<name>"    a pull request carrying that label
 #
@@ -308,21 +337,63 @@ FILTERS = {
 # "label:" are mutually exclusive -- a job is either unconditional on pull
 # requests or opt-in, never both -- and check-ci-config.py rejects a job that
 # lists both rather than letting the label quietly win.
+#
+# Almost everything is "queue": the merge queue is the authoritative gate, and
+# it tests the merge result rather than the PR head. "push" is reserved for
+# work that can only happen once a commit is on main. Adding "push" back to a
+# test job would make every merge run it twice, once in the queue and once
+# after, which is the thing the queue was adopted to avoid.
 POLICY = {
-    "build_linux": ["pr", "push"],
-    "build_macos": ["pr", "push"],
-    "benchmark": ["pr", "push"],
-    # docs deploys to asf-site, so it must not run from a pull request.
+    # The one test job that also runs on push to main, and only because of
+    # actions/cache scoping: a pull request can restore caches saved on its
+    # own branch or on main, and nowhere else. The queue runs on a throwaway
+    # gh-readonly-queue/* branch, so whatever it saves is deleted with that
+    # branch. Without a push run, a Cargo.lock or pom.xml change would leave
+    # main's cargo-ci, cargo-debug, Maven and TPC-H/TPC-DS caches stale
+    # forever, and every later pull request would pay the delta on top of the
+    # restore-keys prefix match.
+    #
+    # On push that is the *only* thing it is for. The queue already tested the
+    # exact tree that landed, so re-running the lints and the 5x4 linux-test
+    # matrix there tests nothing, and they are 514 of the 587 runner-minutes a
+    # push run costs. The split below keeps the cache writers on push and moves
+    # everything else behind `build_linux_full`.
+    "build_linux": ["pr", "queue", "push"],
+    # The lints and the test matrix inside pr_build_linux.yml. Deliberately no
+    # "push": ci.yml turns this output into the workflow's `cache-refresh-only`
+    # input, so dropping "push" here is what trims the push tier down to the
+    # jobs that write an actions/cache entry. See issue #5929.
+    "build_linux_full": ["pr", "queue"],
+    # macOS runners are the scarcest capacity we have, and the Linux build
+    # already covers rustfmt and the Rust/JVM compile on every PR. The label
+    # is for a change that touches platform-specific code.
+    "build_macos": ["queue", "label:run-macos-tests"],
+    # Benchmark sources are compiled and linted, never run, so a break there
+    # cannot affect a PR's correctness verdict; the queue catches it.
+    "benchmark": ["queue", "label:run-benchmark-check"],
+    # docs deploys to asf-site, so it must not run from a pull request or from
+    # the queue's throwaway branch.
     "docs": ["push"],
-    "spark_3_4": ["push", "label:run-spark-3.4-tests"],
-    "spark_3_5": ["pr", "push"],
-    "spark_4_0": ["push", "label:run-spark-4.0-tests"],
-    "spark_4_1": ["pr", "push"],
-    "iceberg_1_8": ["push", "label:run-iceberg-tests"],
-    "iceberg_1_9": ["push", "label:run-iceberg-tests"],
-    "iceberg_1_10": ["push", "label:run-iceberg-tests"],
+    # Spark 3.4 is deprecated, so it is the one test job outside the queue
+    # tier: a failure there no longer blocks a merge. It stays runnable on
+    # demand -- the label on a pull request, or a workflow_dispatch -- so
+    # anyone who wants to check a change against 3.4 still can.
+    "spark_3_4": ["label:run-spark-3.4-tests"],
+    "spark_3_5": ["queue", "label:run-spark-3.5-tests"],
+    "spark_4_0": ["queue", "label:run-spark-4.0-tests"],
+    # Spark 4.1 is the default build profile, so it is the cheapest early
+    # warning that a change is wrong and stays in the PR tier. Only the
+    # catalyst and sql_core shards, though: over Aug 12 to Sep 11 2026 the
+    # three sql_hive shards cost about 65 runner-hours a day on pull requests
+    # and were the only failing job on 7 PR runs, against 33 for sql_core, and
+    # their 67-minute shard set the PR tier's wall clock. See issue #5870.
+    "spark_4_1": ["pr", "queue"],
+    "spark_4_1_hive": ["queue", "label:run-spark-4.1-hive-tests"],
+    "iceberg_1_8": ["queue", "label:run-iceberg-tests"],
+    "iceberg_1_9": ["queue", "label:run-iceberg-tests"],
+    "iceberg_1_10": ["queue", "label:run-iceberg-tests"],
     # Iceberg 1.11 is our only Spark 4.1 Iceberg coverage, so it is not opt-in.
-    "iceberg_1_11": ["pr", "push"],
+    "iceberg_1_11": ["pr", "queue"],
 }
 
 
@@ -344,6 +415,8 @@ def event_allows(job, event):
         return True
     if name == "push":
         return "push" in tiers
+    if name == "merge_group":
+        return "queue" in tiers
     if name != "pull_request":
         return False
 
