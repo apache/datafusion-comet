@@ -97,7 +97,16 @@ case class RevertNativeForTransitionHeavyStages(session: SparkSession)
     val reason =
       s"Stage reverted: $transitionCount C2R transitions exceed threshold $maxTransitions"
 
-    val reverted = revertToSpark(stagePlan)
+    val reverted =
+      try {
+        revertToSpark(stagePlan)
+      } catch {
+        case e: CometExec.InvalidSparkFallbackException =>
+          logWarning(
+            s"Skipping transition-heavy stage reversion because a Comet operator could not " +
+              s"restore its Spark plan: ${e.getMessage}")
+          return None
+      }
     val result = if (outputColumnar && !reverted.supportsColumnar) {
       RowToColumnarExec(withFallbackReason(reverted, reason))
     } else {
@@ -138,16 +147,25 @@ case class RevertNativeForTransitionHeavyStages(session: SparkSession)
   }
 
   /**
-   * Like `transformDown`, never descends stage-boundary children.
+   * Like `transformDown`, never descends stage-boundary children. If the rule rewrites the
+   * current node, re-apply it to the result so stacked transitions such as
+   * `CometSparkToColumnarExec(CometNativeColumnarToRowExec(x))` are fully unwrapped before
+   * children are visited. Spark's `transformDown` does not do this; leaving the inner C2R in
+   * place later calls `CometNativeColumnarToRowExec.withNewChildren` with a reverted row-based
+   * child, which asserts `child.supportsColumnar`.
    */
   private def transformStageDown(plan: SparkPlan)(
       rule: PartialFunction[SparkPlan, SparkPlan]): SparkPlan = {
     val transformed = rule.applyOrElse(plan, identity[SparkPlan])
-    val newChildren = transformed.children.map { child =>
-      if (isStageBoundary(child)) child else transformStageDown(child)(rule)
+    if (transformed ne plan) {
+      transformStageDown(transformed)(rule)
+    } else {
+      val newChildren = transformed.children.map { child =>
+        if (isStageBoundary(child)) child else transformStageDown(child)(rule)
+      }
+      if (newChildren == transformed.children) transformed
+      else transformed.withNewChildren(newChildren)
     }
-    if (newChildren == transformed.children) transformed
-    else transformed.withNewChildren(newChildren)
   }
 
   /** Like `transformUp`, never descends stage-boundary children. */
@@ -176,7 +194,27 @@ case class RevertNativeForTransitionHeavyStages(session: SparkSession)
     count
   }
 
+  /**
+   * Checks for Comet operators whose original Spark plan is also their input. This must run
+   * before any bottom-up rewrite replaces children. Otherwise a stable `originalPlan` reference
+   * can keep pointing at the old Comet child after `withNewChildren`, hiding the alias and
+   * causing fallback to reconstruct that Comet child instead of a Spark operator.
+   */
+  private def validateOriginalPlanAliases(plan: SparkPlan): Unit = plan match {
+    case _ if isStageBoundary(plan) => ()
+    case cometExec: CometExec =>
+      val sparkPlan = cometExec.originalPlan
+      if (sparkPlan != null && cometExec.children.exists(_ eq sparkPlan)) {
+        throw new CometExec.InvalidSparkFallbackException(
+          s"${cometExec.getClass.getSimpleName} aliases its original Spark plan with a child")
+      }
+      cometExec.children.foreach(validateOriginalPlanAliases)
+    case _ =>
+      plan.children.foreach(validateOriginalPlanAliases)
+  }
+
   private[rules] def revertToSpark(plan: SparkPlan): SparkPlan = {
+    validateOriginalPlanAliases(plan)
     val stripped = transformStageDown(plan) {
       case CometNativeColumnarToRowExec(child) => child
       case CometColumnarToRowExec(child) => child
@@ -185,14 +223,7 @@ case class RevertNativeForTransitionHeavyStages(session: SparkSession)
       case RowToColumnarExec(child) => child
     }
     val reverted = transformStageUp(stripped) { case cometExec: CometExec =>
-      if (cometExec.originalPlan.children.size == cometExec.children.size) {
-        cometExec.originalPlan.withNewChildren(cometExec.children)
-      } else {
-        logWarning(
-          "Comet plan and original have different child count for " +
-            s"${cometExec.getClass.getSimpleName}, using originalPlan as-is.")
-        cometExec.originalPlan
-      }
+      cometExec.sparkFallback(cometExec.children)
     }
     insertTransitions(reverted)
   }

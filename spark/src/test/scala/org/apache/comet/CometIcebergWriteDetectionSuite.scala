@@ -35,7 +35,7 @@ import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeReference}
 import org.apache.spark.sql.comet.{CometIcebergWriteExec, CometSparkToColumnarExec, IcebergWriteExec}
 import org.apache.spark.sql.execution.{ApplyColumnarRulesAndInsertTransitions, ColumnarToRowExec, CommandExecutionMode, LeafExecNode, SparkPlan}
-import org.apache.spark.sql.types.IntegerType
+import org.apache.spark.sql.types.{BinaryType, IntegerType} 
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
 import org.apache.comet.CometSparkSessionExtensions.isSpark35Plus
@@ -1051,9 +1051,15 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
    * boundary, which this pins directly.
    */
   private def writeChildAfterTransitionRules(source: SparkPlan): SparkPlan = {
+    val child = CometSparkToColumnarExec(source)
+    val output = Seq(
+      AttributeReference(IcebergWriteExec.CommitMessageColumn, BinaryType, nullable = false)())
+    val originalPlan = IcebergWriteExec(null, output, child)
     val write = CometIcebergWriteExec(
       Operator.newBuilder().build(),
-      CometSparkToColumnarExec(source),
+      originalPlan,
+      child,
+      output,
       batchWrite = null,
       table = null,
       partitionSpecId = 0)

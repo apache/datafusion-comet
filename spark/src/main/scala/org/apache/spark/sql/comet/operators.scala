@@ -600,6 +600,29 @@ abstract class CometExec extends CometPlan {
   /** The original Spark operator from which this Comet operator is converted from */
   def originalPlan: SparkPlan
 
+  /**
+   * Rebuilds the Spark operator represented by this Comet operator with reverted children.
+   *
+   * Operators whose Comet representation changes the Spark plan shape must override this method.
+   */
+  def sparkFallback(newChildren: Seq[SparkPlan]): SparkPlan = {
+    val sparkPlan = originalPlan
+    if (sparkPlan == null) {
+      throw new CometExec.InvalidSparkFallbackException(
+        s"${getClass.getSimpleName} has no original Spark plan")
+    }
+    if (newChildren.exists(_ eq sparkPlan)) {
+      throw new CometExec.InvalidSparkFallbackException(
+        s"${getClass.getSimpleName} aliases its original Spark plan with a child")
+    }
+    if (sparkPlan.children.size != newChildren.size) {
+      throw new CometExec.InvalidSparkFallbackException(
+        s"${getClass.getSimpleName} cannot restore ${sparkPlan.getClass.getSimpleName}: " +
+          s"expected ${sparkPlan.children.size} children but received ${newChildren.size}")
+    }
+    sparkPlan.withNewChildren(newChildren)
+  }
+
   /** Comet always support columnar execution */
   override def supportsColumnar: Boolean = true
 
@@ -650,6 +673,9 @@ abstract class CometExec extends CometPlan {
 }
 
 object CometExec {
+  final class InvalidSparkFallbackException(message: String)
+      extends IllegalArgumentException(message)
+
   // An unique id for each CometExecIterator, used to identify the native query execution.
   private val curId = new java.util.concurrent.atomic.AtomicLong()
 

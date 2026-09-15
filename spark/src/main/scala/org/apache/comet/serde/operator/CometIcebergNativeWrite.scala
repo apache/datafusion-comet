@@ -565,7 +565,9 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
           "Native Iceberg write conversion: SparkWrite.outputSpecId reflection failed"))
     CometIcebergWriteExec(
       nativeOp,
+      op,
       op.child,
+      op.output,
       op.batchWrite,
       table.asInstanceOf[AnyRef],
       outputSpecId)
