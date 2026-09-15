@@ -23,10 +23,11 @@
 //! `ArrayBasedMapBuilder` performs before inserting an entry, and restate the upstream errors
 //! as the Spark error classes `SparkErrorConverter` turns back into `QueryExecutionErrors`:
 //!
-//! - a `NULL` key element raises `[NULL_MAP_KEY]`, ahead of any duplicate-key check, because
-//!   Spark rejects the `NULL` before it reaches the dedup map;
-//! - a key array and value array of different lengths raise `[MAP_KEY_VALUE_DIFF_SIZES]`;
-//! - a duplicate key under `EXCEPTION` raises `[DUPLICATED_MAP_KEY]` naming the key.
+//! - a key array and value array of different lengths raise `[MAP_KEY_VALUE_DIFF_SIZES]`, which
+//!   Spark checks before it builds anything;
+//! - a `NULL` key raises `[NULL_MAP_KEY]` and, under `EXCEPTION`, a duplicate key raises
+//!   `[DUPLICATED_MAP_KEY]` naming the key. Spark inserts entries one at a time, so whichever
+//!   comes first in the row decides which of the two it reports.
 //!
 //! `str_to_map` builds its keys by splitting a string, so it needs only the duplicate-key
 //! restatement.
@@ -36,7 +37,8 @@ use arrow::array::{Array, ArrayRef, AsArray, StructArray, UInt32Array};
 use arrow::buffer::NullBuffer;
 use arrow::compute::take;
 use arrow::datatypes::{DataType, FieldRef};
-use datafusion::common::{exec_err, DataFusionError, Result};
+use datafusion::common::config::MapKeyDedupPolicy;
+use datafusion::common::{exec_err, DataFusionError, HashSet, Result, ScalarValue};
 use datafusion::logical_expr::{
     ColumnarValue, ReturnFieldArgs, ScalarFunctionArgs, ScalarUDFImpl, Signature,
 };
@@ -87,7 +89,7 @@ impl ScalarUDFImpl for SparkMapFromArrays {
         compact_list_arguments(&mut args)?;
         match args.args.as_slice() {
             [ColumnarValue::Array(keys), ColumnarValue::Array(values)] => {
-                validate_map_from_arrays(keys, values)?
+                validate_map_from_arrays(keys, values, last_value_wins(&args))?
             }
             other => return exec_err!("map_from_arrays expects 2 arguments, got {}", other.len()),
         }
@@ -138,7 +140,9 @@ impl ScalarUDFImpl for SparkMapFromEntries {
         let mut args = expand_scalars(args)?;
         compact_list_arguments(&mut args)?;
         match args.args.as_slice() {
-            [ColumnarValue::Array(entries)] => validate_map_from_entries(entries)?,
+            [ColumnarValue::Array(entries)] => {
+                validate_map_from_entries(entries, last_value_wins(&args))?
+            }
             other => return exec_err!("map_from_entries expects 1 argument, got {}", other.len()),
         }
         self.inner
@@ -206,6 +210,11 @@ fn expand_scalars(mut args: ScalarFunctionArgs) -> Result<ScalarFunctionArgs> {
     Ok(args)
 }
 
+/// Whether the session asks for Spark's `LAST_WIN` duplicate key policy.
+fn last_value_wins(args: &ScalarFunctionArgs) -> bool {
+    args.config_options.spark.map_key_dedup_policy == MapKeyDedupPolicy::LastWin
+}
+
 /// Rebuilds any list argument whose entries do not start at offset zero.
 ///
 /// The upstream kernels read each row's entries at its own offset but build the mask that selects
@@ -248,8 +257,12 @@ fn entries_start_at_zero(array: &ArrayRef) -> bool {
 }
 
 /// Rejects the inputs Spark's `MapFromArrays` rejects before building the map: a row whose key
-/// and value arrays differ in length, and a `NULL` key element.
-fn validate_map_from_arrays(keys: &ArrayRef, values: &ArrayRef) -> Result<()> {
+/// and value arrays differ in length, and a `NULL` or duplicate key.
+fn validate_map_from_arrays(
+    keys: &ArrayRef,
+    values: &ArrayRef,
+    last_value_wins: bool,
+) -> Result<()> {
     // A `NULL`-typed argument makes every row a NULL map, which never reaches the builder.
     if matches!(keys.data_type(), DataType::Null) || matches!(values.data_type(), DataType::Null) {
         return Ok(());
@@ -260,6 +273,7 @@ fn validate_map_from_arrays(keys: &ArrayRef, values: &ArrayRef) -> Result<()> {
         return exec_err!("map_from_arrays: keys and values must have the same number of rows");
     }
     let key_nulls = element_validity(&flat_keys);
+    let mut seen = HashSet::new();
 
     for row in 0..key_offsets.len().saturating_sub(1) {
         // `MapFromArrays` is null intolerant, so a NULL input array yields a NULL map without
@@ -272,18 +286,16 @@ fn validate_map_from_arrays(keys: &ArrayRef, values: &ArrayRef) -> Result<()> {
             return Err(SparkError::MapKeyValueDiffSizes.into());
         }
         if let Some(nulls) = &key_nulls {
-            if nulls.slice(start, end - start).null_count() > 0 {
-                return Err(SparkError::NullMapKey.into());
-            }
+            check_keys_in_order(&flat_keys, start, end, nulls, last_value_wins, &mut seen)?;
         }
     }
     Ok(())
 }
 
-/// Rejects a `NULL` key element in the rows `map_from_entries` actually builds a map from. A row
-/// is skipped when its entries array is NULL or holds a NULL `struct` element, since Spark
+/// Rejects a `NULL` or duplicate key in the rows `map_from_entries` actually builds a map from. A
+/// row is skipped when its entries array is NULL or holds a NULL `struct` element, since Spark
 /// returns a NULL map for both without inserting any entry.
-fn validate_map_from_entries(entries: &ArrayRef) -> Result<()> {
+fn validate_map_from_entries(entries: &ArrayRef, last_value_wins: bool) -> Result<()> {
     if matches!(entries.data_type(), DataType::Null) {
         return Ok(());
     }
@@ -299,16 +311,51 @@ fn validate_map_from_entries(entries: &ArrayRef) -> Result<()> {
     };
     let element_nulls = structs.nulls();
 
+    let keys = structs.column(0);
+    let mut seen = HashSet::new();
+
     for row in 0..offsets.len().saturating_sub(1) {
         if !entries.is_valid(row) {
             continue;
         }
-        let (start, len) = (offsets[row], offsets[row + 1] - offsets[row]);
-        if element_nulls.is_some_and(|nulls| nulls.slice(start, len).null_count() > 0) {
+        let (start, end) = (offsets[row], offsets[row + 1]);
+        if element_nulls.is_some_and(|nulls| nulls.slice(start, end - start).null_count() > 0) {
             continue;
         }
-        if key_nulls.slice(start, len).null_count() > 0 {
+        check_keys_in_order(keys, start, end, &key_nulls, last_value_wins, &mut seen)?;
+    }
+    Ok(())
+}
+
+/// Walks one row's keys in the order Spark's `ArrayBasedMapBuilder` inserts them, so whichever of
+/// a `NULL` key and a duplicate key comes first is the one reported, as Spark reports it. Only
+/// reached when the keys carry a `NULL` somewhere: without one, the kernel's own duplicate check
+/// already names the same key Spark would.
+#[allow(clippy::allow_attributes, clippy::mutable_key_type)] // ScalarValue is used as a hash key
+fn check_keys_in_order(
+    flat_keys: &ArrayRef,
+    start: usize,
+    end: usize,
+    key_nulls: &NullBuffer,
+    last_value_wins: bool,
+    seen: &mut HashSet<ScalarValue>,
+) -> Result<()> {
+    seen.clear();
+    for index in start..end {
+        if key_nulls.is_null(index) {
             return Err(SparkError::NullMapKey.into());
+        }
+        // `LAST_WIN` overwrites a duplicate rather than raising, so only the `NULL` check is
+        // left to do in that mode.
+        if last_value_wins {
+            continue;
+        }
+        let key = ScalarValue::try_from_array(flat_keys, index)?.compacted();
+        if !seen.insert(key.clone()) {
+            return Err(SparkError::DuplicatedMapKey {
+                key: key.to_string(),
+            }
+            .into());
         }
     }
     Ok(())
@@ -741,6 +788,117 @@ mod tests {
             result.entries().column(1).as_string::<i32>().value(0),
             "200"
         );
+    }
+
+    /// Spark inserts entries one at a time, so a duplicate at an earlier index is reported even
+    /// though a `NULL` key follows it.
+    #[test]
+    fn map_from_arrays_reports_a_duplicate_before_a_later_null_key() {
+        let keys = int_list(
+            Int32Array::from(vec![Some(1), Some(1), None]),
+            &[0, 3],
+            None,
+        );
+        let values = string_list(
+            StringArray::from(vec![Some("a"), Some("b"), Some("c")]),
+            &[0, 3],
+            None,
+        );
+        let err = invoke(
+            &SparkMapFromArrays::default(),
+            vec![keys, values],
+            MapKeyDedupPolicy::Exception,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("[DUPLICATED_MAP_KEY]"), "{err}");
+    }
+
+    /// The mirror case: the `NULL` comes first, so it is the one reported.
+    #[test]
+    fn map_from_arrays_reports_a_null_key_before_a_later_duplicate() {
+        let keys = int_list(
+            Int32Array::from(vec![None, Some(1), Some(1)]),
+            &[0, 3],
+            None,
+        );
+        let values = string_list(
+            StringArray::from(vec![Some("a"), Some("b"), Some("c")]),
+            &[0, 3],
+            None,
+        );
+        let err = invoke(
+            &SparkMapFromArrays::default(),
+            vec![keys, values],
+            MapKeyDedupPolicy::Exception,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("[NULL_MAP_KEY]"), "{err}");
+    }
+
+    /// A duplicate in an earlier row wins over a `NULL` key in a later one.
+    #[test]
+    fn map_from_arrays_reports_the_first_offending_row() {
+        let keys = int_list(
+            Int32Array::from(vec![Some(1), Some(1), None, Some(2)]),
+            &[0, 2, 4],
+            None,
+        );
+        let values = string_list(
+            StringArray::from(vec![Some("a"), Some("b"), Some("c"), Some("d")]),
+            &[0, 2, 4],
+            None,
+        );
+        let err = invoke(
+            &SparkMapFromArrays::default(),
+            vec![keys, values],
+            MapKeyDedupPolicy::Exception,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("[DUPLICATED_MAP_KEY]"), "{err}");
+    }
+
+    #[test]
+    fn map_from_entries_reports_a_duplicate_before_a_later_null_key() {
+        let entries = entry_list(
+            Int32Array::from(vec![Some(1), Some(1), None]),
+            StringArray::from(vec![Some("a"), Some("b"), Some("c")]),
+            &[0, 3],
+            None,
+        );
+        let err = invoke(
+            &SparkMapFromEntries::default(),
+            vec![entries],
+            MapKeyDedupPolicy::Exception,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("[DUPLICATED_MAP_KEY]"), "{err}");
+    }
+
+    /// Under `LAST_WIN` a duplicate is not an error, so a `NULL` key is still reported.
+    #[test]
+    fn last_win_still_rejects_a_null_key_after_a_duplicate() {
+        let keys = int_list(
+            Int32Array::from(vec![Some(1), Some(1), None]),
+            &[0, 3],
+            None,
+        );
+        let values = string_list(
+            StringArray::from(vec![Some("a"), Some("b"), Some("c")]),
+            &[0, 3],
+            None,
+        );
+        let err = invoke(
+            &SparkMapFromArrays::default(),
+            vec![keys, values],
+            MapKeyDedupPolicy::LastWin,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("[NULL_MAP_KEY]"), "{err}");
     }
 
     #[test]
