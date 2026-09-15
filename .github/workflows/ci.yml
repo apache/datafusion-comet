@@ -175,6 +175,7 @@ jobs:
       iceberg_1_9:  ${{ steps.compute.outputs.iceberg_1_9 }}
       iceberg_1_10: ${{ steps.compute.outputs.iceberg_1_10 }}
       iceberg_1_11: ${{ steps.compute.outputs.iceberg_1_11 }}
+      delta:        ${{ steps.compute.outputs.delta }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -323,6 +324,15 @@ jobs:
       spark-full: '3.5.9'
       java: 17
 
+  delta_contrib:
+    name: Delta Contrib Tests
+    needs: changes
+    permissions:
+      contents: read
+    # Queue-only by default; PRs need the `run-delta-tests` label.
+    if: needs.changes.outputs.delta == 'true'
+    uses: ./.github/workflows/delta_contrib_test.yml
+
   spark_4_0:
     name: Spark SQL Tests (Spark 4.0)
     needs: changes
@@ -454,6 +464,7 @@ jobs:
       - pyarrow_udf_test
       - spark_3_4
       - spark_3_5
+      - delta_contrib
       - spark_4_0
       - spark_4_1
       - iceberg_1_8

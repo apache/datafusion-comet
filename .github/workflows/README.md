@@ -87,6 +87,7 @@ to `pr_build_linux.yml` without either the guard or an entry in
                                                                 pyarrow_udf_test    run-pyarrow-udf-tests
                                                                 spark_4_1 sql_hive  run-spark-4.1-hive-tests
                                                                 spark_3_5           run-spark-3.5-tests
+                                                                delta_contrib       run-delta-tests
                                                                 spark_4_0           run-spark-4.0-tests
   label or dispatch only                                        iceberg_1_8         run-iceberg-tests
   ----------------------                                        iceberg_1_9         run-iceberg-tests
@@ -121,6 +122,7 @@ to `pr_build_linux.yml` without either the guard or an entry in
 | `pyarrow_udf_test`   | merge group, **or** PR with `run-pyarrow-udf-tests`                                                                    | map-in-batch and Python runner code |
 | `docs`               | push to main, paths matched                                                                                            | `.asf.yaml`, `docs/**`, `docs.yaml` |
 | `spark_3_5`          | merge group, **or** PR with `run-spark-3.5-tests`                                                                      | Spark 3.5 sources                   |
+| `delta_contrib`      | merge group, **or** PR with `run-delta-tests`                                                                          | Delta contrib and native sources    |
 | `spark_4_1`          | PR or merge group, paths matched; the `sql_hive` shards only in the merge group **or** with `run-spark-4.1-hive-tests` | Spark 4.1 sources                   |
 | `spark_3_4`          | PR with `run-spark-3.4-tests`, or dispatch                                                                             | Spark 3.4 sources                   |
 | `spark_4_0`          | merge group, **or** PR with `run-spark-4.0-tests`                                                                      | Spark 4.0 sources                   |
