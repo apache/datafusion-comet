@@ -550,8 +550,10 @@ fn check_leaf_conversion(
         return reject_on_non_empty();
     }
 
-    // Decimal-to-decimal narrowing. Spark's `isDecimalTypeMatched` (the
-    // `DecimalLogicalTypeAnnotation` branch) allows the read only when
+    // Spark 3.x requires equal decimal scales. Spark 4+ permits scale widening
+    // when the requested precision grows by at least as much as the scale.
+    // Its `isDecimalTypeMatched` (the `DecimalLogicalTypeAnnotation` branch)
+    // allows the read only when
     //   `dst_scale >= src_scale` AND
     //   `dst_precision - dst_scale >= src_precision - src_scale`.
     // Either failure means silently dropping fractional digits or losing
@@ -561,6 +563,12 @@ fn check_leaf_conversion(
     {
         let src_int_precision = i32::from(*src_p) - i32::from(*src_s);
         let dst_int_precision = i32::from(*dst_p) - i32::from(*dst_s);
+        if !options.allow_type_promotion && dst_s > src_s {
+            // Match the vectorized reader: reject while decoding a non-empty row
+            // group, rather than failing an empty file during schema adaptation.
+            // This is the Spark 3.x SPARK-34212 failure tracked under Comet #4354.
+            return reject_on_non_empty();
+        }
         if dst_s < src_s || dst_int_precision < src_int_precision {
             return reject();
         }
@@ -1797,11 +1805,10 @@ mod test {
         Ok(())
     }
 
-    /// Sanity check: widening both precision and scale by the same amount is
-    /// allowed (the cast is lossless). Decimal(5, 2) -> Decimal(7, 4) gives
-    /// scaleIncrease=2, precisionIncrease=2, so `precisionIncrease >= scaleIncrease`.
+    /// Spark 4+ allows lossless scale widening; Spark 3.x rejects it only when
+    /// reading rows. Empty files must remain readable in both versions.
     #[tokio::test]
-    async fn parquet_decimal_widening_succeeds() -> Result<(), DataFusionError> {
+    async fn parquet_decimal_widening_follows_spark_version() -> Result<(), DataFusionError> {
         let batch = decimal_batch(5, 2)?;
         let required_schema = Arc::new(Schema::new(vec![Field::new(
             "a",
@@ -1809,7 +1816,36 @@ mod test {
             false,
         )]));
 
-        let _ = roundtrip(&batch, required_schema).await?;
+        for allow_type_promotion in [false, true] {
+            let mut options = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
+            options.allow_type_promotion = allow_type_promotion;
+            let mut stream = scan_parquet(&batch, Arc::clone(&required_schema), options.clone())?;
+            let result = stream.next().await.unwrap();
+            if allow_type_promotion {
+                let result = result?;
+                assert_eq!(
+                    result
+                        .column(0)
+                        .as_primitive::<arrow::datatypes::Decimal128Type>()
+                        .values(),
+                    &[12300, 45600]
+                );
+            } else {
+                let err = result.expect_err("Spark 3.x must reject decimal scale widening");
+                let DataFusionError::External(source) = err else {
+                    panic!("expected a typed schema conversion error, got {err}");
+                };
+                assert!(matches!(
+                    source.downcast_ref::<datafusion_comet_common::SparkError>(),
+                    Some(datafusion_comet_common::SparkError::ParquetSchemaConvert { .. })
+                ));
+            }
+            let empty = RecordBatch::new_empty(batch.schema());
+            let mut stream = scan_parquet(&empty, Arc::clone(&required_schema), options)?;
+            while let Some(result) = stream.next().await {
+                assert_eq!(result?.num_rows(), 0);
+            }
+        }
         Ok(())
     }
 
