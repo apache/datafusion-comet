@@ -39,7 +39,7 @@
 
 ## dayofweek
 
-- Performance (tuned 2026-09-08, PR [#5771](https://github.com/apache/datafusion-comet/pull/5771)): computed directly from the epoch day (`((days + 4).rem_euclid(7) + 1)`) by the native `spark_dayofweek` kernel, replacing `datepart('dow', ..)` -- which reconstructs a `NaiveDateTime` per row and recomputes the null mask via `unary_opt` -- plus a separate `+ 1` arithmetic node. 8.4-10.2x faster. Note the old path returned NULL for epoch days outside chrono's range; the kernel is correct across the full `i32` domain. Benchmark: `benches/dayofweek_weekday.rs`.
+- Performance (tuned 2026-09-08, PR [#5771](https://github.com/apache/datafusion-comet/pull/5771)): computed directly from the epoch day (`((days + 4).rem_euclid(7) + 1)`) by the native `spark_dayofweek` kernel, replacing `datepart('dow', ..)` -- which reconstructs a `NaiveDateTime` per row and recomputes the null mask via `unary_opt` -- plus a separate `+ 1` arithmetic node. About 9x faster on flat input with no or sparse nulls, 3-4x at 87.5% nulls, and roughly 1.1x on an all-null batch or a cardinality-8 dictionary, where the replaced path already did little work (about 2x at cardinality 1024). Note the old path returned NULL for epoch days outside chrono's range; the kernel is correct across the full `i32` domain. Benchmark: `benches/dayofweek_weekday.rs`.
 
 ## from_utc_timestamp
 
@@ -50,7 +50,7 @@
 
 ## hour
 
-- Performance (tuned 2026-09-08, PR [#5771](https://github.com/apache/datafusion-comet/pull/5771)): `hour`/`minute`/`second` take an integer fast path when no timezone offset applies -- `TimestampNTZ`, or a timezone-aware timestamp in a UTC session -- computing the field from the stored microseconds with Euclidean division instead of building a `chrono` datetime per row via `date_part`. Dictionaries, non-microsecond units and offset timezones keep the general path. 83-96% faster; the offset-timezone path is unchanged. Benchmark: `benches/extract_clock_fields.rs`.
+- Performance (tuned 2026-09-08, PR [#5771](https://github.com/apache/datafusion-comet/pull/5771)): `hour`/`minute`/`second` take an integer fast path when no timezone offset applies -- `TimestampNTZ`, or a timezone-aware timestamp in a UTC session -- computing the field from the stored microseconds with Euclidean division instead of building a `chrono` datetime per row via `date_part`. Dictionaries, non-microsecond units and offset timezones keep the general path. Every fast-path shape with a baseline of at least 2 µs takes 82-94% less time; offset session zones and dictionary input keep the general path and stay within noise on a repeat. Benchmark: `benches/extract_date_part.rs`.
 
 ## make_timestamp_ltz
 
@@ -62,7 +62,7 @@
 
 ## minute
 
-- Performance (tuned 2026-09-08, PR [#5771](https://github.com/apache/datafusion-comet/pull/5771)): `hour`/`minute`/`second` take an integer fast path when no timezone offset applies -- `TimestampNTZ`, or a timezone-aware timestamp in a UTC session -- computing the field from the stored microseconds with Euclidean division instead of building a `chrono` datetime per row via `date_part`. Dictionaries, non-microsecond units and offset timezones keep the general path. 83-96% faster; the offset-timezone path is unchanged. Benchmark: `benches/extract_clock_fields.rs`.
+- Performance (tuned 2026-09-08, PR [#5771](https://github.com/apache/datafusion-comet/pull/5771)): `hour`/`minute`/`second` take an integer fast path when no timezone offset applies -- `TimestampNTZ`, or a timezone-aware timestamp in a UTC session -- computing the field from the stored microseconds with Euclidean division instead of building a `chrono` datetime per row via `date_part`. Dictionaries, non-microsecond units and offset timezones keep the general path. Every fast-path shape with a baseline of at least 2 µs takes 82-94% less time; offset session zones and dictionary input keep the general path and stay within noise on a repeat. Benchmark: `benches/extract_date_part.rs`.
 
 ## monthname
 
@@ -74,7 +74,7 @@
 
 ## second
 
-- Performance (tuned 2026-09-08, PR [#5771](https://github.com/apache/datafusion-comet/pull/5771)): `hour`/`minute`/`second` take an integer fast path when no timezone offset applies -- `TimestampNTZ`, or a timezone-aware timestamp in a UTC session -- computing the field from the stored microseconds with Euclidean division instead of building a `chrono` datetime per row via `date_part`. Dictionaries, non-microsecond units and offset timezones keep the general path. 83-96% faster; the offset-timezone path is unchanged. Benchmark: `benches/extract_clock_fields.rs`.
+- Performance (tuned 2026-09-08, PR [#5771](https://github.com/apache/datafusion-comet/pull/5771)): `hour`/`minute`/`second` take an integer fast path when no timezone offset applies -- `TimestampNTZ`, or a timezone-aware timestamp in a UTC session -- computing the field from the stored microseconds with Euclidean division instead of building a `chrono` datetime per row via `date_part`. Dictionaries, non-microsecond units and offset timezones keep the general path. Every fast-path shape with a baseline of at least 2 µs takes 82-94% less time; offset session zones and dictionary input keep the general path and stay within noise on a repeat. Benchmark: `benches/extract_date_part.rs`.
 
 ## to_date
 
@@ -115,4 +115,4 @@
 
 ## weekday
 
-- Performance (tuned 2026-09-08, PR [#5771](https://github.com/apache/datafusion-comet/pull/5771)): computed directly from the epoch day (`(days + 3).rem_euclid(7)`) by the native `spark_weekday` kernel, replacing `datepart('isodow', ..)` plus a `- 1` arithmetic node. 8.4-10.2x faster. `weekday` numbers Monday = 0 through Sunday = 6, a different convention from `dayofweek`. Benchmark: `benches/dayofweek_weekday.rs`.
+- Performance (tuned 2026-09-08, PR [#5771](https://github.com/apache/datafusion-comet/pull/5771)): computed directly from the epoch day (`(days + 3).rem_euclid(7)`) by the native `spark_weekday` kernel, replacing `datepart('isodow', ..)` plus a `- 1` arithmetic node. About 9x faster on flat input with no or sparse nulls, 3-4x at 87.5% nulls, and roughly 1.1x on an all-null batch or a cardinality-8 dictionary, where the replaced path already did little work (about 2x at cardinality 1024). `weekday` numbers Monday = 0 through Sunday = 6, a different convention from `dayofweek`. Benchmark: `benches/dayofweek_weekday.rs`.

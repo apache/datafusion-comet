@@ -40,8 +40,6 @@ private object CometGetDateField extends Enumeration {
   val Year: Value = Value("year")
   val Month: Value = Value("month")
   val DayOfMonth: Value = Value("day")
-  // Datafusion: day of the week where Sunday is 0, but spark sunday is 1 (1 = Sunday,
-  // 2 = Monday, ..., 7 = Saturday).
   val DayOfYear: Value = Value("doy")
   val WeekOfYear: Value = Value("week")
   val Quarter: Value = Value("quarter")
