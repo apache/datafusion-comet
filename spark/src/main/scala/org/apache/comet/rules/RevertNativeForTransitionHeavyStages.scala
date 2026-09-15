@@ -103,7 +103,7 @@ case class RevertNativeForTransitionHeavyStages(session: SparkSession)
       } catch {
         case e: CometExec.InvalidSparkFallbackException =>
           logWarning(
-            s"Skipping transition-heavy stage reversion because a Comet operator could not " +
+            "Skipping transition-heavy stage reversion because a Comet operator could not " +
               s"restore its Spark plan: ${e.getMessage}")
           return None
       }
