@@ -41,8 +41,20 @@ and has to run after the commit is on main, and `pr_build_linux`, because of
 `actions/cache` scoping. A pull request can only restore caches saved on its
 own branch or on `main`, and the queue runs on a throwaway
 `gh-readonly-queue/*` branch whose caches are deleted with it. Without a push
-run, a `Cargo.lock` or `pom.xml` change would leave the cargo-registry, Maven
-and TPC-H/TPC-DS caches on `main` stale until the next unrelated change.
+run, a `Cargo.lock` or `pom.xml` change would leave the cargo-ci, cargo-debug,
+Maven and TPC-H/TPC-DS caches on `main` stale until the next unrelated change.
+
+Warming those caches is the only thing the push run is for, so on `push` the
+Linux build runs in **cache-refresh-only** mode: `build-native`,
+`linux-test-rust` and the two TPC-H/TPC-DS jobs, each stopping once its cache
+entry is written, and nothing else. The lints, the 5x4 `linux-test` matrix and
+the TPC query runs are skipped, which takes the push tier from 587
+runner-minutes to about 73. Two POLICY outputs express this: `build_linux`
+says whether the workflow runs at all, `build_linux_full` whether it runs the
+lints and tests too, and `ci.yml` folds the second into the workflow's
+`cache-refresh-only` input. `dev/ci/check-ci-config.py` fails if a job is added
+to `pr_build_linux.yml` without either the guard or an entry in
+`CACHE_REFRESH_JOBS` naming the cache it writes. See issue #5929.
 
 ```
                 pull_request | merge_group | push to main | workflow_dispatch
@@ -68,7 +80,7 @@ and TPC-H/TPC-DS caches on `main` stale until the next unrelated change.
         v                                   v                                   v
   PR + queue tier                     push to main only         queue tier, or PR with label
   ---------------                     -----------------         ---------------------------
-  pr_build_linux (+ push, for cache)  docs                      pr_build_macos      run-macos-tests
+  pr_build_linux (+ push, cache only) docs                      pr_build_macos      run-macos-tests
   spark_4_1 (catalyst + sql_core)                               pr_benchmark_check  run-benchmark-check
   iceberg_1_11                                                  spark_4_1 sql_hive  run-spark-4.1-hive-tests
                                                                 spark_3_5           run-spark-3.5-tests
@@ -99,7 +111,7 @@ and TPC-H/TPC-DS caches on `main` stale until the next unrelated change.
 | -------------------- | ---------------------------------------------------------------------------------------------------------------------- | ----------------------------------- |
 | `preflight`          | every PR / merge group / push / dispatch / label                                                                       | none (always runs)                  |
 | `changes`            | every PR / merge group / push / dispatch / label                                                                       | runs `dev/ci/compute-changes.py`    |
-| `pr_build_linux`     | PR, merge group or push to main, paths matched                                                                         | `dev/ci/compute-changes.py`         |
+| `pr_build_linux`     | PR, merge group or push to main, paths matched; on push only the cache-writing jobs, via `build_linux_full`            | `dev/ci/compute-changes.py`         |
 | `pr_build_macos`     | merge group, **or** PR with `run-macos-tests`                                                                          | `dev/ci/compute-changes.py`         |
 | `pr_benchmark_check` | merge group, **or** PR with `run-benchmark-check`                                                                      | benchmark sources only              |
 | `docs`               | push to main, paths matched                                                                                            | `.asf.yaml`, `docs/**`, `docs.yaml` |
@@ -199,6 +211,13 @@ in `dev/ci/compute-changes.py`:
   exclusive. `workflow_dispatch` always runs everything.
 
 Moving a suite between the PR and queue tiers is a one-word edit to `POLICY`.
+
+An output does not have to map one-to-one onto a job. Two outputs can feed a
+single call when part of a workflow belongs in a different tier from the rest:
+`spark_4_1` / `spark_4_1_hive` select which module shards the one Spark 4.1
+build runs, and `build_linux` / `build_linux_full` select whether the Linux
+build runs everything or only the jobs that populate `main`'s caches. Both
+share their `FILTERS` list by assignment so the two entries cannot drift.
 
 So adding a suite, moving sources, or changing when something runs is an edit
 to one of those two tables, not to ten `${{ }}` expressions. Keeping the policy
