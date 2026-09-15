@@ -21,11 +21,12 @@ package org.apache.comet.exec
 
 import java.{util => ju}
 
+import org.apache.arrow.vector.{FixedSizeBinaryVector, VarBinaryVector}
 import org.apache.arrow.vector.types.pojo.ArrowType
 import org.apache.spark.CometDriverPlugin
 import org.apache.spark.SparkConf
 import org.apache.spark.sql.{CometTestBase, Row}
-import org.apache.spark.sql.catalyst.expressions.{And, Attribute, Expression, GreaterThanOrEqual, LessThan, Literal}
+import org.apache.spark.sql.catalyst.expressions.{And, Attribute, AttributeReference, Expression, GreaterThanOrEqual, LessThan, Literal}
 import org.apache.spark.sql.columnar.{CachedBatch, SimpleMetricsCachedBatch}
 import org.apache.spark.sql.comet.{CometBroadcastHashJoinExec, CometInMemoryTableScanExec, CometSortExec, CometSortMergeJoinExec}
 import org.apache.spark.sql.comet.execution.arrow.CometCachedBatchHelper
@@ -38,11 +39,12 @@ import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, SortMergeJoi
 import org.apache.spark.sql.functions.max
 import org.apache.spark.sql.internal.{SQLConf, StaticSQLConf}
 import org.apache.spark.sql.types._
+import org.apache.spark.sql.vectorized.{ColumnarBatch, ColumnVector}
 import org.apache.spark.storage.StorageLevel
 
 import org.apache.comet.{CometArrowAllocator, CometConf}
 import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus}
-import org.apache.comet.vector.CometVector
+import org.apache.comet.vector.{CometPlainVector, CometVector}
 
 class CometInMemoryCacheSuite extends CometTestBase {
 
@@ -1377,15 +1379,21 @@ class CometInMemoryCacheSuite extends CometTestBase {
     }
   }
 
-  /** Decode `batches` through the cache serializer, selecting `selected`, and total the rows. */
+  /**
+   * Decode `batches` through the cache serializer, selecting `selected`, and total the rows.
+   *
+   * `cacheAttributes` defaults to the relation's own, and is overridable so a test can hand the
+   * reader a schema the writer did not use.
+   */
   private def decodedRowCount(
       relation: org.apache.spark.sql.execution.columnar.InMemoryRelation,
       batches: Array[CachedBatch],
-      selected: Seq[Attribute]): Long = {
+      selected: Seq[Attribute],
+      cacheAttributes: Option[Seq[Attribute]] = None): Long = {
     relation.cacheBuilder.serializer
       .convertCachedBatchToColumnarBatch(
         spark.sparkContext.parallelize(batches.toSeq, 1),
-        relation.output,
+        cacheAttributes.getOrElse(relation.output),
         selected,
         spark.sessionState.conf)
       // ColumnarBatch is not serializable, so reduce to a count inside the closure.
@@ -1405,10 +1413,8 @@ class CometInMemoryCacheSuite extends CometTestBase {
    */
   private def interceptDecodeFailure(f: => Unit): Throwable = {
     val thrown = intercept[Exception](f)
-    val chain =
-      Iterator.iterate(thrown: Throwable)(_.getCause).takeWhile(_ != null).take(20).toSeq
     assert(
-      !chain.exists { t =>
+      !causeChain(thrown).exists { t =>
         t.getClass.getName.contains("IllegalReferenceCount") ||
         Option(t.getMessage).exists(m => m.contains("RefCnt") || m.contains("refCnt"))
       },
@@ -1477,70 +1483,110 @@ class CometInMemoryCacheSuite extends CometTestBase {
     }
   }
 
-  test("Comet in-memory cache decodes only the projected columns") {
-    // Timings would be a weak assertion here, so this scrambles the compressed bytes of the
-    // columns the read must not touch, leaving every other byte of the payload identical.
-    // Reading still has to succeed, which it only can if those columns' buffers were never copied
-    // out of the payload and handed to the decompressor. The second half checks the corruption is
-    // detectable at all, so the first half cannot pass just because the bad bytes decode silently
-    // to nothing.
+  // Every column of both relations takes a turn as the sole projection. Timings would be a weak
+  // assertion here, so each turn scrambles the compressed bytes of the columns the read must not
+  // touch, leaving every other byte of the payload identical. Reading still has to succeed, which
+  // it only can if those columns' buffers were never copied out of the payload and handed to the
+  // decompressor. Each turn then corrupts the selected column too, so the assertion cannot pass
+  // just because the bad bytes decode silently to nothing.
+  //
+  // The nested relation is what exercises the span arithmetic. A flat column always owns one field
+  // node and two or three buffers, whereas a nested one owns a run as long as its whole subtree,
+  // so a run computed short or long by a buffer shifts every column after it -- and which column
+  // is selected decides whether that misalignment reaches into a corrupted neighbour.
+  Seq(("flat", withProjectionCache _), ("nested", withNestedProjectionCache _)).foreach {
+    case (shape, withCache) =>
+      test(s"Comet in-memory cache decodes only the projected columns of a $shape relation") {
+        withCache { (relation, batches) =>
+          val cacheSchema = Utils.fromAttributes(relation.output)
+          val pristine = CometCachedBatchHelper.snapshotPayloads(batches)
+
+          relation.output.indices.foreach { i =>
+            assert(
+              batches.forall(b => CometCachedBatchHelper.columnIsCompressed(b, cacheSchema, i)),
+              s"column ${relation.output(i).name} is not stored compressed, so corrupting it " +
+                "would prove nothing")
+          }
+
+          relation.output.indices.foreach { selectedIdx =>
+            CometCachedBatchHelper.restorePayloads(batches, pristine)
+            val selected = Seq(relation.output(selectedIdx))
+            val name = relation.output(selectedIdx).name
+
+            relation.output.indices.filter(_ != selectedIdx).foreach { i =>
+              batches.foreach(b => CometCachedBatchHelper.corruptColumn(b, cacheSchema, i))
+            }
+            assert(
+              decodedRowCount(relation, batches, selected) == projectionCacheRows,
+              s"reading $name must not decompress the other ${relation.output.length - 1} columns")
+
+            batches.foreach(b =>
+              CometCachedBatchHelper.corruptColumn(b, cacheSchema, selectedIdx))
+            interceptDecodeFailure {
+              decodedRowCount(relation, batches, selected)
+            }
+          }
+        }
+      }
+  }
+
+  test("Comet in-memory cache rejects a payload that disagrees with the cached schema") {
+    // Nothing in the payload says which schema wrote it, and `batch.buffers(j)` is an unchecked
+    // flatbuffer accessor, so a reader working from a wider schema than the writer used would
+    // otherwise copy windows from wherever the arithmetic landed: wrong values, or an
+    // out-of-range read reported from inside the copy rather than as the layout problem it is.
     withProjectionCache { (relation, batches) =>
-      val cacheSchema = Utils.fromAttributes(relation.output)
-      val selectedIdx = 1
-      val selected = Seq(relation.output(selectedIdx))
-
-      relation.output.indices.foreach { i =>
-        assert(
-          batches.forall(b => CometCachedBatchHelper.columnIsCompressed(b, cacheSchema, i)),
-          s"column $i is not stored compressed, so corrupting it would prove nothing")
+      val extra = AttributeReference("extra", LongType)()
+      val thrown = intercept[Exception] {
+        decodedRowCount(
+          relation,
+          batches,
+          Seq(relation.output.head),
+          cacheAttributes = Some(relation.output :+ extra))
       }
-
-      relation.output.indices.filter(_ != selectedIdx).foreach { i =>
-        batches.foreach(b => CometCachedBatchHelper.corruptColumn(b, cacheSchema, i))
-      }
-
       assert(
-        decodedRowCount(relation, batches, selected) == projectionCacheRows,
-        "reading one column must not decompress the other five")
-
-      batches.foreach(b => CometCachedBatchHelper.corruptColumn(b, cacheSchema, selectedIdx))
-      interceptDecodeFailure {
-        decodedRowCount(relation, batches, selected)
-      }
+        causeChain(thrown).exists(t =>
+          Option(t.getMessage).exists(_.contains("does not match the cached schema"))),
+        s"a layout mismatch must be reported as itself: $thrown")
     }
   }
 
-  test("Comet in-memory cache decodes only the projected columns of a nested relation") {
-    // The flat case above pins one column and corrupts the rest. Here every column takes its turn,
-    // because a nested column's run of buffers is as long as its subtree rather than a fixed two or
-    // three: a run computed short or long shifts every column after it, so which column is selected
-    // decides whether the misalignment reaches into a corrupted neighbour.
-    nestedProjectionColumns.indices.foreach { selectedIdx =>
-      withNestedProjectionCache { (relation, batches) =>
-        val cacheSchema = Utils.fromAttributes(relation.output)
-        val selected = Seq(relation.output(selectedIdx))
-        val name = relation.output(selectedIdx).name
+  test("Comet in-memory cache converts a batch whose vectors do not match the cached layout") {
+    // BinaryType is an Arrow Binary to the reader -- validity, offsets, data -- but a CometVector
+    // may wrap a FixedSizeBinaryVector for the same Spark type, which has no offsets buffer. An
+    // accelerated mapInArrow returning pa.binary(n) and an Iceberg fixed[N] read both produce one.
+    // Since the payload stores no schema, writing that and reading a Binary shifts every buffer
+    // from that column on, so the write path has to notice and convert instead. isArrowBacked
+    // cannot: it accepts both vectors, as the first assertion of each case records.
+    val cacheSchema = StructType(Seq(StructField("b", BinaryType)))
+    val rows = 4
 
-        relation.output.indices.foreach { i =>
-          assert(
-            batches.forall(b => CometCachedBatchHelper.columnIsCompressed(b, cacheSchema, i)),
-            s"column ${relation.output(i).name} is not stored compressed, so corrupting it " +
-              "would prove nothing")
-        }
+    val fixed = new FixedSizeBinaryVector("b", CometArrowAllocator, 3)
+    try {
+      fixed.allocateNew(rows)
+      (0 until rows).foreach(i => fixed.set(i, Array[Byte](i.toByte, 1, 2)))
+      fixed.setValueCount(rows)
+      val batch = new ColumnarBatch(Array[ColumnVector](new CometPlainVector(fixed)), rows)
+      assert(Utils.isArrowBacked(batch))
+      assert(
+        !CometCachedBatchHelper.writesDirectly(batch, cacheSchema),
+        "a fixed-size binary vector does not have the layout the reader rebuilds for BinaryType")
+    } finally {
+      fixed.close()
+    }
 
-        relation.output.indices.filter(_ != selectedIdx).foreach { i =>
-          batches.foreach(b => CometCachedBatchHelper.corruptColumn(b, cacheSchema, i))
-        }
-
-        assert(
-          decodedRowCount(relation, batches, selected) == projectionCacheRows,
-          s"reading $name must not decompress the other ${relation.output.length - 1} columns")
-
-        batches.foreach(b => CometCachedBatchHelper.corruptColumn(b, cacheSchema, selectedIdx))
-        interceptDecodeFailure {
-          decodedRowCount(relation, batches, selected)
-        }
-      }
+    val varBinary = new VarBinaryVector("b", CometArrowAllocator)
+    try {
+      varBinary.allocateNew(rows)
+      (0 until rows).foreach(i => varBinary.set(i, Array[Byte](i.toByte, 1, 2)))
+      varBinary.setValueCount(rows)
+      val batch = new ColumnarBatch(Array[ColumnVector](new CometPlainVector(varBinary)), rows)
+      assert(Utils.isArrowBacked(batch))
+      assert(
+        CometCachedBatchHelper.writesDirectly(batch, cacheSchema),
+        "the vector Comet's own scans produce for BinaryType must still take the direct path")
+    } finally {
+      varBinary.close()
     }
   }
 
@@ -1789,19 +1835,44 @@ class CometInMemoryCacheSuite extends CometTestBase {
     // else -- the holder is published to the task-completion listener only once its constructor
     // returns -- so a failure that does not release them leaks off-heap for the life of the
     // executor.
+    //
+    // Two corruption points, because they fail at different depths. Taking out a column's first
+    // buffer fails before anything of that column has been decompressed. Taking out only the last
+    // buffer of a string column -- whose offsets and data are separately compressed -- decompresses
+    // one buffer into a fresh allocation and then throws on the next, leaving that allocation
+    // reachable from nothing the failure path can see. The second is the one that catches a leak
+    // in `VectorLoader`; the first is the one that catches a cleanup path releasing the shared
+    // body twice.
     withProjectionCache { (relation, batches) =>
       val cacheSchema = Utils.fromAttributes(relation.output)
-      // Corrupt the second selected column, so the first is copied out successfully first.
-      val selected = Seq(relation.output(0), relation.output(1))
-      batches.foreach(b => CometCachedBatchHelper.corruptColumn(b, cacheSchema, 1))
+      val pristine = CometCachedBatchHelper.snapshotPayloads(batches)
+      val stringIdx = 3
+      assert(relation.output(stringIdx).dataType.typeName == "string")
 
-      val before = CometArrowAllocator.getAllocatedMemory
-      interceptDecodeFailure {
-        decodedRowCount(relation, batches, selected)
+      val cases = Seq(
+        (
+          "a column's first buffer",
+          // Corrupt the second selected column, so the first is copied out successfully first.
+          (b: CachedBatch) => CometCachedBatchHelper.corruptColumn(b, cacheSchema, 1),
+          Seq(relation.output(0), relation.output(1))),
+        (
+          "a string column's trailing buffer",
+          (b: CachedBatch) =>
+            CometCachedBatchHelper.corruptTrailingBuffer(b, cacheSchema, stringIdx),
+          Seq(relation.output(stringIdx))))
+
+      cases.foreach { case (where, corrupt, selected) =>
+        CometCachedBatchHelper.restorePayloads(batches, pristine)
+        batches.foreach(corrupt)
+
+        val before = CometArrowAllocator.getAllocatedMemory
+        interceptDecodeFailure {
+          decodedRowCount(relation, batches, selected)
+        }
+        assert(
+          CometArrowAllocator.getAllocatedMemory == before,
+          s"everything allocated before a failure in $where must be released")
       }
-      assert(
-        CometArrowAllocator.getAllocatedMemory == before,
-        "everything allocated before the failure must be released")
     }
   }
 
@@ -1842,28 +1913,6 @@ class CometInMemoryCacheSuite extends CometTestBase {
       } finally {
         spark.catalog.clearCache()
       }
-    }
-  }
-
-  test("Comet in-memory cache releases its vectors when a column fails after a partial decode") {
-    // Tighter than the two cases above, and the one that actually catches a leak. A string column
-    // stores its offsets and its data as separate compressed buffers, so corrupting only the
-    // second makes the decoder decompress one buffer of the column into a fresh allocation and
-    // then throw on the next, with the first reachable from nothing the failure path can see.
-    withProjectionCache { (relation, batches) =>
-      val cacheSchema = Utils.fromAttributes(relation.output)
-      val stringIdx = 3
-      assert(relation.output(stringIdx).dataType.typeName == "string")
-      batches.foreach(b =>
-        CometCachedBatchHelper.corruptTrailingBuffer(b, cacheSchema, stringIdx))
-
-      val before = CometArrowAllocator.getAllocatedMemory
-      interceptDecodeFailure {
-        decodedRowCount(relation, batches, Seq(relation.output(stringIdx)))
-      }
-      assert(
-        CometArrowAllocator.getAllocatedMemory == before,
-        "a buffer decoded before the failure must be released")
     }
   }
 

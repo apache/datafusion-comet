@@ -47,7 +47,7 @@ import org.apache.comet.vector.NativeUtil
  * and no end-of-stream marker, produced by `CachedBatchIpc.serialize`. Compression is applied per
  * Arrow buffer rather than over the payload as a whole, which is what lets a scan decompress only
  * the columns it projected: the message records every buffer's offset and length, so
- * `CachedBatchIpc.readProjected` copies out just the selected columns' byte ranges. The cache
+ * `CachedBatchIpc.Projection.load` copies out just the selected columns' byte ranges. The cache
  * manager still owns storage and eviction; this class only changes the cached payload.
  */
 private case class CometCachedBatch(
@@ -56,6 +56,15 @@ private case class CometCachedBatch(
     override val stats: InternalRow,
     bytes: Array[Byte])
     extends SimpleMetricsCachedBatch
+
+/**
+ * The write codec, resolved on the driver and shipped to the executors in the write closure.
+ *
+ * Both write paths resolve it there rather than inside their `mapPartitions` closure: on an
+ * executor `CometConf` would resolve against whatever `SQLConf` happens to be current on that
+ * thread rather than against this session's.
+ */
+private case class CacheCodecSettings(name: String, zstdLevel: Int)
 
 /**
  * Cache serializer that stores Comet-compatible Arrow batches in Spark's in-memory cache.
@@ -363,32 +372,26 @@ class ArrowCachedBatchSerializer extends SimpleMetricsCachedBatchSerializer {
     case _ => false
   }
 
-  // Compute Spark-compatible cache stats before serializing each batch to Arrow.
-  // The stats are stored beside the Arrow bytes so Spark's cache filter can prune
-  // CometCachedBatch without decoding the batch first.
-  //
-  // A columnar input batch is not guaranteed to be Arrow-backed; see supportsColumnarInput for
-  // why. Batches that are not get copied into Arrow first, since Utils.serializeBatches only
-  // writes CometVector columns.
-  /**
-   * The configured write codec, read on the driver.
-   *
-   * Both write paths resolve this here rather than inside their `mapPartitions` closure: the
-   * closure ships to the executors, where `CometConf` would resolve against whatever `SQLConf`
-   * happens to be current on that thread rather than against this session's.
-   */
-  private def codecSettings(conf: SQLConf): (String, Int) =
-    (
+  private def codecSettings(conf: SQLConf): CacheCodecSettings =
+    CacheCodecSettings(
       CometConf.COMET_EXEC_IN_MEMORY_CACHE_COMPRESSION_CODEC.get(conf),
       CometConf.COMET_EXEC_IN_MEMORY_CACHE_COMPRESSION_ZSTD_LEVEL.get(conf))
 
+  // Serialize each batch to Arrow, gathering the Spark-compatible cache stats first. The stats are
+  // stored beside the Arrow bytes so Spark's cache filter can prune a CometCachedBatch without
+  // decoding it.
+  //
+  // A columnar input batch is not guaranteed to be Arrow-backed, nor to be laid out the way the
+  // reader will read it; see supportsColumnarInput and CachedBatchIpc.matchesReaderLayout. Batches
+  // that are not get copied into Arrow first.
   private def encodeBatches(
       batches: Iterator[ColumnarBatch],
       attrs: Seq[Attribute],
-      codecSetting: (String, Int)): Iterator[CachedBatch] = {
+      codecSetting: CacheCodecSettings): Iterator[CachedBatch] = {
     val arrowSchema =
       Utils.toArrowSchema(Utils.fromAttributes(attrs), CometArrowStream.NATIVE_TIMEZONE)
-    val codec = CachedBatchIpc.compressionCodec(codecSetting._1, codecSetting._2)
+    val readerFields = arrowSchema.getFields.asScala.toIndexedSeq
+    val codec = CachedBatchIpc.compressionCodec(codecSetting.name, codecSetting.zstdLevel)
     val orderings = boundsOrderings(attrs)
 
     batches.map { batch =>
@@ -397,7 +400,14 @@ class ArrowCachedBatchSerializer extends SimpleMetricsCachedBatchSerializer {
       val (lower, upper, nulls) = gatherColumnStats(batch, attrs, orderings)
       val numRows = batch.numRows()
 
-      val (bytes, columnSizes) = if (Utils.isArrowBacked(batch)) {
+      // Written as it stands only if its vectors are ones the writer accepts and are already laid
+      // out the way the schema-less payload will be read back; see CachedBatchIpc's
+      // matchesReaderLayout. Anything else is converted, which is what makes the fast path safe
+      // rather than merely usual.
+      val writeDirectly =
+        Utils.isArrowBacked(batch) && CachedBatchIpc.matchesReaderLayout(batch, readerFields)
+
+      val (bytes, columnSizes) = if (writeDirectly) {
         CachedBatchIpc.serialize(batch, codec, CometArrowAllocator)
       } else {
         val arrowBatch =
@@ -515,8 +525,10 @@ class ArrowCachedBatchSerializer extends SimpleMetricsCachedBatchSerializer {
 
     input.mapPartitions { it =>
       // Built once per partition: resolving the Arrow schema and the projection's buffer layout
-      // walks every field of the cached relation, which would otherwise be paid per batch.
-      val projection = new CachedBatchIpc.Projection(
+      // walks every field of the cached relation, which would otherwise be paid per batch. Lazy
+      // because a row-count-only read selects nothing and never decodes, and that walk is the
+      // whole cost of such a scan over a wide relation.
+      lazy val projection = new CachedBatchIpc.Projection(
         Utils
           .toArrowSchema(cacheSchema, CometArrowStream.NATIVE_TIMEZONE)
           .getFields
