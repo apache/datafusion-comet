@@ -109,7 +109,7 @@ logic and to skip tests. Add the matching helper for the new version
 
 ### Add a Compile-Only CI Job
 
-Edit `.github/workflows/pr_build_linux.yml` and `pr_build_macos.yml` to add
+Edit `.github/workflows/pr_build_linux_checks.yml` and `pr_build_macos.yml` to add
 the new Spark version to the `build-spark` (or equivalent compile-only) job
 matrix. Do not add it to the heavier test matrices yet. A compile-only job
 keeps the CI cost of stage 1 small and prevents test failures on the new

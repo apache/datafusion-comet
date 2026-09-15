@@ -181,10 +181,11 @@ class NativeBuildSelectionTest(unittest.TestCase):
         self.assert_selection(["dev/diffs/4.1.3.diff"], {"spark_4_1"})
 
     def test_legacy_patch_needs_opt_in(self):
-        """Assert queue-tier Spark patches need their label on ordinary PR runs.
+        """Assert older Spark patches need their label on ordinary PR runs.
 
         Each repository-relative patch path is tested with and without its
-        matching label. Inputs and routing tables stay unchanged; a mismatch
+        matching label, including deprecated Spark 3.4, which is excluded from
+        the merge queue. Inputs and routing tables stay unchanged; a mismatch
         in either the consumer or producer selection fails the assertion.
         """
         for version, job, label in (
@@ -248,16 +249,26 @@ class NativeBuildSelectionTest(unittest.TestCase):
             action="labeled", labels=OPT_IN, label="run-iceberg-tests",
         )
 
-    def test_merge_queue_runs_include_legacy_consumers(self):
-        """Assert the queue selects all native consumers in compute() and CLI.
+    def test_merge_queue_excludes_deprecated_spark_3_4(self):
+        """Assert queue selection excludes Spark 3.4 through compute() and CLI.
 
-        A native source edit matches every consumer without opt-in labels.
-        Check both entry points; the CLI's temporary inputs are cleaned up
-        by cli_outputs(), and neither check changes the routing policy.
+        A shared native edit selects the other eight callers and the producer;
+        a Spark 3.4-only patch selects no caller and skips the producer.
+        Supplying opt-in labels cannot restore deprecated coverage to a queue
+        event. Fixtures and policy stay unchanged, cli_outputs() owns and
+        removes temporary inputs, and every mismatch fails an assertion.
         """
-        files = ["native/core/src/lib.rs"]
-        self.assert_selection(files, set(CONSUMERS), event="merge_group")
-        self.assert_selected(self.cli_outputs(files, {"name": "merge_group"}), set(CONSUMERS))
+        for files, expected in (
+            (["native/core/src/lib.rs"], set(CONSUMERS) - {"spark_3_4"}),
+            (["dev/diffs/3.4.3.diff"], set()),
+        ):
+            for labels in ((), OPT_IN):
+                event = {"name": "merge_group", "labels": labels}
+                for invoke in (self.filters.compute, self.cli_outputs):
+                    with self.subTest(files=files, labels=labels, api=invoke.__name__):
+                        flags = invoke(files, event)
+                        self.assertFalse(flags["spark_3_4"])
+                        self.assert_selected(flags, expected)
 
     def test_main_runs_only_linux_consumers_to_refresh_caches(self):
         """Assert push selects the Linux consumer and native build in both APIs.
@@ -271,7 +282,12 @@ class NativeBuildSelectionTest(unittest.TestCase):
         self.assert_selected(self.cli_outputs(files, {"name": "push"}), {"pr_build_linux"})
 
     def test_manual_runs_include_legacy_consumers_without_changed_files(self):
-        """Assert empty-input dispatch selects every consumer in compute and CLI."""
+        """Assert empty-input dispatch selects all nine callers in both APIs.
+
+        Deprecated Spark 3.4 remains runnable manually even though it is absent
+        from the merge queue. Inputs and routing policy stay unchanged; the CLI
+        helper removes temporary inputs and a missing output fails assertions.
+        """
         self.assert_selection([], set(CONSUMERS), event="workflow_dispatch")
         flags = self.cli_outputs([], {"name": "workflow_dispatch"})
         self.assert_selected(flags, set(CONSUMERS))
@@ -317,11 +333,13 @@ class NativeBuildSelectionTest(unittest.TestCase):
     def test_label_event_cli_uses_only_the_new_gating_label(self):
         """Assert the CLI derives native selection from the new label only.
 
-        Exercise Spark 3.5's queue opt-in, Spark 4.1's Hive-only route, Iceberg's
-        grouped opt-in, and an unrelated label. cli_outputs() cleans up the child
-        environment and temporary file; routing tables remain unchanged.
+        Exercise deprecated Spark 3.4's retained opt-in, Spark 3.5's queue
+        opt-in, Spark 4.1's Hive-only route, Iceberg's grouped opt-in, and an
+        unrelated label. cli_outputs() cleans up the child environment and
+        temporary file; routing tables remain unchanged and mismatches fail.
         """
         for label, expected in (
+            ("run-spark-3.4-tests", {"spark_3_4"}),
             ("run-spark-3.5-tests", {"spark_3_5"}),
             ("run-spark-4.1-hive-tests", {"spark_4_1"}),
             ("run-iceberg-tests", {"iceberg_1_8", "iceberg_1_9", "iceberg_1_10"}),
