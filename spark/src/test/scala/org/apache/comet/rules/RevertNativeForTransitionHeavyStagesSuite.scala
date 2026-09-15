@@ -19,17 +19,114 @@
 
 package org.apache.comet.rules
 
-import org.apache.spark.sql.CometTestBase
+import java.io.File
+
+import org.apache.spark.sql.{CometTestBase, SaveMode}
+import org.apache.spark.sql.catalyst.expressions.{AttributeReference, Literal}
 import org.apache.spark.sql.catalyst.expressions.aggregate.{Final, Partial}
 import org.apache.spark.sql.comet._
 import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
 import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.adaptive.QueryStageExec
+import org.apache.spark.sql.execution.command.DataWritingCommandExec
+import org.apache.spark.sql.execution.datasources.WriteFilesExec
 import org.apache.spark.sql.internal.SQLConf
+import org.apache.spark.sql.types.BinaryType
+import org.apache.spark.sql.util.QueryExecutionListener
 
 import org.apache.comet.CometConf
+import org.apache.comet.serde.OperatorOuterClass.Operator
+
+private case class AliasingFallbackCometExec(
+    override val originalPlan: SparkPlan,
+    child: SparkPlan)
+    extends CometExec
+    with UnaryExecNode {
+  override protected def withNewChildInternal(newChild: SparkPlan): SparkPlan =
+    copy(child = newChild)
+}
 
 class RevertNativeForTransitionHeavyStagesSuite extends CometTestBase {
+
+  private def cometIcebergWrite(child: SparkPlan): CometIcebergWriteExec = {
+    val output = Seq(
+      AttributeReference(IcebergWriteExec.CommitMessageColumn, BinaryType, nullable = false)())
+    val originalPlan = IcebergWriteExec(null, output, child)
+    CometIcebergWriteExec(
+      Operator.newBuilder().build(),
+      originalPlan,
+      child,
+      output,
+      batchWrite = null,
+      table = null,
+      partitionSpecId = 0)
+  }
+
+  private def cometFilter(child: SparkPlan): CometFilterExec = {
+    val condition = Literal.TrueLiteral
+    val sparkFilter = FilterExec(condition, child)
+    CometFilterExec(
+      Operator.newBuilder().build(),
+      sparkFilter,
+      sparkFilter.output,
+      condition,
+      child,
+      SerializedPlan(None))
+  }
+
+  private def captureDataWritingCommand(path: String): DataWritingCommandExec = {
+    var captured: SparkPlan = null
+    val listener = new QueryExecutionListener {
+      override def onSuccess(funcName: String, qe: QueryExecution, durationNs: Long): Unit = {
+        if (funcName == "save" || funcName.contains("command")) {
+          captured = qe.executedPlan
+        }
+      }
+      override def onFailure(
+          funcName: String,
+          qe: QueryExecution,
+          exception: Exception): Unit = {}
+    }
+    spark.listenerManager.register(listener)
+    try {
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        spark.range(1).toDF("id").write.mode("overwrite").parquet(path)
+      }
+    } finally {
+      spark.listenerManager.unregister(listener)
+    }
+    val plan = stripAQEPlan(
+      Option(captured).getOrElse(fail("expected a captured parquet write plan")))
+    plan
+      .collectFirst { case command: DataWritingCommandExec => command }
+      .getOrElse(fail(s"expected DataWritingCommandExec:\n$plan"))
+  }
+
+  private def cometNativeWrite(
+      child: SparkPlan,
+      command: DataWritingCommandExec): CometNativeWriteExec = {
+    CometNativeWriteExec(
+      Operator.newBuilder().build(),
+      command,
+      child,
+      outputPath = "/tmp/unused-native-write",
+      mode = SaveMode.Overwrite)
+  }
+
+  private def assertRestoredParquetWrite(reverted: SparkPlan): WriteFilesExec = {
+    val command = reverted match {
+      case node: DataWritingCommandExec => node
+      case other => fail(s"expected DataWritingCommandExec, got:\n$other")
+    }
+    val writeFiles = command.child match {
+      case node: WriteFilesExec => node
+      case other => fail(s"expected WriteFilesExec under DataWritingCommandExec, got:\n$other")
+    }
+    assert(
+      command.collect { case _: CometNativeWriteExec => true }.isEmpty,
+      s"native parquet write should be restored, not erased:\n$reverted")
+    writeFiles
+  }
 
   private def createSparkPlan(sql: String): SparkPlan = {
     var plan: SparkPlan = null
@@ -138,6 +235,187 @@ class RevertNativeForTransitionHeavyStagesSuite extends CometTestBase {
           reverted.output.map(_.name) == cometPlan.output.map(_.name),
           "Output schema should be preserved after revert")
       }
+    }
+  }
+
+  test("revertToSpark preserves an Iceberg write with a leaf child") {
+    val sparkPlan = createSparkPlan("SELECT id FROM VALUES (1) AS t(id)")
+    val leaf = sparkPlan.collectFirst { case node: LeafExecNode => node }.getOrElse {
+      fail(s"expected a leaf node in test plan:\n$sparkPlan")
+    }
+    val write = cometIcebergWrite(leaf)
+
+    val reverted = RevertNativeForTransitionHeavyStages(spark).revertToSpark(write)
+    val icebergWrite = reverted match {
+      case node: IcebergWriteExec => node
+      case other => fail(s"expected IcebergWriteExec, got:\n$other")
+    }
+
+    assert(icebergWrite.child eq leaf)
+    assert(icebergWrite.output.map(_.name) == Seq(IcebergWriteExec.CommitMessageColumn))
+    assert(icebergWrite.output.map(_.dataType) == Seq(BinaryType))
+  }
+
+  test("revertToSpark preserves an Iceberg write over SparkToColumnar of a row source") {
+    val sparkPlan = createSparkPlan("SELECT id FROM VALUES (1) AS t(id)")
+    val leaf = sparkPlan.collectFirst { case node: LeafExecNode => node }.getOrElse {
+      fail(s"expected a leaf node in test plan:\n$sparkPlan")
+    }
+    val write = cometIcebergWrite(CometSparkToColumnarExec(leaf))
+
+    val reverted = RevertNativeForTransitionHeavyStages(spark).revertToSpark(write)
+    val icebergWrite = reverted match {
+      case node: IcebergWriteExec => node
+      case other => fail(s"expected IcebergWriteExec, got:\n$other")
+    }
+
+    assert(
+      icebergWrite.child eq leaf,
+      s"SparkToColumnar should unwrap to the row source:\n$reverted")
+    assert(icebergWrite.output.map(_.name) == Seq(IcebergWriteExec.CommitMessageColumn))
+    assert(icebergWrite.output.map(_.dataType) == Seq(BinaryType))
+    assert(
+      reverted.collect { case _: CometSparkToColumnarExec => true }.isEmpty,
+      s"SparkToColumnar should be fully unwrapped:\n$reverted")
+  }
+
+  test("revertToSpark preserves an Iceberg write without duplicating its unary child") {
+    val sparkPlan = createSparkPlan("SELECT id FROM VALUES (1), (2) AS t(id)")
+    val leaf = sparkPlan.collectFirst { case node: LeafExecNode => node }.getOrElse {
+      fail(s"expected a leaf node in test plan:\n$sparkPlan")
+    }
+    val write = cometIcebergWrite(cometFilter(leaf))
+
+    val reverted = RevertNativeForTransitionHeavyStages(spark).revertToSpark(write)
+
+    assert(reverted.isInstanceOf[IcebergWriteExec], s"expected IcebergWriteExec:\n$reverted")
+    assert(
+      reverted.collect { case _: FilterExec => true }.size == 1,
+      s"expected exactly one Spark FilterExec:\n$reverted")
+    assert(countCometExecs(reverted) == 0, s"expected no Comet operators:\n$reverted")
+  }
+
+  test("revertToSpark unwraps stacked SparkToColumnar(C2R) under a native write") {
+    val sparkPlan = createSparkPlan("SELECT id FROM VALUES (1) AS t(id)")
+    val leaf = sparkPlan.collectFirst { case node: LeafExecNode => node }.getOrElse {
+      fail(s"expected a leaf node in test plan:\n$sparkPlan")
+    }
+    val stacked = CometSparkToColumnarExec(CometNativeColumnarToRowExec(cometFilter(leaf)))
+    val write = cometIcebergWrite(stacked)
+
+    val reverted = RevertNativeForTransitionHeavyStages(spark).revertToSpark(write)
+
+    assert(reverted.isInstanceOf[IcebergWriteExec], s"expected IcebergWriteExec:\n$reverted")
+    assert(
+      reverted.collect { case _: FilterExec => true }.size == 1,
+      s"expected exactly one Spark FilterExec:\n$reverted")
+    assert(
+      reverted.collect { case _: CometNativeColumnarToRowExec | _: CometSparkToColumnarExec =>
+        true
+      }.isEmpty,
+      s"stacked transitions should be fully unwrapped:\n$reverted")
+    assert(countCometExecs(reverted) == 0, s"expected no Comet operators:\n$reverted")
+  }
+
+  test("revertToSpark preserves a native parquet write with a leaf child") {
+    val sparkPlan = createSparkPlan("SELECT id FROM VALUES (1) AS t(id)")
+    val leaf = sparkPlan.collectFirst { case node: LeafExecNode => node }.getOrElse {
+      fail(s"expected a leaf node in test plan:\n$sparkPlan")
+    }
+    withTempPath { dir =>
+      val write = cometNativeWrite(leaf, captureDataWritingCommand(dir.getAbsolutePath))
+      val reverted = RevertNativeForTransitionHeavyStages(spark).revertToSpark(write)
+      val writeFiles = assertRestoredParquetWrite(reverted)
+      assert(writeFiles.child eq leaf, s"expected the original leaf child:\n$reverted")
+    }
+  }
+
+  test("revertToSpark preserves a native parquet write without duplicating its unary child") {
+    val sparkPlan = createSparkPlan("SELECT id FROM VALUES (1), (2) AS t(id)")
+    val leaf = sparkPlan.collectFirst { case node: LeafExecNode => node }.getOrElse {
+      fail(s"expected a leaf node in test plan:\n$sparkPlan")
+    }
+    withTempPath { dir =>
+      val write =
+        cometNativeWrite(cometFilter(leaf), captureDataWritingCommand(dir.getAbsolutePath))
+      val reverted = RevertNativeForTransitionHeavyStages(spark).revertToSpark(write)
+      assertRestoredParquetWrite(reverted)
+      assert(
+        reverted.collect { case _: FilterExec => true }.size == 1,
+        s"expected exactly one Spark FilterExec:\n$reverted")
+      assert(countCometExecs(reverted) == 0, s"expected no Comet operators:\n$reverted")
+    }
+  }
+
+  test("revertToSpark restores a native parquet write whose command has no WriteFilesExec") {
+    val sparkPlan = createSparkPlan("SELECT id FROM VALUES (1) AS t(id)")
+    val leaf = sparkPlan.collectFirst { case node: LeafExecNode => node }.getOrElse {
+      fail(s"expected a leaf node in test plan:\n$sparkPlan")
+    }
+    withTempPath { dir =>
+      val command = captureDataWritingCommand(dir.getAbsolutePath)
+      val input = command.child match {
+        case writeFiles: WriteFilesExec => writeFiles.child
+        case other => other
+      }
+      val commandWithoutWriteFiles =
+        command.withNewChildren(Seq(input)).asInstanceOf[DataWritingCommandExec]
+      val write = cometNativeWrite(leaf, commandWithoutWriteFiles)
+      val reverted = RevertNativeForTransitionHeavyStages(spark).revertToSpark(write)
+      val restored = reverted match {
+        case node: DataWritingCommandExec => node
+        case other => fail(s"expected DataWritingCommandExec, got:\n$other")
+      }
+      assert(restored.child eq leaf, s"expected the original leaf child:\n$reverted")
+      assert(
+        restored.collect { case _: WriteFilesExec => true }.isEmpty,
+        s"WriteFilesExec should not be reinserted when the original command lacked it:\n$reverted")
+      assert(
+        restored.collect { case _: CometNativeWriteExec => true }.isEmpty,
+        s"native parquet write should be restored, not erased:\n$reverted")
+    }
+  }
+
+  test("invalid original-plan alias skips the entire stage reversion") {
+    withSQLConf(
+      CometConf.COMET_EXEC_TRANSITION_REVERT_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_TRANSITION_REVERT_MAX_TRANSITIONS.key -> "0") {
+      val sparkPlan = createSparkPlan("SELECT id FROM VALUES (1) AS t(id)")
+      val leaf = sparkPlan.collectFirst { case node: LeafExecNode => node }.getOrElse {
+        fail(s"expected a leaf node in test plan:\n$sparkPlan")
+      }
+      val aliasing = AliasingFallbackCometExec(leaf, leaf)
+      val stagePlan = CometNativeColumnarToRowExec(aliasing)
+      val rule = RevertNativeForTransitionHeavyStages(spark)
+      assert(rule.countTransitions(stagePlan) == 1)
+
+      val result = rule(stagePlan)
+
+      assert(
+        result eq stagePlan,
+        s"invalid fallback must leave the whole stage unchanged:\n$result")
+    }
+  }
+
+  test("invalid original-plan alias to a Comet child skips the entire stage reversion") {
+    withSQLConf(
+      CometConf.COMET_EXEC_TRANSITION_REVERT_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_TRANSITION_REVERT_MAX_TRANSITIONS.key -> "0") {
+      val sparkPlan = createSparkPlan("SELECT id FROM VALUES (1) AS t(id)")
+      val leaf = sparkPlan.collectFirst { case node: LeafExecNode => node }.getOrElse {
+        fail(s"expected a leaf node in test plan:\n$sparkPlan")
+      }
+      val cometChild = cometFilter(leaf)
+      val aliasing = AliasingFallbackCometExec(cometChild, cometChild)
+      val stagePlan = CometNativeColumnarToRowExec(aliasing)
+      val rule = RevertNativeForTransitionHeavyStages(spark)
+      assert(rule.countTransitions(stagePlan) == 1)
+
+      val result = rule(stagePlan)
+
+      assert(
+        result eq stagePlan,
+        s"invalid nested fallback must leave the whole stage unchanged:\n$result")
     }
   }
 
