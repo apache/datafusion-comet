@@ -333,46 +333,31 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
       case _: SpecifiedWindowFrame => false
       case _ => true
     }
-    if (isEverExpanding) {
-      windowExpr.windowFunction match {
-        case agg: AggregateExpression =>
-          agg.aggregateFunction match {
-            case a: Average =>
-              a.sumDataType match {
-                case decimal: DecimalType if decimal.precision == DecimalType.MAX_PRECISION =>
-                  // Spark can preserve an out-of-precision intermediate sum in a window
-                  // buffer until AVG divides it by the count. Comet's decimal accumulator
-                  // instead records overflow immediately, so keep these windows in Spark
-                  // when the intermediate precision cannot be widened any further.
-                  withFallbackReason(
-                    windowExpr,
-                    "AVG on DECIMAL with maximum-precision intermediate state is not supported")
-                  return None
-                case _ =>
-              }
-            case _ =>
-          }
-        case _ =>
-      }
-    }
-    if (!isEverExpanding) {
-      windowExpr.windowFunction match {
-        case agg: AggregateExpression =>
-          agg.aggregateFunction match {
-            case s: Sum if s.dataType.isInstanceOf[DecimalType] =>
-              withFallbackReason(
-                windowExpr,
-                "SUM on DECIMAL with a sliding window frame is not supported")
-              return None
-            case a: Average if a.dataType.isInstanceOf[DecimalType] =>
-              withFallbackReason(
-                windowExpr,
-                "AVG on DECIMAL with a sliding window frame is not supported")
-              return None
-            case _ =>
-          }
-        case _ =>
-      }
+    windowExpr.windowFunction match {
+      case AggregateExpression(a: Average, _, _, _, _) if isEverExpanding =>
+        a.sumDataType match {
+          case decimal: DecimalType if decimal.precision == DecimalType.MAX_PRECISION =>
+            // Spark can retain an out-of-precision window sum until AVG divides by count.
+            // Comet records overflow immediately, so the two accumulators can disagree.
+            withFallbackReason(
+              windowExpr,
+              "AVG on DECIMAL with maximum-precision intermediate state is not supported")
+            return None
+          case _ =>
+        }
+      case AggregateExpression(s: Sum, _, _, _, _)
+          if !isEverExpanding && s.dataType.isInstanceOf[DecimalType] =>
+        withFallbackReason(
+          windowExpr,
+          "SUM on DECIMAL with a sliding window frame is not supported")
+        return None
+      case AggregateExpression(a: Average, _, _, _, _)
+          if !isEverExpanding && a.dataType.isInstanceOf[DecimalType] =>
+        withFallbackReason(
+          windowExpr,
+          "AVG on DECIMAL with a sliding window frame is not supported")
+        return None
+      case _ =>
     }
 
     // Comet's native window planner ships RANGE frame offsets as

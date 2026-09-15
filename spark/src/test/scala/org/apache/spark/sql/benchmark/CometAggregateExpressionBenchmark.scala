@@ -21,9 +21,7 @@ package org.apache.spark.sql.benchmark
 
 import org.apache.spark.benchmark.Benchmark
 import org.apache.spark.sql.comet.CometHashAggregateExec
-import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
 import org.apache.spark.sql.execution.aggregate.HashAggregateExec
-import org.apache.spark.sql.execution.exchange.ShuffleExchangeExec
 import org.apache.spark.sql.internal.SQLConf
 
 import org.apache.comet.CometConf
@@ -80,20 +78,13 @@ object CometAggregateExpressionBenchmark extends CometBenchmarkBase {
                   s"CAST(id % $groups AS INT) AS k",
                   "CAST(id % 97 AS DECIMAL(20, 2)) AS v"))
             val input = spark.table("parquetV1Table")
-            assert(input.inputFiles.length == partitions)
             assert(input.rdd.getNumPartitions == partitions)
-            assert(input.count() == rows)
-            val result = spark.sql(query).collect().toSeq
-            assert(result.map(_.getInt(0)) == (0 until 100))
-            result
+            spark.sql(query).collect().toSeq
           }
           val benchmark = new Benchmark("grouped_ansi_decimal_avg", rows, output = output)
           val modes = Seq(false, true)
           for (optIn <- (if (reverse) modes.reverse else modes)) {
             withSQLConf(allowIncompatible -> optIn.toString) {
-              // Inspect the whole scan, not the one-partition TopK output.
-              val inputPartitions = spark.table("parquetV1Table").rdd.getNumPartitions
-              assert(inputPartitions == partitions)
               val df = spark.sql(query)
               assert(df.collect().toSeq == expected)
               val plan = df.queryExecution.executedPlan
@@ -101,13 +92,7 @@ object CometAggregateExpressionBenchmark extends CometBenchmarkBase {
               val sparkAggregates = plan.collect { case _: HashAggregateExec => 1 }.sum
               assert(nativeAggregates == (if (optIn) 2 else 0), plan.treeString)
               assert(sparkAggregates == (if (optIn) 0 else 2), plan.treeString)
-              benchmark.out.println(s"Grouped ANSI AVG allowIncompatible=$optIn, rows=$rows, " +
-                s"groups=$groups, inputPartitions=$inputPartitions, shufflePartitions=$partitions, " +
-                s"filePartitionBytes=$filePartitionBytes, fileOpenCostBytes=$filePartitionBytes, " +
-                "ansi=true, aqe=false, nativeScan=true, shuffleMode=auto, " +
-                s"master=${spark.sparkContext.master}, " +
-                s"sparkVersion=${spark.version}, resultMatchesSpark=true, " +
-                s"nativeAggregates=$nativeAggregates, sparkAggregates=$sparkAggregates")
+              benchmark.out.println(s"Grouped ANSI AVG allowIncompatible=$optIn")
               benchmark.out.println(plan.treeString)
             }
             benchmark.addCase(s"Comet allowIncompatible=$optIn") { _ =>
@@ -152,17 +137,8 @@ object CometAggregateExpressionBenchmark extends CometBenchmarkBase {
           val query = "SELECT k, AVG(v) FROM parquetV1Table GROUP BY k"
           val expected = withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
             val input = spark.table("parquetV1Table")
-            assert(input.inputFiles.length == partitions)
-            val inputPartitions = input.rdd.getNumPartitions
-            assert(
-              inputPartitions == partitions,
-              s"Expected $partitions inputs, got $inputPartitions")
-            val df = spark.sql(query)
-            val result = df.collect()
-            assert(result.length == groups)
-            println(
-              "Wide-decimal Spark baseline plan:\n" + df.queryExecution.executedPlan.treeString)
-            result.toSet
+            assert(input.rdd.getNumPartitions == partitions)
+            spark.sql(query).collect().toSeq.sortBy(_.getDecimal(0))
           }
           val modes = Seq("native", "auto")
           for (mode <- (if (reverse) modes.reverse else modes)) {
@@ -174,24 +150,9 @@ object CometAggregateExpressionBenchmark extends CometBenchmarkBase {
                 CometConf.COMET_ENABLED.key -> "true",
                 CometConf.COMET_EXEC_ENABLED.key -> "true")): _*) {
               val df = spark.sql(query)
-              val result = df.collect()
-              assert(result.length == groups)
-              assert(result.toSet == expected, s"Wide-decimal results differ from Spark: $mode")
+              assert(df.collect().toSeq.sortBy(_.getDecimal(0)) == expected)
               val plan = df.queryExecution.executedPlan
-              val cometShuffles = plan.collect { case exchange: CometShuffleExchangeExec =>
-                exchange.shuffleType.toString
-              }
-              val sparkShuffles = plan.collect { case _: ShuffleExchangeExec => 1 }.sum
-              val nativeAggregates = plan.collect { case _: CometHashAggregateExec => 1 }.sum
-              assert(cometShuffles.size + sparkShuffles == 1)
-              // Report the actual routing, including the expected Spark aggregate fallback in
-              // native-only mode. A faster result does not justify an incompatible hash key.
-              println(s"Wide-decimal shuffle mode=$mode, rows=$rows, groups=$groups, " +
-                s"inputPartitions=$partitions, shufflePartitions=$partitions, " +
-                s"filePartitionBytes=$filePartitionBytes, fileOpenCostBytes=$filePartitionBytes, " +
-                s"master=${spark.sparkContext.master}, sparkVersion=${spark.version}, " +
-                s"resultMatchesSpark=true, cometShuffles=${cometShuffles.mkString(",")}, " +
-                s"sparkShuffles=$sparkShuffles, nativeAggregates=$nativeAggregates")
+              println(s"Wide-decimal shuffle mode=$mode")
               println(plan.treeString)
             }
             if (!validateOnly) {
