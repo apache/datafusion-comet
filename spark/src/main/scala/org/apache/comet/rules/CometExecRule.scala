@@ -25,7 +25,8 @@ import scala.collection.mutable.ListBuffer
 import scala.jdk.CollectionConverters._
 
 import org.apache.spark.sql.SparkSession
-import org.apache.spark.sql.catalyst.expressions.{Divide, DoubleLiteral, EqualNullSafe, EqualTo, Expression, FloatLiteral, GreaterThan, GreaterThanOrEqual, KnownFloatingPointNormalized, LessThan, LessThanOrEqual, NamedExpression, Remainder, SortOrder}
+import org.apache.spark.sql.catalyst.expressions.{AttributeReference, AttributeSet, Divide, DoubleLiteral, EqualNullSafe, EqualTo, Expression, FloatLiteral, GreaterThan, GreaterThanOrEqual, KnownFloatingPointNormalized, LeafExpression, LessThan, LessThanOrEqual, NamedExpression, Remainder, SortOrder}
+import org.apache.spark.sql.catalyst.expressions.codegen.CodegenFallback
 import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateMode, Final, Partial, PartialMerge}
 import org.apache.spark.sql.catalyst.optimizer.NormalizeNaNAndZero
 import org.apache.spark.sql.catalyst.plans.{JoinType, LeftAnti, LeftSemi}
@@ -1142,10 +1143,32 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
       case _ => false
     }
 
+    // Match Spark's whole-stage eligibility before relying on deferred generated expressions.
+    // In interpreted execution, or across an input adapter, a Project materializes every output.
+    def supportsWholeStage(node: SparkPlan): Boolean = node match {
+      case codegen: CodegenSupport
+          if conf.wholeStageEnabled &&
+            !QueryPlanSerde.usesInterpretedProjection(conf) &&
+            codegen.supportCodegen =>
+        !node.expressions.exists(_.exists {
+          case _: LeafExpression => false
+          case _: CodegenFallback => true
+          case _ => false
+        }) && !WholeStageCodegenExec.isTooManyFields(conf, node.schema) &&
+        !node.children.exists(child => WholeStageCodegenExec.isTooManyFields(conf, child.schema))
+      case _ => false
+    }
+
+    def eagerReferences(expr: Expression): AttributeSet = expr match {
+      case attribute: AttributeReference => AttributeSet(Seq(attribute))
+      case _ => AttributeSet(QueryPlanSerde.eagerlyEvaluatedChildren(expr).flatMap(eagerReferences))
+    }
+
     def protect(
         node: SparkPlan,
         belowLimit: Boolean,
-        hasLimitAncestor: Boolean): (SparkPlan, Option[String]) = {
+        hasLimitAncestor: Boolean,
+        deferredInputs: AttributeSet): (SparkPlan, Option[String]) = {
       val original = originalPlan(node)
       val startsLimit = original match {
         // Offset-only collection does not stop its input early.
@@ -1176,8 +1199,32 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
       // A top-K is still a LIMIT even when its current input requires sorting.
       val limitAncestor = hasLimitAncestor || startsLimit ||
         original.isInstanceOf[TakeOrderedAndProjectExec]
+      val childDeferredInputs = original match {
+        // AQE can present a previously converted subtree. Batch bridges must not hide
+        // the original Project from its Spark consumer's deferred-input contract.
+        case _: RowToColumnarExec | _: ColumnarToRowExec | _: CometColumnarToRowExec |
+            _: CometNativeColumnarToRowExec | _: CometSparkToColumnarExec =>
+          deferredInputs
+        // Spark gives both children of these joins separate generated stages. Stage roots
+        // and input adapters likewise materialize rows before handing them to a consumer.
+        case _: SortMergeJoinExec | _: ShuffledHashJoinExec | _: WholeStageCodegenExec |
+            _: InputAdapter =>
+          AttributeSet.empty
+        case project: ProjectExec if supportsWholeStage(project) =>
+          val eagerOutputs = project.projectList.filterNot(expr =>
+            expr.deterministic && deferredInputs.contains(expr.toAttribute))
+          project.inputSet -- project.usedInputs --
+            AttributeSet(eagerOutputs.flatMap(eagerReferences))
+        case codegen: CodegenSupport if !materializesInput && supportsWholeStage(original) =>
+          original.inputSet -- codegen.usedInputs
+        case _ => AttributeSet.empty
+      }
       val protectedChildren = node.children.map { child =>
-        protect(child, startsLimit || (belowLimit && !materializesInput), limitAncestor)
+        protect(
+          child,
+          startsLimit || (belowLimit && !materializesInput),
+          limitAncestor,
+          childDeferredInputs)
       }
       val childReason = protectedChildren.flatMap(_._2).headOption
       val condition = original match {
@@ -1213,10 +1260,29 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
       } else {
         None
       }
+      val deferredOutputExpressions = original match {
+        case project: ProjectExec => project.projectList
+        // Grouped hash aggregation materializes its input but defers deterministic result
+        // expressions to its consumer. Ungrouped aggregation evaluates its results eagerly.
+        case aggregate: HashAggregateExec if aggregate.groupingExpressions.nonEmpty =>
+          aggregate.resultExpressions
+        case _ => Seq.empty
+      }
+      val deferredProjection =
+        if (deferredOutputExpressions.nonEmpty && supportsWholeStage(original)) {
+          deferredOutputExpressions
+            .filter(expr => expr.deterministic && deferredInputs.contains(expr.toAttribute))
+            .flatMap(findEvaluationMaskName)
+            .headOption
+            .map(name => s"$name requires Spark evaluation in a deferred projection")
+        } else {
+          None
+        }
       val ownReason = limitName
         .map(name => s"$name requires Spark evaluation below LIMIT")
         .orElse(aggregateBufferName.map(name =>
           s"$name requires Spark aggregate buffers below LIMIT with AQE"))
+        .orElse(deferredProjection)
         .orElse(
           condition
             .flatMap(findEvaluationMaskName)
@@ -1252,7 +1318,7 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
       (prepared, reason)
     }
 
-    protect(plan, belowLimit = false, hasLimitAncestor = false)._1
+    protect(plan, belowLimit = false, hasLimitAncestor = false, AttributeSet.empty)._1
   }
 
   /** Convert a Spark plan to a Comet plan using the specified serde handler */

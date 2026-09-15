@@ -24,6 +24,7 @@ import java.util.concurrent.atomic.AtomicLong
 import scala.collection.mutable
 import scala.collection.mutable.ArrayBuffer
 import scala.jdk.CollectionConverters._
+import scala.util.control.NonFatal
 
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.expressions._
@@ -836,6 +837,34 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
     }
 
     val fn = aggExpr.aggregateFunction
+    if (aggExpr.mode == Partial || aggExpr.mode == Complete) {
+      // Raw-input aggregates can skip arguments (FILTER, null-skipping, or state-dependent
+      // updates). Final/PartialMerge only read buffers, so their original children are irrelevant.
+      var pending = fn.children.toList
+      while (pending.nonEmpty) {
+        val child = pending.head
+        pending = pending.tail
+        child match {
+          case nextDay: NextDay
+              if CometNextDay.evaluationMaskName(nextDay).isDefined &&
+                (aggExpr.filter.isDefined || fn.isInstanceOf[First] || fn.isInstanceOf[Last]) =>
+            withFallbackReason(
+              aggExpr,
+              "next_day requires Spark evaluation in aggregate arguments: " +
+                "native aggregation may evaluate a masked child.")
+            return None
+          case _ =>
+        }
+        // Imperative aggregates interpret their arguments even when codegen is enabled.
+        if (fn.isInstanceOf[ImperativeAggregate] && requiresSparkInterpretedEvaluation(child)) {
+          withFallbackReason(
+            aggExpr,
+            s"${child.prettyName} requires Spark interpreted evaluation in aggregate arguments")
+          return None
+        }
+        pending = child.children.toList ::: pending
+      }
+    }
     val cometExpr = aggrSerdeMap.get(fn.getClass)
     val protoAggExprOpt = cometExpr match {
       case Some(handler) =>
@@ -966,6 +995,24 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
     result
   }
 
+  /** Known eval/codegen differences; callers inspect the enclosing expression tree. */
+  private[serde] def requiresSparkInterpretedEvaluation(expr: Expression): Boolean = expr match {
+    // Interpreted evaluation unboxes a null threshold to zero; generated evaluation returns null.
+    case levenshtein: Levenshtein => levenshtein.children.lift(2).exists(_.nullable)
+    case nextDay: NextDay
+        if nextDay.dayOfWeek.foldable && !nextDay.dayOfWeek.isInstanceOf[Literal] =>
+      // Match NextDay.doGenCode's constant evaluation. Spark can recover from a generation failure
+      // by interpreting the projection, but the dispatcher cannot. Successful constants stay
+      // eligible for native execution or dispatch.
+      try {
+        nextDay.dayOfWeek.eval()
+        false
+      } catch {
+        case NonFatal(_) => true
+      }
+    case _ => false
+  }
+
   private def liftCoverageTags(from: Expression, to: Expression): Unit = {
     val exprs = from.collect { case e: Expression => e }
     Seq(CometExplainInfo.NATIVE_EXPRS, CometExplainInfo.CODEGEN_DISPATCH_EXPRS).foreach { tag =>
@@ -1022,6 +1069,34 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       expr: Expression,
       inputs: Seq[Attribute],
       binding: Boolean): Option[Expr] = {
+
+    // Inspect the full tree before an enclosing expression can dispatch it as a whole.
+    var remaining = expr :: Nil
+    while (remaining.nonEmpty) {
+      val node = remaining.head
+      remaining = remaining.tail
+      node match {
+        case nextDay: NextDay if requiresSparkInterpretedEvaluation(nextDay) =>
+          withFallbackReason(
+            expr,
+            "next_day requires Spark evaluation because its weekday fails during code generation")
+          return None
+        case _: Levenshtein if requiresSparkInterpretedEvaluation(node) =>
+          withFallbackReason(
+            expr,
+            "levenshtein with a nullable threshold requires Spark evaluation: " +
+              "Spark interpreted and generated evaluation differ")
+          return None
+        case _ =>
+      }
+      node.children.reverseIterator.foreach(child => remaining = child :: remaining)
+    }
+    unsupportedNextDayEvaluation(expr) match {
+      case Some(reason) =>
+        withFallbackReason(expr, reason)
+        return None
+      case None =>
+    }
 
     def convert[T <: Expression](expr: T, handler: CometExpressionSerde[T]): Option[Expr] = {
       val exprConfName = handler.getExprConfigName(expr)
@@ -1124,6 +1199,75 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
         // that child's context instead of replacing it with the structural wrapper's origin.
         if (protoExpr.hasExprId) protoExpr else attachExprIdAndContext(expr, protoExpr)
       }
+  }
+
+  /** Spark 4.2 changed this setting from String to an Enumeration.Value. */
+  private[comet] def usesInterpretedProjection(conf: SQLConf): Boolean =
+    conf.getConf(SQLConf.CODEGEN_FACTORY_MODE).toString == "NO_CODEGEN"
+
+  /** Inputs Spark evaluates whenever it consumes this expression's output. */
+  private[comet] def eagerlyEvaluatedChildren(expr: Expression): Seq[Expression] = expr match {
+    case conditional: ConditionalExpression => conditional.alwaysEvaluatedInputs
+    // Generated TryEval can catch failures from a deferred child's code.
+    case _: TryEval => Seq.empty
+    case order: SortOrder => Seq(order.child)
+    case unary: UnaryExpression => Seq(unary.child)
+    case _: DateAdd | _: DateDiff | _: BinaryComparison =>
+      expr.children.take(if (expr.children.head.nullable) 1 else 2)
+    case _: Concat | _: Greatest | _: Least => expr.children
+    case _ => Seq.empty
+  }
+
+  /** Reject ANSI NextDay below native parents that can evaluate children Spark skips. */
+  private def unsupportedNextDayEvaluation(expr: Expression): Option[String] = {
+    var stack: List[(Expression, Option[String])] = (expr, None) :: Nil
+    while (stack.nonEmpty) {
+      val (current, unsafeAncestor) = stack.head
+      stack = stack.tail
+      current match {
+        case nextDay: NextDay
+            if CometNextDay.evaluationMaskName(nextDay).isDefined && unsafeAncestor.isDefined =>
+          return Some(
+            s"next_day requires Spark evaluation under ${unsafeAncestor.get}: " +
+              "native evaluation may evaluate a masked child.")
+        case _ =>
+      }
+
+      def pushChildren(context: Option[String]): Unit = {
+        current.children.reverseIterator.foreach { child =>
+          stack = (child, context) :: stack
+        }
+      }
+
+      val wholeExpressionDispatch = exprSerdeMap.get(current.getClass).exists { handler =>
+        (handler.isInstanceOf[CodegenDispatchFallback] &&
+          handler.asInstanceOf[CometExpressionSerde[Expression]]
+            .getSupportLevel(current).isInstanceOf[Unsupported]) ||
+        (handler.isInstanceOf[CometCodegenDispatch[_]] &&
+          !handler.isInstanceOf[NativeOptInAvailable])
+      }
+      if (unsafeAncestor.isDefined) {
+        // An outer native parent can evaluate even a dispatched subtree too early.
+        pushChildren(unsafeAncestor)
+      } else if (!wholeExpressionDispatch) {
+        current match {
+          case _: If | _: CaseWhen | _: EqualNullSafe =>
+            pushChildren(None)
+          case coalesce: Coalesce if coalesce.deterministic =>
+            pushChildren(None)
+          case order: SortOrder =>
+            // sameOrderExpressions are equivalences, not evaluated sort keys.
+            stack = (order.child, None) :: stack
+          case _ =>
+            val eager = eagerlyEvaluatedChildren(current)
+            current.children.reverseIterator.foreach { child =>
+              val context = if (eager.exists(_ eq child)) None else Some(current.nodeName)
+              stack = (child, context) :: stack
+            }
+        }
+      }
+    }
+    None
   }
 
   /**

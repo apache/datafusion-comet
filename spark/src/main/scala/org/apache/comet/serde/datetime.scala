@@ -404,7 +404,26 @@ object CometConvertTimezone
  * 70ms dispatched against 89ms for Spark. See
  * https://github.com/apache/datafusion-comet/issues/5591.
  */
-object CometNextDay extends CometExpressionSerde[NextDay] with CodegenDispatchFallback {
+object CometNextDay
+    extends CometExpressionSerde[NextDay]
+    with CodegenDispatchFallback
+    with RequiresSparkEvaluationMask[NextDay] {
+
+  override def evaluationMaskName(expr: NextDay): Option[String] = {
+    if (!expr.failOnError) return None
+    expr.dayOfWeek match {
+      case Literal(null, _) => None
+      case Literal(value: org.apache.spark.unsafe.types.UTF8String, _) =>
+        try {
+          org.apache.spark.sql.catalyst.util.DateTimeUtils.getDayOfWeekFromString(value)
+          None
+        } catch {
+          case scala.util.control.NonFatal(_) => Some("next_day")
+        }
+      case _ => Some("next_day")
+    }
+  }
+
 
   private val collationReason = DatetimeCollation.reason("next_day")
 
