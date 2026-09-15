@@ -100,12 +100,16 @@ BUILD_JOBS = {
     "iceberg_1_11",
 }
 
+# The two contrib/UDF gates also run ./mvnw, but consume no shared artifact.
+MVN_JOBS = BUILD_JOBS | {"delta_gate", "pyarrow_udf"}
+
 ROUTING_CASES = [
     # The Maven wrapper and its config feed every job that runs ./mvnw: the
-    # Linux/macOS builds, setup-spark-builder, and the Iceberg `mvnw install`.
-    ([".mvn/maven.config"], BUILD_JOBS),
-    ([".mvn/wrapper/maven-wrapper.properties"], BUILD_JOBS),
-    (["mvnw"], BUILD_JOBS),
+    # Linux/macOS builds, setup-spark-builder, the Iceberg `mvnw install`, the
+    # Delta gate's effective-pom check and the PyArrow suite's `mvnw install`.
+    ([".mvn/maven.config"], MVN_JOBS),
+    ([".mvn/wrapper/maven-wrapper.properties"], MVN_JOBS),
+    (["mvnw"], MVN_JOBS),
     # The artifact wrappers are used by every producer and consumer of a
     # shared artifact. Without these, an edit confined to one of them routes
     # to nothing at all and merges having been exercised by no consumer.
@@ -116,6 +120,16 @@ ROUTING_CASES = [
     # Spot checks that the additions above did not widen unrelated routes.
     (["docs/source/user-guide/overview.md"], {"docs"}),
     (["native/core/benches/parquet_read.rs"], {"benchmark"}),
+    # The Delta gate script is read by nothing else; the contrib crate feeds
+    # only the gate. The PyArrow pytest lives under spark/, so the Linux and
+    # macOS builds see it too, but no Spark SQL or Iceberg suite does, and
+    # neither does the Delta gate, which only inspects build output.
+    (["dev/verify-contrib-delta-gate.sh"], {"delta_gate"}),
+    (["contrib/delta/native/src/lib.rs"], {"delta_gate"}),
+    (
+        ["spark/src/test/resources/pyspark/test_pyarrow_udf.py"],
+        {"build_linux", "build_linux_full", "build_macos", "pyarrow_udf"},
+    ),
 ]
 
 # Event policy. Each case is (event, expected set of jobs allowed to run),
@@ -130,7 +144,7 @@ SPARK_OPT_IN = {"spark_3_5", "spark_4_0", "spark_4_1_hive"}
 # than quietly accept it coming back.
 SPARK_DEPRECATED = {"spark_3_4"}
 ICEBERG_OPT_IN = {"iceberg_1_8", "iceberg_1_9", "iceberg_1_10"}
-BUILD_OPT_IN = {"build_macos", "benchmark"}
+BUILD_OPT_IN = {"build_macos", "benchmark", "delta_gate", "pyarrow_udf"}
 QUEUE_TIER = PR_TIER | SPARK_OPT_IN | ICEBERG_OPT_IN | BUILD_OPT_IN
 ALL_JOBS = QUEUE_TIER | SPARK_DEPRECATED | {"docs"}
 
@@ -165,6 +179,26 @@ POLICY_CASES = [
     (
         {"name": "pull_request", "action": "synchronize", "labels": ["run-benchmark-check"]},
         PR_TIER | {"benchmark"},
+    ),
+    # The Delta build gate and the PyArrow UDF suite were standalone workflows
+    # that ran on every pull request and again on push to main. Folded in as
+    # queue-only jobs, each with its own label, they follow the same rules.
+    (
+        {"name": "pull_request", "action": "synchronize", "labels": ["run-delta-build-gate"]},
+        PR_TIER | {"delta_gate"},
+    ),
+    (
+        {"name": "pull_request", "action": "synchronize", "labels": ["run-pyarrow-udf-tests"]},
+        PR_TIER | {"pyarrow_udf"},
+    ),
+    (
+        {
+            "name": "pull_request",
+            "action": "labeled",
+            "label": "run-pyarrow-udf-tests",
+            "labels": ["run-pyarrow-udf-tests"],
+        },
+        {"pyarrow_udf"},
     ),
     (
         {
