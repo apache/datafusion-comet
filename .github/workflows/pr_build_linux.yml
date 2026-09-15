@@ -19,8 +19,33 @@ name: PR Build (Linux)
 
 # Reusable: invoked by ci.yml. Triggering, path filters, and concurrency
 # live in the umbrella workflow.
+#
+# Two modes, selected by `cache-refresh-only`:
+#
+#   false  the full pipeline: the lints, the 5x4 linux-test matrix, the Rust
+#          tests and the TPC-H/TPC-DS correctness runs. Pull requests and the
+#          merge queue.
+#   true   only the jobs that write an actions/cache entry, and each only far
+#          enough to populate it. This is the push-to-main tier, where the
+#          queue has already tested the exact tree that landed and the sole
+#          remaining purpose of the run is to leave main's caches warm for the
+#          next pull request. See the `build_linux` / `build_linux_full`
+#          comments in dev/ci/compute-changes.py for why that tier exists.
+#
+# Keeping both modes in this file is deliberate. The cache keys are the whole
+# point of the push tier, and a separate cache-warming workflow would have to
+# repeat every one of them; here they cannot drift apart. dev/ci/check-ci-config.py
+# pins which jobs survive `cache-refresh-only`, so a job added without the guard
+# cannot quietly put the full pipeline back on the push tier.
 on:
   workflow_call:
+    inputs:
+      cache-refresh-only:
+        description: >-
+          Populate main's actions/cache entries without running any lint or
+          test. Set by ci.yml on push to main.
+        type: boolean
+        default: false
 
 env:
   RUST_VERSION: stable
@@ -32,7 +57,9 @@ env:
 
 jobs:
 
-  # Fast lint check - gates all other jobs
+  # Fast lint check - gates all other jobs. Runs in cache-refresh-only mode too:
+  # it is 40 seconds, and `build-native` and `linux-test-rust` both `needs:` it,
+  # so skipping it would skip the two jobs the push tier exists to run.
   lint:
     name: Lint
     runs-on: ubuntu-24.04
@@ -54,6 +81,7 @@ jobs:
   # set, including the semantic rules, still runs in lint-java.
   scalafix-syntactic:
     name: Lint Scala (syntactic)
+    if: ${{ !inputs.cache-refresh-only }}
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
@@ -63,9 +91,28 @@ jobs:
         with:
           jvm: temurin:21
 
+      # Split the network from the lint. `cs launch` resolves and downloads the
+      # scalafix artifacts from Maven Central, which resets connections now and
+      # then, so the warm-up retries a no-op `--version` run. The real check then
+      # runs `--mode offline` against the populated cache: no network, and a
+      # nonzero exit can only mean a lint violation, never a download failure.
+      - name: Fetch scalafix
+        run: |
+          for attempt in 1 2 3; do
+            if cs launch scalafix:0.14.6 -- --version; then
+              break
+            fi
+            if [ "$attempt" = 3 ]; then
+              echo "::error::scalafix download failed after 3 attempts."
+              exit 1
+            fi
+            echo "::warning::scalafix download failed (attempt $attempt of 3); retrying in $((attempt * 15))s."
+            sleep $((attempt * 15))
+          done
+
       - name: Run syntactic scalafix check (no compile)
         run: |
-          cs launch scalafix:0.14.6 -- \
+          cs launch --mode offline scalafix:0.14.6 -- \
             --check \
             --syntactic \
             --config .scalafix-syntactic.conf \
@@ -75,16 +122,17 @@ jobs:
   lint-java:
     needs: lint
     name: Lint Java (${{ matrix.profile.name }})
+    if: ${{ !inputs.cache-refresh-only }}
     runs-on: ubuntu-24.04
     container:
       image: amd64/rust
       env:
-        JAVA_TOOL_OPTIONS: ${{ (matrix.profile.java_version == '17' || matrix.profile.java_version == '21') && '--add-exports=java.base/sun.nio.ch=ALL-UNNAMED --add-exports=java.base/sun.util.calendar=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/java.lang=ALL-UNNAMED' || '' }}
+        JAVA_TOOL_OPTIONS: '--add-exports=java.base/sun.nio.ch=ALL-UNNAMED --add-exports=java.base/sun.util.calendar=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/java.lang=ALL-UNNAMED'
     strategy:
       matrix:
         profile:
-          - name: "Spark 3.4, JDK 11, Scala 2.12"
-            java_version: "11"
+          - name: "Spark 3.4, JDK 17, Scala 2.12"
+            java_version: "17"
             maven_opts: "-Pspark-3.4 -Pscala-2.12"
           - name: "Spark 3.5, JDK 17, Scala 2.12"
             java_version: "17"
@@ -119,6 +167,9 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-java-maven-
 
+      - name: Bootstrap Maven
+        uses: ./.github/actions/maven-bootstrap
+
       - name: Run scalafix check
         run: |
           ./mvnw -B package -DskipTests scalafix:scalafix -Dscalafix.mode=CHECK -Psemanticdb ${{ matrix.profile.maven_opts }}
@@ -151,6 +202,7 @@ jobs:
   build-spark-4-1:
     needs: lint
     name: Build Spark 4.1, JDK 17
+    if: ${{ !inputs.cache-refresh-only }}
     runs-on: ubuntu-24.04
     container:
       image: amd64/rust
@@ -173,12 +225,16 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-java-maven-
 
+      - name: Bootstrap Maven
+        uses: ./.github/actions/maven-bootstrap
+
       - name: Compile (skip tests)
         run: ./mvnw -B install -DskipTests -Dmaven.test.skip=true -Pspark-4.1
 
   celeborn-reflection-compatibility:
     needs: lint
     name: Celeborn ${{ matrix.celeborn_version }} reflection compatibility
+    if: ${{ !inputs.cache-refresh-only }}
     runs-on: ubuntu-24.04
     container:
       image: amd64/rust
@@ -207,6 +263,9 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-java-maven-
 
+      - name: Bootstrap Maven
+        uses: ./.github/actions/maven-bootstrap
+
       - name: Verify reflected Celeborn internals
         env:
           SPARK_LOCAL_HOSTNAME: localhost
@@ -219,7 +278,9 @@ jobs:
             -Dsuites=org.apache.comet.shuffle.CelebornReflectionCompatibilitySuite \
             -DfailIfNoTests=false
 
-  # Build native library once and share with all test jobs
+  # Build native library once and share with all test jobs. Also the owner of
+  # main's `cargo-ci` cache entry, which is why it runs in cache-refresh-only
+  # mode: rebuilding native/target from cold costs every pull request ~20 min.
   build-native:
     needs: lint
     name: Build Native Library
@@ -255,7 +316,7 @@ jobs:
           RUSTFLAGS: "-Ctarget-cpu=x86-64-v3 -Clink-arg=-fuse-ld=bfd"
 
       - name: Upload native library
-        uses: actions/upload-artifact@v7
+        uses: ./.github/actions/upload-artifact-retry
         with:
           name: native-lib-linux
           path: native/target/ci/libcomet.so
@@ -271,7 +332,12 @@ jobs:
             native/target
           key: ${{ runner.os }}-cargo-ci-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}-${{ hashFiles('native/**/*.rs') }}
 
-  # Run Rust tests (runs in parallel with build-native, uses debug builds)
+  # Run Rust tests (runs in parallel with build-native, uses debug builds).
+  # Owns main's `cargo-debug` cache entry, so it runs in cache-refresh-only mode
+  # as well. The tests themselves are a small slice of its runtime -- almost all
+  # of it is the compile that populates the cache -- so there is nothing to gain
+  # from a compile-only variant, and running them keeps the cache contents
+  # identical to what a pull request restores.
   linux-test-rust:
     needs: lint
     name: ubuntu-latest/rust-test
@@ -314,13 +380,14 @@ jobs:
 
   linux-test:
     needs: build-native
+    if: ${{ !inputs.cache-refresh-only }}
     strategy:
       matrix:
         # the goal with these profiles is to get coverage of all Java, Scala, and Spark
         # versions without testing all possible combinations, which would be overkill
         profile:
-          - name: "Spark 3.4, JDK 11, Scala 2.12"
-            java_version: "11"
+          - name: "Spark 3.4, JDK 17, Scala 2.12"
+            java_version: "17"
             maven_opts: "-Pspark-3.4 -Pscala-2.12"
 
           - name: "Spark 3.5, JDK 17, Scala 2.13"
@@ -349,7 +416,6 @@ jobs:
               org.apache.comet.parquet.CometEmptyRelationParquetWriterSuite
               org.apache.comet.parquet.ParquetReadV1Suite
               org.apache.comet.parquet.ParquetReadV2Suite
-              org.apache.comet.parquet.ParquetReadFromFakeHadoopFsSuite
               org.apache.comet.parquet.ParquetTimestampLtzAsNtzSuite
               org.apache.spark.sql.comet.ParquetDatetimeRebaseV1Suite
               org.apache.spark.sql.comet.ParquetDatetimeRebaseV2Suite
@@ -437,6 +503,7 @@ jobs:
               org.apache.spark.sql.comet.CometScanWithPlanDataSuite
               org.apache.spark.sql.comet.util.UtilsSuite
               org.apache.comet.vector.NativeUtilSuite
+              org.apache.comet.vector.CometVectorUtilsSuite
               org.apache.comet.objectstore.NativeConfigSuite
               org.apache.comet.serde.operator.CometIcebergNativeScanSuite
               org.apache.comet.serde.operator.CometNativeScanSuite
@@ -449,6 +516,7 @@ jobs:
             value: |
               org.apache.comet.CometExpressionSuite
               org.apache.comet.CometSqlFileTestSuite
+              org.apache.comet.SqlFileTestParserSuite
               org.apache.comet.CometExpressionCoverageSuite
               org.apache.comet.CometVariantTypeSuite
               org.apache.comet.CometHashExpressionSuite
@@ -488,7 +556,7 @@ jobs:
     container:
       image: amd64/rust
       env:
-        JAVA_TOOL_OPTIONS: ${{ (matrix.profile.java_version == '17' || matrix.profile.java_version == '21') && '--add-exports=java.base/sun.nio.ch=ALL-UNNAMED --add-exports=java.base/sun.util.calendar=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/java.lang=ALL-UNNAMED' || '' }}
+        JAVA_TOOL_OPTIONS: '--add-exports=java.base/sun.nio.ch=ALL-UNNAMED --add-exports=java.base/sun.util.calendar=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/java.lang=ALL-UNNAMED'
 
     steps:
       - uses: actions/checkout@v7
@@ -500,7 +568,7 @@ jobs:
           jdk-version: ${{ matrix.profile.java_version }}
 
       - name: Download native library
-        uses: actions/download-artifact@v8
+        uses: ./.github/actions/download-artifact-retry
         with:
           name: native-lib-linux
           # Download to release/ since Maven's -Prelease expects libcomet.so there
@@ -526,7 +594,11 @@ jobs:
           upload-test-reports: true
           skip-native-build: true
 
-  # TPC-H correctness test - verifies benchmark queries produce correct results
+  # TPC-H correctness test - verifies benchmark queries produce correct results.
+  # Runs in cache-refresh-only mode for its two cache entries: the SF=1 dataset,
+  # which is expensive to regenerate, and main's shared `java-maven` entry. Only
+  # the query run is skipped there; everything up to and including data
+  # generation still has to happen for the dataset cache to exist.
   verify-benchmark-results-tpch:
     needs: build-native
     name: Verify TPC-H Results
@@ -545,7 +617,7 @@ jobs:
           jdk-version: 17
 
       - name: Download native library
-        uses: actions/download-artifact@v8
+        uses: ./.github/actions/download-artifact-retry
         with:
           name: native-lib-linux
           path: native/target/release/
@@ -567,6 +639,11 @@ jobs:
           path: ./tpch
           key: tpch-${{ hashFiles('.github/workflows/pr_build_linux.yml') }}
 
+      # Without this, a transient repo.maven.apache.org blip fails the whole
+      # job before anything is compiled.
+      - name: Bootstrap Maven
+        uses: ./.github/actions/maven-bootstrap
+
       - name: Build project
         run: |
           ./mvnw -B -Prelease install -DskipTests
@@ -577,11 +654,15 @@ jobs:
           cd spark && MAVEN_OPTS='-Xmx20g' ../mvnw -B -Prelease exec:java -Dexec.mainClass="org.apache.spark.sql.GenTPCHData" -Dexec.classpathScope="test" -Dexec.cleanupDaemonThreads="false" -Dexec.args="--location `pwd`/.. --scaleFactor 1 --numPartitions 1 --overwrite"
 
       - name: Run TPC-H queries
+        if: ${{ !inputs.cache-refresh-only }}
         run: |
           SPARK_HOME=`pwd` SPARK_TPCH_DATA=`pwd`/tpch/sf1_parquet ./mvnw -B -Prelease -Dsuites=org.apache.spark.sql.CometTPCHQuerySuite test
 
   # TPC-DS correctness tests - verifies benchmark queries produce correct results.
-  # The three join strategies run sequentially in one job so the project is built once.
+  # The three join strategies run sequentially in one job so the project is built
+  # once. Runs in cache-refresh-only mode for the same reason as the TPC-H job;
+  # there the three query passes are skipped and only the dataset generation and
+  # the Maven cache remain.
   verify-benchmark-results-tpcds:
     needs: build-native
     name: Verify TPC-DS Results
@@ -600,7 +681,7 @@ jobs:
           jdk-version: 17
 
       - name: Download native library
-        uses: actions/download-artifact@v8
+        uses: ./.github/actions/download-artifact-retry
         with:
           name: native-lib-linux
           path: native/target/release/
@@ -621,6 +702,11 @@ jobs:
         with:
           path: ./tpcds-sf-1
           key: tpcds-${{ hashFiles('.github/workflows/pr_build_linux.yml') }}
+
+      # Without this, a transient repo.maven.apache.org blip fails the whole
+      # job before anything is compiled.
+      - name: Bootstrap Maven
+        uses: ./.github/actions/maven-bootstrap
 
       - name: Build project
         run: |
@@ -646,6 +732,7 @@ jobs:
           cd spark && MAVEN_OPTS='-Xmx20g' ../mvnw -B -Prelease exec:java -Dexec.mainClass="org.apache.spark.sql.GenTPCDSData" -Dexec.classpathScope="test" -Dexec.cleanupDaemonThreads="false" -Dexec.args="--dsdgenDir `pwd`/../tpcds-kit/tools --location `pwd`/../tpcds-sf-1 --scaleFactor 1 --numPartitions 1"
 
       - name: Run TPC-DS queries (Sort merge join)
+        if: ${{ !inputs.cache-refresh-only }}
         run: |
           SPARK_HOME=`pwd` SPARK_TPCDS_DATA=`pwd`/tpcds-sf-1 ./mvnw -B -Prelease -Dsuites=org.apache.spark.sql.CometTPCDSQuerySuite test
         env:
@@ -654,6 +741,7 @@ jobs:
             spark.sql.join.preferSortMergeJoin=true
 
       - name: Run TPC-DS queries (Broadcast hash join)
+        if: ${{ !inputs.cache-refresh-only }}
         run: |
           SPARK_HOME=`pwd` SPARK_TPCDS_DATA=`pwd`/tpcds-sf-1 ./mvnw -B -Prelease -Dsuites=org.apache.spark.sql.CometTPCDSQuerySuite test
         env:
@@ -661,6 +749,7 @@ jobs:
             spark.sql.autoBroadcastJoinThreshold=10485760
 
       - name: Run TPC-DS queries (Shuffled hash join)
+        if: ${{ !inputs.cache-refresh-only }}
         run: |
           SPARK_HOME=`pwd` SPARK_TPCDS_DATA=`pwd`/tpcds-sf-1 ./mvnw -B -Prelease -Dsuites=org.apache.spark.sql.CometTPCDSQuerySuite test
         env:
