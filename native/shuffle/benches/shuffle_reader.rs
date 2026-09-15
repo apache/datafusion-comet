@@ -26,7 +26,8 @@ use arrow::ipc::writer::IpcWriteContext;
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use datafusion::physical_plan::metrics::Time;
 use datafusion_comet_shuffle::{
-    read_ipc_compressed, reset_schema_cache, CompressionCodec, ShuffleBlockWriter,
+    read_ipc_compressed, read_ipc_compressed_validated, reset_schema_cache, CompressionCodec,
+    ShuffleBlockWriter,
 };
 use std::hint::black_box;
 use std::io::Cursor;
@@ -175,6 +176,13 @@ fn bench_block(
     group.bench_with_input(BenchmarkId::new("decode_block", id), block, |b, block| {
         b.iter(|| black_box(read_ipc_compressed(black_box(block)).unwrap()))
     });
+
+    // the remote entry point: the same decode with array validation on
+    group.bench_with_input(
+        BenchmarkId::new("decode_block_validated", id),
+        block,
+        |b, block| b.iter(|| black_box(read_ipc_compressed_validated(black_box(block)).unwrap())),
+    );
 
     // same decode with the cache cleared each iteration, so drift moves both arms together
     group.bench_with_input(

@@ -491,13 +491,15 @@ impl<R: Read> Read for RequireLz4EndMark<R> {
 mod tests {
     use super::{
         read_ipc_compressed, read_ipc_compressed_validated, reset_schema_cache, schema_cache_stats,
-        scratch_capacity, SchemaCacheStats, SCHEMA_CACHE_CAPACITY, SCRATCH_RETAIN_LIMIT,
+        scratch_capacity, RequireLz4EndMark, SchemaCacheStats, SCHEMA_CACHE_CAPACITY,
+        SCRATCH_RETAIN_LIMIT,
     };
+    use crate::writers::rss::tests::allocations;
     use arrow::array::{Array, DictionaryArray, Int32Array, RecordBatch, StringArray};
     use arrow::datatypes::{DataType, Field, Int32Type, Schema};
     use arrow::ipc::reader::StreamReader;
     use arrow::ipc::writer::StreamWriter;
-    use std::io::{Cursor, Write};
+    use std::io::{Cursor, Read, Write};
     use std::sync::Arc;
 
     const CODECS: [&[u8; 4]; 4] = [b"NONE", b"LZ4_", b"ZSTD", b"SNAP"];
@@ -693,17 +695,13 @@ mod tests {
         assert_eq!(schema_cache_stats(), stats(5, 6), "most recent stays");
     }
 
-    /// Bodies read from a decompressor are allocated at exactly their length, as `StreamReader`
-    /// allocates them, so the arrays carry no growth slack and report the same memory size.
-    #[test]
-    #[cfg_attr(miri, ignore)] // Miri cannot call Zstd's C FFI.
-    fn decoded_arrays_report_the_same_memory_size_as_stream_reader() {
-        let num_rows = 100_000;
+    /// An `Int32` and a `Utf8` column, `num_rows` long.
+    fn wide_batch(num_rows: i32) -> RecordBatch {
         let schema = Arc::new(Schema::new(vec![
             Field::new("i", DataType::Int32, false),
             Field::new("s", DataType::Utf8, false),
         ]));
-        let batch = RecordBatch::try_new(
+        RecordBatch::try_new(
             schema,
             vec![
                 Arc::new((0..num_rows).collect::<Int32Array>()),
@@ -714,7 +712,82 @@ mod tests {
                 ),
             ],
         )
-        .unwrap();
+        .unwrap()
+    }
+
+    /// The reader this change replaced: a `StreamReader` per block over the decompressor,
+    /// exactly one batch, then the end of the stream.
+    fn stream_reader_decode(block: &[u8]) -> RecordBatch {
+        fn read<R: Read>(input: R) -> RecordBatch {
+            let mut reader = unsafe {
+                StreamReader::try_new(input, None)
+                    .unwrap()
+                    .with_skip_validation(true)
+            };
+            let batch = reader.next().unwrap().unwrap();
+            assert!(reader.next().is_none());
+            batch
+        }
+        let mut encoded = &block[4..];
+        match &block[..4] {
+            b"NONE" => read(&mut encoded),
+            b"LZ4_" => read(lz4_flex::frame::FrameDecoder::new(RequireLz4EndMark(
+                &mut encoded,
+            ))),
+            b"ZSTD" => read(zstd::Decoder::with_buffer(&mut encoded).unwrap()),
+            b"SNAP" => read(snap::read::FrameDecoder::new(&mut encoded)),
+            _ => unreachable!(),
+        }
+    }
+
+    /// With the schema cached, a decode allocates no more than the `StreamReader` path did:
+    /// no more allocations, no more bytes, and no higher peak, on every codec, for a tiny block
+    /// and a typical one.
+    #[test]
+    #[cfg_attr(miri, ignore)] // Miri cannot call Zstd's C FFI.
+    fn warm_decode_allocates_no_more_than_stream_reader() {
+        /// (allocations, bytes requested, peak live bytes) of one decode
+        fn probe(
+            decode: impl FnOnce() -> RecordBatch,
+            expected: &RecordBatch,
+        ) -> (usize, usize, usize) {
+            let ((batch, (allocations, bytes)), peak) = allocations::measure(|| {
+                let batch = decode();
+                (batch, allocations::totals())
+            });
+            assert_eq!(&batch, expected);
+            (allocations, bytes, peak)
+        }
+
+        for (shape, batch) in [("3 rows", mixed_batch()), ("8192 rows", wide_batch(8192))] {
+            for codec in CODECS {
+                let block = block_for(&batch, codec);
+                reset_schema_cache();
+                assert_eq!(read_ipc_compressed(&block).unwrap(), batch);
+
+                let old = probe(|| stream_reader_decode(&block), &batch);
+                let new = probe(|| read_ipc_compressed(&block).unwrap(), &batch);
+                assert_eq!(schema_cache_stats(), stats(1, 1));
+
+                let codec = std::str::from_utf8(codec).unwrap();
+                println!(
+                    "{shape} {codec}: stream reader (allocations, bytes, peak) {old:?}, \
+                     cached {new:?}"
+                );
+                assert!(
+                    new.0 <= old.0 && new.1 <= old.1 && new.2 <= old.2,
+                    "{shape} {codec}: {old:?} -> {new:?}"
+                );
+            }
+        }
+    }
+
+    /// Bodies read from a decompressor are allocated at exactly their length, as `StreamReader`
+    /// allocates them, so the arrays carry no growth slack and report the same memory size.
+    #[test]
+    #[cfg_attr(miri, ignore)] // Miri cannot call Zstd's C FFI.
+    fn decoded_arrays_report_the_same_memory_size_as_stream_reader() {
+        let batch = wide_batch(100_000);
         let ipc = ipc_bytes(&batch);
         let via_stream_reader = StreamReader::try_new(Cursor::new(&ipc), None)
             .unwrap()
@@ -898,9 +971,11 @@ mod tests {
         }
     }
 
+    /// Validation must reject a corrupt array whether the schema is parsed for this block or
+    /// served from the cache by an earlier valid block of the same schema.
     #[test]
     #[cfg_attr(miri, ignore)] // Miri cannot call Zstd's C FFI.
-    fn invalid_array_offsets_return_error() {
+    fn invalid_array_offsets_fail_validation_cold_and_warm() {
         let schema = Arc::new(Schema::new(vec![Field::new("s", DataType::Utf8, false)]));
         let batch = RecordBatch::try_new(
             Arc::clone(&schema),
@@ -921,8 +996,19 @@ mod tests {
         assert_eq!(positions.len(), 1);
         // Change [0, 3, 6] to [0, 3, 2]: the second string now has decreasing offsets.
         payload[positions[0] + 8..positions[0] + 12].copy_from_slice(&2_i32.to_le_bytes());
+        let valid = ipc_bytes(&batch);
         for codec in CODECS {
+            reset_schema_cache();
             assert!(read_ipc_compressed_validated(&encode(codec, &payload)).is_err());
+            assert_eq!(
+                read_ipc_compressed_validated(&encode(codec, &valid)).unwrap(),
+                batch
+            );
+            assert!(
+                read_ipc_compressed_validated(&encode(codec, &payload)).is_err(),
+                "{codec:?}: warm"
+            );
+            assert_eq!(schema_cache_stats(), stats(2, 1), "{codec:?}");
         }
     }
 
