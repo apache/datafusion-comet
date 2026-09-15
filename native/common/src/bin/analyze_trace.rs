@@ -16,8 +16,9 @@
 // under the License.
 
 //! Analyzes a Comet chrome trace event log (`comet-event-trace.json`) and
-//! compares jemalloc usage against the sum of per-thread Comet memory pool
-//! reservations. Reports any points where jemalloc exceeds the total pool size.
+//! compares the process-wide native allocation counter against the sum of
+//! per-thread Comet memory pool reservations. Reports any points where the
+//! allocated bytes exceed the total pool size.
 //!
 //! Usage:
 //!   cargo run --bin analyze_trace -- <path-to-comet-event-trace.json>
@@ -26,6 +27,15 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader};
 use std::{env, fs::File};
+
+/// The process-wide allocation counters the tool understands, most preferred first.
+///
+/// `native_allocated` (the `alloc-accounting` feature) counts only the bytes Rust code holds from
+/// the global allocator, so it is the tighter comparison against pool reservations.
+/// `jemalloc_allocated` (the `jemalloc` feature) also includes jemalloc's own metadata. A trace
+/// that carries both is analyzed against `native_allocated` alone; a trace with neither cannot be
+/// analyzed.
+const ALLOCATED_COUNTERS: [&str; 2] = ["native_allocated", "jemalloc_allocated"];
 
 /// A single Chrome trace event (only the fields we care about).
 #[derive(Deserialize)]
@@ -42,7 +52,7 @@ struct TraceEvent {
 /// Snapshot of memory state at a given timestamp.
 struct MemorySnapshot {
     ts: u64,
-    jemalloc: u64,
+    allocated: u64,
     pool_total: u64,
 }
 
@@ -61,14 +71,16 @@ fn main() {
     let file = File::open(&args[1]).expect("Failed to open trace file");
     let reader = BufReader::new(file);
 
-    // Latest jemalloc value (global, not per-thread)
-    let mut latest_jemalloc: u64 = 0;
+    // Index into ALLOCATED_COUNTERS of the counter being analyzed, once one has been seen
+    let mut source: Option<usize> = None;
+    // Latest allocated value (global, not per-thread)
+    let mut latest_allocated: u64 = 0;
     // Per-thread pool reservations: thread_NNN -> bytes
     let mut pool_by_thread: HashMap<String, u64> = HashMap::new();
-    // Points where jemalloc exceeded pool total
+    // Points where allocated exceeded pool total
     let mut violations: Vec<MemorySnapshot> = Vec::new();
     // Track peak values
-    let mut peak_jemalloc: u64 = 0;
+    let mut peak_allocated: u64 = 0;
     let mut peak_pool_total: u64 = 0;
     let mut peak_excess: u64 = 0;
     let mut counter_events: u64 = 0;
@@ -110,11 +122,28 @@ fn main() {
 
         counter_events += 1;
 
-        if event.name == "jemalloc_allocated" {
-            if let Some(val) = event.args.get("jemalloc_allocated") {
-                latest_jemalloc = val.as_u64().unwrap_or(0);
-                if latest_jemalloc > peak_jemalloc {
-                    peak_jemalloc = latest_jemalloc;
+        if let Some(rank) = ALLOCATED_COUNTERS
+            .iter()
+            .position(|name| *name == event.name)
+        {
+            match source {
+                // A preferred counter is present in this trace; ignore the other one.
+                Some(current) if current < rank => continue,
+                Some(current) if current == rank => {}
+                // First sighting of a more preferred counter. Start over so the peaks and
+                // violations reported all come from a single source.
+                _ => {
+                    source = Some(rank);
+                    latest_allocated = 0;
+                    peak_allocated = 0;
+                    peak_excess = 0;
+                    violations.clear();
+                }
+            }
+            if let Some(val) = event.args.get(&event.name) {
+                latest_allocated = val.as_u64().unwrap_or(0);
+                if latest_allocated > peak_allocated {
+                    peak_allocated = latest_allocated;
                 }
             }
         } else if event.name.contains("comet_memory_reserved") {
@@ -129,14 +158,14 @@ fn main() {
             continue;
         }
 
-        // After each jemalloc or pool update, check the current state
+        // After each allocated or pool update, check the current state
         let pool_total: u64 = pool_by_thread.values().sum();
         if pool_total > peak_pool_total {
             peak_pool_total = pool_total;
         }
 
-        if latest_jemalloc > 0 && pool_total > 0 && latest_jemalloc > pool_total {
-            let excess = latest_jemalloc - pool_total;
+        if latest_allocated > 0 && pool_total > 0 && latest_allocated > pool_total {
+            let excess = latest_allocated - pool_total;
             if excess > peak_excess {
                 peak_excess = excess;
             }
@@ -147,46 +176,56 @@ fn main() {
             {
                 violations.push(MemorySnapshot {
                     ts: event.ts,
-                    jemalloc: latest_jemalloc,
+                    allocated: latest_allocated,
                     pool_total,
                 });
             }
         }
     }
 
+    let Some(source) = source.map(|rank| ALLOCATED_COUNTERS[rank]) else {
+        eprintln!(
+            "No process-wide allocation counter found in the trace: expected one of {}. \
+             Build the native library with the `alloc-accounting` or `jemalloc` feature.",
+            ALLOCATED_COUNTERS.join(", ")
+        );
+        std::process::exit(1);
+    };
+
     // Print summary
     println!("=== Comet Trace Memory Analysis ===\n");
     println!("Counter events parsed: {counter_events}");
+    println!("Allocation counter:    {source}");
     println!("Threads with memory pools: {}", pool_by_thread.len());
-    println!("Peak jemalloc allocated:   {}", format_bytes(peak_jemalloc));
+    println!("Peak {source}:   {}", format_bytes(peak_allocated));
     println!(
         "Peak pool total:           {}",
         format_bytes(peak_pool_total)
     );
     println!(
-        "Peak excess (jemalloc - pool): {}",
+        "Peak excess ({source} - pool): {}",
         format_bytes(peak_excess)
     );
     println!();
 
     if violations.is_empty() {
-        println!("OK: jemalloc never exceeded the total pool reservation.");
+        println!("OK: {source} never exceeded the total pool reservation.");
     } else {
         println!(
-            "WARNING: jemalloc exceeded pool reservation at {} sampled points:\n",
+            "WARNING: {source} exceeded pool reservation at {} sampled points:\n",
             violations.len()
         );
         println!(
-            "{:>14}  {:>14}  {:>14}  {:>14}",
-            "Time (us)", "jemalloc", "pool_total", "excess"
+            "{:>14}  {:>18}  {:>14}  {:>14}",
+            "Time (us)", source, "pool_total", "excess"
         );
-        println!("{}", "-".repeat(62));
+        println!("{}", "-".repeat(66));
         for snap in &violations {
-            let excess = snap.jemalloc - snap.pool_total;
+            let excess = snap.allocated - snap.pool_total;
             println!(
-                "{:>14}  {:>14}  {:>14}  {:>14}",
+                "{:>14}  {:>18}  {:>14}  {:>14}",
                 snap.ts,
-                format_bytes(snap.jemalloc),
+                format_bytes(snap.allocated),
                 format_bytes(snap.pool_total),
                 format_bytes(excess),
             );

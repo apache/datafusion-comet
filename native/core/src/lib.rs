@@ -60,19 +60,10 @@ pub mod parquet;
 #[cfg(debug_assertions)]
 pub mod debug;
 
-// Global allocator selection.
-//
-// `backend` names the allocator the feature set asks for: jemalloc where it builds, otherwise
-// mimalloc, otherwise the system allocator. The three `backend` cfgs partition every feature
-// combination, so exactly one definition exists, and each backend predicate is written once. The
-// unwrapped `#[global_allocator]` lives inside the backend module that owns it, so a build without
-// `alloc-accounting` is byte-for-byte the previous arrangement: no wrapper, no per-allocation work,
-// and no explicit allocator at all when the selection is the system allocator.
-//
-// With `alloc-accounting`, the single wrapped `#[global_allocator]` below refers to
-// `backend::Backend` whatever it resolved to. That is what makes the wrapper impossible to drop
-// silently: a feature combination with no backend would fail to compile rather than run with the
-// metric enabled and reading zero.
+// Global allocator selection. `backend` names the allocator the feature set asks for: jemalloc
+// where it builds, otherwise mimalloc, otherwise the system allocator. The three cfgs partition
+// every feature combination, so exactly one `backend` exists and a combination matching none would
+// fail to compile rather than install nothing and leave the accounting metric reading zero.
 
 /// jemalloc, on targets where it builds, unless mimalloc was also requested.
 #[cfg(all(
@@ -84,10 +75,6 @@ mod backend {
     pub type Backend = tikv_jemallocator::Jemalloc;
     pub const BACKEND: Backend = tikv_jemallocator::Jemalloc;
     pub const NAME: &str = "jemalloc";
-
-    #[cfg(not(feature = "alloc-accounting"))]
-    #[global_allocator]
-    static GLOBAL: Backend = BACKEND;
 }
 
 /// mimalloc, unless a usable jemalloc was also requested.
@@ -99,15 +86,10 @@ mod backend {
     pub type Backend = mimalloc::MiMalloc;
     pub const BACKEND: Backend = mimalloc::MiMalloc;
     pub const NAME: &str = "mimalloc";
-
-    #[cfg(not(feature = "alloc-accounting"))]
-    #[global_allocator]
-    static GLOBAL: Backend = BACKEND;
 }
 
-/// The system allocator: the complement of the two cases above. This covers neither feature, a
-/// jemalloc request on MSVC, and both features together, which each backend cfg excludes in favour
-/// of the other.
+/// The system allocator: the complement of the two cases above, which covers neither feature, a
+/// jemalloc request on MSVC, and both features together.
 #[cfg(not(any(
     all(
         not(target_env = "msvc"),
@@ -119,9 +101,6 @@ mod backend {
         not(all(not(target_env = "msvc"), feature = "jemalloc"))
     )
 )))]
-// Without `alloc-accounting` nothing refers to this selection: the system allocator is the
-// default, so no `#[global_allocator]` is installed.
-#[cfg_attr(not(feature = "alloc-accounting"), allow(dead_code))]
 mod backend {
     pub type Backend = std::alloc::System;
     pub const BACKEND: Backend = std::alloc::System;
@@ -129,10 +108,14 @@ mod backend {
 }
 
 /// The name of the allocator backend this build selected: `"jemalloc"`, `"mimalloc"` or
-/// `"system"`. This is the one place the selection is decided, so anything that needs to know
-/// which allocator is in effect (the `alloc_overhead` benchmark's liveness check, for instance)
-/// reads it from here rather than re-deriving it from the feature set.
+/// `"system"`. The selection is decided here and nowhere else, so the `alloc_overhead` benchmark's
+/// liveness check reads it from here rather than re-deriving it from the feature set.
+#[doc(hidden)]
 pub use backend::NAME as ALLOCATOR_BACKEND;
+
+#[cfg(not(feature = "alloc-accounting"))]
+#[global_allocator]
+static GLOBAL: backend::Backend = backend::BACKEND;
 
 #[cfg(feature = "alloc-accounting")]
 #[global_allocator]

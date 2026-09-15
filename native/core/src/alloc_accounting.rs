@@ -17,23 +17,14 @@
 
 //! Process-wide accounting of the bytes currently handed out by the Rust global allocator.
 //!
-//! Comet's [`MemoryPool`](datafusion::execution::memory_pool::MemoryPool) counts *declared
-//! reservations*: bytes an operator explicitly asked for. Plenty of real allocation never goes
-//! through it — Arrow builders, expression kernels, decompression buffers, Parquet metadata,
-//! `object_store` buffers, tokio's own machinery — so pool reservations are a lower bound on
-//! Comet's footprint, and the size of the gap is workload-dependent and currently unmeasurable at
-//! runtime. See the [memory management contributor guide] for the full picture.
-//!
 //! [`AccountingAllocator`] wraps the selected global allocator and maintains a single signed
-//! process-wide byte balance, which [`current_balance`] exposes. This is **observability only**: it
-//! never rejects an allocation, never panics, and never gates the memory pool. It exists so the
-//! accounting gap can be seen in tracing output next to the pool reservations it should be
-//! compared against.
+//! process-wide byte balance, which [`current_balance`] exposes so it can be compared against the
+//! memory pool's reservations in tracing output. This is observability only: it never rejects an
+//! allocation, never panics, and never gates the memory pool.
 //!
-//! The balance counts `Layout` bytes, not resident pages. It excludes allocator fragmentation,
+//! The balance counts `Layout` bytes, not resident pages: it excludes allocator fragmentation,
 //! jemalloc's retained pages, `mmap`ed regions, and anything a C dependency allocates through libc
-//! `malloc` rather than Rust's `GlobalAlloc` — so it is a lower bound on RSS as well, just a much
-//! tighter one than pool reservations.
+//! `malloc` rather than Rust's `GlobalAlloc`. See the [memory management contributor guide].
 //!
 //! [memory management contributor guide]:
 //!     https://datafusion.apache.org/comet/contributor-guide/memory_management.html
@@ -56,7 +47,7 @@ thread_local! {
     /// directly instead of recursing. The only such allocation today is the one some platforms
     /// make when registering `LOCAL_DRIFT`'s destructor on first touch.
     ///
-    /// Const-initialized and destructor-free, so reading it never allocates and never fails —
+    /// Const-initialized and destructor-free, so reading it never allocates and never fails,
     /// which is what makes it safe to consult before touching `LOCAL_DRIFT`.
     static IN_TRACK: Cell<bool> = const { Cell::new(false) };
 
@@ -64,12 +55,9 @@ thread_local! {
     static LOCAL_DRIFT: ThreadDrift = const { ThreadDrift(Cell::new(0)) };
 }
 
-/// Owns a thread's un-flushed delta and settles the remainder when the thread exits.
-///
-/// Without the destructor, up to [`SETTLE_THRESHOLD`] bytes of accounting would be silently
-/// discarded every time a thread died. Worker threads live for the process lifetime, but the
-/// blocking pool churns on tokio's idle timeout, so on a long-lived executor that would be a
-/// slowly accumulating bias in the reported balance.
+/// Owns a thread's un-flushed delta and settles the remainder when the thread exits. Without the
+/// destructor, up to [`SETTLE_THRESHOLD`] bytes of accounting would be discarded every time a
+/// thread died, and tokio's blocking pool churns threads on its idle timeout.
 struct ThreadDrift(Cell<isize>);
 
 impl Drop for ThreadDrift {
@@ -85,13 +73,12 @@ impl Drop for ThreadDrift {
 ///
 /// Returns 0 when the [`AccountingAllocator`] is not installed. Never reported negative: the
 /// balance can dip below zero transiently while per-thread deltas settle out of order.
+///
+/// The value is approximate. Each live thread holds up to [`SETTLE_THRESHOLD`] bytes of
+/// un-flushed delta in either direction, so the reported balance can lag the true one by up to
+/// that amount times the number of live threads.
 pub fn current_balance() -> usize {
-    clamp_balance(BALANCE.load(Ordering::Relaxed))
-}
-
-/// Clamps a signed balance to the unsigned value reported to callers.
-fn clamp_balance(balance: isize) -> usize {
-    balance.max(0) as usize
+    BALANCE.load(Ordering::Relaxed).max(0) as usize
 }
 
 /// Adds `delta` to `local_drift`, flushing into the shared balance once the magnitude reaches
@@ -196,6 +183,8 @@ unsafe impl<A: GlobalAlloc> GlobalAlloc for AccountingAllocator<A> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::alloc::System;
+    use std::sync::atomic::AtomicUsize;
     use std::sync::{Mutex, MutexGuard};
 
     /// `BALANCE` is process-wide and the crate's tests run in parallel, so a test that reads it
@@ -211,50 +200,77 @@ mod tests {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
-    #[test]
-    fn settle_accumulates_below_the_threshold() {
-        let drift = Cell::new(0);
-        settle(&drift, 1024);
-        // A flush would have reset the drift to zero, so this alone shows the shared balance was
-        // not touched. Reading `BALANCE` here would race with every other test's allocations.
-        assert_eq!(drift.get(), 1024, "small delta stays thread-local");
+    const MIB: usize = 1024 * 1024;
+
+    /// Slack allowed between an observed balance and the expected one, to absorb whatever the
+    /// rest of the crate allocates during a test's window. It is half the smallest move any test
+    /// below expects, so a wrongly ordered or wrongly sized update still lands outside it.
+    const MARGIN: usize = 16 * MIB;
+
+    fn about(actual: usize, expected: usize) -> bool {
+        actual.abs_diff(expected) <= MARGIN
+    }
+
+    /// An inner allocator that records the reported balance at the moment each inner call is
+    /// made, which pins down whether the wrapper accounts before or after delegating.
+    struct Recording {
+        balance_at_dealloc: AtomicUsize,
+        balance_at_realloc: AtomicUsize,
+    }
+
+    impl Recording {
+        fn new() -> Self {
+            Self {
+                balance_at_dealloc: AtomicUsize::new(usize::MAX),
+                balance_at_realloc: AtomicUsize::new(usize::MAX),
+            }
+        }
+    }
+
+    unsafe impl GlobalAlloc for Recording {
+        unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+            System.alloc(layout)
+        }
+
+        unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+            self.balance_at_dealloc
+                .store(current_balance(), Ordering::Relaxed);
+            System.dealloc(ptr, layout)
+        }
+
+        unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+            self.balance_at_realloc
+                .store(current_balance(), Ordering::Relaxed);
+            System.realloc(ptr, layout, new_size)
+        }
     }
 
     #[test]
-    fn settle_flushes_at_the_threshold() {
-        let drift = Cell::new(0);
-        settle(&drift, SETTLE_THRESHOLD);
-        assert_eq!(drift.get(), 0, "drift resets once flushed");
+    fn settle_flushes_only_at_the_threshold() {
+        for (delta, residue) in [
+            (1024, 1024),
+            (-1024, -1024),
+            (SETTLE_THRESHOLD - 1, SETTLE_THRESHOLD - 1),
+            (SETTLE_THRESHOLD, 0),
+            (-SETTLE_THRESHOLD, 0),
+        ] {
+            let drift = Cell::new(0);
+            settle(&drift, delta);
+            // A flush resets the drift to zero, so the residue alone says whether the shared
+            // balance was touched. Reading `BALANCE` here would race with every other test.
+            assert_eq!(drift.get(), residue, "delta {delta}");
+        }
     }
 
-    #[test]
-    fn settle_flushes_negative_drift() {
-        let drift = Cell::new(0);
-        settle(&drift, -SETTLE_THRESHOLD);
-        assert_eq!(drift.get(), 0);
-    }
-
-    #[test]
-    fn a_transiently_negative_balance_reports_as_zero() {
-        assert_eq!(clamp_balance(-1), 0);
-        assert_eq!(clamp_balance(isize::MIN), 0);
-        assert_eq!(clamp_balance(0), 0);
-        assert_eq!(clamp_balance(4096), 4096);
-    }
-
-    /// A real allocation must move the reported balance: this is the one test that checks the
-    /// wrapper is actually installed as the global allocator for the current feature set, rather
-    /// than exercising it through a local instance.
-    ///
-    /// The block is zeroed and never touched, so it costs address space rather than resident
-    /// memory, and it is large enough that nothing else in the crate can free half of it inside the
-    /// microseconds between the two reads.
+    /// A real allocation must move the reported balance. This is the one test that checks the
+    /// wrapper is actually installed as the global allocator for the current feature set. The
+    /// block is zeroed and never touched, so it costs address space rather than resident memory.
     #[test]
     #[cfg(feature = "alloc-accounting")]
     fn a_real_allocation_raises_the_balance() {
         use std::hint::black_box;
 
-        const SIZE: usize = 256 * 1024 * 1024;
+        const SIZE: usize = 256 * MIB;
         let _guard = serial();
         let before = current_balance();
         // `black_box` keeps the allocation observable so it cannot be elided.
@@ -269,41 +285,15 @@ mod tests {
         drop(held);
     }
 
-    /// The balance must drop before the inner allocator is asked to free the block.
-    ///
-    /// jemalloc decrements its own `stats.allocated` at the start of a large free and then, for
-    /// blocks above its oversize threshold, unmaps the pages eagerly, which takes milliseconds for
-    /// a block of a few hundred megabytes. If the subtraction happened after delegating, the balance
-    /// would keep reporting a block the allocator had already given back for that whole window,
-    /// and `native_allocated` would read above `jemalloc_allocated`.
+    /// The balance must drop before the inner allocator is asked to free the block, because
+    /// jemalloc drops its own count at the start of a large free and then spends milliseconds
+    /// unmapping the pages; see the comment on `dealloc`.
     #[test]
     fn dealloc_settles_before_delegating() {
-        use std::alloc::System;
-        use std::sync::atomic::AtomicUsize;
-
-        /// Records the reported balance at the moment the inner free is called.
-        struct Recording {
-            balance_at_dealloc: AtomicUsize,
-        }
-
-        unsafe impl GlobalAlloc for Recording {
-            unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-                System.alloc(layout)
-            }
-
-            unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-                self.balance_at_dealloc
-                    .store(current_balance(), Ordering::Relaxed);
-                System.dealloc(ptr, layout)
-            }
-        }
-
         // Well above the settle threshold, so both the allocation and the free flush immediately.
-        const SIZE: usize = 64 * 1024 * 1024;
+        const SIZE: usize = 64 * MIB;
         let _guard = serial();
-        let allocator = AccountingAllocator::new(Recording {
-            balance_at_dealloc: AtomicUsize::new(usize::MAX),
-        });
+        let allocator = AccountingAllocator::new(Recording::new());
         let layout = Layout::from_size_align(SIZE, 8).unwrap();
 
         // SAFETY: the layout is valid and non-zero, and the block is freed below through the same
@@ -314,25 +304,71 @@ mod tests {
         unsafe { allocator.dealloc(ptr, layout) };
 
         let seen = allocator.inner.balance_at_dealloc.load(Ordering::Relaxed);
-        // Half the block is a wide margin against parallel test noise while still being far
-        // outside anything the mutation (subtracting after delegating) could produce.
         assert!(
-            seen + SIZE / 2 <= after_alloc,
-            "inner dealloc saw balance {seen}, expected at most {} (balance after alloc was \
+            about(seen + SIZE, after_alloc),
+            "inner dealloc saw balance {seen}, expected about {} (balance after alloc was \
              {after_alloc})",
-            after_alloc - SIZE / 2
+            after_alloc.saturating_sub(SIZE)
         );
+    }
+
+    /// `realloc` moves the balance by the size difference, not by the new size, and does so after
+    /// delegating: the inner allocator must see the balance still carrying the old size.
+    #[test]
+    fn realloc_accounts_the_size_difference_after_delegating() {
+        const OLD: usize = 64 * MIB;
+        const GROWN: usize = 96 * MIB;
+        const SHRUNK: usize = 32 * MIB;
+        let _guard = serial();
+        let allocator = AccountingAllocator::new(Recording::new());
+        let layout = Layout::from_size_align(OLD, 8).unwrap();
+
+        // SAFETY: each layout matches the block's current size, and the block is freed at the end
+        // through the same allocator that produced it.
+        let ptr = unsafe { allocator.alloc(layout) };
+        assert!(!ptr.is_null());
+        let before_grow = current_balance();
+
+        let ptr = unsafe { allocator.realloc(ptr, layout, GROWN) };
+        assert!(!ptr.is_null());
+        let after_grow = current_balance();
+        let seen = allocator.inner.balance_at_realloc.load(Ordering::Relaxed);
+        assert!(
+            about(seen, before_grow),
+            "inner realloc saw balance {seen}, expected about {before_grow}: the wrapper must \
+             account after delegating"
+        );
+        assert!(
+            about(after_grow, before_grow + (GROWN - OLD)),
+            "growing {OLD} -> {GROWN} moved the balance {before_grow} -> {after_grow}, expected \
+             about +{}",
+            GROWN - OLD
+        );
+
+        let layout = Layout::from_size_align(GROWN, 8).unwrap();
+        let ptr = unsafe { allocator.realloc(ptr, layout, SHRUNK) };
+        assert!(!ptr.is_null());
+        let after_shrink = current_balance();
+        assert!(
+            about(after_shrink + (GROWN - SHRUNK), after_grow),
+            "shrinking {GROWN} -> {SHRUNK} moved the balance {after_grow} -> {after_shrink}, \
+             expected about -{}",
+            GROWN - SHRUNK
+        );
+
+        unsafe { allocator.dealloc(ptr, Layout::from_size_align(SHRUNK, 8).unwrap()) };
     }
 
     /// Threads must settle their remaining drift on exit.
     ///
-    /// The worker writes a drift straight into its `LOCAL_DRIFT` cell and exits. Without the
-    /// wrapper installed nothing else ever calls `track`, so the only path by which that value can
-    /// reach the shared balance is `ThreadDrift::drop`; that is the build CI runs, and the one in
-    /// which a missing destructor is caught. The value is far larger than any real allocation,
-    /// which makes the check immune to whatever the rest of the crate is allocating meanwhile.
-    /// The injected amount is taken back out afterwards so later tests see an unchanged balance.
+    /// The worker writes a drift straight into its `LOCAL_DRIFT` cell and exits, so the only path
+    /// by which that value can reach the shared balance is `ThreadDrift::drop`. That holds only
+    /// while the wrapper is not installed: with it, thread teardown's own allocations call `track`
+    /// and flush the oversized drift before the destructor runs, and the test would pass without
+    /// one. So the test is confined to the default build, which is the one CI runs. The injected
+    /// amount is far larger than any real allocation, and is taken back out afterwards.
     #[test]
+    #[cfg(not(feature = "alloc-accounting"))]
     fn thread_exit_settles_remaining_drift() {
         use std::thread;
 
