@@ -18,9 +18,8 @@
 [workspace]
 default-members = ["core", "spark-expr", "common", "proto", "jni-bridge", "shuffle"]
 members = ["core", "spark-expr", "common", "proto", "jni-bridge", "shuffle"]
-# The contrib crate at ../contrib/delta/native is intentionally NOT a workspace member
-# (workspace members must live hierarchically under the workspace root). It's pulled in
-# as a path dep by `core/Cargo.toml` when the `contrib-delta` feature is enabled.
+# Crates under ../contrib are intentionally NOT workspace members. Core pulls them in as
+# optional path dependencies when their corresponding contrib feature is enabled.
 exclude = ["../contrib"]
 resolver = "2"
 
