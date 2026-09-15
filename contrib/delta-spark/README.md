@@ -49,11 +49,12 @@ for configuration details.
 
 The module builds under the `delta` Maven profile. It resolves `comet-spark`
 from the local Maven repository, so install `common` and `spark` from the same
-checkout immediately before, as CI does; a stale sibling install is the trap
-the contributor guide warns about:
+checkout immediately before, as CI does, with the `delta` profile active so that
+install produces the spark test-jar the contrib suites depend on; a stale sibling
+install is the trap the contributor guide warns about:
 
 ```shell
-./mvnw -Pspark-3.5 install -pl common,spark -DskipTests
+./mvnw -Pspark-3.5,delta install -pl common,spark -DskipTests
 ./mvnw -Pspark-3.5,delta install -pl contrib/delta-spark
 ```
 
