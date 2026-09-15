@@ -3053,6 +3053,45 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
+  test("greedy_unified_checked pool completes a sort within budget") {
+    withSQLConf(CometConf.COMET_OFFHEAP_MEMORY_POOL_TYPE.key -> "greedy_unified_checked") {
+      withTempDir { dir =>
+        val path = new Path(dir.toURI.toString, "part-r-0.parquet")
+        makeRawTimeParquetFileColumns(path, dictionaryEnabled = true, n = 1000, rowGroupSize = 10)
+        readParquetFile(path.toString) { df =>
+          checkSparkAnswerAndOperator(df.sortWithinPartitions($"_0".desc_nulls_first))
+        }
+      }
+    }
+  }
+
+  test("greedy_unified_checked pool denies reservations once real native usage exceeds budget") {
+    // A fraction this small makes the budget a few kilobytes, which the executor's native code
+    // already exceeds before the query starts, so the sort's first reservation is denied by the
+    // real-bytes check rather than by Spark. Having reserved nothing, the sort cannot spill.
+    withSQLConf(
+      CometConf.COMET_OFFHEAP_MEMORY_POOL_TYPE.key -> "greedy_unified_checked",
+      CometConf.COMET_OFFHEAP_MEMORY_POOL_FRACTION.key -> "0.000001") {
+      withTempDir { dir =>
+        val path = new Path(dir.toURI.toString, "part-r-0.parquet")
+        makeRawTimeParquetFileColumns(path, dictionaryEnabled = true, n = 1000, rowGroupSize = 10)
+        readParquetFile(path.toString) { df =>
+          val thrown = intercept[Throwable] {
+            df.sortWithinPartitions($"_0".desc_nulls_first).collect()
+          }
+          val messages = Iterator
+            .iterate(thrown)(_.getCause)
+            .takeWhile(_ != null)
+            .map(e => Option(e.getMessage).getOrElse(""))
+            .toSeq
+          assert(
+            messages.exists(_.contains("native memory in use is")),
+            s"expected the checked pool's denial, got: ${messages.mkString(" <- ")}")
+        }
+      }
+    }
+  }
+
   test("limit") {
     Seq("native", "jvm").foreach { columnarShuffleMode =>
       withSQLConf(

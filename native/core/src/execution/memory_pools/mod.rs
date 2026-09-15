@@ -15,12 +15,14 @@
 // specific language governing permissions and limitations
 // under the License.
 
+mod checked_pool;
 mod config;
 mod fair_pool;
 pub mod logging_pool;
 mod task_shared;
 mod unified_pool;
 
+use checked_pool::CheckedMemoryPool;
 use datafusion::execution::memory_pool::{
     FairSpillPool, GreedyMemoryPool, MemoryPool, TrackConsumersPool, UnboundedMemoryPool,
 };
@@ -60,6 +62,12 @@ pub(crate) fn create_memory_pool(
             tracked(CometUnifiedMemoryPool::new(
                 comet_task_memory_manager,
                 task_attempt_id,
+            ))
+        }),
+        MemoryPoolType::GreedyUnifiedChecked => acquire_task_shared_pool(task_attempt_id, || {
+            tracked(CheckedMemoryPool::new(
+                CometUnifiedMemoryPool::new(comet_task_memory_manager, task_attempt_id),
+                pool_size,
             ))
         }),
         MemoryPoolType::FairUnified => acquire_task_shared_pool(task_attempt_id, || {

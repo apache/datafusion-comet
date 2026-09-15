@@ -41,19 +41,6 @@ use log4rs::{
     Config,
 };
 
-#[cfg(all(
-    not(target_env = "msvc"),
-    feature = "jemalloc",
-    not(feature = "mimalloc")
-))]
-use tikv_jemallocator::Jemalloc;
-
-#[cfg(all(
-    feature = "mimalloc",
-    not(all(not(target_env = "msvc"), feature = "jemalloc"))
-))]
-use mimalloc::MiMalloc;
-
 // Re-export from jvm-bridge crate for internal use
 pub use datafusion_comet_jni_bridge::errors;
 pub use datafusion_comet_jni_bridge::JAVA_VM;
@@ -65,6 +52,7 @@ pub mod jvm_bridge {
 
 use errors::{try_unwrap_or_throw, CometError, CometResult};
 
+pub mod alloc_accounting;
 pub mod cloud;
 pub mod execution;
 pub mod parquet;
@@ -72,20 +60,75 @@ pub mod parquet;
 #[cfg(debug_assertions)]
 pub mod debug;
 
+// Global allocator selection.
+//
+// `backend` names the allocator the feature set asks for: jemalloc where it builds, otherwise
+// mimalloc, otherwise the system allocator. The three `backend` cfgs partition every feature
+// combination, so exactly one definition exists, and each backend predicate is written once. The
+// unwrapped `#[global_allocator]` lives inside the backend module that owns it, so a build without
+// `alloc-accounting` is byte-for-byte the previous arrangement: no wrapper, no per-allocation work,
+// and no explicit allocator at all when the selection is the system allocator.
+//
+// With `alloc-accounting`, the single wrapped `#[global_allocator]` below refers to
+// `backend::Backend` whatever it resolved to. That is what makes the wrapper impossible to drop
+// silently: a feature combination with no backend would fail to compile rather than run with the
+// metric enabled and reading zero.
+
+/// jemalloc, on targets where it builds, unless mimalloc was also requested.
 #[cfg(all(
     not(target_env = "msvc"),
     feature = "jemalloc",
     not(feature = "mimalloc")
 ))]
-#[global_allocator]
-static GLOBAL: Jemalloc = Jemalloc;
+mod backend {
+    pub type Backend = tikv_jemallocator::Jemalloc;
+    pub const BACKEND: Backend = tikv_jemallocator::Jemalloc;
 
+    #[cfg(not(feature = "alloc-accounting"))]
+    #[global_allocator]
+    static GLOBAL: Backend = BACKEND;
+}
+
+/// mimalloc, unless a usable jemalloc was also requested.
 #[cfg(all(
     feature = "mimalloc",
     not(all(not(target_env = "msvc"), feature = "jemalloc"))
 ))]
+mod backend {
+    pub type Backend = mimalloc::MiMalloc;
+    pub const BACKEND: Backend = mimalloc::MiMalloc;
+
+    #[cfg(not(feature = "alloc-accounting"))]
+    #[global_allocator]
+    static GLOBAL: Backend = BACKEND;
+}
+
+/// The system allocator: the complement of the two cases above. This covers neither feature, a
+/// jemalloc request on MSVC, and both features together, which each backend cfg excludes in favour
+/// of the other.
+#[cfg(not(any(
+    all(
+        not(target_env = "msvc"),
+        feature = "jemalloc",
+        not(feature = "mimalloc")
+    ),
+    all(
+        feature = "mimalloc",
+        not(all(not(target_env = "msvc"), feature = "jemalloc"))
+    )
+)))]
+// Without `alloc-accounting` nothing refers to this selection: the system allocator is the
+// default, so no `#[global_allocator]` is installed.
+#[cfg_attr(not(feature = "alloc-accounting"), allow(dead_code))]
+mod backend {
+    pub type Backend = std::alloc::System;
+    pub const BACKEND: Backend = std::alloc::System;
+}
+
+#[cfg(feature = "alloc-accounting")]
 #[global_allocator]
-static GLOBAL: MiMalloc = MiMalloc;
+static GLOBAL: alloc_accounting::AccountingAllocator<backend::Backend> =
+    alloc_accounting::AccountingAllocator::new(backend::BACKEND);
 
 #[no_mangle]
 pub extern "system" fn Java_org_apache_comet_NativeBase_init(

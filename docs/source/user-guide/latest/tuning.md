@@ -100,8 +100,9 @@ The valid pool types are:
 
 - `fair_unified` (default when `spark.memory.offHeap.enabled=true` is set)
 - `greedy_unified`
+- `greedy_unified_checked`
 
-Both pool types are shared across all native execution contexts within the same Spark task. When
+All pool types are shared across all native execution contexts within the same Spark task. When
 Comet executes a shuffle, it runs two native execution contexts concurrently (e.g. one for
 pre-shuffle operators and one for the shuffle writer). The shared pool ensures that the combined
 memory usage stays within the per-task limit.
@@ -113,6 +114,15 @@ when there is sufficient memory in order to leave enough memory for other operat
 
 The `greedy_unified` pool type implements a greedy first-come first-serve limit. This pool works well for queries that do not
 need to spill or have a single spillable operator.
+
+The `greedy_unified_checked` pool type is `greedy_unified` with one extra check. Before asking Spark for memory, it
+compares the bytes the native allocator has actually handed out, across the whole executor, against Comet's off-heap
+budget (`spark.memory.offHeap.size` multiplied by `spark.comet.exec.memoryPool.fraction`). If the real usage plus the
+request would exceed the budget, the reservation is denied and the operator spills, or fails if it cannot spill.
+This catches native memory that operators never reserved, which the other pools cannot see. The check is process-wide,
+so once any task pushes real usage to the budget every task's next reservation is denied, and it only gates
+reservations: allocations themselves are never refused. It requires the native library to be built with the
+`alloc-accounting` cargo feature, which is on by default.
 
 [shuffle]: #shuffle
 [Advanced Memory Tuning]: #advanced-memory-tuning
