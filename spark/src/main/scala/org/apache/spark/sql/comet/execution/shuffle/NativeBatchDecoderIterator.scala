@@ -42,7 +42,8 @@ case class NativeBatchDecoderIterator(
     nativeLib: Native,
     nativeUtil: NativeUtil,
     tracingEnabled: Boolean,
-    expectedSchema: Option[Array[Byte]] = None)
+    expectedSchema: Option[Array[Byte]] = None,
+    dataBuffer: ShuffleBlockBuffer = new ShuffleBlockBuffer())
     extends Iterator[ColumnarBatch] {
 
   // One consumer reads this iterator, while task completion may close it from another thread.
@@ -57,8 +58,6 @@ case class NativeBatchDecoderIterator(
   require(
     !validateRemoteFrames || expectedSchema.exists(_ != null),
     "Remote shuffle decoding requires the expected Spark schema")
-
-  import NativeBatchDecoderIterator._
 
   private val channel: ReadableByteChannel = if (in != null) {
     Channels.newChannel(in)
@@ -204,16 +203,7 @@ case class NativeBatchDecoderIterator(
         s"Native shuffle block size of $bytesToRead exceeds " +
           s"maximum of ${Integer.MAX_VALUE}. Try reducing shuffle batch size.")
     }
-    var dataBuf = threadLocalDataBuf.get()
-    if (dataBuf.capacity() < bytesToRead) {
-      // it is unlikely that we would overflow here since it would
-      // require a 1GB compressed shuffle block but we check anyway
-      val newCapacity = (bytesToRead * 2L).min(Integer.MAX_VALUE).toInt
-      dataBuf = ByteBuffer.allocateDirect(newCapacity)
-      threadLocalDataBuf.set(dataBuf)
-    }
-    dataBuf.clear()
-    dataBuf.limit(bytesToRead.toInt)
+    val dataBuf = dataBuffer.acquire(bytesToRead.toInt)
     while (dataBuf.hasRemaining && channel.read(dataBuf) >= 0) {}
     if (dataBuf.hasRemaining) {
       throw new EOFException("Data corrupt: unexpected EOF while reading compressed batch")
@@ -250,24 +240,52 @@ case class NativeBatchDecoderIterator(
         prefetched.filterNot(_ eq previous).foreach(pending => release(pending.close()))
         if (decoderHandle != 0L) release(nativeLib.releaseRemoteShuffleDecoder(decoderHandle))
         if (in != null) release(in.close())
-        release(resetDataBuf())
         if (failure != null) throw failure
       }
     }
   }
 }
 
-object NativeBatchDecoderIterator {
+/**
+ * The direct buffer a compressed shuffle block is read into before it is handed to native code.
+ *
+ * One instance is meant to live for a whole reduce task and be shared by every
+ * [[NativeBatchDecoderIterator]] the task creates: the block-store reader creates one iterator
+ * per fetched map output, and a reducer over thousands of map outputs would otherwise allocate a
+ * fresh direct buffer per map output. The buffer only grows, to twice the largest block seen, and
+ * is released with the task. This mirrors the direct-read path's `CometShuffleBlockIterator`,
+ * which keeps one buffer per task for the same reason.
+ *
+ * Not thread-safe: a block is read into the buffer and decoded from it by the same thread before
+ * the next block is read.
+ */
+final class ShuffleBlockBuffer {
+  import ShuffleBlockBuffer._
 
-  private val INITIAL_BUFFER_SIZE = 128 * 1024
+  private var buffer: ByteBuffer = _
 
-  private val threadLocalDataBuf: ThreadLocal[ByteBuffer] = ThreadLocal.withInitial(() => {
-    ByteBuffer.allocateDirect(INITIAL_BUFFER_SIZE)
-  })
+  /** Number of direct buffers allocated so far; exposed for tests. */
+  private[shuffle] var allocations = 0
 
-  private def resetDataBuf(): Unit = {
-    if (threadLocalDataBuf.get().capacity() > INITIAL_BUFFER_SIZE) {
-      threadLocalDataBuf.set(ByteBuffer.allocateDirect(INITIAL_BUFFER_SIZE))
+  /**
+   * Returns a buffer positioned at zero with its limit set to `bytesToRead`, growing the
+   * underlying allocation when the block does not fit.
+   */
+  def acquire(bytesToRead: Int): ByteBuffer = {
+    if (buffer == null || buffer.capacity() < bytesToRead) {
+      // Doubling keeps the number of reallocations logarithmic in the largest block. Clamp so a
+      // block near the 2 GB direct-buffer limit still gets a buffer it fits in.
+      val newCapacity =
+        (bytesToRead * 2L).max(INITIAL_BUFFER_SIZE).min(Integer.MAX_VALUE).toInt
+      buffer = ByteBuffer.allocateDirect(newCapacity)
+      allocations += 1
     }
+    buffer.clear()
+    buffer.limit(bytesToRead)
+    buffer
   }
+}
+
+object ShuffleBlockBuffer {
+  private val INITIAL_BUFFER_SIZE = 128 * 1024
 }
