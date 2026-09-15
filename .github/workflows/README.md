@@ -24,15 +24,9 @@ ruleset in `.asf.yaml`. That splits CI into two tiers:
   evaluated against the merge result rather than against the PR head.
 
 Every queue-only job has a `run-*` label that opts a pull request into it
-early, listed in the diagram below. The PR tier used to be wider: Spark 4.1
-(catalyst and `sql_core`) and Iceberg 1.11 ran on every pull request, and the
-Linux build ran its test matrix against all five Spark profiles. Those moved
-behind the queue once agent-driven review, and agent-driven replies to
-review, multiplied the number of pushes a pull request goes through before it
-is queued: every one of those pushes paid for all of it, and the queue was
-going to run all of it anyway. The Lint Java matrix still compiles Spark
-3.4/3.5/4.0 on every pull request, so a shim that fails to build is still
-caught there; only the runtime suites wait.
+early, listed in the diagram below. The Lint Java matrix compiles Spark
+3.4/3.5/4.0 on every pull request, so a shim that fails to build is caught
+there; only the runtime suites wait for the queue.
 
 `spark_3_4` is in neither tier. Spark 3.4 is deprecated, so its Spark SQL
 suite no longer gates a merge; it runs only when a pull request carries
