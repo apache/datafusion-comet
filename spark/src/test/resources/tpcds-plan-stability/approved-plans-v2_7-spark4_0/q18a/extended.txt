@@ -1,0 +1,217 @@
+TakeOrderedAndProject
++- Union
+   :-  HashAggregate [COMET: HashAggregateExec is not fully compatible with Spark (Grouped decimal AVG in ANSI mode requires Spark's lazy group evaluation). To enable it anyway, set spark.comet.operator.HashAggregateExec.allowIncompatible=true. For more information, refer to the Comet Compatibility Guide (https://datafusion.apache.org/comet/user-guide/latest/compatibility/index.html).]
+   :  +- Exchange
+   :     +-  HashAggregate [COMET: HashAggregateExec is not fully compatible with Spark (Grouped decimal AVG in ANSI mode requires Spark's lazy group evaluation). To enable it anyway, set spark.comet.operator.HashAggregateExec.allowIncompatible=true. For more information, refer to the Comet Compatibility Guide (https://datafusion.apache.org/comet/user-guide/latest/compatibility/index.html).]
+   :        +- CometColumnarToRow
+   :           +- CometProject
+   :              +- CometBroadcastHashJoin
+   :                 :- CometProject
+   :                 :  +- CometBroadcastHashJoin
+   :                 :     :- CometProject
+   :                 :     :  +- CometBroadcastHashJoin
+   :                 :     :     :- CometProject
+   :                 :     :     :  +- CometBroadcastHashJoin
+   :                 :     :     :     :- CometProject
+   :                 :     :     :     :  +- CometBroadcastHashJoin
+   :                 :     :     :     :     :- CometProject
+   :                 :     :     :     :     :  +- CometBroadcastHashJoin
+   :                 :     :     :     :     :     :- CometFilter
+   :                 :     :     :     :     :     :  +- CometNativeScan parquet spark_catalog.default.catalog_sales
+   :                 :     :     :     :     :     :        +- CometSubqueryBroadcast
+   :                 :     :     :     :     :     :           +- CometBroadcastExchange
+   :                 :     :     :     :     :     :              +- CometProject
+   :                 :     :     :     :     :     :                 +- CometFilter
+   :                 :     :     :     :     :     :                    +- CometNativeScan parquet spark_catalog.default.date_dim
+   :                 :     :     :     :     :     +- CometBroadcastExchange
+   :                 :     :     :     :     :        +- CometProject
+   :                 :     :     :     :     :           +- CometFilter
+   :                 :     :     :     :     :              +- CometNativeScan parquet spark_catalog.default.customer_demographics
+   :                 :     :     :     :     +- CometBroadcastExchange
+   :                 :     :     :     :        +- CometProject
+   :                 :     :     :     :           +- CometFilter
+   :                 :     :     :     :              +- CometNativeScan parquet spark_catalog.default.customer
+   :                 :     :     :     +- CometBroadcastExchange
+   :                 :     :     :        +- CometFilter
+   :                 :     :     :           +- CometNativeScan parquet spark_catalog.default.customer_demographics
+   :                 :     :     +- CometBroadcastExchange
+   :                 :     :        +- CometProject
+   :                 :     :           +- CometFilter
+   :                 :     :              +- CometNativeScan parquet spark_catalog.default.customer_address
+   :                 :     +- CometBroadcastExchange
+   :                 :        +- CometProject
+   :                 :           +- CometFilter
+   :                 :              +- CometNativeScan parquet spark_catalog.default.date_dim
+   :                 +- CometBroadcastExchange
+   :                    +- CometProject
+   :                       +- CometFilter
+   :                          +- CometNativeScan parquet spark_catalog.default.item
+   :-  HashAggregate [COMET: HashAggregateExec is not fully compatible with Spark (Grouped decimal AVG in ANSI mode requires Spark's lazy group evaluation). To enable it anyway, set spark.comet.operator.HashAggregateExec.allowIncompatible=true. For more information, refer to the Comet Compatibility Guide (https://datafusion.apache.org/comet/user-guide/latest/compatibility/index.html).]
+   :  +- Exchange
+   :     +-  HashAggregate [COMET: HashAggregateExec is not fully compatible with Spark (Grouped decimal AVG in ANSI mode requires Spark's lazy group evaluation). To enable it anyway, set spark.comet.operator.HashAggregateExec.allowIncompatible=true. For more information, refer to the Comet Compatibility Guide (https://datafusion.apache.org/comet/user-guide/latest/compatibility/index.html).]
+   :        +- CometColumnarToRow
+   :           +- CometProject
+   :              +- CometBroadcastHashJoin
+   :                 :- CometProject
+   :                 :  +- CometBroadcastHashJoin
+   :                 :     :- CometProject
+   :                 :     :  +- CometBroadcastHashJoin
+   :                 :     :     :- CometProject
+   :                 :     :     :  +- CometBroadcastHashJoin
+   :                 :     :     :     :- CometProject
+   :                 :     :     :     :  +- CometBroadcastHashJoin
+   :                 :     :     :     :     :- CometProject
+   :                 :     :     :     :     :  +- CometBroadcastHashJoin
+   :                 :     :     :     :     :     :- CometFilter
+   :                 :     :     :     :     :     :  +- CometNativeScan parquet spark_catalog.default.catalog_sales
+   :                 :     :     :     :     :     :        +- ReusedSubquery
+   :                 :     :     :     :     :     +- CometBroadcastExchange
+   :                 :     :     :     :     :        +- CometProject
+   :                 :     :     :     :     :           +- CometFilter
+   :                 :     :     :     :     :              +- CometNativeScan parquet spark_catalog.default.customer_demographics
+   :                 :     :     :     :     +- CometBroadcastExchange
+   :                 :     :     :     :        +- CometProject
+   :                 :     :     :     :           +- CometFilter
+   :                 :     :     :     :              +- CometNativeScan parquet spark_catalog.default.customer
+   :                 :     :     :     +- CometBroadcastExchange
+   :                 :     :     :        +- CometFilter
+   :                 :     :     :           +- CometNativeScan parquet spark_catalog.default.customer_demographics
+   :                 :     :     +- CometBroadcastExchange
+   :                 :     :        +- CometProject
+   :                 :     :           +- CometFilter
+   :                 :     :              +- CometNativeScan parquet spark_catalog.default.customer_address
+   :                 :     +- CometBroadcastExchange
+   :                 :        +- CometProject
+   :                 :           +- CometFilter
+   :                 :              +- CometNativeScan parquet spark_catalog.default.date_dim
+   :                 +- CometBroadcastExchange
+   :                    +- CometProject
+   :                       +- CometFilter
+   :                          +- CometNativeScan parquet spark_catalog.default.item
+   :-  HashAggregate [COMET: HashAggregateExec is not fully compatible with Spark (Grouped decimal AVG in ANSI mode requires Spark's lazy group evaluation). To enable it anyway, set spark.comet.operator.HashAggregateExec.allowIncompatible=true. For more information, refer to the Comet Compatibility Guide (https://datafusion.apache.org/comet/user-guide/latest/compatibility/index.html).]
+   :  +- Exchange
+   :     +-  HashAggregate [COMET: HashAggregateExec is not fully compatible with Spark (Grouped decimal AVG in ANSI mode requires Spark's lazy group evaluation). To enable it anyway, set spark.comet.operator.HashAggregateExec.allowIncompatible=true. For more information, refer to the Comet Compatibility Guide (https://datafusion.apache.org/comet/user-guide/latest/compatibility/index.html).]
+   :        +- CometColumnarToRow
+   :           +- CometProject
+   :              +- CometBroadcastHashJoin
+   :                 :- CometProject
+   :                 :  +- CometBroadcastHashJoin
+   :                 :     :- CometProject
+   :                 :     :  +- CometBroadcastHashJoin
+   :                 :     :     :- CometProject
+   :                 :     :     :  +- CometBroadcastHashJoin
+   :                 :     :     :     :- CometProject
+   :                 :     :     :     :  +- CometBroadcastHashJoin
+   :                 :     :     :     :     :- CometProject
+   :                 :     :     :     :     :  +- CometBroadcastHashJoin
+   :                 :     :     :     :     :     :- CometFilter
+   :                 :     :     :     :     :     :  +- CometNativeScan parquet spark_catalog.default.catalog_sales
+   :                 :     :     :     :     :     :        +- ReusedSubquery
+   :                 :     :     :     :     :     +- CometBroadcastExchange
+   :                 :     :     :     :     :        +- CometProject
+   :                 :     :     :     :     :           +- CometFilter
+   :                 :     :     :     :     :              +- CometNativeScan parquet spark_catalog.default.customer_demographics
+   :                 :     :     :     :     +- CometBroadcastExchange
+   :                 :     :     :     :        +- CometProject
+   :                 :     :     :     :           +- CometFilter
+   :                 :     :     :     :              +- CometNativeScan parquet spark_catalog.default.customer
+   :                 :     :     :     +- CometBroadcastExchange
+   :                 :     :     :        +- CometFilter
+   :                 :     :     :           +- CometNativeScan parquet spark_catalog.default.customer_demographics
+   :                 :     :     +- CometBroadcastExchange
+   :                 :     :        +- CometProject
+   :                 :     :           +- CometFilter
+   :                 :     :              +- CometNativeScan parquet spark_catalog.default.customer_address
+   :                 :     +- CometBroadcastExchange
+   :                 :        +- CometProject
+   :                 :           +- CometFilter
+   :                 :              +- CometNativeScan parquet spark_catalog.default.date_dim
+   :                 +- CometBroadcastExchange
+   :                    +- CometProject
+   :                       +- CometFilter
+   :                          +- CometNativeScan parquet spark_catalog.default.item
+   :-  HashAggregate [COMET: HashAggregateExec is not fully compatible with Spark (Grouped decimal AVG in ANSI mode requires Spark's lazy group evaluation). To enable it anyway, set spark.comet.operator.HashAggregateExec.allowIncompatible=true. For more information, refer to the Comet Compatibility Guide (https://datafusion.apache.org/comet/user-guide/latest/compatibility/index.html).]
+   :  +- Exchange
+   :     +-  HashAggregate [COMET: HashAggregateExec is not fully compatible with Spark (Grouped decimal AVG in ANSI mode requires Spark's lazy group evaluation). To enable it anyway, set spark.comet.operator.HashAggregateExec.allowIncompatible=true. For more information, refer to the Comet Compatibility Guide (https://datafusion.apache.org/comet/user-guide/latest/compatibility/index.html).]
+   :        +- CometColumnarToRow
+   :           +- CometProject
+   :              +- CometBroadcastHashJoin
+   :                 :- CometProject
+   :                 :  +- CometBroadcastHashJoin
+   :                 :     :- CometProject
+   :                 :     :  +- CometBroadcastHashJoin
+   :                 :     :     :- CometProject
+   :                 :     :     :  +- CometBroadcastHashJoin
+   :                 :     :     :     :- CometProject
+   :                 :     :     :     :  +- CometBroadcastHashJoin
+   :                 :     :     :     :     :- CometProject
+   :                 :     :     :     :     :  +- CometBroadcastHashJoin
+   :                 :     :     :     :     :     :- CometFilter
+   :                 :     :     :     :     :     :  +- CometNativeScan parquet spark_catalog.default.catalog_sales
+   :                 :     :     :     :     :     :        +- ReusedSubquery
+   :                 :     :     :     :     :     +- CometBroadcastExchange
+   :                 :     :     :     :     :        +- CometProject
+   :                 :     :     :     :     :           +- CometFilter
+   :                 :     :     :     :     :              +- CometNativeScan parquet spark_catalog.default.customer_demographics
+   :                 :     :     :     :     +- CometBroadcastExchange
+   :                 :     :     :     :        +- CometProject
+   :                 :     :     :     :           +- CometFilter
+   :                 :     :     :     :              +- CometNativeScan parquet spark_catalog.default.customer
+   :                 :     :     :     +- CometBroadcastExchange
+   :                 :     :     :        +- CometFilter
+   :                 :     :     :           +- CometNativeScan parquet spark_catalog.default.customer_demographics
+   :                 :     :     +- CometBroadcastExchange
+   :                 :     :        +- CometProject
+   :                 :     :           +- CometFilter
+   :                 :     :              +- CometNativeScan parquet spark_catalog.default.customer_address
+   :                 :     +- CometBroadcastExchange
+   :                 :        +- CometProject
+   :                 :           +- CometFilter
+   :                 :              +- CometNativeScan parquet spark_catalog.default.date_dim
+   :                 +- CometBroadcastExchange
+   :                    +- CometProject
+   :                       +- CometFilter
+   :                          +- CometNativeScan parquet spark_catalog.default.item
+   +- CometColumnarToRow
+      +- CometHashAggregate
+         +- CometExchange
+            +- CometHashAggregate
+               +- CometProject
+                  +- CometBroadcastHashJoin
+                     :- CometProject
+                     :  +- CometBroadcastHashJoin
+                     :     :- CometProject
+                     :     :  +- CometBroadcastHashJoin
+                     :     :     :- CometProject
+                     :     :     :  +- CometBroadcastHashJoin
+                     :     :     :     :- CometProject
+                     :     :     :     :  +- CometBroadcastHashJoin
+                     :     :     :     :     :- CometProject
+                     :     :     :     :     :  +- CometBroadcastHashJoin
+                     :     :     :     :     :     :- CometFilter
+                     :     :     :     :     :     :  +- CometNativeScan parquet spark_catalog.default.catalog_sales
+                     :     :     :     :     :     :        +- ReusedSubquery
+                     :     :     :     :     :     +- CometBroadcastExchange
+                     :     :     :     :     :        +- CometProject
+                     :     :     :     :     :           +- CometFilter
+                     :     :     :     :     :              +- CometNativeScan parquet spark_catalog.default.customer_demographics
+                     :     :     :     :     +- CometBroadcastExchange
+                     :     :     :     :        +- CometProject
+                     :     :     :     :           +- CometFilter
+                     :     :     :     :              +- CometNativeScan parquet spark_catalog.default.customer
+                     :     :     :     +- CometBroadcastExchange
+                     :     :     :        +- CometFilter
+                     :     :     :           +- CometNativeScan parquet spark_catalog.default.customer_demographics
+                     :     :     +- CometBroadcastExchange
+                     :     :        +- CometProject
+                     :     :           +- CometFilter
+                     :     :              +- CometNativeScan parquet spark_catalog.default.customer_address
+                     :     +- CometBroadcastExchange
+                     :        +- CometProject
+                     :           +- CometFilter
+                     :              +- CometNativeScan parquet spark_catalog.default.date_dim
+                     +- CometBroadcastExchange
+                        +- CometFilter
+                           +- CometNativeScan parquet spark_catalog.default.item
+
+Comet accelerated 192 out of 206 eligible operators (93%). Final plan contains 5 transitions between Spark and Comet. Accelerated expressions: 7 native, 0 codegen dispatch.

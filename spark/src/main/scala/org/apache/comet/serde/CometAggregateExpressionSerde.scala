@@ -82,16 +82,23 @@ trait CometAggregateExpressionSerde[T <: AggregateFunction] {
   def getSupportLevel(expr: T): SupportLevel = Compatible(None)
 
   /**
-   * Whether this aggregate's intermediate buffer format is compatible between Spark and Comet for
-   * the given function instance, making it safe to run the Partial in one engine and the Final in
-   * the other. Aggregates with simple single-value buffers (MIN, MAX, bitwise) are always safe;
-   * SUM and non-decimal AVG match Spark's buffer and are safe except where noted per instance
-   * (e.g. TRY-mode SUM uses a Comet-internal flag column). COUNT is intentionally excluded
-   * despite a matching buffer: mixed COUNT partial/final regressed AQE's
+   * Whether a Comet aggregate can consume this function's Spark intermediate buffer. This covers
+   * Spark Partial to Comet Final, including intermediate PartialMerge stages. COUNT is excluded
+   * despite a matching buffer: a Comet Final above a Spark Partial regressed AQE's
    * PropagateEmptyRelationAfterAQE pattern (which matches BaseAggregateExec only) and the Spark
    * 4.0 count-bug decorrelation for correlated IN subqueries.
    */
-  def supportsMixedPartialFinal(fn: T): Boolean = false
+  def supportsSparkPartialToNativeFinal(fn: T): Boolean = false
+
+  /**
+   * Whether Spark can consume this function's Comet intermediate buffer. Keep this separate from
+   * the reverse direction: planner restrictions on a Comet Final do not necessarily prohibit a
+   * Comet Partial feeding a Spark Final. Existing bidirectional implementations share the
+   * default; handlers may admit an additional forward direction only after validating it
+   * independently.
+   */
+  def supportsNativePartialToSparkFinal(fn: T): Boolean =
+    supportsSparkPartialToNativeFinal(fn)
 
   /**
    * Convert a Spark expression into a protocol buffer representation that can be passed into

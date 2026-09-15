@@ -146,8 +146,11 @@ pub struct AvgAccumulator {
 
 impl Accumulator for AvgAccumulator {
     fn state(&mut self) -> Result<Vec<ScalarValue>> {
+        // Spark's final AVG adds partial sums without coalescing nulls. Empty partials
+        // must therefore carry a zero sum, even when update_batch was never called.
+        let sum = if self.count == 0 { Some(0.0) } else { self.sum };
         Ok(vec![
-            ScalarValue::Float64(self.sum),
+            ScalarValue::Float64(sum),
             ScalarValue::from(self.count),
         ])
     }
@@ -350,5 +353,25 @@ where
     fn size(&self) -> usize {
         self.counts.capacity() * std::mem::size_of::<i64>()
             + self.sums.capacity() * std::mem::size_of::<T>()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use arrow::array::Float64Array;
+
+    /// Empty and all-null partials must emit Spark's zero sum while evaluating to null.
+    #[test]
+    fn empty_partial_state_matches_spark() -> Result<()> {
+        let mut partial = AvgAccumulator::default();
+        let empty = vec![ScalarValue::Float64(Some(0.0)), ScalarValue::Int64(Some(0))];
+        assert_eq!(partial.state()?, empty);
+        assert_eq!(partial.evaluate()?, ScalarValue::Float64(None));
+
+        partial.update_batch(&[Arc::new(Float64Array::from(vec![None, None]))])?;
+        assert_eq!(partial.state()?, empty);
+        assert_eq!(partial.evaluate()?, ScalarValue::Float64(None));
+        Ok(())
     }
 }

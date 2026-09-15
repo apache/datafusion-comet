@@ -28,17 +28,18 @@ import org.apache.spark.{CometListenerBusUtils, SparkConf}
 import org.apache.spark.scheduler.{SparkListener, SparkListenerTaskEnd}
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.catalyst.expressions.Cast
-import org.apache.spark.sql.catalyst.expressions.aggregate.{Final, Partial, PartialMerge}
+import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateMode, Final, Partial, PartialMerge}
 import org.apache.spark.sql.catalyst.optimizer.EliminateSorts
-import org.apache.spark.sql.catalyst.plans.physical.RangePartitioning
-import org.apache.spark.sql.comet.CometHashAggregateExec
-import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
+import org.apache.spark.sql.catalyst.plans.physical.{HashPartitioning, RangePartitioning}
+import org.apache.spark.sql.comet.{CometFilterExec, CometHashAggregateExec}
+import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometNativeShuffle, CometShuffleExchangeExec}
 import org.apache.spark.sql.execution.SQLExecution
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AdaptiveSparkPlanHelper}
+import org.apache.spark.sql.execution.aggregate.{BaseAggregateExec, HashAggregateExec}
 import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
 import org.apache.spark.sql.functions.{avg, col, count_distinct, expr, sum}
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{DataTypes, StructField, StructType}
+import org.apache.spark.sql.types.{DataTypes, DecimalType, StructField, StructType}
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometConf.COMET_EXEC_STRICT_FLOATING_POINT
@@ -355,6 +356,121 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  for (adaptive <- Seq(false, true)) {
+    test(s"decimal AVG falls back across a Spark shuffle (AQE=$adaptive)") {
+      withTempDir { dir =>
+        val path = s"${dir.getAbsolutePath}/data"
+        withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+          spark
+            .range(0L, 8L, 1L, 4)
+            .selectExpr("id", "CAST(200 AS DECIMAL(20, 2)) AS v")
+            .write
+            .parquet(path)
+        }
+
+        withSQLConf(
+          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString,
+          SQLConf.FILES_MAX_PARTITION_BYTES.key -> "1048576",
+          SQLConf.PARQUET_FILTER_PUSHDOWN_ENABLED.key -> "false",
+          CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "false",
+          CometConf.COMET_CONVERT_FROM_PARQUET_ENABLED.key -> "true",
+          CometConf.COMET_SHUFFLE_ENABLED.key -> "false") {
+          withParquetTable(path, "decimal_avg_fallback") {
+            // The filter leaves three input partitions empty. Decimal AVG is not safe to mix
+            // between engines: a native empty partial can poison the Spark final's sum buffer.
+            val df = sql("SELECT AVG(v) FROM decimal_avg_fallback WHERE id = 1")
+            val initialPlan = stripAQEPlan(df.queryExecution.executedPlan)
+            checkAnswer(df, Seq(Row(new java.math.BigDecimal("200.000000"))))
+            for (plan <- Seq(initialPlan, df.queryExecution.executedPlan)) {
+              assert(collect(plan) { case agg: CometHashAggregateExec => agg }.isEmpty)
+              // Falling back the aggregate must not discard the native filter/scan conversion.
+              assert(collect(plan) { case filter: CometFilterExec => filter }.nonEmpty)
+            }
+
+            // Compatible buffers may still use a native Partial and a Spark Final.
+            val safe = sql("SELECT MIN(v), MAX(v) FROM decimal_avg_fallback WHERE id = 1")
+            checkAnswer(
+              safe,
+              Seq(Row(new java.math.BigDecimal("200.00"), new java.math.BigDecimal("200.00"))))
+            assert(collect(safe.queryExecution.executedPlan) { case agg: CometHashAggregateExec =>
+              agg
+            }.size == 1)
+
+            // The same unsafe buffer is valid when both aggregate stages execute in Comet.
+            withSQLConf(CometConf.COMET_SHUFFLE_ENABLED.key -> "true") {
+              val native = sql("SELECT AVG(v) FROM decimal_avg_fallback WHERE id = 1")
+              checkAnswer(native, Seq(Row(new java.math.BigDecimal("200.000000"))))
+              assert(collect(native.queryExecution.executedPlan) {
+                case agg: CometHashAggregateExec => agg
+              }.size == 2)
+            }
+          }
+        }
+      }
+    }
+  }
+
+  for (adaptive <- Seq(false, true)) {
+    test(s"COUNT preserves safe native partials across a Spark shuffle (AQE=$adaptive)") {
+      val data = Seq((0, None), (0, None), (1, Some(3)), (1, None), (1, Some(4)))
+      withParquetTable(data, "count_fallback", false) {
+        withSQLConf(
+          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString,
+          SQLConf.PARQUET_FILTER_PUSHDOWN_ENABLED.key -> "false",
+          CometConf.COMET_SHUFFLE_ENABLED.key -> "false") {
+          for (query <- Seq(
+              "SELECT _1, COUNT(_2), COUNT(*) FROM count_fallback GROUP BY _1",
+              "SELECT COUNT(_2), COUNT(*) FROM count_fallback WHERE _1 < 0")) {
+            val df = sql(query)
+            val initialPlan = stripAQEPlan(df.queryExecution.executedPlan)
+            assert(collect(initialPlan) {
+              case agg: CometHashAggregateExec if agg.modes == Seq(Partial) => agg
+            }.size == 1)
+            assert(collect(initialPlan) {
+              case agg: BaseAggregateExec
+                  if agg.aggregateExpressions.map(_.mode).distinct == Seq(Final) =>
+                agg
+            }.size == 1)
+            checkSparkAnswer(df)
+          }
+        }
+      }
+    }
+
+    for (fn <- Seq("collect_list", "collect_set")) {
+      test(s"$fn falls back when enabled native shuffle is ineligible (AQE=$adaptive)") {
+        val data = (0 until 30).map(i => (i % 3, if (i % 7 == 0) None else Some(i % 5)))
+        withParquetTable(data, "collect_fallback", false) {
+          withSQLConf(
+            SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString,
+            SQLConf.PARQUET_FILTER_PUSHDOWN_ENABLED.key -> "false",
+            SQLConf.USE_OBJECT_HASH_AGG.key -> "true",
+            CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
+            CometConf.COMET_SHUFFLE_MODE.key -> "native",
+            CometConf.COMET_SHUFFLE_NATIVE_HASH_PARTITIONING_ENABLED.key -> "false") {
+            // Integer keys isolate this from the wide-decimal shuffle restriction in #5420.
+            // The native Partial emits an Array buffer, but Spark's Final expects Binary.
+            val query = s"SELECT _1, sort_array($fn(_2)), COUNT(*) " +
+              "FROM collect_fallback WHERE _1 >= 0 GROUP BY _1"
+            val df = sql(query)
+            val initialPlan = stripAQEPlan(df.queryExecution.executedPlan)
+            checkSparkAnswer(df)
+            for (plan <- Seq(initialPlan, df.queryExecution.executedPlan)) {
+              assert(collect(plan) { case agg: CometHashAggregateExec => agg }.isEmpty)
+              assert(collect(plan) { case filter: CometFilterExec => filter }.nonEmpty)
+            }
+            // A fully native producer/consumer pair can still use its native buffer format.
+            withSQLConf(CometConf.COMET_SHUFFLE_NATIVE_HASH_PARTITIONING_ENABLED.key -> "true") {
+              val native = sql(query)
+              checkSparkAnswer(native)
+              assert(getNumCometHashAggregate(native) == 2)
+            }
+          }
+        }
+      }
+    }
+  }
+
   test("stddev_pop should return NaN for some cases") {
     withSQLConf(CometConf.COMET_SHUFFLE_ENABLED.key -> "true") {
       Seq(true, false).foreach { nullOnDivideByZero =>
@@ -655,6 +771,46 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("avg with empty partial input and Spark final") {
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.FILES_MAX_PARTITION_BYTES.key -> "1048576",
+      SQLConf.PARQUET_FILTER_PUSHDOWN_ENABLED.key -> "false",
+      CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "false",
+      CometConf.COMET_CONVERT_FROM_PARQUET_ENABLED.key -> "true",
+      CometConf.COMET_SHUFFLE_ENABLED.key -> "false",
+      CometConf.COMET_ENABLE_FINAL_HASH_AGGREGATE.key -> "false") {
+      withTempPath { path =>
+        // Four files remain separate scan partitions. Only one partition has a matching row,
+        // so the other native partials must emit Spark's (sum = 0, count = 0) AVG buffer.
+        spark
+          .range(0L, 8L, 1L, 4)
+          .selectExpr(
+            "id",
+            "cast(id + 1 as int) as quantity",
+            "cast(id + 10 as decimal(7, 2)) as price")
+          .write
+          .parquet(path.getCanonicalPath)
+        withParquetTable(path.getCanonicalPath, "avg_empty_partials") {
+          for (predicate <- Seq("id = 1", "id < 0")) {
+            // Spark optimizes this narrow decimal AVG to AVG(UnscaledValue(price)), so both
+            // averages exercise the mixed non-decimal accumulator path.
+            val df =
+              sql(s"SELECT avg(quantity), avg(price) FROM avg_empty_partials WHERE $predicate")
+            checkSparkAnswer(df)
+            val plan = df.queryExecution.executedPlan
+            assert(
+              plan.collect { case a: CometHashAggregateExec => a.modes }.flatten ==
+                Seq(Partial))
+            assert(plan.collect { case a: HashAggregateExec =>
+              a.aggregateExpressions.map(_.mode).distinct
+            }.flatten == Seq(Final))
+          }
+        }
+      }
+    }
+  }
+
   test("count, avg with null") {
     Seq(false, true).foreach { dictionary =>
       withSQLConf("parquet.enable.dictionary" -> dictionary.toString) {
@@ -913,26 +1069,29 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
             val path = new Path(dir.toURI.toString, "test")
             makeParquetFile(path, 1000, 20, dictionaryEnabled)
             withParquetTable(path.toUri.toString, "tbl") {
+              // Spark rewrites _7's small decimal SUM to Long; _8 and _9 remain decimal and
+              // cannot use a native Partial when the Final runs in Spark.
               val expectedNumOfCometAggregates = if (nativeShuffleEnabled) 2 else 1
+              val expectedNumOfDecimalAggregates = if (nativeShuffleEnabled) 2 else 0
 
               checkSparkAnswerAndNumOfAggregates(
                 "SELECT _g2, SUM(_7) FROM tbl GROUP BY _g2",
                 expectedNumOfCometAggregates)
               checkSparkAnswerAndNumOfAggregates(
                 "SELECT _g3, SUM(_8) FROM tbl GROUP BY _g3",
-                expectedNumOfCometAggregates)
+                expectedNumOfDecimalAggregates)
               checkSparkAnswerAndNumOfAggregates(
                 "SELECT _g4, SUM(_9) FROM tbl GROUP BY _g4",
-                expectedNumOfCometAggregates)
+                expectedNumOfDecimalAggregates)
               checkSparkAnswerAndNumOfAggregates(
                 "SELECT SUM(_7) FROM tbl",
                 expectedNumOfCometAggregates)
               checkSparkAnswerAndNumOfAggregates(
                 "SELECT SUM(_8) FROM tbl",
-                expectedNumOfCometAggregates)
+                expectedNumOfDecimalAggregates)
               checkSparkAnswerAndNumOfAggregates(
                 "SELECT SUM(_9) FROM tbl",
-                expectedNumOfCometAggregates)
+                expectedNumOfDecimalAggregates)
             }
           }
         }
@@ -1423,20 +1582,24 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     // There is no sum to overflow when the input is empty or entirely null, so avg must
     // return null rather than raising ARITHMETIC_OVERFLOW in ANSI mode.
     // https://github.com/apache/datafusion-comet/issues/5148
-    Seq(true, false).foreach { ansiEnabled =>
+    for {
+      ansiEnabled <- Seq(true, false)
+      precision <- Seq(27, 38)
+    } {
       withSQLConf(
         SQLConf.ANSI_ENABLED.key -> ansiEnabled.toString,
         CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
         CometConf.COMET_SHUFFLE_MODE.key -> "native") {
-        val table = s"avg_decimal_empty_ansi_$ansiEnabled"
+        val table = s"avg_decimal_empty_${precision}_ansi_$ansiEnabled"
+        val nativeAggregates = if (precision == 38) 0 else 2
         withTable(table) {
-          sql(s"create table $table(a decimal(38, 2), b INT) using parquet")
+          sql(s"create table $table(a decimal($precision, 2), b INT) using parquet")
           // no rows at all
-          checkSparkAnswer(s"select avg(a) from $table")
+          checkSparkAnswerAndNumOfAggregates(s"select avg(a) from $table", nativeAggregates)
           checkSparkAnswer(s"select b, avg(a) from $table group by b")
           // rows, but every value to average is null
           sql(s"insert into $table values(null, 1), (null, 2)")
-          checkSparkAnswer(s"select avg(a) from $table")
+          checkSparkAnswerAndNumOfAggregates(s"select avg(a) from $table", nativeAggregates)
           checkSparkAnswer(s"select b, avg(a) from $table group by b")
         }
       }
@@ -1465,6 +1628,363 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("high-precision global decimal AVG and TRY_AVG fall back to Spark") {
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "true",
+      CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
+      CometConf.COMET_SHUFFLE_MODE.key -> "native") {
+      withTempDir { dir =>
+        withTempView("high_precision_global_avg") {
+          Seq((1, "0.6"), (2, "0.6"))
+            .toDF("ord", "raw_v")
+            .selectExpr(
+              "ord",
+              "CAST(raw_v AS DECIMAL(27,27)) AS v27",
+              "CAST(raw_v AS DECIMAL(28,28)) AS v28",
+              "CAST(raw_v AS DECIMAL(38,38)) AS v38")
+            .write
+            .mode("overwrite")
+            .parquet(dir.toString)
+          spark.read
+            .parquet(dir.toString)
+            .coalesce(1)
+            .createOrReplaceTempView("high_precision_global_avg")
+
+          val fallbackReason =
+            "Ungrouped AVG on DECIMAL with maximum-precision intermediate state is not supported"
+          for (ansiEnabled <- Seq(false, true)) {
+            withSQLConf(SQLConf.ANSI_ENABLED.key -> ansiEnabled.toString) {
+              val query = "SELECT AVG(v38), TRY_AVG(v38) FROM high_precision_global_avg"
+              val expected = new java.math.BigDecimal("0.6").setScale(38)
+              checkAnswer(sql(query), Seq(Row(expected, expected)))
+              val (_, cometPlan) = checkSparkAnswerAndFallbackReason(query, fallbackReason)
+              assert(collect(cometPlan) { case agg: CometHashAggregateExec => agg }.isEmpty)
+              val sparkAggregates = collect(cometPlan) { case agg: HashAggregateExec => agg }
+              assert(sparkAggregates.size == 2)
+              // Spark can divide the wider sum before materializing a decimal buffer when
+              // both stages stay adjacent. Falling back only the final is unsafe.
+              assert(sparkAggregates.head.child.isInstanceOf[HashAggregateExec])
+            }
+          }
+
+          val (_, boundaryPlan) = checkSparkAnswerAndFallbackReason(
+            "SELECT AVG(v28) FROM high_precision_global_avg",
+            fallbackReason)
+          assert(collect(boundaryPlan) { case agg: CometHashAggregateExec => agg }.isEmpty)
+          checkSparkAnswerAndNumOfAggregates("SELECT AVG(v27) FROM high_precision_global_avg", 2)
+
+          // Exercise grouped intermediate buffers in the distinct rewrite and the separate
+          // ObjectHashAggregate support check used when AVG shares a node with collect_list.
+          for (aggregates <- Seq(
+              "AVG(v38), COUNT(DISTINCT ord)",
+              "AVG(v38), sort_array(collect_list(ord))")) {
+            val (_, cometPlan) = checkSparkAnswerAndFallbackReason(
+              s"SELECT $aggregates FROM high_precision_global_avg",
+              fallbackReason)
+            assert(collect(cometPlan) { case agg: CometHashAggregateExec => agg }.isEmpty)
+          }
+
+          // A shuffled final can also retain a wider sum after merging individually valid
+          // partials. Keep that shape in Spark as well, not just adjacent partial/final pairs.
+          spark.read
+            .parquet(dir.toString)
+            .repartition(2, col("ord"))
+            .createOrReplaceTempView("high_precision_global_avg")
+          val shuffledQuery =
+            "SELECT AVG(v38), TRY_AVG(v38) FROM high_precision_global_avg"
+          for (ansiEnabled <- Seq(false, true)) {
+            withSQLConf(SQLConf.ANSI_ENABLED.key -> ansiEnabled.toString) {
+              val expected = new java.math.BigDecimal("0.6").setScale(38)
+              checkAnswer(sql(shuffledQuery), Seq(Row(expected, expected)))
+              val (_, cometPlan) =
+                checkSparkAnswerAndFallbackReason(shuffledQuery, fallbackReason)
+              assert(collect(cometPlan) { case agg: CometHashAggregateExec => agg }.isEmpty)
+            }
+          }
+        }
+      }
+    }
+  }
+
+  test("high-precision DISTINCT decimal AVG preserves Spark shuffle semantics") {
+    withSQLConf(
+      SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "true",
+      SQLConf.SHUFFLE_PARTITIONS.key -> "2",
+      SQLConf.COALESCE_PARTITIONS_ENABLED.key -> "false",
+      CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
+      CometConf.COMET_SHUFFLE_NATIVE_HASH_PARTITIONING_ENABLED.key -> "true") {
+      withTempDir { dir =>
+        withTempView("high_precision_distinct_avg") {
+          Seq((1, "0.6"), (2, "0.6"), (3, "0.2"), (4, "0.3"))
+            .toDF("ord", "raw_v")
+            .selectExpr("ord", "CAST(raw_v AS DECIMAL(38,38)) AS v")
+            .write
+            .mode("overwrite")
+            .parquet(dir.toString)
+          spark.read
+            .parquet(dir.toString)
+            .repartition(2, col("ord"))
+            .createOrReplaceTempView("high_precision_distinct_avg")
+
+          for {
+            shuffleMode <- Seq("native", "auto")
+            adaptiveEnabled <- Seq(false, true)
+            (aggregate, ansiEnabled) <- Seq(("AVG", false), ("AVG", true), ("TRY_AVG", true))
+          } {
+            withSQLConf(
+              CometConf.COMET_SHUFFLE_MODE.key -> shuffleMode,
+              SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptiveEnabled.toString,
+              SQLConf.ANSI_ENABLED.key -> ansiEnabled.toString) {
+              withClue(
+                s"mode=$shuffleMode, aqe=$adaptiveEnabled, ansi=$ansiEnabled, $aggregate: ") {
+                val df = sql(s"SELECT $aggregate(DISTINCT v) FROM high_precision_distinct_avg")
+                // Spark hashes all three distinct values to one partition. Materializing its
+                // partial sum overflows; different decimal hashing can hide that overflow.
+                if (ansiEnabled && aggregate == "AVG") {
+                  checkSparkAnswerMaybeThrows(df) match {
+                    case (Some(sparkExc), Some(cometExc)) =>
+                      assert(sparkExc.getMessage.contains("ARITHMETIC_OVERFLOW"))
+                      assert(cometExc.getMessage.contains("ARITHMETIC_OVERFLOW"))
+                    case _ => fail("Both Spark and Comet must report decimal AVG overflow")
+                  }
+                } else {
+                  checkSparkAnswer(df)
+                  checkAnswer(df, Seq(Row(null)))
+                }
+
+                val nativeDecimalHashShuffles = collect(df.queryExecution.executedPlan) {
+                  case exchange: CometShuffleExchangeExec
+                      if exchange.shuffleType == CometNativeShuffle &&
+                        (exchange.outputPartitioning match {
+                          case HashPartitioning(expressions, _) =>
+                            expressions.exists(_.dataType match {
+                              case d: DecimalType => d.precision > 18
+                              case _ => false
+                            })
+                          case _ => false
+                        }) =>
+                    exchange
+                }
+                assert(nativeDecimalHashShuffles.isEmpty)
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  test("grouped decimal AVG preserves overflow across columnar shuffle") {
+    withSQLConf(
+      SQLConf.SHUFFLE_PARTITIONS.key -> "2",
+      SQLConf.COALESCE_PARTITIONS_ENABLED.key -> "false",
+      CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
+      CometConf.COMET_SHUFFLE_NATIVE_HASH_PARTITIONING_ENABLED.key -> "true") {
+      withTempDir { dir =>
+        withTempView("grouped_decimal_avg") {
+          Seq((1, 0, "0.6"), (1, 0, "0.6"), (2, 2, "0.1"), (2, 2, "0.2"), (3, 4, null))
+            .toDF("k", "part", "raw_v")
+            .selectExpr(
+              "k",
+              "part",
+              "CAST(k AS DECIMAL(38,0)) AS k38",
+              "CAST(raw_v AS DECIMAL(38,38)) AS v")
+            .coalesce(1)
+            .write
+            .mode("overwrite")
+            .parquet(dir.toString)
+          spark.read
+            .parquet(dir.toString)
+            .repartition(2, col("part"))
+            .createOrReplaceTempView("grouped_decimal_avg")
+
+          val validAverage = new java.math.BigDecimal("0.15").setScale(38)
+          val validGroups = Seq(
+            Row(new java.math.BigDecimal("2"), validAverage),
+            Row(new java.math.BigDecimal("3"), null))
+          for {
+            shuffleMode <- Seq("native", "auto")
+            adaptiveEnabled <- Seq(false, true)
+            (aggregate, ansiEnabled) <- Seq(("AVG", false), ("AVG", true), ("TRY_AVG", true))
+          } {
+            withSQLConf(
+              CometConf.COMET_SHUFFLE_MODE.key -> shuffleMode,
+              SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptiveEnabled.toString,
+              SQLConf.ANSI_ENABLED.key -> ansiEnabled.toString) {
+              withClue(
+                s"mode=$shuffleMode, aqe=$adaptiveEnabled, ansi=$ansiEnabled, $aggregate: ") {
+                val df = sql(s"SELECT k38, $aggregate(v) FROM grouped_decimal_avg " +
+                  "GROUP BY k38")
+                // Both 0.6 values reach one partial aggregate. Its overflowed state has a
+                // null count whose payload is zeroed by the columnar shuffle's row conversion.
+                if (ansiEnabled && aggregate == "AVG") {
+                  checkSparkAnswerMaybeThrows(df) match {
+                    case (Some(sparkExc), Some(cometExc)) =>
+                      assert(sparkExc.getMessage.contains("ARITHMETIC_OVERFLOW"))
+                      assert(cometExc.getMessage.contains("ARITHMETIC_OVERFLOW"))
+                    case _ =>
+                      fail("Both Spark and Comet must report grouped decimal AVG overflow")
+                  }
+                } else {
+                  checkSparkAnswer(df)
+                  checkAnswer(df, Row(new java.math.BigDecimal("1"), null) +: validGroups)
+                }
+
+                val plan = df.queryExecution.executedPlan
+                val nativeAggregates = collect(plan) { case agg: CometHashAggregateExec => agg }
+                val nativeAvg = shuffleMode == "auto" && !(ansiEnabled && aggregate == "AVG")
+                assert(nativeAggregates.size == (if (nativeAvg) 2 else 0))
+                if (nativeAvg) {
+                  assert(collect(plan) {
+                    case exchange: CometShuffleExchangeExec
+                        if exchange.shuffleType == CometColumnarShuffle =>
+                      exchange
+                  }.nonEmpty)
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  for (adaptive <- Seq(false, true)) {
+    test(s"grouped decimal AVG LIMIT preserves lazy overflow errors (AQE=$adaptive)") {
+      withSQLConf(
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString,
+        SQLConf.COALESCE_PARTITIONS_ENABLED.key -> "false",
+        SQLConf.SHUFFLE_PARTITIONS.key -> "1",
+        SQLConf.PARQUET_FILTER_PUSHDOWN_ENABLED.key -> "false",
+        SQLConf.ANSI_ENABLED.key -> "true",
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "false",
+        CometConf.COMET_CONVERT_FROM_PARQUET_ENABLED.key -> "true",
+        CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
+        CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
+        withTempDir { dir =>
+          withTempView("grouped_avg_limit") {
+            // One ordered file puts the valid group before an all-null group and an overflow.
+            // Do not order the aggregate result: sorting would consume the overflow group.
+            withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+              spark
+                .range(0, 4, 1, 1)
+                .selectExpr(
+                  "CASE WHEN id = 0 THEN 0 WHEN id = 1 THEN 2 ELSE 1 END AS k",
+                  "CAST(CASE WHEN id = 0 THEN '0.1' WHEN id = 1 THEN NULL " +
+                    "ELSE '0.6' END AS DECIMAL(38,38)) AS v")
+                .write
+                .mode("overwrite")
+                .parquet(dir.toString)
+              val input = spark.read.parquet(dir.toString)
+              input.createOrReplaceTempView("grouped_avg_limit")
+            }
+
+            val query = "SELECT k, AVG(v) AS a FROM grouped_avg_limit GROUP BY k"
+
+            // Return the native modes without executing the query, including stages inside AQE.
+            def nativeModes(df: DataFrame): Set[AggregateMode] =
+              collect(df.queryExecution.executedPlan) { case agg: CometHashAggregateExec =>
+                agg.modes
+              }.flatten.toSet
+
+            val firstGroup = Seq(Row(0, new java.math.BigDecimal("0.1").setScale(38)))
+            withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+              checkAnswer(sql(s"$query LIMIT 1"), firstGroup)
+            }
+            val limited = sql(s"$query LIMIT 1")
+            val initialPlan = stripAQEPlan(limited.queryExecution.executedPlan)
+            checkAnswer(limited, firstGroup)
+            for (plan <- Seq(initialPlan, limited.queryExecution.executedPlan)) {
+              assert(collect(plan) { case agg: CometHashAggregateExec => agg }.isEmpty)
+              val sparkModes = collect(plan) { case agg: BaseAggregateExec =>
+                agg.aggregateExpressions.map(_.mode)
+              }.flatten
+              assert(sparkModes.contains(Partial) && sparkModes.contains(Final))
+            }
+
+            withSQLConf(
+              CometConf.getOperatorAllowIncompatConfigKey(classOf[HashAggregateExec]) -> "true") {
+              // Opting in restores both native stages for a healthy ordered LIMIT, before and
+              // after AQE. Exclude the overflowing group without changing the decimal type.
+              val healthyQuery = "SELECT k, AVG(v) AS a FROM grouped_avg_limit " +
+                "WHERE k <> 1 GROUP BY k ORDER BY k LIMIT 1"
+              val healthy = sql(healthyQuery)
+              assert(nativeModes(healthy) == Set(Partial, Final))
+              checkAnswer(healthy, firstGroup)
+              assert(nativeModes(healthy) == Set(Partial, Final))
+
+              // Opting in allows the native aggregate to evaluate the overflow group that
+              // Spark's LIMIT 1 leaves unread.
+              val overflowing = sql(s"$query LIMIT 1")
+              assert(nativeModes(overflowing) == Set(Partial, Final))
+              val error = intercept[Exception](overflowing.collect())
+              assert(error.getMessage.contains("ARITHMETIC_OVERFLOW"))
+
+              // An opt-in must not let decimal buffers cross engines when either stage is
+              // unavailable. Check both directions, including AQE's isolated stage planning.
+              for (disabled <- Seq(
+                  CometConf.COMET_ENABLE_PARTIAL_HASH_AGGREGATE,
+                  CometConf.COMET_ENABLE_FINAL_HASH_AGGREGATE)) {
+                withSQLConf(disabled.key -> "false") {
+                  val split = sql(healthyQuery)
+                  checkAnswer(split, firstGroup)
+                  assert(nativeModes(split).isEmpty)
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  test("grouped ANSI decimal AVG requires operator opt-in for hash and object aggregates") {
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.ANSI_ENABLED.key -> "true",
+      SQLConf.USE_OBJECT_HASH_AGG.key -> "true",
+      CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
+      CometConf.COMET_SHUFFLE_MODE.key -> "native") {
+      withParquetTable(Seq((0, "0.1"), (1, "0.2")), "grouped_avg_modes") {
+        // Real DISTINCT and object-aggregate plans cover the alternate aggregation paths.
+        for (extra <- Seq("", ", COUNT(DISTINCT _1)", ", collect_list(_1)")) {
+          val query = s"SELECT _1 AS k, AVG(CAST(_2 AS DECIMAL(20,2))) AS a$extra " +
+            "FROM grouped_avg_modes GROUP BY _1"
+          val (_, plan) = checkSparkAnswerAndFallbackReason(
+            query,
+            "Grouped decimal AVG in ANSI mode requires Spark's lazy group evaluation")
+          assert(collect(plan) { case agg: CometHashAggregateExec => agg }.isEmpty)
+        }
+
+        val operators = Seq(
+          "HashAggregateExec" -> "",
+          "ObjectHashAggregateExec" ->
+            ", collect_list(_1)")
+        // Each config applies only to its named Spark operator. Enabling the other operator
+        // must leave fallback intact, while enabling the matching one restores both stages.
+        for ((enabled, _) <- operators) {
+          withSQLConf(operators.map { case (name, _) =>
+            CometConf.getOperatorAllowIncompatConfigKey(name) -> (name == enabled).toString
+          }: _*) {
+            for ((name, extra) <- operators) {
+              val df = sql(
+                s"SELECT _1 AS k, AVG(CAST(_2 AS DECIMAL(20,2))) AS a$extra " +
+                  "FROM grouped_avg_modes GROUP BY _1 ORDER BY k LIMIT 1")
+              checkSparkAnswer(df)
+              val native = collect(df.queryExecution.executedPlan) {
+                case agg: CometHashAggregateExec => agg
+              }
+              assert(native.size == (if (name == enabled) 2 else 0))
+              assert(native.forall(_.originalPlan.getClass.getSimpleName == name))
+            }
+          }
+        }
+      }
+    }
+  }
+
   test("final decimal avg") {
     withSQLConf(
       CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
@@ -1486,13 +2006,13 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
             sql(s"insert into $table values(0.13344406545919155429936259114971302408, 5)")
 
             checkSparkAnswerAndNumOfAggregates(s"SELECT b , AVG(a) FROM $table GROUP BY b", 2)
-            checkSparkAnswerAndNumOfAggregates(s"SELECT AVG(a) FROM $table", 2)
+            checkSparkAnswerAndNumOfAggregates(s"SELECT AVG(a) FROM $table", 0)
             checkSparkAnswerAndNumOfAggregates(
               s"SELECT b, MIN(a), MAX(a), COUNT(a), SUM(a), AVG(a) FROM $table GROUP BY b",
               2)
             checkSparkAnswerAndNumOfAggregates(
               s"SELECT MIN(a), MAX(a), COUNT(a), SUM(a), AVG(a) FROM $table",
-              2)
+              0)
           }
         }
       }
@@ -1543,7 +2063,9 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
             val path = new Path(dir.toURI.toString, "test")
             makeParquetFile(path, 1000, 20, dictionaryEnabled)
             withParquetTable(path.toUri.toString, "tbl") {
+              // Only _7 is rewritten to a mixed-safe Long AVG by Spark's decimal optimizer.
               val expectedNumOfCometAggregates = if (nativeShuffleEnabled) 2 else 1
+              val expectedNumOfDecimalAggregates = if (nativeShuffleEnabled) 2 else 0
 
               checkSparkAnswerAndNumOfAggregates(
                 "SELECT _g2, AVG(_7) FROM tbl GROUP BY _g2",
@@ -1551,11 +2073,12 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
               checkSparkAnswerWithTolerance("SELECT _g3, AVG(_8) FROM tbl GROUP BY _g3")
               assert(getNumCometHashAggregate(
-                sql("SELECT _g3, AVG(_8) FROM tbl GROUP BY _g3")) == expectedNumOfCometAggregates)
+                sql(
+                  "SELECT _g3, AVG(_8) FROM tbl GROUP BY _g3")) == expectedNumOfDecimalAggregates)
 
               checkSparkAnswerAndNumOfAggregates(
                 "SELECT _g4, AVG(_9) FROM tbl GROUP BY _g4",
-                expectedNumOfCometAggregates)
+                expectedNumOfDecimalAggregates)
 
               checkSparkAnswerAndNumOfAggregates(
                 "SELECT AVG(_7) FROM tbl",
@@ -1563,11 +2086,9 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
               checkSparkAnswerWithTolerance("SELECT AVG(_8) FROM tbl")
               assert(getNumCometHashAggregate(
-                sql("SELECT AVG(_8) FROM tbl")) == expectedNumOfCometAggregates)
+                sql("SELECT AVG(_8) FROM tbl")) == expectedNumOfDecimalAggregates)
 
-              checkSparkAnswerAndNumOfAggregates(
-                "SELECT AVG(_9) FROM tbl",
-                expectedNumOfCometAggregates)
+              checkSparkAnswerAndNumOfAggregates("SELECT AVG(_9) FROM tbl", 0)
             }
           }
         }
@@ -2494,19 +3015,15 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       (null.asInstanceOf[java.math.BigDecimal], 1),
       (new java.math.BigDecimal("30.00"), 2))
 
-    Seq(true, false).foreach { ansiEnabled =>
-      withSQLConf(SQLConf.ANSI_ENABLED.key -> ansiEnabled.toString) {
-        withParquetTable(nonNullableData, "tbl") {
-          val sumRes = sql("SELECT _2, sum(_1) FROM tbl GROUP BY _2")
-          checkSparkAnswerAndOperator(sumRes)
-          assert(sumRes.schema.fields(1).nullable == true)
-
-          val avgRes = sql("SELECT _2, avg(_1) FROM tbl GROUP BY _2")
-          checkSparkAnswerAndOperator(avgRes)
-          assert(avgRes.schema.fields(1).nullable == true)
-        }
-
-        withParquetTable(nullableData, "tbl") {
+    for {
+      ansiEnabled <- Seq(true, false)
+      data <- Seq(nonNullableData, nullableData)
+    } {
+      // Exercise native nullability in ANSI mode too; default AVG fallback is tested above.
+      withSQLConf(
+        SQLConf.ANSI_ENABLED.key -> ansiEnabled.toString,
+        CometConf.getOperatorAllowIncompatConfigKey(classOf[HashAggregateExec]) -> "true") {
+        withParquetTable(data, "tbl") {
           val sumRes = sql("SELECT _2, sum(_1) FROM tbl GROUP BY _2")
           checkSparkAnswerAndOperator(sumRes)
           assert(sumRes.schema.fields(1).nullable == true)
