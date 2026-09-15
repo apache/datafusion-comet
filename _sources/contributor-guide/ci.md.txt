@@ -40,6 +40,8 @@ Which jobs run also depends on the event:
 | Iceberg Spark SQL tests, Iceberg 1.11             | yes          | yes         |
 | macOS build and Comet test suites                 | with label   | yes         |
 | Benchmark compile and lint check                  | with label   | yes         |
+| Delta contrib build gate                          | with label   | yes         |
+| PyArrow UDF tests, Spark 4.0 / 4.1 / 4.2          | with label   | yes         |
 | Spark SQL tests, Spark 3.5 / 4.0                  | with label   | yes         |
 | Iceberg Spark SQL tests, Iceberg 1.8 / 1.9 / 1.10 | with label   | yes         |
 | Spark SQL tests, Spark 3.4                        | with label   | no          |
@@ -86,6 +88,8 @@ Each suite outside the PR tier has a label that runs it on a pull request:
 | -------------------------- | ---------------------------------------------------- |
 | `run-macos-tests`          | macOS build and Comet test suites                    |
 | `run-benchmark-check`      | Benchmark compile and lint check                     |
+| `run-delta-build-gate`     | Delta contrib build gate                             |
+| `run-pyarrow-udf-tests`    | PyArrow UDF tests against Spark 4.0/4.1/4.2          |
 | `run-spark-4.1-hive-tests` | Spark SQL hive tests against Spark 4.1               |
 | `run-spark-3.4-tests`      | Spark SQL tests against Spark 3.4                    |
 | `run-spark-3.5-tests`      | Spark SQL tests against Spark 3.5                    |
