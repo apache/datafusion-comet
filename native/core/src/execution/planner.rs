@@ -32,7 +32,7 @@ mod delta_scan;
 #[cfg(feature = "contrib-lance")]
 mod lance_scan;
 
-use crate::execution::operators::init_csv_datasource_exec;
+use crate::execution::operators::{init_csv_datasource_exec, CollectMetricsExec};
 use crate::execution::operators::AlignedArrowStreamReader;
 use crate::execution::operators::DynamicFilterJoinExec;
 use crate::execution::operators::IcebergScanExec;
@@ -2605,6 +2605,48 @@ impl PhysicalPlanner {
                         vec![],
                     )),
                 ))
+            }
+            OpStruct::CollectMetrics(metrics) => {
+                assert_eq!(children.len(), 1);
+                let (mut scans, mut shuffle_scans, child) =
+                    self.create_plan(&children[0], inputs, partition_count)?;
+
+                let input_schema = child.schema();
+
+                let agg_exprs = metrics
+                    .agg_exprs
+                    .iter()
+                    .map(|agg_proto| self.create_agg_expr(agg_proto, input_schema.clone()))
+                    .collect::<Result<Vec<_>, _>>()?;
+
+                let agg_fields = agg_exprs
+                    .iter()
+                    .enumerate()
+                    .map(|(i, agg)| {
+                        Field::new(
+                            format!("agg_{i}"),
+                            agg.field().data_type().clone(),
+                            agg.field().is_nullable(),
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                let agg_schema = Arc::new(Schema::new(agg_fields));
+
+                let metric_exprs = metrics
+                    .metric_exprs
+                    .iter()
+                    .map(|expr_proto| self.create_expr(expr_proto, agg_schema.clone()))
+                    .collect::<Result<Vec<_>, _>>()?;
+
+                let collect_metrics_exec: Arc<dyn ExecutionPlan> = Arc::new(CollectMetricsExec::new(
+                    metrics.metric_name.clone(),
+                    agg_exprs,
+                    metric_exprs,
+                    Arc::clone(&child.native_plan),
+                ));
+
+                Ok((scans, shuffle_scans, Arc::new(SparkPlan::new(spark_plan.plan_id, collect_metrics_exec, vec![child]))))
+
             }
             _ => Err(GeneralError(format!(
                 "Unsupported or unregistered operator type: {:?}",

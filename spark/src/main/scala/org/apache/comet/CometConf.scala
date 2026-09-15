@@ -257,6 +257,8 @@ object CometConf extends ShimCometConf {
     createExecEnabledConfig("localTableScan", defaultValue = false)
   val COMET_EXEC_SAMPLE_ENABLED: ConfigEntry[Boolean] =
     createExecEnabledConfig("sample", defaultValue = true)
+  val COMET_EXEC_COLLECT_METRICS_ENABLED: ConfigEntry[Boolean] =
+    createExecEnabledConfig("collectMetrics", defaultValue = true)
 
   val COMET_EXEC_IN_MEMORY_CACHE_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.exec.inMemoryCache.enabled")

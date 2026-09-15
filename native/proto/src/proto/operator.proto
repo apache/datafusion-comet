@@ -68,6 +68,7 @@ message Operator {
     Sample sample = 118;
     WindowGroupLimit window_group_limit = 119;
     IcebergWrite iceberg_write = 120;
+    CollectMetrics collect_metrics = 121;
     // Extension point for optional, out-of-tree contrib scans (Delta, Lance, ...). The concrete
     // scan message (e.g. `DeltaScan`) is packed into this envelope on the JVM side and dispatched
     // by `type_url` on the native side. Using a single permanent field -- rather than a new oneof
@@ -1058,4 +1059,10 @@ enum RankLikeFunction {
   RowNumber = 0;
   Rank = 1;
   DenseRank = 2;
+}
+
+message CollectMetrics {
+  string metric_name = 1;
+  repeated spark.spark_expression.AggExpr agg_exprs = 2;
+  repeated spark.spark_expression.Expr metric_exprs = 3;
 }
