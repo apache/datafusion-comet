@@ -43,6 +43,7 @@ import org.apache.spark.sql.comet.CometPlanChecker
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometNativeShuffle, CometShuffleExchangeExec}
 import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
+import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
 import org.apache.spark.sql.internal._
 import org.apache.spark.sql.test._
 import org.apache.spark.sql.types.{DecimalType, StructType}
@@ -66,6 +67,14 @@ abstract class CometTestBase
 
   protected val shuffleManager: String =
     "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager"
+
+  protected def assertExchangeReuseOver[T](plan: SparkPlan, clue: String)(
+      pf: PartialFunction[SparkPlan, T]): Unit = {
+    val reused = collect(plan) {
+      case exchange: ReusedExchangeExec if collect(exchange.child)(pf).nonEmpty => exchange
+    }
+    assert(reused.nonEmpty, s"$clue:\n$plan")
+  }
 
   protected def sparkConf: SparkConf = {
     val conf = new SparkConf()
