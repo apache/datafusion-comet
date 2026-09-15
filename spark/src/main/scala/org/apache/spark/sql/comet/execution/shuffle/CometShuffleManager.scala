@@ -21,6 +21,7 @@ package org.apache.spark.sql.comet.execution.shuffle
 
 import java.util.concurrent.ConcurrentHashMap
 
+import scala.annotation.nowarn
 import scala.jdk.CollectionConverters._
 
 import org.apache.spark.ShuffleDependency
@@ -164,6 +165,7 @@ class CometShuffleManager(conf: SparkConf) extends ShuffleManager with Logging {
     }
   }
 
+  @nowarn("msg=references private")
   override def getReader[K, C](
       handle: ShuffleHandle,
       startMapIndex: Int,
@@ -216,6 +218,7 @@ class CometShuffleManager(conf: SparkConf) extends ShuffleManager with Logging {
   }
 
   /** Get a writer for a given partition. Called on executors by map tasks. */
+  @nowarn("msg=references private")
   override def getWriter[K, V](
       handle: ShuffleHandle,
       mapId: Long,

@@ -71,7 +71,7 @@ object CometRegExpBenchmark extends CometBenchmarkBase {
           patterns.foreach { p =>
             val query = s"select c1 rlike '${p.pattern}' from parquetV1Table"
             runBenchmark(p.name) {
-              runRLikeModes(p.name, v, query)
+              runRLikeModes(p.name, v.toLong, query)
             }
           }
         }

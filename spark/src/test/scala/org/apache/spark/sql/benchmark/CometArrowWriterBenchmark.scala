@@ -97,7 +97,10 @@ object CometArrowWriterBenchmark extends BenchmarkBase {
         val root = VectorSchemaRoot.create(arrowSchema, allocator)
         try {
           val benchmark =
-            new Benchmark(s"Spark columnar to Arrow ($numRows rows)", numRows, output = output)
+            new Benchmark(
+              s"Spark columnar to Arrow ($numRows rows)",
+              numRows.toLong,
+              output = output)
           benchmark.addCase("on-heap optimized path") { _ =>
             writeBatch(onHeap, bulkCopy = true, root)
           }
@@ -133,7 +136,7 @@ object CometArrowWriterBenchmark extends BenchmarkBase {
         arrowSchema,
         Iterator.from(0).map(i => if ((i & 1) == 0) nullRow else row),
         numRows)
-      val rowBenchmark = new Benchmark("Spark rows to Arrow", numRows, output = output)
+      val rowBenchmark = new Benchmark("Spark rows to Arrow", numRows.toLong, output = output)
       try {
         rowBenchmark.addCase("fixed-width, no nulls") { _ => noNullRowReader.loadNextBatch() }
         rowBenchmark.addCase("fixed-width, 50% nulls") { _ => nullableRowReader.loadNextBatch() }

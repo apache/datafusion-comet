@@ -911,7 +911,7 @@ case class CometExecRule(session: SparkSession)
       .flatten
       .toSet
     if (reasons.nonEmpty) {
-      withFallbackReasons(op, reasons)
+      val _ = withFallbackReasons(op, reasons)
     }
   }
 
@@ -943,7 +943,7 @@ case class CometExecRule(session: SparkSession)
             "operator or any of its expressions. Add a withFallbackReason call stating why " +
             s"conversion failed. Operator:\n$op")
       }
-      withFallbackReason(op, s"${op.nodeName} is not supported")
+      val _ = withFallbackReason(op, s"${op.nodeName} is not supported")
     }
   }
 
@@ -972,7 +972,8 @@ case class CometExecRule(session: SparkSession)
       CometExplainInfo.collectExprTagValues(allExprs, CometExplainInfo.CODEGEN_DISPATCH_EXPRS)
     appendTagValues(exec, CometExplainInfo.CODEGEN_DISPATCH_EXPRS, routedNames)
     if (routedNames.nonEmpty && CometConf.COMET_EXPLAIN_CODEGEN_ENABLED.get()) {
-      withInfo(exec, s"JVM codegen dispatcher: ${routedNames.toSeq.sorted.mkString(", ")}")
+      val _ =
+        withInfo(exec, s"JVM codegen dispatcher: ${routedNames.toSeq.sorted.mkString(", ")}")
     }
   }
 

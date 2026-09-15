@@ -308,11 +308,11 @@ class CometTaskMetricsSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
       def insert(value: Int): Unit = {
         val bytes = new Array[Byte](4 + 16)
-        Platform.putInt(bytes, Platform.BYTE_ARRAY_OFFSET, value)
+        Platform.putInt(bytes, Platform.BYTE_ARRAY_OFFSET.toLong, value)
         val row = new UnsafeRow(1)
-        row.pointTo(bytes, Platform.BYTE_ARRAY_OFFSET + 4, 16)
+        row.pointTo(bytes, (Platform.BYTE_ARRAY_OFFSET + 4).toLong, 16)
         row.setInt(0, value)
-        sorter.insertRecord(bytes, Platform.BYTE_ARRAY_OFFSET, bytes.length, value % 2)
+        sorter.insertRecord(bytes, Platform.BYTE_ARRAY_OFFSET.toLong, bytes.length, value % 2)
       }
 
       try {

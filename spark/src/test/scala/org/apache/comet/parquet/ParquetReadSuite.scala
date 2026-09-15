@@ -736,8 +736,8 @@ abstract class ParquetReadSuite extends CometTestBase {
         opt match {
           case Some(i) =>
             record.add(0, i % 2 == 0)
-            record.add(1, i.toByte)
-            record.add(2, i.toShort)
+            record.add(1, i.toByte.toInt)
+            record.add(2, i.toShort.toInt)
             record.add(3, i)
             record.add(4, i.toLong)
             record.add(5, i.toFloat)
@@ -1153,7 +1153,7 @@ abstract class ParquetReadSuite extends CometTestBase {
         var b = record.addGroup("b")
         b.add("b1", 1)
         b.add("b2", 1)
-        var c = record.addGroup("c")
+        val c = record.addGroup("c")
         c.add("c1", 1)
         c.add("c2", 1)
         writer.write(record)
@@ -1223,7 +1223,7 @@ abstract class ParquetReadSuite extends CometTestBase {
         var b = record.addGroup("b")
         b.add("b1", 1)
         b.add("b2", 1)
-        var c = record.addGroup("c")
+        val c = record.addGroup("c")
         c.add("c1", 1)
         c.add("c2", 1)
         writer.write(record)
@@ -1900,7 +1900,7 @@ abstract class ParquetReadSuite extends CometTestBase {
   }
 
   private def withId(id: Int) =
-    new MetadataBuilder().putLong(ParquetUtils.FIELD_ID_METADATA_KEY, id).build()
+    new MetadataBuilder().putLong(ParquetUtils.FIELD_ID_METADATA_KEY, id.toLong).build()
 
   // Based on Spark ParquetIOSuite.test("vectorized reader: array of nested struct")
   test("array of nested struct with and without field id") {

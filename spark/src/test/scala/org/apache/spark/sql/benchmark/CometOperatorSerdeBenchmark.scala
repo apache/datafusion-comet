@@ -219,7 +219,7 @@ object CometOperatorSerdeBenchmark extends CometBenchmarkBase {
             val iterations = 100
             val benchmark = new Benchmark(
               s"IcebergScan serde ($numPartitions partitions, ${tasks.size()} tasks)",
-              iterations,
+              iterations.toLong,
               output = output)
 
             // Benchmark: Convert FileScanTasks to protobuf (the convert() method)
@@ -342,7 +342,7 @@ object CometOperatorSerdeBenchmark extends CometBenchmarkBase {
 
         val benchmark = new Benchmark(
           s"CometScanRule apply ($numPartitions partitions)",
-          iterations,
+          iterations.toLong,
           output = output)
 
         benchmark.addCase("CometScanRule.apply(sparkPlan)") { _ =>
