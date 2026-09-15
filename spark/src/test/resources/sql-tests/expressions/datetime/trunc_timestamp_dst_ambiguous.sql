@@ -15,36 +15,49 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- Regression test for ambiguous local times during DST fall-back.
--- On 2024-11-03 at 2:00 AM America/Los_Angeles, clocks fall back to 1:00 AM,
--- so 1:30 AM occurs twice (once in PDT, once in PST). Truncating 01:30 to HOUR
--- gives 01:00, which is ambiguous. chrono's DateTime::with_minute(0) returns
--- None for ambiguous results, causing a panic in as_micros_from_unix_epoch_utc.
+-- Differential coverage for scalar date_trunc around DST overlaps and gaps.
+-- Explicit UTC offsets include both occurrences of the repeated US fall-back hour. The 2018
+-- Sao Paulo values exercise its historic midnight spring-forward gap: truncating a valid 01:30
+-- local timestamp to DAY targets the nonexistent local midnight.
 
 -- Config: spark.comet.expression.TruncTimestamp.allowIncompatible=true
--- Config: spark.sql.session.timeZone=America/Los_Angeles
+-- ConfigMatrix: spark.sql.session.timeZone=America/Los_Angeles,America/New_York,America/Sao_Paulo
 
 statement
 CREATE TABLE test_trunc_ambiguous(ts timestamp) USING parquet
 
 statement
 INSERT INTO test_trunc_ambiguous VALUES
-  (timestamp('2024-11-03 01:30:00'))
+  (timestamp('2018-11-04T01:30:15.123456Z')),
+  (timestamp('2018-11-04T02:30:15.123456Z')),
+  (timestamp('2018-11-04T03:30:15.123456Z')),
+  (timestamp('2018-11-04T04:30:15.123456Z')),
+  (timestamp('2024-03-10T06:30:15.123456Z')),
+  (timestamp('2024-03-10T07:30:15.123456Z')),
+  (timestamp('2024-03-10T08:30:15.123456Z')),
+  (timestamp('2024-03-10T09:30:15.123456Z')),
+  (timestamp('2024-03-10T10:30:15.123456Z')),
+  (timestamp('2024-03-10T11:30:15.123456Z')),
+  (timestamp('2024-11-03T05:30:15.123456Z')),
+  (timestamp('2024-11-03T06:30:15.123456Z')),
+  (timestamp('2024-11-03T07:30:15.123456Z')),
+  (timestamp('2024-11-03T08:30:15.123456Z')),
+  (timestamp('2024-11-03T09:30:15.123456Z')),
+  (timestamp('2024-11-03T10:30:15.123456Z')),
+  (NULL)
 
-query ignore(native panic: chrono returns None for ambiguous local time during DST fall-back)
-SELECT ts, date_trunc('DAY', ts) FROM test_trunc_ambiguous ORDER BY ts
-
-query ignore(native panic: chrono returns None for ambiguous local time during DST fall-back)
-SELECT ts, date_trunc('HOUR', ts) FROM test_trunc_ambiguous ORDER BY ts
-
-query ignore(native panic: chrono returns None for ambiguous local time during DST fall-back)
-SELECT ts, date_trunc('WEEK', ts) FROM test_trunc_ambiguous ORDER BY ts
-
-query ignore(native panic: chrono returns None for ambiguous local time during DST fall-back)
-SELECT ts, date_trunc('MONTH', ts) FROM test_trunc_ambiguous ORDER BY ts
-
-query ignore(native panic: chrono returns None for ambiguous local time during DST fall-back)
-SELECT ts, date_trunc('QUARTER', ts) FROM test_trunc_ambiguous ORDER BY ts
-
-query ignore(native panic: chrono returns None for ambiguous local time during DST fall-back)
-SELECT ts, date_trunc('YEAR', ts) FROM test_trunc_ambiguous ORDER BY ts
+query
+SELECT
+  ts,
+  date_trunc('YEAR', ts),
+  date_trunc('QUARTER', ts),
+  date_trunc('MONTH', ts),
+  date_trunc('WEEK', ts),
+  date_trunc('DAY', ts),
+  date_trunc('HOUR', ts),
+  date_trunc('MINUTE', ts),
+  date_trunc('SECOND', ts),
+  date_trunc('MILLISECOND', ts),
+  date_trunc('MICROSECOND', ts)
+FROM test_trunc_ambiguous
+ORDER BY ts

@@ -2100,6 +2100,7 @@ dependencies = [
  "datafusion",
  "datafusion-comet-common",
  "datafusion-comet-jni-bridge",
+ "datafusion-functions",
  "datafusion-spark",
  "futures",
  "jni 0.22.4",
