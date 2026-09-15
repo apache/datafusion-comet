@@ -217,11 +217,12 @@ re-armed automatically.
 
 ## Nightly runs
 
-`ci.yml` also runs on a schedule, at 06:00 UTC every day, against `main` as it stands. That run
-executes only the nightly tier: the Comet test suites against the Spark profiles other than 4.1,
-the Spark SQL suites for Spark 3.5 and 4.0, and the Iceberg suites for 1.8, 1.9 and 1.10. The
-queue already ran everything else against the same tree, so nothing in the queue tier is repeated.
-The run skips itself when nothing has landed on `main` since the previous night.
+`ci.yml` also runs on a schedule, at 06:00 UTC every day, against what landed on `main` since the
+previous run. That run executes only the nightly tier: the Comet test suites against the Spark
+profiles other than 4.1, the Spark SQL suites for Spark 3.5 and 4.0, and the Iceberg suites for
+1.8, 1.9 and 1.10, each only when the day's changes touched files it covers. The queue already ran
+everything else against the same tree, so nothing in the queue tier is repeated. A day with no
+merges, or with only documentation changes, runs nothing.
 
 A red nightly has no pull request to show up on, so the run opens an issue labelled
 `ci-nightly-failure` that links the run and lists the jobs that failed. If one of those issues is

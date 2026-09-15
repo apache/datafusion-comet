@@ -61,12 +61,7 @@ def select(profiles):
     """Return the matrix rows for a --profiles value, or raise ValueError."""
     if profiles not in SELECTORS:
         raise ValueError(f"--profiles must be one of {', '.join(SELECTORS)}, got {profiles!r}")
-    if profiles == "all":
-        rows = PROFILES
-    elif profiles == "pr":
-        rows = [row for row in PROFILES if row["tier"] == "pr"]
-    else:
-        rows = [row for row in PROFILES if row["tier"] == "nightly"]
+    rows = [row for row in PROFILES if profiles == "all" or row["tier"] == profiles]
     return [{key: value for key, value in row.items() if key != "tier"} for row in rows]
 
 

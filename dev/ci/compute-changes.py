@@ -407,16 +407,14 @@ FILTERS["build_linux_all_profiles"] = FILTERS["build_linux"]
 #
 # The merge queue is the authoritative gate: it tests the merge result rather
 # than the PR head, and every "queue" job has to pass before a change lands.
-# "nightly" is for the suites whose job is to catch a regression on a Spark or
-# Iceberg version other than the default one. Those ran in the queue until
-# mid-September 2026, when Spark 3.5, Spark 4.0 and Iceberg 1.8/1.9/1.10 were
-# about 870 of the 1,900 runner-minutes a queue run cost, and the old Iceberg
-# versions were the most common reason a queue run went red on a tree that was
-# fine (issue #5870). A regression they catch is real but rare, and a day's
-# delay in seeing it costs less than paying for the suites on every merge. The
-# scheduled run tests main as it stands, so it skips itself when nothing has
-# landed since the previous one, and a failure opens a `ci-nightly-failure`
-# issue (see the `nightly_report` job in ci.yml).
+# "nightly" is for the suites that catch a regression on a Spark or Iceberg
+# version other than the default one: about 870 of the 1,900 runner-minutes a
+# queue run cost in September 2026, and the most common reason a queue run
+# went red on a good tree (issue #5870). A regression there is real but rare,
+# and a day's delay in seeing it costs less than running the suites on every
+# merge. The scheduled run diffs main against the previous tick and routes
+# through FILTERS like any other event. A job is "queue" or "nightly", never
+# both; check-ci-config.py enforces that.
 #
 # "push" is reserved for work that can only happen once a commit is on main.
 # Adding "push" back to a test job would make every merge run it twice, once
@@ -606,21 +604,11 @@ def matches(patterns, files):
 
 if __name__ == "__main__":
     event = event_from_env()
-    # workflow_dispatch and schedule have no meaningful base to diff against,
-    # so the caller passes an empty list and every path filter is treated as
-    # matched. A dispatch runs everything; the nightly still goes through
-    # POLICY, so only the "nightly" tier runs. The caller also skips the
-    # nightly outright when nothing has landed since the previous one.
+    # workflow_dispatch has no meaningful base to diff against, so the caller
+    # passes an empty list and every path filter is treated as matched.
     if event["name"] == "workflow_dispatch":
         for name in FILTERS:
             print(f"{name}=true")
-        sys.exit(0)
-    if event["name"] == "schedule":
-        # NIGHTLY_STALE is set by ci.yml when nothing has landed on main since
-        # the previous nightly; the whole tier is then skipped.
-        stale = os.environ.get("NIGHTLY_STALE", "") == "true"
-        for name in FILTERS:
-            print(f"{name}={'true' if not stale and event_allows(name, event) else 'false'}")
         sys.exit(0)
     files_path = Path(sys.argv[1])
     files = [line.strip() for line in files_path.read_text().splitlines() if line.strip()]

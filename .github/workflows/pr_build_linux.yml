@@ -41,11 +41,18 @@ name: PR Build (Linux)
 # `run-all-spark-profiles` runs `all`. See the `build_linux_all_profiles`
 # comment in dev/ci/compute-changes.py.
 #
-# Keeping both modes in this file is deliberate. The cache keys are the whole
-# point of the push tier, and a separate cache-warming workflow would have to
-# repeat every one of them; here they cannot drift apart. dev/ci/check-ci-config.py
-# pins which jobs survive `cache-refresh-only`, so a job added without the guard
-# cannot quietly put the full pipeline back on the push tier.
+# `nightly` is also a third mode. Whenever ci.yml passes it, the default
+# profile's pipeline has already run at this commit (in the queue and the push
+# run for the scheduled event, in the PR tier for a label run), so only `lint`,
+# `build-native` and the `linux-test` matrix run; every other job carries
+# `if: ${{ inputs.profiles != 'nightly' }}`.
+#
+# Keeping all three modes in this file is deliberate. The cache keys are the
+# whole point of the push tier, and a separate cache-warming workflow would
+# have to repeat every one of them; here they cannot drift apart.
+# dev/ci/check-ci-config.py pins which jobs survive `cache-refresh-only` and
+# which run under `profiles: nightly`, so a job added without either guard
+# cannot quietly put the full pipeline back on those tiers.
 on:
   workflow_call:
     inputs:
@@ -108,7 +115,7 @@ jobs:
   # set, including the semantic rules, still runs in lint-java.
   scalafix-syntactic:
     name: Lint Scala (syntactic)
-    if: ${{ !inputs.cache-refresh-only }}
+    if: ${{ !inputs.cache-refresh-only && inputs.profiles != 'nightly' }}
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
@@ -149,7 +156,7 @@ jobs:
   lint-java:
     needs: lint
     name: Lint Java (${{ matrix.profile.name }})
-    if: ${{ !inputs.cache-refresh-only }}
+    if: ${{ !inputs.cache-refresh-only && inputs.profiles != 'nightly' }}
     runs-on: ubuntu-24.04
     container:
       image: amd64/rust
@@ -229,7 +236,7 @@ jobs:
   build-spark-4-1:
     needs: lint
     name: Build Spark 4.1, JDK 17
-    if: ${{ !inputs.cache-refresh-only }}
+    if: ${{ !inputs.cache-refresh-only && inputs.profiles != 'nightly' }}
     runs-on: ubuntu-24.04
     container:
       image: amd64/rust
@@ -261,7 +268,7 @@ jobs:
   celeborn-reflection-compatibility:
     needs: lint
     name: Celeborn ${{ matrix.celeborn_version }} reflection compatibility
-    if: ${{ !inputs.cache-refresh-only }}
+    if: ${{ !inputs.cache-refresh-only && inputs.profiles != 'nightly' }}
     runs-on: ubuntu-24.04
     container:
       image: amd64/rust
@@ -351,7 +358,9 @@ jobs:
 
       - name: Save Cargo cache
         uses: actions/cache/save@v6
-        if: github.ref == 'refs/heads/main'
+        # The push run is the cache warmer (see the header); a scheduled run
+        # at the same sha would only re-archive an entry that already exists.
+        if: github.event_name == 'push'
         with:
           path: |
             ~/.cargo/registry
@@ -368,6 +377,7 @@ jobs:
   linux-test-rust:
     needs: lint
     name: ubuntu-latest/rust-test
+    if: ${{ inputs.profiles != 'nightly' }}
     runs-on: ubuntu-24.04
     container:
       image: amd64/rust
@@ -397,7 +407,9 @@ jobs:
 
       - name: Save Cargo cache
         uses: actions/cache/save@v6
-        if: github.ref == 'refs/heads/main'
+        # The push run is the cache warmer (see the header); a scheduled run
+        # at the same sha would only re-archive an entry that already exists.
+        if: github.event_name == 'push'
         with:
           path: |
             ~/.cargo/registry
@@ -415,9 +427,8 @@ jobs:
         # The Spark profiles live in dev/ci/linux-test-profiles.py and are
         # selected by the `profiles` input: the default build profile on a
         # pull request and in the merge queue, the other four in the nightly
-        # run. The goal of the full list
-        # is coverage of every Java, Scala and Spark version without testing
-        # every combination.
+        # run. The goal of the full list is coverage of every Java, Scala and
+        # Spark version without testing every combination.
         profile: ${{ fromJSON(needs.lint.outputs.profile-matrix) }}
         # Suites are grouped by functional area into balanced buckets so that no test
         # job runs much longer than ~23 min. See
@@ -613,6 +624,7 @@ jobs:
   verify-benchmark-results-tpch:
     needs: build-native
     name: Verify TPC-H Results
+    if: ${{ inputs.profiles != 'nightly' }}
     runs-on: ubuntu-24.04
     container:
       image: amd64/rust
@@ -677,6 +689,7 @@ jobs:
   verify-benchmark-results-tpcds:
     needs: build-native
     name: Verify TPC-DS Results
+    if: ${{ inputs.profiles != 'nightly' }}
     runs-on: ubuntu-24.04
     container:
       image: amd64/rust

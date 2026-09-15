@@ -212,13 +212,19 @@ makes the escape hatch look like it silently does nothing.
 ### Nightly tier
 
 `ci.yml` also fires on a `schedule` (06:00 UTC daily). On that event `changes`
-has nothing to diff, so every path filter counts as matched and `POLICY`
-selects the `nightly` tier alone: the queue already ran every `queue` job
-against the tree that is now `main`, so repeating them would be paying twice.
-The run skips itself when `HEAD` is older than the schedule interval (plus 30
-minutes of slack for scheduling jitter), so a quiet weekend does not re-test
-the same tree three times. If a nightly fails for an infrastructure reason and
-nothing lands the next day, dispatch `ci.yml` by hand.
+diffs `main` against its tip as of the previous tick (24 hours back, plus 30
+minutes of slack for scheduling jitter), so the nightly is routed by the same
+`FILTERS` as every other event and `POLICY` selects the `nightly` tier alone:
+the queue already ran every `queue` job against the tree that is now `main`.
+A quiet day diffs to nothing and runs nothing; a docs-only day runs nothing
+either. If a nightly fails for an infrastructure reason and nothing lands the
+next day, dispatch `ci.yml` by hand.
+
+With `profiles: nightly`, `pr_build_linux.yml` runs only `lint`, `build-native`
+and the `linux-test` matrix; the lints, Rust tests, Spark build and TPC runs
+carry `if: ${{ inputs.profiles != 'nightly' }}` because the queue and the push
+run already produced those verdicts at the same commit. `check-ci-config.py`
+pins that the same way it pins the cache-refresh guard.
 
 A red nightly has no pull request to appear on, and GitHub only emails a
 scheduled run's failure to whoever last touched the workflow file, so
@@ -228,11 +234,6 @@ the jobs that failed. If one is already open it comments there instead, so
 consecutive red nights accumulate in one issue. Closing the issue is how the
 failure is acknowledged; the next red night opens a new one. The label has to
 exist in repository settings, like the `run-*` labels above.
-
-The nightly run is keyed on the same sha as the push-to-main run of the commit
-at the tip of `main`, so the concurrency group gives it its own `nightly`
-subgroup; otherwise a merge landing just before the schedule fired would have
-its cache refresh cancelled.
 
 ## Standalone workflows (not under the umbrella)
 

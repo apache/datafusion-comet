@@ -150,28 +150,20 @@ ROUTING_CASES = [
 # The PR tier is the Linux build and nothing else. Every Spark SQL and Iceberg
 # suite waits for the queue or the nightly run, or for its label.
 PR_TIER = {"build_linux", "build_linux_full"}
-SPARK_OPT_IN = {"spark_3_5", "spark_4_0", "spark_4_1", "spark_4_1_hive"}
-# Spark 3.4 is deprecated and sits outside the queue and nightly tiers
-# entirely: a label on a pull request, or a workflow_dispatch, and nothing
-# else. Keeping it in its own set is what makes the `merge_group` and
-# `schedule` cases below assert its absence rather than quietly accept it
-# coming back.
-SPARK_DEPRECATED = {"spark_3_4"}
-ICEBERG_OPT_IN = {"iceberg_1_8", "iceberg_1_9", "iceberg_1_10", "iceberg_1_11"}
-# `build_linux_all_profiles` is the linux-test matrix's non-default Spark
-# profiles: part of the Linux build's call, not a job of its own.
-BUILD_OPT_IN = {
+# The queue adds one Spark version (4.1, the default profile) and one Iceberg
+# version (1.11, the only Spark 4.1 coverage), plus the build-level gates.
+QUEUE_TIER = PR_TIER | {
+    "spark_4_1",
+    "spark_4_1_hive",
+    "iceberg_1_11",
     "build_macos",
     "benchmark",
-    "build_linux_all_profiles",
     "delta_gate",
     "pyarrow_udf",
 }
-# The queue runs one Spark version (4.1, the default profile) and one Iceberg
-# version (1.11, the only Spark 4.1 coverage). Every other Spark and Iceberg
-# version, and the linux-test matrix's other Spark profiles, run once a night
-# against main instead. Spelled out as the set of jobs the queue must *not*
-# run, so a suite drifting back into the queue fails the `merge_group` case.
+# Every other Spark and Iceberg version, and the linux-test matrix's other
+# Spark profiles (`build_linux_all_profiles`, part of the Linux build's call
+# rather than a job of its own), run once a night against main instead.
 NIGHTLY_TIER = {
     "spark_3_5",
     "spark_4_0",
@@ -180,8 +172,17 @@ NIGHTLY_TIER = {
     "iceberg_1_10",
     "build_linux_all_profiles",
 }
-QUEUE_TIER = (PR_TIER | SPARK_OPT_IN | ICEBERG_OPT_IN | BUILD_OPT_IN) - NIGHTLY_TIER
+# Spark 3.4 is deprecated and sits outside the queue and nightly tiers
+# entirely: a label on a pull request, or a workflow_dispatch, and nothing
+# else. Keeping it in its own set is what makes the `merge_group` and
+# `schedule` cases below assert its absence rather than quietly accept it
+# coming back.
+SPARK_DEPRECATED = {"spark_3_4"}
+# One label opts a pull request into every Iceberg version, whichever tier
+# each sits in.
+ICEBERG_OPT_IN = {"iceberg_1_8", "iceberg_1_9", "iceberg_1_10", "iceberg_1_11"}
 ALL_JOBS = QUEUE_TIER | NIGHTLY_TIER | SPARK_DEPRECATED | {"docs"}
+assert not QUEUE_TIER & NIGHTLY_TIER, "a job is queue or nightly, never both"
 
 POLICY_CASES = [
     # A manual run may exercise anything.
@@ -400,6 +401,33 @@ CACHE_REFRESH_JOBS = {
 # indented further, and those are expected rather than a reason to exempt the
 # whole job.
 CACHE_REFRESH_GUARD = re.compile(r"^    if:.*!\s*inputs\.cache-refresh-only")
+# The same file's third mode: with `profiles: nightly` only the jobs the
+# linux-test matrix needs run. See check_nightly_scope.
+NIGHTLY_JOBS = {
+    "lint": "publishes the profile matrix that linux-test reads",
+    "build-native": "builds the native library the matrix loads",
+    "linux-test": "the matrix itself",
+}
+NIGHTLY_GUARD = re.compile(r"^    if:.*inputs\.profiles\s*!=\s*'nightly'")
+
+
+def guarded_jobs(path, guard):
+    """Return (job ids in `path`, the subset whose job-level `if:` matches `guard`)."""
+    jobs, guarded, job, in_jobs = [], set(), None, False
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if line.startswith("jobs:"):
+            in_jobs = True
+            continue
+        if not in_jobs or line.lstrip().startswith("#"):
+            continue
+        match = JOB_KEY.match(line)
+        if match:
+            job = match.group(1)
+            jobs.append(job)
+            continue
+        if job and guard.match(line):
+            guarded.add(job)
+    return jobs, guarded
 CACHE_REFRESH_INPUT = re.compile(r"^\s+cache-refresh-only:\s*\$\{\{")
 # `profiles:` is passed as a folded scalar (`>-`) whose expression sits on the
 # next line, so match the key alone.
@@ -446,8 +474,8 @@ def check_linux_test_profiles():
 
     ci.yml maps `build_linux_full` and `build_linux_all_profiles` onto these
     three values. A profile in neither tier would never run anywhere; one in
-    both would run twice on a labelled pull request. The `pr` tier also has to be the
-    default build profile and nothing else, which is the whole reason the
+    both would run twice on a labelled pull request. The `pr` tier also has
+    to be the default build profile and nothing else, which is the reason the
     split exists. And the caller has to pass the input at all: its default is
     `all`, so a dropped `with:` line quietly puts every profile back on the
     pull request tier.
@@ -533,6 +561,13 @@ def check_event_policy():
                 f"{job}: POLICY lists both 'pr' and a 'label:' tier. Those are "
                 f"mutually exclusive; drop 'pr' if the job is opt-in, or drop "
                 f"the label if it should run on every pull request"
+            )
+        # The nightly exists so the queue does not pay for these suites; a job
+        # in both tiers would run twice a day for one verdict.
+        if "queue" in tiers and "nightly" in tiers:
+            failures.append(
+                f"{job}: POLICY lists both 'queue' and 'nightly'. The queue "
+                f"already tested the tree the nightly runs against, so pick one"
             )
     for failure in failures:
         print(f"event policy: {failure}")
@@ -813,20 +848,7 @@ def check_cache_refresh_scope():
     minutes a push, which is what this check exists to notice.
     """
     failures = []
-    jobs, guarded, job, in_jobs = [], set(), None, False
-    for line in CACHE_REFRESH_WORKFLOW.read_text(encoding="utf-8").splitlines():
-        if line.startswith("jobs:"):
-            in_jobs = True
-            continue
-        if not in_jobs or line.lstrip().startswith("#"):
-            continue
-        match = JOB_KEY.match(line)
-        if match:
-            job = match.group(1)
-            jobs.append(job)
-            continue
-        if job and CACHE_REFRESH_GUARD.match(line):
-            guarded.add(job)
+    jobs, guarded = guarded_jobs(CACHE_REFRESH_WORKFLOW, CACHE_REFRESH_GUARD)
 
     for stale in sorted(set(CACHE_REFRESH_JOBS) - set(jobs)):
         failures.append(
@@ -866,6 +888,45 @@ def check_cache_refresh_scope():
     return not failures
 
 
+def check_nightly_scope():
+    """With `profiles: nightly`, pr_build_linux.yml runs the test matrix alone.
+
+    That input value means the default-profile pipeline already ran at this
+    commit: in the queue and the push run for the nightly, in the PR tier for
+    a `run-all-spark-profiles` label run. The lints, the Rust tests, the
+    Spark build and the TPC-H/TPC-DS runs would repeat a verdict, so every
+    job other than the three the matrix needs carries
+    `if: ${{ inputs.profiles != 'nightly' }}`. Silent when broken, like the
+    cache-refresh guard: the nightly just costs 100-odd runner-minutes more.
+    """
+    failures = []
+    jobs, guarded = guarded_jobs(CACHE_REFRESH_WORKFLOW, NIGHTLY_GUARD)
+    for stale in sorted(set(NIGHTLY_JOBS) - set(jobs)):
+        failures.append(
+            f"NIGHTLY_JOBS names `{stale}`, which no longer exists in "
+            f"{CACHE_REFRESH_WORKFLOW}; drop it here, or restore the job"
+        )
+    for name in jobs:
+        if name in NIGHTLY_JOBS and name in guarded:
+            failures.append(
+                f"{CACHE_REFRESH_WORKFLOW}: job `{name}` is listed in "
+                f"NIGHTLY_JOBS ({NIGHTLY_JOBS[name]}) but carries the "
+                f"`profiles != 'nightly'` guard, so the nightly test matrix "
+                f"cannot run"
+            )
+        if name not in NIGHTLY_JOBS and name not in guarded:
+            failures.append(
+                f"{CACHE_REFRESH_WORKFLOW}: job `{name}` has no "
+                f"`if: ${{{{ inputs.profiles != 'nightly' }}}}`, so it repeats "
+                f"on every nightly a verdict the queue already produced. Add "
+                f"the guard, or add the job to NIGHTLY_JOBS with the reason "
+                f"the test matrix needs it"
+            )
+    for failure in failures:
+        print(f"nightly scope: {failure}")
+    return not failures
+
+
 if __name__ == "__main__":
     ok = check_change_filters()
     ok = check_event_policy() and ok
@@ -875,6 +936,7 @@ if __name__ == "__main__":
     ok = check_local_actions_have_checkout() and ok
     ok = check_required_checks() and ok
     ok = check_cache_refresh_scope() and ok
+    ok = check_nightly_scope() and ok
     if not ok:
         sys.exit(1)
     print("CI config checks passed")

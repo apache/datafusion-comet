@@ -32,10 +32,10 @@
 #                 the default profile's.
 #   schedule      the nightly regression sweep of everything else: the Linux
 #                 test matrix against the other Spark profiles, Spark SQL on
-#                 Spark 3.5 and 4.0, and Iceberg 1.8/1.9/1.10, against main
-#                 as it stands. It skips itself when nothing has landed since
-#                 the previous night, and a failure opens (or comments on) an
-#                 issue labelled `ci-nightly-failure`.
+#                 Spark 3.5 and 4.0, and Iceberg 1.8/1.9/1.10, routed by the
+#                 same path filters over what landed on main since the
+#                 previous tick. A failure opens (or comments on) an issue
+#                 labelled `ci-nightly-failure`.
 #
 # Spark 3.4 is deprecated and sits outside all three tiers: it runs only when
 # a pull request carries `run-spark-3.4-tests`, or from a manual dispatch.
@@ -55,13 +55,12 @@ name: CI
 # A `labeled` event (e.g. the run-spark-*-tests gates, or dependabot's automatic
 # `dependencies` label added ~1s after open) fires at the same commit as the
 # opened/synchronize run. Keying the group on the label name keeps labeled runs
-# in their own subgroup so they never cancel the real commit run; opened and
-# synchronize both map to `commit` so a new push still supersedes its predecessor.
-# The nightly run is keyed on the same sha as the push-to-main run of the commit
-# at the tip of main, so it gets its own subgroup too; otherwise a merge landing
-# just before the schedule fires would have its cache refresh cancelled.
+# in their own subgroup so they never cancel the real commit run. Every other
+# run is keyed on its event name: opened, synchronize and reopened all map to
+# `pull_request`, so a new push still supersedes its predecessor, while a
+# scheduled run at the tip of main never cancels that commit's push run.
 concurrency:
-  group: ${{ github.repository }}-${{ github.head_ref || github.sha }}-${{ github.workflow }}-${{ github.event_name == 'schedule' && 'nightly' || github.event.action == 'labeled' && github.event.label.name || 'commit' }}
+  group: ${{ github.repository }}-${{ github.head_ref || github.sha }}-${{ github.workflow }}-${{ github.event.action == 'labeled' && github.event.label.name || github.event_name }}
   cancel-in-progress: true
 
 on:
@@ -221,19 +220,13 @@ jobs:
             # any gated job.
             :
           elif [[ "$EVENT_NAME" == "schedule" ]]; then
-            # Same: the nightly tests main as it stands, so there is nothing
-            # to diff and compute-changes.py runs the whole nightly tier. It
-            # skips when HEAD predates the previous night's run, so a quiet
-            # weekend does not re-test the same tree three times. The slack
-            # covers scheduling jitter; if a nightly fails for an
-            # infrastructure reason and nothing lands the next day, trigger
-            # ci.yml by hand instead.
-            head_ts=$(git log -1 --format=%ct)
-            age=$(( $(date +%s) - head_ts ))
-            if [[ "$age" -gt $(( 24 * 3600 + 1800 )) ]]; then
-              echo "HEAD is $(( age / 3600 ))h old; nothing has landed since the last nightly"
-              export NIGHTLY_STALE=true
-            fi
+            # The nightly's base is the tip of main as of the previous tick,
+            # with 30 minutes of slack for scheduling jitter. A quiet day
+            # diffs to nothing and runs nothing; a docs-only day routes to
+            # nothing too. If a nightly fails for an infrastructure reason
+            # and nothing lands the next day, dispatch ci.yml by hand.
+            prev=$(git rev-list -1 --before="24 hours 30 minutes ago" HEAD)
+            git diff --name-only "$prev"..HEAD > changed_files.txt
           elif [[ "$EVENT_NAME" == "pull_request" ]]; then
             git diff --name-only "$PR_BASE_SHA"..."$PR_HEAD_SHA" > changed_files.txt
           elif [[ "$EVENT_NAME" == "merge_group" ]]; then
@@ -535,9 +528,7 @@ jobs:
   #
   # It sits downstream of the aggregator rather than of the nightly jobs
   # themselves so the job list here does not have to be kept in step with
-  # POLICY. It is exempt from `required_checks.needs` in
-  # dev/ci/check-ci-config.py for the same reason `docs` is: it is never part
-  # of a merge decision.
+  # POLICY.
   # ---------------------------------------------------------------------------
   nightly_report:
     name: Nightly failure report
