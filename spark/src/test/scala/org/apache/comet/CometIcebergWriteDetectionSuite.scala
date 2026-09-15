@@ -500,26 +500,37 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
     assert(unresolved.exists(_.contains("gs://")), unresolved)
   }
 
-  test("fall-back: gs data location under ResolvingFileIO whose GCSFileIO fails to initialize") {
+  test("gs data location under ResolvingFileIO with a GCSFileIO that fails to initialize") {
     // ResolvingFileIO.ioClass maps gs:// to GCSFileIO, but the delegate it instantiates is a
     // HadoopFileIO whenever loading or initializing GCSFileIO throws an IllegalArgumentException,
-    // so the gate must judge the instantiated delegate. An unparseable GCS chunk size makes
-    // GCSFileIO.initialize throw NumberFormatException where the GCS client libraries are
-    // present; where they are absent, loading fails earlier (or, when only some of them are
-    // present, construction fails with an error Iceberg does not fall back from, and the writer
-    // itself would fail). On every classpath the effective delegate is never GCSFileIO and the
-    // write must be declined.
+    // so the gate must judge the instantiated delegate. Iceberg before 1.10 parses gcs.* in
+    // GCSFileIO.initialize, so an unparseable chunk size takes that fallback wherever GCSFileIO
+    // can be constructed (where the class does not load, the same fallback runs; where its
+    // construction fails, Iceberg does not fall back and the delegate is unresolvable). 1.10+
+    // defers the parsing to client construction, so there the property leaves the delegate
+    // unchanged and the gate must follow whatever Iceberg instantiates.
     withTempIcebergDir { warehouseDir =>
       val location = "gs://nonexistent/iceberg/db/gs_resolving_bad"
       val badProperty = "gcs.channel.read.chunk-size-bytes" -> "invalid"
-      val resolving = new ResolvingFileIO()
-      resolving.setConf(new Configuration())
-      resolving.initialize(java.util.Collections.singletonMap(badProperty._1, badProperty._2))
-      val delegate =
+      def resolveWith(props: java.util.Map[String, String]): Option[Class[_]] = {
+        val resolving = new ResolvingFileIO()
+        resolving.setConf(new Configuration())
+        resolving.initialize(props)
         try IcebergReflection.resolveFileIOClass(resolving, location)
         finally resolving.close()
-      logInfo(s"ResolvingFileIO delegate with $badProperty on this classpath: $delegate")
-      assert(delegate.forall(_ == classOf[HadoopFileIO]), delegate)
+      }
+      val eagerInit = !icebergVersionAtLeast(1, 10)
+      val delegate =
+        resolveWith(java.util.Collections.singletonMap(badProperty._1, badProperty._2))
+      logInfo(
+        s"ResolvingFileIO delegate with $badProperty on this classpath: $delegate " +
+          s"(eager initialization: $eagerInit)")
+      if (eagerInit) {
+        assert(delegate.forall(_ == classOf[HadoopFileIO]), delegate)
+      } else {
+        val unaffected = resolveWith(java.util.Collections.emptyMap[String, String]())
+        assert(delegate == unaffected, s"$delegate differs from $unaffected without the property")
+      }
       val badCat = "resolving_bad_io_cat"
       withSQLConf(
         s"spark.sql.catalog.$badCat" -> "org.apache.iceberg.spark.SparkCatalog",
@@ -535,11 +546,19 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
           ) USING iceberg
           TBLPROPERTIES ('write.data.path'='$location')
         """)
-        val writeExec = planInsertWriteExec(s"$badCat.$ns.gs_resolving_bad")
-        assertUnsupportedContains(writeExec, "gs_resolving_bad", "gs://")
-        CometIcebergNativeWrite.getSupportLevel(writeExec) match {
-          case Unsupported(Some(reason)) => assert(!reason.contains("GCSFileIO"), reason)
-          case other => fail(s"expected Unsupported with a reason, got $other")
+        val support = CometIcebergNativeWrite.getSupportLevel(
+          planInsertWriteExec(s"$badCat.$ns.gs_resolving_bad"))
+        if (delegate.exists(_.getName == IcebergReflection.ClassNames.GCS_FILE_IO)) {
+          assert(!eagerInit, "an unparseable chunk size must fail eager initialization")
+          assert(
+            support.isInstanceOf[Compatible],
+            s"expected Compatible via GCSFileIO, got $support")
+        } else {
+          support match {
+            case Unsupported(Some(reason)) =>
+              assert(reason.contains("gs://") && !reason.contains("GCSFileIO"), reason)
+            case other => fail(s"expected Unsupported with a reason, got $other")
+          }
         }
       }
     }
