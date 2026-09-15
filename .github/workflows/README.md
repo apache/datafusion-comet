@@ -22,7 +22,7 @@ ruleset in `.asf.yaml`. That splits CI into two tiers:
   against the merge result rather than against the PR head.
 
 Every queue-only job has a `run-*` label that opts a pull request into it
-early, listed in the diagram below.
+early, listed in the table below.
 
 `spark_3_4` is in neither tier. Spark 3.4 is deprecated, so its Spark SQL
 suite no longer gates a merge; it runs only when a pull request carries
@@ -34,84 +34,90 @@ required one, so a red 3.4 there changes nothing. It is the next push with
 the label still applied that runs 3.4 under `Required Checks`, and with the
 queue run gone that push is the only thing that makes a 3.4 failure blocking.
 
-Heavy jobs have no `push` tier. The queue already tested the exact tree that
+Most heavy jobs have no `push` tier. The queue already tested the exact tree that
 lands, so re-running them on push to main would double the cost of every
-merge. Two jobs are still on `push`: `docs`, because it deploys to `asf-site`
-and has to run after the commit is on main, and `pr_build_linux`, because of
-`actions/cache` scoping. A pull request can only restore caches saved on its
-own branch or on `main`, and the queue runs on a throwaway
+merge. Two routes are still on `push`: `docs`, because it deploys to `asf-site`
+and has to run after the commit is on main, and `build_linux`, because of
+`actions/cache` scoping. The Linux route selects `pr_build_linux_checks` and
+`pr_build_linux`, with the shared `build_linux_native` producer supplying the
+latter. Spark SQL and Iceberg consumers stay off on push. A pull request can
+only restore caches saved on its own branch or on `main`, and the queue runs on a throwaway
 `gh-readonly-queue/*` branch whose caches are deleted with it. Without a push
 run, a `Cargo.lock` or `pom.xml` change would leave the cargo-registry, Maven
 and TPC-H/TPC-DS caches on `main` stale until the next unrelated change.
 
 ```
-                pull_request | merge_group | push to main | workflow_dispatch
+pull_request | merge_group | push to main | workflow_dispatch
+                       |
+                   preflight
+                       |
+                    changes
+                       |
+       +---------------+--------------------+
+       |                                    |
+  Linux checks / macOS /               build_linux_native
+  docs / benchmark (if selected)       (if any consumer is selected)
                                             |
-                                            v
-                                +-----------------------+
-                                |       preflight       |  ubuntu-slim
-                                |  (RAT, prettier,      |
-                                |   missing-suites,     |
-                                |   actionlint)         |
-                                +-----------+-----------+
-                                            |  on success
-                                            v
-                                +-----------------------+
-                                |        changes        |  ubuntu-slim
-                                | (compute-changes.py:  |
-                                |  one boolean per      |
-                                |  heavy job)           |
-                                +-----------+-----------+
-                                            |
-        +-----------------------------------+-----------------------------------+
-        |                                   |                                   |
-        v                                   v                                   v
-  PR + queue tier                     push to main only         queue tier, or PR with label
-  ---------------                     -----------------         ---------------------------
-  pr_build_linux (+ push, for cache)  docs                      pr_build_macos      run-macos-tests
-  spark_4_1 (catalyst + sql_core)                               pr_benchmark_check  run-benchmark-check
-  iceberg_1_11                                                  spark_4_1 sql_hive  run-spark-4.1-hive-tests
-                                                                spark_3_5           run-spark-3.5-tests
-                                                                spark_4_0           run-spark-4.0-tests
-  label or dispatch only                                        iceberg_1_8         run-iceberg-tests
-  ----------------------                                        iceberg_1_9         run-iceberg-tests
-  spark_3_4  run-spark-3.4-tests                                iceberg_1_10        run-iceberg-tests
+                           +----------------+----------------+
+                           |                |                |
+                     pr_build_linux     spark_3_* /      iceberg_1_*
+                                        spark_4_*
 
-        |                                   |                                   |
-        +-----------------------------------+-----------------------------------+
-                                            v
-                                +-----------------------+
-                                |    required_checks    |  ubuntu-slim
-                                |  one flat name that   |
-                                |  is safe to require   |
-                                +-----------------------+
-
-  reusable workflows invoked via `uses:`:
-    pr_build_linux.yml         spark_sql_test_reusable.yml
-    pr_build_macos.yml         iceberg_spark_test_reusable.yml
-    pr_benchmark_check.yml
-    docs.yaml
+Every job above reports to required_checks (except the docs deployment).
 ```
+
+`build_linux_native.yml` builds the default Linux `libcomet.so` once per run
+with JDK 17, the Cargo `ci` profile, and the existing x86-64-v3/bfd flags.
+Every selected Linux test, Spark SQL, and Iceberg caller waits for that producer
+and receives `native-lib-linux` through its required `native-library-artifact`
+input. Consumers keep their own Spark/JDK versions and download the library
+into `native/target/release/`, where Maven expects it. Spark still pre-compiles
+and shares its JVM test classes separately for each Spark/JDK version.
+
+`compute-changes.py` derives `build_linux_native` as the union of the selected
+consumer outputs, after applying path and event/label policy. The workflow
+reads that single output. A Spark-patch-only change therefore gets a native
+build when its Spark caller is selected, even if the Linux build is not.
+Documentation-only changes, benchmark-only changes, and unrelated label
+events do not start an unused native build. The event-selection regression
+test checks that the producer and its consumers stay in agreement across PR,
+merge-group, push, and manual runs. A macOS-only or benchmark-only label run
+also skips this producer because neither job consumes the Linux artifact.
+
+Linux lint, compile-only checks, Celeborn compatibility tests, and Rust debug
+tests run in `pr_build_linux_checks.yml` as soon as change selection completes.
+They run alongside the native producer and still report results if it fails.
+Only the JVM/TPC test consumers in `pr_build_linux.yml` wait for the shared
+artifact. Both Linux callers use the same path and event selection. Regression
+checks preserve this separation and prevent independent checks from acquiring
+a native-build dependency.
+
+Rust formatting runs before native compilation and before the independent
+Linux build/test jobs. Rust debug tests, macOS, and feature-specific workflows
+continue to build their own binaries. The shared producer is the only writer
+of the Linux CI-profile Cargo cache, and only writes on `main`.
 
 ## What runs when
 
-| Job in `ci.yml`      | Triggered by                                                                                                           | Routing rule                        |
-| -------------------- | ---------------------------------------------------------------------------------------------------------------------- | ----------------------------------- |
-| `preflight`          | every PR / merge group / push / dispatch / label                                                                       | none (always runs)                  |
-| `changes`            | every PR / merge group / push / dispatch / label                                                                       | runs `dev/ci/compute-changes.py`    |
-| `pr_build_linux`     | PR, merge group or push to main, paths matched                                                                         | `dev/ci/compute-changes.py`         |
-| `pr_build_macos`     | merge group, **or** PR with `run-macos-tests`                                                                          | `dev/ci/compute-changes.py`         |
-| `pr_benchmark_check` | merge group, **or** PR with `run-benchmark-check`                                                                      | benchmark sources only              |
-| `docs`               | push to main, paths matched                                                                                            | `.asf.yaml`, `docs/**`, `docs.yaml` |
-| `spark_3_5`          | merge group, **or** PR with `run-spark-3.5-tests`                                                                      | Spark 3.5 sources                   |
-| `spark_4_1`          | PR or merge group, paths matched; the `sql_hive` shards only in the merge group **or** with `run-spark-4.1-hive-tests` | Spark 4.1 sources                   |
-| `spark_3_4`          | PR with `run-spark-3.4-tests`, or dispatch                                                                             | Spark 3.4 sources                   |
-| `spark_4_0`          | merge group, **or** PR with `run-spark-4.0-tests`                                                                      | Spark 4.0 sources                   |
-| `iceberg_1_11`       | PR or merge group, paths matched                                                                                       | Iceberg sources                     |
-| `iceberg_1_8`        | merge group, **or** PR with `run-iceberg-tests`                                                                        | Iceberg sources                     |
-| `iceberg_1_9`        | merge group, **or** PR with `run-iceberg-tests`                                                                        | Iceberg sources                     |
-| `iceberg_1_10`       | merge group, **or** PR with `run-iceberg-tests`                                                                        | Iceberg sources                     |
-| `required_checks`    | always, after every job above except `docs`                                                                            | none (always runs)                  |
+| Job in `ci.yml`         | Triggered by                                                                                                           | Routing rule                        |
+| ----------------------- | ---------------------------------------------------------------------------------------------------------------------- | ----------------------------------- |
+| `preflight`             | every PR / merge group / push / dispatch / label                                                                       | none (always runs)                  |
+| `changes`               | every PR / merge group / push / dispatch / label                                                                       | runs `dev/ci/compute-changes.py`    |
+| `build_linux_native`    | any selected Linux/Spark/Iceberg consumer                                                                              | `dev/ci/compute-changes.py`         |
+| `pr_build_linux_checks` | PR, merge group or push to main, paths matched                                                                         | `dev/ci/compute-changes.py`         |
+| `pr_build_linux`        | PR, merge group or push to main, paths matched                                                                         | `dev/ci/compute-changes.py`         |
+| `pr_build_macos`        | merge group, **or** PR with `run-macos-tests`                                                                          | `dev/ci/compute-changes.py`         |
+| `pr_benchmark_check`    | merge group, **or** PR with `run-benchmark-check`                                                                      | benchmark sources only              |
+| `docs`                  | push to main, paths matched                                                                                            | `.asf.yaml`, `docs/**`, `docs.yaml` |
+| `spark_3_5`             | merge group, **or** PR with `run-spark-3.5-tests`                                                                      | Spark 3.5 sources                   |
+| `spark_4_1`             | PR or merge group, paths matched; the `sql_hive` shards only in the merge group **or** with `run-spark-4.1-hive-tests` | Spark 4.1 sources                   |
+| `spark_3_4`             | PR with `run-spark-3.4-tests`, or dispatch                                                                             | Spark 3.4 sources                   |
+| `spark_4_0`             | merge group, **or** PR with `run-spark-4.0-tests`                                                                      | Spark 4.0 sources                   |
+| `iceberg_1_11`          | PR or merge group, paths matched                                                                                       | Iceberg sources                     |
+| `iceberg_1_8`           | merge group, **or** PR with `run-iceberg-tests`                                                                        | Iceberg sources                     |
+| `iceberg_1_9`           | merge group, **or** PR with `run-iceberg-tests`                                                                        | Iceberg sources                     |
+| `iceberg_1_10`          | merge group, **or** PR with `run-iceberg-tests`                                                                        | Iceberg sources                     |
+| `required_checks`       | always, after every job above except `docs`                                                                            | none (always runs)                  |
 
 A heavy job appears in the PR's checks list as a `skipped` entry whenever
 its path filter or event criteria don't match. Skipped checks count as
@@ -121,12 +127,14 @@ safe to make a required check.
 ### Label events
 
 `ci.yml` also fires on `pull_request.types: [labeled]`, so applying
-`run-spark-3.4-tests`, `run-spark-4.0-tests` or `run-iceberg-tests` starts the
-job that label gates without needing a new push. GitHub cannot filter a
+`run-spark-3.4-tests`, `run-spark-3.5-tests`, `run-spark-4.0-tests`,
+`run-spark-4.1-hive-tests`, `run-iceberg-tests`, `run-macos-tests`, or
+`run-benchmark-check` starts the jobs that label gates without needing a new
+push. GitHub cannot filter a
 `pull_request` trigger by label name, so **every** label added to a PR starts a
 run, including labels that gate nothing.
 
-Two rules keep those runs from corrupting the PR's status:
+Three rules keep those runs from corrupting the PR's status:
 
 - `preflight` and `changes` carry no event guard and run every time. A job held
   back by `if:` still publishes a check run under its own name with conclusion
@@ -172,6 +180,8 @@ umbrella doesn't watch, or operate independently of the rest of CI:
 
 | File                              | Called from `ci.yml` job(s)                                  |
 | --------------------------------- | ------------------------------------------------------------ |
+| `build_linux_native.yml`          | `build_linux_native`                                         |
+| `pr_build_linux_checks.yml`       | `pr_build_linux_checks`                                      |
 | `pr_build_linux.yml`              | `pr_build_linux`                                             |
 | `pr_build_macos.yml`              | `pr_build_macos`                                             |
 | `pr_benchmark_check.yml`          | `pr_benchmark_check`                                         |
@@ -181,13 +191,26 @@ umbrella doesn't watch, or operate independently of the rest of CI:
 
 ## Changing what runs when
 
-Every heavy job in `ci.yml` is gated on exactly one thing:
+Consumer jobs in `ci.yml` use their routing outputs, for example:
 
 ```yaml
 if: needs.changes.outputs.spark_3_5 == 'true'
 ```
 
-That single boolean folds together two separate decisions, both of which live
+Spark 4.1 has separate core and Hive outputs selecting the same caller:
+
+```yaml
+if: needs.changes.outputs.spark_4_1 == 'true' || needs.changes.outputs.spark_4_1_hive == 'true'
+```
+
+`NATIVE_CONSUMERS` in `dev/ci/compute-changes.py` maps each native consumer
+job to all outputs that can select it. The shared native producer runs when
+any of those outputs is true. A Hive-only label event has `spark_4_1=false`
+and `spark_4_1_hive=true`, so it still starts the native producer. The
+configuration guard checks the exact callers, output exports, dependencies,
+and gates against this mapping.
+
+Each routing output folds together two separate decisions, both of which live
 in `dev/ci/compute-changes.py`:
 
 - **`FILTERS`** — which files the job covers. Pattern semantics match
@@ -214,22 +237,24 @@ a routing table in `dev/ci/check-ci-config.py`, which `preflight` runs.
 ## Artifact names must be unique per producer
 
 Artifact names are scoped to the workflow **run**, not to the calling
-workflow. `ci.yml` calls `spark_sql_test_reusable.yml` once per Spark
-version and `iceberg_spark_test_reusable.yml` once per Iceberg version, all
-inside the same run, so an unqualified name like `native-lib-linux` would be
-claimed by several producers at once. That breaks two things:
+workflow. `build_linux_native.yml` is called exactly once and is the sole
+producer of `native-lib-linux`. Its consumers declare a required
+`native-library-artifact` input; `ci.yml` passes that name and makes every
+consumer depend on the shared producer. They download the existing artifact
+without publishing copies under version-specific names.
 
-- `download-artifact` resolves a name to the highest matching artifact ID.
-  Nothing ties it to the producer the consumer declared in `needs`.
-- `upload-artifact` with `overwrite: true` deletes the newest record with
-  that name before uploading, which can be a sibling's finished artifact.
-  The retry wrapper below forces `overwrite` on attempts 2 and 3.
+Artifacts with multiple producers still carry their version inputs. For
+example, `spark_sql_test_reusable.yml` publishes
+`jvm-compiled-spark-${{ inputs.spark-full }}-jdk${{ inputs.java }}` because
+each Spark version has different compiled classes. Publishing two artifacts
+under the same name can make a download select a sibling's artifact and let
+an upload retry overwrite that sibling's output.
 
-So every artifact published by a reusable workflow that `ci.yml` calls more
-than once carries its version inputs, e.g.
-`native-lib-spark-4.1.3-jdk17`. `dev/ci/check-ci-config.py` enforces this,
-and also that every `download-artifact` name is produced by an upload in the
-same workflow.
+`dev/ci/check-ci-config.py` verifies both contracts: local uploads and
+downloads must match, and shared native-library consumers must be wired to
+the one declared producer. Artifact retention remains one day; a failed-job
+rerun can reuse a successful producer's artifact during that retention
+window. If it has expired, rerun the full workflow to rebuild it.
 
 ## Retrying flaky network operations
 
@@ -302,6 +327,12 @@ Any job whose first Maven use is a bare `./mvnw` needs this step before it.
 `./.github/actions/java-test` carries its own inline copy rather than calling
 the composite, because a local action invoking another local action is
 deliberately avoided here (see the artifact-upload note above).
+
+The independent Java lint, Spark 4.1 compile, and Celeborn compatibility jobs
+in `pr_build_linux_checks.yml` each bootstrap Maven, as do the two TPC jobs
+in `pr_build_linux.yml`. The configuration guard scans both workflows and
+requires an earlier unconditional bootstrap step for every direct `./mvnw`
+command; a bootstrap that ignores failure does not satisfy the guard.
 
 ## Merge queue
 
