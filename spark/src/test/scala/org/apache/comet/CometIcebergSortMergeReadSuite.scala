@@ -133,16 +133,6 @@ class CometIcebergSortMergeReadSuite
 
   private val catalogCounter = new AtomicInteger(0)
 
-  // preserve-data-ordering makes Iceberg report the table sort order; adaptive off keeps the
-  // executed plan stable for the sort/shuffle counts below. preserve-data-grouping is also set
-  // because newer Iceberg builds reject preserve-data-ordering without it (SparkPartitioningAware
-  // Scan throws "Cannot preserve data ordering without data grouping"); it is a harmless no-op on
-  // builds that do not require it.
-  private val orderedReadConf: Seq[(String, String)] = Seq(
-    "spark.sql.iceberg.planning.preserve-data-ordering" -> "true",
-    "spark.sql.iceberg.planning.preserve-data-grouping" -> "true",
-    "spark.sql.adaptive.enabled" -> "false")
-
   // Storage-partitioned join config. preserve-data-grouping + v2 bucketing let Iceberg report
   // KeyGroupedPartitioning on the BatchScanExec, and the join knobs force a sort-merge join over
   // co-partitioned inputs so the Exchange can be eliminated. Comet does not report partitioning
@@ -321,12 +311,23 @@ class CometIcebergSortMergeReadSuite
   }
 
   // The reporting mechanism: SupportsReportOrdering -> CometIcebergNativeScanExec.outputOrdering
+  //
+  // NOTE ON TABLE SHAPE: Iceberg only reports a sort order for a table with a non-empty grouping
+  // key -- isOrderingEnabled in apache/iceberg#16750 is `!groupingKeyType().fields().isEmpty() &&
+  // canReportOrdering(...)`, and Iceberg's own testNoMergeReaderForUnpartitionedSortedTable asserts
+  // an unpartitioned sorted table reports nothing. So a merge test MUST use a partitioned table, or
+  // Iceberg reports no ordering, Comet takes the plain unordered read, and the merge never runs (the
+  // checkSparkAnswer then passes by comparing the unordered path against itself). Every merge test
+  // below partitions by a single-value column `p` so the ordering is reported while all files stay
+  // in one partition -- the shape that actually exercises the multi-file k-way merge -- and asserts
+  // assumeOrderingReported after the correctness check so a reporting build proves the merge ran.
 
   test("native scan reports the table sort order for a multi-file sorted table") {
-    withSortedTables(orderedReadConf)("t") { cat =>
-      spark.sql(s"CREATE TABLE $cat.db.t (id INT, data STRING) USING iceberg")
+    withSortedTables(spjConf)("t") { cat =>
+      spark.sql(
+        s"CREATE TABLE $cat.db.t (id INT, data STRING, p STRING) USING iceberg PARTITIONED BY (p)")
       replaceSortOrder(cat, "db", "t", "id" -> true)
-      insertBatches(cat, "t", "(1,'a'),(3,'c')", "(2,'b'),(4,'d')")
+      insertBatches(cat, "t", "(1,'a','P1'),(3,'c','P1')", "(2,'b','P1'),(4,'d','P1')")
 
       val (_, plan) = checkSparkAnswer(s"SELECT id, data FROM $cat.db.t ORDER BY id")
       assume(nativeScans(plan).nonEmpty, "query did not use the native Iceberg scan")
@@ -338,68 +339,91 @@ class CometIcebergSortMergeReadSuite
   }
 
   test("sort-merge disabled keeps the scan native and still reports the ordering (via sort)") {
-    withSortedTables(
-      orderedReadConf ++ Seq(CometConf.COMET_ICEBERG_SORT_MERGE_ENABLED.key -> "false"))("t") {
-      cat =>
-        spark.sql(s"CREATE TABLE $cat.db.t (id INT, data STRING) USING iceberg")
-        replaceSortOrder(cat, "db", "t", "id" -> true)
-        insertBatches(cat, "t", "(1,'a'),(3,'c')", "(2,'b'),(4,'d')")
+    withSortedTables(spjConf ++ Seq(CometConf.COMET_ICEBERG_SORT_MERGE_ENABLED.key -> "false"))(
+      "t") { cat =>
+      spark.sql(
+        s"CREATE TABLE $cat.db.t (id INT, data STRING, p STRING) USING iceberg PARTITIONED BY (p)")
+      replaceSortOrder(cat, "db", "t", "id" -> true)
+      insertBatches(cat, "t", "(1,'a','P1'),(3,'c','P1')", "(2,'b','P1'),(4,'d','P1')")
 
-        // Disabling only turns off the k-way merge, not the whole native scan: Comet still reads
-        // the table and still honours the reported order (via a spillable sort). Correctness must
-        // hold, and on an ordering-reporting Iceberg build the scan still advertises the order.
-        val (_, plan) = checkSparkAnswer(s"SELECT id, data FROM $cat.db.t ORDER BY id")
-        assert(
-          nativeScans(plan).nonEmpty,
-          s"sort-merge disabled must not force the scan back to Spark:\n$plan")
-        assumeOrderingReported(plan)
+      // Disabling only turns off the k-way merge, not the whole native scan: Comet still reads
+      // the table and still honours the reported order (via a spillable sort). Correctness must
+      // hold, and on an ordering-reporting Iceberg build the scan still advertises the order.
+      val (_, plan) = checkSparkAnswer(s"SELECT id, data FROM $cat.db.t ORDER BY id")
+      assert(
+        nativeScans(plan).nonEmpty,
+        s"sort-merge disabled must not force the scan back to Spark:\n$plan")
+      assumeOrderingReported(plan)
     }
   }
 
-  // K-way merge correctness (EnsureRequirements / EliminateSorts consume the reported ordering;
-  // ORDER BY keeps the comparison order-sensitive so a merge defect is caught directly).
+  // K-way merge correctness. The tables are partitioned so Iceberg reports the ordering and the
+  // merge actually runs (see the NOTE ON TABLE SHAPE above); assumeOrderingReported proves that on a
+  // reporting build. Order sensitivity is verified with a window over the merged input rather than a
+  // global ORDER BY, because Spark keeps its final Sort for a global ORDER BY (a per-partition order
+  // does not satisfy a global one) and that re-sort would repair -- and hide -- a mis-ordered merge.
 
-  test("merges multiple sorted files into one globally-ordered stream") {
-    withSortedTables(orderedReadConf)("t") { cat =>
-      spark.sql(s"CREATE TABLE $cat.db.t (id INT, data STRING) USING iceberg")
-      replaceSortOrder(cat, "db", "t", "id" -> true)
-      insertBatches(
-        cat,
-        "t",
-        "(1,'a'),(2,'b')",
-        "(3,'c'),(4,'d')",
-        "(5,'e'),(6,'f')",
-        "(7,'g'),(8,'h')")
+  test("merges multiple sorted files per partition and preserves order") {
+    withSortedTables(spjConf)("t") { cat =>
+      spark.sql(
+        s"CREATE TABLE $cat.db.t (c1 INT, c2 INT, data STRING) USING iceberg " +
+          "PARTITIONED BY (bucket(4, c1))")
+      replaceSortOrder(cat, "db", "t", "c1" -> true, "c2" -> true)
+      // Multiple files, each holding rows for every c1 bucket, so the k-way merge runs within a
+      // partition; c2 interleaves across the files so a mis-ordered merge changes the row numbering.
+      insertBatches(cat, "t", "(1,1,'a'),(2,1,'b')", "(1,3,'c'),(2,3,'d')", "(1,2,'e'),(2,2,'f')")
 
-      val (_, plan) = checkSparkAnswer(s"SELECT id, data FROM $cat.db.t ORDER BY id")
-      assert(nativeScans(plan).length == 1, s"expected exactly one native scan:\n$plan")
+      // ROW_NUMBER over the reported (c1, c2) order: Spark keeps that order (the window's required
+      // ordering is satisfied, no re-sort), so a mis-ordered merge yields wrong row numbers.
+      val query =
+        s"SELECT c1, c2, ROW_NUMBER() OVER (PARTITION BY c1 ORDER BY c2) AS rn FROM $cat.db.t"
+      val (_, plan) = checkSparkAnswer(query)
+      assume(nativeScans(plan).nonEmpty, "query did not use the native Iceberg scan")
+      assumeOrderingReported(plan)
+      assert(
+        countSorts(plan) == 0,
+        s"the merge must satisfy the window ordering without a re-sort:\n$plan")
     }
   }
 
   test("merge interleaves duplicate sort-key values across files") {
-    withSortedTables(orderedReadConf)("t") { cat =>
-      spark.sql(s"CREATE TABLE $cat.db.t (id INT, data STRING) USING iceberg")
+    withSortedTables(spjConf)("t") { cat =>
+      spark.sql(
+        s"CREATE TABLE $cat.db.t (id INT, data STRING, p STRING) USING iceberg PARTITIONED BY (p)")
       replaceSortOrder(cat, "db", "t", "id" -> true)
       // The same id appears in several files; the merge must keep every row, not drop or mis-order.
-      insertBatches(cat, "t", "(1,'a'),(2,'b')", "(1,'c'),(2,'d')", "(1,'e'),(3,'f')")
+      insertBatches(
+        cat,
+        "t",
+        "(1,'a','P1'),(2,'b','P1')",
+        "(1,'c','P1'),(2,'d','P1')",
+        "(1,'e','P1'),(3,'f','P1')")
 
-      checkSparkAnswer(s"SELECT id, data FROM $cat.db.t ORDER BY id, data")
+      val (_, plan) = checkSparkAnswer(s"SELECT id, data FROM $cat.db.t ORDER BY id, data")
+      assumeOrderingReported(plan)
     }
   }
 
   test("merge applies merge-on-read deletes across a multi-file sorted partition") {
-    withSortedTables(orderedReadConf)("t") { cat =>
+    withSortedTables(spjConf)("t") { cat =>
       spark.sql(
-        s"CREATE TABLE $cat.db.t (id INT, data STRING) USING iceberg " +
+        s"CREATE TABLE $cat.db.t (id INT, data STRING, p STRING) USING iceberg " +
+          "PARTITIONED BY (p) " +
           "TBLPROPERTIES ('format-version'='2', 'write.delete.mode'='merge-on-read')")
       replaceSortOrder(cat, "db", "t", "id" -> true)
       // Several files so a merge is required; then delete rows from some of them. On a v2
       // merge-on-read table DELETE writes delete files rather than rewriting the data files, so
       // the scan must apply the deletes while merging the still-sorted files.
-      insertBatches(cat, "t", "(1,'a'),(4,'d')", "(2,'b'),(5,'e')", "(3,'c'),(6,'f')")
+      insertBatches(
+        cat,
+        "t",
+        "(1,'a','P1'),(4,'d','P1')",
+        "(2,'b','P1'),(5,'e','P1')",
+        "(3,'c','P1'),(6,'f','P1')")
       spark.sql(s"DELETE FROM $cat.db.t WHERE id IN (2, 5)")
 
-      checkSparkAnswer(s"SELECT id, data FROM $cat.db.t ORDER BY id")
+      val (_, plan) = checkSparkAnswer(s"SELECT id, data FROM $cat.db.t ORDER BY id")
+      assumeOrderingReported(plan)
     }
   }
 
@@ -437,74 +461,94 @@ class CometIcebergSortMergeReadSuite
     }
   }
 
-  test("merge on a descending sort order") {
-    withSortedTables(orderedReadConf)("t") { cat =>
-      spark.sql(s"CREATE TABLE $cat.db.t (id INT, data STRING) USING iceberg")
-      replaceSortOrder(cat, "db", "t", "id" -> false)
-      insertBatches(cat, "t", "(10,'j'),(9,'i')", "(8,'h'),(7,'g')", "(6,'f'),(4,'d')")
+  test("merge on a descending sort order preserves order") {
+    withSortedTables(spjConf)("t") { cat =>
+      spark.sql(
+        s"CREATE TABLE $cat.db.t (c1 INT, c2 INT, data STRING) USING iceberg " +
+          "PARTITIONED BY (bucket(4, c1))")
+      replaceSortOrder(cat, "db", "t", "c1" -> true, "c2" -> false) // c2 DESC, Iceberg NULLS LAST
+      insertBatches(cat, "t", "(1,3,'a'),(2,3,'b')", "(1,1,'c'),(2,1,'d')", "(1,2,'e'),(2,2,'f')")
 
-      checkSparkAnswer(s"SELECT id FROM $cat.db.t ORDER BY id DESC")
+      // Window ordered DESC over the merged (c1, c2 DESC) order; a mis-ordered descending merge
+      // changes the row numbers (a global ORDER BY DESC would be re-sorted by Spark and hide it).
+      val query =
+        s"SELECT c1, c2, ROW_NUMBER() OVER (PARTITION BY c1 ORDER BY c2 DESC) AS rn FROM $cat.db.t"
+      val (_, plan) = checkSparkAnswer(query)
+      assume(nativeScans(plan).nonEmpty, "query did not use the native Iceberg scan")
+      assumeOrderingReported(plan)
+      assert(
+        countSorts(plan) == 0,
+        s"the descending merge must satisfy the window ordering without a re-sort:\n$plan")
     }
   }
 
   test("merge on a multi-column sort order") {
-    withSortedTables(orderedReadConf)("t") { cat =>
-      spark.sql(s"CREATE TABLE $cat.db.t (c1 INT, c2 STRING, c3 STRING) USING iceberg")
+    withSortedTables(spjConf)("t") { cat =>
+      spark.sql(
+        s"CREATE TABLE $cat.db.t (c1 INT, c2 STRING, c3 STRING, p STRING) USING iceberg " +
+          "PARTITIONED BY (p)")
       replaceSortOrder(cat, "db", "t", "c3" -> true, "c1" -> true)
       insertBatches(
         cat,
         "t",
-        "(1,'a','A'),(3,'c','A')",
-        "(2,'b','A'),(1,'a','B')",
-        "(2,'b','B'),(3,'c','B')")
+        "(1,'a','A','P1'),(3,'c','A','P1')",
+        "(2,'b','A','P1'),(1,'a','B','P1')",
+        "(2,'b','B','P1'),(3,'c','B','P1')")
 
-      checkSparkAnswer(s"SELECT c3, c1, c2 FROM $cat.db.t ORDER BY c3, c1")
+      val (_, plan) = checkSparkAnswer(s"SELECT c3, c1, c2 FROM $cat.db.t ORDER BY c3, c1")
+      assumeOrderingReported(plan)
     }
   }
 
   test("single file needs no merge") {
-    withSortedTables(orderedReadConf)("t") { cat =>
-      spark.sql(s"CREATE TABLE $cat.db.t (id INT, data STRING) USING iceberg")
+    withSortedTables(spjConf)("t") { cat =>
+      spark.sql(
+        s"CREATE TABLE $cat.db.t (id INT, data STRING, p STRING) USING iceberg PARTITIONED BY (p)")
       replaceSortOrder(cat, "db", "t", "id" -> true)
-      insertBatches(cat, "t", "(1,'a'),(2,'b')")
+      insertBatches(cat, "t", "(1,'a','P1'),(2,'b','P1')")
 
-      checkSparkAnswer(s"SELECT id, data FROM $cat.db.t ORDER BY id")
+      val (_, plan) = checkSparkAnswer(s"SELECT id, data FROM $cat.db.t ORDER BY id")
+      assumeOrderingReported(plan)
     }
   }
 
   test("many small files in one partition merge correctly") {
     // Raise the per-partition file limit so the k-way merge (not the sort fallback) runs with many
     // files -- the shape this feature targets, where the merge opens one reader per file at once.
-    // On an ordering-reporting Iceberg build this exercises a ~70-way SortPreservingMerge; on the
-    // published Iceberg (no reported ordering) it is a plain read. checkSparkAnswer guards
+    // Partitioned by a single value so Iceberg reports the ordering and the ~70-way merge actually
+    // runs; assumeOrderingReported proves it on a reporting build. checkSparkAnswer guards
     // correctness; asserting on memory-pool usage / peak concurrent readers is a TODO for #5343.
     val conf =
-      orderedReadConf :+ (CometConf.COMET_ICEBERG_SORT_MERGE_MAX_FILES_PER_PARTITION.key -> "1000")
+      spjConf :+ (CometConf.COMET_ICEBERG_SORT_MERGE_MAX_FILES_PER_PARTITION.key -> "1000")
     withSortedTables(conf)("t") { cat =>
-      spark.sql(s"CREATE TABLE $cat.db.t (id INT, data STRING) USING iceberg")
+      spark.sql(
+        s"CREATE TABLE $cat.db.t (id INT, data STRING, p STRING) USING iceberg PARTITIONED BY (p)")
       replaceSortOrder(cat, "db", "t", "id" -> true)
-      val rows = (1 to 70).map(i => s"($i,'v$i')")
+      val rows = (1 to 70).map(i => s"($i,'v$i','P1')")
       insertBatches(cat, "t", rows: _*)
 
-      checkSparkAnswer(s"SELECT id, data FROM $cat.db.t ORDER BY id")
+      val (_, plan) = checkSparkAnswer(s"SELECT id, data FROM $cat.db.t ORDER BY id")
+      assumeOrderingReported(plan)
     }
   }
 
   test("many small files in one partition stay correct (exercises the sort fallback)") {
-    withSortedTables(orderedReadConf)("t") { cat =>
-      spark.sql(s"CREATE TABLE $cat.db.t (id INT, data STRING) USING iceberg")
+    withSortedTables(spjConf)("t") { cat =>
+      spark.sql(
+        s"CREATE TABLE $cat.db.t (id INT, data STRING, p STRING) USING iceberg PARTITIONED BY (p)")
       replaceSortOrder(cat, "db", "t", "id" -> true)
-      // 70 single-row inserts -> 70 files in one unpartitioned partition, above the default
-      // maxFilesPerPartition (64). On an ordering-reporting Iceberg build this drives the native
+      // 70 single-row inserts -> 70 files in one partition, above the default maxFilesPerPartition
+      // (64). Partitioned so Iceberg reports the ordering; above the cap the native scan takes the
       // fallback -- a single unordered read plus a spillable SortExec, not a 70-way merge -- which
-      // is the shape this feature actually targets (a sorted table with many small commits). On
-      // the published Iceberg (no reported ordering) it is a plain read. checkSparkAnswer guards
-      // correctness either way; asserting on memory-pool usage / peak concurrent readers is a
-      // TODO for #5343.
-      val rows = (1 to 70).map(i => s"($i,'v$i')")
+      // is the shape this feature targets (a sorted table with many small commits). assumeOrdering
+      // Reported proves the ordering was reported (so the sort-fallback path really ran) on a
+      // reporting build. checkSparkAnswer guards correctness; asserting on memory-pool usage / peak
+      // concurrent readers is a TODO for #5343.
+      val rows = (1 to 70).map(i => s"($i,'v$i','P1')")
       insertBatches(cat, "t", rows: _*)
 
-      checkSparkAnswer(s"SELECT id, data FROM $cat.db.t ORDER BY id")
+      val (_, plan) = checkSparkAnswer(s"SELECT id, data FROM $cat.db.t ORDER BY id")
+      assumeOrderingReported(plan)
     }
   }
 
@@ -547,10 +591,16 @@ class CometIcebergSortMergeReadSuite
   }
 
   test("results are identical with the sort-merge feature on and off") {
-    withSortedTables(orderedReadConf)("t") { cat =>
-      spark.sql(s"CREATE TABLE $cat.db.t (id INT, data STRING) USING iceberg")
+    withSortedTables(spjConf)("t") { cat =>
+      spark.sql(
+        s"CREATE TABLE $cat.db.t (id INT, data STRING, p STRING) USING iceberg PARTITIONED BY (p)")
       replaceSortOrder(cat, "db", "t", "id" -> true)
-      insertBatches(cat, "t", "(1,'a'),(3,'c')", "(2,'b'),(4,'d')", "(5,'e'),(6,'f')")
+      insertBatches(
+        cat,
+        "t",
+        "(1,'a','P1'),(3,'c','P1')",
+        "(2,'b','P1'),(4,'d','P1')",
+        "(5,'e','P1'),(6,'f','P1')")
       val query = s"SELECT id, data FROM $cat.db.t ORDER BY id"
 
       val enabled = spark.sql(query).collect().toSeq
@@ -814,15 +864,22 @@ class CometIcebergSortMergeReadSuite
   // Limit: TakeOrderedAndProjectExec degenerates to a cheap take when the child is already sorted.
 
   test("order-by-limit over a sorted table is correct") {
-    withSortedTables(orderedReadConf)("t") { cat =>
-      spark.sql(s"CREATE TABLE $cat.db.t (id INT, data STRING) USING iceberg")
+    withSortedTables(spjConf)("t") { cat =>
+      spark.sql(
+        s"CREATE TABLE $cat.db.t (id INT, data STRING, p STRING) USING iceberg PARTITIONED BY (p)")
       replaceSortOrder(cat, "db", "t", "id" -> true)
-      insertBatches(cat, "t", "(1,'a'),(3,'c')", "(2,'b'),(4,'d')", "(5,'e'),(6,'f')")
+      insertBatches(
+        cat,
+        "t",
+        "(1,'a','P1'),(3,'c','P1')",
+        "(2,'b','P1'),(4,'d','P1')",
+        "(5,'e','P1'),(6,'f','P1')")
 
       // TakeOrderedAndProject is planned for ORDER BY ... LIMIT and, when the child is already
       // reported sorted, degenerates to a cheap bounded take instead of a full top-N heap.
       // Correctness (including the LIMIT cut over the merged order) is the guarantee here.
-      checkSparkAnswer(s"SELECT id, data FROM $cat.db.t ORDER BY id LIMIT 3")
+      val (_, plan) = checkSparkAnswer(s"SELECT id, data FROM $cat.db.t ORDER BY id LIMIT 3")
+      assumeOrderingReported(plan)
     }
   }
 }
