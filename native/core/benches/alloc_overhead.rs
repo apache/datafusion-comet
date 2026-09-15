@@ -17,11 +17,12 @@
 
 //! Measures the cost the `alloc-accounting` global-allocator wrapper adds per allocation.
 //!
-//! Run the same benchmark with and without the feature and compare:
+//! The feature is on by default, so the "off" run has to drop the defaults and re-add the rest:
 //!
 //! ```shell
-//! cargo bench --bench alloc_overhead -- --save-baseline off
-//! cargo bench --bench alloc_overhead --features alloc-accounting -- --baseline off
+//! cargo bench --bench alloc_overhead --no-default-features --features jemalloc,hdfs-opendal \
+//!     -- --save-baseline off
+//! cargo bench --bench alloc_overhead --features jemalloc -- --baseline off
 //! ```
 //!
 //! The benchmark relies on the `#[global_allocator]` that `lib.rs` installs, which reaches this
