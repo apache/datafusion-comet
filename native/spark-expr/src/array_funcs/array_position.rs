@@ -301,8 +301,9 @@ mod tests {
 
     #[test]
     fn test_nested_float_and_null_position() -> DataFusionResult<()> {
-        // Arrow and the previous ScalarValue fallback distinguish signed zeros, so the second
-        // row matches at position 2 rather than position 1.
+        // Signed-zero equality does not yet match Spark, so the second row matches at position 2;
+        // see https://github.com/apache/datafusion-comet/issues/5191.
+        // NaN and inner-null equality match Spark.
         let values = ListArray::from_iter_primitive::<Float64Type, _, _>([
             Some(vec![Some(1.0)]),
             Some(vec![Some(f64::NAN)]),
