@@ -32,36 +32,10 @@
 
 name: Delta Contrib Build Gate
 
-concurrency:
-  group: ${{ github.repository }}-${{ github.head_ref || github.sha }}-${{ github.workflow }}
-  cancel-in-progress: true
-
+# Reusable: invoked by ci.yml. Triggering, path filters, and concurrency
+# live in the umbrella workflow.
 on:
-  push:
-    branches:
-      - main
-    paths-ignore:
-      - "benchmarks/**"
-      - "doc/**"
-      - "docs/**"
-      - "**.md"
-      - "dev/changelog/*.md"
-      - "native/core/benches/**"
-      - "native/spark-expr/benches/**"
-      - "spark/src/main/scala/org/apache/comet/GenerateDocs.scala"
-      - "spark-integration/**"
-  pull_request:
-    paths-ignore:
-      - "benchmarks/**"
-      - "doc/**"
-      - "docs/**"
-      - "**.md"
-      - "dev/changelog/*.md"
-      - "native/core/benches/**"
-      - "native/spark-expr/benches/**"
-      - "spark/src/main/scala/org/apache/comet/GenerateDocs.scala"
-      - "spark-integration/**"
-  workflow_dispatch:
+  workflow_call:
 
 permissions:
   contents: read

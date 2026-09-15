@@ -63,7 +63,9 @@ trait Spark4xMapInBatchSupport {
   protected case class RunnerInputs(
       chainedFunc: Seq[(ChainedPythonFunctions, Long)],
       pythonRunnerConf: Map[String, String],
-      jobArtifactUUID: Option[String])
+      jobArtifactUUID: Option[String],
+      arrowMaxRecordsPerBatch: Int,
+      arrowMaxBytesPerBatch: Long)
 
   /**
    * Resolves the `SQLConf`-derived inputs the `ArrowPythonRunner` needs. Must be called on the
@@ -74,5 +76,7 @@ trait Spark4xMapInBatchSupport {
     RunnerInputs(
       chainedFunc = Seq((ChainedPythonFunctions(Seq(pythonUDF.func)), pythonUDF.resultId.id)),
       pythonRunnerConf = ArrowPythonRunner.getPythonRunnerConfMap(conf),
-      jobArtifactUUID = JobArtifactSet.getCurrentJobArtifactState.map(_.uuid))
+      jobArtifactUUID = JobArtifactSet.getCurrentJobArtifactState.map(_.uuid),
+      arrowMaxRecordsPerBatch = conf.arrowMaxRecordsPerBatch,
+      arrowMaxBytesPerBatch = conf.arrowMaxBytesPerBatch)
 }

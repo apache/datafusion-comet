@@ -40,6 +40,8 @@ Which jobs run also depends on the event:
 | Iceberg Spark SQL tests, Iceberg 1.11             | yes          | yes         |
 | macOS build and Comet test suites                 | with label   | yes         |
 | Benchmark compile and lint check                  | with label   | yes         |
+| Delta contrib build gate                          | with label   | yes         |
+| PyArrow UDF tests, Spark 4.0 / 4.1 / 4.2          | with label   | yes         |
 | Spark SQL tests, Spark 3.5 / 4.0                  | with label   | yes         |
 | Iceberg Spark SQL tests, Iceberg 1.8 / 1.9 / 1.10 | with label   | yes         |
 | Spark SQL tests, Spark 3.4                        | with label   | no          |
@@ -51,6 +53,14 @@ on push to `main`, because the queue already tested the exact tree that landed. 
 is the Linux build, which also runs on push so that the dependency caches on `main` stay fresh: a
 pull request can only restore caches saved on its own branch or on `main`, and the queue's
 temporary branch takes its caches with it when it is deleted.
+
+That push run is for the caches and nothing else, so it runs in **cache-refresh-only** mode: only
+the four jobs that own a cache entry (the native CI build, the Rust tests, and the two TPC-H/TPC-DS
+jobs, the last two stopping before their query passes), plus the short `Lint` job the native jobs
+depend on. The lints and the Comet test matrix are skipped, which is the difference between 587
+runner-minutes a push and about 73. If you add a job to `pr_build_linux.yml`, give it
+`if: ${{ !inputs.cache-refresh-only }}` unless it writes a cache that `main` needs;
+`dev/ci/check-ci-config.py` fails the build if you forget.
 
 Spark 3.4 is the one suite in neither tier. [Spark 3.4 support is deprecated](../user-guide/latest/compatibility/spark-versions.md#spark-34),
 so its Spark SQL suite no longer gates a merge. It remains available on demand: apply the
@@ -78,6 +88,8 @@ Each suite outside the PR tier has a label that runs it on a pull request:
 | -------------------------- | ---------------------------------------------------- |
 | `run-macos-tests`          | macOS build and Comet test suites                    |
 | `run-benchmark-check`      | Benchmark compile and lint check                     |
+| `run-delta-build-gate`     | Delta contrib build gate                             |
+| `run-pyarrow-udf-tests`    | PyArrow UDF tests against Spark 4.0/4.1/4.2          |
 | `run-spark-4.1-hive-tests` | Spark SQL hive tests against Spark 4.1               |
 | `run-spark-3.4-tests`      | Spark SQL tests against Spark 3.4                    |
 | `run-spark-3.5-tests`      | Spark SQL tests against Spark 3.5                    |
@@ -203,8 +215,9 @@ does; the macOS job differs from Linux only in the platform.
 The umbrella workflow, the reusable workflows it calls, and the routing tables are checked by
 `dev/ci/check-ci-config.py`, which runs in preflight. It enforces that every job feeds
 `Required Checks`, that the required check name in `.asf.yaml` matches the job that publishes it,
-that artifact names are unique per producer, and that the routing policy matches its test cases.
-Run it locally before pushing a CI change:
+that artifact names are unique per producer, that the routing policy matches its test cases, and
+that every job in `pr_build_linux.yml` is either a cache writer or skipped on push. Run it locally
+before pushing a CI change:
 
 ```sh
 python3 dev/ci/check-ci-config.py
