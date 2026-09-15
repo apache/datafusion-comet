@@ -71,6 +71,10 @@ FILTERS = {
     # `cache-refresh-only` input. Populated below, after the dict, so the two
     # lists cannot drift.
     "build_linux_full": [],
+    # A third POLICY decision on the same inputs: whether the linux-test matrix
+    # runs every Spark profile or only the PR-tier one. ci.yml folds it into
+    # the reusable workflow's `profiles` input. Populated below as well.
+    "build_linux_all_profiles": [],
     "build_macos": [
         "native/**",
         "common/**",
@@ -386,6 +390,7 @@ FILTERS = {
 }
 FILTERS["spark_4_1_hive"] = FILTERS["spark_4_1"]
 FILTERS["build_linux_full"] = FILTERS["build_linux"]
+FILTERS["build_linux_all_profiles"] = FILTERS["build_linux"]
 
 # Which events may run each job, independent of the path filters above.
 #
@@ -415,7 +420,7 @@ POLICY = {
     # restore-keys prefix match.
     #
     # On push that is the *only* thing it is for. The queue already tested the
-    # exact tree that landed, so re-running the lints and the 5x4 linux-test
+    # exact tree that landed, so re-running the lints and the linux-test
     # matrix there tests nothing, and they are 514 of the 587 runner-minutes a
     # push run costs. The split below keeps the cache writers on push and moves
     # everything else behind `build_linux_full`.
@@ -425,6 +430,15 @@ POLICY = {
     # input, so dropping "push" here is what trims the push tier down to the
     # jobs that write an actions/cache entry. See issue #5929.
     "build_linux_full": ["pr", "queue"],
+    # The linux-test matrix's Spark profiles other than the default one. The
+    # five profiles cost about the same each, roughly 2,300 runner-minutes a
+    # day apiece on pull requests in mid-September 2026, and together they
+    # were three quarters of the Linux build. A pull request runs the Comet
+    # test suites against Spark 4.1 only; the queue runs all five. The
+    # lint-java matrix still compiles Spark 3.4/3.5/4.0 on every pull request,
+    # so what waits for the queue is runtime behaviour, not a shim that fails
+    # to build. ci.yml turns this output into the workflow's `profiles` input.
+    "build_linux_all_profiles": ["queue", "label:run-all-spark-profiles"],
     # macOS runners are the scarcest capacity we have, and the Linux build
     # already covers rustfmt and the Rust/JVM compile on every PR. The label
     # is for a change that touches platform-specific code.

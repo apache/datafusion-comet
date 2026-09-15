@@ -34,7 +34,9 @@ Which jobs run also depends on the event:
 
 | Suite                                             | Pull request | Merge queue |
 | ------------------------------------------------- | ------------ | ----------- |
-| Linux build, lint, and Comet test suites          | yes          | yes         |
+| Linux build, lint, Rust tests, TPC-H/TPC-DS       | yes          | yes         |
+| Comet test suites, Spark 4.1                      | yes          | yes         |
+| Comet test suites, Spark 3.4 / 3.5 / 4.0 / 4.2    | with label   | yes         |
 | Spark SQL tests, Spark 4.1, catalyst and sql_core | with label   | yes         |
 | Spark SQL tests, Spark 4.1, sql_hive              | with label   | yes         |
 | Iceberg Spark SQL tests, Iceberg 1.11             | with label   | yes         |
@@ -87,6 +89,7 @@ Each suite outside the PR tier has a label that runs it on a pull request:
 | Label                      | Runs                                                  |
 | -------------------------- | ----------------------------------------------------- |
 | `run-macos-tests`          | macOS build and Comet test suites                     |
+| `run-all-spark-profiles`   | Comet test suites against Spark 3.4 / 3.5 / 4.0 / 4.2 |
 | `run-benchmark-check`      | Benchmark compile and lint check                      |
 | `run-delta-build-gate`     | Delta contrib build gate                              |
 | `run-pyarrow-udf-tests`    | PyArrow UDF tests against Spark 4.0/4.1/4.2           |
@@ -131,7 +134,9 @@ does not cover. Some examples:
   Spark's own SQL suite is the thing that would catch a behavior difference; `run-spark-4.1-tests`
   runs it against the default profile
 - code under `spark/src/main/spark-3.4/`, `spark-3.5/`, `spark-4.0/` or the shared `spark-3.x/`
-  directory, or any change to `CometExprShim` and friends
+  directory, or any change to `CometExprShim` and friends; `run-all-spark-profiles` runs the Comet
+  test suites against every Spark version rather than 4.1 alone (the Lint Java matrix already
+  compiles the 3.4/3.5/4.0 profiles on every pull request, so this is for runtime differences)
 - a change to a Spark SQL diff under `dev/diffs/`
 - anything that touches Hive table support, `InsertIntoHiveTable`, or the `sql/hive` parts of
   the 4.1 diff
