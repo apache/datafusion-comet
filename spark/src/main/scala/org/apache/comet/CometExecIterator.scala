@@ -21,8 +21,6 @@ package org.apache.comet
 
 import java.lang.management.ManagementFactory
 
-import scala.jdk.CollectionConverters._
-
 import org.apache.arrow.c.ArrowArrayStream
 import org.apache.hadoop.conf.Configuration
 import org.apache.spark._
@@ -39,7 +37,6 @@ import org.apache.comet.Tracing.withTrace
 import org.apache.comet.exceptions.CometQueryExecutionException
 import org.apache.comet.parquet.CometFileKeyUnwrapper
 import org.apache.comet.serde.Config.ConfigMap
-import org.apache.comet.serde.OperatorOuterClass.Operator
 import org.apache.comet.shuffle.ShufflePartitionPusher
 import org.apache.comet.vector.NativeUtil
 
@@ -218,20 +215,7 @@ class CometExecIterator(
       // Handle CometQueryExecutionException with JSON payload first
       case e: CometQueryExecutionException =>
         logError(s"Native execution for task $taskAttemptId failed", e)
-        // Fused scans (including shuffle writers) carry paths in the injected task plan, but
-        // may not supply taskFilePaths. Read that metadata only when execution fails.
-        def scanPaths(op: Operator): Seq[String] = {
-          val paths = op.getNativeScan.getFilePartition.getPartitionedFileList.asScala
-            .map(_.getFilePath)
-            .toSeq
-          paths ++ op.getChildrenList.asScala.flatMap(scanPaths)
-        }
-        val filePaths =
-          if (taskFilePaths.nonEmpty) taskFilePaths
-          else {
-            scanPaths(Operator.parseFrom(protobufQueryPlan)).distinct
-          }
-        throw SparkErrorConverter.convertToSparkException(e, filePaths)
+        throw SparkErrorConverter.convertToSparkException(e, taskFilePaths)
 
       case e: CometNativeException =>
         // it is generally considered bad practice to log and then rethrow an

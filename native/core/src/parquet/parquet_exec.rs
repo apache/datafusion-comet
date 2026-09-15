@@ -18,6 +18,7 @@
 use crate::execution::operators::ExecutionError;
 use crate::parquet::eager_page_index_reader_factory::{EagerPageIndexReaderFactory, ScanIoSource};
 use crate::parquet::encryption_support::{CometEncryptionConfig, ENCRYPTION_FACTORY_ID};
+use crate::parquet::file_error_context::ParquetErrorContext;
 use crate::parquet::name_fold::fold_schema_names;
 use crate::parquet::parquet_support::ObjectStoreBackend;
 use crate::parquet::parquet_support::SparkParquetOptions;
@@ -221,6 +222,11 @@ pub(crate) fn init_datasource_exec(
         _ => Arc::new(parquet_source),
     };
 
+    let file_source = if spark_parquet_options.checked_timestamp_overflow {
+        ParquetErrorContext::wrap(file_source)
+    } else {
+        file_source
+    };
     let expr_adapter_factory: Arc<dyn PhysicalExprAdapterFactory> = Arc::new(
         SparkPhysicalExprAdapterFactory::new(spark_parquet_options, default_values),
     );

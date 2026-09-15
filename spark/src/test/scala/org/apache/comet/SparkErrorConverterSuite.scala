@@ -40,11 +40,12 @@ class SparkErrorConverterSuite extends AnyFunSuite {
   }
 
   test("ParquetTimestampOverflow wraps the arithmetic cause in a file-read SparkException") {
-    val json = """{"errorType":"ParquetTimestampOverflow","errorClass":"","params":{}}"""
-    val path = "file:/tmp/data/part-0.parquet"
+    val path = "file:///tmp/data/bad%20timestamp%25.parquet"
+    val json =
+      s"""{"errorType":"ParquetTimestampOverflow","errorClass":"","params":{"filePath":"$path"}}"""
     val ex = SparkErrorConverter.convertToSparkException(
       new org.apache.comet.exceptions.CometQueryExecutionException(json),
-      taskFilePaths = Seq(path))
+      taskFilePaths = Seq("file:///tmp/data/healthy.parquet", path))
     assert(ex.getClass == classOf[SparkException])
     val error = ex.asInstanceOf[SparkException]
     val errorClass =

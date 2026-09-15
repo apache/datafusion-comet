@@ -88,8 +88,7 @@ object SparkErrorConverter extends ShimSparkErrorConverter {
     val rawParams = errorJson.params.getOrElse(Map.empty)
     // File-read errors without a native path use the per-task file list from CometExecIterator.
     val params =
-      if ((errorJson.errorType == "CannotReadFile" ||
-          errorJson.errorType == "ParquetTimestampOverflow")
+      if (errorJson.errorType == "CannotReadFile"
         && rawParams.get("filePath").forall(p => p == null || p.toString.isEmpty)
         && taskFilePaths.nonEmpty) {
         rawParams + ("filePath" -> taskFilePaths.mkString(","))

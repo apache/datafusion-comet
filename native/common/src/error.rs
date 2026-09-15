@@ -251,10 +251,10 @@ pub enum SparkError {
         spark_type: String,
     },
 
-    /// Overflow in Parquet's millis-to-micros conversion. Unlike a cast's LongOverflow, the JVM
-    /// wraps this in cannotReadFilesError, using the per-task file list for the path.
+    /// Overflow in Parquet's millis-to-micros conversion. The per-file reader fills in the
+    /// original Spark path before the JVM wraps this in cannotReadFilesError.
     #[error("long overflow")]
-    ParquetTimestampOverflow,
+    ParquetTimestampOverflow { file_path: String },
 
     /// A per-file read failure (corrupt footer/page, truncated/empty file, deleted file) raised by
     /// the native parquet reader / object_store. Classified by typed `DataFusionError` variant (no
@@ -359,7 +359,7 @@ impl SparkError {
             SparkError::DuplicateFieldByFieldId { .. } => "DuplicateFieldByFieldId",
             SparkError::ParquetMissingFieldIds => "ParquetMissingFieldIds",
             SparkError::ParquetSchemaConvert { .. } => "ParquetSchemaConvert",
-            SparkError::ParquetTimestampOverflow => "ParquetTimestampOverflow",
+            SparkError::ParquetTimestampOverflow { .. } => "ParquetTimestampOverflow",
             SparkError::CannotReadFile { .. } => "CannotReadFile",
             SparkError::Arrow(_) => "Arrow",
             SparkError::Internal(_) => "Internal",
@@ -622,6 +622,9 @@ impl SparkError {
                     "sparkType": spark_type,
                 })
             }
+            SparkError::ParquetTimestampOverflow { file_path } => {
+                serde_json::json!({ "filePath": file_path })
+            }
             SparkError::CannotReadFile { file_path, message } => {
                 serde_json::json!({
                     "filePath": file_path,
@@ -728,7 +731,7 @@ impl SparkError {
             }
 
             // File-read failures are wrapped by QueryExecutionErrors.cannotReadFilesError.
-            SparkError::CannotReadFile { .. } | SparkError::ParquetTimestampOverflow => {
+            SparkError::CannotReadFile { .. } | SparkError::ParquetTimestampOverflow { .. } => {
                 "org/apache/spark/SparkException"
             }
 
@@ -830,7 +833,7 @@ impl SparkError {
             SparkError::ParquetSchemaConvert { .. } => None,
 
             // The JVM's cannotReadFilesError supplies the version-appropriate error class.
-            SparkError::CannotReadFile { .. } | SparkError::ParquetTimestampOverflow => None,
+            SparkError::CannotReadFile { .. } | SparkError::ParquetTimestampOverflow { .. } => None,
 
             // Generic errors (no error class)
             SparkError::Arrow(_) | SparkError::Internal(_) => None,
@@ -975,16 +978,20 @@ mod tests {
 
     #[test]
     fn test_long_overflow_json() {
-        for (error, error_type, exception_class) in [
+        for (error, error_type, exception_class, params) in [
             (
                 SparkError::LongOverflow,
                 "LongOverflow",
                 "java/lang/ArithmeticException",
+                serde_json::json!({}),
             ),
             (
-                SparkError::ParquetTimestampOverflow,
+                SparkError::ParquetTimestampOverflow {
+                    file_path: "file:///bad%20timestamp.parquet".to_string(),
+                },
                 "ParquetTimestampOverflow",
                 "org/apache/spark/SparkException",
+                serde_json::json!({ "filePath": "file:///bad%20timestamp.parquet" }),
             ),
         ] {
             let parsed: serde_json::Value = serde_json::from_str(&error.to_json()).unwrap();
@@ -993,7 +1000,7 @@ mod tests {
                 serde_json::json!({
                     "errorType": error_type,
                     "errorClass": "",
-                    "params": {},
+                    "params": params,
                 })
             );
             assert_eq!(error.exception_class(), exception_class);

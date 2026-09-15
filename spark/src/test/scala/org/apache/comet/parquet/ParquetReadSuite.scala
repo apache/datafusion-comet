@@ -277,7 +277,8 @@ abstract class ParquetReadSuite extends CometTestBase {
     Seq(false, true).foreach { dictionaryEnabled =>
       Seq(92233720368547758L, -92233720368547758L).foreach { millis =>
         withTempDir { dir =>
-          val path = new Path(dir.toURI.toString, "part-r-0.parquet")
+          val path = new Path(dir.toURI.toString, "bad timestamp%.parquet")
+          val healthyPath = new Path(dir.toURI.toString, "healthy.parquet")
           val schema = MessageTypeParser.parseMessageType("""
             |message root {
             |  optional int64 ts(TIMESTAMP_MILLIS);
@@ -318,6 +319,13 @@ abstract class ParquetReadSuite extends CometTestBase {
           }
           writer.close()
 
+          val healthyWriter = createParquetWriter(schema, healthyPath, dictionaryEnabled)
+          val healthyRecord = new SimpleGroup(schema)
+          healthyRecord.add(0, 0L)
+          healthyRecord.add(1, 0L)
+          healthyWriter.write(healthyRecord)
+          healthyWriter.close()
+
           val footerReader = org.apache.parquet.hadoop.ParquetFileReader.open(
             org.apache.parquet.hadoop.util.HadoopInputFile
               .fromPath(path, spark.sessionState.newHadoopConf()))
@@ -335,17 +343,25 @@ abstract class ParquetReadSuite extends CometTestBase {
           }
 
           Seq(false, true).foreach { ansiEnabled =>
-            withSQLConf(SQLConf.ANSI_ENABLED.key -> ansiEnabled.toString) {
-              readParquetFile(path.toString) { df =>
+            withSQLConf(
+              SQLConf.ANSI_ENABLED.key -> ansiEnabled.toString,
+              SQLConf.FILES_MIN_PARTITION_NUM.key -> "1",
+              SQLConf.FILES_MAX_PARTITION_BYTES.key -> "134217728") {
+              readParquetFile(dir.toString) { df =>
                 val queries = Seq("ts", "ts_ntz", "s", "s.ts", "s.ts_ntz", "a", "m")
                   .map(column => df.select(column)) :+ df.select("ts").repartition(1)
                 queries.foreach { selected =>
-                  assert(collect(selected.queryExecution.executedPlan) {
-                    case _: CometNativeScanExec => true
-                  }.nonEmpty)
+                  val scans = collect(selected.queryExecution.executedPlan) {
+                    case scan: CometNativeScanExec => scan
+                  }
+                  assert(scans.nonEmpty)
+                  scans.foreach { scan =>
+                    assert(scan.perPartitionFilePaths.length == 1)
+                    assert(scan.perPartitionFilePaths.head.size == 2)
+                  }
 
                   val error = checkSparkError(selected, errorClass)
-                  assert(new Path(error.getMessageParameters.get("path")) == path)
+                  assert(new java.net.URI(error.getMessageParameters.get("path")) == path.toUri)
                   assert(error.getCause.getClass == classOf[ArithmeticException])
                   assert(error.getCause.getMessage == "long overflow")
                 }
