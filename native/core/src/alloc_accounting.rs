@@ -196,14 +196,28 @@ unsafe impl<A: GlobalAlloc> GlobalAlloc for AccountingAllocator<A> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, MutexGuard};
+
+    /// `BALANCE` is process-wide and the crate's tests run in parallel, so a test that reads it
+    /// sees every other test's allocations. The tests that move it by tens of megabytes take this
+    /// lock so they cannot land inside each other's windows; the rest of the crate is kept out by
+    /// making each window microseconds wide and each expected move far larger than anything else
+    /// allocates in that time.
+    static SERIAL: Mutex<()> = Mutex::new(());
+
+    fn serial() -> MutexGuard<'static, ()> {
+        SERIAL
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
 
     #[test]
     fn settle_accumulates_below_the_threshold() {
         let drift = Cell::new(0);
-        let before = BALANCE.load(Ordering::Relaxed);
         settle(&drift, 1024);
+        // A flush would have reset the drift to zero, so this alone shows the shared balance was
+        // not touched. Reading `BALANCE` here would race with every other test's allocations.
         assert_eq!(drift.get(), 1024, "small delta stays thread-local");
-        assert_eq!(BALANCE.load(Ordering::Relaxed), before);
     }
 
     #[test]
@@ -228,18 +242,29 @@ mod tests {
         assert_eq!(clamp_balance(4096), 4096);
     }
 
-    /// A real allocation must move the reported balance. Parallel test noise can only add to the
-    /// balance, so the assertion is one-sided.
+    /// A real allocation must move the reported balance: this is the one test that checks the
+    /// wrapper is actually installed as the global allocator for the current feature set, rather
+    /// than exercising it through a local instance.
+    ///
+    /// The block is zeroed and never touched, so it costs address space rather than resident
+    /// memory, and it is large enough that nothing else in the crate can free half of it inside the
+    /// microseconds between the two reads.
     #[test]
     #[cfg(feature = "alloc-accounting")]
     fn a_real_allocation_raises_the_balance() {
+        use std::hint::black_box;
+
+        const SIZE: usize = 256 * 1024 * 1024;
+        let _guard = serial();
         let before = current_balance();
-        // Well above the settle threshold, so it is guaranteed to flush.
-        let held: Vec<u8> = vec![0u8; 8 * 1024 * 1024];
+        // `black_box` keeps the allocation observable so it cannot be elided.
+        let held: Vec<u8> = black_box(vec![0u8; SIZE]);
         let during = current_balance();
+        black_box(&held);
         assert!(
-            during >= before + 4 * 1024 * 1024,
-            "8 MiB allocation should raise the balance (before={before}, during={during})"
+            during >= before + SIZE / 2,
+            "a {SIZE} byte allocation should raise the balance (before={before}, during={during}); \
+             is the accounting wrapper installed for this feature set?"
         );
         drop(held);
     }
@@ -275,6 +300,7 @@ mod tests {
 
         // Well above the settle threshold, so both the allocation and the free flush immediately.
         const SIZE: usize = 64 * 1024 * 1024;
+        let _guard = serial();
         let allocator = AccountingAllocator::new(Recording {
             balance_at_dealloc: AtomicUsize::new(usize::MAX),
         });
@@ -300,49 +326,33 @@ mod tests {
 
     /// Threads must settle their remaining drift on exit.
     ///
-    /// Each worker allocates a sub-threshold buffer — so the bytes are still sitting in its local
-    /// drift, never flushed — and hands ownership back to this thread before exiting. The matching
-    /// free therefore happens here, after the worker is gone, so the only way those bytes can ever
-    /// reach the shared balance is `ThreadDrift::drop`. Without the destructor the balance does not
-    /// move at all, and the later frees drive it *below* where it started.
+    /// The worker writes a drift straight into its `LOCAL_DRIFT` cell and exits. Without the
+    /// wrapper installed nothing else ever calls `track`, so the only path by which that value can
+    /// reach the shared balance is `ThreadDrift::drop`; that is the build CI runs, and the one in
+    /// which a missing destructor is caught. The value is far larger than any real allocation,
+    /// which makes the check immune to whatever the rest of the crate is allocating meanwhile.
+    /// The injected amount is taken back out afterwards so later tests see an unchanged balance.
     #[test]
-    #[cfg(feature = "alloc-accounting")]
     fn thread_exit_settles_remaining_drift() {
-        use std::sync::mpsc;
         use std::thread;
 
-        const THREADS: usize = 64;
-        const PER_THREAD: usize = 32 * 1024;
+        const INJECTED: isize = 1 << 40;
+        let _guard = serial();
+
+        let before = BALANCE.load(Ordering::Relaxed);
+        thread::spawn(|| {
+            LOCAL_DRIFT.with(|drift| drift.0.set(drift.0.get() + INJECTED));
+        })
+        .join()
+        .unwrap();
+        let moved = BALANCE.load(Ordering::Relaxed) - before;
+        BALANCE.fetch_sub(INJECTED, Ordering::Relaxed);
+
         assert!(
-            (PER_THREAD as isize) < SETTLE_THRESHOLD,
-            "the per-thread buffer must stay in local drift for this test to mean anything"
-        );
-
-        let (tx, rx) = mpsc::channel();
-        let before = current_balance() as isize;
-
-        for _ in 0..THREADS {
-            let tx = tx.clone();
-            thread::spawn(move || tx.send(vec![0u8; PER_THREAD]).unwrap())
-                .join()
-                .unwrap();
-        }
-        drop(tx);
-
-        let held: Vec<Vec<u8>> = rx.iter().collect();
-        assert_eq!(held.len(), THREADS);
-
-        let moved = current_balance() as isize - before;
-        let allocated = (THREADS * PER_THREAD) as isize;
-        // Half the expected total is a wide margin against parallel test noise while still being
-        // far outside anything the mutation (a destructor that discards the drift) could produce.
-        assert!(
-            moved >= allocated / 2,
-            "drift from exited threads never reached the shared balance: \
+            moved >= INJECTED / 2,
+            "drift from an exited thread never reached the shared balance: \
              balance moved {moved} bytes, expected at least {}",
-            allocated / 2
+            INJECTED / 2
         );
-
-        drop(held);
     }
 }

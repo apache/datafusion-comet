@@ -28,13 +28,19 @@
 //! through the `rlib`. `assert_accounting_is_live` fails the run if the wrapper is somehow not in
 //! effect — without it, a "with the feature" run could silently be a second baseline.
 //!
-//! `small_churn` is the worst case: allocations so small that the wrapper's bookkeeping is a
-//! meaningful fraction of the allocator's own work. `arrow_sized_churn` is closer to what Comet
-//! actually does, where a batch-sized buffer dwarfs the bookkeeping. Real query workloads sit at
-//! or below `arrow_sized_churn`, because they do actual work between allocations.
+//! `small_churn` is the worst case for the thread-local path: allocations so small that the
+//! wrapper's bookkeeping is a meaningful fraction of the allocator's own work. `threshold_churn` is
+//! the worst case for the shared counter: an alloc/free loop at exactly the 64 KiB settle threshold
+//! flushes to the process-wide atomic on every call, and the parallel variant does that from every
+//! core at once, so the gap between the single-threaded and parallel numbers is the cost of
+//! contention on that cacheline. `arrow_sized_churn` is closer to what Comet actually does, where
+//! a batch-sized buffer dwarfs the bookkeeping. Real query workloads sit at or below
+//! `arrow_sized_churn`, because they do actual work between allocations.
 
 use criterion::{criterion_group, criterion_main, BatchSize, Criterion, Throughput};
 use std::hint::black_box;
+use std::thread;
+use std::time::Instant;
 
 /// Guards against measuring nothing. If the wrapper were not actually installed in the benchmark
 /// binary, every "with the feature" number would silently be a second baseline run.
@@ -108,5 +114,58 @@ fn growth_churn(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, small_churn, arrow_sized_churn, growth_churn);
+/// Alloc/free of an untouched block, so the allocator call itself is most of the work and the
+/// wrapper's share is largest.
+fn alloc_free(size: usize) {
+    let v: Vec<u8> = Vec::with_capacity(black_box(size));
+    black_box(&v);
+}
+
+/// Alloc/free loops either side of the 64 KiB settle threshold, single-threaded and from every
+/// core at once.
+///
+/// A loop of one size never accumulates drift, so the threshold decides everything: at 32 KiB the
+/// alloc and the free cancel inside the thread-local cell and the shared counter is never touched,
+/// while at 64 KiB every alloc and every free flushes. The 64 KiB parallel case is therefore the
+/// upper bound on shared-counter contention: `available_parallelism()` threads each doing two
+/// atomic read-modify-writes per iteration on the same cacheline, with nothing else in between.
+///
+/// Times are reported per alloc/free pair per thread, so a parallel number equal to its
+/// single-threaded counterpart means the threads did not slow each other down at all.
+fn threshold_churn(c: &mut Criterion) {
+    assert_accounting_is_live();
+    let threads = thread::available_parallelism().map_or(4, |n| n.get());
+    let mut group = c.benchmark_group("alloc_overhead");
+    group.throughput(Throughput::Elements(1));
+    for size in [32 * 1024usize, 64 * 1024] {
+        let kb = size / 1024;
+        group.bench_function(format!("alloc_free_{kb}kb"), |b| {
+            b.iter(|| alloc_free(size));
+        });
+        group.bench_function(format!("parallel_alloc_free_{kb}kb_x{threads}"), |b| {
+            b.iter_custom(|iters| {
+                let start = Instant::now();
+                thread::scope(|scope| {
+                    for _ in 0..threads {
+                        scope.spawn(move || {
+                            for _ in 0..iters {
+                                alloc_free(size);
+                            }
+                        });
+                    }
+                });
+                start.elapsed()
+            });
+        });
+    }
+    group.finish();
+}
+
+criterion_group!(
+    benches,
+    small_churn,
+    threshold_churn,
+    arrow_sized_churn,
+    growth_churn
+);
 criterion_main!(benches);
