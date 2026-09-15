@@ -83,6 +83,7 @@ pub mod debug;
 mod backend {
     pub type Backend = tikv_jemallocator::Jemalloc;
     pub const BACKEND: Backend = tikv_jemallocator::Jemalloc;
+    pub const NAME: &str = "jemalloc";
 
     #[cfg(not(feature = "alloc-accounting"))]
     #[global_allocator]
@@ -97,6 +98,7 @@ mod backend {
 mod backend {
     pub type Backend = mimalloc::MiMalloc;
     pub const BACKEND: Backend = mimalloc::MiMalloc;
+    pub const NAME: &str = "mimalloc";
 
     #[cfg(not(feature = "alloc-accounting"))]
     #[global_allocator]
@@ -123,7 +125,14 @@ mod backend {
 mod backend {
     pub type Backend = std::alloc::System;
     pub const BACKEND: Backend = std::alloc::System;
+    pub const NAME: &str = "system";
 }
+
+/// The name of the allocator backend this build selected: `"jemalloc"`, `"mimalloc"` or
+/// `"system"`. This is the one place the selection is decided, so anything that needs to know
+/// which allocator is in effect (the `alloc_overhead` benchmark's liveness check, for instance)
+/// reads it from here rather than re-deriving it from the feature set.
+pub use backend::NAME as ALLOCATOR_BACKEND;
 
 #[cfg(feature = "alloc-accounting")]
 #[global_allocator]

@@ -50,11 +50,31 @@ use std::hint::black_box;
 use std::thread;
 use std::time::Instant;
 
-/// Guards against measuring the wrong allocator. jemalloc keeps its own count of bytes it has
-/// served; if it is not the global allocator of this binary that count stays at zero, and a
-/// "jemalloc" baseline would in fact be the system allocator.
-#[cfg(feature = "jemalloc")]
+/// Guards against measuring the wrong allocator, and says which one is being measured.
+///
+/// Which backend is in effect is `lib.rs`'s decision, not this crate's feature flags': with
+/// `jemalloc,mimalloc` together the library deliberately falls back to the system allocator, and
+/// jemalloc on MSVC is not selected at all. So the check asks the library which backend it chose
+/// rather than re-deriving that from the feature set, and can never disagree with the selection it
+/// is meant to verify.
 fn assert_backend_is_live() {
+    static ANNOUNCE: std::sync::Once = std::sync::Once::new();
+    ANNOUNCE.call_once(|| {
+        eprintln!(
+            "alloc_overhead: measuring the `{}` allocator backend",
+            comet::ALLOCATOR_BACKEND
+        )
+    });
+    if comet::ALLOCATOR_BACKEND == "jemalloc" {
+        assert_jemalloc_is_live();
+    }
+}
+
+/// jemalloc keeps its own count of bytes it has served; if it is not the global allocator of this
+/// binary that count stays at zero, and a "jemalloc" baseline would in fact be the system
+/// allocator.
+#[cfg(feature = "jemalloc")]
+fn assert_jemalloc_is_live() {
     use tikv_jemalloc_ctl::{epoch, stats};
     let held: Vec<u8> = black_box(vec![1u8; 8 * 1024 * 1024]);
     black_box(&held);
@@ -62,14 +82,17 @@ fn assert_backend_is_live() {
     let allocated = stats::allocated::read().expect("jemalloc stats.allocated");
     assert!(
         allocated >= 8 * 1024 * 1024,
-        "the jemalloc feature is enabled but jemalloc is not the global allocator of this binary \
+        "the library selected jemalloc but jemalloc is not the global allocator of this binary \
          (stats.allocated = {allocated}); the numbers below would be meaningless"
     );
     drop(held);
 }
 
+/// Without the feature the library cannot have selected jemalloc, so this is never reached.
 #[cfg(not(feature = "jemalloc"))]
-fn assert_backend_is_live() {}
+fn assert_jemalloc_is_live() {
+    unreachable!("the library reports the jemalloc backend but the feature is not enabled");
+}
 
 /// Guards against measuring nothing. If the wrapper were not actually installed in the benchmark
 /// binary, every "with the feature" number would silently be a second baseline run.
