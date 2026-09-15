@@ -20,12 +20,12 @@
 #
 # The five Spark profiles cost about the same each, and together they are
 # three quarters of what the Linux build spends on a pull request. Only one of
-# them is the default build profile, so a pull request runs the Comet test
-# suites against that one and the merge queue runs all five. A job-level `if:`
-# cannot see `matrix`, so the selection has to happen before the matrix is
-# expanded: the `lint` job runs this script and publishes the result as a job
-# output that `linux-test` reads with `fromJSON`, the same way
-# spark-sql-modules.py picks the Spark SQL shards.
+# them is the default build profile, so a pull request and the merge queue run
+# the Comet test suites against that one and the nightly run covers the other
+# four. A job-level `if:` cannot see `matrix`, so the selection has to happen
+# before the matrix is expanded: the `lint` job runs this script and publishes
+# the result as a job output that `linux-test` reads with `fromJSON`, the same
+# way spark-sql-modules.py picks the Spark SQL shards.
 #
 # `lint-java` keeps its own literal profile list. It compiles every profile it
 # can on every pull request (about five minutes each), which is what keeps a
@@ -33,7 +33,7 @@
 # runtime suites move behind it.
 #
 # Usage:
-#   linux-test-profiles.py --profiles all|pr|queue-only --github-output $GITHUB_OUTPUT
+#   linux-test-profiles.py --profiles all|pr|nightly --github-output $GITHUB_OUTPUT
 #   linux-test-profiles.py --profiles pr          (prints the matrix JSON)
 
 import argparse
@@ -42,19 +42,19 @@ import sys
 from pathlib import Path
 
 # `tier` is what --profiles selects on: "pr" rows run on every pull request
-# and in the queue, "queue" rows only in the queue (or with the
+# and in the queue, "nightly" rows only in the nightly run (or with the
 # `run-all-spark-profiles` label). The goal of the list is coverage of every
 # Java, Scala and Spark version without testing every combination.
 PROFILES = [
-    {"name": "Spark 3.4, JDK 17, Scala 2.12", "java_version": "17", "maven_opts": "-Pspark-3.4 -Pscala-2.12", "tier": "queue"},
-    {"name": "Spark 3.5, JDK 17, Scala 2.13", "java_version": "17", "maven_opts": "-Pspark-3.5 -Pscala-2.13", "tier": "queue"},
-    {"name": "Spark 4.0, JDK 21", "java_version": "21", "maven_opts": "-Pspark-4.0", "tier": "queue"},
+    {"name": "Spark 3.4, JDK 17, Scala 2.12", "java_version": "17", "maven_opts": "-Pspark-3.4 -Pscala-2.12", "tier": "nightly"},
+    {"name": "Spark 3.5, JDK 17, Scala 2.13", "java_version": "17", "maven_opts": "-Pspark-3.5 -Pscala-2.13", "tier": "nightly"},
+    {"name": "Spark 4.0, JDK 21", "java_version": "21", "maven_opts": "-Pspark-4.0", "tier": "nightly"},
     # The default build profile, and the one a contributor builds locally.
     {"name": "Spark 4.1, JDK 17", "java_version": "17", "maven_opts": "-Pspark-4.1", "tier": "pr"},
-    {"name": "Spark 4.2, JDK 17", "java_version": "17", "maven_opts": "-Pspark-4.2", "tier": "queue"},
+    {"name": "Spark 4.2, JDK 17", "java_version": "17", "maven_opts": "-Pspark-4.2", "tier": "nightly"},
 ]
 
-SELECTORS = ("all", "pr", "queue-only")
+SELECTORS = ("all", "pr", "nightly")
 
 
 def select(profiles):
@@ -66,7 +66,7 @@ def select(profiles):
     elif profiles == "pr":
         rows = [row for row in PROFILES if row["tier"] == "pr"]
     else:
-        rows = [row for row in PROFILES if row["tier"] == "queue"]
+        rows = [row for row in PROFILES if row["tier"] == "nightly"]
     return [{key: value for key, value in row.items() if key != "tier"} for row in rows]
 
 
@@ -75,7 +75,7 @@ def main(argv):
     parser.add_argument(
         "--profiles",
         default="all",
-        help="all, pr (the profiles every pull request runs) or queue-only (the ones it does not)",
+        help="all, pr (the profiles every pull request runs) or nightly (the ones it does not)",
     )
     parser.add_argument("--github-output", type=Path, help="append matrix=<json> to this $GITHUB_OUTPUT file")
     args = parser.parse_args(argv)

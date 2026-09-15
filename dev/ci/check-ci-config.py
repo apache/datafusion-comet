@@ -79,8 +79,9 @@ AGGREGATOR_NAME_EXPR = re.compile(
 # Jobs that legitimately stay out of the aggregator's `needs:`. `docs` deploys
 # to asf-site on push to main; it gates nothing and is never part of a merge
 # decision, so folding it in would only turn a failed site deploy into a red
-# `Required Checks` on main.
-AGGREGATOR_EXEMPT = {AGGREGATOR_JOB, "docs"}
+# `Required Checks` on main. `nightly_report` runs *after* the aggregator, on
+# the scheduled event only, to open an issue when the nightly tier fails.
+AGGREGATOR_EXEMPT = {AGGREGATOR_JOB, "docs", "nightly_report"}
 
 # Changed-file list -> the set of outputs compute-changes.py must report true.
 # Every other output must be false. Keep one case per shared build input so a
@@ -147,13 +148,14 @@ ROUTING_CASES = [
 # derived from POLICY, so that a change to the routing has to be stated twice
 # and cannot be made by accident.
 # The PR tier is the Linux build and nothing else. Every Spark SQL and Iceberg
-# suite waits for the queue, or for its label.
+# suite waits for the queue or the nightly run, or for its label.
 PR_TIER = {"build_linux", "build_linux_full"}
 SPARK_OPT_IN = {"spark_3_5", "spark_4_0", "spark_4_1", "spark_4_1_hive"}
-# Spark 3.4 is deprecated and sits outside the queue tier entirely: a label on
-# a pull request, or a workflow_dispatch, and nothing else. Keeping it in its
-# own set is what makes the `merge_group` case below assert its absence rather
-# than quietly accept it coming back.
+# Spark 3.4 is deprecated and sits outside the queue and nightly tiers
+# entirely: a label on a pull request, or a workflow_dispatch, and nothing
+# else. Keeping it in its own set is what makes the `merge_group` and
+# `schedule` cases below assert its absence rather than quietly accept it
+# coming back.
 SPARK_DEPRECATED = {"spark_3_4"}
 ICEBERG_OPT_IN = {"iceberg_1_8", "iceberg_1_9", "iceberg_1_10", "iceberg_1_11"}
 # `build_linux_all_profiles` is the linux-test matrix's non-default Spark
@@ -165,16 +167,34 @@ BUILD_OPT_IN = {
     "delta_gate",
     "pyarrow_udf",
 }
-QUEUE_TIER = PR_TIER | SPARK_OPT_IN | ICEBERG_OPT_IN | BUILD_OPT_IN
-ALL_JOBS = QUEUE_TIER | SPARK_DEPRECATED | {"docs"}
+# The queue runs one Spark version (4.1, the default profile) and one Iceberg
+# version (1.11, the only Spark 4.1 coverage). Every other Spark and Iceberg
+# version, and the linux-test matrix's other Spark profiles, run once a night
+# against main instead. Spelled out as the set of jobs the queue must *not*
+# run, so a suite drifting back into the queue fails the `merge_group` case.
+NIGHTLY_TIER = {
+    "spark_3_5",
+    "spark_4_0",
+    "iceberg_1_8",
+    "iceberg_1_9",
+    "iceberg_1_10",
+    "build_linux_all_profiles",
+}
+QUEUE_TIER = (PR_TIER | SPARK_OPT_IN | ICEBERG_OPT_IN | BUILD_OPT_IN) - NIGHTLY_TIER
+ALL_JOBS = QUEUE_TIER | NIGHTLY_TIER | SPARK_DEPRECATED | {"docs"}
 
 POLICY_CASES = [
     # A manual run may exercise anything.
     ({"name": "workflow_dispatch"}, ALL_JOBS),
     # The merge queue is the authoritative gate: everything except the site
-    # deploy, which can only run once the commit is actually on main, and the
-    # deprecated Spark 3.4 suite, which no longer gates a merge.
+    # deploy, which can only run once the commit is actually on main, the
+    # nightly tier, and the deprecated Spark 3.4 suite, which no longer gates
+    # a merge.
     ({"name": "merge_group"}, QUEUE_TIER),
+    # The scheduled run is the nightly tier and nothing else. The queue already
+    # ran everything in QUEUE_TIER against the tree that is now main, so a
+    # queue job showing up here is a suite being paid for twice a day.
+    ({"name": "schedule"}, NIGHTLY_TIER),
     # Push to main is the site deploy plus the Linux build, which is there to
     # refresh main's actions/cache entries (see POLICY). `build_linux_full`
     # must stay out: it is what turns the lints and the test matrix back on,
@@ -185,13 +205,13 @@ POLICY_CASES = [
     # opt-in suites stay off without their label.
     ({"name": "pull_request", "action": "opened", "labels": []}, PR_TIER),
     ({"name": "pull_request", "action": "synchronize", "labels": []}, PR_TIER),
-    # Spark 3.5 moved behind the queue; its label is the escape hatch.
+    # Spark 3.5 runs nightly; its label is the escape hatch.
     (
         {"name": "pull_request", "action": "synchronize", "labels": ["run-spark-3.5-tests"]},
         PR_TIER | {"spark_3_5"},
     ),
-    # So did the macOS build and the benchmark compile check, each with its
-    # own label. Neither label pulls in the other.
+    # The macOS build and the benchmark compile check are queue-only, each
+    # with its own label. Neither label pulls in the other.
     (
         {"name": "pull_request", "action": "synchronize", "labels": ["run-macos-tests"]},
         PR_TIER | {"build_macos"},
@@ -229,10 +249,10 @@ POLICY_CASES = [
         },
         {"build_macos"},
     ),
-    # The linux-test matrix's non-default Spark profiles are queue-only with
+    # The linux-test matrix's non-default Spark profiles run nightly, with
     # their own label. On a pushed commit the label adds them to the PR tier's
     # Linux build call (`profiles: all`); on the `labeled` event alone it is
-    # the only output set, and ci.yml turns that into `profiles: queue-only`
+    # the only output set, and ci.yml turns that into `profiles: nightly`
     # so the default profile, which already ran at this commit, is not repeated.
     (
         {"name": "pull_request", "action": "synchronize", "labels": ["run-all-spark-profiles"]},
@@ -422,11 +442,11 @@ def check_spark_sql_modules():
 
 
 def check_linux_test_profiles():
-    """`--profiles pr` and `--profiles queue-only` must partition `--profiles all`.
+    """`--profiles pr` and `--profiles nightly` must partition `--profiles all`.
 
     ci.yml maps `build_linux_full` and `build_linux_all_profiles` onto these
     three values. A profile in neither tier would never run anywhere; one in
-    both would run twice in the queue. The `pr` tier also has to be the
+    both would run twice on a labelled pull request. The `pr` tier also has to be the
     default build profile and nothing else, which is the whole reason the
     split exists. And the caller has to pass the input at all: its default is
     `all`, so a dropped `with:` line quietly puts every profile back on the
@@ -438,14 +458,14 @@ def check_linux_test_profiles():
     failures = []
     names = lambda rows: [row["name"] for row in rows]
     everything = names(module.select("all"))
-    pr, queue_only = names(module.select("pr")), names(module.select("queue-only"))
+    pr, nightly = names(module.select("pr")), names(module.select("nightly"))
     if pr != ["Spark 4.1, JDK 17"]:
         failures.append(f"the pr tier must be the default build profile alone, got {pr}")
-    if not queue_only:
-        failures.append("the queue-only tier is empty (see PROFILES in dev/ci/linux-test-profiles.py)")
-    if sorted(pr + queue_only) != sorted(everything):
+    if not nightly:
+        failures.append("the nightly tier is empty (see PROFILES in dev/ci/linux-test-profiles.py)")
+    if sorted(pr + nightly) != sorted(everything):
         failures.append(
-            f"pr {pr} + queue-only {queue_only} does not partition all {everything} "
+            f"pr {pr} + nightly {nightly} does not partition all {everything} "
             f"(see PROFILES in dev/ci/linux-test-profiles.py)"
         )
     if len(set(everything)) != len(everything):

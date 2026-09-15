@@ -20,19 +20,25 @@
 # change touched files relevant to that workflow.
 #
 # Merging goes through GitHub's merge queue (see `rulesets` in `.asf.yaml`), so
-# there are two tiers:
+# there are three tiers:
 #
 #   pull_request  fast feedback. The Linux build only, with its test matrix
 #                 run against the default Spark profile (4.1) alone.
-#   merge_group   the authoritative gate. The Linux build with the test
-#                 matrix against every Spark profile, plus the macOS build,
+#   merge_group   the authoritative gate. The PR tier plus the macOS build,
 #                 the benchmark compile check, the Delta contrib build gate,
-#                 the PyArrow UDF suite, Spark 3.5/4.0/4.1 and Iceberg
-#                 1.8/1.9/1.10/1.11, evaluated against the merge result
-#                 rather than the PR head.
+#                 the PyArrow UDF suite, Spark SQL on Spark 4.1 and Iceberg
+#                 1.11, evaluated against the merge result rather than the
+#                 PR head. One Spark version and one Iceberg version, both
+#                 the default profile's.
+#   schedule      the nightly regression sweep of everything else: the Linux
+#                 test matrix against the other Spark profiles, Spark SQL on
+#                 Spark 3.5 and 4.0, and Iceberg 1.8/1.9/1.10, against main
+#                 as it stands. It skips itself when nothing has landed since
+#                 the previous night, and a failure opens (or comments on) an
+#                 issue labelled `ci-nightly-failure`.
 #
-# Spark 3.4 is deprecated and sits outside both tiers: it runs only when a
-# pull request carries `run-spark-3.4-tests`, or from a manual dispatch.
+# Spark 3.4 is deprecated and sits outside all three tiers: it runs only when
+# a pull request carries `run-spark-3.4-tests`, or from a manual dispatch.
 #
 # Which tier a job sits in is POLICY in dev/ci/compute-changes.py, not an
 # expression here. Heavy jobs deliberately have no `push` tier: the queue
@@ -51,8 +57,11 @@ name: CI
 # opened/synchronize run. Keying the group on the label name keeps labeled runs
 # in their own subgroup so they never cancel the real commit run; opened and
 # synchronize both map to `commit` so a new push still supersedes its predecessor.
+# The nightly run is keyed on the same sha as the push-to-main run of the commit
+# at the tip of main, so it gets its own subgroup too; otherwise a merge landing
+# just before the schedule fires would have its cache refresh cancelled.
 concurrency:
-  group: ${{ github.repository }}-${{ github.head_ref || github.sha }}-${{ github.workflow }}-${{ github.event.action == 'labeled' && github.event.label.name || 'commit' }}
+  group: ${{ github.repository }}-${{ github.head_ref || github.sha }}-${{ github.workflow }}-${{ github.event_name == 'schedule' && 'nightly' || github.event.action == 'labeled' && github.event.label.name || 'commit' }}
   cancel-in-progress: true
 
 on:
@@ -62,6 +71,11 @@ on:
   push:
     branches:
       - main
+  schedule:
+    # 06:00 UTC daily: after the evening's merges in the Americas and before
+    # the working day starts in Europe, so a red nightly is waiting when the
+    # first people look. Miri runs at 04:00 and the snapshot publish at 03:00.
+    - cron: '0 6 * * *'
   workflow_dispatch:
 
 jobs:
@@ -206,6 +220,20 @@ jobs:
             # every output true for this event so a manual run can exercise
             # any gated job.
             :
+          elif [[ "$EVENT_NAME" == "schedule" ]]; then
+            # Same: the nightly tests main as it stands, so there is nothing
+            # to diff and compute-changes.py runs the whole nightly tier. It
+            # skips when HEAD predates the previous night's run, so a quiet
+            # weekend does not re-test the same tree three times. The slack
+            # covers scheduling jitter; if a nightly fails for an
+            # infrastructure reason and nothing lands the next day, trigger
+            # ci.yml by hand instead.
+            head_ts=$(git log -1 --format=%ct)
+            age=$(( $(date +%s) - head_ts ))
+            if [[ "$age" -gt $(( 24 * 3600 + 1800 )) ]]; then
+              echo "HEAD is $(( age / 3600 ))h old; nothing has landed since the last nightly"
+              export NIGHTLY_STALE=true
+            fi
           elif [[ "$EVENT_NAME" == "pull_request" ]]; then
             git diff --name-only "$PR_BASE_SHA"..."$PR_HEAD_SHA" > changed_files.txt
           elif [[ "$EVENT_NAME" == "merge_group" ]]; then
@@ -248,21 +276,22 @@ jobs:
     #
     #   pull request          linux, full            -> profiles: pr
     #   ... with the label    linux, full, all       -> profiles: all
-    #   `labeled` run         all                    -> profiles: queue-only
-    #   merge queue           linux, full, all       -> profiles: all
+    #   `labeled` run         all                    -> profiles: nightly
+    #   merge queue           linux, full            -> profiles: pr
+    #   nightly               all                    -> profiles: nightly
     #   push to main          linux                  -> cache-refresh-only
     #
     # Only push to main sets `build_linux` without `build_linux_full`, which is
     # the whole point: the queue has already tested that tree, so the push run
-    # is there for the caches alone. A `labeled` run sets only the third, and
-    # then runs just the profiles the PR tier skipped.
+    # is there for the caches alone. A `labeled` run and the nightly set only
+    # the third, and then run just the profiles the PR and queue tiers skip.
     if: needs.changes.outputs.build_linux == 'true' || needs.changes.outputs.build_linux_all_profiles == 'true'
     uses: ./.github/workflows/pr_build_linux.yml
     with:
       cache-refresh-only: ${{ needs.changes.outputs.build_linux_full != 'true' && needs.changes.outputs.build_linux_all_profiles != 'true' }}
       profiles: >-
         ${{ needs.changes.outputs.build_linux_all_profiles != 'true' && 'pr'
-            || needs.changes.outputs.build_linux_full != 'true' && 'queue-only'
+            || needs.changes.outputs.build_linux_full != 'true' && 'nightly'
             || 'all' }}
 
   pr_build_macos:
@@ -332,7 +361,7 @@ jobs:
   spark_3_5:
     name: Spark SQL Tests (Spark 3.5)
     needs: changes
-    # Queue-only by default; PRs need the `run-spark-3.5-tests` label.
+    # Nightly by default; PRs need the `run-spark-3.5-tests` label.
     if: needs.changes.outputs.spark_3_5 == 'true'
     uses: ./.github/workflows/spark_sql_test_reusable.yml
     with:
@@ -343,9 +372,8 @@ jobs:
   spark_4_0:
     name: Spark SQL Tests (Spark 4.0)
     needs: changes
-    # Queue-only by default; PRs need the `run-spark-4.0-tests` label. Swapped
-    # with spark_4_1 on the `oom` branch to validate the memory caps against
-    # Spark 4.1 by default.
+    # Nightly by default; PRs need the `run-spark-4.0-tests` label. Spark 4.1
+    # is the one Spark SQL suite the queue runs, being the default profile.
     if: needs.changes.outputs.spark_4_0 == 'true'
     uses: ./.github/workflows/spark_sql_test_reusable.yml
     with:
@@ -376,7 +404,7 @@ jobs:
   iceberg_1_8:
     name: Iceberg Spark SQL Tests (Iceberg 1.8)
     needs: changes
-    # Queue-only by default; PRs need the `run-iceberg-tests` label.
+    # Nightly by default; PRs need the `run-iceberg-tests` label.
     if: needs.changes.outputs.iceberg_1_8 == 'true'
     uses: ./.github/workflows/iceberg_spark_test_reusable.yml
     with:
@@ -389,7 +417,7 @@ jobs:
   iceberg_1_9:
     name: Iceberg Spark SQL Tests (Iceberg 1.9)
     needs: changes
-    # Queue-only by default; PRs need the `run-iceberg-tests` label.
+    # Nightly by default; PRs need the `run-iceberg-tests` label.
     if: needs.changes.outputs.iceberg_1_9 == 'true'
     uses: ./.github/workflows/iceberg_spark_test_reusable.yml
     with:
@@ -402,7 +430,7 @@ jobs:
   iceberg_1_10:
     name: Iceberg Spark SQL Tests (Iceberg 1.10)
     needs: changes
-    # Queue-only by default; PRs need the `run-iceberg-tests` label.
+    # Nightly by default; PRs need the `run-iceberg-tests` label.
     if: needs.changes.outputs.iceberg_1_10 == 'true'
     uses: ./.github/workflows/iceberg_spark_test_reusable.yml
     with:
@@ -416,8 +444,8 @@ jobs:
     name: Iceberg Spark SQL Tests (Iceberg 1.11)
     needs: changes
     # Queue-only by default; PRs need the `run-iceberg-tests` label. Iceberg
-    # 1.11 is our only Spark 4.1 Iceberg coverage, and it was the PR-tier
-    # Iceberg job for that reason until every suite moved behind the queue.
+    # 1.11 is our only Spark 4.1 Iceberg coverage, which is why it is the one
+    # Iceberg version the queue runs while 1.8/1.9/1.10 run nightly.
     if: needs.changes.outputs.iceberg_1_11 == 'true'
     uses: ./.github/workflows/iceberg_spark_test_reusable.yml
     with:
@@ -493,3 +521,69 @@ jobs:
         run: |
           echo "::error::One or more upstream jobs did not succeed. See the results above."
           exit 1
+
+  # ---------------------------------------------------------------------------
+  # nightly_report: a red nightly has no pull request to show up on, and a
+  # scheduled run only emails whoever last touched the workflow file, so
+  # without this a regression in the nightly tier sits unnoticed on the
+  # Actions tab. On the scheduled event, and only when `required_checks` is
+  # not green, it opens an issue labelled `ci-nightly-failure` listing the
+  # failed jobs, or comments on the one that is already open so consecutive
+  # red nights accumulate in one place instead of one issue a day. Closing
+  # the issue is how the failure is acknowledged; the next red night opens a
+  # new one.
+  #
+  # It sits downstream of the aggregator rather than of the nightly jobs
+  # themselves so the job list here does not have to be kept in step with
+  # POLICY. It is exempt from `required_checks.needs` in
+  # dev/ci/check-ci-config.py for the same reason `docs` is: it is never part
+  # of a merge decision.
+  # ---------------------------------------------------------------------------
+  nightly_report:
+    name: Nightly failure report
+    needs: required_checks
+    if: always() && github.event_name == 'schedule' && needs.required_checks.result != 'success'
+    permissions:
+      actions: read
+      issues: write
+    runs-on: ubuntu-slim
+    steps:
+      - uses: actions/github-script@v9
+        with:
+          script: |
+            const label = 'ci-nightly-failure';
+            const { owner, repo } = context.repo;
+            const runUrl = `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`;
+            const shortSha = context.sha.slice(0, 10);
+            const day = new Date().toISOString().slice(0, 10);
+
+            const jobs = await github.paginate(github.rest.actions.listJobsForWorkflowRun, {
+              owner, repo, run_id: context.runId, filter: 'latest', per_page: 100,
+            });
+            const failed = jobs
+              .filter((job) => job.conclusion === 'failure' || job.conclusion === 'cancelled')
+              .map((job) => `- [${job.name}](${job.html_url}) (${job.conclusion})`);
+
+            const body = [
+              `The nightly CI run against \`main\` at ${shortSha} did not pass: ${runUrl}`,
+              '',
+              failed.length ? 'Jobs that did not succeed:' : 'No individual job reported a failure; see the run for details.',
+              ...failed,
+              '',
+              'The nightly tier runs the Spark and Iceberg versions the merge queue does not',
+              '(see `POLICY` in `dev/ci/compute-changes.py`). Close this issue once the failure',
+              'is understood; the next red nightly opens a new one.',
+            ].join('\n');
+
+            const { data: open } = await github.rest.issues.listForRepo({
+              owner, repo, labels: label, state: 'open', per_page: 1,
+            });
+            if (open.length > 0) {
+              await github.rest.issues.createComment({ owner, repo, issue_number: open[0].number, body });
+              core.info(`Commented on #${open[0].number}`);
+            } else {
+              const { data: issue } = await github.rest.issues.create({
+                owner, repo, title: `Nightly CI failed on ${day}`, body, labels: [label],
+              });
+              core.info(`Opened #${issue.number}`);
+            }
