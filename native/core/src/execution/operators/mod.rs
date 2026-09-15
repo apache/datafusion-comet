@@ -28,6 +28,7 @@ mod aligned_stream_reader;
 mod copy;
 mod dynamic_filter;
 mod dynamic_filter_join;
+mod parquet_reader_filter;
 pub(crate) use dynamic_filter_join::DynamicFilterJoinExec;
 mod filter;
 pub(crate) use filter::CometFilterExec;
