@@ -23,7 +23,7 @@ import scala.util.Random
 
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.{Column, CometTestBase, DataFrame, Row}
-import org.apache.spark.sql.catalyst.expressions.{Alias, Cast, FromUnixTime, Literal, StructsToJson, TruncDate, TruncTimestamp}
+import org.apache.spark.sql.catalyst.expressions.{Alias, Cast, FromUnixTime, InSet, Literal, StructsToJson, TruncDate, TruncTimestamp}
 import org.apache.spark.sql.catalyst.optimizer.{ConvertToLocalRelation, OptimizeIn, SimplifyExtractValueOps}
 import org.apache.spark.sql.comet.CometProjectExec
 import org.apache.spark.sql.execution.{ProjectExec, SparkPlan}
@@ -1685,10 +1685,11 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("test in(set)/not in(set)") {
     Seq("100", "0").foreach { inSetThreshold =>
-      Seq(false, true).foreach { dictionary =>
+      for (dictionary <- Seq(false, true); codegen <- Seq("false", "true")) {
         withSQLConf(
           SQLConf.OPTIMIZER_INSET_CONVERSION_THRESHOLD.key -> inSetThreshold,
-          "parquet.enable.dictionary" -> dictionary.toString) {
+          "parquet.enable.dictionary" -> dictionary.toString,
+          CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> codegen) {
           val table = "names"
           withTable(table) {
             sql(s"create table $table(id int, name varchar(20)) using parquet")
@@ -1696,9 +1697,15 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
               s"insert into $table values(1, 'James'), (1, 'Jones'), (2, 'Smith'), (3, 'Smith')," +
                 "(NULL, 'Jones'), (4, NULL)")
 
-            checkSparkAnswerAndOperator(s"SELECT * FROM $table WHERE id in (1, 2, 4, NULL)")
-            checkSparkAnswerAndOperator(
-              s"SELECT * FROM $table WHERE name in ('Smith', 'Brown', NULL)")
+            val nativeName = if (inSetThreshold == "0") "inset" else "in"
+            checkSparkAnswerAndImpl(
+              s"SELECT * FROM $table WHERE id in (1, 2, 4, NULL)",
+              native = Seq(nativeName),
+              dispatched = Seq.empty)
+            checkSparkAnswerAndImpl(
+              s"SELECT * FROM $table WHERE name in ('Smith', 'Brown', NULL)",
+              native = Seq(nativeName),
+              dispatched = Seq.empty)
 
             // TODO: why with not in, the plan is only `LocalTableScan`?
             checkSparkAnswerAndOperator(s"SELECT * FROM $table WHERE id not in (1)")
@@ -1723,12 +1730,34 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       withParquetTable(data, "tbl") {
         // An unset config exercises the version-dependent default, which follows ANSI mode on
         // Spark 4.0+ and is always the legacy behavior on Spark 3.x.
-        for (legacy <- Seq(Some("true"), Some("false"), None); ansi <- Seq("true", "false")) {
+        for {
+          legacy <- Seq(Some("true"), Some("false"), None)
+          ansi <- Seq("true", "false")
+          codegen <- Seq("true", "false")
+        } {
           val legacyConf = legacy.map("spark.sql.legacy.nullInEmptyListBehavior" -> _).toSeq
-          withSQLConf(Seq(SQLConf.ANSI_ENABLED.key -> ansi) ++ legacyConf: _*) {
-            val df = sql("SELECT _1 AS a FROM tbl")
-              .select(col("a"), col("a").isin(), !col("a").isin())
-            checkSparkAnswer(df)
+          withSQLConf(
+            Seq(
+              SQLConf.ANSI_ENABLED.key -> ansi,
+              CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> codegen) ++ legacyConf: _*) {
+            val input = sql("SELECT _1 AS a FROM tbl")
+            val emptySet = InSet(input.queryExecution.analyzed.output.head, Set.empty[Any])
+            val df = input.select(
+              col("a"),
+              col("a").isin(),
+              !col("a").isin(),
+              getColumnFromExpression(emptySet))
+            val legacyEnabled = !CometSparkSessionExtensions.isSpark35Plus ||
+              legacy.map(_.toBoolean).getOrElse(!isSpark40Plus || !ansi.toBoolean)
+            if (!legacyEnabled) {
+              checkSparkAnswerAndImpl(df, native = Seq("in", "inset"))
+            } else if (codegen.toBoolean) {
+              checkSparkAnswerAndImpl(df, dispatched = Seq("in", "inset"))
+            } else {
+              checkSparkAnswerAndFallbackReason(
+                df,
+                s"in: ${CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key}=false")
+            }
           }
         }
       }
