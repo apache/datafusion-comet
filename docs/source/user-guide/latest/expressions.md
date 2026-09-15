@@ -400,7 +400,7 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | `map_concat` | ✅ | Codegen dispatch |  |
 | `map_contains_key` | ✅ | — |  |
 | `map_entries` | ✅ | Native |  |
-| `map_from_arrays` | ✅ | Native |  |
+| `map_from_arrays` | ✅ | Hybrid | LAST_WIN routes through the JVM codegen dispatcher; EXCEPTION runs natively |
 | `map_from_entries` | ✅ | Hybrid | BinaryType key/value falls back (Incompatible) ([details](compatibility/expressions/map.md)) |
 | `map_keys` | ✅ | Native |  |
 | `map_values` | ✅ | Native |  |
