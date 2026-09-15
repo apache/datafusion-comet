@@ -242,7 +242,9 @@ All configuration options support bucket-specific overrides using the pattern `f
 `fs.s3a.path.style.access` selects how the bucket is placed in the request URL: virtual-hosted
 addressing (the default, `false`) sends requests to `https://<bucket>.<endpoint>`, while path-style
 (`true`) sends them to `https://<endpoint>/<bucket>`, which many S3-compatible services such as MinIO
-require. An endpoint whose host is an IP address is always addressed path-style, as the AWS SDK does.
+require. An endpoint whose host is an IP address is always addressed path-style, as the AWS SDK does,
+and so is a bucket whose name contains a dot over HTTPS, since the dotted host falls outside S3's
+wildcard certificate.
 Earlier Comet releases addressed every custom `fs.s3a.endpoint` path-style whatever the flag said,
 so a MinIO or Ceph RGW deployment that never set the flag now sends requests to `<bucket>.<host>`
 and fails with a DNS error; set `fs.s3a.path.style.access=true` to keep the previous behavior.

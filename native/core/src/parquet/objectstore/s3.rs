@@ -244,7 +244,11 @@ fn extract_s3_config_options(
     // and treats non-boolean text as that default. object_store expects the inverse flag.
     let path_style_access = get_config_trimmed(configs, bucket, "path.style.access")
         .is_some_and(|value| value.eq_ignore_ascii_case("true"));
-    let mut virtual_hosted_style_request = !path_style_access;
+    // The AWS SDK addresses a bucket whose name contains a dot path-style over HTTPS, because
+    // the dotted host does not match S3's wildcard certificate. The default AWS endpoint is
+    // HTTPS, and normalize_endpoint applies the same rule to a custom one by its scheme.
+    let mut virtual_hosted_style_request =
+        !path_style_access && !bucket_needs_path_style_over_https(bucket);
 
     // Extract endpoint configuration and shape it for the selected addressing style. The flag is
     // taken from the normalized result so the endpoint and the flag never disagree.
@@ -270,6 +274,12 @@ fn extract_s3_config_options(
     }
 
     s3_configs
+}
+
+/// Whether the AWS SDK would refuse to virtual-host `bucket` over HTTPS: a dot in the name
+/// makes `bucket.s3.<region>.amazonaws.com` fall outside S3's wildcard certificate.
+fn bucket_needs_path_style_over_https(bucket: &str) -> bool {
+    bucket.contains('.')
 }
 
 /// An endpoint shaped for object_store together with the addressing mode it was shaped for.
@@ -313,6 +323,9 @@ fn normalize_endpoint(
     if !virtual_hosted_style_request {
         return path_style(endpoint);
     }
+    if endpoint.starts_with("https://") && bucket_needs_path_style_over_https(bucket) {
+        return path_style(endpoint);
+    }
 
     // Fall back to the endpoint as written when it cannot be parsed so object_store reports
     // the malformed value instead of a mangled one
@@ -334,6 +347,14 @@ fn normalize_endpoint(
         endpoint: format!("{}://{bucket}.{host}{port}{path}", url.scheme()),
         virtual_hosted_style_request: true,
     })
+}
+
+/// The credentials file Hadoop's profile provider reads when none is configured:
+/// `AWS_SHARED_CREDENTIALS_FILE` when set, otherwise `~/.aws/credentials`.
+fn default_shared_credentials_file(env_override: Option<String>, home: Option<String>) -> String {
+    env_override
+        .filter(|path| !path.trim().is_empty())
+        .unwrap_or_else(|| format!("{}/.aws/credentials", home.unwrap_or_default()))
 }
 
 fn get_config<'a>(
@@ -532,10 +553,12 @@ fn build_aws_credential_provider_metadata(
         HADOOP_PROFILE => Ok(CredentialProviderMetadata::Profile {
             name: get_non_empty_config(configs, bucket, "auth.profile.name"),
             file: get_non_empty_config(configs, bucket, "auth.profile.file"),
+            credentials_only: true,
         }),
         AWS_PROFILE_V1 | AWS_PROFILE => Ok(CredentialProviderMetadata::Profile {
             name: None,
             file: None,
+            credentials_only: false,
         }),
         _ => Err(object_store::Error::Generic {
             store: "S3",
@@ -770,6 +793,9 @@ enum CredentialProviderMetadata {
     Profile {
         name: Option<String>,
         file: Option<String>,
+        // Hadoop's ProfileAWSCredentialsProvider reads only the credentials file, while the
+        // SDK spellings merge the SDK's config and credentials files.
+        credentials_only: bool,
     },
     Static {
         is_valid: bool,
@@ -809,7 +835,7 @@ impl CredentialProviderMetadata {
             CredentialProviderMetadata::Imds => "Imds".to_string(),
             CredentialProviderMetadata::Environment => "Environment".to_string(),
             CredentialProviderMetadata::WebIdentity => "WebIdentity".to_string(),
-            CredentialProviderMetadata::Profile { name, file } => {
+            CredentialProviderMetadata::Profile { name, file, .. } => {
                 let overrides: Vec<String> = [("name", name), ("file", file)]
                     .into_iter()
                     .filter_map(|(key, value)| value.as_ref().map(|v| format!("{key}: {v}")))
@@ -882,15 +908,28 @@ impl CredentialProviderMetadata {
                     .build();
                 Ok(Arc::new(credential_provider))
             }
-            CredentialProviderMetadata::Profile { name, file } => {
+            CredentialProviderMetadata::Profile {
+                name,
+                file,
+                credentials_only,
+            } => {
                 let mut builder = ProfileFileCredentialsProvider::builder()
                     .configure(&ProviderConfig::with_default_region().await);
                 if let Some(name) = name {
                     builder = builder.profile_name(name);
                 }
-                if let Some(file) = file {
-                    // Hadoop's ProfileAWSCredentialsProvider loads fs.s3a.auth.profile.file as a
-                    // credentials-format file and reads nothing else, so mirror that here
+                // Hadoop's ProfileAWSCredentialsProvider loads the configured file, or the
+                // shared credentials file, as a credentials-format file and reads nothing
+                // else, so a same-name role profile in the SDK's config file never applies.
+                let credentials_file = match (file, credentials_only) {
+                    (Some(file), _) => Some(file.clone()),
+                    (None, true) => Some(default_shared_credentials_file(
+                        std::env::var("AWS_SHARED_CREDENTIALS_FILE").ok(),
+                        std::env::var("HOME").ok(),
+                    )),
+                    (None, false) => None,
+                };
+                if let Some(file) = credentials_file {
                     builder = builder.profile_files(
                         EnvConfigFiles::builder()
                             .with_file(EnvConfigFileKind::Credentials, file)
@@ -1672,6 +1711,7 @@ mod tests {
                     CredentialProviderMetadata::Profile {
                         name: expected_name.map(str::to_string),
                         file: expected_file.map(str::to_string),
+                        credentials_only: true,
                     },
                     "provider {provider_name}, name {name:?}, file {file:?}"
                 );
@@ -1701,6 +1741,7 @@ mod tests {
                 CredentialProviderMetadata::Profile {
                     name: None,
                     file: None,
+                    credentials_only: false,
                 },
                 "provider {provider_name}"
             );
@@ -1753,6 +1794,7 @@ mod tests {
                 CredentialProviderMetadata::Profile {
                     name: Some(expected_name.to_string()),
                     file: Some(expected_file.to_string()),
+                    credentials_only: true,
                 },
                 "bucket {bucket}"
             );
@@ -1783,6 +1825,7 @@ mod tests {
                 CredentialProviderMetadata::Profile {
                     name: Some("analytics".to_string()),
                     file: Some("/etc/aws/credentials".to_string()),
+                    credentials_only: true,
                 },
                 CredentialProviderMetadata::Imds,
             ])
@@ -2285,12 +2328,76 @@ mod tests {
             );
         }
 
+        // A dotted bucket over HTTPS stays path-style, as the AWS SDK addresses it, since the
+        // dotted host falls outside S3's wildcard certificate; over HTTP it is virtual-hosted.
         assert_eq!(
             normalize_endpoint("custom.endpoint.com", "my.dotted.bucket", true),
             Some(NormalizedEndpoint {
-                endpoint: "https://my.dotted.bucket.custom.endpoint.com".to_string(),
+                endpoint: "https://custom.endpoint.com".to_string(),
+                virtual_hosted_style_request: false,
+            })
+        );
+        assert_eq!(
+            normalize_endpoint("http://custom.endpoint.com", "my.dotted.bucket", true),
+            Some(NormalizedEndpoint {
+                endpoint: "http://my.dotted.bucket.custom.endpoint.com".to_string(),
                 virtual_hosted_style_request: true,
             })
+        );
+    }
+
+    #[test]
+    fn test_extract_s3_config_dotted_bucket_stays_path_style_on_default_endpoint() {
+        // No custom endpoint means the HTTPS AWS endpoint, where a dotted bucket must be
+        // addressed path-style whatever the flag says.
+        let configs = TestConfigBuilder::new().with_region("us-east-1").build();
+        let s3_configs = extract_s3_config_options(&configs, "review.dotted.bucket");
+        assert_eq!(
+            s3_configs.get(&AmazonS3ConfigKey::VirtualHostedStyleRequest),
+            Some(&"false".to_string())
+        );
+        assert!(!s3_configs.contains_key(&AmazonS3ConfigKey::Endpoint));
+
+        let configs = TestConfigBuilder::new()
+            .with_region("us-east-1")
+            .with_property("endpoint", "https://s3.us-east-1.amazonaws.com")
+            .build();
+        let s3_configs = extract_s3_config_options(&configs, "review.dotted.bucket");
+        assert_eq!(
+            s3_configs.get(&AmazonS3ConfigKey::VirtualHostedStyleRequest),
+            Some(&"false".to_string())
+        );
+        assert_eq!(
+            s3_configs.get(&AmazonS3ConfigKey::Endpoint),
+            Some(&"https://s3.us-east-1.amazonaws.com".to_string())
+        );
+
+        let s3_configs = extract_s3_config_options(&configs, "plainbucket");
+        assert_eq!(
+            s3_configs.get(&AmazonS3ConfigKey::VirtualHostedStyleRequest),
+            Some(&"true".to_string())
+        );
+    }
+
+    #[test]
+    fn test_default_shared_credentials_file_matches_hadoop() {
+        assert_eq!(
+            default_shared_credentials_file(None, Some("/home/comet".to_string())),
+            "/home/comet/.aws/credentials"
+        );
+        assert_eq!(
+            default_shared_credentials_file(
+                Some("/etc/aws/shared".to_string()),
+                Some("/home/comet".to_string())
+            ),
+            "/etc/aws/shared"
+        );
+        assert_eq!(
+            default_shared_credentials_file(
+                Some("  ".to_string()),
+                Some("/home/comet".to_string())
+            ),
+            "/home/comet/.aws/credentials"
         );
     }
 
@@ -2594,16 +2701,19 @@ mod tests {
         let profile_metadata = CredentialProviderMetadata::Profile {
             name: None,
             file: None,
+            credentials_only: false,
         };
         assert_eq!(profile_metadata.simple_string(), "Profile");
         let profile_metadata = CredentialProviderMetadata::Profile {
             name: Some("analytics".to_string()),
             file: None,
+            credentials_only: true,
         };
         assert_eq!(profile_metadata.simple_string(), "Profile(name: analytics)");
         let profile_metadata = CredentialProviderMetadata::Profile {
             name: Some("analytics".to_string()),
             file: Some("/etc/aws/credentials".to_string()),
+            credentials_only: true,
         };
         assert_eq!(
             profile_metadata.simple_string(),
