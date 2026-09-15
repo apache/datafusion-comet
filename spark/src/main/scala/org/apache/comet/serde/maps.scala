@@ -142,19 +142,33 @@ object CometMapExtract extends CometExpressionSerde[GetMapValue] {
 private object MapBuilderSupport {
 
   /**
-   * `ArrayBasedMapBuilder` normalizes a floating-point key before storing it, so a `-0.0` key is
-   * stored as `+0.0` and every `NaN` collapses to one canonical `NaN`. The native builders
-   * compare the raw Arrow values, so a map built from both `-0.0` and `+0.0` keeps two entries
-   * where Spark reports a duplicate key. This is a note rather than a decline because a map keyed
-   * on `-0.0` or `NaN` is rare; `spark.comet.exec.strictFloatingPoint` declines it for users who
-   * want the guarantee.
+   * Floating-point keys differ from Spark only on 4.0 and later, and differently per function.
+   * `ArrayBasedMapBuilder` gained `keyNormalizer` in 4.0 (with
+   * `spark.sql.legacy.disableMapKeyNormalization` to turn it off); 3.4 and 3.5 do not normalize
+   * at all, so the native builders already match there.
+   *
+   * On 4.0+ the normalized key decides duplicates for both functions, so a map built from both
+   * `-0.0` and `+0.0` is one key in Spark and two natively. What each function stores then
+   * diverges: `MapFromArrays` calls `ArrayBasedMapBuilder.from`, which returns the input arrays
+   * untouched when no key repeated, so a lone `-0.0` key stays `-0.0` in Spark too; while
+   * `MapFromEntries` puts entries one at a time and always calls `build()`, which emits the
+   * normalized keys, so a lone `-0.0` key comes back as `+0.0` in Spark and as `-0.0` natively.
+   *
+   * A note rather than a decline, because a map keyed on `-0.0` or `NaN` is rare;
+   * `spark.comet.exec.strictFloatingPoint` declines it for anyone who wants the guarantee. That
+   * gate is not conditioned on the Spark version: declining on 3.4 and 3.5 costs those users
+   * nothing beyond a fallback they opted into.
    */
   val floatingPointKeyNote: String =
-    "Spark normalizes a floating-point map key, so a `-0.0` key is stored as `+0.0` and all " +
-      "`NaN` keys collapse into one. Comet's native map construction compares the raw Arrow " +
-      "values, so `-0.0` and `+0.0` stay distinct keys rather than a duplicate key. Set " +
-      s"`${COMET_EXEC_STRICT_FLOATING_POINT.key}=true` to fall back to Spark for a " +
-      "floating-point map key."
+    "On Spark 4.0 and later, `ArrayBasedMapBuilder` normalizes a floating-point map key before " +
+      "comparing it, so `-0.0` counts as the same key as `+0.0` and all `NaN`s count as one " +
+      "key. Comet's native map construction compares the raw Arrow values, so a map built from " +
+      "both `-0.0` and `+0.0` keeps two entries where Spark reports a duplicate key. " +
+      "`map_from_entries` also stores the normalized key, so Spark returns `+0.0` for a `-0.0` " +
+      "key where Comet returns `-0.0`; `map_from_arrays` keeps the original keys in both " +
+      "engines when nothing repeated. Spark 3.4 and 3.5 do not normalize at all, so they match " +
+      s"Comet already. Set `${COMET_EXEC_STRICT_FLOATING_POINT.key}=true` to fall back to Spark " +
+      "for a floating-point map key."
 
   /**
    * `ArrayBasedMapBuilder` keys its dedup map on `TypeUtils.getInterpretedOrdering` once the key
