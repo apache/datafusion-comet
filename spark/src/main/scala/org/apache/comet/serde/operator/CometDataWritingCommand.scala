@@ -19,18 +19,21 @@
 
 package org.apache.comet.serde.operator
 
-import java.net.URI
-import java.util.Locale
+import java.util.UUID
 
 import scala.jdk.CollectionConverters._
 
-import org.apache.parquet.hadoop.ParquetOutputFormat
-import org.apache.spark.SparkException
+import org.apache.hadoop.mapreduce.Job
+import org.apache.hadoop.mapreduce.lib.output.FileOutputFormat
+import org.apache.spark.internal.io.FileCommitProtocol
+import org.apache.spark.sql.catalyst.InternalRow
+import org.apache.spark.sql.catalyst.util.CaseInsensitiveMap
 import org.apache.spark.sql.comet.{CometNativeExec, CometNativeWriteExec}
 import org.apache.spark.sql.execution.command.DataWritingCommandExec
 import org.apache.spark.sql.execution.datasources.{InsertIntoHadoopFsRelationCommand, WriteFilesExec}
 import org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormat
 import org.apache.spark.sql.internal.SQLConf
+import org.apache.spark.util.SerializableConfiguration
 
 import org.apache.comet.{CometConf, ConfigEntry}
 import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
@@ -43,9 +46,6 @@ import org.apache.comet.serde.OperatorOuterClass.Operator
  * operations to use Comet's native Parquet writer.
  */
 object CometDataWritingCommand extends CometOperatorSerde[DataWritingCommandExec] {
-
-  private val supportedCompressionCodes =
-    Set("none", "uncompressed", "snappy", "lz4", "zstd", "gzip")
 
   override def enabledConfig: Option[ConfigEntry[Boolean]] =
     Some(CometConf.COMET_NATIVE_PARQUET_WRITE_ENABLED)
@@ -64,6 +64,13 @@ object CometDataWritingCommand extends CometOperatorSerde[DataWritingCommandExec
               return Unsupported(Some("Supported output filesystems: local, HDFS"))
             }
 
+            val hadoopConf = op.session.sessionState.newHadoopConfWithOptions(cmd.options)
+            NativeWriteUtils
+              .escapedHdfsDestination(
+                cmd.outputPath.toString,
+                hadoopConf.get(NativeWriteUtils.BASE_OUTPUT_NAME, "part"))
+              .foreach(reason => return Unsupported(Some(reason)))
+
             if (cmd.bucketSpec.isDefined) {
               return Unsupported(Some("Bucketed writes are not supported"))
             }
@@ -72,8 +79,8 @@ object CometDataWritingCommand extends CometOperatorSerde[DataWritingCommandExec
               return Unsupported(Some("Partitioned writes are not supported"))
             }
 
-            val codec = parseCompressionCodec(cmd)
-            if (!supportedCompressionCodes.contains(codec)) {
+            val codec = NativeWriteUtils.parseCompressionCodec(cmd.options)
+            if (!NativeWriteUtils.supportedCompressionCodecs.contains(codec)) {
               return Unsupported(Some(s"Unsupported compression codec: $codec"))
             }
 
@@ -103,14 +110,11 @@ object CometDataWritingCommand extends CometOperatorSerde[DataWritingCommandExec
 
       val outputPath = cmd.outputPath.toString
 
-      val codec = parseCompressionCodec(cmd) match {
-        case "snappy" => OperatorOuterClass.CompressionCodec.Snappy
-        case "lz4" => OperatorOuterClass.CompressionCodec.Lz4
-        case "zstd" => OperatorOuterClass.CompressionCodec.Zstd
-        case "gzip" => OperatorOuterClass.CompressionCodec.Gzip
-        case "none" | "uncompressed" => OperatorOuterClass.CompressionCodec.None
-        case other =>
-          withFallbackReason(op, s"Unsupported compression codec: $other")
+      val plannedCodec = NativeWriteUtils.parseCompressionCodec(cmd.options)
+      val codec = NativeWriteUtils.protoCompressionCodec(plannedCodec) match {
+        case Some(codec) => codec
+        case None =>
+          withFallbackReason(op, s"Unsupported compression codec: $plannedCodec")
           return None
       }
 
@@ -123,14 +127,17 @@ object CometDataWritingCommand extends CometOperatorSerde[DataWritingCommandExec
           cmd.query.schema.fields.toIndexedSeq,
           Some(
             op.session.sessionState.conf.getConf(SQLConf.PARQUET_FIELD_ID_WRITE_ENABLED))).asJava)
-      // Note: work_dir, job_id, and task_attempt_id will be set at execution time
-      // in CometNativeWriteExec, as they depend on the Spark task context
+      // CometNativeWriteExec replaces output_path with the committer's exact task filename
+      // at execution time, leaving work_dir unset.
 
       // Collect S3/cloud storage configurations
       val session = op.session
       val hadoopConf = session.sessionState.newHadoopConfWithOptions(cmd.options)
+      // `outputPath` is `Path.toString`, which is not a valid URI string: it leaves spaces and
+      // literal `%` unescaped, so `URI.create` would throw (and the catch below would silently
+      // give the write back to Spark). Going through `Path` escapes them again.
       val objectStoreOptions =
-        NativeConfig.extractObjectStoreOptions(hadoopConf, URI.create(outputPath))
+        NativeConfig.extractObjectStoreOptions(hadoopConf, cmd.outputPath.toUri)
       objectStoreOptions.foreach { case (key, value) =>
         writerOpBuilder.putObjectStoreOptions(key, value)
       }
@@ -169,43 +176,29 @@ object CometDataWritingCommand extends CometOperatorSerde[DataWritingCommandExec
         other
     }
 
-    // Create FileCommitProtocol for atomic writes
-    val jobId = java.util.UUID.randomUUID().toString
-    val committer =
-      try {
-        // Use Spark's SQLHadoopMapReduceCommitProtocol
-        val committerClass =
-          classOf[org.apache.spark.sql.execution.datasources.SQLHadoopMapReduceCommitProtocol]
-        val constructor =
-          committerClass.getConstructor(classOf[String], classOf[String], classOf[Boolean])
-        Some(
-          constructor
-            .newInstance(
-              jobId,
-              outputPath,
-              java.lang.Boolean.FALSE // dynamicPartitionOverwrite = false for now
-            )
-            .asInstanceOf[org.apache.spark.internal.io.FileCommitProtocol])
-      } catch {
-        case e: Exception =>
-          throw new SparkException(s"Could not instantiate FileCommitProtocol: ${e.getMessage}")
-      }
+    val session = op.session
+    val job = Job.getInstance(session.sessionState.newHadoopConfWithOptions(cmd.options))
+    job.setOutputKeyClass(classOf[Void])
+    job.setOutputValueClass(classOf[InternalRow])
+    FileOutputFormat.setOutputPath(job, cmd.outputPath)
+    val outputWriterFactory =
+      cmd.fileFormat.prepareWrite(session, job, CaseInsensitiveMap(cmd.options), cmd.query.schema)
 
-    CometNativeWriteExec(nativeOp, childPlan, outputPath, cmd.mode, committer, jobId)
-  }
+    val committer = FileCommitProtocol.instantiate(
+      session.sessionState.conf.fileCommitProtocolClass,
+      UUID.randomUUID().toString,
+      outputPath,
+      dynamicPartitionOverwrite = false)
+    job.getConfiguration.set("spark.sql.sources.writeJobUUID", UUID.randomUUID().toString)
 
-  private def parseCompressionCodec(cmd: InsertIntoHadoopFsRelationCommand) = {
-    // `compression`, `parquet.compression` (i.e., ParquetOutputFormat.COMPRESSION), and
-    // `spark.sql.parquet.compression.codec` are in order of precedence from highest to
-    // lowest, matching Spark's own ParquetOptions.compressionCodecClassName.
-    cmd.options
-      .get("compression")
-      .orElse(cmd.options.get(ParquetOutputFormat.COMPRESSION))
-      .getOrElse(
-        SQLConf.get.getConfString(
-          SQLConf.PARQUET_COMPRESSION.key,
-          SQLConf.PARQUET_COMPRESSION.defaultValueString))
-      .toLowerCase(Locale.ROOT)
+    CometNativeWriteExec(
+      nativeOp,
+      childPlan,
+      outputPath,
+      cmd.mode,
+      committer,
+      new SerializableConfiguration(job.getConfiguration),
+      outputWriterFactory)
   }
 
 }
