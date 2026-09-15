@@ -144,15 +144,19 @@ Create a test Parquet source
 scala> (0 until 10).toDF("a").write.mode("overwrite").parquet("/tmp/test")
 ```
 
-Comet will log output similar to:
+Comet will log output similar to this on Spark 4.0 and later:
 
 ```shell
 INFO core/src/lib.rs: Comet native library version $COMET_VERSION initialized
 WARN CometExecRule: Comet cannot execute some parts of this plan natively (set spark.comet.explain.fallback.enabled=false to disable this logging):
-  Execute InsertIntoHadoopFsRelationCommand [COMET: Native support for operator DataWritingCommandExec is disabled. Set spark.comet.parquet.write.enabled=true to enable it.]
-+- WriteFiles
+  Execute InsertIntoHadoopFsRelationCommand
++- WriteFiles [COMET: Native support for operator WriteFilesExec is disabled. Set spark.comet.parquet.write.enabled=true to enable it.]
    +-  LocalTableScan [COMET: Native support for operator LocalTableScanExec is disabled. Set spark.comet.exec.localTableScan.enabled=true to enable it.]
 ```
+
+On Spark 3.4 and 3.5 the native writer replaces the whole write command rather than just the
+per-task write, so the same message appears on `Execute InsertIntoHadoopFsRelationCommand` and
+names `DataWritingCommandExec`.
 
 Query the data from the test source and check:
 
