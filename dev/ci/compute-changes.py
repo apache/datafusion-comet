@@ -65,6 +65,16 @@ FILTERS = {
         "!spark/src/test/scala/org/apache/spark/sql/benchmark/**",
         "!spark/src/main/scala/org/apache/comet/GenerateDocs.scala",
     ],
+    # Same inputs as build_linux: not a separate job but a second POLICY
+    # decision for the same call, selecting the full pipeline rather than the
+    # cache-populating subset. ci.yml folds it into the reusable workflow's
+    # `cache-refresh-only` input. Populated below, after the dict, so the two
+    # lists cannot drift.
+    "build_linux_full": [],
+    # A third POLICY decision on the same inputs: whether the linux-test matrix
+    # runs every Spark profile or only the PR-tier one. ci.yml folds it into
+    # the reusable workflow's `profiles` input. Populated below as well.
+    "build_linux_all_profiles": [],
     "build_macos": [
         "native/**",
         "common/**",
@@ -93,6 +103,67 @@ FILTERS = {
         "native/core/benches/**",
         "native/spark-expr/benches/**",
         "spark/src/test/scala/org/apache/spark/sql/benchmark/**",
+    ],
+    # dev/verify-contrib-delta-gate.sh proves the default cargo, Maven and
+    # libcomet builds carry no Delta surface and that the gated build does.
+    # It reads the cargo tree, the effective pom, the compiled classes and the
+    # dylib symbol table: main sources and build inputs, never tests.
+    "delta_gate": [
+        "native/**",
+        "common/src/main/**",
+        "spark/src/main/**",
+        "contrib/delta/**",
+        "pom.xml",
+        "**/pom.xml",
+        ".mvn/**",
+        "mvnw",
+        "Makefile",
+        "rust-toolchain.toml",
+        "dev/verify-contrib-delta-gate.sh",
+        ".github/workflows/ci.yml",
+        ".github/workflows/delta_build_gate.yml",
+        ".github/actions/setup-builder/**",
+        "!**.md",
+        "!native/core/benches/**",
+        "!native/spark-expr/benches/**",
+        "!spark/src/main/scala/org/apache/comet/GenerateDocs.scala",
+    ],
+    # A real Python worker against each Spark 4.x Arrow runner. The list is
+    # deliberately narrow: the suite builds Comet three times, once per Spark
+    # version, and only the map-in-batch wiring can change its verdict.
+    "pyarrow_udf": [
+        "pom.xml",
+        "common/pom.xml",
+        "native/shuffle/src/spark_unsafe/row.rs",
+        "spark/pom.xml",
+        "spark/src/main/java/org/apache/comet/vector/**",
+        "spark/src/main/java/org/apache/spark/sql/comet/execution/shuffle/SpillWriter.java",
+        "spark/src/main/scala/org/apache/comet/CometConf.scala",
+        "spark/src/main/scala/org/apache/comet/rules/EliminateRedundantTransitions.scala",
+        "spark/src/main/scala/org/apache/comet/vector/**",
+        "spark/src/main/scala/org/apache/spark/sql/comet/CometMapInBatchExec.scala",
+        "spark/src/main/scala/org/apache/spark/sql/comet/shims/MapInBatchInfo.scala",
+        "spark/src/main/spark-3.4/org/apache/spark/sql/comet/shims/ShimCometMapInBatch.scala",
+        "spark/src/main/spark-3.5/org/apache/spark/sql/comet/shims/ShimCometMapInBatch.scala",
+        "spark/src/main/spark-4.0/org/apache/spark/sql/comet/shims/ShimCometMapInBatch.scala",
+        "spark/src/main/spark-4.0/org/apache/spark/sql/execution/python/CometArrowPythonRunner.scala",
+        "spark/src/main/spark-4.1/org/apache/spark/sql/comet/shims/ShimCometMapInBatch.scala",
+        "spark/src/main/spark-4.1/org/apache/spark/sql/execution/python/CometArrowPythonRunner.scala",
+        "spark/src/main/spark-4.2/org/apache/spark/sql/comet/shims/ShimCometMapInBatch.scala",
+        "spark/src/main/spark-4.2/org/apache/spark/sql/execution/python/CometArrowPythonRunner.scala",
+        "spark/src/main/spark-4.x/org/apache/spark/sql/comet/shims/Spark4xMapInBatchSupport.scala",
+        "spark/src/main/spark-4.x/org/apache/spark/sql/execution/python/CometArrowPythonRunnerBase.scala",
+        "spark/src/test/resources/pyspark/conftest.py",
+        "spark/src/test/resources/pyspark/test_pyarrow_udf.py",
+        "spark/src/test/resources/pyspark/test_pyarrow_udf_dictionary_shuffle.py",
+        "spark/src/test/spark-3.5/org/apache/spark/sql/comet/CometMapInBatchSuite.scala",
+        "spark/src/test/spark-4.x/org/apache/spark/sql/comet/CometMapInBatchSuite.scala",
+        "spark/src/test/spark-4.x/org/apache/spark/sql/execution/python/CometArrowPythonRunnerSuite.scala",
+        ".mvn/**",
+        "mvnw",
+        ".github/workflows/ci.yml",
+        ".github/workflows/pyarrow_udf_test.yml",
+        ".github/actions/setup-builder/**",
     ],
     "docs": [
         ".asf.yaml",
@@ -318,6 +389,8 @@ FILTERS = {
     ],
 }
 FILTERS["spark_4_1_hive"] = FILTERS["spark_4_1"]
+FILTERS["build_linux_full"] = FILTERS["build_linux"]
+FILTERS["build_linux_all_profiles"] = FILTERS["build_linux"]
 
 # Which events may run each job, independent of the path filters above.
 #
@@ -342,10 +415,30 @@ POLICY = {
     # own branch or on main, and nowhere else. The queue runs on a throwaway
     # gh-readonly-queue/* branch, so whatever it saves is deleted with that
     # branch. Without a push run, a Cargo.lock or pom.xml change would leave
-    # main's cargo-registry, Maven and TPC-H/TPC-DS caches stale forever, and
-    # every later pull request would pay the delta on top of the restore-keys
-    # prefix match.
+    # main's cargo-ci, cargo-debug, Maven and TPC-H/TPC-DS caches stale
+    # forever, and every later pull request would pay the delta on top of the
+    # restore-keys prefix match.
+    #
+    # On push that is the *only* thing it is for. The queue already tested the
+    # exact tree that landed, so re-running the lints and the linux-test
+    # matrix there tests nothing, and they are 514 of the 587 runner-minutes a
+    # push run costs. The split below keeps the cache writers on push and moves
+    # everything else behind `build_linux_full`.
     "build_linux": ["pr", "queue", "push"],
+    # The lints and the test matrix inside pr_build_linux.yml. Deliberately no
+    # "push": ci.yml turns this output into the workflow's `cache-refresh-only`
+    # input, so dropping "push" here is what trims the push tier down to the
+    # jobs that write an actions/cache entry. See issue #5929.
+    "build_linux_full": ["pr", "queue"],
+    # The linux-test matrix's Spark profiles other than the default one. The
+    # five profiles cost about the same each, roughly 2,300 runner-minutes a
+    # day apiece on pull requests in mid-September 2026, and together they
+    # were three quarters of the Linux build. A pull request runs the Comet
+    # test suites against Spark 4.1 only; the queue runs all five. The
+    # lint-java matrix still compiles Spark 3.4/3.5/4.0 on every pull request,
+    # so what waits for the queue is runtime behaviour, not a shim that fails
+    # to build. ci.yml turns this output into the workflow's `profiles` input.
+    "build_linux_all_profiles": ["queue", "label:run-all-spark-profiles"],
     # macOS runners are the scarcest capacity we have, and the Linux build
     # already covers rustfmt and the Rust/JVM compile on every PR. The label
     # is for a change that touches platform-specific code.
@@ -353,25 +446,45 @@ POLICY = {
     # Benchmark sources are compiled and linted, never run, so a break there
     # cannot affect a PR's correctness verdict; the queue catches it.
     "benchmark": ["queue", "label:run-benchmark-check"],
+    # The Delta build gate only proves a build-system property, and the
+    # PyArrow suite builds Comet once per Spark 4.x version to drive a real
+    # Python worker. Neither changes often enough to earn a PR-tier slot; the
+    # queue catches a regression before it lands, and the label is the escape
+    # hatch for a change to the surface they cover.
+    "delta_gate": ["queue", "label:run-delta-build-gate"],
+    "pyarrow_udf": ["queue", "label:run-pyarrow-udf-tests"],
     # docs deploys to asf-site, so it must not run from a pull request or from
     # the queue's throwaway branch.
     "docs": ["push"],
-    "spark_3_4": ["queue", "label:run-spark-3.4-tests"],
+    # Spark 3.4 is deprecated, so it is the one test job outside the queue
+    # tier: a failure there no longer blocks a merge. It stays runnable on
+    # demand -- the label on a pull request, or a workflow_dispatch -- so
+    # anyone who wants to check a change against 3.4 still can.
+    "spark_3_4": ["label:run-spark-3.4-tests"],
     "spark_3_5": ["queue", "label:run-spark-3.5-tests"],
     "spark_4_0": ["queue", "label:run-spark-4.0-tests"],
-    # Spark 4.1 is the default build profile, so it is the cheapest early
-    # warning that a change is wrong and stays in the PR tier. Only the
-    # catalyst and sql_core shards, though: over Aug 12 to Sep 11 2026 the
-    # three sql_hive shards cost about 65 runner-hours a day on pull requests
-    # and were the only failing job on 7 PR runs, against 33 for sql_core, and
-    # their 67-minute shard set the PR tier's wall clock. See issue #5870.
-    "spark_4_1": ["pr", "queue"],
-    "spark_4_1_hive": ["queue", "label:run-spark-4.1-hive-tests"],
+    # No Spark SQL suite runs on a plain pull request. Spark 4.1 was the last
+    # one in the PR tier, first whole (issue #5870 pulled the sql_hive shards
+    # out) and then catalyst and sql_core alone. What changed is how often a
+    # pull request is pushed: with agent-driven review and agent-driven
+    # replies to review, a PR now goes through several more rounds before it
+    # is queued, and each round paid for the whole 4.1 build. The queue still
+    # runs every shard before anything lands; the two labels bring the run
+    # forward. `run-spark-4.1-tests` selects the whole suite, so it appears on
+    # both outputs; `run-spark-4.1-hive-tests` selects only the hive shards.
+    "spark_4_1": ["queue", "label:run-spark-4.1-tests"],
+    "spark_4_1_hive": [
+        "queue",
+        "label:run-spark-4.1-tests",
+        "label:run-spark-4.1-hive-tests",
+    ],
+    # Same for Iceberg: 1.11 was the PR-tier version because it is the only
+    # Spark 4.1 coverage, and it now waits for the queue with the other three.
+    # One label opts a pull request into all four.
     "iceberg_1_8": ["queue", "label:run-iceberg-tests"],
     "iceberg_1_9": ["queue", "label:run-iceberg-tests"],
     "iceberg_1_10": ["queue", "label:run-iceberg-tests"],
-    # Iceberg 1.11 is our only Spark 4.1 Iceberg coverage, so it is not opt-in.
-    "iceberg_1_11": ["pr", "queue"],
+    "iceberg_1_11": ["queue", "label:run-iceberg-tests"],
 }
 
 

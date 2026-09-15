@@ -15,7 +15,7 @@
 # specific language governing permissions and limitations
 # under the License.
 
-# Guards five CI invariants that are silent when broken:
+# Guards six CI invariants that are silent when broken:
 #
 #   1. Change-filter routing. dev/ci/compute-changes.py decides which heavy
 #      jobs run. A file that a job depends on but that no filter lists makes
@@ -50,6 +50,12 @@
 #      run only under an input or a label can carry that for a long time
 #      before anyone runs them.
 #
+#   6. Push-tier scope. On push to main, ci.yml calls pr_build_linux.yml with
+#      `cache-refresh-only`, which reduces it to the jobs that write an
+#      actions/cache entry; the merge queue already tested that tree. A job
+#      added to that workflow without the guard starts running on every push
+#      again and nothing fails, so nothing tells you.
+#
 # Run from the repository root: python3 dev/ci/check-ci-config.py
 
 import importlib.util
@@ -81,6 +87,8 @@ AGGREGATOR_EXEMPT = {AGGREGATOR_JOB, "docs"}
 # filter deletion cannot pass unnoticed.
 BUILD_JOBS = {
     "build_linux",
+    "build_linux_full",
+    "build_linux_all_profiles",
     "build_macos",
     "spark_3_4",
     "spark_3_5",
@@ -93,44 +101,85 @@ BUILD_JOBS = {
     "iceberg_1_11",
 }
 
+# The two contrib/UDF gates also run ./mvnw, but consume no shared artifact.
+MVN_JOBS = BUILD_JOBS | {"delta_gate", "pyarrow_udf"}
+
 ROUTING_CASES = [
     # The Maven wrapper and its config feed every job that runs ./mvnw: the
-    # Linux/macOS builds, setup-spark-builder, and the Iceberg `mvnw install`.
-    ([".mvn/maven.config"], BUILD_JOBS),
-    ([".mvn/wrapper/maven-wrapper.properties"], BUILD_JOBS),
-    (["mvnw"], BUILD_JOBS),
+    # Linux/macOS builds, setup-spark-builder, the Iceberg `mvnw install`, the
+    # Delta gate's effective-pom check and the PyArrow suite's `mvnw install`.
+    ([".mvn/maven.config"], MVN_JOBS),
+    ([".mvn/wrapper/maven-wrapper.properties"], MVN_JOBS),
+    (["mvnw"], MVN_JOBS),
     # The artifact wrappers are used by every producer and consumer of a
     # shared artifact. Without these, an edit confined to one of them routes
     # to nothing at all and merges having been exercised by no consumer.
     ([".github/actions/upload-artifact-retry/action.yaml"], BUILD_JOBS),
     ([".github/actions/download-artifact-retry/action.yaml"], BUILD_JOBS),
     # The Maven bootstrap composite is called only from pr_build_linux.yml.
-    ([".github/actions/maven-bootstrap/action.yaml"], {"build_linux"}),
+    (
+        [".github/actions/maven-bootstrap/action.yaml"],
+        {"build_linux", "build_linux_full", "build_linux_all_profiles"},
+    ),
     # Spot checks that the additions above did not widen unrelated routes.
     (["docs/source/user-guide/overview.md"], {"docs"}),
     (["native/core/benches/parquet_read.rs"], {"benchmark"}),
+    # The Delta gate script is read by nothing else; the contrib crate feeds
+    # only the gate. The PyArrow pytest lives under spark/, so the Linux and
+    # macOS builds see it too, but no Spark SQL or Iceberg suite does, and
+    # neither does the Delta gate, which only inspects build output.
+    (["dev/verify-contrib-delta-gate.sh"], {"delta_gate"}),
+    (["contrib/delta/native/src/lib.rs"], {"delta_gate"}),
+    (
+        ["spark/src/test/resources/pyspark/test_pyarrow_udf.py"],
+        {
+            "build_linux",
+            "build_linux_full",
+            "build_linux_all_profiles",
+            "build_macos",
+            "pyarrow_udf",
+        },
+    ),
 ]
 
 # Event policy. Each case is (event, expected set of jobs allowed to run),
 # where "allowed" ignores path filters. Written out longhand rather than
 # derived from POLICY, so that a change to the routing has to be stated twice
 # and cannot be made by accident.
-PR_TIER = {"build_linux", "spark_4_1", "iceberg_1_11"}
-SPARK_OPT_IN = {"spark_3_4", "spark_3_5", "spark_4_0", "spark_4_1_hive"}
-ICEBERG_OPT_IN = {"iceberg_1_8", "iceberg_1_9", "iceberg_1_10"}
-BUILD_OPT_IN = {"build_macos", "benchmark"}
+# The PR tier is the Linux build and nothing else. Every Spark SQL and Iceberg
+# suite waits for the queue, or for its label.
+PR_TIER = {"build_linux", "build_linux_full"}
+SPARK_OPT_IN = {"spark_3_5", "spark_4_0", "spark_4_1", "spark_4_1_hive"}
+# Spark 3.4 is deprecated and sits outside the queue tier entirely: a label on
+# a pull request, or a workflow_dispatch, and nothing else. Keeping it in its
+# own set is what makes the `merge_group` case below assert its absence rather
+# than quietly accept it coming back.
+SPARK_DEPRECATED = {"spark_3_4"}
+ICEBERG_OPT_IN = {"iceberg_1_8", "iceberg_1_9", "iceberg_1_10", "iceberg_1_11"}
+# `build_linux_all_profiles` is the linux-test matrix's non-default Spark
+# profiles: part of the Linux build's call, not a job of its own.
+BUILD_OPT_IN = {
+    "build_macos",
+    "benchmark",
+    "build_linux_all_profiles",
+    "delta_gate",
+    "pyarrow_udf",
+}
 QUEUE_TIER = PR_TIER | SPARK_OPT_IN | ICEBERG_OPT_IN | BUILD_OPT_IN
-ALL_JOBS = QUEUE_TIER | {"docs"}
+ALL_JOBS = QUEUE_TIER | SPARK_DEPRECATED | {"docs"}
 
 POLICY_CASES = [
     # A manual run may exercise anything.
     ({"name": "workflow_dispatch"}, ALL_JOBS),
     # The merge queue is the authoritative gate: everything except the site
-    # deploy, which can only run once the commit is actually on main.
+    # deploy, which can only run once the commit is actually on main, and the
+    # deprecated Spark 3.4 suite, which no longer gates a merge.
     ({"name": "merge_group"}, QUEUE_TIER),
     # Push to main is the site deploy plus the Linux build, which is there to
-    # refresh main's actions/cache entries (see POLICY). Any other test job
-    # showing up here means every merge is paying for it twice.
+    # refresh main's actions/cache entries (see POLICY). `build_linux_full`
+    # must stay out: it is what turns the lints and the test matrix back on,
+    # and the queue has already run those against the tree that landed. Any
+    # other test job showing up here means every merge is paying for it twice.
     ({"name": "push"}, {"docs", "build_linux"}),
     # A plain pull request: the PR tier only. docs must never run here, and the
     # opt-in suites stay off without their label.
@@ -151,6 +200,26 @@ POLICY_CASES = [
         {"name": "pull_request", "action": "synchronize", "labels": ["run-benchmark-check"]},
         PR_TIER | {"benchmark"},
     ),
+    # The Delta build gate and the PyArrow UDF suite were standalone workflows
+    # that ran on every pull request and again on push to main. Folded in as
+    # queue-only jobs, each with its own label, they follow the same rules.
+    (
+        {"name": "pull_request", "action": "synchronize", "labels": ["run-delta-build-gate"]},
+        PR_TIER | {"delta_gate"},
+    ),
+    (
+        {"name": "pull_request", "action": "synchronize", "labels": ["run-pyarrow-udf-tests"]},
+        PR_TIER | {"pyarrow_udf"},
+    ),
+    (
+        {
+            "name": "pull_request",
+            "action": "labeled",
+            "label": "run-pyarrow-udf-tests",
+            "labels": ["run-pyarrow-udf-tests"],
+        },
+        {"pyarrow_udf"},
+    ),
     (
         {
             "name": "pull_request",
@@ -160,8 +229,40 @@ POLICY_CASES = [
         },
         {"build_macos"},
     ),
-    # The Spark 4.1 hive shards are queue-only with their own label. The label
-    # adds them to the PR tier's Spark 4.1 call rather than starting a second.
+    # The linux-test matrix's non-default Spark profiles are queue-only with
+    # their own label. On a pushed commit the label adds them to the PR tier's
+    # Linux build call (`profiles: all`); on the `labeled` event alone it is
+    # the only output set, and ci.yml turns that into `profiles: queue-only`
+    # so the default profile, which already ran at this commit, is not repeated.
+    (
+        {"name": "pull_request", "action": "synchronize", "labels": ["run-all-spark-profiles"]},
+        PR_TIER | {"build_linux_all_profiles"},
+    ),
+    (
+        {
+            "name": "pull_request",
+            "action": "labeled",
+            "label": "run-all-spark-profiles",
+            "labels": ["run-all-spark-profiles"],
+        },
+        {"build_linux_all_profiles"},
+    ),
+    # Spark 4.1 is queue-only too. Two labels feed its one call: the suite
+    # label selects every module, the hive label only the sql_hive shards.
+    # Neither label pulls in any other Spark version.
+    (
+        {"name": "pull_request", "action": "synchronize", "labels": ["run-spark-4.1-tests"]},
+        PR_TIER | {"spark_4_1", "spark_4_1_hive"},
+    ),
+    (
+        {
+            "name": "pull_request",
+            "action": "labeled",
+            "label": "run-spark-4.1-tests",
+            "labels": ["run-spark-4.1-tests"],
+        },
+        {"spark_4_1", "spark_4_1_hive"},
+    ),
     (
         {"name": "pull_request", "action": "synchronize", "labels": ["run-spark-4.1-hive-tests"]},
         PR_TIER | {"spark_4_1_hive"},
@@ -175,10 +276,34 @@ POLICY_CASES = [
         },
         {"spark_4_1_hive"},
     ),
-    # An opt-in label present on a pushed commit adds just that suite.
+    # Adding the hive label on top of the suite label re-runs only the hive
+    # rows: a `labeled` run selects what the new label gates, and the suite
+    # label's earlier run already covered every module at this commit.
+    (
+        {
+            "name": "pull_request",
+            "action": "labeled",
+            "label": "run-spark-4.1-hive-tests",
+            "labels": ["run-spark-4.1-tests", "run-spark-4.1-hive-tests"],
+        },
+        {"spark_4_1_hive"},
+    ),
+    # An opt-in label present on a pushed commit adds just that suite. For the
+    # deprecated Spark 3.4 suite the label is the *only* way it ever runs on a
+    # pull request or the queue, so this case and the `labeled` one below are
+    # what keep it reachable at all.
     (
         {"name": "pull_request", "action": "synchronize", "labels": ["run-spark-3.4-tests"]},
         PR_TIER | {"spark_3_4"},
+    ),
+    (
+        {
+            "name": "pull_request",
+            "action": "labeled",
+            "label": "run-spark-3.4-tests",
+            "labels": ["run-spark-3.4-tests"],
+        },
+        {"spark_3_4"},
     ),
     (
         {"name": "pull_request", "action": "synchronize", "labels": ["run-iceberg-tests"]},
@@ -239,6 +364,27 @@ JOB_KEY = re.compile(r"^  ([A-Za-z0-9_-]+):\s*$")
 LOCAL_ACTION_USES = re.compile(r"uses:\s*(\./\.github/actions/\S+)")
 CHECKOUT_USES = re.compile(r"uses:\s*actions/checkout@")
 
+# pr_build_linux.yml runs in two modes; see its header. These are the jobs that
+# must survive `cache-refresh-only`, because each one writes an actions/cache
+# entry that main needs warm for the next pull request. Anything else in that
+# file has to carry the guard.
+CACHE_REFRESH_WORKFLOW = WORKFLOWS / "pr_build_linux.yml"
+CACHE_REFRESH_JOBS = {
+    "lint": "gates build-native and linux-test-rust, and costs 40 seconds",
+    "build-native": "writes the cargo-ci cache (native/target, CI profile)",
+    "linux-test-rust": "writes the cargo-debug cache (native/target, debug)",
+    "verify-benchmark-results-tpch": "writes the TPC-H SF=1 dataset and java-maven caches",
+    "verify-benchmark-results-tpcds": "writes the TPC-DS SF=1 dataset and java-maven caches",
+}
+# Job-level `if:` only: step-level guards inside the two verify jobs are
+# indented further, and those are expected rather than a reason to exempt the
+# whole job.
+CACHE_REFRESH_GUARD = re.compile(r"^    if:.*!\s*inputs\.cache-refresh-only")
+CACHE_REFRESH_INPUT = re.compile(r"^\s+cache-refresh-only:\s*\$\{\{")
+# `profiles:` is passed as a folded scalar (`>-`) whose expression sits on the
+# next line, so match the key alone.
+PROFILES_INPUT = re.compile(r"^\s+profiles:\s*(>-|\$\{\{)")
+
 
 def load_filters():
     spec = importlib.util.spec_from_file_location("compute_changes", "dev/ci/compute-changes.py")
@@ -272,6 +418,49 @@ def check_spark_sql_modules():
         failures.append(f"duplicate module names in {everything}")
     for failure in failures:
         print(f"spark sql modules: {failure}")
+    return not failures
+
+
+def check_linux_test_profiles():
+    """`--profiles pr` and `--profiles queue-only` must partition `--profiles all`.
+
+    ci.yml maps `build_linux_full` and `build_linux_all_profiles` onto these
+    three values. A profile in neither tier would never run anywhere; one in
+    both would run twice in the queue. The `pr` tier also has to be the
+    default build profile and nothing else, which is the whole reason the
+    split exists. And the caller has to pass the input at all: its default is
+    `all`, so a dropped `with:` line quietly puts every profile back on the
+    pull request tier.
+    """
+    spec = importlib.util.spec_from_file_location("linux_test_profiles", "dev/ci/linux-test-profiles.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    failures = []
+    names = lambda rows: [row["name"] for row in rows]
+    everything = names(module.select("all"))
+    pr, queue_only = names(module.select("pr")), names(module.select("queue-only"))
+    if pr != ["Spark 4.1, JDK 17"]:
+        failures.append(f"the pr tier must be the default build profile alone, got {pr}")
+    if not queue_only:
+        failures.append("the queue-only tier is empty (see PROFILES in dev/ci/linux-test-profiles.py)")
+    if sorted(pr + queue_only) != sorted(everything):
+        failures.append(
+            f"pr {pr} + queue-only {queue_only} does not partition all {everything} "
+            f"(see PROFILES in dev/ci/linux-test-profiles.py)"
+        )
+    if len(set(everything)) != len(everything):
+        failures.append(f"duplicate profile names in {everything}")
+    for row in module.select("all"):
+        if sorted(row) != ["java_version", "maven_opts", "name"]:
+            failures.append(f"profile {row['name']!r} must carry exactly name, java_version and maven_opts")
+    ci = (WORKFLOWS / "ci.yml").read_text(encoding="utf-8").splitlines()
+    if not any(PROFILES_INPUT.match(line) for line in ci):
+        failures.append(
+            "ci.yml never passes `profiles:` to pr_build_linux.yml. The input "
+            "defaults to all, so without it every pull request runs every profile again"
+        )
+    for failure in failures:
+        print(f"linux test profiles: {failure}")
     return not failures
 
 
@@ -588,13 +777,84 @@ def check_required_checks():
     return not failures
 
 
+def check_cache_refresh_scope():
+    """Every job in pr_build_linux.yml is either a cache writer or guarded.
+
+    On push to main the merge queue has already tested the exact tree that
+    landed, so the only thing left for that run to do is leave main's
+    actions/cache entries warm -- a pull request can restore caches saved on
+    its own branch or on main and nowhere else, and the queue's throwaway
+    branch takes its own with it. ci.yml therefore calls the workflow with
+    `cache-refresh-only` on push, and every job that is not a cache writer
+    has to opt out with `if: ${{ !inputs.cache-refresh-only }}`.
+
+    A job added without the guard runs on every push again. Nothing fails when
+    that happens; the runner bill just quietly goes back up by up to ~500
+    minutes a push, which is what this check exists to notice.
+    """
+    failures = []
+    jobs, guarded, job, in_jobs = [], set(), None, False
+    for line in CACHE_REFRESH_WORKFLOW.read_text(encoding="utf-8").splitlines():
+        if line.startswith("jobs:"):
+            in_jobs = True
+            continue
+        if not in_jobs or line.lstrip().startswith("#"):
+            continue
+        match = JOB_KEY.match(line)
+        if match:
+            job = match.group(1)
+            jobs.append(job)
+            continue
+        if job and CACHE_REFRESH_GUARD.match(line):
+            guarded.add(job)
+
+    for stale in sorted(set(CACHE_REFRESH_JOBS) - set(jobs)):
+        failures.append(
+            f"CACHE_REFRESH_JOBS names `{stale}`, which no longer exists in "
+            f"{CACHE_REFRESH_WORKFLOW}; drop it here, or restore the job"
+        )
+    for name in jobs:
+        if name in CACHE_REFRESH_JOBS and name in guarded:
+            failures.append(
+                f"{CACHE_REFRESH_WORKFLOW}: job `{name}` is listed in "
+                f"CACHE_REFRESH_JOBS ({CACHE_REFRESH_JOBS[name]}) but carries "
+                f"the cache-refresh-only guard, so it is skipped on push and "
+                f"the cache it owns goes stale on main"
+            )
+        if name not in CACHE_REFRESH_JOBS and name not in guarded:
+            failures.append(
+                f"{CACHE_REFRESH_WORKFLOW}: job `{name}` has no "
+                f"`if: ${{{{ !inputs.cache-refresh-only }}}}`, so it runs on "
+                f"every push to main where the merge queue has already tested "
+                f"the same tree. Add the guard, or add the job to "
+                f"CACHE_REFRESH_JOBS with the cache entry it writes"
+            )
+
+    # The guards above do nothing unless the caller actually sets the input;
+    # its default is false, so a dropped `with:` block silently restores the
+    # full pipeline on push.
+    ci = (WORKFLOWS / "ci.yml").read_text(encoding="utf-8").splitlines()
+    if not any(CACHE_REFRESH_INPUT.match(line) for line in ci):
+        failures.append(
+            "ci.yml never passes `cache-refresh-only:` to pr_build_linux.yml. "
+            "The input defaults to false, so without it every push to main runs "
+            "the full pipeline again"
+        )
+
+    for failure in failures:
+        print(f"cache refresh scope: {failure}")
+    return not failures
+
+
 if __name__ == "__main__":
     ok = check_change_filters()
     ok = check_event_policy() and ok
     ok = check_spark_sql_modules() and ok
+    ok = check_linux_test_profiles() and ok
     ok = check_artifact_names() and ok
     ok = check_local_actions_have_checkout() and ok
     ok = check_required_checks() and ok
+    ok = check_cache_refresh_scope() and ok
     if not ok:
         sys.exit(1)
     print("CI config checks passed")

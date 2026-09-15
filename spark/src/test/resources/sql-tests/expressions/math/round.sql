@@ -15,6 +15,8 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
+-- Config: spark.comet.exec.scalaUDF.codegen.enabled=true
+
 -- Integral and non-negative-scale decimal inputs round natively. Float and double inputs have no
 -- native implementation (Spark rounds them through BigDecimal built from Double.toString), so they
 -- route through the codegen dispatcher and must match Spark exactly.
@@ -41,9 +43,13 @@ SELECT d, round(d), round(d, 0), round(d, 2), round(d, -1) FROM test_round
 query expect_dispatch(round)
 SELECT f, round(f), round(f, 0), round(f, 2), round(f, -1) FROM test_round
 
--- Null scale makes the whole result null without evaluating the child.
-query
+-- Null scale short-circuits in the dispatcher for floating-point inputs.
+query expect_dispatch(round)
 SELECT round(d, NULL), round(f, NULL) FROM test_round
+
+-- Compatible inputs use the native serializer's null-scale branch.
+query expect_native(round)
+SELECT round(dec, NULL), round(i, NULL), round(l, NULL) FROM test_round
 
 -- Decimal and integral inputs stay on the native path.
 query expect_native(round)
