@@ -23,10 +23,20 @@
 
 ## element_at
 
-- Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
-- Spark 3.5.8 (audited 2026-05-27): baseline. `ElementAt(left, right, defaultValueOutOfBound, failOnError) extends GetMapValueUtil`; the parser routes `element_at(<array>, ...)` to one overload and `element_at(<map>, ...)` to another. Comet routes `MapType` input through the same native `map_extract` path used by `GetMapValue`.
-- Spark 4.0.1 (audited 2026-05-27): adds `nullIntolerant: Boolean` field; semantics unchanged.
-- Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.
+- Spark 3.4.3 (audited 2026-09-11): `ElementAt` uses `GetMapValueUtil` for map inputs. Interpreted lookup compares keys with `TypeUtils.getInterpretedOrdering`; generated lookup uses `CodegenContext.genEqual`. Both return the first matching value, or NULL for a missing key, NULL map/key or NULL value, independently of ANSI mode. The NULL left operand short-circuits key evaluation.
+- Spark 3.5.8 (audited 2026-09-11): same map evaluation and codegen; key-type checking uses `DataTypeUtils.sameType` instead of `DataType.sameType`.
+- Spark 4.0.1 (audited 2026-09-11): replaces the `NullIntolerant` trait with a field and refactors array error context; map lookup semantics are unchanged. `genEqual` now honors string collation, including inside arrays/structs. Map construction normalizes floating-point keys by default; lookup equality itself treats NaNs as equal and matches either sign of zero in all four versions.
+- Spark 4.1.1 (audited 2026-09-11): `ElementAt` class body is unchanged from 4.0.1.
+- Comet retains `MapKeySupport`'s native exclusions for floating-point keys at any nesting level, non-default collations and complex keys. `CodegenDispatchFallback` runs those lookups with Spark's generated code inside Comet, rather than relaxing native `map_extract` equality. ANSI-mode nullable nondeterministic map/array operands also dispatch as a whole, preserving single evaluation and NULL short-circuiting. Compatible deterministic operands retain the existing native route and ANSI NULL guard.
+- Regression coverage: `map_lookup_dispatch.sql` checks both lookup spellings on column inputs under ANSI on/off, including signed zero, NaN, infinities, subnormals, NULL/empty maps, NULL keys/values, nested NULLs, structural equality and NULL-map short-circuiting of a throwing key. `element_at_map_collation.sql` covers Spark 4.0+ collation; `CometMapExpressionSuite` retains constant-folding-on coverage and checks fallback when dispatch is disabled. The dispatcher type gate and expression enablement remain in control.
+
+## getmapvalue
+
+- Spark 3.4.3 (audited 2026-09-11): `GetMapValue` implements `map_col[key]` and shares the interpreted/generated lookup helpers with map `ElementAt`; see the equality and NULL behavior above.
+- Spark 3.5.8 (audited 2026-09-11): same `GetMapValue` implementation as 3.4.3.
+- Spark 4.0.1 (audited 2026-09-11): same lookup loop, with collation-aware equality supplied by code generation.
+- Spark 4.1.1 (audited 2026-09-11): tightens analysis-time input checking to `MapType`; runtime lookup is unchanged.
+- `CometMapExtract` uses `CodegenDispatchFallback` for the same key-type exclusions as `CometElementAt`. Native lookup and its guards are otherwise unchanged. SQL tests use map columns because Spark can rewrite a constructor subscript `map(...)[key]` into `CASE` even with constant folding disabled.
 
 ## map_contains_key
 
