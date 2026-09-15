@@ -158,13 +158,15 @@ fn main() {
             continue;
         }
 
-        // After each allocated or pool update, check the current state
+        // After each allocated or pool update, check the current state. A comparison needs one
+        // sample of each side: an observed zero reservation is a real value that allocation can
+        // exceed, so only the absence of any pool sample defers the check.
         let pool_total: u64 = pool_by_thread.values().sum();
         if pool_total > peak_pool_total {
             peak_pool_total = pool_total;
         }
 
-        if latest_allocated > 0 && pool_total > 0 && latest_allocated > pool_total {
+        if source.is_some() && !pool_by_thread.is_empty() && latest_allocated > pool_total {
             let excess = latest_allocated - pool_total;
             if excess > peak_excess {
                 peak_excess = excess;
@@ -208,7 +210,11 @@ fn main() {
     );
     println!();
 
-    if violations.is_empty() {
+    if pool_by_thread.is_empty() {
+        println!(
+            "No pool reservation samples in the trace, so there is nothing to compare against."
+        );
+    } else if violations.is_empty() {
         println!("OK: {source} never exceeded the total pool reservation.");
     } else {
         println!(

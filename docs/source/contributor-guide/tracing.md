@@ -121,10 +121,10 @@ not being tracked by the pool.
 
 ## Definition of Labels
 
-| Label                            | Meaning                                                                                                                  |
-| -------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
-| jvm_heap_used                    | JVM heap memory usage of live objects for the executor process                                                           |
-| jemalloc_allocated               | Native memory usage for the executor process (requires `jemalloc` feature)                                               |
-| native_allocated                 | Bytes handed out by the Rust global allocator, process-wide (requires `alloc-accounting` feature). Approximate: each live thread holds up to 64 KiB of un-flushed delta, so the value can lag the true balance by that much per thread. |
-| thread_NNN_comet_memory_reserved | Memory reserved by Comet's DataFusion memory pool (summed across all contexts on the thread). NNN is the Rust thread ID. |
-| thread_NNN_comet_jvm_shuffle     | Off-heap memory allocated by Comet for columnar shuffle. NNN is the Rust thread ID.                                      |
+| Label                            | Meaning                                                                                                                                                              |
+| -------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| jvm_heap_used                    | JVM heap memory usage of live objects for the executor process                                                                                                       |
+| jemalloc_allocated               | Native memory usage for the executor process (requires `jemalloc` feature)                                                                                           |
+| native_allocated                 | Bytes handed out by the Rust global allocator, process-wide (requires `alloc-accounting` feature). Approximate to within 64 KiB of un-flushed delta per live thread. |
+| thread_NNN_comet_memory_reserved | Memory reserved by Comet's DataFusion memory pool (summed across all contexts on the thread). NNN is the Rust thread ID.                                             |
+| thread_NNN_comet_jvm_shuffle     | Off-heap memory allocated by Comet for columnar shuffle. NNN is the Rust thread ID.                                                                                  |
