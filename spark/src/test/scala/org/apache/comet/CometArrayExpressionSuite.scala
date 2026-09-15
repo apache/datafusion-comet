@@ -1489,6 +1489,23 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
     }
   }
 
+  // Spark declares split and sequence as ArrayType(..., containsNull=false). Native
+  // Parquet already normalizes stored children to nullable, so the non-null element
+  // field is produced after the scan. CometSlice must infer its return type from that
+  // input field; a planned nullable element disagrees with the kernel and crashes.
+  // https://github.com/apache/datafusion-comet/issues/5743
+  test("slice over expression-produced non-null element arrays (#5743)") {
+    val input = Seq((1, "axb", 2), (2, "", 3), (3, "cxd", 2))
+    withParquetDataFrame(input) { parquet =>
+      withParquetTable(parquet.toDF("id", "s", "n"), "t") {
+        checkSparkAnswerAndOperator(sql("SELECT id, slice(split(s, 'x'), 1, n) AS a FROM t"))
+        checkSparkAnswerAndOperator(sql("SELECT id, slice(sequence(1, n), 1, 2) AS a FROM t"))
+        checkSparkAnswerAndOperator(
+          sql("SELECT id, slice(concat(split(s, 'x'), array('z')), 1, n) AS a FROM t"))
+      }
+    }
+  }
+
   // https://issues.apache.org/jira/browse/SPARK-55747
   test("(ansi) GetArrayItem on null array from split()") {
     withSQLConf(
