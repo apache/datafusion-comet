@@ -21,7 +21,7 @@ under the License.
 
 Comet runs CI through GitHub Actions, and merges to `main` go through GitHub's merge queue. This
 page is the contributor's view of both: what runs on a pull request, what runs later in the queue,
-how to opt a pull request into a queue-only suite, and what to do when a run fails. The
+how to opt a pull request into a suite the PR tier skips, and what to do when a run fails. The
 mechanics behind the configuration are documented in
 [.github/workflows/README.md](https://github.com/apache/datafusion-comet/blob/main/.github/workflows/README.md).
 
@@ -42,8 +42,9 @@ Which jobs run also depends on the event:
 | Benchmark compile and lint check                  | with label   | yes         |
 | Delta contrib build gate                          | with label   | yes         |
 | PyArrow UDF tests, Spark 4.0 / 4.1 / 4.2          | with label   | yes         |
-| Spark SQL tests, Spark 3.4 / 3.5 / 4.0            | with label   | yes         |
+| Spark SQL tests, Spark 3.5 / 4.0                  | with label   | yes         |
 | Iceberg Spark SQL tests, Iceberg 1.8 / 1.9 / 1.10 | with label   | yes         |
+| Spark SQL tests, Spark 3.4                        | with label   | no          |
 
 The **PR tier** is the fast feedback loop while a change is being iterated on. The **queue
 tier** is the authoritative gate: everything the PR tier runs plus the remaining suites, evaluated
@@ -53,6 +54,24 @@ is the Linux build, which also runs on push so that the dependency caches on `ma
 pull request can only restore caches saved on its own branch or on `main`, and the queue's
 temporary branch takes its caches with it when it is deleted.
 
+That push run is for the caches and nothing else, so it runs in **cache-refresh-only** mode: only
+the four jobs that own a cache entry (the native CI build, the Rust tests, and the two TPC-H/TPC-DS
+jobs, the last two stopping before their query passes), plus the short `Lint` job the native jobs
+depend on. The lints and the Comet test matrix are skipped, which is the difference between 587
+runner-minutes a push and about 73. If you add a job to `pr_build_linux.yml`, give it
+`if: ${{ !inputs.cache-refresh-only }}` unless it writes a cache that `main` needs;
+`dev/ci/check-ci-config.py` fails the build if you forget.
+
+Spark 3.4 is the one suite in neither tier. [Spark 3.4 support is deprecated](../user-guide/latest/compatibility/spark-versions.md#spark-34),
+so its Spark SQL suite no longer gates a merge. It remains available on demand: apply the
+`run-spark-3.4-tests` label to run it against a pull request, or trigger `ci.yml` from the Actions
+page with **Run workflow**, which runs every suite regardless of tier. A contributor touching Spark
+3.4 code can still get a verdict before merging, but applying the label is only half of that: the
+run it starts is advisory. Label the pull request and then push, and Spark 3.4 joins the required
+verdict like any other suite. See
+[Opting a pull request into a suite the PR tier skips](#opting-a-pull-request-into-a-suite-the-pr-tier-skips)
+for the mechanics.
+
 Every job's result feeds one flat job named `Required Checks`, and that is the only status check
 `main` requires. A job that is skipped because the change did not touch its inputs counts as a
 pass. A job that fails or is cancelled turns `Required Checks` red.
@@ -61,9 +80,9 @@ Which tier a job belongs to is the `POLICY` table in `dev/ci/compute-changes.py`
 filters are the `FILTERS` table in the same file, and `dev/ci/check-ci-config.py` holds the test
 cases that pin both down.
 
-## Opting a pull request into a queue-only suite
+## Opting a pull request into a suite the PR tier skips
 
-Each queue-only suite has a label that runs it on a pull request:
+Each suite outside the PR tier has a label that runs it on a pull request:
 
 | Label                      | Runs                                                 |
 | -------------------------- | ---------------------------------------------------- |
@@ -77,6 +96,10 @@ Each queue-only suite has a label that runs it on a pull request:
 | `run-spark-4.0-tests`      | Spark SQL tests against Spark 4.0                    |
 | `run-iceberg-tests`        | Iceberg Spark SQL tests against Iceberg 1.8/1.9/1.10 |
 
+For every suite except Spark 3.4 the label only brings the run forward; the queue would have run
+it anyway before the change landed. For Spark 3.4 the label is the only way the suite runs on a
+pull request at all.
+
 Apply a label from the pull request sidebar, or from the command line:
 
 ```sh
@@ -87,6 +110,14 @@ Applying a label starts a new run immediately at the pull request's current comm
 executes only the suite the label gates; the PR tier already ran at that commit and is not
 repeated. Its aggregate verdict is published as `Required Checks (label run)` rather than
 `Required Checks`, so it can be read alongside the commit run without replacing it.
+
+For every suite except Spark 3.4, that separate name costs nothing: the merge queue runs the suite
+again before the change lands, so a failure a label run surfaced still blocks the merge later.
+Spark 3.4 has no queue run behind it. A red `Required Checks (label run)` leaves an earlier green
+`Required Checks` in place and the pull request mergeable, so treat a label run as feedback to read,
+not as a gate. For Spark 3.4 to count toward the required verdict the label has to already be on
+the pull request when a commit is pushed — which is what the next push gives you, since the label
+stays applied.
 
 The label stays on the pull request, so every later push runs the suite as part of the normal PR
 run. Remove the label once it has served its purpose. To re-run the suite at the same commit,
@@ -105,6 +136,11 @@ does not cover. Some examples:
   compiled on macOS
 - a change to the benchmark sources under `spark/src/test/scala/org/apache/spark/sql/benchmark`
   or to `native/*/benches`
+
+Reach for `run-spark-3.4-tests` deliberately, since nothing else will run it: a change to
+`spark/src/main/spark-3.4/`, to `dev/diffs/3.4.3.diff`, or to shared code whose Spark 3.4 behavior
+you are unsure of. Without the label, a Spark 3.4 regression will not be caught before the change
+lands.
 
 Labels that gate nothing, such as `dependencies` or the type labels, also start a run. That run
 executes nothing and finishes in a minute. It is a consequence of GitHub firing the `labeled`
@@ -167,19 +203,20 @@ re-armed automatically.
 
 ## Reproducing a suite failure locally
 
-The queue-only Spark SQL suites run Spark's own test suite against Comet, with the version's diff
-from `dev/diffs/` applied. See [Spark SQL Tests](spark-sql-tests.md) for how to run one locally,
-and [Iceberg Spark Tests](iceberg-spark-tests.md) for the Iceberg equivalents. For the Comet test
-suites that run on macOS, `make test-jvm` on a Mac runs the same suites the workflow does; the
-macOS job differs from Linux only in the platform.
+The Spark SQL suites outside the PR tier run Spark's own test suite against Comet, with the
+version's diff from `dev/diffs/` applied. See [Spark SQL Tests](spark-sql-tests.md) for how to run
+one locally, and [Iceberg Spark Tests](iceberg-spark-tests.md) for the Iceberg equivalents. For the
+Comet test suites that run on macOS, `make test-jvm` on a Mac runs the same suites the workflow
+does; the macOS job differs from Linux only in the platform.
 
 ## Changing CI itself
 
 The umbrella workflow, the reusable workflows it calls, and the routing tables are checked by
 `dev/ci/check-ci-config.py`, which runs in preflight. It enforces that every job feeds
 `Required Checks`, that the required check name in `.asf.yaml` matches the job that publishes it,
-that artifact names are unique per producer, and that the routing policy matches its test cases.
-Run it locally before pushing a CI change:
+that artifact names are unique per producer, that the routing policy matches its test cases, and
+that every job in `pr_build_linux.yml` is either a cache writer or skipped on push. Run it locally
+before pushing a CI change:
 
 ```sh
 python3 dev/ci/check-ci-config.py

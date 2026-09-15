@@ -100,3 +100,5 @@ jobs:
         run: |
           /tmp/venv/bin/python -m pytest -v \
             spark/src/test/resources/pyspark/test_pyarrow_udf.py
+          /tmp/venv/bin/python -m pytest -v \
+            spark/src/test/resources/pyspark/test_pyarrow_udf_dictionary_shuffle.py
