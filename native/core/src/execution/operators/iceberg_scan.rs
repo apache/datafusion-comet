@@ -230,6 +230,14 @@ impl IcebergScanExec {
         let scan_metrics = scan_result.metrics().clone();
         let stream = scan_result.stream();
 
+        // `ignore_variant_annotation` stays at its default of false, so the Parquet VARIANT
+        // annotation check in `SparkPhysicalExprAdapterFactory::create` is always enforced here.
+        // `spark.sql.parquet.ignoreVariantAnnotation` is a Parquet-datasource conf that the
+        // Iceberg read path never consults, so there is deliberately no escape hatch: an Iceberg
+        // table whose file annotates a field as VARIANT while the table schema asks for an
+        // ordinary struct is the same defect apache/datafusion-comet#5741 describes. Reaching it
+        // needs a table schema that disagrees with its own data files, since `CometScanRule` falls
+        // back for any Iceberg table carrying a Variant column.
         let spark_options = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
         let adapter_factory = SparkPhysicalExprAdapterFactory::new(spark_options, None);
 

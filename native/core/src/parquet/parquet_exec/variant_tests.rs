@@ -163,6 +163,7 @@ async fn scan_variant_file(filename: PathBuf) -> VariantArray {
         false,
         false,
         false,
+        false,
     )
     .unwrap();
     let mut stream = scan.execute(0, session_ctx.task_ctx()).unwrap();
@@ -228,6 +229,7 @@ async fn unread_variant_does_not_override_arrow_schema_hint() {
         false,
         false,
         false,
+        false,
     )
     .unwrap();
     let mut stream = scan.execute(0, session.task_ctx()).unwrap();
@@ -256,6 +258,7 @@ fn encrypted_projected_variant_is_rejected_before_reader_creation() {
         false,
         &session,
         true,
+        false,
         false,
         false,
     );
