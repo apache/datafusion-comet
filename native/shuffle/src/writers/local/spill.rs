@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use crate::codec_context::ShuffleCodecContext;
 use crate::metrics::ShufflePartitionerMetrics;
 use crate::writers::BufBatchWriter;
 use crate::ShuffleBlockWriter;
@@ -51,12 +52,16 @@ impl SpillWriter {
         })
     }
 
+    /// Stages the batches from `iter` into this partition's spill file.
+    ///
+    /// `codec_context` comes from the task-level owner; a `SpillWriter` exists per partition.
     /// `recycled_buffer` is a scratch byte buffer shared by the sequential per-partition
     /// spill writes; it is left drained on return so one buffer's capacity serves every
     /// partition instead of each write regrowing its own.
     pub(crate) fn write<I: Iterator<Item = datafusion::common::Result<RecordBatch>>>(
         &mut self,
         iter: &mut I,
+        codec_context: &mut ShuffleCodecContext,
         runtime: &RuntimeEnv,
         metrics: &ShufflePartitionerMetrics,
         recycled_buffer: &mut Vec<u8>,
@@ -74,6 +79,7 @@ impl SpillWriter {
                 buf_batch_writer.write(
                     &batch?,
                     recycled_buffer,
+                    codec_context,
                     &metrics.encode_time,
                     &metrics.write_time,
                 )?;
@@ -82,12 +88,14 @@ impl SpillWriter {
                     buf_batch_writer.write(
                         &batch,
                         recycled_buffer,
+                        codec_context,
                         &metrics.encode_time,
                         &metrics.write_time,
                     )?;
                 }
                 buf_batch_writer.flush(
                     recycled_buffer,
+                    codec_context,
                     &metrics.encode_time,
                     &metrics.write_time,
                 )?;
@@ -267,6 +275,7 @@ mod tests {
         let mut spill = spill_writer(&batch, 10);
         let runtime = RuntimeEnv::default();
         let metrics = ShufflePartitionerMetrics::new(&ExecutionPlanMetricsSet::new(), 0);
+        let mut codec_context = ShuffleCodecContext::default();
         let mut recycled = Vec::new();
         let mut iter = vec![
             Ok(batch),
@@ -275,7 +284,13 @@ mod tests {
         .into_iter();
 
         assert!(spill
-            .write(&mut iter, &runtime, &metrics, &mut recycled)
+            .write(
+                &mut iter,
+                &mut codec_context,
+                &runtime,
+                &metrics,
+                &mut recycled
+            )
             .is_err());
         assert!(
             recycled.is_empty(),
@@ -301,11 +316,18 @@ mod tests {
         let mut spill = spill_writer(&batch, 10);
         let runtime = pathless_backend::runtime();
         let metrics = ShufflePartitionerMetrics::new(&ExecutionPlanMetricsSet::new(), 0);
+        let mut codec_context = ShuffleCodecContext::default();
         let mut recycled = Vec::new();
         let mut iter = vec![Ok(batch)].into_iter();
 
         spill
-            .write(&mut iter, &runtime, &metrics, &mut recycled)
+            .write(
+                &mut iter,
+                &mut codec_context,
+                &runtime,
+                &metrics,
+                &mut recycled,
+            )
             .unwrap();
         assert!(spill.has_spill_file());
 
