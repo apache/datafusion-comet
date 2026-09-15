@@ -503,15 +503,17 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
   test("gs data location under ResolvingFileIO is judged by the resolved delegate") {
     // ResolvingFileIO (the REST catalog default) picks GCSFileIO for gs:// when the GCS bundle
     // loads and HadoopFileIO otherwise; the expectation follows whichever this classpath yields.
+    // Resolved through the gate's own helper: `ResolvingFileIO.ioClass` throws a
+    // NoClassDefFoundError (not an Exception) when the GCS client libraries are absent.
     withTempIcebergDir { warehouseDir =>
       val location = "gs://nonexistent/iceberg/db/gs_resolving"
       val resolving = new ResolvingFileIO()
       resolving.setConf(new Configuration())
       resolving.initialize(java.util.Collections.emptyMap[String, String]())
       val delegate =
-        try resolving.ioClass(location)
+        try IcebergReflection.resolveFileIOClass(resolving, location)
         finally resolving.close()
-      logInfo(s"ResolvingFileIO delegate for $location on this classpath: ${delegate.getName}")
+      logInfo(s"ResolvingFileIO delegate for $location on this classpath: $delegate")
       val resolvingCat = "resolving_io_cat"
       withSQLConf(
         s"spark.sql.catalog.$resolvingCat" -> "org.apache.iceberg.spark.SparkCatalog",
@@ -527,14 +529,16 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
           TBLPROPERTIES ('write.data.path'='$location')
         """)
         val writeExec = planInsertWriteExec(s"$resolvingCat.$ns.gs_resolving")
-        if (classOf[HadoopFileIO].isAssignableFrom(delegate)) {
-          assertUnsupportedContains(writeExec, "gs_resolving", "gs://", delegate.getName)
-        } else {
-          assert(delegate.getName == "org.apache.iceberg.gcp.gcs.GCSFileIO", delegate)
-          val support = CometIcebergNativeWrite.getSupportLevel(writeExec)
-          assert(
-            support.isInstanceOf[Compatible],
-            s"expected Compatible via GCSFileIO, got $support")
+        delegate match {
+          case Some(cls) if cls.getName == IcebergReflection.ClassNames.GCS_FILE_IO =>
+            val support = CometIcebergNativeWrite.getSupportLevel(writeExec)
+            assert(
+              support.isInstanceOf[Compatible],
+              s"expected Compatible via GCSFileIO, got $support")
+          case Some(cls) =>
+            assertUnsupportedContains(writeExec, "gs_resolving", "gs://", cls.getName)
+          case None =>
+            assertUnsupportedContains(writeExec, "gs_resolving", "gs://", "could not resolve")
         }
       }
     }
