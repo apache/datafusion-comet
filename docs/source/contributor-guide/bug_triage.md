@@ -76,6 +76,65 @@ A bug should be escalated to a higher priority if:
 - A `priority:medium` bug is reported by multiple users or affects a common workload → consider
   escalating to `priority:high`
 - A `priority:low` CI flake is blocking PR merges consistently → escalate to `priority:medium`
+- A bug turns out to be a `regression` from the most recent release → consider escalating one
+  level, because users who upgrade are exposed to it without changing anything on their side
+
+## Regression Label
+
+| Label        | Description                                             |
+| ------------ | ------------------------------------------------------- |
+| `regression` | A bug that did not affect the most recent Comet release |
+
+Apply `regression` to a bug when a workload that behaved correctly on the most recent release
+behaves incorrectly on `main`. That covers wrong results, a new failure, a new crash, and the case
+where an expression used to fall back to Spark (and was therefore correct) and now runs natively
+with a wrong answer. It also covers a loss of safety: a query that failed with a clear error on the
+last release and now returns silently wrong data is a regression, even though it never produced the
+right answer on either version.
+
+A defect that already shipped in the most recent release is **not** a regression, no matter how
+recently it was reported. Neither is a defect in a feature added after that release: a workload
+running on the release cannot reach code that did not exist yet.
+
+`regression` is orthogonal to priority. A regression still gets the priority label its symptoms
+earn, and it is an escalation trigger rather than a priority of its own. It applies only to bugs.
+
+### Determining the Comparison Point
+
+Always compare against the most recent release **tag**, resolved at triage time rather than
+hard-coded, so the comparison point moves forward as Comet ships:
+
+```bash
+LATEST_RELEASE=$(gh release view --repo apache/datafusion-comet --json tagName --jq .tagName)
+git fetch --tags
+git log -1 --format=%cI "$LATEST_RELEASE"
+```
+
+Compare against the **tag's commit date**, not the release's publication date — commits that land
+between the two are not in the release.
+
+### Establishing Regression Status
+
+Work through these in order and stop at the first definite answer:
+
+1. **Issue creation date.** An issue opened before the tag was cut describes behavior that shipped
+   in that release. Not a regression.
+2. **Is the defective code present at the tag?** `git show "$LATEST_RELEASE:<path>"`,
+   `git grep <pattern> "$LATEST_RELEASE"`, or `git diff "$LATEST_RELEASE"..HEAD -- <path>`. If the
+   defective logic is there verbatim, not a regression.
+3. **Was the path reachable at the tag?** Check that the Scala serde entry, shim, or native
+   registration existed, not just the kernel. Code absent from the tag means new work, not a
+   regression — unless a post-release change broke a path that used to be correct.
+4. **Run the reproducer against the tag.** Build the tag in a scratch worktree and run it. This is
+   the only way to settle cases that turn on a dependency bump (a DataFusion or Arrow/Parquet major
+   version) rather than on Comet's own code.
+
+Issues found during PR review often say "this is pre-existing, not caused by this PR". That is a
+claim about the pull request under review, not about the last release; a defect can be pre-existing
+relative to the PR that surfaced it and still have landed after the tag. Verify against the tag.
+
+If the evidence is inconclusive, leave `regression` off and say so on the issue rather than
+guessing.
 
 ## Area Labels
 
@@ -111,9 +170,11 @@ When a new issue is filed:
 3. **Assess correctness impact first.** Ask: "Could this produce wrong results silently?" This
    is more important than whether it crashes.
 4. **Apply a priority label** using the decision tree above (bugs only).
-5. **Apply area labels** to indicate the affected subsystem(s).
-6. **Apply `good first issue`** if the fix is likely straightforward and well-scoped.
-7. **Remove the `requires-triage` label** to indicate triage is complete.
+5. **Check whether the bug is a regression** from the most recent release tag and apply
+   `regression` if it is (bugs only).
+6. **Apply area labels** to indicate the affected subsystem(s).
+7. **Apply `good first issue`** if the fix is likely straightforward and well-scoped.
+8. **Remove the `requires-triage` label** to indicate triage is complete.
 
 ### For Existing Bugs
 
@@ -122,6 +183,9 @@ Periodically review open bugs to ensure priorities are still accurate:
 - Has a `priority:medium` bug been open for a long time with user reports? Consider escalating.
 - Has a `priority:high` bug been fixed by a related change? Close it.
 - Are there clusters of related bugs that should be tracked under an EPIC?
+- Does an open bug need its regression status re-checked against a newer release? A bug that was
+  a regression from one release is still a regression once the next release ships with it
+  unfixed, so `regression` stays until the bug is fixed.
 
 ### Prioritization Principles
 
@@ -183,3 +247,4 @@ Triage is a valuable contribution that doesn't require writing code. You can hel
 - Identifying duplicate issues
 - Linking related issues together
 - Testing whether old bugs have been fixed by recent changes
+- Checking whether an open bug is a `regression` from the most recent release tag
