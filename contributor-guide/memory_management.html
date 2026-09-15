@@ -1,0 +1,1076 @@
+<!--
+Licensed to the Apache Software Foundation (ASF) under one
+or more contributor license agreements.  See the NOTICE file
+distributed with this work for additional information
+regarding copyright ownership.  The ASF licenses this file
+to you under the Apache License, Version 2.0 (the
+"License"); you may not use this file except in compliance
+with the License.  You may obtain a copy of the License at
+
+  http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing,
+software distributed under the License is distributed on an
+"AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+KIND, either express or implied.  See the License for the
+specific language governing permissions and limitations
+under the License.
+-->
+
+
+
+
+<!DOCTYPE html>
+
+
+<html lang="en" data-content_root="../" data-theme="light">
+
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <title>Memory Management &#8212; Apache DataFusion Comet  documentation</title>
+  
+  
+  
+  <script data-cfasync="false">
+    document.documentElement.dataset.mode = localStorage.getItem("mode") || "light";
+    document.documentElement.dataset.theme = localStorage.getItem("theme") || "light";
+  </script>
+  <!--
+    this give us a css class that will be invisible only if js is disabled
+  -->
+  <noscript>
+    <style>
+      .pst-js-only { display: none !important; }
+
+    </style>
+  </noscript>
+  
+  <!-- Loaded before other Sphinx assets -->
+  <link href="../_static/styles/theme.css?digest=8878045cc6db502f8baf" rel="stylesheet" />
+<link href="../_static/styles/pydata-sphinx-theme.css?digest=8878045cc6db502f8baf" rel="stylesheet" />
+
+    <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=8f2a1f02" />
+    <link rel="stylesheet" type="text/css" href="../_static/theme_overrides.css?v=bfdde722" />
+  
+  <!-- So that users can add custom icons -->
+  <script src="../_static/scripts/fontawesome.js?digest=8878045cc6db502f8baf"></script>
+  <!-- Pre-loaded scripts that we'll load fully later -->
+  <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=8878045cc6db502f8baf" />
+<link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=8878045cc6db502f8baf" />
+
+    <script src="../_static/documentation_options.js?v=5929fcd5"></script>
+    <script src="../_static/doctools.js?v=9a2dae69"></script>
+    <script src="../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script>DOCUMENTATION_OPTIONS.pagename = 'contributor-guide/memory_management';</script>
+    <script async="true" defer="true" src="https://buttons.github.io/buttons.js"></script>
+    <script src="../_static/comet-ux.js?v=97577a30"></script>
+    <link rel="index" title="Index" href="../genindex.html" />
+    <link rel="search" title="Search" href="../search.html" />
+    <link rel="next" title="ANSI SQL Error Propagation in Comet" href="sql_error_propagation.html" />
+    <link rel="prev" title="Native Shuffle" href="native_shuffle.html" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="docsearch:language" content="en"/>
+  <meta name="docsearch:version" content="" />
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="preload" as="style"
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
+<link rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap"
+      media="print" onload="this.media='all'">
+<noscript>
+  <link rel="stylesheet"
+        href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
+</noscript>
+
+  </head>
+  
+  
+  <body data-bs-spy="scroll" data-bs-target=".bd-toc-nav" data-offset="180" data-bs-root-margin="0px 0px -60%" data-default-mode="light">
+
+  
+  
+  <div id="pst-skip-link" class="skip-link d-print-none"><a href="#main-content">Skip to main content</a></div>
+  
+  <div id="pst-scroll-pixel-helper"></div>
+  
+  <button type="button" class="btn rounded-pill" id="pst-back-to-top">
+    <i class="fa-solid fa-arrow-up"></i>Back to top</button>
+
+  
+  <dialog id="pst-search-dialog">
+    
+<form class="bd-search d-flex align-items-center"
+      action="../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         placeholder="Search the docs ..."
+         aria-label="Search the docs ..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form>
+  </dialog>
+
+  <div class="pst-async-banner-revealer d-none">
+  <aside id="bd-header-version-warning" class="d-none d-print-none" aria-label="Version warning"></aside>
+</div>
+
+  
+    <header class="bd-header navbar navbar-expand-lg bd-navbar d-print-none">
+<div class="bd-header__inner bd-page-width">
+  <button class="pst-navbar-icon sidebar-toggle primary-toggle" aria-label="Site navigation">
+    <span class="fa-solid fa-bars"></span>
+  </button>
+  
+  
+  <div class="col-lg-3 navbar-header-items__start">
+    
+      <div class="navbar-item">
+
+  
+    
+  
+
+<a class="navbar-brand logo" href="../index.html">
+  
+  
+  
+  
+  
+    
+    
+    
+    <img src="../_static/DataFusionComet-Logo-Light.png" class="logo__image only-light" alt="Apache DataFusion Comet  documentation - Home"/>
+    <img src="../_static/DataFusionComet-Logo-Dark.png" class="logo__image only-dark pst-js-only" alt="Apache DataFusion Comet  documentation - Home"/>
+  
+  
+</a></div>
+    
+  </div>
+  
+  <div class="col-lg-9 navbar-header-items">
+    
+    <div class="me-auto navbar-header-items__center">
+      
+        <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../user-guide/index.html">
+    User Guide
+  </a>
+</li>
+
+
+<li class="nav-item current active">
+  <a class="nav-link nav-internal" href="index.html">
+    Contributor Guide
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../changelog/index.html">
+    Changelog
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../about/index.html">
+    About
+  </a>
+</li>
+
+  </ul>
+</nav></div>
+      
+    </div>
+    
+    
+    <div class="navbar-header-items__end">
+      
+        <div class="navbar-item navbar-persistent--container">
+          
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+        </div>
+      
+      
+        <div class="navbar-item"><ul class="navbar-icon-links"
+    aria-label="Icon Links">
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://github.com/apache/datafusion-comet" title="GitHub" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-github fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">GitHub</span></a>
+        </li>
+</ul></div>
+      
+        <div class="navbar-item">
+
+<button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button pst-js-only" aria-label="Color mode" data-bs-title="Color mode"  data-bs-placement="bottom" data-bs-toggle="tooltip">
+  <i class="theme-switch fa-solid fa-sun                fa-lg" data-mode="light" title="Light"></i>
+  <i class="theme-switch fa-solid fa-moon               fa-lg" data-mode="dark"  title="Dark"></i>
+  <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg" data-mode="auto"  title="System Settings"></i>
+</button></div>
+      
+    </div>
+    
+  </div>
+  
+  
+    <div class="navbar-persistent--mobile">
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+    </div>
+  
+
+  
+    <button class="pst-navbar-icon sidebar-toggle secondary-toggle" aria-label="On this page">
+      <span class="fa-solid fa-outdent"></span>
+    </button>
+  
+</div>
+
+    </header>
+  
+
+  <div class="bd-container">
+    <div class="bd-container__inner bd-page-width">
+      
+      
+      
+      <dialog id="pst-primary-sidebar-modal"></dialog>
+      <div id="pst-primary-sidebar" class="bd-sidebar-primary bd-sidebar">
+        
+
+  
+  <div class="sidebar-header-items sidebar-primary__section">
+    
+    
+      <div class="sidebar-header-items__center">
+        
+          
+          
+            <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../user-guide/index.html">
+    User Guide
+  </a>
+</li>
+
+
+<li class="nav-item current active">
+  <a class="nav-link nav-internal" href="index.html">
+    Contributor Guide
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../changelog/index.html">
+    Changelog
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../about/index.html">
+    About
+  </a>
+</li>
+
+  </ul>
+</nav></div>
+          
+        
+      </div>
+    
+    
+    
+      <div class="sidebar-header-items__end">
+        
+          <div class="navbar-item"><ul class="navbar-icon-links"
+    aria-label="Icon Links">
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://github.com/apache/datafusion-comet" title="GitHub" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-github fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">GitHub</span></a>
+        </li>
+</ul></div>
+        
+          <div class="navbar-item">
+
+<button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button pst-js-only" aria-label="Color mode" data-bs-title="Color mode"  data-bs-placement="bottom" data-bs-toggle="tooltip">
+  <i class="theme-switch fa-solid fa-sun                fa-lg" data-mode="light" title="Light"></i>
+  <i class="theme-switch fa-solid fa-moon               fa-lg" data-mode="dark"  title="Dark"></i>
+  <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg" data-mode="auto"  title="System Settings"></i>
+</button></div>
+        
+      </div>
+    
+  </div>
+  
+    <div class="sidebar-primary-items__start sidebar-primary__section">
+        <div class="sidebar-primary-item">
+<form class="bd-search d-flex align-items-center"
+      action="../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         placeholder="Search the docs ..."
+         aria-label="Search the docs ..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form></div>
+        <div class="sidebar-primary-item"><!--
+Licensed to the Apache Software Foundation (ASF) under one
+or more contributor license agreements.  See the NOTICE file
+distributed with this work for additional information
+regarding copyright ownership.  The ASF licenses this file
+to you under the Apache License, Version 2.0 (the
+"License"); you may not use this file except in compliance
+with the License.  You may obtain a copy of the License at
+
+  http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing,
+software distributed under the License is distributed on an
+"AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+KIND, either express or implied.  See the License for the
+specific language governing permissions and limitations
+under the License.
+-->
+
+
+
+
+  
+
+<nav class="bd-links" id="bd-docs-nav" aria-label="Main navigation">
+  <div class="bd-toc-item active">
+    
+      <p aria-level="2" class="caption" role="heading"><span class="caption-text">Getting Started</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="contributing.html">Getting Started</a></li>
+<li class="toctree-l1"><a class="reference internal" href="development.html">Development Guide</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Project Architecture</span></p>
+<ul class="current nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="plugin_overview.html">Comet Plugin Architecture</a></li>
+
+<li class="toctree-l1"><a class="reference internal" href="ffi.html">Arrow FFI</a></li>
+<li class="toctree-l1"><a class="reference internal" href="jvm_shuffle.html">JVM Shuffle</a></li>
+<li class="toctree-l1"><a class="reference internal" href="native_shuffle.html">Native Shuffle</a></li>
+<li class="toctree-l1 current active"><a class="current reference internal" href="#">Memory Management</a></li>
+<li class="toctree-l1"><a class="reference internal" href="sql_error_propagation.html">ANSI Error Propagation</a></li>
+<li class="toctree-l1"><a class="reference internal" href="s3-credential-provider-design.html">S3 Credential Provider Design</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Adding Functionality</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="adding_a_new_operator.html">Adding a New Operator</a></li>
+<li class="toctree-l1"><a class="reference internal" href="adding_a_new_expression.html">Adding a New Expression</a></li>
+<li class="toctree-l1"><a class="reference internal" href="adding_a_new_spark_version.html">Adding a New Spark Version</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Testing</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="sql-file-tests.html">Comet SQL Tests</a></li>
+<li class="toctree-l1"><a class="reference internal" href="spark-sql-tests.html">Spark SQL Tests</a></li>
+<li class="toctree-l1"><a class="reference internal" href="iceberg-spark-tests.html">Iceberg Spark Tests</a></li>
+<li class="toctree-l1"><a class="reference internal" href="ci.html">Continuous Integration</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Debugging and Performance</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="debugging.html">Debugging Guide</a></li>
+<li class="toctree-l1 has-children"><a class="reference internal" href="benchmarking.html">Benchmarking Guide</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="benchmark-results/tpc-ds.html">TPC-DS</a></li>
+<li class="toctree-l2"><a class="reference internal" href="benchmarking_macos.html">Comet Benchmarking on macOS</a></li>
+<li class="toctree-l2"><a class="reference internal" href="benchmarking_aws_ec2.html">Comet Benchmarking in EC2</a></li>
+<li class="toctree-l2"><a class="reference internal" href="benchmarking_micro_ec2.html">Micro Benchmarking on AWS EC2</a></li>
+<li class="toctree-l2"><a class="reference internal" href="benchmarking_spark_sql_perf.html">TPC-DS Benchmarking with spark-sql-perf</a></li>
+</ul>
+</details></li>
+<li class="toctree-l1"><a class="reference internal" href="optimizing_expressions.html">Optimizing Scalar Expressions</a></li>
+<li class="toctree-l1"><a class="reference internal" href="profiling.html">Profiling</a></li>
+<li class="toctree-l1"><a class="reference internal" href="tracing.html">Tracing</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Reference</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1 has-children"><a class="reference internal" href="expression-audits/index.html">Expression Audits</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="expression-audits/agg_funcs.html">agg_funcs</a></li>
+<li class="toctree-l2"><a class="reference internal" href="expression-audits/array_funcs.html">array_funcs</a></li>
+<li class="toctree-l2"><a class="reference internal" href="expression-audits/bitwise_funcs.html">bitwise_funcs</a></li>
+<li class="toctree-l2"><a class="reference internal" href="expression-audits/collection_funcs.html">collection_funcs</a></li>
+<li class="toctree-l2"><a class="reference internal" href="expression-audits/conditional_funcs.html">conditional_funcs</a></li>
+<li class="toctree-l2"><a class="reference internal" href="expression-audits/conversion_funcs.html">conversion_funcs</a></li>
+<li class="toctree-l2"><a class="reference internal" href="expression-audits/datetime_funcs.html">datetime_funcs</a></li>
+<li class="toctree-l2"><a class="reference internal" href="expression-audits/generator_funcs.html">generator_funcs</a></li>
+<li class="toctree-l2"><a class="reference internal" href="expression-audits/hash_funcs.html">hash_funcs</a></li>
+<li class="toctree-l2"><a class="reference internal" href="expression-audits/json_funcs.html">json_funcs</a></li>
+<li class="toctree-l2"><a class="reference internal" href="expression-audits/map_funcs.html">map_funcs</a></li>
+<li class="toctree-l2"><a class="reference internal" href="expression-audits/math_funcs.html">math_funcs</a></li>
+<li class="toctree-l2"><a class="reference internal" href="expression-audits/misc_funcs.html">misc_funcs</a></li>
+<li class="toctree-l2"><a class="reference internal" href="expression-audits/predicate_funcs.html">predicate_funcs</a></li>
+<li class="toctree-l2"><a class="reference internal" href="expression-audits/string_funcs.html">string_funcs</a></li>
+<li class="toctree-l2"><a class="reference internal" href="expression-audits/struct_funcs.html">struct_funcs</a></li>
+<li class="toctree-l2"><a class="reference internal" href="expression-audits/url_funcs.html">url_funcs</a></li>
+<li class="toctree-l2"><a class="reference internal" href="expression-audits/window_funcs.html">window_funcs</a></li>
+</ul>
+</details></li>
+<li class="toctree-l1"><a class="reference internal" href="spark_configs_support.html">Supported Spark Configurations</a></li>
+<li class="toctree-l1"><a class="reference internal" href="config_conventions.html">Configuration Conventions</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Project Mechanics</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="bug_triage.html">Bug Triage</a></li>
+<li class="toctree-l1"><a class="reference internal" href="release_process.html">Release Process</a></li>
+<li class="toctree-l1"><a class="reference internal" href="roadmap.html">Roadmap</a></li>
+<li class="toctree-l1"><a class="reference external" href="https://github.com/apache/datafusion-comet">Github and Issue Tracker</a></li>
+</ul>
+
+    
+  </div>
+</nav></div>
+    </div>
+  
+  
+  <div class="sidebar-primary-items__end sidebar-primary__section">
+      <div class="sidebar-primary-item">
+<div id="ethical-ad-placement"
+      class="flat"
+      data-ea-publisher="readthedocs"
+      data-ea-type="readthedocs-sidebar"
+      data-ea-manual="true">
+</div></div>
+  </div>
+
+
+      </div>
+      
+      <main id="main-content" class="bd-main" role="main">
+        
+        
+          <div class="bd-content">
+            <div class="bd-article-container">
+              
+              <div class="bd-header-article d-print-none">
+<div class="header-article-items header-article__inner">
+  
+    <div class="header-article-items__start">
+      
+        <div class="header-article-item">
+
+<nav aria-label="Breadcrumb" class="d-print-none">
+  <ul class="bd-breadcrumbs">
+    
+    <li class="breadcrumb-item breadcrumb-home">
+      <a href="../index.html" class="nav-link" aria-label="Home">
+        <i class="fa-solid fa-home"></i>
+      </a>
+    </li>
+    
+    <li class="breadcrumb-item"><a href="index.html" class="nav-link">Comet Contributor Guide</a></li>
+    
+    <li class="breadcrumb-item active" aria-current="page"><span class="ellipsis">Memory Management</span></li>
+  </ul>
+</nav>
+</div>
+      
+    </div>
+  
+  
+</div>
+</div>
+              
+              
+              
+                
+<div id="searchbox"></div>
+                <article class="bd-article">
+                  
+  <!--
+Licensed to the Apache Software Foundation (ASF) under one
+or more contributor license agreements.  See the NOTICE file
+distributed with this work for additional information
+regarding copyright ownership.  The ASF licenses this file
+to you under the Apache License, Version 2.0 (the
+"License"); you may not use this file except in compliance
+with the License.  You may obtain a copy of the License at
+
+  http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing,
+software distributed under the License is distributed on an
+"AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+KIND, either express or implied.  See the License for the
+specific language governing permissions and limitations
+under the License.
+-->
+<section id="memory-management">
+<h1>Memory Management<a class="headerlink" href="#memory-management" title="Link to this heading">#</a></h1>
+<p>This page describes how memory is budgeted, accounted, and enforced across the JVM/native
+boundary. It is aimed at contributors working on memory pools, operators that reserve memory, or
+anyone debugging an out-of-memory report. For user-facing tuning advice, see the
+<a class="reference internal" href="../user-guide/latest/tuning.html"><span class="std std-doc">Tuning Guide</span></a>.</p>
+<p>This page covers off-heap mode (<code class="docutils literal notranslate"><span class="pre">spark.memory.offHeap.enabled=true</span></code>) only. Comet also has an
+on-heap mode, but it exists so that the Spark SQL test suite can run against Comet without changing
+Spark’s memory configuration. It must not be used in production, and it is not described here. The
+pool types that only on-heap mode exposes belong to the <code class="docutils literal notranslate"><span class="pre">CATEGORY_TESTING</span></code> config group for the
+same reason.</p>
+<section id="overview">
+<h2>Overview<a class="headerlink" href="#overview" title="Link to this heading">#</a></h2>
+<p>A Comet executor has to satisfy three separate memory budgets at once, and they are enforced by
+three different parties:</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Budget</p></th>
+<th class="head"><p>Enforced by</p></th>
+<th class="head"><p>What happens when it is exceeded</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>JVM heap</p></td>
+<td><p>The JVM</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">java.lang.OutOfMemoryError</span></code>; Spark treats it as fatal and exits the executor</p></td>
+</tr>
+<tr class="row-odd"><td><p>Spark’s memory pools</p></td>
+<td><p>Spark bookkeeping</p></td>
+<td><p>A consumer is asked to spill, or the task fails with <code class="docutils literal notranslate"><span class="pre">SparkOutOfMemoryError</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p>Container RSS</p></td>
+<td><p>The OS / cgroup</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">SIGKILL</span></code> of the whole executor process (exit 137, <code class="docutils literal notranslate"><span class="pre">OOMKilled</span></code>)</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>The first two are <em>accounting</em>: a running total of bytes that consumers have voluntarily declared.
+The third is <em>physical</em>: the kernel measures resident pages and does not care what any accounting
+layer believes.</p>
+<p>The first row is easy to get wrong. Spark’s <code class="docutils literal notranslate"><span class="pre">Executor.isFatalError</span></code> exempts <code class="docutils literal notranslate"><span class="pre">SparkOutOfMemoryError</span></code>,
+which is the error Spark’s own memory manager throws when a consumer cannot get the bytes it asked
+for, so that failure is confined to the task and the executor keeps running. An ordinary JVM
+<code class="docutils literal notranslate"><span class="pre">OutOfMemoryError</span></code> is not exempt: the executor hands it to <code class="docutils literal notranslate"><span class="pre">SparkUncaughtExceptionHandler</span></code>, which
+calls <code class="docutils literal notranslate"><span class="pre">System.exit(SparkExitCode.OOM)</span></code> (exit code 52). Real heap exhaustion therefore usually costs
+the whole executor, not one task. An executor loss on its own does not tell you which budget was
+exceeded; the exit code does.</p>
+<p>Comet’s difficulty is that its allocations are made by Rust code, so they are invisible to the JVM
+heap and to Spark’s own off-heap accounting, yet they land squarely in container RSS. Comet
+therefore maintains its own budget that is meant to shadow the physical one, and the accuracy of
+that shadow is the central problem this page is about.</p>
+</section>
+<section id="who-allocates-what">
+<h2>Who allocates what<a class="headerlink" href="#who-allocates-what" title="Link to this heading">#</a></h2>
+<p>Enabling Comet does not add one new memory consumer, it adds several, and they are not all
+accounted by the same party. This inventory is worth internalizing before reading the rest of the
+page:</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Allocator</p></th>
+<th class="head"><p>Lives in</p></th>
+<th class="head"><p>Bounded by</p></th>
+<th class="head"><p>Visible to Spark?</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>Spark execution + storage (on-heap)</p></td>
+<td><p>JVM heap</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">spark.executor.memory</span></code> and the unified memory manager</p></td>
+<td><p>Yes</p></td>
+</tr>
+<tr class="row-odd"><td><p>Spark Tungsten (off-heap)</p></td>
+<td><p>Off-heap</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">spark.memory.offHeap.size</span></code> via <code class="docutils literal notranslate"><span class="pre">TaskMemoryManager</span></code></p></td>
+<td><p>Yes</p></td>
+</tr>
+<tr class="row-even"><td><p>Comet native (Rust global allocator)</p></td>
+<td><p>Native heap</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">memory_limit</span></code> (see below), enforced only via the memory pool</p></td>
+<td><p>No</p></td>
+</tr>
+<tr class="row-odd"><td><p>Comet JVM Arrow (<code class="docutils literal notranslate"><span class="pre">CometArrowAllocator</span></code>)</p></td>
+<td><p>Off-heap</p></td>
+<td><p><strong>Nothing</strong>: a <code class="docutils literal notranslate"><span class="pre">RootAllocator(Long.MaxValue)</span></code></p></td>
+<td><p>No</p></td>
+</tr>
+<tr class="row-even"><td><p>Comet JVM shuffle pages</p></td>
+<td><p>Off-heap</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">spark.memory.offHeap.size</span></code> via <code class="docutils literal notranslate"><span class="pre">TaskMemoryManager</span></code></p></td>
+<td><p>Yes</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>Two observations follow.</p>
+<p><strong>Comet’s JVM-side Arrow allocator is unbounded and accounted by nobody.</strong> <code class="docutils literal notranslate"><span class="pre">CometArrowAllocator</span></code>
+(<code class="docutils literal notranslate"><span class="pre">spark/src/main/scala/org/apache/comet/package.scala</span></code>) is a single process-wide
+<code class="docutils literal notranslate"><span class="pre">new</span> <span class="pre">RootAllocator(Long.MaxValue)</span></code>. Child allocators are cut from it for FFI stream export
+(<code class="docutils literal notranslate"><span class="pre">CometNativeArrowSource</span></code>), broadcast coalescing, and <code class="docutils literal notranslate"><span class="pre">CometSparkToColumnarExec</span></code>. These are real
+off-heap bytes in container RSS that neither Spark’s <code class="docutils literal notranslate"><span class="pre">TaskMemoryManager</span></code> nor Comet’s native memory
+pool sees. In practice the volume is modest, a batch at a time per stream, but there is no
+ceiling and no backpressure.</p>
+<p><strong>The JVM shuffle allocator is an ordinary Spark consumer.</strong> <code class="docutils literal notranslate"><span class="pre">CometShuffleMemoryAllocator.getInstance</span></code>
+returns <code class="docutils literal notranslate"><span class="pre">CometUnifiedShuffleMemoryAllocator</span></code>, a Spark <code class="docutils literal notranslate"><span class="pre">MemoryConsumer</span></code> drawing from
+<code class="docutils literal notranslate"><span class="pre">spark.memory.offHeap.size</span></code>, so shuffle pages are arbitrated against Spark’s other consumers in the
+same task like any other allocation.</p>
+</section>
+<section id="where-comet-s-budget-comes-from">
+<h2>Where Comet’s budget comes from<a class="headerlink" href="#where-comet-s-budget-comes-from" title="Link to this heading">#</a></h2>
+<p><code class="docutils literal notranslate"><span class="pre">CometExecIterator.getMemoryConfig</span></code> computes the budget once per executor and passes it across JNI
+to <code class="docutils literal notranslate"><span class="pre">Java_org_apache_comet_Native_createPlan</span></code> as <code class="docutils literal notranslate"><span class="pre">memory_limit</span></code>. Comet shares Spark’s off-heap pool
+rather than asking for a separate allocation:</p>
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>memory_limit = spark.memory.offHeap.size * spark.comet.exec.memoryPool.fraction
+</pre></div>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.memoryPool.fraction</span></code> defaults to <code class="docutils literal notranslate"><span class="pre">1.0</span></code>. Lowering it is the current workaround for
+Comet’s under-accounting (see <a class="reference internal" href="#the-accounting-gap">The accounting gap</a>). It holds back a slice of
+the off-heap pool that Comet is not allowed to reserve, on the assumption that Comet’s real usage
+overshoots its reservations by roughly that slice.</p>
+<p>A second value, <code class="docutils literal notranslate"><span class="pre">memory_limit_per_task</span></code>, is computed and passed alongside it, but only the on-heap
+pool types read it.</p>
+<section id="resolving-the-pool-type">
+<h3>Resolving the pool type<a class="headerlink" href="#resolving-the-pool-type" title="Link to this heading">#</a></h3>
+<p><code class="docutils literal notranslate"><span class="pre">parse_memory_pool_config</span></code> (<code class="docutils literal notranslate"><span class="pre">native/core/src/execution/memory_pools/config.rs</span></code>) turns the pool-type
+string and the limit into a <code class="docutils literal notranslate"><span class="pre">MemoryPoolConfig</span></code>. Two pool types are valid in off-heap mode:</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Pool type</p></th>
+<th class="head"><p>Sized from</p></th>
+<th class="head"><p>Notes</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">fair_unified</span></code> (default)</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">memory_limit</span></code></p></td>
+<td><p>Delegates to Spark’s <code class="docutils literal notranslate"><span class="pre">TaskMemoryManager</span></code>; task-shared</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">greedy_unified</span></code></p></td>
+<td><p>n/a (pool size <code class="docutils literal notranslate"><span class="pre">0</span></code>)</p></td>
+<td><p>Spark owns the limit entirely; task-shared</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>Any other pool type is rejected with a configuration error.</p>
+</section>
+</section>
+<section id="the-pool-stack">
+<h2>The pool stack<a class="headerlink" href="#the-pool-stack" title="Link to this heading">#</a></h2>
+<p><code class="docutils literal notranslate"><span class="pre">create_memory_pool</span></code> builds a base pool and <code class="docutils literal notranslate"><span class="pre">createPlan</span></code> then wraps it in decorators. Reading from
+the inside out, a Comet plan in the default configuration sees:</p>
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>[LoggingMemoryPool]        &lt;- only when spark.comet.debug.memory=true
+  [TaskSharedMemoryPool]   &lt;- RAII handle for the per-task registry
+    [TrackConsumersPool]   &lt;- DataFusion; names the top 10 consumers in error messages
+      [CometFairMemoryPool]  &lt;- delegates acquire/release to Spark over JNI
+</pre></div>
+</div>
+<p>Each decorator forwards every <code class="docutils literal notranslate"><span class="pre">MemoryPool</span></code> method to its inner pool, so <code class="docutils literal notranslate"><span class="pre">reserved()</span></code> at any level
+reports the base pool’s number.</p>
+<section id="the-unified-pools">
+<h3>The unified pools<a class="headerlink" href="#the-unified-pools" title="Link to this heading">#</a></h3>
+<p><code class="docutils literal notranslate"><span class="pre">CometUnifiedMemoryPool</span></code> and <code class="docutils literal notranslate"><span class="pre">CometFairMemoryPool</span></code> (<code class="docutils literal notranslate"><span class="pre">unified_pool.rs</span></code>, <code class="docutils literal notranslate"><span class="pre">fair_pool.rs</span></code>) are the
+bridge to Spark. Their <code class="docutils literal notranslate"><span class="pre">try_grow</span></code> calls <code class="docutils literal notranslate"><span class="pre">CometTaskMemoryManager.acquireMemory</span></code> over JNI, which goes
+through Spark’s ordinary <code class="docutils literal notranslate"><span class="pre">TaskMemoryManager</span></code>. That means:</p>
+<ul class="simple">
+<li><p>Comet competes with Spark’s own off-heap consumers (Tungsten sorters, <code class="docutils literal notranslate"><span class="pre">BytesToBytesMap</span></code>, and so
+on) for the same <code class="docutils literal notranslate"><span class="pre">spark.memory.offHeap.size</span></code>, and Spark’s unified memory manager arbitrates.</p></li>
+<li><p>Spark can force <em>Spark’s</em> consumers in the same task to spill to satisfy Comet’s request.</p></li>
+<li><p>The reverse does not hold. Comet registers a <code class="docutils literal notranslate"><span class="pre">NativeMemoryConsumer</span></code> with the <code class="docutils literal notranslate"><span class="pre">TaskMemoryManager</span></code>
+so that Spark has something to charge, but its <code class="docutils literal notranslate"><span class="pre">spill()</span></code> always returns <code class="docutils literal notranslate"><span class="pre">0</span></code>
+(<code class="docutils literal notranslate"><span class="pre">CometTaskMemoryManager.java</span></code>). A Spark allocation can therefore never make a native sorter or
+aggregate release its reservations. Native operators spill only when their <em>own</em> <code class="docutils literal notranslate"><span class="pre">try_grow</span></code>
+fails, so a JVM consumer that is blocked behind native reservations has no way to reclaim them.</p></li>
+<li><p>A partial grant (<code class="docutils literal notranslate"><span class="pre">acquired</span> <span class="pre">&lt;</span> <span class="pre">additional</span></code>) is released immediately and reported as
+<code class="docutils literal notranslate"><span class="pre">ResourcesExhausted</span></code>, which is the signal DataFusion uses to spill.</p></li>
+</ul>
+<p><code class="docutils literal notranslate"><span class="pre">CometFairMemoryPool</span></code> additionally applies a local check before it asks Spark. It divides
+<code class="docutils literal notranslate"><span class="pre">pool_size</span></code> by the number of consumers currently registered with the pool and rejects the request if
+the pool’s <em>total</em> reserved bytes plus the request would exceed that quotient. Two details matter
+for tuning:</p>
+<ul class="simple">
+<li><p>The comparison is against the shared total (<code class="docutils literal notranslate"><span class="pre">state.used</span></code>), not against the requesting consumer’s
+own reservation. With an 8 GiB pool and two registered consumers, once one of them holds 3 GiB a
+2 GiB request from the other is rejected, even though neither would exceed 4 GiB. In effect the
+usable pool shrinks to <code class="docutils literal notranslate"><span class="pre">pool_size</span> <span class="pre">/</span> <span class="pre">num_consumers</span></code> in aggregate as soon as more than one consumer
+is registered.</p></li>
+<li><p>The pool is task-shared (see below), so <code class="docutils literal notranslate"><span class="pre">num_consumers</span></code> counts every registered consumer across
+every native plan in the task, not just the plan making the request.</p></li>
+</ul>
+<p>This is why <code class="docutils literal notranslate"><span class="pre">fair_unified</span></code> spills earlier than <code class="docutils literal notranslate"><span class="pre">greedy_unified</span></code>. It is not a per-consumer quota, and
+reading it as one overstates the memory a multi-operator task can use.</p>
+</section>
+<section id="task-shared-pools-and-their-lifetime">
+<h3>Task-shared pools and their lifetime<a class="headerlink" href="#task-shared-pools-and-their-lifetime" title="Link to this heading">#</a></h3>
+<p>A single Spark task can run more than one native plan concurrently: a shuffle runs the pre-shuffle
+operators and the shuffle writer as separate native execution contexts. If each got its own pool,
+the per-task limit would be enforced once per plan rather than once per task.</p>
+<p><code class="docutils literal notranslate"><span class="pre">acquire_task_shared_pool</span></code> (<code class="docutils literal notranslate"><span class="pre">task_shared.rs</span></code>) keeps a process-wide
+<code class="docutils literal notranslate"><span class="pre">HashMap&lt;task_attempt_id,</span> <span class="pre">Weak&lt;TaskSharedMemoryPool&gt;&gt;</span></code>. Plans in the same task upgrade the existing
+<code class="docutils literal notranslate"><span class="pre">Weak</span></code> and share one pool; the returned <code class="docutils literal notranslate"><span class="pre">Arc</span></code> is the only lifetime handle, so the registry entry
+disappears when the last plan (and its last reservation) drops. There is no explicit release call to
+forget, and a <code class="docutils literal notranslate"><span class="pre">createPlan</span></code> that fails partway through cleans up on unwind.</p>
+<p><code class="docutils literal notranslate"><span class="pre">TaskSharedMemoryPool::drop</span></code> has to handle one race: an <code class="docutils literal notranslate"><span class="pre">acquire</span></code> can observe an expired <code class="docutils literal notranslate"><span class="pre">Weak</span></code> and
+insert a replacement before the dying pool reaches the registry lock. The drop therefore compares
+pointers and only removes an entry that is still its own.</p>
+</section>
+</section>
+<section id="how-datafusion-consumes-the-pool">
+<h2>How DataFusion consumes the pool<a class="headerlink" href="#how-datafusion-consumes-the-pool" title="Link to this heading">#</a></h2>
+<p>Native operators reserve through DataFusion’s <code class="docutils literal notranslate"><span class="pre">MemoryConsumer</span></code> / <code class="docutils literal notranslate"><span class="pre">MemoryReservation</span></code> API:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">try_grow(n)</span></code> may fail. Spillable operators (<code class="docutils literal notranslate"><span class="pre">ExternalSorter</span></code>, the grouped hash aggregate,
+sort-merge join) respond to a <code class="docutils literal notranslate"><span class="pre">ResourcesExhausted</span></code> error by spilling to disk and retrying. This is
+the only mechanism that turns memory pressure into progress rather than failure.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">grow(n)</span></code> is infallible and panics if the pool refuses. It is used where the caller cannot spill.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">shrink(n)</span></code> returns bytes to the pool.</p></li>
+</ul>
+<p>An operator that never calls <code class="docutils literal notranslate"><span class="pre">try_grow</span></code> is invisible to the pool no matter how much memory it uses.</p>
+</section>
+<section id="crossing-the-ffi-boundary">
+<h2>Crossing the FFI boundary<a class="headerlink" href="#crossing-the-ffi-boundary" title="Link to this heading">#</a></h2>
+<p>Batches move between the JVM and native over the Arrow C Data and C Stream interfaces, which are
+zero-copy. Nothing is copied, so the <em>allocator</em> that produced a batch and the <em>runtime</em> that
+decides when it dies can be on opposite sides of the boundary. See <a class="reference internal" href="ffi.html"><span class="std std-doc">Arrow FFI</span></a> for the
+mechanics; what matters here is who is charged and who controls the lifetime.</p>
+<p>Two things are easy to conflate here. The <em>allocator</em> of a buffer determines which process-level
+accounting (if any) saw the bytes appear. Whether the buffer is <em>reserved</em> in Comet’s pool is a
+separate decision, made by whichever operator holds it, and that operator neither knows nor cares
+which side of the boundary the bytes came from.</p>
+<p><strong>JVM → native (<code class="docutils literal notranslate"><span class="pre">ScanExec</span></code>).</strong> The JVM allocates the Arrow buffers from a child of
+<code class="docutils literal notranslate"><span class="pre">CometArrowAllocator</span></code> and exports the whole per-partition iterator once as an <code class="docutils literal notranslate"><span class="pre">ArrowArrayStream</span></code>.
+<code class="docutils literal notranslate"><span class="pre">ScanExec</span></code> imports each batch through <code class="docutils literal notranslate"><span class="pre">AlignedArrowStreamReader</span></code> with <code class="docutils literal notranslate"><span class="pre">CopyMode::UnpackOrClone</span></code>:
+dictionary columns are unpacked into new native arrays, everything else is an <code class="docutils literal notranslate"><span class="pre">Arc</span></code> clone of the
+imported buffers. Those bytes stay where Java Arrow put them and are pinned for as long as any native
+reference survives. They are invisible to Spark’s <code class="docutils literal notranslate"><span class="pre">TaskMemoryManager</span></code>, and <code class="docutils literal notranslate"><span class="pre">CometArrowAllocator</span></code> is
+unbounded, so nobody charged for them at allocation time. Whether they are charged <em>later</em> depends
+on who holds them. DataFusion’s <code class="docutils literal notranslate"><span class="pre">ExternalSorter</span></code> reserves <code class="docutils literal notranslate"><span class="pre">get_reserved_bytes_for_record_batch</span></code> for
+every batch it retains, and the hash join build side reserves <code class="docutils literal notranslate"><span class="pre">get_record_batch_memory_size</span></code> for
+each incoming batch; both read buffer sizes off the <code class="docutils literal notranslate"><span class="pre">ArrayData</span></code> and apply equally to imported
+buffers. So an imported batch that a sort or join has buffered <em>is</em> reserved in Comet’s pool, and
+through a unified pool is charged to Spark. The same batch held by an operator that does not reserve
+(a projection or filter, or <code class="docutils literal notranslate"><span class="pre">ScanExec</span></code> itself between polls) is charged to nothing.</p>
+<p><strong>Native → JVM (<code class="docutils literal notranslate"><span class="pre">CometExecIterator</span></code>).</strong> DataFusion produces the batch in Rust, and whether it is
+still reserved when it reaches the boundary depends on the producing operator. The sort’s output is
+wrapped in a <code class="docutils literal notranslate"><span class="pre">ReservationStream</span></code> that shrinks the reservation by the batch’s size as each batch is
+emitted, so by the time <code class="docutils literal notranslate"><span class="pre">prepare_output</span></code> sees a sorted batch its bytes are no longer reserved.
+<code class="docutils literal notranslate"><span class="pre">prepare_output</span></code> then calls <code class="docutils literal notranslate"><span class="pre">move_to_spark</span></code>, which writes an <code class="docutils literal notranslate"><span class="pre">FFI_ArrowArray</span></code> whose release callback
+drops the Rust <code class="docutils literal notranslate"><span class="pre">ArrayData</span></code>; no reservation travels with it. The JVM wraps the pointers in
+<code class="docutils literal notranslate"><span class="pre">ArrowBuf</span></code>s and the memory is freed when the JVM calls <code class="docutils literal notranslate"><span class="pre">close()</span></code>. An exported batch is therefore
+usually <em>not</em> pool-charged while the JVM holds it, but it is resident until the JVM releases it. A
+slow or backed-up JVM consumer keeps native memory alive that no accounting layer is counting.</p>
+<p>The point is not that one direction is charged and the other is not. <strong>Buffer lifetime and
+reservation lifetime are independent.</strong> A reservation is a number an operator chose to declare and
+later withdraw; a buffer lives until its last reference drops, on whichever side of the boundary
+that happens. The two are kept in step only inside operators written to do so, and only while that
+operator holds the batch. Once the batch leaves the operator, in either direction, the reservation
+stops and the bytes keep going. That is the shape of the gap to hold in mind when reading the next
+section, and it is what any fix at the allocator level has to close.</p>
+</section>
+<section id="the-accounting-gap">
+<h2>The accounting gap<a class="headerlink" href="#the-accounting-gap" title="Link to this heading">#</a></h2>
+<p>The pool tracks <em>declared reservations</em>. Container RSS counts <em>pages the process touched</em>. The two
+diverge for several structural reasons:</p>
+<ul class="simple">
+<li><p><strong>Undeclared allocations.</strong> Arrow array builders, expression kernels producing intermediate
+arrays, decompression buffers, Parquet metadata structures, <code class="docutils literal notranslate"><span class="pre">object_store</span></code> request buffers, and
+tokio’s own machinery all allocate without reserving. Only operators that were explicitly written
+to reserve show up in the pool.</p></li>
+<li><p><strong>Rounding and padding.</strong> Arrow buffers are padded to 64-byte boundaries and builders grow by
+doubling, so a reservation of exactly <code class="docutils literal notranslate"><span class="pre">n</span></code> bytes routinely corresponds to more than <code class="docutils literal notranslate"><span class="pre">n</span></code> bytes of
+heap.</p></li>
+<li><p><strong>Allocator behavior.</strong> <code class="docutils literal notranslate"><span class="pre">malloc</span></code>-level fragmentation, size-class rounding, and jemalloc’s
+retained/dirty page cache all add resident bytes that no layer above the allocator can see.
+Freeing memory does not necessarily return pages to the OS.</p></li>
+<li><p><strong>Non-Rust allocations.</strong> Memory allocated by C dependencies through libc <code class="docutils literal notranslate"><span class="pre">malloc</span></code>, and anything
+<code class="docutils literal notranslate"><span class="pre">mmap</span></code>ed, never passes through Rust’s <code class="docutils literal notranslate"><span class="pre">GlobalAlloc</span></code>.</p></li>
+<li><p><strong>Batches in flight across the FFI boundary.</strong> Reservations stop at the operator that made them.
+Imported JVM batches are reserved only while a reserving operator holds them, and exported native
+batches have usually been released by the time the JVM receives them yet stay resident until the
+JVM closes them (see <a class="reference internal" href="#crossing-the-ffi-boundary">Crossing the FFI boundary</a>).</p></li>
+</ul>
+<p>The practical consequence is that <code class="docutils literal notranslate"><span class="pre">reserved()</span></code> is a lower bound on Comet’s real footprint, and the
+gap is workload-dependent. <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.memoryPool.fraction</span></code> exists purely so operators can
+hand-tune a haircut that covers the gap for their workload.</p>
+<p>To measure the gap on a real query, enable tracing with the <code class="docutils literal notranslate"><span class="pre">jemalloc</span></code> feature and compare
+<code class="docutils literal notranslate"><span class="pre">jemalloc_allocated</span></code> against the summed <code class="docutils literal notranslate"><span class="pre">thread_NNN_comet_memory_reserved</span></code> values; see
+<a class="reference internal" href="tracing.html#analyzing-memory-usage"><span class="std std-ref">Tracing</span></a>.</p>
+</section>
+<section id="what-the-container-sees">
+<h2>What the container sees<a class="headerlink" href="#what-the-container-sees" title="Link to this heading">#</a></h2>
+<p>On Kubernetes, Spark sizes the executor pod from <code class="docutils literal notranslate"><span class="pre">ResourceProfile</span></code>:</p>
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>pod memory request = pod memory limit
+                   = spark.executor.memory
+                   + spark.executor.memoryOverhead   (default max(0.1 * executor.memory, 384 MiB))
+                   + spark.memory.offHeap.size
+                   + pyspark memory                  (Python applications only)
+</pre></div>
+</div>
+<p>Both the request and the limit are set to this same value, so the pod’s cgroup <code class="docutils literal notranslate"><span class="pre">memory.max</span></code> is a
+hard ceiling on the sum of everything in the container. That cgroup counts, among other things:</p>
+<ul class="simple">
+<li><p>the JVM heap (<code class="docutils literal notranslate"><span class="pre">spark.executor.memory</span></code>),</p></li>
+<li><p>JVM non-heap: metaspace, code cache, thread stacks, GC structures, Netty direct buffers,</p></li>
+<li><p>Spark’s own off-heap allocations,</p></li>
+<li><p><strong>all of Comet’s native allocations</strong>,</p></li>
+<li><p>Comet’s JVM-side Arrow buffers (<code class="docutils literal notranslate"><span class="pre">CometArrowAllocator</span></code>),</p></li>
+<li><p>page cache charged to the cgroup by the container’s file I/O, including spill files.</p></li>
+</ul>
+<p>Only the first and a portion of the third are visible to Spark’s accounting. When the total crosses
+<code class="docutils literal notranslate"><span class="pre">memory.max</span></code>, the kernel OOM killer kills the process. The failure mode is significantly worse than
+a task-level OOM: every task running on that executor dies, every cached block it held is lost and
+must be recomputed, and the shuffle files it produced become unavailable to downstream fetches.
+Spark’s driver sees only <code class="docutils literal notranslate"><span class="pre">ExecutorLostFailure</span></code> with exit code 137.</p>
+<p>Two facts follow that are easy to get wrong:</p>
+<ol class="arabic simple">
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">spark.memory.offHeap.size</span></code> is part of the pod limit, not extra headroom on top of it.</strong>
+Raising Comet’s off-heap budget on Kubernetes raises the pod’s memory request by the same
+amount, so the scheduler will place fewer executors per node rather than silently giving Comet
+more room.</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">spark.executor.memoryOverhead</span></code> is the only slack in the container</strong>, and the JVM’s own
+non-heap usage already consumes a large part of it. Comet’s overshoot beyond its declared
+reservations eats into the same allowance.</p></li>
+</ol>
+<p>YARN behaves analogously. The container size is the same sum, and the NodeManager kills containers
+that exceed it, but the kill is done by the NodeManager’s monitor rather than the kernel, so it is
+somewhat less abrupt.</p>
+</section>
+<section id="open-problems">
+<h2>Open problems<a class="headerlink" href="#open-problems" title="Link to this heading">#</a></h2>
+<p>Nothing described above prevents an executor from being OOM-killed. Every enforcement point Comet
+has bounds <em>declared reservations</em>, and the sections above describe several structural reasons why
+declared reservations are a lower bound on physical usage. The known gaps, roughly in order of how
+much they matter:</p>
+<ul class="simple">
+<li><p><strong>No signal for real native usage.</strong> The only way to observe the gap today is to enable tracing
+with the <code class="docutils literal notranslate"><span class="pre">jemalloc</span></code> feature and compare <code class="docutils literal notranslate"><span class="pre">jemalloc_allocated</span></code> against summed reservations after
+the fact. There is no runtime value that an operator, a metric, or a policy could read.</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.memoryPool.fraction</span></code> is a manual proxy for the gap.</strong> It asks operators to
+guess a per-workload haircut rather than measuring anything.</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">CometArrowAllocator</span></code> is unbounded</strong> and participates in no budget.</p></li>
+<li><p><strong>Buffer and reservation lifetimes are independent across the FFI boundary.</strong> A batch can be
+resident on either side with no reservation covering it, because reservations are made and
+withdrawn by individual operators while the bytes outlive them.</p></li>
+<li><p><strong>Spark cannot trigger native spilling.</strong> <code class="docutils literal notranslate"><span class="pre">NativeMemoryConsumer.spill()</span></code> returns <code class="docutils literal notranslate"><span class="pre">0</span></code>, so native
+reservations are released only when a native operator decides to spill on its own failed
+<code class="docutils literal notranslate"><span class="pre">try_grow</span></code>. JVM consumers in the same task can be starved behind them.</p></li>
+</ul>
+<p><a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4576">Issue #4576</a> tracks work on the first two.</p>
+</section>
+<section id="debugging-memory-issues">
+<h2>Debugging memory issues<a class="headerlink" href="#debugging-memory-issues" title="Link to this heading">#</a></h2>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Tool</p></th>
+<th class="head"><p>What it gives you</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.debug.memory=true</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">LoggingMemoryPool</span></code> logs every register/grow/shrink with the consumer name</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.explain.native.enabled=true</span></code></p></td>
+<td><p>Native plan with per-operator metrics, including spill counts</p></td>
+</tr>
+<tr class="row-even"><td><p><a class="reference internal" href="tracing.html#analyzing-memory-usage"><span class="std std-ref">Tracing</span></a></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">jemalloc_allocated</span></code> vs summed pool reservations; the accounting gap</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">TrackConsumersPool</span></code></p></td>
+<td><p>Names the top 10 consumers in <code class="docutils literal notranslate"><span class="pre">ResourcesExhausted</span></code> messages (always on)</p></td>
+</tr>
+<tr class="row-even"><td><p><a class="reference external" href="https://github.com/cetra3/thresher"><code class="docutils literal notranslate"><span class="pre">thresher</span></code></a></p></td>
+<td><p>Third-party crate that dumps a jemalloc heap profile at a threshold</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>A checklist for triaging an executor OOM kill:</p>
+<ol class="arabic simple">
+<li><p>Confirm which budget was exceeded. Exit code 137 / <code class="docutils literal notranslate"><span class="pre">OOMKilled</span></code> on the pod is the cgroup. Exit
+code 52 with <code class="docutils literal notranslate"><span class="pre">java.lang.OutOfMemoryError</span></code> in the executor log is JVM heap exhaustion; Spark
+treats it as fatal, so the executor is lost either way and the exit code is what distinguishes
+them. A failed task with <code class="docutils literal notranslate"><span class="pre">SparkOutOfMemoryError</span></code> and a surviving executor is Spark’s managed
+memory pool, which is the only one of the three that is recoverable at task level.</p></li>
+<li><p>Compare <code class="docutils literal notranslate"><span class="pre">jemalloc_allocated</span></code> against the summed pool reservations from a trace. A large excess
+points at undeclared native allocations; a small excess points at the budget simply being too
+small, or at the JVM side.</p></li>
+<li><p>Check <code class="docutils literal notranslate"><span class="pre">spark.comet.batchSize</span></code> against the schema width. Peak memory scales with
+<code class="docutils literal notranslate"><span class="pre">batch_size</span> <span class="pre">*</span> <span class="pre">columns</span></code>, and wide or deeply nested schemas amplify it.</p></li>
+<li><p>Check whether the operators involved can spill at all. <code class="docutils literal notranslate"><span class="pre">ShuffledHashJoin</span></code> cannot, so
+<code class="docutils literal notranslate"><span class="pre">spark.comet.exec.forceShuffledHashJoin=true</span></code> converts a spillable sort-merge join into one that
+is not.</p></li>
+</ol>
+</section>
+</section>
+
+
+                </article>
+              
+              
+              
+              
+              
+                <footer class="prev-next-footer d-print-none">
+                  
+<div class="prev-next-area">
+    <a class="left-prev"
+       href="native_shuffle.html"
+       title="previous page">
+      <i class="fa-solid fa-angle-left"></i>
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">previous</p>
+        <p class="prev-next-title">Native Shuffle</p>
+      </div>
+    </a>
+    <a class="right-next"
+       href="sql_error_propagation.html"
+       title="next page">
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">next</p>
+        <p class="prev-next-title">ANSI SQL Error Propagation in Comet</p>
+      </div>
+      <i class="fa-solid fa-angle-right"></i>
+    </a>
+</div>
+                </footer>
+              
+            </div>
+            
+            
+              
+                <dialog id="pst-secondary-sidebar-modal"></dialog>
+                <div id="pst-secondary-sidebar" class="bd-sidebar-secondary bd-toc"><div class="sidebar-secondary-items sidebar-secondary__inner">
+
+
+  <div class="sidebar-secondary-item">
+<div
+    id="pst-page-navigation-heading-2"
+    class="page-toc tocsection onthispage">
+    <i class="fa-solid fa-list"></i> On this page
+  </div>
+  <nav class="bd-toc-nav page-toc" aria-labelledby="pst-page-navigation-heading-2">
+    <ul class="visible nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#overview">Overview</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#who-allocates-what">Who allocates what</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#where-comet-s-budget-comes-from">Where Comet’s budget comes from</a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#resolving-the-pool-type">Resolving the pool type</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#the-pool-stack">The pool stack</a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#the-unified-pools">The unified pools</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#task-shared-pools-and-their-lifetime">Task-shared pools and their lifetime</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#how-datafusion-consumes-the-pool">How DataFusion consumes the pool</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#crossing-the-ffi-boundary">Crossing the FFI boundary</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#the-accounting-gap">The accounting gap</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#what-the-container-sees">What the container sees</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#open-problems">Open problems</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#debugging-memory-issues">Debugging memory issues</a></li>
+</ul>
+  </nav></div>
+
+</div></div>
+              
+            
+          </div>
+          <footer class="bd-footer-content">
+            
+          </footer>
+        
+      </main>
+    </div>
+  </div>
+  
+  <!-- Scripts loaded after <body> so the DOM is not blocked -->
+  <script defer src="../_static/scripts/bootstrap.js?digest=8878045cc6db502f8baf"></script>
+<script defer src="../_static/scripts/pydata-sphinx-theme.js?digest=8878045cc6db502f8baf"></script>
+
+<footer class="comet-footer" role="contentinfo">
+  <div class="comet-footer__inner">
+
+    <!-- Brand: logo only — no duplicated tagline -->
+    <a class="comet-footer__brand" href="../index.html" aria-label="Apache DataFusion Comet — home">
+      <img src="../_static/images/DataFusionComet-Logo-Light.png"
+           class="comet-footer__logo only-light"
+           width="3256" height="836"
+           loading="lazy" decoding="async"
+           alt="" />
+      <img src="../_static/images/DataFusionComet-Logo-Dark.png"
+           class="comet-footer__logo only-dark pst-js-only"
+           width="3256" height="836"
+           loading="lazy" decoding="async"
+           alt="" />
+    </a>
+
+    <!-- Two compact link columns: documentation + community -->
+    <nav class="comet-footer__links" aria-label="Footer navigation">
+      <div class="comet-footer__col">
+        <div class="comet-footer__col-title">Documentation</div>
+        <a href="../user-guide/index.html">User Guide</a>
+        <a href="index.html">Contributor Guide</a>
+        <a href="../changelog/index.html">Changelog</a>
+      </div>
+
+      <div class="comet-footer__col">
+        <div class="comet-footer__col-title">Community</div>
+        <a href="https://github.com/apache/datafusion-comet" target="_blank" rel="noopener">GitHub</a>
+        <a href="https://datafusion.apache.org/contributor-guide/communication.html" target="_blank" rel="noopener">Slack &amp; Discord</a>
+        <a href="https://apache.org" target="_blank" rel="noopener">Apache Software Foundation</a>
+      </div>
+    </nav>
+  </div>
+
+  <!-- Legal: license, copyright, trademark — single quiet line -->
+  <div class="comet-footer__legal">
+    <p>
+      &copy; 2023&ndash;2026 Apache Software Foundation &nbsp;·&nbsp;
+      Licensed under the <a href="https://www.apache.org/licenses/LICENSE-2.0" target="_blank" rel="noopener">Apache License 2.0</a>
+    </p>
+    <p class="comet-footer__trademark">
+      Apache DataFusion, Apache DataFusion Comet, the Apache feather logo, and the Apache DataFusion project logo are trademarks of The Apache Software Foundation.
+    </p>
+  </div>
+</footer>
+
+  </body>
+</html>
