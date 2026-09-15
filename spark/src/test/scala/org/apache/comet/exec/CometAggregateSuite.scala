@@ -208,6 +208,32 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  for (grouped <- Seq(false, true)) {
+    test(s"collect_list/collect_set over typed nested NULL (grouped=$grouped)") {
+      // A folded typed NULL reaches native collection normalization as a scalar. Both scalar
+      // and grouped accumulators must ignore the NULL and return empty collections with the
+      // declared nested element type. Require executed native Partial/Final aggregates so that
+      // constant folding or Spark fallback cannot hide the normalization path.
+      withSQLConf(
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+        SQLConf.SHUFFLE_PARTITIONS.key -> "2") {
+        withParquetTable(Seq((0, 1), (0, 2), (1, 3)), "tbl") {
+          val typedNull = "CAST(NULL AS ARRAY<STRUCT<a: INT, b: STRUCT<x: INT>>>)"
+          val projection = if (grouped) "_1, " else ""
+          val grouping = if (grouped) " GROUP BY _1" else ""
+          val (_, cometPlan) = checkSparkAnswerAndOperator(
+            sql(s"SELECT ${projection}collect_list($typedNull), collect_set($typedNull) " +
+              s"FROM tbl$grouping"))
+          val aggregates = collect(cometPlan) { case aggregate: CometHashAggregateExec =>
+            aggregate
+          }
+          assert(aggregates.exists(_.modes.contains(Partial)))
+          assert(aggregates.exists(_.modes.contains(Final)))
+        }
+      }
+    }
+  }
+
   test("collect_list/collect_set combined with distinct aggregate falls back safely") {
     // SPARK-17616: a distinct aggregate combined with collect_list/collect_set produces a
     // multi-stage plan where the buffer-producing Partial may run in Spark (e.g. over a
