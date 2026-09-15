@@ -71,6 +71,10 @@ FILTERS = {
     # `cache-refresh-only` input. Populated below, after the dict, so the two
     # lists cannot drift.
     "build_linux_full": [],
+    # A third POLICY decision on the same inputs: whether the linux-test matrix
+    # runs every Spark profile or only the PR-tier one. ci.yml folds it into
+    # the reusable workflow's `profiles` input. Populated below as well.
+    "build_linux_all_profiles": [],
     "build_macos": [
         "native/**",
         "common/**",
@@ -386,6 +390,7 @@ FILTERS = {
 }
 FILTERS["spark_4_1_hive"] = FILTERS["spark_4_1"]
 FILTERS["build_linux_full"] = FILTERS["build_linux"]
+FILTERS["build_linux_all_profiles"] = FILTERS["build_linux"]
 
 # Which events may run each job, independent of the path filters above.
 #
@@ -415,7 +420,7 @@ POLICY = {
     # restore-keys prefix match.
     #
     # On push that is the *only* thing it is for. The queue already tested the
-    # exact tree that landed, so re-running the lints and the 5x4 linux-test
+    # exact tree that landed, so re-running the lints and the linux-test
     # matrix there tests nothing, and they are 514 of the 587 runner-minutes a
     # push run costs. The split below keeps the cache writers on push and moves
     # everything else behind `build_linux_full`.
@@ -425,6 +430,15 @@ POLICY = {
     # input, so dropping "push" here is what trims the push tier down to the
     # jobs that write an actions/cache entry. See issue #5929.
     "build_linux_full": ["pr", "queue"],
+    # The linux-test matrix's Spark profiles other than the default one. The
+    # five profiles cost about the same each, roughly 2,300 runner-minutes a
+    # day apiece on pull requests in mid-September 2026, and together they
+    # were three quarters of the Linux build. A pull request runs the Comet
+    # test suites against Spark 4.1 only; the queue runs all five. The
+    # lint-java matrix still compiles Spark 3.4/3.5/4.0 on every pull request,
+    # so what waits for the queue is runtime behaviour, not a shim that fails
+    # to build. ci.yml turns this output into the workflow's `profiles` input.
+    "build_linux_all_profiles": ["queue", "label:run-all-spark-profiles"],
     # macOS runners are the scarcest capacity we have, and the Linux build
     # already covers rustfmt and the Rust/JVM compile on every PR. The label
     # is for a change that touches platform-specific code.
@@ -449,19 +463,28 @@ POLICY = {
     "spark_3_4": ["label:run-spark-3.4-tests"],
     "spark_3_5": ["queue", "label:run-spark-3.5-tests"],
     "spark_4_0": ["queue", "label:run-spark-4.0-tests"],
-    # Spark 4.1 is the default build profile, so it is the cheapest early
-    # warning that a change is wrong and stays in the PR tier. Only the
-    # catalyst and sql_core shards, though: over Aug 12 to Sep 11 2026 the
-    # three sql_hive shards cost about 65 runner-hours a day on pull requests
-    # and were the only failing job on 7 PR runs, against 33 for sql_core, and
-    # their 67-minute shard set the PR tier's wall clock. See issue #5870.
-    "spark_4_1": ["pr", "queue"],
-    "spark_4_1_hive": ["queue", "label:run-spark-4.1-hive-tests"],
+    # No Spark SQL suite runs on a plain pull request. Spark 4.1 was the last
+    # one in the PR tier, first whole (issue #5870 pulled the sql_hive shards
+    # out) and then catalyst and sql_core alone. What changed is how often a
+    # pull request is pushed: with agent-driven review and agent-driven
+    # replies to review, a PR now goes through several more rounds before it
+    # is queued, and each round paid for the whole 4.1 build. The queue still
+    # runs every shard before anything lands; the two labels bring the run
+    # forward. `run-spark-4.1-tests` selects the whole suite, so it appears on
+    # both outputs; `run-spark-4.1-hive-tests` selects only the hive shards.
+    "spark_4_1": ["queue", "label:run-spark-4.1-tests"],
+    "spark_4_1_hive": [
+        "queue",
+        "label:run-spark-4.1-tests",
+        "label:run-spark-4.1-hive-tests",
+    ],
+    # Same for Iceberg: 1.11 was the PR-tier version because it is the only
+    # Spark 4.1 coverage, and it now waits for the queue with the other three.
+    # One label opts a pull request into all four.
     "iceberg_1_8": ["queue", "label:run-iceberg-tests"],
     "iceberg_1_9": ["queue", "label:run-iceberg-tests"],
     "iceberg_1_10": ["queue", "label:run-iceberg-tests"],
-    # Iceberg 1.11 is our only Spark 4.1 Iceberg coverage, so it is not opt-in.
-    "iceberg_1_11": ["pr", "queue"],
+    "iceberg_1_11": ["queue", "label:run-iceberg-tests"],
 }
 
 

@@ -88,6 +88,7 @@ AGGREGATOR_EXEMPT = {AGGREGATOR_JOB, "docs"}
 BUILD_JOBS = {
     "build_linux",
     "build_linux_full",
+    "build_linux_all_profiles",
     "build_macos",
     "spark_3_4",
     "spark_3_5",
@@ -116,7 +117,10 @@ ROUTING_CASES = [
     ([".github/actions/upload-artifact-retry/action.yaml"], BUILD_JOBS),
     ([".github/actions/download-artifact-retry/action.yaml"], BUILD_JOBS),
     # The Maven bootstrap composite is called only from pr_build_linux.yml.
-    ([".github/actions/maven-bootstrap/action.yaml"], {"build_linux", "build_linux_full"}),
+    (
+        [".github/actions/maven-bootstrap/action.yaml"],
+        {"build_linux", "build_linux_full", "build_linux_all_profiles"},
+    ),
     # Spot checks that the additions above did not widen unrelated routes.
     (["docs/source/user-guide/overview.md"], {"docs"}),
     (["native/core/benches/parquet_read.rs"], {"benchmark"}),
@@ -128,7 +132,13 @@ ROUTING_CASES = [
     (["contrib/delta/native/src/lib.rs"], {"delta_gate"}),
     (
         ["spark/src/test/resources/pyspark/test_pyarrow_udf.py"],
-        {"build_linux", "build_linux_full", "build_macos", "pyarrow_udf"},
+        {
+            "build_linux",
+            "build_linux_full",
+            "build_linux_all_profiles",
+            "build_macos",
+            "pyarrow_udf",
+        },
     ),
 ]
 
@@ -136,15 +146,25 @@ ROUTING_CASES = [
 # where "allowed" ignores path filters. Written out longhand rather than
 # derived from POLICY, so that a change to the routing has to be stated twice
 # and cannot be made by accident.
-PR_TIER = {"build_linux", "build_linux_full", "spark_4_1", "iceberg_1_11"}
-SPARK_OPT_IN = {"spark_3_5", "spark_4_0", "spark_4_1_hive"}
+# The PR tier is the Linux build and nothing else. Every Spark SQL and Iceberg
+# suite waits for the queue, or for its label.
+PR_TIER = {"build_linux", "build_linux_full"}
+SPARK_OPT_IN = {"spark_3_5", "spark_4_0", "spark_4_1", "spark_4_1_hive"}
 # Spark 3.4 is deprecated and sits outside the queue tier entirely: a label on
 # a pull request, or a workflow_dispatch, and nothing else. Keeping it in its
 # own set is what makes the `merge_group` case below assert its absence rather
 # than quietly accept it coming back.
 SPARK_DEPRECATED = {"spark_3_4"}
-ICEBERG_OPT_IN = {"iceberg_1_8", "iceberg_1_9", "iceberg_1_10"}
-BUILD_OPT_IN = {"build_macos", "benchmark", "delta_gate", "pyarrow_udf"}
+ICEBERG_OPT_IN = {"iceberg_1_8", "iceberg_1_9", "iceberg_1_10", "iceberg_1_11"}
+# `build_linux_all_profiles` is the linux-test matrix's non-default Spark
+# profiles: part of the Linux build's call, not a job of its own.
+BUILD_OPT_IN = {
+    "build_macos",
+    "benchmark",
+    "build_linux_all_profiles",
+    "delta_gate",
+    "pyarrow_udf",
+}
 QUEUE_TIER = PR_TIER | SPARK_OPT_IN | ICEBERG_OPT_IN | BUILD_OPT_IN
 ALL_JOBS = QUEUE_TIER | SPARK_DEPRECATED | {"docs"}
 
@@ -209,8 +229,40 @@ POLICY_CASES = [
         },
         {"build_macos"},
     ),
-    # The Spark 4.1 hive shards are queue-only with their own label. The label
-    # adds them to the PR tier's Spark 4.1 call rather than starting a second.
+    # The linux-test matrix's non-default Spark profiles are queue-only with
+    # their own label. On a pushed commit the label adds them to the PR tier's
+    # Linux build call (`profiles: all`); on the `labeled` event alone it is
+    # the only output set, and ci.yml turns that into `profiles: queue-only`
+    # so the default profile, which already ran at this commit, is not repeated.
+    (
+        {"name": "pull_request", "action": "synchronize", "labels": ["run-all-spark-profiles"]},
+        PR_TIER | {"build_linux_all_profiles"},
+    ),
+    (
+        {
+            "name": "pull_request",
+            "action": "labeled",
+            "label": "run-all-spark-profiles",
+            "labels": ["run-all-spark-profiles"],
+        },
+        {"build_linux_all_profiles"},
+    ),
+    # Spark 4.1 is queue-only too. Two labels feed its one call: the suite
+    # label selects every module, the hive label only the sql_hive shards.
+    # Neither label pulls in any other Spark version.
+    (
+        {"name": "pull_request", "action": "synchronize", "labels": ["run-spark-4.1-tests"]},
+        PR_TIER | {"spark_4_1", "spark_4_1_hive"},
+    ),
+    (
+        {
+            "name": "pull_request",
+            "action": "labeled",
+            "label": "run-spark-4.1-tests",
+            "labels": ["run-spark-4.1-tests"],
+        },
+        {"spark_4_1", "spark_4_1_hive"},
+    ),
     (
         {"name": "pull_request", "action": "synchronize", "labels": ["run-spark-4.1-hive-tests"]},
         PR_TIER | {"spark_4_1_hive"},
@@ -221,6 +273,18 @@ POLICY_CASES = [
             "action": "labeled",
             "label": "run-spark-4.1-hive-tests",
             "labels": ["run-spark-4.1-hive-tests"],
+        },
+        {"spark_4_1_hive"},
+    ),
+    # Adding the hive label on top of the suite label re-runs only the hive
+    # rows: a `labeled` run selects what the new label gates, and the suite
+    # label's earlier run already covered every module at this commit.
+    (
+        {
+            "name": "pull_request",
+            "action": "labeled",
+            "label": "run-spark-4.1-hive-tests",
+            "labels": ["run-spark-4.1-tests", "run-spark-4.1-hive-tests"],
         },
         {"spark_4_1_hive"},
     ),
@@ -317,6 +381,9 @@ CACHE_REFRESH_JOBS = {
 # whole job.
 CACHE_REFRESH_GUARD = re.compile(r"^    if:.*!\s*inputs\.cache-refresh-only")
 CACHE_REFRESH_INPUT = re.compile(r"^\s+cache-refresh-only:\s*\$\{\{")
+# `profiles:` is passed as a folded scalar (`>-`) whose expression sits on the
+# next line, so match the key alone.
+PROFILES_INPUT = re.compile(r"^\s+profiles:\s*(>-|\$\{\{)")
 
 
 def load_filters():
@@ -351,6 +418,49 @@ def check_spark_sql_modules():
         failures.append(f"duplicate module names in {everything}")
     for failure in failures:
         print(f"spark sql modules: {failure}")
+    return not failures
+
+
+def check_linux_test_profiles():
+    """`--profiles pr` and `--profiles queue-only` must partition `--profiles all`.
+
+    ci.yml maps `build_linux_full` and `build_linux_all_profiles` onto these
+    three values. A profile in neither tier would never run anywhere; one in
+    both would run twice in the queue. The `pr` tier also has to be the
+    default build profile and nothing else, which is the whole reason the
+    split exists. And the caller has to pass the input at all: its default is
+    `all`, so a dropped `with:` line quietly puts every profile back on the
+    pull request tier.
+    """
+    spec = importlib.util.spec_from_file_location("linux_test_profiles", "dev/ci/linux-test-profiles.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    failures = []
+    names = lambda rows: [row["name"] for row in rows]
+    everything = names(module.select("all"))
+    pr, queue_only = names(module.select("pr")), names(module.select("queue-only"))
+    if pr != ["Spark 4.1, JDK 17"]:
+        failures.append(f"the pr tier must be the default build profile alone, got {pr}")
+    if not queue_only:
+        failures.append("the queue-only tier is empty (see PROFILES in dev/ci/linux-test-profiles.py)")
+    if sorted(pr + queue_only) != sorted(everything):
+        failures.append(
+            f"pr {pr} + queue-only {queue_only} does not partition all {everything} "
+            f"(see PROFILES in dev/ci/linux-test-profiles.py)"
+        )
+    if len(set(everything)) != len(everything):
+        failures.append(f"duplicate profile names in {everything}")
+    for row in module.select("all"):
+        if sorted(row) != ["java_version", "maven_opts", "name"]:
+            failures.append(f"profile {row['name']!r} must carry exactly name, java_version and maven_opts")
+    ci = (WORKFLOWS / "ci.yml").read_text(encoding="utf-8").splitlines()
+    if not any(PROFILES_INPUT.match(line) for line in ci):
+        failures.append(
+            "ci.yml never passes `profiles:` to pr_build_linux.yml. The input "
+            "defaults to all, so without it every pull request runs every profile again"
+        )
+    for failure in failures:
+        print(f"linux test profiles: {failure}")
     return not failures
 
 
@@ -740,6 +850,7 @@ if __name__ == "__main__":
     ok = check_change_filters()
     ok = check_event_policy() and ok
     ok = check_spark_sql_modules() and ok
+    ok = check_linux_test_profiles() and ok
     ok = check_artifact_names() and ok
     ok = check_local_actions_have_checkout() and ok
     ok = check_required_checks() and ok
