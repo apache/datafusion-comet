@@ -19,11 +19,12 @@
 
 package org.apache.comet.shims
 
-import org.apache.spark.sql.catalyst.expressions.EvalMode
+import org.apache.spark.sql.catalyst.expressions.{EvalMode, Expression, TimeAdd}
 import org.apache.spark.sql.catalyst.expressions.aggregate.Sum
 import org.apache.spark.sql.internal.SQLConf
 
 import org.apache.comet.expressions.CometEvalMode
+import org.apache.comet.serde.{CometCodegenDispatch, CometExpressionSerde}
 import org.apache.comet.serde.ExprOuterClass.BinaryOutputStyle
 
 /**
@@ -42,6 +43,12 @@ trait CometExprShim extends Spark4xCometExprShim {
       case _ => BinaryOutputStyle.HEX_DISCRETE
     }
   }
+
+  // Spark 4.0 still spells `timestamp + interval` as `TimeAdd`; 4.1 renames it.
+  override def sparkVersionSpecificMiscExpressions
+      : Map[Class[_ <: Expression], CometExpressionSerde[_]] =
+    super.sparkVersionSpecificMiscExpressions + (classOf[TimeAdd] -> new CometCodegenDispatch[
+      TimeAdd])
 }
 
 object CometEvalModeUtil {
