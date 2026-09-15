@@ -156,15 +156,33 @@ private object MapBuilderSupport {
       s"`${COMET_EXEC_STRICT_FLOATING_POINT.key}=true` to fall back to Spark for a " +
       "floating-point map key."
 
+  /**
+   * `ArrayBasedMapBuilder` keys its dedup map on `TypeUtils.getInterpretedOrdering` once the key
+   * type contains a string, so under `UTF8_LCASE` the keys `'a'` and `'A'` are one key. The
+   * native builders compare the raw Arrow bytes and would keep both, missing the duplicate that
+   * Spark reports (or, under `LAST_WIN`, the overwrite Spark performs). `MapKeySupport` declines
+   * a collated key for `map_extract` for the same reason.
+   */
+  val collationKeyReason: String =
+    "Comet's native map construction compares string keys as `UTF8_BINARY`, so it cannot honour " +
+      "a non-default collation when it looks for a duplicate key."
+
   /** The support level for a map constructor whose result has key type `keyType`. */
   def keySupport(keyType: DataType): SupportLevel =
-    SupportLevel
-      .strictFloatingPointReason(keyType, "Map construction on a floating-point key")
-      .map(reason => Incompatible(Some(reason)))
-      .getOrElse(Compatible(None))
+    if (hasNonDefaultStringCollation(keyType)) {
+      Incompatible(Some(collationKeyReason))
+    } else {
+      SupportLevel
+        .strictFloatingPointReason(keyType, "Map construction on a floating-point key")
+        .map(reason => Incompatible(Some(reason)))
+        .getOrElse(Compatible(None))
+    }
 }
 
 object CometMapFromArrays extends CometExpressionSerde[MapFromArrays] {
+
+  override def getIncompatibleReasons(): Seq[String] =
+    Seq(MapBuilderSupport.collationKeyReason)
 
   override def getCompatibleNotes(): Seq[String] =
     Seq(MapBuilderSupport.floatingPointKeyNote)
@@ -193,7 +211,7 @@ object CometMapFromEntries
     "`BinaryType` is not supported as a map value in `map_from_entries`"
 
   override def getIncompatibleReasons(): Seq[String] =
-    Seq(keyUnsupportedReason, valueUnsupportedReason)
+    Seq(keyUnsupportedReason, valueUnsupportedReason, MapBuilderSupport.collationKeyReason)
 
   override def getCompatibleNotes(): Seq[String] =
     Seq(MapBuilderSupport.floatingPointKeyNote)
