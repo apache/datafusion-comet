@@ -115,8 +115,10 @@ ROUTING_CASES = [
     # to nothing at all and merges having been exercised by no consumer.
     ([".github/actions/upload-artifact-retry/action.yaml"], BUILD_JOBS),
     ([".github/actions/download-artifact-retry/action.yaml"], BUILD_JOBS),
-    # The Maven bootstrap composite is called only from pr_build_linux.yml.
-    ([".github/actions/maven-bootstrap/action.yaml"], {"build_linux", "build_linux_full"}),
+    # Maven bootstrap runs inside setup-builder and setup-macos-builder, so it
+    # reaches every job that runs ./mvnw, the Delta gate and PyArrow suite
+    # included.
+    ([".github/actions/maven-bootstrap/action.yaml"], MVN_JOBS),
     # Spot checks that the additions above did not widen unrelated routes.
     (["docs/source/user-guide/overview.md"], {"docs"}),
     (["native/core/benches/parquet_read.rs"], {"benchmark"}),

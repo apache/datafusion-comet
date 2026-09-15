@@ -285,11 +285,11 @@ built-in step retry. Use `./.github/actions/upload-artifact-retry` instead for
 any artifact a later job consumes: same inputs and outputs, three attempts,
 15s then 45s backoff. Attempts 2 and 3 force `overwrite: true`, so the name
 must belong to exactly one producer in the run (see above). The uploads inside
-`./.github/actions/java-test` stay on the plain action, since a local action
-calling another local action is untested here. Its two failure-only uploads run
-on jobs that are already red. Its test-report upload also runs on green jobs
-and is `continue-on-error: true`: nothing downstream consumes the reports, and
-a `FinalizeArtifact` 403 must not turn a passing test run into a red check.
+`./.github/actions/java-test` stay on the plain action. Its two failure-only
+uploads run on jobs that are already red. Its test-report upload also runs on
+green jobs and is `continue-on-error: true`: nothing downstream consumes the
+reports, and a `FinalizeArtifact` 403 must not turn a passing test run into a
+red check.
 
 **Artifact download.** `actions/download-artifact` has the same narrow retry
 list, so a `ListArtifacts` answered `(403) Forbidden: Error from intermediary`
@@ -320,15 +320,18 @@ the whole pipeline by hand.
 **Maven wrapper bootstrap.** `./mvnw` downloads the Maven distribution itself on
 a cold runner, and a blip from `repo.maven.apache.org` fails the job before
 anything is compiled. `./.github/actions/maven-bootstrap` caches that
-distribution under `~/.m2/wrapper/dists` (keyed on
+distribution under the wrapper's `.m2/wrapper/dists` (keyed on
 `.mvn/wrapper/maven-wrapper.properties`, not `pom.xml`) and retries
 `./mvnw --version` four times with exponential backoff. It retries only the
 bootstrap, never compilation or test execution.
 
-Any job whose first Maven use is a bare `./mvnw` needs this step before it.
-`./.github/actions/java-test` carries its own inline copy rather than calling
-the composite, because a local action invoking another local action is
-deliberately avoided here (see the artifact-upload note above).
+`./.github/actions/setup-builder` and `./.github/actions/setup-macos-builder`
+run it as their last step, once the JDK is on PATH, so every job that goes
+through either of them is covered without a step of its own; that includes
+the `java-test`, `rust-test` and `setup-spark-builder` callers. `preflight` in
+`ci.yml` uses no setup action and calls it directly before the RAT check. A
+new job that runs `./mvnw` without going through a setup action needs the
+step before its first Maven use.
 
 ## Merge queue
 
