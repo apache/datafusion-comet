@@ -1127,4 +1127,61 @@ mod tests {
             &with_spark_arrow_schema(Arc::clone(&rewritten)).unwrap()
         ));
     }
+    /// A file with two root `d` columns beside `a(id=7)`, read by name and by id with field
+    /// ids on: the footer check must let the first `d` win like the adapter does, and still
+    /// raise for a nested duplicate the request names.
+    #[test]
+    fn field_id_check_keeps_root_duplicates_first_wins() {
+        use datafusion_comet_spark_expr::EvalMode;
+        use parquet::arrow::PARQUET_FIELD_ID_META_KEY;
+        use parquet::file::reader::FileReader;
+        let id7 = HashMap::from([(PARQUET_FIELD_ID_META_KEY.to_string(), "7".to_string())]);
+        let schema = Arc::new(Schema::new(vec![
+            arrow::datatypes::Field::new("d", DataType::Int64, true),
+            arrow::datatypes::Field::new("d", DataType::Int64, true),
+            arrow::datatypes::Field::new("a", DataType::Int64, true).with_metadata(id7.clone()),
+        ]));
+        let batch = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![
+                Arc::new(arrow::array::Int64Array::from(vec![1, 2, 3])),
+                Arc::new(arrow::array::Int64Array::from(vec![10, 20, 30])),
+                Arc::new(arrow::array::Int64Array::from(vec![100, 200, 300])),
+            ],
+        )
+        .unwrap();
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let mut writer = ArrowWriter::try_new(file.reopen().unwrap(), schema, None).unwrap();
+        writer.write(&batch).unwrap();
+        writer.close().unwrap();
+        let reader = SerializedFileReader::new(file.reopen().unwrap()).unwrap();
+        let metadata = Arc::new(reader.metadata().clone());
+
+        let requested = Arc::new(Schema::new(vec![
+            arrow::datatypes::Field::new("d", DataType::Int64, true),
+            arrow::datatypes::Field::new("a", DataType::Int64, true).with_metadata(id7),
+        ]));
+        let mut parquet_options = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
+        parquet_options.case_sensitive = true;
+        parquet_options.use_field_id = true;
+        let check = FieldIdCheck {
+            requested_schema: Arc::clone(&requested),
+            parquet_options: parquet_options.clone(),
+            validated: Mutex::new(HashMap::new()),
+        };
+        check
+            .validate(&Path::from("dup_root.parquet"), &metadata)
+            .expect("the first root `d` wins, as in the adapter");
+
+        parquet_options.case_sensitive = false;
+        let check = FieldIdCheck {
+            requested_schema: requested,
+            parquet_options,
+            validated: Mutex::new(HashMap::new()),
+        };
+        let err = check
+            .validate(&Path::from("dup_root.parquet"), &metadata)
+            .expect_err("identical names are ambiguous in case-insensitive mode");
+        assert!(err.to_string().contains("duplicate field"), "{err}");
+    }
 }

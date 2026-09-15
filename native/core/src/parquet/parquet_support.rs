@@ -43,7 +43,7 @@ use log::debug;
 use object_store::path::Path;
 use object_store::{parse_url, ObjectStore, ObjectStoreScheme};
 use parquet::arrow::PARQUET_FIELD_ID_META_KEY;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
 use std::time::Duration;
 use std::{collections::hash_map::DefaultHasher, hash::Hasher, sync::RwLock};
@@ -349,12 +349,46 @@ pub(crate) fn validate_field_mapping(
 ) -> Result<(), SparkError> {
     // `ParquetMissingFieldIds` needs no counterpart here: a file with no ids differs from an
     // id-bearing requested schema in field metadata, so the opener runs the adapter for it.
+    // Root duplicates resolve first-wins in the adapter (Spark's reader binds the first file
+    // column), so only the first of each exact root name stays name-matchable here; nested
+    // duplicates keep the resolver's rejection.
+    let root_fields = if parquet_options.case_sensitive {
+        first_wins_root_fields(file_schema)
+    } else {
+        file_schema.fields().clone()
+    };
     resolve_field_mapping(
-        &DataType::Struct(file_schema.fields().clone()),
+        &DataType::Struct(root_fields),
         &DataType::Struct(requested_schema.fields().clone()),
         parquet_options,
     )
     .map(|_| ())
+}
+
+/// The root fields with every later exact duplicate renamed to a name no request can match,
+/// keeping its type and metadata so an id it carries is still seen. Mirrors the adapter's
+/// remap, where the first file column wins.
+fn first_wins_root_fields(file_schema: &Schema) -> Fields {
+    let mut seen: HashSet<&str> = HashSet::with_capacity(file_schema.fields().len());
+    file_schema
+        .fields()
+        .iter()
+        .enumerate()
+        .map(|(i, field)| {
+            if seen.insert(field.name().as_str()) {
+                Arc::clone(field)
+            } else {
+                Arc::new(
+                    Field::new(
+                        format!("__comet_shadowed_root_{i}"),
+                        field.data_type().clone(),
+                        field.is_nullable(),
+                    )
+                    .with_metadata(field.metadata().clone()),
+                )
+            }
+        })
+        .collect()
 }
 
 /// Resolve how `to_type` reads from `from_type`, recursing through struct, list, and map
@@ -2462,6 +2496,55 @@ mod tests {
                 msg.contains("duplicate field") && msg.contains("\"d\"") && msg.contains("d, d"),
                 "unexpected error: {msg}"
             );
+        }
+
+        /// The footer check sees the root as a struct, but root duplicates resolve first-wins
+        /// like the adapter, so a requested root name beside an identical sibling passes while
+        /// an id-bearing column keeps the check installed.
+        #[test]
+        fn footer_check_keeps_root_duplicates_first_wins_and_rejects_nested_ones() {
+            use crate::parquet::parquet_support::validate_field_mapping;
+            use arrow::datatypes::Schema;
+            let id7 = HashMap::from([(PARQUET_FIELD_ID_META_KEY.to_string(), "7".to_string())]);
+            let file = Schema::new(vec![
+                Field::new("d", DataType::Int64, true),
+                Field::new("d", DataType::Int64, true),
+                Field::new("a", DataType::Int64, true).with_metadata(id7.clone()),
+            ]);
+            let requested = Schema::new(vec![
+                Field::new("d", DataType::Int64, true),
+                Field::new("a", DataType::Int64, true).with_metadata(id7.clone()),
+            ]);
+            let mut opts = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
+            opts.case_sensitive = true;
+            opts.use_field_id = true;
+            validate_field_mapping(&file, &requested, &opts)
+                .expect("a duplicate root name must not block the read");
+
+            // In case-insensitive mode identical root names are Spark's own ambiguity error.
+            opts.case_sensitive = false;
+            let err = validate_field_mapping(&file, &requested, &opts).unwrap_err();
+            assert!(err.to_string().contains("duplicate field"), "{err}");
+
+            // Nested identical siblings keep the resolver's rejection when requested.
+            opts.case_sensitive = true;
+            let nested_file = Schema::new(vec![Field::new(
+                "s",
+                DataType::Struct(Fields::from(vec![
+                    Field::new("d", DataType::Int64, true),
+                    Field::new("d", DataType::Int64, true),
+                ])),
+                true,
+            )
+            .with_metadata(id7.clone())]);
+            let nested_requested = Schema::new(vec![Field::new(
+                "s",
+                DataType::Struct(Fields::from(vec![Field::new("d", DataType::Int64, true)])),
+                true,
+            )
+            .with_metadata(id7)]);
+            let err = validate_field_mapping(&nested_file, &nested_requested, &opts).unwrap_err();
+            assert!(err.to_string().contains("duplicate field"), "{err}");
         }
 
         /// The duplicate siblings are only refused when requested: reading the unique sibling
