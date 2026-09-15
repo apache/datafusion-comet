@@ -17,41 +17,11 @@
 
 name: PyArrow UDF Tests
 
-concurrency:
-  group: ${{ github.repository }}-${{ github.head_ref || github.sha }}-${{ github.workflow }}
-  cancel-in-progress: true
-
+# Reusable: invoked by ci.yml. Triggering, path filters, and concurrency
+# live in the umbrella workflow. The list of files this suite covers is the
+# `pyarrow_udf` entry in FILTERS in dev/ci/compute-changes.py.
 on:
-  push:
-    branches:
-      - main
-    paths: &feature-paths
-      - "pom.xml"
-      - "common/pom.xml"
-      - "common/src/main/scala/org/apache/comet/CometConf.scala"
-      - "spark/pom.xml"
-      - "spark/src/main/scala/org/apache/comet/rules/EliminateRedundantTransitions.scala"
-      - "spark/src/main/scala/org/apache/spark/sql/comet/CometMapInBatchExec.scala"
-      - "spark/src/main/scala/org/apache/spark/sql/comet/shims/MapInBatchInfo.scala"
-      - "spark/src/main/spark-3.4/org/apache/spark/sql/comet/shims/ShimCometMapInBatch.scala"
-      - "spark/src/main/spark-3.5/org/apache/spark/sql/comet/shims/ShimCometMapInBatch.scala"
-      - "spark/src/main/spark-4.0/org/apache/spark/sql/comet/shims/ShimCometMapInBatch.scala"
-      - "spark/src/main/spark-4.1/org/apache/spark/sql/comet/shims/ShimCometMapInBatch.scala"
-      - "spark/src/main/spark-4.2/org/apache/spark/sql/comet/shims/ShimCometMapInBatch.scala"
-      - "spark/src/main/spark-4.0/org/apache/spark/sql/execution/python/CometArrowPythonRunner.scala"
-      - "spark/src/main/spark-4.1/org/apache/spark/sql/execution/python/CometArrowPythonRunner.scala"
-      - "spark/src/main/spark-4.2/org/apache/spark/sql/execution/python/CometArrowPythonRunner.scala"
-      - "spark/src/main/spark-4.x/org/apache/spark/sql/comet/shims/Spark4xMapInBatchSupport.scala"
-      - "spark/src/main/spark-4.x/org/apache/spark/sql/execution/python/CometArrowPythonRunnerBase.scala"
-      - "spark/src/test/resources/pyspark/conftest.py"
-      - "spark/src/test/resources/pyspark/test_pyarrow_udf.py"
-      - "spark/src/test/spark-3.5/org/apache/spark/sql/comet/CometMapInBatchSuite.scala"
-      - "spark/src/test/spark-4.x/org/apache/spark/sql/comet/CometMapInBatchSuite.scala"
-      - "spark/src/test/spark-4.x/org/apache/spark/sql/execution/python/CometArrowPythonRunnerSuite.scala"
-      - ".github/workflows/pyarrow_udf_test.yml"
-  pull_request:
-    paths: *feature-paths
-  workflow_dispatch:
+  workflow_call:
 
 permissions:
   contents: read
@@ -130,3 +100,5 @@ jobs:
         run: |
           /tmp/venv/bin/python -m pytest -v \
             spark/src/test/resources/pyspark/test_pyarrow_udf.py
+          /tmp/venv/bin/python -m pytest -v \
+            spark/src/test/resources/pyspark/test_pyarrow_udf_dictionary_shuffle.py
