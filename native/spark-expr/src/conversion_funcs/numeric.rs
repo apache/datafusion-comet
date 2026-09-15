@@ -142,36 +142,38 @@ macro_rules! cast_float_to_timestamp_impl {
 /// `num::Float` supplies the arithmetic predicates; the two widths differ only in the plain-notation
 /// window's endpoints and in the literal text of the smallest subnormal, which Java's algorithm
 /// spells with more digits than a shortest-round-trip formatter produces.
-pub trait JavaFloatString: Float + fmt::Display + fmt::UpperExp {
-    /// `Float.MIN_VALUE` / `Double.MIN_VALUE` as Java spells it.
-    const MIN_SUBNORMAL: &'static str;
+///
+/// Sealed: the crate root re-exports this module, and `f32` and `f64` are the only widths Java has.
+pub trait JavaFloatString: sealed::Sealed + Float + fmt::Display + fmt::UpperExp {
+    /// `Float.MIN_VALUE` / `Double.MIN_VALUE`: the value one ULP above zero, the one Java does not
+    /// render shortest. `Float::min_positive_value` is the smallest *normal*, so this has no `num`
+    /// equivalent.
+    const MIN_SUBNORMAL: Self;
+    /// `MIN_SUBNORMAL` as Java spells it.
+    const MIN_SUBNORMAL_TEXT: &'static str;
     /// Plain notation covers `[0.001, 10^7)`; anything outside it is scientific.
     const PLAIN_LOWER: Self;
     const PLAIN_UPPER: Self;
+}
 
-    /// The value one ULP above zero, the one Java does not render shortest. `Float::min_positive_value`
-    /// is the smallest *normal*, so this has no `num` equivalent.
-    fn is_smallest_subnormal(self) -> bool;
+mod sealed {
+    pub trait Sealed {}
+    impl Sealed for f32 {}
+    impl Sealed for f64 {}
 }
 
 impl JavaFloatString for f32 {
-    const MIN_SUBNORMAL: &'static str = "1.4E-45";
+    const MIN_SUBNORMAL: Self = f32::from_bits(1);
+    const MIN_SUBNORMAL_TEXT: &'static str = "1.4E-45";
     const PLAIN_LOWER: Self = 0.001;
     const PLAIN_UPPER: Self = 10000000.0;
-
-    fn is_smallest_subnormal(self) -> bool {
-        self.abs().to_bits() == 1
-    }
 }
 
 impl JavaFloatString for f64 {
-    const MIN_SUBNORMAL: &'static str = "4.9E-324";
+    const MIN_SUBNORMAL: Self = f64::from_bits(1);
+    const MIN_SUBNORMAL_TEXT: &'static str = "4.9E-324";
     const PLAIN_LOWER: Self = 0.001;
     const PLAIN_UPPER: Self = 10000000.0;
-
-    fn is_smallest_subnormal(self) -> bool {
-        self.abs().to_bits() == 1
-    }
 }
 
 /// Writes `value` as Java's `Float.toString` / `Double.toString` renders it.
@@ -189,10 +191,13 @@ impl JavaFloatString for f64 {
 /// this way, and iceberg-java spells a float or double partition directory this way, where the
 /// unabbreviated form overruns the filesystem's limit on one path component.
 ///
-/// This is the pre-JDK-19 `Double.toString`, which is not shortest-round-trip for every value.
-/// Only the smallest subnormal, by far the most visible case, is corrected for here.
+/// Rust's digits are shortest-round-trip, which is what JDK 19+ `Double.toString` produces. Earlier
+/// JDKs sometimes emit a longer string (JDK-4511638: `2.0E23` came out as `1.9999999999999998E23`),
+/// and those values are not corrected for here. The smallest subnormal, which every JDK spells as
+/// `4.9E-324` rather than the shortest `5E-324`, is.
 ///
-/// Errors only if `out` does; writing into a `String` or an arrow string builder cannot fail.
+/// Errors only if `out` does. Writing into a `String` or an arrow string builder cannot fail, which
+/// is what lets the callers of this function discard the result.
 pub fn write_java_float_string<T: JavaFloatString, W: fmt::Write>(
     value: T,
     out: &mut W,
@@ -214,11 +219,11 @@ pub fn write_java_float_string<T: JavaFloatString, W: fmt::Write>(
         } else {
             "Infinity"
         })
-    } else if value.is_smallest_subnormal() {
+    } else if abs == T::MIN_SUBNORMAL {
         if value.is_sign_negative() {
             out.write_str("-")?;
         }
-        out.write_str(T::MIN_SUBNORMAL)
+        out.write_str(T::MIN_SUBNORMAL_TEXT)
     } else {
         // The coefficient has to be inspected before any of it is emitted, so it is formatted
         // into a stack buffer rather than into `out`, which may not be rewindable.
@@ -237,8 +242,18 @@ pub fn write_java_float_string<T: JavaFloatString, W: fmt::Write>(
     }
 }
 
-/// Scratch space for one `{:E}` rendering, sized past the longest a float can produce
-/// (`-2.2250738585072014E-308`).
+/// `Float.toString` / `Double.toString` of `value` as an owned `String`, for callers that need one
+/// rendering rather than a column of them.
+pub fn java_float_string<T: JavaFloatString>(value: T) -> String {
+    let mut out = String::new();
+    // Cannot fail; see `write_java_float_string`.
+    let _ = write_java_float_string(value, &mut out);
+    out
+}
+
+/// Scratch space for one `{:E}` rendering. `{:E}` emits at most 17 significant digits for an
+/// `f64`, so the longest output is sign + digit + point + 16 digits + `E` + sign + 3 exponent
+/// digits, 24 bytes.
 #[derive(Default)]
 struct ExponentBuf {
     bytes: [u8; 32],
@@ -255,8 +270,8 @@ impl ExponentBuf {
 impl fmt::Write for ExponentBuf {
     fn write_str(&mut self, s: &str) -> fmt::Result {
         let end = self.len + s.len();
-        // Unreachable for `{:E}` of an f32 or f64; returning an error rather than panicking keeps
-        // a future caller's mistake out of the JNI boundary.
+        // Unreachable for `{:E}` of an f32 or f64 (see the size bound above); returning an error
+        // rather than panicking keeps a future caller's mistake out of the JNI boundary.
         let target = self.bytes.get_mut(self.len..end).ok_or(fmt::Error)?;
         target.copy_from_slice(s.as_bytes());
         self.len = end;
@@ -283,7 +298,7 @@ where
         match value {
             None => builder.append_null(),
             Some(value) => {
-                // Infallible for a string builder; the signature is generic over the sink.
+                // Cannot fail; see `write_java_float_string`.
                 let _ = write_java_float_string(value, &mut builder);
                 builder.append_value("");
             }

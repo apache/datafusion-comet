@@ -27,7 +27,7 @@ use std::sync::Arc;
 
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
-use datafusion_comet_spark_expr::{write_java_float_string, JavaFloatString};
+use datafusion_comet_spark_expr::java_float_string;
 use iceberg::spec::{
     Literal, PartitionKey, PartitionSpec, PrimitiveLiteral, PrimitiveType, SchemaRef, StructType,
     Transform, Type,
@@ -157,10 +157,9 @@ const NULL: &str = "null";
 /// `CometIcebergNativeWrite`'s format-version gate keeps them out of a native write today; the arms
 /// exist so a future V3 write does not reintroduce the panic.
 ///
-/// `float` and `double` go through `write_java_float_string`, which `cast(float as string)` also
-/// uses; delegating rendered `Double.MAX_VALUE` as 309 digits and failed the write with `File name
-/// too long` (apache/datafusion-comet#5836). Iceberg deprecated float and double partitioning in
-/// 1.3, so this is for tables that already have such a field.
+/// `float` and `double` go through `java_float_string`, which `cast(float as string)` also uses;
+/// delegating rendered `Double.MAX_VALUE` as 309 digits and failed the write with `File name too
+/// long` (apache/datafusion-comet#5836).
 fn human_string(transform: &Transform, field_type: &Type, value: Option<&Literal>) -> String {
     // Java returns "null" for a null partition value regardless of transform or type, which also
     // covers every `void` field: `void` produces no value, so this is the only arm it reaches.
@@ -168,10 +167,14 @@ fn human_string(transform: &Transform, field_type: &Type, value: Option<&Literal
         return NULL.to_string();
     };
 
-    // `year`/`month`/`day`/`hour` render the ordinal itself and never see a timestamp or binary
-    // field type (their result types are `int` and `date`), so they cannot collide with the arms
-    // below. iceberg-rust already mirrors `TransformUtil` for them. `bucket` and `truncate` reject
-    // float and double outright, so `identity` is the only transform that reaches those two arms.
+    // `field_type` is the transform's *result* type (`partition_to_path` passes the partition
+    // struct's field type), so a transform reaches an arm below only if it produces that type.
+    // `year`/`month`/`hour` and `bucket` produce `int` and `day` produces `date`, which no arm
+    // matches, so a bucketed float column never gets here; iceberg-rust already mirrors
+    // `TransformUtil` for the ordinals. `truncate` keeps its source type and accepts `binary`, so
+    // it can reach the base64 arm, which is also how iceberg-java's default `toHumanString` spells
+    // a truncated binary. It does not accept float or double, so `identity` is the only way into
+    // those two arms.
     match (field_type.as_primitive_type(), &primitive) {
         (Some(PrimitiveType::Timestamp), PrimitiveLiteral::Long(micros)) => {
             iso_timestamp(*micros, 6, false)
@@ -195,15 +198,6 @@ fn human_string(transform: &Transform, field_type: &Type, value: Option<&Literal
         }
         _ => transform.to_human_string(field_type, value),
     }
-}
-
-/// `Float.toString` / `Double.toString` of one partition value, owned for `human_string`'s
-/// signature. A partition path is built once per data file, so the allocation is off the hot path.
-fn java_float_string<T: JavaFloatString>(value: T) -> String {
-    let mut out = String::new();
-    // Writing into a `String` cannot fail.
-    let _ = write_java_float_string(value, &mut out);
-    out
 }
 
 /// Renders a sub-second count since the Unix epoch the way iceberg-java's
