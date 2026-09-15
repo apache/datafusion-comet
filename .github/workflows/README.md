@@ -99,25 +99,25 @@ of the Linux CI-profile Cargo cache, and only writes on `main`.
 
 ## What runs when
 
-| Job in `ci.yml`      | Triggered by                                                                                                           | Routing rule                        |
-| -------------------- | ---------------------------------------------------------------------------------------------------------------------- | ----------------------------------- |
-| `preflight`          | every PR / merge group / push / dispatch / label                                                                       | none (always runs)                  |
-| `changes`            | every PR / merge group / push / dispatch / label                                                                       | runs `dev/ci/compute-changes.py`    |
-| `build_linux_native` | any selected Linux/Spark/Iceberg consumer | `dev/ci/compute-changes.py` |
-| `pr_build_linux_checks` | PR, merge group or push to main, paths matched | `dev/ci/compute-changes.py` |
-| `pr_build_linux`     | PR, merge group or push to main, paths matched                                                                         | `dev/ci/compute-changes.py`         |
-| `pr_build_macos`     | merge group, **or** PR with `run-macos-tests`                                                                          | `dev/ci/compute-changes.py`         |
-| `pr_benchmark_check` | merge group, **or** PR with `run-benchmark-check`                                                                      | benchmark sources only              |
-| `docs`               | push to main, paths matched                                                                                            | `.asf.yaml`, `docs/**`, `docs.yaml` |
-| `spark_3_5`          | merge group, **or** PR with `run-spark-3.5-tests`                                                                      | Spark 3.5 sources                   |
-| `spark_4_1`          | PR or merge group, paths matched; the `sql_hive` shards only in the merge group **or** with `run-spark-4.1-hive-tests` | Spark 4.1 sources                   |
-| `spark_3_4`          | PR with `run-spark-3.4-tests`, or dispatch                                                                             | Spark 3.4 sources                   |
-| `spark_4_0`          | merge group, **or** PR with `run-spark-4.0-tests`                                                                      | Spark 4.0 sources                   |
-| `iceberg_1_11`       | PR or merge group, paths matched                                                                                       | Iceberg sources                     |
-| `iceberg_1_8`        | merge group, **or** PR with `run-iceberg-tests`                                                                        | Iceberg sources                     |
-| `iceberg_1_9`        | merge group, **or** PR with `run-iceberg-tests`                                                                        | Iceberg sources                     |
-| `iceberg_1_10`       | merge group, **or** PR with `run-iceberg-tests`                                                                        | Iceberg sources                     |
-| `required_checks`    | always, after every job above except `docs`                                                                            | none (always runs)                  |
+| Job in `ci.yml`         | Triggered by                                                                                                           | Routing rule                        |
+| ----------------------- | ---------------------------------------------------------------------------------------------------------------------- | ----------------------------------- |
+| `preflight`             | every PR / merge group / push / dispatch / label                                                                       | none (always runs)                  |
+| `changes`               | every PR / merge group / push / dispatch / label                                                                       | runs `dev/ci/compute-changes.py`    |
+| `build_linux_native`    | any selected Linux/Spark/Iceberg consumer                                                                              | `dev/ci/compute-changes.py`         |
+| `pr_build_linux_checks` | PR, merge group or push to main, paths matched                                                                         | `dev/ci/compute-changes.py`         |
+| `pr_build_linux`        | PR, merge group or push to main, paths matched                                                                         | `dev/ci/compute-changes.py`         |
+| `pr_build_macos`        | merge group, **or** PR with `run-macos-tests`                                                                          | `dev/ci/compute-changes.py`         |
+| `pr_benchmark_check`    | merge group, **or** PR with `run-benchmark-check`                                                                      | benchmark sources only              |
+| `docs`                  | push to main, paths matched                                                                                            | `.asf.yaml`, `docs/**`, `docs.yaml` |
+| `spark_3_5`             | merge group, **or** PR with `run-spark-3.5-tests`                                                                      | Spark 3.5 sources                   |
+| `spark_4_1`             | PR or merge group, paths matched; the `sql_hive` shards only in the merge group **or** with `run-spark-4.1-hive-tests` | Spark 4.1 sources                   |
+| `spark_3_4`             | PR with `run-spark-3.4-tests`, or dispatch                                                                             | Spark 3.4 sources                   |
+| `spark_4_0`             | merge group, **or** PR with `run-spark-4.0-tests`                                                                      | Spark 4.0 sources                   |
+| `iceberg_1_11`          | PR or merge group, paths matched                                                                                       | Iceberg sources                     |
+| `iceberg_1_8`           | merge group, **or** PR with `run-iceberg-tests`                                                                        | Iceberg sources                     |
+| `iceberg_1_9`           | merge group, **or** PR with `run-iceberg-tests`                                                                        | Iceberg sources                     |
+| `iceberg_1_10`          | merge group, **or** PR with `run-iceberg-tests`                                                                        | Iceberg sources                     |
+| `required_checks`       | always, after every job above except `docs`                                                                            | none (always runs)                  |
 
 A heavy job appears in the PR's checks list as a `skipped` entry whenever
 its path filter or event criteria don't match. Skipped checks count as
