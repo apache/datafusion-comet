@@ -180,6 +180,21 @@ public class SpillSorter extends SpillWriter {
     }
   }
 
+  /**
+   * Memory held by the in-memory sorter's pointer array alone, excluding the data pages. This is
+   * what the pointer array growth in {@link CometShuffleExternalSorter} must be sized from: sizing
+   * it from {@link #getMemoryUsage()} would grow the array in proportion to the data pages instead
+   * of doubling it.
+   */
+  public long getPointerArrayMemoryUsage() {
+    synchronized (this) {
+      if (freed || inMemSorter == null) {
+        return 0;
+      }
+      return inMemSorter.getMemoryUsage();
+    }
+  }
+
   @Override
   protected void spill(int required) throws IOException {
     spillCallback.onSpillRequired();

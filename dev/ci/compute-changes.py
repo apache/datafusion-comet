@@ -65,6 +65,12 @@ FILTERS = {
         "!spark/src/test/scala/org/apache/spark/sql/benchmark/**",
         "!spark/src/main/scala/org/apache/comet/GenerateDocs.scala",
     ],
+    # Same inputs as build_linux: not a separate job but a second POLICY
+    # decision for the same call, selecting the full pipeline rather than the
+    # cache-populating subset. ci.yml folds it into the reusable workflow's
+    # `cache-refresh-only` input. Populated below, after the dict, so the two
+    # lists cannot drift.
+    "build_linux_full": [],
     "build_macos": [
         "native/**",
         "common/**",
@@ -318,6 +324,7 @@ FILTERS = {
     ],
 }
 FILTERS["spark_4_1_hive"] = FILTERS["spark_4_1"]
+FILTERS["build_linux_full"] = FILTERS["build_linux"]
 
 # Which events may run each job, independent of the path filters above.
 #
@@ -342,10 +349,21 @@ POLICY = {
     # own branch or on main, and nowhere else. The queue runs on a throwaway
     # gh-readonly-queue/* branch, so whatever it saves is deleted with that
     # branch. Without a push run, a Cargo.lock or pom.xml change would leave
-    # main's cargo-registry, Maven and TPC-H/TPC-DS caches stale forever, and
-    # every later pull request would pay the delta on top of the restore-keys
-    # prefix match.
+    # main's cargo-ci, cargo-debug, Maven and TPC-H/TPC-DS caches stale
+    # forever, and every later pull request would pay the delta on top of the
+    # restore-keys prefix match.
+    #
+    # On push that is the *only* thing it is for. The queue already tested the
+    # exact tree that landed, so re-running the lints and the 5x4 linux-test
+    # matrix there tests nothing, and they are 514 of the 587 runner-minutes a
+    # push run costs. The split below keeps the cache writers on push and moves
+    # everything else behind `build_linux_full`.
     "build_linux": ["pr", "queue", "push"],
+    # The lints and the test matrix inside pr_build_linux.yml. Deliberately no
+    # "push": ci.yml turns this output into the workflow's `cache-refresh-only`
+    # input, so dropping "push" here is what trims the push tier down to the
+    # jobs that write an actions/cache entry. See issue #5929.
+    "build_linux_full": ["pr", "queue"],
     # macOS runners are the scarcest capacity we have, and the Linux build
     # already covers rustfmt and the Rust/JVM compile on every PR. The label
     # is for a change that touches platform-specific code.
@@ -356,7 +374,11 @@ POLICY = {
     # docs deploys to asf-site, so it must not run from a pull request or from
     # the queue's throwaway branch.
     "docs": ["push"],
-    "spark_3_4": ["queue", "label:run-spark-3.4-tests"],
+    # Spark 3.4 is deprecated, so it is the one test job outside the queue
+    # tier: a failure there no longer blocks a merge. It stays runnable on
+    # demand -- the label on a pull request, or a workflow_dispatch -- so
+    # anyone who wants to check a change against 3.4 still can.
+    "spark_3_4": ["label:run-spark-3.4-tests"],
     "spark_3_5": ["queue", "label:run-spark-3.5-tests"],
     "spark_4_0": ["queue", "label:run-spark-4.0-tests"],
     # Spark 4.1 is the default build profile, so it is the cheapest early
