@@ -2145,6 +2145,30 @@ abstract class ParquetReadSuite extends CometTestBase {
     }
   }
 
+  test("duplicate exact nested names are refused when requested and skipped otherwise") {
+    // The file's struct carries two children named `dup` beside a unique `other`.
+    withSQLConf(SQLConf.CASE_SENSITIVE.key -> "true") {
+      val path = getResourceParquetFilePath("test-data/duplicate-nested-names.parquet")
+      spark.read
+        .schema("id bigint, s struct<other: bigint>")
+        .parquet(path)
+        .createOrReplaceTempView("dup_nested_other")
+      checkSparkAnswerAndOperator("SELECT id, s.other FROM dup_nested_other ORDER BY id")
+
+      spark.read
+        .schema("id bigint, s struct<dup: bigint>")
+        .parquet(path)
+        .createOrReplaceTempView("dup_nested_dup")
+      val error = intercept[Exception] {
+        sql("SELECT id, s.dup FROM dup_nested_dup ORDER BY id").collect()
+      }
+      val messages = causeChain(error).flatMap(e => Option(e.getMessage))
+      assert(
+        messages.exists(m => m.contains("duplicate field") && m.contains("dup")),
+        s"expected the duplicate sibling refusal, got:\n${messages.mkString("\n")}")
+    }
+  }
+
   test("duplicate field id inside a struct is rejected without a cast") {
     withSQLConf(SQLConf.PARQUET_FIELD_ID_READ_ENABLED.key -> "true") {
       withTempPath { dir =>

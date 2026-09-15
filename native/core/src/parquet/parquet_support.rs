@@ -462,15 +462,23 @@ fn resolve_struct_mapping(
             _ => match name_matches.get(to_folded[to_pos].as_str()) {
                 // Spark's `caseInsensitiveParquetFieldMap` rejects a requested name that folds
                 // onto more than one file field. In case-sensitive mode the fold is identity, so
-                // a collision means byte-identical siblings and the later one wins silently,
-                // as with Spark's `caseSensitiveParquetFieldMap` built by `toMap`.
-                Some(m) if m.ambiguous && !parquet_options.case_sensitive => {
+                // a collision means byte-identical siblings; Spark's own answer there is not
+                // stable across versions, so refusing beats silently picking one.
+                Some(m) if m.ambiguous => {
                     let matched: Vec<&str> = from_folded
                         .iter()
                         .zip(from_fields.iter())
                         .filter(|(folded, _)| *folded == &to_folded[to_pos])
                         .map(|(_, f)| f.name().as_str())
                         .collect();
+                    if parquet_options.case_sensitive {
+                        return Err(SparkError::Internal(format!(
+                            "Found duplicate field(s) \"{}\": [{}] in a Parquet struct; Comet does \
+                             not select between sibling fields with identical names",
+                            to_field.name(),
+                            matched.join(", ")
+                        )));
+                    }
                     return Err(SparkError::duplicate_field_case_insensitive(
                         to_field.name(),
                         &matched,
@@ -2428,12 +2436,12 @@ mod tests {
             assert_eq!(col.value(0), 44);
         }
 
-        /// Two physical struct fields carry the IDENTICAL name in case-sensitive mode.
-        /// Spark's `caseSensitiveParquetFieldMap` is built with `.toMap`, where the later
-        /// entry wins silently; the exact-name lookup here must do the same rather than
-        /// return the first field.
+        /// Two physical struct fields carry the IDENTICAL name in case-sensitive mode and the
+        /// requested struct asks for it. Spark's clip picks the last through `toMap` while its
+        /// reader has returned other mixes, so the read is refused with a message naming the
+        /// field rather than silently picking one.
         #[test]
-        fn duplicate_exact_names_resolve_to_the_last_field() {
+        fn duplicate_exact_names_are_rejected_when_requested() {
             let from = struct_of(
                 vec![
                     Field::new("d", DataType::Int32, true),
@@ -2447,6 +2455,36 @@ mod tests {
             let mut opts = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
             opts.case_sensitive = true;
 
+            let err = parquet_convert_array(from, &to_type, &opts)
+                .expect_err("a requested field with two identical siblings must be refused");
+            let msg = err.to_string();
+            assert!(
+                msg.contains("duplicate field") && msg.contains("\"d\"") && msg.contains("d, d"),
+                "unexpected error: {msg}"
+            );
+        }
+
+        /// The duplicate siblings are only refused when requested: reading the unique sibling
+        /// beside them resolves normally, as Spark's clip only iterates the requested fields.
+        #[test]
+        fn unrequested_duplicate_siblings_do_not_block_the_read() {
+            let from = struct_of(
+                vec![
+                    Field::new("d", DataType::Int32, true),
+                    Field::new("d", DataType::Int32, true),
+                    Field::new("other", DataType::Int32, true),
+                ],
+                vec![1, 2, 3],
+            );
+            let to_type = DataType::Struct(Fields::from(vec![Field::new(
+                "other",
+                DataType::Int32,
+                true,
+            )]));
+
+            let mut opts = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
+            opts.case_sensitive = true;
+
             let result = parquet_convert_array(from, &to_type, &opts).unwrap();
             let result_struct = result.as_any().downcast_ref::<StructArray>().unwrap();
             let col = result_struct
@@ -2454,7 +2492,7 @@ mod tests {
                 .as_any()
                 .downcast_ref::<Int32Array>()
                 .unwrap();
-            assert_eq!(col.value(0), 2);
+            assert_eq!(col.value(0), 3);
         }
 
         /// Two file children differ only by case and the requested name folds onto both:
