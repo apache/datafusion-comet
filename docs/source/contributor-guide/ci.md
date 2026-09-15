@@ -218,7 +218,7 @@ re-armed automatically.
 ## Nightly runs
 
 `ci.yml` also runs on a schedule, at 06:00 UTC every day, against what landed on `main` since the
-previous run. That run executes only the nightly tier: the Comet test suites against the Spark
+last successful scheduled run. That run executes only the nightly tier: the Comet test suites against the Spark
 profiles other than 4.1, the Spark SQL suites for Spark 3.5 and 4.0, and the Iceberg suites for
 1.8, 1.9 and 1.10, each only when the day's changes touched files it covers. The queue already ran
 everything else against the same tree, so nothing in the queue tier is repeated. A day with no
@@ -229,9 +229,9 @@ A red nightly has no pull request to show up on, so the run opens an issue label
 already open, the run comments on it instead, so a failure that persists across several nights
 stays in one place. When you pick up a nightly failure:
 
-1. **Find the commit.** The issue names the `main` commit the run tested. Compare it with the
-   previous green nightly (filter the Actions page by the `schedule` event) to narrow the change
-   that introduced it.
+1. **Find the commit.** The issue names the `main` commit the run tested, and the run's
+   `Detect changes` log names the base it diffed against, which is the commit the previous green
+   nightly tested. The regression is in that range.
 2. **Reproduce it on a pull request.** Open the fix as a pull request and apply the label for
    the suite that failed, so the same suite runs against the fix before it lands.
 3. **Close the issue** once the failure is understood, whether it was fixed, excluded, or found to

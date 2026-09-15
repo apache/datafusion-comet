@@ -212,13 +212,16 @@ makes the escape hatch look like it silently does nothing.
 ### Nightly tier
 
 `ci.yml` also fires on a `schedule` (06:00 UTC daily). On that event `changes`
-diffs `main` against its tip as of the previous tick (24 hours back, plus 30
-minutes of slack for scheduling jitter), so the nightly is routed by the same
-`FILTERS` as every other event and `POLICY` selects the `nightly` tier alone:
-the queue already ran every `queue` job against the tree that is now `main`.
-A quiet day diffs to nothing and runs nothing; a docs-only day runs nothing
-either. If a nightly fails for an infrastructure reason and nothing lands the
-next day, dispatch `ci.yml` by hand.
+diffs `main` against the commit the last successful scheduled run tested
+(`dev/ci/nightly-base.py` looks it up through the Actions API), so the nightly
+is routed by the same `FILTERS` as every other event and `POLICY` selects the
+`nightly` tier alone: the queue already ran every `queue` job against the tree
+that is now `main`. Every commit is covered exactly once, and a red nightly
+keeps its commits in scope until a green one supersedes it. When there is no
+such run, the API is unreachable, or the base is no longer on `main`, the base
+falls back to the tip as of the previous tick, 24 hours back plus 30 minutes
+of slack for scheduling jitter. A quiet day diffs to nothing and runs nothing;
+a docs-only day runs nothing either.
 
 With `profiles: nightly`, `pr_build_linux.yml` runs only `lint`, `build-native`
 and the `linux-test` matrix; the lints, Rust tests, Spark build and TPC runs

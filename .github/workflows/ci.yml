@@ -33,8 +33,8 @@
 #   schedule      the nightly regression sweep of everything else: the Linux
 #                 test matrix against the other Spark profiles, Spark SQL on
 #                 Spark 3.5 and 4.0, and Iceberg 1.8/1.9/1.10, routed by the
-#                 same path filters over what landed on main since the
-#                 previous tick. A failure opens (or comments on) an issue
+#                 same path filters over what landed on main since the last
+#                 green nightly. A failure opens (or comments on) an issue
 #                 labelled `ci-nightly-failure`.
 #
 # Spark 3.4 is deprecated and sits outside all three tiers: it runs only when
@@ -172,6 +172,11 @@ jobs:
     name: Detect changes
     needs: preflight
     runs-on: ubuntu-slim
+    # `actions: read` is for dev/ci/nightly-base.py, which lists previous
+    # scheduled runs to pick the nightly's diff base.
+    permissions:
+      actions: read
+      contents: read
     outputs:
       build_linux:  ${{ steps.compute.outputs.build_linux }}
       build_linux_full: ${{ steps.compute.outputs.build_linux_full }}
@@ -211,6 +216,7 @@ jobs:
           MQ_HEAD_SHA:  ${{ github.event.merge_group.head_sha }}
           PUSH_BEFORE:  ${{ github.event.before }}
           PUSH_AFTER:   ${{ github.sha }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           : > changed_files.txt
@@ -220,12 +226,19 @@ jobs:
             # any gated job.
             :
           elif [[ "$EVENT_NAME" == "schedule" ]]; then
-            # The nightly's base is the tip of main as of the previous tick,
-            # with 30 minutes of slack for scheduling jitter. A quiet day
-            # diffs to nothing and runs nothing; a docs-only day routes to
-            # nothing too. If a nightly fails for an infrastructure reason
-            # and nothing lands the next day, dispatch ci.yml by hand.
-            prev=$(git rev-list -1 --before="24 hours 30 minutes ago" HEAD)
+            # The nightly's base is the commit the last successful scheduled
+            # run tested, so everything that landed since is covered exactly
+            # once and a red nightly keeps its commits in scope until a green
+            # one supersedes it. Without such a run (the first nightly, an API
+            # error, or a base no longer on main) fall back to the tip as of
+            # the previous tick, with 30 minutes of slack for scheduling
+            # jitter. A quiet day diffs to nothing and runs nothing; so does
+            # a docs-only day.
+            prev=$(python3 dev/ci/nightly-base.py)
+            if [[ -z "$prev" ]] || ! git merge-base --is-ancestor "$prev" HEAD 2>/dev/null; then
+              prev=$(git rev-list -1 --before="24 hours 30 minutes ago" HEAD)
+            fi
+            echo "Nightly base: $prev"
             git diff --name-only "$prev"..HEAD > changed_files.txt
           elif [[ "$EVENT_NAME" == "pull_request" ]]; then
             git diff --name-only "$PR_BASE_SHA"..."$PR_HEAD_SHA" > changed_files.txt
