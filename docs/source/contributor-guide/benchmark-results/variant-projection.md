@@ -41,12 +41,12 @@ fixtures include all schema keys in metadata; the empty-key fixture exercises me
 Two runs reverse the reader order. Each case has 7–17 measured iterations after warmup.
 Cells show average ± standard deviation in milliseconds, with Spark-first / Comet-first runs.
 
-| Fixture | Spark (ms) | Comet (ms) |
-| --- | --- | --- |
-| Canonical | 132 ± 8 / 128 ± 4 | 125 ± 4 / 136 ± 5 |
+| Fixture            | Spark (ms)        | Comet (ms)        |
+| ------------------ | ----------------- | ----------------- |
+| Canonical          | 132 ± 8 / 128 ± 4 | 125 ± 4 / 136 ± 5 |
 | Partially shredded | 153 ± 4 / 152 ± 1 | 242 ± 2 / 242 ± 5 |
-| Fully shredded | 161 ± 4 / 147 ± 1 | 207 ± 3 / 209 ± 4 |
-| Empty key | 148 ± 3 / 150 ± 2 | 310 ± 2 / 311 ± 3 |
+| Fully shredded     | 161 ± 4 / 147 ± 1 | 207 ± 3 / 209 ± 4 |
+| Empty key          | 148 ± 3 / 150 ± 2 | 310 ± 2 / 311 ± 3 |
 
 After building and installing the `ci` library and Spark 4.0 artifacts:
 
@@ -66,12 +66,12 @@ cumulative allocated bytes, including temporary and output buffers. This measure
 traffic, not retained memory or allocation counts, and excludes Parquet decoding and JVM work.
 These larger Arrow fixtures are separate from the scan fixtures above.
 
-| Fixture | Allocated bytes per row | Mean ms per batch |
-| --- | --- | --- |
-| Canonical | 10,332 | 3.762 |
-| Partially shredded | 57,402 | 15.925 |
-| Fully shredded | 52,320 | 11.796 |
-| Empty key | 83,399 | 22.268 |
+| Fixture            | Allocated bytes per row | Mean ms per batch |
+| ------------------ | ----------------------- | ----------------- |
+| Canonical          | 10,332                  | 3.762             |
+| Partially shredded | 57,402                  | 15.925            |
+| Fully shredded     | 52,320                  | 11.796            |
+| Empty key          | 83,399                  | 22.268            |
 
 ```shell
 cd native

@@ -103,8 +103,8 @@ functions, and hashing a `CalendarInterval`. Remaining work is tracked by
 
 ## Variant
 
-| Type          | Status | Notes                                                                                                                       |
-| ------------- | ------ | --------------------------------------------------------------------------------------------------------------------------- |
+| Type          | Status | Notes                                                                                                                           |
+| ------------- | ------ | ------------------------------------------------------------------------------------------------------------------------------- |
 | `VariantType` | ⚠️     | Spark 4.0+. Native Parquet scans support direct projection of top-level Variant columns. Non-null existence defaults fall back. |
 
 Direct projection requires explicit configuration on every supported Spark version:
