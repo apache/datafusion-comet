@@ -888,8 +888,40 @@ Cloud Service Providers.</p>
 </section>
 <section id="using-a-published-jar-file">
 <h2>Using a Published JAR File<a class="headerlink" href="#using-a-published-jar-file" title="Link to this heading">#</a></h2>
-<p>This documentation is for the current development version of Comet. Published jar files are only available for released versions.
-To use this version of Comet, see <a class="reference internal" href="source.html"><span class="std std-doc">Building from source</span></a>.</p>
+<p>This documentation is for the current development version of Comet, which has not been released. Nightly snapshot
+jar files for this version are published to the
+<a class="reference external" href="https://repository.apache.org/content/repositories/snapshots/org/apache/datafusion/">ASF snapshot repository</a> for the
+amd64 and arm64 architectures for Linux. For Apple macOS, it is currently necessary to
+<a class="reference internal" href="source.html"><span class="std std-doc">build from source</span></a>.</p>
+<p>Snapshots are unreleased development builds provided for testing and evaluation only. They are not Apache releases,
+have not been voted on, and should not be used in production. Older snapshots are removed from the repository
+periodically.</p>
+<p>A new snapshot is published each night that new commits land on the <code class="docutils literal notranslate"><span class="pre">main</span></code> branch. Every snapshot carries the same
+version, <code class="docutils literal notranslate"><span class="pre">1.1.0-SNAPSHOT</span></code>, so Maven-based tooling resolves the most recent one automatically. The
+<a class="reference external" href="https://github.com/apache/datafusion-comet/actions/workflows/publish_snapshot.yml">Publish Snapshot</a> workflow log
+records the commit each snapshot was built from.</p>
+<p>The following artifacts are published:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">comet-spark-spark3.4_2.12</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">comet-spark-spark3.5_2.12</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">comet-spark-spark4.0_2.13</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">comet-spark-spark4.1_2.13</span></code></p></li>
+</ul>
+<p>To download a snapshot jar, browse to the artifact directory in the snapshot repository, for example
+<a class="reference external" href="https://repository.apache.org/content/repositories/snapshots/org/apache/datafusion/comet-spark-spark4.1_2.13/1.1.0-SNAPSHOT/">comet-spark-spark4.1_2.13/1.1.0-SNAPSHOT</a>,
+and pick the jar with the newest timestamp. Then use it as described in
+<a class="reference internal" href="#run-spark-shell-with-comet-enabled">Run Spark Shell with Comet enabled</a>.</p>
+<p>Alternatively, let Spark resolve the newest snapshot directly:</p>
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span><span class="nv">$SPARK_HOME</span>/bin/spark-shell<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--repositories<span class="w"> </span>https://repository.apache.org/content/repositories/snapshots/<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--packages<span class="w"> </span>org.apache.datafusion:comet-spark-spark4.1_2.13:1.1.0-SNAPSHOT<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--conf<span class="w"> </span>spark.plugins<span class="o">=</span>org.apache.spark.CometPlugin<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--conf<span class="w"> </span>spark.shuffle.manager<span class="o">=</span>org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--conf<span class="w"> </span>spark.comet.explain.fallback.enabled<span class="o">=</span><span class="nb">true</span><span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--conf<span class="w"> </span>spark.memory.offHeap.enabled<span class="o">=</span><span class="nb">true</span><span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--conf<span class="w"> </span>spark.memory.offHeap.size<span class="o">=</span>4g
+</pre></div>
+</div>
 </section>
 <section id="building-from-source">
 <h2>Building from source<a class="headerlink" href="#building-from-source" title="Link to this heading">#</a></h2>
