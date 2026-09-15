@@ -29,7 +29,7 @@ import org.scalatest.funsuite.AnyFunSuite
 import org.scalatest.matchers.should.Matchers
 
 import org.apache.arrow.memory.{AllocationListener, RootAllocator}
-import org.apache.arrow.vector.{BaseFixedWidthVector, BaseValueVector, BigIntVector, BitVector, DecimalVector, IntervalMonthDayNanoVector, IntVector, VarCharVector, VectorSchemaRoot}
+import org.apache.arrow.vector.{BaseFixedWidthVector, BaseValueVector, BigIntVector, BitVector, DecimalVector, IntVector, VarCharVector, VectorSchemaRoot}
 import org.apache.arrow.vector.complex.StructVector
 import org.apache.arrow.vector.dictionary.{Dictionary => ArrowDictionary}
 import org.apache.arrow.vector.dictionary.DictionaryProvider.MapDictionaryProvider
