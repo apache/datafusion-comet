@@ -235,9 +235,10 @@ case class CometIcebergNativeScanExec(
       nativeMetrics = nativeMetrics,
       subqueries = Seq.empty) {
       override def compute(split: Partition, context: TaskContext): Iterator[ColumnarBatch] = {
-        val res = super.compute(split, context)
+        // Register before super.compute creates the CometExecIterator, so this listener runs
+        // after the iterator's close has published the final scan metrics.
         Option(context).foreach(nativeMetrics.reportScanInputMetrics)
-        res
+        super.compute(split, context)
       }
     }
   }
