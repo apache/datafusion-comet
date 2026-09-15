@@ -85,6 +85,29 @@ class CometCodegenSuite
     }
   }
 
+  /**
+   * Whether `replace` was routed through the JVM codegen dispatcher. Inspects the expression
+   * collection rather than formatted explain text: `rollUpInfoMessages` concatenates sibling
+   * names alphabetically (`cast, divide, ..., replace`), so a substring `"JVM codegen dispatcher:
+   * replace"` misses the case where `replace` is not first.
+   */
+  private def replaceIsDispatched(
+      plan: org.apache.spark.sql.execution.SparkPlan): (Seq[String], String) = {
+    val info = new ExtendedExplainInfo()
+    (info.getCodegenDispatchExpressions(plan), info.generateExtendedInfo(plan))
+  }
+
+  private def assertReplaceDispatch(
+      df: org.apache.spark.sql.DataFrame,
+      expectDispatcher: Boolean,
+      clue: String): Unit = {
+    checkSparkAnswerAndOperator(df)
+    val (dispatched, explain) = replaceIsDispatched(df.queryExecution.executedPlan)
+    assert(
+      dispatched.contains("replace") == expectDispatcher,
+      s"$clue, got dispatched expressions: $dispatched\n$explain")
+  }
+
   test("codegen kernel round-trips CalendarIntervalType") {
     val input = new IntervalMonthDayNanoVector("in", CometArrowAllocator)
     val field =
@@ -511,6 +534,101 @@ class CometCodegenSuite
         info
           .generateExtendedInfo(plan)
           .contains("Accelerated expressions: 0 native, 0 codegen dispatch."))
+    }
+  }
+
+  test("replace compatibility boundary cases stay on JVM codegen dispatcher") {
+    withSQLConf(
+      CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "true",
+      CometConf.COMET_EXPLAIN_CODEGEN_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_PROJECT_ENABLED.key -> "true",
+      CometConf.COMET_EXTENDED_EXPLAIN_FORMAT.key ->
+        CometConf.COMET_EXTENDED_EXPLAIN_FORMAT_VERBOSE) {
+
+      // Malformed search: CometLiteral would normalize 0xFF to U+FFFD, incorrectly matching
+      // a well-formed U+FFFD in the source.
+      withTable("t") {
+        sql("CREATE TABLE t (s STRING) USING parquet")
+        sql("INSERT INTO t VALUES ('\uFFFD'), ('ok')")
+        assertReplaceDispatch(
+          sql("SELECT replace(s, CAST(X'FF' AS STRING), 'x') FROM t"),
+          expectDispatcher = true,
+          "expected dispatcher path for malformed search literal")
+      }
+
+      // Malformed replacement has the same serialization hazard.
+      withTable("t") {
+        sql("CREATE TABLE t (s STRING) USING parquet")
+        sql("INSERT INTO t VALUES ('a'), ('b')")
+        assertReplaceDispatch(
+          sql("SELECT replace(s, 'a', CAST(X'FF' AS STRING)) FROM t"),
+          expectDispatcher = true,
+          "expected dispatcher path for malformed replacement literal")
+      }
+
+      // Spark skips replacement evaluation when src is NULL; native evaluates every child.
+      withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
+        withTable("t") {
+          sql("CREATE TABLE t (s STRING, n INT) USING parquet")
+          sql("INSERT INTO t VALUES (NULL, 0), ('a', 1)")
+          assertReplaceDispatch(
+            sql("SELECT replace(s, 'a', CAST(1 / n AS STRING)) FROM t"),
+            expectDispatcher = true,
+            "expected dispatcher path for throwing replacement expression")
+        }
+      }
+
+      // A 256 KiB scalar replacement overflows Arrow Utf8 offsets when broadcast to 8192 rows.
+      withTable("t") {
+        sql("CREATE TABLE t (s STRING) USING parquet")
+        sql("INSERT INTO t VALUES ('hello')")
+        assertReplaceDispatch(
+          sql("SELECT replace(s, 'notfound', repeat('x', 262144)) FROM t"),
+          expectDispatcher = true,
+          "expected dispatcher path for oversized replacement literal")
+      }
+
+      // Source is not on the whitelist: Spark short-circuits inside substring when s is NULL.
+      withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
+        withTable("t") {
+          sql("CREATE TABLE t (s STRING, n INT) USING parquet")
+          sql("INSERT INTO t VALUES (NULL, 0), ('a', 1)")
+          assertReplaceDispatch(
+            sql("SELECT replace(substring(s, 1, CAST(1 / n AS INT)), 'a', 'x') FROM t"),
+            expectDispatcher = true,
+            "expected dispatcher path for throwing expression nested in source")
+        }
+      }
+
+      // Malformed source literal: same CometLiteral byte-normalization as search/replacement.
+      withTable("t") {
+        sql("CREATE TABLE t (r STRING) USING parquet")
+        sql("INSERT INTO t VALUES ('x')")
+        assertReplaceDispatch(
+          sql("SELECT replace(CAST(X'FF' AS STRING), 'a', r) FROM t"),
+          expectDispatcher = true,
+          "expected dispatcher path for malformed source literal")
+      }
+
+      // Malformed literal nested under concat is still in the source tree.
+      withTable("t") {
+        sql("CREATE TABLE t (r STRING) USING parquet")
+        sql("INSERT INTO t VALUES ('x')")
+        assertReplaceDispatch(
+          sql("SELECT replace(concat(CAST(X'FF' AS STRING), r), 'a', 'x') FROM t"),
+          expectDispatcher = true,
+          "expected dispatcher path for malformed literal nested in source")
+      }
+
+      // Oversized source literal has the same broadcast / offset-overflow hazard.
+      withTable("t") {
+        sql("CREATE TABLE t (r STRING) USING parquet")
+        sql("INSERT INTO t VALUES ('x')")
+        assertReplaceDispatch(
+          sql("SELECT replace(repeat('x', 262144), 'notfound', r) FROM t"),
+          expectDispatcher = true,
+          "expected dispatcher path for oversized source literal")
+      }
     }
   }
 
