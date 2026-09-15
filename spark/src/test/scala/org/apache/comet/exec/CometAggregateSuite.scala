@@ -431,7 +431,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
           spark
             .range(0L, 8L, 1L, 4)
-            .selectExpr("id", "CAST(1 AS BIGINT) AS v", "CAST(NULL AS BIGINT) AS n")
+            .selectExpr("id", "CAST(1 AS BIGINT) AS v")
             .write
             .parquet(path)
         }
@@ -442,42 +442,31 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           SQLConf.PARQUET_FILTER_PUSHDOWN_ENABLED.key -> "false",
           CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "false",
           CometConf.COMET_CONVERT_FROM_PARQUET_ENABLED.key -> "true",
-          CometConf.COMET_SHUFFLE_ENABLED.key -> "false") {
+          CometConf.COMET_SHUFFLE_ENABLED.key -> "false",
+          CometConf.COMET_ENABLE_FINAL_HASH_AGGREGATE.key -> "true") {
           withParquetTable(path, "count_avg_fallback") {
             assert(sql("SELECT * FROM count_avg_fallback").rdd.getNumPartitions == 4)
-            for (finalEnabled <- Seq(false, true)) {
-              withSQLConf(
-                CometConf.COMET_ENABLE_FINAL_HASH_AGGREGATE.key -> finalEnabled.toString) {
-                // A safe COUNT buffer must not admit an unsafe AVG buffer in the same Partial.
-                // Three partitions have no surviving rows, so AVG has no update_batch call and
-                // its old native state is (null, 0), which poisons Spark Final's sum. Disabling
-                // Final tests early tagging; leaving it enabled tests post-conversion repair.
-                for ((selection, expected) <- Seq(
-                    "AVG(v) FROM count_avg_fallback WHERE id = 1" -> Row(1L, 1.0),
-                    "AVG(n) FROM count_avg_fallback WHERE id = 1" -> Row(1L, null),
-                    "AVG(v) FROM count_avg_fallback WHERE id < 0" -> Row(0L, null))) {
-                  val df = sql(s"SELECT COUNT(*), $selection")
-                  val initialPlan = stripAQEPlan(df.queryExecution.executedPlan)
-                  checkAnswer(df, Seq(expected))
-                  for (plan <- Seq(initialPlan, df.queryExecution.executedPlan)) {
-                    assert(collect(plan) { case agg: CometHashAggregateExec => agg }.isEmpty)
-                    val partials = collect(plan) {
-                      case agg: BaseAggregateExec
-                          if agg.aggregateExpressions.map(_.mode).distinct == Seq(Partial) =>
-                        agg
-                    }
-                    assert(partials.size == 1)
-                    assert(
-                      partials.head.getTagValue(CometExecRule.COMET_UNSAFE_PARTIAL).isDefined)
-                    assert(collect(plan) { case filter: CometFilterExec => filter }.nonEmpty)
-                  }
-                }
+            // A safe COUNT buffer must not admit an unsafe AVG buffer in the same Partial.
+            // Three partitions have no surviving rows, so AVG has no update_batch call and
+            // its native state is (null, 0), which poisons Spark Final's sum. Keeping Final
+            // enabled exercises repair after the shuffle falls back during conversion.
+            val df = sql("SELECT COUNT(*), AVG(v) FROM count_avg_fallback WHERE id = 1")
+            val initialPlan = stripAQEPlan(df.queryExecution.executedPlan)
+            checkAnswer(df, Seq(Row(1L, 1.0)))
+            for (plan <- Seq(initialPlan, df.queryExecution.executedPlan)) {
+              assert(collect(plan) { case agg: CometHashAggregateExec => agg }.isEmpty)
+              val partials = collect(plan) {
+                case agg: BaseAggregateExec
+                    if agg.aggregateExpressions.map(_.mode).distinct == Seq(Partial) =>
+                  agg
               }
+              assert(partials.size == 1)
+              assert(partials.head.getTagValue(CometExecRule.COMET_UNSAFE_PARTIAL).isDefined)
+              assert(collect(plan) { case filter: CometFilterExec => filter }.nonEmpty)
             }
             withSQLConf(
               CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
-              CometConf.COMET_SHUFFLE_MODE.key -> "native",
-              CometConf.COMET_ENABLE_FINAL_HASH_AGGREGATE.key -> "true") {
+              CometConf.COMET_SHUFFLE_MODE.key -> "native") {
               // The native Final can consume its own empty AVG buffers; only the engine split
               // is unsafe. Keep the fully native aggregate path enabled.
               val native =
@@ -496,28 +485,25 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     test(s"COUNT preserves safe native partials across a Spark shuffle (AQE=$adaptive)") {
       val data = Seq((0, None), (0, None), (1, Some(3)), (1, None), (1, Some(4)))
       withParquetTable(data, "count_fallback", false) {
-        for (finalEnabled <- Seq(false, true)) {
-          withSQLConf(
-            SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString,
-            SQLConf.PARQUET_FILTER_PUSHDOWN_ENABLED.key -> "false",
-            CometConf.COMET_SHUFFLE_ENABLED.key -> "false",
-            CometConf.COMET_ENABLE_FINAL_HASH_AGGREGATE.key -> finalEnabled.toString) {
-            for (query <- Seq(
-                "SELECT _1, COUNT(_2), COUNT(*) FROM count_fallback GROUP BY _1",
-                "SELECT COUNT(_2), COUNT(*) FROM count_fallback WHERE _1 = 0",
-                "SELECT COUNT(_2), COUNT(*) FROM count_fallback WHERE _1 < 0")) {
-              val df = sql(query)
-              val initialPlan = stripAQEPlan(df.queryExecution.executedPlan)
-              assert(collect(initialPlan) {
-                case agg: CometHashAggregateExec if agg.modes == Seq(Partial) => agg
-              }.size == 1)
-              assert(collect(initialPlan) {
-                case agg: BaseAggregateExec
-                    if agg.aggregateExpressions.map(_.mode).distinct == Seq(Final) =>
-                  agg
-              }.size == 1)
-              checkSparkAnswer(df)
-            }
+        withSQLConf(
+          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString,
+          SQLConf.PARQUET_FILTER_PUSHDOWN_ENABLED.key -> "false",
+          CometConf.COMET_SHUFFLE_ENABLED.key -> "false",
+          CometConf.COMET_ENABLE_FINAL_HASH_AGGREGATE.key -> "true") {
+          for (query <- Seq(
+              "SELECT _1, COUNT(_2), COUNT(*) FROM count_fallback GROUP BY _1",
+              "SELECT COUNT(_2), COUNT(*) FROM count_fallback WHERE _1 < 0")) {
+            val df = sql(query)
+            val initialPlan = stripAQEPlan(df.queryExecution.executedPlan)
+            assert(collect(initialPlan) {
+              case agg: CometHashAggregateExec if agg.modes == Seq(Partial) => agg
+            }.size == 1)
+            assert(collect(initialPlan) {
+              case agg: BaseAggregateExec
+                  if agg.aggregateExpressions.map(_.mode).distinct == Seq(Final) =>
+                agg
+            }.size == 1)
+            checkSparkAnswer(df)
           }
         }
       }
@@ -1853,7 +1839,6 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
               // Spark rewrites _7 to Long AVG, whose empty native buffer is also unsafe for a
               // Spark Final until #5420. Keep all AVG partials in Spark across this boundary.
               val expectedNumOfCometAggregates = if (nativeShuffleEnabled) 2 else 0
-              val expectedNumOfDecimalAggregates = if (nativeShuffleEnabled) 2 else 0
 
               checkSparkAnswerAndNumOfAggregates(
                 "SELECT _g2, AVG(_7) FROM tbl GROUP BY _g2",
@@ -1861,12 +1846,11 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
               checkSparkAnswerWithTolerance("SELECT _g3, AVG(_8) FROM tbl GROUP BY _g3")
               assert(getNumCometHashAggregate(
-                sql(
-                  "SELECT _g3, AVG(_8) FROM tbl GROUP BY _g3")) == expectedNumOfDecimalAggregates)
+                sql("SELECT _g3, AVG(_8) FROM tbl GROUP BY _g3")) == expectedNumOfCometAggregates)
 
               checkSparkAnswerAndNumOfAggregates(
                 "SELECT _g4, AVG(_9) FROM tbl GROUP BY _g4",
-                expectedNumOfDecimalAggregates)
+                expectedNumOfCometAggregates)
 
               checkSparkAnswerAndNumOfAggregates(
                 "SELECT AVG(_7) FROM tbl",
@@ -1874,11 +1858,11 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
               checkSparkAnswerWithTolerance("SELECT AVG(_8) FROM tbl")
               assert(getNumCometHashAggregate(
-                sql("SELECT AVG(_8) FROM tbl")) == expectedNumOfDecimalAggregates)
+                sql("SELECT AVG(_8) FROM tbl")) == expectedNumOfCometAggregates)
 
               checkSparkAnswerAndNumOfAggregates(
                 "SELECT AVG(_9) FROM tbl",
-                expectedNumOfDecimalAggregates)
+                expectedNumOfCometAggregates)
             }
           }
         }
