@@ -55,7 +55,6 @@ use arrow::datatypes::{
     DataType, Field, FieldRef, Fields, Schema, TimeUnit, DECIMAL128_MAX_PRECISION,
 };
 use arrow::ffi_stream::FFI_ArrowArrayStream;
-use arrow::record_batch::RecordBatch;
 use datafusion::functions_aggregate::bit_and_or_xor::{bit_and_udaf, bit_or_udaf, bit_xor_udaf};
 use datafusion::functions_aggregate::count::count_udaf;
 use datafusion::functions_aggregate::min_max::max_udaf;
@@ -110,8 +109,8 @@ use datafusion::datasource::listing::PartitionedFile;
 use datafusion::logical_expr::type_coercion::functions::fields_with_udf;
 use datafusion::logical_expr::type_coercion::other::get_coerce_type_for_case_expression;
 use datafusion::logical_expr::{
-    AggregateUDF, ColumnarValue, ReturnFieldArgs, ScalarUDF, TypeSignature, WindowFrame,
-    WindowFrameBound, WindowFrameUnits, WindowFunctionDefinition,
+    AggregateUDF, ReturnFieldArgs, ScalarUDF, TypeSignature, WindowFrame, WindowFrameBound,
+    WindowFrameUnits, WindowFunctionDefinition,
 };
 use datafusion::physical_expr::expressions::{Literal, StatsType};
 use datafusion::physical_expr::window::WindowExpr;
@@ -158,7 +157,6 @@ use jni::objects::{Global, JObject};
 use log::warn;
 use num::{BigInt, ToPrimitive};
 use object_store::path::Path;
-use parquet::variant::VariantType;
 use std::cmp::max;
 use std::{collections::HashMap, sync::Arc};
 
@@ -1002,37 +1000,17 @@ impl PhysicalPlanner {
         }
     }
 
-    /// Scan defaults are literals, except Variant's constant [value, metadata] storage struct.
-    /// Keep that exception here so general Variant expressions remain unsupported.
+    /// Only constant literals are supported as scan defaults.
     fn create_default_value(
         &self,
         spark_expr: &Expr,
         input_schema: SchemaRef,
-        field: &Field,
     ) -> Result<ScalarValue, ExecutionError> {
         let expr = self.create_expr(spark_expr, Arc::clone(&input_schema))?;
         if let Some(literal) = expr.downcast_ref::<DataFusionLiteral>() {
             return Ok(literal.value().clone());
         }
-        if !field.has_valid_extension_type::<VariantType>()
-            || expr.downcast_ref::<CreateNamedStruct>().is_none()
-            || expr.children().len() != 2
-            || !expr.children().iter().all(|child| {
-                child
-                    .downcast_ref::<DataFusionLiteral>()
-                    .is_some_and(|literal| matches!(literal.value(), ScalarValue::Binary(Some(_))))
-            })
-            || expr.data_type(&input_schema)? != *field.data_type()
-        {
-            return Err(GeneralError(
-                "Expected a literal or constant Variant storage struct for scan default"
-                    .to_string(),
-            ));
-        }
-        match expr.evaluate(&RecordBatch::new_empty(input_schema))? {
-            ColumnarValue::Scalar(value) => Ok(value),
-            _ => Err(GeneralError("Expected a scalar scan default".to_string())),
-        }
+        Err(GeneralError("Expected a literal scan default".to_string()))
     }
 
     /// Create a DataFusion physical sort expression from Spark physical expression
@@ -1715,11 +1693,8 @@ impl PhysicalPlanner {
                                         "Scan default index {idx} is outside schema"
                                     ))
                                 })?;
-                                let value = self.create_default_value(
-                                    expr,
-                                    Arc::clone(&required_schema),
-                                    field,
-                                )?;
+                                let value =
+                                    self.create_default_value(expr, Arc::clone(&required_schema))?;
                                 Ok((Column::new(field.name(), idx), value))
                             })
                             .collect::<Result<HashMap<_, _>, ExecutionError>>()?,
@@ -5176,7 +5151,7 @@ mod tests {
     }
 
     #[test]
-    fn variant_scan_default_requires_constant_storage() {
+    fn scan_default_rejects_struct_expressions() {
         let planner = PhysicalPlanner::new(Arc::new(SessionContext::new()), 0);
         let storage = DataType::Struct(Fields::from(vec![
             Field::new("value", DataType::Binary, false),
@@ -5195,7 +5170,7 @@ mod tests {
             })),
             ..Default::default()
         };
-        let mut value = spark_expression::CreateNamedStruct {
+        let value = spark_expression::CreateNamedStruct {
             names: vec!["value".to_string(), "metadata".to_string()],
             values: vec![bytes(vec![0]), bytes(vec![1, 0, 0])],
         };
@@ -5203,32 +5178,8 @@ mod tests {
             expr_struct: Some(ExprStruct::CreateNamedStruct(value)),
             ..Default::default()
         };
-        let scalar = planner
-            .create_default_value(&default_expr(value.clone()), Arc::clone(&schema), &field)
-            .unwrap();
-        let ScalarValue::Struct(array) = scalar else {
-            panic!("expected a Variant storage scalar")
-        };
-        assert_eq!(array.data_type(), &storage);
-        assert_eq!(array.len(), 1);
-        assert_eq!(
-            ScalarValue::try_from_array(array.column(0).as_ref(), 0).unwrap(),
-            ScalarValue::Binary(Some(vec![0]))
-        );
-
-        // A struct expression is only a scan default for a marked Variant field.
-        let unmarked = Field::new("v", storage, true);
         assert!(planner
-            .create_default_value(&default_expr(value.clone()), Arc::clone(&schema), &unmarked)
-            .is_err());
-        value.names.swap(0, 1);
-        assert!(planner
-            .create_default_value(&default_expr(value.clone()), Arc::clone(&schema), &field)
-            .is_err());
-        value.names.swap(0, 1);
-        value.values[0] = create_bound_reference(0);
-        assert!(planner
-            .create_default_value(&default_expr(value), schema, &field)
+            .create_default_value(&default_expr(value), schema)
             .is_err());
     }
 

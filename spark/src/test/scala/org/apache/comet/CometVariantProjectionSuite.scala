@@ -54,18 +54,8 @@ class CometVariantProjectionSuite extends CometTestBase {
   }
 
   private def checkVariantAnswer(df: DataFrame, expected: Seq[Row]): SparkPlan = {
-    // Shredding can produce different valid byte encodings of the same Variant value.
-    // Compare Spark's rendered values while retaining SQL nulls and ordinary sibling types.
-    def prepare(rows: Seq[Row]): Seq[Row] = rows
-      .map { row =>
-        Row.fromSeq(row.toSeq.zip(df.schema.fields).map {
-          case (value, field) if value != null && Utils.variantType.contains(field.dataType) =>
-            value.toString
-          case (value, _) => value
-        })
-      }
-      .sortBy(_.toString)
-    assert(prepare(df.collect().toSeq) == prepare(expected))
+    // VariantVal equality compares both value and metadata bytes, including integer widths.
+    checkAnswer(df, expected)
     df.queryExecution.executedPlan
   }
 
@@ -151,6 +141,41 @@ class CometVariantProjectionSuite extends CometTestBase {
     }
   }
 
+  test("shredded Variant scalar encodings and dictionary traversal match Spark bytes") {
+    for (typed <- Seq(
+        "CAST(n AS BIGINT)",
+        "CAST(n AS DECIMAL(38, 2))",
+        "CAST(n AS STRING)",
+        "array(named_struct('typed_value', CAST(n AS BIGINT)))")) {
+      withVariantFile(s"""
+        SELECT named_struct('metadata', X'01010006756E75736564', 'typed_value', $typed) AS v
+        FROM VALUES (-2147483649L), (-32769L), (-129L), (-128L), (0L), (127L),
+          (128L), (32767L), (32768L), (2147483647L), (2147483648L) AS input(n)
+        """) { path =>
+        checkNative(spark.read.schema("v VARIANT").parquet(path))
+      }
+    }
+    // Source IDs are z=0, unused=1. Spark visits b, its child, a, then residual z;
+    // the residual's wide integer remains wide while typed integers are narrowed.
+    withVariantFile("""
+      SELECT named_struct('metadata', X'01020001077A756E75736564',
+        'value', X'0201000009180900000000000000', 'typed_value',
+        named_struct('b', named_struct('typed_value', named_struct('inner',
+          named_struct('typed_value', 1))), 'a', named_struct('typed_value', 2))) AS v
+      """) { path =>
+      checkNative(spark.read.schema("v VARIANT").parquet(path))
+    }
+    // Merely having typed_value in the schema triggers reconstruction, even when it is null.
+    for (typed <- Seq("", ", 'typed_value', CAST(NULL AS INT)")) {
+      withVariantFile(s"""
+        SELECT named_struct('metadata', X'01010006756E75736564',
+          'value', X'180100000000000000' $typed) AS v
+        """) { path =>
+        checkNative(spark.read.schema("v VARIANT").parquet(path))
+      }
+    }
+  }
+
   test("malformed shredded Variant values report Spark's error class") {
     for (typed <- Seq(
         "CAST(NULL AS INT)",
@@ -178,7 +203,7 @@ class CometVariantProjectionSuite extends CometTestBase {
     }
   }
 
-  test("missing Variant default preserves later default indexes and present nulls") {
+  test("non-null Variant existence defaults fall back to Spark") {
     assume(Utils.variantType.isDefined, "VariantType requires Spark 4.0+")
     val schema = StructType(
       Seq(
@@ -187,30 +212,33 @@ class CometVariantProjectionSuite extends CometTestBase {
         StructField("v", Utils.variantType.get)
           .withExistenceDefaultValue("parse_json('{\"default\":42}')"),
         StructField("tail", IntegerType).withExistenceDefaultValue("99")))
-    for ((query, expectedValue, expectedTail) <- Seq(
-        ("SELECT 1 AS id", "parse_json('{\"default\":42}')", 99),
-        ("SELECT 1 AS id, CAST(NULL AS VARIANT) AS v, 7 AS tail", "CAST(NULL AS VARIANT)", 7),
-        (
-          "SELECT 1 AS id, parse_json('{\"present\":true}') AS v, 7 AS tail",
-          "parse_json('{\"present\":true}')",
-          7))) {
+    assert(CometNativeScan.serializeExistenceDefaultValues(schema, Seq.empty).isEmpty)
+    for (query <- Seq(
+        "SELECT 1 AS id",
+        "SELECT 1 AS id, CAST(NULL AS VARIANT) AS v, 7 AS tail",
+        "SELECT 1 AS id, parse_json('{\"present\":true}') AS v, 7 AS tail")) {
       withVariantFile(query) { path =>
-        // Spark's vectorized reader rejects Variant defaults, and its row reader misapplies
-        // later defaults when preceding columns are absent. Use Spark's literal results.
-        // TODO: Replace these explicit expected rows with a Spark Parquet read once every
-        // supported Spark profile handles Variant defaults and subsequent default indexes.
-        val expected = sparkRows(
-          sql(s"SELECT 1 AS id, 11 AS before, $expectedValue AS v, $expectedTail AS tail"))
-        checkNative(spark.read.schema(schema).parquet(path), Some(expected))
+        val df = spark.read.schema(schema).parquet(path)
+        checkScanFallbackPlan(df, "one or more column default values are not supported")
+        if (query == "SELECT 1 AS id") {
+          val (sparkError, cometError) = checkSparkAnswerMaybeThrows(df)
+          assert(sparkError.nonEmpty && cometError.nonEmpty)
+        } else {
+          checkAnswer(df, sparkRows(spark.read.schema(schema).parquet(path)))
+        }
       }
     }
-    withSQLConf(CometConf.getExprEnabledConfigKey("CreateNamedStruct") -> "false") {
-      assert(CometNativeScan.serializeExistenceDefaultValues(schema, Seq.empty).isEmpty)
-      withVariantFile("SELECT 1 AS id") { path =>
-        checkScanFallbackPlan(
-          spark.read.schema(schema).parquet(path),
-          "one or more column default values are not supported")
-      }
+  }
+
+  test("null Variant existence defaults preserve later default indexes") {
+    assume(Utils.variantType.isDefined, "VariantType requires Spark 4.0+")
+    val schema = StructType(
+      Seq(
+        StructField("id", IntegerType),
+        StructField("v", Utils.variantType.get).withExistenceDefaultValue("NULL"),
+        StructField("tail", IntegerType).withExistenceDefaultValue("99")))
+    withVariantFile("SELECT 1 AS id") { path =>
+      checkNative(spark.read.schema(schema).parquet(path), Some(Seq(Row(1, null, 99))))
     }
   }
 

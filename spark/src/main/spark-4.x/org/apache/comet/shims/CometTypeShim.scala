@@ -19,11 +19,10 @@
 
 package org.apache.comet.shims
 
-import org.apache.spark.sql.catalyst.expressions.{CreateNamedStruct, Expression, Literal}
 import org.apache.spark.sql.catalyst.expressions.aggregate.Mode
 import org.apache.spark.sql.execution.datasources.VariantMetadata
 import org.apache.spark.sql.types.{ArrayType, DataType, MapType, StringType, StructType, VariantType}
-import org.apache.spark.unsafe.types.{UTF8String, VariantVal}
+import org.apache.spark.unsafe.types.UTF8String
 
 trait CometTypeShim {
   // `reverseOpt` is set for `mode() WITHIN GROUP (ORDER BY col [DESC])` and the
@@ -77,14 +76,6 @@ trait CometTypeShim {
   }
 
   def variantType: Option[DataType] = Some(VariantType)
-
-  // Only scan defaults use Variant's storage struct; general Variant literals stay on Spark.
-  def variantDefaultExpression(value: Any): Option[Expression] = value match {
-    case v: VariantVal if v.getValue != null && v.getMetadata != null =>
-      Some(CreateNamedStruct(
-        Seq(Literal("value"), Literal(v.getValue), Literal("metadata"), Literal(v.getMetadata))))
-    case _ => None
-  }
 
   def isTimeType(dt: DataType): Boolean =
     dt.getClass.getSimpleName.startsWith("TimeType")

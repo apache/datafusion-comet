@@ -105,16 +105,21 @@ functions, and hashing a `CalendarInterval`. Remaining work is tracked by
 
 | Type          | Status | Notes                                                                                                                       |
 | ------------- | ------ | --------------------------------------------------------------------------------------------------------------------------- |
-| `VariantType` | ⚠️     | Spark 4.0+. Native Parquet scans support direct projection of top-level Variant columns, including missing-column defaults. |
+| `VariantType` | ⚠️     | Spark 4.0+. Native Parquet scans support direct projection of top-level Variant columns. Non-null existence defaults fall back. |
 
-Direct projection requires `spark.sql.variant.allowReadingShredded=true` (the default in Spark
-4.1+), `spark.sql.variant.pushVariantIntoScan=false`, and the default Parquet timestamp inference
-settings. Nested Variant columns, pushed-down
+Direct projection requires explicit configuration on every supported Spark version:
+`spark.sql.variant.allowReadingShredded=true` (defaults to false in Spark 4.0) and
+`spark.sql.variant.pushVariantIntoScan=false` (defaults to true in Spark 4.1+), with the default
+Parquet timestamp inference settings. Support for Spark's whole-value pushdown rewrite is tracked
+by [#5519](https://github.com/apache/datafusion-comet/issues/5519). Nested Variant columns, pushed-down
 Variant field extraction, expressions, writes, shuffle and spill, Python operators, encrypted
 files, and Iceberg scans fall back to Spark. Spark also handles columnar-to-row conversion of
 the native scan output and strict reads with `allowReadingShredded=false`. Broader
 support is tracked by [#4295](https://github.com/apache/datafusion-comet/issues/4295) and
 [#3983](https://github.com/apache/datafusion-comet/issues/3983).
+
+Shredded reconstruction can be slower than Spark's reader; see the
+[focused scan and allocation measurements](../../contributor-guide/benchmark-results/variant-projection.md).
 
 ## Other
 

@@ -18,7 +18,7 @@
 use super::*;
 use arrow::{
     array::{Int64Array, ListArray},
-    buffer::OffsetBuffer,
+    buffer::{NullBuffer, OffsetBuffer},
     datatypes::{Field, Fields},
 };
 use parquet::variant::{
@@ -232,6 +232,46 @@ fn assert_spark_unicode_output(output: &StructArray) {
 }
 
 #[test]
+fn shredded_scalar_bytes_match_spark_and_residual_bytes_remain_wide() {
+    // Golden bytes from Spark VariantBuilder.appendLong, including each width boundary.
+    for (number, width) in [(1_i64, 1), (-129, 2), (32768, 4), (2147483648, 8)] {
+        let metadata: ArrayRef = Arc::new(BinaryArray::from(vec![&[1, 1, 0, 1, b'z'][..]]));
+        let mut wide = vec![0x18];
+        wide.extend_from_slice(&number.to_le_bytes());
+        for typed in [true, false] {
+            let physical: ArrayRef = Arc::new(StructArray::new(
+                vec![
+                    Field::new("metadata", DataType::Binary, false),
+                    Field::new("value", DataType::Binary, true),
+                    Field::new("typed_value", DataType::Int64, true),
+                ]
+                .into(),
+                vec![
+                    Arc::clone(&metadata),
+                    Arc::new(BinaryArray::from(vec![(!typed).then_some(wide.as_slice())])),
+                    Arc::new(Int64Array::from(vec![typed.then_some(number)])),
+                ],
+                None,
+            ));
+            let output = normalize_variant_array(&physical, &target_field(false)).unwrap();
+            let output = output.as_struct();
+            assert_eq!(output.column(1).as_binary::<i32>().value(0), [1, 0, 0]);
+            let mut expected = vec![match width {
+                1 => 0x0c,
+                2 => 0x10,
+                4 => 0x14,
+                _ => 0x18,
+            }];
+            expected.extend_from_slice(&number.to_le_bytes()[..width]);
+            assert_eq!(
+                output.column(0).as_binary::<i32>().value(0),
+                if typed { &expected } else { &wide }
+            );
+        }
+    }
+}
+
+#[test]
 fn normalize_full_shredding_reorders_children_and_preserves_parent_nulls() {
     let mut builder = VariantArrayBuilder::new(3);
     builder.append_variant(Variant::from(1_i64));
@@ -269,8 +309,8 @@ fn normalize_full_shredding_reorders_children_and_preserves_parent_nulls() {
     assert!(output.is_null(1));
 
     let variant = VariantArray::try_new(output).unwrap();
-    assert_eq!(variant.value(0), Variant::from(10_i64));
-    assert_eq!(variant.value(2), Variant::from(30_i64));
+    assert_eq!(variant.value(0), Variant::Int8(10));
+    assert_eq!(variant.value(2), Variant::Int8(30));
 }
 
 #[test]
@@ -379,9 +419,9 @@ fn normalize_shredded_objects_extend_metadata_and_preserve_missing_fields() {
         (1, vec![]),
         (
             2,
-            vec![("a", Variant::from(1_i64)), ("z", Variant::from(9_i64))],
+            vec![("a", Variant::Int8(1)), ("z", Variant::from(9_i64))],
         ),
-        (3, vec![("a", Variant::Null), ("b", Variant::from(2_i64))]),
+        (3, vec![("a", Variant::Null), ("b", Variant::Int8(2))]),
     ] {
         let Variant::Object(object) = output.value(row) else {
             panic!("expected object")
@@ -434,10 +474,10 @@ fn normalize_rejects_missing_required_shredding_states() {
 #[test]
 fn canonical_and_shredded_values_normalize_equally() {
     let mut builder = VariantArrayBuilder::new(6);
-    builder.new_object().with_field("known", 1_i64).finish();
+    builder.new_object().with_field("known", 1_i8).finish();
     builder
         .new_object()
-        .with_field("known", 2_i64)
+        .with_field("known", 2_i8)
         .with_field("extra", 3_i64)
         .finish();
     builder
@@ -486,7 +526,7 @@ fn canonical_and_shredded_values_normalize_equally() {
 }
 
 #[test]
-fn normalize_unshredded_variant_orders_for_spark_and_is_idempotent() {
+fn normalize_unshredded_variant_preserves_bytes_and_is_idempotent() {
     let keys = unicode_object_keys();
     let mut builder = VariantBuilder::new().with_field_names(keys.iter().map(String::as_str));
     let mut object = builder.new_object();
@@ -512,11 +552,14 @@ fn normalize_unshredded_variant_orders_for_spark_and_is_idempotent() {
     );
 
     let first = normalize_variant_array(&physical, &target_field(false)).unwrap();
-    assert_spark_unicode_output(first.as_struct());
     let first_value = first.as_struct().column(0).as_binary::<i32>().value(0);
+    assert_eq!(first_value, value);
+    assert_eq!(
+        first.as_struct().column(1).as_binary::<i32>().value(0),
+        metadata
+    );
 
     let second = normalize_variant_array(&first, &target_field(false)).unwrap();
-    assert_spark_unicode_output(second.as_struct());
     assert_eq!(
         second.as_struct().column(0).as_binary::<i32>().value(0),
         first_value
@@ -643,25 +686,30 @@ fn lazy_rewrites_preserve_prefix_nulls_and_suffix() {
     );
 }
 
-// Run explicitly with --ignored --nocapture; fixture construction is outside the timed loop.
+// Run explicitly with --release --features jemalloc -- --ignored --nocapture.
+// Fixture construction is outside the timed loop; every row repeats its dictionary.
 #[test]
 #[ignore]
 fn benchmark_variant_buffer_reuse() {
     use std::{hint::black_box, time::Instant};
     let rows = 4096;
     let payload = "x".repeat(4096);
-    let mut strings = VariantArrayBuilder::new(rows);
     let mut objects = VariantArrayBuilder::new(rows);
+    let mut empty_keys = VariantArrayBuilder::new(rows);
     for _ in 0..rows {
-        strings.append_variant(Variant::from(payload.as_str()));
         objects
             .new_object()
-            .with_field("known", 1_i64)
+            .with_field("known", 1_i8)
             .with_field("payload", payload.as_str())
             .finish();
+        empty_keys
+            .new_object()
+            .with_field("known", 1_i8)
+            .with_field("", payload.as_str())
+            .finish();
     }
-    let strings = strings.build();
     let objects = objects.build();
+    let empty_keys = empty_keys.build();
     let shredded = shred_variant(
         &objects,
         &DataType::Struct(Fields::from(vec![Field::new(
@@ -671,30 +719,67 @@ fn benchmark_variant_buffer_reuse() {
         )])),
     )
     .unwrap();
-    let target = target_field(false);
-    let DataType::Struct(fields) = target.data_type() else {
-        unreachable!()
-    };
-    let strings: ArrayRef = Arc::new(StructArray::new(
-        fields.clone(),
+    let full = shred_variant(
+        &objects,
+        &DataType::Struct(Fields::from(vec![
+            Field::new("known", DataType::Int64, true),
+            Field::new("payload", DataType::Utf8, true),
+        ])),
+    )
+    .unwrap();
+    let empty_metadata: ArrayRef = Arc::new(BinaryArray::from_iter_values((0..rows).map(|row| {
+        let mut metadata = binary_value(empty_keys.metadata_column(), row)
+            .unwrap()
+            .to_vec();
+        metadata[0] &= !0x10;
+        metadata
+    })));
+    let empty: ArrayRef = Arc::new(StructArray::new(
         vec![
-            cast(strings.value_column().as_ref(), &DataType::Binary).unwrap(),
-            cast(strings.metadata_column().as_ref(), &DataType::Binary).unwrap(),
+            Field::new("metadata", DataType::Binary, false),
+            Field::new(
+                "value",
+                empty_keys.value_column().data_type().clone(),
+                false,
+            ),
+            Field::new("typed_value", DataType::Int64, true),
+        ]
+        .into(),
+        vec![
+            empty_metadata,
+            Arc::clone(empty_keys.value_column()),
+            Arc::new(Int64Array::from(vec![None; rows])),
         ],
         None,
     ));
-    let shredded: ArrayRef = Arc::new(shredded.into_inner());
-    for (name, input) in [("canonical", strings), ("partially_shredded", shredded)] {
+    let target = target_field(false);
+    let cases: [(&str, ArrayRef); 4] = [
+        ("canonical", Arc::new(objects.into_inner())),
+        ("partially_shredded", Arc::new(shredded.into_inner())),
+        ("fully_shredded", Arc::new(full.into_inner())),
+        ("empty_key", empty),
+    ];
+    for (name, input) in cases {
         for _ in 0..3 {
             black_box(normalize_variant_array(&input, &target).unwrap());
         }
+        #[cfg(all(feature = "jemalloc", not(feature = "mimalloc")))]
+        let allocated = tikv_jemalloc_ctl::thread::allocatedp::read().unwrap();
+        #[cfg(all(feature = "jemalloc", not(feature = "mimalloc")))]
+        let before = allocated.get();
         let start = Instant::now();
         for _ in 0..30 {
             black_box(normalize_variant_array(black_box(&input), &target).unwrap());
         }
+        let elapsed = start.elapsed();
+        #[cfg(all(feature = "jemalloc", not(feature = "mimalloc")))]
+        eprintln!(
+            "{name}: {} allocator bytes/row",
+            (allocated.get() - before) / (30 * rows as u64)
+        );
         eprintln!(
             "{name}: {:.3} ms/batch, {rows} rows, 4096-byte payload",
-            start.elapsed().as_secs_f64() * 1000.0 / 30.0
+            elapsed.as_secs_f64() * 1000.0 / 30.0
         );
     }
 }

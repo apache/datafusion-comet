@@ -63,7 +63,8 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with CometTypeS
       .collect {
         case ((value, field), index) if value != null =>
           val expression = if (isVariantType(field.dataType)) {
-            variantDefaultExpression(value)
+            // Spark's vectorized reader cannot materialize a non-null Variant default.
+            None
           } else {
             Some(Literal.create(value, field.dataType))
           }
