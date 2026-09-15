@@ -409,6 +409,12 @@ NIGHTLY_JOBS = {
     "linux-test": "the matrix itself",
 }
 NIGHTLY_GUARD = re.compile(r"^    if:.*inputs\.profiles\s*!=\s*'nightly'")
+# The `schedule` case in ci.yml's `Detect changes` script, and what has to be
+# in it. See check_nightly_base_fallback.
+CI_WORKFLOW = WORKFLOWS / "ci.yml"
+SCHEDULE_BRANCH = re.compile(r'^(\s+)elif \[\[ "\$EVENT_NAME" == "schedule" \]\]; then\s*$')
+# Any base derived from a clock rather than from the previous run.
+DATE_BASED_BASE = re.compile(r"--(before|since|after|until)\b")
 
 
 def guarded_jobs(path, guard):
@@ -927,6 +933,78 @@ def check_nightly_scope():
     return not failures
 
 
+def schedule_branch():
+    """The body of the `schedule` case in ci.yml's `Detect changes` script.
+
+    Ends at the next branch keyword indented the same as the `elif` itself, so
+    the `if`/`else` nested inside the case stays part of the body.
+    """
+    body, indent = [], None
+    for line in CI_WORKFLOW.read_text(encoding="utf-8").splitlines():
+        if indent is None:
+            match = SCHEDULE_BRANCH.match(line)
+            if match:
+                indent = match.group(1)
+            continue
+        if re.match(rf"^{indent}(elif|else|fi)\b", line):
+            break
+        body.append(line)
+    return body
+
+
+def check_nightly_base_fallback():
+    """The nightly must run everything when it has no base to diff against.
+
+    `dev/ci/nightly-base.py` returns the commit the last successful scheduled
+    run tested, and the nightly diffs `main` against it. When it returns
+    nothing -- the first nightly, an Actions API error, or a base that has
+    left `main` -- the only safe base is no base at all: list the whole tree
+    and let POLICY narrow it to the nightly tier.
+
+    Guessing a narrower base is silently destructive, which is why it is
+    pinned here. Say the last green nightly was three nights ago, a source
+    change landed two nights ago and no nightly has covered it, and only docs
+    have landed since. A one-day window starts after that source change, so
+    its suites are skipped, the run goes green, and `nightly-base.py` then
+    hands that green head out as tomorrow's base. The coverage is gone, the
+    run that dropped it was green, and nothing says so.
+    """
+    failures = []
+    body = schedule_branch()
+    if not body:
+        failures.append(
+            f"{CI_WORKFLOW}: no `schedule` case in the `Detect changes` script "
+            f"(SCHEDULE_BRANCH no longer matches); the nightly is unrouted"
+        )
+    code = [line for line in body if not line.lstrip().startswith("#")]
+    text = "\n".join(code)
+    if "dev/ci/nightly-base.py" not in text:
+        failures.append(
+            f"{CI_WORKFLOW}: the `schedule` case does not call "
+            f"dev/ci/nightly-base.py, so the nightly is not based on the last "
+            f"successful scheduled run and commits can be covered twice or not "
+            f"at all"
+        )
+    if "git ls-tree -r --name-only HEAD" not in text:
+        failures.append(
+            f"{CI_WORKFLOW}: the `schedule` case has no "
+            f"`git ls-tree -r --name-only HEAD` fallback, so a nightly with no "
+            f"base does not run the whole tier"
+        )
+    for line in code:
+        if DATE_BASED_BASE.search(line):
+            failures.append(
+                f"{CI_WORKFLOW}: the `schedule` case derives a base from the "
+                f"clock (`{line.strip()}`). A window that starts after a commit "
+                f"no nightly has covered yet skips that commit's suites, goes "
+                f"green, and becomes tomorrow's base. Fall back to the whole "
+                f"tree instead"
+            )
+    for failure in failures:
+        print(f"nightly base: {failure}")
+    return not failures
+
+
 if __name__ == "__main__":
     ok = check_change_filters()
     ok = check_event_policy() and ok
@@ -937,6 +1015,7 @@ if __name__ == "__main__":
     ok = check_required_checks() and ok
     ok = check_cache_refresh_scope() and ok
     ok = check_nightly_scope() and ok
+    ok = check_nightly_base_fallback() and ok
     if not ok:
         sys.exit(1)
     print("CI config checks passed")

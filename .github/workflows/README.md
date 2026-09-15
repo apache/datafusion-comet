@@ -217,11 +217,16 @@ diffs `main` against the commit the last successful scheduled run tested
 is routed by the same `FILTERS` as every other event and `POLICY` selects the
 `nightly` tier alone: the queue already ran every `queue` job against the tree
 that is now `main`. Every commit is covered exactly once, and a red nightly
-keeps its commits in scope until a green one supersedes it. When there is no
-such run, the API is unreachable, or the base is no longer on `main`, the base
-falls back to the tip as of the previous tick, 24 hours back plus 30 minutes
-of slack for scheduling jitter. A quiet day diffs to nothing and runs nothing;
-a docs-only day runs nothing either.
+keeps its commits in scope until a green one supersedes it. A quiet day diffs
+to nothing and runs nothing; a docs-only day runs nothing either.
+
+When there is no such run, the API is unreachable, or the base is no longer on
+`main`, there is no base to diff against and the run treats every tracked file
+as changed, so the whole nightly tier runs. Guessing a narrower base — a fixed
+time window, say — would be worse than useless: a window that starts after a
+commit no nightly has covered yet skips the suites that commit needs, lets the
+run go green, and then hands that green head to `nightly-base.py` as tomorrow's
+base, so the coverage is dropped for good.
 
 With `profiles: nightly`, `pr_build_linux.yml` runs only `lint`, `build-native`
 and the `linux-test` matrix; the lints, Rust tests, Spark build and TPC runs

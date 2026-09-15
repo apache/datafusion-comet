@@ -412,9 +412,9 @@ FILTERS["build_linux_all_profiles"] = FILTERS["build_linux"]
 # queue run cost in September 2026, and the most common reason a queue run
 # went red on a good tree (issue #5870). A regression there is real but rare,
 # and a day's delay in seeing it costs less than running the suites on every
-# merge. The scheduled run diffs main against the previous tick and routes
-# through FILTERS like any other event. A job is "queue" or "nightly", never
-# both; check-ci-config.py enforces that.
+# merge. The scheduled run diffs main against the commit the last successful
+# scheduled run tested and routes through FILTERS like any other event. A job
+# is "queue" or "nightly", never both; check-ci-config.py enforces that.
 #
 # "push" is reserved for work that can only happen once a commit is on main.
 # Adding "push" back to a test job would make every merge run it twice, once

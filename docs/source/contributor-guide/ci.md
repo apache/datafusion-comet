@@ -224,6 +224,10 @@ profiles other than 4.1, the Spark SQL suites for Spark 3.5 and 4.0, and the Ice
 everything else against the same tree, so nothing in the queue tier is repeated. A day with no
 merges, or with only documentation changes, runs nothing.
 
+If the previous run cannot be found — the first nightly, an unreachable Actions API, or a base that
+is no longer on `main` — the run has nothing to diff against and runs the whole nightly tier
+instead of guessing at a range.
+
 A red nightly has no pull request to show up on, so the run opens an issue labelled
 `ci-nightly-failure` that links the run and lists the jobs that failed. If one of those issues is
 already open, the run comments on it instead, so a failure that persists across several nights

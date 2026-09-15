@@ -229,17 +229,25 @@ jobs:
             # The nightly's base is the commit the last successful scheduled
             # run tested, so everything that landed since is covered exactly
             # once and a red nightly keeps its commits in scope until a green
-            # one supersedes it. Without such a run (the first nightly, an API
-            # error, or a base no longer on main) fall back to the tip as of
-            # the previous tick, with 30 minutes of slack for scheduling
-            # jitter. A quiet day diffs to nothing and runs nothing; so does
-            # a docs-only day.
+            # one supersedes it. A quiet day diffs to nothing and runs
+            # nothing; so does a docs-only day.
+            #
+            # Without a base -- the first nightly, an API error, or a base no
+            # longer on main -- run the whole tier by treating every tracked
+            # file as changed, the same way the first push to a branch does
+            # below. Guessing a narrower base would be worse than running
+            # nothing: a window that starts after a commit no nightly has
+            # covered yet skips the suites that commit needs, goes green
+            # anyway, and then becomes the base for tomorrow, dropping that
+            # coverage for good.
             prev=$(python3 dev/ci/nightly-base.py)
-            if [[ -z "$prev" ]] || ! git merge-base --is-ancestor "$prev" HEAD 2>/dev/null; then
-              prev=$(git rev-list -1 --before="24 hours 30 minutes ago" HEAD)
+            if [[ -n "$prev" ]] && git merge-base --is-ancestor "$prev" HEAD 2>/dev/null; then
+              echo "Nightly base: $prev"
+              git diff --name-only "$prev"..HEAD > changed_files.txt
+            else
+              echo "Nightly base unknown; running the whole nightly tier"
+              git ls-tree -r --name-only HEAD > changed_files.txt
             fi
-            echo "Nightly base: $prev"
-            git diff --name-only "$prev"..HEAD > changed_files.txt
           elif [[ "$EVENT_NAME" == "pull_request" ]]; then
             git diff --name-only "$PR_BASE_SHA"..."$PR_HEAD_SHA" > changed_files.txt
           elif [[ "$EVENT_NAME" == "merge_group" ]]; then

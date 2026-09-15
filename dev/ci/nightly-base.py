@@ -20,10 +20,14 @@
 #
 # The nightly diffs main against that commit, so every commit that landed
 # since the last green nightly is covered exactly once, and a red nightly
-# keeps the regressing commits in scope until a green one supersedes it. The
-# `changes` job in ci.yml falls back to a time-based base when this prints
-# nothing: the first scheduled run, or an API error, which is reported as a
-# warning rather than failing the run.
+# keeps the regressing commits in scope until a green one supersedes it. When
+# this prints nothing -- the first scheduled run, or an API error, which is
+# reported as a warning rather than failing the run -- the `changes` job in
+# ci.yml has no base it can trust and runs the whole nightly tier instead.
+# There is deliberately no narrower fallback: a guessed base that starts after
+# a commit no nightly has covered yet would skip that commit's suites, let the
+# run go green, and then become tomorrow's base, dropping the coverage for
+# good.
 #
 # Needs GITHUB_TOKEN with `actions: read`, plus the GITHUB_REPOSITORY and
 # GITHUB_API_URL variables every job has.
@@ -53,7 +57,8 @@ def main():
     except (urllib.error.URLError, OSError, KeyError, ValueError) as e:
         # stderr, so the caller's command substitution stays empty.
         print(
-            f"::warning::could not list previous scheduled runs ({e}); using the time-based base",
+            f"::warning::could not list previous scheduled runs ({e}); "
+            "running the whole nightly tier",
             file=sys.stderr,
         )
         return 0
