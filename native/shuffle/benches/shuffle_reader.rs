@@ -24,7 +24,9 @@ use arrow::ipc::reader::StreamReader;
 use arrow::ipc::writer::IpcWriteContext;
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use datafusion::physical_plan::metrics::Time;
-use datafusion_comet_shuffle::{read_ipc_compressed, CompressionCodec, ShuffleBlockWriter};
+use datafusion_comet_shuffle::{
+    read_ipc_compressed, CompressionCodec, ShuffleBlockDecoder, ShuffleBlockWriter,
+};
 use std::hint::black_box;
 use std::io::Cursor;
 use std::sync::Arc;
@@ -93,11 +95,22 @@ fn criterion_benchmark(c: &mut Criterion) {
 
             let id = format!("{num_columns}col_{num_rows}row");
 
-            // full decode: schema parse plus record batch
+            // full decode with a throwaway decoder: schema parse plus record batch
             group.bench_with_input(
                 BenchmarkId::new("decode_block", &id),
                 &uncompressed,
                 |b, block| b.iter(|| black_box(read_ipc_compressed(black_box(block)).unwrap())),
+            );
+
+            // full decode with a decoder held across blocks, the way a reader holds it: the
+            // schema message is byte-identical every time, so it is served from the cache
+            group.bench_with_input(
+                BenchmarkId::new("decode_block_cached_schema", &id),
+                &uncompressed,
+                |b, block| {
+                    let mut decoder = ShuffleBlockDecoder::new();
+                    b.iter(|| black_box(decoder.decode(black_box(block)).unwrap()))
+                },
             );
 
             // schema parse alone: `try_new` stops before the record batch. Skips the codec tag.

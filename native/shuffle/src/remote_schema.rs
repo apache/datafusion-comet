@@ -25,15 +25,28 @@ use datafusion::error::Result;
 use datafusion_comet_common::cast_and_stamp_schema;
 use std::sync::Arc;
 
+use crate::ShuffleBlockDecoder;
+
 /// Decode a remote shuffle batch and reconcile its encoding with Spark's declared logical types.
 /// Validate buffers and logical types before casting, so a corrupt frame cannot be made to look
 /// compatible by a value-changing cast. Dictionary keys are an encoding detail, including inside
 /// containers: decode them here before either native execution or the JVM Arrow importer sees them.
+/// Decode and validate one remote block with a throwaway decoder. Readers that decode many
+/// blocks should use [`decode_remote_shuffle_batch_with`] and keep the decoder, so the IPC
+/// schema message is parsed once rather than per block.
 pub fn decode_remote_shuffle_batch(
     bytes: &[u8],
     expected_types: &[DataType],
 ) -> Result<RecordBatch> {
-    let batch = crate::read_ipc_compressed_validated(bytes)?;
+    decode_remote_shuffle_batch_with(&mut ShuffleBlockDecoder::new(), bytes, expected_types)
+}
+
+pub fn decode_remote_shuffle_batch_with(
+    decoder: &mut ShuffleBlockDecoder,
+    bytes: &[u8],
+    expected_types: &[DataType],
+) -> Result<RecordBatch> {
+    let batch = decoder.decode_validated(bytes)?;
     validate_remote_schema(&batch, expected_types)?;
     if batch
         .columns()
