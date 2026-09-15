@@ -34,7 +34,7 @@ import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.comet.{CometBatchScanExec, CometNativeExec}
 import org.apache.spark.sql.comet.shims.ShimDataSourceRDDPartition
-import org.apache.spark.sql.execution.datasources.v2.{BatchScanExec, DataSourceRDD, DataSourceRDDPartition}
+import org.apache.spark.sql.execution.datasources.v2.{DataSourceRDD, DataSourceRDDPartition, DataSourceV2ScanExecBase}
 import org.apache.spark.sql.types._
 
 import com.google.protobuf.ByteString
@@ -45,6 +45,7 @@ import org.apache.comet.objectstore.NativeConfig
 import org.apache.comet.serde.{CometOperatorSerde, OperatorOuterClass}
 import org.apache.comet.serde.OperatorOuterClass.{Operator, SparkStructField}
 import org.apache.comet.serde.QueryPlanSerde.serializeDataType
+import org.apache.comet.shims.ShimCometStreaming
 
 object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] with Logging {
 
@@ -99,6 +100,11 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
       "_pos" -> (Int.MaxValue - 2),
       "_spec_id" -> (Int.MaxValue - 4),
       "_partition" -> (Int.MaxValue - 5))
+
+  val ChangeFieldIds: Map[String, Int] = Map(
+    "_change_type" -> (Int.MaxValue - 104),
+    "_change_ordinal" -> (Int.MaxValue - 105),
+    "_commit_snapshot_id" -> (Int.MaxValue - 106))
 
   /**
    * Wraps an Iceberg partition value (a typed primitive) in a PartitionValue. The value encoding
@@ -409,13 +415,12 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
   private def serializePartitionData(
       task: Any,
       contentScanTaskClass: Class[_],
-      fileScanTaskClass: Class[_],
       taskBuilder: OperatorOuterClass.IcebergFileScanTask.Builder,
       commonBuilder: OperatorOuterClass.IcebergScanCommon.Builder,
       partitionSpecToPoolIndex: mutable.HashMap[String, Int],
       partitionDataToPoolIndex: mutable.HashMap[String, Int]): Unit = {
     try {
-      val specMethod = IcebergReflection.getMethod(fileScanTaskClass, "spec")
+      val specMethod = IcebergReflection.getMethod(contentScanTaskClass, "spec")
       val spec = specMethod.invoke(task)
 
       if (spec != null) {
@@ -876,6 +881,13 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
           "Metadata should have been extracted in CometScanRule.")
     }
 
+    Some(placeholder(scan.wrapped, metadata, builder))
+  }
+
+  def placeholder(
+      scan: DataSourceV2ScanExecBase,
+      metadata: CometIcebergNativeScanMetadata,
+      builder: Operator.Builder): Operator = {
     val icebergScanBuilder = OperatorOuterClass.IcebergScan.newBuilder()
     val commonBuilder = OperatorOuterClass.IcebergScanCommon.newBuilder()
 
@@ -884,13 +896,13 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
     // required_schema, pools) is set by serializePartitions() at execution time, so setting it
     // here would be wasted work.
     commonBuilder.setMetadataLocation(metadata.metadataLocation)
-    commonBuilder.setScanHashCode(scan.scan.hashCode())
+    commonBuilder.setScanHashCode(ShimCometStreaming.icebergScanHash(scan))
 
     icebergScanBuilder.setCommon(commonBuilder.build())
     // partition field intentionally empty - will be populated at execution time
 
     builder.clearChildren()
-    Some(builder.setIcebergScan(icebergScanBuilder).build())
+    builder.setIcebergScan(icebergScanBuilder).build()
   }
 
   /**
@@ -913,7 +925,7 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
    * DeleteFileIndex does.
    *
    * @param scanExec
-   *   The BatchScanExec whose inputRDD contains the DPP-filtered partitions
+   *   The batch or micro-batch scan whose inputRDD contains the planned partitions
    * @param output
    *   The output attributes for the scan
    * @param metadata
@@ -922,7 +934,7 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
    *   Tuple of (commonBytes, perPartitionBytes) for native execution
    */
   def serializePartitions(
-      scanExec: BatchScanExec,
+      scanExec: DataSourceV2ScanExecBase,
       output: Seq[Attribute],
       metadata: CometIcebergNativeScanMetadata): (Array[Byte], Array[Array[Byte]]) = {
 
@@ -967,7 +979,10 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
     lazy val hasHistoricalColumns = {
       val tableSchemaFieldIds =
         fieldIdMapping(metadata.tableSchema.asInstanceOf[AnyRef]).values.toSet
-      metadata.globalFieldIdMapping.values.exists(id => !tableSchemaFieldIds.contains(id))
+      metadata.globalFieldIdMapping
+        .filterNot { case (name, _) => ChangeFieldIds.contains(name) }
+        .values
+        .exists(id => !tableSchemaFieldIds.contains(id))
     }
     // Columns whose Iceberg type iceberg-rust cannot use for page-index pruning; residual
     // predicates over them are dropped (see icebergExprToProto). Computed once from the full table
@@ -1033,16 +1048,8 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
             .inputPartitions(partition.asInstanceOf[DataSourceRDDPartition])
 
           inputPartitions.foreach { inputPartition =>
-            val inputPartClass = inputPartition.getClass
-
             {
-              val taskGroupMethod =
-                IcebergReflection.getDeclaredMethod(inputPartClass, "taskGroup")
-              val taskGroup = taskGroupMethod.invoke(inputPartition)
-
-              val tasksMethod = IcebergReflection.getMethod(taskGroup.getClass, "tasks")
-              val tasksCollection =
-                tasksMethod.invoke(taskGroup).asInstanceOf[java.util.Collection[_]]
+              val tasksCollection = IcebergReflection.tasksFromInputPartition(inputPartition)
 
               tasksCollection.asScala.foreach { task =>
                 totalTasks += 1
@@ -1079,7 +1086,31 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
                 // verbatim for iceberg-rust to decode. Unencrypted files leave the field unset.
                 keyMetadataBytes(keyMetadataMethod, dataFile).foreach(taskBuilder.setKeyMetadata)
 
-                val taskSchema = taskSchemaMethod.invoke(task)
+                val taskSchema = if (fileScanTaskClass.isInstance(task)) {
+                  taskSchemaMethod.invoke(task)
+                } else {
+                  val changeClass =
+                    IcebergReflection.loadClass("org.apache.iceberg.ChangelogScanTask")
+                  val changeType =
+                    IcebergReflection.getMethod(changeClass, "operation").invoke(task).toString
+                  require(
+                    Set("INSERT", "DELETE").contains(changeType),
+                    s"Unsupported changelog operation: $changeType")
+                  taskBuilder.setChange(
+                    OperatorOuterClass.IcebergChange
+                      .newBuilder()
+                      .setChangeType(changeType)
+                      .setChangeOrdinal(
+                        IcebergReflection
+                          .getMethod(changeClass, "changeOrdinal")
+                          .invoke(task)
+                          .asInstanceOf[Int])
+                      .setCommitSnapshotId(IcebergReflection
+                        .getMethod(changeClass, "commitSnapshotId")
+                        .invoke(task)
+                        .asInstanceOf[Long]))
+                  metadata.tableSchema.asInstanceOf[AnyRef]
+                }
 
                 val deletes =
                   IcebergReflection.getDeleteFilesFromTask(task, fileScanTaskClass)
@@ -1123,7 +1154,7 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
                     .schemaWithRequiredFields(
                       baseSchema,
                       metadata.table,
-                      IcebergReflection.partitionSourceFieldIds(task, fileScanTaskClass))
+                      IcebergReflection.partitionSourceFieldIds(task))
                     .asInstanceOf[AnyRef]
 
                 val schemaIdx = schemaToPoolIndex.getOrElseUpdate(
@@ -1137,18 +1168,22 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
 
                 val nameToFieldId = fieldIdMapping(schema)
 
-                val projectFieldIds = output.map { attr =>
-                  nameToFieldId
-                    .get(attr.name)
-                    .orElse(metadata.globalFieldIdMapping.get(attr.name))
-                    .orElse(CometIcebergNativeScan.MetadataFieldIds.get(attr.name))
-                    .getOrElse {
-                      throw new IllegalStateException(
-                        s"Column '${attr.name}' not found in task schema, global schema, " +
-                          "or metadata field IDs. This indicates a bug in CometScanRule " +
-                          "validation -- all output columns should be resolvable.")
-                    }
-                }
+                val projectFieldIds = output
+                  .filterNot { attr =>
+                    taskBuilder.hasChange && ChangeFieldIds.contains(attr.name)
+                  }
+                  .map { attr =>
+                    nameToFieldId
+                      .get(attr.name)
+                      .orElse(metadata.globalFieldIdMapping.get(attr.name))
+                      .orElse(CometIcebergNativeScan.MetadataFieldIds.get(attr.name))
+                      .getOrElse {
+                        throw new IllegalStateException(
+                          s"Column '${attr.name}' not found in task schema, global schema, " +
+                            "or metadata field IDs. This indicates a bug in CometScanRule " +
+                            "validation -- all output columns should be resolvable.")
+                      }
+                  }
 
                 val projectFieldIdsIdx = projectFieldIdsToPoolIndex.getOrElseUpdate(
                   projectFieldIds, {
@@ -1216,7 +1251,6 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
                 serializePartitionData(
                   task,
                   contentScanTaskClass,
-                  fileScanTaskClass,
                   taskBuilder,
                   commonBuilder,
                   partitionSpecToPoolIndex,

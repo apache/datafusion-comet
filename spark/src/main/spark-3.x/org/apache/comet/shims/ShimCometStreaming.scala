@@ -20,12 +20,31 @@
 package org.apache.comet.shims
 
 import org.apache.spark.sql.execution.SparkPlan
+import org.apache.spark.sql.execution.datasources.v2.DataSourceV2ScanExecBase
+import org.apache.spark.sql.internal.SQLConf
+
+import org.apache.comet.iceberg.IcebergReflection
 
 // StreamSourceAwareSparkPlan does not exist in Spark 3.x, so fall back to
 // walking the physical tree and checking each node's logical link. Inspecting
 // only the root's logical link would silently miss streaming plans whenever a
 // rule produced a fresh root node without copying the link over.
 object ShimCometStreaming {
+  def nativeExecutionEnabled(conf: SQLConf, plan: SparkPlan): Boolean = false
+
+  def isStateBoundary(plan: SparkPlan): Boolean = false
+
   def isStreamingPlan(plan: SparkPlan): Boolean =
     plan.exists(_.logicalLink.exists(_.isStreaming))
+
+  // Spark 3.x progress reporting requires a MicroBatchScanExec node and cannot associate a
+  // replacement source with its stream. Keep the existing Spark execution path on these versions.
+  def transformIcebergScans(
+      plan: SparkPlan,
+      transform: DataSourceV2ScanExecBase => SparkPlan): SparkPlan = plan
+
+  def icebergTasks(scan: DataSourceV2ScanExecBase): Option[java.util.List[_]] =
+    IcebergReflection.getTasks(scan.scan)
+
+  def icebergScanHash(scan: DataSourceV2ScanExecBase): Int = scan.scan.hashCode()
 }
