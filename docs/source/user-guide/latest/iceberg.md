@@ -165,6 +165,25 @@ For a custom S3-compatible endpoint, configure the catalog with the endpoint, pa
 
 These `s3.*` storage properties are not specific to the Hive catalog shown here. When `s3.access-key-id` / `s3.secret-access-key` are omitted, credentials come from the standard AWS chain (environment variables, instance profiles, and so on). `client.region` is auto-detected for AWS but should be set for non-AWS endpoints. If your REST catalog vends temporary credentials, the native reader does not consume them automatically, and wiring that requires the credential provider bridge. See Iceberg's [S3 FileIO](https://iceberg.apache.org/docs/latest/aws/#s3-fileio) docs for the full property list, and [S3 Credential Providers](s3-credential-providers.md) for vended or per-request credentials.
 
+### Object store configuration (HDFS)
+
+`hdfs://` tables are read and written through iceberg-rust's `hdfs-native` backend, a pure-Rust HDFS RPC client. This is **not** the libhdfs/JNI client that the plain-Parquet native scan uses for `spark.hadoop.fs.comet.libhdfs.schemes`: the two clients live in the same process but connect independently, so an Iceberg table and a plain Parquet file on the same cluster each open their own connections. The Rust client still reads `core-site.xml` / `hdfs-site.xml` from `$HADOOP_CONF_DIR` (or `$HADOOP_HOME`), and Kerberos works through the system `libgssapi_krb5` and the ambient credential cache — it does not reuse the JVM's Kerberos subject.
+
+The NameNode endpoints are the one thing the Rust client cannot infer from the Hadoop XML. The underlying OpenDAL builder connects to the endpoints given in the `hdfs.name-node` property (comma-separated for HA failover) and falls back to the authority written in the table location when that property is absent. A single-NameNode cluster therefore needs no configuration, because `hdfs://nn.example.com:8020/...` is already a routable address. An HA cluster does: its locations read `hdfs://<nameservice>/...`, and a nameservice is not a host.
+
+Comet resolves this automatically from the session Hadoop configuration — it reads `dfs.ha.namenodes.<nameservice>` and each `dfs.namenode.rpc-address.<nameservice>.<nn>` and hands iceberg-rust the same failover list the JVM client would use. Nothing needs to be set as long as the standard HDFS client configuration is on the classpath. To override it (or to supply endpoints Spark's configuration does not carry), set the property on the catalog:
+
+```shell
+    --conf spark.sql.catalog.hdfs_cat=org.apache.iceberg.spark.SparkCatalog \
+    --conf spark.sql.catalog.hdfs_cat.type=hadoop \
+    --conf spark.sql.catalog.hdfs_cat.warehouse=hdfs://nameservice1/warehouse \
+    --conf spark.sql.catalog.hdfs_cat.hdfs.name-node=hdfs://nn1.example.com:8020,hdfs://nn2.example.com:8020
+```
+
+An explicit catalog property always wins over the values derived from the Hadoop configuration. Individual HDFS client settings can also be forwarded with `hadoop.`-prefixed catalog properties (for example `spark.sql.catalog.hdfs_cat.hadoop.dfs.client.failover.random.order=true`), which override the values loaded from `$HADOOP_CONF_DIR`.
+
+A location with no authority at all (`hdfs:///warehouse/...`) falls back to the JVM reader: the scheme gate runs before the catalog properties are assembled, so Comet declines rather than assume a NameNode.
+
 ### Current limitations
 
 The following scenarios will fall back to the JVM Iceberg reader:

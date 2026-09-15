@@ -36,7 +36,11 @@ const ICEBERG_PROVIDER_CLASS_PROPERTY: &str = "s3.comet.credential.provider.clas
 /// Key prefixes forwarded to iceberg-rust's `FileIO`. The full unfiltered catalog bag (catalog
 /// URI, OAuth tokens, credentials.uri, tenant-id, etc.) is kept upstream so
 /// `CometS3CredentialBridge` can read whatever the vendor needs.
-const STORAGE_PROPERTY_PREFIXES: &[&str] = &["s3.", "gcs.", "adls.", "client."];
+///
+/// `hdfs.` carries the NameNode list and `hadoop.` the HDFS client overrides; dropping them would
+/// leave an HA table with only its nameservice authority, which is not a routable host (see
+/// `CometIcebergNativeScan.hadoopToIcebergHdfsProperties`).
+const STORAGE_PROPERTY_PREFIXES: &[&str] = &["s3.", "gcs.", "adls.", "client.", "hdfs.", "hadoop."];
 
 /// Pick an OpenDAL storage backend from a URI's scheme. `file` (or no scheme) falls through to
 /// the local file system. `memory` is used by the write path to assemble manifest bytes that
@@ -59,6 +63,10 @@ pub(crate) fn storage_factory_for(
         "file" => Ok(Arc::new(OpenDalStorageFactory::Fs)),
         "memory" => Ok(Arc::new(OpenDalStorageFactory::Memory)),
         "gs" => Ok(Arc::new(OpenDalStorageFactory::Gcs)),
+        // iceberg-rust's pure-Rust `hdfs-native` backend -- NOT the libhdfs/JNI client the
+        // plain-Parquet path uses (`fs.comet.libhdfs.schemes`). Both link into the same
+        // `libcomet`, but they are separate clients with separate connections and Kerberos state.
+        "hdfs" => Ok(Arc::new(OpenDalStorageFactory::HdfsNative)),
         // Reads keep the OSS backend they have always had (CometScanRule admits `oss` scan
         // locations through HadoopFileIO). Writes fail closed: Comet does not forward `oss.*`
         // properties into the FileIO and no test covers the write path, so OSS-specific
@@ -269,11 +277,50 @@ mod tests {
 
     #[test]
     fn unknown_scheme_is_rejected() {
-        let err = factory_result("hdfs://nn/db/table", AccessMode::Read).unwrap_err();
+        // object_store recognizes abfss, but iceberg-rust's OpenDAL storage factory has no arm
+        // for it, so the JVM gate must decline rather than fail here at execution time.
+        let err = factory_result("abfss://c@acct/db/table", AccessMode::Read).unwrap_err();
         assert!(
             err.contains("Unsupported storage scheme"),
             "unexpected error: {err}"
         );
+    }
+
+    #[test]
+    fn hdfs_scheme_resolves_for_both_modes() {
+        // Unlike `oss`, writes are admitted: `hdfs.`/`hadoop.` properties are forwarded, so
+        // nothing is silently dropped.
+        for mode in [AccessMode::Read, AccessMode::Write] {
+            assert!(factory_result("hdfs://nn:8020/warehouse/db/t", mode).is_ok());
+            assert!(factory_result("hdfs://nameservice1/warehouse/db/t", mode).is_ok());
+        }
+    }
+
+    #[test]
+    fn hdfs_properties_reach_the_file_io() {
+        // If the prefix filter drops these, an HA table connects to its nameservice as if it were
+        // a host and fails only once a task opens a file.
+        let props = HashMap::from([
+            (
+                "hdfs.name-node".to_string(),
+                "hdfs://nn1:8020,hdfs://nn2:8020".to_string(),
+            ),
+            (
+                "hadoop.dfs.client.failover.random.order".to_string(),
+                "true".to_string(),
+            ),
+            // Must not survive the narrowing: the unfiltered bag also carries catalog identity
+            // and OAuth material that iceberg-rust's FileIO has no business seeing.
+            ("uri".to_string(), "thrift://metastore:9083".to_string()),
+        ]);
+
+        let forwarded: Vec<&String> = props
+            .keys()
+            .filter(|k| STORAGE_PROPERTY_PREFIXES.iter().any(|p| k.starts_with(p)))
+            .collect();
+
+        assert_eq!(forwarded.len(), 2, "forwarded: {forwarded:?}");
+        assert!(load_file_io(&props, "hdfs://nameservice1/db/t", "cat", AccessMode::Read).is_ok());
     }
 
     #[test]
