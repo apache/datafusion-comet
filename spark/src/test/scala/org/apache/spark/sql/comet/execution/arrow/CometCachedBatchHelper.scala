@@ -25,7 +25,9 @@ import java.nio.channels.Channels
 import scala.jdk.CollectionConverters._
 
 import org.apache.arrow.flatbuf.{MessageHeader, RecordBatch => FlatBufRecordBatch}
+import org.apache.arrow.memory.BufferAllocator
 import org.apache.arrow.vector.TypeLayout
+import org.apache.arrow.vector.compression.CompressionCodec
 import org.apache.arrow.vector.ipc.ReadChannel
 import org.apache.arrow.vector.ipc.message.{MessageMetadataResult, MessageSerializer}
 import org.apache.arrow.vector.types.pojo.Field
@@ -76,6 +78,19 @@ object CometCachedBatchHelper {
   def writesDirectly(batch: ColumnarBatch, cacheSchema: StructType): Boolean =
     Utils
       .isArrowBacked(batch) && CachedBatchIpc.matchesReaderLayout(batch, arrowFields(cacheSchema))
+
+  /**
+   * Serialize one batch the way the cache writer does, with a caller-chosen codec.
+   *
+   * Another thin shim, for tests about the write path itself rather than about what a cached
+   * relation reads back. The codec is the parameter that matters: handing in one that throws is
+   * how a compression failure part way through a batch is reached deterministically.
+   */
+  def serialize(
+      batch: ColumnarBatch,
+      codec: CompressionCodec,
+      allocator: BufferAllocator): Array[Byte] =
+    CachedBatchIpc.serialize(batch, codec, allocator)._1
 
   /**
    * Whether the payload begins with a Schema message rather than going straight to the record

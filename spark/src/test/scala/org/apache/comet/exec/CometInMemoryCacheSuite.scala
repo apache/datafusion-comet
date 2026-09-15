@@ -21,7 +21,10 @@ package org.apache.comet.exec
 
 import java.{util => ju}
 
-import org.apache.arrow.vector.{FixedSizeBinaryVector, VarBinaryVector}
+import org.apache.arrow.compression.ZstdCompressionCodec
+import org.apache.arrow.memory.{ArrowBuf, BufferAllocator}
+import org.apache.arrow.vector.{FixedSizeBinaryVector, IntVector, VarBinaryVector, VarCharVector}
+import org.apache.arrow.vector.compression.{CompressionCodec, CompressionUtil}
 import org.apache.arrow.vector.types.pojo.ArrowType
 import org.apache.spark.CometDriverPlugin
 import org.apache.spark.SparkConf
@@ -1873,6 +1876,83 @@ class CometInMemoryCacheSuite extends CometTestBase {
           CometArrowAllocator.getAllocatedMemory == before,
           s"everything allocated before a failure in $where must be released")
       }
+    }
+  }
+
+  /**
+   * A zstd codec that compresses the first `succeedFor` buffers and then throws.
+   *
+   * Delegating to the real codec until it fails is the point: the buffers already compressed are
+   * genuine off-heap allocations reachable only from inside the writer, which is what a real
+   * failure -- zstd unable to allocate its workspace part way through a batch -- leaves behind.
+   */
+  private class FailAfterCompressionCodec(succeedFor: Int) extends CompressionCodec {
+    private val delegate = new ZstdCompressionCodec(1)
+    var compressed: Int = 0
+
+    override def compress(allocator: BufferAllocator, buffer: ArrowBuf): ArrowBuf = {
+      if (compressed == succeedFor) {
+        throw new RuntimeException(FailAfterCompressionCodec.Message)
+      }
+      compressed += 1
+      delegate.compress(allocator, buffer)
+    }
+
+    override def decompress(allocator: BufferAllocator, buffer: ArrowBuf): ArrowBuf =
+      delegate.decompress(allocator, buffer)
+
+    override def getCodecType: CompressionUtil.CodecType = delegate.getCodecType
+  }
+
+  private object FailAfterCompressionCodec {
+    val Message: String = "injected compression failure"
+  }
+
+  test("Comet in-memory cache releases its buffers when a column fails to compress") {
+    // Writing a batch allocates a buffer per compressed buffer before any payload exists, and
+    // nothing outside the writer can reach them while it is still assembling the record batch they
+    // belong to. This is why the codec is not handed to `VectorUnloader`: it accumulates them in a
+    // list local to `getRecordBatch`, which is off the stack by the time a caller sees the failure,
+    // so a single failed materialization would leak a batch's worth of off-heap for the life of the
+    // executor.
+    val rows = 256
+    val ints = new IntVector("i", CometArrowAllocator)
+    val strings = new VarCharVector("s", CometArrowAllocator)
+    try {
+      ints.allocateNew(rows)
+      (0 until rows).foreach(i => ints.set(i, i))
+      ints.setValueCount(rows)
+
+      strings.allocateNew(rows)
+      (0 until rows).foreach(i => strings.setSafe(i, s"value_$i".getBytes("UTF-8")))
+      strings.setValueCount(rows)
+
+      val batch = new ColumnarBatch(
+        Array[ColumnVector](new CometPlainVector(ints), new CometPlainVector(strings)),
+        rows)
+
+      // An int vector is validity and data, a varchar validity, offsets and data: five buffers in
+      // all. Succeeding for two puts the failure at the string column's first buffer, with the int
+      // column's two already compressed into allocations only the writer can reach. Failing at the
+      // very first buffer would pass with no cleanup at all.
+      val codec = new FailAfterCompressionCodec(succeedFor = 2)
+      val before = CometArrowAllocator.getAllocatedMemory
+      val thrown = intercept[Exception] {
+        CometCachedBatchHelper.serialize(batch, codec, CometArrowAllocator)
+      }
+
+      assert(
+        causeChain(thrown).exists(t =>
+          Option(t.getMessage).contains(FailAfterCompressionCodec.Message)),
+        s"a compression failure must surface as itself: $thrown")
+      assert(codec.compressed == 2, "the failure must come after some buffers were compressed")
+      assert(
+        CometArrowAllocator.getAllocatedMemory == before,
+        "everything allocated before a write failure must be released")
+    } finally {
+      // Never reaches the writer's own clear(), which only runs once the payload is built.
+      ints.close()
+      strings.close()
     }
   }
 

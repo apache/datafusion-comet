@@ -24,16 +24,22 @@ format that Comet operators read directly. Without it, a cached table is stored 
 format and every scan of it has to convert each batch before Comet can continue, which shows up in
 the plan as a `CometSparkColumnarToColumnar` above the cache scan.
 
-This feature is **experimental and disabled by default**.
+This feature is **experimental and disabled by default**. Turn it on at startup, alongside the rest
+of Comet's configuration:
 
-```scala
-spark.conf.set("spark.comet.exec.inMemoryCache.enabled", "true")
+```shell
+$SPARK_HOME/bin/spark-shell \
+    ... \
+    --conf spark.comet.exec.inMemoryCache.enabled=true
 ```
+
+It has to be set before the `SparkContext` starts. Comet's driver plugin chooses
+`spark.sql.cache.serializer` once, while the context is initializing, so a session that started
+with the default goes on using Spark's cache format however the config is set afterwards.
 
 ## What changes when it is enabled
 
-`spark.comet.exec.inMemoryCache.enabled` is read at startup, and its value then decides whether
-Comet installs its cache serializer as `spark.sql.cache.serializer`. When it is installed:
+With Comet's serializer installed as `spark.sql.cache.serializer`:
 
 - Cached data is stored as `CometCachedBatch` rather than Spark's `DefaultCachedBatch`.
 - Cached tables are scanned by `CometInMemoryTableScan`, which feeds Comet operators directly.

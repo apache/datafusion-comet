@@ -210,10 +210,13 @@ private[comet] object CachedBatchIpc {
         root.setRowCount(batch.numRows())
       }
 
-      // alignBuffers=true matches the 8-byte buffer alignment Projection.load reproduces when it
-      // repacks the selected buffers.
-      val unloader = new VectorUnloader(root, true, codec, true)
-      val recordBatch = unloader.getRecordBatch
+      // Unloaded plain and compressed afterwards rather than by handing the codec to the unloader;
+      // see compressed for why.
+      val unloader = new VectorUnloader(root, true, NoCompressionCodec.INSTANCE, true)
+      val plainBatch = unloader.getRecordBatch
+      val recordBatch =
+        try compressed(plainBatch, codec, allocator)
+        finally plainBatch.close()
       try {
         val fields = vectors.map(_.getField)
         // Leaves the batch in the state serializeBatches leaves one. The record batch holds its
@@ -292,7 +295,7 @@ private[comet] object CachedBatchIpc {
       // for how the write path avoids producing one.
       if (batch.nodesLength() != totalNodes || batch.buffersLength() != totalBuffers) {
         throw new SparkException(
-          s"Comet cached batch does not match the cached schema: the payload holds " +
+          "Comet cached batch does not match the cached schema: the payload holds " +
             s"${batch.nodesLength()} field nodes and ${batch.buffersLength()} buffers, but the " +
             s"schema describes $totalNodes and $totalBuffers")
       }
@@ -387,6 +390,64 @@ private[comet] object CachedBatchIpc {
       count: Field => Int): (Array[Int], Int) = {
     val starts = arrowFields.scanLeft(0)(_ + count(_)).toArray
     (selectedIndices.flatMap(i => starts(i) until starts(i + 1)), starts.last)
+  }
+
+  /**
+   * The same record batch with every buffer compressed, as a new batch the caller owns.
+   *
+   * `VectorUnloader` would do this itself if handed the codec, but it leaks on the failure path:
+   * `appendNodes` retains each input buffer and accumulates the compressed ones into a list local
+   * to `getRecordBatch`, so a buffer that fails to compress -- zstd unable to allocate its
+   * workspace, say -- strands that retain and leaves every buffer compressed before it reachable
+   * from nothing. Closing the input batch afterwards undoes neither, so one failed cache
+   * materialization leaks a batch's worth of off-heap for the life of the executor. Compressing
+   * here keeps every allocation reachable from this method's own error path, as [[decompressed]]
+   * does on the read side.
+   *
+   * The retain before each `compress` is where the reference on the buffer that comes back is
+   * from. A codec that allocates consumes it and hands back a buffer of its own;
+   * `NoCompressionCodec` hands back the input itself, and the retain is then the reference
+   * `result` ends up owning. Releasing it again is what a throw owes.
+   */
+  private def compressed(
+      batch: ArrowRecordBatch,
+      codec: CompressionCodec,
+      allocator: BufferAllocator): ArrowRecordBatch = {
+    val buffers = new java.util.ArrayList[ArrowBuf](batch.getBuffers.size)
+    try {
+      batch.getBuffers.asScala.foreach { buffer =>
+        buffer.getReferenceManager.retain()
+        val packed =
+          try codec.compress(allocator, buffer)
+          catch {
+            case NonFatal(e) =>
+              buffer.getReferenceManager.release()
+              throw e
+          }
+        buffers.add(packed)
+      }
+
+      val result = new ArrowRecordBatch(
+        batch.getLength,
+        batch.getNodes,
+        buffers,
+        CompressionUtil.createBodyCompression(codec),
+        batch.getVariadicBufferCounts,
+        // alignBuffers=true matches the 8-byte buffer alignment Projection.load reproduces when it
+        // repacks the selected buffers. This is the layout that gets written, so the unloader's is
+        // not the one that matters.
+        true)
+      // The constructor retained each buffer, so drop the references held here.
+      buffers.asScala.foreach(_.close())
+      result
+    } catch {
+      case NonFatal(e) =>
+        buffers.asScala.foreach { buffer =>
+          try buffer.close()
+          catch { case NonFatal(closeError) => e.addSuppressed(closeError) }
+        }
+        throw e
+    }
   }
 
   /**
