@@ -31,12 +31,10 @@ import org.apache.spark.sql.types.BinaryType
 import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
 import org.apache.comet.testing.{DataGenOptions, ParquetGenerator, SchemaGenOptions}
 
-class CometMapExpressionSuite extends CometTestBase with CometCodegenAssertions {
+class CometMapExpressionSuite extends CometTestBase {
 
   private def checkMapLookupDispatch(query: String): Unit = {
-    assertCodegenRan {
-      checkSparkAnswerAndOperator(query)
-    }
+    checkSparkAnswerAndImpl(query, native = Seq.empty, dispatched = Seq("element_at"))
   }
 
   test("map lookup preserves fallback when codegen dispatch is disabled") {

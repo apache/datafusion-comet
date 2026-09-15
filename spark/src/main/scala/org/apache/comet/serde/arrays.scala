@@ -637,7 +637,7 @@ object CometElementAt extends CometExpressionSerde[ElementAt] with CodegenDispat
   private val argumentsReason = "unsupported arguments for ElementAt"
 
   override def getUnsupportedReasons(): Seq[String] =
-    MapKeySupport.unsupportedReasons ++ Seq(eagerIndexReason, inputTypeReason, argumentsReason)
+    MapKeySupport.unsupportedReasons :+ eagerIndexReason
 
   /** True when `convert` has to wrap the lookup to reproduce Spark's NULL short-circuit. */
   private def needsNullGuard(expr: ElementAt): Boolean =
