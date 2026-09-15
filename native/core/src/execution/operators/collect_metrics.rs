@@ -15,15 +15,11 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use std::fmt;
-use std::fmt::Formatter;
-use std::pin::Pin;
-use std::sync::Arc;
-use std::task::{ready, Context, Poll};
 use arrow::array::{ArrayRef, RecordBatch};
 use arrow::datatypes::{Field, Schema, SchemaRef};
-use datafusion::common::Result;
+use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::common::DataFusionError;
+use datafusion::common::Result;
 use datafusion::execution::{RecordBatchStream, SendableRecordBatchStream, TaskContext};
 use datafusion::logical_expr::Accumulator;
 use datafusion::physical_expr::aggregate::AggregateFunctionExpr;
@@ -31,6 +27,11 @@ use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_expr_common::metrics::{ExecutionPlanMetricsSet, MetricsSet};
 use datafusion::physical_plan::{DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties};
 use futures::{Stream, StreamExt};
+use std::fmt;
+use std::fmt::Formatter;
+use std::pin::Pin;
+use std::sync::Arc;
+use std::task::{ready, Context, Poll};
 
 #[derive(Debug)]
 pub struct CollectMetricsExec {
@@ -96,7 +97,17 @@ impl ExecutionPlan for CollectMetricsExec {
         vec![&self.input]
     }
 
-    fn with_new_children(self: Arc<Self>, children: Vec<Arc<dyn ExecutionPlan>>) -> Result<Arc<dyn ExecutionPlan>> {
+    fn apply_expressions(
+        &self,
+        _f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> Result<TreeNodeRecursion>,
+    ) -> Result<TreeNodeRecursion> {
+        Ok(TreeNodeRecursion::Continue)
+    }
+
+    fn with_new_children(
+        self: Arc<Self>,
+        children: Vec<Arc<dyn ExecutionPlan>>,
+    ) -> Result<Arc<dyn ExecutionPlan>> {
         if children.len() != 1 {
             return Err(DataFusionError::Plan(
                 "CometCollectMetricsExec requires exactly one child".to_string(),
@@ -110,13 +121,20 @@ impl ExecutionPlan for CollectMetricsExec {
         )))
     }
 
-    fn execute(&self, partition: usize, context: Arc<TaskContext>) -> Result<SendableRecordBatchStream> {
+    fn execute(
+        &self,
+        partition: usize,
+        context: Arc<TaskContext>,
+    ) -> Result<SendableRecordBatchStream> {
         let input_stream = self.input.execute(partition, context)?;
 
         let accumulators: Vec<Box<dyn Accumulator + Send>> = self
             .agg_exprs
             .iter()
-            .map(|agg| agg.create_accumulator().map(|acc| acc as Box<dyn Accumulator + Send>))
+            .map(|agg| {
+                agg.create_accumulator()
+                    .map(|acc| acc as Box<dyn Accumulator + Send>)
+            })
             .collect::<Result<Vec<_>>>()?;
 
         let stream: CollectMetricsStream = CollectMetricsStream::new(
@@ -170,10 +188,7 @@ impl CollectMetricsStream {
             let args = agg_expr
                 .expressions()
                 .iter()
-                .map(|e| {
-                    e.evaluate(batch)?
-                        .into_array(batch.num_rows())
-                })
+                .map(|e| e.evaluate(batch)?.into_array(batch.num_rows()))
                 .collect::<Result<Vec<_>>>()?;
             acc.update_batch(&args)?;
         }
@@ -217,10 +232,7 @@ impl CollectMetricsStream {
 impl Stream for CollectMetricsStream {
     type Item = Result<RecordBatch>;
 
-    fn poll_next(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-    ) -> Poll<Option<Self::Item>> {
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let poll = self.input.poll_next_unpin(cx);
         match ready!(poll) {
             Some(Ok(batch)) => {
