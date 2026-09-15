@@ -3779,8 +3779,9 @@ class CometIcebergNativeSuite
         spark.sparkContext.addSparkListener(listener)
 
         try {
-          // The limit stops pulling before the scan is exhausted, so the final metric publish
-          // happens in the iterator's completion-time close.
+          // This Iceberg scan is its own native block with no JVM input, so its metrics publish
+          // per batch and this covers the registration site rather than the listener order,
+          // which stays unguarded for a fused Iceberg scan until the scan-input gate widens.
           val query = "SELECT * FROM test_cat.db.task_metrics_limit_test LIMIT 3"
           Seq("-1", CometConf.COMET_METRICS_UPDATE_INTERVAL.defaultValueString).foreach {
             interval =>

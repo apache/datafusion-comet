@@ -110,8 +110,12 @@ case class CometMetricNode(metrics: Map[String, SQLMetric], children: Seq[CometM
    * a limit, leaves the final publish to that close.
    *
    * Adds to the task's counters instead of replacing them, so bytes that a fallback Spark scan
-   * accumulated in the same task survive. Trees registered on one task may share accumulators
-   * (see [[reportSpillMetrics]]), so each accumulator is counted once per task.
+   * accumulated in the same task survive. That holds only when the fallback scan registers its
+   * completion listener after this one, which a `CometSparkToColumnarExec` input always does and
+   * a coalesced Spark-scan partition computed first does not: `FileScanRDD`'s close then runs
+   * last and sets bytesRead from the value it snapshotted at construction. Trees registered on
+   * one task may share accumulators (see [[reportSpillMetrics]]), so each accumulator is counted
+   * once per task.
    */
   def reportScanInputMetrics(ctx: TaskContext): Unit = {
     val seenMetrics = CometMetricNode.taskSeenMetrics(ctx).scanInput

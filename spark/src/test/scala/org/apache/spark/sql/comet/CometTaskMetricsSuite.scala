@@ -1202,7 +1202,7 @@ class CometTaskMetricsSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           s"recordsRead mismatch: comet=$cometRecordsReversed, spark=$sparkRecordsReversed")
         assert(
           cometBytesReversed >= fallbackBytes && cometBytesReversed < nativeBytes + fallbackBytes,
-          s"bytesRead with the fallback side first keeps only its own bytes today: " +
+          "bytesRead with the fallback side first keeps only its own bytes today: " +
             s"comet=$cometBytesReversed, native=$nativeBytes, fallback=$fallbackBytes")
       }
     }
