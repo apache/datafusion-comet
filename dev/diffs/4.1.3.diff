@@ -270,6 +270,18 @@ index 0efe0877e9b..f9df0400c99 100644
  -- load test data
  CREATE TABLE test_having (a int, b int, c string, d string) USING parquet;
  INSERT INTO test_having VALUES (0, 1, 'XXXX', 'A');
+diff --git a/sql/core/src/test/resources/sql-tests/inputs/replacing-missing-expression-with-alias.sql b/sql/core/src/test/resources/sql-tests/inputs/replacing-missing-expression-with-alias.sql
+index 0f238033fad..590faebe77a 100644
+--- a/sql/core/src/test/resources/sql-tests/inputs/replacing-missing-expression-with-alias.sql
++++ b/sql/core/src/test/resources/sql-tests/inputs/replacing-missing-expression-with-alias.sql
+@@ -1,3 +1,7 @@
++-- Comet: ORDER BY ties can produce a different row order from the Spark golden files.
++-- https://github.com/apache/datafusion-comet/issues/5570
++--SET spark.comet.enabled=false
++
+ -- Replace expression with alias that has semantically equal child if expression is not in output
+ SELECT col1 + 1 AS a FROM VALUES(1) GROUP BY a ORDER BY col1 + 1;
+ SELECT col1 + 1 AS a, a AS b FROM VALUES(1) GROUP BY a ORDER BY col1 + 1;
 diff --git a/sql/core/src/test/resources/sql-tests/inputs/subquery/in-subquery/in-limit.sql b/sql/core/src/test/resources/sql-tests/inputs/subquery/in-subquery/in-limit.sql
 index 7c816d8a416..b1551a2b296 100644
 --- a/sql/core/src/test/resources/sql-tests/inputs/subquery/in-subquery/in-limit.sql
@@ -306,6 +318,18 @@ index 7c816d8a416..b1551a2b296 100644
  -- correlated IN subquery
  -- LIMIT on both parent and subquery sides
  SELECT *
+diff --git a/sql/core/src/test/resources/sql-tests/inputs/subquery/in-subquery/in-set-operations.sql b/sql/core/src/test/resources/sql-tests/inputs/subquery/in-subquery/in-set-operations.sql
+index c6b6a338c9b..2a305792460 100644
+--- a/sql/core/src/test/resources/sql-tests/inputs/subquery/in-subquery/in-set-operations.sql
++++ b/sql/core/src/test/resources/sql-tests/inputs/subquery/in-subquery/in-set-operations.sql
+@@ -1,3 +1,7 @@
++-- Comet: ORDER BY ties can produce a different row order from the Spark golden files.
++-- https://github.com/apache/datafusion-comet/issues/5570
++--SET spark.comet.enabled=false
++
+ -- A test suite for set-operations in parent side, subquery, and both predicate subquery
+ -- It includes correlated cases.
+ --ONLY_IF spark
 diff --git a/sql/core/src/test/resources/sql-tests/inputs/view-schema-binding-config.sql b/sql/core/src/test/resources/sql-tests/inputs/view-schema-binding-config.sql
 index e803254ea64..74db78aee38 100644
 --- a/sql/core/src/test/resources/sql-tests/inputs/view-schema-binding-config.sql
@@ -1240,20 +1264,15 @@ index 74cdee49e55..f7452c9abb7 100644
        verifyCallCount(
          df.selectExpr("testUdf(a + 1) + testUdf(1 + a)", "testUdf(a + 1)"), Row(4, 2), 1)
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/SQLQueryTestSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/SQLQueryTestSuite.scala
-index 23f0144dcec..2586d93d630 100644
+index 23f0144dcec..40d536bb23a 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/SQLQueryTestSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/SQLQueryTestSuite.scala
-@@ -166,7 +166,16 @@ class SQLQueryTestSuite extends QueryTest with SharedSparkSession with SQLHelper
+@@ -166,7 +166,11 @@ class SQLQueryTestSuite extends QueryTest with SharedSparkSession with SQLHelper
      if (TestUtils.testCommandAvailable("/bin/bash")) Nil else Set("transform.sql")
    /** List of test cases to ignore, in lower cases. */
    protected def ignoreList: Set[String] = Set(
 -    "ignored.sql" // Do NOT remove this one. It is here to test the ignore functionality.
 +    "ignored.sql", // Do NOT remove this one. It is here to test the ignore functionality.
-+    // Comet: ORDER BY column has ties; row order is non-deterministic when
-+    // running with high parallelism. Tracked for restoration once Comet
-+    // produces stable ordering for these queries.
-+    "replacing-missing-expression-with-alias.sql",
-+    "in-set-operations.sql",
 +    // Comet: theta_sketch_estimate(theta_sketch_agg(...)) over collated
 +    // strings reads sketch binary as UTF-8 and fails. Skip until Comet
 +    // adds proper handling or falls back for theta-sketch on collation.
@@ -1261,7 +1280,7 @@ index 23f0144dcec..2586d93d630 100644
    ) ++ otherIgnoreList
    /** List of test cases that require TPCDS table schemas to be loaded. */
    private def requireTPCDSCases: Seq[String] = Seq("pipe-operators.sql")
-@@ -682,9 +691,24 @@ class SQLQueryTestSuite extends QueryTest with SharedSparkSession with SQLHelper
+@@ -682,9 +686,24 @@ class SQLQueryTestSuite extends QueryTest with SharedSparkSession with SQLHelper
          s"Schema did not match for query #$i\n${expected.sql}: $output") {
          output.schema
        }
