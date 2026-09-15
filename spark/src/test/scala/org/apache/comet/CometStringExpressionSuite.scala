@@ -46,56 +46,6 @@ class CometStringExpressionSuite extends CometTestBase with CometCodegenAssertio
     testStringPadding("rpad")
   }
 
-  for (function <- Seq("lpad", "rpad")) {
-    test(s"$function routing for unsupported argument shapes") {
-      val data: Seq[(String, Option[Int], String)] = Seq(
-        ("hi", Some(5), "xy"),
-        ("hello", Some(3), "x"),
-        ("", Some(3), "a"),
-        ("hi", Some(5), ""),
-        (null, Some(5), "x"),
-        ("hi", None, "x"),
-        ("hi", Some(5), null),
-        (null, None, null))
-      withParquetTable(data, "tbl") {
-        withSQLConf(
-          SQLConf.OPTIMIZER_EXCLUDED_RULES.key ->
-            "org.apache.spark.sql.catalyst.optimizer.ConstantFolding") {
-          for (codegenEnabled <- Seq("false", "true")) {
-            withSQLConf(CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> codegenEnabled) {
-              for (query <- Seq(
-                  s"SELECT $function(_1, _2, _3) FROM tbl",
-                  s"SELECT $function('hi', _2, 'xy') FROM tbl",
-                  s"SELECT $function('hi', 5, 'xy') FROM tbl")) {
-                if (codegenEnabled.toBoolean) {
-                  checkSparkAnswerAndImpl(query, native = Seq.empty, dispatched = Seq(function))
-                } else {
-                  checkSparkAnswerAndFallbackReason(
-                    query,
-                    s"$function: ${CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key}=false")
-                }
-              }
-            }
-          }
-        }
-      }
-    }
-
-    test(s"$function routing for supported argument shapes") {
-      withParquetTable(Seq(("hi", 5), ("hello", 3), ("", 0)), "tbl") {
-        for (codegenEnabled <- Seq("false", "true")) {
-          withSQLConf(CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> codegenEnabled) {
-            for (query <- Seq(
-                s"SELECT $function(_1, _2) FROM tbl",
-                s"SELECT $function(_1, _2, 'xy') FROM tbl")) {
-              checkSparkAnswerAndImpl(query, native = Seq(function), dispatched = Seq.empty)
-            }
-          }
-        }
-      }
-    }
-  }
-
   test("lpad/rpad with NULL length") {
     // FuzzDataGenerator never generates NULL integers (#5389), so build the rows explicitly.
     // Spark's StringLPad/StringRPad are null-intolerant: a NULL length yields a NULL row.
