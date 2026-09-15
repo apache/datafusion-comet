@@ -221,7 +221,6 @@ fn create_shuffle_writer_exec(
         partitioning,
         compression_codec,
         "/tmp/data.out".to_string(),
-        "/tmp/index.out".to_string(),
         false,
         1024 * 1024,
         None,
