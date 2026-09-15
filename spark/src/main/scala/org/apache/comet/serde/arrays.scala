@@ -750,10 +750,12 @@ object CometArrayFilter extends CometExpressionSerde[ArrayFilter] {
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     expr.function match {
       case LambdaFunction(IsNotNull(v: NamedLambdaVariable), Seq(lambdaVar), _)
-          if v.exprId == lambdaVar.exprId =>
+          if v.exprId == lambdaVar.exprId &&
+            !expr.argument.exists(requiresSparkInterpretedEvaluation) =>
         // Fast path: Catalyst desugars `array_compact` to `filter(arr, x -> x IS NOT NULL)`, so
         // restore the native serde here (avoids per-batch JNI). Guard requires the IsNotNull
         // operand to be the lambda variable itself, not a captured column (#4830).
+        // ArrayFilter interprets its argument, so keep sensitive children in the full dispatcher.
         CometArrayCompact.convert(expr, inputs, binding)
       case _ =>
         // General lambda: run Spark's own evaluation through the codegen dispatcher so the result

@@ -135,8 +135,7 @@ object CometStringTranslate
 object CometLevenshtein extends CometExpressionSerde[Levenshtein] with CodegenDispatchFallback {
 
   private val collationReason =
-    "Non-default (non-UTF8_BINARY) collated input. The native kernel compares raw bytes, so " +
-      "collation-aware comparison has no native path."
+    "Levenshtein with non-UTF8_BINARY collation is not supported natively"
 
   override def getUnsupportedReasons(): Seq[String] = Seq(collationReason)
 
