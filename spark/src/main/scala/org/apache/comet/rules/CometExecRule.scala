@@ -840,7 +840,8 @@ case class CometExecRule(session: SparkSession)
         case writeFiles: WriteFilesExec => Seq(writeFiles.child)
         case other => Seq(other)
       }
-      if ((op.output ++ dataProducingChildren.flatMap(_.output)).exists(attr =>
+      if (!op.isInstanceOf[CometScanExec] &&
+        (op.output ++ dataProducingChildren.flatMap(_.output)).exists(attr =>
           containsVariantType(attr.dataType))) {
         withFallbackReason(
           op,

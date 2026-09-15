@@ -1208,6 +1208,20 @@ index e4b5e10f7c3..c6efde09c8a 100644
  
    protected val baseResourcePath = {
      // use the same way as `SQLQueryTestSuite` to get the resource path
+diff --git a/sql/core/src/test/scala/org/apache/spark/sql/ResolveDefaultColumnsSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/ResolveDefaultColumnsSuite.scala
+index cb9d0909554..084d6515e8b 100644
+--- a/sql/core/src/test/scala/org/apache/spark/sql/ResolveDefaultColumnsSuite.scala
++++ b/sql/core/src/test/scala/org/apache/spark/sql/ResolveDefaultColumnsSuite.scala
+@@ -284,7 +284,8 @@ class ResolveDefaultColumnsSuite extends QueryTest with SharedSparkSession {
+     withTable("t") {
+       sql("CREATE TABLE t(v VARIANT DEFAULT parse_json('1')) USING PARQUET")
+       sql("INSERT INTO t VALUES(DEFAULT)")
+-      checkAnswer(sql("select v from t"), sql("select parse_json('1')").collect())
++      // Native unshredding may use a different integer width for the same Variant value.
++      assert(sql("select v from t").collect().map(_.get(0).toString).toSeq == Seq("1"))
+     }
+   }
+ 
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/SQLQuerySuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/SQLQuerySuite.scala
 index 74cdee49e55..f7452c9abb7 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/SQLQuerySuite.scala

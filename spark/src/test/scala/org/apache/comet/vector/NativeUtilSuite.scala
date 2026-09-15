@@ -35,7 +35,7 @@ import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.comet.CometExec
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.execution.vectorized.ConstantColumnVector
-import org.apache.spark.sql.types.{IntegerType, StringType, StructField, StructType}
+import org.apache.spark.sql.types.{BinaryType, IntegerType, StringType, StructField, StructType}
 import org.apache.spark.sql.vectorized.{ColumnarBatch, ColumnVector}
 
 import org.apache.comet.CometConf
@@ -432,7 +432,20 @@ class NativeUtilSuite extends CometTestBase {
           val iterator = CometExec.getCometIterator(Array.empty[Object], 1, plan, 1, 0)
           try {
             assert(iterator.hasNext)
-            Iterator.single(iterator.next().column(0).dataType())
+            val column = iterator.next().column(0)
+            assert(column.getChild(0).dataType() == BinaryType)
+            assert(column.getChild(1).dataType() == BinaryType)
+            // Spark 3.x has no getVariant method; the suite still compiles for that profile.
+            val value = classOf[ColumnVector]
+              .getMethod("getVariant", classOf[Int])
+              .invoke(column, Int.box(0))
+            assert(
+              value.getClass
+                .getMethod("getValue")
+                .invoke(value)
+                .asInstanceOf[Array[Byte]]
+                .sameElements(Array[Byte](0)))
+            Iterator.single(column.dataType())
           } finally {
             iterator.close()
           }
