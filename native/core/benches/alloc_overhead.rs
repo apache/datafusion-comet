@@ -24,9 +24,13 @@
 //! cargo bench --bench alloc_overhead --features alloc-accounting -- --baseline off
 //! ```
 //!
-//! The benchmark relies on the `#[global_allocator]` that `lib.rs` installs, which is linked in
-//! through the `rlib`. `assert_accounting_is_live` fails the run if the wrapper is somehow not in
-//! effect — without it, a "with the feature" run could silently be a second baseline.
+//! The benchmark relies on the `#[global_allocator]` that `lib.rs` installs, which reaches this
+//! binary through the `rlib`. That only happens if the crate is actually linked, and an `--extern`
+//! crate that nothing names is dropped from the crate graph along with its allocator, so the
+//! `extern crate` below is load-bearing: without it a baseline run that never touches `comet`
+//! silently measures the system allocator instead of jemalloc. The two liveness checks fail the run
+//! if either the selected backend or the wrapper is somehow not in effect, because a number
+//! measured against the wrong allocator would be worse than no number.
 //!
 //! `small_churn` is the worst case for the thread-local path: allocations so small that the
 //! wrapper's bookkeeping is a meaningful fraction of the allocator's own work. `threshold_churn` is
@@ -37,10 +41,35 @@
 //! a batch-sized buffer dwarfs the bookkeeping. Real query workloads sit at or below
 //! `arrow_sized_churn`, because they do actual work between allocations.
 
+// Pulls `comet`, and with it the `#[global_allocator]` selected by its feature set, into this
+// binary even when the feature set leaves nothing here that names the crate.
+extern crate comet;
+
 use criterion::{criterion_group, criterion_main, BatchSize, Criterion, Throughput};
 use std::hint::black_box;
 use std::thread;
 use std::time::Instant;
+
+/// Guards against measuring the wrong allocator. jemalloc keeps its own count of bytes it has
+/// served; if it is not the global allocator of this binary that count stays at zero, and a
+/// "jemalloc" baseline would in fact be the system allocator.
+#[cfg(feature = "jemalloc")]
+fn assert_backend_is_live() {
+    use tikv_jemalloc_ctl::{epoch, stats};
+    let held: Vec<u8> = black_box(vec![1u8; 8 * 1024 * 1024]);
+    black_box(&held);
+    epoch::advance().expect("jemalloc epoch");
+    let allocated = stats::allocated::read().expect("jemalloc stats.allocated");
+    assert!(
+        allocated >= 8 * 1024 * 1024,
+        "the jemalloc feature is enabled but jemalloc is not the global allocator of this binary \
+         (stats.allocated = {allocated}); the numbers below would be meaningless"
+    );
+    drop(held);
+}
+
+#[cfg(not(feature = "jemalloc"))]
+fn assert_backend_is_live() {}
 
 /// Guards against measuring nothing. If the wrapper were not actually installed in the benchmark
 /// binary, every "with the feature" number would silently be a second baseline run.
@@ -67,6 +96,7 @@ fn assert_accounting_is_live() {}
 /// Allocation sizes that stay under the 64 KiB settle threshold, so most iterations exercise only
 /// the thread-local fast path rather than the atomic flush.
 fn small_churn(c: &mut Criterion) {
+    assert_backend_is_live();
     assert_accounting_is_live();
     let mut group = c.benchmark_group("alloc_overhead");
     for size in [16usize, 256, 4096] {
@@ -133,6 +163,7 @@ fn alloc_free(size: usize) {
 /// Times are reported per alloc/free pair per thread, so a parallel number equal to its
 /// single-threaded counterpart means the threads did not slow each other down at all.
 fn threshold_churn(c: &mut Criterion) {
+    assert_backend_is_live();
     assert_accounting_is_live();
     let threads = thread::available_parallelism().map_or(4, |n| n.get());
     let mut group = c.benchmark_group("alloc_overhead");
