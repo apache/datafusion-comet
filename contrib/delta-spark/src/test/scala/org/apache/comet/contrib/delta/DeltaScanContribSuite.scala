@@ -1820,7 +1820,7 @@ class DeltaScanContribSuite extends CometDeltaTestBase {
       .s3ConfigDivergenceReason(conf, Seq(new URI("s3a://mybucket/part-0.parquet")))
     assert(
       reason.isEmpty,
-      s"expected no decline (and no exception) for a literal " +
+      "expected no decline (and no exception) for a literal " +
         s"self-reference, since it resolves to the same unexpanded text on both sides: $reason")
   }
 
@@ -2386,7 +2386,7 @@ class DeltaScanContribSuite extends CometDeltaTestBase {
         assert(
           uncovered.isEmpty,
           "Native reads fs.s3a.* key(s) that DeltaScanSupport.AllS3ConfigKeys does not compare, " +
-            s"so a Hadoop-vs-native divergence on any of them would go undetected: " +
+            "so a Hadoop-vs-native divergence on any of them would go undetected: " +
             s"${uncovered.toSeq.sorted.mkString(", ")} -- add the missing key(s) to " +
             "AllS3ConfigKeys")
     }

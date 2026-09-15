@@ -130,7 +130,7 @@ class CometScanContribSuite extends AnyFunSuite {
         val discovered = CometScanContrib.loadContribs(loader)
         assert(
           discovered.exists(_.isInstanceOf[ClaimingScanContrib]),
-          s"the linkable provider should still be discovered, got: " +
+          "the linkable provider should still be discovered, got: " +
             discovered.map(_.getClass.getName))
         assert(!discovered.exists(_.getClass.getName == skewed))
       }
