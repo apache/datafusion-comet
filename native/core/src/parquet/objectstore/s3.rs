@@ -244,19 +244,23 @@ fn extract_s3_config_options(
     // and treats non-boolean text as that default. object_store expects the inverse flag.
     let path_style_access = get_config_trimmed(configs, bucket, "path.style.access")
         .is_some_and(|value| value.eq_ignore_ascii_case("true"));
-    // The AWS SDK addresses a bucket whose name contains a dot path-style over HTTPS, because
-    // the dotted host does not match S3's wildcard certificate. The default AWS endpoint is
-    // HTTPS, and normalize_endpoint applies the same rule to a custom one by its scheme.
-    let mut virtual_hosted_style_request =
-        !path_style_access && !bucket_needs_path_style_over_https(bucket);
+    let mut virtual_hosted_style_request = !path_style_access;
 
     // Extract endpoint configuration and shape it for the selected addressing style. The flag is
-    // taken from the normalized result so the endpoint and the flag never disagree.
-    if let Some(endpoint) = get_config_trimmed(configs, bucket, "endpoint") {
-        if let Some(normalized) = normalize_endpoint(endpoint, bucket, virtual_hosted_style_request)
-        {
+    // taken from the normalized result so the endpoint and the flag never disagree. A custom
+    // endpoint decides the dotted-bucket rule by its own scheme inside normalize_endpoint; the
+    // default AWS endpoint is HTTPS, so the rule applies to it here.
+    let custom_endpoint = get_config_trimmed(configs, bucket, "endpoint")
+        .and_then(|endpoint| normalize_endpoint(endpoint, bucket, virtual_hosted_style_request));
+    match custom_endpoint {
+        Some(normalized) => {
             virtual_hosted_style_request = normalized.virtual_hosted_style_request;
             s3_configs.insert(AmazonS3ConfigKey::Endpoint, normalized.endpoint);
+        }
+        None => {
+            if bucket_needs_path_style_over_https(bucket) {
+                virtual_hosted_style_request = false;
+            }
         }
     }
     s3_configs.insert(
@@ -550,9 +554,13 @@ fn build_aws_credential_provider_metadata(
         // Only Hadoop's own provider reads the profile keys. Hadoop builds the SDK spellings
         // through the SDK's static constructor without its configuration, so applying the keys
         // to them here would authenticate the native side as a different identity.
+        // With no configured file, Hadoop reads AWS_SHARED_CREDENTIALS_FILE or the JVM
+        // user's ~/.aws/credentials; the JVM forwards that resolved path so both sides agree
+        // even when the native process sees a different HOME.
         HADOOP_PROFILE => Ok(CredentialProviderMetadata::Profile {
             name: get_non_empty_config(configs, bucket, "auth.profile.name"),
-            file: get_non_empty_config(configs, bucket, "auth.profile.file"),
+            file: get_non_empty_config(configs, bucket, "auth.profile.file")
+                .or_else(|| get_non_empty_config(configs, bucket, "comet.default.profile.file")),
             credentials_only: true,
         }),
         AWS_PROFILE_V1 | AWS_PROFILE => Ok(CredentialProviderMetadata::Profile {
@@ -2376,6 +2384,77 @@ mod tests {
         assert_eq!(
             s3_configs.get(&AmazonS3ConfigKey::VirtualHostedStyleRequest),
             Some(&"true".to_string())
+        );
+
+        // A custom HTTP endpoint keeps virtual hosting for a dotted bucket, as the SDK does,
+        // since the certificate rule only applies to HTTPS.
+        let configs = TestConfigBuilder::new()
+            .with_property("endpoint", "http://storage.example.test")
+            .build();
+        let s3_configs = extract_s3_config_options(&configs, "review.dotted.bucket");
+        assert_eq!(
+            s3_configs.get(&AmazonS3ConfigKey::VirtualHostedStyleRequest),
+            Some(&"true".to_string())
+        );
+        assert_eq!(
+            s3_configs.get(&AmazonS3ConfigKey::Endpoint),
+            Some(&"http://review.dotted.bucket.storage.example.test".to_string())
+        );
+    }
+
+    #[tokio::test]
+    #[cfg_attr(miri, ignore)] // AWS credential providers call foreign functions
+    async fn test_hadoop_profile_provider_takes_the_forwarded_default_file() {
+        // With no configured file the JVM-resolved default applies; a configured file wins;
+        // the SDK spellings ignore both.
+        for (file, expected) in [
+            (None, Some("/synthetic/jvm-home/.aws/credentials")),
+            (Some("/etc/aws/credentials"), Some("/etc/aws/credentials")),
+        ] {
+            let mut builder = TestConfigBuilder::new()
+                .with_credential_provider(HADOOP_PROFILE)
+                .with_property(
+                    "comet.default.profile.file",
+                    "/synthetic/jvm-home/.aws/credentials",
+                );
+            if let Some(file) = file {
+                builder = builder.with_property("auth.profile.file", file);
+            }
+            let configs = builder.build();
+            let metadata =
+                build_credential_provider(&configs, "test-bucket", Duration::from_secs(300))
+                    .await
+                    .unwrap()
+                    .expect("Should return a credential provider")
+                    .metadata();
+            assert_eq!(
+                metadata,
+                CredentialProviderMetadata::Profile {
+                    name: None,
+                    file: expected.map(str::to_string),
+                    credentials_only: true,
+                }
+            );
+        }
+        let configs = TestConfigBuilder::new()
+            .with_credential_provider(AWS_PROFILE)
+            .with_property(
+                "comet.default.profile.file",
+                "/synthetic/jvm-home/.aws/credentials",
+            )
+            .build();
+        let metadata = build_credential_provider(&configs, "test-bucket", Duration::from_secs(300))
+            .await
+            .unwrap()
+            .expect("Should return a credential provider")
+            .metadata();
+        assert_eq!(
+            metadata,
+            CredentialProviderMetadata::Profile {
+                name: None,
+                file: None,
+                credentials_only: false,
+            }
         );
     }
 
