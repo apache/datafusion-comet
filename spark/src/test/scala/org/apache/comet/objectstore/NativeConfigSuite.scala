@@ -30,6 +30,35 @@ import org.apache.comet.CometConf.COMET_S3_COMPLIANT_SCHEMES_KEY
 
 class NativeConfigSuite extends AnyFunSuite with Matchers {
 
+  test("extractObjectStoreOptions forwards the JVM-resolved default credentials file") {
+    val hadoopConf = new Configuration()
+    val options =
+      NativeConfig.extractObjectStoreOptions(hadoopConf, new URI("s3a://test-bucket/object"))
+    val expected = new java.io.File(
+      new java.io.File(System.getProperty("user.home"), ".aws"),
+      "credentials").getPath
+    if (sys.env.get("AWS_SHARED_CREDENTIALS_FILE").exists(_.trim.nonEmpty)) {
+      assert(
+        options(NativeConfig.COMET_DEFAULT_PROFILE_FILE_KEY) ==
+          sys.env("AWS_SHARED_CREDENTIALS_FILE"))
+    } else {
+      assert(options(NativeConfig.COMET_DEFAULT_PROFILE_FILE_KEY) == expected)
+    }
+    val gsOptions =
+      NativeConfig.extractObjectStoreOptions(hadoopConf, new URI("gs://test-bucket/object"))
+    assert(!gsOptions.contains(NativeConfig.COMET_DEFAULT_PROFILE_FILE_KEY))
+
+    // The env override wins, a blank override falls back to user.home, and HOME is not used.
+    assert(
+      NativeConfig.defaultSharedCredentialsFile(
+        Map("AWS_SHARED_CREDENTIALS_FILE" -> "/etc/aws/shared"),
+        "/synthetic/jvm-home") == "/etc/aws/shared")
+    assert(
+      NativeConfig.defaultSharedCredentialsFile(
+        Map("AWS_SHARED_CREDENTIALS_FILE" -> "  ", "HOME" -> "/synthetic/env-home"),
+        "/synthetic/jvm-home") == "/synthetic/jvm-home/.aws/credentials")
+  }
+
   test("extractObjectStoreOptions - multiple cloud provider configurations") {
     val hadoopConf = new Configuration()
     // S3A configs

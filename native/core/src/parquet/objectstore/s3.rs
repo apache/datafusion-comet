@@ -18,7 +18,7 @@
 use log::{debug, error};
 use std::collections::HashMap;
 use std::sync::OnceLock;
-use url::Url;
+use url::{Host, Url};
 
 use crate::cloud::s3::credential_bridge::{AccessMode, CometS3CredentialBridge};
 use crate::execution::jni_api::get_runtime;
@@ -34,6 +34,7 @@ use aws_credential_types::{
     provider::{error::CredentialsError, ProvideCredentials},
     Credentials,
 };
+use aws_runtime::env_config::file::{EnvConfigFileKind, EnvConfigFiles};
 use object_store::{
     aws::{AmazonS3Builder, AmazonS3ConfigKey, AwsCredential},
     path::Path,
@@ -239,24 +240,33 @@ fn extract_s3_config_options(
         s3_configs.insert(AmazonS3ConfigKey::Region, region.to_string());
     }
 
-    // Extract and handle path style access (virtual hosted style)
-    let mut virtual_hosted_style_request = false;
-    if let Some(path_style) = get_config_trimmed(configs, bucket, "path.style.access") {
-        virtual_hosted_style_request = path_style.to_lowercase() == "true";
-        s3_configs.insert(
-            AmazonS3ConfigKey::VirtualHostedStyleRequest,
-            virtual_hosted_style_request.to_string(),
-        );
-    }
+    // Hadoop defaults fs.s3a.path.style.access to false, which means virtual-hosted addressing,
+    // and treats non-boolean text as that default. object_store expects the inverse flag.
+    let path_style_access = get_config_trimmed(configs, bucket, "path.style.access")
+        .is_some_and(|value| value.eq_ignore_ascii_case("true"));
+    let mut virtual_hosted_style_request = !path_style_access;
 
-    // Extract endpoint configuration and modify if virtual hosted style is enabled
-    if let Some(endpoint) = get_config_trimmed(configs, bucket, "endpoint") {
-        let normalized_endpoint =
-            normalize_endpoint(endpoint, bucket, virtual_hosted_style_request);
-        if let Some(endpoint) = normalized_endpoint {
-            s3_configs.insert(AmazonS3ConfigKey::Endpoint, endpoint);
+    // Extract endpoint configuration and shape it for the selected addressing style. The flag is
+    // taken from the normalized result so the endpoint and the flag never disagree. A custom
+    // endpoint decides the dotted-bucket rule by its own scheme inside normalize_endpoint; the
+    // default AWS endpoint is HTTPS, so the rule applies to it here.
+    let custom_endpoint = get_config_trimmed(configs, bucket, "endpoint")
+        .and_then(|endpoint| normalize_endpoint(endpoint, bucket, virtual_hosted_style_request));
+    match custom_endpoint {
+        Some(normalized) => {
+            virtual_hosted_style_request = normalized.virtual_hosted_style_request;
+            s3_configs.insert(AmazonS3ConfigKey::Endpoint, normalized.endpoint);
+        }
+        None => {
+            if bucket_needs_path_style_over_https(bucket) {
+                virtual_hosted_style_request = false;
+            }
         }
     }
+    s3_configs.insert(
+        AmazonS3ConfigKey::VirtualHostedStyleRequest,
+        virtual_hosted_style_request.to_string(),
+    );
 
     // Extract request payer configuration
     if let Some(requester_pays) = get_config_trimmed(configs, bucket, "requester.pays.enabled") {
@@ -270,11 +280,27 @@ fn extract_s3_config_options(
     s3_configs
 }
 
+/// Whether the AWS SDK would refuse to virtual-host `bucket` over HTTPS: a dot in the name
+/// makes `bucket.s3.<region>.amazonaws.com` fall outside S3's wildcard certificate.
+fn bucket_needs_path_style_over_https(bucket: &str) -> bool {
+    bucket.contains('.')
+}
+
+/// An endpoint shaped for object_store together with the addressing mode it was shaped for.
+#[derive(Debug, Clone, PartialEq)]
+struct NormalizedEndpoint {
+    endpoint: String,
+    virtual_hosted_style_request: bool,
+}
+
+/// Shapes a Hadoop `fs.s3a.endpoint` value into the endpoint object_store expects: for
+/// virtual-hosted requests the bucket becomes the leading host label (`scheme://bucket.host[:port]`),
+/// while for path-style requests object_store appends `/bucket` itself so the value passes through.
 fn normalize_endpoint(
     endpoint: &str,
     bucket: &str,
     virtual_hosted_style_request: bool,
-) -> Option<String> {
+) -> Option<NormalizedEndpoint> {
     if endpoint.is_empty() {
         return None;
     }
@@ -292,15 +318,47 @@ fn normalize_endpoint(
         endpoint.to_string()
     };
 
-    if virtual_hosted_style_request {
-        if endpoint.ends_with("/") {
-            Some(format!("{endpoint}{bucket}"))
-        } else {
-            Some(format!("{endpoint}/{bucket}"))
-        }
-    } else {
-        Some(endpoint) // Avoid extra to_string() call since endpoint is already a String
+    let path_style = |endpoint: String| {
+        Some(NormalizedEndpoint {
+            endpoint,
+            virtual_hosted_style_request: false,
+        })
+    };
+    if !virtual_hosted_style_request {
+        return path_style(endpoint);
     }
+    if endpoint.starts_with("https://") && bucket_needs_path_style_over_https(bucket) {
+        return path_style(endpoint);
+    }
+
+    // Fall back to the endpoint as written when it cannot be parsed so object_store reports
+    // the malformed value instead of a mangled one
+    let Ok(url) = Url::parse(&endpoint) else {
+        return path_style(endpoint);
+    };
+    // The AWS SDK endpoint rules address IP-literal hosts path-style since `bucket.127.0.0.1` is
+    // not a valid host. Hadoop does not special-case `localhost`, so neither does this.
+    let host = match url.host() {
+        Some(Host::Domain(host)) => host,
+        _ => return path_style(endpoint),
+    };
+    let port = url
+        .port()
+        .map(|port| format!(":{port}"))
+        .unwrap_or_default();
+    let path = url.path().trim_end_matches('/');
+    Some(NormalizedEndpoint {
+        endpoint: format!("{}://{bucket}.{host}{port}{path}", url.scheme()),
+        virtual_hosted_style_request: true,
+    })
+}
+
+/// The credentials file Hadoop's profile provider reads when none is configured:
+/// `AWS_SHARED_CREDENTIALS_FILE` when set, otherwise `~/.aws/credentials`.
+fn default_shared_credentials_file(env_override: Option<String>, home: Option<String>) -> String {
+    env_override
+        .filter(|path| !path.trim().is_empty())
+        .unwrap_or_else(|| format!("{}/.aws/credentials", home.unwrap_or_default()))
 }
 
 fn get_config<'a>(
@@ -321,6 +379,17 @@ pub(super) fn get_config_trimmed<'a>(
     property: &str,
 ) -> Option<&'a str> {
     get_config(configs, bucket, property).map(|s| s.trim())
+}
+
+/// Like [`get_config_trimmed`] but treats a blank value as unset.
+fn get_non_empty_config(
+    configs: &HashMap<String, String>,
+    bucket: &str,
+    property: &str,
+) -> Option<String> {
+    get_config_trimmed(configs, bucket, property)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
 }
 
 /// Activation key (without `fs.s3a.` prefix) naming the vendor `CometS3CredentialProvider` FQCN.
@@ -358,6 +427,7 @@ const AWS_WEB_IDENTITY: &str =
 const AWS_WEB_IDENTITY_V1: &str = "com.amazonaws.auth.WebIdentityTokenCredentialsProvider";
 const AWS_PROFILE: &str = "software.amazon.awssdk.auth.credentials.ProfileCredentialsProvider";
 const AWS_PROFILE_V1: &str = "com.amazonaws.auth.profile.ProfileCredentialsProvider";
+const HADOOP_PROFILE: &str = "org.apache.hadoop.fs.s3a.auth.ProfileAWSCredentialsProvider";
 const AWS_ANONYMOUS: &str = "software.amazon.awssdk.auth.credentials.AnonymousCredentialsProvider";
 const AWS_ANONYMOUS_V1: &str = "com.amazonaws.auth.AnonymousAWSCredentials";
 
@@ -481,7 +551,23 @@ fn build_aws_credential_provider_metadata(
         }
         HADOOP_ASSUMED_ROLE => build_assume_role_credential_provider_metadata(configs, bucket),
         AWS_WEB_IDENTITY_V1 | AWS_WEB_IDENTITY => Ok(CredentialProviderMetadata::WebIdentity),
-        AWS_PROFILE_V1 | AWS_PROFILE => Ok(CredentialProviderMetadata::Profile),
+        // Only Hadoop's own provider reads the profile keys. Hadoop builds the SDK spellings
+        // through the SDK's static constructor without its configuration, so applying the keys
+        // to them here would authenticate the native side as a different identity.
+        // With no configured file, Hadoop reads AWS_SHARED_CREDENTIALS_FILE or the JVM
+        // user's ~/.aws/credentials; the JVM forwards that resolved path so both sides agree
+        // even when the native process sees a different HOME.
+        HADOOP_PROFILE => Ok(CredentialProviderMetadata::Profile {
+            name: get_non_empty_config(configs, bucket, "auth.profile.name"),
+            file: get_non_empty_config(configs, bucket, "auth.profile.file")
+                .or_else(|| get_non_empty_config(configs, bucket, "comet.default.profile.file")),
+            credentials_only: true,
+        }),
+        AWS_PROFILE_V1 | AWS_PROFILE => Ok(CredentialProviderMetadata::Profile {
+            name: None,
+            file: None,
+            credentials_only: false,
+        }),
         _ => Err(object_store::Error::Generic {
             store: "S3",
             source: format!("Unsupported credential provider: {credential_provider_name}").into(),
@@ -712,7 +798,13 @@ enum CredentialProviderMetadata {
     Imds,
     Environment,
     WebIdentity,
-    Profile,
+    Profile {
+        name: Option<String>,
+        file: Option<String>,
+        // Hadoop's ProfileAWSCredentialsProvider reads only the credentials file, while the
+        // SDK spellings merge the SDK's config and credentials files.
+        credentials_only: bool,
+    },
     Static {
         is_valid: bool,
         access_key: String,
@@ -735,7 +827,7 @@ impl CredentialProviderMetadata {
             CredentialProviderMetadata::Imds => "Imds",
             CredentialProviderMetadata::Environment => "Environment",
             CredentialProviderMetadata::WebIdentity => "WebIdentity",
-            CredentialProviderMetadata::Profile => "Profile",
+            CredentialProviderMetadata::Profile { .. } => "Profile",
             CredentialProviderMetadata::Static { .. } => "Static",
             CredentialProviderMetadata::AssumeRole { .. } => "AssumeRole",
             CredentialProviderMetadata::Chain(..) => "Chain",
@@ -751,7 +843,17 @@ impl CredentialProviderMetadata {
             CredentialProviderMetadata::Imds => "Imds".to_string(),
             CredentialProviderMetadata::Environment => "Environment".to_string(),
             CredentialProviderMetadata::WebIdentity => "WebIdentity".to_string(),
-            CredentialProviderMetadata::Profile => "Profile".to_string(),
+            CredentialProviderMetadata::Profile { name, file, .. } => {
+                let overrides: Vec<String> = [("name", name), ("file", file)]
+                    .into_iter()
+                    .filter_map(|(key, value)| value.as_ref().map(|v| format!("{key}: {v}")))
+                    .collect();
+                if overrides.is_empty() {
+                    "Profile".to_string()
+                } else {
+                    format!("Profile({})", overrides.join(", "))
+                }
+            }
             CredentialProviderMetadata::Static { is_valid, .. } => {
                 format!("Static(valid: {is_valid})")
             }
@@ -814,11 +916,35 @@ impl CredentialProviderMetadata {
                     .build();
                 Ok(Arc::new(credential_provider))
             }
-            CredentialProviderMetadata::Profile => {
-                let credential_provider = ProfileFileCredentialsProvider::builder()
-                    .configure(&ProviderConfig::with_default_region().await)
-                    .build();
-                Ok(Arc::new(credential_provider))
+            CredentialProviderMetadata::Profile {
+                name,
+                file,
+                credentials_only,
+            } => {
+                let mut builder = ProfileFileCredentialsProvider::builder()
+                    .configure(&ProviderConfig::with_default_region().await);
+                if let Some(name) = name {
+                    builder = builder.profile_name(name);
+                }
+                // Hadoop's ProfileAWSCredentialsProvider loads the configured file, or the
+                // shared credentials file, as a credentials-format file and reads nothing
+                // else, so a same-name role profile in the SDK's config file never applies.
+                let credentials_file = match (file, credentials_only) {
+                    (Some(file), _) => Some(file.clone()),
+                    (None, true) => Some(default_shared_credentials_file(
+                        std::env::var("AWS_SHARED_CREDENTIALS_FILE").ok(),
+                        std::env::var("HOME").ok(),
+                    )),
+                    (None, false) => None,
+                };
+                if let Some(file) = credentials_file {
+                    builder = builder.profile_files(
+                        EnvConfigFiles::builder()
+                            .with_file(EnvConfigFileKind::Credentials, file)
+                            .build(),
+                    );
+                }
+                Ok(Arc::new(builder.build()))
             }
             CredentialProviderMetadata::Static {
                 is_valid,
@@ -974,6 +1100,20 @@ mod tests {
             self
         }
 
+        fn with_property(mut self, property: &str, value: &str) -> Self {
+            self.configs
+                .insert(format!("fs.s3a.{property}"), value.to_string());
+            self
+        }
+
+        fn with_bucket_property(mut self, bucket: &str, property: &str, value: &str) -> Self {
+            self.configs.insert(
+                format!("fs.s3a.bucket.{bucket}.{property}"),
+                value.to_string(),
+            );
+            self
+        }
+
         fn build(self) -> HashMap<String, String> {
             self.configs
         }
@@ -993,6 +1133,34 @@ mod tests {
             path,
             Path::from("/comet/spark-warehouse/part-00000.snappy.parquet")
         );
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)] // AWS credential providers and object_store call foreign functions
+    fn test_create_store_with_custom_endpoint() {
+        // object_store must accept the flag and endpoint pair in both addressing modes, and
+        // create_store enables allow_http so an http endpoint is usable
+        let url = Url::parse("s3a://test-bucket/comet/data.parquet").unwrap();
+        for path_style_access in ["false", "true"] {
+            let configs = TestConfigBuilder::new()
+                .with_credential_provider(HADOOP_ANONYMOUS)
+                .with_region("us-east-1")
+                .with_property("endpoint", "http://minio.internal:9000")
+                .with_property("path.style.access", path_style_access)
+                .build();
+            let (_object_store, path) =
+                create_store(&url, &configs, Duration::from_secs(300)).unwrap();
+            assert_eq!(path, Path::from("/comet/data.parquet"));
+        }
+
+        // An IP-literal endpoint must build without path.style.access being set
+        let configs = TestConfigBuilder::new()
+            .with_credential_provider(HADOOP_ANONYMOUS)
+            .with_region("us-east-1")
+            .with_property("endpoint", "http://127.0.0.1:9000")
+            .build();
+        let (_object_store, path) = create_store(&url, &configs, Duration::from_secs(300)).unwrap();
+        assert_eq!(path, Path::from("/comet/data.parquet"));
     }
 
     #[test]
@@ -1502,20 +1670,174 @@ mod tests {
     #[tokio::test]
     #[cfg_attr(miri, ignore)] // AWS credential providers call foreign functions
     async fn test_profile_credential_provider() {
+        // (configured name, configured file, expected name, expected file)
+        let cases = [
+            (None, None, None, None),
+            (Some("analytics"), None, Some("analytics"), None),
+            (
+                None,
+                Some("/etc/aws/credentials"),
+                None,
+                Some("/etc/aws/credentials"),
+            ),
+            (
+                Some("analytics"),
+                Some("/etc/aws/credentials"),
+                Some("analytics"),
+                Some("/etc/aws/credentials"),
+            ),
+            // Empty and blank values are treated as unset, other values are trimmed
+            (Some(""), Some("   "), None, None),
+            (
+                Some("  analytics  "),
+                Some(" /etc/aws/credentials "),
+                Some("analytics"),
+                Some("/etc/aws/credentials"),
+            ),
+        ];
+        for (name, file, expected_name, expected_file) in cases {
+            {
+                let provider_name = HADOOP_PROFILE;
+                let mut builder = TestConfigBuilder::new().with_credential_provider(provider_name);
+                if let Some(name) = name {
+                    builder = builder.with_property("auth.profile.name", name);
+                }
+                if let Some(file) = file {
+                    builder = builder.with_property("auth.profile.file", file);
+                }
+                let configs = builder.build();
+
+                let result =
+                    build_credential_provider(&configs, "test-bucket", Duration::from_secs(300))
+                        .await
+                        .unwrap();
+                let test_provider = result
+                    .expect("Should return a credential provider")
+                    .metadata();
+                assert_eq!(
+                    test_provider,
+                    CredentialProviderMetadata::Profile {
+                        name: expected_name.map(str::to_string),
+                        file: expected_file.map(str::to_string),
+                        credentials_only: true,
+                    },
+                    "provider {provider_name}, name {name:?}, file {file:?}"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    #[cfg_attr(miri, ignore)] // AWS credential providers call foreign functions
+    async fn test_sdk_profile_provider_spellings_ignore_the_profile_keys() {
+        // Hadoop constructs these spellings without its configuration, so the native side must
+        // resolve the SDK default profile too, even when the keys are set.
         for provider_name in [AWS_PROFILE, AWS_PROFILE_V1] {
             let configs = TestConfigBuilder::new()
                 .with_credential_provider(provider_name)
+                .with_property("auth.profile.name", "analytics")
+                .with_property("auth.profile.file", "/etc/aws/credentials")
                 .build();
-
-            let result =
+            let test_provider =
                 build_credential_provider(&configs, "test-bucket", Duration::from_secs(300))
                     .await
-                    .unwrap();
-            assert!(result.is_some(), "Should return a credential provider");
-
-            let test_provider = result.unwrap().metadata();
-            assert_eq!(test_provider, CredentialProviderMetadata::Profile);
+                    .unwrap()
+                    .expect("Should return a credential provider")
+                    .metadata();
+            assert_eq!(
+                test_provider,
+                CredentialProviderMetadata::Profile {
+                    name: None,
+                    file: None,
+                    credentials_only: false,
+                },
+                "provider {provider_name}"
+            );
         }
+    }
+
+    #[tokio::test]
+    #[cfg_attr(miri, ignore)] // AWS credential providers call foreign functions
+    async fn test_profile_credential_provider_per_bucket_override() {
+        // Each key is overridden independently, so a bucket can replace just the name or just
+        // the file while the other key keeps its global value
+        let configs = TestConfigBuilder::new()
+            .with_credential_provider(HADOOP_PROFILE)
+            .with_property("auth.profile.name", "global-profile")
+            .with_property("auth.profile.file", "/etc/aws/global-credentials")
+            .with_bucket_property("name-bucket", "auth.profile.name", "bucket-profile")
+            .with_bucket_property(
+                "file-bucket",
+                "auth.profile.file",
+                "/etc/aws/bucket-credentials",
+            )
+            .build();
+
+        let cases = [
+            (
+                "name-bucket",
+                "bucket-profile",
+                "/etc/aws/global-credentials",
+            ),
+            (
+                "file-bucket",
+                "global-profile",
+                "/etc/aws/bucket-credentials",
+            ),
+            (
+                "other-bucket",
+                "global-profile",
+                "/etc/aws/global-credentials",
+            ),
+        ];
+        for (bucket, expected_name, expected_file) in cases {
+            let result = build_credential_provider(&configs, bucket, Duration::from_secs(300))
+                .await
+                .unwrap();
+            let test_provider = result
+                .expect("Should return a credential provider")
+                .metadata();
+            assert_eq!(
+                test_provider,
+                CredentialProviderMetadata::Profile {
+                    name: Some(expected_name.to_string()),
+                    file: Some(expected_file.to_string()),
+                    credentials_only: true,
+                },
+                "bucket {bucket}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    #[cfg_attr(miri, ignore)] // AWS credential providers call foreign functions
+    async fn test_profile_credential_provider_in_chain() {
+        let configs = TestConfigBuilder::new()
+            .with_credential_provider(&format!(
+                "{AWS_ENVIRONMENT},{HADOOP_PROFILE},{AWS_INSTANCE_PROFILE}"
+            ))
+            .with_property("auth.profile.name", "analytics")
+            .with_property("auth.profile.file", "/etc/aws/credentials")
+            .build();
+
+        let result = build_credential_provider(&configs, "test-bucket", Duration::from_secs(300))
+            .await
+            .unwrap();
+        let test_provider = result
+            .expect("Should return a credential provider")
+            .metadata();
+        assert_eq!(
+            test_provider,
+            CredentialProviderMetadata::Chain(vec![
+                CredentialProviderMetadata::Environment,
+                CredentialProviderMetadata::Profile {
+                    name: Some("analytics".to_string()),
+                    file: Some("/etc/aws/credentials".to_string()),
+                    credentials_only: true,
+                },
+                CredentialProviderMetadata::Imds,
+            ])
+        );
     }
 
     #[tokio::test]
@@ -1966,75 +2288,470 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_s3_config_custom_endpoint() {
-        let cases = vec![
+    fn test_normalize_endpoint_virtual_hosted_style() {
+        // Virtual-hosted addressing inserts the bucket as the leading host label. The scheme,
+        // port and any path suffix are preserved and a trailing slash is dropped.
+        let cases = [
+            (
+                "custom.endpoint.com",
+                "https://test-bucket.custom.endpoint.com",
+            ),
+            (
+                "http://custom.endpoint.com",
+                "http://test-bucket.custom.endpoint.com",
+            ),
+            (
+                "https://custom.endpoint.com/",
+                "https://test-bucket.custom.endpoint.com",
+            ),
+            (
+                "http://minio.internal:9000",
+                "http://test-bucket.minio.internal:9000",
+            ),
+            (
+                "https://custom.endpoint.com:8443/",
+                "https://test-bucket.custom.endpoint.com:8443",
+            ),
+            (
+                "https://custom.endpoint.com/path/to/resource",
+                "https://test-bucket.custom.endpoint.com/path/to/resource",
+            ),
+            (
+                "https://custom.endpoint.com/path/to/resource/",
+                "https://test-bucket.custom.endpoint.com/path/to/resource",
+            ),
+            (
+                "s3.us-west-2.amazonaws.com",
+                "https://test-bucket.s3.us-west-2.amazonaws.com",
+            ),
+        ];
+        for (endpoint, expected) in cases {
+            assert_eq!(
+                normalize_endpoint(endpoint, "test-bucket", true),
+                Some(NormalizedEndpoint {
+                    endpoint: expected.to_string(),
+                    virtual_hosted_style_request: true,
+                }),
+                "endpoint {endpoint}"
+            );
+        }
+
+        // A dotted bucket over HTTPS stays path-style, as the AWS SDK addresses it, since the
+        // dotted host falls outside S3's wildcard certificate; over HTTP it is virtual-hosted.
+        assert_eq!(
+            normalize_endpoint("custom.endpoint.com", "my.dotted.bucket", true),
+            Some(NormalizedEndpoint {
+                endpoint: "https://custom.endpoint.com".to_string(),
+                virtual_hosted_style_request: false,
+            })
+        );
+        assert_eq!(
+            normalize_endpoint("http://custom.endpoint.com", "my.dotted.bucket", true),
+            Some(NormalizedEndpoint {
+                endpoint: "http://my.dotted.bucket.custom.endpoint.com".to_string(),
+                virtual_hosted_style_request: true,
+            })
+        );
+    }
+
+    #[test]
+    fn test_extract_s3_config_dotted_bucket_stays_path_style_on_default_endpoint() {
+        // No custom endpoint means the HTTPS AWS endpoint, where a dotted bucket must be
+        // addressed path-style whatever the flag says.
+        let configs = TestConfigBuilder::new().with_region("us-east-1").build();
+        let s3_configs = extract_s3_config_options(&configs, "review.dotted.bucket");
+        assert_eq!(
+            s3_configs.get(&AmazonS3ConfigKey::VirtualHostedStyleRequest),
+            Some(&"false".to_string())
+        );
+        assert!(!s3_configs.contains_key(&AmazonS3ConfigKey::Endpoint));
+
+        let configs = TestConfigBuilder::new()
+            .with_region("us-east-1")
+            .with_property("endpoint", "https://s3.us-east-1.amazonaws.com")
+            .build();
+        let s3_configs = extract_s3_config_options(&configs, "review.dotted.bucket");
+        assert_eq!(
+            s3_configs.get(&AmazonS3ConfigKey::VirtualHostedStyleRequest),
+            Some(&"false".to_string())
+        );
+        assert_eq!(
+            s3_configs.get(&AmazonS3ConfigKey::Endpoint),
+            Some(&"https://s3.us-east-1.amazonaws.com".to_string())
+        );
+
+        let s3_configs = extract_s3_config_options(&configs, "plainbucket");
+        assert_eq!(
+            s3_configs.get(&AmazonS3ConfigKey::VirtualHostedStyleRequest),
+            Some(&"true".to_string())
+        );
+
+        // A custom HTTP endpoint keeps virtual hosting for a dotted bucket, as the SDK does,
+        // since the certificate rule only applies to HTTPS.
+        let configs = TestConfigBuilder::new()
+            .with_property("endpoint", "http://storage.example.test")
+            .build();
+        let s3_configs = extract_s3_config_options(&configs, "review.dotted.bucket");
+        assert_eq!(
+            s3_configs.get(&AmazonS3ConfigKey::VirtualHostedStyleRequest),
+            Some(&"true".to_string())
+        );
+        assert_eq!(
+            s3_configs.get(&AmazonS3ConfigKey::Endpoint),
+            Some(&"http://review.dotted.bucket.storage.example.test".to_string())
+        );
+    }
+
+    #[tokio::test]
+    #[cfg_attr(miri, ignore)] // AWS credential providers call foreign functions
+    async fn test_hadoop_profile_provider_takes_the_forwarded_default_file() {
+        // With no configured file the JVM-resolved default applies; a configured file wins;
+        // the SDK spellings ignore both.
+        for (file, expected) in [
+            (None, Some("/synthetic/jvm-home/.aws/credentials")),
+            (Some("/etc/aws/credentials"), Some("/etc/aws/credentials")),
+        ] {
+            let mut builder = TestConfigBuilder::new()
+                .with_credential_provider(HADOOP_PROFILE)
+                .with_property(
+                    "comet.default.profile.file",
+                    "/synthetic/jvm-home/.aws/credentials",
+                );
+            if let Some(file) = file {
+                builder = builder.with_property("auth.profile.file", file);
+            }
+            let configs = builder.build();
+            let metadata =
+                build_credential_provider(&configs, "test-bucket", Duration::from_secs(300))
+                    .await
+                    .unwrap()
+                    .expect("Should return a credential provider")
+                    .metadata();
+            assert_eq!(
+                metadata,
+                CredentialProviderMetadata::Profile {
+                    name: None,
+                    file: expected.map(str::to_string),
+                    credentials_only: true,
+                }
+            );
+        }
+        let configs = TestConfigBuilder::new()
+            .with_credential_provider(AWS_PROFILE)
+            .with_property(
+                "comet.default.profile.file",
+                "/synthetic/jvm-home/.aws/credentials",
+            )
+            .build();
+        let metadata = build_credential_provider(&configs, "test-bucket", Duration::from_secs(300))
+            .await
+            .unwrap()
+            .expect("Should return a credential provider")
+            .metadata();
+        assert_eq!(
+            metadata,
+            CredentialProviderMetadata::Profile {
+                name: None,
+                file: None,
+                credentials_only: false,
+            }
+        );
+    }
+
+    #[test]
+    fn test_default_shared_credentials_file_matches_hadoop() {
+        assert_eq!(
+            default_shared_credentials_file(None, Some("/home/comet".to_string())),
+            "/home/comet/.aws/credentials"
+        );
+        assert_eq!(
+            default_shared_credentials_file(
+                Some("/etc/aws/shared".to_string()),
+                Some("/home/comet".to_string())
+            ),
+            "/etc/aws/shared"
+        );
+        assert_eq!(
+            default_shared_credentials_file(
+                Some("  ".to_string()),
+                Some("/home/comet".to_string())
+            ),
+            "/home/comet/.aws/credentials"
+        );
+    }
+
+    #[test]
+    fn test_normalize_endpoint_path_style() {
+        // Path-style leaves the endpoint as configured apart from the https default, since
+        // object_store appends the bucket itself
+        let cases = [
             ("custom.endpoint.com", "https://custom.endpoint.com"),
-            ("https://custom.endpoint.com", "https://custom.endpoint.com"),
+            ("http://custom.endpoint.com", "http://custom.endpoint.com"),
+            (
+                "https://custom.endpoint.com/",
+                "https://custom.endpoint.com/",
+            ),
+            ("http://minio.internal:9000", "http://minio.internal:9000"),
+            (
+                "https://custom.endpoint.com:8443/",
+                "https://custom.endpoint.com:8443/",
+            ),
             (
                 "https://custom.endpoint.com/path/to/resource",
                 "https://custom.endpoint.com/path/to/resource",
             ),
+            (
+                "s3.us-west-2.amazonaws.com",
+                "https://s3.us-west-2.amazonaws.com",
+            ),
         ];
-        for (endpoint, configured_endpoint) in cases {
-            let mut configs = HashMap::new();
-            configs.insert("fs.s3a.endpoint".to_string(), endpoint.to_string());
-            let s3_configs = extract_s3_config_options(&configs, "test-bucket");
+        for (endpoint, expected) in cases {
             assert_eq!(
-                s3_configs.get(&AmazonS3ConfigKey::Endpoint),
-                Some(&configured_endpoint.to_string())
+                normalize_endpoint(endpoint, "test-bucket", false),
+                Some(NormalizedEndpoint {
+                    endpoint: expected.to_string(),
+                    virtual_hosted_style_request: false,
+                }),
+                "endpoint {endpoint}"
+            );
+        }
+
+        assert_eq!(
+            normalize_endpoint("custom.endpoint.com", "my.dotted.bucket", false),
+            Some(NormalizedEndpoint {
+                endpoint: "https://custom.endpoint.com".to_string(),
+                virtual_hosted_style_request: false,
+            })
+        );
+    }
+
+    #[test]
+    fn test_normalize_endpoint_ip_host_forces_path_style() {
+        // The AWS SDK endpoint rules address IP-literal hosts path-style whatever the
+        // configuration says, since `bucket.127.0.0.1` is not a valid host
+        let cases = [
+            ("http://127.0.0.1:9000", "http://127.0.0.1:9000"),
+            ("http://127.0.0.1", "http://127.0.0.1"),
+            ("127.0.0.1:9000", "https://127.0.0.1:9000"),
+            ("http://[::1]:9000", "http://[::1]:9000"),
+            ("https://[::1]", "https://[::1]"),
+            ("[::1]:9000", "https://[::1]:9000"),
+        ];
+        for (endpoint, expected) in cases {
+            for virtual_hosted_style_request in [true, false] {
+                assert_eq!(
+                    normalize_endpoint(endpoint, "test-bucket", virtual_hosted_style_request),
+                    Some(NormalizedEndpoint {
+                        endpoint: expected.to_string(),
+                        virtual_hosted_style_request: false,
+                    }),
+                    "endpoint {endpoint}, requested virtual-hosted {virtual_hosted_style_request}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_normalize_endpoint_skips_default_aws_endpoint() {
+        for virtual_hosted_style_request in [true, false] {
+            assert_eq!(
+                normalize_endpoint(
+                    "s3.amazonaws.com",
+                    "test-bucket",
+                    virtual_hosted_style_request
+                ),
+                None
+            );
+            assert_eq!(
+                normalize_endpoint("", "test-bucket", virtual_hosted_style_request),
+                None
             );
         }
     }
 
     #[test]
-    fn test_extract_s3_config_custom_endpoint_with_virtual_hosted_style() {
-        let cases = vec![
+    fn test_extract_s3_config_path_style_access() {
+        // Hadoop defaults fs.s3a.path.style.access to false (virtual-hosted) and, like
+        // Configuration.getBoolean, falls back to that default for non-boolean text
+        let cases = [
+            (None, "true", "https://test-bucket.custom.endpoint.com"),
             (
-                "custom.endpoint.com",
-                "https://custom.endpoint.com/test-bucket",
+                Some("false"),
+                "true",
+                "https://test-bucket.custom.endpoint.com",
             ),
             (
-                "https://custom.endpoint.com",
-                "https://custom.endpoint.com/test-bucket",
+                Some("yes"),
+                "true",
+                "https://test-bucket.custom.endpoint.com",
             ),
-            (
-                "https://custom.endpoint.com/",
-                "https://custom.endpoint.com/test-bucket",
-            ),
-            (
-                "https://custom.endpoint.com/path/to/resource",
-                "https://custom.endpoint.com/path/to/resource/test-bucket",
-            ),
-            (
-                "https://custom.endpoint.com/path/to/resource/",
-                "https://custom.endpoint.com/path/to/resource/test-bucket",
-            ),
+            (Some("true"), "false", "https://custom.endpoint.com"),
+            (Some(" TRUE "), "false", "https://custom.endpoint.com"),
         ];
-        for (endpoint, configured_endpoint) in cases {
-            let mut configs = HashMap::new();
-            configs.insert("fs.s3a.endpoint".to_string(), endpoint.to_string());
-            configs.insert("fs.s3a.path.style.access".to_string(), "true".to_string());
+        for (path_style_access, expected_flag, expected_endpoint) in cases {
+            let mut builder =
+                TestConfigBuilder::new().with_property("endpoint", "custom.endpoint.com");
+            if let Some(value) = path_style_access {
+                builder = builder.with_property("path.style.access", value);
+            }
+            let s3_configs = extract_s3_config_options(&builder.build(), "test-bucket");
+            assert_eq!(
+                s3_configs.get(&AmazonS3ConfigKey::VirtualHostedStyleRequest),
+                Some(&expected_flag.to_string()),
+                "path.style.access {path_style_access:?}"
+            );
+            assert_eq!(
+                s3_configs.get(&AmazonS3ConfigKey::Endpoint),
+                Some(&expected_endpoint.to_string()),
+                "path.style.access {path_style_access:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_extract_s3_config_ip_endpoint_forces_path_style() {
+        // With path.style.access unset an IP-literal endpoint stays path-style and the flag
+        // handed to object_store agrees with the unchanged endpoint
+        for endpoint in [
+            "http://127.0.0.1:9000",
+            "http://127.0.0.1",
+            "http://[::1]:9000",
+            "http://[::1]",
+        ] {
+            let configs = TestConfigBuilder::new()
+                .with_property("endpoint", endpoint)
+                .build();
+            let s3_configs = extract_s3_config_options(&configs, "test-bucket");
+            assert_eq!(
+                s3_configs.get(&AmazonS3ConfigKey::VirtualHostedStyleRequest),
+                Some(&"false".to_string()),
+                "endpoint {endpoint}"
+            );
+            assert_eq!(
+                s3_configs.get(&AmazonS3ConfigKey::Endpoint),
+                Some(&endpoint.to_string()),
+                "endpoint {endpoint}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_extract_s3_config_http_endpoint_keeps_scheme() {
+        for (path_style_access, expected_endpoint) in [
+            ("false", "http://test-bucket.minio.internal:9000"),
+            ("true", "http://minio.internal:9000"),
+        ] {
+            let configs = TestConfigBuilder::new()
+                .with_property("endpoint", "http://minio.internal:9000")
+                .with_property("path.style.access", path_style_access)
+                .build();
             let s3_configs = extract_s3_config_options(&configs, "test-bucket");
             assert_eq!(
                 s3_configs.get(&AmazonS3ConfigKey::Endpoint),
-                Some(&configured_endpoint.to_string())
+                Some(&expected_endpoint.to_string()),
+                "path.style.access {path_style_access}"
             );
         }
+    }
+
+    #[test]
+    fn test_extract_s3_config_path_style_access_without_endpoint() {
+        // The flag is always handed to object_store so the default AWS endpoint follows the
+        // same addressing rule as a custom one
+        let configs = TestConfigBuilder::new().with_region("us-east-1").build();
+        let s3_configs = extract_s3_config_options(&configs, "test-bucket");
+        assert_eq!(
+            s3_configs.get(&AmazonS3ConfigKey::VirtualHostedStyleRequest),
+            Some(&"true".to_string())
+        );
+        assert!(!s3_configs.contains_key(&AmazonS3ConfigKey::Endpoint));
+
+        let configs = TestConfigBuilder::new()
+            .with_region("us-east-1")
+            .with_property("path.style.access", "true")
+            .build();
+        let s3_configs = extract_s3_config_options(&configs, "test-bucket");
+        assert_eq!(
+            s3_configs.get(&AmazonS3ConfigKey::VirtualHostedStyleRequest),
+            Some(&"false".to_string())
+        );
+        assert!(!s3_configs.contains_key(&AmazonS3ConfigKey::Endpoint));
+    }
+
+    #[test]
+    fn test_extract_s3_config_per_bucket_overrides() {
+        // A bucket can override both the endpoint and the addressing flag, in either direction
+        let configs = TestConfigBuilder::new()
+            .with_property("endpoint", "global.endpoint.com")
+            .with_property("path.style.access", "true")
+            .with_bucket_property("vh-bucket", "endpoint", "http://bucket.endpoint.com:9000")
+            .with_bucket_property("vh-bucket", "path.style.access", "false")
+            .build();
+
+        let s3_configs = extract_s3_config_options(&configs, "vh-bucket");
+        assert_eq!(
+            s3_configs.get(&AmazonS3ConfigKey::VirtualHostedStyleRequest),
+            Some(&"true".to_string())
+        );
+        assert_eq!(
+            s3_configs.get(&AmazonS3ConfigKey::Endpoint),
+            Some(&"http://vh-bucket.bucket.endpoint.com:9000".to_string())
+        );
+
+        let s3_configs = extract_s3_config_options(&configs, "other-bucket");
+        assert_eq!(
+            s3_configs.get(&AmazonS3ConfigKey::VirtualHostedStyleRequest),
+            Some(&"false".to_string())
+        );
+        assert_eq!(
+            s3_configs.get(&AmazonS3ConfigKey::Endpoint),
+            Some(&"https://global.endpoint.com".to_string())
+        );
+
+        let configs = TestConfigBuilder::new()
+            .with_property("endpoint", "global.endpoint.com")
+            .with_property("path.style.access", "false")
+            .with_bucket_property("ps-bucket", "path.style.access", "true")
+            .build();
+
+        let s3_configs = extract_s3_config_options(&configs, "ps-bucket");
+        assert_eq!(
+            s3_configs.get(&AmazonS3ConfigKey::VirtualHostedStyleRequest),
+            Some(&"false".to_string())
+        );
+        assert_eq!(
+            s3_configs.get(&AmazonS3ConfigKey::Endpoint),
+            Some(&"https://global.endpoint.com".to_string())
+        );
+
+        let s3_configs = extract_s3_config_options(&configs, "other-bucket");
+        assert_eq!(
+            s3_configs.get(&AmazonS3ConfigKey::VirtualHostedStyleRequest),
+            Some(&"true".to_string())
+        );
+        assert_eq!(
+            s3_configs.get(&AmazonS3ConfigKey::Endpoint),
+            Some(&"https://other-bucket.global.endpoint.com".to_string())
+        );
     }
 
     #[test]
     fn test_extract_s3_config_ignore_default_endpoint() {
-        let mut configs = HashMap::new();
-        configs.insert(
-            "fs.s3a.endpoint".to_string(),
-            "s3.amazonaws.com".to_string(),
-        );
-        let s3_configs = extract_s3_config_options(&configs, "test-bucket");
-        assert!(s3_configs.is_empty());
+        for path_style_access in ["false", "true"] {
+            let configs = TestConfigBuilder::new()
+                .with_property("endpoint", "s3.amazonaws.com")
+                .with_property("path.style.access", path_style_access)
+                .build();
+            let s3_configs = extract_s3_config_options(&configs, "test-bucket");
+            assert!(!s3_configs.contains_key(&AmazonS3ConfigKey::Endpoint));
 
-        configs.insert("fs.s3a.endpoint".to_string(), "".to_string());
-        let s3_configs = extract_s3_config_options(&configs, "test-bucket");
-        assert!(s3_configs.is_empty());
+            let configs = TestConfigBuilder::new()
+                .with_property("endpoint", "")
+                .with_property("path.style.access", path_style_access)
+                .build();
+            let s3_configs = extract_s3_config_options(&configs, "test-bucket");
+            assert!(!s3_configs.contains_key(&AmazonS3ConfigKey::Endpoint));
+        }
     }
 
     #[test]
@@ -2057,6 +2774,29 @@ mod tests {
         assert_eq!(
             assume_role_metadata.simple_string(),
             "AssumeRole(role: arn:aws:iam::123456789012:role/test-role, session: test-session, base: Environment)"
+        );
+
+        // Test Profile provider with and without overrides
+        let profile_metadata = CredentialProviderMetadata::Profile {
+            name: None,
+            file: None,
+            credentials_only: false,
+        };
+        assert_eq!(profile_metadata.simple_string(), "Profile");
+        let profile_metadata = CredentialProviderMetadata::Profile {
+            name: Some("analytics".to_string()),
+            file: None,
+            credentials_only: true,
+        };
+        assert_eq!(profile_metadata.simple_string(), "Profile(name: analytics)");
+        let profile_metadata = CredentialProviderMetadata::Profile {
+            name: Some("analytics".to_string()),
+            file: Some("/etc/aws/credentials".to_string()),
+            credentials_only: true,
+        };
+        assert_eq!(
+            profile_metadata.simple_string(),
+            "Profile(name: analytics, file: /etc/aws/credentials)"
         );
 
         // Test Chain provider
