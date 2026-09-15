@@ -373,6 +373,12 @@ trait ShimSparkErrorConverter {
           QueryExecutionErrors.readCurrentFileNotFoundError(
             new FileNotFoundException(s"File $path does not exist")))
 
+      case "ParquetTimestampOverflow" =>
+        val filePath = params.get("filePath").map(_.toString).getOrElse("")
+        Some(
+          QueryExecutionErrors
+            .cannotReadFilesError(new ArithmeticException("long overflow"), filePath))
+
       case "CannotReadFile" =>
         // A per-file read failure of a readable-but-broken file (corrupt/truncated parquet,
         // object_store, IO) classified by typed DataFusionError variant on the native side. Wrap
