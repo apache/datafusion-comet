@@ -35,7 +35,7 @@
 //!   --partitions 200 --codec lz4
 //! ```
 
-use arrow::datatypes::{DataType, SchemaRef};
+use arrow::datatypes::{DataType, Schema, SchemaRef};
 use clap::Parser;
 use datafusion::execution::config::SessionConfig;
 use datafusion::execution::runtime_env::RuntimeEnvBuilder;
@@ -446,7 +446,19 @@ async fn execute_shuffle_write(
     data_file: String,
     index_file: String,
 ) -> datafusion::common::Result<(MetricsSet, MetricsSet)> {
-    let config = SessionConfig::new().with_batch_size(batch_size);
+    let mut config = SessionConfig::new().with_batch_size(batch_size);
+    // Comet never hands the shuffle writer view types: the serde maps Spark `String` to `Utf8`,
+    // and the planner casts UDF results back from `Utf8View`/`BinaryView` to the non-view
+    // variants. DataFusion's parquet reader defaults `schema_force_view_types` to true, which
+    // would feed this benchmark a data shape production never produces -- and one the writer
+    // handles far worse, since a batch at or above `batch_size` rows bypasses the
+    // `BatchCoalescer` and an interleaved view array is serialized with the backing data
+    // buffers of every input batch it drew rows from.
+    config
+        .options_mut()
+        .execution
+        .parquet
+        .schema_force_view_types = false;
     let mut runtime_builder = RuntimeEnvBuilder::new();
     if let Some(mem_limit) = memory_limit {
         runtime_builder = runtime_builder.with_memory_limit(mem_limit, 1.0);
@@ -466,6 +478,9 @@ async fn execute_shuffle_write(
         .create_physical_plan()
         .await
         .expect("Failed to create physical plan");
+
+    // The header schema is read straight from the file, so check what reaches the writer.
+    reject_view_types(&parquet_plan.schema());
 
     let input: Arc<dyn ExecutionPlan> = if parquet_plan
         .properties()
@@ -631,6 +646,38 @@ fn parse_hash_columns(s: &str) -> Vec<usize> {
         .collect()
 }
 
+/// Fails the run if the schema reaching the shuffle writer carries Arrow view types, which
+/// Comet does not produce and this writer serializes with every backing buffer attached.
+fn reject_view_types(schema: &Schema) {
+    fn find_view(data_type: &DataType) -> Option<&DataType> {
+        match data_type {
+            DataType::Utf8View | DataType::BinaryView => Some(data_type),
+            DataType::List(field)
+            | DataType::LargeList(field)
+            | DataType::FixedSizeList(field, _)
+            | DataType::Map(field, _) => find_view(field.data_type()),
+            DataType::Struct(fields) => fields.iter().find_map(|f| find_view(f.data_type())),
+            DataType::Dictionary(_, values) => find_view(values),
+            _ => None,
+        }
+    }
+
+    let offenders = schema
+        .fields()
+        .iter()
+        .filter_map(|field| {
+            find_view(field.data_type()).map(|found| format!("{} ({found})", field.name()))
+        })
+        .collect::<Vec<_>>();
+
+    assert!(
+        offenders.is_empty(),
+        "Execution schema carries Arrow view types that Comet does not produce: {}. \
+         Re-check `schema_force_view_types` before trusting any measurement from this run.",
+        offenders.join(", ")
+    );
+}
+
 fn describe_schema(schema: &arrow::datatypes::Schema) -> String {
     let mut counts = std::collections::HashMap::new();
     for field in schema.fields() {
@@ -645,6 +692,9 @@ fn describe_schema(schema: &arrow::datatypes::Schema) -> String {
             | DataType::UInt64 => "int",
             DataType::Float16 | DataType::Float32 | DataType::Float64 => "float",
             DataType::Utf8 | DataType::LargeUtf8 => "string",
+            // named, not folded into "string"/"binary", so a view schema is visible in the header
+            DataType::Utf8View => "stringview",
+            DataType::BinaryView => "binaryview",
             DataType::Boolean => "bool",
             DataType::Date32 | DataType::Date64 => "date",
             DataType::Decimal128(_, _) | DataType::Decimal256(_, _) => "decimal",
@@ -683,5 +733,64 @@ fn format_bytes(bytes: usize) -> String {
         format!("{:.2} KiB", bytes as f64 / 1024.0)
     } else {
         format!("{bytes} B")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::reject_view_types;
+    use arrow::datatypes::{DataType, Field, Fields, Schema};
+    use std::sync::Arc;
+
+    fn schema_of(data_type: DataType) -> Schema {
+        Schema::new(vec![
+            Field::new("plain", DataType::Int32, false),
+            Field::new("subject", data_type, true),
+        ])
+    }
+
+    #[test]
+    fn plain_schema_is_accepted() {
+        reject_view_types(&schema_of(DataType::Utf8));
+    }
+
+    #[test]
+    #[should_panic(expected = "subject (Utf8View)")]
+    fn top_level_string_view_is_rejected() {
+        reject_view_types(&schema_of(DataType::Utf8View));
+    }
+
+    #[test]
+    #[should_panic(expected = "subject (BinaryView)")]
+    fn top_level_binary_view_is_rejected() {
+        reject_view_types(&schema_of(DataType::BinaryView));
+    }
+
+    #[test]
+    #[should_panic(expected = "subject (Utf8View)")]
+    fn view_nested_in_a_list_is_rejected() {
+        reject_view_types(&schema_of(DataType::List(Arc::new(Field::new(
+            "item",
+            DataType::Utf8View,
+            true,
+        )))));
+    }
+
+    #[test]
+    #[should_panic(expected = "subject (Utf8View)")]
+    fn view_nested_in_a_struct_is_rejected() {
+        reject_view_types(&schema_of(DataType::Struct(Fields::from(vec![
+            Field::new("a", DataType::Int64, true),
+            Field::new("b", DataType::Utf8View, true),
+        ]))));
+    }
+
+    #[test]
+    #[should_panic(expected = "subject (Utf8View)")]
+    fn view_behind_a_dictionary_is_rejected() {
+        reject_view_types(&schema_of(DataType::Dictionary(
+            Box::new(DataType::Int32),
+            Box::new(DataType::Utf8View),
+        )));
     }
 }
