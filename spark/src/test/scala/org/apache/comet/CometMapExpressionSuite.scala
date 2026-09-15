@@ -162,9 +162,11 @@ class CometMapExpressionSuite extends CometTestBase {
 
   test("map_from_arrays - key and value arrays of different lengths are rejected") {
     withMapBuilderTable { table =>
-      // Spark reports this through a `_LEGACY_ERROR_TEMP_*` condition whose number moves between
-      // Spark versions, so hold the two engines to each other rather than naming the condition.
-      checkSparkErrorParity(sql(s"SELECT map_from_arrays(array(k, k + 1), array(v)) FROM $table"))
+      // Spark reports this through a legacy condition rather than a named one, but the number is
+      // the same in every version Comet supports (checked in 3.4.3, 3.5.8 and 4.1.3).
+      checkSparkError(
+        sql(s"SELECT map_from_arrays(array(k, k + 1), array(v)) FROM $table"),
+        "_LEGACY_ERROR_TEMP_2128")
     }
   }
 

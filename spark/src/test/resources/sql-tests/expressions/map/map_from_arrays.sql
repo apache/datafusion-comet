@@ -74,7 +74,8 @@ SELECT map_from_arrays(array(CAST(NULL AS STRING), NULL), array(1, 2))
 query expect_error(DUPLICATED_MAP_KEY)
 SELECT map_from_arrays(array('a', 'a'), array(1, 2))
 
--- key and value arrays of different lengths. Spark reports this through a `_LEGACY_ERROR_TEMP_*`
--- condition whose number moves between Spark versions, so match on the message instead.
+-- key and value arrays of different lengths. Spark reports this through a legacy condition,
+-- `_LEGACY_ERROR_TEMP_2128` in every version Comet supports; matching on the message keeps the
+-- fixture readable.
 query expect_error(must have the same length)
 SELECT map_from_arrays(array('a', 'b'), array(1))
