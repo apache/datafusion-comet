@@ -32,8 +32,9 @@
 //! restatement.
 
 use crate::SparkError;
-use arrow::array::{Array, ArrayRef, AsArray, StructArray};
+use arrow::array::{Array, ArrayRef, AsArray, StructArray, UInt32Array};
 use arrow::buffer::NullBuffer;
+use arrow::compute::take;
 use arrow::datatypes::{DataType, FieldRef};
 use datafusion::common::{exec_err, DataFusionError, Result};
 use datafusion::logical_expr::{
@@ -82,7 +83,8 @@ impl ScalarUDFImpl for SparkMapFromArrays {
     }
 
     fn invoke_with_args(&self, args: ScalarFunctionArgs) -> Result<ColumnarValue> {
-        let args = expand_scalars(args)?;
+        let mut args = expand_scalars(args)?;
+        compact_list_arguments(&mut args)?;
         match args.args.as_slice() {
             [ColumnarValue::Array(keys), ColumnarValue::Array(values)] => {
                 validate_map_from_arrays(keys, values)?
@@ -133,7 +135,8 @@ impl ScalarUDFImpl for SparkMapFromEntries {
     }
 
     fn invoke_with_args(&self, args: ScalarFunctionArgs) -> Result<ColumnarValue> {
-        let args = expand_scalars(args)?;
+        let mut args = expand_scalars(args)?;
+        compact_list_arguments(&mut args)?;
         match args.args.as_slice() {
             [ColumnarValue::Array(entries)] => validate_map_from_entries(entries)?,
             other => return exec_err!("map_from_entries expects 1 argument, got {}", other.len()),
@@ -201,6 +204,47 @@ fn expand_scalars(mut args: ScalarFunctionArgs) -> Result<ScalarFunctionArgs> {
         }
     }
     Ok(args)
+}
+
+/// Rebuilds any list argument whose entries do not start at offset zero.
+///
+/// The upstream kernels read each row's entries at its own offset but build the mask that selects
+/// the surviving keys from zero, then apply that mask to the list's whole values array. Arrow's
+/// `filter` accepts a predicate shorter than the array it filters, so on a sliced argument the
+/// mismatch silently selects keys belonging to earlier rows instead of raising. A `LIMIT` above a
+/// projection is enough to produce one, so bring the argument back to offset zero first.
+fn compact_list_arguments(args: &mut ScalarFunctionArgs) -> Result<()> {
+    for arg in args.args.iter_mut() {
+        if let ColumnarValue::Array(array) = arg {
+            if !entries_start_at_zero(array) {
+                let indices = UInt32Array::from_iter_values(0..array.len() as u32);
+                *arg = ColumnarValue::Array(take(array.as_ref(), &indices, None)?);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Whether a list argument's values hold exactly the entries its offsets address, which is what
+/// the upstream kernels assume. Any other array type is left alone.
+fn entries_start_at_zero(array: &ArrayRef) -> bool {
+    match array.data_type() {
+        DataType::List(_) => {
+            let list = array.as_list::<i32>();
+            let offsets = list.offsets();
+            offsets[0] == 0 && offsets[offsets.len() - 1] as usize == list.values().len()
+        }
+        DataType::LargeList(_) => {
+            let list = array.as_list::<i64>();
+            let offsets = list.offsets();
+            offsets[0] == 0 && offsets[offsets.len() - 1] as usize == list.values().len()
+        }
+        DataType::FixedSizeList(_, size) => {
+            let list = array.as_fixed_size_list();
+            list.values().len() == list.len() * *size as usize
+        }
+        _ => true,
+    }
 }
 
 /// Rejects the inputs Spark's `MapFromArrays` rejects before building the map: a row whose key
@@ -343,7 +387,7 @@ mod tests {
     use super::*;
     use arrow::array::{Int32Array, ListArray, MapArray, StringArray};
     use arrow::buffer::OffsetBuffer;
-    use arrow::datatypes::{Field, Fields};
+    use arrow::datatypes::{Field, Fields, Int32Type};
     use datafusion::common::config::{ConfigOptions, MapKeyDedupPolicy};
     use datafusion::common::ScalarValue;
 
@@ -632,6 +676,71 @@ mod tests {
             .unwrap(),
         );
         assert_eq!(result.value_offsets(), &[0, 2]);
+    }
+
+    /// A `LIMIT` above a projection hands the kernel a sliced list. The mask the upstream helper
+    /// builds is zero-based while it reads entries at each row's own offset, so without
+    /// `compact_list_arguments` this reads a preceding row's key instead of raising.
+    #[test]
+    fn map_from_arrays_reads_the_right_row_of_a_sliced_list() {
+        let keys = int_list(Int32Array::from(vec![10, 20]), &[0, 1, 2], None);
+        let values = string_list(
+            StringArray::from(vec![Some("100"), Some("200")]),
+            &[0, 1, 2],
+            None,
+        );
+        let result = map_result(
+            invoke(
+                &SparkMapFromArrays::default(),
+                vec![keys.slice(1, 1), values.slice(1, 1)],
+                MapKeyDedupPolicy::Exception,
+            )
+            .unwrap(),
+        );
+        assert_eq!(result.len(), 1);
+        assert_eq!(
+            result
+                .entries()
+                .column(0)
+                .as_primitive::<Int32Type>()
+                .value(0),
+            20
+        );
+        assert_eq!(
+            result.entries().column(1).as_string::<i32>().value(0),
+            "200"
+        );
+    }
+
+    #[test]
+    fn map_from_entries_reads_the_right_row_of_a_sliced_list() {
+        let entries = entry_list(
+            Int32Array::from(vec![10, 20]),
+            StringArray::from(vec![Some("100"), Some("200")]),
+            &[0, 1, 2],
+            None,
+        );
+        let result = map_result(
+            invoke(
+                &SparkMapFromEntries::default(),
+                vec![entries.slice(1, 1)],
+                MapKeyDedupPolicy::Exception,
+            )
+            .unwrap(),
+        );
+        assert_eq!(result.len(), 1);
+        assert_eq!(
+            result
+                .entries()
+                .column(0)
+                .as_primitive::<Int32Type>()
+                .value(0),
+            20
+        );
+        assert_eq!(
+            result.entries().column(1).as_string::<i32>().value(0),
+            "200"
+        );
     }
 
     #[test]
