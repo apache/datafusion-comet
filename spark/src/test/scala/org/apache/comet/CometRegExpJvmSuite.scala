@@ -189,6 +189,9 @@ class CometRegExpJvmSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   private def explainOf(df: org.apache.spark.sql.DataFrame): String =
     new ExtendedExplainInfo().generateExtendedInfo(df.queryExecution.executedPlan)
 
+  private def codegenDispatchExpressions(df: org.apache.spark.sql.DataFrame): Seq[String] =
+    new ExtendedExplainInfo().getCodegenDispatchExpressions(df.queryExecution.executedPlan)
+
   private def assertSparkRegexError(query: String): Unit = {
     def collectError(): Throwable =
       intercept[Throwable](sql(query).collect())
@@ -622,7 +625,7 @@ class CometRegExpJvmSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         checkSparkAnswerAndOperator(df)
         val explain = explainOf(df)
         assert(
-          explain.contains("JVM codegen dispatcher: rlike"),
+          codegenDispatchExpressions(df).contains("rlike"),
           s"expected dispatcher for collated subject, got:\n$explain")
       }
     }
@@ -636,7 +639,7 @@ class CometRegExpJvmSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         checkSparkAnswerAndOperator(df)
         val explain = explainOf(df)
         assert(
-          explain.contains("JVM codegen dispatcher: rlike"),
+          codegenDispatchExpressions(df).contains("rlike"),
           s"expected dispatcher for collated pattern, got:\n$explain")
       }
     }
@@ -651,7 +654,7 @@ class CometRegExpJvmSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           checkSparkAnswerAndOperator(df)
           val explain = explainOf(df)
           assert(
-            explain.contains("JVM codegen dispatcher: rlike"),
+            codegenDispatchExpressions(df).contains("rlike"),
             s"expected dispatcher for collated subject with allowIncompatible, got:\n$explain")
         }
       }
@@ -667,7 +670,7 @@ class CometRegExpJvmSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           checkSparkAnswerAndOperator(df)
           val explain = explainOf(df)
           assert(
-            explain.contains("JVM codegen dispatcher: rlike"),
+            codegenDispatchExpressions(df).contains("rlike"),
             s"expected dispatcher for collated pattern with allowIncompatible, got:\n$explain")
         }
       }
