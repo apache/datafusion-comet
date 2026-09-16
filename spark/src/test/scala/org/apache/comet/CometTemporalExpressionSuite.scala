@@ -176,8 +176,10 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
         SQLConf.SESSION_LOCAL_TIMEZONE.key -> tz,
         CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "true") {
         for (format <- CometTruncTimestamp.supportedFormats) {
-          checkSparkAnswerAndOperator(
-            s"SELECT c0, date_trunc('$format', c0) from tbl order by c0")
+          checkSparkAnswerAndImpl(
+            s"SELECT c0, date_trunc('$format', c0) from tbl order by c0",
+            native = Seq.empty,
+            dispatched = Seq("date_trunc"))
         }
       }
     }
@@ -213,10 +215,13 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
     for (tz <- nonUtcTimezones) {
       withSQLConf(
         SQLConf.SESSION_LOCAL_TIMEZONE.key -> tz,
-        "spark.comet.expression.TruncTimestamp.allowIncompatible" -> "true") {
+        "spark.comet.expression.TruncTimestamp.allowIncompatible" -> "true",
+        CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "false") {
         for (format <- CometTruncTimestamp.supportedFormats) {
-          checkSparkAnswerAndOperator(
-            s"SELECT c0, date_trunc('$format', c0) from tbl order by c0")
+          checkSparkAnswerAndImpl(
+            s"SELECT c0, date_trunc('$format', c0) from tbl order by c0",
+            native = Seq("date_trunc"),
+            dispatched = Seq.empty)
         }
       }
     }
@@ -602,8 +607,10 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
     withSQLConf(
       SQLConf.SESSION_LOCAL_TIMEZONE.key -> "UTC",
       CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "true") {
-      checkSparkAnswerAndOperator(
-        "SELECT c0, date_format(c0, 'yyyy-MM-dd EEEE') from tbl order by c0")
+      checkSparkAnswerAndImpl(
+        "SELECT c0, date_format(c0, 'yyyy-MM-dd EEEE') from tbl order by c0",
+        native = Seq.empty,
+        dispatched = Seq("date_format"))
     }
   }
 
@@ -629,8 +636,10 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
       withSQLConf(
         SQLConf.SESSION_LOCAL_TIMEZONE.key -> tz,
         CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "true") {
-        checkSparkAnswerAndOperator(
-          "SELECT c0, date_format(c0, 'yyyy-MM-dd HH:mm:ss') from tbl order by c0")
+        checkSparkAnswerAndImpl(
+          "SELECT c0, date_format(c0, 'yyyy-MM-dd HH:mm:ss') from tbl order by c0",
+          native = Seq.empty,
+          dispatched = Seq("date_format"))
       }
     }
   }
@@ -659,13 +668,15 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
     for (tz <- nonUtcTimezones) {
       withSQLConf(
         SQLConf.SESSION_LOCAL_TIMEZONE.key -> tz,
-        "spark.comet.expression.DateFormatClass.allowIncompatible" -> "true") {
+        "spark.comet.expression.DateFormatClass.allowIncompatible" -> "true",
+        CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "false") {
         // Native to_char results may diverge from Spark for non-UTC timezones (the reason the
         // JVM UDF is the default), so we only check that execution stays inside Comet. ORDER BY
         // is omitted to keep the plan free of AQEShuffleRead.
         val df = sql("SELECT c0, date_format(c0, 'yyyy-MM-dd') from tbl")
         df.collect()
         checkCometOperators(stripAQEPlan(df.queryExecution.executedPlan))
+        assertExpressionImpl(df.queryExecution.executedPlan, Seq("date_format"), Seq.empty)
       }
     }
   }
