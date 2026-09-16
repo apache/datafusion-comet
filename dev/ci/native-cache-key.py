@@ -25,24 +25,24 @@ build commands in our workflows; it is not a general local-build cache.
 
 import argparse
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
-import runpy
 import subprocess
 
 
 # Share both the input patterns and their glob semantics with main's warmer.
-CHANGES = runpy.run_path(str(Path(__file__).with_name("compute-changes.py")))
+SPEC = importlib.util.spec_from_file_location("compute_changes", Path(__file__).with_name("compute-changes.py"))
+CHANGES = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(CHANGES)
 
 
 def digest(value):
-    """Return a stable SHA-256 for JSON-compatible build inputs."""
     return hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
 
 
 def command(args, cwd):
-    """Read command stdout in cwd; missing tools or unsuccessful commands fail CI."""
     return subprocess.check_output(args, cwd=cwd, text=True).strip()
 
 
@@ -54,7 +54,7 @@ def source_inputs(root, profile="ci"):
     builds omit benchmarks; debug checks compile them. Trust only this checkout
     for the Git read: container steps can run as a different owner than checkout.
     """
-    patterns = CHANGES["NATIVE_LIBRARY_INPUTS" if profile == "ci" else "NATIVE_BUILD_INPUTS"]
+    patterns = CHANGES.NATIVE_LIBRARY_INPUTS if profile == "ci" else CHANGES.NATIVE_BUILD_INPUTS
     inventory = command(["git", "-c", f"safe.directory={root}",
                          "ls-files", "--stage", "-z"], root)
     sources = {}
@@ -62,7 +62,7 @@ def source_inputs(root, profile="ci"):
         if not record:
             continue
         metadata, name = record.split("\t", 1)
-        if CHANGES["matches"](patterns, [name]):
+        if CHANGES.matches(patterns, [name]):
             sources[name] = [metadata.split()[0],
                              hashlib.sha256((root / name).read_bytes()).hexdigest()]
     dependencies = {name: value for name, value in sources.items()
@@ -75,9 +75,10 @@ def environment_inputs(root, env):
 
     Rust's versions include the compiler commit; dpkg identifies the installed
     C/C++/protobuf tools and system libraries. The JDK release file identifies
-    the vendor/build supplying JNI headers and libjvm. Paths and RUSTFLAGS are
-    included because linking can embed them. Native producer workflows/actions
-    in the source map cover how these tools are configured and invoked.
+    the vendor/build supplying JNI headers and libjvm. Record build overrides,
+    including target-qualified cc variables and HDFS linking options, without
+    including unrelated per-run GitHub variables. The shared setup/build actions
+    are hashed separately; caller test configuration does not affect the library.
     """
     java_home = Path(env["JAVA_HOME"])
     return {
@@ -91,7 +92,12 @@ def environment_inputs(root, env):
         "java_home": str(java_home),
         "java_release": (java_home / "release").read_text(),
         "cargo_home": env.get("CARGO_HOME", str(Path.home() / ".cargo")),
-        "rustflags": env["RUSTFLAGS"],
+        "env": {name: value for name, value in env.items()
+                if name.startswith(("CARGO_", "RUST", "HOST_", "TARGET_", "HDFS_"))
+                or name.split("_", 1)[0] in {"CC", "CXX", "CFLAGS", "CXXFLAGS", "CXXSTDLIB",
+                                           "LDFLAGS", "AR", "ARFLAGS", "RANLIB", "RANLIBFLAGS", "PROTOC"}
+                or name in {"JAVA_HOME", "PATH", "HADOOP_HOME", "DOCS_RS",
+                            "CRATE_CC_NO_DEFAULTS", "CROSS_COMPILE"}},
     }
 
 
