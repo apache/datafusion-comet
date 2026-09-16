@@ -426,12 +426,14 @@ an incremental cache and runs `cargo build --locked --profile ci`. Artifacts and
 downstream tests use the same paths in either case.
 
 `dev/ci/native-cache-key.py` snapshots tracked native/protobuf/dependency files,
-shared JVM inputs, build configuration and CI definitions before Cargo generates
-source files. The key also includes Rust versions, installed system package
+Cargo configuration and the native build recipes before Cargo generates source
+files. The key also includes Rust versions, installed system package
 versions, architecture, JDK release/path and compiler flags. The helper targets
 our official Rust container and `setup-builder`, not arbitrary local toolchains.
-Spark-only edits and generated files preserve the key; native/protobuf changes
-invalidate it. The shared action uses portable `x86-64-v3` code generation.
+Spark-only edits, documentation, unrelated workflows and generated files preserve
+the key; native/protobuf changes invalidate it. Benchmarks enter the debug cache
+key but not the library key. The shared action uses portable `x86-64-v3` code
+generation.
 
 The incremental cache contains the effective `CARGO_HOME` registry/git directories
 and `native/target`. Its dependency prefix permits reuse after source changes,
@@ -440,10 +442,13 @@ key and continues to run all checks and tests.
 
 Only pushes to `main` save either cache. Main always compiles to keep the
 incremental cache warm. Other runs consume matching entries; a cold or evicted
-cache builds normally. GitHub Actions handles cache storage and restoration.
+cache builds normally. Changes to shared native inputs owned by other workflows
+also trigger main's cache warmer. GitHub Actions handles cache storage and
+restoration.
 
-Preflight tests key invalidation, generated-file stability and container checkout
-ownership. After main populates the new namespace, verify a hosted library hit
+Preflight tests key invalidation, generated-file stability, container checkout
+ownership, and that every binary-key input triggers main's cache warmer. After
+main populates the new namespace, verify a hosted library hit
 by checking that `Restore native library cache` reports an exact hit and the
 Cargo steps skip, while the normal artifact upload and downstream tests pass.
 

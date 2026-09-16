@@ -573,11 +573,22 @@ def event_allows(job, event):
 
 
 def compute(files, event):
-    """Return {job: bool}, folding the path filter and the event policy."""
-    return {
+    """Return job flags, including main's warmer for shared native cache inputs."""
+    selected = {
         name: event_allows(name, event) and matches(patterns, files)
         for name, patterns in FILTERS.items()
     }
+    # These native-key inputs have no ordinary Linux route. Warm main after
+    # they change, without adding the full Linux pipeline to contrib-only PRs.
+    if event.get("name") == "push" and matches([
+        "contrib/*/native/**", ".cargo/**", "rust-toolchain",
+        ".github/workflows/spark_sql_test_reusable.yml",
+        ".github/workflows/iceberg_spark_test_reusable.yml",
+        ".github/workflows/spark_sql_writer_tests.yml",
+        "!**.md", "!**/benches/**",
+    ], files):
+        selected["build_linux"] = True
+    return selected
 
 
 def event_from_env():
