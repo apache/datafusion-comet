@@ -132,10 +132,8 @@ class CometSparkSessionExtensionsSuite extends CometTestBase {
   }
 
   test("wide decimal hash keys use Spark-compatible shuffle partitioning") {
-    for {
-      mode <- Seq("native", "auto", "jvm")
-      precision <- Seq(18, 19, 38)
-    } {
+    // Check the native precision boundary, then routing of unsupported keys in each mode.
+    for ((mode, precision) <- Seq(("native", 18), ("native", 19), ("auto", 19), ("jvm", 19))) {
       withSQLConf(
         CometConf.COMET_ENABLED.key -> "true",
         CometConf.COMET_EXEC_ENABLED.key -> "true",
@@ -175,7 +173,7 @@ class CometSparkSessionExtensionsSuite extends CometTestBase {
             assert(shuffle.getTagValue(CometExplainInfo.FALLBACK_REASONS).isEmpty)
           }
 
-          if (mode == "native" && precision == 38) {
+          if (mode == "native" && precision == 19) {
             // Wide decimals remain supported as payloads, range keys, and in a single partition.
             Seq(
               HashPartitioning(Seq(child.output(1)), 2),

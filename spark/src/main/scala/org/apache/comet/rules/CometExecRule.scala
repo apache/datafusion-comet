@@ -1165,11 +1165,8 @@ case class CometExecRule(session: SparkSession)
       case shuffle: ShuffleExchangeExec =>
         revertChain(shuffle.child).map(child => shuffle.withNewChildren(Seq(child)))
 
-      case _: ShuffleQueryStageExec | _: ReusedExchangeExec =>
-        // A stage owns (and may already have materialized) its buffers. Never rewrite it here.
-        // The whole-plan QueryStagePrep pass must tag the Partial before stages are created;
-        // that tag keeps it in Spark when the rule is reapplied to the exchange in isolation.
-        None
+      // Stop at every other operator, including stages that may already own materialized buffers.
+      // QueryStagePrep must tag their Partial before stage creation to keep it in Spark.
       case _ => None
     }
 

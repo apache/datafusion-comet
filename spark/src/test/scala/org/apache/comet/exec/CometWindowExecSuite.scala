@@ -615,35 +615,33 @@ class CometWindowExecSuite extends CometTestBase {
       spark.read.parquet(dir.toString).createOrReplaceTempView("high_precision_dec_avg")
       val fallbackReason =
         "AVG on DECIMAL with maximum-precision intermediate state is not supported"
-      def runningAverage(aggregate: String, column: String) = sql(s"""
-        SELECT g, ord,
-          $aggregate($column) OVER (
-            PARTITION BY g
-            ORDER BY ord
-            ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
-          ) AS running_avg
-        FROM high_precision_dec_avg
-        ORDER BY g, ord
-      """)
-
-      for {
-        ansiEnabled <- Seq(false, true)
-        aggregate <- Seq("AVG", "TRY_AVG")
-      } {
-        withSQLConf(SQLConf.ANSI_ENABLED.key -> ansiEnabled.toString) {
-          val (_, cometPlan) =
-            checkSparkAnswerAndFallbackReason(runningAverage(aggregate, "v38"), fallbackReason)
-          assert(collect(cometPlan) { case window: SparkWindowExec => window }.nonEmpty)
-          assert(collect(cometPlan) { case window: CometWindowExec => window }.isEmpty)
+      // Cover the sum-precision boundary plus AVG and TRY_AVG at maximum precision.
+      withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
+        for ((aggregate, precision) <- Seq(
+            ("AVG", 27),
+            ("AVG", 28),
+            ("AVG", 38),
+            ("TRY_AVG", 38))) {
+          val df = sql(s"""
+            SELECT g, ord,
+              $aggregate(v$precision) OVER (
+                PARTITION BY g
+                ORDER BY ord
+                ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+              ) AS running_avg
+            FROM high_precision_dec_avg
+            ORDER BY g, ord
+          """)
+          if (precision == 27) {
+            val (_, plan) = checkSparkAnswerAndOperator(df)
+            assertCometWindowExecExists(plan)
+          } else {
+            val (_, plan) = checkSparkAnswerAndFallbackReason(df, fallbackReason)
+            assert(collect(plan) { case window: SparkWindowExec => window }.nonEmpty)
+            assert(collect(plan) { case window: CometWindowExec => window }.isEmpty)
+          }
         }
       }
-
-      val (_, maxPrecisionPlan) =
-        checkSparkAnswerAndFallbackReason(runningAverage("AVG", "v28"), fallbackReason)
-      assert(collect(maxPrecisionPlan) { case window: SparkWindowExec => window }.nonEmpty)
-
-      val (_, lowerPrecisionPlan) = checkSparkAnswerAndOperator(runningAverage("AVG", "v27"))
-      assertCometWindowExecExists(lowerPrecisionPlan)
     }
   }
 

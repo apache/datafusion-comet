@@ -140,52 +140,48 @@ impl AggregateUDFImpl for Avg {
 /// An accumulator to compute the average
 #[derive(Debug, Default)]
 pub struct AvgAccumulator {
-    sum: Option<f64>,
+    /// Spark's partial buffer uses zero for empty input; count determines result nulls.
+    sum: f64,
     count: i64,
 }
 
 impl Accumulator for AvgAccumulator {
+    /// Return Spark's sum/count buffer, including a zero sum before any input arrives.
     fn state(&mut self) -> Result<Vec<ScalarValue>> {
-        // Spark's final AVG adds partial sums without coalescing nulls. Empty partials
-        // must therefore carry a zero sum, even when update_batch was never called.
-        let sum = if self.count == 0 { Some(0.0) } else { self.sum };
         Ok(vec![
-            ScalarValue::Float64(sum),
+            ScalarValue::Float64(Some(self.sum)),
             ScalarValue::from(self.count),
         ])
     }
 
+    /// Add non-null values and their count to the buffer; floating-point overflow is valid.
     fn update_batch(&mut self, values: &[ArrayRef]) -> Result<()> {
         let values = values[0].as_primitive::<Float64Type>();
         self.count += (values.len() - values.null_count()) as i64;
-        let v = self.sum.get_or_insert(0.);
         if let Some(x) = sum(values) {
-            *v += x;
+            self.sum += x;
         }
         Ok(())
     }
 
+    /// Add partial sums and counts to the buffer without consuming the input arrays.
     fn merge_batch(&mut self, states: &[ArrayRef]) -> Result<()> {
         // counts are summed
         self.count += sum(states[1].as_primitive::<Int64Type>()).unwrap_or_default();
 
         // sums are summed - no overflow checking in all Eval Modes
         if let Some(x) = sum(states[0].as_primitive::<Float64Type>()) {
-            let v = self.sum.get_or_insert(0.);
-            *v += x;
+            self.sum += x;
         }
         Ok(())
     }
 
+    /// Return the average without consuming state, or null when no non-null input arrived.
     fn evaluate(&mut self) -> Result<ScalarValue> {
         if self.count == 0 {
-            // If all input are nulls, count will be 0, and we will get null after the division.
-            // This is consistent with Spark Average implementation.
             Ok(ScalarValue::Float64(None))
         } else {
-            Ok(ScalarValue::Float64(
-                self.sum.map(|f| f / self.count as f64),
-            ))
+            Ok(ScalarValue::Float64(Some(self.sum / self.count as f64)))
         }
     }
 

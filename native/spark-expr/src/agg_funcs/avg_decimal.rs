@@ -435,8 +435,10 @@ impl AvgDecimalGroupsAccumulator {
         datafusion::common::DataFusionError::from(error)
     }
 
+    /// Add one non-null input to an existing group. Overflow permanently nulls its
+    /// state; ANSI errors are deferred until that group is evaluated.
     #[inline]
-    fn update_single(&mut self, group_index: usize, value: i128) -> Result<()> {
+    fn update_single(&mut self, group_index: usize, value: i128) {
         let (new_sum, is_overflow) = self.sums[group_index].overflowing_add(value);
         self.counts[group_index] += 1;
         self.sums[group_index] = new_sum;
@@ -448,7 +450,6 @@ impl AvgDecimalGroupsAccumulator {
             // This matches Spark's DecimalAddNoOverflowCheck behavior.
             self.is_not_null.set_bit(group_index, false);
         }
-        Ok(())
     }
 }
 
@@ -479,7 +480,7 @@ impl GroupsAccumulator for AvgDecimalGroupsAccumulator {
         let iter = group_indices.iter().zip(data.iter());
         if opt_filter.is_none() && values.null_count() == 0 {
             for (&group_index, &value) in iter {
-                self.update_single(group_index, value)?;
+                self.update_single(group_index, value);
             }
         } else {
             for (idx, (&group_index, &value)) in iter.enumerate() {
@@ -491,7 +492,7 @@ impl GroupsAccumulator for AvgDecimalGroupsAccumulator {
                 if values.is_null(idx) {
                     continue;
                 }
-                self.update_single(group_index, value)?;
+                self.update_single(group_index, value);
             }
         }
         Ok(())
