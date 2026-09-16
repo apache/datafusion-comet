@@ -1110,6 +1110,42 @@ class CometIcebergWriteActionSuite
     }
   }
 
+  // iceberg-java renders a `float` or `double` partition value with `Float.toString` /
+  // `Double.toString`. Rust's `Display` spelled `Double.MAX_VALUE` as 309 digits instead, past the
+  // 255-byte limit on one path component (apache/datafusion-comet#5836).
+  test("native acceleration: float and double partition paths match iceberg-java") {
+    assumeNativeAcceleration()
+    withIcebergCatalog { warehouseDir =>
+      Seq("float_path_native", "float_path_jvm").foreach { table =>
+        spark.sql(s"""
+          CREATE TABLE $catalog.$ns.$table (id INT, f FLOAT, d DOUBLE)
+          USING iceberg PARTITIONED BY (f, d)
+        """)
+      }
+      // A whole value, one inside the plain-notation window, and the two extremes that overran
+      // the path component limit.
+      val values =
+        "(1, CAST(1.0 AS FLOAT), CAST(1.0 AS DOUBLE)), " +
+          "(2, CAST(-0.5 AS FLOAT), CAST(1.7976931348623157E308 AS DOUBLE)), " +
+          "(3, CAST(3.4028235E38 AS FLOAT), CAST(4.9E-324 AS DOUBLE)), " +
+          "(4, CAST(0.001 AS FLOAT), CAST(1.0E20 AS DOUBLE))"
+
+      assertNativeWriteEngages("float_path_native", Seq(1, 2, 3, 4)) {
+        spark.sql(s"INSERT INTO $catalog.$ns.float_path_native VALUES $values")
+      }
+      spark.sql(s"INSERT INTO $catalog.$ns.float_path_jvm VALUES $values")
+
+      val nativeDirs = partitionDirs(warehouseDir, "float_path_native")
+      assert(nativeDirs == partitionDirs(warehouseDir, "float_path_jvm"), s"native: $nativeDirs")
+      assert(
+        nativeDirs == Set(
+          "f=1.0/d=1.0",
+          "f=-0.5/d=1.7976931348623157E308",
+          "f=3.4028235E38/d=4.9E-324",
+          "f=0.001/d=1.0E20"))
+    }
+  }
+
   // iceberg-java's `UpdatePartitionSpec` keeps a dropped partition field in a format-version-1
   // spec as a `void` transform so its field id survives, and `PartitionSpec#isUnpartitioned` is
   // "every field is void", not "no fields". The next write therefore runs through the

@@ -29,6 +29,7 @@ import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.api.java.UDF1
 import org.apache.spark.sql.catalyst.expressions.{Add, Alias, AttributeReference, BoundReference, Cast, CreateArray, CreateMap, CreateNamedStruct, Expression, Hypot, Literal, MapConcat}
 import org.apache.spark.sql.catalyst.expressions.objects.Invoke
+import org.apache.spark.sql.comet.CometProjectExec
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
@@ -67,6 +68,59 @@ class CometCodegenSuite
         .mkString(", ")
       sql(s"INSERT INTO t VALUES $rows")
       f
+    }
+  }
+
+  test("json_array_length routing follows native opt-in and dispatcher settings") {
+    withSubjects("[1,2,3]", "[]", "not an array", null) {
+      for {
+        allowIncompatible <- Seq(false, true)
+        codegenEnabled <- Seq(false, true)
+      } {
+        withSQLConf(
+          "spark.comet.expression.LengthOfJsonArray.allowIncompatible" ->
+            allowIncompatible.toString,
+          CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> codegenEnabled.toString,
+          SQLConf.OPTIMIZER_EXCLUDED_RULES.key ->
+            "org.apache.spark.sql.catalyst.optimizer.ConstantFolding") {
+          val queries = Seq(
+            "SELECT json_array_length(s) FROM t",
+            "SELECT json_array_length('[1,2,3]') FROM t") ++
+            (if (allowIncompatible) Seq.empty
+             else
+               Seq(
+                 """SELECT json_array_length("[{'key':'value'}]") FROM t""",
+                 "SELECT json_array_length('[1,2,3] trailing') FROM t"))
+
+          queries.foreach { query =>
+            withClue(s"allowIncompatible=$allowIncompatible, codegen=$codegenEnabled: $query") {
+              val df = sql(query)
+              if (!allowIncompatible && !codegenEnabled) {
+                checkSparkAnswerAndFallbackReasons(
+                  df,
+                  Set("json_array_length: spark.comet.exec.scalaUDF.codegen.enabled=false"))
+              } else {
+                val (_, cometPlan) = checkSparkAnswerAndOperator(df)
+                // Spark 4 rewrites this expression to StaticInvoke. Inspect the executable
+                // expression because the rewrite does not preserve its implementation tags.
+                val expr = stripAQEPlan(cometPlan)
+                  .collectFirst { case project: CometProjectExec =>
+                    project.nativeOp.getProjection.getProjectList(0)
+                  }
+                  .getOrElse(fail("Expected a Comet projection"))
+                if (allowIncompatible) {
+                  assert(expr.hasScalarFunc)
+                  assert(expr.getScalarFunc.getFunc === "json_array_length")
+                } else {
+                  assert(expr.hasJvmScalarUdf)
+                  assert(
+                    expr.getJvmScalarUdf.getClassName === classOf[CometScalaUDFCodegen].getName)
+                }
+              }
+            }
+          }
+        }
+      }
     }
   }
 
