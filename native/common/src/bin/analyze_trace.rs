@@ -37,6 +37,14 @@ use std::{env, fs::File};
 /// analyzed.
 const ALLOCATED_COUNTERS: [&str; 2] = ["native_allocated", "jemalloc_allocated"];
 
+/// The process-wide total of Comet's memory pool reservations.
+///
+/// Preferred over summing the per-thread `thread_NNN_comet_memory_reserved` counters. Those report
+/// the full reservation of a task-shared pool once per thread that references it, so adding them
+/// across threads multiplies a shared pool by its thread count. A trace without this counter is
+/// still analyzed from the per-thread sum, with a warning, so older traces remain readable.
+const POOL_TOTAL_COUNTER: &str = "comet_memory_reserved_total";
+
 /// A single Chrome trace event (only the fields we care about).
 #[derive(Deserialize)]
 struct TraceEvent {
@@ -75,8 +83,11 @@ fn main() {
     let mut source: Option<usize> = None;
     // Latest allocated value (global, not per-thread)
     let mut latest_allocated: u64 = 0;
-    // Per-thread pool reservations: thread_NNN -> bytes
+    // Per-thread pool reservations: thread_NNN -> bytes. Only used when the trace lacks the
+    // process-wide total, since summing these over-counts task-shared pools.
     let mut pool_by_thread: HashMap<String, u64> = HashMap::new();
+    // Process-wide pool total, when the trace carries it.
+    let mut pool_total_counter: Option<u64> = None;
     // Points where allocated exceeded pool total
     let mut violations: Vec<MemorySnapshot> = Vec::new();
     // Track peak values
@@ -146,6 +157,12 @@ fn main() {
                     peak_allocated = latest_allocated;
                 }
             }
+        } else if event.name == POOL_TOTAL_COUNTER {
+            // Must be matched before the per-thread branch below, whose `contains` check would
+            // otherwise also match this name and fold the process-wide total into the map.
+            if let Some(val) = event.args.get(&event.name) {
+                pool_total_counter = Some(val.as_u64().unwrap_or(0));
+            }
         } else if event.name.contains("comet_memory_reserved") {
             // Name format: thread_NNN_comet_memory_reserved
             let thread_key = event.name.clone();
@@ -161,12 +178,13 @@ fn main() {
         // After each allocated or pool update, check the current state. A comparison needs one
         // sample of each side: an observed zero reservation is a real value that allocation can
         // exceed, so only the absence of any pool sample defers the check.
-        let pool_total: u64 = pool_by_thread.values().sum();
+        let pool_total: u64 = pool_total_counter.unwrap_or_else(|| pool_by_thread.values().sum());
         if pool_total > peak_pool_total {
             peak_pool_total = pool_total;
         }
 
-        if source.is_some() && !pool_by_thread.is_empty() && latest_allocated > pool_total {
+        let have_pool_sample = pool_total_counter.is_some() || !pool_by_thread.is_empty();
+        if source.is_some() && have_pool_sample && latest_allocated > pool_total {
             let excess = latest_allocated - pool_total;
             if excess > peak_excess {
                 peak_excess = excess;
@@ -198,7 +216,19 @@ fn main() {
     println!("=== Comet Trace Memory Analysis ===\n");
     println!("Counter events parsed: {counter_events}");
     println!("Allocation counter:    {source}");
-    println!("Threads with memory pools: {}", pool_by_thread.len());
+    if pool_total_counter.is_some() {
+        println!("Pool total source:     {POOL_TOTAL_COUNTER} (process-wide)");
+    } else {
+        println!(
+            "Pool total source:     sum of {} per-thread counters",
+            pool_by_thread.len()
+        );
+        println!(
+            "WARNING: this trace predates {POOL_TOTAL_COUNTER}. Summing the per-thread counters\n\
+             over-counts: a task-shared pool reports its full reservation on every thread that\n\
+             references it, so the totals below are upper bounds and the excess is understated."
+        );
+    }
     println!("Peak {source}:   {}", format_bytes(peak_allocated));
     println!(
         "Peak pool total:           {}",
@@ -210,7 +240,7 @@ fn main() {
     );
     println!();
 
-    if pool_by_thread.is_empty() {
+    if pool_total_counter.is_none() && pool_by_thread.is_empty() {
         println!(
             "No pool reservation samples in the trace, so there is nothing to compare against."
         );
@@ -245,5 +275,8 @@ fn main() {
     for (thread, bytes) in &threads {
         println!("  {thread}: {}", format_bytes(**bytes));
     }
-    println!("\n  Total: {}", format_bytes(pool_by_thread.values().sum()));
+    println!(
+        "\n  Total: {}",
+        format_bytes(pool_total_counter.unwrap_or_else(|| pool_by_thread.values().sum()))
+    );
 }

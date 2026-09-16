@@ -1107,6 +1107,13 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
                 &exec_context.tracing_memory_metric_name,
                 total_reserved_for_thread(exec_context.rust_thread_id) as u64,
             );
+            // Process-wide total, emitted here so it is true at the same instant as the
+            // allocation counter above. The per-thread counter cannot be summed across threads:
+            // it reports a shared pool's full reservation once per referencing thread.
+            log_memory_usage(
+                "comet_memory_reserved_total",
+                crate::execution::memory_pools::total_reserved_across_tasks() as u64,
+            );
         }
 
         result

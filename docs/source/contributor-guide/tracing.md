@@ -78,10 +78,13 @@ cargo run --bin analyze_trace -- /path/to/comet-event-trace.json
 
 The tool reads counter events from the trace log. Because tracing logs metrics per thread, `native_allocated`
 and `jemalloc_allocated` are process-wide values (the same global allocation reported from whichever thread
-logs it), while `thread_NNN_comet_memory_reserved` values are per-thread pool reservations that are summed to
-get the total tracked memory. The tool analyzes `native_allocated` when the trace contains it, since that
-counts only what Rust code holds from the allocator, and otherwise falls back to `jemalloc_allocated`. The
-output names the counter it used. A trace with neither counter is rejected.
+logs it). The total tracked memory comes from `comet_memory_reserved_total`, which counts each pool once
+process-wide. The per-thread `thread_NNN_comet_memory_reserved` values must not be summed to obtain it: a
+task-shared pool reports its full reservation on every thread that references it, so summing multiplies it by
+the thread count. Traces recorded before that counter existed are still analyzed from the per-thread sum, and
+the tool warns that the total over-counts. The tool analyzes `native_allocated` when the trace contains it,
+since that counts only what Rust code holds from the allocator, and otherwise falls back to
+`jemalloc_allocated`. The output names the counter it used. A trace with neither counter is rejected.
 
 Sample output:
 
@@ -121,10 +124,11 @@ not being tracked by the pool.
 
 ## Definition of Labels
 
-| Label                            | Meaning                                                                                                                                                              |
-| -------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| jvm_heap_used                    | JVM heap memory usage of live objects for the executor process                                                                                                       |
-| jemalloc_allocated               | Native memory usage for the executor process (requires `jemalloc` feature)                                                                                           |
-| native_allocated                 | Bytes handed out by the Rust global allocator, process-wide (requires `alloc-accounting` feature). Approximate to within 64 KiB of un-flushed delta per live thread. |
-| thread_NNN_comet_memory_reserved | Memory reserved by Comet's DataFusion memory pool (summed across all contexts on the thread). NNN is the Rust thread ID.                                             |
-| thread_NNN_comet_jvm_shuffle     | Off-heap memory allocated by Comet for columnar shuffle. NNN is the Rust thread ID.                                                                                  |
+| Label                            | Meaning                                                                                                                                                                                                                                       |
+| -------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| jvm_heap_used                    | JVM heap memory usage of live objects for the executor process                                                                                                                                                                                |
+| jemalloc_allocated               | Native memory usage for the executor process (requires `jemalloc` feature)                                                                                                                                                                    |
+| native_allocated                 | Bytes handed out by the Rust global allocator, process-wide (requires `alloc-accounting` feature). Approximate to within 64 KiB of un-flushed delta per live thread.                                                                          |
+| comet_memory_reserved_total      | Total memory reserved across every live Comet memory pool, process-wide. Counts each task-shared pool once, so unlike the per-thread counters it can be compared directly against an allocation counter.                                      |
+| thread_NNN_comet_memory_reserved | Memory reserved by Comet's DataFusion memory pool (summed across all contexts on the thread). NNN is the Rust thread ID. Do not sum these across threads: a task-shared pool reports its full reservation on every thread that references it. |
+| thread_NNN_comet_jvm_shuffle     | Off-heap memory allocated by Comet for columnar shuffle. NNN is the Rust thread ID.                                                                                                                                                           |
