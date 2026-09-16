@@ -578,6 +578,12 @@ under the License.
 <li><p>Spark 4.0+. Implemented natively: maps a <code class="docutils literal notranslate"><span class="pre">DateType</span></code> value to a fixed US-English abbreviated day name (<code class="docutils literal notranslate"><span class="pre">DayOfWeek.getDisplayName(TextStyle.SHORT,</span> <span class="pre">Locale.US)</span></code>), with no session-locale or timezone dependence.</p></li>
 </ul>
 </section>
+<section id="dayofweek">
+<h2>dayofweek<a class="headerlink" href="#dayofweek" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p>Performance (tuned 2026-09-08, PR <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/5771">#5771</a>): computed directly from the epoch day (<code class="docutils literal notranslate"><span class="pre">((days</span> <span class="pre">+</span> <span class="pre">4).rem_euclid(7)</span> <span class="pre">+</span> <span class="pre">1)</span></code>) by the native <code class="docutils literal notranslate"><span class="pre">spark_dayofweek</span></code> kernel, replacing <code class="docutils literal notranslate"><span class="pre">datepart('dow',</span> <span class="pre">..)</span></code> – which reconstructs a <code class="docutils literal notranslate"><span class="pre">NaiveDateTime</span></code> per row and recomputes the null mask via <code class="docutils literal notranslate"><span class="pre">unary_opt</span></code> – plus a separate <code class="docutils literal notranslate"><span class="pre">+</span> <span class="pre">1</span></code> arithmetic node. About 9x faster on flat input with no or sparse nulls, 3-4x at 87.5% nulls, and roughly 1.1x on an all-null batch or a cardinality-8 dictionary, where the replaced path already did little work (about 2x at cardinality 1024). Note the old path returned NULL for epoch days outside chrono’s range; the kernel is correct across the full <code class="docutils literal notranslate"><span class="pre">i32</span></code> domain. Benchmark: <code class="docutils literal notranslate"><span class="pre">benches/dayofweek_weekday.rs</span></code>.</p></li>
+</ul>
+</section>
 <section id="from-utc-timestamp">
 <h2>from_utc_timestamp<a class="headerlink" href="#from-utc-timestamp" title="Link to this heading">#</a></h2>
 <ul class="simple">
@@ -585,6 +591,12 @@ under the License.
 <li><p>Spark 3.5.8 (audited 2026-05-12): baseline.</p></li>
 <li><p>Spark 4.0.1 (audited 2026-05-12): <code class="docutils literal notranslate"><span class="pre">inputTypes</span></code> widened to <code class="docutils literal notranslate"><span class="pre">StringTypeWithCollation</span></code>; behaviour unchanged for ASCII timezone strings.</p></li>
 <li><p>Marked <code class="docutils literal notranslate"><span class="pre">Incompatible</span></code>: Comet’s native timezone parser only accepts IANA zone IDs (e.g. <code class="docutils literal notranslate"><span class="pre">America/Los_Angeles</span></code>) and fixed <code class="docutils literal notranslate"><span class="pre">+HH:MM</span></code> offsets, while Spark also accepts legacy forms (<code class="docutils literal notranslate"><span class="pre">GMT+1</span></code>, <code class="docutils literal notranslate"><span class="pre">UTC+1</span></code>, three-letter abbreviations like <code class="docutils literal notranslate"><span class="pre">PST</span></code>). By default it runs through the codegen dispatcher (Spark-correct) and uses the native path only when incompatible expressions are explicitly allowed, where legacy zone forms throw a native parse error at execution.</p></li>
+</ul>
+</section>
+<section id="hour">
+<h2>hour<a class="headerlink" href="#hour" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p>Performance (tuned 2026-09-08, PR <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/5771">#5771</a>): <code class="docutils literal notranslate"><span class="pre">hour</span></code>/<code class="docutils literal notranslate"><span class="pre">minute</span></code>/<code class="docutils literal notranslate"><span class="pre">second</span></code> take an integer fast path when no timezone offset applies – <code class="docutils literal notranslate"><span class="pre">TimestampNTZ</span></code>, or a timezone-aware timestamp in a UTC session – computing the field from the stored microseconds with Euclidean division instead of building a <code class="docutils literal notranslate"><span class="pre">chrono</span></code> datetime per row via <code class="docutils literal notranslate"><span class="pre">date_part</span></code>. Dictionaries, non-microsecond units and offset timezones keep the general path. Every fast-path shape with a baseline of at least 2 µs takes 82-94% less time; offset session zones and dictionary input keep the general path and stay within noise on a repeat. Benchmark: <code class="docutils literal notranslate"><span class="pre">benches/extract_date_part.rs</span></code>.</p></li>
 </ul>
 </section>
 <section id="make-timestamp-ltz">
@@ -599,6 +611,12 @@ under the License.
 <li><p>The 6-argument form rewrites to <code class="docutils literal notranslate"><span class="pre">MakeTimestamp</span></code> and runs via the codegen dispatcher. The 2-argument <code class="docutils literal notranslate"><span class="pre">(date,</span> <span class="pre">time)</span></code> form requires the Spark 4.1 TIME type and falls back.</p></li>
 </ul>
 </section>
+<section id="minute">
+<h2>minute<a class="headerlink" href="#minute" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p>Performance (tuned 2026-09-08, PR <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/5771">#5771</a>): <code class="docutils literal notranslate"><span class="pre">hour</span></code>/<code class="docutils literal notranslate"><span class="pre">minute</span></code>/<code class="docutils literal notranslate"><span class="pre">second</span></code> take an integer fast path when no timezone offset applies – <code class="docutils literal notranslate"><span class="pre">TimestampNTZ</span></code>, or a timezone-aware timestamp in a UTC session – computing the field from the stored microseconds with Euclidean division instead of building a <code class="docutils literal notranslate"><span class="pre">chrono</span></code> datetime per row via <code class="docutils literal notranslate"><span class="pre">date_part</span></code>. Dictionaries, non-microsecond units and offset timezones keep the general path. Every fast-path shape with a baseline of at least 2 µs takes 82-94% less time; offset session zones and dictionary input keep the general path and stay within noise on a repeat. Benchmark: <code class="docutils literal notranslate"><span class="pre">benches/extract_date_part.rs</span></code>.</p></li>
+</ul>
+</section>
 <section id="monthname">
 <h2>monthname<a class="headerlink" href="#monthname" title="Link to this heading">#</a></h2>
 <ul class="simple">
@@ -609,6 +627,12 @@ under the License.
 <h2>now<a class="headerlink" href="#now" title="Link to this heading">#</a></h2>
 <ul class="simple">
 <li><p>Alias of <code class="docutils literal notranslate"><span class="pre">current_timestamp</span></code>; constant-folded to a literal by Spark’s <code class="docutils literal notranslate"><span class="pre">ComputeCurrentTime</span></code> rule before Comet sees the plan.</p></li>
+</ul>
+</section>
+<section id="second">
+<h2>second<a class="headerlink" href="#second" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p>Performance (tuned 2026-09-08, PR <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/5771">#5771</a>): <code class="docutils literal notranslate"><span class="pre">hour</span></code>/<code class="docutils literal notranslate"><span class="pre">minute</span></code>/<code class="docutils literal notranslate"><span class="pre">second</span></code> take an integer fast path when no timezone offset applies – <code class="docutils literal notranslate"><span class="pre">TimestampNTZ</span></code>, or a timezone-aware timestamp in a UTC session – computing the field from the stored microseconds with Euclidean division instead of building a <code class="docutils literal notranslate"><span class="pre">chrono</span></code> datetime per row via <code class="docutils literal notranslate"><span class="pre">date_part</span></code>. Dictionaries, non-microsecond units and offset timezones keep the general path. Every fast-path shape with a baseline of at least 2 µs takes 82-94% less time; offset session zones and dictionary input keep the general path and stay within noise on a repeat. Benchmark: <code class="docutils literal notranslate"><span class="pre">benches/extract_date_part.rs</span></code>.</p></li>
 </ul>
 </section>
 <section id="to-date">
@@ -660,6 +684,12 @@ under the License.
 <h2>try_to_timestamp<a class="headerlink" href="#try-to-timestamp" title="Link to this heading">#</a></h2>
 <ul class="simple">
 <li><p>Rewrites to <code class="docutils literal notranslate"><span class="pre">Cast(...,</span> <span class="pre">EvalMode.LEGACY)</span></code> (no format, native) or <code class="docutils literal notranslate"><span class="pre">GetTimestamp(...,</span> <span class="pre">failOnError</span> <span class="pre">=</span> <span class="pre">false)</span></code> (with format, via the codegen dispatcher) before Comet sees the plan. In non-ANSI mode the rewritten tree is identical to <code class="docutils literal notranslate"><span class="pre">to_timestamp</span></code>; invalid inputs return NULL to match Spark.</p></li>
+</ul>
+</section>
+<section id="weekday">
+<h2>weekday<a class="headerlink" href="#weekday" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p>Performance (tuned 2026-09-08, PR <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/5771">#5771</a>): computed directly from the epoch day (<code class="docutils literal notranslate"><span class="pre">(days</span> <span class="pre">+</span> <span class="pre">3).rem_euclid(7)</span></code>) by the native <code class="docutils literal notranslate"><span class="pre">spark_weekday</span></code> kernel, replacing <code class="docutils literal notranslate"><span class="pre">datepart('isodow',</span> <span class="pre">..)</span></code> plus a <code class="docutils literal notranslate"><span class="pre">-</span> <span class="pre">1</span></code> arithmetic node. About 9x faster on flat input with no or sparse nulls, 3-4x at 87.5% nulls, and roughly 1.1x on an all-null batch or a cardinality-8 dictionary, where the replaced path already did little work (about 2x at cardinality 1024). <code class="docutils literal notranslate"><span class="pre">weekday</span></code> numbers Monday = 0 through Sunday = 6, a different convention from <code class="docutils literal notranslate"><span class="pre">dayofweek</span></code>. Benchmark: <code class="docutils literal notranslate"><span class="pre">benches/dayofweek_weekday.rs</span></code>.</p></li>
 </ul>
 </section>
 </section>
@@ -715,11 +745,15 @@ under the License.
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#current-date">current_date</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#current-timestamp">current_timestamp</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#dayname">dayname</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#dayofweek">dayofweek</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#from-utc-timestamp">from_utc_timestamp</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#hour">hour</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#make-timestamp-ltz">make_timestamp_ltz</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#make-timestamp-ntz">make_timestamp_ntz</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#minute">minute</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#monthname">monthname</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#now">now</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#second">second</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#to-date">to_date</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#to-timestamp">to_timestamp</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#to-timestamp-ltz">to_timestamp_ltz</a></li>
@@ -728,6 +762,7 @@ under the License.
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#try-make-timestamp">try_make_timestamp</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#try-to-date">try_to_date</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#try-to-timestamp">try_to_timestamp</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#weekday">weekday</a></li>
 </ul>
   </nav></div>
 
