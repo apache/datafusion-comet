@@ -406,3 +406,11 @@ harness = false
 [[bench]]
 name = "dayofweek_weekday"
 harness = false
+
+[[bench]]
+name = "nondeterministic"
+harness = false
+
+[[bench]]
+name = "json_array_length"
+harness = false
