@@ -151,6 +151,22 @@ class CometMapExpressionSuite extends CometTestBase {
     }
   }
 
+  // Spark's `BinaryExpression.eval` returns NULL the moment the left input is NULL and never
+  // evaluates the right one, so a failing cast in the values argument does not run for a row whose
+  // keys array is NULL. Comet evaluates both argument subtrees, so the serde keeps a `CaseWhen`
+  // guard: its `AND` lets the native side skip the values expression once the keys are known NULL.
+  // https://github.com/apache/datafusion-comet/pull/5854#discussion_r4016898751
+  test("map_from_arrays - a null keys array skips the values expression under ANSI") {
+    withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
+      withTable("map_short_circuit") {
+        sql("CREATE TABLE map_short_circuit(k ARRAY<INT>, v STRING) USING parquet")
+        sql("INSERT INTO map_short_circuit VALUES (NULL, 'bad')")
+        checkSparkAnswerAndOperator(
+          sql("SELECT map_from_arrays(k, array(CAST(v AS INT))) FROM map_short_circuit"))
+      }
+    }
+  }
+
   test("map_from_arrays - a null input array gives a null map") {
     withMapBuilderTable { table =>
       checkSparkAnswerAndOperator(

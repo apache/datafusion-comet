@@ -25,7 +25,7 @@ import org.apache.spark.sql.types._
 
 import org.apache.comet.CometConf.COMET_EXEC_STRICT_FLOATING_POINT
 import org.apache.comet.DataTypeSupport.isComplexType
-import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, hasNonDefaultStringCollation, scalarFunctionExprToProto}
+import org.apache.comet.serde.QueryPlanSerde.{createBinaryExpr, exprToProtoInternal, hasNonDefaultStringCollation, scalarFunctionExprToProto}
 import org.apache.comet.shims.CometTypeShim
 
 /**
@@ -204,15 +204,55 @@ object CometMapFromArrays extends CometExpressionSerde[MapFromArrays] {
   override def getSupportLevel(expr: MapFromArrays): SupportLevel =
     MapBuilderSupport.keySupport(expr.dataType.keyType)
 
+  /**
+   * Native `map_from_arrays` already returns a NULL map for a NULL input array, so the `CaseWhen`
+   * below guards evaluation order rather than the result. `BinaryExpression.eval` returns as soon
+   * as the left input is NULL and never evaluates the right one, so under ANSI a failing cast in
+   * the values argument never runs for a row whose keys array is NULL. Comet evaluates both
+   * argument subtrees, so without the guard that cast raises where Spark returns NULL. Wrapping
+   * the call lets the `AND` short-circuit skip the values expression.
+   *
+   * @see
+   *   https://github.com/apache/datafusion-comet/pull/5854#discussion_r4016898751
+   */
   override def convert(
       expr: MapFromArrays,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     val keysExpr = exprToProtoInternal(expr.left, inputs, binding)
     val valuesExpr = exprToProtoInternal(expr.right, inputs, binding)
-    // Native `map_from_arrays` is null intolerant like Spark's: a NULL keys or values array
-    // yields a NULL map for that row, so no CaseWhen guard is needed here.
-    scalarFunctionExprToProto("map_from_arrays", keysExpr, valuesExpr)
+    val keyType = expr.left.dataType.asInstanceOf[ArrayType].elementType
+    val valueType = expr.right.dataType.asInstanceOf[ArrayType].elementType
+    val returnType = MapType(keyType = keyType, valueType = valueType)
+    for {
+      andBinaryExprProto <- createAndBinaryExpr(expr, inputs, binding)
+      mapFromArraysExprProto <- scalarFunctionExprToProto("map_from_arrays", keysExpr, valuesExpr)
+      nullLiteralExprProto <- exprToProtoInternal(Literal(null, returnType), inputs, binding)
+    } yield {
+      val caseWhenExprProto = ExprOuterClass.CaseWhen
+        .newBuilder()
+        .addWhen(andBinaryExprProto)
+        .addThen(mapFromArraysExprProto)
+        .setElseExpr(nullLiteralExprProto)
+        .build()
+      ExprOuterClass.Expr
+        .newBuilder()
+        .setCaseWhen(caseWhenExprProto)
+        .build()
+    }
+  }
+
+  private def createAndBinaryExpr(
+      expr: MapFromArrays,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    createBinaryExpr(
+      expr,
+      IsNotNull(expr.left),
+      IsNotNull(expr.right),
+      inputs,
+      binding,
+      (builder, binaryExpr) => builder.setAnd(binaryExpr))
   }
 }
 
