@@ -37,6 +37,7 @@ final class ExecutorShufflePushAdmission {
   private final Semaphore available;
   private CelebornTransportCallbackTracker transportCallbacks;
   private boolean transportCallbacksInitialized;
+  private boolean closed;
 
   private ExecutorShufflePushAdmission(int limit) {
     this.limit = limit;
@@ -58,17 +59,34 @@ final class ExecutorShufflePushAdmission {
   }
 
   static void releaseClient(Object client) {
+    ExecutorShufflePushAdmission admission;
     synchronized (CLIENTS) {
-      CLIENTS.remove(client);
+      admission = CLIENTS.remove(client);
+    }
+    if (admission != null) {
+      admission.close();
     }
   }
 
   synchronized CelebornTransportCallbackTracker transportCallbacks(Object client) {
+    if (closed) {
+      return null;
+    }
     if (!transportCallbacksInitialized) {
       transportCallbacks = CelebornTransportCallbackTracker.tryCreate(client);
       transportCallbacksInitialized = true;
     }
     return transportCallbacks;
+  }
+
+  private synchronized void close() {
+    if (closed) {
+      return;
+    }
+    closed = true;
+    if (transportCallbacks != null) {
+      transportCallbacks.close();
+    }
   }
 
   void acquire(int bytes, BooleanSupplier cancelled) throws IOException {

@@ -31,7 +31,7 @@ use std::collections::HashSet;
 use arrow::array::{Array, RecordBatch, UInt32Array};
 use arrow::compute::{take, TakeOptions};
 use arrow::datatypes::DataType as ArrowDataType;
-use datafusion::common::{DataFusionError, Result as DataFusionResult, ScalarValue};
+use datafusion::common::{DataFusionError, Result as DataFusionResult};
 use datafusion::execution::disk_manager::DiskManagerMode;
 use datafusion::execution::memory_pool::MemoryPool;
 use datafusion::execution::runtime_env::RuntimeEnvBuilder;
@@ -41,7 +41,8 @@ use datafusion::{
     physical_plan::{display::DisplayableExecutionPlan, SendableRecordBatchStream},
     prelude::{SessionConfig, SessionContext},
 };
-use datafusion_comet_proto::spark_operator::{Operator, ShuffleScan};
+use datafusion_comet_proto::spark_expression::agg_expr::ExprStruct as AggExprStruct;
+use datafusion_comet_proto::spark_operator::{AggregateMode, Operator, ShuffleScan};
 use datafusion_comet_spark_expr::url_funcs::{CometParseUrl, CometTryParseUrl};
 use datafusion_spark::function::array::array_contains::SparkArrayContains;
 use datafusion_spark::function::array::repeat::SparkArrayRepeat;
@@ -100,7 +101,7 @@ use tokio::sync::mpsc;
 use crate::execution::memory_pools::{create_memory_pool, parse_memory_pool_config};
 use crate::execution::operators::{ScanExec, ShuffleScanExec};
 use crate::execution::shuffle::{
-    read_ipc_compressed, read_ipc_compressed_validated, validate_remote_schema, CompressionCodec,
+    decode_remote_shuffle_batch, read_ipc_compressed, CompressionCodec,
 };
 use crate::execution::spark_plan::SparkPlan;
 
@@ -116,7 +117,7 @@ use crate::execution::spark_config::{
 };
 use crate::parquet::encryption_support::{CometEncryptionFactory, ENCRYPTION_FACTORY_ID};
 use datafusion_comet_proto::spark_operator::operator::OpStruct;
-use log::info;
+use log::{info, warn};
 use std::sync::OnceLock;
 #[cfg(feature = "jemalloc")]
 use tikv_jemalloc_ctl::{epoch, stats};
@@ -129,6 +130,18 @@ fn log_jemalloc_usage() {
     let allocated = stats::allocated::mib().unwrap();
     e.advance().unwrap();
     log_memory_usage("jemalloc_allocated", allocated.read().unwrap() as u64);
+}
+
+/// Reports the bytes currently handed out by the Rust global allocator, process-wide.
+///
+/// Logged alongside the per-thread pool reservations so the two can be compared directly: a large
+/// and growing excess is native memory the pool is not accounting for.
+#[cfg(feature = "alloc-accounting")]
+fn log_native_allocated() {
+    log_memory_usage(
+        "native_allocated",
+        crate::alloc_accounting::current_balance() as u64,
+    );
 }
 
 /// Registry of active memory pools per Rust thread ID.
@@ -238,8 +251,47 @@ fn build_runtime(default_worker_threads: Option<usize>) -> Runtime {
     }
     builder
         .enable_all()
+        .on_thread_start(attach_thread_as_daemon)
+        .on_thread_stop(detach_thread)
         .build()
         .expect("Failed to create Tokio runtime")
+}
+
+/// Attaches a runtime thread to the JVM as a daemon thread.
+///
+/// jni-rs attaches threads lazily with `AttachCurrentThread`, which makes them non-daemon JVM
+/// threads. `DestroyJavaVM` waits for all non-daemon threads to exit before it runs shutdown
+/// hooks, but runtime threads only exit once the shutdown hook has called `SparkContext.stop()`
+/// and [`release_runtime`]. An application that returns from `main` without calling
+/// `SparkContext.stop()` would therefore never exit. Daemon threads are not waited for, and
+/// jni-rs reuses an existing attachment rather than attaching again.
+fn attach_thread_as_daemon() {
+    let Some(vm) = crate::JAVA_VM.get() else {
+        return;
+    };
+    let vm = vm.get_raw();
+    let mut env: *mut std::ffi::c_void = std::ptr::null_mut();
+    // SAFETY: `vm` is the JavaVM stored by `NativeBase.init` and outlives the runtime. Null
+    // attach args select the default JNI version, thread name and thread group.
+    let rc =
+        unsafe { ((**vm).v1_4.AttachCurrentThreadAsDaemon)(vm, &mut env, std::ptr::null_mut()) };
+    if rc != jni::sys::JNI_OK {
+        warn!("Failed to attach tokio runtime thread to the JVM as a daemon thread: {rc}");
+    }
+}
+
+/// Detaches a thread attached by [`attach_thread_as_daemon`] before it exits. jni-rs only
+/// detaches threads it attached itself.
+fn detach_thread() {
+    let Some(vm) = crate::JAVA_VM.get() else {
+        return;
+    };
+    let vm = vm.get_raw();
+    // SAFETY: see `attach_thread_as_daemon`. Detaching an unattached thread is a JNI error,
+    // not undefined behavior.
+    unsafe {
+        ((**vm).v1_1.DetachCurrentThread)(vm);
+    }
 }
 
 /// Initialize the global Tokio runtime with the given default worker thread count.
@@ -300,6 +352,7 @@ fn op_name(op: &OpStruct) -> &'static str {
         OpStruct::Window(_) => "Window",
         OpStruct::NativeScan(_) => "NativeScan",
         OpStruct::IcebergScan(_) => "IcebergScan",
+        OpStruct::IcebergWrite(_) => "IcebergWrite",
         OpStruct::ParquetWriter(_) => "ParquetWriter",
         OpStruct::Explode(_) => "Explode",
         OpStruct::CsvScan(_) => "CsvScan",
@@ -511,6 +564,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
                 max_temp_directory_size,
                 task_cpus as usize,
                 &spark_config,
+                &spark_plan,
             )?;
 
             let plan_creation_time = start.elapsed();
@@ -628,6 +682,42 @@ pub extern "system" fn Java_org_apache_comet_Native_setShufflePartitionPusher(
     })
 }
 
+/// Only admit the validated native-shuffle path. A session belongs to one fused Spark plan,
+/// so an unsafe partial aggregate disables skipping for the whole plan, including its children.
+/// This deliberately gives up some opportunities rather than changing execution contexts per op.
+fn configure_skip_partial_aggregation(config: &mut SessionConfig, plan: &Operator) {
+    fn supported(plan: &Operator) -> bool {
+        let supported_aggregate = match &plan.op_struct {
+            Some(OpStruct::HashAgg(agg)) => match AggregateMode::try_from(agg.mode) {
+                // Final never skips. Still inspect its children below.
+                Ok(AggregateMode::Final) => true,
+                Ok(AggregateMode::Partial) => {
+                    agg.expr_modes
+                        .iter()
+                        .all(|mode| *mode == AggregateMode::Partial as i32)
+                        && agg.agg_exprs.iter().all(|expr| {
+                            matches!(&expr.expr_struct, Some(AggExprStruct::Count(count))
+                                if count.children.len() == 1)
+                        })
+                }
+                // PartialMerge is represented as native Partial, but consumes states, not rows.
+                _ => false,
+            },
+            _ => true,
+        };
+        supported_aggregate && plan.children.iter().all(supported)
+    }
+
+    if !matches!(&plan.op_struct, Some(OpStruct::ShuffleWriter(_))) || !supported(plan) {
+        // Enforce safety after config pass-through: a testing override cannot make unsupported
+        // accumulators convertible. DF 55 removed supports_convert_to_state().
+        config
+            .options_mut()
+            .execution
+            .skip_partial_aggregation_probe_ratio_threshold = 1.1;
+    }
+}
+
 /// Configure DataFusion session context.
 fn prepare_datafusion_session_context(
     batch_size: usize,
@@ -636,6 +726,7 @@ fn prepare_datafusion_session_context(
     max_temp_directory_size: u64,
     task_cpus: usize,
     spark_config: &HashMap<String, String>,
+    spark_plan: &Operator,
 ) -> CometResult<SessionContext> {
     let paths = local_dirs.into_iter().map(PathBuf::from).collect();
     let disk_manager = DiskManagerBuilder::default()
@@ -649,17 +740,7 @@ fn prepare_datafusion_session_context(
         // This DataFusion context is within the scope of an executing Spark Task. We want to set
         // its internal parallelism to the number of CPUs allocated to Spark Tasks. This can be
         // modified by changing spark.task.cpus in the Spark config.
-        .with_batch_size(batch_size)
-        // DataFusion partial aggregates can emit duplicate rows so we disable the
-        // skip partial aggregation feature because this is not compatible with Spark's
-        // use of partial aggregates.
-        .set(
-            "datafusion.execution.skip_partial_aggregation_probe_ratio_threshold",
-            // this is the threshold of number of groups / number of rows and the
-            // maximum value is 1.0, so we set the threshold a little higher just
-            // to be safe
-            &ScalarValue::Float64(Some(1.1)),
-        );
+        .with_batch_size(batch_size);
 
     // Translate the Comet-namespaced row-level pushdown flag into the equivalent
     // DataFusion session options. `pushdown_filters` enables the parquet reader's
@@ -685,6 +766,8 @@ fn prepare_datafusion_session_context(
             session_config = session_config.set_str(&df_key, value);
         }
     }
+
+    configure_skip_partial_aggregation(&mut session_config, spark_plan);
 
     let runtime = rt_config.build()?;
 
@@ -753,6 +836,7 @@ fn prepare_output(
     let schema_addrs = unsafe { schema_addrs.get_elements(env, ReleaseMode::NoCopyBack)? };
     let schema_addrs = &*schema_addrs;
 
+    let output_schema = output_batch.schema();
     let results = output_batch.columns();
     let num_rows = output_batch.num_rows();
 
@@ -779,6 +863,7 @@ fn prepare_output(
         let mut i = 0;
         while i < results.len() {
             let array_ref = results.get(i).ok_or(CometError::IndexOutOfBounds(i))?;
+            let field = output_schema.field(i);
 
             if array_ref.offset() != 0 {
                 // https://github.com/apache/datafusion-comet/issues/2051
@@ -795,11 +880,11 @@ fn prepare_output(
 
                 new_array
                     .to_data()
-                    .move_to_spark(array_addrs[i], schema_addrs[i])?;
+                    .move_to_spark(field, array_addrs[i], schema_addrs[i])?;
             } else {
                 array_ref
                     .to_data()
-                    .move_to_spark(array_addrs[i], schema_addrs[i])?;
+                    .move_to_spark(field, array_addrs[i], schema_addrs[i])?;
             }
             i += 1;
         }
@@ -1016,6 +1101,8 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
         if exec_context.tracing_enabled {
             #[cfg(feature = "jemalloc")]
             log_jemalloc_usage();
+            #[cfg(feature = "alloc-accounting")]
+            log_native_allocated();
             log_memory_usage(
                 &exec_context.tracing_memory_metric_name,
                 total_reserved_for_thread(exec_context.rust_thread_id) as u64,
@@ -1250,9 +1337,55 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_decodeShuffleBlock(
 }
 
 #[no_mangle]
+/// Parse the expected schema once for a remote shuffle iterator.
+///
+/// The iterator owns the returned decoder and releases it when the input is closed.
+pub extern "system" fn Java_org_apache_comet_Native_createRemoteShuffleDecoder(
+    e: EnvUnowned,
+    _class: JClass,
+    expected_schema: JByteArray,
+) -> jlong {
+    try_unwrap_or_throw(&e, |env| {
+        let bytes = env.convert_byte_array(expected_schema)?;
+        let schema = ShuffleScan::decode(bytes.as_slice()).map_err(|error| {
+            CometError::Internal(format!("Invalid expected remote shuffle schema: {error}"))
+        })?;
+        let decoder = RemoteShuffleDecoder {
+            expected_types: schema.fields.iter().map(to_arrow_datatype).collect(),
+        };
+        Ok(Box::into_raw(Box::new(decoder)) as jlong)
+    })
+}
+
+/// Immutable decoding state owned by one JVM remote shuffle iterator, not shared across tasks.
+struct RemoteShuffleDecoder {
+    expected_types: Vec<ArrowDataType>,
+}
+
+#[no_mangle]
+/// Release a remote shuffle iterator's decoder.
+///
+/// # Safety
+/// A nonzero handle must have been returned by `createRemoteShuffleDecoder`, must not have
+/// been released, and must not be in use by a concurrent decode call.
+pub unsafe extern "system" fn Java_org_apache_comet_Native_releaseRemoteShuffleDecoder(
+    e: EnvUnowned,
+    _class: JClass,
+    decoder_handle: jlong,
+) {
+    try_unwrap_or_throw(&e, |_| {
+        if decoder_handle != 0 {
+            drop(unsafe { Box::from_raw(decoder_handle as *mut RemoteShuffleDecoder) });
+        }
+        Ok(())
+    })
+}
+
+#[no_mangle]
 /// Decode a remote native shuffle block with Arrow array and logical type validation enabled.
 /// # Safety
-/// This function is inherently unsafe since it deals with raw pointers passed from JNI.
+/// Buffer and output pointers must be valid. The decoder handle must have been returned by
+/// `createRemoteShuffleDecoder` and must remain alive for the duration of this call.
 pub unsafe extern "system" fn Java_org_apache_comet_Native_decodeShuffleBlockWithValidation(
     e: EnvUnowned,
     _class: JClass,
@@ -1261,22 +1394,21 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_decodeShuffleBlockWit
     array_addrs: JLongArray,
     schema_addrs: JLongArray,
     tracing_enabled: jboolean,
-    expected_schema: JByteArray,
+    decoder_handle: jlong,
 ) -> jlong {
     try_unwrap_or_throw(&e, |env| {
         with_trace("decodeShuffleBlock", tracing_enabled != JNI_FALSE, || {
-            let bytes = env.convert_byte_array(expected_schema)?;
-            let schema = ShuffleScan::decode(bytes.as_slice()).map_err(|error| {
-                CometError::Internal(format!("Invalid expected remote shuffle schema: {error}"))
-            })?;
-            let expected_types: Vec<_> = schema.fields.iter().map(to_arrow_datatype).collect();
+            let decoder = unsafe { (decoder_handle as *const RemoteShuffleDecoder).as_ref() }
+                .ok_or_else(|| {
+                    CometError::Internal("Remote shuffle decoder is not initialized".to_owned())
+                })?;
             decode_shuffle_block(
                 env,
                 byte_buffer,
                 length,
                 array_addrs,
                 schema_addrs,
-                Some(&expected_types),
+                Some(&decoder.expected_types),
             )
         })
     })
@@ -1294,11 +1426,9 @@ fn decode_shuffle_block(
     let length = length as usize;
     let slice: &[u8] = unsafe { std::slice::from_raw_parts(raw_pointer, length) };
     let batch = if let Some(expected_types) = expected_types {
-        let batch = read_ipc_compressed_validated(slice)?;
-        // Reject incompatible remote schemas before exporting arrays to the JVM. Casting or
-        // importing first can silently change values or bypass remote fetch-failure reporting.
-        validate_remote_schema(&batch, expected_types)?;
-        batch
+        // Reject incompatible logical types, then decode dictionaries before JVM import. The
+        // JVM importer supports fewer dictionary key/value layouts than the shuffle writer.
+        decode_remote_shuffle_batch(slice, expected_types)?
     } else {
         read_ipc_compressed(slice)?
     };
@@ -1505,6 +1635,120 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_columnarToRowClose(
 mod tests {
     use super::*;
     use datafusion::execution::memory_pool::{MemoryConsumer, UnboundedMemoryPool};
+    use datafusion_comet_proto::spark_expression::{AggExpr, Count, Expr, Sum};
+    use datafusion_comet_proto::spark_operator::{HashAggregate, ShuffleWriter};
+
+    #[test]
+    fn skip_partial_eligibility_is_fail_closed() {
+        let count = AggExpr {
+            expr_struct: Some(AggExprStruct::Count(Count {
+                children: vec![Expr::default()],
+            })),
+            ..Default::default()
+        };
+        let sum = AggExpr {
+            expr_struct: Some(AggExprStruct::Sum(Sum::default())),
+            ..Default::default()
+        };
+        let partial = HashAggregate {
+            grouping_exprs: vec![Expr::default()],
+            agg_exprs: vec![count.clone()],
+            mode: AggregateMode::Partial as i32,
+            ..Default::default()
+        };
+        let writer = |agg: HashAggregate| Operator {
+            op_struct: Some(OpStruct::ShuffleWriter(ShuffleWriter::default())),
+            children: vec![Operator {
+                op_struct: Some(OpStruct::HashAgg(agg)),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let ratio = |plan: &Operator, requested: f64| {
+            let mut config = SessionConfig::new();
+            config
+                .options_mut()
+                .execution
+                .skip_partial_aggregation_probe_rows_threshold = 37;
+            config
+                .options_mut()
+                .execution
+                .skip_partial_aggregation_probe_ratio_threshold = requested;
+            configure_skip_partial_aggregation(&mut config, plan);
+            assert_eq!(
+                config
+                    .options()
+                    .execution
+                    .skip_partial_aggregation_probe_rows_threshold,
+                37
+            );
+            config
+                .options()
+                .execution
+                .skip_partial_aggregation_probe_ratio_threshold
+        };
+
+        for agg in [
+            partial.clone(),
+            HashAggregate {
+                agg_exprs: vec![],
+                ..partial.clone()
+            },
+            HashAggregate {
+                agg_exprs: vec![count.clone(), count],
+                ..partial.clone()
+            },
+        ] {
+            let plan = writer(agg);
+            assert_eq!(ratio(&plan, 0.8), 0.8);
+            assert_eq!(ratio(&plan, 0.5), 0.5);
+            assert_eq!(ratio(&plan, 1.1), 1.1);
+            // Non-native shuffle / standalone native blocks stay disabled.
+            assert_eq!(ratio(&plan.children[0], 0.8), 1.1);
+        }
+
+        for agg in [
+            HashAggregate {
+                agg_exprs: vec![sum],
+                ..partial.clone()
+            },
+            HashAggregate {
+                agg_exprs: vec![AggExpr::default()],
+                ..partial.clone()
+            },
+            HashAggregate {
+                agg_exprs: vec![AggExpr {
+                    expr_struct: Some(AggExprStruct::Count(Count {
+                        children: vec![Expr::default(), Expr::default()],
+                    })),
+                    ..Default::default()
+                }],
+                ..partial.clone()
+            },
+            HashAggregate {
+                mode: AggregateMode::PartialMerge as i32,
+                ..partial.clone()
+            },
+            HashAggregate {
+                expr_modes: vec![AggregateMode::PartialMerge as i32],
+                ..partial.clone()
+            },
+            HashAggregate {
+                mode: 99,
+                ..partial.clone()
+            },
+        ] {
+            let plan = writer(agg);
+            assert_eq!(ratio(&plan, 0.8), 1.1);
+            // An eligible sibling or a Final parent must not hide the unsafe child.
+            let mut nested = writer(HashAggregate {
+                mode: AggregateMode::Final as i32,
+                ..partial.clone()
+            });
+            nested.children[0].children = plan.children;
+            assert_eq!(ratio(&nested, 0.8), 1.1);
+        }
+    }
 
     fn entry_count(thread_id: u64) -> usize {
         get_thread_memory_pools()

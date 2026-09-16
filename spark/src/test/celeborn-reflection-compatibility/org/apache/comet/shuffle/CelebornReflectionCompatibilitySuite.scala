@@ -169,6 +169,24 @@ class CelebornReflectionCompatibilitySuite extends AnyFunSuite {
     })
   }
 
+  test("reject native shuffle for released clients with final completion-tracking fields") {
+    val completionFields = Seq(
+      declaredField(transportClientFactory, "clientBootstraps"),
+      declaredField(transportClient, "channel"),
+      declaredField(transportResponseHandler, "outstandingPushes"),
+      declaredField(shuffleClient, "pushDataRetryPool"))
+    completionFields.foreach { field =>
+      assert(Modifier.isFinal(field.getModifiers), s"$field must remain final in Celeborn")
+      assert(!Modifier.isVolatile(field.getModifiers), s"$field must not be volatile in Celeborn")
+    }
+
+    val reason =
+      CelebornShufflePartitionPusher.nativePushCompletionUnavailableReason(shuffleClient)
+    assert(reason != null, s"Celeborn $celebornVersion must not use native push admission")
+    assert(reason.contains("completion"), reason)
+    assert(reason.contains("volatile"), reason)
+  }
+
   private def load(name: String): Class[_] = Class.forName(name, false, classLoader)
 
   private def instanceField(owner: Class[_], name: String, expectedType: Class[_]): Field = {

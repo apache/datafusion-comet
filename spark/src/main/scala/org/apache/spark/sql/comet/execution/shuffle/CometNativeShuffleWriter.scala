@@ -39,7 +39,7 @@ import org.apache.spark.sql.execution.metric.SQLMetric
 import org.apache.spark.sql.types.StructField
 import org.apache.spark.util.{ThreadUtils, Utils}
 
-import org.apache.comet.{CometConf, CometExecIterator}
+import org.apache.comet.{CometConf, CometExecIterator, CometShuffleSizeLimitException}
 import org.apache.comet.serde.{OperatorOuterClass, PartitioningOuterClass, QueryPlanSerde}
 import org.apache.comet.serde.OperatorOuterClass.{CompressionCodec, Operator}
 import org.apache.comet.serde.operator.schema2Proto
@@ -103,6 +103,9 @@ class CometNativeShuffleWriter[K, V](
           catch {
             case cleanupFailure: Throwable => failure.addSuppressed(cleanupFailure)
           }
+          if (CometNativeShuffleWriter.isSizeLimitFailure(failure)) {
+            destination.onSizeLimitExceeded(failure)
+          }
         }
         throw failure
     }
@@ -148,7 +151,12 @@ class CometNativeShuffleWriter[K, V](
       // in CometNativeShuffleInputRDD.getPartitions on the driver), not on the spec. The spec's
       // execContext.perPartitionByKey is emptied in prepareNativeShuffleDependency so the full
       // O(numPartitions) map stays out of the broadcast task binary.
-      PlanDataInjector.injectPlanData(
+      //
+      // The unified plan differs per task (output paths), so there is no base plan cache entry
+      // here; scan lookup rides the source keys the driver embedded in childNativeOp's scans,
+      // and prepared commons are shared across this shuffle's map tasks via the shuffleId.
+      PlanDataInjector.injectPlanDataForShuffle(
+        shuffleId,
         unifiedPlan,
         ctx.commonByKey,
         shuffleInputIter.planDataByKey)
@@ -484,6 +492,16 @@ class CometNativeShuffleWriter[K, V](
 }
 
 private[shuffle] object CometNativeShuffleWriter {
+  private[shuffle] def isSizeLimitFailure(failure: Throwable): Boolean = {
+    var cause = failure
+    val visited = new java.util.IdentityHashMap[Throwable, java.lang.Boolean]()
+    while (cause != null && visited.put(cause, java.lang.Boolean.TRUE) == null) {
+      if (cause.isInstanceOf[CometShuffleSizeLimitException]) return true
+      cause = cause.getCause
+    }
+    false
+  }
+
   def drainAndClose(iterator: Iterator[_], close: () => Unit): Unit = {
     Utils.tryWithSafeFinally {
       while (iterator.hasNext) {
@@ -503,7 +521,8 @@ private[shuffle] final case class CelebornNativeShuffleDestination(
     maxFrameBytes: Int,
     numPartitions: Int,
     commitAuthorized: Boolean = false,
-    commitValidator: () => Boolean = () => true) {
+    commitValidator: () => Boolean = () => true,
+    onSizeLimitExceeded: Throwable => Unit = _ => ()) {
   require(pusher != null, "The Celeborn shuffle partition pusher must not be null")
   require(maxFrameBytes >= 20, "The Celeborn shuffle frame limit must fit a complete frame")
   require(

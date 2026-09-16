@@ -266,17 +266,17 @@ fn array_insert<O: OffsetSizeTrait>(
             if pos1 <= len + 1 {
                 // In-range insertion (including appending to end)
                 let corrected = pos1 - 1; // 0-based insertion point
-                mutable_values.extend(0, start, start + corrected);
-                mutable_values.extend(1, row_index, row_index + 1);
-                mutable_values.extend(0, start + corrected, end);
+                mutable_values.try_extend(0, start, start + corrected)?;
+                mutable_values.try_extend(1, row_index, row_index + 1)?;
+                mutable_values.try_extend(0, start + corrected, end)?;
                 final_len = len + 1;
             } else {
                 // Beyond end: pad with nulls then insert
                 let corrected = pos1 - 1;
                 let padding = corrected - len;
-                mutable_values.extend(0, start, end);
-                mutable_values.extend_nulls(padding);
-                mutable_values.extend(1, row_index, row_index + 1);
+                mutable_values.try_extend(0, start, end)?;
+                mutable_values.try_extend_nulls(padding)?;
+                mutable_values.try_extend(1, row_index, row_index + 1)?;
                 final_len = corrected + 1; // equals pos1
             }
         } else {
@@ -289,9 +289,9 @@ fn array_insert<O: OffsetSizeTrait>(
                 // Legacy:     -1 behaves like insert before the last element (corrected = len - k)
                 let base_offset = if legacy_mode { 0 } else { 1 };
                 let corrected = len - k + base_offset;
-                mutable_values.extend(0, start, start + corrected);
-                mutable_values.extend(1, row_index, row_index + 1);
-                mutable_values.extend(0, start + corrected, end);
+                mutable_values.try_extend(0, start, start + corrected)?;
+                mutable_values.try_extend(1, row_index, row_index + 1)?;
+                mutable_values.try_extend(0, start + corrected, end)?;
                 final_len = len + 1;
             } else {
                 // Negative index beyond the start (Spark-specific behavior):
@@ -300,9 +300,9 @@ fn array_insert<O: OffsetSizeTrait>(
                 let base_offset = if legacy_mode { 1 } else { 0 };
                 let target_len = k + base_offset;
                 let padding = target_len.saturating_sub(len + 1);
-                mutable_values.extend(1, row_index, row_index + 1); // insert item first
-                mutable_values.extend_nulls(padding); // pad nulls
-                mutable_values.extend(0, start, end); // append original values
+                mutable_values.try_extend(1, row_index, row_index + 1)?; // insert item first
+                mutable_values.try_extend_nulls(padding)?; // pad nulls
+                mutable_values.try_extend(0, start, end)?; // append original values
                 final_len = target_len;
             }
         }

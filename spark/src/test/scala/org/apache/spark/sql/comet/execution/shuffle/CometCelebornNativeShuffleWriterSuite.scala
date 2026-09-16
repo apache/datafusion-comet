@@ -28,7 +28,7 @@ import org.apache.spark.shuffle.{BaseShuffleHandle, FetchFailedException, IndexS
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
-import org.apache.comet.CometConf
+import org.apache.comet.{CometConf, CometShuffleSizeLimitException}
 import org.apache.comet.shuffle.{CelebornShufflePartitionPusher, CelebornShufflePusherFactory, RecordingCelebornPushClient}
 
 /** Exercises real Spark map tasks, native RSS planning, and the Celeborn map lifecycle. */
@@ -103,6 +103,22 @@ class CometCelebornNativeShuffleWriterSuite extends CometTestBase {
             .asInstanceOf[CometShuffleDependency[Int, ColumnarBatch, ColumnarBatch]])
       }
     }
+  }
+
+  test("default pushers and the configured factory can share executor byte admission") {
+    val client = new RecordingCelebornPushClient
+    val defaultPusher = new CelebornShufflePartitionPusher(client, 19, 3, 0, 12, 9)
+    val configuredPusher = CelebornShufflePusherFactory.create(
+      new SparkConf(false),
+      client,
+      19,
+      12,
+      9,
+      TaskContext.empty())
+
+    assert(defaultPusher.maxReservationBytes() == configuredPusher.maxReservationBytes())
+    defaultPusher.abort()
+    configuredPusher.abort()
   }
 
   test("configured frame limits and executor admission both constrain native RSS callbacks") {
@@ -272,6 +288,282 @@ class CometCelebornNativeShuffleWriterSuite extends CometTestBase {
     }
   }
 
+  test("native frame limit failures abort before requesting a shuffle fallback") {
+    withNativeShuffleDependency() { dependency =>
+      val numMappers = dependency.rdd.getNumPartitions
+      val results = spark.sparkContext.runJob(
+        dependency.rdd,
+        (context: TaskContext, inputs: Iterator[Product2[Int, ColumnarBatch]]) => {
+          val client = new RecordingCelebornPushClient
+          val pusher = CelebornShufflePusherFactory.create(
+            SparkEnv.get.conf.clone().set(CometConf.COMET_SHUFFLE_RSS_MAX_FRAME_BYTES.key, "20"),
+            client,
+            96,
+            numMappers,
+            dependency.partitioner.numPartitions,
+            context)
+          val restart =
+            new FetchFailedException(
+              null,
+              dependency.shuffleId,
+              -1L,
+              -1,
+              0,
+              "restart locally",
+              null)
+          var fallbackCalls = 0
+          var reportedFailure: Throwable = null
+          var cleanupBeforeFallback = false
+          val writer = CometCelebornNativeShuffleWriterSuite.newWriter(
+            dependency,
+            context,
+            pusher,
+            onSizeLimitExceeded = failure => {
+              fallbackCalls += 1
+              reportedFailure = failure
+              cleanupBeforeFallback = client.cleanupCalls.get() == 1
+              throw restart
+            })
+          val actual =
+            try {
+              writer.write(inputs)
+              null
+            } catch {
+              case failure: FetchFailedException => failure
+            }
+
+          (
+            actual eq restart,
+            fallbackCalls,
+            reportedFailure.isInstanceOf[CometShuffleSizeLimitException],
+            cleanupBeforeFallback,
+            client.pushCount,
+            client.mapperEndCalls.get(),
+            writer.mapStatus == null,
+            writer.stop(success = false).isEmpty)
+        })
+
+      assert(results.nonEmpty)
+      assert(results.forall(_._1))
+      assert(results.forall(_._2 == 1))
+      assert(results.forall(_._3))
+      assert(results.forall(_._4))
+      assert(results.forall(_._5 == 0))
+      assert(results.forall(_._6 == 0))
+      assert(results.forall(_._7))
+      assert(results.forall(_._8))
+    }
+  }
+
+  test("a size failure after a successful push discards the partial remote map") {
+    withNativeShuffleDependency() { dependency =>
+      val numMappers = dependency.rdd.getNumPartitions
+      val results = spark.sparkContext.runJob(
+        dependency.rdd,
+        (context: TaskContext, inputs: Iterator[Product2[Int, ColumnarBatch]]) => {
+          val expected = new CometShuffleSizeLimitException("single row exceeds RSS frame limit")
+          val client = new RecordingCelebornPushClient {
+            override def pushOrMergeData(
+                shuffleId: Int,
+                mapId: Int,
+                attemptId: Int,
+                partitionId: Int,
+                bytes: Array[Byte],
+                offset: Int,
+                length: Int,
+                numMappers: Int,
+                numPartitions: Int,
+                doPush: Boolean,
+                skipCompress: Boolean): Int = {
+              if (pushCount == 1) failure = expected
+              super.pushOrMergeData(
+                shuffleId,
+                mapId,
+                attemptId,
+                partitionId,
+                bytes,
+                offset,
+                length,
+                numMappers,
+                numPartitions,
+                doPush,
+                skipCompress)
+            }
+          }
+          val pusher = CelebornShufflePusherFactory.create(
+            SparkEnv.get.conf,
+            client,
+            97,
+            numMappers,
+            dependency.partitioner.numPartitions,
+            context)
+          var fallbackCalls = 0
+          var cleanupBeforeFallback = false
+          val writer = CometCelebornNativeShuffleWriterSuite.newWriter(
+            dependency,
+            context,
+            pusher,
+            onSizeLimitExceeded = failure => {
+              assert(failure eq expected)
+              fallbackCalls += 1
+              cleanupBeforeFallback = client.cleanupCalls.get() == 1
+            })
+          val actual =
+            try {
+              writer.write(inputs)
+              null
+            } catch {
+              case failure: CometShuffleSizeLimitException => failure
+            }
+
+          (
+            actual eq expected,
+            fallbackCalls,
+            cleanupBeforeFallback,
+            client.pushCount,
+            client.mapperEndCalls.get(),
+            writer.mapStatus == null,
+            writer.stop(success = false).isEmpty)
+        })
+
+      assert(results.nonEmpty)
+      assert(results.forall(_._1))
+      assert(results.forall(_._2 == 1))
+      assert(results.forall(_._3))
+      assert(results.forall(_._4 == 2))
+      assert(results.forall(_._5 == 0))
+      assert(results.forall(_._6))
+      assert(results.forall(_._7))
+    }
+  }
+
+  test("transport failures do not request fallback based on their error message") {
+    withNativeShuffleDependency() { dependency =>
+      val numMappers = dependency.rdd.getNumPartitions
+      val results = spark.sparkContext.runJob(
+        dependency.rdd,
+        (context: TaskContext, inputs: Iterator[Product2[Int, ColumnarBatch]]) => {
+          val expected = new IOException("single row exceeds RSS frame limit")
+          val client = new RecordingCelebornPushClient
+          client.failure = expected
+          val pusher = CelebornShufflePusherFactory.create(
+            SparkEnv.get.conf,
+            client,
+            98,
+            numMappers,
+            dependency.partitioner.numPartitions,
+            context)
+          var fallbackCalls = 0
+          val writer = CometCelebornNativeShuffleWriterSuite.newWriter(
+            dependency,
+            context,
+            pusher,
+            onSizeLimitExceeded = _ => fallbackCalls += 1)
+          val actual =
+            try {
+              writer.write(inputs)
+              null
+            } catch {
+              case failure: IOException => failure
+            }
+
+          (
+            actual eq expected,
+            fallbackCalls,
+            client.cleanupCalls.get(),
+            writer.mapStatus == null,
+            writer.stop(success = false).isEmpty)
+        })
+
+      assert(results.nonEmpty)
+      assert(results.forall(_._1))
+      assert(results.forall(_._2 == 0))
+      assert(results.forall(_._3 == 1))
+      assert(results.forall(_._4))
+      assert(results.forall(_._5))
+    }
+  }
+
+  for (adaptive <- Seq(false, true)) {
+    test(
+      s"a row exceeding the RSS frame limit roundtrips through local Comet shuffle: AQE=$adaptive") {
+      // Exercise the reported 70 MiB row once; the AQE variant uses the same limit crossing at a
+      // smaller scale. Disabling compression makes the encoded size deterministic.
+      val payloadBytes = if (adaptive) 1024 * 1024 else 70 * 1024 * 1024
+      val payload = "x" * payloadBytes
+      val rows = Seq((0, "small"), (1, payload))
+      val runtimeConf = SparkEnv.get.conf
+      val previousCompression = runtimeConf.getOption("spark.shuffle.compress")
+      runtimeConf.set("spark.shuffle.compress", "false")
+      try {
+        withSQLConf(
+          CometConf.COMET_EXEC_ENABLED.key -> "true",
+          CometConf.COMET_SHUFFLE_MODE.key -> "native",
+          CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
+          "spark.sql.adaptive.enabled" -> adaptive.toString) {
+          withTempPath { path =>
+            rows
+              .toDF("key", "payload")
+              .coalesce(1)
+              .write
+              .option("parquet.enable.dictionary", "false")
+              .parquet(path.getCanonicalPath)
+            val shuffled = spark.read.parquet(path.getCanonicalPath).repartition(3, $"key")
+            val dependency = collect(shuffled.queryExecution.executedPlan) {
+              case exchange: CometShuffleExchangeExec =>
+                exchange.shuffleDependency
+                  .asInstanceOf[CometShuffleDependency[Int, ColumnarBatch, ColumnarBatch]]
+            }.headOption.getOrElse(fail("Expected a native Comet shuffle exchange"))
+            val numMappers = dependency.rdd.getNumPartitions
+            val frameBytes = if (adaptive) "32k" else "64m"
+            val remoteAttempts = spark.sparkContext.runJob(
+              dependency.rdd,
+              (context: TaskContext, inputs: Iterator[Product2[Int, ColumnarBatch]]) => {
+                val client = new RecordingCelebornPushClient
+                val pusher = CelebornShufflePusherFactory.create(
+                  SparkEnv.get.conf
+                    .clone()
+                    .set(CometConf.COMET_SHUFFLE_RSS_MAX_FRAME_BYTES.key, frameBytes),
+                  client,
+                  99,
+                  numMappers,
+                  dependency.partitioner.numPartitions,
+                  context)
+                var fallbackRequested = false
+                val writer = CometCelebornNativeShuffleWriterSuite.newWriter(
+                  dependency,
+                  context,
+                  pusher,
+                  onSizeLimitExceeded = _ => fallbackRequested = true)
+                try {
+                  writer.write(inputs)
+                } catch {
+                  case _: CometShuffleSizeLimitException =>
+                }
+                val failedWithoutCommit =
+                  fallbackRequested && client.cleanupCalls.get() == 1 &&
+                    client.mapperEndCalls.get() == 0 && writer.mapStatus == null
+                writer.stop(success = false)
+                failedWithoutCommit
+              })
+            assert(remoteAttempts.exists(identity))
+
+            // The dependency is registered with the suite's real local Comet manager. Running
+            // it again exercises native file output, Spark map-status publication, and the Comet
+            // reader, including a frame larger than the remote limit and normal AQE stage reads.
+            val actual = shuffled.collect().map(row => (row.getInt(0), row.getString(1))).toSeq
+            assert(actual.sortBy(_._1) == rows)
+          }
+        }
+      } finally {
+        previousCompression match {
+          case Some(value) => runtimeConf.set("spark.shuffle.compress", value)
+          case None => runtimeConf.remove("spark.shuffle.compress")
+        }
+      }
+    }
+  }
+
   test("low-cardinality range shuffle plans use the actual reducer partition count") {
     withNativeShuffleDependency(rangePartitioning = true) { dependency =>
       val actualPartitions = dependency.partitioner.numPartitions
@@ -424,7 +716,9 @@ private[shuffle] object CometCelebornNativeShuffleWriterSuite {
       context: TaskContext,
       pusher: CelebornShufflePartitionPusher,
       commitAuthorized: Boolean = false,
-      commitValidator: () => Boolean = () => true): CometNativeShuffleWriter[Int, ColumnarBatch] =
+      commitValidator: () => Boolean = () => true,
+      onSizeLimitExceeded: Throwable => Unit = _ => ())
+      : CometNativeShuffleWriter[Int, ColumnarBatch] =
     new CometNativeShuffleWriter[Int, ColumnarBatch](
       dependency.nativeShuffleSpec.get,
       dependency.outputPartitioning.get,
@@ -442,7 +736,8 @@ private[shuffle] object CometCelebornNativeShuffleWriterSuite {
           pusher.maxFrameBytes(),
           dependency.partitioner.numPartitions,
           commitAuthorized,
-          commitValidator)))
+          commitValidator,
+          onSizeLimitExceeded)))
 
   final class LocalFallbackShuffleManager extends ShuffleManager {
     var unregisteredShuffle: Option[Int] = None

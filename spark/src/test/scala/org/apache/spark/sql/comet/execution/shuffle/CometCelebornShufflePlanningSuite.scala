@@ -476,13 +476,14 @@ class CometCelebornShufflePlanningSuite extends CometTestBase {
       percentile <- Seq("percentile", "percentile_approx")
       mergeFunction <- Seq("first", "last")
     } {
-      test(s"unsupported $mergeFunction merge preserves $percentile buffers with AQE=$adaptive") {
+      test(s"disabled $mergeFunction preserves $percentile buffers with AQE=$adaptive") {
         manager.withPlanningSupport(CelebornNativeShufflePlanningSupport()) {
           withSQLConf(
             SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString,
             SQLConf.SHUFFLE_PARTITIONS.key -> "4",
+            s"spark.comet.expression.${mergeFunction.capitalize}.enabled" -> "false",
             CometConf.COMET_SHUFFLE_MODE.key -> "native") {
-            // FIRST/LAST cannot merge natively. Tag the incompatible percentile producer
+            // Disable FIRST/LAST to exercise fallback. Tag the incompatible percentile producer
             // before the first DISTINCT exchange is materialized, not just at the later
             // exchange that falls back. Its grouping key makes FIRST/LAST deterministic.
             val query = spark
@@ -635,6 +636,43 @@ class CometCelebornShufflePlanningSuite extends CometTestBase {
         checkAnswer(query, (1L to 32L).map(Row(_)))
         assert(cometExchanges(query.queryExecution.executedPlan).isEmpty)
         assert(manager.nativeRegistrations.get() == nativeRegistrations)
+      }
+    }
+
+    test(s"unavailable push completion executes Spark shuffles with AQE=$adaptive") {
+      val reason = "Celeborn client cannot safely observe native push completion"
+      manager.withPlanningSupport(
+        CelebornNativeShufflePlanningSupport(unavailableReason = Some(reason))) {
+        withSQLConf(
+          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString,
+          CometConf.COMET_SHUFFLE_MODE.key -> "native") {
+          assertNativeExecutionLoaded()
+          assert(!isCometShuffleEnabled(spark.sessionState.conf))
+          val exchange = ShuffleExchangeExec(SinglePartition, nativeChild())
+          assert(CometShuffleExchangeExec.shuffleSupported(exchange).isEmpty)
+          assert(reasons(exchange).contains(reason))
+          assertSpecialSupport(expected = false)
+
+          val nativeRegistrations = manager.nativeRegistrations.get()
+          val sparkRegistrations = manager.sparkRegistrations.get()
+          val repartitioned = input.repartition(2, col("value"))
+          assertSparkExchange(repartitioned.queryExecution.executedPlan)
+          checkAnswer(repartitioned, (1L to 32L).map(Row(_)))
+
+          val limit = input.limit(3)
+          val topK = input.orderBy(col("value").desc).limit(3)
+          assert(collect(limit.queryExecution.executedPlan) { case op: CometCollectLimitExec =>
+            op
+          }.isEmpty)
+          assert(collect(topK.queryExecution.executedPlan) {
+            case op: CometTakeOrderedAndProjectExec => op
+          }.isEmpty)
+          checkAnswer(limit, Seq(Row(1L), Row(2L), Row(3L)))
+          checkAnswer(topK, Seq(Row(32L), Row(31L), Row(30L)))
+          assert(cometExchanges(repartitioned.queryExecution.executedPlan).isEmpty)
+          assert(manager.nativeRegistrations.get() == nativeRegistrations)
+          assert(manager.sparkRegistrations.get() > sparkRegistrations)
+        }
       }
     }
 

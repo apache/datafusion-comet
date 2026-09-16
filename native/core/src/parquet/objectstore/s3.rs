@@ -120,7 +120,13 @@ pub fn create_store(
             .block_on(resolve_bucket_region(bucket))
             .map_err(|e| object_store::Error::Generic {
                 store: "S3",
-                source: format!("Failed to resolve region: {e}").into(),
+                source: format!(
+                    "Failed to resolve region: {e}. If '{bucket}' is on a non-AWS S3-compatible \
+                     service, set fs.s3a.endpoint (and optionally fs.s3a.endpoint.region, \
+                     fs.s3a.path.style.access) or the per-bucket variants \
+                     fs.s3a.bucket.{bucket}.endpoint[.region] so Comet skips the AWS HEAD probe."
+                )
+                .into(),
             })?;
         debug!("resolved region: {region:?}");
         builder = builder.with_config(AmazonS3ConfigKey::Region, region.to_string());

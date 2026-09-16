@@ -25,10 +25,11 @@ use crate::partitioners::{
 use crate::writers::{LocalPartitionWriter, PartitionWriter, RssPartitionWriter};
 use crate::{CometPartitioning, CompressionCodec, ShuffleBlockWriter};
 use async_trait::async_trait;
+use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::common::{exec_datafusion_err, DataFusionError};
-use datafusion::physical_expr::{EquivalenceProperties, Partitioning};
+use datafusion::physical_expr::{EquivalenceProperties, Partitioning, PhysicalExpr};
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
-use datafusion::physical_plan::EmptyRecordBatchStream;
+use datafusion::physical_plan::{apply_expression_roots, EmptyRecordBatchStream};
 use datafusion::{
     arrow::datatypes::SchemaRef,
     error::Result,
@@ -202,6 +203,21 @@ impl ExecutionPlan for ShuffleWriterExec {
 
     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
         vec![&self.input]
+    }
+
+    fn apply_expressions(
+        &self,
+        f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> Result<TreeNodeRecursion>,
+    ) -> Result<TreeNodeRecursion> {
+        match &self.partitioning {
+            CometPartitioning::Hash(exprs, _) => apply_expression_roots(exprs, f),
+            CometPartitioning::RangePartitioning(ordering, _, _, _) => {
+                apply_expression_roots(ordering.iter().map(|sort_expr| &sort_expr.expr), f)
+            }
+            CometPartitioning::SinglePartition | CometPartitioning::RoundRobin(_, _) => {
+                Ok(TreeNodeRecursion::Continue)
+            }
+        }
     }
 
     fn with_new_children(
@@ -392,10 +408,9 @@ fn contextualize_shuffle_error(error: DataFusionError, phase: &str) -> DataFusio
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::{read_ipc_compressed, ShuffleBlockWriter};
+    use crate::{read_ipc_compressed, ShuffleBlockWriter, ShuffleCodecContext};
     use arrow::array::{Array, Int64Array, StringArray, StringBuilder};
     use arrow::datatypes::{DataType, Field, Schema};
-    use arrow::ipc::writer::CompressionContext;
     use arrow::record_batch::RecordBatch;
     use arrow::row::{RowConverter, SortField};
     use datafusion::datasource::memory::MemorySourceConfig;
@@ -425,14 +440,9 @@ mod test {
             let mut cursor = Cursor::new(&mut output);
             let writer =
                 ShuffleBlockWriter::try_new(batch.schema().as_ref(), codec.clone()).unwrap();
-            let mut compression_context = CompressionContext::default();
+            let mut codec_context = ShuffleCodecContext::default();
             let length = writer
-                .write_batch(
-                    &batch,
-                    &mut cursor,
-                    &mut compression_context,
-                    &Time::default(),
-                )
+                .write_batch(&batch, &mut cursor, &mut codec_context, &Time::default())
                 .unwrap();
             assert_eq!(length, output.len());
 
@@ -471,14 +481,9 @@ mod test {
             let mut output = vec![];
             let mut cursor = Cursor::new(&mut output);
             let writer = ShuffleBlockWriter::try_new(schema.as_ref(), codec.clone()).unwrap();
-            let mut compression_context = CompressionContext::default();
+            let mut codec_context = ShuffleCodecContext::default();
             writer
-                .write_batch(
-                    &batch,
-                    &mut cursor,
-                    &mut compression_context,
-                    &Time::default(),
-                )
+                .write_batch(&batch, &mut cursor, &mut codec_context, &Time::default())
                 .unwrap();
 
             let batch2 = read_ipc_compressed(&output[16..]).unwrap();
@@ -577,6 +582,74 @@ mod test {
         repartitioner.insert_batch(batch.clone()).await.unwrap();
     }
 
+    /// The zstd context is reused within one encode burst but must not survive past it: a
+    /// spill event and the final shuffle write each end with the context released.
+    #[tokio::test]
+    #[cfg_attr(miri, ignore)] // miri can't call foreign function `ZSTD_createCCtx`
+    async fn local_writer_releases_zstd_context_at_burst_boundaries() {
+        let batch = create_batch(900);
+        let num_partitions = 2;
+        let runtime_env = create_runtime(512 * 1024);
+        let metrics_set = ExecutionPlanMetricsSet::new();
+        let dir = tempfile::tempdir().unwrap();
+        let shuffle_block_writer =
+            ShuffleBlockWriter::try_new(batch.schema().as_ref(), CompressionCodec::Zstd(1))
+                .unwrap();
+        let local_partition_writer = LocalPartitionWriter::try_new(
+            dir.path().join("data.out").to_str().unwrap().to_string(),
+            dir.path().join("index.out").to_str().unwrap().to_string(),
+            shuffle_block_writer,
+            num_partitions,
+            1024,
+            1024 * 1024,
+            Arc::clone(&runtime_env),
+        )
+        .unwrap();
+        let mut repartitioner = MultiPartitionShuffleRepartitioner::try_new(
+            0,
+            local_partition_writer,
+            CometPartitioning::Hash(vec![Arc::new(Column::new("a", 0))], num_partitions),
+            ShufflePartitionerMetrics::new(&metrics_set, 0),
+            runtime_env,
+            1024,
+            false,
+            None,
+        )
+        .unwrap();
+
+        repartitioner.insert_batch(batch.clone()).await.unwrap();
+        repartitioner.spill(0).unwrap();
+        assert!(
+            repartitioner
+                .partition_writer()
+                .get_spill_writers()
+                .iter()
+                .all(|writer| writer.has_spill_file()),
+            "the burst must encode blocks for every partition"
+        );
+        assert_eq!(
+            repartitioner.partition_writer().zstd_creation_count(),
+            1,
+            "one spill burst across all partitions must create the zstd context exactly once"
+        );
+        assert!(
+            !repartitioner.partition_writer().holds_zstd_cctx(),
+            "a finished spill burst must not keep the zstd context cached"
+        );
+
+        repartitioner.insert_batch(batch.clone()).await.unwrap();
+        repartitioner.shuffle_write().unwrap();
+        assert_eq!(
+            repartitioner.partition_writer().zstd_creation_count(),
+            2,
+            "the next burst re-creates the context once, not per block"
+        );
+        assert!(
+            !repartitioner.partition_writer().holds_zstd_cctx(),
+            "finish_all must release the zstd context"
+        );
+    }
+
     #[tokio::test]
     async fn shuffle_partitioner_charges_shared_buffer_once() {
         // `insert_batch` slices a large batch into batch_size chunks that all share one backing
@@ -640,13 +713,14 @@ mod test {
         );
     }
 
-    /// Spill every slice of one shared Arrow allocation and verify that memory accounting
-    /// includes that backing allocation once per outer input batch, plus each slice's indices.
+    /// Spill the same rows with different input batching and allocation-sharing patterns.
     async fn shared_buffer_memory_spilled_bytes(
         max_buffer_bytes: Option<usize>,
         memory_limit: usize,
         input_batches: usize,
-    ) -> usize {
+        input_batch_rows: usize,
+        fresh_allocations: bool,
+    ) -> (usize, Vec<u8>) {
         let num_rows = 16_384usize;
         let batch_size = 1024usize;
         let num_partitions = 2;
@@ -656,7 +730,6 @@ mod test {
             vec![Arc::new(Int64Array::from_iter_values(0..num_rows as i64))],
         )
         .unwrap();
-        let buffer_bytes = backing.get_array_memory_size();
 
         let runtime_env = create_runtime(memory_limit);
         let metrics_set = ExecutionPlanMetricsSet::new();
@@ -688,8 +761,26 @@ mod test {
         )
         .unwrap();
 
+        let mut expected_buffer_bytes = 0;
         for _ in 0..input_batches {
-            repartitioner.insert_batch(backing.clone()).await.unwrap();
+            for start in (0..num_rows).step_by(input_batch_rows) {
+                let end = (start + input_batch_rows).min(num_rows);
+                let input = if fresh_allocations {
+                    RecordBatch::try_new(
+                        Arc::clone(&schema),
+                        vec![Arc::new(Int64Array::from_iter_values(
+                            start as i64..end as i64,
+                        ))],
+                    )
+                    .unwrap()
+                } else {
+                    backing.slice(start, end - start)
+                };
+                // Each internal chunk spills and releases its full pinned input allocation.
+                expected_buffer_bytes += input.column(0).to_data().buffers()[0].capacity()
+                    * input.num_rows().div_ceil(batch_size);
+                repartitioner.insert_batch(input).await.unwrap();
+            }
         }
         repartitioner.shuffle_write().unwrap();
 
@@ -701,30 +792,28 @@ mod test {
         );
 
         let spilled = memory_spilled_bytes.value();
-        let minimum_backing_bytes = input_batches * buffer_bytes;
-        assert!(
-            spilled > minimum_backing_bytes,
-            "partition-index allocations must remain in memory spill accounting: \
-             {spilled} bytes reported for {minimum_backing_bytes} backing bytes"
-        );
         // Each row receives one (batch index, row index) entry. Allow twice the logical index
-        // size for Vec capacity rounding while still rejecting one full backing charge per slice.
-        let maximum_index_bytes = input_batches * num_rows * std::mem::size_of::<(u32, u32)>() * 2;
-        let maximum_spilled = minimum_backing_bytes + maximum_index_bytes;
+        // size for Vec capacity rounding. Buffer capacity contributes again on every spill,
+        // regardless of whether the caller or insert_batch sliced the input.
+        let minimum_index_bytes = input_batches * num_rows * std::mem::size_of::<(u32, u32)>();
         assert!(
-            spilled <= maximum_spilled,
-            "shared backing buffers must be charged once per input batch: \
-             {spilled} bytes reported, expected at most {maximum_spilled}"
+            (expected_buffer_bytes + minimum_index_bytes
+                ..=expected_buffer_bytes + minimum_index_bytes * 2)
+                .contains(&spilled),
+            "each spill must count its pinned input buffers and indices: \
+             {spilled} bytes reported for {expected_buffer_bytes} buffer bytes"
         );
 
-        spilled
+        (spilled, std::fs::read(dir.path().join("data.out")).unwrap())
     }
 
     #[tokio::test]
     #[cfg_attr(miri, ignore)] // miri can't call foreign function `ZSTD_createCCtx`
-    async fn max_buffer_spills_charge_shared_backing_once_per_input_batch() {
-        let one_batch = shared_buffer_memory_spilled_bytes(Some(8 * 1024), 512 * 1024, 1).await;
-        let two_batches = shared_buffer_memory_spilled_bytes(Some(8 * 1024), 512 * 1024, 2).await;
+    async fn max_buffer_spill_metrics_are_cumulative() {
+        let (one_batch, _) =
+            shared_buffer_memory_spilled_bytes(Some(8 * 1024), 512 * 1024, 1, 16_384, false).await;
+        let (two_batches, _) =
+            shared_buffer_memory_spilled_bytes(Some(8 * 1024), 512 * 1024, 2, 16_384, false).await;
         assert_eq!(
             two_batches,
             one_batch * 2,
@@ -735,8 +824,43 @@ mod test {
 
     #[tokio::test]
     #[cfg_attr(miri, ignore)] // miri can't call foreign function `ZSTD_createCCtx`
-    async fn rejected_reservations_charge_shared_backing_once_per_input_batch() {
-        shared_buffer_memory_spilled_bytes(None, 1, 1).await;
+    async fn rejected_reservations_count_pinned_input_buffers() {
+        shared_buffer_memory_spilled_bytes(None, 1, 1, 16_384, false).await;
+    }
+
+    #[tokio::test]
+    #[cfg_attr(miri, ignore)] // miri can't call foreign function `ZSTD_createCCtx`
+    async fn shared_buffer_spill_metrics_do_not_depend_on_input_batching() {
+        // Partial HashAggregate can emit the sixteen zero-copy slices separately. They must
+        // report the same memory spill size and write the same data as slicing one input here.
+        for (max_buffer_bytes, memory_limit) in [(Some(8 * 1024), 512 * 1024), (None, 1)] {
+            let (whole_bytes, whole_output) = shared_buffer_memory_spilled_bytes(
+                max_buffer_bytes,
+                memory_limit,
+                1,
+                16_384,
+                false,
+            )
+            .await;
+            let (sliced_bytes, sliced_output) =
+                shared_buffer_memory_spilled_bytes(max_buffer_bytes, memory_limit, 1, 1024, false)
+                    .await;
+            assert_eq!(sliced_bytes, whole_bytes);
+            assert_eq!(sliced_output, whole_output);
+
+            // Independently allocated chunks pin less memory per spill, even though their
+            // serialized output is identical to the shared zero-copy slices.
+            let (fresh_bytes, fresh_output) =
+                shared_buffer_memory_spilled_bytes(max_buffer_bytes, memory_limit, 1, 1024, true)
+                    .await;
+            assert!(fresh_bytes < whole_bytes);
+            assert_eq!(fresh_output, whole_output);
+
+            let (repeated_bytes, _) =
+                shared_buffer_memory_spilled_bytes(max_buffer_bytes, memory_limit, 2, 1024, false)
+                    .await;
+            assert_eq!(repeated_bytes, whole_bytes * 2);
+        }
     }
 
     /// Buffer `num_batches` batches through a `MultiPartitionShuffleRepartitioner` and return its
@@ -789,7 +913,7 @@ mod test {
             .partition_writer()
             .get_spill_writers()
             .iter()
-            .filter_map(|writer| writer.path())
+            .filter_map(|writer| writer.path().unwrap())
             .map(|path| usize::try_from(std::fs::metadata(path).unwrap().len()).unwrap())
             .sum();
         assert_eq!(
@@ -1160,6 +1284,7 @@ mod test {
         let codec = CompressionCodec::Lz4Frame;
         let encode_time = Time::default();
         let write_time = Time::default();
+        let mut codec_context = ShuffleCodecContext::default();
 
         // Write with coalescing (batch_size=8192)
         let mut coalesced_output = Vec::new();
@@ -1171,10 +1296,21 @@ mod test {
                 1024 * 1024,
                 8192,
             );
+            let mut scratch = Vec::new();
             for batch in &small_batches {
-                buf_writer.write(batch, &encode_time, &write_time).unwrap();
+                buf_writer
+                    .write(
+                        batch,
+                        &mut scratch,
+                        &mut codec_context,
+                        &encode_time,
+                        &write_time,
+                    )
+                    .unwrap();
             }
-            buf_writer.flush(&encode_time, &write_time).unwrap();
+            buf_writer
+                .flush(&mut scratch, &mut codec_context, &encode_time, &write_time)
+                .unwrap();
         }
 
         // Write without coalescing (batch_size=1)
@@ -1187,10 +1323,21 @@ mod test {
                 1024 * 1024,
                 1,
             );
+            let mut scratch = Vec::new();
             for batch in &small_batches {
-                buf_writer.write(batch, &encode_time, &write_time).unwrap();
+                buf_writer
+                    .write(
+                        batch,
+                        &mut scratch,
+                        &mut codec_context,
+                        &encode_time,
+                        &write_time,
+                    )
+                    .unwrap();
             }
-            buf_writer.flush(&encode_time, &write_time).unwrap();
+            buf_writer
+                .flush(&mut scratch, &mut codec_context, &encode_time, &write_time)
+                .unwrap();
         }
 
         // Coalesced output should be smaller due to fewer IPC schema blocks
@@ -1281,6 +1428,7 @@ mod test {
         let codec = CompressionCodec::Lz4Frame;
         let encode_time = Time::default();
         let write_time = Time::default();
+        let mut codec_context = ShuffleCodecContext::default();
 
         let mut output = Vec::new();
         {
@@ -1291,10 +1439,21 @@ mod test {
                 1024 * 1024,
                 batch_size as usize,
             );
+            let mut scratch = Vec::new();
             for batch in &inputs {
-                buf_writer.write(batch, &encode_time, &write_time).unwrap();
+                buf_writer
+                    .write(
+                        batch,
+                        &mut scratch,
+                        &mut codec_context,
+                        &encode_time,
+                        &write_time,
+                    )
+                    .unwrap();
             }
-            buf_writer.flush(&encode_time, &write_time).unwrap();
+            buf_writer
+                .flush(&mut scratch, &mut codec_context, &encode_time, &write_time)
+                .unwrap();
         }
 
         let blocks = read_all_ipc_batches(&output);
