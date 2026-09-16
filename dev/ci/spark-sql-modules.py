@@ -18,8 +18,8 @@
 # The test matrix for .github/workflows/spark_sql_test_reusable.yml.
 #
 # The rows used to be a literal `strategy.matrix.module` list in the workflow.
-# They live here so that a caller can ask for a subset: the umbrella keeps the
-# Spark 4.1 `sql_hive` shards out of the PR tier (see POLICY in
+# They live here so that a caller can ask for a subset: the umbrella lets a
+# pull request opt into only the Spark 4.1 `sql_hive` shards (see POLICY in
 # dev/ci/compute-changes.py and issue #5870) and a job-level `if:` cannot see
 # `matrix`, so the selection has to happen before the matrix is expanded. The
 # `build` job runs this script and publishes the result as a job output that
