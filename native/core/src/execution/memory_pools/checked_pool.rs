@@ -144,15 +144,18 @@ impl<P: MemoryPool> MemoryPool for CheckedMemoryPool<P> {
                 ));
             }
             if !self.reported.swap(true, Ordering::Relaxed) {
+                // Both quantities are named because either can be what crosses the budget: a
+                // large single request against modest usage, or a small request against usage
+                // that is already near the ceiling.
                 warn!(
-                    "Comet's real native memory usage ({in_use} bytes) has passed \
-                     spark.memory.offHeap.size ({} bytes) while reserving {additional} bytes for \
-                     {}. This memory is not covered by the pool's reservations and the executor \
-                     may be killed for exceeding its container limit. Set \
+                    "Reserving {additional} bytes for {} would take Comet's real native memory \
+                     usage ({in_use} bytes) past spark.memory.offHeap.size ({} bytes). This \
+                     memory is not covered by the pool's reservations and the executor may be \
+                     killed for exceeding its container limit. Set \
                      spark.comet.exec.memoryPool.enforceNativeUsage=true to refuse such \
                      reservations instead, or raise spark.memory.offHeap.size.",
-                    self.budget,
-                    reservation.consumer().name()
+                    reservation.consumer().name(),
+                    self.budget
                 );
             }
         }
