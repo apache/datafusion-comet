@@ -20,8 +20,10 @@
 package org.apache.spark.sql.benchmark
 
 /**
- * Benchmark for `length` over binary and string columns: short and long payloads, a column with
- * nulls, and repeated versus varied values. To run this benchmark:
+ * Benchmark for `length` over binary and string columns. Payloads are the decimal text of the
+ * generated Long, so widths vary per row: `b_short` is that text (up to 20 bytes), `b_long`
+ * repeats it 128 times, `b_null` blanks one row in five, and `b_repeated` cycles through the nine
+ * values of `value % 5` over a signed generator. To run this benchmark:
  * {{{
  *   SPARK_GENERATE_BENCHMARK_FILES=1 make benchmark-org.apache.spark.sql.benchmark.CometBinaryLengthBenchmark
  * }}}
@@ -40,8 +42,9 @@ object CometBinaryLengthBenchmark extends CometBenchmarkBase {
     runBenchmarkWithTable("length on binary and string", 1024 * 1024) { v =>
       withTempPath { dir =>
         withTempTable("parquetV1Table") {
-          // c1 varies per row; the binary columns cover an 8-byte payload, a 1 KiB payload,
-          // a fifth of the rows null, and five distinct values the writer dictionary-encodes.
+          // c1 is the row's decimal text repeated ten times; the binary columns cover the same
+          // text as bytes, 128 repeats of it, a fifth of the rows null, and the nine values of
+          // value % 5 that the writer dictionary-encodes.
           prepareTable(
             dir,
             spark.sql("SELECT REPEAT(CAST(value AS STRING), 10) AS c1," +
