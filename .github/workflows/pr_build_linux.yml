@@ -404,6 +404,8 @@ jobs:
           jdk-version: 17
 
       - name: Fingerprint Rust test build inputs
+        # Default HDFS support compiles against JNI headers and links libjvm.
+        # Cached build-script outputs also contain JDK paths (core/build.rs).
         id: cargo-key
         run: python3 dev/ci/native-cache-key.py --profile debug --github-output "$GITHUB_OUTPUT"
 

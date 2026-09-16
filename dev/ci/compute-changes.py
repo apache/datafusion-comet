@@ -38,6 +38,25 @@ import re
 import sys
 from pathlib import Path
 
+# Shared cache recipes affect every native producer. Tests exercise the recipes
+# but do not affect the resulting library, so they are routed separately below.
+NATIVE_CACHE_RECIPES = (
+    ".github/actions/build-native-ci/**",
+    "dev/ci/native-cache-key.py", "dev/ci/compute-changes.py",
+)
+
+# Cargo validates optional contrib manifests against native/Cargo.lock even
+# with their features disabled. Their Rust sources and standalone lockfiles
+# do not enter the default CI/debug builds.
+NATIVE_BUILD_INPUTS = (
+    "native/**", "contrib/*/native/Cargo.toml", ".cargo/**",
+    ".github/actions/setup-builder/**", *NATIVE_CACHE_RECIPES,
+    ".github/workflows/pr_build_linux.yml", ".github/workflows/spark_sql_test_reusable.yml",
+    ".github/workflows/iceberg_spark_test_reusable.yml", ".github/workflows/spark_sql_writer_tests.yml",
+    "rust-toolchain", "rust-toolchain.toml", "!**.md",
+)
+NATIVE_LIBRARY_INPUTS = (*NATIVE_BUILD_INPUTS, "!**/benches/**")
+
 FILTERS = {
     "build_linux": [
         "native/**",
@@ -395,8 +414,7 @@ for _native_consumer in (
     "iceberg_1_8", "iceberg_1_9", "iceberg_1_10", "iceberg_1_11",
 ):
     FILTERS[_native_consumer].extend([
-        ".github/actions/build-native-ci/**",
-        "dev/ci/native-cache-key.py",
+        *NATIVE_CACHE_RECIPES,
         "dev/ci/test-native-cache-key.py",
     ])
 
@@ -563,15 +581,9 @@ def compute(files, event):
         name: event_allows(name, event) and matches(patterns, files)
         for name, patterns in FILTERS.items()
     }
-    # These native-key inputs have no ordinary Linux route. Warm main after
-    # they change, without adding the full Linux pipeline to contrib-only PRs.
-    if event.get("name") == "push" and matches([
-        "contrib/*/native/**", ".cargo/**", "rust-toolchain",
-        ".github/workflows/spark_sql_test_reusable.yml",
-        ".github/workflows/iceberg_spark_test_reusable.yml",
-        ".github/workflows/spark_sql_writer_tests.yml",
-        "!**.md", "!**/benches/**",
-    ], files):
+    # Use the fingerprint's exact patterns and matcher for main's producer,
+    # including inputs owned by other workflows, without broadening PR jobs.
+    if event.get("name") == "push" and matches(NATIVE_LIBRARY_INPUTS, files):
         selected["build_linux"] = True
     return selected
 

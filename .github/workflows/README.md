@@ -411,6 +411,8 @@ The Linux, Spark SQL, Iceberg and manual writer workflows call
 cache hit restores `native/target/ci/libcomet.so` and skips Cargo. A miss restores
 an incremental cache and runs `cargo build --locked --profile ci`. Artifacts and
 downstream tests use the same paths in either case.
+`--locked` deliberately fails when a manifest change requires updating
+`native/Cargo.lock`; contributors must commit that lockfile update with the change.
 
 `dev/ci/native-cache-key.py` snapshots tracked native/protobuf/dependency files,
 Cargo configuration and the native build recipes before Cargo generates source
@@ -418,14 +420,21 @@ files. The key also includes Rust versions, installed system package
 versions, architecture, JDK release/path and compiler flags. The helper targets
 our official Rust container and `setup-builder`, not arbitrary local toolchains.
 Spark-only edits, documentation, unrelated workflows and generated files preserve
-the key; native/protobuf changes invalidate it. Benchmarks enter the debug cache
-key but not the library key. The shared action uses portable `x86-64-v3` code
-generation.
+the key; native/protobuf changes invalidate it. Optional contrib crates contribute
+their manifests, which Cargo resolves even with their features disabled, but not
+their Rust sources or standalone lockfiles. Benchmarks enter the debug cache key
+but not the library key. The input lists and glob matcher are shared with main's
+cache routing in `compute-changes.py`. The shared action uses portable `x86-64-v3`
+code generation.
 
 The incremental cache contains the effective `CARGO_HOME` registry/git directories
-and `native/target`. Its dependency prefix permits reuse after source changes,
-but every restore still invokes Cargo. The Rust test job uses a separate debug
-key and continues to run all checks and tests.
+and `native/target`. Its dependency prefix permits reuse after source changes
+within the same build environment, but every restore still invokes Cargo.
+Environment changes also invalidate this fallback: native dependencies compile C
+against JNI headers and cache build-script outputs that Cargo does not fully
+invalidate after external compiler or JDK changes. This can miss after unrelated
+package updates, but prevents reusing those objects under a new library key.
+The Rust test job uses a separate debug key and continues to run all checks and tests.
 
 Only pushes to `main` save either cache. Main always compiles to keep the
 incremental cache warm. Other runs consume matching entries; a cold or evicted
