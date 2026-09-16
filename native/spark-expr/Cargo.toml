@@ -410,3 +410,7 @@ harness = false
 [[bench]]
 name = "cast_decimal_to_boolean"
 harness = false
+
+[[bench]]
+name = "dayofweek_weekday"
+harness = false
