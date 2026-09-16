@@ -133,6 +133,12 @@ ROUTING_CASES = [
     # reaches every job that runs ./mvnw, the Delta gate and PyArrow suite
     # included.
     ([".github/actions/maven-bootstrap/action.yaml"], MVN_JOBS),
+    # Linux's compact native cache is shared by every Spark/Iceberg producer.
+    # Helper edits also match macOS's broad dev/ci filter, as before.
+    ([".github/actions/build-native-ci/action.yaml"], BUILD_JOBS - {"build_macos"}),
+    (["dev/ci/native-cache-key.py"], BUILD_JOBS),
+    (["dev/ci/native-library-cache.py"], BUILD_JOBS),
+    (["dev/ci/test-native-cache-workflow.py"], BUILD_JOBS),
     # Spot checks that the additions above did not widen unrelated routes.
     (["docs/source/user-guide/overview.md"], {"docs"}),
     (["native/core/benches/parquet_read.rs"], {"benchmark"}),
@@ -416,7 +422,7 @@ CHECKOUT_USES = re.compile(r"uses:\s*actions/checkout@")
 CACHE_REFRESH_WORKFLOW = WORKFLOWS / "pr_build_linux.yml"
 CACHE_REFRESH_JOBS = {
     "lint": "gates build-native and linux-test-rust, and costs 40 seconds",
-    "build-native": "writes the cargo-ci cache (native/target, CI profile)",
+    "build-native": "writes the compact native library and cargo-ci caches",
     "linux-test-rust": "writes the cargo-debug cache (native/target, debug)",
     "verify-benchmark-results-tpch": "writes the TPC-H SF=1 dataset and java-maven caches",
     "verify-benchmark-results-tpcds": "writes the TPC-DS SF=1 dataset and java-maven caches",

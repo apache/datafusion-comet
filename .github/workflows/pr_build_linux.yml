@@ -360,27 +360,10 @@ jobs:
         uses: ./.github/actions/setup-builder
         with:
           rust-version: ${{ env.RUST_VERSION }}
-          jdk-version: 17  # JDK only needed for JVM module proto generation
+          jdk-version: 17  # JNI headers and libjvm are native build inputs.
 
-      - name: Restore Cargo cache
-        uses: actions/cache/restore@v6
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            native/target
-          key: ${{ runner.os }}-cargo-ci-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}-${{ hashFiles('native/**/*.rs') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-ci-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}-
-
-      - name: Build native library (CI profile)
-        run: |
-          cd native
-          # CI profile: same overflow behavior as release, but faster compilation
-          # (no LTO, parallel codegen)
-          cargo build --profile ci
-        env:
-          RUSTFLAGS: "-Ctarget-cpu=x86-64-v3 -Clink-arg=-fuse-ld=bfd"
+      - name: Build or restore native library
+        uses: ./.github/actions/build-native-ci
 
       - name: Upload native library
         uses: ./.github/actions/upload-artifact-retry
@@ -388,18 +371,6 @@ jobs:
           name: native-lib-linux
           path: native/target/ci/libcomet.so
           retention-days: 1
-
-      - name: Save Cargo cache
-        uses: actions/cache/save@v6
-        # The push run is the cache warmer (see the header); a scheduled run
-        # at the same sha would only re-archive an entry that already exists.
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            native/target
-          key: ${{ runner.os }}-cargo-ci-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}-${{ hashFiles('native/**/*.rs') }}
 
   # Run Rust tests (runs in parallel with build-native, uses debug builds).
   # Owns main's `cargo-debug` cache entry, so it runs in cache-refresh-only mode
@@ -423,17 +394,20 @@ jobs:
           rust-version: ${{ env.RUST_VERSION }}
           jdk-version: 17
 
+      - name: Fingerprint Rust test build inputs
+        id: cargo-key
+        run: python3 dev/ci/native-cache-key.py --profile debug --github-output "$GITHUB_OUTPUT"
+
       - name: Restore Cargo cache
+        id: cargo-cache
         uses: actions/cache/restore@v6
         with:
           path: |
-            ~/.cargo/registry
-            ~/.cargo/git
+            ${{ steps.cargo-key.outputs.cargo-home }}/registry
+            ${{ steps.cargo-key.outputs.cargo-home }}/git
             native/target
-          # Note: Java version intentionally excluded - Rust target is JDK-independent
-          key: ${{ runner.os }}-cargo-debug-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}-${{ hashFiles('native/**/*.rs') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-debug-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}-
+          key: ${{ steps.cargo-key.outputs.source-key }}
+          restore-keys: ${{ steps.cargo-key.outputs.restore-prefix }}
 
       - name: Rust test steps
         uses: ./.github/actions/rust-test
@@ -442,13 +416,13 @@ jobs:
         uses: actions/cache/save@v6
         # The push run is the cache warmer (see the header); a scheduled run
         # at the same sha would only re-archive an entry that already exists.
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.cargo-cache.outputs.cache-hit != 'true'
         with:
           path: |
-            ~/.cargo/registry
-            ~/.cargo/git
+            ${{ steps.cargo-key.outputs.cargo-home }}/registry
+            ${{ steps.cargo-key.outputs.cargo-home }}/git
             native/target
-          key: ${{ runner.os }}-cargo-debug-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}-${{ hashFiles('native/**/*.rs') }}
+          key: ${{ steps.cargo-key.outputs.source-key }}
 
   linux-test:
     # `lint` is already upstream via build-native; it is listed here so this
@@ -648,17 +622,6 @@ jobs:
           name: native-lib-linux
           # Download to release/ since Maven's -Prelease expects libcomet.so there
           path: native/target/release/
-
-      # Restore cargo registry cache (for any cargo commands that might run)
-      - name: Restore Cargo registry
-        uses: actions/cache/restore@v6
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('native/**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-registry-
 
       - name: Java test steps
         uses: ./.github/actions/java-test
