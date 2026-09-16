@@ -35,8 +35,10 @@ use crate::alloc_accounting;
 ///
 /// Both `fair_unified` and `greedy_unified` wear this unless
 /// `spark.comet.exec.memoryPool.checkNativeUsage` is disabled. The budget is
-/// `spark.memory.offHeap.size` multiplied by `spark.comet.exec.memoryPool.fraction`, the same
-/// value the pools already receive as their limit.
+/// `spark.memory.offHeap.size`, deliberately not the pool's own limit: that limit is the off-heap
+/// size times `spark.comet.exec.memoryPool.fraction`, and the fraction is how operators hold back
+/// reservable memory to force spilling. Deriving this budget from it too would turn a small
+/// fraction into denied reservations rather than the spills it was set to cause.
 ///
 /// Both the balance and the budget are process-wide. The balance counts every byte the Rust
 /// allocator has served in this executor, not just this task's, and the budget is Comet's whole
@@ -111,9 +113,9 @@ impl<P: MemoryPool> MemoryPool for CheckedMemoryPool<P> {
         if in_use.saturating_add(additional) > self.budget {
             return Err(resources_datafusion_err!(
                 "Failed to reserve {additional} bytes for {}: native memory in use is {in_use} \
-                 bytes of a {} byte budget. Reserved: {}. Lower \
-                 spark.comet.exec.memoryPool.fraction to leave more headroom, or disable this \
-                 check with spark.comet.exec.memoryPool.checkNativeUsage=false",
+                 bytes of a {} byte budget (spark.memory.offHeap.size). Reserved: {}. Raise \
+                 spark.memory.offHeap.size, or disable this check with \
+                 spark.comet.exec.memoryPool.checkNativeUsage=false",
                 reservation.consumer().name(),
                 self.budget,
                 self.reserved()

@@ -26,6 +26,7 @@ pub(crate) const COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED: &str =
     "spark.comet.parquet.rowFilterPushdown.enabled";
 pub(crate) const COMET_MEMORY_POOL_CHECK_NATIVE_USAGE: &str =
     "spark.comet.exec.memoryPool.checkNativeUsage";
+pub(crate) const SPARK_MEMORY_OFFHEAP_SIZE: &str = "spark.memory.offHeap.size";
 pub(crate) const SPARK_EXECUTOR_CORES: &str = "spark.executor.cores";
 
 pub(crate) trait SparkConfig {

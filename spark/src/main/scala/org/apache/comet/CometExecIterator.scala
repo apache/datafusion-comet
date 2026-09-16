@@ -360,6 +360,16 @@ object CometExecIterator extends Logging {
     builder.putEntries(
       CometConf.COMET_OFFHEAP_MEMORY_POOL_CHECK_NATIVE_USAGE.key,
       CometConf.COMET_OFFHEAP_MEMORY_POOL_CHECK_NATIVE_USAGE.get(SQLConf.get).toString)
+    // The off-heap pools check real native usage against the whole off-heap size, which is a
+    // Spark config rather than a Comet one and so is not carried by `cometSqlConfs`. Deliberately
+    // not the memory limit the pools already receive: that has the pool fraction applied, and the
+    // fraction bounds reservations rather than real usage.
+    val sparkConf = SparkEnv.get.conf
+    if (CometSparkSessionExtensions.isOffHeapEnabled(sparkConf)) {
+      builder.putEntries(
+        "spark.memory.offHeap.size",
+        ByteUnit.MiB.toBytes(sparkConf.getSizeAsMb("spark.memory.offHeap.size")).toString)
+    }
 
     builder.build().toByteArray
   }

@@ -59,15 +59,16 @@ pub(crate) fn parse_memory_pool_config(
     memory_limit: i64,
     memory_limit_per_task: i64,
     check_native_usage: bool,
+    off_heap_size: usize,
 ) -> CometResult<MemoryPoolConfig> {
     let pool_size = memory_limit as usize;
     let memory_pool_config = if off_heap_mode {
-        // Both off-heap pools reserve against Spark's ledger, which only counts what operators
-        // declared. `pool_size` is `spark.memory.offHeap.size` times
-        // `spark.comet.exec.memoryPool.fraction`, so it is also the ceiling that Comet's real
-        // native usage should stay under, and the pools check it against that unless the user
-        // turned the check off.
-        let native_usage_budget = (check_native_usage && pool_size > 0).then_some(pool_size);
+        // Deliberately the whole off-heap size rather than `pool_size`, which is that size times
+        // `spark.comet.exec.memoryPool.fraction`. The fraction bounds what Comet may *reserve*,
+        // and lowering it is how operators force spilling; reusing it here would also lower the
+        // ceiling on *real* usage, so a small fraction would deny reservations outright instead
+        // of provoking the spills it was set to cause.
+        let native_usage_budget = (check_native_usage && off_heap_size > 0).then_some(off_heap_size);
         match memory_pool_type.as_str() {
             "fair_unified" => MemoryPoolConfig::new(MemoryPoolType::FairUnified, pool_size)
                 .with_native_usage_budget(native_usage_budget),

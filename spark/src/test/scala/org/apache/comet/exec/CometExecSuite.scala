@@ -4295,39 +4295,6 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
-  test("off-heap memory pools deny reservations once real native usage exceeds the budget") {
-    // The budget the pools check real allocations against is spark.memory.offHeap.size (2g for
-    // this suite) times memoryPool.fraction, so a tiny fraction puts it far below what the
-    // executor's native code is already holding and the sort's first reservation is refused.
-    Seq("fair_unified", "greedy_unified").foreach { poolType =>
-      withSQLConf(
-        CometConf.COMET_OFFHEAP_MEMORY_POOL_TYPE.key -> poolType,
-        CometConf.COMET_OFFHEAP_MEMORY_POOL_FRACTION.key -> "0.000001") {
-        val e = intercept[Throwable] {
-          spark.range(0, 100000).selectExpr("id", "id % 7 AS m").sort("m", "id").collect()
-        }
-        val messages = causeChain(e).map(t => s"${t.getClass.getName}: ${t.getMessage}")
-        assert(
-          messages.exists(_.contains("native memory in use is")),
-          s"expected $poolType to deny the reservation on real native usage, but got:\n  " +
-            messages.mkString("\n  "))
-      }
-    }
-  }
-
-  test("the off-heap real native usage check can be disabled") {
-    // Same budget as above, so the check alone is what separates this from the denial test.
-    // greedy_unified rather than fair_unified because the fair pool also divides the (now tiny)
-    // pool size among its consumers, which would deny the reservation for an unrelated reason.
-    withSQLConf(
-      CometConf.COMET_OFFHEAP_MEMORY_POOL_TYPE.key -> "greedy_unified",
-      CometConf.COMET_OFFHEAP_MEMORY_POOL_CHECK_NATIVE_USAGE.key -> "false",
-      CometConf.COMET_OFFHEAP_MEMORY_POOL_FRACTION.key -> "0.000001") {
-      val df = spark.range(0, 100000).selectExpr("id", "id % 7 AS m").sort("m", "id")
-      assert(df.count() == 100000)
-    }
-  }
-
 }
 
 case class BucketedTableTestSpec(

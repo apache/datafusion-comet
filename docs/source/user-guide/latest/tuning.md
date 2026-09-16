@@ -118,9 +118,9 @@ need to spill or have a single spillable operator.
 Both pools reserve memory against Spark's ledger, which only counts what operators explicitly asked for. Native memory
 that never went through the pool, such as scratch buffers inside kernels or intermediate Arrow arrays, stays invisible
 until the executor exceeds its container limit and is killed. To bound that, both pools also compare the memory the
-native allocator has actually handed out against Comet's budget
-(`spark.memory.offHeap.size` multiplied by `spark.comet.exec.memoryPool.fraction`) and refuse a reservation that would
-take real usage past it. Operators that can spill then spill, and the ones that cannot fail the task instead of the
+native allocator has actually handed out against `spark.memory.offHeap.size` and refuse a reservation that would take
+real usage past it. Note that this is the whole off-heap size, not the reservable portion: `spark.comet.exec.memoryPool.fraction`
+bounds what Comet may reserve, and lowering it to provoke spilling deliberately does not lower this ceiling too. Operators that can spill then spill, and the ones that cannot fail the task instead of the
 executor. Set `spark.comet.exec.memoryPool.checkNativeUsage` to `false` to turn the check off.
 
 The check is process-wide on both sides: it compares every byte the native allocator has served in the executor against
