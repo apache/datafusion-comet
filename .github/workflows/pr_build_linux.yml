@@ -22,7 +22,7 @@ name: PR Build (Linux)
 #
 # Two modes, selected by `cache-refresh-only`:
 #
-#   false  the full pipeline: the lints, the 5x4 linux-test matrix, the Rust
+#   false  the full pipeline: the lints, the linux-test matrix, the Rust
 #          tests and the TPC-H/TPC-DS correctness runs. Pull requests and the
 #          merge queue.
 #   true   only the jobs that write an actions/cache entry, and each only far
@@ -32,11 +32,27 @@ name: PR Build (Linux)
 #          next pull request. See the `build_linux` / `build_linux_full`
 #          comments in dev/ci/compute-changes.py for why that tier exists.
 #
-# Keeping both modes in this file is deliberate. The cache keys are the whole
-# point of the push tier, and a separate cache-warming workflow would have to
-# repeat every one of them; here they cannot drift apart. dev/ci/check-ci-config.py
-# pins which jobs survive `cache-refresh-only`, so a job added without the guard
-# cannot quietly put the full pipeline back on the push tier.
+# Within the full pipeline, `profiles` picks which Spark profiles the
+# linux-test matrix runs the Comet test suites against: `pr` is the default
+# build profile alone, `all` is every profile, and `nightly` is the rest.
+# The rows live in dev/ci/linux-test-profiles.py, which the `lint` job runs so
+# that the matrix can be built from its output. A pull request and the merge
+# queue run `pr`, the nightly run `nightly`, and a pull request carrying
+# `run-all-spark-profiles` runs `all`. See the `build_linux_all_profiles`
+# comment in dev/ci/compute-changes.py.
+#
+# `nightly` is also a third mode. Whenever ci.yml passes it, the default
+# profile's pipeline has already run at this commit (in the queue and the push
+# run for the scheduled event, in the PR tier for a label run), so only `lint`,
+# `build-native` and the `linux-test` matrix run; every other job carries
+# `if: ${{ inputs.profiles != 'nightly' }}`.
+#
+# Keeping all three modes in this file is deliberate. The cache keys are the
+# whole point of the push tier, and a separate cache-warming workflow would
+# have to repeat every one of them; here they cannot drift apart.
+# dev/ci/check-ci-config.py pins which jobs survive `cache-refresh-only` and
+# which run under `profiles: nightly`, so a job added without either guard
+# cannot quietly put the full pipeline back on those tiers.
 on:
   workflow_call:
     inputs:
@@ -46,6 +62,15 @@ on:
           test. Set by ci.yml on push to main.
         type: boolean
         default: false
+      profiles:
+        # Which Spark profiles the linux-test matrix runs. `pr` is the default
+        # build profile alone, `all` is every profile, `nightly` is every
+        # profile except the `pr` one (the nightly run, and a `labeled` run,
+        # where the PR-tier row already ran at this commit). Rows and tiers
+        # are in dev/ci/linux-test-profiles.py.
+        description: 'Which Spark profiles linux-test runs: all, pr (the default build profile) or nightly (the rest)'
+        type: string
+        default: 'all'
 
 env:
   RUST_VERSION: stable
@@ -65,8 +90,17 @@ jobs:
     runs-on: ubuntu-24.04
     container:
       image: amd64/rust
+    outputs:
+      # The `profile` dimension of the linux-test matrix, selected by the
+      # `profiles` input. Computed here because this job already gates
+      # linux-test and a job-level `if:` cannot see `matrix`.
+      profile-matrix: ${{ steps.profiles.outputs.matrix }}
     steps:
       - uses: actions/checkout@v7
+
+      - name: Select linux-test profiles
+        id: profiles
+        run: python3 dev/ci/linux-test-profiles.py --profiles "${{ inputs.profiles }}" --github-output "$GITHUB_OUTPUT"
 
       - name: Check Rust formatting
         run: |
@@ -81,7 +115,7 @@ jobs:
   # set, including the semantic rules, still runs in lint-java.
   scalafix-syntactic:
     name: Lint Scala (syntactic)
-    if: ${{ !inputs.cache-refresh-only }}
+    if: ${{ !inputs.cache-refresh-only && inputs.profiles != 'nightly' }}
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
@@ -122,7 +156,7 @@ jobs:
   lint-java:
     needs: lint
     name: Lint Java (${{ matrix.profile.name }})
-    if: ${{ !inputs.cache-refresh-only }}
+    if: ${{ !inputs.cache-refresh-only && inputs.profiles != 'nightly' }}
     runs-on: ubuntu-24.04
     container:
       image: amd64/rust
@@ -202,7 +236,7 @@ jobs:
   build-spark-4-1:
     needs: lint
     name: Build Spark 4.1, JDK 17
-    if: ${{ !inputs.cache-refresh-only }}
+    if: ${{ !inputs.cache-refresh-only && inputs.profiles != 'nightly' }}
     runs-on: ubuntu-24.04
     container:
       image: amd64/rust
@@ -234,7 +268,7 @@ jobs:
   celeborn-reflection-compatibility:
     needs: lint
     name: Celeborn ${{ matrix.celeborn_version }} reflection compatibility
-    if: ${{ !inputs.cache-refresh-only }}
+    if: ${{ !inputs.cache-refresh-only && inputs.profiles != 'nightly' }}
     runs-on: ubuntu-24.04
     container:
       image: amd64/rust
@@ -324,7 +358,9 @@ jobs:
 
       - name: Save Cargo cache
         uses: actions/cache/save@v6
-        if: github.ref == 'refs/heads/main'
+        # The push run is the cache warmer (see the header); a scheduled run
+        # at the same sha would only re-archive an entry that already exists.
+        if: github.event_name == 'push'
         with:
           path: |
             ~/.cargo/registry
@@ -341,6 +377,7 @@ jobs:
   linux-test-rust:
     needs: lint
     name: ubuntu-latest/rust-test
+    if: ${{ inputs.profiles != 'nightly' }}
     runs-on: ubuntu-24.04
     container:
       image: amd64/rust
@@ -370,7 +407,9 @@ jobs:
 
       - name: Save Cargo cache
         uses: actions/cache/save@v6
-        if: github.ref == 'refs/heads/main'
+        # The push run is the cache warmer (see the header); a scheduled run
+        # at the same sha would only re-archive an entry that already exists.
+        if: github.event_name == 'push'
         with:
           path: |
             ~/.cargo/registry
@@ -379,32 +418,18 @@ jobs:
           key: ${{ runner.os }}-cargo-debug-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}-${{ hashFiles('native/**/*.rs') }}
 
   linux-test:
-    needs: build-native
+    # `lint` is already upstream via build-native; it is listed here so this
+    # job can read its `profile-matrix` output.
+    needs: [lint, build-native]
     if: ${{ !inputs.cache-refresh-only }}
     strategy:
       matrix:
-        # the goal with these profiles is to get coverage of all Java, Scala, and Spark
-        # versions without testing all possible combinations, which would be overkill
-        profile:
-          - name: "Spark 3.4, JDK 17, Scala 2.12"
-            java_version: "17"
-            maven_opts: "-Pspark-3.4 -Pscala-2.12"
-
-          - name: "Spark 3.5, JDK 17, Scala 2.13"
-            java_version: "17"
-            maven_opts: "-Pspark-3.5 -Pscala-2.13"
-
-          - name: "Spark 4.0, JDK 21"
-            java_version: "21"
-            maven_opts: "-Pspark-4.0"
-
-          - name: "Spark 4.1, JDK 17"
-            java_version: "17"
-            maven_opts: "-Pspark-4.1"
-
-          - name: "Spark 4.2, JDK 17"
-            java_version: "17"
-            maven_opts: "-Pspark-4.2"
+        # The Spark profiles live in dev/ci/linux-test-profiles.py and are
+        # selected by the `profiles` input: the default build profile on a
+        # pull request and in the merge queue, the other four in the nightly
+        # run. The goal of the full list is coverage of every Java, Scala and
+        # Spark version without testing every combination.
+        profile: ${{ fromJSON(needs.lint.outputs.profile-matrix) }}
         # Suites are grouped by functional area into balanced buckets so that no test
         # job runs much longer than ~23 min. See
         # docs/superpowers/specs/2026-05-22-pr-build-consolidation-design.md for the
@@ -485,6 +510,7 @@ jobs:
               org.apache.comet.rules.CometScanContribSuite
               org.apache.comet.rules.CometScanSchemeFallbackSuite
               org.apache.comet.rules.CometExecRuleSuite
+              org.apache.spark.sql.comet.CometPlanEqualitySuite
               org.apache.comet.rules.RevertNativeForTransitionHeavyStagesSuite
               org.apache.spark.sql.CometTPCDSQuerySuite
               org.apache.spark.sql.CometTPCDSQueryTestSuite
@@ -599,6 +625,7 @@ jobs:
   verify-benchmark-results-tpch:
     needs: build-native
     name: Verify TPC-H Results
+    if: ${{ inputs.profiles != 'nightly' }}
     runs-on: ubuntu-24.04
     container:
       image: amd64/rust
@@ -663,6 +690,7 @@ jobs:
   verify-benchmark-results-tpcds:
     needs: build-native
     name: Verify TPC-DS Results
+    if: ${{ inputs.profiles != 'nightly' }}
     runs-on: ubuntu-24.04
     container:
       image: amd64/rust
