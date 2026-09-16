@@ -1158,7 +1158,7 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
   // not strict floating point is on. Neither gate needs the allowIncompatible escape hatch.
   Seq("true", "false").foreach { strict =>
     test(
-      s"range partitioning on floating-point uses native shuffle when " +
+      "range partitioning on floating-point uses native shuffle when " +
         s"strictFloatingPoint=$strict") {
       withSQLConf(
         CometConf.COMET_SHUFFLE_NATIVE_RANGE_PARTITIONING_ENABLED.key -> "true",
