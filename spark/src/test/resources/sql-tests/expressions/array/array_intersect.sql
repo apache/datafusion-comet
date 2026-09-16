@@ -16,6 +16,7 @@
 -- under the License.
 
 -- Config: spark.comet.expression.ArrayIntersect.allowIncompatible=true
+-- Config: spark.comet.exec.scalaUDF.codegen.enabled=true
 
 -- DataFusion's array_intersect emits elements in the order of the longer input
 -- (it uses the shorter side as the hash lookup), while Spark emits elements in
@@ -30,7 +31,7 @@ CREATE TABLE test_array_intersect(a array<int>, b array<int>) USING parquet
 statement
 INSERT INTO test_array_intersect VALUES (array(1, 2, 3), array(2, 3, 4)), (array(1, 2), array(3, 4)), (array(), array(1)), (NULL, array(1)), (array(1, NULL), array(NULL, 2))
 
-query
+query expect_native(array_intersect)
 SELECT array_intersect(a, b) FROM test_array_intersect
 
 -- column + literal
@@ -257,3 +258,26 @@ SELECT array_intersect(array(1, NULL, 3), b) FROM test_array_intersect
 -- conditional (CASE WHEN) arrays
 query
 SELECT array_intersect(CASE WHEN a IS NOT NULL THEN a ELSE array(0) END, b) FROM test_array_intersect
+
+-- Without native opt-in, preserve Spark's left-input order even when the right array is longer.
+statement
+INSERT INTO test_array_intersect VALUES (array(2, 1), array(3, 1, 2))
+
+statement
+SET spark.comet.expression.ArrayIntersect.allowIncompatible=false
+
+query expect_dispatch(array_intersect)
+SELECT array_intersect(a, b) FROM test_array_intersect
+
+statement
+SET spark.comet.exec.scalaUDF.codegen.enabled=false
+
+query expect_fallback(array_intersect: spark.comet.exec.scalaUDF.codegen.enabled=false)
+SELECT array_intersect(a, b) FROM test_array_intersect
+
+-- Native opt-in works even with the dispatcher disabled. Normalize the permitted order difference.
+statement
+SET spark.comet.expression.ArrayIntersect.allowIncompatible=true
+
+query expect_native(array_intersect)
+SELECT sort_array(array_intersect(a, b)) FROM test_array_intersect
