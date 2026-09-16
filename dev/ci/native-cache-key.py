@@ -24,6 +24,7 @@ build commands in our workflows; it is not a general local-build cache.
 """
 
 import argparse
+from fnmatch import fnmatchcase
 import hashlib
 import json
 import os
@@ -31,9 +32,15 @@ from pathlib import Path
 import subprocess
 
 
-SOURCE_PREFIXES = ("native/", "contrib/", "common/", ".cargo/", ".mvn/",
-                   ".github/actions/", ".github/workflows/", "dev/ci/")
-SOURCE_FILES = {"Makefile", "pom.xml", "mvnw", "rust-toolchain", "rust-toolchain.toml"}
+# Direct Cargo inputs and the recipes that install/configure the native build.
+# Unrelated workflows and JVM/Maven files do not enter the native library build.
+INPUT_PATTERNS = (
+    "native/**", "contrib/*/native/**", ".cargo/**",
+    ".github/actions/setup-builder/**", ".github/actions/build-native-ci/**",
+    ".github/workflows/pr_build_linux.yml", ".github/workflows/spark_sql_test_reusable.yml",
+    ".github/workflows/iceberg_spark_test_reusable.yml", ".github/workflows/spark_sql_writer_tests.yml",
+    "rust-toolchain", "rust-toolchain.toml", "dev/ci/native-cache-key.py",
+)
 
 
 def digest(value):
@@ -46,12 +53,13 @@ def command(args, cwd):
     return subprocess.check_output(args, cwd=cwd, text=True).strip()
 
 
-def source_inputs(root):
-    """Read tracked build files and return dependency and complete input maps.
+def source_inputs(root, profile="ci"):
+    """Return dependency and source maps for the selected native build profile.
 
     Each map contains relative names, Git modes and content digests. Untracked
-    generated Rust and target files are excluded. Trust only this checkout for
-    the Git read: container steps can run as a different owner than checkout.
+    generated Rust, target files and documentation are excluded. CI library
+    builds omit benchmarks; debug checks compile them. Trust only this checkout
+    for the Git read: container steps can run as a different owner than checkout.
     """
     inventory = command(["git", "-c", f"safe.directory={root}",
                          "ls-files", "--stage", "-z"], root)
@@ -60,7 +68,9 @@ def source_inputs(root):
         if not record:
             continue
         metadata, name = record.split("\t", 1)
-        if name in SOURCE_FILES or name.startswith(SOURCE_PREFIXES):
+        if name.endswith(".md") or (profile == "ci" and "/benches/" in name):
+            continue
+        if any(fnmatchcase(name, pattern) for pattern in INPUT_PATTERNS):
             sources[name] = [metadata.split()[0],
                              hashlib.sha256((root / name).read_bytes()).hexdigest()]
     dependencies = {name: value for name, value in sources.items()
@@ -74,8 +84,8 @@ def environment_inputs(root, env):
     Rust's versions include the compiler commit; dpkg identifies the installed
     C/C++/protobuf tools and system libraries. The JDK release file identifies
     the vendor/build supplying JNI headers and libjvm. Paths and RUSTFLAGS are
-    included because linking can embed them. Workflow/action files in the source
-    map cover changes to how these tools are installed and invoked.
+    included because linking can embed them. Native producer workflows/actions
+    in the source map cover how these tools are configured and invoked.
     """
     java_home = Path(env["JAVA_HOME"])
     return {
@@ -121,7 +131,7 @@ def main():
     cwd = Path.cwd().resolve()
     root = Path(command(["git", "-c", f"safe.directory={cwd}",
                          "rev-parse", "--show-toplevel"], cwd))
-    dependencies, sources = source_inputs(root)
+    dependencies, sources = source_inputs(root, args.profile)
     environment = environment_inputs(root, os.environ)
     keys = cache_keys(args.profile, dependencies, sources, environment)
     output = "".join(f"{key}={value}\n" for key, value in keys.items())
