@@ -17,49 +17,25 @@
 
 name: PR Build (Linux)
 
-# Reusable: invoked by ci.yml. Triggering, path filters, and concurrency
-# live in the umbrella workflow.
+# Reusable Linux JVM/TPC consumers of the shared native library. Triggering,
+# path filters, and concurrency live in ci.yml. Independent checks live in
+# pr_build_linux_checks.yml and the cargo-ci cache writer in build_linux_native.yml.
 #
-# Two modes, selected by `cache-refresh-only`:
+# `cache-refresh-only` keeps only the two TPC jobs, stopping after data generation
+# and Maven cache population. The queue already tested the tree on a main push.
 #
-#   false  the full pipeline: the lints, the linux-test matrix, the Rust
-#          tests and the TPC-H/TPC-DS correctness runs. Pull requests and the
-#          merge queue.
-#   true   only the jobs that write an actions/cache entry, and each only far
-#          enough to populate it. This is the push-to-main tier, where the
-#          queue has already tested the exact tree that landed and the sole
-#          remaining purpose of the run is to leave main's caches warm for the
-#          next pull request. See the `build_linux` / `build_linux_full`
-#          comments in dev/ci/compute-changes.py for why that tier exists.
-#
-# Within the full pipeline, `profiles` picks which Spark profiles the
-# linux-test matrix runs the Comet test suites against: `pr` is the default
-# build profile alone, `all` is every profile, and `nightly` is the rest.
-# The rows live in dev/ci/linux-test-profiles.py, which the `lint` job runs so
-# that the matrix can be built from its output. A pull request and the merge
-# queue run `pr`, the nightly run `nightly`, and a pull request carrying
-# `run-all-spark-profiles` runs `all`. See the `build_linux_all_profiles`
-# comment in dev/ci/compute-changes.py.
-#
-# `nightly` is also a third mode. Whenever ci.yml passes it, the default
-# profile's pipeline has already run at this commit (in the queue and the push
-# run for the scheduled event, in the PR tier for a label run), so only `lint`,
-# `build-native` and the `linux-test` matrix run; every other job carries
-# `if: ${{ inputs.profiles != 'nightly' }}`.
-#
-# Keeping all three modes in this file is deliberate. The cache keys are the
-# whole point of the push tier, and a separate cache-warming workflow would
-# have to repeat every one of them; here they cannot drift apart.
-# dev/ci/check-ci-config.py pins which jobs survive `cache-refresh-only` and
-# which run under `profiles: nightly`, so a job added without either guard
-# cannot quietly put the full pipeline back on those tiers.
+# `profiles` selects the linux-test rows from dev/ci/linux-test-profiles.py:
+# `pr` runs the default profile, `nightly` the other four, and `all` every profile.
+# The prepare-matrix job publishes those rows independently of the moved lint job.
+# In nightly mode the TPC jobs are skipped because they already ran at this commit.
+# dev/ci/check-ci-config.py checks both modes across all three Linux workflows.
 on:
   workflow_call:
     inputs:
       cache-refresh-only:
         description: >-
-          Populate main's actions/cache entries without running any lint or
-          test. Set by ci.yml on push to main.
+          Populate main's TPC dataset and Maven caches without running query
+          passes or the JVM test matrix. Set by ci.yml on push to main.
         type: boolean
         default: false
       profiles:

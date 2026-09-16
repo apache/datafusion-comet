@@ -22,6 +22,15 @@ name: PR Checks (Linux)
 # Triggering and path filters live in the umbrella workflow.
 on:
   workflow_call:
+    inputs:
+      cache-refresh-only:
+        description: 'Refresh the Rust debug cache without repeating the other checks'
+        type: boolean
+        default: false
+      profiles:
+        description: 'Linux profile selection; nightly skips checks already run at this commit'
+        type: string
+        default: 'all'
 
 permissions:
   contents: read
@@ -36,7 +45,7 @@ env:
 
 jobs:
 
-  # Rust formatting gates the build and test jobs below
+  # Keep formatting in cache-refresh mode: it gates the Rust debug cache writer.
   lint:
     name: Lint
     runs-on: ubuntu-24.04
@@ -57,6 +66,7 @@ jobs:
   # run -Psemanticdb yet), so it is the only gate covering them. The full rule
   # set, including the semantic rules, still runs in lint-java.
   scalafix-syntactic:
+    if: ${{ !inputs.cache-refresh-only && inputs.profiles != 'nightly' }}
     name: Lint Scala (syntactic)
     runs-on: ubuntu-24.04
     steps:
@@ -96,6 +106,7 @@ jobs:
             spark
 
   lint-java:
+    if: ${{ !inputs.cache-refresh-only && inputs.profiles != 'nightly' }}
     needs: lint
     name: Lint Java (${{ matrix.profile.name }})
     runs-on: ubuntu-24.04
@@ -175,6 +186,7 @@ jobs:
   # in follow-up PRs. Excluded from lint-java because semanticdb-scalac_2.13.17 is not yet
   # published and the lint job activates -Psemanticdb.
   build-spark-4-1:
+    if: ${{ !inputs.cache-refresh-only && inputs.profiles != 'nightly' }}
     needs: lint
     name: Build Spark 4.1, JDK 17
     runs-on: ubuntu-24.04
@@ -206,6 +218,7 @@ jobs:
         run: ./mvnw -B install -DskipTests -Dmaven.test.skip=true -Pspark-4.1
 
   celeborn-reflection-compatibility:
+    if: ${{ !inputs.cache-refresh-only && inputs.profiles != 'nightly' }}
     needs: lint
     name: Celeborn ${{ matrix.celeborn_version }} reflection compatibility
     runs-on: ubuntu-24.04
@@ -251,8 +264,10 @@ jobs:
             -Dsuites=org.apache.comet.shuffle.CelebornReflectionCompatibilitySuite \
             -DfailIfNoTests=false
 
-  # Rust tests use a separate debug build, not the shared CI library.
+  # Rust tests use a separate debug build and refresh main's cargo-debug cache.
+  # Keep them in cache-refresh mode; compilation dominates their runtime.
   linux-test-rust:
+    if: ${{ inputs.profiles != 'nightly' }}
     needs: lint
     name: ubuntu-latest/rust-test
     runs-on: ubuntu-24.04
@@ -284,7 +299,8 @@ jobs:
 
       - name: Save Cargo cache
         uses: actions/cache/save@v6
-        if: github.ref == 'refs/heads/main'
+        # Nightly runs reuse the cache already refreshed by the push run.
+        if: github.event_name == 'push'
         with:
           path: |
             ~/.cargo/registry

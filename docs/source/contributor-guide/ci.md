@@ -59,13 +59,18 @@ is the Linux build, which also runs on push so that the dependency caches on `ma
 pull request can only restore caches saved on its own branch or on `main`, and the queue's
 temporary branch takes its caches with it when it is deleted.
 
-That push run is for the caches and nothing else, so it runs in **cache-refresh-only** mode: only
-the four jobs that own a cache entry (the native CI build, the Rust tests, and the two TPC-H/TPC-DS
-jobs, the last two stopping before their query passes), plus the short `Lint` job the native jobs
-depend on. The lints and the Comet test matrix are skipped, which is the difference between 587
-runner-minutes a push and about 73. If you add a job to `pr_build_linux.yml`, give it
-`if: ${{ !inputs.cache-refresh-only }}` unless it writes a cache that `main` needs;
-`dev/ci/check-ci-config.py` fails the build if you forget.
+That push run uses **cache-refresh-only** mode across three Linux workflows.
+`build_linux_native.yml` builds the shared library and refreshes the native CI cache.
+`pr_build_linux_checks.yml` runs Rust formatting and Rust tests to refresh the debug cache.
+`pr_build_linux.yml` runs the two TPC-H/TPC-DS jobs through dataset generation and Maven
+cache population, then skips their query passes. Java/Scala lints, compile-only and Celeborn
+checks, profile selection, and the JVM test matrix are skipped.
+
+When adding a job to either `pr_build_linux.yml` or `pr_build_linux_checks.yml`, give it
+`if: ${{ !inputs.cache-refresh-only }}` unless it is needed to refresh a cache on `main`.
+Also preserve the `profiles: nightly` guards so nightly runs do not repeat checks already run
+at that commit. `dev/ci/check-ci-config.py` records the allowed jobs by workflow across all
+three files and verifies that both Linux callers pass the mode inputs.
 
 Spark 3.4 is the one suite in neither tier. [Spark 3.4 support is deprecated](../user-guide/latest/compatibility/spark-versions.md#spark-34),
 so its Spark SQL suite no longer gates a merge. It remains available on demand: apply the
@@ -258,8 +263,9 @@ The umbrella workflow, the reusable workflows it calls, and the routing tables a
 `dev/ci/check-ci-config.py`, which runs in preflight. It enforces that every job feeds
 `Required Checks`, that the required check name in `.asf.yaml` matches the job that publishes it,
 that artifact names are unique per producer, that the routing policy matches its test cases, and
-that every job in `pr_build_linux.yml` is either a cache writer or skipped on push. Run it locally
-before pushing a CI change:
+that the three Linux workflows preserve cache-refresh and nightly job selection. It also checks
+that both Linux callers pass the mode inputs, so moving a job cannot silently restore work on
+push. Run it locally before pushing a CI change:
 
 ```sh
 python3 dev/ci/check-ci-config.py

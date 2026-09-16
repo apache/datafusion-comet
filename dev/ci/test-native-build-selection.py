@@ -35,7 +35,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 CONSUMERS = {
-    "pr_build_linux": ("build_linux",),
+    "pr_build_linux": ("build_linux", "build_linux_all_profiles"),
     "spark_3_4": ("spark_3_4",),
     "spark_3_5": ("spark_3_5",),
     "spark_4_0": ("spark_4_0",),
@@ -45,10 +45,14 @@ CONSUMERS = {
     "iceberg_1_10": ("iceberg_1_10",),
     "iceberg_1_11": ("iceberg_1_11",),
 }
-DEFAULT = {"pr_build_linux", "spark_4_1", "iceberg_1_11"}
+DEFAULT = {"pr_build_linux"}
+QUEUE = {"pr_build_linux", "spark_4_1", "iceberg_1_11"}
+NIGHTLY = {"pr_build_linux", "spark_3_5", "spark_4_0",
+           "iceberg_1_8", "iceberg_1_9", "iceberg_1_10"}
 OPT_IN = (
     "run-spark-3.4-tests", "run-spark-3.5-tests", "run-spark-4.0-tests",
-    "run-spark-4.1-hive-tests", "run-iceberg-tests",
+    "run-spark-4.1-tests", "run-spark-4.1-hive-tests", "run-iceberg-tests",
+    "run-all-spark-profiles",
 )
 
 
@@ -143,20 +147,26 @@ class NativeBuildSelectionTest(unittest.TestCase):
     def test_spark_4_1_core_and_hive_event_routes(self):
         """Check both Spark 4.1 output flags and the producer through both APIs.
 
-        A Spark 4.1 patch isolates this caller. Ordinary PRs select core only,
-        the Hive label selects Hive only, and subsequent labeled-PR updates,
-        the queue, and manual dispatch select both. Fixtures remain unchanged;
+        A Spark 4.1 patch isolates this caller. Ordinary PRs select neither,
+        the Hive label selects Hive only, and the full-suite label, queue,
+        and manual dispatch select both. Fixtures remain unchanged;
         CLI inputs are temporary, and any routing mismatch fails assertions.
         """
         files = ["dev/diffs/4.1.3.diff"]
         hive_label = "run-spark-4.1-hive-tests"
+        suite_label = "run-spark-4.1-tests"
         cases = (
-            ({"name": "pull_request", "action": "synchronize"}, True, False),
+            ({"name": "pull_request", "action": "synchronize"}, False, False),
             ({"name": "pull_request", "action": "labeled", "label": hive_label,
               "labels": [hive_label]}, False, True),
             ({"name": "pull_request", "action": "synchronize", "labels": [hive_label]},
+             False, True),
+            ({"name": "pull_request", "action": "labeled", "label": suite_label,
+              "labels": [suite_label]}, True, True),
+            ({"name": "pull_request", "action": "synchronize", "labels": [suite_label]},
              True, True),
             ({"name": "merge_group"}, True, True),
+            ({"name": "schedule"}, False, False),
             ({"name": "workflow_dispatch"}, True, True),
         )
         for event, core, hive in cases:
@@ -168,7 +178,7 @@ class NativeBuildSelectionTest(unittest.TestCase):
                     self.assert_selected(
                         flags,
                         set(CONSUMERS) if event["name"] == "workflow_dispatch"
-                        else {"spark_4_1"},
+                        else {"spark_4_1"} if core or hive else set(),
                     )
 
     def test_docs_and_benchmarks_do_not_build_native(self):
@@ -177,8 +187,8 @@ class NativeBuildSelectionTest(unittest.TestCase):
                 self.assert_selection([path], set())
 
     def test_spark_patch_does_not_require_linux_test_workflow(self):
-        """Assert a default-tier Spark patch selects native without Linux tests."""
-        self.assert_selection(["dev/diffs/4.1.3.diff"], {"spark_4_1"})
+        """Assert a queued Spark patch selects native without Linux tests."""
+        self.assert_selection(["dev/diffs/4.1.3.diff"], {"spark_4_1"}, event="merge_group")
 
     def test_legacy_patch_needs_opt_in(self):
         """Assert older Spark patches need their label on ordinary PR runs.
@@ -215,6 +225,7 @@ class NativeBuildSelectionTest(unittest.TestCase):
             ("spark_3_4", "run-spark-3.4-tests"),
             ("spark_3_5", "run-spark-3.5-tests"),
             ("spark_4_0", "run-spark-4.0-tests"),
+            ("spark_4_1", "run-spark-4.1-tests"),
             ("spark_4_1", "run-spark-4.1-hive-tests"),
         ):
             with self.subTest(label=label):
@@ -224,42 +235,45 @@ class NativeBuildSelectionTest(unittest.TestCase):
                 )
 
     def test_nonconsumer_labels_do_not_build_native(self):
-        """Assert macOS and benchmark label runs select no shared native build.
+        """Assert independent label runs select no shared native build.
 
-        Both real routes match the changed paths, and all consumer opt-ins are
+        All real routes match the changed paths, and all consumer opt-ins are
         present. Check that the newly labeled route runs while every native
         consumer stays off. No input or routing configuration is changed.
         """
         for label, key in (
             ("run-macos-tests", "build_macos"),
             ("run-benchmark-check", "benchmark"),
+            ("run-delta-build-gate", "delta_gate"),
+            ("run-pyarrow-udf-tests", "pyarrow_udf"),
         ):
             with self.subTest(label=label):
                 flags = self.filters.compute(
-                    ["native/core/src/lib.rs", "native/core/benches/parquet_read.rs"],
+                    ["pom.xml", "native/core/benches/parquet_read.rs"],
                     {"name": "pull_request", "action": "labeled",
                      "labels": (*OPT_IN, label), "label": label},
                 )
                 self.assertTrue(flags[key])
                 self.assert_selected(flags, set())
 
-    def test_new_iceberg_label_runs_only_opt_in_versions(self):
+    def test_new_iceberg_label_runs_all_iceberg_versions(self):
         self.assert_selection(
-            ["native/core/src/lib.rs"], {"iceberg_1_8", "iceberg_1_9", "iceberg_1_10"},
+            ["native/core/src/lib.rs"],
+            {"iceberg_1_8", "iceberg_1_9", "iceberg_1_10", "iceberg_1_11"},
             action="labeled", labels=OPT_IN, label="run-iceberg-tests",
         )
 
-    def test_merge_queue_excludes_deprecated_spark_3_4(self):
-        """Assert queue selection excludes Spark 3.4 through compute() and CLI.
+    def test_merge_queue_uses_default_versions(self):
+        """Assert queue selection uses default versions through compute() and CLI.
 
-        A shared native edit selects the other eight callers and the producer;
+        A shared native edit selects the three default callers and the producer;
         a Spark 3.4-only patch selects no caller and skips the producer.
         Supplying opt-in labels cannot restore deprecated coverage to a queue
         event. Fixtures and policy stay unchanged, cli_outputs() owns and
         removes temporary inputs, and every mismatch fails an assertion.
         """
         for files, expected in (
-            (["native/core/src/lib.rs"], set(CONSUMERS) - {"spark_3_4"}),
+            (["native/core/src/lib.rs"], QUEUE),
             (["dev/diffs/3.4.3.diff"], set()),
         ):
             for labels in ((), OPT_IN):
@@ -270,10 +284,37 @@ class NativeBuildSelectionTest(unittest.TestCase):
                         self.assertFalse(flags["spark_3_4"])
                         self.assert_selected(flags, expected)
 
+    def test_nightly_runs_other_versions(self):
+        """Assert nightly callers, including Linux profiles, get their producer."""
+        for files, expected in (
+            (["native/core/src/lib.rs"], NIGHTLY),
+            (["common/src/test/ExampleTest.java"], {"pr_build_linux"}),
+            (["dev/diffs/3.4.3.diff"], set()),
+        ):
+            event = {"name": "schedule"}
+            for invoke in (self.filters.compute, self.cli_outputs):
+                with self.subTest(files=files, api=invoke.__name__):
+                    flags = invoke(files, event)
+                    self.assertFalse(flags["build_linux"])
+                    self.assert_selected(flags, expected)
+
+    def test_all_profiles_label_selects_linux_producer(self):
+        """Assert the new all-profile label selects Linux without its default route."""
+        event = {
+            "name": "pull_request", "action": "labeled",
+            "labels": OPT_IN, "label": "run-all-spark-profiles",
+        }
+        for invoke in (self.filters.compute, self.cli_outputs):
+            with self.subTest(api=invoke.__name__):
+                flags = invoke(["native/core/src/lib.rs"], event)
+                self.assertFalse(flags["build_linux"])
+                self.assertTrue(flags["build_linux_all_profiles"])
+                self.assert_selected(flags, {"pr_build_linux"})
+
     def test_main_runs_only_linux_consumers_to_refresh_caches(self):
         """Assert push selects the Linux consumer and native build in both APIs.
 
-        Main's cache refresh needs the shared producer, while queue-only test
+        Main's cache refresh needs the shared producer, while other test
         consumers stay off. The native source path and event are read-only;
         cli_outputs() owns and cleans up its temporary changed-files input.
         """
@@ -296,7 +337,7 @@ class NativeBuildSelectionTest(unittest.TestCase):
     def test_empty_changes_and_unsupported_events_skip_native(self):
         """Assert ordinary empty diffs and unsupported events select no consumers."""
         self.assert_selection([], set())
-        self.assert_selection(["native/core/src/lib.rs"], set(), event="schedule")
+        self.assert_selection(["native/core/src/lib.rs"], set(), event="repository_dispatch")
 
     def test_nonconsumer_outputs_do_not_select_native(self):
         """Select each unrelated route alone and ensure it cannot start native CI.
@@ -309,7 +350,8 @@ class NativeBuildSelectionTest(unittest.TestCase):
         filters = {key: [key] for key in self.filters.FILTERS}
         with mock.patch.dict(self.filters.FILTERS, filters, clear=True):
             for key, event in (
-                ("build_macos", "merge_group"), ("benchmark", "merge_group"), ("docs", "push")
+                ("build_macos", "merge_group"), ("benchmark", "merge_group"),
+                ("delta_gate", "merge_group"), ("pyarrow_udf", "merge_group"), ("docs", "push")
             ):
                 with self.subTest(key=key):
                     flags = self.filters.compute([key], {"name": event})
@@ -333,16 +375,18 @@ class NativeBuildSelectionTest(unittest.TestCase):
     def test_label_event_cli_uses_only_the_new_gating_label(self):
         """Assert the CLI derives native selection from the new label only.
 
-        Exercise deprecated Spark 3.4's retained opt-in, Spark 3.5's queue
-        opt-in, Spark 4.1's Hive-only route, Iceberg's grouped opt-in, and an
+        Exercise deprecated Spark 3.4's retained opt-in, Spark 3.5's nightly
+        opt-in, Spark 4.1's core/Hive routes, Iceberg's grouped opt-in, and an
         unrelated label. cli_outputs() cleans up the child environment and
         temporary file; routing tables remain unchanged and mismatches fail.
         """
         for label, expected in (
             ("run-spark-3.4-tests", {"spark_3_4"}),
             ("run-spark-3.5-tests", {"spark_3_5"}),
+            ("run-spark-4.1-tests", {"spark_4_1"}),
             ("run-spark-4.1-hive-tests", {"spark_4_1"}),
-            ("run-iceberg-tests", {"iceberg_1_8", "iceberg_1_9", "iceberg_1_10"}),
+            ("run-iceberg-tests", {"iceberg_1_8", "iceberg_1_9", "iceberg_1_10", "iceberg_1_11"}),
+            ("run-all-spark-profiles", {"pr_build_linux"}),
             ("dependencies", set()),
         ):
             with self.subTest(label=label):
@@ -369,35 +413,38 @@ class NativeBuildSelectionTest(unittest.TestCase):
             )
 
     def test_producer_output_matches_all_consumer_combinations(self):
-        """Exhaust all 1,024 output path masks across event and label combinations.
+        """Exhaust all 2,048 output path masks across event and label routes.
 
         Synthetic one-path filters exercise compute() without relying on real
         paths overlapping particular consumers. Unrelated routes also match,
         guarding against accidentally including them in the native union. Only
         FILTERS is patched, and it is restored on success or assertion failure;
         the actual event policy and native-output computation always execute.
-        Core and Hive use independent synthetic paths to exercise either route
-        alone, even though their real path filters are identical.
-        Include every subset of native opt-in labels and the merge queue,
-        cache-refresh push, manual dispatch, and unsupported schedule events.
+        Linux profiles and Spark core/Hive use independent synthetic paths to
+        exercise either route alone, despite their identical real filters.
+        Include absent, individual and combined opt-in labels, each newly
+        added label, the merge queue, cache-refresh push, manual dispatch,
+        nightly schedule and an unsupported event. Exhaustive label subsets
+        would repeat the same independent per-job decisions.
         """
         keys = [key for routes in CONSUMERS.values() for key in routes]
-        label_sets = [
-            tuple(label for label, selected in zip(OPT_IN, mask) if selected)
-            for mask in itertools.product((False, True), repeat=len(OPT_IN))
-        ]
         events = [
             {"name": "merge_group"}, {"name": "push"},
             {"name": "workflow_dispatch"}, {"name": "schedule"},
+            {"name": "repository_dispatch"},
         ]
-        for labels in label_sets:
+        for labels in ((), OPT_IN):
             for action in ("opened", "synchronize", "reopened"):
                 events.append({"name": "pull_request", "action": action, "labels": labels})
-            for label in (*OPT_IN, "dependencies"):
-                events.append({
-                    "name": "pull_request", "action": "labeled",
-                    "labels": labels, "label": label,
-                })
+        for label in OPT_IN:
+            events.append({
+                "name": "pull_request", "action": "synchronize", "labels": (label,),
+            })
+        for label in (*OPT_IN, "dependencies"):
+            events.append({
+                "name": "pull_request", "action": "labeled",
+                "labels": OPT_IN, "label": label,
+            })
         filters = {key: [key] for key in self.filters.FILTERS}
         unrelated = sorted(set(filters) - set(keys))
         with mock.patch.dict(self.filters.FILTERS, filters, clear=True):

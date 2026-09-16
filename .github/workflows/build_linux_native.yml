@@ -76,7 +76,8 @@ jobs:
 
       - name: Save Cargo cache
         uses: actions/cache/save@v6
-        if: github.ref == 'refs/heads/main'
+        # Nightly runs reuse the cache already refreshed by the push run.
+        if: github.event_name == 'push'
         with:
           path: |
             ~/.cargo/registry

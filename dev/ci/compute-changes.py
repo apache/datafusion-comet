@@ -431,7 +431,7 @@ FILTERS["build_linux_all_profiles"] = FILTERS["build_linux"]
 # in the queue and once after, which is the thing the queue was adopted to
 # avoid.
 POLICY = {
-    # The one test job that also runs on push to main, and only because of
+    # The Linux workflows also run on push to main, and only because of
     # actions/cache scoping: a pull request can restore caches saved on its
     # own branch or on main, and nowhere else. The queue runs on a throwaway
     # gh-readonly-queue/* branch, so whatever it saves is deleted with that
@@ -443,13 +443,16 @@ POLICY = {
     # On push that is the *only* thing it is for. The queue already tested the
     # exact tree that landed, so re-running the lints and the linux-test
     # matrix there tests nothing, and they are 514 of the 587 runner-minutes a
-    # push run costs. The split below keeps the cache writers on push and moves
-    # everything else behind `build_linux_full`.
+    # push run costs. The cache writers now span build_linux_native.yml,
+    # pr_build_linux_checks.yml (cargo-debug), and pr_build_linux.yml (Maven
+    # and TPC-H/TPC-DS), so push must select all three workflows. The split
+    # below keeps those writers on push and moves everything else behind
+    # `build_linux_full`.
     "build_linux": ["pr", "queue", "push"],
-    # The lints and the test matrix inside pr_build_linux.yml. Deliberately no
-    # "push": ci.yml turns this output into the workflow's `cache-refresh-only`
-    # input, so dropping "push" here is what trims the push tier down to the
-    # jobs that write an actions/cache entry. See issue #5929.
+    # The lints in pr_build_linux_checks.yml and test matrix in pr_build_linux.yml.
+    # Deliberately no "push": ci.yml uses this output for both workflows'
+    # `cache-refresh-only` inputs, trimming push down to jobs needed to write an
+    # actions/cache entry. See issue #5929.
     "build_linux_full": ["pr", "queue"],
     # The linux-test matrix's Spark profiles other than the default one. The
     # five profiles cost about the same each, roughly 2,300 runner-minutes a
@@ -514,11 +517,12 @@ POLICY = {
 
 # Map each caller job that downloads the shared Linux native library to every
 # output key that can select it. Insertion order follows the callers in ci.yml.
-# Spark 4.1 has two routes into one caller: core shards and opt-in Hive shards.
+# Linux has separate default/all-profile routes, and Spark 4.1 has core/Hive
+# routes; either route must select the shared producer for its caller.
 # The producer has no independent path or event policy: it runs exactly when
 # any route of at least one consumer is selected after FILTERS and POLICY apply.
 NATIVE_CONSUMERS = {
-    "pr_build_linux": ("build_linux",),
+    "pr_build_linux": ("build_linux", "build_linux_all_profiles"),
     "spark_3_4": ("spark_3_4",),
     "spark_3_5": ("spark_3_5",),
     "spark_4_0": ("spark_4_0",),

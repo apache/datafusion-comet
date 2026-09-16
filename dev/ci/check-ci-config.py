@@ -48,15 +48,15 @@
 #      run only under an input or a label can carry that for a long time
 #      before anyone runs them.
 #
-#   6. Push-tier scope. On push to main, ci.yml calls pr_build_linux.yml with
-#      `cache-refresh-only`, which reduces it to the jobs that write an
-#      actions/cache entry; the merge queue already tested that tree. A job
-#      added to that workflow without the guard starts running on every push
-#      again and nothing fails, so nothing tells you.
+#   6. Linux mode scope. Both Linux callers receive `cache-refresh-only` and
+#      `profiles`, so push runs only refresh caches and nightly runs only test
+#      the non-default profiles. Per-workflow tables preserve the cache writers
+#      and prerequisites after the pipeline is split across three workflows.
+#
 #   7. Independent Linux checks. Lint, compile-only checks and debug Rust
 #      tests must remain runnable without waiting for the native CI build.
 #
-#   7. Direct Maven wrapper invocations in the two Linux workflows must run
+#   8. Direct Maven wrapper invocations in the two Linux workflows must run
 #      after the retrying bootstrap, including checks moved between them.
 #
 # Run from the repository root: python3 dev/ci/check-ci-config.py
@@ -129,7 +129,10 @@ ROUTING_CASES = [
     # Editing the shared Linux producer must exercise every Linux consumer.
     ([".github/workflows/build_linux_native.yml"], BUILD_JOBS - {"build_macos"}),
     # The independent lint/compile/Rust workflow belongs only to Linux CI.
-    ([".github/workflows/pr_build_linux_checks.yml"], {"build_linux"}),
+    (
+        [".github/workflows/pr_build_linux_checks.yml"],
+        {"build_linux", "build_linux_full", "build_linux_all_profiles"},
+    ),
     # Spot checks that the additions above did not widen unrelated routes.
     (["docs/source/user-guide/overview.md"], {"docs"}),
     (["native/core/benches/parquet_read.rs"], {"benchmark"}),
@@ -401,28 +404,37 @@ SHARED_NATIVE_CONSUMERS = {
     "iceberg_spark_test_reusable.yml",
 }
 
-# pr_build_linux.yml runs in two modes; see its header. These are the jobs that
-# must survive `cache-refresh-only`, because each one writes an actions/cache
-# entry that main needs warm for the next pull request. Anything else in that
-# file has to carry the guard.
-CACHE_REFRESH_WORKFLOW = WORKFLOWS / "pr_build_linux.yml"
+# The Linux pipeline spans three workflows. Cache writers and their prerequisites
+# must survive `cache-refresh-only`; every other job must carry the guard.
 CACHE_REFRESH_JOBS = {
-    "lint": "gates build-native and linux-test-rust, and costs 40 seconds",
-    "build-native": "writes the cargo-ci cache (native/target, CI profile)",
-    "linux-test-rust": "writes the cargo-debug cache (native/target, debug)",
-    "verify-benchmark-results-tpch": "writes the TPC-H SF=1 dataset and java-maven caches",
-    "verify-benchmark-results-tpcds": "writes the TPC-DS SF=1 dataset and java-maven caches",
+    "build_linux_native.yml": {
+        "build-native": "writes the cargo-ci cache (native/target, CI profile)",
+    },
+    "pr_build_linux_checks.yml": {
+        "lint": "gates linux-test-rust",
+        "linux-test-rust": "writes the cargo-debug cache (native/target, debug)",
+    },
+    "pr_build_linux.yml": {
+        "verify-benchmark-results-tpch": "writes the TPC-H SF=1 dataset and java-maven caches",
+        "verify-benchmark-results-tpcds": "writes the TPC-DS SF=1 dataset and java-maven caches",
+    },
 }
 # Job-level `if:` only: step-level guards inside the two verify jobs are
 # indented further, and those are expected rather than a reason to exempt the
 # whole job.
 CACHE_REFRESH_GUARD = re.compile(r"^    if:.*!\s*inputs\.cache-refresh-only")
-# The same file's third mode: with `profiles: nightly` only the jobs the
-# linux-test matrix needs run. See check_nightly_scope.
+# With `profiles: nightly`, only the matrix and its prerequisites run.
 NIGHTLY_JOBS = {
-    "lint": "publishes the profile matrix that linux-test reads",
-    "build-native": "builds the native library the matrix loads",
-    "linux-test": "the matrix itself",
+    "build_linux_native.yml": {
+        "build-native": "builds the native library the matrix loads",
+    },
+    "pr_build_linux_checks.yml": {
+        "lint": "the short formatting prerequisite retained by the checks workflow",
+    },
+    "pr_build_linux.yml": {
+        "prepare-matrix": "publishes the profile matrix that linux-test reads",
+        "linux-test": "the matrix itself",
+    },
 }
 NIGHTLY_GUARD = re.compile(r"^    if:.*inputs\.profiles\s*!=\s*'nightly'")
 # The `schedule` case in ci.yml's `Detect changes` script, and what has to be
@@ -450,14 +462,19 @@ def guarded_jobs(path, guard):
         if job and guard.match(line):
             guarded.add(job)
     return jobs, guarded
-CACHE_REFRESH_INPUT = re.compile(r"^\s+cache-refresh-only:\s*\$\{\{")
-# `profiles:` is passed as a folded scalar (`>-`) whose expression sits on the
-# next line, so match the key alone.
-PROFILES_INPUT = re.compile(r"^\s+profiles:\s*(>-|\$\{\{)")
 
 
 LINUX_CHECKS_WORKFLOW = "pr_build_linux_checks.yml"
 LINUX_CHECKS_JOB = "pr_build_linux_checks"
+LINUX_MODE_CALLERS = ("pr_build_linux", LINUX_CHECKS_JOB)
+CACHE_REFRESH_EXPRESSION = (
+    "${{ needs.changes.outputs.build_linux_full != 'true' "
+    "&& needs.changes.outputs.build_linux_all_profiles != 'true' }}"
+)
+PROFILES_EXPRESSION = (
+    "${{ needs.changes.outputs.build_linux_all_profiles != 'true' && 'pr' "
+    "|| needs.changes.outputs.build_linux_full != 'true' && 'nightly' || 'all' }}"
+)
 INDEPENDENT_LINUX_JOBS = {
     "lint", "scalafix-syntactic", "lint-java", "build-spark-4-1",
     "celeborn-reflection-compatibility", "linux-test-rust",
@@ -533,12 +550,7 @@ def check_linux_test_profiles():
     for row in module.select("all"):
         if sorted(row) != ["java_version", "maven_opts", "name"]:
             failures.append(f"profile {row['name']!r} must carry exactly name, java_version and maven_opts")
-    ci = (WORKFLOWS / "ci.yml").read_text(encoding="utf-8").splitlines()
-    if not any(PROFILES_INPUT.match(line) for line in ci):
-        failures.append(
-            "ci.yml never passes `profiles:` to pr_build_linux.yml. The input "
-            "defaults to all, so without it every pull request runs every profile again"
-        )
+    failures.extend(linux_profile_failures(WORKFLOWS))
     for failure in failures:
         print(f"linux test profiles: {failure}")
     return not failures
@@ -660,6 +672,45 @@ def block_mapping(text, indent):
 
 def scalar(value):
     return value.strip().strip("\"'")
+
+
+def linux_mode_input_failures(workflows, name, expected):
+    """Check each Linux caller's mode expression, including folded YAML scalars."""
+    ci = (workflows / "ci.yml").read_text(encoding="utf-8")
+    jobs = block_mapping(block_mapping(ci, 0).get("jobs", ("", ""))[1], 2)
+    failures = []
+    for job_id in LINUX_MODE_CALLERS:
+        fields = block_mapping(jobs.get(job_id, ("", ""))[1], 4)
+        inputs = block_mapping(fields.get("with", ("", ""))[1], 6)
+        value, body = inputs.get(name, ("", ""))
+        expression = body if value in {"|", "|-", ">", ">-"} else value
+        actual = " ".join(line.strip() for line in expression.splitlines()
+                          if line.strip() and not line.lstrip().startswith("#"))
+        if actual != expected:
+            failures.append(f"ci.yml: {job_id} must pass {name}: {expected}")
+    return failures
+
+
+def linux_profile_failures(workflows):
+    """Keep profile selection connected after splitting out the native producer."""
+    failures = linux_mode_input_failures(workflows, "profiles", PROFILES_EXPRESSION)
+    path = workflows / "pr_build_linux.yml"
+    if not path.exists():
+        return failures + [f"{path}: Linux test workflow is missing"]
+    text = path.read_text(encoding="utf-8")
+    jobs = block_mapping(block_mapping(text, 0).get("jobs", ("", ""))[1], 2)
+    prepare = jobs.get("prepare-matrix", ("", ""))[1]
+    outputs = block_mapping(block_mapping(prepare, 4).get("outputs", ("", ""))[1], 6)
+    if outputs.get("profile-matrix", ("", ""))[0] != "${{ steps.profiles.outputs.matrix }}":
+        failures.append(f"{path}: prepare-matrix must publish steps.profiles.outputs.matrix")
+    test = jobs.get("linux-test", ("", ""))[1]
+    strategy = block_mapping(block_mapping(test, 4).get("strategy", ("", ""))[1], 6)
+    matrix = block_mapping(strategy.get("matrix", ("", ""))[1], 8)
+    if ("prepare-matrix" not in dependencies(test)
+            or matrix.get("profile", ("", ""))[0]
+            != "${{ fromJSON(needs.prepare-matrix.outputs.profile-matrix) }}"):
+        failures.append(f"{path}: linux-test must consume prepare-matrix's profile-matrix output")
+    return failures
 
 
 def dependencies(job):
@@ -1139,96 +1190,54 @@ def check_required_checks():
     return not failures
 
 
-def check_cache_refresh_scope():
-    """Every job in pr_build_linux.yml is either a cache writer or guarded.
-
-    On push to main the merge queue has already tested the exact tree that
-    landed, so the only thing left for that run to do is leave main's
-    actions/cache entries warm -- a pull request can restore caches saved on
-    its own branch or on main and nowhere else, and the queue's throwaway
-    branch takes its own with it. ci.yml therefore calls the workflow with
-    `cache-refresh-only` on push, and every job that is not a cache writer
-    has to opt out with `if: ${{ !inputs.cache-refresh-only }}`.
-
-    A job added without the guard runs on every push again. Nothing fails when
-    that happens; the runner bill just quietly goes back up by up to ~500
-    minutes a push, which is what this check exists to notice.
-    """
+def linux_scope_failures(workflows, allowed, guard, mode):
+    """Require each workflow's retained jobs and guard every other job in that mode."""
     failures = []
-    jobs, guarded = guarded_jobs(CACHE_REFRESH_WORKFLOW, CACHE_REFRESH_GUARD)
+    for filename, retained in allowed.items():
+        path = workflows / filename
+        if not path.exists():
+            failures.append(f"{path}: {mode} workflow is missing")
+            continue
+        jobs, guarded = guarded_jobs(path, guard)
+        for name in sorted(retained.keys() - set(jobs)):
+            failures.append(f"{path}: {mode} requires job `{name}` ({retained[name]})")
+        for name in jobs:
+            if name in retained and name in guarded:
+                failures.append(f"{path}: {mode} must retain job `{name}` ({retained[name]}), "
+                                "but it carries the mode's skip guard")
+            if name not in retained and name not in guarded:
+                failures.append(f"{path}: job `{name}` has no {mode} guard, so it repeats "
+                                "work the earlier CI tier already ran")
+    return failures
 
-    for stale in sorted(set(CACHE_REFRESH_JOBS) - set(jobs)):
-        failures.append(
-            f"CACHE_REFRESH_JOBS names `{stale}`, which no longer exists in "
-            f"{CACHE_REFRESH_WORKFLOW}; drop it here, or restore the job"
-        )
-    for name in jobs:
-        if name in CACHE_REFRESH_JOBS and name in guarded:
-            failures.append(
-                f"{CACHE_REFRESH_WORKFLOW}: job `{name}` is listed in "
-                f"CACHE_REFRESH_JOBS ({CACHE_REFRESH_JOBS[name]}) but carries "
-                f"the cache-refresh-only guard, so it is skipped on push and "
-                f"the cache it owns goes stale on main"
-            )
-        if name not in CACHE_REFRESH_JOBS and name not in guarded:
-            failures.append(
-                f"{CACHE_REFRESH_WORKFLOW}: job `{name}` has no "
-                f"`if: ${{{{ !inputs.cache-refresh-only }}}}`, so it runs on "
-                f"every push to main where the merge queue has already tested "
-                f"the same tree. Add the guard, or add the job to "
-                f"CACHE_REFRESH_JOBS with the cache entry it writes"
-            )
 
-    # The guards above do nothing unless the caller actually sets the input;
-    # its default is false, so a dropped `with:` block silently restores the
-    # full pipeline on push.
-    ci = (WORKFLOWS / "ci.yml").read_text(encoding="utf-8").splitlines()
-    if not any(CACHE_REFRESH_INPUT.match(line) for line in ci):
-        failures.append(
-            "ci.yml never passes `cache-refresh-only:` to pr_build_linux.yml. "
-            "The input defaults to false, so without it every push to main runs "
-            "the full pipeline again"
-        )
+def cache_refresh_failures(workflows):
+    """Keep main's cache writers across all three workflows and skip other work.
 
+    The caller expressions are checked separately for both Linux calls: finding
+    one input elsewhere in ci.yml does not protect the other workflow's jobs.
+    """
+    failures = linux_scope_failures(
+        workflows, CACHE_REFRESH_JOBS, CACHE_REFRESH_GUARD, "cache-refresh-only")
+    failures.extend(linux_mode_input_failures(
+        workflows, "cache-refresh-only", CACHE_REFRESH_EXPRESSION))
+    return failures
+
+
+def check_cache_refresh_scope():
+    failures = cache_refresh_failures(WORKFLOWS)
     for failure in failures:
         print(f"cache refresh scope: {failure}")
     return not failures
 
 
-def check_nightly_scope():
-    """With `profiles: nightly`, pr_build_linux.yml runs the test matrix alone.
+def nightly_scope_failures(workflows):
+    """Keep the nightly matrix and prerequisites while skipping previously run checks."""
+    return linux_scope_failures(workflows, NIGHTLY_JOBS, NIGHTLY_GUARD, "nightly")
 
-    That input value means the default-profile pipeline already ran at this
-    commit: in the queue and the push run for the nightly, in the PR tier for
-    a `run-all-spark-profiles` label run. The lints, the Rust tests, the
-    Spark build and the TPC-H/TPC-DS runs would repeat a verdict, so every
-    job other than the three the matrix needs carries
-    `if: ${{ inputs.profiles != 'nightly' }}`. Silent when broken, like the
-    cache-refresh guard: the nightly just costs 100-odd runner-minutes more.
-    """
-    failures = []
-    jobs, guarded = guarded_jobs(CACHE_REFRESH_WORKFLOW, NIGHTLY_GUARD)
-    for stale in sorted(set(NIGHTLY_JOBS) - set(jobs)):
-        failures.append(
-            f"NIGHTLY_JOBS names `{stale}`, which no longer exists in "
-            f"{CACHE_REFRESH_WORKFLOW}; drop it here, or restore the job"
-        )
-    for name in jobs:
-        if name in NIGHTLY_JOBS and name in guarded:
-            failures.append(
-                f"{CACHE_REFRESH_WORKFLOW}: job `{name}` is listed in "
-                f"NIGHTLY_JOBS ({NIGHTLY_JOBS[name]}) but carries the "
-                f"`profiles != 'nightly'` guard, so the nightly test matrix "
-                f"cannot run"
-            )
-        if name not in NIGHTLY_JOBS and name not in guarded:
-            failures.append(
-                f"{CACHE_REFRESH_WORKFLOW}: job `{name}` has no "
-                f"`if: ${{{{ inputs.profiles != 'nightly' }}}}`, so it repeats "
-                f"on every nightly a verdict the queue already produced. Add "
-                f"the guard, or add the job to NIGHTLY_JOBS with the reason "
-                f"the test matrix needs it"
-            )
+
+def check_nightly_scope():
+    failures = nightly_scope_failures(WORKFLOWS)
     for failure in failures:
         print(f"nightly scope: {failure}")
     return not failures

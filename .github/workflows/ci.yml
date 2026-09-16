@@ -288,8 +288,14 @@ jobs:
     needs: changes
     permissions:
       contents: read
-    if: needs.changes.outputs.build_linux == 'true'
+    if: needs.changes.outputs.build_linux == 'true' || needs.changes.outputs.build_linux_all_profiles == 'true'
     uses: ./.github/workflows/pr_build_linux_checks.yml
+    with:
+      cache-refresh-only: ${{ needs.changes.outputs.build_linux_full != 'true' && needs.changes.outputs.build_linux_all_profiles != 'true' }}
+      profiles: >-
+        ${{ needs.changes.outputs.build_linux_all_profiles != 'true' && 'pr'
+            || needs.changes.outputs.build_linux_full != 'true' && 'nightly'
+            || 'all' }}
 
   # compute-changes.py derives this output from the selected native consumers.
   build_linux_native:
@@ -303,12 +309,10 @@ jobs:
   pr_build_linux:
     name: PR Build (Linux)
     needs: [changes, build_linux_native]
-    # Three POLICY outputs feed one call, the same shape as spark_4_1 below.
-    # `build_linux` decides whether the workflow runs at all; `build_linux_full`
-    # whether it runs the lints and the test matrix as well as the jobs that
-    # populate main's actions/cache entries; `build_linux_all_profiles` whether
-    # the test matrix covers every Spark profile or only the default one. The
-    # combinations that occur:
+    # Three POLICY outputs configure both Linux callers above and here.
+    # `build_linux` or `build_linux_all_profiles` selects them; `build_linux_full`
+    # enables the independent checks and tests beyond main's cache writers.
+    # Together with `build_linux_all_profiles`, it selects the test profiles:
     #
     #   pull request          linux, full            -> profiles: pr
     #   ... with the label    linux, full, all       -> profiles: all

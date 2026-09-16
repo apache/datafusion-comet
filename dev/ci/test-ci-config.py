@@ -58,6 +58,110 @@ class SharedNativeArtifactTest(unittest.TestCase):
 
     def test_real_workflows_have_valid_shared_artifacts(self):
         self.assertEqual(CHECK.artifact_failures(self.workflows), [])
+        self.assertEqual(CHECK.cache_refresh_failures(self.workflows), [])
+        self.assertEqual(CHECK.nightly_scope_failures(self.workflows), [])
+        self.assertEqual(CHECK.linux_profile_failures(self.workflows), [])
+
+    def test_linux_modes_reject_new_unguarded_jobs_in_each_workflow(self):
+        for filename in CHECK.CACHE_REFRESH_JOBS:
+            path = self.workflows / filename
+            original = path.read_text(encoding="utf-8")
+            with self.subTest(workflow=filename):
+                path.write_text(original + "\n  extra-check:\n    runs-on: ubuntu-24.04\n"
+                                "    steps:\n      - run: true\n", encoding="utf-8")
+                for check in (CHECK.cache_refresh_failures, CHECK.nightly_scope_failures):
+                    failures = check(self.workflows)
+                    self.assertTrue(any("extra-check` has no" in item for item in failures), failures)
+            path.write_text(original, encoding="utf-8")
+
+    def test_cache_refresh_preserves_each_cache_owner_and_prerequisite(self):
+        """Reject both removing a retained job and guarding it off on main pushes."""
+        for filename, retained in CHECK.CACHE_REFRESH_JOBS.items():
+            path = self.workflows / filename
+            original = path.read_text(encoding="utf-8")
+            jobs = CHECK.block_mapping(CHECK.block_mapping(original, 0)["jobs"][1], 2)
+            for job_id in retained:
+                body = jobs[job_id][1]
+                guarded = (body.replace("inputs.profiles != 'nightly'",
+                                        "!inputs.cache-refresh-only && inputs.profiles != 'nightly'", 1)
+                           if "if" in CHECK.block_mapping(body, 4) else
+                           "\n    if: ${{ !inputs.cache-refresh-only }}" + body)
+                mutations = (
+                    (original.replace(f"  {job_id}:{body}", "", 1), f"requires job `{job_id}`"),
+                    (original.replace(body, guarded, 1), f"must retain job `{job_id}`"),
+                )
+                for mutation, expected in mutations:
+                    with self.subTest(workflow=filename, job=job_id, expected=expected):
+                        self.assertNotEqual(original, mutation)
+                        path.write_text(mutation, encoding="utf-8")
+                        failures = CHECK.cache_refresh_failures(self.workflows)
+                        self.assertTrue(any(expected in item for item in failures), failures)
+            path.write_text(original, encoding="utf-8")
+
+    def test_existing_checks_cannot_lose_cache_or_nightly_guards(self):
+        cases = (
+            ("pr_build_linux_checks.yml", "lint-java", "!inputs.cache-refresh-only && ",
+             CHECK.cache_refresh_failures),
+            ("pr_build_linux.yml", "linux-test", "    if: ${{ !inputs.cache-refresh-only }}\n",
+             CHECK.cache_refresh_failures),
+            ("pr_build_linux_checks.yml", "linux-test-rust",
+             "    if: ${{ inputs.profiles != 'nightly' }}\n", CHECK.nightly_scope_failures),
+            ("pr_build_linux.yml", "verify-benchmark-results-tpch",
+             "    if: ${{ inputs.profiles != 'nightly' }}\n", CHECK.nightly_scope_failures),
+        )
+        for filename, job_id, guard, check in cases:
+            path = self.workflows / filename
+            original = path.read_text(encoding="utf-8")
+            body = CHECK.block_mapping(CHECK.block_mapping(original, 0)["jobs"][1], 2)[job_id][1]
+            with self.subTest(workflow=filename, job=job_id):
+                self.assertIn(guard, body)
+                path.write_text(original.replace(body, body.replace(guard, "", 1), 1), encoding="utf-8")
+                failures = check(self.workflows)
+                self.assertTrue(any(f"job `{job_id}` has no" in item for item in failures), failures)
+            path.write_text(original, encoding="utf-8")
+
+    def test_linux_callers_each_require_the_correct_mode_inputs(self):
+        """One intact caller must not hide missing or miswired inputs on its sibling."""
+        path = self.workflows / "ci.yml"
+        original = path.read_text(encoding="utf-8")
+        jobs = CHECK.block_mapping(CHECK.block_mapping(original, 0)["jobs"][1], 2)
+        for job_id in CHECK.LINUX_MODE_CALLERS:
+            body = jobs[job_id][1]
+            fields = CHECK.block_mapping(body, 4)
+            inputs = CHECK.block_mapping(fields["with"][1], 6)
+            for name, check in (("cache-refresh-only", CHECK.cache_refresh_failures),
+                                ("profiles", CHECK.linux_profile_failures)):
+                value, nested = inputs[name]
+                declaration = f"      {name}: {value}{nested}"
+                self.assertIn(declaration, body)
+                for replacement in ("", f"      {name}: false\n"):
+                    with self.subTest(job=job_id, input=name, replacement=replacement):
+                        mutation = body.replace(declaration, replacement, 1)
+                        path.write_text(original.replace(body, mutation, 1), encoding="utf-8")
+                        failures = check(self.workflows)
+                        self.assertTrue(any(f"{job_id} must pass {name}:" in item
+                                            for item in failures), failures)
+        path.write_text(original, encoding="utf-8")
+
+    def test_linux_profile_matrix_stays_connected_and_available_at_night(self):
+        path = self.workflows / "pr_build_linux.yml"
+        original = path.read_text(encoding="utf-8")
+        mutations = (
+            ("${{ steps.profiles.outputs.matrix }}", "[]", CHECK.linux_profile_failures,
+             "prepare-matrix must publish"),
+            ("${{ fromJSON(needs.prepare-matrix.outputs.profile-matrix) }}", "[]",
+             CHECK.linux_profile_failures, "linux-test must consume prepare-matrix"),
+            ("    if: ${{ !inputs.cache-refresh-only }}\n",
+             "    if: ${{ !inputs.cache-refresh-only && inputs.profiles != 'nightly' }}\n",
+             CHECK.nightly_scope_failures, "must retain job `prepare-matrix`"),
+        )
+        for old, new, check, expected in mutations:
+            with self.subTest(expected=expected):
+                self.assertIn(old, original)
+                path.write_text(original.replace(old, new, 1), encoding="utf-8")
+                failures = check(self.workflows)
+                self.assertTrue(any(expected in item for item in failures), failures)
+        path.write_text(original, encoding="utf-8")
 
     def test_native_gates_cannot_bypass_selected_outputs(self):
         """Reject an inverted gate for each producer/consumer in a temporary copy.
@@ -126,17 +230,22 @@ class SharedNativeArtifactTest(unittest.TestCase):
                 self.assert_rejected("spark_4_1 must select exactly")
         path.write_text(original, encoding="utf-8")
 
-    def test_hive_route_must_remain_in_native_selector(self):
-        """Reject omitting Hive from Python while ci.yml still selects it.
+    def test_secondary_routes_must_remain_in_native_selector(self):
+        """Reject omitting Hive or non-default profiles from the producer's selector.
 
         Patch only the freshly imported selector returned to the checker;
         temporary and repository workflows remain unchanged. The mock scope
         restores load_filters even if the expected diagnostic is not raised.
         """
-        selector = CHECK.load_filters()
-        selector.NATIVE_CONSUMERS = {**selector.NATIVE_CONSUMERS, "spark_4_1": ("spark_4_1",)}
-        with mock.patch.object(CHECK, "load_filters", return_value=selector):
-            self.assert_rejected("spark_4_1 must select exactly")
+        for job_id in ("spark_4_1", "pr_build_linux"):
+            with self.subTest(job=job_id):
+                selector = CHECK.load_filters()
+                selector.NATIVE_CONSUMERS = {
+                    **selector.NATIVE_CONSUMERS,
+                    job_id: selector.NATIVE_CONSUMERS[job_id][:1],
+                }
+                with mock.patch.object(CHECK, "load_filters", return_value=selector):
+                    self.assert_rejected(f"{job_id} must select exactly")
 
     def test_native_consumer_calls_must_match_selector_ids(self):
         """Reject missing, renamed, or unrelated workflow calls for Spark 4.1.
@@ -250,7 +359,8 @@ class SharedNativeArtifactTest(unittest.TestCase):
         self.assert_rejected("native-library-artifact must be a required string input")
 
     def test_consumer_input_must_be_string(self):
-        self.replace("pr_build_linux.yml", "type: string", "type: boolean")
+        self.replace("pr_build_linux.yml", "required: true\n        type: string",
+                     "required: true\n        type: boolean")
         self.assert_rejected("native-library-artifact must be a required string input")
 
     def test_literal_native_download_is_rejected(self):
@@ -338,8 +448,8 @@ class SharedNativeArtifactTest(unittest.TestCase):
         self.assert_rejected("independent jobs must stay in pr_build_linux_checks.yml")
 
     def test_independent_checks_cannot_require_native_artifact_input(self):
-        self.replace(CHECK.LINUX_CHECKS_WORKFLOW, "  workflow_call:\n",
-                     "  workflow_call:\n    inputs:\n      native-library-artifact:\n"
+        self.replace(CHECK.LINUX_CHECKS_WORKFLOW, "    inputs:\n",
+                     "    inputs:\n      native-library-artifact:\n"
                      "        required: true\n        type: string\n")
         self.assert_rejected("independent Linux checks must not consume the shared native artifact")
 

@@ -29,7 +29,7 @@ ruleset in `.asf.yaml`. That splits CI into three tiers:
   surfaces.
 
 Every queue-only and nightly job has a `run-*` label that opts a pull request
-into it early, listed in the diagram below. The Lint Java matrix compiles
+into it early, listed in the table below. The Lint Java matrix compiles
 Spark 3.4/3.5/4.0 on every pull request, so a shim that fails to build is
 caught there; only the runtime suites wait for the queue or the nightly.
 
@@ -55,92 +55,50 @@ only restore caches saved on its own branch or on `main`, and the queue runs on 
 run, a `Cargo.lock` or `pom.xml` change would leave the cargo-ci, cargo-debug,
 Maven and TPC-H/TPC-DS caches on `main` stale until the next unrelated change.
 
-Warming those caches is the only thing the push run is for, so on `push` the
-Linux build runs in **cache-refresh-only** mode: `build-native`,
-`linux-test-rust` and the two TPC-H/TPC-DS jobs, each stopping once its cache
-entry is written, and nothing else. The lints, the `linux-test` matrix and
-the TPC query runs are skipped, which takes the push tier from 587
-runner-minutes to about 73. Three POLICY outputs express this: `build_linux`
-says whether the workflow runs at all, `build_linux_full` whether it runs the
-lints and tests too, and `build_linux_all_profiles` whether the `linux-test`
-matrix covers every Spark profile or only the default one. `ci.yml` folds the
-second into the workflow's `cache-refresh-only` input and the third into its
-`profiles` input. `dev/ci/check-ci-config.py` fails if a job is added to
-`pr_build_linux.yml` without either the guard or an entry in
-`CACHE_REFRESH_JOBS` naming the cache it writes. See issue #5929.
+On a push to main, `build_linux` selects all three Linux workflows, but only
+cache-refresh work survives their job guards:
+
+- `build_linux_native.yml`: `build-native` refreshes `cargo-ci`.
+- `pr_build_linux_checks.yml`: `lint` gates `linux-test-rust`, which refreshes
+  `cargo-debug`. The Java/Scala lints, compile-only job and Celeborn checks skip.
+- `pr_build_linux.yml`: the two TPC jobs populate their datasets and Maven
+  caches, then skip query execution. Profile selection and JVM tests skip.
+
+Both Linux callers receive `cache-refresh-only` and `profiles` from the same
+routing outputs. `build_linux_full` enables the checks and tests;
+`build_linux_all_profiles` also selects the Linux consumers for nightly and
+profile-label runs. Those runs must stay out of cache-refresh mode even when
+`build_linux_full` is false. `dev/ci/check-ci-config.py` checks the caller
+inputs and the allowed jobs across all three workflows, so adding an
+unguarded job cannot silently restore unnecessary work on every push.
 
 The profile rows of the `linux-test` matrix live in
 `dev/ci/linux-test-profiles.py` rather than in the workflow, because a
-job-level `if:` cannot see `matrix`: the `lint` job runs the script with the
+job-level `if:` cannot see `matrix`: the `prepare-matrix` job runs the script with the
 `profiles` input and publishes the rows as a job output that the matrix reads
 with `fromJSON`. Each row carries a tier, `pr` for the default build profile
 and `nightly` for the other four, and `check-ci-config.py` asserts that the two
 tiers partition the list and that the `pr` tier is exactly the default profile.
 
 ```
-          pull_request | merge_group | push to main | schedule | workflow_dispatch
-                                            |
-                                            v
-                                +-----------------------+
-                                |       preflight       |  ubuntu-slim
-                                |  (RAT, prettier,      |
-                                |   missing-suites,     |
-                                |   actionlint)         |
-                                +-----------+-----------+
-                                            |  on success
-                                            v
-                                +-----------------------+
-                                |        changes        |  ubuntu-slim
-                                | (compute-changes.py:  |
-                                |  one boolean per      |
-                                |  heavy job)           |
-                                +-----------+-----------+
-                                            |
-        +-----------------------------------+-----------------------------------+
-        |                                   |                                   |
-        v                                   v                                   v
-  PR + queue tier                     push to main only         queue tier, or PR with label
-  ---------------                     -----------------         ---------------------------
-  pr_build_linux (+ push, cache only) docs                      pr_build_macos      run-macos-tests
-    (Spark 4.1 profile only)                                    pr_benchmark_check  run-benchmark-check
-                                                                delta_build_gate    run-delta-build-gate
-                                                                pyarrow_udf_test    run-pyarrow-udf-tests
-                                                                spark_4_1           run-spark-4.1-tests
-  label or dispatch only                                        spark_4_1 sql_hive  run-spark-4.1-hive-tests
-  ----------------------                                        iceberg_1_11        run-iceberg-tests
-  spark_3_4  run-spark-3.4-tests
-                                      nightly tier, or PR with label
-                                      ------------------------------
-                                      pr_build_linux      run-all-spark-profiles
-                                        (other profiles)
-                                      spark_3_5           run-spark-3.5-tests
-                                      spark_4_0           run-spark-4.0-tests
-                                      iceberg_1_8         run-iceberg-tests
-                                      iceberg_1_9         run-iceberg-tests
-                                      iceberg_1_10        run-iceberg-tests
+pull_request | merge_group | push to main | schedule | workflow_dispatch
+                              |
+                          preflight
+                              |
+                           changes
+                              |
+       +----------------------+-----------------------+
+       |                      |                       |
+  Linux checks         build_linux_native       macOS / benchmark /
+  (independent)        (if any consumer          Delta / PyArrow / docs
+                        is selected)            (if selected)
+                              |
+                +-------------+-------------+
+                |             |             |
+          pr_build_linux   spark_*       iceberg_*
 
-        |                                   |                                   |
-        +-----------------------------------+-----------------------------------+
-                                            v
-                                +-----------------------+
-                                |    required_checks    |  ubuntu-slim
-                                |  one flat name that   |
-                                |  is safe to require   |
-                                +-----------+-----------+
-                                            |  schedule only, when red
-                                            v
-                                +-----------------------+
-                                |    nightly_report     |  ubuntu-slim
-                                |  opens or comments on |
-                                |  a ci-nightly-failure |
-                                |  issue                |
-                                +-----------------------+
-
-  reusable workflows invoked via `uses:`:
-    pr_build_linux.yml         spark_sql_test_reusable.yml
-    pr_build_macos.yml         iceberg_spark_test_reusable.yml
-    pr_benchmark_check.yml     delta_build_gate.yml
-    docs.yaml                  pyarrow_udf_test.yml
+Every gating job reports to required_checks. A failed scheduled run also
+starts nightly_report. The table below lists each caller's event policy.
 ```
 
 `build_linux_native.yml` builds the default Linux `libcomet.so` once per run
@@ -158,7 +116,7 @@ build when its Spark caller is selected, even if the Linux build is not.
 Documentation-only changes, benchmark-only changes, and unrelated label
 events do not start an unused native build. The event-selection regression
 test checks that the producer and its consumers stay in agreement across PR,
-merge-group, push, and manual runs. A macOS-only or benchmark-only label run
+merge-group, push, nightly, and manual runs. A macOS-only or benchmark-only label run
 also skips this producer because neither job consumes the Linux artifact.
 
 Linux lint, compile-only checks, Celeborn compatibility tests, and Rust debug
@@ -172,30 +130,32 @@ a native-build dependency.
 Rust formatting runs before native compilation and before the independent
 Linux build/test jobs. Rust debug tests, macOS, and feature-specific workflows
 continue to build their own binaries. The shared producer is the only writer
-of the Linux CI-profile Cargo cache, and only writes on `main`.
+of the Linux CI-profile Cargo cache, and only saves it on pushes to `main`.
 
 ## What runs when
 
-| Job in `ci.yml`      | Triggered by                                                                                                                                                                                                                                           | Routing rule                        |
-| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------- |
-| `preflight`          | every PR / merge group / push / schedule / dispatch / label                                                                                                                                                                                            | none (always runs)                  |
-| `changes`            | every PR / merge group / push / schedule / dispatch / label                                                                                                                                                                                            | runs `dev/ci/compute-changes.py`    |
-| `pr_build_linux`     | PR, merge group or push to main, paths matched; on push only the cache-writing jobs, via `build_linux_full`; the test matrix's non-default Spark profiles only in the nightly run **or** with `run-all-spark-profiles`, via `build_linux_all_profiles` | `dev/ci/compute-changes.py`         |
-| `pr_build_macos`     | merge group, **or** PR with `run-macos-tests`                                                                                                                                                                                                          | `dev/ci/compute-changes.py`         |
-| `pr_benchmark_check` | merge group, **or** PR with `run-benchmark-check`                                                                                                                                                                                                      | benchmark sources only              |
-| `delta_build_gate`   | merge group, **or** PR with `run-delta-build-gate`                                                                                                                                                                                                     | main sources, poms, `contrib/delta` |
-| `pyarrow_udf_test`   | merge group, **or** PR with `run-pyarrow-udf-tests`                                                                                                                                                                                                    | map-in-batch and Python runner code |
-| `docs`               | push to main, paths matched                                                                                                                                                                                                                            | `.asf.yaml`, `docs/**`, `docs.yaml` |
-| `spark_3_5`          | nightly, **or** PR with `run-spark-3.5-tests`                                                                                                                                                                                                          | Spark 3.5 sources                   |
-| `spark_4_1`          | merge group, **or** PR with `run-spark-4.1-tests`; the `sql_hive` shards alone with `run-spark-4.1-hive-tests`                                                                                                                                         | Spark 4.1 sources                   |
-| `spark_3_4`          | PR with `run-spark-3.4-tests`, or dispatch                                                                                                                                                                                                             | Spark 3.4 sources                   |
-| `spark_4_0`          | nightly, **or** PR with `run-spark-4.0-tests`                                                                                                                                                                                                          | Spark 4.0 sources                   |
-| `iceberg_1_11`       | merge group, **or** PR with `run-iceberg-tests`                                                                                                                                                                                                        | Iceberg sources                     |
-| `iceberg_1_8`        | nightly, **or** PR with `run-iceberg-tests`                                                                                                                                                                                                            | Iceberg sources                     |
-| `iceberg_1_9`        | nightly, **or** PR with `run-iceberg-tests`                                                                                                                                                                                                            | Iceberg sources                     |
-| `iceberg_1_10`       | nightly, **or** PR with `run-iceberg-tests`                                                                                                                                                                                                            | Iceberg sources                     |
-| `required_checks`    | always, after every job above except `docs`                                                                                                                                                                                                            | none (always runs)                  |
-| `nightly_report`     | schedule only, after `required_checks`, when it is not green                                                                                                                                                                                           | none                                |
+| Job in `ci.yml`         | Triggered by                                                                                                                                                                                                                                           | Routing rule                        |
+| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------- |
+| `preflight`             | every PR / merge group / push / schedule / dispatch / label                                                                                                                                                                                            | none (always runs)                  |
+| `changes`               | every PR / merge group / push / schedule / dispatch / label                                                                                                                                                                                            | runs `dev/ci/compute-changes.py`    |
+| `build_linux_native`    | any selected Linux/Spark/Iceberg consumer, including nightly and profile-label runs                                                                                                                                                                    | `dev/ci/compute-changes.py`         |
+| `pr_build_linux_checks` | same selection as `pr_build_linux`; cache-refresh and nightly inputs skip unnecessary checks                                                                                                                                                           | `dev/ci/compute-changes.py`         |
+| `pr_build_linux`        | PR, merge group or push to main, paths matched; on push only the cache-writing jobs, via `build_linux_full`; the test matrix's non-default Spark profiles only in the nightly run **or** with `run-all-spark-profiles`, via `build_linux_all_profiles` | `dev/ci/compute-changes.py`         |
+| `pr_build_macos`        | merge group, **or** PR with `run-macos-tests`                                                                                                                                                                                                          | `dev/ci/compute-changes.py`         |
+| `pr_benchmark_check`    | merge group, **or** PR with `run-benchmark-check`                                                                                                                                                                                                      | benchmark sources only              |
+| `delta_build_gate`      | merge group, **or** PR with `run-delta-build-gate`                                                                                                                                                                                                     | main sources, poms, `contrib/delta` |
+| `pyarrow_udf_test`      | merge group, **or** PR with `run-pyarrow-udf-tests`                                                                                                                                                                                                    | map-in-batch and Python runner code |
+| `docs`                  | push to main, paths matched                                                                                                                                                                                                                            | `.asf.yaml`, `docs/**`, `docs.yaml` |
+| `spark_3_5`             | nightly, **or** PR with `run-spark-3.5-tests`                                                                                                                                                                                                          | Spark 3.5 sources                   |
+| `spark_4_1`             | merge group, **or** PR with `run-spark-4.1-tests`; the `sql_hive` shards alone with `run-spark-4.1-hive-tests`                                                                                                                                         | Spark 4.1 sources                   |
+| `spark_3_4`             | PR with `run-spark-3.4-tests`, or dispatch                                                                                                                                                                                                             | Spark 3.4 sources                   |
+| `spark_4_0`             | nightly, **or** PR with `run-spark-4.0-tests`                                                                                                                                                                                                          | Spark 4.0 sources                   |
+| `iceberg_1_11`          | merge group, **or** PR with `run-iceberg-tests`                                                                                                                                                                                                        | Iceberg sources                     |
+| `iceberg_1_8`           | nightly, **or** PR with `run-iceberg-tests`                                                                                                                                                                                                            | Iceberg sources                     |
+| `iceberg_1_9`           | nightly, **or** PR with `run-iceberg-tests`                                                                                                                                                                                                            | Iceberg sources                     |
+| `iceberg_1_10`          | nightly, **or** PR with `run-iceberg-tests`                                                                                                                                                                                                            | Iceberg sources                     |
+| `required_checks`       | always, after every job above except `docs`                                                                                                                                                                                                            | none (always runs)                  |
+| `nightly_report`        | schedule only, after `required_checks`, when it is not green                                                                                                                                                                                           | none                                |
 
 A heavy job appears in the PR's checks list as a `skipped` entry whenever
 its path filter or event criteria don't match. Skipped checks count as
@@ -206,8 +166,9 @@ safe to make a required check.
 
 `ci.yml` also fires on `pull_request.types: [labeled]`, so applying
 `run-spark-3.4-tests`, `run-spark-3.5-tests`, `run-spark-4.0-tests`,
-`run-spark-4.1-hive-tests`, `run-iceberg-tests`, `run-macos-tests`, or
-`run-benchmark-check` starts the jobs that label gates without needing a new
+`run-spark-4.1-tests`, `run-spark-4.1-hive-tests`, `run-all-spark-profiles`,
+`run-iceberg-tests`, `run-macos-tests`, `run-delta-build-gate`,
+`run-pyarrow-udf-tests`, or `run-benchmark-check` starts the jobs that label gates without needing a new
 push. GitHub cannot filter a
 `pull_request` trigger by label name, so **every** label added to a PR starts a
 run, including labels that gate nothing.
@@ -263,11 +224,13 @@ commit no nightly has covered yet skips the suites that commit needs, lets the
 run go green, and then hands that green head to `nightly-base.py` as tomorrow's
 base, so the coverage is dropped for good.
 
-With `profiles: nightly`, `pr_build_linux.yml` runs only `lint`, `build-native`
-and the `linux-test` matrix; the lints, Rust tests, Spark build and TPC runs
-carry `if: ${{ inputs.profiles != 'nightly' }}` because the queue and the push
-run already produced those verdicts at the same commit. `check-ci-config.py`
-pins that the same way it pins the cache-refresh guard.
+With `profiles: nightly`, `pr_build_linux.yml` runs only `prepare-matrix`
+and `linux-test`, consuming the shared native producer's library. The
+independent checks workflow runs only its short Rust formatting prerequisite.
+Rust debug tests, other lints and both TPC jobs carry
+`if: ${{ inputs.profiles != 'nightly' }}` because they already ran at this
+commit. `check-ci-config.py` pins this scope across the three Linux workflows
+alongside the cache-refresh guards.
 
 A red nightly has no pull request to appear on, and GitHub only emails a
 scheduled run's failure to whoever last touched the workflow file, so
@@ -326,7 +289,9 @@ if: needs.changes.outputs.spark_4_1 == 'true' || needs.changes.outputs.spark_4_1
 `NATIVE_CONSUMERS` in `dev/ci/compute-changes.py` maps each native consumer
 job to all outputs that can select it. The shared native producer runs when
 any of those outputs is true. A Hive-only label event has `spark_4_1=false`
-and `spark_4_1_hive=true`, so it still starts the native producer. The
+and `spark_4_1_hive=true`, so it still starts the native producer. Likewise,
+`build_linux_all_profiles=true` starts it when `build_linux=false`, covering
+nightly runs and newly applied `run-all-spark-profiles` labels. The
 configuration guard checks the exact callers, output exports, dependencies,
 and gates against this mapping.
 
