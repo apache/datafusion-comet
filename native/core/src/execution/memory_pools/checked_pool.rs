@@ -63,8 +63,9 @@ pub struct CheckedMemoryPool<P: MemoryPool> {
     inner: P,
     budget: usize,
     enforce: bool,
-    /// Set once this pool has logged a crossing, so that observing does not flood the log:
-    /// `try_grow` is called constantly and the condition is sticky once real usage is high.
+    /// Set once this pool has logged, whether that was an observed crossing or a refusal, so that
+    /// neither mode floods the log: `try_grow` is called constantly and the condition is sticky
+    /// once real usage is high. One line per pool means one line per task that hit the budget.
     reported: AtomicBool,
 }
 
@@ -133,6 +134,21 @@ impl<P: MemoryPool> MemoryPool for CheckedMemoryPool<P> {
         let in_use = alloc_accounting::current_balance();
         if in_use.saturating_add(additional) > self.budget {
             if self.enforce {
+                // Log the first refusal too, not just the first observed crossing. A refusal is
+                // returned as an error, and DataFusion usually answers it by spilling and
+                // retrying, which swallows the error: without this line the check can be
+                // refusing reservations on every task and leave no trace anywhere that it ran.
+                if !self.reported.swap(true, Ordering::Relaxed) {
+                    warn!(
+                        "Refusing to reserve {additional} bytes for {}: it would take Comet's \
+                         real native memory usage ({in_use} bytes) past \
+                         spark.memory.offHeap.size ({} bytes). Operators that can spill will \
+                         spill; those that cannot will fail the task. Set \
+                         spark.comet.exec.memoryPool.enforceNativeUsage=false to only log this.",
+                        reservation.consumer().name(),
+                        self.budget
+                    );
+                }
                 return Err(resources_datafusion_err!(
                     "Failed to reserve {additional} bytes for {}: native memory in use is \
                      {in_use} bytes of a {} byte budget (spark.memory.offHeap.size). Reserved: \
