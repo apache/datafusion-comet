@@ -397,10 +397,7 @@ for _native_consumer in (
     FILTERS[_native_consumer].extend([
         ".github/actions/build-native-ci/**",
         "dev/ci/native-cache-key.py",
-        "dev/ci/native-library-cache.py",
         "dev/ci/test-native-cache-key.py",
-        "dev/ci/test-native-library-cache.py",
-        "dev/ci/test-native-cache-workflow.py",
     ])
 
 FILTERS["spark_4_1_hive"] = FILTERS["spark_4_1"]

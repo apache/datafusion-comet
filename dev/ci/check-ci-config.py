@@ -133,8 +133,6 @@ ROUTING_CASES = [
     # Helper edits also match macOS's broad dev/ci filter, as before.
     ([".github/actions/build-native-ci/action.yaml"], BUILD_JOBS - {"build_macos"}),
     (["dev/ci/native-cache-key.py"], BUILD_JOBS),
-    (["dev/ci/native-library-cache.py"], BUILD_JOBS),
-    (["dev/ci/test-native-cache-workflow.py"], BUILD_JOBS),
     # Spot checks that the additions above did not widen unrelated routes.
     (["docs/source/user-guide/overview.md"], {"docs"}),
     (["native/core/benches/parquet_read.rs"], {"benchmark"}),
