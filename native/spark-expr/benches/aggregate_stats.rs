@@ -19,10 +19,8 @@
 //! `aggregate.rs` (which covers `avg_decimal` / `sum_decimal` / `sum_int`):
 //! the Welford-path statistical aggregates (`variance`, `stddev`, `covariance`,
 //! `correlation`), non-decimal `avg`, exact and approximate percentile, and
-//! HyperLogLog++ `approx_count_distinct`. Each Comet accumulator is benched
-//! alongside its DataFusion built-in (where one exists) so the Comet-owned
-//! update loop can be attributed independently of the shared execution
-//! framework.
+//! HyperLogLog++ `approx_count_distinct`. Only Comet's own accumulators are
+//! benched here.
 
 use arrow::array::{ArrayRef, Float64Builder, RecordBatch, StringBuilder};
 use arrow::datatypes::SchemaRef;
@@ -31,11 +29,6 @@ use criterion::{criterion_group, criterion_main, Criterion};
 use datafusion::datasource::memory::MemorySourceConfig;
 use datafusion::datasource::source::DataSourceExec;
 use datafusion::execution::TaskContext;
-use datafusion::functions_aggregate::average::avg_udaf;
-use datafusion::functions_aggregate::correlation::corr_udaf;
-use datafusion::functions_aggregate::covariance::{covar_pop_udaf, covar_samp_udaf};
-use datafusion::functions_aggregate::stddev::{stddev_pop_udaf, stddev_udaf};
-use datafusion::functions_aggregate::variance::{var_pop_udaf, var_samp_udaf};
 use datafusion::logical_expr::AggregateUDF;
 use datafusion::physical_expr::aggregate::AggregateExprBuilder;
 use datafusion::physical_expr::expressions::{lit, Column, StatsType};
@@ -70,17 +63,12 @@ fn criterion_benchmark(c: &mut Criterion) {
     let mut group = c.benchmark_group("stats_agg_single");
 
     let single_cases: Vec<(&str, Arc<AggregateUDF>)> = vec![
-        ("variance_samp_datafusion", var_samp_udaf()),
-        ("variance_samp_comet", comet_variance(StatsType::Sample)),
-        ("variance_pop_datafusion", var_pop_udaf()),
-        ("variance_pop_comet", comet_variance(StatsType::Population)),
-        ("stddev_samp_datafusion", stddev_udaf()),
-        ("stddev_samp_comet", comet_stddev(StatsType::Sample)),
-        ("stddev_pop_datafusion", stddev_pop_udaf()),
-        ("stddev_pop_comet", comet_stddev(StatsType::Population)),
-        ("avg_datafusion", avg_udaf()),
+        ("variance_samp", comet_variance(StatsType::Sample)),
+        ("variance_pop", comet_variance(StatsType::Population)),
+        ("stddev_samp", comet_stddev(StatsType::Sample)),
+        ("stddev_pop", comet_stddev(StatsType::Population)),
         (
-            "avg_comet",
+            "avg",
             Arc::new(AggregateUDF::new_from_impl(Avg::new(
                 "avg",
                 DataType::Float64,
@@ -107,15 +95,9 @@ fn criterion_benchmark(c: &mut Criterion) {
     let mut group = c.benchmark_group("stats_agg_pair");
 
     let pair_cases: Vec<(&str, Arc<AggregateUDF>)> = vec![
-        ("covariance_samp_datafusion", covar_samp_udaf()),
-        ("covariance_samp_comet", comet_covariance(StatsType::Sample)),
-        ("covariance_pop_datafusion", covar_pop_udaf()),
-        (
-            "covariance_pop_comet",
-            comet_covariance(StatsType::Population),
-        ),
-        ("correlation_datafusion", corr_udaf()),
-        ("correlation_comet", comet_correlation()),
+        ("covariance_samp", comet_covariance(StatsType::Sample)),
+        ("covariance_pop", comet_covariance(StatsType::Population)),
+        ("correlation", comet_correlation()),
     ];
 
     for (name, udf) in pair_cases {
@@ -133,11 +115,10 @@ fn criterion_benchmark(c: &mut Criterion) {
     }
     group.finish();
 
-    // Percentile and approximate distinct count (Comet-owned; no directly
-    // comparable Spark-compatible DataFusion built-in, so Comet-only here).
+    // Percentile and approximate distinct count.
     let mut group = c.benchmark_group("stats_agg_percentile");
 
-    group.bench_function("approx_percentile_comet", |b| {
+    group.bench_function("approx_percentile", |b| {
         let udf = Arc::new(AggregateUDF::new_from_impl(ApproxPercentile::new(
             vec![0.5],
             10000,
@@ -155,7 +136,7 @@ fn criterion_benchmark(c: &mut Criterion) {
         })
     });
 
-    group.bench_function("percentile_comet", |b| {
+    group.bench_function("percentile", |b| {
         let udf = Arc::new(AggregateUDF::new_from_impl(
             SparkPercentile::try_new(0.5).unwrap(),
         ));
@@ -174,7 +155,7 @@ fn criterion_benchmark(c: &mut Criterion) {
     });
 
     for p in [10i32, 14] {
-        group.bench_function(format!("approx_count_distinct_comet_p{p}"), |b| {
+        group.bench_function(format!("approx_count_distinct_p{p}"), |b| {
             let udf = Arc::new(AggregateUDF::new_from_impl(HllPlusPlus::new(p)));
             b.to_async(&rt).iter(|| {
                 black_box(agg_test(
