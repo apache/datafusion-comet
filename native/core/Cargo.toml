@@ -105,7 +105,7 @@ datafusion-functions-nested = { version = "55.1.0" }
 
 [features]
 backtrace = ["datafusion/backtrace"]
-default = ["hdfs-opendal"]
+default = ["hdfs-opendal", "alloc-accounting"]
 contrib-lance = ["dep:comet-contrib-lance"]
 hdfs-opendal = ["opendal", "object_store_opendal", "hdfs-sys"]
 jemalloc = ["tikv-jemallocator", "tikv-jemalloc-ctl"]
@@ -114,10 +114,11 @@ jemalloc = ["tikv-jemallocator", "tikv-jemalloc-ctl"]
 # Default builds carry zero Delta surface.
 contrib-delta = ["dep:comet-contrib-delta"]
 
-# Observability for real native memory usage. Wraps the global allocator to track the bytes it
-# hands out, and reports the total as the `native_allocated` tracing metric so it can be compared
-# against the memory pool's reservations. Never rejects an allocation. Off by default; a build
-# without it has no wrapper and no per-allocation work.
+# Real native memory usage. Wraps the global allocator to track the bytes it hands out, reports
+# the total as the `native_allocated` tracing metric, and backs the off-heap memory pools' check
+# of real usage against Comet's budget. Never rejects an allocation. On by default; build with
+# `--no-default-features` (re-adding the other defaults) to drop the wrapper and its
+# per-allocation work, which also leaves the pools' check reporting zero bytes in use.
 alloc-accounting = []
 
 # exclude optional packages from cargo machete verifications

@@ -357,6 +357,9 @@ object CometExecIterator extends Logging {
     builder.putEntries(
       CometConf.COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED.key,
       CometConf.COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED.get(SQLConf.get).toString)
+    builder.putEntries(
+      CometConf.COMET_OFFHEAP_MEMORY_POOL_CHECK_NATIVE_USAGE.key,
+      CometConf.COMET_OFFHEAP_MEMORY_POOL_CHECK_NATIVE_USAGE.get(SQLConf.get).toString)
 
     builder.build().toByteArray
   }

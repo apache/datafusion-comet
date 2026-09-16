@@ -86,9 +86,10 @@ Comet shares an off-heap memory pool with Spark. The size of the pool is
 specified by `spark.memory.offHeap.size`.
 
 Comet's memory accounting isn't 100% accurate and this can result in Comet using more memory than it reserves,
-leading to out-of-memory exceptions. To work around this issue, it is possible to
-set `spark.comet.exec.memoryPool.fraction` to a value less than `1.0` to restrict the amount of memory that can be
-reserved by Comet.
+leading to out-of-memory exceptions. `spark.comet.exec.memoryPool.fraction` restricts the amount of memory that
+Comet can reserve, and defaults to `0.8` so that the remaining fifth of the pool absorbs allocations Comet makes
+without reserving them. Lower it further for workloads that still overshoot, or raise it towards `1.0` to trade
+that margin for reservable memory.
 
 For more details about Spark off-heap memory mode, please refer to [Spark documentation].
 
@@ -113,6 +114,18 @@ when there is sufficient memory in order to leave enough memory for other operat
 
 The `greedy_unified` pool type implements a greedy first-come first-serve limit. This pool works well for queries that do not
 need to spill or have a single spillable operator.
+
+Both pools reserve memory against Spark's ledger, which only counts what operators explicitly asked for. Native memory
+that never went through the pool, such as scratch buffers inside kernels or intermediate Arrow arrays, stays invisible
+until the executor exceeds its container limit and is killed. To bound that, both pools also compare the memory the
+native allocator has actually handed out against Comet's budget
+(`spark.memory.offHeap.size` multiplied by `spark.comet.exec.memoryPool.fraction`) and refuse a reservation that would
+take real usage past it. Operators that can spill then spill, and the ones that cannot fail the task instead of the
+executor. Set `spark.comet.exec.memoryPool.checkNativeUsage` to `false` to turn the check off.
+
+The check is process-wide on both sides: it compares every byte the native allocator has served in the executor against
+Comet's whole off-heap allotment, so once any task pushes real usage to the budget, every task's next reservation is
+denied. It gates reservations only; allocations themselves are never refused.
 
 [shuffle]: #shuffle
 [Advanced Memory Tuning]: #advanced-memory-tuning

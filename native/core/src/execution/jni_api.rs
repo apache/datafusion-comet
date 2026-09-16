@@ -112,8 +112,8 @@ use crate::execution::tracing::{
 use crate::execution::memory_pools::logging_pool::LoggingMemoryPool;
 use crate::execution::spark_config::{
     SparkConfig, COMET_DEBUG_ENABLED, COMET_DEBUG_MEMORY, COMET_EXPLAIN_NATIVE_ENABLED,
-    COMET_MAX_TEMP_DIRECTORY_SIZE, COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED,
-    COMET_TRACING_ENABLED, SPARK_EXECUTOR_CORES,
+    COMET_MAX_TEMP_DIRECTORY_SIZE, COMET_MEMORY_POOL_CHECK_NATIVE_USAGE,
+    COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED, COMET_TRACING_ENABLED, SPARK_EXECUTOR_CORES,
 };
 use crate::parquet::encryption_support::{CometEncryptionFactory, ENCRYPTION_FACTORY_ID};
 use datafusion_comet_proto::spark_operator::operator::OpStruct;
@@ -495,6 +495,11 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
         let max_temp_directory_size =
             spark_config.get_u64(COMET_MAX_TEMP_DIRECTORY_SIZE, 100 * 1024 * 1024 * 1024);
         let logging_memory_pool = spark_config.get_bool(COMET_DEBUG_MEMORY);
+        // Defaults to true, so it has to be read with an explicit default: the config map only
+        // carries values Spark actually holds, and `CometExecIterator` injects this one for that
+        // reason.
+        let check_native_usage =
+            spark_config.get_bool_with_default(COMET_MEMORY_POOL_CHECK_NATIVE_USAGE, true);
 
         with_trace("createPlan", tracing_enabled, || {
             // Init JVM classes
@@ -527,6 +532,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
                 memory_pool_type,
                 memory_limit,
                 memory_limit_per_task,
+                check_native_usage,
             )?;
             let memory_pool =
                 create_memory_pool(&memory_pool_config, task_memory_manager, task_attempt_id);

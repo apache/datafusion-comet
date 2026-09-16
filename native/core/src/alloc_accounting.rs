@@ -181,10 +181,7 @@ unsafe impl<A: GlobalAlloc> GlobalAlloc for AccountingAllocator<A> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use std::alloc::System;
-    use std::sync::atomic::AtomicUsize;
+pub(crate) mod test_support {
     use std::sync::{Mutex, MutexGuard};
 
     /// `BALANCE` is process-wide and the crate's tests run in parallel, so a test that reads it
@@ -192,13 +189,24 @@ mod tests {
     /// lock so they cannot land inside each other's windows; the rest of the crate is kept out by
     /// making each window microseconds wide and each expected move far larger than anything else
     /// allocates in that time.
+    ///
+    /// Lives outside the tests module because the memory pool's own gate test moves the balance
+    /// the same way and has to share the lock.
     static SERIAL: Mutex<()> = Mutex::new(());
 
-    fn serial() -> MutexGuard<'static, ()> {
+    pub(crate) fn serial() -> MutexGuard<'static, ()> {
         SERIAL
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::test_support::serial;
+    use super::*;
+    use std::alloc::System;
+    use std::sync::atomic::AtomicUsize;
 
     const MIB: usize = 1024 * 1024;
 

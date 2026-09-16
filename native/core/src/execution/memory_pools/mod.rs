@@ -15,12 +15,14 @@
 // specific language governing permissions and limitations
 // under the License.
 
+mod checked_pool;
 mod config;
 mod fair_pool;
 pub mod logging_pool;
 mod task_shared;
 mod unified_pool;
 
+use checked_pool::CheckedMemoryPool;
 use datafusion::execution::memory_pool::{
     FairSpillPool, GreedyMemoryPool, MemoryPool, TrackConsumersPool, UnboundedMemoryPool,
 };
@@ -52,21 +54,33 @@ pub(crate) fn create_memory_pool(
         ))
     }
 
+    /// Wraps an off-heap pool in the real-native-usage check when one is configured, so a
+    /// reservation is refused once Comet's actual allocations reach the budget rather than only
+    /// once its declared reservations do. `tracked` stays outermost so a denial is still
+    /// annotated with the largest consumers.
+    fn checked(pool: impl MemoryPool + 'static, budget: Option<usize>) -> Arc<dyn MemoryPool> {
+        match budget {
+            Some(budget) => tracked(CheckedMemoryPool::new(pool, budget)),
+            None => tracked(pool),
+        }
+    }
+
     let pool_type = memory_pool_config.pool_type;
     let pool_size = memory_pool_config.pool_size;
+    let native_usage_budget = memory_pool_config.native_usage_budget;
 
     match pool_type {
         MemoryPoolType::GreedyUnified => acquire_task_shared_pool(task_attempt_id, || {
-            tracked(CometUnifiedMemoryPool::new(
-                comet_task_memory_manager,
-                task_attempt_id,
-            ))
+            checked(
+                CometUnifiedMemoryPool::new(comet_task_memory_manager, task_attempt_id),
+                native_usage_budget,
+            )
         }),
         MemoryPoolType::FairUnified => acquire_task_shared_pool(task_attempt_id, || {
-            tracked(CometFairMemoryPool::new(
-                comet_task_memory_manager,
-                pool_size,
-            ))
+            checked(
+                CometFairMemoryPool::new(comet_task_memory_manager, pool_size),
+                native_usage_budget,
+            )
         }),
         MemoryPoolType::GreedyTaskShared => acquire_task_shared_pool(task_attempt_id, || {
             tracked(GreedyMemoryPool::new(pool_size))

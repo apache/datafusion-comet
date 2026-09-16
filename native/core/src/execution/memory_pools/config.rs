@@ -33,6 +33,9 @@ pub(crate) enum MemoryPoolType {
 pub(crate) struct MemoryPoolConfig {
     pub(crate) pool_type: MemoryPoolType,
     pub(crate) pool_size: usize,
+    /// Budget the off-heap pools check real native usage against, or `None` when the check is
+    /// off. Always `None` in on-heap mode, where Comet has no off-heap allotment to compare to.
+    pub(crate) native_usage_budget: Option<usize>,
 }
 
 impl MemoryPoolConfig {
@@ -40,7 +43,13 @@ impl MemoryPoolConfig {
         Self {
             pool_type,
             pool_size,
+            native_usage_budget: None,
         }
+    }
+
+    fn with_native_usage_budget(mut self, budget: Option<usize>) -> Self {
+        self.native_usage_budget = budget;
+        self
     }
 }
 
@@ -49,16 +58,25 @@ pub(crate) fn parse_memory_pool_config(
     memory_pool_type: String,
     memory_limit: i64,
     memory_limit_per_task: i64,
+    check_native_usage: bool,
 ) -> CometResult<MemoryPoolConfig> {
     let pool_size = memory_limit as usize;
     let memory_pool_config = if off_heap_mode {
+        // Both off-heap pools reserve against Spark's ledger, which only counts what operators
+        // declared. `pool_size` is `spark.memory.offHeap.size` times
+        // `spark.comet.exec.memoryPool.fraction`, so it is also the ceiling that Comet's real
+        // native usage should stay under, and the pools check it against that unless the user
+        // turned the check off.
+        let native_usage_budget = (check_native_usage && pool_size > 0).then_some(pool_size);
         match memory_pool_type.as_str() {
-            "fair_unified" => MemoryPoolConfig::new(MemoryPoolType::FairUnified, pool_size),
+            "fair_unified" => MemoryPoolConfig::new(MemoryPoolType::FairUnified, pool_size)
+                .with_native_usage_budget(native_usage_budget),
             "greedy_unified" => {
                 // the `unified` memory pool interacts with Spark's memory pool to allocate
                 // memory therefore does not need a size to be explicitly set. The pool size
                 // shared with Spark is set by `spark.memory.offHeap.size`.
                 MemoryPoolConfig::new(MemoryPoolType::GreedyUnified, 0)
+                    .with_native_usage_budget(native_usage_budget)
             }
             _ => {
                 return Err(CometError::Config(format!(

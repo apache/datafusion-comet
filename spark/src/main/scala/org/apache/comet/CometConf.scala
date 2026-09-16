@@ -844,11 +844,27 @@ object CometConf extends ShimCometConf {
     conf("spark.comet.exec.memoryPool.fraction")
       .category(CATEGORY_TUNING)
       .doc(
-        "Fraction of off-heap memory pool that is available to Comet. " +
+        "Fraction of off-heap memory pool that is available to Comet. The default leaves a " +
+          "margin for native memory that Comet allocates without reserving it, which its " +
+          "memory pools cannot otherwise account for. " +
           "Only applies to off-heap mode. " +
           s"$TUNING_GUIDE.")
       .doubleConf
-      .createWithDefault(1.0)
+      .createWithDefault(0.8)
+
+  val COMET_OFFHEAP_MEMORY_POOL_CHECK_NATIVE_USAGE: ConfigEntry[Boolean] =
+    conf("spark.comet.exec.memoryPool.checkNativeUsage")
+      .category(CATEGORY_TUNING)
+      .doc(
+        "When enabled, Comet's off-heap memory pools refuse a reservation if the memory the " +
+          "native allocator has actually handed out, plus the request, would exceed " +
+          "`spark.memory.offHeap.size` multiplied by `spark.comet.exec.memoryPool.fraction`. " +
+          "This bounds native memory that operators never reserved, which the pools cannot " +
+          "otherwise see, turning an executor that would be killed for exceeding its container " +
+          "limit into a spill or a failed task. Only applies to off-heap mode. " +
+          s"$TUNING_GUIDE.")
+      .booleanConf
+      .createWithDefault(true)
 
   val COMET_NATIVE_LOAD_REQUIRED: ConfigEntry[Boolean] = conf("spark.comet.nativeLoadRequired")
     .category(CATEGORY_EXEC)
