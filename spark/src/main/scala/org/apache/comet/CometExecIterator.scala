@@ -358,8 +358,8 @@ object CometExecIterator extends Logging {
       CometConf.COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED.key,
       CometConf.COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED.get(SQLConf.get).toString)
     builder.putEntries(
-      CometConf.COMET_OFFHEAP_MEMORY_POOL_CHECK_NATIVE_USAGE.key,
-      CometConf.COMET_OFFHEAP_MEMORY_POOL_CHECK_NATIVE_USAGE.get(SQLConf.get).toString)
+      CometConf.COMET_OFFHEAP_MEMORY_POOL_ENFORCE_NATIVE_USAGE.key,
+      CometConf.COMET_OFFHEAP_MEMORY_POOL_ENFORCE_NATIVE_USAGE.get(SQLConf.get).toString)
     // The off-heap pools check real native usage against the whole off-heap size, which is a
     // Spark config rather than a Comet one and so is not carried by `cometSqlConfs`. Deliberately
     // not the memory limit the pools already receive: that has the pool fraction applied, and the

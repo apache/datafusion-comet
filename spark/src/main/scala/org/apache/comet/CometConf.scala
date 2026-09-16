@@ -844,27 +844,27 @@ object CometConf extends ShimCometConf {
     conf("spark.comet.exec.memoryPool.fraction")
       .category(CATEGORY_TUNING)
       .doc(
-        "Fraction of off-heap memory pool that is available to Comet. The default leaves a " +
-          "margin for native memory that Comet allocates without reserving it, which its " +
-          "memory pools cannot otherwise account for. " +
+        "Fraction of off-heap memory pool that is available to Comet. " +
           "Only applies to off-heap mode. " +
           s"$TUNING_GUIDE.")
       .doubleConf
-      .createWithDefault(0.8)
+      .createWithDefault(1.0)
 
-  val COMET_OFFHEAP_MEMORY_POOL_CHECK_NATIVE_USAGE: ConfigEntry[Boolean] =
-    conf("spark.comet.exec.memoryPool.checkNativeUsage")
+  val COMET_OFFHEAP_MEMORY_POOL_ENFORCE_NATIVE_USAGE: ConfigEntry[Boolean] =
+    conf("spark.comet.exec.memoryPool.enforceNativeUsage")
       .category(CATEGORY_TUNING)
       .doc(
-        "When enabled, Comet's off-heap memory pools refuse a reservation if the memory the " +
-          "native allocator has actually handed out, plus the request, would exceed " +
-          "`spark.memory.offHeap.size` multiplied by `spark.comet.exec.memoryPool.fraction`. " +
-          "This bounds native memory that operators never reserved, which the pools cannot " +
-          "otherwise see, turning an executor that would be killed for exceeding its container " +
-          "limit into a spill or a failed task. Only applies to off-heap mode. " +
+        "Comet's off-heap memory pools compare the memory the native allocator has actually " +
+          "handed out against `spark.memory.offHeap.size`, which bounds native memory that " +
+          "operators never reserved and that the pools cannot otherwise see. By default a " +
+          "crossing is only logged, once per task. When this is enabled the pools refuse the " +
+          "reservation instead, so operators that can spill do so and those that cannot fail " +
+          "the task rather than the executor. Enforcement is off by default while the rate of " +
+          "false positives on real workloads is still being established. " +
+          "Only applies to off-heap mode. " +
           s"$TUNING_GUIDE.")
       .booleanConf
-      .createWithDefault(true)
+      .createWithDefault(false)
 
   val COMET_NATIVE_LOAD_REQUIRED: ConfigEntry[Boolean] = conf("spark.comet.nativeLoadRequired")
     .category(CATEGORY_EXEC)

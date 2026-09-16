@@ -24,8 +24,8 @@ pub(crate) const COMET_MAX_TEMP_DIRECTORY_SIZE: &str = "spark.comet.maxTempDirec
 pub(crate) const COMET_DEBUG_MEMORY: &str = "spark.comet.debug.memory";
 pub(crate) const COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED: &str =
     "spark.comet.parquet.rowFilterPushdown.enabled";
-pub(crate) const COMET_MEMORY_POOL_CHECK_NATIVE_USAGE: &str =
-    "spark.comet.exec.memoryPool.checkNativeUsage";
+pub(crate) const COMET_MEMORY_POOL_ENFORCE_NATIVE_USAGE: &str =
+    "spark.comet.exec.memoryPool.enforceNativeUsage";
 pub(crate) const SPARK_MEMORY_OFFHEAP_SIZE: &str = "spark.memory.offHeap.size";
 pub(crate) const SPARK_EXECUTOR_CORES: &str = "spark.executor.cores";
 

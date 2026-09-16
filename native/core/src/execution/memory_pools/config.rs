@@ -33,9 +33,14 @@ pub(crate) enum MemoryPoolType {
 pub(crate) struct MemoryPoolConfig {
     pub(crate) pool_type: MemoryPoolType,
     pub(crate) pool_size: usize,
-    /// Budget the off-heap pools check real native usage against, or `None` when the check is
-    /// off. Always `None` in on-heap mode, where Comet has no off-heap allotment to compare to.
+    /// Budget the off-heap pools compare real native usage against, or `None` when there is
+    /// nothing to compare to. Always `None` in on-heap mode, where Comet has no off-heap
+    /// allotment. Set whether or not the crossing is enforced, because observing it is the
+    /// default behaviour.
     pub(crate) native_usage_budget: Option<usize>,
+    /// Whether crossing `native_usage_budget` refuses the reservation. When false the pools only
+    /// log the crossing.
+    pub(crate) enforce_native_usage: bool,
 }
 
 impl MemoryPoolConfig {
@@ -44,11 +49,13 @@ impl MemoryPoolConfig {
             pool_type,
             pool_size,
             native_usage_budget: None,
+            enforce_native_usage: false,
         }
     }
 
-    fn with_native_usage_budget(mut self, budget: Option<usize>) -> Self {
+    fn with_native_usage_budget(mut self, budget: Option<usize>, enforce: bool) -> Self {
         self.native_usage_budget = budget;
+        self.enforce_native_usage = enforce;
         self
     }
 }
@@ -58,7 +65,7 @@ pub(crate) fn parse_memory_pool_config(
     memory_pool_type: String,
     memory_limit: i64,
     memory_limit_per_task: i64,
-    check_native_usage: bool,
+    enforce_native_usage: bool,
     off_heap_size: usize,
 ) -> CometResult<MemoryPoolConfig> {
     let pool_size = memory_limit as usize;
@@ -68,16 +75,16 @@ pub(crate) fn parse_memory_pool_config(
         // and lowering it is how operators force spilling; reusing it here would also lower the
         // ceiling on *real* usage, so a small fraction would deny reservations outright instead
         // of provoking the spills it was set to cause.
-        let native_usage_budget = (check_native_usage && off_heap_size > 0).then_some(off_heap_size);
+        let native_usage_budget = (off_heap_size > 0).then_some(off_heap_size);
         match memory_pool_type.as_str() {
             "fair_unified" => MemoryPoolConfig::new(MemoryPoolType::FairUnified, pool_size)
-                .with_native_usage_budget(native_usage_budget),
+                .with_native_usage_budget(native_usage_budget, enforce_native_usage),
             "greedy_unified" => {
                 // the `unified` memory pool interacts with Spark's memory pool to allocate
                 // memory therefore does not need a size to be explicitly set. The pool size
                 // shared with Spark is set by `spark.memory.offHeap.size`.
                 MemoryPoolConfig::new(MemoryPoolType::GreedyUnified, 0)
-                    .with_native_usage_budget(native_usage_budget)
+                    .with_native_usage_budget(native_usage_budget, enforce_native_usage)
             }
             _ => {
                 return Err(CometError::Config(format!(

@@ -29,10 +29,10 @@ import org.apache.comet.CometConf
  *
  * The budget is `spark.memory.offHeap.size`, which Spark fixes when the session starts, so these
  * tests need a session of their own rather than a `withSQLConf` override. The size below is
- * smaller than the memory Comet's native code already holds before a query runs, so the first
- * reservation any operator makes is refused while the check is on. Deliberately not achieved by
- * lowering `spark.comet.exec.memoryPool.fraction`: that bounds what Comet may reserve, not what
- * the check measures.
+ * smaller than the memory Comet's native code already holds before a query runs, so every
+ * reservation crosses the budget and the first one is refused once enforcement is turned on.
+ * Deliberately not achieved by lowering `spark.comet.exec.memoryPool.fraction`: that bounds what
+ * Comet may reserve, not what the check measures.
  */
 class CometMemoryPoolNativeUsageSuite extends CometTestBase {
 
@@ -51,7 +51,9 @@ class CometMemoryPoolNativeUsageSuite extends CometTestBase {
 
   test("off-heap pools deny reservations once real native usage exceeds the off-heap size") {
     Seq("fair_unified", "greedy_unified").foreach { poolType =>
-      withSQLConf(CometConf.COMET_OFFHEAP_MEMORY_POOL_TYPE.key -> poolType) {
+      withSQLConf(
+        CometConf.COMET_OFFHEAP_MEMORY_POOL_ENFORCE_NATIVE_USAGE.key -> "true",
+        CometConf.COMET_OFFHEAP_MEMORY_POOL_TYPE.key -> poolType) {
         val messages = failureMessages(sortSmallInput())
         assert(
           messages.exists(_.contains("native memory in use is")),
@@ -61,18 +63,16 @@ class CometMemoryPoolNativeUsageSuite extends CometTestBase {
     }
   }
 
-  test("the real native usage check can be disabled") {
-    // The same query under the same off-heap size, so the check is the only difference. It is too
-    // small for the sort either way, which is what makes the budget bite in the test above; what
-    // changes here is who refuses the reservation. With the check off it is no longer held back
-    // in Comet, so it reaches Spark's ledger and fails there instead.
-    withSQLConf(
-      CometConf.COMET_OFFHEAP_MEMORY_POOL_TYPE.key -> "greedy_unified",
-      CometConf.COMET_OFFHEAP_MEMORY_POOL_CHECK_NATIVE_USAGE.key -> "false") {
+  test("the check only observes by default") {
+    // The same query under the same off-heap size, so enforcement is the only difference. It is
+    // too small for the sort either way, which is what makes the budget bite in the test above;
+    // what changes here is who refuses the reservation. Left at its default the check only logs,
+    // so the reservation is not held back in Comet and reaches Spark's ledger, which fails it.
+    withSQLConf(CometConf.COMET_OFFHEAP_MEMORY_POOL_TYPE.key -> "greedy_unified") {
       val messages = failureMessages(sortSmallInput())
       assert(
         !messages.exists(_.contains("native memory in use is")),
-        s"the check was disabled but still refused the reservation:\n  " +
+        s"the check is not enforcing by default but still refused the reservation:\n  " +
           messages.mkString("\n  "))
       assert(
         messages.exists(_.contains("failed to acquire")),

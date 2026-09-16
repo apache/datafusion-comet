@@ -112,7 +112,7 @@ use crate::execution::tracing::{
 use crate::execution::memory_pools::logging_pool::LoggingMemoryPool;
 use crate::execution::spark_config::{
     SparkConfig, COMET_DEBUG_ENABLED, COMET_DEBUG_MEMORY, COMET_EXPLAIN_NATIVE_ENABLED,
-    COMET_MAX_TEMP_DIRECTORY_SIZE, COMET_MEMORY_POOL_CHECK_NATIVE_USAGE,
+    COMET_MAX_TEMP_DIRECTORY_SIZE, COMET_MEMORY_POOL_ENFORCE_NATIVE_USAGE,
     COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED, SPARK_MEMORY_OFFHEAP_SIZE, COMET_TRACING_ENABLED, SPARK_EXECUTOR_CORES,
 };
 use crate::parquet::encryption_support::{CometEncryptionFactory, ENCRYPTION_FACTORY_ID};
@@ -498,8 +498,9 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
         // Defaults to true, so it has to be read with an explicit default: the config map only
         // carries values Spark actually holds, and `CometExecIterator` injects this one for that
         // reason.
-        let check_native_usage =
-            spark_config.get_bool_with_default(COMET_MEMORY_POOL_CHECK_NATIVE_USAGE, true);
+        // Defaults to false: the pools observe and log a crossing but do not act on it yet.
+        let enforce_native_usage =
+            spark_config.get_bool_with_default(COMET_MEMORY_POOL_ENFORCE_NATIVE_USAGE, false);
         // Injected by `CometExecIterator` because it is a Spark config rather than a Comet one.
         // Absent (0) in on-heap mode, which leaves the check off.
         let off_heap_size = spark_config.get_usize(SPARK_MEMORY_OFFHEAP_SIZE, 0);
@@ -535,7 +536,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
                 memory_pool_type,
                 memory_limit,
                 memory_limit_per_task,
-                check_native_usage,
+                enforce_native_usage,
                 off_heap_size,
             )?;
             let memory_pool =
