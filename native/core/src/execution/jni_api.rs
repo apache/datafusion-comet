@@ -113,7 +113,8 @@ use crate::execution::memory_pools::logging_pool::LoggingMemoryPool;
 use crate::execution::spark_config::{
     SparkConfig, COMET_DEBUG_ENABLED, COMET_DEBUG_MEMORY, COMET_EXPLAIN_NATIVE_ENABLED,
     COMET_MAX_TEMP_DIRECTORY_SIZE, COMET_MEMORY_POOL_ENFORCE_NATIVE_USAGE,
-    COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED, SPARK_MEMORY_OFFHEAP_SIZE, COMET_TRACING_ENABLED, SPARK_EXECUTOR_CORES,
+    COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED, COMET_TRACING_ENABLED, SPARK_EXECUTOR_CORES,
+    SPARK_MEMORY_OFFHEAP_SIZE,
 };
 use crate::parquet::encryption_support::{CometEncryptionFactory, ENCRYPTION_FACTORY_ID};
 use datafusion_comet_proto::spark_operator::operator::OpStruct;

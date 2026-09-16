@@ -72,11 +72,11 @@ class CometMemoryPoolNativeUsageSuite extends CometTestBase {
       val messages = failureMessages(sortSmallInput())
       assert(
         !messages.exists(_.contains("native memory in use is")),
-        s"the check is not enforcing by default but still refused the reservation:\n  " +
+        "the check is not enforcing by default but still refused the reservation:\n  " +
           messages.mkString("\n  "))
       assert(
         messages.exists(_.contains("failed to acquire")),
-        s"expected the reservation to reach Spark's ledger, but got:\n  " +
+        "expected the reservation to reach Spark's ledger, but got:\n  " +
           messages.mkString("\n  "))
     }
   }
