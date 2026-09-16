@@ -16,8 +16,8 @@
 // under the License.
 
 use arrow::array::{Array, ArrayRef, Datum, Float64Array};
-use arrow::buffer::NullBuffer;
-use arrow::compute::kernels::arity::{binary, unary};
+use arrow::buffer::{NullBuffer, ScalarBuffer};
+use arrow::compute::kernels::arity::unary;
 use arrow::error::ArrowError;
 use datafusion::common::{utils::take_function_args, DataFusionError};
 use datafusion::physical_expr_common::datum::apply;
@@ -25,9 +25,10 @@ use datafusion::physical_plan::ColumnarValue;
 use std::sync::Arc;
 
 /// When null density exceeds this fraction (numerator / denominator), the raw-buffer
-/// kernels (`unary`/`binary`) waste `spark_powf` calls on masked-out slots that carry
-/// non-zero payload (e.g. `pow(a + 2.5D, b)` after Arrow addition preserves null bits
-/// but overwrites the value). Above the threshold we iterate valid indices instead.
+/// loops (`unary`, or the zipped loop in `pow_binary`) waste `spark_powf` calls on
+/// masked-out slots that carry non-zero payload (e.g. `pow(a + 2.5D, b)` after Arrow
+/// addition preserves null bits but overwrites the value). Above the threshold we iterate
+/// valid indices instead. For array/array the density is that of the combined mask.
 ///
 /// See `benches/spark_pow.rs::spark_pow: * composed nulls *` for the crossover.
 const NULL_SKIP_THRESHOLD_NUM: usize = 3;
@@ -76,7 +77,7 @@ fn as_f64_array(array: &dyn Array) -> Result<&Float64Array, ArrowError> {
         })
 }
 
-/// Array/array uses [`binary`] over [`spark_powf`]. Scalar/array and array/scalar use
+/// Array/array uses [`pow_binary`]. Scalar/array and array/scalar use
 /// [`unary`] so the scalar is not broadcast. A null scalar on either side short-circuits
 /// to an all-null array. When null density exceeds the threshold (see [`is_dense_null`])
 /// we skip masked slots to avoid running `spark_powf` on carried-over payload from an
@@ -106,17 +107,7 @@ fn spark_pow_kernel(lhs: &dyn Datum, rhs: &dyn Datum) -> Result<ArrayRef, ArrowE
                 unary(left, |base| spark_powf(base, right.value(0)))
             }
         }
-        _ => {
-            // Effective null count of the output is bounded below by max(left, right).
-            // Using the max avoids a full NullBuffer::union scan just for the density
-            // check; the union still happens if we actually take the null-aware path.
-            let approx_nulls = left.null_count().max(right.null_count());
-            if is_dense_null(approx_nulls, left.len()) {
-                pow_binary_null_aware(left, right)?
-            } else {
-                binary(left, right, spark_powf)?
-            }
-        }
+        _ => pow_binary(left, right)?,
     };
     Ok(Arc::new(result))
 }
@@ -148,12 +139,13 @@ fn pow_array_scalar_null_aware(base: &Float64Array, exp: f64) -> Float64Array {
     Float64Array::new(out.into(), Some(nulls.clone()))
 }
 
-fn pow_binary_null_aware(
-    base: &Float64Array,
-    exp: &Float64Array,
-) -> Result<Float64Array, ArrowError> {
-    // Match arrow's `binary` contract: reject mismatched lengths with an error rather
-    // than panicking on out-of-bounds indexing below.
+/// Array/array power. The output null mask is the union of both input masks, and the
+/// dense-null dispatch must be based on that union: with independent null patterns each
+/// operand can be under the threshold while most output rows are null. The union is
+/// computed once and reused for both the density check and the result.
+fn pow_binary(base: &Float64Array, exp: &Float64Array) -> Result<Float64Array, ArrowError> {
+    // Match arrow's `binary` contract: reject mismatched lengths with an error. This must
+    // precede `NullBuffer::union`, which panics on mismatched lengths.
     if base.len() != exp.len() {
         return Err(ArrowError::ComputeError(format!(
             "spark_pow: arrays have different lengths: {} vs {}",
@@ -161,23 +153,24 @@ fn pow_binary_null_aware(
             exp.len()
         )));
     }
-    let combined = NullBuffer::union(base.nulls(), exp.nulls());
+    let nulls = NullBuffer::union(base.nulls(), exp.nulls());
     let base_values = base.values();
     let exp_values = exp.values();
-    let mut out = vec![0.0f64; base.len()];
-    match &combined {
-        Some(nulls) => {
-            for i in nulls.valid_indices() {
+    let values: ScalarBuffer<f64> = match &nulls {
+        Some(n) if is_dense_null(n.null_count(), base.len()) => {
+            let mut out = vec![0.0f64; base.len()];
+            for i in n.valid_indices() {
                 out[i] = spark_powf(base_values[i], exp_values[i]);
             }
+            out.into()
         }
-        None => {
-            for i in 0..base.len() {
-                out[i] = spark_powf(base_values[i], exp_values[i]);
-            }
-        }
-    }
-    Ok(Float64Array::new(out.into(), combined))
+        _ => base_values
+            .iter()
+            .zip(exp_values.iter())
+            .map(|(&b, &e)| spark_powf(b, e))
+            .collect(),
+    };
+    Ok(Float64Array::new(values, nulls))
 }
 
 #[cfg(test)]
@@ -399,6 +392,50 @@ mod test {
             err.to_string().contains("different lengths"),
             "expected length-mismatch error, got: {err}"
         );
+    }
+
+    /// Independent null masks: each operand is 70% null (under the dense-null threshold on
+    /// its own) but the union is 91% null, so the dispatch takes the null-skipping path.
+    /// Null slots carry a real payload, and the result must still be null exactly where
+    /// either input is null and `spark_powf` everywhere else.
+    #[test]
+    fn test_spark_pow_binary_independent_null_masks() {
+        use arrow::buffer::NullBuffer;
+        let rows = 100;
+        // Valid when `i % 10 < 3` (base) and when `(i / 10) % 10 < 3` (exp): 30% valid each,
+        // independent, 9% valid in the union.
+        let base_valid: Vec<bool> = (0..rows).map(|i| i % 10 < 3).collect();
+        let exp_valid: Vec<bool> = (0..rows).map(|i| (i / 10) % 10 < 3).collect();
+        let base = Float64Array::new(
+            vec![2.5; rows].into(),
+            Some(NullBuffer::from(base_valid.clone())),
+        );
+        let exp = Float64Array::new(
+            vec![1.5; rows].into(),
+            Some(NullBuffer::from(exp_valid.clone())),
+        );
+        assert!(!is_dense_null(base.null_count(), rows));
+        assert!(!is_dense_null(exp.null_count(), rows));
+
+        let result = spark_pow(&[
+            ColumnarValue::Array(Arc::new(base)),
+            ColumnarValue::Array(Arc::new(exp)),
+        ])
+        .unwrap();
+        let ColumnarValue::Array(arr) = result else {
+            panic!("expected array result");
+        };
+        let arr = arr.as_any().downcast_ref::<Float64Array>().unwrap();
+        assert_eq!(arr.len(), rows);
+        assert_eq!(arr.null_count(), 91);
+        for i in 0..rows {
+            if base_valid[i] && exp_valid[i] {
+                assert!(!arr.is_null(i), "row {i} should be valid");
+                assert_eq!(arr.value(i), 2.5f64.powf(1.5));
+            } else {
+                assert!(arr.is_null(i), "row {i} should be null");
+            }
+        }
     }
 
     /// Simulates the output of an upstream Arrow op (e.g. `a + 2.5D`) that preserves the

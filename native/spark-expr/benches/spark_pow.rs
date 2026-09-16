@@ -76,6 +76,27 @@ fn create_f64_array_with_payload_in_nulls(rows: usize, null_pct: usize) -> Array
     Arc::new(Float64Array::new(values.into(), nulls))
 }
 
+/// Build a Float64 column with approximately `null_pct`% nulls placed by a seeded hash, so
+/// two columns built with different seeds have independent null masks. Payload in null
+/// slots is the default 0, matching a nullable column read before any arithmetic.
+fn create_f64_array_with_hashed_nulls(rows: usize, null_pct: u64, seed: u64) -> ArrayRef {
+    let arr: Float64Array = (0..rows as u64)
+        .map(|i| {
+            // splitmix64 finalizer: cheap, deterministic, and well mixed across bits.
+            let mut h = i.wrapping_add(seed).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+            h = (h ^ (h >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+            h = (h ^ (h >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+            h ^= h >> 31;
+            if h % 100 < null_pct {
+                None
+            } else {
+                Some(0.5 + ((i % 10) as f64) * 0.5)
+            }
+        })
+        .collect();
+    Arc::new(arr)
+}
+
 fn criterion_benchmark(c: &mut Criterion) {
     let rows = 8192;
     let no_nulls_a = create_f64_array(rows, 0);
@@ -183,7 +204,7 @@ fn criterion_benchmark(c: &mut Criterion) {
     // kernel. Timing includes both the Arrow `add` and the `spark_pow` call so it reflects
     // the real query cost, not a pre-materialised intermediate. Two shapes:
     //   1. `pow(a + 2.5D, 3)` — array/scalar dispatch (`pow_array_scalar_null_aware`)
-    //   2. `pow(a + 2.5D, b)` — array/array dispatch (`pow_binary_null_aware`), with
+    //   2. `pow(a + 2.5D, b)` — array/array dispatch (`pow_binary`), with
     //      nullable `a` and a non-null array of finite fractional exponents.
     let exp_arg = ColumnarValue::Scalar(ScalarValue::Float64(Some(3.0)));
     let two_point_five: Arc<dyn Datum> = Arc::new(Scalar::new(Float64Array::from(vec![2.5])));
@@ -220,6 +241,31 @@ fn criterion_benchmark(c: &mut Criterion) {
                     let args = [
                         ColumnarValue::Array(composed_base),
                         ColumnarValue::Array(Arc::clone(&exp)),
+                    ];
+                    black_box(spark_pow(black_box(&args)).unwrap())
+                })
+            },
+        );
+    }
+    // Independent null masks on both operands: `pow(a + 2.5D, b + 2.5D)`. Each operand is
+    // below the dense-null threshold on its own, but the output null density is roughly
+    // `1 - (1 - p)^2` (about 91% at 70% per operand), so the dispatch must look at the
+    // combined mask rather than either operand alone. Both additions are timed.
+    for null_pct in [50u64, 70, 74, 80] {
+        let a: ArrayRef = create_f64_array_with_hashed_nulls(rows, null_pct, 1);
+        let b: ArrayRef = create_f64_array_with_hashed_nulls(rows, null_pct, 2);
+        let scalar = Arc::clone(&two_point_five);
+        c.bench_function(
+            &format!("spark_pow: pipeline pow(a + 2.5D, b + 2.5D) independent nulls {null_pct}%"),
+            move |bencher| {
+                bencher.iter(|| {
+                    let composed_base =
+                        add(black_box(&a.as_ref()), black_box(scalar.as_ref())).unwrap();
+                    let composed_exp =
+                        add(black_box(&b.as_ref()), black_box(scalar.as_ref())).unwrap();
+                    let args = [
+                        ColumnarValue::Array(composed_base),
+                        ColumnarValue::Array(composed_exp),
                     ];
                     black_box(spark_pow(black_box(&args)).unwrap())
                 })
