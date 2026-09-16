@@ -17,10 +17,12 @@
 
 //! Benchmarks for Comet-owned `agg_funcs` accumulators not covered by
 //! `aggregate.rs` (which covers `avg_decimal` / `sum_decimal` / `sum_int`):
-//! the Welford-path statistical aggregates (`variance`, `stddev`, `covariance`,
+//! the Welford-path statistical aggregates (`variance`, `covariance`,
 //! `correlation`), non-decimal `avg`, exact and approximate percentile, and
 //! HyperLogLog++ `approx_count_distinct`. Only Comet's own accumulators are
-//! benched here.
+//! benched here. `stddev` is intentionally omitted: `StddevAccumulator` wraps
+//! `VarianceAccumulator`, so its per-row update loop is identical to `variance`
+//! (it only adds a final `sqrt`).
 
 use arrow::array::{ArrayRef, Float64Builder, RecordBatch, StringBuilder};
 use arrow::datatypes::SchemaRef;
@@ -36,7 +38,7 @@ use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::aggregates::{AggregateExec, AggregateMode, PhysicalGroupBy};
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion_comet_spark_expr::{
-    ApproxPercentile, Avg, Correlation, Covariance, HllPlusPlus, SparkPercentile, Stddev, Variance,
+    ApproxPercentile, Avg, Correlation, Covariance, HllPlusPlus, SparkPercentile, Variance,
 };
 use futures::StreamExt;
 use std::hint::black_box;
@@ -59,14 +61,12 @@ fn criterion_benchmark(c: &mut Criterion) {
 
     let rt = Runtime::new().unwrap();
 
-    // Single-input accumulators: variance / stddev (population + sample) and avg.
+    // Single-input accumulators: variance (population + sample) and avg.
     let mut group = c.benchmark_group("stats_agg_single");
 
     let single_cases: Vec<(&str, Arc<AggregateUDF>)> = vec![
         ("variance_samp", comet_variance(StatsType::Sample)),
         ("variance_pop", comet_variance(StatsType::Population)),
-        ("stddev_samp", comet_stddev(StatsType::Sample)),
-        ("stddev_pop", comet_stddev(StatsType::Population)),
         (
             "avg",
             Arc::new(AggregateUDF::new_from_impl(Avg::new(
@@ -174,15 +174,6 @@ fn criterion_benchmark(c: &mut Criterion) {
 fn comet_variance(stats_type: StatsType) -> Arc<AggregateUDF> {
     Arc::new(AggregateUDF::new_from_impl(Variance::new(
         "variance",
-        DataType::Float64,
-        stats_type,
-        false,
-    )))
-}
-
-fn comet_stddev(stats_type: StatsType) -> Arc<AggregateUDF> {
-    Arc::new(AggregateUDF::new_from_impl(Stddev::new(
-        "stddev",
         DataType::Float64,
         stats_type,
         false,
