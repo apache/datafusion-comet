@@ -15,18 +15,15 @@
 # specific language governing permissions and limitations
 # under the License.
 
-# Guards six CI invariants that are silent when broken:
+# Guards CI invariants that are silent when broken:
 #
 #   1. Change-filter routing. dev/ci/compute-changes.py decides which heavy
 #      jobs run. A file that a job depends on but that no filter lists makes
 #      that job skip, so the edit merges with only preflight having looked at
 #      it. The table below pins the routing for the shared build inputs.
 #
-#   2. Event policy. The same script decides which events may run each job.
-#      That used to be a `${{ }}` expression on every job in ci.yml, where it
-#      could not be tested; POLICY_CASES below is the test it never had. The
-#      expected sets are transcribed from the `if:` expressions ci.yml carried
-#      before the policy moved, so a regression here is a behaviour change.
+#   2. Event policy. The routing script also decides which events may run
+#      each job; POLICY_CASES pins the behavior of the former workflow gates.
 #
 #   3. Required-check coverage. `Required Checks` in ci.yml is the job that
 #      `.asf.yaml` can name in `required_status_checks` for main. A heavy job
@@ -38,8 +35,9 @@
 #      GitHub keeps the most recent check run per name per commit, so a label
 #      run publishing the required name would overwrite the real verdict.
 #
-#   4. Artifact-name uniqueness. Artifact names are scoped to the *run*, not
-#      to the calling workflow, and ci.yml calls the Spark SQL and Iceberg
+#   4. Artifact-name uniqueness and explicit shared-producer wiring. Names
+#      are scoped to the *run*, not the calling workflow. ci.yml calls the
+#      Spark SQL and Iceberg
 #      reusable workflows several times in one run. Two producers sharing a
 #      name make `download-artifact` pick by highest artifact ID rather than
 #      by `needs`, and make the forced `overwrite` on an upload retry delete
@@ -50,11 +48,16 @@
 #      run only under an input or a label can carry that for a long time
 #      before anyone runs them.
 #
-#   6. Push-tier scope. On push to main, ci.yml calls pr_build_linux.yml with
-#      `cache-refresh-only`, which reduces it to the jobs that write an
-#      actions/cache entry; the merge queue already tested that tree. A job
-#      added to that workflow without the guard starts running on every push
-#      again and nothing fails, so nothing tells you.
+#   6. Linux mode scope. Both Linux callers receive `cache-refresh-only` and
+#      `profiles`, so push runs only refresh caches and nightly runs only test
+#      the non-default profiles. Per-workflow tables preserve the cache writers
+#      and prerequisites after the pipeline is split across three workflows.
+#
+#   7. Independent Linux checks. Lint, compile-only checks and debug Rust
+#      tests must remain runnable without waiting for the native CI build.
+#
+#   8. Direct Maven wrapper invocations in the two Linux workflows must run
+#      after the retrying bootstrap, including checks moved between them.
 #
 # Run from the repository root: python3 dev/ci/check-ci-config.py
 
@@ -117,9 +120,17 @@ ROUTING_CASES = [
     # to nothing at all and merges having been exercised by no consumer.
     ([".github/actions/upload-artifact-retry/action.yaml"], BUILD_JOBS),
     ([".github/actions/download-artifact-retry/action.yaml"], BUILD_JOBS),
-    # The Maven bootstrap composite is called only from pr_build_linux.yml.
+    # Both Linux workflows call the Maven bootstrap composite. They share the
+    # build_linux route, so moving a caller between them keeps this route.
     (
         [".github/actions/maven-bootstrap/action.yaml"],
+        {"build_linux", "build_linux_full", "build_linux_all_profiles"},
+    ),
+    # Editing the shared Linux producer must exercise every Linux consumer.
+    ([".github/workflows/build_linux_native.yml"], BUILD_JOBS - {"build_macos"}),
+    # The independent lint/compile/Rust workflow belongs only to Linux CI.
+    (
+        [".github/workflows/pr_build_linux_checks.yml"],
         {"build_linux", "build_linux_full", "build_linux_all_profiles"},
     ),
     # Spot checks that the additions above did not widen unrelated routes.
@@ -372,9 +383,7 @@ POLICY_CASES = [
 # `uses:` values that publish an artifact, and the one that consumes it.
 UPLOAD_USES = re.compile(r"uses:\s*(\./\.github/actions/upload-artifact-retry|actions/upload-artifact@)")
 DOWNLOAD_USES = re.compile(r"uses:\s*(\./\.github/actions/download-artifact-retry|actions/download-artifact@)")
-# The artifact name is the first `name:` key of the step's `with:` block. A
-# following step starts with `- `, which distinguishes it from a `with:` key.
-WITH_NAME = re.compile(r"^\s+name:\s*(\S.*?)\s*$")
+# A following step starts with `- `, unlike the current step's `with:` keys.
 NEW_STEP = re.compile(r"^\s*-\s")
 
 # A job id in a workflow file, and the two `uses:` shapes the checkout guard
@@ -384,29 +393,48 @@ NEW_STEP = re.compile(r"^\s*-\s")
 JOB_KEY = re.compile(r"^  ([A-Za-z0-9_-]+):\s*$")
 LOCAL_ACTION_USES = re.compile(r"uses:\s*(\./\.github/actions/\S+)")
 CHECKOUT_USES = re.compile(r"uses:\s*actions/checkout@")
+SHARED_NATIVE_WORKFLOW = "build_linux_native.yml"
+SHARED_NATIVE_JOB = "build_linux_native"
+SHARED_NATIVE_INPUT = "native-library-artifact"
+SHARED_NATIVE_ARTIFACT = "native-lib-linux"
+SHARED_NATIVE_EXPRESSION = "${{ inputs.native-library-artifact }}"
+SHARED_NATIVE_CONSUMERS = {
+    "pr_build_linux.yml",
+    "spark_sql_test_reusable.yml",
+    "iceberg_spark_test_reusable.yml",
+}
 
-# pr_build_linux.yml runs in two modes; see its header. These are the jobs that
-# must survive `cache-refresh-only`, because each one writes an actions/cache
-# entry that main needs warm for the next pull request. Anything else in that
-# file has to carry the guard.
-CACHE_REFRESH_WORKFLOW = WORKFLOWS / "pr_build_linux.yml"
+# The Linux pipeline spans three workflows. Cache writers and their prerequisites
+# must survive `cache-refresh-only`; every other job must carry the guard.
 CACHE_REFRESH_JOBS = {
-    "lint": "gates build-native and linux-test-rust, and costs 40 seconds",
-    "build-native": "writes the cargo-ci cache (native/target, CI profile)",
-    "linux-test-rust": "writes the cargo-debug cache (native/target, debug)",
-    "verify-benchmark-results-tpch": "writes the TPC-H SF=1 dataset and java-maven caches",
-    "verify-benchmark-results-tpcds": "writes the TPC-DS SF=1 dataset and java-maven caches",
+    "build_linux_native.yml": {
+        "build-native": "writes the cargo-ci cache (native/target, CI profile)",
+    },
+    "pr_build_linux_checks.yml": {
+        "lint": "gates linux-test-rust",
+        "linux-test-rust": "writes the cargo-debug cache (native/target, debug)",
+    },
+    "pr_build_linux.yml": {
+        "verify-benchmark-results-tpch": "writes the TPC-H SF=1 dataset and java-maven caches",
+        "verify-benchmark-results-tpcds": "writes the TPC-DS SF=1 dataset and java-maven caches",
+    },
 }
 # Job-level `if:` only: step-level guards inside the two verify jobs are
 # indented further, and those are expected rather than a reason to exempt the
 # whole job.
 CACHE_REFRESH_GUARD = re.compile(r"^    if:.*!\s*inputs\.cache-refresh-only")
-# The same file's third mode: with `profiles: nightly` only the jobs the
-# linux-test matrix needs run. See check_nightly_scope.
+# With `profiles: nightly`, only the matrix and its prerequisites run.
 NIGHTLY_JOBS = {
-    "lint": "publishes the profile matrix that linux-test reads",
-    "build-native": "builds the native library the matrix loads",
-    "linux-test": "the matrix itself",
+    "build_linux_native.yml": {
+        "build-native": "builds the native library the matrix loads",
+    },
+    "pr_build_linux_checks.yml": {
+        "lint": "the short formatting prerequisite retained by the checks workflow",
+    },
+    "pr_build_linux.yml": {
+        "prepare-matrix": "publishes the profile matrix that linux-test reads",
+        "linux-test": "the matrix itself",
+    },
 }
 NIGHTLY_GUARD = re.compile(r"^    if:.*inputs\.profiles\s*!=\s*'nightly'")
 # The `schedule` case in ci.yml's `Detect changes` script, and what has to be
@@ -434,10 +462,25 @@ def guarded_jobs(path, guard):
         if job and guard.match(line):
             guarded.add(job)
     return jobs, guarded
-CACHE_REFRESH_INPUT = re.compile(r"^\s+cache-refresh-only:\s*\$\{\{")
-# `profiles:` is passed as a folded scalar (`>-`) whose expression sits on the
-# next line, so match the key alone.
-PROFILES_INPUT = re.compile(r"^\s+profiles:\s*(>-|\$\{\{)")
+
+
+LINUX_CHECKS_WORKFLOW = "pr_build_linux_checks.yml"
+LINUX_CHECKS_JOB = "pr_build_linux_checks"
+LINUX_MODE_CALLERS = ("pr_build_linux", LINUX_CHECKS_JOB)
+CACHE_REFRESH_EXPRESSION = (
+    "${{ needs.changes.outputs.build_linux_full != 'true' "
+    "&& needs.changes.outputs.build_linux_all_profiles != 'true' }}"
+)
+PROFILES_EXPRESSION = (
+    "${{ needs.changes.outputs.build_linux_all_profiles != 'true' && 'pr' "
+    "|| needs.changes.outputs.build_linux_full != 'true' && 'nightly' || 'all' }}"
+)
+INDEPENDENT_LINUX_JOBS = {
+    "lint", "scalafix-syntactic", "lint-java", "build-spark-4-1",
+    "celeborn-reflection-compatibility", "linux-test-rust",
+}
+LINUX_MAVEN_WORKFLOWS = (LINUX_CHECKS_WORKFLOW, "pr_build_linux.yml")
+MAVEN_BOOTSTRAP_ACTION = "./.github/actions/maven-bootstrap"
 
 
 def load_filters():
@@ -507,12 +550,7 @@ def check_linux_test_profiles():
     for row in module.select("all"):
         if sorted(row) != ["java_version", "maven_opts", "name"]:
             failures.append(f"profile {row['name']!r} must carry exactly name, java_version and maven_opts")
-    ci = (WORKFLOWS / "ci.yml").read_text(encoding="utf-8").splitlines()
-    if not any(PROFILES_INPUT.match(line) for line in ci):
-        failures.append(
-            "ci.yml never passes `profiles:` to pr_build_linux.yml. The input "
-            "defaults to all, so without it every pull request runs every profile again"
-        )
+    failures.extend(linux_profile_failures(WORKFLOWS))
     for failure in failures:
         print(f"linux test profiles: {failure}")
     return not failures
@@ -580,50 +618,364 @@ def check_event_policy():
     return not failures
 
 
-def artifact_names(path):
-    """Return ([upload names], [download names]) for one workflow file."""
-    uploads, downloads = [], []
+def artifact_steps(path):
+    """Return artifact steps and their direct `with:` inputs."""
+    artifacts = []
     lines = path.read_text(encoding="utf-8").splitlines()
     for index, line in enumerate(lines):
         if UPLOAD_USES.search(line):
-            bucket = uploads
+            kind = "upload"
         elif DOWNLOAD_USES.search(line):
-            bucket = downloads
+            kind = "download"
         else:
             continue
+        indent = len(line) - len(line.lstrip())
+        body = []
         for following in lines[index + 1:]:
-            if NEW_STEP.match(following):
-                break  # step ended without a `name:`; download-all, or the default
-            match = WITH_NAME.match(following)
-            if match:
-                bucket.append(match.group(1))
-                break
-    return uploads, downloads
+            if following.strip() and not following.lstrip().startswith("#"):
+                if NEW_STEP.match(following) or len(following) - len(following.lstrip()) < indent:
+                    break
+            body.append(following)
+        text = "\n".join(body)
+        with_key = re.search(r"^( +)with:\s*$", text, re.MULTILINE)
+        if with_key:
+            with_indent = len(with_key.group(1))
+            inputs = block_mapping(block_mapping(text, with_indent)["with"][1], with_indent + 2)
+            artifacts.append((kind, {key: scalar(value) for key, (value, _) in inputs.items()}))
+    return artifacts
 
 
-def check_artifact_names():
-    ci = (WORKFLOWS / "ci.yml").read_text(encoding="utf-8")
+def artifact_names(path):
+    """Return ([upload names], [download names]) for one workflow file."""
+    steps = artifact_steps(path)
+    return tuple([inputs["name"] for kind, inputs in steps if kind == expected and "name" in inputs]
+                 for expected in ("upload", "download"))
+
+
+def block_mapping(text, indent):
+    """Read block-style keys at the workflow files' conventional indentation.
+
+    This only inspects the small mapping subset needed by the guards below;
+    actionlint remains responsible for validating GitHub Actions YAML syntax.
+    Values are (inline value, indented body), so scalar inputs and nested
+    workflow/job mappings can be checked without a third-party YAML dependency.
+    """
+    pattern = re.compile(r"^" + " " * indent + r"([\w-]+):[^\S\n]*(.*)$", re.MULTILINE)
+    matches = list(pattern.finditer(text))
+    return {
+        match.group(1): (match.group(2).strip(),
+                         text[match.end():matches[index + 1].start()
+                              if index + 1 < len(matches) else len(text)])
+        for index, match in enumerate(matches)
+    }
+
+
+def scalar(value):
+    return value.strip().strip("\"'")
+
+
+def linux_mode_input_failures(workflows, name, expected):
+    """Check each Linux caller's mode expression, including folded YAML scalars."""
+    ci = (workflows / "ci.yml").read_text(encoding="utf-8")
+    jobs = block_mapping(block_mapping(ci, 0).get("jobs", ("", ""))[1], 2)
+    failures = []
+    for job_id in LINUX_MODE_CALLERS:
+        fields = block_mapping(jobs.get(job_id, ("", ""))[1], 4)
+        inputs = block_mapping(fields.get("with", ("", ""))[1], 6)
+        value, body = inputs.get(name, ("", ""))
+        expression = body if value in {"|", "|-", ">", ">-"} else value
+        actual = " ".join(line.strip() for line in expression.splitlines()
+                          if line.strip() and not line.lstrip().startswith("#"))
+        if actual != expected:
+            failures.append(f"ci.yml: {job_id} must pass {name}: {expected}")
+    return failures
+
+
+def linux_profile_failures(workflows):
+    """Keep profile selection connected after splitting out the native producer."""
+    failures = linux_mode_input_failures(workflows, "profiles", PROFILES_EXPRESSION)
+    path = workflows / "pr_build_linux.yml"
+    if not path.exists():
+        return failures + [f"{path}: Linux test workflow is missing"]
+    text = path.read_text(encoding="utf-8")
+    jobs = block_mapping(block_mapping(text, 0).get("jobs", ("", ""))[1], 2)
+    prepare = jobs.get("prepare-matrix", ("", ""))[1]
+    outputs = block_mapping(block_mapping(prepare, 4).get("outputs", ("", ""))[1], 6)
+    if outputs.get("profile-matrix", ("", ""))[0] != "${{ steps.profiles.outputs.matrix }}":
+        failures.append(f"{path}: prepare-matrix must publish steps.profiles.outputs.matrix")
+    test = jobs.get("linux-test", ("", ""))[1]
+    strategy = block_mapping(block_mapping(test, 4).get("strategy", ("", ""))[1], 6)
+    matrix = block_mapping(strategy.get("matrix", ("", ""))[1], 8)
+    if ("prepare-matrix" not in dependencies(test)
+            or matrix.get("profile", ("", ""))[0]
+            != "${{ fromJSON(needs.prepare-matrix.outputs.profile-matrix) }}"):
+        failures.append(f"{path}: linux-test must consume prepare-matrix's profile-matrix output")
+    return failures
+
+
+def dependencies(job):
+    value, body = block_mapping(job, 4).get("needs", ("", ""))
+    if value.startswith("[") and value.endswith("]"):
+        return {scalar(item) for item in value[1:-1].split(",")}
+    if value:
+        return {scalar(value)}
+    return {scalar(item) for item in re.findall(r"^\s+- (.+)$", body, re.MULTILINE)}
+
+
+def shared_native_failures(workflows, jobs, artifacts):
+    """Validate the sole allowed cross-workflow artifact producer/consumer edge."""
+    failures = []
+    producer_uses = f"./.github/workflows/{SHARED_NATIVE_WORKFLOW}"
+    calls = [job_id for job_id, (_, body) in jobs.items()
+             if scalar(block_mapping(body, 4).get("uses", ("", ""))[0]) == producer_uses]
+    if calls != [SHARED_NATIVE_JOB]:
+        failures.append(f"ci.yml: expected exactly one {SHARED_NATIVE_JOB} call to {producer_uses}")
+
+    if SHARED_NATIVE_JOB in jobs:
+        body = jobs[SHARED_NATIVE_JOB][1]
+        if "changes" not in dependencies(body):
+            failures.append(f"ci.yml: {SHARED_NATIVE_JOB} must need changes")
+        if "strategy" in block_mapping(body, 4):
+            failures.append(f"ci.yml: {SHARED_NATIVE_JOB} must not use a matrix")
+    for filename, (uploads, _) in artifacts.items():
+        if filename != SHARED_NATIVE_WORKFLOW and SHARED_NATIVE_ARTIFACT in uploads:
+            failures.append(f"{filename}: only {SHARED_NATIVE_WORKFLOW} may upload '{SHARED_NATIVE_ARTIFACT}'")
+
+    producer = workflows / SHARED_NATIVE_WORKFLOW
+    if not producer.exists():
+        failures.append(f"{producer}: shared native producer is missing")
+    else:
+        producer_jobs = block_mapping(
+            block_mapping(producer.read_text(encoding="utf-8"), 0).get("jobs", ("", ""))[1], 2)
+        uploads = artifacts[SHARED_NATIVE_WORKFLOW][0]
+        if len(producer_jobs) != 1 or uploads != [SHARED_NATIVE_ARTIFACT]:
+            failures.append(f"{producer}: expected one job uploading '{SHARED_NATIVE_ARTIFACT}' once")
+        for _, body in producer_jobs.values():
+            if "strategy" in block_mapping(body, 4):
+                failures.append(f"{producer}: shared native producer must not use a matrix")
+
+    seen_consumers = set()
+    for job_id, (_, body) in jobs.items():
+        fields = block_mapping(body, 4)
+        called = scalar(fields.get("uses", ("", ""))[0]).removeprefix("./.github/workflows/")
+        if called not in SHARED_NATIVE_CONSUMERS:
+            continue
+        seen_consumers.add(called)
+        if not {"changes", SHARED_NATIVE_JOB}.issubset(dependencies(body)):
+            failures.append(f"ci.yml: {job_id} must need changes and {SHARED_NATIVE_JOB}")
+        inputs = block_mapping(fields.get("with", ("", ""))[1], 6)
+        if scalar(inputs.get(SHARED_NATIVE_INPUT, ("", ""))[0]) != SHARED_NATIVE_ARTIFACT:
+            failures.append(f"ci.yml: {job_id} must pass {SHARED_NATIVE_INPUT}: {SHARED_NATIVE_ARTIFACT}")
+
+    for filename in sorted(SHARED_NATIVE_CONSUMERS):
+        path = workflows / filename
+        if filename not in seen_consumers:
+            failures.append(f"ci.yml: shared native consumer {filename} is not called")
+        if not path.exists():
+            failures.append(f"{path}: shared native consumer is missing")
+            continue
+        text = path.read_text(encoding="utf-8")
+        declaration = text
+        for key, indent in (("on", 0), ("workflow_call", 2), ("inputs", 4),
+                            (SHARED_NATIVE_INPUT, 6)):
+            declaration = block_mapping(declaration, indent).get(key, ("", ""))[1]
+        fields = block_mapping(declaration, 8)
+        if (scalar(fields.get("required", ("", ""))[0]) != "true"
+                or scalar(fields.get("type", ("", ""))[0]) != "string"):
+            failures.append(f"{path}: {SHARED_NATIVE_INPUT} must be a required string input")
+        uploads, downloads = artifacts[filename]
+        if SHARED_NATIVE_EXPRESSION not in downloads:
+            failures.append(f"{path}: must download {SHARED_NATIVE_EXPRESSION}")
+        if any(name.startswith("native-lib") or name == SHARED_NATIVE_EXPRESSION for name in uploads):
+            failures.append(f"{path}: native library must only be uploaded by {SHARED_NATIVE_WORKFLOW}")
+        native_destinations = [inputs.get("name") for kind, inputs in artifact_steps(path)
+                               if kind == "download" and inputs.get("path", "").startswith("native/target")]
+        if (any(name.startswith("native-lib") for name in downloads)
+                or any(name != SHARED_NATIVE_EXPRESSION for name in native_destinations)):
+            failures.append(f"{path}: native downloads must use {SHARED_NATIVE_EXPRESSION}")
+        if re.search(r"^\s*(?:cargo build\b|make (?:release|core)\b)", text, re.MULTILINE):
+            failures.append(f"{path}: must consume the shared native library instead of building it")
+    return failures
+
+
+def linux_checks_failures(workflows, jobs):
+    """Keep lint, compile-only and debug Rust checks independent of native CI."""
+    failures = []
+    body = jobs.get(LINUX_CHECKS_JOB, ("", ""))[1]
+    fields = block_mapping(body, 4)
+    expected_uses = f"./.github/workflows/{LINUX_CHECKS_WORKFLOW}"
+    if scalar(fields.get("uses", ("", ""))[0]) != expected_uses:
+        failures.append(f"ci.yml: {LINUX_CHECKS_JOB} must call {expected_uses}")
+    if dependencies(body) != {"changes"}:
+        failures.append(f"ci.yml: {LINUX_CHECKS_JOB} must need only changes, independently of native CI")
+
+    def condition(job):
+        value, body = block_mapping(job, 4).get("if", ("", ""))
+        text = body if value in {"|", ">"} else value
+        return " ".join(line.strip() for line in text.splitlines()
+                        if line.strip() and not line.lstrip().startswith("#"))
+
+    if condition(body) != condition(jobs.get("pr_build_linux", ("", ""))[1]):
+        failures.append(f"ci.yml: {LINUX_CHECKS_JOB} must use the Linux test selection condition")
+
+    checks = workflows / LINUX_CHECKS_WORKFLOW
+    if not checks.exists():
+        failures.append(f"{checks}: independent Linux checks workflow is missing")
+        return failures
+    text = checks.read_text(encoding="utf-8")
+    check_jobs = block_mapping(block_mapping(text, 0).get("jobs", ("", ""))[1], 2)
+    missing = INDEPENDENT_LINUX_JOBS - check_jobs.keys()
+    if missing:
+        failures.append(f"{checks}: independent jobs are missing: {', '.join(sorted(missing))}")
+    events = block_mapping(text, 0).get("on", ("", ""))[1]
+    workflow_call = block_mapping(events, 2).get("workflow_call", ("", ""))[1]
+    inputs = block_mapping(block_mapping(workflow_call, 4).get("inputs", ("", ""))[1], 6)
+    if SHARED_NATIVE_INPUT in inputs or any(
+            kind == "download" and (inputs.get("name", "").startswith("native-lib")
+                                    or inputs.get("path", "").startswith("native/target"))
+            for kind, inputs in artifact_steps(checks)):
+        failures.append(f"{checks}: independent Linux checks must not consume the shared native artifact")
+
+    consumers = workflows / "pr_build_linux.yml"
+    if consumers.exists():
+        consumer_jobs = block_mapping(
+            block_mapping(consumers.read_text(encoding="utf-8"), 0).get("jobs", ("", ""))[1], 2)
+        misplaced = INDEPENDENT_LINUX_JOBS & consumer_jobs.keys()
+        if misplaced:
+            failures.append(f"{consumers}: independent jobs must stay in {LINUX_CHECKS_WORKFLOW}: "
+                            f"{', '.join(sorted(misplaced))}")
+    return failures
+
+
+def native_selection_failures(jobs):
+    """Return errors when workflow gates diverge from the Python selector.
+
+    `jobs` is the ci.yml job mapping returned by block_mapping, with each value
+    holding an inline scalar and indented body. The selector maps actual caller
+    IDs to tuples of selection outputs; each caller must use exactly their OR
+    (a single comparison for one output), and export every output directly.
+    For example, spark_4_1 accepts either its core or Hive output, while the
+    producer has one derived output. Expressions are compared, not evaluated.
+    Inputs and files are not mutated; import/read errors propagate.
+    """
+    consumers = load_filters().NATIVE_CONSUMERS
+    actual_consumers = {
+        job_id for job_id, (_, body) in jobs.items()
+        if scalar(block_mapping(body, 4).get("uses", ("", ""))[0])
+        .removeprefix("./.github/workflows/") in SHARED_NATIVE_CONSUMERS
+    }
+    failures = []
+    if actual_consumers != consumers.keys():
+        failures.append("ci.yml: native consumer calls must match NATIVE_CONSUMERS "
+                        "in compute-changes.py")
+    changes = block_mapping(jobs.get("changes", ("", ""))[1], 4)
+    outputs = block_mapping(changes.get("outputs", ("", ""))[1], 6)
+    selections = {SHARED_NATIVE_JOB: (SHARED_NATIVE_JOB,), **consumers}
+    for job_id, routes in selections.items():
+        fields = block_mapping(jobs.get(job_id, ("", ""))[1], 4)
+        expected = " || ".join(f"needs.changes.outputs.{output} == 'true'" for output in routes)
+        if fields.get("if", ("", ""))[0] != expected:
+            failures.append(f"ci.yml: {job_id} must select exactly {expected}")
+        for output in routes:
+            if outputs.get(output, ("", ""))[0] != f"${{{{ steps.compute.outputs.{output} }}}}":
+                failures.append(f"ci.yml: changes must export steps.compute.outputs.{output}")
+    return failures
+
+
+def job_steps(job):
+    """Return ordered step mappings from a conventional workflow job body.
+
+    `job` is the indented text from block_mapping. Only the direct `steps:`
+    list at six spaces is read; each result uses block_mapping's (scalar,
+    body) values. Replacing each list marker with spaces lets that existing
+    parser read step keys at eight spaces without inspecting nested actions.
+    This reads a string, mutates nothing, and returns an empty list if absent;
+    actionlint remains responsible for other YAML layouts and syntax errors.
+    """
+    body = block_mapping(job, 4).get("steps", ("", ""))[1]
+    starts = list(re.finditer(r"^      - ", body, re.MULTILINE))
+    return [block_mapping("        " + body[start.end():
+                          starts[index + 1].start() if index + 1 < len(starts) else len(body)], 8)
+            for index, start in enumerate(starts)]
+
+
+def linux_maven_bootstrap_failures(workflows):
+    """Return errors for Linux Maven runs without a prior reliable bootstrap.
+
+    `workflows` is a directory Path. Read only the two Linux reusable workflows
+    and their direct job steps; composite actions own their internal bootstrap.
+    Each direct ./mvnw run needs an earlier maven-bootstrap step in the same job
+    with no `if` and with failures propagated. Comments and non-run fields do
+    not count as commands. No files or mappings are mutated; missing workflows
+    produce errors, other file-read errors propagate, and success returns [].
+    """
+    failures = []
+    for filename in LINUX_MAVEN_WORKFLOWS:
+        path = workflows / filename
+        if not path.exists():
+            failures.append(f"{path}: Linux Maven workflow is missing")
+            continue
+        jobs = block_mapping(block_mapping(path.read_text(encoding="utf-8"), 0)
+                             .get("jobs", ("", ""))[1], 2)
+        for job_id, (_, body) in jobs.items():
+            bootstrapped = False
+            for step in job_steps(body):
+                if (scalar(step.get("uses", ("", ""))[0]) == MAVEN_BOOTSTRAP_ACTION
+                        and "if" not in step
+                        and scalar(step.get("continue-on-error", ("false", ""))[0]) == "false"):
+                    bootstrapped = True
+                value, script = step.get("run", ("", ""))
+                script = script if value in {"|", ">", "|-", ">-", "|+", ">+"} else scalar(value)
+                commands = "\n".join(line for line in script.splitlines()
+                                     if not line.lstrip().startswith("#"))
+                if re.search(r"(?<![\w./])\./mvnw(?:\s|$)", commands) and not bootstrapped:
+                    failures.append(f"{path}: {job_id} must bootstrap Maven unconditionally "
+                                    "with failures propagated before running ./mvnw")
+    return failures
+
+
+def artifact_failures(workflows):
+    """Return artifact, routing, independence, and Linux Maven bootstrap errors.
+
+    `workflows` is a directory Path containing ci.yml and the reusable workflows.
+    Files and parsed mappings are read only. An empty list means all invariants
+    passed; file-read and selector-import errors propagate to the caller.
+    """
+    ci = (workflows / "ci.yml").read_text(encoding="utf-8")
+    jobs = block_mapping(block_mapping(ci, 0).get("jobs", ("", ""))[1], 2)
     call_counts = {}
     for called in re.findall(r"uses:\s*\./\.github/workflows/(\S+)", ci):
         call_counts[called] = call_counts.get(called, 0) + 1
 
-    failures = []
-    for path in sorted(WORKFLOWS.glob("*.y*ml")):
-        uploads, downloads = artifact_names(path)
-        if call_counts.get(path.name, 0) > 1:
+    artifacts = {path.name: artifact_names(path) for path in sorted(workflows.glob("*.y*ml"))}
+    failures = shared_native_failures(workflows, jobs, artifacts)
+    failures.extend(linux_checks_failures(workflows, jobs))
+    failures.extend(native_selection_failures(jobs))
+    failures.extend(linux_maven_bootstrap_failures(workflows))
+    shared_wiring_valid = not failures
+    for filename, (uploads, downloads) in artifacts.items():
+        path = workflows / filename
+        if call_counts.get(filename, 0) > 1:
             for name in uploads:
                 if "inputs." not in name:
                     failures.append(
                         f"{path}: artifact '{name}' is uploaded by a workflow ci.yml calls "
-                        f"{call_counts[path.name]} times; qualify the name with an input "
+                        f"{call_counts[filename]} times; qualify the name with an input "
                         f"(e.g. ${{{{ inputs.spark-full }}}}) so the parallel producers stay distinct"
                     )
         for name in downloads:
-            if name not in uploads:
+            explicitly_shared = (shared_wiring_valid and filename in SHARED_NATIVE_CONSUMERS
+                                 and name == SHARED_NATIVE_EXPRESSION)
+            if name not in uploads and not explicitly_shared:
                 failures.append(
                     f"{path}: artifact '{name}' is downloaded but never uploaded in the same "
                     f"workflow; a producer rename probably missed its consumer"
                 )
+    return failures
+
+
+def check_artifact_names():
+    failures = artifact_failures(WORKFLOWS)
     for failure in failures:
         print(f"artifact name: {failure}")
     return not failures
@@ -838,96 +1190,54 @@ def check_required_checks():
     return not failures
 
 
-def check_cache_refresh_scope():
-    """Every job in pr_build_linux.yml is either a cache writer or guarded.
-
-    On push to main the merge queue has already tested the exact tree that
-    landed, so the only thing left for that run to do is leave main's
-    actions/cache entries warm -- a pull request can restore caches saved on
-    its own branch or on main and nowhere else, and the queue's throwaway
-    branch takes its own with it. ci.yml therefore calls the workflow with
-    `cache-refresh-only` on push, and every job that is not a cache writer
-    has to opt out with `if: ${{ !inputs.cache-refresh-only }}`.
-
-    A job added without the guard runs on every push again. Nothing fails when
-    that happens; the runner bill just quietly goes back up by up to ~500
-    minutes a push, which is what this check exists to notice.
-    """
+def linux_scope_failures(workflows, allowed, guard, mode):
+    """Require each workflow's retained jobs and guard every other job in that mode."""
     failures = []
-    jobs, guarded = guarded_jobs(CACHE_REFRESH_WORKFLOW, CACHE_REFRESH_GUARD)
+    for filename, retained in allowed.items():
+        path = workflows / filename
+        if not path.exists():
+            failures.append(f"{path}: {mode} workflow is missing")
+            continue
+        jobs, guarded = guarded_jobs(path, guard)
+        for name in sorted(retained.keys() - set(jobs)):
+            failures.append(f"{path}: {mode} requires job `{name}` ({retained[name]})")
+        for name in jobs:
+            if name in retained and name in guarded:
+                failures.append(f"{path}: {mode} must retain job `{name}` ({retained[name]}), "
+                                "but it carries the mode's skip guard")
+            if name not in retained and name not in guarded:
+                failures.append(f"{path}: job `{name}` has no {mode} guard, so it repeats "
+                                "work the earlier CI tier already ran")
+    return failures
 
-    for stale in sorted(set(CACHE_REFRESH_JOBS) - set(jobs)):
-        failures.append(
-            f"CACHE_REFRESH_JOBS names `{stale}`, which no longer exists in "
-            f"{CACHE_REFRESH_WORKFLOW}; drop it here, or restore the job"
-        )
-    for name in jobs:
-        if name in CACHE_REFRESH_JOBS and name in guarded:
-            failures.append(
-                f"{CACHE_REFRESH_WORKFLOW}: job `{name}` is listed in "
-                f"CACHE_REFRESH_JOBS ({CACHE_REFRESH_JOBS[name]}) but carries "
-                f"the cache-refresh-only guard, so it is skipped on push and "
-                f"the cache it owns goes stale on main"
-            )
-        if name not in CACHE_REFRESH_JOBS and name not in guarded:
-            failures.append(
-                f"{CACHE_REFRESH_WORKFLOW}: job `{name}` has no "
-                f"`if: ${{{{ !inputs.cache-refresh-only }}}}`, so it runs on "
-                f"every push to main where the merge queue has already tested "
-                f"the same tree. Add the guard, or add the job to "
-                f"CACHE_REFRESH_JOBS with the cache entry it writes"
-            )
 
-    # The guards above do nothing unless the caller actually sets the input;
-    # its default is false, so a dropped `with:` block silently restores the
-    # full pipeline on push.
-    ci = (WORKFLOWS / "ci.yml").read_text(encoding="utf-8").splitlines()
-    if not any(CACHE_REFRESH_INPUT.match(line) for line in ci):
-        failures.append(
-            "ci.yml never passes `cache-refresh-only:` to pr_build_linux.yml. "
-            "The input defaults to false, so without it every push to main runs "
-            "the full pipeline again"
-        )
+def cache_refresh_failures(workflows):
+    """Keep main's cache writers across all three workflows and skip other work.
 
+    The caller expressions are checked separately for both Linux calls: finding
+    one input elsewhere in ci.yml does not protect the other workflow's jobs.
+    """
+    failures = linux_scope_failures(
+        workflows, CACHE_REFRESH_JOBS, CACHE_REFRESH_GUARD, "cache-refresh-only")
+    failures.extend(linux_mode_input_failures(
+        workflows, "cache-refresh-only", CACHE_REFRESH_EXPRESSION))
+    return failures
+
+
+def check_cache_refresh_scope():
+    failures = cache_refresh_failures(WORKFLOWS)
     for failure in failures:
         print(f"cache refresh scope: {failure}")
     return not failures
 
 
-def check_nightly_scope():
-    """With `profiles: nightly`, pr_build_linux.yml runs the test matrix alone.
+def nightly_scope_failures(workflows):
+    """Keep the nightly matrix and prerequisites while skipping previously run checks."""
+    return linux_scope_failures(workflows, NIGHTLY_JOBS, NIGHTLY_GUARD, "nightly")
 
-    That input value means the default-profile pipeline already ran at this
-    commit: in the queue and the push run for the nightly, in the PR tier for
-    a `run-all-spark-profiles` label run. The lints, the Rust tests, the
-    Spark build and the TPC-H/TPC-DS runs would repeat a verdict, so every
-    job other than the three the matrix needs carries
-    `if: ${{ inputs.profiles != 'nightly' }}`. Silent when broken, like the
-    cache-refresh guard: the nightly just costs 100-odd runner-minutes more.
-    """
-    failures = []
-    jobs, guarded = guarded_jobs(CACHE_REFRESH_WORKFLOW, NIGHTLY_GUARD)
-    for stale in sorted(set(NIGHTLY_JOBS) - set(jobs)):
-        failures.append(
-            f"NIGHTLY_JOBS names `{stale}`, which no longer exists in "
-            f"{CACHE_REFRESH_WORKFLOW}; drop it here, or restore the job"
-        )
-    for name in jobs:
-        if name in NIGHTLY_JOBS and name in guarded:
-            failures.append(
-                f"{CACHE_REFRESH_WORKFLOW}: job `{name}` is listed in "
-                f"NIGHTLY_JOBS ({NIGHTLY_JOBS[name]}) but carries the "
-                f"`profiles != 'nightly'` guard, so the nightly test matrix "
-                f"cannot run"
-            )
-        if name not in NIGHTLY_JOBS and name not in guarded:
-            failures.append(
-                f"{CACHE_REFRESH_WORKFLOW}: job `{name}` has no "
-                f"`if: ${{{{ inputs.profiles != 'nightly' }}}}`, so it repeats "
-                f"on every nightly a verdict the queue already produced. Add "
-                f"the guard, or add the job to NIGHTLY_JOBS with the reason "
-                f"the test matrix needs it"
-            )
+
+def check_nightly_scope():
+    failures = nightly_scope_failures(WORKFLOWS)
     for failure in failures:
         print(f"nightly scope: {failure}")
     return not failures

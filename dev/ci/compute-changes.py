@@ -40,6 +40,7 @@ from pathlib import Path
 
 FILTERS = {
     "build_linux": [
+        ".github/workflows/build_linux_native.yml",
         "native/**",
         "common/**",
         "spark/**",
@@ -53,6 +54,7 @@ FILTERS = {
         "dev/ci/**",
         ".github/workflows/ci.yml",
         ".github/workflows/pr_build_linux.yml",
+        ".github/workflows/pr_build_linux_checks.yml",
         ".github/actions/setup-builder/**",
         ".github/actions/java-test/**",
         ".github/actions/maven-bootstrap/**",
@@ -179,6 +181,7 @@ FILTERS = {
         "spark/src/main/spark-*/**",
     ],
     "spark_3_4": [
+        ".github/workflows/build_linux_native.yml",
         "native/**/src/**",
         "native/**/Cargo.toml",
         "native/Cargo.lock",
@@ -206,6 +209,7 @@ FILTERS = {
         "mvnw",
     ],
     "spark_3_5": [
+        ".github/workflows/build_linux_native.yml",
         "native/**/src/**",
         "native/**/Cargo.toml",
         "native/Cargo.lock",
@@ -233,6 +237,7 @@ FILTERS = {
         "mvnw",
     ],
     "spark_4_0": [
+        ".github/workflows/build_linux_native.yml",
         "native/**/src/**",
         "native/**/Cargo.toml",
         "native/Cargo.lock",
@@ -260,6 +265,7 @@ FILTERS = {
         "mvnw",
     ],
     "spark_4_1": [
+        ".github/workflows/build_linux_native.yml",
         "native/**/src/**",
         "native/**/Cargo.toml",
         "native/Cargo.lock",
@@ -292,6 +298,7 @@ FILTERS = {
     # input. Populated below, after the dict, so the two lists cannot drift.
     "spark_4_1_hive": [],
     "iceberg_1_8": [
+        ".github/workflows/build_linux_native.yml",
         "native/**/src/**",
         "native/**/Cargo.toml",
         "native/Cargo.lock",
@@ -316,6 +323,7 @@ FILTERS = {
         "mvnw",
     ],
     "iceberg_1_9": [
+        ".github/workflows/build_linux_native.yml",
         "native/**/src/**",
         "native/**/Cargo.toml",
         "native/Cargo.lock",
@@ -340,6 +348,7 @@ FILTERS = {
         "mvnw",
     ],
     "iceberg_1_10": [
+        ".github/workflows/build_linux_native.yml",
         "native/**/src/**",
         "native/**/Cargo.toml",
         "native/Cargo.lock",
@@ -364,6 +373,7 @@ FILTERS = {
         "mvnw",
     ],
     "iceberg_1_11": [
+        ".github/workflows/build_linux_native.yml",
         "native/**/src/**",
         "native/**/Cargo.toml",
         "native/Cargo.lock",
@@ -421,7 +431,7 @@ FILTERS["build_linux_all_profiles"] = FILTERS["build_linux"]
 # in the queue and once after, which is the thing the queue was adopted to
 # avoid.
 POLICY = {
-    # The one test job that also runs on push to main, and only because of
+    # The Linux workflows also run on push to main, and only because of
     # actions/cache scoping: a pull request can restore caches saved on its
     # own branch or on main, and nowhere else. The queue runs on a throwaway
     # gh-readonly-queue/* branch, so whatever it saves is deleted with that
@@ -433,13 +443,16 @@ POLICY = {
     # On push that is the *only* thing it is for. The queue already tested the
     # exact tree that landed, so re-running the lints and the linux-test
     # matrix there tests nothing, and they are 514 of the 587 runner-minutes a
-    # push run costs. The split below keeps the cache writers on push and moves
-    # everything else behind `build_linux_full`.
+    # push run costs. The cache writers now span build_linux_native.yml,
+    # pr_build_linux_checks.yml (cargo-debug), and pr_build_linux.yml (Maven
+    # and TPC-H/TPC-DS), so push must select all three workflows. The split
+    # below keeps those writers on push and moves everything else behind
+    # `build_linux_full`.
     "build_linux": ["pr", "queue", "push"],
-    # The lints and the test matrix inside pr_build_linux.yml. Deliberately no
-    # "push": ci.yml turns this output into the workflow's `cache-refresh-only`
-    # input, so dropping "push" here is what trims the push tier down to the
-    # jobs that write an actions/cache entry. See issue #5929.
+    # The lints in pr_build_linux_checks.yml and test matrix in pr_build_linux.yml.
+    # Deliberately no "push": ci.yml uses this output for both workflows'
+    # `cache-refresh-only` inputs, trimming push down to jobs needed to write an
+    # actions/cache entry. See issue #5929.
     "build_linux_full": ["pr", "queue"],
     # The linux-test matrix's Spark profiles other than the default one. The
     # five profiles cost about the same each, roughly 2,300 runner-minutes a
@@ -502,6 +515,24 @@ POLICY = {
     "iceberg_1_11": ["queue", "label:run-iceberg-tests"],
 }
 
+# Map each caller job that downloads the shared Linux native library to every
+# output key that can select it. Insertion order follows the callers in ci.yml.
+# Linux has separate default/all-profile routes, and Spark 4.1 has core/Hive
+# routes; either route must select the shared producer for its caller.
+# The producer has no independent path or event policy: it runs exactly when
+# any route of at least one consumer is selected after FILTERS and POLICY apply.
+NATIVE_CONSUMERS = {
+    "pr_build_linux": ("build_linux", "build_linux_all_profiles"),
+    "spark_3_4": ("spark_3_4",),
+    "spark_3_5": ("spark_3_5",),
+    "spark_4_0": ("spark_4_0",),
+    "spark_4_1": ("spark_4_1", "spark_4_1_hive"),
+    "iceberg_1_8": ("iceberg_1_8",),
+    "iceberg_1_9": ("iceberg_1_9",),
+    "iceberg_1_10": ("iceberg_1_10",),
+    "iceberg_1_11": ("iceberg_1_11",),
+}
+
 
 def gating_labels(job):
     return [t[len("label:"):] for t in POLICY[job] if t.startswith("label:")]
@@ -546,11 +577,26 @@ def event_allows(job, event):
 
 
 def compute(files, event):
-    """Return {job: bool}, folding the path filter and the event policy."""
-    return {
-        name: event_allows(name, event) and matches(patterns, files)
+    """Return a new {output: bool} mapping for consumers and their native build.
+
+    `files` is a reusable sequence of repository-relative changed paths;
+    `event` has the fields described by event_allows(). Neither input is
+    mutated. Manual dispatch selects every route even with no changed files;
+    other events require both path and event matches. The shared native build
+    is selected only after those decisions, taking the union of every caller's
+    routes, so Hive alone can start its producer and a denied opt-in route
+    cannot start an unused producer. Unknown events select nothing. Configuration
+    lookup failures propagate as KeyError rather than returning partial output.
+    """
+    manual = event.get("name") == "workflow_dispatch"
+    outputs = {
+        name: event_allows(name, event) and (manual or matches(patterns, files))
         for name, patterns in FILTERS.items()
     }
+    outputs["build_linux_native"] = any(
+        outputs[name] for routes in NATIVE_CONSUMERS.values() for name in routes
+    )
+    return outputs
 
 
 def event_from_env():
@@ -605,12 +651,12 @@ def matches(patterns, files):
 if __name__ == "__main__":
     event = event_from_env()
     # workflow_dispatch has no meaningful base to diff against, so the caller
-    # passes an empty list and every path filter is treated as matched.
+    # passes an empty list. compute() applies its override before deriving the
+    # native producer, and every event emits the same complete set of outputs.
     if event["name"] == "workflow_dispatch":
-        for name in FILTERS:
-            print(f"{name}=true")
-        sys.exit(0)
-    files_path = Path(sys.argv[1])
-    files = [line.strip() for line in files_path.read_text().splitlines() if line.strip()]
+        files = []
+    else:
+        files_path = Path(sys.argv[1])
+        files = [line.strip() for line in files_path.read_text().splitlines() if line.strip()]
     for name, flag in compute(files, event).items():
         print(f"{name}={'true' if flag else 'false'}")
