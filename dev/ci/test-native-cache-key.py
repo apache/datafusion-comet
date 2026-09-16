@@ -300,6 +300,36 @@ class NativeCacheKeyTests(unittest.TestCase):
             if name != "cargo-home":
                 self.assertNotIn("JAVA_HOME", value)
 
+    def test_container_checkout_ownership_does_not_block_git_inventory(self):
+        """Read a foreign-owned checkout without changing persistent Git trust.
+
+        Git's test switch reproduces the runner/container ownership mismatch
+        without requiring root. Real Git must reject the unconfigured checkout,
+        then the CLI must discover its root and tracked files successfully.
+        Only native tool discovery is mocked; global Git config stays untouched.
+        """
+        global_config = self.directory / "global.gitconfig"
+        global_config.write_text("")
+        env = dict(os.environ, GIT_TEST_ASSUME_DIFFERENT_OWNER="1",
+                   GIT_CONFIG_GLOBAL=str(global_config), GIT_CONFIG_NOSYSTEM="1")
+        untrusted = subprocess.run(["git", "rev-parse", "--show-toplevel"],
+                                   cwd=self.root, env=env, capture_output=True)
+        self.assertEqual(untrusted.returncode, 128)
+        self.assertIn(b"dubious ownership", untrusted.stderr)
+        arguments = ["native-cache-key.py", "--profile", "ci"]
+        with patch.dict(CACHE.os.environ, env, clear=True), \
+                patch.object(CACHE.Path, "cwd", return_value=self.root), \
+                patch.object(CACHE.sys, "argv", arguments), \
+                patch.object(CACHE, "environment_identity", return_value=(self.cargo_home, {})), \
+                patch.object(CACHE.sys, "stdout", new_callable=io.StringIO) as stdout, \
+                patch.object(CACHE.sys, "stderr", new_callable=io.StringIO) as stderr:
+            self.assertEqual(CACHE.main(), 0, stderr.getvalue())
+        dependencies, sources = CACHE.tracked_inputs(self.root, dict(os.environ))
+        expected = CACHE.cache_keys("ci", dependencies, sources, {}, self.cargo_home)
+        actual = dict(line.split("=", 1) for line in stdout.getvalue().splitlines())
+        self.assertEqual(actual, expected)
+        self.assertEqual(global_config.read_text(), "")
+
     def test_cli_publishes_outputs_only_after_complete_snapshot(self):
         """Failed fingerprinting preserves GitHub outputs; success emits opaque keys."""
         output_file = self.directory / "github-output"
