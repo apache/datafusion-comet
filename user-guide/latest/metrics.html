@@ -807,22 +807,22 @@ eligibility and reader restrictions.</p>
 </tr>
 </thead>
 <tbody>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">dynamic_filter_rows_evaluated</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">dynamic_filter_join_rows_evaluated</span></code></p></td>
 <td><p>Probe rows evaluated by the runtime filter.</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">dynamic_filter_rows_pruned</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">dynamic_filter_join_rows_pruned</span></code></p></td>
 <td><p>Probe rows rejected by that filter before the hash probe.</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">dynamic_filter_rows_bypassed</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">dynamic_filter_join_rows_bypassed</span></code></p></td>
 <td><p>Probe rows passed through while the runtime filter is inactive.</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">dynamic_filter_eval_time</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">dynamic_filter_join_eval_time</span></code></p></td>
 <td><p>Time evaluating the runtime filter.</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">dynamic_filter_reader_filters_attached</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">dynamic_filter_join_filters_attached</span></code></p></td>
 <td><p>Executions that attach their runtime filter to a native reader.</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">dynamic_filter_reader_filters_skipped</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">dynamic_filter_join_filters_skipped</span></code></p></td>
 <td><p>Executions whose probe input is ineligible for reader attachment.</p></td>
 </tr>
 </tbody>
