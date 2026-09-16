@@ -216,9 +216,20 @@ suggested) to overlap I/O across files at the cost of extra memory.
 
 ## Optimizing Sorting on Floating-Point Values
 
-Sorting on floating-point data types (or complex types containing floating-point values) is not compatible with
-Spark if the data contains both zero and negative zero. This is likely an edge case that is not of concern for many users
-and sorting on floating-point data can be enabled by setting `spark.comet.expression.SortOrder.allowIncompatible=true`.
+Comet normalizes NaN payloads and signed zeros in scalar `FLOAT` and `DOUBLE` ordering keys, so `ORDER BY`, window
+ordering and range partitioning on them match Spark and stay native even with
+`spark.comet.exec.strictFloatingPoint=true`. Only the comparison key is normalized; returned values keep their original
+NaN representation and zero sign.
+
+Floating-point values nested in arrays, structs, or maps are compared with Arrow's raw total ordering instead, which can
+differ from Spark when the data contains both zero and negative zero, or more than one NaN representation. This is likely
+an edge case that is not of concern for many users. Setting `spark.comet.exec.strictFloatingPoint=true` makes those
+nested cases fall back to Spark, and they can be forced back onto the native path with
+`spark.comet.expression.SortOrder.allowIncompatible=true`.
+
+`sort_array` is separate. It sorts array elements rather than ordering rows, and its elements are compared with Arrow's
+raw total ordering, so `spark.comet.exec.strictFloatingPoint=true` makes it fall back even for a scalar floating-point
+element type. Use `spark.comet.expression.SortArray.allowIncompatible=true` to keep it native.
 
 ## Optimizing Joins
 
