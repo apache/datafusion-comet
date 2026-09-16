@@ -210,7 +210,13 @@ fn decode_generic_string<O: OffsetSizeTrait>(array: &ArrayRef) -> Result<ArrayRe
     // Fast path: the used byte range parses as UTF-8 AND no element boundary splits a codepoint.
     // Both are required: a whole-buffer-valid "é" (C3 A9) with per-element offsets [0,1,2] yields
     // element slices `C3` and `A9`, each invalid, and `value()` would decode them unchecked (UB).
-    if std::str::from_utf8(&values[start..end]).is_ok() {
+    //
+    // Every imported string column pays this pass, so it uses simdutf8 rather than
+    // `std::str::from_utf8`: std is fast on ASCII but falls back to a byte-at-a-time loop on
+    // non-ASCII text, which made multibyte columns several times slower to import. The `basic`
+    // validator is enough because an invalid buffer takes the slow path below, which finds the
+    // bad bytes itself.
+    if simdutf8::basic::from_utf8(&values[start..end]).is_ok() {
         let mut boundaries_ok = true;
         for off in &offsets[1..len] {
             let o = off.as_usize();
