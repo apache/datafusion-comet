@@ -417,10 +417,18 @@ downstream tests use the same paths in either case.
 `dev/ci/native-cache-key.py` snapshots tracked native/protobuf/dependency files,
 Cargo configuration and the native build recipes before Cargo generates source
 files. The key also includes Rust versions, installed system package
-versions, architecture, JDK release/path and compiler flags. The helper targets
-our official Rust container and `setup-builder`, not arbitrary local toolchains.
-Spark-only edits, documentation, unrelated workflows and generated files preserve
-the key; native/protobuf changes invalidate it. Optional contrib crates contribute
+versions, architecture, JDK release/path and the build environment: Cargo/Rust
+settings, C/C++ compiler and flag overrides (including target-specific variants),
+and the HDFS library overrides used by the default dependencies. The helper targets
+our official Rust container and `setup-builder`. Adding external tools or files
+requires updating this contract; recording an override's path does not identify
+arbitrary contents stored there.
+
+The shared build and setup actions are fingerprinted; the four caller workflows
+are not. Their selected Rust/JDK versions and build environment are observed
+directly, so editing a test matrix or shard does not force a native rebuild.
+Spark-only edits, documentation and generated files also preserve the key;
+native/protobuf changes invalidate it. Optional contrib crates contribute
 their manifests, which Cargo resolves even with their features disabled, but not
 their Rust sources or standalone lockfiles. Benchmarks enter the debug cache key
 but not the library key. The input lists and glob matcher are shared with main's
@@ -428,7 +436,11 @@ cache routing in `compute-changes.py`. The shared action uses portable `x86-64-v
 code generation.
 
 The incremental cache contains the effective `CARGO_HOME` registry/git directories
-and `native/target`. Its dependency prefix permits reuse after source changes
+and `native/target`. In the Rust container, correcting `~/.cargo` to
+`/usr/local/cargo` adds the registry and Git checkouts that the old entry did not
+contain. The incremental entry therefore grows alongside the addition of the
+separate finished-library entry.
+Its dependency prefix permits reuse after source changes
 within the same build environment, but every restore still invokes Cargo.
 Environment changes also invalidate this fallback: native dependencies compile C
 against JNI headers and cache build-script outputs that Cargo does not fully
@@ -443,8 +455,10 @@ also trigger main's cache warmer. GitHub Actions handles cache storage and
 restoration.
 
 Preflight tests key invalidation, generated-file stability, container checkout
-ownership, and that every binary-key input triggers main's cache warmer. After
-main populates the new namespace, verify a hosted library hit
+ownership, and that every binary-key input triggers main's cache warmer. On the
+first main push that populates these namespaces, report the compressed cache
+sizes in bytes for both the finished library and the incremental Cargo entry,
+using the cache-save logs or Actions cache API. Then verify a hosted library hit
 by checking that `Restore native library cache` reports an exact hit and the
 Cargo steps skip, while the normal artifact upload and downstream tests pass.
 

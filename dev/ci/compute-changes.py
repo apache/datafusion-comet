@@ -38,8 +38,8 @@ import re
 import sys
 from pathlib import Path
 
-# Shared cache recipes affect every native producer. Tests exercise the recipes
-# but do not affect the resulting library, so they are routed separately below.
+# Shared cache recipes affect every native producer. Their tests run in
+# Preflight and retain the existing dev/ci/** routes, without adding consumers.
 NATIVE_CACHE_RECIPES = (
     ".github/actions/build-native-ci/**",
     "dev/ci/native-cache-key.py", "dev/ci/compute-changes.py",
@@ -51,8 +51,6 @@ NATIVE_CACHE_RECIPES = (
 NATIVE_BUILD_INPUTS = (
     "native/**", "contrib/*/native/Cargo.toml", ".cargo/**",
     ".github/actions/setup-builder/**", *NATIVE_CACHE_RECIPES,
-    ".github/workflows/pr_build_linux.yml", ".github/workflows/spark_sql_test_reusable.yml",
-    ".github/workflows/iceberg_spark_test_reusable.yml", ".github/workflows/spark_sql_writer_tests.yml",
     "rust-toolchain", "rust-toolchain.toml", "!**.md",
 )
 NATIVE_LIBRARY_INPUTS = (*NATIVE_BUILD_INPUTS, "!**/benches/**")
@@ -413,10 +411,7 @@ for _native_consumer in (
     "build_linux", "spark_3_4", "spark_3_5", "spark_4_0", "spark_4_1",
     "iceberg_1_8", "iceberg_1_9", "iceberg_1_10", "iceberg_1_11",
 ):
-    FILTERS[_native_consumer].extend([
-        *NATIVE_CACHE_RECIPES,
-        "dev/ci/test-native-cache-key.py",
-    ])
+    FILTERS[_native_consumer].extend(NATIVE_CACHE_RECIPES)
 
 FILTERS["spark_4_1_hive"] = FILTERS["spark_4_1"]
 FILTERS["build_linux_full"] = FILTERS["build_linux"]

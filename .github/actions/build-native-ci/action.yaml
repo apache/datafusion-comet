@@ -20,13 +20,15 @@ description: 'Reuse an exact-input native library, otherwise build it with the C
 runs:
   using: composite
   steps:
+    - name: Pin native build flags
+      shell: bash
+      run: echo 'RUSTFLAGS=-Ctarget-cpu=x86-64-v3 -Clink-arg=-fuse-ld=bfd' >> "$GITHUB_ENV"
+
     # Call after checkout and setup-builder. Compute once, before Cargo writes
     # generated Rust files, and use the same keys for both restore and save.
     - name: Fingerprint native build inputs
       id: key
       shell: bash
-      env:
-        RUSTFLAGS: '-Ctarget-cpu=x86-64-v3 -Clink-arg=-fuse-ld=bfd'
       run: python3 dev/ci/native-cache-key.py --profile ci --github-output "$GITHUB_OUTPUT"
 
     - name: Restore native library cache
@@ -54,8 +56,6 @@ runs:
     - name: Build native library (CI profile)
       if: steps.binary-cache.outputs.cache-hit != 'true' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
       shell: bash
-      env:
-        RUSTFLAGS: '-Ctarget-cpu=x86-64-v3 -Clink-arg=-fuse-ld=bfd'
       run: |
         cd native
         # A target-directory cache is only an incremental build aid. Cargo
