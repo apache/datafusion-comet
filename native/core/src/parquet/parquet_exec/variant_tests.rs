@@ -352,3 +352,167 @@ async fn variant_scan_reads_wide_physical_decimal_as_decimal128() {
         }
     }
 }
+
+/// The two-field storage Spark writes for a Variant, declared without the Variant marker, which is
+/// the shape of a hand-written `struct<value binary, metadata binary>` read schema.
+fn plain_variant_storage() -> DataType {
+    DataType::Struct(Fields::from(vec![
+        Field::new("value", DataType::Binary, false),
+        Field::new("metadata", DataType::Binary, false),
+    ]))
+}
+
+/// The relation data schema `CometNativeScan` sends: every root, with `v` as a plain struct.
+fn id_and_plain_variant_schema() -> SchemaRef {
+    Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int32, true),
+        Field::new("v", plain_variant_storage(), true),
+    ]))
+}
+
+/// Writes `id INT` next to a VARIANT-annotated `v`. With `rows == 0` the file has no row group.
+fn write_id_and_annotated_variant(rows: usize) -> PathBuf {
+    let file_schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int32, true),
+        Field::new("v", plain_variant_storage(), true).with_extension_type(VariantType),
+    ]));
+    let filename = get_temp_filename();
+    let mut writer = ArrowWriter::try_new_with_options(
+        File::create(&filename).unwrap(),
+        Arc::clone(&file_schema),
+        ArrowWriterOptions::new().with_skip_arrow_metadata(true),
+    )
+    .unwrap();
+    if rows > 0 {
+        let DataType::Struct(storage_fields) = plain_variant_storage() else {
+            unreachable!()
+        };
+        let variant = StructArray::new(
+            storage_fields,
+            vec![
+                Arc::new(BinaryArray::from(vec![Some(&[12u8, 1u8][..])])) as ArrayRef,
+                Arc::new(BinaryArray::from(vec![Some(&[1u8, 0u8, 0u8][..])])) as ArrayRef,
+            ],
+            None,
+        );
+        let batch = RecordBatch::try_new(
+            file_schema,
+            vec![
+                Arc::new(arrow::array::Int32Array::from(vec![1])) as ArrayRef,
+                Arc::new(variant) as ArrayRef,
+            ],
+        )
+        .unwrap();
+        writer.write(&batch).unwrap();
+    }
+    writer.close().unwrap();
+    filename
+}
+
+/// Scans through `init_datasource_exec` the way `CometNativeScan` drives it: the full data
+/// schema, the Spark read schema, and a projection into the data schema. Returns the row count or
+/// the error the scan raised.
+async fn scan_with_read_schema(
+    filename: PathBuf,
+    required_schema: SchemaRef,
+    projection: Vec<usize>,
+) -> Result<usize, datafusion::common::DataFusionError> {
+    let partitioned_file =
+        PartitionedFile::from_path(filename.to_string_lossy().into_owned()).unwrap();
+    let session_ctx = Arc::new(SessionContext::new());
+    let scan = init_datasource_exec(
+        required_schema,
+        Some(id_and_plain_variant_schema()),
+        None,
+        ObjectStoreUrl::local_filesystem(),
+        ObjectStoreBackend::Local,
+        vec![vec![partitioned_file]],
+        Some(projection),
+        None,
+        None,
+        "UTC",
+        false,
+        false,
+        false,
+        false,
+        &session_ctx,
+        false,
+        false,
+        false,
+        false,
+    )
+    .unwrap();
+    let mut stream = scan.execute(0, session_ctx.task_ctx())?;
+    let mut rows = 0;
+    while let Some(batch) = stream.next().await {
+        rows += batch?.num_rows();
+    }
+    Ok(rows)
+}
+
+fn read_schema_id_only() -> SchemaRef {
+    Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, true)]))
+}
+
+fn assert_variant_annotation_rejected(result: Result<usize, datafusion::common::DataFusionError>) {
+    let err = result.expect_err("reading the annotated `v` as a plain struct must be rejected");
+    assert!(
+        err.to_string().contains("_LEGACY_ERROR_TEMP_3071"),
+        "unexpected error: {err}"
+    );
+}
+
+/// Spark's schema pruning keeps unrequested roots in the relation data schema, so `v` reaches the
+/// native scan even when only `id` is read. The check must follow the read schema, not the data
+/// schema, or selecting `id` alone fails on a column the query never touches.
+#[tokio::test]
+async fn annotated_root_outside_the_read_schema_is_not_rejected() {
+    let rows = scan_with_read_schema(
+        write_id_and_annotated_variant(1),
+        read_schema_id_only(),
+        vec![0],
+    )
+    .await
+    .expect("`v` is not in the read schema, so its annotation must not be checked");
+    assert_eq!(rows, 1);
+}
+
+/// Once `v` is part of the read schema, the plain struct request is rejected as Spark rejects it.
+#[tokio::test]
+async fn annotated_root_inside_the_read_schema_is_rejected() {
+    assert_variant_annotation_rejected(
+        scan_with_read_schema(
+            write_id_and_annotated_variant(1),
+            id_and_plain_variant_schema(),
+            vec![0, 1],
+        )
+        .await,
+    );
+}
+
+/// Scoping the check to the read schema must not move it to row groups: a requested annotated root
+/// in a file with no row group is still rejected, matching Spark's schema-conversion-time check.
+#[tokio::test]
+async fn requested_annotated_root_is_rejected_on_an_empty_file() {
+    assert_variant_annotation_rejected(
+        scan_with_read_schema(
+            write_id_and_annotated_variant(0),
+            id_and_plain_variant_schema(),
+            vec![0, 1],
+        )
+        .await,
+    );
+}
+
+/// The empty-file counterpart of `annotated_root_outside_the_read_schema_is_not_rejected`.
+#[tokio::test]
+async fn unrequested_annotated_root_is_not_rejected_on_an_empty_file() {
+    let rows = scan_with_read_schema(
+        write_id_and_annotated_variant(0),
+        read_schema_id_only(),
+        vec![0],
+    )
+    .await
+    .expect("`v` is not in the read schema, so its annotation must not be checked");
+    assert_eq!(rows, 0);
+}

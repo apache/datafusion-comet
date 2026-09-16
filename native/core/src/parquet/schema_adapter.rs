@@ -53,6 +53,12 @@ pub struct SparkPhysicalExprAdapterFactory {
     /// Default values for columns that may be missing from the physical schema.
     /// The key is the Column (containing name and index).
     default_values: Option<HashMap<Column, ScalarValue>>,
+    /// The Spark read schema (`requiredSchema`), which is what Spark clips the Parquet schema to
+    /// before converting it. The logical file schema can be wider: Spark's schema pruning keeps
+    /// unrequested top-level fields in the relation's data schema, and Comet passes that whole
+    /// schema with a separate projection. Roots outside this schema are never converted by
+    /// Spark, so the VARIANT annotation check skips them. `None` checks every root.
+    required_schema: Option<SchemaRef>,
 }
 
 impl SparkPhysicalExprAdapterFactory {
@@ -64,7 +70,14 @@ impl SparkPhysicalExprAdapterFactory {
         Self {
             parquet_options,
             default_values,
+            required_schema: None,
         }
+    }
+
+    /// Restrict the VARIANT annotation check to the roots Spark actually reads.
+    pub fn with_required_schema(mut self, required_schema: SchemaRef) -> Self {
+        self.required_schema = Some(required_schema);
+        self
     }
 }
 
@@ -547,45 +560,13 @@ fn check_variant_annotation(
     }
     match (logical.data_type(), physical.data_type()) {
         (DataType::Struct(logical_fields), DataType::Struct(physical_fields)) => {
-            // Pair nested fields the same way `spark_parquet_convert` does, so the field this
-            // check inspects is the one the read will actually pull from the file: when the
-            // logical struct carries Parquet field IDs anywhere, ID-bearing logical fields match
-            // ONLY by ID and the rest fall back to the folded name. A logical field with no
+            // Resolve nested fields exactly as `spark_parquet_convert` does when it reads them,
+            // including field-id precedence, case folding and the ambiguity error, so the field
+            // inspected here is the one the read pulls from the file. A logical field with no
             // counterpart in the file is null-filled and carries no annotation to check.
-            let should_match_by_id = parquet_options.use_field_id
-                && logical_fields.iter().any(|f| parse_field_id(f).is_some());
-            let physical_id_to_index: HashMap<i32, usize> = if should_match_by_id {
-                let mut map = HashMap::new();
-                for (i, field) in physical_fields.iter().enumerate() {
-                    if let Some(id) = parse_field_id(field) {
-                        map.entry(id).or_insert(i);
-                    }
-                }
-                map
-            } else {
-                HashMap::new()
-            };
-            let physical_names = physical_fields
-                .iter()
-                .map(|field| field.name().as_str())
-                .collect::<Vec<_>>();
-            let physical_folded = fold_names(&physical_names, parquet_options.case_sensitive);
-            // First match wins on a folded-name collision, as `spark_parquet_convert` does when it
-            // falls through its ambiguity check; `collect` would arbitrarily keep the last.
-            let mut folded_to_index: HashMap<&str, usize> = HashMap::new();
-            for (i, folded) in physical_folded.iter().enumerate() {
-                folded_to_index.entry(folded.as_str()).or_insert(i);
-            }
-
-            for logical_child in logical_fields {
-                let physical_index = match (should_match_by_id, parse_field_id(logical_child)) {
-                    (true, Some(id)) => physical_id_to_index.get(&id).copied(),
-                    _ => {
-                        let folded =
-                            fold_name(logical_child.name(), parquet_options.case_sensitive);
-                        folded_to_index.get(folded.as_str()).copied()
-                    }
-                };
+            let physical_indices =
+                match_struct_fields(physical_fields, logical_fields, parquet_options)?;
+            for (logical_child, physical_index) in logical_fields.iter().zip(physical_indices) {
                 if let Some(i) = physical_index {
                     check_variant_annotation(
                         logical_child,
@@ -603,7 +584,21 @@ fn check_variant_annotation(
             check_variant_annotation(logical_item, physical_item, parquet_options, path)?;
         }
         (DataType::Map(logical_entries, _), DataType::Map(physical_entries, _)) => {
-            check_variant_annotation(logical_entries, physical_entries, parquet_options, path)?;
+            // Map children are read by position, not by name: `MapArray::keys` and `values` take
+            // columns 0 and 1, and Spark's converter takes `getChild(0)` and `getChild(1)`. The
+            // file may name them anything, so pair them positionally rather than through
+            // `match_struct_fields`.
+            if let (DataType::Struct(logical_children), DataType::Struct(physical_children)) =
+                (logical_entries.data_type(), physical_entries.data_type())
+            {
+                path.push(logical_entries.name().clone());
+                for (logical_child, physical_child) in
+                    logical_children.iter().zip(physical_children.iter())
+                {
+                    check_variant_annotation(logical_child, physical_child, parquet_options, path)?;
+                }
+                path.pop();
+            }
         }
         _ => {}
     }
@@ -1096,13 +1091,35 @@ impl PhysicalExprAdapterFactory for SparkPhysicalExprAdapterFactory {
             for (i, name) in physical_folded.iter().enumerate() {
                 physical_by_folded.entry(name.as_str()).or_insert(i);
             }
+            // When the read schema is known, check each requested root against its requested
+            // type and skip roots Spark would not read. Requested roots share their Spark names
+            // with the logical file schema, so the same fold pairs them.
+            let required_by_folded: Option<HashMap<String, &FieldRef>> =
+                self.required_schema.as_ref().map(|required| {
+                    let mut map = HashMap::new();
+                    for (field, folded) in required
+                        .fields()
+                        .iter()
+                        .zip(fold_schema_names(required, case_sensitive))
+                    {
+                        map.entry(folded).or_insert(field);
+                    }
+                    map
+                });
             let mut path = Vec::new();
             for (logical_field, folded) in logical_file_schema.fields().iter().zip(&logical_folded)
             {
+                let requested_field = match &required_by_folded {
+                    Some(required) => match required.get(folded) {
+                        Some(field) => *field,
+                        None => continue,
+                    },
+                    None => logical_field,
+                };
                 if let Some(&i) = physical_by_folded.get(folded.as_str()) {
                     path.clear();
                     check_variant_annotation(
-                        logical_field,
+                        requested_field,
                         &adapted_physical_schema.fields()[i],
                         &self.parquet_options,
                         &mut path,
@@ -3957,6 +3974,9 @@ mod test {
         /// Keep the Variant markers on the requested schema, modelling a genuine native Variant
         /// projection (`projects_variant` in `parquet_exec.rs`) instead of a hand-written struct.
         keep_request_markers: bool,
+        /// Request this schema instead of one derived from the file schema, for cases where
+        /// Spark's requested names differ from the names the file was written with.
+        requested_schema: Option<SchemaRef>,
     }
 
     impl Default for ProbeOptions {
@@ -3965,6 +3985,7 @@ mod test {
                 skip_arrow_metadata: true,
                 ignore_variant_annotation: false,
                 keep_request_markers: false,
+                requested_schema: None,
             }
         }
     }
@@ -3990,7 +4011,9 @@ mod test {
         print_schema(&mut printed, reader.parquet_schema().root_schema());
         let printed = String::from_utf8(printed).unwrap();
 
-        let requested = if options.keep_request_markers {
+        let requested = if let Some(requested) = options.requested_schema {
+            requested
+        } else if options.keep_request_markers {
             Arc::clone(&file_schema)
         } else {
             Arc::new(Schema::new(
@@ -4094,9 +4117,10 @@ mod test {
         );
     }
 
-    /// One row of `map<string, variant>`, the `mv` column of the Spark suite.
-    fn map_of_variant_batch() -> Result<RecordBatch, DataFusionError> {
-        let value_field = variant_field("value");
+    /// One row of `map<string, variant>`, the `mv` column of the Spark suite, with the map value
+    /// child named `value_name` in the file.
+    fn map_of_variant_batch(value_name: &str) -> Result<RecordBatch, DataFusionError> {
+        let value_field = variant_field(value_name);
         let entry_fields = Fields::from(vec![
             Arc::new(Field::new("key", DataType::Utf8, false)),
             Arc::clone(&value_field),
@@ -4205,7 +4229,7 @@ mod test {
     /// The `mv map<string, variant>` case.
     #[tokio::test]
     async fn variant_annotation_as_map_value_is_rejected() -> Result<(), DataFusionError> {
-        let batch = map_of_variant_batch()?;
+        let batch = map_of_variant_batch("value")?;
         let probe = probe_variant_annotation(batch, ProbeOptions::default()).await?;
         // The path walks through the Parquet map's `entries` group, as Spark's own error does.
         assert_variant_annotation_rejected(&probe, "mv.entries.value", plain_variant_storage_sql());
@@ -4385,7 +4409,7 @@ mod test {
                 RecordBatch::try_new(top_level, vec![Arc::new(variant_storage_array())])?,
             ),
             // The conf short-circuits the whole walk, so a nested annotation must be ignored too.
-            ("map value", map_of_variant_batch()?),
+            ("map value", map_of_variant_batch("value")?),
         ];
         for (shape, batch) in cases {
             let probe = probe_variant_annotation(
@@ -4445,6 +4469,81 @@ mod test {
         let probe = probe_variant_annotation(batch, ProbeOptions::default()).await?;
         assert_variant_annotation_rejected(&probe, "v", plain_variant_storage_sql());
         Ok(())
+    }
+
+    /// Map children are read by position, so a VARIANT annotation on the second child must be
+    /// rejected even when the file names that child something other than the `value` Spark
+    /// requests. Pairing by name would find no `value` in the file and skip the annotation while
+    /// the read still consumes the child positionally. The error path uses the requested names.
+    #[tokio::test]
+    async fn variant_annotation_on_a_renamed_map_value_is_rejected() -> Result<(), DataFusionError>
+    {
+        let requested_entries = Fields::from(vec![
+            Field::new("key", DataType::Utf8, false),
+            Field::new("value", DataType::Struct(variant_storage_fields()), true),
+        ]);
+        let requested = Arc::new(Schema::new(vec![Field::new(
+            "mv",
+            DataType::Map(
+                Arc::new(Field::new(
+                    "entries",
+                    DataType::Struct(requested_entries),
+                    false,
+                )),
+                false,
+            ),
+            true,
+        )]));
+        let probe = probe_variant_annotation(
+            map_of_variant_batch("payload")?,
+            ProbeOptions {
+                requested_schema: Some(requested),
+                ..Default::default()
+            },
+        )
+        .await?;
+        assert!(
+            probe.parquet_schema.contains("payload"),
+            "the file must name the map value `payload` for this case to mean anything"
+        );
+        assert_variant_annotation_rejected(&probe, "mv.entries.value", plain_variant_storage_sql());
+        Ok(())
+    }
+
+    /// A requested root is walked with its requested type, not its data-schema type, so an
+    /// annotated nested field that the read schema prunes away is not checked. Spark clips the
+    /// Parquet schema to the read schema before converting it and never looks at `ns.nv` here.
+    #[test]
+    fn annotated_field_pruned_from_the_read_schema_is_not_rejected() {
+        let storage = DataType::Struct(variant_storage_fields());
+        let nested = |nv: Field| {
+            Arc::new(Schema::new(vec![Field::new(
+                "ns",
+                DataType::Struct(Fields::from(vec![
+                    Field::new("a", DataType::Int32, true),
+                    nv,
+                ])),
+                true,
+            )]))
+        };
+        let logical = nested(Field::new("nv", storage.clone(), true));
+        let physical = nested(Field::new("nv", storage, true).with_extension_type(VariantType));
+        let required = Arc::new(Schema::new(vec![Field::new(
+            "ns",
+            DataType::Struct(Fields::from(vec![Field::new("a", DataType::Int32, true)])),
+            true,
+        )]));
+        let result = SparkPhysicalExprAdapterFactory::new(
+            SparkParquetOptions::new(EvalMode::Legacy, "UTC", false),
+            None,
+        )
+        .with_required_schema(required)
+        .create(logical, physical);
+        assert!(
+            result.is_ok(),
+            "`ns.nv` is outside the read schema: {:?}",
+            result.err()
+        );
     }
 
     /// A top-level Variant column: the `v variant` case of the Spark suite.
@@ -4543,7 +4642,7 @@ mod test {
     /// another conversion branch, independent of both struct fields and list elements.
     #[tokio::test]
     async fn variant_annotation_survives_as_map_value() -> Result<(), DataFusionError> {
-        let batch = map_of_variant_batch()?;
+        let batch = map_of_variant_batch("value")?;
         let probe = probe_variant_annotation(batch, ProbeOptions::default()).await?;
         assert_annotation_survived("map value", &probe, |s| {
             match s.field_with_name("mv").ok()?.data_type() {

@@ -224,7 +224,8 @@ pub(crate) fn init_datasource_exec(
     };
 
     let expr_adapter_factory: Arc<dyn PhysicalExprAdapterFactory> = Arc::new(
-        SparkPhysicalExprAdapterFactory::new(spark_parquet_options, default_values),
+        SparkPhysicalExprAdapterFactory::new(spark_parquet_options, default_values)
+            .with_required_schema(Arc::clone(&required_schema)),
     );
 
     let file_groups = file_groups
