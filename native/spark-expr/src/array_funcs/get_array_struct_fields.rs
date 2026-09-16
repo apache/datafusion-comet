@@ -69,9 +69,11 @@ impl GetArrayStructFields {
             DataType::Struct(fields) => {
                 let field = &fields[self.ordinal];
                 // A null struct element yields null even when the field itself is required.
-                Ok(Arc::new(field.as_ref().clone().with_nullable(
-                    list_field.is_nullable() || field.is_nullable(),
-                )))
+                if list_field.is_nullable() && !field.is_nullable() {
+                    Ok(Arc::new(field.as_ref().clone().with_nullable(true)))
+                } else {
+                    Ok(Arc::clone(field))
+                }
             }
             data_type => Err(DataFusionError::Internal(format!(
                 "Unexpected data type in GetArrayStructFields: {data_type:?}"
@@ -98,15 +100,16 @@ impl PhysicalExpr for GetArrayStructFields {
 
     fn evaluate(&self, batch: &RecordBatch) -> DataFusionResult<ColumnarValue> {
         let child_value = self.child.evaluate(batch)?.into_array(batch.num_rows())?;
-        let field = self.child_field(batch.schema().as_ref())?;
 
         match child_value.data_type() {
             DataType::List(_) => {
+                let field = self.child_field(batch.schema().as_ref())?;
                 let list_array = as_list_array(&child_value)?;
 
                 get_array_struct_fields(list_array, self.ordinal, field)
             }
             DataType::LargeList(_) => {
+                let field = self.child_field(batch.schema().as_ref())?;
                 let list_array = as_large_list_array(&child_value)?;
 
                 get_array_struct_fields(list_array, self.ordinal, field)
@@ -245,6 +248,21 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn non_list_child_returns_dispatch_error() {
+        let batch = RecordBatch::try_from_iter(vec![(
+            "value",
+            Arc::new(Int32Array::from(vec![1])) as arrow::array::ArrayRef,
+        )])
+        .unwrap();
+        let expr = GetArrayStructFields::new(Arc::new(Column::new("value", 0)), 0);
+        assert!(expr
+            .evaluate(&batch)
+            .unwrap_err()
+            .to_string()
+            .contains("Unexpected child type for ListExtract: Int32"));
     }
 
     #[test]

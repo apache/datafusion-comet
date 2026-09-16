@@ -21,5 +21,8 @@ CREATE TABLE test_arr_struct(arr array<struct<name: string, value: int>>) USING 
 statement
 INSERT INTO test_arr_struct VALUES (array(named_struct('name', 'a', 'value', 1), named_struct('name', 'b', 'value', 2))), (array(named_struct('name', 'x', 'value', 10))), (NULL)
 
+statement
+INSERT INTO test_arr_struct VALUES (array(NULL, named_struct('name', 'b', 'value', 2)))
+
 query spark_answer_only
 SELECT arr.name, arr.value FROM test_arr_struct

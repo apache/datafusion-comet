@@ -40,6 +40,7 @@ import org.apache.spark.sql.types._
 import com.google.protobuf.ByteString
 
 import org.apache.comet.{CometConf, ConfigEntry}
+import org.apache.comet.DataTypeSupport.isComplexType
 import org.apache.comet.iceberg.{CometIcebergNativeScanMetadata, IcebergReflection}
 import org.apache.comet.objectstore.NativeConfig
 import org.apache.comet.serde.{CometOperatorSerde, OperatorOuterClass}
@@ -630,10 +631,9 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
             operation match {
               // iceberg-rust has accessors only for primitive fields, not containers. Keep
               // the post-scan filter without sending residuals that would warn on every task.
-              case IS_NULL | IS_NOT_NULL | NOT_NULL
-                  if attribute.dataType.isInstanceOf[ArrayType] ||
-                    attribute.dataType.isInstanceOf[MapType] ||
-                    attribute.dataType.isInstanceOf[StructType] =>
+              // Containers cannot be partition columns, so Iceberg cannot remove their null
+              // checks from the post-scan filter through exact partition selection.
+              case IS_NULL | IS_NOT_NULL | NOT_NULL if isComplexType(attribute.dataType) =>
                 None
               case IS_NULL => Some(unaryPredicate(columnName, IcebergPredicateOperator.IsNull))
               case IS_NOT_NULL | NOT_NULL =>

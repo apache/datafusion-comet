@@ -969,8 +969,7 @@ case class CometScanRule(session: SparkSession)
           defaultValuesSupported && schemaTypesSupported && encryptionKeyLengthSupported &&
           taskValidation.allParquet && allSupportedFilesystems && allLocationsOpenable &&
           metadataSchemeSupported && partitionTypesSupported && unifiedPartitionTypeSupported &&
-          transformFunctionsSupported &&
-          deleteFileTypesSupported && dppSubqueriesSupported) {
+          transformFunctionsSupported && deleteFileTypesSupported && dppSubqueriesSupported) {
           CometBatchScanExec(
             scanExec.clone().asInstanceOf[BatchScanExec],
             runtimeFilters = scanExec.runtimeFilters,

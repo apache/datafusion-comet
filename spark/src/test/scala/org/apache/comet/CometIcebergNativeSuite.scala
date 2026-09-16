@@ -26,24 +26,28 @@ import java.nio.charset.StandardCharsets.UTF_8
 import scala.collection.mutable
 import scala.jdk.CollectionConverters._
 
+import org.apache.iceberg.Schema
+import org.apache.iceberg.catalog.TableIdentifier
 import org.apache.iceberg.data.IcebergGenerics
 import org.apache.iceberg.expressions.Expressions
-import org.apache.iceberg.spark.Spark3Util
+import org.apache.iceberg.spark.{Spark3Util, SparkCatalog}
+import org.apache.iceberg.types.Types
 import org.apache.spark.CometListenerBusUtils
 import org.apache.spark.scheduler.{SparkListener, SparkListenerTaskEnd}
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
-import org.apache.spark.sql.catalyst.expressions.DynamicPruningExpression
+import org.apache.spark.sql.catalyst.expressions.{AttributeReference, DynamicPruningExpression}
 import org.apache.spark.sql.comet._
 import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
 import org.apache.spark.sql.execution.{InSubqueryExec, ReusedSubqueryExec, SparkPlan, SubqueryExec}
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AdaptiveSparkPlanHelper, BroadcastQueryStageExec}
 import org.apache.spark.sql.execution.exchange.{ReusedExchangeExec, ShuffleExchangeExec}
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{StringType, TimestampType}
+import org.apache.spark.sql.types.{ArrayType, IntegerType, MapType, StringType, StructType, TimestampType}
 
 import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus, isSpark41Plus, isSpark42Plus}
 import org.apache.comet.iceberg.{IcebergReflection, RESTCatalogHelper}
 import org.apache.comet.serde.OperatorOuterClass
+import org.apache.comet.serde.operator.CometIcebergNativeScan
 import org.apache.comet.testing.{FuzzDataGenerator, SchemaGenOptions}
 
 /**
@@ -2215,18 +2219,18 @@ class CometIcebergNativeSuite
   }
 
   test("complex type null residuals are not serialized") {
-    import org.apache.spark.sql.types.{ArrayType, IntegerType, MapType, StructType}
-    import org.apache.comet.serde.operator.CometIcebergNativeScan
-    import org.apache.spark.sql.catalyst.expressions.AttributeReference
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
     for (dataType <- Seq(
         ArrayType(IntegerType),
         MapType(StringType, IntegerType),
         new StructType().add("value", IntegerType));
       predicate <- Seq(Expressions.isNull("value"), Expressions.notNull("value"))) {
-      assert(
-        CometIcebergNativeScan
+      withClue(s"$dataType: $predicate") {
+        assert(CometIcebergNativeScan
           .icebergExprToProto(predicate, Seq(AttributeReference("value", dataType)()), Set.empty)
           .isEmpty)
+      }
     }
     assert(
       CometIcebergNativeScan
@@ -2235,6 +2239,65 @@ class CometIcebergNativeSuite
           Seq(AttributeReference("value", IntegerType)()),
           Set.empty)
         .nonEmpty)
+  }
+
+  test("required field projection preserves null array elements") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+        val tableName = "test_cat.db.required_array_field_test"
+        val catalog = spark.sessionState.catalogManager
+          .catalog("test_cat")
+          .asInstanceOf[SparkCatalog]
+        val element =
+          Types.StructType.of(Types.NestedField.required(4, "a", Types.IntegerType.get()))
+        val schema = new Schema(
+          Types.NestedField.required(1, "id", Types.IntegerType.get()),
+          Types.NestedField.optional(2, "l", Types.ListType.ofOptional(3, element)))
+        try {
+          catalog.icebergCatalog.createTable(
+            TableIdentifier.of("db", "required_array_field_test"),
+            schema)
+          spark.sql(s"""
+            INSERT INTO $tableName VALUES
+              (1, array(named_struct('a', 1))),
+              (2, NULL),
+              (3, array()),
+              (4, array(NULL)),
+              (5, array(NULL, named_struct('a', 2)))
+          """)
+          assert(
+            catalog.icebergCatalog
+              .loadTable(TableIdentifier.of("db", "required_array_field_test"))
+              .schema()
+              .findField("l.element.a")
+              .isRequired)
+          val query = s"SELECT id, l.a FROM $tableName"
+          val (_, cometPlan) = checkSparkAnswer(query)
+          assertSingleNativeScan(cometPlan)
+          assert(
+            collect(cometPlan) { case project: CometProjectExec => project }.nonEmpty,
+            s"$cometPlan")
+          checkAnswer(
+            spark.sql(query),
+            Seq(
+              Row(1, Seq(1)),
+              Row(2, null),
+              Row(3, Seq.empty[Int]),
+              Row(4, Seq(null)),
+              Row(5, Seq(null, 2))))
+        } finally {
+          spark.sql(s"DROP TABLE IF EXISTS $tableName")
+        }
+      }
+    }
   }
 
   // Complex type filter tests
