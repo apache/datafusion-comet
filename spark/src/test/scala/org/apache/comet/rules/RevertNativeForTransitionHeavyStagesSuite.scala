@@ -19,6 +19,9 @@
 
 package org.apache.comet.rules
 
+import java.util.concurrent.{CountDownLatch, TimeUnit}
+import java.util.concurrent.atomic.AtomicReference
+
 import org.apache.spark.sql.{CometTestBase, SaveMode}
 import org.apache.spark.sql.catalyst.expressions.{AttributeReference, Literal}
 import org.apache.spark.sql.catalyst.expressions.aggregate.{Final, Partial}
@@ -73,11 +76,13 @@ class RevertNativeForTransitionHeavyStagesSuite extends CometTestBase {
   }
 
   private def captureDataWritingCommand(path: String): DataWritingCommandExec = {
-    var captured: SparkPlan = null
+    val captured = new AtomicReference[SparkPlan]()
+    val callbackCompleted = new CountDownLatch(1)
     val listener = new QueryExecutionListener {
       override def onSuccess(funcName: String, qe: QueryExecution, durationNs: Long): Unit = {
         if (funcName == "save" || funcName.contains("command")) {
-          captured = qe.executedPlan
+          captured.set(qe.executedPlan)
+          callbackCompleted.countDown()
         }
       }
       override def onFailure(
@@ -90,11 +95,14 @@ class RevertNativeForTransitionHeavyStagesSuite extends CometTestBase {
       withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
         spark.range(1).toDF("id").write.mode("overwrite").parquet(path)
       }
+      assert(
+        callbackCompleted.await(10, TimeUnit.SECONDS),
+        "timed out waiting to capture the parquet write plan")
     } finally {
       spark.listenerManager.unregister(listener)
     }
     val plan = stripAQEPlan(
-      Option(captured).getOrElse(fail("expected a captured parquet write plan")))
+      Option(captured.get()).getOrElse(fail("expected a captured parquet write plan")))
     plan
       .collectFirst { case command: DataWritingCommandExec => command }
       .getOrElse(fail(s"expected DataWritingCommandExec:\n$plan"))
