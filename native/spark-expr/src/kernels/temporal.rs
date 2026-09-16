@@ -32,7 +32,6 @@ use arrow::array::{
 };
 use arrow::{
     array::*,
-    compute::cast,
     datatypes::{DataType, Field, TimeUnit},
 };
 use datafusion::{
@@ -368,18 +367,6 @@ where
 /// Truncates a date expressed as days since the epoch, returning `None` if it is out of range.
 type DateTruncFn = fn(i32) -> Option<i32>;
 
-/// The Spark `trunc` spellings and the canonical granularities accepted by DataFusion.
-const DATE_TRUNC_ALIASES: [(&str, &str); 8] = [
-    ("YEAR", "year"),
-    ("YYYY", "year"),
-    ("YY", "year"),
-    ("QUARTER", "quarter"),
-    ("MONTH", "month"),
-    ("MON", "month"),
-    ("MM", "month"),
-    ("WEEK", "week"),
-];
-
 /// The `date_trunc` formats Spark accepts, and the truncation each one selects.
 const DATE_TRUNC_FORMATS: [(&str, DateTruncFn); 8] = [
     ("YEAR", trunc_days_to_year),
@@ -402,19 +389,6 @@ fn date_trunc_fn_for_format(format: &str) -> Result<DateTruncFn, SparkError> {
         .iter()
         .find(|(name, _)| name.eq_ignore_ascii_case(format))
         .map(|(_, trunc_fn)| *trunc_fn)
-        .ok_or_else(|| {
-            SparkError::Internal(format!(
-                "Unsupported format: {format:?} for function 'date_trunc'"
-            ))
-        })
-}
-
-/// Normalize a Spark `trunc` format without exposing additional DataFusion granularities.
-fn normalize_date_trunc_format(format: &str) -> Result<&'static str, SparkError> {
-    DATE_TRUNC_ALIASES
-        .iter()
-        .find(|(name, _)| name.eq_ignore_ascii_case(format))
-        .map(|(_, granularity)| *granularity)
         .ok_or_else(|| {
             SparkError::Internal(format!(
                 "Unsupported format: {format:?} for function 'date_trunc'"
@@ -447,72 +421,13 @@ fn fits_datafusion_coarse_trunc_range(micros: i64) -> bool {
         && micros >= LOWER_NANOSECOND_MICROS + COARSE_TRUNC_MARGIN_MICROS
 }
 
-#[inline]
-fn date32_to_utc_midnight_micros(days: i32) -> Option<i64> {
-    i64::from(days).checked_mul(MICROS_PER_DAY)
-}
-
-#[inline]
-fn date32_fits_upstream(days: i32) -> bool {
-    date32_to_utc_midnight_micros(days).is_some_and(fits_datafusion_coarse_trunc_range)
-}
-
-/// Truncate scalar-format Date32 values through DataFusion's physical `date_trunc`.
+/// Truncate Date32 values directly in days since the epoch.
 ///
-/// DataFusion 55.1 scales coarse timestamp granularities to nanoseconds internally. Spark Date
-/// supports approximately years 0001 through 9999, while TimestampNanosecond only spans roughly
-/// 1677 through 2262. Values outside the guarded TimestampNanosecond range therefore retain the
-/// established Date32 calculation; values inside it use the upstream cast sandwich.
+/// Routing Date32 through DataFusion's timestamp kernel requires two casts and temporary arrays,
+/// which is materially slower than this single-pass implementation.
 fn date_trunc_date32(array: &Date32Array, format: String) -> Result<Date32Array, SparkError> {
-    let granularity = normalize_date_trunc_format(&format)?;
     let trunc_fn = date_trunc_fn_for_format(&format)?;
-    let mut has_wide_value = false;
-    let upstream_input: Date32Array = array
-        .iter()
-        .map(|value| {
-            value.and_then(|days| {
-                if date32_fits_upstream(days) {
-                    Some(days)
-                } else {
-                    has_wide_value = true;
-                    None
-                }
-            })
-        })
-        .collect();
-
-    if upstream_input.null_count() == array.len() {
-        return Ok(array.iter().map(|value| value.and_then(trunc_fn)).collect());
-    }
-
-    let timestamps = cast(
-        &upstream_input,
-        &DataType::Timestamp(TimeUnit::Microsecond, None),
-    )?;
-    let truncated = datafusion_date_trunc(timestamps, granularity)?;
-    let truncated = cast(truncated.as_ref(), &DataType::Date32)?;
-    let upstream = truncated
-        .as_any()
-        .downcast_ref::<Date32Array>()
-        .expect("DataFusion date_trunc Date32 cast mismatch");
-
-    if !has_wide_value {
-        return Ok(upstream.clone());
-    }
-
-    Ok(array
-        .iter()
-        .enumerate()
-        .map(|(index, value)| {
-            value.and_then(|days| {
-                if date32_fits_upstream(days) {
-                    Some(upstream.value(index))
-                } else {
-                    trunc_fn(days)
-                }
-            })
-        })
-        .collect())
+    Ok(array.iter().map(|value| value.and_then(trunc_fn)).collect())
 }
 
 ///
@@ -1367,14 +1282,6 @@ mod tests {
                 format!("Unsupported format: {format:?} for function 'date_trunc'")
             );
         }
-
-        assert!(super::date32_to_utc_midnight_micros(i32::MAX).is_none());
-        assert!(super::date32_to_utc_midnight_micros(i32::MIN).is_none());
-        assert!(!super::date32_fits_upstream(epoch_days("3333-05-17")));
-        assert!(!super::date32_fits_upstream(epoch_days("0001-01-01")));
-        assert!(super::date32_fits_upstream(epoch_days("2024-05-17")));
-        assert!(super::date32_fits_upstream(epoch_days("1678-09-27")));
-        assert!(!super::date32_fits_upstream(epoch_days("1678-09-26")));
     }
 
     #[test]
