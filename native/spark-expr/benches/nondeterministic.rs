@@ -29,8 +29,8 @@ use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use datafusion::physical_expr::expressions::Column;
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion_comet_spark_expr::{
-    BernoulliCellSampler, monotonically_increasing_id::MonotonicallyIncreasingId, RandExpr, RandStrExpr, RandnExpr, ShuffleExpr,
-    UuidExpr,
+    monotonically_increasing_id::MonotonicallyIncreasingId, BernoulliCellSampler, RandExpr,
+    RandStrExpr, RandnExpr, ShuffleExpr, UuidExpr,
 };
 use std::hint::black_box;
 use std::sync::Arc;
