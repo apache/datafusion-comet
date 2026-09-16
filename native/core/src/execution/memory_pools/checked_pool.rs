@@ -167,13 +167,14 @@ impl<P: MemoryPool> MemoryPool for CheckedMemoryPool<P> {
     }
 
     fn memory_limit(&self) -> MemoryLimit {
-        // Only a real limit when it is enforced. Reporting it while merely observing would tell
-        // callers that planning against a budget nothing rejects is safe.
-        if self.enforce {
-            MemoryLimit::Finite(self.budget)
-        } else {
-            self.inner.memory_limit()
-        }
+        // Always the inner pool's limit, never the budget, in both modes. The budget is a
+        // process-wide backstop compared against process-wide allocator usage, not this pool's
+        // reservable limit, so reporting it here would be a lie about the pool. DataFusion also
+        // acts on this value: `AggregateExec::should_use_partial_reduce_hash_stream` bails out
+        // whenever the pool reports `Finite`, so returning the budget would silently change the
+        // aggregation strategy as a side effect of enabling the check, which is not something a
+        // memory guard should do.
+        self.inner.memory_limit()
     }
 }
 
@@ -206,16 +207,15 @@ mod tests {
         reservation.try_grow(0).unwrap();
     }
 
+    /// Never `Finite(budget)`, in either mode. DataFusion changes its aggregation strategy when a
+    /// pool reports a finite limit, so reporting the backstop here would make enabling the check
+    /// alter execution even when it never refuses anything.
     #[test]
-    fn reports_the_budget_as_its_limit_when_enforcing() {
+    fn always_reports_the_inner_limit_whether_enforcing_or_not() {
         assert!(matches!(
             enforcing(4096).memory_limit(),
-            MemoryLimit::Finite(4096)
+            MemoryLimit::Infinite
         ));
-    }
-
-    #[test]
-    fn defers_to_the_inner_limit_when_only_observing() {
         assert!(matches!(
             observing(4096).memory_limit(),
             MemoryLimit::Infinite
