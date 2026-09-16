@@ -25,7 +25,7 @@ import scala.collection.mutable
 import scala.collection.mutable.ListBuffer
 
 import org.apache.spark.sql.catalyst.analysis.FunctionRegistry
-import org.apache.spark.sql.catalyst.expressions.{Cast, Expression}
+import org.apache.spark.sql.catalyst.expressions.{Cast, Expression, StringLPad, StringRPad}
 
 import org.apache.comet.CometConf.COMET_ONHEAP_MEMORY_OVERHEAD
 import org.apache.comet.expressions.{CometCast, CometEvalMode}
@@ -198,7 +198,14 @@ object GenerateDocs {
       (exprKinds ++ aggKinds).toMap
     }
     FunctionRegistry.expressions.iterator.map { case (name, (info, _)) =>
-      name -> classNameToKind.getOrElse(info.getClassName, ImplUnknown)
+      // Spark registers builders for padding because the expression depends on the input type.
+      // Resolve their string expressions, which expose both the native and dispatcher paths.
+      val className = name match {
+        case "lpad" => classOf[StringLPad].getName
+        case "rpad" => classOf[StringRPad].getName
+        case _ => info.getClassName
+      }
+      name -> classNameToKind.getOrElse(className, ImplUnknown)
     }.toMap
   }
 

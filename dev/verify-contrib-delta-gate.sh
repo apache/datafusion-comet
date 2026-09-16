@@ -24,9 +24,9 @@
 #      doesn't pull `delta_kernel` into the dependency tree.
 #   2. Maven: default `mvn ... package` doesn't compile any
 #      `org/apache/comet/contrib/` classes and doesn't pull `io.delta:*` deps.
-#   3. Symbol/size: the resulting `libcomet` (`.so` on Linux, `.dylib` on macOS) from the default build is
-#      meaningfully smaller than the contrib-enabled build, and carries no
-#      `comet_contrib_delta`/`delta_kernel`/etc. external symbols.
+#   3. Symbols: the resulting `libcomet` (`.so` on Linux, `.dylib` on macOS) from the default
+#      build carries no `comet_contrib_delta`/`delta_kernel`/etc. symbols, and the
+#      contrib-enabled build carries some (so the pattern is known to still match).
 #
 # Exit non-zero on the first failure. Designed to be wired into CI so a future
 # change that leaks Delta into core gets caught immediately.
@@ -225,9 +225,9 @@ if [[ -n "$SERVICE_LEAKS" ]]; then
 fi
 green "OK: default build registers no contrib services (empty ServiceLoader registries at runtime)"
 
-# ---- libcomet symbol/size gate -------------------------------------------
+# ---- libcomet symbol gate -------------------------------------------------
 
-hdr "libcomet: default build is smaller and has no Delta symbols"
+hdr "libcomet: default build has no Delta symbols"
 cd "$NATIVE_DIR"
 # The cdylib extension is platform-specific: `libcomet.so` on Linux (CI), `libcomet.dylib` on
 # macOS. Find whichever the build produced; `stat`/`nm` flags also differ across the two.
@@ -251,6 +251,17 @@ delta_syms() {
   nm "$1" 2>/dev/null | grep -ciE 'comet_contrib_delta|delta_kernel|deltadvfilter|deltasynthetic' || true
 }
 
+# `nm` is the only direct measurement this section makes, so a missing `nm` has to fail rather
+# than silently skip -- same anti-vacuous discipline as the cargo-tree and effective-pom guards
+# above. Every image the gate runs on ships one (CI's `amd64/rust` has binutils; macOS has
+# Xcode's). Previously a missing `nm` degraded both symbol checks to no-ops and left the size
+# comparison below as the only enforcement, which is backwards: the size number is the weak
+# signal and the symbols are the strong one.
+if ! command -v nm >/dev/null 2>&1; then
+  red "FAIL: 'nm' not found on PATH; refusing to conclude 'no Delta symbols' vacuously"
+  exit 1
+fi
+
 cargo clean -p comet-contrib-delta -p datafusion-comet >/dev/null 2>&1 || true
 cargo build -j 4 -p datafusion-comet >/dev/null 2>&1
 LIB_DEFAULT="$(comet_lib)"
@@ -259,11 +270,7 @@ if [[ -z "$LIB_DEFAULT" ]]; then
   exit 1
 fi
 SIZE_DEFAULT="$(lib_size "$LIB_DEFAULT")"
-if command -v nm >/dev/null 2>&1; then
-  EXT_SYMS="$(delta_syms "$LIB_DEFAULT")"
-else
-  EXT_SYMS=0
-fi
+EXT_SYMS="$(delta_syms "$LIB_DEFAULT")"
 if [[ "$EXT_SYMS" -ne 0 ]]; then
   red "FAIL: default libcomet contains $EXT_SYMS Delta-related symbols"
   exit 1
@@ -273,34 +280,38 @@ green "OK: default libcomet has 0 Delta symbols (size=$SIZE_DEFAULT bytes)"
 cargo build -j 4 -p datafusion-comet --features contrib-delta >/dev/null 2>&1
 LIB_CONTRIB="$(comet_lib)"
 SIZE_CONTRIB="$(lib_size "$LIB_CONTRIB")"
-if [[ "$SIZE_CONTRIB" -le "$SIZE_DEFAULT" ]]; then
-  red "FAIL: contrib-enabled libcomet (size=$SIZE_CONTRIB) is not larger than default (size=$SIZE_DEFAULT)"
-  red "       (would indicate contrib was being linked into default build too)"
+# The contrib-enabled libcomet MUST contain Delta-related symbols. Without this, a future Rust
+# toolchain that mangles symbols differently (so our grep pattern stops matching) would silently
+# make the default-build check a no-op while still passing -- the gate would lie about being
+# enforced. Asserting both "default has 0" AND "contrib has >0" catches grep-pattern drift.
+CONTRIB_SYMS="$(delta_syms "$LIB_CONTRIB")"
+if [[ "$CONTRIB_SYMS" -lt 1 ]]; then
+  red "FAIL: contrib-enabled libcomet has 0 Delta-related symbols matching our grep pattern."
+  red "      This means the symbol-name pattern in this script has drifted from what"
+  red "      Rust currently emits, and the default-build check above is now a no-op."
+  red "      Inspect the dylib's exports and update the grep pattern."
   exit 1
 fi
-# Sanity check: the contrib-enabled libcomet MUST contain Delta-related symbols.
-# Without this, a future Rust toolchain that mangles symbols differently (so our
-# grep pattern stops matching) would silently make the default-build check a no-op
-# while still passing -- the gate would lie about being enforced. Asserting both
-# "default has 0" AND "contrib has >0" catches grep-pattern drift.
-if command -v nm >/dev/null 2>&1; then
-  CONTRIB_SYMS="$(delta_syms "$LIB_CONTRIB")"
-  if [[ "$CONTRIB_SYMS" -lt 1 ]]; then
-    red "FAIL: contrib-enabled libcomet has 0 Delta-related symbols matching our grep pattern."
-    red "      This means the symbol-name pattern in this script has drifted from what"
-    red "      Rust currently emits, and the default-build check above is now a no-op."
-    red "      Inspect the dylib's exports and update the grep pattern."
-    exit 1
-  fi
-fi
-DIFF_MB=$(( (SIZE_CONTRIB - SIZE_DEFAULT) / 1024 / 1024 ))
-green "OK: contrib-enabled libcomet is ${DIFF_MB} MB larger than default (size=$SIZE_CONTRIB bytes)"
+# Sizes are REPORTED, not asserted. This gate used to require the contrib-enabled lib to be
+# strictly larger than the default one, on the theory that a default build which had quietly
+# linked contrib would show no size gap. That does not survive contact with a 1.5 GB unstripped
+# debug cdylib: `comet-contrib-delta` is a ~75-line stub, so what it actually adds is swamped by
+# how rustc happens to partition the crate into codegen units -- DWARF is re-emitted per unit, so
+# the total moves by ~1 MB in response to source changes that have nothing to do with Delta, and
+# the two builds move independently because only `datafusion-comet` is recompiled for the second
+# one. Measured on apache/datafusion-comet#5810, whose entire native diff is a 20-line
+# `sort_unstable_by` in the Iceberg writer: against its base commit the default lib grew 875 KB
+# while the contrib-enabled lib shrank 396 KB, inverting a gap that had been +1.2 MB one commit
+# earlier and failing the gate. The two symbol checks are the direct measurement of the property
+# we care about -- "the default build links zero Delta symbols" is asserted, not inferred from a
+# byte count -- so nothing is lost by printing the sizes and moving on.
+green "OK: contrib-enabled libcomet has $CONTRIB_SYMS Delta symbols (size=$SIZE_CONTRIB bytes, $((SIZE_CONTRIB - SIZE_DEFAULT)) bytes vs default)"
 
 # ---- Summary --------------------------------------------------------------
 
 hdr "All gate checks passed"
 echo "  default cargo:  no comet-contrib-delta, no delta_kernel"
 echo "  default mvn:    no io.delta:*, no contrib/delta classes"
-echo "  default dylib:  ${DIFF_MB} MB smaller than contrib build, 0 Delta symbols"
+echo "  default dylib:  0 Delta symbols (contrib build has $CONTRIB_SYMS)"
 echo
 echo "Run with: dev/verify-contrib-delta-gate.sh"

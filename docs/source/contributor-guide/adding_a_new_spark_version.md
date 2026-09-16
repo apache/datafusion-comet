@@ -262,25 +262,32 @@ version:
 - `.github/workflows/spark_sql_test_reusable.yml` holds the job logic.
 
 Add a `spark_X_Y` job to `ci.yml` passing `spark-short`, `spark-full`, and
-`java`, using the closest existing job as a template. A brand-new version
-starts out on demand only, gated on `github.event_name == 'workflow_dispatch'`
-so it runs neither on PRs nor on pushes to main. It then graduates in two
-steps as the version settles: first to a `run-spark-X.Y-tests` label gate
-(runs on pushes to main, stays off the default PR path), and finally to the
-unconditional PR path that the well-established versions use.
+`java`, using the closest existing job as a template. Its `if:` is only
+`needs.changes.outputs.spark_X_Y == 'true'`: which events may run the job is
+`POLICY` in `dev/ci/compute-changes.py`, never an event check in `ci.yml`. A
+brand-new version starts out on demand only, `["label:run-spark-X.Y-tests"]`,
+meaning the label on a pull request or a `workflow_dispatch`, gating no merge.
+It then graduates as the version settles: to `"nightly"` alongside the other
+non-default versions, and to `"queue"` if it ever becomes the default profile.
 
-Three more registrations are needed, and the job is silently skipped if any is
-missed. In `dev/ci/compute-changes.py`, add a matching `spark_X_Y` entry to
-`FILTERS`. In `ci.yml`:
+Four more registrations are needed. The first three are silent when missed;
+the fourth fails preflight, which is what tells you about the other three.
 
-- expose `spark_X_Y` as an output of the `changes` job, otherwise the `if:`
-  gate reads an empty string on every event;
-- add `spark_X_Y` to the `workflow_dispatch` key list in that job's compute
-  step, otherwise a manual run leaves the output unset even though the job's
-  own `if:` accepts `workflow_dispatch`;
-- when you move to the label gate, add `run-spark-X.Y-tests` to the label
-  allowlist in the `preflight` job's `if:`, otherwise the whole workflow is
-  skipped for the `labeled` event and the label never triggers anything.
+- In `dev/ci/compute-changes.py`, add a matching `spark_X_Y` entry to
+  `FILTERS` **and** to `POLICY`. A `FILTERS` key with no `POLICY` entry makes
+  the `changes` job raise `KeyError` on every event that is not a dispatch.
+- In `ci.yml`, expose `spark_X_Y` as an output of the `changes` job, otherwise
+  the `if:` gate reads an empty string on every event.
+- In `ci.yml`, add the job to `required_checks.needs`, otherwise it can fail
+  without blocking the merge queue.
+- In `dev/ci/check-ci-config.py`, add the job to `BUILD_JOBS`, to the tier set
+  that feeds `ALL_JOBS`, and add a `POLICY_CASES` entry per gating label.
+  `check_event_policy` compares `POLICY` against those cases exactly, so a new
+  job fails that check until it is declared there.
+
+There is no label allowlist to update: the `preflight` job deliberately
+carries no `if:`, so a `labeled` event always reaches `changes`, and `POLICY`
+decides from there.
 
 Before merging, run `make format`, run clippy
 (`cd native && cargo clippy --all-targets --workspace -- -D warnings`), and

@@ -19,7 +19,7 @@
 
 package org.apache.comet.serde
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression, Literal}
+import org.apache.spark.sql.catalyst.expressions.{ApplyFunctionExpression, Attribute, Expression, Literal}
 import org.apache.spark.sql.catalyst.expressions.objects.StaticInvoke
 import org.apache.spark.sql.types._
 
@@ -29,13 +29,16 @@ import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, scalarFunctio
  * Native support for Iceberg's Spark system functions (`bucket`, `truncate`, `years`, `months`,
  * `days`, `hours`).
  *
- * Iceberg exposes each of these through Spark's static magic method, so
- * `V2ExpressionUtils.resolveScalarFunction` binds them as `StaticInvoke(cls, "invoke", args)`
- * where `cls` is one of the per-type implementations under `org.apache.iceberg.spark.functions`
- * (e.g. `BucketFunction$BucketInt`). The same expressions appear in the hash distribution and
- * local sort that Iceberg requests in front of a partitioned write, and in predicates and
- * projections that users write against hidden partitioning, so routing them through
- * [[CometStaticInvoke]] covers shuffle, sort, filter, and projection at once.
+ * Iceberg exposes each of these through Spark's DataSourceV2 catalog function API. Spark's
+ * `V2ExpressionUtils.resolveScalarFunction` resolves them one of two ways: when the per-type
+ * implementation class exposes a static `invoke` "magic method" with a matching signature the
+ * call is lowered to `StaticInvoke(cls, "invoke", args)`; otherwise the call is lowered to
+ * `ApplyFunctionExpression(function, args)`. The magic method is an optional performance opt-in
+ * in the DSv2 API, not a requirement, so any Iceberg release (or third-party V2 catalog) that
+ * omits it lands on the second path. Both paths carry the same class as their identity, so a
+ * single set of handlers keyed by that class name covers them. See [[CometStaticInvoke]] for the
+ * `StaticInvoke` entry point and [[CometApplyFunctionExpression]] for the
+ * `ApplyFunctionExpression` entry point.
  *
  * The list of classes is Iceberg's; `IcebergVersionFunction` is a zero-argument constant and is
  * deliberately left out.
@@ -45,20 +48,20 @@ object CometIcebergSystemFunctions {
   private val FunctionsPackage = "org.apache.iceberg.spark.functions."
 
   /** Every Iceberg system function exposes its static magic method under this name. */
-  private val MagicMethod = "invoke"
+  private[serde] val MagicMethod = "invoke"
 
   private def implementations(
       outer: String,
-      handler: CometExpressionSerde[StaticInvoke],
-      inner: String*): Seq[((String, String), CometExpressionSerde[StaticInvoke])] =
-    inner.map(name => (MagicMethod, s"$FunctionsPackage$outer$$$name") -> handler)
+      handler: CometExpressionSerde[Expression],
+      inner: String*): Seq[(String, CometExpressionSerde[Expression])] =
+    inner.map(name => s"$FunctionsPackage$outer$$$name" -> handler)
 
   /**
-   * Handlers keyed by `(functionName, class name)` of the Iceberg implementation class that
-   * `StaticInvoke` calls, the shape [[CometStaticInvoke]] dispatches on. Iceberg is not on
-   * Comet's compile classpath, which is why the key carries the class name rather than the class.
+   * Handlers keyed by the Iceberg implementation class name that both `StaticInvoke` and
+   * `ApplyFunctionExpression` carry as their identity. Iceberg is not on Comet's compile
+   * classpath, which is why the key is a class name rather than a class.
    */
-  val staticInvokeHandlers: Map[(String, String), CometExpressionSerde[StaticInvoke]] = (
+  val handlers: Map[String, CometExpressionSerde[Expression]] = (
     implementations(
       "BucketFunction",
       CometIcebergBucket,
@@ -113,6 +116,16 @@ object CometIcebergSystemFunctions {
     case Literal(v: Byte, ByteType) if v > 0 => Some(v.toInt)
     case _ => None
   }
+
+  /**
+   * Extracts `(arguments, dataType)` from either wrapping expression. Kept together so a future
+   * shape (e.g. Spark introduces yet another lowering) has a single seam to extend.
+   */
+  private[serde] def unwrap(expr: Expression): Option[(Seq[Expression], DataType)] = expr match {
+    case si: StaticInvoke => Some((si.arguments, si.dataType))
+    case afe: ApplyFunctionExpression => Some((afe.children, afe.dataType))
+    case _ => None
+  }
 }
 
 /**
@@ -120,44 +133,52 @@ object CometIcebergSystemFunctions {
  * parameter followed by the value. The parameter has to be a literal because the native kernel
  * takes it as a constant, and it has to be positive because Iceberg's Java implementation divides
  * by it (zero throws, which the fallback preserves by leaving the expression to Spark).
+ *
+ * Accepts either `StaticInvoke` or `ApplyFunctionExpression` since the same handler is registered
+ * under both entry points; the extractor in [[CometIcebergSystemFunctions.unwrap]] normalizes
+ * both to `(arguments, dataType)`.
  */
 abstract class CometIcebergParameterizedTransform(
     nativeName: String,
     parameterName: String,
     valueTypeSupported: DataType => Boolean)
-    extends CometExpressionSerde[StaticInvoke] {
+    extends CometExpressionSerde[Expression] {
 
-  override def getSupportLevel(expr: StaticInvoke): SupportLevel = expr.arguments match {
-    case Seq(parameter, value) =>
-      if (CometIcebergSystemFunctions.positiveIntLiteral(parameter).isEmpty) {
-        Unsupported(Some(s"$parameterName must be a positive integer literal, got $parameter"))
-      } else if (!valueTypeSupported(value.dataType)) {
-        Unsupported(Some(s"$nativeName does not support input type ${value.dataType}"))
-      } else {
-        Compatible()
-      }
-    case other =>
-      Unsupported(Some(s"expected ($parameterName, value) arguments, got ${other.size}"))
-  }
+  override def getSupportLevel(expr: Expression): SupportLevel =
+    CometIcebergSystemFunctions.unwrap(expr) match {
+      case Some((Seq(parameter, value), _)) =>
+        if (CometIcebergSystemFunctions.positiveIntLiteral(parameter).isEmpty) {
+          Unsupported(Some(s"$parameterName must be a positive integer literal, got $parameter"))
+        } else if (!valueTypeSupported(value.dataType)) {
+          Unsupported(Some(s"$nativeName does not support input type ${value.dataType}"))
+        } else {
+          Compatible()
+        }
+      case Some((other, _)) =>
+        Unsupported(Some(s"expected ($parameterName, value) arguments, got ${other.size}"))
+      case None =>
+        Unsupported(Some(s"unrecognized wrapping expression: ${expr.getClass.getName}"))
+    }
 
   override def convert(
-      expr: StaticInvoke,
+      expr: Expression,
       inputs: Seq[Attribute],
-      binding: Boolean): Option[ExprOuterClass.Expr] = expr.arguments match {
-    case Seq(parameter, value) =>
-      // Normalize to an int literal so the native side always sees an Int32 scalar.
-      val parameterProto = CometIcebergSystemFunctions
-        .positiveIntLiteral(parameter)
-        .flatMap(n => exprToProtoInternal(Literal(n, IntegerType), inputs, binding))
-      val valueProto = exprToProtoInternal(value, inputs, binding)
-      scalarFunctionExprToProtoWithReturnType(
-        nativeName,
-        expr.dataType,
-        failOnError = false,
-        parameterProto,
-        valueProto)
-    case _ => None
-  }
+      binding: Boolean): Option[ExprOuterClass.Expr] =
+    CometIcebergSystemFunctions.unwrap(expr) match {
+      case Some((Seq(parameter, value), returnType)) =>
+        // Normalize to an int literal so the native side always sees an Int32 scalar.
+        val parameterProto = CometIcebergSystemFunctions
+          .positiveIntLiteral(parameter)
+          .flatMap(n => exprToProtoInternal(Literal(n, IntegerType), inputs, binding))
+        val valueProto = exprToProtoInternal(value, inputs, binding)
+        scalarFunctionExprToProtoWithReturnType(
+          nativeName,
+          returnType,
+          failOnError = false,
+          parameterProto,
+          valueProto)
+      case _ => None
+    }
 }
 
 /** `bucket(numBuckets, value)` over the types `BucketFunction.bind` accepts. */
@@ -203,13 +224,14 @@ object CometIcebergTruncate
 
   // Ordered after the parameter check so that `truncate(0, decimal_col)` still reports the width
   // problem, which is the one that changes whether Iceberg's own ArithmeticException is raised.
-  override def getSupportLevel(expr: StaticInvoke): SupportLevel = expr.arguments match {
-    case Seq(parameter, value)
-        if value.dataType.isInstanceOf[DecimalType] &&
-          CometIcebergSystemFunctions.positiveIntLiteral(parameter).isDefined =>
-      Unsupported(Some(DecimalNote))
-    case _ => super.getSupportLevel(expr)
-  }
+  override def getSupportLevel(expr: Expression): SupportLevel =
+    CometIcebergSystemFunctions.unwrap(expr) match {
+      case Some((Seq(parameter, value), _))
+          if value.dataType.isInstanceOf[DecimalType] &&
+            CometIcebergSystemFunctions.positiveIntLiteral(parameter).isDefined =>
+        Unsupported(Some(DecimalNote))
+      case _ => super.getSupportLevel(expr)
+    }
 
   override def getUnsupportedReasons(): Seq[String] = Seq(
     "Iceberg's `truncate(width, value)` system function on a `decimal` column. " + DecimalNote +
@@ -218,30 +240,40 @@ object CometIcebergTruncate
       "decimals, are unaffected.")
 }
 
-/** Shared shape of the single-argument `years`, `months`, `days`, and `hours` transforms. */
+/**
+ * Shared shape of the single-argument `years`, `months`, `days`, and `hours` transforms. Accepts
+ * either wrapping expression via [[CometIcebergSystemFunctions.unwrap]].
+ */
 abstract class CometIcebergTemporalTransform(
     nativeName: String,
     valueTypeSupported: DataType => Boolean)
-    extends CometExpressionSerde[StaticInvoke] {
+    extends CometExpressionSerde[Expression] {
 
-  override def getSupportLevel(expr: StaticInvoke): SupportLevel = expr.arguments match {
-    case Seq(value) if valueTypeSupported(value.dataType) => Compatible()
-    case Seq(value) =>
-      Unsupported(Some(s"$nativeName does not support input type ${value.dataType}"))
-    case other => Unsupported(Some(s"expected one argument, got ${other.size}"))
-  }
+  override def getSupportLevel(expr: Expression): SupportLevel =
+    CometIcebergSystemFunctions.unwrap(expr) match {
+      case Some((Seq(value), _)) if valueTypeSupported(value.dataType) => Compatible()
+      case Some((Seq(value), _)) =>
+        Unsupported(Some(s"$nativeName does not support input type ${value.dataType}"))
+      case Some((other, _)) =>
+        Unsupported(Some(s"expected one argument, got ${other.size}"))
+      case None =>
+        Unsupported(Some(s"unrecognized wrapping expression: ${expr.getClass.getName}"))
+    }
 
   override def convert(
-      expr: StaticInvoke,
+      expr: Expression,
       inputs: Seq[Attribute],
-      binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val valueProto = exprToProtoInternal(expr.arguments.head, inputs, binding)
-    scalarFunctionExprToProtoWithReturnType(
-      nativeName,
-      expr.dataType,
-      failOnError = false,
-      valueProto)
-  }
+      binding: Boolean): Option[ExprOuterClass.Expr] =
+    CometIcebergSystemFunctions.unwrap(expr) match {
+      case Some((Seq(value), returnType)) =>
+        val valueProto = exprToProtoInternal(value, inputs, binding)
+        scalarFunctionExprToProtoWithReturnType(
+          nativeName,
+          returnType,
+          failOnError = false,
+          valueProto)
+      case _ => None
+    }
 }
 
 object CometIcebergYears
