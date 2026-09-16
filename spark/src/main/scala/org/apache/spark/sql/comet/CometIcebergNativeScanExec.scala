@@ -230,6 +230,7 @@ case class CometIcebergNativeScanExec(
       commonByKey = Map(injectorKey -> commonData),
       perPartitionByKey = Map(injectorKey -> perPartitionData),
       serializedPlan = serializedPlan,
+      planFingerprint = PlanDataInjector.planFingerprint(serializedPlan),
       defaultNumPartitions = perPartitionData.length,
       numOutputCols = output.length,
       nativeMetrics = nativeMetrics,
