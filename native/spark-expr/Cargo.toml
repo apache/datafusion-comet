@@ -406,3 +406,7 @@ harness = false
 [[bench]]
 name = "dayofweek_weekday"
 harness = false
+
+[[bench]]
+name = "aggregate_stats"
+harness = false
