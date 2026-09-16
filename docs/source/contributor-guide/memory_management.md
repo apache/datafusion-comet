@@ -97,10 +97,11 @@ rather than asking for a separate allocation:
 memory_limit = spark.memory.offHeap.size * spark.comet.exec.memoryPool.fraction
 ```
 
-`spark.comet.exec.memoryPool.fraction` defaults to `1.0`. Lowering it is the current workaround for
-Comet's under-accounting (see [The accounting gap](#the-accounting-gap)). It holds back a slice of
-the off-heap pool that Comet is not allowed to reserve, on the assumption that Comet's real usage
-overshoots its reservations by roughly that slice.
+`spark.comet.exec.memoryPool.fraction` defaults to `0.8`. It holds back a slice of the off-heap
+pool that Comet is not allowed to reserve, on the assumption that Comet's real usage overshoots its
+reservations by roughly that slice (see [The accounting gap](#the-accounting-gap)). The same
+`memory_limit` is the budget the off-heap pools compare real allocator usage against, so lowering
+the fraction tightens the reservation ceiling and the real-usage ceiling together.
 
 A second value, `memory_limit_per_task`, is computed and passed alongside it, but only the on-heap
 pool types read it.
@@ -260,8 +261,10 @@ diverge for several structural reasons:
   JVM closes them (see [Crossing the FFI boundary](#crossing-the-ffi-boundary)).
 
 The practical consequence is that `reserved()` is a lower bound on Comet's real footprint, and the
-gap is workload-dependent. `spark.comet.exec.memoryPool.fraction` exists purely so operators can
-hand-tune a haircut that covers the gap for their workload.
+gap is workload-dependent. `spark.comet.exec.memoryPool.fraction` lets operators hold back a slice
+of the pool that covers the gap for their workload, and the off-heap pools additionally refuse a
+reservation once the allocator's real usage reaches that budget, so the gap is bounded rather than
+only estimated.
 
 To measure the gap on a real query, enable tracing with the `jemalloc` feature and compare
 `jemalloc_allocated` against the summed `thread_NNN_comet_memory_reserved` values; see
@@ -316,11 +319,15 @@ has bounds _declared reservations_, and the sections above describe several stru
 declared reservations are a lower bound on physical usage. The known gaps, roughly in order of how
 much they matter:
 
-- **No signal for real native usage.** The only way to observe the gap today is to enable tracing
-  with the `jemalloc` feature and compare `jemalloc_allocated` against summed reservations after
-  the fact. There is no runtime value that an operator, a metric, or a policy could read.
-- **`spark.comet.exec.memoryPool.fraction` is a manual proxy for the gap.** It asks operators to
-  guess a per-workload haircut rather than measuring anything.
+- **Real native usage is process-wide, with no per-task attribution.** `alloc_accounting` reports
+  one balance for the whole executor, so the off-heap pools' check cannot tell which task caused
+  an overrun: once any task pushes real usage to the budget, every task's next reservation is
+  denied.
+- **The check gates reservations, not allocations.** An allocation that never goes through the
+  pool is counted after the fact and is never refused, so real usage can still exceed the budget
+  between reservations.
+- **`spark.comet.exec.memoryPool.fraction` is still set by hand.** It asks operators to guess how
+  much of the pool to hold back, even though the overrun it guards against is now measured.
 - **`CometArrowAllocator` is unbounded** and participates in no budget.
 - **Buffer and reservation lifetimes are independent across the FFI boundary.** A batch can be
   resident on either side with no reservation covering it, because reservations are made and
