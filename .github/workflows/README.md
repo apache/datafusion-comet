@@ -419,53 +419,33 @@ which jobs do run on main and therefore do write.
 
 ## Reusing Linux native builds
 
-The Linux, Spark SQL, Iceberg and manual Spark writer workflows use
-`.github/actions/build-native-ci` after checkout and toolchain setup. It keeps
-two separate caches:
+The Linux, Spark SQL, Iceberg and manual writer workflows call
+`.github/actions/build-native-ci` after checkout and `setup-builder`. An exact
+cache hit restores `native/target/ci/libcomet.so` and skips Cargo. A miss restores
+an incremental cache and runs `cargo build --locked --profile ci`. Artifacts and
+downstream tests use the same paths in either case.
 
-- A compact `libcomet.so` cache avoids compilation when every native build
-  input matches. It uses an exact key, with no fallback prefix. A manifest
-  records the input key and the library's SHA-256; a missing, partial or
-  invalid entry falls back to compilation. The library is staged at the same
-  `native/target/ci/libcomet.so` path as a fresh build, then uploaded under the
-  caller's existing artifact name. All downstream tests still run.
-- The larger Cargo cache contains the actual `CARGO_HOME` registry/git
-  directories and `native/target`. A matching dependency prefix can seed a
-  build after native sources change. Restoring this cache always runs
-  `cargo build --locked --profile ci`; a target-directory cache hit alone
-  never authorizes reusing a binary without compiling.
+`dev/ci/native-cache-key.py` snapshots tracked native/protobuf/dependency files,
+shared JVM inputs, build configuration and CI definitions before Cargo generates
+source files. The key also includes Rust versions, installed system package
+versions, architecture, JDK release/path and compiler flags. The helper targets
+our official Rust container and `setup-builder`, not arbitrary local toolchains.
+Spark-only edits and generated files preserve the key; native/protobuf changes
+invalidate it. The shared action uses portable `x86-64-v3` code generation.
 
-`dev/ci/native-cache-key.py` computes the keys once, before Cargo generates
-Rust source files. It hashes tracked native and contrib files, shared JVM
-inputs, build configuration and CI definitions, together with the resolved
-Rust/C/C++/protobuf tools, JDK, installed system packages, architecture and
-build environment. Generated files and untracked build output do not change
-the save key. The CPU target remains explicitly `x86-64-v3`; binaries built
-with `target-cpu=native` must not enter this cache. Unsupported external tool
-or library overrides fail key generation rather than create an incomplete
-identity. Ordinary changes confined to Spark sources can retain the same
-native key; changing protobuf, toolchains or build flags cannot.
+The incremental cache contains the effective `CARGO_HOME` registry/git directories
+and `native/target`. Its dependency prefix permits reuse after source changes,
+but every restore still invokes Cargo. The Rust test job uses a separate debug
+key and continues to run all checks and tests.
 
-Only pushes to `main` save these caches. PR, queue, nightly and manual runs
-consume them without writing new entries. A main push still invokes Cargo,
-even when the compact entry exists, to keep the larger compiler cache warm.
-It skips re-saving an exact cache entry. The Rust test job uses the same key
-snapshot and Cargo-home resolution with a separate debug profile, and still
-runs every Rust check and test.
+Only pushes to `main` save either cache. Main always compiles to keep the
+incremental cache warm. Other runs consume matching entries; a cold or evicted
+cache builds normally. GitHub Actions handles cache storage and restoration.
 
-The first main push after adoption populates the new cache namespace. Until
-then, or after eviction, runs build normally. Cache reuse is scoped by GitHub's
-cache access rules; it does not fetch a binary from an arbitrary PR or use the
-latest main binary when inputs differ. The manifest detects corruption, while
-the main-only write policy determines which builds can populate the cache.
-
-Preflight runs the native-key, compact-library and workflow-flow regression
-tests. To verify a hosted hit, compare the native input key between a main
-push and a later run with unchanged inputs: `Validate cached native library`
-must report `hit=true`, the Cargo restore/build steps must skip, and the
-normal library upload and downstream tests must succeed. A native or protobuf
-edit must instead invoke Cargo. These timings depend on cache availability;
-the change does not promise a fixed build-time reduction.
+Preflight tests key invalidation, generated-file stability and container checkout
+ownership. After main populates the new namespace, verify a hosted library hit
+by checking that `Restore native library cache` reports an exact hit and the
+Cargo steps skip, while the normal artifact upload and downstream tests pass.
 
 ## Retrying flaky network operations
 
