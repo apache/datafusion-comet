@@ -126,8 +126,10 @@ def tracked_inputs(root, env):
     Read worktree bytes and modes, so staged or unstaged edits invalidate keys.
     The inventory excludes generated/untracked files and target directories.
     Missing tracked inputs, conflicts, symlinks, or submodules fail closed.
+    Trust this checkout for this command: container CI can run under a different
+    owner than checkout, whose temporary global Git configuration is not kept.
     """
-    inventory = command(["git", "ls-files", "--stage", "-z"], root, env)
+    inventory = command(["git", "-c", f"safe.directory={root}", "ls-files", "--stage", "-z"], root, env)
     sources = {}
     dependencies = {}
     for record in inventory.split(b"\0"):
@@ -287,6 +289,8 @@ def main():
 
     --github-output optionally appends the same key=value records printed on
     stdout. Failure returns status 1 with a concise error and writes no outputs.
+    Invoke from the checkout root; Git trusts only that directory for these
+    reads without changing global configuration or trusting other checkouts.
     """
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--profile", required=True, choices=("ci", "debug"))
@@ -294,7 +298,8 @@ def main():
     args = parser.parse_args()
     try:
         env = dict(os.environ)
-        root = Path(command(["git", "rev-parse", "--show-toplevel"], Path.cwd(), env)
+        cwd = Path.cwd().resolve()
+        root = Path(command(["git", "-c", f"safe.directory={cwd}", "rev-parse", "--show-toplevel"], cwd, env)
                     .decode().strip()).resolve()
         dependencies, sources = tracked_inputs(root, env)
         cargo_home, environment = environment_identity(root, args.profile, env)
