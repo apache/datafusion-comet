@@ -22,7 +22,6 @@ import importlib.util
 import io
 import os
 from pathlib import Path
-import runpy
 import subprocess
 import sys
 import tempfile
@@ -48,8 +47,13 @@ class NativeCacheKeyTests(unittest.TestCase):
                        "native/lib.rs": "fn native() {}\n", "native/proto/expr.proto": "message Expr {}\n",
                        "spark/Plan.scala": "object Plan {}\n", "README.md": "Comet\n",
                        ".github/workflows/README.md": "CI documentation\n",
+                       ".github/workflows/pr_build_linux.yml": "jobs: {}\n",
                        ".github/workflows/spark_sql_test_reusable.yml": "jobs: {}\n",
+                       ".github/workflows/iceberg_spark_test_reusable.yml": "jobs: {}\n",
+                       ".github/workflows/spark_sql_writer_tests.yml": "jobs: {}\n",
                        ".github/workflows/check_pr_title.yml": "jobs: {}\n",
+                       ".github/actions/build-native-ci/action.yaml": "runs: {}\n",
+                       ".github/actions/setup-builder/action.yaml": "runs: {}\n",
                        "dev/ci/compute-changes.py": "# shared native input rules\n",
                        "contrib/delta/native/Cargo.toml": '[package]\nname = "delta"\n',
                        "contrib/delta/native/src/lib.rs": "fn delta() {}\n",
@@ -84,7 +88,7 @@ class NativeCacheKeyTests(unittest.TestCase):
         before = self.keys()
         for name in ("native/lib.rs", "native/proto/expr.proto", "native/Cargo.toml", "native/Cargo.lock",
                      "contrib/delta/native/Cargo.toml", "dev/ci/compute-changes.py",
-                     ".github/workflows/spark_sql_test_reusable.yml"):
+                     ".github/actions/build-native-ci/action.yaml", ".github/actions/setup-builder/action.yaml"):
             with self.subTest(name=name):
                 self.write(name, self.inputs[name] + "changed\n")
                 after = self.keys()
@@ -100,12 +104,16 @@ class NativeCacheKeyTests(unittest.TestCase):
         """Generated files and non-build edits preserve reuse; debug still tracks benchmarks."""
         before = self.keys()
         debug = self.keys("debug")
+        for name in self.inputs:
+            if name.startswith(".github/workflows/"):
+                self.write(name, "unrelated test configuration\n")
+        self.env["GITHUB_RUN_ID"] = "12345"
+        self.assertEqual(before, self.keys())
+        self.assertEqual(debug, self.keys("debug"))
         self.write("native/proto/src/generated/expr.rs", "generated Rust")
         self.write("native/target/ci/libcomet.so", "compiled library")
         self.write("spark/Plan.scala", "object NewPlan {}")
         self.write("README.md", "updated docs")
-        self.write(".github/workflows/README.md", "updated CI docs")
-        self.write(".github/workflows/check_pr_title.yml", "jobs: {changed: {}}")
         self.write("contrib/delta/native/src/lib.rs", "fn changed_delta() {}")
         self.write("contrib/delta/native/Cargo.lock", "version = 3\n")
         self.write("contrib/a/b/native/Cargo.toml", '[package]\nname = "changed_nested"\n')
@@ -113,10 +121,10 @@ class NativeCacheKeyTests(unittest.TestCase):
         self.assertEqual(before, self.keys())
         self.assertNotEqual(debug["source-key"], self.keys("debug")["source-key"])
 
-    def test_every_binary_key_input_has_a_main_cache_warmer(self):
-        """Check real tracked inputs against push routing, plus inputs absent from today's tree."""
+    def test_native_input_routing(self):
+        """Library inputs warm main; helper tests retain Linux coverage without extra consumers."""
         project = Path(__file__).resolve().parents[2]
-        route = runpy.run_path(str(project / "dev/ci/compute-changes.py"))["compute"]
+        route = CACHE.CHANGES.compute
         _, sources = CACHE.source_inputs(project)
         for name in [*sources, ".cargo/config.toml", "rust-toolchain", "contrib/new/native/Cargo.toml"]:
             self.assertTrue(route([name], {"name": "push"})["build_linux"], name)
@@ -124,6 +132,11 @@ class NativeCacheKeyTests(unittest.TestCase):
                      "contrib/a/b/native/Cargo.toml", "contrib/a/b/native/x.rs"):
             self.assertFalse(route([name], {"name": "push"})["build_linux"], name)
         self.assertFalse(route(["contrib/new/native/Cargo.toml"], {"name": "pull_request"})["build_linux"])
+        for event in ("merge_group", "schedule"):
+            routed = route(["dev/ci/test-native-cache-key.py"], {"name": event})
+            self.assertTrue(routed["build_linux" if event == "merge_group" else "build_linux_all_profiles"])
+            self.assertFalse(any(selected for name, selected in routed.items()
+                                 if name.startswith(("spark_", "iceberg_"))))
 
     def test_tools_jdk_flags_and_tracked_build_configuration_invalidate(self):
         """Observed tool/package versions, Java metadata, flags and tracked configs enter keys."""
@@ -142,6 +155,16 @@ class NativeCacheKeyTests(unittest.TestCase):
         self.env["RUSTFLAGS"] += " -Copt-level=1"
         self.assertNotEqual(before["binary-key"], self.keys()["binary-key"])
         self.env["RUSTFLAGS"] = "-Ctarget-cpu=x86-64-v3 -Clink-arg=-fuse-ld=bfd"
+        for name in ("CC", "CXX", "CFLAGS", "LDFLAGS", "AR", "PROTOC", "PROTOC_INCLUDE",
+                     "RUSTC_WRAPPER", "CARGO_BUILD_TARGET", "CARGO_PROFILE_CI_OPT_LEVEL",
+                     "CC_x86_64_unknown_linux_gnu", "HOST_CC", "TARGET_CFLAGS",
+                     "HDFS_LIB_DIR", "HADOOP_HOME", "HDFS_STATIC", "DOCS_RS", "PATH"):
+            with self.subTest(environment=name):
+                self.env[name] = "build override"
+                after = self.keys()
+                for key in ("binary-key", "source-key", "restore-prefix"):
+                    self.assertNotEqual(before[key], after[key])
+                del self.env[name]
         self.write(".cargo/config.toml", "[build]\nincremental = false\n")
         subprocess.run(["git", "add", ".cargo/config.toml"], cwd=self.root, check=True)
         self.assertNotEqual(before["binary-key"], self.keys()["binary-key"])
