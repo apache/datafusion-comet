@@ -6266,12 +6266,14 @@ mod tests {
                 assert_eq!(metrics.metrics["build_input_rows"], 4);
                 if enabled {
                     assert_eq!(metrics.metrics["input_rows"], 3);
-                    assert_eq!(metrics.metrics["dynamic_filter_rows_evaluated"], 100);
-                    assert_eq!(metrics.metrics["dynamic_filter_rows_pruned"], 97);
-                    assert_eq!(metrics.metrics["dynamic_filter_rows_bypassed"], 0);
+                    assert_eq!(metrics.metrics["dynamic_filter_join_rows_evaluated"], 100);
+                    assert_eq!(metrics.metrics["dynamic_filter_join_rows_pruned"], 97);
+                    assert_eq!(metrics.metrics["dynamic_filter_join_rows_bypassed"], 0);
                 } else {
                     assert_eq!(metrics.metrics["input_rows"], 100);
-                    assert!(!metrics.metrics.contains_key("dynamic_filter_rows_pruned"));
+                    assert!(!metrics
+                        .metrics
+                        .contains_key("dynamic_filter_join_rows_pruned"));
                 }
             }
         }
