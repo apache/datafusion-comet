@@ -1,0 +1,109 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+name: Build or restore the Linux CI native library
+description: 'Reuse an exact-input native library, otherwise build it with the CI profile'
+outputs:
+  cache-hit:
+    description: 'Whether a validated cached library replaced compilation'
+    value: ${{ steps.library.outputs.hit == 'true' && 'true' || 'false' }}
+runs:
+  using: composite
+  steps:
+    # Call after checkout and setup-builder. Compute once, before Cargo writes
+    # generated Rust files, and use the same keys for both restore and save.
+    - name: Fingerprint native build inputs
+      id: key
+      shell: bash
+      env:
+        RUSTFLAGS: '-Ctarget-cpu=x86-64-v3 -Clink-arg=-fuse-ld=bfd'
+      run: python3 dev/ci/native-cache-key.py --profile ci --github-output "$GITHUB_OUTPUT"
+
+    - name: Restore native library cache
+      id: binary-cache
+      uses: actions/cache/restore@v6
+      with:
+        path: ${{ runner.temp }}/comet-native-library
+        key: ${{ steps.key.outputs.binary-key }}
+        # Main still builds to keep its incremental Cargo cache warm. Lookup
+        # only avoids downloading a library that this run will not execute.
+        lookup-only: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+
+    - name: Validate cached native library
+      id: library
+      if: steps.binary-cache.outputs.cache-hit == 'true' && !(github.event_name == 'push' && github.ref == 'refs/heads/main')
+      shell: bash
+      env:
+        NATIVE_CACHE_KEY: ${{ steps.key.outputs.binary-key }}
+      run: |
+        python3 dev/ci/native-library-cache.py restore \
+          --key "$NATIVE_CACHE_KEY" \
+          --cache-dir "$RUNNER_TEMP/comet-native-library" \
+          --library native/target/ci/libcomet.so \
+          --github-output "$GITHUB_OUTPUT"
+
+    - name: Restore incremental Cargo cache
+      id: cargo-cache
+      if: steps.library.outputs.hit != 'true'
+      uses: actions/cache/restore@v6
+      with:
+        path: |
+          ${{ steps.key.outputs.cargo-home }}/registry
+          ${{ steps.key.outputs.cargo-home }}/git
+          native/target
+        key: ${{ steps.key.outputs.source-key }}
+        restore-keys: ${{ steps.key.outputs.restore-prefix }}
+
+    - name: Build native library (CI profile)
+      if: steps.library.outputs.hit != 'true'
+      shell: bash
+      env:
+        RUSTFLAGS: '-Ctarget-cpu=x86-64-v3 -Clink-arg=-fuse-ld=bfd'
+      run: |
+        cd native
+        # A target-directory cache is only an incremental build aid. Cargo
+        # must run even on an exact target-cache hit; only the validated,
+        # separately keyed binary cache can replace compilation.
+        cargo build --locked --profile ci
+
+    - name: Prepare native library cache
+      if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.binary-cache.outputs.cache-hit != 'true'
+      shell: bash
+      env:
+        NATIVE_CACHE_KEY: ${{ steps.key.outputs.binary-key }}
+      run: |
+        python3 dev/ci/native-library-cache.py prepare \
+          --key "$NATIVE_CACHE_KEY" \
+          --cache-dir "$RUNNER_TEMP/comet-native-library" \
+          --library native/target/ci/libcomet.so
+
+    - name: Save native library cache
+      if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.binary-cache.outputs.cache-hit != 'true'
+      uses: actions/cache/save@v6
+      with:
+        path: ${{ runner.temp }}/comet-native-library
+        key: ${{ steps.key.outputs.binary-key }}
+
+    - name: Save incremental Cargo cache
+      if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.cargo-cache.outputs.cache-hit != 'true'
+      uses: actions/cache/save@v6
+      with:
+        path: |
+          ${{ steps.key.outputs.cargo-home }}/registry
+          ${{ steps.key.outputs.cargo-home }}/git
+          native/target
+        key: ${{ steps.key.outputs.source-key }}
