@@ -19,7 +19,6 @@
 
 package org.apache.comet.rules
 
-
 import org.apache.spark.sql.{CometTestBase, SaveMode}
 import org.apache.spark.sql.catalyst.expressions.{AttributeReference, Literal}
 import org.apache.spark.sql.catalyst.expressions.aggregate.{Final, Partial}
