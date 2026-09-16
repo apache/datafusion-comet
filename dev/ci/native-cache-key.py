@@ -24,23 +24,16 @@ build commands in our workflows; it is not a general local-build cache.
 """
 
 import argparse
-from fnmatch import fnmatchcase
 import hashlib
 import json
 import os
 from pathlib import Path
+import runpy
 import subprocess
 
 
-# Direct Cargo inputs and the recipes that install/configure the native build.
-# Unrelated workflows and JVM/Maven files do not enter the native library build.
-INPUT_PATTERNS = (
-    "native/**", "contrib/*/native/**", ".cargo/**",
-    ".github/actions/setup-builder/**", ".github/actions/build-native-ci/**",
-    ".github/workflows/pr_build_linux.yml", ".github/workflows/spark_sql_test_reusable.yml",
-    ".github/workflows/iceberg_spark_test_reusable.yml", ".github/workflows/spark_sql_writer_tests.yml",
-    "rust-toolchain", "rust-toolchain.toml", "dev/ci/native-cache-key.py",
-)
+# Share both the input patterns and their glob semantics with main's warmer.
+CHANGES = runpy.run_path(str(Path(__file__).with_name("compute-changes.py")))
 
 
 def digest(value):
@@ -61,6 +54,7 @@ def source_inputs(root, profile="ci"):
     builds omit benchmarks; debug checks compile them. Trust only this checkout
     for the Git read: container steps can run as a different owner than checkout.
     """
+    patterns = CHANGES["NATIVE_LIBRARY_INPUTS" if profile == "ci" else "NATIVE_BUILD_INPUTS"]
     inventory = command(["git", "-c", f"safe.directory={root}",
                          "ls-files", "--stage", "-z"], root)
     sources = {}
@@ -68,9 +62,7 @@ def source_inputs(root, profile="ci"):
         if not record:
             continue
         metadata, name = record.split("\t", 1)
-        if name.endswith(".md") or (profile == "ci" and "/benches/" in name):
-            continue
-        if any(fnmatchcase(name, pattern) for pattern in INPUT_PATTERNS):
+        if CHANGES["matches"](patterns, [name]):
             sources[name] = [metadata.split()[0],
                              hashlib.sha256((root / name).read_bytes()).hexdigest()]
     dependencies = {name: value for name, value in sources.items()
@@ -108,6 +100,8 @@ def cache_keys(profile, dependencies, sources, environment):
 
     Only the incremental Cargo cache has a source-independent restore prefix.
     The library key includes all tracked build inputs and never uses fallback.
+    Both retain the environment: native build scripts can reuse C objects
+    without detecting changes to external compiler binaries or JNI headers.
     """
     prefix = f"Linux-cargo-{profile}-v3-{digest([environment, dependencies])}-"
     return {
