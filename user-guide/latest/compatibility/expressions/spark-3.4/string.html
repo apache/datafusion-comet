@@ -875,9 +875,13 @@ under the License.
 </section>
 <section id="rlike">
 <h2>RLike<a class="headerlink" href="#rlike" title="Link to this heading">#</a></h2>
-<p>By default, <code class="docutils literal notranslate"><span class="pre">RLike</span></code> is evaluated in the JVM using Spark’s own code-generated implementation (run inside the Comet pipeline), which matches Spark exactly. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.RLike.allowIncompatible=true</span></code> to opt into Comet’s native implementation instead, which has the following differences from Spark:</p>
+<p>The following cases use Comet’s native implementation by default:</p>
 <ul class="simple">
-<li><p>Uses Rust regexp engine, which has different behavior to Java regexp engine</p></li>
+<li><p>A <code class="docutils literal notranslate"><span class="pre">UTF8_BINARY</span></code> literal pattern admitted by the <a class="reference internal" href="../../regex.html#when-the-rust-engine-is-safe"><span class="std std-ref">plan-time compatibility analyzer</span></a> is evaluated natively by default.</p></li>
+</ul>
+<p>For applicable cases that are not selected for native execution automatically, <code class="docutils literal notranslate"><span class="pre">RLike</span></code> is evaluated in the JVM using Spark’s own code-generated implementation (run inside the Comet pipeline) by default. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.RLike.allowIncompatible=true</span></code> to explicitly select Comet’s native implementation, which has the following differences from Spark:</p>
+<ul class="simple">
+<li><p>For applicable literal patterns outside the automatically admitted subset, the native Rust regex engine may behave differently from Java regex.</p></li>
 </ul>
 </section>
 <section id="regexpreplace">
