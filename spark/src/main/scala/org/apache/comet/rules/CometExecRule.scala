@@ -1182,11 +1182,42 @@ case class CometExecRule(session: SparkSession)
   }
 
   /**
+   * Inspect a failed repair's buffer path without rewriting it or materializing any stage. Report
+   * only a native Partial/PartialMerge whose emitted state is not known to be Spark-compatible.
+   * Spark Partials and completed aggregates establish new buffers, so stop there rather than
+   * finding an unrelated native producer below them. Only known aggregate and exchange wrappers
+   * forward the same buffer path; an arbitrary operator is not evidence of a mixed boundary.
+   */
+  private def hasUnrepairedNativeBuffer(plan: SparkPlan): Boolean = plan match {
+    case agg: CometHashAggregateExec if agg.aggregateExpressions.isEmpty =>
+      hasUnrepairedNativeBuffer(agg.child)
+    case agg: CometHashAggregateExec =>
+      agg.modes.forall(m => m == Partial || m == PartialMerge) &&
+      !QueryPlanSerde.allAggsSupportNativePartialToSparkFinal(agg.aggregateExpressions)
+    case agg: BaseAggregateExec
+        if agg.aggregateExpressions.nonEmpty &&
+          agg.aggregateExpressions.forall(_.mode == Partial) =>
+      false
+    case agg: BaseAggregateExec =>
+      agg.aggregateExpressions.forall(e => e.mode == Partial || e.mode == PartialMerge) &&
+      hasUnrepairedNativeBuffer(agg.child)
+    case placeholder: CometSinkPlaceHolder => hasUnrepairedNativeBuffer(placeholder.child)
+    case read: AQEShuffleReadExec => hasUnrepairedNativeBuffer(read.child)
+    case stage: ShuffleQueryStageExec => hasUnrepairedNativeBuffer(stage.plan)
+    case reused: ReusedExchangeExec => hasUnrepairedNativeBuffer(reused.child)
+    case shuffle: CometShuffleExchangeExec => hasUnrepairedNativeBuffer(shuffle.child)
+    case shuffle: ShuffleExchangeExec => hasUnrepairedNativeBuffer(shuffle.child)
+    case _ => false
+  }
+
+  /**
    * The early tagging pass cannot know whether a Final's child will become native. Check the
    * actual conversion result before serialization or AQE stage creation, restoring the feeding
-   * aggregate/exchange chain while keeping native work below its Partial.
+   * aggregate/exchange chain while keeping native work below its Partial. Return the repaired
+   * plan, or preserve an unrepairable path and record one warning on its Spark Final if an unsafe
+   * native producer remains. Existing stages and their buffers are never rewritten by this pass.
    */
-  private def revertUnsafePartialAggregates(plan: SparkPlan): SparkPlan = {
+  private[rules] def revertUnsafePartialAggregates(plan: SparkPlan): SparkPlan = {
     def revertChain(node: SparkPlan): Option[SparkPlan] = node match {
       case agg: CometHashAggregateExec if agg.modes == Seq(Partial) =>
         Some(
@@ -1229,7 +1260,21 @@ case class CometExecRule(session: SparkSession)
           // Rebuild native consumers and shuffles from their original Spark operators. Merely
           // replacing their children would leave a native protobuf reading the old buffers.
           .map(child => transform(agg.withNewChildren(Seq(child))))
-          .getOrElse(agg)
+          .getOrElse {
+            if (hasUnrepairedNativeBuffer(agg.child)) {
+              val reason = "Comet could not restore a native intermediate buffer producer " +
+                "below Spark final aggregate; the remaining buffer may be incompatible"
+              // AQE can revisit the same consumer. Record the explanation and warn once,
+              // regardless of whether general fallback logging is enabled.
+              if (!agg
+                  .getTagValue(CometExplainInfo.FALLBACK_REASONS)
+                  .exists(_.contains(reason))) {
+                if (!CometConf.COMET_EXPLAIN_FALLBACK_LOG_ENABLED.get()) logWarning(reason)
+                withFallbackReason(agg, reason)
+              }
+            }
+            agg
+          }
     }
   }
 

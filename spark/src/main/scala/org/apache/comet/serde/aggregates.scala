@@ -287,7 +287,11 @@ object CometAverage extends CometAggregateExpressionSerde[Average] {
 object CometSum extends CometAggregateExpressionSerde[Sum] {
 
   // Non-decimal, non-TRY SUM emits one nullable sum, including null for empty/all-null input;
-  // Spark's coalesce-based merge accepts it. Decimal and TRY state remain excluded.
+  // Spark's coalesce-based merge accepts it. Decimal SUM has Spark's (sum, isEmpty) layout,
+  // but native updates make precision overflow sticky (or throw in ANSI mode). Spark's generated
+  // scalar SUM can recover before emitting its partial: decimal(38,38) inputs 0.6, 0.6, -0.6
+  // sum to 0.6. Keep decimal partials in Spark until those update semantics match. Integer TRY
+  // SUM also remains excluded because its native state contains an extra has_all_nulls column.
   override def supportsNativePartialToSparkFinal(fn: Sum): Boolean =
     !fn.child.dataType.isInstanceOf[DecimalType] &&
       CometEvalModeUtil.fromSparkEvalMode(CometEvalModeUtil.sumEvalMode(fn)) != CometEvalMode.TRY

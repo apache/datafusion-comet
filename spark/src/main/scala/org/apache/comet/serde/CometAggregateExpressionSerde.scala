@@ -93,7 +93,8 @@ trait CometAggregateExpressionSerde[T <: AggregateFunction] {
   /**
    * Whether Spark can consume this function's Comet intermediate buffer. Opt in independently
    * from the reverse direction: consuming Spark state does not establish that Comet emits state
-   * Spark can merge, especially from a never-updated or all-null partial accumulator.
+   * Spark can merge, especially from a never-updated or all-null partial accumulator. Remaining
+   * forward-compatibility audits are tracked in issue #5975.
    */
   def supportsNativePartialToSparkFinal(fn: T): Boolean = false
 
