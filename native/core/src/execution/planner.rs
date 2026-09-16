@@ -100,6 +100,7 @@ use iceberg::expr::Bind;
 use crate::execution::operators::ExecutionError::GeneralError;
 use crate::execution::shuffle::{CometPartitioning, CompressionCodec};
 use crate::execution::spark_plan::SparkPlan;
+use crate::parquet::objectstore::s3::apply_executor_object_store_defaults;
 use crate::parquet::objectstore::s3_blob_fs_support::normalize_object_store_url;
 use crate::parquet::parquet_support::prepare_object_store_with_configs;
 use datafusion::common::scalar::ScalarStructBuilder;
@@ -1695,11 +1696,12 @@ impl PhysicalPlanner {
                     .map(|f| f.file_path.clone())
                     .expect("partition should have files after empty check");
 
-                let object_store_options: HashMap<String, String> = common
+                let mut object_store_options: HashMap<String, String> = common
                     .object_store_options
                     .iter()
                     .map(|(k, v)| (k.clone(), v.clone()))
                     .collect();
+                apply_executor_object_store_defaults(&self.session_ctx, &mut object_store_options);
                 let (object_store_url, _, object_store_backend) =
                     prepare_object_store_with_configs(
                         self.session_ctx.runtime_env(),
@@ -1747,11 +1749,12 @@ impl PhysicalPlanner {
                     convert_spark_types_to_arrow_schema(scan.partition_schema.as_slice());
                 let projection_vector: Vec<usize> =
                     scan.projection_vector.iter().map(|i| *i as usize).collect();
-                let object_store_options: HashMap<String, String> = scan
+                let mut object_store_options: HashMap<String, String> = scan
                     .object_store_options
                     .iter()
                     .map(|(k, v)| (k.clone(), v.clone()))
                     .collect();
+                apply_executor_object_store_defaults(&self.session_ctx, &mut object_store_options);
                 let one_file = scan
                     .file_partitions
                     .first()

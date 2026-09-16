@@ -199,11 +199,12 @@ object NativeConfig {
   /**
    * Where the native side finds the credentials file Hadoop's profile provider would read with no
    * `fs.s3a.auth.profile.file` configured: `AWS_SHARED_CREDENTIALS_FILE`, else the JVM user's
-   * `~/.aws/credentials` (Hadoop resolves the home through `user.home`, not `HOME`).
+   * `~/.aws/credentials` (Hadoop resolves the home through `user.home`, not `HOME`). Resolved on
+   * the executor at plan creation, since the executor's home is what its Hadoop provider reads.
    */
   val COMET_DEFAULT_PROFILE_FILE_KEY = "fs.s3a.comet.default.profile.file"
 
-  private[objectstore] def defaultSharedCredentialsFile(
+  private[comet] def defaultSharedCredentialsFile(
       env: Map[String, String] = sys.env,
       userHome: String = System.getProperty("user.home")): String =
     env
@@ -245,13 +246,6 @@ object NativeConfig {
     // rather than an Option allocation per Hadoop property.
     val vendorPrefix = if (s3CompliantSchemes.contains(scheme)) s"fs.$scheme." else ""
     val vendorEntries = scala.collection.mutable.ArrayBuffer[(String, String)]()
-
-    // Hadoop's ProfileAWSCredentialsProvider reads this file when fs.s3a.auth.profile.file is
-    // unset; native resolves paths against its own environment, so the JVM's answer rides along
-    // for every scheme that uses the fs.s3a.* surface.
-    if (prefixes.get.contains("fs.s3a.")) {
-      options(COMET_DEFAULT_PROFILE_FILE_KEY) = defaultSharedCredentialsFile()
-    }
 
     hadoopConf.iterator().asScala.foreach { entry =>
       val key = entry.getKey

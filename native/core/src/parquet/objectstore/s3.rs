@@ -353,6 +353,43 @@ fn normalize_endpoint(
     })
 }
 
+/// Object store defaults the executor JVM resolves at plan creation and native applies to
+/// every scan's options, so the native side reads the same files Hadoop does on that executor.
+#[derive(Debug, Clone, Default)]
+pub struct ExecutorObjectStoreDefaults {
+    /// The credentials file Hadoop's profile provider reads with no `fs.s3a.auth.profile.file`
+    /// configured, resolved against the executor JVM's `user.home` and environment.
+    pub default_profile_file: Option<String>,
+}
+
+/// The key the executor JVM and the native provider share for that file.
+pub const COMET_DEFAULT_PROFILE_FILE_KEY: &str = "fs.s3a.comet.default.profile.file";
+
+impl ExecutorObjectStoreDefaults {
+    /// Overlays the executor's defaults onto a scan's forwarded options. The executor value
+    /// wins over anything the driver serialized, since only the executor knows its own home.
+    pub fn apply(&self, options: &mut HashMap<String, String>) {
+        if let Some(file) = &self.default_profile_file {
+            options.insert(COMET_DEFAULT_PROFILE_FILE_KEY.to_string(), file.clone());
+        }
+    }
+}
+
+/// Applies the executor defaults registered on `session` (see `ExecutorObjectStoreDefaults`)
+/// to a scan's forwarded object store options.
+pub fn apply_executor_object_store_defaults(
+    session: &datafusion::prelude::SessionContext,
+    options: &mut HashMap<String, String>,
+) {
+    if let Some(defaults) = session
+        .state()
+        .config()
+        .get_extension::<ExecutorObjectStoreDefaults>()
+    {
+        defaults.apply(options);
+    }
+}
+
 /// The credentials file Hadoop's profile provider reads when none is configured:
 /// `AWS_SHARED_CREDENTIALS_FILE` when set, otherwise `~/.aws/credentials`.
 fn default_shared_credentials_file(env_override: Option<String>, home: Option<String>) -> String {
@@ -2456,6 +2493,45 @@ mod tests {
                 credentials_only: false,
             }
         );
+    }
+
+    #[test]
+    fn test_executor_defaults_overlay_the_forwarded_options() {
+        use datafusion::prelude::{SessionConfig, SessionContext};
+        let mut options = HashMap::from([(
+            COMET_DEFAULT_PROFILE_FILE_KEY.to_string(),
+            "/synthetic/driver-home/.aws/credentials".to_string(),
+        )]);
+        // Without executor defaults registered, the options pass through untouched.
+        apply_executor_object_store_defaults(&SessionContext::new(), &mut options);
+        assert_eq!(
+            options
+                .get(COMET_DEFAULT_PROFILE_FILE_KEY)
+                .map(String::as_str),
+            Some("/synthetic/driver-home/.aws/credentials")
+        );
+        // The executor's own resolution wins over whatever the driver serialized.
+        let config = SessionConfig::new().with_extension(Arc::new(ExecutorObjectStoreDefaults {
+            default_profile_file: Some("/synthetic/executor-home/.aws/credentials".to_string()),
+        }));
+        apply_executor_object_store_defaults(
+            &SessionContext::new_with_config(config),
+            &mut options,
+        );
+        assert_eq!(
+            options
+                .get(COMET_DEFAULT_PROFILE_FILE_KEY)
+                .map(String::as_str),
+            Some("/synthetic/executor-home/.aws/credentials")
+        );
+        // An executor with nothing resolved leaves the options alone.
+        let config =
+            SessionConfig::new().with_extension(Arc::new(ExecutorObjectStoreDefaults::default()));
+        apply_executor_object_store_defaults(
+            &SessionContext::new_with_config(config),
+            &mut options,
+        );
+        assert_eq!(options.len(), 1);
     }
 
     #[test]

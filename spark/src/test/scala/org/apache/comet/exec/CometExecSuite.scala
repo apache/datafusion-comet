@@ -67,6 +67,14 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
+  test("serialized executor configs carry the executor-resolved default credentials file") {
+    val protobuf = CometExecIterator.serializeCometSQLConfs()
+    val entries = org.apache.comet.serde.Config.ConfigMap.parseFrom(protobuf).getEntriesMap
+    assert(
+      entries.get(org.apache.comet.objectstore.NativeConfig.COMET_DEFAULT_PROFILE_FILE_KEY) ==
+        org.apache.comet.objectstore.NativeConfig.defaultSharedCredentialsFile())
+  }
+
   test("SQLConf serde") {
 
     def roundtrip = {

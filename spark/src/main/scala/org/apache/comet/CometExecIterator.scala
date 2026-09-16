@@ -35,6 +35,7 @@ import org.apache.spark.util.SerializableConfiguration
 import org.apache.comet.CometConf._
 import org.apache.comet.Tracing.withTrace
 import org.apache.comet.exceptions.CometQueryExecutionException
+import org.apache.comet.objectstore.NativeConfig
 import org.apache.comet.parquet.CometFileKeyUnwrapper
 import org.apache.comet.serde.Config.ConfigMap
 import org.apache.comet.shuffle.ShufflePartitionPusher
@@ -357,6 +358,12 @@ object CometExecIterator extends Logging {
     builder.putEntries(
       CometConf.COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED.key,
       CometConf.COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED.get(SQLConf.get).toString)
+
+    // This runs on the executor, so the credentials file Hadoop's profile provider would read
+    // here is resolved against this JVM's user.home, not the driver's or the native process's.
+    builder.putEntries(
+      NativeConfig.COMET_DEFAULT_PROFILE_FILE_KEY,
+      NativeConfig.defaultSharedCredentialsFile())
 
     builder.build().toByteArray
   }
