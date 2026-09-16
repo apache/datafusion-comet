@@ -388,6 +388,21 @@ FILTERS = {
         "mvnw",
     ],
 }
+# These inputs are shared by the Linux native producers. Keep the routes in
+# one place so an action-only cache change exercises each applicable consumer.
+for _native_consumer in (
+    "build_linux", "spark_3_4", "spark_3_5", "spark_4_0", "spark_4_1",
+    "iceberg_1_8", "iceberg_1_9", "iceberg_1_10", "iceberg_1_11",
+):
+    FILTERS[_native_consumer].extend([
+        ".github/actions/build-native-ci/**",
+        "dev/ci/native-cache-key.py",
+        "dev/ci/native-library-cache.py",
+        "dev/ci/test-native-cache-key.py",
+        "dev/ci/test-native-library-cache.py",
+        "dev/ci/test-native-cache-workflow.py",
+    ])
+
 FILTERS["spark_4_1_hive"] = FILTERS["spark_4_1"]
 FILTERS["build_linux_full"] = FILTERS["build_linux"]
 FILTERS["build_linux_all_profiles"] = FILTERS["build_linux"]

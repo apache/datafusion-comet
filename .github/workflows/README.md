@@ -404,6 +404,56 @@ entry through `restore-keys` and downloads whatever else it needs, which is
 what a cold pull request already did. See the push-tier discussion above for
 which jobs do run on main and therefore do write.
 
+## Reusing Linux native builds
+
+The Linux, Spark SQL, Iceberg and manual Spark writer workflows use
+`.github/actions/build-native-ci` after checkout and toolchain setup. It keeps
+two separate caches:
+
+- A compact `libcomet.so` cache avoids compilation when every native build
+  input matches. It uses an exact key, with no fallback prefix. A manifest
+  records the input key and the library's SHA-256; a missing, partial or
+  invalid entry falls back to compilation. The library is staged at the same
+  `native/target/ci/libcomet.so` path as a fresh build, then uploaded under the
+  caller's existing artifact name. All downstream tests still run.
+- The larger Cargo cache contains the actual `CARGO_HOME` registry/git
+  directories and `native/target`. A matching dependency prefix can seed a
+  build after native sources change. Restoring this cache always runs
+  `cargo build --locked --profile ci`; a target-directory cache hit alone
+  never authorizes reusing a binary without compiling.
+
+`dev/ci/native-cache-key.py` computes the keys once, before Cargo generates
+Rust source files. It hashes tracked native and contrib files, shared JVM
+inputs, build configuration and CI definitions, together with the resolved
+Rust/C/C++/protobuf tools, JDK, installed system packages, architecture and
+build environment. Generated files and untracked build output do not change
+the save key. The CPU target remains explicitly `x86-64-v3`; binaries built
+with `target-cpu=native` must not enter this cache. Unsupported external tool
+or library overrides fail key generation rather than create an incomplete
+identity. Ordinary changes confined to Spark sources can retain the same
+native key; changing protobuf, toolchains or build flags cannot.
+
+Only pushes to `main` save these caches. PR, queue, nightly and manual runs
+consume them without writing new entries. A main push still invokes Cargo,
+even when the compact entry exists, to keep the larger compiler cache warm.
+It skips re-saving an exact cache entry. The Rust test job uses the same key
+snapshot and Cargo-home resolution with a separate debug profile, and still
+runs every Rust check and test.
+
+The first main push after adoption populates the new cache namespace. Until
+then, or after eviction, runs build normally. Cache reuse is scoped by GitHub's
+cache access rules; it does not fetch a binary from an arbitrary PR or use the
+latest main binary when inputs differ. The manifest detects corruption, while
+the main-only write policy determines which builds can populate the cache.
+
+Preflight runs the native-key, compact-library and workflow-flow regression
+tests. To verify a hosted hit, compare the native input key between a main
+push and a later run with unchanged inputs: `Validate cached native library`
+must report `hit=true`, the Cargo restore/build steps must skip, and the
+normal library upload and downstream tests must succeed. A native or protobuf
+edit must instead invoke Cargo. These timings depend on cache availability;
+the change does not promise a fixed build-time reduction.
+
 ## Retrying flaky network operations
 
 **Maven.** `.mvn/maven.config` tunes the Maven Resolver HTTP transport: six
