@@ -22,6 +22,7 @@ package org.apache
 import java.util.Properties
 
 import org.apache.arrow.memory.RootAllocator
+import org.apache.spark.comet.CometArrowAllocationListener
 import org.apache.spark.internal.Logging
 
 package object comet {
@@ -32,8 +33,13 @@ package object comet {
    * Until the reference count is zero, the memory will not be released. If the consumer side is
    * finished later than the close of the allocator, the allocator will think the memory is
    * leaked. To avoid this, we use a single allocator for the whole execution process.
+   *
+   * The allocator itself is unlimited, but [[CometArrowAllocationListener]] reports every
+   * allocation to Spark's memory manager so that these off-heap bytes are no longer invisible to
+   * Spark's accounting. It reports without enforcing, so allocation here still cannot fail.
    */
-  val CometArrowAllocator = new RootAllocator(Long.MaxValue)
+  val CometArrowAllocator =
+    new RootAllocator(new CometArrowAllocationListener, Long.MaxValue)
 
   /**
    * Provides access to build information about the Comet libraries. This will be used by the
