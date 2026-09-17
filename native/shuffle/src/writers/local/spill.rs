@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use crate::codec_context::ShuffleCodecContext;
 use crate::metrics::ShufflePartitionerMetrics;
 use crate::writers::BufBatchWriter;
 use crate::ShuffleBlockWriter;
@@ -91,6 +92,7 @@ impl PartitionedSpill {
         &mut self,
         pid: usize,
         iter: &mut I,
+        codec_context: &mut ShuffleCodecContext,
         runtime: &RuntimeEnv,
         metrics: &ShufflePartitionerMetrics,
         recycled_buffer: &mut Vec<u8>,
@@ -111,6 +113,7 @@ impl PartitionedSpill {
             buf_batch_writer.write(
                 &batch?,
                 recycled_buffer,
+                codec_context,
                 &metrics.encode_time,
                 &metrics.write_time,
             )?;
@@ -119,11 +122,17 @@ impl PartitionedSpill {
                 buf_batch_writer.write(
                     &batch,
                     recycled_buffer,
+                    codec_context,
                     &metrics.encode_time,
                     &metrics.write_time,
                 )?;
             }
-            buf_batch_writer.flush(recycled_buffer, &metrics.encode_time, &metrics.write_time)?;
+            buf_batch_writer.flush(
+                recycled_buffer,
+                codec_context,
+                &metrics.encode_time,
+                &metrics.write_time,
+            )?;
             Ok::<_, DataFusionError>(buf_batch_writer.bytes_written())
         })();
 
@@ -340,7 +349,14 @@ mod tests {
         ]
         .into_iter();
         assert!(spill
-            .write(0, &mut iter, &RuntimeEnv::default(), &metrics(), recycled)
+            .write(
+                0,
+                &mut iter,
+                &mut ShuffleCodecContext::default(),
+                &RuntimeEnv::default(),
+                &metrics(),
+                recycled
+            )
             .is_err());
     }
 
@@ -366,6 +382,7 @@ mod tests {
             .write(
                 1,
                 &mut vec![Ok(test_batch())].into_iter(),
+                &mut ShuffleCodecContext::default(),
                 &RuntimeEnv::default(),
                 &metrics(),
                 &mut recycled,
@@ -382,12 +399,14 @@ mod tests {
     fn partitions_share_one_file_in_write_order() {
         let mut spill = partitioned_spill(&test_batch(), 2);
         let runtime = RuntimeEnv::default();
+        let mut codec_context = ShuffleCodecContext::default();
         let mut recycled = Vec::new();
         for pid in [1, 0, 1] {
             spill
                 .write(
                     pid,
                     &mut vec![Ok(test_batch())].into_iter(),
+                    &mut codec_context,
                     &runtime,
                     &metrics(),
                     &mut recycled,
@@ -408,12 +427,14 @@ mod tests {
     fn writes_stay_buffered_until_flush() {
         let mut spill = partitioned_spill(&test_batch(), 2);
         let runtime = RuntimeEnv::default();
+        let mut codec_context = ShuffleCodecContext::default();
         let mut recycled = Vec::new();
         for pid in [0, 1] {
             spill
                 .write(
                     pid,
                     &mut vec![Ok(test_batch())].into_iter(),
+                    &mut codec_context,
                     &runtime,
                     &metrics(),
                     &mut recycled,
@@ -435,6 +456,7 @@ mod tests {
             .write(
                 0,
                 &mut std::iter::empty(),
+                &mut ShuffleCodecContext::default(),
                 &RuntimeEnv::default(),
                 &metrics(),
                 &mut Vec::new(),
@@ -458,6 +480,7 @@ mod tests {
             .write(
                 0,
                 &mut vec![Ok(test_batch())].into_iter(),
+                &mut ShuffleCodecContext::default(),
                 &pathless_backend::runtime(),
                 &metrics(),
                 &mut Vec::new(),
