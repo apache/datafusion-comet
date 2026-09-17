@@ -877,6 +877,8 @@ case class CometExecRule(session: SparkSession)
 
   /** Keep opted-in expressions in Spark's row pipeline where an operator can skip inputs. */
   private def preserveEvaluationMasks(plan: SparkPlan): SparkPlan = {
+    if (!CometConf.COMET_EXEC_PRESERVE_EVALUATION_MASKS_ENABLED.get()) return plan
+
     def findEvaluationMaskName(expr: Expression): Option[String] = {
       var name: Option[String] = None
       expr.exists { child =>
@@ -886,53 +888,34 @@ case class CometExecRule(session: SparkSession)
       name
     }
 
+    def originalPlan(node: SparkPlan): SparkPlan = node match {
+      case scan: CometScanExec =>
+        scan.wrapped
+          .copy(partitionFilters = scan.partitionFilters, dataFilters = scan.dataFilters)
+      case comet: CometExec => comet.originalPlan
+      case shuffle: CometShuffleExchangeExec => shuffle.originalPlan
+      case broadcast: CometBroadcastExchangeExec => broadcast.originalPlan
+      case _ => node
+    }
+
+    // Most plans contain no opted-in expression. Include native originals and sticky tags
+    // so repeated AQE passes still restore an already-protected subtree when necessary.
+    if (!plan.exists(node =>
+        node.getTagValue(CometExecRule.UNSAFE_EXPRESSION_EVALUATION).isDefined ||
+          originalPlan(node).expressions.exists(findEvaluationMaskName(_).isDefined))) {
+      return plan
+    }
+
     def firstMatch(joinType: JoinType): Boolean = joinType match {
       case LeftSemi | LeftAnti => true
       case _ => false
-    }
-
-    // A reused native Final may need to fall back along with its incompatible Partial buffer.
-    // Restore only that buffer-producing chain so tagUnsafePartialAggregates can protect it.
-    // Do not cross a materialized query stage or descend below the input of a pure Partial.
-    def restoreNativeAggregateBuffers(node: SparkPlan): Option[SparkPlan] = {
-      val original = node match {
-        case agg: CometHashAggregateExec => agg.originalPlan
-        case shuffle: CometShuffleExchangeExec => shuffle.originalPlan
-        case _ => node
-      }
-      def restore(children: Seq[SparkPlan]): SparkPlan = {
-        val restored = original.withNewChildren(children)
-        node.getTagValue(SparkPlan.LOGICAL_PLAN_TAG).foreach(restored.setLogicalLink)
-        restored
-      }
-      original match {
-        case agg: BaseAggregateExec
-            if agg.aggregateExpressions.nonEmpty &&
-              agg.aggregateExpressions.forall(_.mode == Partial) =>
-          if (original ne node) Some(restore(node.children)) else None
-        case agg: BaseAggregateExec
-            if agg.aggregateExpressions.forall(e =>
-              e.mode == Partial || e.mode == PartialMerge) =>
-          restoreNativeAggregateBuffers(node.children.head).map(child => restore(Seq(child)))
-        case _: ShuffleExchangeLike =>
-          restoreNativeAggregateBuffers(node.children.head).map(child => restore(Seq(child)))
-        case _ => None
-      }
     }
 
     def protect(
         node: SparkPlan,
         belowLimit: Boolean,
         hasLimitAncestor: Boolean): (SparkPlan, Option[String]) = {
-      val original = node match {
-        case scan: CometScanExec =>
-          scan.wrapped
-            .copy(partitionFilters = scan.partitionFilters, dataFilters = scan.dataFilters)
-        case comet: CometExec => comet.originalPlan
-        case shuffle: CometShuffleExchangeExec => shuffle.originalPlan
-        case broadcast: CometBroadcastExchangeExec => broadcast.originalPlan
-        case _ => node
-      }
+      val original = originalPlan(node)
       val startsLimit = original match {
         // Offset-only collection does not stop its input early.
         case collect: CollectLimitExec => collect.limit >= 0
@@ -991,7 +974,8 @@ case class CometExecRule(session: SparkSession)
       // compatible buffers before that happens, even if a current operator drains its input.
       val aggregateBufferName = if (hasLimitAncestor && conf.adaptiveExecutionEnabled) {
         finalAggregate
-          .filterNot(agg => QueryPlanSerde.allAggsSupportMixedExecution(agg.aggregateExpressions))
+          .filterNot(agg =>
+            QueryPlanSerde.allAggsSupportNativePartialToSparkFinal(agg.aggregateExpressions))
           .flatMap(
             _.resultExpressions.iterator.flatMap(findEvaluationMaskName).take(1).toSeq.headOption)
       } else {
@@ -1010,16 +994,9 @@ case class CometExecRule(session: SparkSession)
       val restartsNative = original.isInstanceOf[ShuffleExchangeLike] ||
         original.isInstanceOf[BroadcastExchangeLike]
       val reason = ownReason.orElse(if (restartsNative) None else childReason)
-      val children = protectedChildren.map(_._1).map { child =>
-        original match {
-          case agg: BaseAggregateExec
-              if reason.isDefined && agg.aggregateExpressions.map(_.mode).distinct == Seq(
-                Final) &&
-                !QueryPlanSerde.allAggsSupportMixedExecution(agg.aggregateExpressions) =>
-            restoreNativeAggregateBuffers(child).getOrElse(child)
-          case _ => child
-        }
-      }
+      // Early tags keep fresh aggregate buffers safe before AQE materialization. Reused native
+      // buffer chains are restored by revertUnsafePartialAggregates after conversion.
+      val children = protectedChildren.map(_._1)
       val prepared = node match {
         // Do not refill a batch between the row decoder and its short-circuiting consumer.
         case _: RowToColumnarExec | _: CometSparkToColumnarExec if childReason.isDefined =>

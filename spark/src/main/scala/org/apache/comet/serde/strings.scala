@@ -768,7 +768,8 @@ object CometBase64 extends CometExpressionSerde[Base64] {
 // ScalarFunctionExpr evaluates its arguments eagerly and would bypass Spark's short-circuit
 // semantics for compound children (see apache/datafusion-comet#5451). More complex children
 // stay on the JVM codegen dispatcher via CodegenDispatchFallback. CometExecRule preserves
-// row evaluation below LIMIT and in first-match join conditions for both execution paths.
+// row evaluation below LIMIT and in first-match join conditions for both execution paths,
+// unless spark.comet.exec.preserveEvaluationMasks.enabled is disabled for known-valid input.
 // When failOnError = true
 // (from `to_binary('base64')` / `try_to_binary`), Spark uses a stricter RFC 4648 validator, so
 // those cases also stay on the dispatcher. Error messages match Spark byte-for-byte (pinned in
@@ -791,7 +792,9 @@ object CometUnBase64
 
   private val maskedEvaluationReason =
     "unbase64 below LIMIT or in first-match join conditions falls back to Spark so malformed" +
-      " input is not decoded on rows Spark skips"
+      " input is not decoded on rows Spark skips. For known-valid input, set " +
+      "spark.comet.exec.preserveEvaluationMasks.enabled=false to retain native execution; " +
+      "malformed input may then fail even on rows Spark would skip"
 
   override def getUnsupportedReasons(): Seq[String] =
     Seq(failOnErrorReason, nonTrivialChildReason, maskedEvaluationReason)
