@@ -3736,19 +3736,22 @@ impl PhysicalPlanner {
         udf: &HigherOrderUDF,
         func_name: &str,
         value_args: &[Arc<dyn PhysicalExpr>],
-        n_lambdas: usize,
+        lambda_count: usize,
         schema: &Schema,
     ) -> Result<Vec<Vec<FieldRef>>, ExecutionError> {
         let mut planning_fields: Vec<ValueOrLambda<FieldRef, Option<FieldRef>>> = value_args
             .iter()
             .map(|e| Ok(ValueOrLambda::Value(e.return_field(schema)?)))
             .collect::<Result<_, DataFusionError>>()?;
-        planning_fields.extend(std::iter::repeat_n(ValueOrLambda::Lambda(None), n_lambdas));
+        planning_fields.extend(std::iter::repeat_n(
+            ValueOrLambda::Lambda(None),
+            lambda_count,
+        ));
 
         match udf.lambda_parameters(0, &planning_fields)? {
-            LambdaParametersProgress::Complete(items) if items.len() >= n_lambdas => Ok(items),
+            LambdaParametersProgress::Complete(items) if items.len() >= lambda_count => Ok(items),
             LambdaParametersProgress::Complete(items) => Err(GeneralError(format!(
-                "{func_name}: expected parameter fields for {n_lambdas} lambdas, got {}",
+                "{func_name}: expected parameter fields for {lambda_count} lambdas, got {}",
                 items.len()
             ))),
             LambdaParametersProgress::Partial(_) => Err(GeneralError(format!(
