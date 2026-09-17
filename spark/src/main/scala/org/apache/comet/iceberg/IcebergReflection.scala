@@ -55,6 +55,9 @@ object IcebergReflection extends Logging {
     val UNBOUND_PREDICATE = "org.apache.iceberg.expressions.UnboundPredicate"
     val SPARK_BATCH_QUERY_SCAN = "org.apache.iceberg.spark.source.SparkBatchQueryScan"
     val SPARK_STAGED_SCAN = "org.apache.iceberg.spark.source.SparkStagedScan"
+    val SPARK_CHANGELOG_SCAN = "org.apache.iceberg.spark.source.SparkChangelogScan"
+    val ADDED_ROWS_SCAN_TASK = "org.apache.iceberg.AddedRowsScanTask"
+    val DELETED_DATA_FILE_SCAN_TASK = "org.apache.iceberg.DeletedDataFileScanTask"
     val SPARK_SCHEMA_UTIL = "org.apache.iceberg.spark.SparkSchemaUtil"
     val TABLE = "org.apache.iceberg.Table"
     val PARTITIONING = "org.apache.iceberg.Partitioning"
@@ -81,7 +84,19 @@ object IcebergReflection extends Logging {
    * instances.
    */
   val ICEBERG_SCAN_CLASSES: Set[String] =
-    Set(ClassNames.SPARK_BATCH_QUERY_SCAN, ClassNames.SPARK_STAGED_SCAN)
+    Set(
+      ClassNames.SPARK_BATCH_QUERY_SCAN,
+      ClassNames.SPARK_STAGED_SCAN,
+      ClassNames.SPARK_CHANGELOG_SCAN)
+
+  def isChangelogScan(scan: Any): Boolean =
+    scan.getClass.getName == ClassNames.SPARK_CHANGELOG_SCAN
+
+  private def changelogScanField(scan: Any, name: String): Option[Any] = {
+    val field = scan.getClass.getDeclaredField(name)
+    field.setAccessible(true)
+    Option(field.get(scan))
+  }
 
   def isIcebergScanClass(name: String): Boolean = ICEBERG_SCAN_CLASSES.contains(name)
 
@@ -412,6 +427,7 @@ object IcebergReflection extends Logging {
    * The table() method is protected in SparkScan, requiring reflection to access.
    */
   def getTable(scan: Any): Option[Any] = {
+    if (isChangelogScan(scan)) return changelogScanField(scan, "table")
     findMethodInHierarchy(scan.getClass, "table").flatMap { tableMethod =>
       try {
         Some(tableMethod.invoke(scan))
@@ -437,7 +453,16 @@ object IcebergReflection extends Logging {
    * and require reflection.
    */
   def getTasks(scan: Any): Option[java.util.List[_]] =
-    if (isStagedScan(scan)) tasksFromTaskGroups(scan) else tasksFromTasksAccessor(scan)
+    if (isStagedScan(scan) || isChangelogScan(scan)) tasksFromTaskGroups(scan)
+    else tasksFromTasksAccessor(scan)
+
+  /** Tasks already bounded by the streaming source's start/end offsets, or a batch partition. */
+  def tasksFromInputPartition(partition: AnyRef): java.util.Collection[_] = {
+    val taskGroup = getDeclaredMethod(partition.getClass, "taskGroup").invoke(partition)
+    getMethod(taskGroup.getClass, "tasks")
+      .invoke(taskGroup)
+      .asInstanceOf[java.util.Collection[_]]
+  }
 
   private def tasksFromTasksAccessor(scan: Any): Option[java.util.List[_]] =
     findMethodInHierarchy(scan.getClass, "tasks") match {
@@ -492,7 +517,9 @@ object IcebergReflection extends Logging {
    * method we know isn't there.
    */
   def getFilterExpressions(scan: Any): Option[java.util.List[_]] =
-    if (isStagedScan(scan)) {
+    if (isChangelogScan(scan)) {
+      changelogScanField(scan, "filters").map(_.asInstanceOf[java.util.List[_]])
+    } else if (isStagedScan(scan)) {
       Some(java.util.Collections.emptyList[AnyRef]())
     } else {
       // Iceberg 1.11 renamed SparkScan.filterExpressions() to filters(); 1.8-1.10 use the old name.
@@ -709,10 +736,10 @@ object IcebergReflection extends Logging {
    *
    * Returns an empty sequence when the task has no partition spec.
    */
-  def partitionSourceFieldIds(task: Any, fileScanTaskClass: Class[_]): Seq[Int] = {
+  def partitionSourceFieldIds(task: Any): Seq[Int] = {
     val spec =
       try {
-        getMethod(fileScanTaskClass, "spec").invoke(task)
+        getMethod(loadClass(ClassNames.CONTENT_SCAN_TASK), "spec").invoke(task)
       } catch {
         case _: Exception => null
       }
@@ -882,7 +909,14 @@ object IcebergReflection extends Logging {
    *   if reflection fails (callers must handle appropriately based on context)
    */
   def getDeleteFilesFromTask(task: Any, fileScanTaskClass: Class[_]): java.util.List[_] = {
-    val deletesMethod = getMethod(fileScanTaskClass, "deletes")
+    val deletesMethod = if (fileScanTaskClass.isInstance(task)) {
+      getMethod(fileScanTaskClass, "deletes")
+    } else if (loadClass(ClassNames.ADDED_ROWS_SCAN_TASK).isInstance(task)) {
+      getMethod(loadClass(ClassNames.ADDED_ROWS_SCAN_TASK), "deletes")
+    } else {
+      // Deliberately rejects other changelog task kinds, including row-level delete tasks.
+      getMethod(loadClass(ClassNames.DELETED_DATA_FILE_SCAN_TASK), "existingDeletes")
+    }
     val deletes = deletesMethod.invoke(task).asInstanceOf[java.util.List[_]]
     if (deletes == null) new java.util.ArrayList[Any]() else deletes
   }
@@ -953,6 +987,10 @@ object IcebergReflection extends Logging {
    *   The expected Iceberg Schema, or None if reflection fails
    */
   def getExpectedSchema(scan: Any): Option[Any] = {
+    if (isChangelogScan(scan)) {
+      return try changelogScanField(scan, "projection")
+      catch { case _: NoSuchFieldException => changelogScanField(scan, "expectedSchema") }
+    }
     // Iceberg 1.11 renamed SparkScan.expectedSchema() to projection() (the projected read
     // schema); 1.8-1.10 still expose expectedSchema(). Try the new name first, then fall back.
     findMethodInHierarchy(scan.getClass, "projection")

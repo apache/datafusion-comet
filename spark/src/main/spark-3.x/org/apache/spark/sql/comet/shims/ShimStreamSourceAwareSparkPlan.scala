@@ -19,4 +19,8 @@
 
 package org.apache.spark.sql.comet.shims
 
-trait ShimStreamSourceAwareSparkPlan {}
+import org.apache.spark.sql.execution.SparkPlan
+
+trait ShimStreamSourceAwareSparkPlan {
+  protected def streamSourcePlan: SparkPlan = null
+}

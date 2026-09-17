@@ -24,9 +24,9 @@ use std::sync::Arc;
 use std::task::{Context, Poll};
 
 use arrow::array::{ArrayRef, RecordBatch, RecordBatchOptions};
-use arrow::datatypes::SchemaRef;
+use arrow::datatypes::{Schema, SchemaRef};
 use datafusion::common::tree_node::TreeNodeRecursion;
-use datafusion::common::{DataFusionError, Result as DFResult};
+use datafusion::common::{DataFusionError, Result as DFResult, ScalarValue};
 use datafusion::execution::{RecordBatchStream, SendableRecordBatchStream, TaskContext};
 use datafusion::physical_expr::expressions::Column;
 use datafusion::physical_expr::{EquivalenceProperties, PhysicalExpr};
@@ -34,9 +34,11 @@ use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
 use datafusion::physical_plan::metrics::{
     BaselineMetrics, Count, ExecutionPlanMetricsSet, MetricBuilder, MetricsSet,
 };
+use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{
     DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties,
 };
+use datafusion_comet_proto::spark_operator::IcebergChange;
 use futures::{Stream, StreamExt, TryStreamExt};
 use iceberg::arrow::ScanMetrics;
 use iceberg::io::FileIO;
@@ -81,6 +83,8 @@ pub struct IcebergScanExec {
     catalog_name: String,
     /// Pre-planned file scan tasks
     tasks: Vec<FileScanTask>,
+    /// Changelog constants aligned with the planned tasks. Absent for ordinary table scans.
+    changes: Option<Vec<IcebergChange>>,
     /// Number of data files to read concurrently
     data_file_concurrency_limit: usize,
     /// Metrics
@@ -108,6 +112,7 @@ impl IcebergScanExec {
             catalog_properties,
             catalog_name,
             tasks,
+            changes: None,
             data_file_concurrency_limit,
             metrics,
         })
@@ -120,6 +125,20 @@ impl IcebergScanExec {
             EmissionType::Incremental,
             Boundedness::Bounded,
         ))
+    }
+
+    pub fn with_changes(mut self, changes: Vec<IcebergChange>) -> DFResult<Self> {
+        if changes.len() != self.tasks.len()
+            || changes
+                .iter()
+                .any(|c| !matches!(c.change_type.as_str(), "INSERT" | "DELETE"))
+        {
+            return Err(DataFusionError::Plan(
+                "Invalid Iceberg changelog tasks".into(),
+            ));
+        }
+        self.changes = Some(changes);
+        Ok(self)
     }
 }
 
@@ -161,7 +180,10 @@ impl ExecutionPlan for IcebergScanExec {
         _partition: usize,
         context: Arc<TaskContext>,
     ) -> DFResult<SendableRecordBatchStream> {
-        self.execute_with_tasks(self.tasks.clone(), context)
+        match &self.changes {
+            Some(changes) => self.execute_changes(changes, context),
+            None => self.execute_with_tasks(self.tasks.clone(), context),
+        }
     }
 
     fn metrics(&self) -> Option<MetricsSet> {
@@ -170,6 +192,93 @@ impl ExecutionPlan for IcebergScanExec {
 }
 
 impl IcebergScanExec {
+    fn execute_changes(
+        &self,
+        changes: &[IcebergChange],
+        context: Arc<TaskContext>,
+    ) -> DFResult<SendableRecordBatchStream> {
+        // Read only added/removed data files, reusing the ordinary reader and its concurrency.
+        // A group has constant CDC metadata, so no per-row JVM callback or second table scan is needed.
+        let mut groups = std::collections::BTreeMap::new();
+        for (task, change) in self.tasks.iter().zip(changes) {
+            groups
+                .entry((
+                    change.change_type.clone(),
+                    change.change_ordinal,
+                    change.commit_snapshot_id,
+                ))
+                .or_insert_with(Vec::new)
+                .push(task.clone());
+        }
+        let data_fields = self
+            .output_schema
+            .fields()
+            .iter()
+            .filter(|f| {
+                !matches!(
+                    f.name().as_str(),
+                    "_change_type" | "_change_ordinal" | "_commit_snapshot_id"
+                )
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        let mut scan = Self::new(
+            self.metadata_location.clone(),
+            Arc::new(Schema::new(data_fields)),
+            self.catalog_properties.clone(),
+            self.catalog_name.clone(),
+            vec![],
+            self.data_file_concurrency_limit,
+        )
+        .map_err(|e| DataFusionError::Execution(e.to_string()))?;
+        scan.metrics = self.metrics.clone();
+        let output_schema = Arc::clone(&self.output_schema);
+        // Open groups on demand. Each reader already applies the file-concurrency limit;
+        // overlapping groups would multiply that limit and retain extra FileIO handles.
+        let streams = groups.into_iter().map(
+            move |((change_type, ordinal, snapshot), tasks)| -> DFResult<_> {
+                let input = scan.execute_with_tasks(tasks, Arc::clone(&context))?;
+                let schema = Arc::clone(&output_schema);
+                Ok(input.map(move |batch| {
+                    let batch = batch?;
+                    let columns = schema
+                        .fields()
+                        .iter()
+                        .map(|field| {
+                            let constant = match field.name().as_str() {
+                                "_change_type" => {
+                                    Some(ScalarValue::Utf8(Some(change_type.clone())))
+                                }
+                                "_change_ordinal" => Some(ScalarValue::Int32(Some(ordinal))),
+                                "_commit_snapshot_id" => Some(ScalarValue::Int64(Some(snapshot))),
+                                _ => None,
+                            };
+                            match constant {
+                                Some(value) => Ok(arrow::compute::cast(
+                                    &value.to_array_of_size(batch.num_rows())?,
+                                    field.data_type(),
+                                )?),
+                                None => Ok(Arc::clone(
+                                    batch.column(batch.schema().index_of(field.name())?),
+                                )),
+                            }
+                        })
+                        .collect::<DFResult<Vec<_>>>()?;
+                    Ok(RecordBatch::try_new_with_options(
+                        Arc::clone(&schema),
+                        columns,
+                        &RecordBatchOptions::new().with_row_count(Some(batch.num_rows())),
+                    )?)
+                }))
+            },
+        );
+        let stream = futures::stream::iter(streams).try_flatten();
+        Ok(Box::pin(RecordBatchStreamAdapter::new(
+            Arc::clone(&self.output_schema),
+            stream,
+        )))
+    }
+
     /// Handles MOR (Merge-On-Read) tables by automatically applying positional and equality
     /// deletes via iceberg-rust's ArrowReader.
     fn execute_with_tasks(

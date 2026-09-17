@@ -26,6 +26,7 @@ import org.apache.spark.benchmark.Benchmark
 import org.apache.spark.sql.comet.{CometBatchScanExec, CometIcebergNativeScanExec}
 import org.apache.spark.sql.execution.SparkPlan
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanExec
+import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
 
 import org.apache.comet.CometConf
 import org.apache.comet.rules.CometScanRule
@@ -100,7 +101,7 @@ object CometOperatorSerdeBenchmark extends CometBenchmarkBase {
   private def reconstructBatchScanExec(
       nativeScan: CometIcebergNativeScanExec): CometBatchScanExec = {
     CometBatchScanExec(
-      wrapped = nativeScan.originalPlan,
+      wrapped = nativeScan.originalPlan.asInstanceOf[BatchScanExec],
       runtimeFilters = Seq.empty,
       nativeIcebergScanMetadata = Some(nativeScan.nativeIcebergScanMetadata))
   }

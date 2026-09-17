@@ -162,5 +162,6 @@ fn get_operator_type(spark_operator: &Operator) -> Option<OperatorType> {
         // so the supports-mixed-codegen check skips it.
         OpStruct::ContribScan(_) => None,
         OpStruct::WindowGroupLimit(_) => None, // Not yet in OperatorType enum
+        OpStruct::IcebergChangelog(_) => None,
     }
 }
