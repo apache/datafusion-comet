@@ -247,6 +247,8 @@ private object ArrayExtremaSupport extends CometTypeShim {
 
   def getSupportLevel(elementType: DataType): SupportLevel = {
     if (hasNonDefaultStringCollation(elementType)) {
+      // The dispatcher runs Spark's own comparison with the original collation IDs, including
+      // strings nested in arrays or structs. Keep the native bytewise comparison opt-in only.
       Incompatible(Some(incompatReason))
     } else {
       Compatible()
@@ -254,7 +256,9 @@ private object ArrayExtremaSupport extends CometTypeShim {
   }
 }
 
-object CometArrayMax extends CometExpressionSerde[ArrayMax] {
+object CometArrayMax extends CometExpressionSerde[ArrayMax] with CodegenDispatchFallback {
+  override def hasConditionalNativeDefault: Boolean = true
+
   override def getIncompatibleReasons(): Seq[String] = Seq(ArrayExtremaSupport.incompatReason)
 
   override def getSupportLevel(expr: ArrayMax): SupportLevel =
@@ -272,7 +276,9 @@ object CometArrayMax extends CometExpressionSerde[ArrayMax] {
   }
 }
 
-object CometArrayMin extends CometExpressionSerde[ArrayMin] {
+object CometArrayMin extends CometExpressionSerde[ArrayMin] with CodegenDispatchFallback {
+  override def hasConditionalNativeDefault: Boolean = true
+
   override def getIncompatibleReasons(): Seq[String] = Seq(ArrayExtremaSupport.incompatReason)
 
   override def getSupportLevel(expr: ArrayMin): SupportLevel =

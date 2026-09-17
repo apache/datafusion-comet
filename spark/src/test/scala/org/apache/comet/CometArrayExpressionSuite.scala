@@ -631,6 +631,32 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
     }
   }
 
+  test("array extrema - collations fall back when the dispatcher is disabled") {
+    assume(isSpark40Plus)
+    withParquetTable(Seq(("a", "B"), ("B", "a"), ("A", "a")), "collated_extrema") {
+      val a = "CAST(_1 AS STRING COLLATE UTF8_LCASE)"
+      val b = "CAST(_2 AS STRING COLLATE UTF8_LCASE)"
+      val inputs = Seq(
+        s"array($a, $b)",
+        s"array(array($a), array($b))",
+        s"array(named_struct('s', $a), named_struct('s', $b))",
+        s"array(named_struct('s', array($a)), named_struct('s', array($b)))")
+      for (strict <- Seq(false, true)) {
+        withSQLConf(
+          CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key -> strict.toString,
+          CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "false",
+          CometConf.getExprAllowIncompatConfigKey(classOf[ArrayMin]) -> "false",
+          CometConf.getExprAllowIncompatConfigKey(classOf[ArrayMax]) -> "false") {
+          for (function <- Seq("array_min", "array_max"); input <- inputs) {
+            checkSparkAnswerAndFallbackReason(
+              s"SELECT $function($input) FROM collated_extrema",
+              "Array extrema use binary string ordering")
+          }
+        }
+      }
+    }
+  }
+
   test("array extrema - runtime NaN representations") {
     withParquetTable(Seq((Float.NaN, Double.NaN)), "floating_point_extrema") {
       for (strict <- Seq(false, true)) {

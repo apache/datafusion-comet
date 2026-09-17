@@ -95,7 +95,7 @@
 - Spark 3.5.8 (audited 2026-08-22): `ArrayMax` skips NULL elements and returns NULL for an empty or all-NULL array. `SQLOrderingUtil` treats all NaNs as equal and greater than non-NaN values, and signed zeros as equal. The first equal maximum is retained. Nested arrays and structs compare lexicographically, with NULL fields or elements ordered first.
 - Spark 4.0.1 (audited 2026-08-22): `NullIntolerant` becomes a `nullIntolerant` field. Extrema semantics are unchanged; string ordering can use non-default collations.
 - Spark 4.1.1 (audited 2026-08-22): identical to 4.0.1.
-- Current status: `CometArrayMax` uses the native `SparkArrayExtrema` UDF. Typed float/double scans and recursive array/struct comparisons follow Spark's ordering and preserve the original first equal element, including its zero sign and NaN representation. This path is used in both strict and non-strict floating-point modes without the JVM codegen dispatcher. Other scalar element types retain the existing DataFusion implementation. Non-UTF8_BINARY string collations, including nested fields, are flagged `Incompatible` ([#4496](https://github.com/apache/datafusion-comet/issues/4496)).
+- Current status: `CometArrayMax` uses the native `SparkArrayExtrema` UDF. Typed float/double scans and recursive array/struct comparisons follow Spark's ordering and preserve the original first equal element, including its zero sign and NaN representation. This path is used in both strict and non-strict floating-point modes without the JVM codegen dispatcher. Other scalar element types retain the existing DataFusion implementation. Non-UTF8_BINARY string collations, including nested fields, use Spark's JVM codegen dispatcher inside the Comet pipeline by default. If the dispatcher is disabled, these cases fall back to Spark unless incompatible native execution is explicitly enabled ([#4496](https://github.com/apache/datafusion-comet/issues/4496)).
 
 ## array_min
 
@@ -103,7 +103,7 @@
 - Spark 3.5.8 (audited 2026-08-22): mirrors `ArrayMax`, retaining the first equal minimum. The NULL, NaN, signed-zero, and nested comparison rules are the same.
 - Spark 4.0.1 (audited 2026-08-22): same trait refactor and collation support as `array_max`, with no change in floating-point extrema semantics.
 - Spark 4.1.1 (audited 2026-08-22): identical to 4.0.1.
-- Current status: `CometArrayMin` shares the native `SparkArrayExtrema` implementation and support boundary with `array_max`. Both floating-point modes use Spark-compatible native ordering, preserving the original first equal minimum. Non-default string collations remain `Incompatible` ([#4496](https://github.com/apache/datafusion-comet/issues/4496)).
+- Current status: `CometArrayMin` shares the native `SparkArrayExtrema` implementation and support boundary with `array_max`. Both floating-point modes use Spark-compatible native ordering, preserving the original first equal minimum. Non-default string collations use the same JVM codegen dispatch and dispatcher-disabled fallback as `array_max` ([#4496](https://github.com/apache/datafusion-comet/issues/4496)).
 
 ## array_position
 
