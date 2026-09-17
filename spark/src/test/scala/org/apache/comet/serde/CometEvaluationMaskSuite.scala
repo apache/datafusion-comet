@@ -104,6 +104,60 @@ class CometEvaluationMaskSuite extends CometTestBase {
     Seq(sparkError, cometError).foreach(error => assert(error.exists(malformed), query))
   }
 
+  test("evaluation-mask protection can be disabled for known-valid input") {
+    val preserve = CometConf.COMET_EXEC_PRESERVE_EVALUATION_MASKS_ENABLED
+    assert(preserve.defaultValue.contains(true))
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
+      SQLConf.SHUFFLE_PARTITIONS.key -> "1",
+      CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "true") {
+      withInputs(
+        "opt_out_valid" -> "SELECT * FROM VALUES (1, 'YWJj'), (1, 'YWFh') AS t(k, bad)",
+        "opt_out_left" -> "SELECT * FROM VALUES (1, X'616262'), (2, X'616262') AS t(k, expected)") {
+        for (enabled <- Seq(true, false)) {
+          withSQLConf(preserve.key -> enabled.toString) {
+            val projection = "SELECT hex(unbase64(bad)) FROM opt_out_valid LIMIT 1"
+            val compound = "SELECT hex(unbase64(concat(bad, ''))) FROM opt_out_valid LIMIT 1"
+            if (enabled) {
+              checkSparkAnswerAndFallbackReason(projection, limitReason)
+              checkSparkAnswerAndFallbackReason(compound, limitReason)
+            } else {
+              checkSparkAnswerAndImpl(sql(projection), native = Seq("unbase64"))
+              checkSparkAnswerAndImpl(sql(compound), dispatched = Seq("unbase64"))
+            }
+            for (kind <- Seq("SEMI", "ANTI")) {
+              val query = s"""SELECT /*+ BROADCAST(r) */ l.k
+                             |FROM opt_out_left l LEFT $kind JOIN opt_out_valid r
+                             |ON l.k = r.k AND unbase64(r.bad) > l.expected""".stripMargin
+              if (enabled) {
+                checkSparkAnswerAndFallbackReason(query, joinReason)
+              } else {
+                val (_, plan) = checkSparkAnswerAndImpl(sql(query), native = Seq("unbase64"))
+                assert(count[CometBroadcastHashJoinExec](plan) == 1, plan.toString)
+              }
+            }
+            // AQE can remove the sort after Partial materializes. The opt-out keeps both
+            // aggregate halves native instead of preemptively restoring Spark's buffers.
+            withSQLConf(
+              SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "false",
+              CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+              val aggregate = sparkPlan(
+                "SELECT unbase64(bad) AS decoded, collect_list(k) FROM " +
+                  "VALUES (1, 'YWJj'), (1, 'YWFh') AS t(k, bad) GROUP BY bad")
+              assert(aggregateCounts(aggregate) == (0, 2))
+              val sorted = SortExec(
+                Seq(SortOrder(aggregate.output.head, Ascending)),
+                global = false,
+                aggregate)
+              val plan = applyRule(CollectLimitExec(1, sorted))
+              assert(aggregateCounts(plan) == (if (enabled) (0, 2) else (2, 0)), plan.toString)
+            }
+          }
+        }
+      }
+    }
+  }
+
   test("LIMIT masks follow the decoder policy with ANSI, strict and compound inputs") {
     assert(QueryPlanSerde.exprSerdeMap.collect { case (cls, _: RequiresSparkEvaluationMask[_]) =>
       cls
@@ -124,6 +178,7 @@ class CometEvaluationMaskSuite extends CometTestBase {
                 expressions.forall(QueryPlanSerde.evaluationMaskName(_).contains("unbase64")))
             }
             // Existing unbase64/to_binary SQL tests exercise native and dispatched serialization.
+            // Other throwing expressions: https://github.com/apache/datafusion-comet/issues/6006.
             Seq(
               Add(Literal(Int.MaxValue), Literal(1)),
               Cast(input, IntegerType),

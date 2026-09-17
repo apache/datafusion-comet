@@ -124,6 +124,20 @@ divergence:
 - Spark 4.2 introduced additional ANSI arithmetic overflow behavior differences that Comet does
   not yet track ([#4967](https://github.com/apache/datafusion-comet/issues/4967)).
 
+## Errors from rows Spark skips
+
+Batch evaluation can raise a data-dependent error on a row that Spark's row pipeline would
+never evaluate. Comet preserves operator-level evaluation masks for `unbase64` under limits,
+first-match semi/anti join conditions, and ordered top-K or unpartitioned window limits.
+This protection is enabled by default. Setting
+`spark.comet.exec.preserveEvaluationMasks.enabled=false` retains native execution for known-valid
+input, but can raise errors from malformed Base64 in rows Spark would skip.
+
+This policy currently enrolls only `UnBase64`; it does not establish error-evaluation parity for
+ANSI arithmetic, casts, decimal division, or `element_at`. Per-row conditional evaluation
+(`AND`, `CASE`) and aggregate `FILTER` require separate checks. The broader audit and remaining
+work are tracked in [#6006](https://github.com/apache/datafusion-comet/issues/6006).
+
 ## Known result-value divergences
 
 The following native paths silently return values that differ from Spark for edge-case inputs.
