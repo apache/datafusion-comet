@@ -31,6 +31,46 @@ It is recommended that `COMET_WORKER_THREADS` be set to the number of executor c
 in some environments, such as Kubernetes, where the number of cores allocated to a pod will already be equal to the
 number of executor cores.
 
+## Adaptive Partial Aggregation
+
+For high-cardinality grouping, Comet can bypass partial hash aggregation when it is not
+reducing the number of rows enough. This currently applies only to fused native shuffle-writer
+plans whose partial aggregates are grouping-only or single-argument `COUNT`. Low-cardinality
+inputs continue to aggregate normally. The SQL metric `rows bypassing partial aggregation`
+shows whether skipping occurred.
+
+Eligibility is conservative for the whole fused native plan: any unsupported partial accumulator,
+Spark `PartialMerge`, or mixed-mode aggregate disables skipping in that plan. Multi-argument
+`COUNT` and other accumulators are not admitted. Distribution-required grouping-only stages
+still fully deduplicate, and non-native-shuffle plans retain ordinary aggregation.
+The DataFusion testing configuration override does not bypass these safety checks.
+
+DataFusion 55 defaults to probing after 100,000 input rows per partial aggregation
+partition and skipping when the number of groups divided by input rows exceeds `0.8`.
+To experiment with these thresholds, enable `spark.comet.exec.respectDataFusionConfigs`,
+a development and testing option that defaults to `false`. For example, the following
+SQL settings pass through the default threshold values, which you can adjust:
+
+```sql
+SET spark.comet.exec.respectDataFusionConfigs=true;
+SET spark.comet.datafusion.execution.skip_partial_aggregation_probe_rows_threshold=100000;
+SET spark.comet.datafusion.execution.skip_partial_aggregation_probe_ratio_threshold=0.8;
+```
+
+A lower row threshold allows an earlier decision; a lower ratio threshold makes
+skipping more likely. Skipping can increase the number of partial states emitted
+and the amount of shuffle data, so measure the effect on your workload.
+
+To disable skipping, keep `spark.comet.exec.respectDataFusionConfigs=true` and set
+the ratio threshold above the maximum possible groups/input-rows ratio:
+
+```sql
+SET spark.comet.datafusion.execution.skip_partial_aggregation_probe_ratio_threshold=1.1;
+```
+
+These settings only tune eligible plans. Unsupported accumulators and modes remain
+disabled even when configuration overrides are enabled.
+
 ## Memory Tuning
 
 It is necessary to specify how much memory Comet can use in addition to memory already allocated to Spark. In some

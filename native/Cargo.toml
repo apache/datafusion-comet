@@ -18,9 +18,8 @@
 [workspace]
 default-members = ["core", "spark-expr", "common", "proto", "jni-bridge", "shuffle"]
 members = ["core", "spark-expr", "common", "proto", "jni-bridge", "shuffle"]
-# The contrib crate at ../contrib/delta/native is intentionally NOT a workspace member
-# (workspace members must live hierarchically under the workspace root). It's pulled in
-# as a path dep by `core/Cargo.toml` when the `contrib-delta` feature is enabled.
+# Crates under ../contrib are intentionally NOT workspace members. Core pulls them in as
+# optional path dependencies when their corresponding contrib feature is enabled.
 exclude = ["../contrib"]
 resolver = "2"
 
@@ -56,6 +55,8 @@ chrono = { version = "0.4", default-features = false, features = ["clock"] }
 futures = "0.3.32"
 num = "0.4"
 rand = "0.10"
+# Before upgrading `regex`, complete the Java-parity fixture gate tracked in
+# https://github.com/apache/datafusion-comet/issues/5813.
 regex = "1.12.3"
 thiserror = "2"
 object_store = { version = "0.13.2", features = ["gcp", "azure", "aws", "http"] }
