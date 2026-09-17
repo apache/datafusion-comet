@@ -527,7 +527,7 @@ class CometDeltaNativeScanSuite extends CometDeltaTestBase {
       val df = spark.read.format("delta").load(path)
       assert(
         deltaNativeScans(df).isEmpty,
-        s"Expected no native Delta scan under a newline directory:\n" +
+        "Expected no native Delta scan under a newline directory:\n" +
           s"${df.queryExecution.executedPlan}")
       checkSparkAnswerAndFallbackReason(
         df,
@@ -550,7 +550,7 @@ class CometDeltaNativeScanSuite extends CometDeltaTestBase {
       val df = spark.read.format("delta").load(clonePath)
       assert(
         deltaNativeScans(df).isEmpty,
-        s"Expected no native Delta scan for a clone of a newline-directory source:\n" +
+        "Expected no native Delta scan for a clone of a newline-directory source:\n" +
           s"${df.queryExecution.executedPlan}")
       checkSparkAnswerAndFallbackReason(
         df,
@@ -574,7 +574,7 @@ class CometDeltaNativeScanSuite extends CometDeltaTestBase {
       val df = spark.read.format("delta").load(path)
       assert(
         deltaNativeScans(df).isEmpty,
-        s"Expected no native Delta scan for a converted table with a newline basename:\n" +
+        "Expected no native Delta scan for a converted table with a newline basename:\n" +
           s"${df.queryExecution.executedPlan}")
       checkSparkAnswerAndFallbackReason(
         df,
@@ -648,7 +648,7 @@ class CometDeltaNativeScanSuite extends CometDeltaTestBase {
       val survivingValues = df.collect().map(_.getAs[Byte]("tag")).distinct
       assert(
         survivingValues.sameElements(Array(7.toByte)),
-        s"expected the extra column's value (7) to survive DV filtering, got " +
+        "expected the extra column's value (7) to survive DV filtering, got " +
           survivingValues.toSeq)
     }
   }
@@ -1071,7 +1071,7 @@ class CometDeltaNativeScanSuite extends CometDeltaTestBase {
         val sumRi = rows.map(_.getLong(1)).sum
         assert(
           sumRi == 475,
-          s"expected sum(row_index) == 475 (sum(0..31) - (1 + 7 + 13) = 496 - 21), got " +
+          "expected sum(row_index) == 475 (sum(0..31) - (1 + 7 + 13) = 496 - 21), got " +
             s"$sumRi -- a wrongly-claimed native scan would have summed to 0")
       }
     }
@@ -1136,8 +1136,8 @@ class CometDeltaNativeScanSuite extends CometDeltaTestBase {
         assert(
           ex.getMessage.contains("non-pinned"),
           "expected delta-spark's pinned-TahoeLogFileIndex requirement to be the failure " +
-            s"(if this now succeeds, DSv2 coverage for the DV row-index write-sink scenario " +
-            s"may finally be achievable and this test should be replaced with a real one): " +
+            "(if this now succeeds, DSv2 coverage for the DV row-index write-sink scenario " +
+            "may finally be achievable and this test should be replaced with a real one): " +
             ex.getMessage)
       }
     }
@@ -2183,7 +2183,7 @@ class CometDeltaNativeScanSuite extends CometDeltaTestBase {
           val df = spark.read.format("delta").load(clonePath)
           assert(
             deltaNativeScans(df).isEmpty,
-            s"Expected no native Delta scan for a viewfs-selected-file clone:\n" +
+            "Expected no native Delta scan for a viewfs-selected-file clone:\n" +
               s"${df.queryExecution.executedPlan}")
           checkSparkAnswerAndFallbackReason(
             df,
