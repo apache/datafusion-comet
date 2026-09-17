@@ -151,12 +151,12 @@ Native shuffle (`CometExchange`) is selected when all of the following condition
    - Writes field count header
    - Writes compressed IPC stream
 
-6. **Output files**: Two files are produced:
-   - **Data file**: Concatenated partition data
-   - **Index file**: Array of 8-byte little-endian offsets marking partition boundaries
+6. **Output**: One data file holds the concatenated partition data. The writer records the byte
+   offset where each partition begins, plus the total length, and keeps them in memory.
 
-7. **Commit**: Back in JVM, `CometNativeShuffleWriter` reads the index file to get partition
-   lengths and commits via Spark's `IndexShuffleBlockResolver`.
+7. **Commit**: Back in JVM, `CometNativeShuffleWriter` fetches the offsets with
+   `Native.getShufflePartitionOffsets`, converts them to partition lengths, and commits via
+   Spark's `IndexShuffleBlockResolver.writeMetadataFileAndCommit`, which writes Spark's index file.
 
 ### Read Path
 
