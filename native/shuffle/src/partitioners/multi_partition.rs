@@ -535,6 +535,7 @@ impl<T: PartitionWriter> MultiPartitionShuffleRepartitioner<T> {
                     )
                 })
             };
+            self.partition_writer.write_burst_complete();
 
             // Count the input capacity released from buffering by this spill, including a
             // rejected reservation. Shared allocations are charged once within a spill, but
