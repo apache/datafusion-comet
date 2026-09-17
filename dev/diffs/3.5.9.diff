@@ -1,5 +1,5 @@
 diff --git a/pom.xml b/pom.xml
-index 49eca0f7555..ba234805889 100644
+index 49eca0f7555..fa4e50f9841 100644
 --- a/pom.xml
 +++ b/pom.xml
 @@ -148,6 +148,8 @@
@@ -2230,20 +2230,6 @@ index 8e88049f51e..f8e2194a8ac 100644
  
          case _ =>
            throw new AnalysisException("Can not match ParquetTable in the query.")
-diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetIOSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetIOSuite.scala
-index 710ab21090f..604af376a02 100644
---- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetIOSuite.scala
-+++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetIOSuite.scala
-@@ -1345,7 +1345,8 @@ class ParquetIOSuite extends QueryTest with ParquetTest with SharedSparkSession
-     }
-   }
- 
--  test("SPARK-40128 read DELTA_LENGTH_BYTE_ARRAY encoded strings") {
-+  test("SPARK-40128 read DELTA_LENGTH_BYTE_ARRAY encoded strings",
-+      IgnoreComet("Comet doesn't support DELTA encoding yet")) {
-     withAllParquetReaders {
-       checkAnswer(
-         // "fruit" column in this file is encoded using DELTA_LENGTH_BYTE_ARRAY.
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetQuerySuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetQuerySuite.scala
 index ecec7d7b217..f6a4c746226 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetQuerySuite.scala
@@ -2542,6 +2528,92 @@ index d083cac48ff..3c11bcde807 100644
 +  extends StreamTest with BeforeAndAfter with Matchers with IgnoreCometSuite {
  
    import testImplicits._
+ 
+diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/streaming/state/RocksDBStateStoreIntegrationSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/streaming/state/RocksDBStateStoreIntegrationSuite.scala
+index 339d00058fc..93671c9ddd4 100644
+--- a/sql/core/src/test/scala/org/apache/spark/sql/execution/streaming/state/RocksDBStateStoreIntegrationSuite.scala
++++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/streaming/state/RocksDBStateStoreIntegrationSuite.scala
+@@ -23,6 +23,7 @@ import scala.collection.JavaConverters
+ 
+ import org.scalatest.time.{Minute, Span}
+ 
++import org.apache.spark.sql.IgnoreCometSuite
+ import org.apache.spark.sql.execution.streaming.{MemoryStream, StreamingQueryWrapper}
+ import org.apache.spark.sql.functions.count
+ import org.apache.spark.sql.internal.SQLConf
+@@ -30,8 +31,14 @@ import org.apache.spark.sql.streaming._
+ import org.apache.spark.sql.streaming.OutputMode.Update
+ import org.apache.spark.util.Utils
+ 
++// Comet: skip this suite under Comet. Comet falls back to Spark for every streaming plan
++// (see CometExecRule and CometScanRule), so these tests exercise no Comet code path.
++// IgnoreCometSuite is listed before AlsoTestWithChangelogCheckpointingEnabled on purpose:
++// that trait registers most tests through `super.test`, which only reaches the override
++// when the override sits after it in the linearization.
++// See https://github.com/apache/datafusion-comet/issues/5986
+ class RocksDBStateStoreIntegrationSuite extends StreamTest
+-  with AlsoTestWithChangelogCheckpointingEnabled {
++  with IgnoreCometSuite with AlsoTestWithChangelogCheckpointingEnabled {
+   import testImplicits._
+ 
+   test("RocksDBStateStore") {
+diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/streaming/state/RocksDBStateStoreSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/streaming/state/RocksDBStateStoreSuite.scala
+index d113085fd1c..a689e10cead 100644
+--- a/sql/core/src/test/scala/org/apache/spark/sql/execution/streaming/state/RocksDBStateStoreSuite.scala
++++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/streaming/state/RocksDBStateStoreSuite.scala
+@@ -26,6 +26,7 @@ import org.scalatest.BeforeAndAfter
+ 
+ import org.apache.spark.SparkConf
+ import org.apache.spark.io.CompressionCodec
++import org.apache.spark.sql.IgnoreCometSuite
+ import org.apache.spark.sql.LocalSparkSession.withSparkSession
+ import org.apache.spark.sql.SparkSession
+ import org.apache.spark.sql.catalyst.util.quietly
+@@ -37,8 +38,16 @@ import org.apache.spark.tags.ExtendedSQLTest
+ import org.apache.spark.unsafe.Platform
+ import org.apache.spark.util.Utils
+ 
++// Comet: skip this suite under Comet. The tests target RocksDB state-store internals
++// (StateStore get/put/commit), not SQL execution paths. StateStoreSuite, the HDFS-backed
++// twin of this suite, is skipped for the same reason on Spark 4.0 and 4.1.
++// IgnoreCometSuite is listed before AlsoTestWithChangelogCheckpointingEnabled on purpose:
++// that trait registers most tests through `super.test`, which only reaches the override
++// when the override sits after it in the linearization.
++// See https://github.com/apache/datafusion-comet/issues/5986
+ @ExtendedSQLTest
+ class RocksDBStateStoreSuite extends StateStoreSuiteBase[RocksDBStateStoreProvider]
++  with IgnoreCometSuite
+   with AlsoTestWithChangelogCheckpointingEnabled
+   with SharedSparkSession
+   with BeforeAndAfter {
+diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/streaming/state/RocksDBSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/streaming/state/RocksDBSuite.scala
+index 973c1e0cb3b..d8e86384e4a 100644
+--- a/sql/core/src/test/scala/org/apache/spark/sql/execution/streaming/state/RocksDBSuite.scala
++++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/streaming/state/RocksDBSuite.scala
+@@ -32,6 +32,7 @@ import org.apache.hadoop.fs.Path
+ import org.scalactic.source.Position
+ import org.scalatest.Tag
+ 
++import org.apache.spark.sql.IgnoreCometSuite
+ import org.apache.spark.sql.catalyst.util.quietly
+ import org.apache.spark.sql.execution.streaming.{CreateAtomicTestManager, FileSystemBasedCheckpointFileManager}
+ import org.apache.spark.sql.execution.streaming.CheckpointFileManager.{CancellableFSDataOutputStream, RenameBasedFSDataOutputStream}
+@@ -119,8 +120,15 @@ trait AlsoTestWithChangelogCheckpointingEnabled
+   }
+ }
+ 
++// Comet: skip this suite under Comet. The tests target RocksDB internals (open, checkpoint,
++// changelog replay), not SQL execution paths, so nothing here runs through Comet.
++// IgnoreCometSuite is listed before AlsoTestWithChangelogCheckpointingEnabled on purpose:
++// that trait registers most tests through `super.test`, which only reaches the override
++// when the override sits after it in the linearization.
++// See https://github.com/apache/datafusion-comet/issues/5986
+ @SlowSQLTest
+-class RocksDBSuite extends AlsoTestWithChangelogCheckpointingEnabled with SharedSparkSession {
++class RocksDBSuite extends IgnoreCometSuite with AlsoTestWithChangelogCheckpointingEnabled
++    with SharedSparkSession {
+ 
+   sqlConf.setConf(SQLConf.STATE_STORE_PROVIDER_CLASS, classOf[RocksDBStateStoreProvider].getName)
  
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/sources/BucketedReadSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/sources/BucketedReadSuite.scala
 index 746f289c393..f2e0d1c93e5 100644

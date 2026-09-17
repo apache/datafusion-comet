@@ -27,7 +27,6 @@ import org.apache.spark.sql.types.{CalendarIntervalType, DataType, DateType, Dou
 import org.apache.spark.unsafe.types.UTF8String
 
 import org.apache.comet.CometConf
-import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
 import org.apache.comet.expressions.{CometCast, CometEvalMode}
 import org.apache.comet.serde.CometGetDateField.CometGetDateField
 import org.apache.comet.serde.ExprOuterClass.Expr
@@ -41,12 +40,7 @@ private object CometGetDateField extends Enumeration {
   val Year: Value = Value("year")
   val Month: Value = Value("month")
   val DayOfMonth: Value = Value("day")
-  // Datafusion: day of the week where Sunday is 0, but spark sunday is 1 (1 = Sunday,
-  // 2 = Monday, ..., 7 = Saturday).
-  val DayOfWeek: Value = Value("dow")
   val DayOfYear: Value = Value("doy")
-  // Datafusion `isodow` is 1..=7 with Monday=1; Spark `WeekDay` is 0..=6 with Monday=0.
-  val WeekDay: Value = Value("isodow")
   val WeekOfYear: Value = Value("week")
   val Quarter: Value = Value("quarter")
 }
@@ -112,61 +106,33 @@ object CometDayOfMonth
   }
 }
 
-object CometDayOfWeek
-    extends CometExpressionSerde[DayOfWeek]
-    with CometExprGetDateField[DayOfWeek] {
+/**
+ * Spark `dayofweek` numbers Sunday = 1 through Saturday = 7. The native `spark_dayofweek` kernel
+ * derives that from the epoch day with a single modulo, replacing a `datepart('dow', ..)` call
+ * (which builds a calendar datetime per row) plus a separate `+ 1` arithmetic node.
+ */
+object CometDayOfWeek extends CometExpressionSerde[DayOfWeek] {
   override def convert(
       expr: DayOfWeek,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    // Datafusion: day of the week where Sunday is 0, but spark sunday is 1 (1 = Sunday,
-    // 2 = Monday, ..., 7 = Saturday). So we need to add 1 to the result of datepart(dow, ...)
-    val optExpr = getDateField(expr, CometGetDateField.DayOfWeek, inputs, binding)
-      .zip(exprToProtoInternal(Literal(1), inputs, binding))
-      .map { case (left, right) =>
-        Expr
-          .newBuilder()
-          .setAdd(
-            ExprOuterClass.MathExpr
-              .newBuilder()
-              .setLeft(left)
-              .setRight(right)
-              .setEvalMode(ExprOuterClass.EvalMode.LEGACY)
-              .setReturnType(serializeDataType(IntegerType).get)
-              .build())
-          .build()
-      }
-      .headOption
-    optExpr
+    val childExpr = exprToProtoInternal(expr.child, inputs, binding)
+    scalarFunctionExprToProto("spark_dayofweek", childExpr)
   }
 }
 
-object CometWeekDay extends CometExpressionSerde[WeekDay] with CometExprGetDateField[WeekDay] {
+/**
+ * Spark `weekday` numbers Monday = 0 through Sunday = 6, a different convention from
+ * [[CometDayOfWeek]]. The native `spark_weekday` kernel derives it from the epoch day directly,
+ * replacing `datepart('isodow', ..)` plus a `- 1` arithmetic node.
+ */
+object CometWeekDay extends CometExpressionSerde[WeekDay] {
   override def convert(
       expr: WeekDay,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    // Datafusion `isodow` is 1..=7 with Monday=1, but Spark `WeekDay` is 0..=6 with Monday=0,
-    // so subtract 1 from the result of datepart(isodow, ...).
-    // TODO: fix upstream to avoid substraction
-    // https://github.com/apache/datafusion/issues/22599
-    val optExpr = getDateField(expr, CometGetDateField.WeekDay, inputs, binding)
-      .zip(exprToProtoInternal(Literal(1), inputs, binding))
-      .map { case (left, right) =>
-        Expr
-          .newBuilder()
-          .setSubtract(
-            ExprOuterClass.MathExpr
-              .newBuilder()
-              .setLeft(left)
-              .setRight(right)
-              .setEvalMode(ExprOuterClass.EvalMode.LEGACY)
-              .setReturnType(serializeDataType(IntegerType).get)
-              .build())
-          .build()
-      }
-      .headOption
-    optExpr
+    val childExpr = exprToProtoInternal(expr.child, inputs, binding)
+    scalarFunctionExprToProto("spark_weekday", childExpr)
   }
 }
 
@@ -310,13 +276,18 @@ object CometUnixTimestamp extends CometExpressionSerde[UnixTimestamp] {
   }
 
   override def getSupportLevel(expr: UnixTimestamp): SupportLevel = {
-    if (DatetimeCollation.hasNonDefaultCollation(expr)) {
-      Incompatible(Some(collationReason))
-    } else if (isSupportedInputType(expr)) {
-      Compatible()
-    } else {
+    // The input type is screened ahead of the collation check on purpose. A non-date/timestamp
+    // input has no native path at all, so it must report `Unsupported` rather than
+    // `Incompatible`: the latter is waved straight through to `convert` when
+    // `spark.comet.expression.UnixTimestamp.allowIncompatible=true`, and the native kernel then
+    // raises an execution error on the string child instead of falling back to Spark.
+    if (!isSupportedInputType(expr)) {
       val inputType = expr.children.head.dataType
       Unsupported(Some(s"unix_timestamp does not support input type: $inputType"))
+    } else if (DatetimeCollation.hasNonDefaultCollation(expr)) {
+      Incompatible(Some(collationReason))
+    } else {
+      Compatible()
     }
   }
 
@@ -324,12 +295,7 @@ object CometUnixTimestamp extends CometExpressionSerde[UnixTimestamp] {
       expr: UnixTimestamp,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    if (!isSupportedInputType(expr)) {
-      val inputType = expr.children.head.dataType
-      withFallbackReason(expr, s"unix_timestamp does not support input type: $inputType")
-      return None
-    }
-
+    // getSupportLevel reports an unsupported input type before reaching here, so no re-check.
     val childExpr = exprToProtoInternal(expr.children.head, inputs, binding)
 
     if (childExpr.isDefined) {
@@ -434,13 +400,16 @@ object CometConvertTimezone
   }
 }
 
-object CometNextDay extends CometExpressionSerde[NextDay] {
+/**
+ * The native `next_day` kernel reads its `dayOfWeek` argument as raw bytes, so a non-UTF8_BINARY
+ * collation is reported as `Incompatible` and `CodegenDispatchFallback` routes it through the JVM
+ * codegen dispatcher instead of failing the projection back to Spark. Dispatching is not only the
+ * compatible answer here, it is also the faster one: over 1M rows a collated `next_day` measured
+ * 70ms dispatched against 89ms for Spark. See
+ * https://github.com/apache/datafusion-comet/issues/5591.
+ */
+object CometNextDay extends CometExpressionSerde[NextDay] with CodegenDispatchFallback {
 
-  /**
-   * `failOnError` mirrors `spark.sql.ansi.enabled`: under ANSI, Spark throws on a malformed
-   * `dayOfWeek` rather than returning NULL. The resolved flag is passed to native via the
-   * `ScalarFunc.fail_on_error` field.
-   */
   private val collationReason = DatetimeCollation.reason("next_day")
 
   override def getIncompatibleReasons(): Seq[String] =
@@ -453,6 +422,12 @@ object CometNextDay extends CometExpressionSerde[NextDay] {
       Compatible()
     }
   }
+
+  /**
+   * `failOnError` mirrors `spark.sql.ansi.enabled`: under ANSI, Spark throws on a malformed
+   * `dayOfWeek` rather than returning NULL. The resolved flag is passed to native via the
+   * `ScalarFunc.fail_on_error` field.
+   */
   override def convert(expr: NextDay, inputs: Seq[Attribute], binding: Boolean): Option[Expr] = {
     val childExpr = expr.children.map(exprToProtoInternal(_, inputs, binding))
     val optExpr = scalarFunctionExprToProtoWithReturnType(

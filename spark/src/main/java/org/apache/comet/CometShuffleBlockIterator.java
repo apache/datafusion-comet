@@ -27,6 +27,7 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.channels.Channels;
 import java.nio.channels.ReadableByteChannel;
+import java.util.function.LongConsumer;
 
 /**
  * Provides raw compressed shuffle blocks to native code via JNI.
@@ -45,14 +46,20 @@ public class CometShuffleBlockIterator implements Closeable {
 
   private final ReadableByteChannel channel;
   private final InputStream inputStream;
+  private final LongConsumer recordsReadUpdater;
   private final ByteBuffer headerBuf = ByteBuffer.allocate(16).order(ByteOrder.LITTLE_ENDIAN);
   private ByteBuffer dataBuf = ByteBuffer.allocateDirect(INITIAL_BUFFER_SIZE);
   private boolean closed = false;
   private int currentBlockLength = 0;
 
   public CometShuffleBlockIterator(InputStream in) {
+    this(in, records -> {});
+  }
+
+  public CometShuffleBlockIterator(InputStream in, LongConsumer recordsReadUpdater) {
     this.inputStream = in;
     this.channel = Channels.newChannel(in);
+    this.recordsReadUpdater = recordsReadUpdater;
   }
 
   /**
@@ -87,6 +94,13 @@ public class CometShuffleBlockIterator implements Closeable {
     // Field count discarded - schema determined by ShuffleScan protobuf fields
     headerBuf.getLong();
 
+    if (compressedLength < 12) {
+      throw new IOException(
+          "Data corrupt: native shuffle length "
+              + compressedLength
+              + " is smaller than the field count and codec header");
+    }
+
     // Subtract 8 because compressedLength includes the 8-byte field count we already read
     long bytesToRead = compressedLength - 8;
     if (bytesToRead > Integer.MAX_VALUE) {
@@ -120,6 +134,21 @@ public class CometShuffleBlockIterator implements Closeable {
   }
 
   /**
+   * Reports a native IPC/codec failure to the remote stream that supplied the current block. Called
+   * by ShuffleScan via JNI; local streams preserve the original native exception.
+   */
+  public void onDecodeFailure(String message) throws IOException {
+    if (inputStream instanceof CometShuffleReadFailureHandler) {
+      ((CometShuffleReadFailureHandler) inputStream).onShuffleReadFailure(new IOException(message));
+    }
+  }
+
+  /** Whether fetched Arrow arrays require validation before native consumption. */
+  public boolean requiresValidation() {
+    return inputStream instanceof CometShuffleReadFailureHandler;
+  }
+
+  /**
    * Returns the DirectByteBuffer containing the current block's compressed bytes (4-byte codec
    * prefix + compressed IPC data). Called by native code via JNI.
    */
@@ -130,6 +159,11 @@ public class CometShuffleBlockIterator implements Closeable {
   /** Returns the length of the current block in bytes. Called by native code via JNI. */
   public int getCurrentBlockLength() {
     return currentBlockLength;
+  }
+
+  /** Updates Spark's shuffle records-read metric after native code decodes a batch. */
+  public void incRecordsRead(long records) {
+    recordsReadUpdater.accept(records);
   }
 
   @Override

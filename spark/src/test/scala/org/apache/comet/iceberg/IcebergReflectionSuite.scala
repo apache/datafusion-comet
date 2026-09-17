@@ -28,6 +28,7 @@ import org.apache.iceberg.BaseMetastoreTableOperations
 import org.apache.iceberg.BaseTable
 import org.apache.iceberg.DataFiles
 import org.apache.iceberg.PartitionSpec
+import org.apache.iceberg.PartitionSpecParser
 import org.apache.iceberg.Schema
 import org.apache.iceberg.TableMetadata
 import org.apache.iceberg.io.FileIO
@@ -196,6 +197,98 @@ class IcebergReflectionSuite extends AnyFunSuite {
     assert(!Modifier.isPublic(method.get.getDeclaringClass.getModifiers))
     // Without makeAccessible this invoke throws IllegalAccessException.
     assert(method.get.invoke(file).toString == "/tmp/data/f.parquet")
+  }
+
+  /** Mimics a table whose operations installed the stock plaintext manager. */
+  class PlaintextEncryptionTable {
+    def encryption(): AnyRef =
+      org.apache.iceberg.encryption.PlaintextEncryptionManager.instance()
+  }
+
+  /** Mimics a table whose (possibly custom) operations installed a real encryption manager. */
+  class CustomEncryptionTable {
+    def encryption(): AnyRef = new Object
+  }
+
+  class NoEncryptionMethodTable
+
+  test("getEncryptionManager resolves the manager the table actually installed") {
+    val plaintext = IcebergReflection.getEncryptionManager(new PlaintextEncryptionTable)
+    assert(
+      plaintext.exists(
+        _.getClass.getName == "org.apache.iceberg.encryption.PlaintextEncryptionManager"))
+
+    val custom = IcebergReflection.getEncryptionManager(new CustomEncryptionTable)
+    assert(custom.isDefined)
+    assert(
+      custom.get.getClass.getName != "org.apache.iceberg.encryption.PlaintextEncryptionManager")
+  }
+
+  test("getEncryptionManager returns None when encryption() cannot be resolved") {
+    // The write gate treats None as fail-closed, so a table type without the accessor (or a
+    // future rename) declines the native write rather than assuming plaintext.
+    assert(IcebergReflection.getEncryptionManager(new NoEncryptionMethodTable).isEmpty)
+  }
+
+  test("executor-side reflection surface resolves against the linked Iceberg") {
+    // The eligibility gate declines a native write when any class, method, or constructor used
+    // by the executor-side commit-message assembly fails to resolve (it would otherwise be a
+    // task failure after data files were already written). Asserting the probe is green here
+    // means an Iceberg version bump that moves part of that surface fails this test loudly
+    // instead of silently falling every native write back to the JVM writer.
+    assert(
+      IcebergReflection.executorReflectionUnresolved.isEmpty,
+      IcebergReflection.executorReflectionUnresolved)
+  }
+
+  /** Schema the transform tests below partition on, one column per transform source type. */
+  private val transformSchema = new Schema(
+    Types.NestedField.optional(1, "id", Types.LongType.get()),
+    Types.NestedField.optional(2, "s", Types.StringType.get()),
+    Types.NestedField.optional(3, "ts", Types.TimestampType.withZone()))
+
+  /**
+   * The single-field spec Iceberg parses out of `transform`, applied to source column `sourceId`.
+   */
+  private def singleFieldSpec(transform: String, sourceId: Int): PartitionSpec =
+    PartitionSpecParser.fromJson(
+      transformSchema,
+      s"""{"spec-id":0,"fields":[{"name":"p","transform":"$transform",""" +
+        s""""source-id":$sourceId,"field-id":1000}]}""")
+
+  test("forNative keeps every transform iceberg-rust can deserialize") {
+    // Spelled as Iceberg serializes them. The round-trip assertion matters as much as forNative's
+    // own answer: forNative matches on Transform.toString, so a version that renders a transform
+    // differently from its JSON spelling would silently start rewriting it to "unknown".
+    Seq(
+      ("identity", 1),
+      ("void", 1),
+      ("bucket[8]", 1),
+      ("truncate[4]", 2),
+      ("year", 3),
+      ("month", 3),
+      ("day", 3),
+      ("hour", 3)).foreach { case (transform, sourceId) =>
+      val rendered = singleFieldSpec(transform, sourceId).fields().get(0).transform().toString
+      assert(rendered == transform, s"Iceberg renders $transform as $rendered")
+      assert(IcebergReflection.Transforms.forNative(rendered) == transform)
+    }
+  }
+
+  test("forNative rewrites a transform Iceberg Java could not resolve") {
+    // TestForwardCompatibility's UNKNOWN_SPEC. Iceberg parses "zero" into an UnknownTransform whose
+    // toString is the original name; serialized verbatim it fails PartitionSpec deserialization in
+    // iceberg-rust, leaving the scan task holding partition values with no spec, which
+    // FileScanTask validation rejects ("Non-empty FileScanTask partition requires a partition
+    // spec") and the whole scan dies.
+    val spec = singleFieldSpec("zero", 1)
+    val rendered = spec.fields().get(0).transform().toString
+    assert(rendered == "zero")
+    assert(IcebergReflection.Transforms.forNative(rendered) == "unknown")
+
+    // The partition type Comet serializes alongside the rewritten spec has to agree with what
+    // iceberg-rust derives for Transform::Unknown, which is string.
+    assert(spec.partitionType().fields().get(0).`type`().toString == "string")
   }
 
   /** Mimics a newer Iceberg ContentFile, which exposes location(). */

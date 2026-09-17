@@ -24,6 +24,7 @@ mod arrays_zip;
 mod flatten;
 mod get_array_struct_fields;
 mod list_extract;
+mod sequence;
 mod size;
 
 pub use array_extrema::SparkArrayExtrema;
@@ -35,4 +36,5 @@ pub use arrays_zip::SparkArraysZipFunc;
 pub use flatten::SparkFlatten;
 pub use get_array_struct_fields::GetArrayStructFields;
 pub use list_extract::ListExtract;
+pub use sequence::spark_sequence;
 pub use size::{spark_size, SparkSizeFunc};

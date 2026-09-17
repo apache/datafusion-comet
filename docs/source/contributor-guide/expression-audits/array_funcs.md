@@ -84,9 +84,10 @@
 ## array_join
 
 - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
-- Spark 3.5.8 (audited 2026-05-27): baseline. `ArrayJoin(array, delimiter, nullReplacement)`. Comet routes via `CometArrayJoin` to DataFusion's `array_to_string` and is unconditionally flagged `Incompatible` ("Null handling may differ from Spark", [#3178](https://github.com/apache/datafusion-comet/issues/3178)).
+- Spark 3.5.8 (audited 2026-05-27): baseline. `ArrayJoin(array, delimiter, nullReplacement)`. Comet routes via `CometArrayJoin` to DataFusion's `array_to_string`.
 - Spark 4.0.1 (audited 2026-05-27): `inputTypes` widened to `AbstractArrayType(StringTypeWithCollation(supportsTrimCollation = true))`; non-binary collations not propagated ([#2190](https://github.com/apache/datafusion-comet/issues/2190)).
 - Spark 4.1.1 (audited 2026-05-27): adds `contextIndependentFoldable` override; runtime unchanged.
+- Current status: `CometArrayJoin` reports `Compatible` when the delimiter and null replacement are literals or column reads; Spark short-circuits past those arguments and DataFusion does not, so anything else runs through the codegen dispatcher, as do non-default string collations ([#2190](https://github.com/apache/datafusion-comet/issues/2190)). A nullable replacement is wrapped in an `IsNull` guard, since `array_to_string` reads a null `null_string` as "omit nulls" ([#3178](https://github.com/apache/datafusion-comet/issues/3178)).
 
 ## array_max
 
@@ -174,6 +175,16 @@
 - Spark 3.5.8 (audited 2026-05-27): baseline. `GetArrayItem(child, ordinal, failOnError)`; `inputTypes = Seq(AnyDataType, IntegralType)`. Comet routes via `CometGetArrayItem`, wiring `failOnError` through to the proto.
 - Spark 4.0.1 (audited 2026-05-27): semantics unchanged; ANSI default flips to `true`.
 - Spark 4.1.1 (audited 2026-05-27): `inputTypes` tightened to `Seq(ArrayType, IntegralType)` (analysis-time only); runtime unchanged.
+
+## sequence
+
+- Spark 3.4.3 (audited 2026-08-29): `Sequence(start, stop, stepOpt, timeZoneId)`; `Sequence.impl` selects the implementation from `dataType.elementType`, so the integral/temporal split is knowable at plan time. Codegen for the integral path checks boundaries with a plain `IllegalArgumentException("Illegal sequence boundaries: ...")`, then calls the static `Sequence.sequenceLength`, which raises `SparkRuntimeException(_LEGACY_ERROR_TEMP_2161)` past `MAX_ROUNDED_ARRAY_LENGTH` and `internalError("Unreachable code reached.")` when `stop - start` overflows Long but the exact length is within the limit. Default step is per-row `start <= stop ? 1 : -1`.
+- Spark 3.5.8 (audited 2026-08-29): internal refactors only (`DataTypeUtils.sameType`, `PhysicalIntegralType.integral`); runtime semantics identical to 3.4.3.
+- Spark 4.0.1 (audited 2026-08-29): boundary error becomes `SparkIllegalArgumentException(_LEGACY_ERROR_TEMP_3243)` and the length error becomes `COLLECTION_SIZE_LIMIT_EXCEEDED.PARAMETER` (now carrying the function name); adds `throwable` optimizer hint. `sequenceLength` itself is unchanged.
+- Spark 4.1.1 (audited 2026-08-29): byte-identical `Sequence` class body to 4.0.1.
+- Comet routes integral element types (`ByteType`/`ShortType`/`IntegerType`/`LongType`) via `CometSequence` to the native `spark_sequence` kernel ([#5349](https://github.com/apache/datafusion-comet/issues/5349)): one pass over the generated elements, child buffer reserved once per batch, no per-row allocation. The two-argument form is evaluated with Spark's per-row default step inside the kernel. Both error conditions and the internal-error edge are reproduced through `SparkError` and mapped per Spark version by `ShimSparkErrorConverter`. Date/timestamp/timestamp_ntz sequences return `Unsupported` and run on the JVM codegen dispatcher (`CodegenDispatchFallback`), pending the timezone/DST/legacy-calendar work.
+- Per-batch capacity ceiling: the native kernel writes every row's generated elements into one Arrow child buffer whose offsets are `i32`, so the sum of every row's length in a single Arrow batch must fit in `i32::MAX`. Spark itself has no equivalent limit because it stores each row as its own `long[]`. If the total is exceeded, or if the allocator refuses the reservation, the query fails with a `SparkError::SequenceBatchTooLarge` message that names `spark.comet.batchSize` as the actionable knob (lower it to group fewer rows per batch). The `try_reserve` path guarantees the failure surfaces as a query error rather than an allocator abort.
+- Argument-shape restriction: `CometSequence` reports `Unsupported` for any `Sequence` whose `start`, `stop`, or `step` is not a leaf expression, and routes those through the JVM codegen dispatcher (`CodegenDispatchFallback`). DataFusion evaluates each scalar-UDF argument over the whole batch before calling the outer kernel, so a non-leaf argument would run on rows that Spark's per-row null short-circuit (or a `CASE` branch) would have discarded, and could raise where Spark would have returned `NULL`.
 
 ## shuffle
 

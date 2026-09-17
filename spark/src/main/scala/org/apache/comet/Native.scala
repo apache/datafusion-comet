@@ -117,6 +117,21 @@ class Native extends NativeBase {
       schemaAddrs: Array[Long]): Long
 
   /**
+   * Returns the partition offsets published by a finished native shuffle write.
+   *
+   * The writer knows every offset once its plan completes, so they are handed back in memory
+   * rather than through a temporary index file. Call only after the plan has been fully drained,
+   * and only for a plan whose root is a native shuffle writer with a local destination.
+   *
+   * @param plan
+   *   the address to native query plan.
+   * @return
+   *   `numPartitions + 1` offsets, the last being the total data file length, so that partition
+   *   lengths are successive differences.
+   */
+  @native def getShufflePartitionOffsets(plan: Long): Array[Long]
+
+  /**
    * Release and drop the native query plan object and context object.
    *
    * @param plan
@@ -136,9 +151,9 @@ class Native extends NativeBase {
    * @param file
    *   the file path to write to.
    * @param preferDictionaryRatio
-   *   the ratio of total values to distinct values in a string column that makes the writer to
-   *   prefer dictionary encoding. If it is larger than the specified ratio, dictionary encoding
-   *   will be used when writing columns of string type.
+   *   the ratio of total values to distinct values in a string or binary column that makes the
+   *   writer prefer dictionary encoding. If it is larger than the specified ratio, dictionary
+   *   encoding will be used when writing columns of either type.
    * @param batchSize
    *   the batch size on the native side to buffer outputs during the row to columnar conversion
    *   before writing them out to disk.
@@ -199,6 +214,27 @@ class Native extends NativeBase {
       arrayAddrs: Array[Long],
       schemaAddrs: Array[Long],
       tracingEnabled: Boolean): Long
+
+  /**
+   * Create a remote shuffle decoder that retains the expected Spark types for one iterator. The
+   * expected schema is serialized as a ShuffleScan protobuf.
+   */
+  @native def createRemoteShuffleDecoder(expectedSchema: Array[Byte]): Long
+
+  /** Release a remote shuffle decoder after its iterator finishes reading or closes early. */
+  @native def releaseRemoteShuffleDecoder(decoderHandle: Long): Unit
+
+  /**
+   * Decode a remote shuffle block with Arrow buffer/offset and logical type validation, using the
+   * expected Spark types retained by the decoder.
+   */
+  @native def decodeShuffleBlockWithValidation(
+      shuffleBlock: ByteBuffer,
+      length: Int,
+      arrayAddrs: Array[Long],
+      schemaAddrs: Array[Long],
+      tracingEnabled: Boolean,
+      decoderHandle: Long): Long
 
   /**
    * Log the beginning of an event.
