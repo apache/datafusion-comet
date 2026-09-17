@@ -416,6 +416,10 @@ name = "dayofweek_weekday"
 harness = false
 
 [[bench]]
+name = "aggregate_stats"
+harness = false
+
+[[bench]]
 name = "nondeterministic"
 harness = false
 
