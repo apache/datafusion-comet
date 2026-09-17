@@ -121,6 +121,36 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(true)
 
+  val COMET_ICEBERG_SORT_MERGE_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.scan.icebergNative.sortMerge.enabled")
+      .category(CATEGORY_SCAN)
+      .doc("Whether the native Iceberg scan performs a per-partition streaming k-way merge of " +
+        "already-sorted files. When enabled and Iceberg reports an ordering (requires Iceberg's " +
+        "spark.sql.iceberg.planning.preserve-data-ordering), each Spark partition reads its " +
+        "files as separate sorted streams merged into one sorted output. When disabled, the scan " +
+        "stays native and the ordering is still reported and honoured, but via a single " +
+        "unordered read wrapped in a spillable sort instead of the k-way merge (equivalent to " +
+        "setting maxFilesPerPartition to 0). Either way the ordering is surfaced to Spark so " +
+        "redundant sorts are eliminated.")
+      .booleanConf
+      .createWithDefault(true)
+
+  val COMET_ICEBERG_SORT_MERGE_MAX_FILES_PER_PARTITION: ConfigEntry[Int] =
+    conf("spark.comet.scan.icebergNative.sortMerge.maxFilesPerPartition")
+      .category(CATEGORY_SCAN)
+      .doc(
+        "The maximum number of files in a single partition that the native Iceberg scan will " +
+          "k-way merge to preserve sort order. A merge opens one reader per file at once, so " +
+          "above this many files the scan instead reads the partition unordered and sorts it " +
+          "with a spillable sort, bounding concurrently-open readers. Both paths produce sorted " +
+          "output; this only trades merge for a full sort on partitions with many files.")
+      .intConf
+      .checkValue(
+        v => v >= 0,
+        "Max files per partition must be non-negative (0 means never merge; the reported " +
+          "ordering is honoured with a spillable sort instead)")
+      .createWithDefault(64)
+
   val COMET_ICEBERG_WRITE_SPLIT_OPERATOR_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.write.iceberg.splitOperator.enabled")
       .category(CATEGORY_TESTING)
