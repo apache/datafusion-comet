@@ -396,6 +396,7 @@ FILTERS["build_linux_all_profiles"] = FILTERS["build_linux"]
 #
 #   "pr"              every pull request
 #   "queue"           the merge queue, i.e. a merge_group event
+#   "nightly"         the scheduled run against main, once a day
 #   "push"            push to main
 #   "label:<name>"    a pull request carrying that label
 #
@@ -404,11 +405,21 @@ FILTERS["build_linux_all_profiles"] = FILTERS["build_linux"]
 # requests or opt-in, never both -- and check-ci-config.py rejects a job that
 # lists both rather than letting the label quietly win.
 #
-# Almost everything is "queue": the merge queue is the authoritative gate, and
-# it tests the merge result rather than the PR head. "push" is reserved for
-# work that can only happen once a commit is on main. Adding "push" back to a
-# test job would make every merge run it twice, once in the queue and once
-# after, which is the thing the queue was adopted to avoid.
+# The merge queue is the authoritative gate: it tests the merge result rather
+# than the PR head, and every "queue" job has to pass before a change lands.
+# "nightly" is for the suites that catch a regression on a Spark or Iceberg
+# version other than the default one: about 870 of the 1,900 runner-minutes a
+# queue run cost in September 2026, and the most common reason a queue run
+# went red on a good tree (issue #5870). A regression there is real but rare,
+# and a day's delay in seeing it costs less than running the suites on every
+# merge. The scheduled run diffs main against the commit the last successful
+# scheduled run tested and routes through FILTERS like any other event. A job
+# is "queue" or "nightly", never both; check-ci-config.py enforces that.
+#
+# "push" is reserved for work that can only happen once a commit is on main.
+# Adding "push" back to a test job would make every merge run it twice, once
+# in the queue and once after, which is the thing the queue was adopted to
+# avoid.
 POLICY = {
     # The one test job that also runs on push to main, and only because of
     # actions/cache scoping: a pull request can restore caches saved on its
@@ -433,12 +444,13 @@ POLICY = {
     # The linux-test matrix's Spark profiles other than the default one. The
     # five profiles cost about the same each, roughly 2,300 runner-minutes a
     # day apiece on pull requests in mid-September 2026, and together they
-    # were three quarters of the Linux build. A pull request runs the Comet
-    # test suites against Spark 4.1 only; the queue runs all five. The
-    # lint-java matrix still compiles Spark 3.4/3.5/4.0 on every pull request,
-    # so what waits for the queue is runtime behaviour, not a shim that fails
-    # to build. ci.yml turns this output into the workflow's `profiles` input.
-    "build_linux_all_profiles": ["queue", "label:run-all-spark-profiles"],
+    # were three quarters of the Linux build. A pull request and the queue run
+    # the Comet test suites against Spark 4.1 only; the nightly run covers the
+    # other four. The lint-java matrix still compiles Spark 3.4/3.5/4.0 on
+    # every pull request, so what waits for the nightly is runtime behaviour,
+    # not a shim that fails to build. ci.yml turns this output into the
+    # workflow's `profiles` input.
+    "build_linux_all_profiles": ["nightly", "label:run-all-spark-profiles"],
     # macOS runners are the scarcest capacity we have, and the Linux build
     # already covers rustfmt and the Rust/JVM compile on every PR. The label
     # is for a change that touches platform-specific code.
@@ -461,8 +473,11 @@ POLICY = {
     # demand -- the label on a pull request, or a workflow_dispatch -- so
     # anyone who wants to check a change against 3.4 still can.
     "spark_3_4": ["label:run-spark-3.4-tests"],
-    "spark_3_5": ["queue", "label:run-spark-3.5-tests"],
-    "spark_4_0": ["queue", "label:run-spark-4.0-tests"],
+    # Spark 4.1 is the default build profile and the one Spark SQL suite the
+    # queue runs; 3.5 and 4.0 run nightly, or on a pull request with their
+    # label.
+    "spark_3_5": ["nightly", "label:run-spark-3.5-tests"],
+    "spark_4_0": ["nightly", "label:run-spark-4.0-tests"],
     # No Spark SQL suite runs on a plain pull request. Spark 4.1 was the last
     # one in the PR tier, first whole (issue #5870 pulled the sql_hive shards
     # out) and then catalyst and sql_core alone. What changed is how often a
@@ -478,12 +493,12 @@ POLICY = {
         "label:run-spark-4.1-tests",
         "label:run-spark-4.1-hive-tests",
     ],
-    # Same for Iceberg: 1.11 was the PR-tier version because it is the only
-    # Spark 4.1 coverage, and it now waits for the queue with the other three.
-    # One label opts a pull request into all four.
-    "iceberg_1_8": ["queue", "label:run-iceberg-tests"],
-    "iceberg_1_9": ["queue", "label:run-iceberg-tests"],
-    "iceberg_1_10": ["queue", "label:run-iceberg-tests"],
+    # Same shape for Iceberg: 1.11 is the only Spark 4.1 coverage, so it is
+    # the one Iceberg version the queue runs; the three older versions run
+    # nightly. One label opts a pull request into all four.
+    "iceberg_1_8": ["nightly", "label:run-iceberg-tests"],
+    "iceberg_1_9": ["nightly", "label:run-iceberg-tests"],
+    "iceberg_1_10": ["nightly", "label:run-iceberg-tests"],
     "iceberg_1_11": ["queue", "label:run-iceberg-tests"],
 }
 
@@ -508,6 +523,8 @@ def event_allows(job, event):
         return "push" in tiers
     if name == "merge_group":
         return "queue" in tiers
+    if name == "schedule":
+        return "nightly" in tiers
     if name != "pull_request":
         return False
 

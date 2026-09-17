@@ -34,17 +34,25 @@ name: PR Build (Linux)
 #
 # Within the full pipeline, `profiles` picks which Spark profiles the
 # linux-test matrix runs the Comet test suites against: `pr` is the default
-# build profile alone, `all` is every profile, and `queue-only` is the rest.
+# build profile alone, `all` is every profile, and `nightly` is the rest.
 # The rows live in dev/ci/linux-test-profiles.py, which the `lint` job runs so
-# that the matrix can be built from its output. The queue runs `all`; a pull
-# request runs `pr` unless it carries `run-all-spark-profiles`. See the
-# `build_linux_all_profiles` comment in dev/ci/compute-changes.py.
+# that the matrix can be built from its output. A pull request and the merge
+# queue run `pr`, the nightly run `nightly`, and a pull request carrying
+# `run-all-spark-profiles` runs `all`. See the `build_linux_all_profiles`
+# comment in dev/ci/compute-changes.py.
 #
-# Keeping both modes in this file is deliberate. The cache keys are the whole
-# point of the push tier, and a separate cache-warming workflow would have to
-# repeat every one of them; here they cannot drift apart. dev/ci/check-ci-config.py
-# pins which jobs survive `cache-refresh-only`, so a job added without the guard
-# cannot quietly put the full pipeline back on the push tier.
+# `nightly` is also a third mode. Whenever ci.yml passes it, the default
+# profile's pipeline has already run at this commit (in the queue and the push
+# run for the scheduled event, in the PR tier for a label run), so only `lint`,
+# `build-native` and the `linux-test` matrix run; every other job carries
+# `if: ${{ inputs.profiles != 'nightly' }}`.
+#
+# Keeping all three modes in this file is deliberate. The cache keys are the
+# whole point of the push tier, and a separate cache-warming workflow would
+# have to repeat every one of them; here they cannot drift apart.
+# dev/ci/check-ci-config.py pins which jobs survive `cache-refresh-only` and
+# which run under `profiles: nightly`, so a job added without either guard
+# cannot quietly put the full pipeline back on those tiers.
 on:
   workflow_call:
     inputs:
@@ -56,11 +64,11 @@ on:
         default: false
       profiles:
         # Which Spark profiles the linux-test matrix runs. `pr` is the default
-        # build profile alone, `all` is every profile, `queue-only` is every
-        # profile except the `pr` one (a `labeled` run, where the PR-tier row
-        # already ran at this commit). Rows and tiers are in
-        # dev/ci/linux-test-profiles.py.
-        description: 'Which Spark profiles linux-test runs: all, pr (the default build profile) or queue-only (the rest)'
+        # build profile alone, `all` is every profile, `nightly` is every
+        # profile except the `pr` one (the nightly run, and a `labeled` run,
+        # where the PR-tier row already ran at this commit). Rows and tiers
+        # are in dev/ci/linux-test-profiles.py.
+        description: 'Which Spark profiles linux-test runs: all, pr (the default build profile) or nightly (the rest)'
         type: string
         default: 'all'
 
@@ -107,7 +115,7 @@ jobs:
   # set, including the semantic rules, still runs in lint-java.
   scalafix-syntactic:
     name: Lint Scala (syntactic)
-    if: ${{ !inputs.cache-refresh-only }}
+    if: ${{ !inputs.cache-refresh-only && inputs.profiles != 'nightly' }}
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
@@ -148,7 +156,7 @@ jobs:
   lint-java:
     needs: lint
     name: Lint Java (${{ matrix.profile.name }})
-    if: ${{ !inputs.cache-refresh-only }}
+    if: ${{ !inputs.cache-refresh-only && inputs.profiles != 'nightly' }}
     runs-on: ubuntu-24.04
     container:
       image: amd64/rust
@@ -183,8 +191,9 @@ jobs:
           rust-version: ${{ env.RUST_VERSION }}
           jdk-version: ${{ matrix.profile.java_version }}
 
-      - name: Cache Maven dependencies
-        uses: actions/cache@v6
+      - name: Restore Maven dependencies
+        id: maven-cache
+        uses: actions/cache/restore@v6
         with:
           path: |
             ~/.m2/repository
@@ -221,6 +230,19 @@ jobs:
         run: |
           ./dev/ci/check-working-tree-clean.sh
 
+      # Saved only on main: an entry written from a pull request or a
+      # `gh-readonly-queue/*` branch cannot be restored by any later run, and
+      # it evicts main's from the shared budget. See "Large caches are written
+      # on main only" in README.md.
+      - name: Save Maven dependencies
+        if: ${{ github.ref == 'refs/heads/main' && steps.maven-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v6
+        with:
+          path: |
+            ~/.m2/repository
+            /root/.m2/repository
+          key: ${{ runner.os }}-java-maven-${{ hashFiles('**/pom.xml') }}-lint
+
   # Compile-only verification for Spark 4.1. Tests are intentionally skipped: the spark-4.1
   # profile is currently a build target only, and several runtime/test failures are tracked
   # in follow-up PRs. Excluded from lint-java because semanticdb-scalac_2.13.17 is not yet
@@ -228,7 +250,7 @@ jobs:
   build-spark-4-1:
     needs: lint
     name: Build Spark 4.1, JDK 17
-    if: ${{ !inputs.cache-refresh-only }}
+    if: ${{ !inputs.cache-refresh-only && inputs.profiles != 'nightly' }}
     runs-on: ubuntu-24.04
     container:
       image: amd64/rust
@@ -241,8 +263,9 @@ jobs:
           rust-version: ${{ env.RUST_VERSION }}
           jdk-version: 17
 
-      - name: Cache Maven dependencies
-        uses: actions/cache@v6
+      - name: Restore Maven dependencies
+        id: maven-cache
+        uses: actions/cache/restore@v6
         with:
           path: |
             ~/.m2/repository
@@ -257,10 +280,23 @@ jobs:
       - name: Compile (skip tests)
         run: ./mvnw -B install -DskipTests -Dmaven.test.skip=true -Pspark-4.1
 
+      # Saved only on main: an entry written from a pull request or a
+      # `gh-readonly-queue/*` branch cannot be restored by any later run, and
+      # it evicts main's from the shared budget. See "Large caches are written
+      # on main only" in README.md.
+      - name: Save Maven dependencies
+        if: ${{ github.ref == 'refs/heads/main' && steps.maven-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v6
+        with:
+          path: |
+            ~/.m2/repository
+            /root/.m2/repository
+          key: ${{ runner.os }}-java-maven-${{ hashFiles('**/pom.xml') }}-spark-4.1-build
+
   celeborn-reflection-compatibility:
     needs: lint
     name: Celeborn ${{ matrix.celeborn_version }} reflection compatibility
-    if: ${{ !inputs.cache-refresh-only }}
+    if: ${{ !inputs.cache-refresh-only && inputs.profiles != 'nightly' }}
     runs-on: ubuntu-24.04
     container:
       image: amd64/rust
@@ -279,8 +315,9 @@ jobs:
           rust-version: ${{ env.RUST_VERSION }}
           jdk-version: 17
 
-      - name: Cache Maven dependencies
-        uses: actions/cache@v6
+      - name: Restore Maven dependencies
+        id: maven-cache
+        uses: actions/cache/restore@v6
         with:
           path: |
             ~/.m2/repository
@@ -303,6 +340,19 @@ jobs:
             -Dtest=none \
             -Dsuites=org.apache.comet.shuffle.CelebornReflectionCompatibilitySuite \
             -DfailIfNoTests=false
+
+      # Saved only on main: an entry written from a pull request or a
+      # `gh-readonly-queue/*` branch cannot be restored by any later run, and
+      # it evicts main's from the shared budget. See "Large caches are written
+      # on main only" in README.md.
+      - name: Save Maven dependencies
+        if: ${{ github.ref == 'refs/heads/main' && steps.maven-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v6
+        with:
+          path: |
+            ~/.m2/repository
+            /root/.m2/repository
+          key: ${{ runner.os }}-java-maven-${{ hashFiles('**/pom.xml') }}-celeborn-${{ matrix.celeborn_version }}
 
   # Build native library once and share with all test jobs. Also the owner of
   # main's `cargo-ci` cache entry, which is why it runs in cache-refresh-only
@@ -350,7 +400,9 @@ jobs:
 
       - name: Save Cargo cache
         uses: actions/cache/save@v6
-        if: github.ref == 'refs/heads/main'
+        # The push run is the cache warmer (see the header); a scheduled run
+        # at the same sha would only re-archive an entry that already exists.
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         with:
           path: |
             ~/.cargo/registry
@@ -367,6 +419,7 @@ jobs:
   linux-test-rust:
     needs: lint
     name: ubuntu-latest/rust-test
+    if: ${{ inputs.profiles != 'nightly' }}
     runs-on: ubuntu-24.04
     container:
       image: amd64/rust
@@ -396,7 +449,9 @@ jobs:
 
       - name: Save Cargo cache
         uses: actions/cache/save@v6
-        if: github.ref == 'refs/heads/main'
+        # The push run is the cache warmer (see the header); a scheduled run
+        # at the same sha would only re-archive an entry that already exists.
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         with:
           path: |
             ~/.cargo/registry
@@ -413,9 +468,9 @@ jobs:
       matrix:
         # The Spark profiles live in dev/ci/linux-test-profiles.py and are
         # selected by the `profiles` input: the default build profile on a
-        # pull request, all five in the merge queue. The goal of the full list
-        # is coverage of every Java, Scala and Spark version without testing
-        # every combination.
+        # pull request and in the merge queue, the other four in the nightly
+        # run. The goal of the full list is coverage of every Java, Scala and
+        # Spark version without testing every combination.
         profile: ${{ fromJSON(needs.lint.outputs.profile-matrix) }}
         # Suites are grouped by functional area into balanced buckets so that no test
         # job runs much longer than ~23 min. See
@@ -497,6 +552,7 @@ jobs:
               org.apache.comet.rules.CometScanContribSuite
               org.apache.comet.rules.CometScanSchemeFallbackSuite
               org.apache.comet.rules.CometExecRuleSuite
+              org.apache.spark.sql.comet.CometPlanEqualitySuite
               org.apache.comet.rules.RevertNativeForTransitionHeavyStagesSuite
               org.apache.spark.sql.CometTPCDSQuerySuite
               org.apache.spark.sql.CometTPCDSQueryTestSuite
@@ -507,6 +563,7 @@ jobs:
               org.apache.spark.sql.comet.CometDppFallbackRepro3949Suite
               org.apache.spark.sql.comet.CometShuffleFallbackStickinessSuite
               org.apache.spark.sql.comet.PlanDataInjectorSuite
+              org.apache.spark.sql.comet.PlanDataInjectorShuffleLifecycleSuite
               org.apache.spark.sql.comet.CometDecimalArithmeticViewSuite
               org.apache.spark.sql.comet.CometDecimalPromotionSuite
               org.apache.spark.sql.comet.CometScanWithPlanDataSuite
@@ -524,6 +581,7 @@ jobs:
           - name: "expressions"
             value: |
               org.apache.comet.CometExpressionSuite
+              org.apache.comet.GenerateDocsSuite
               org.apache.comet.CometSqlFileTestSuite
               org.apache.comet.SqlFileTestParserSuite
               org.apache.comet.CometExpressionCoverageSuite
@@ -545,6 +603,8 @@ jobs:
               org.apache.comet.expressions.conditional.CometCoalesceSuite
               org.apache.comet.expressions.conditional.CometCaseWhenSuite
               org.apache.comet.CometRegExpJvmSuite
+              org.apache.comet.CometRegexParitySuite
+              org.apache.comet.expressions.CometRegexSuite
               org.apache.comet.CometCodegenSuite
               org.apache.comet.CometCoverageStatsSuite
               org.apache.comet.CometCodegenSourceSuite
@@ -584,8 +644,8 @@ jobs:
           path: native/target/release/
 
       # Restore cargo registry cache (for any cargo commands that might run)
-      - name: Cache Cargo registry
-        uses: actions/cache@v6
+      - name: Restore Cargo registry
+        uses: actions/cache/restore@v6
         with:
           path: |
             ~/.cargo/registry
@@ -611,6 +671,7 @@ jobs:
   verify-benchmark-results-tpch:
     needs: build-native
     name: Verify TPC-H Results
+    if: ${{ inputs.profiles != 'nightly' }}
     runs-on: ubuntu-24.04
     container:
       image: amd64/rust
@@ -631,8 +692,9 @@ jobs:
           name: native-lib-linux
           path: native/target/release/
 
-      - name: Cache Maven dependencies
-        uses: actions/cache@v6
+      - name: Restore Maven dependencies
+        id: maven-cache
+        uses: actions/cache/restore@v6
         with:
           path: |
             ~/.m2/repository
@@ -667,6 +729,19 @@ jobs:
         run: |
           SPARK_HOME=`pwd` SPARK_TPCH_DATA=`pwd`/tpch/sf1_parquet ./mvnw -B -Prelease -Dsuites=org.apache.spark.sql.CometTPCHQuerySuite test
 
+      # Saved only on main: an entry written from a pull request or a
+      # `gh-readonly-queue/*` branch cannot be restored by any later run, and
+      # it evicts main's from the shared budget. See "Large caches are written
+      # on main only" in README.md.
+      - name: Save Maven dependencies
+        if: ${{ github.ref == 'refs/heads/main' && steps.maven-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v6
+        with:
+          path: |
+            ~/.m2/repository
+            /root/.m2/repository
+          key: ${{ runner.os }}-java-maven-${{ hashFiles('**/pom.xml') }}
+
   # TPC-DS correctness tests - verifies benchmark queries produce correct results.
   # The three join strategies run sequentially in one job so the project is built
   # once. Runs in cache-refresh-only mode for the same reason as the TPC-H job;
@@ -675,6 +750,7 @@ jobs:
   verify-benchmark-results-tpcds:
     needs: build-native
     name: Verify TPC-DS Results
+    if: ${{ inputs.profiles != 'nightly' }}
     runs-on: ubuntu-24.04
     container:
       image: amd64/rust
@@ -695,8 +771,9 @@ jobs:
           name: native-lib-linux
           path: native/target/release/
 
-      - name: Cache Maven dependencies
-        uses: actions/cache@v6
+      - name: Restore Maven dependencies
+        id: maven-cache
+        uses: actions/cache/restore@v6
         with:
           path: |
             ~/.m2/repository
@@ -765,3 +842,16 @@ jobs:
           SPARK_TPCDS_JOIN_CONF: |
             spark.sql.autoBroadcastJoinThreshold=-1
             spark.sql.join.forceApplyShuffledHashJoin=true
+
+      # Saved only on main: an entry written from a pull request or a
+      # `gh-readonly-queue/*` branch cannot be restored by any later run, and
+      # it evicts main's from the shared budget. See "Large caches are written
+      # on main only" in README.md.
+      - name: Save Maven dependencies
+        if: ${{ github.ref == 'refs/heads/main' && steps.maven-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v6
+        with:
+          path: |
+            ~/.m2/repository
+            /root/.m2/repository
+          key: ${{ runner.os }}-java-maven-${{ hashFiles('**/pom.xml') }}
