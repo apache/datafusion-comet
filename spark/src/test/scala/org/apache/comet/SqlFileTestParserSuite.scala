@@ -34,6 +34,81 @@ class SqlFileTestParserSuite extends AnyFunSuite {
   private def modeOf(directive: String): QueryAssertionMode =
     parseQueries(directive, "SELECT 1").head.mode
 
+  test("empty and comment-only fixtures have no records or configuration") {
+    Seq(Seq.empty[String], Seq("-- fixture comment", "", "  -- another comment  ")).foreach {
+      lines =>
+        assert(
+          SqlFileTestParser.parse(lines) ===
+            SqlTestFile(Seq.empty, Seq.empty, Seq.empty, Seq.empty))
+    }
+  }
+
+  test("configuration directives preserve order and trim keys and values") {
+    val parsed = SqlFileTestParser.parse(
+      Seq(
+        "-- Config: spark.sql.ansi.enabled = true  ",
+        "-- ConfigMatrix: spark.sql.session.timeZone = UTC, America/Los_Angeles ",
+        "  -- Config: spark.comet.exec.scalaUDF.codegen.enabled = false",
+        "-- ConfigMatrix: spark.sql.optimizer.inSetConversionThreshold = 100, 0"))
+
+    assert(
+      parsed.configs === Seq(
+        "spark.sql.ansi.enabled" -> "true",
+        "spark.comet.exec.scalaUDF.codegen.enabled" -> "false"))
+    assert(
+      parsed.configMatrix === Seq(
+        "spark.sql.session.timeZone" -> Seq("UTC", "America/Los_Angeles"),
+        "spark.sql.optimizer.inSetConversionThreshold" -> Seq("100", "0")))
+    assert(parsed.records.isEmpty)
+    assert(parsed.tables.isEmpty)
+  }
+
+  test("minimum and maximum Spark versions are parsed independently") {
+    Seq(
+      (Seq("-- MinSparkVersion: 3.5 "), Some("3.5"), None),
+      (Seq("  -- MaxSparkVersion: 4.0"), None, Some("4.0")),
+      (Seq("-- MinSparkVersion: 3.5", "-- MaxSparkVersion: 4.0"), Some("3.5"), Some("4.0")))
+      .foreach { case (lines, minVersion, maxVersion) =>
+        val parsed = SqlFileTestParser.parse(lines)
+        assert(parsed.minSparkVersion === minVersion)
+        assert(parsed.maxSparkVersion === maxVersion)
+        assert(parsed.records.isEmpty)
+      }
+  }
+
+  test("statements and queries preserve SQL, source lines and tables for cleanup") {
+    val lines = Seq(
+      "-- fixture comment",
+      "",
+      "statement",
+      "CREATE TABLE first_table(",
+      "  value STRING)",
+      "USING parquet",
+      "  ",
+      "-- another table",
+      "statement",
+      "create table second_table(value INT) USING parquet",
+      "",
+      "statement",
+      "INSERT INTO first_table VALUES ('café')",
+      "",
+      "query",
+      "SELECT value",
+      "FROM first_table")
+
+    // A final record must be collected both at EOF and when followed by a blank line.
+    Seq(lines, lines :+ "").foreach { input =>
+      val parsed = SqlFileTestParser.parse(input)
+      assert(
+        parsed.records === Seq(
+          SqlStatement("CREATE TABLE first_table(\n  value STRING)\nUSING parquet", 4),
+          SqlStatement("create table second_table(value INT) USING parquet", 10),
+          SqlStatement("INSERT INTO first_table VALUES ('café')", 13),
+          SqlQuery("SELECT value\nFROM first_table", CheckCoverageAndAnswer, 16)))
+      assert(parsed.tables === Seq("first_table", "second_table"))
+    }
+  }
+
   test("bare query directive defaults to checking coverage and answer") {
     assert(modeOf("query") === CheckCoverageAndAnswer)
   }

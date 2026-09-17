@@ -151,7 +151,12 @@ class CometNativeShuffleWriter[K, V](
       // in CometNativeShuffleInputRDD.getPartitions on the driver), not on the spec. The spec's
       // execContext.perPartitionByKey is emptied in prepareNativeShuffleDependency so the full
       // O(numPartitions) map stays out of the broadcast task binary.
-      PlanDataInjector.injectPlanData(
+      //
+      // The unified plan differs per task (output paths), so there is no base plan cache entry
+      // here; scan lookup rides the source keys the driver embedded in childNativeOp's scans,
+      // and prepared commons are shared across this shuffle's map tasks via the shuffleId.
+      PlanDataInjector.injectPlanDataForShuffle(
+        shuffleId,
         unifiedPlan,
         ctx.commonByKey,
         shuffleInputIter.planDataByKey)

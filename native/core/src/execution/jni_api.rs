@@ -132,6 +132,18 @@ fn log_jemalloc_usage() {
     log_memory_usage("jemalloc_allocated", allocated.read().unwrap() as u64);
 }
 
+/// Reports the bytes currently handed out by the Rust global allocator, process-wide.
+///
+/// Logged alongside the per-thread pool reservations so the two can be compared directly: a large
+/// and growing excess is native memory the pool is not accounting for.
+#[cfg(feature = "alloc-accounting")]
+fn log_native_allocated() {
+    log_memory_usage(
+        "native_allocated",
+        crate::alloc_accounting::current_balance() as u64,
+    );
+}
+
 /// Registry of active memory pools per Rust thread ID.
 /// Used to sum memory reservations across all contexts on the same thread for tracing.
 type ThreadPoolMap = HashMap<u64, HashMap<i64, Arc<dyn MemoryPool>>>;
@@ -1090,6 +1102,8 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
         if exec_context.tracing_enabled {
             #[cfg(feature = "jemalloc")]
             log_jemalloc_usage();
+            #[cfg(feature = "alloc-accounting")]
+            log_native_allocated();
             log_memory_usage(
                 &exec_context.tracing_memory_metric_name,
                 total_reserved_for_thread(exec_context.rust_thread_id) as u64,
