@@ -23,7 +23,7 @@ import scala.collection.mutable.ListBuffer
 
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.expressions.{Divide, DoubleLiteral, EqualNullSafe, EqualTo, Expression, FloatLiteral, GreaterThan, GreaterThanOrEqual, KnownFloatingPointNormalized, LessThan, LessThanOrEqual, NamedExpression, Remainder}
-import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateMode, Final, First, Last, Partial, PartialMerge}
+import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateMode, Final, Partial, PartialMerge}
 import org.apache.spark.sql.catalyst.optimizer.NormalizeNaNAndZero
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.catalyst.trees.TreeNodeTag
@@ -31,6 +31,7 @@ import org.apache.spark.sql.catalyst.util.sideBySide
 import org.apache.spark.sql.comet._
 import org.apache.spark.sql.comet.execution.arrow.ArrowCachedBatchSerializer
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometNativeShuffle, CometShuffleExchangeExec}
+import org.apache.spark.sql.comet.shims.ShimCometEmptyRelation
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AQEShuffleReadExec, BroadcastQueryStageExec, QueryStageExec, ShuffleQueryStageExec}
@@ -91,6 +92,8 @@ object CometExecRule {
       classOf[InMemoryTableScanExec] -> CometInMemoryTableScanExec,
       classOf[SampleExec] -> CometSampleExec,
       classOf[WindowExec] -> CometWindowExec) ++
+      // EmptyRelationExec was introduced in Spark 4.0.
+      ShimCometEmptyRelation.emptyRelationClass.map(_ -> CometEmptyRelationExec) ++
       // WindowGroupLimitExec exists only on Spark 3.5+; the shim returns None on 3.4.
       ShimCometWindowGroupLimit.windowGroupLimitClass.map(_ -> CometWindowGroupLimitExec)
 
@@ -1087,11 +1090,6 @@ case class CometExecRule(session: SparkSession)
         if (consumesBuffers &&
           !QueryPlanSerde.allAggsSupportMixedExecution(agg.aggregateExpressions) &&
           !canAggregateBeConverted(agg, consumerMode)) {
-          // This pass deliberately records the consumer diagnostic. Once the Partial is tagged
-          // below, the consumer can be skipped because its child is no longer native and may not
-          // reach doConvert, which normally records the same reason.
-          unsupportedPartialMergeFallbackReason(agg).foreach(reason =>
-            withFallbackReason(agg, reason))
           findPartialAggInPlan(agg.child).foreach { partial =>
             // Only tag if the Partial would otherwise have been converted. If the Partial itself
             // cannot be converted (e.g. an incompatible input type or a map-typed grouping key),
@@ -1178,12 +1176,6 @@ case class CometExecRule(session: SparkSession)
     val serde = handler.get.asInstanceOf[CometOperatorSerde[SparkPlan]]
     if (!isOperatorEnabled(serde, agg.asInstanceOf[SparkPlan])) return false
 
-    // ObjectHashAggregate has an extra shuffle-enabled guard in its convert method
-    agg match {
-      case _: ObjectHashAggregateExec if !isCometShuffleEnabled(agg.conf) => return false
-      case _ =>
-    }
-
     val aggregateExpressions = agg.aggregateExpressions
     val groupingExpressions = agg.groupingExpressions
 
@@ -1212,11 +1204,6 @@ case class CometExecRule(session: SparkSession)
       expectedMode == PartialMerge && modes.toSet == Set(Partial, PartialMerge)
     if (!mixedPartialMerge && modes != Seq(expectedMode)) return false
 
-    // FIRST/LAST cannot merge native partial states in a distinct-aggregate rewrite. Predict
-    // this refusal before an earlier exchange materializes incompatible buffers for other
-    // functions in the same aggregate (for example percentile). Mirror doConvert's restriction.
-    if (unsupportedPartialMergeFallbackReason(agg).nonEmpty) return false
-
     // Only Partial binds input attributes; Final and PartialMerge consume intermediate buffers.
     // Mixed distinct-aggregate stages need the same per-expression binding as doConvert.
     if (!aggregateExpressions.forall { e =>
@@ -1234,21 +1221,6 @@ case class CometExecRule(session: SparkSession)
       agg.resultExpressions.forall(e => QueryPlanSerde.exprToProto(e, attributes).isDefined)
     } else {
       true
-    }
-  }
-
-  private def unsupportedPartialMergeFallbackReason(agg: BaseAggregateExec): Option[String] = {
-    val unsupportedMerges = agg.aggregateExpressions.filter { expression =>
-      expression.mode == PartialMerge &&
-      (expression.aggregateFunction.isInstanceOf[First] ||
-        expression.aggregateFunction.isInstanceOf[Last])
-    }
-    if (unsupportedMerges.nonEmpty) {
-      Some(
-        "PartialMerge not supported for aggregates: " +
-          unsupportedMerges.map(_.aggregateFunction.prettyName).mkString(", "))
-    } else {
-      None
     }
   }
 

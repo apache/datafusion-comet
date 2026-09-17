@@ -134,34 +134,37 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
     }
   }
 
-  test("native reader duplicate nested struct fields in case-insensitive mode (non-ASCII)") {
-    withTempPath { path =>
-      // Sibling struct fields that fold to the same name; the nested convert must raise the same
-      // duplicate-field error Spark raises, not panic or resolve arbitrarily.
-      withSQLConf(SQLConf.CASE_SENSITIVE.key -> "true") {
-        spark
-          .range(3)
-          .selectExpr("named_struct('CAFÉ', id, 'café', id) as s")
-          .write
-          .mode("overwrite")
-          .parquet(path.toString)
-      }
-      val readSchema =
-        new StructType().add("s", new StructType().add("Café", LongType, nullable = true))
-      withSQLConf(SQLConf.CASE_SENSITIVE.key -> "false") {
-        val df = spark.read.schema(readSchema).parquet(path.toString)
-        // Confirm Comet's native scan (its nested Struct convert) raises this, not a Spark
-        // fallback that emits the same "duplicate field" substring for the same input.
-        assert(
-          find(df.queryExecution.executedPlan)(_.isInstanceOf[CometNativeScanExec]).isDefined,
-          "expected a CometNativeScanExec so the duplicate error is raised by Comet")
-        val e = intercept[Exception] {
-          df.collect()
+  for (requestedName <- Seq("Café", "café")) {
+    test(s"native reader duplicate nested struct fields: $requestedName (case-insensitive)") {
+      withTempPath { path =>
+        // Sibling struct fields that fold to the same name; the nested convert must raise the same
+        // duplicate-field error Spark raises, not panic or resolve arbitrarily.
+        withSQLConf(SQLConf.CASE_SENSITIVE.key -> "true") {
+          spark
+            .range(3)
+            .selectExpr("named_struct('CAFÉ', id, 'café', id) as s")
+            .write
+            .mode("overwrite")
+            .parquet(path.toString)
         }
-        assert(
-          e.getMessage.contains("duplicate field") ||
-            (e.getCause != null && e.getCause.getMessage.contains("duplicate field")),
-          s"Expected duplicate field error, got: ${e.getMessage}")
+        val readSchema =
+          new StructType()
+            .add("s", new StructType().add(requestedName, LongType, nullable = true))
+        withSQLConf(SQLConf.CASE_SENSITIVE.key -> "false") {
+          val df = spark.read.schema(readSchema).parquet(path.toString)
+          // Confirm Comet's native scan (its nested Struct convert) raises this, not a Spark
+          // fallback that emits the same "duplicate field" substring for the same input.
+          assert(
+            find(df.queryExecution.executedPlan)(_.isInstanceOf[CometNativeScanExec]).isDefined,
+            "expected a CometNativeScanExec so the duplicate error is raised by Comet")
+          val e = intercept[Exception] {
+            df.collect()
+          }
+          assert(
+            e.getMessage.contains("duplicate field") ||
+              (e.getCause != null && e.getCause.getMessage.contains("duplicate field")),
+            s"Expected duplicate field error, got: ${e.getMessage}")
+        }
       }
     }
   }

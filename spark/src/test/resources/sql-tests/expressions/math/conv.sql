@@ -21,7 +21,7 @@ statement
 CREATE TABLE test_conv(s string) USING parquet
 
 statement
-INSERT INTO test_conv VALUES ('100'), ('FF'), ('0'), (NULL)
+INSERT INTO test_conv VALUES ('100'), ('FF'), ('0'), ('FFFFFFFFFFFFFFFF'), ('FFFFFFFFFFFFFFFFF'), (NULL)
 
 query
 SELECT s, conv(s, 16, 10) FROM test_conv

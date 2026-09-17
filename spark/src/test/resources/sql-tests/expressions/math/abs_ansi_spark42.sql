@@ -101,3 +101,15 @@ SELECT abs(v) FROM ansi_test_abs_byte
 -- literal
 query expect_error(overflow)
 SELECT abs(cast(-128 as tinyint))
+
+-- interval abs negates with MathUtils.negateExact unconditionally in Spark's codegen, so overflow
+-- behavior is identical in both ANSI modes; mirrored from abs_ansi.sql (capped at 4.1)
+query
+SELECT abs(make_dt_interval(-106751991, -4, 0, -54.775807)),
+       abs(make_ym_interval(0, -2147483647))
+
+query expect_error(overflow)
+SELECT abs(make_dt_interval(-106751991, -4, 0, -54.775808))
+
+query expect_error(overflow)
+SELECT abs(make_ym_interval(0, -2147483648))

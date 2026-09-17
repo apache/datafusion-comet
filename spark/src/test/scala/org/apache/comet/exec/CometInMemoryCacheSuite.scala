@@ -24,18 +24,23 @@ import java.{util => ju}
 import org.apache.arrow.vector.types.pojo.ArrowType
 import org.apache.spark.CometDriverPlugin
 import org.apache.spark.SparkConf
-import org.apache.spark.sql.CometTestBase
+import org.apache.spark.sql.{CometTestBase, Row}
 import org.apache.spark.sql.catalyst.expressions.{And, Attribute, Expression, GreaterThanOrEqual, LessThan, Literal}
 import org.apache.spark.sql.columnar.{CachedBatch, SimpleMetricsCachedBatch}
-import org.apache.spark.sql.comet.CometInMemoryTableScanExec
+import org.apache.spark.sql.comet.{CometBroadcastHashJoinExec, CometInMemoryTableScanExec, CometSortExec, CometSortMergeJoinExec}
 import org.apache.spark.sql.comet.execution.arrow.CometCachedBatchHelper
+import org.apache.spark.sql.execution.SortExec
+import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AQEShuffleReadExec, QueryStageExec, ShuffleQueryStageExec}
 import org.apache.spark.sql.execution.columnar.{CometInMemoryRelationHelper, InMemoryRelation}
-import org.apache.spark.sql.execution.exchange.{Exchange, ReusedExchangeExec}
+import org.apache.spark.sql.execution.exchange.{Exchange, ReusedExchangeExec, ShuffleExchangeLike}
+import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, SortMergeJoinExec}
+import org.apache.spark.sql.functions.max
 import org.apache.spark.sql.internal.{SQLConf, StaticSQLConf}
+import org.apache.spark.sql.types._
 import org.apache.spark.storage.StorageLevel
 
 import org.apache.comet.{CometArrowAllocator, CometConf}
-import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
+import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus}
 import org.apache.comet.vector.CometVector
 
 class CometInMemoryCacheSuite extends CometTestBase {
@@ -86,6 +91,134 @@ class CometInMemoryCacheSuite extends CometTestBase {
       .map(_.getClass.getName)
       .distinct()
       .collect()
+  }
+
+  // The tests below are ported from Spark 4.1.2's AdaptiveQueryExecSuite; see each source link.
+  private def withAQECache(f: => Unit): Unit = {
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
+      SQLConf.CAN_CHANGE_CACHED_PLAN_OUTPUT_PARTITIONING.key -> "true",
+      SQLConf.SHUFFLE_PARTITIONS.key -> "3",
+      CometConf.COMET_SHUFFLE_MODE.key -> "jvm",
+      CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> "true",
+      "spark.comet.sparkToColumnar.enabled" -> "true") {
+      try {
+        f
+      } finally {
+        spark.catalog.clearCache()
+      }
+    }
+  }
+
+  // https://github.com/apache/spark/blob/v4.1.2/sql/core/src/test/scala/org/apache/spark/sql/execution/adaptive/AdaptiveQueryExecSuite.scala#L3114-L3154
+  test("AQE SPARK-42101: cold and warm Comet cache materialization") {
+    assume(isSpark35Plus, "Table-cache query stages require Spark 3.5+")
+    withAQECache {
+      withSQLConf(SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
+        val left = spark.range(0, 10, 1, 2).selectExpr("cast(id as string) c1")
+        val right = spark.range(0, 10, 1, 2).selectExpr("cast(id as string) c2")
+        val cached = left.join(right, $"c1" === $"c2").cache()
+        val builder = spark.sharedState.cacheManager
+          .lookupCachedData(cached)
+          .get
+          .cachedRepresentation
+          .cacheBuilder
+
+        Seq(true, false).foreach { firstAccess =>
+          val df = cached.groupBy("c1").agg(max($"c2"))
+          val adaptive = df.queryExecution.executedPlan.asInstanceOf[AdaptiveSparkPlanExec]
+          assert(!adaptive.isFinalPlan)
+          assert(builder.isCachedColumnBuffersLoaded != firstAccess)
+          assert(
+            collect(adaptive) { case s: ShuffleExchangeLike => s }.size ==
+              (if (firstAccess) 1 else 0))
+          assert(collect(adaptive) { case s: CometInMemoryTableScanExec => s }.size == 1)
+
+          checkAnswer(df, (0L until 10L).map(i => Row(i.toString, i.toString)))
+          assert(adaptive.isFinalPlan)
+          assert(builder.isCachedColumnBuffersLoaded)
+          assert(collect(adaptive) { case s: ShuffleExchangeLike => s }.isEmpty)
+          assert(collect(adaptive) { case s @ (_: CometSortExec | _: SortExec) => s }.isEmpty)
+          assert(collect(adaptive) { case s: CometInMemoryTableScanExec => s }.size == 1)
+        }
+      }
+    }
+  }
+
+  // https://github.com/apache/spark/blob/v4.1.2/sql/core/src/test/scala/org/apache/spark/sql/execution/adaptive/AdaptiveQueryExecSuite.scala#L3156-L3176
+  test("AQE SPARK-42101: preserve shuffle partitions beside a table cache stage") {
+    assume(isSpark35Plus, "Table-cache query stages require Spark 3.5+")
+    withAQECache {
+      withSQLConf(
+        SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+        SQLConf.COALESCE_PARTITIONS_MIN_PARTITION_NUM.key -> "1") {
+        val cached = Seq(1, 2).toDF("c1").repartition(3, $"c1").cache()
+        val df = cached.join(Seq(1, 2).toDF("c2"), $"c1" === $"c2")
+        checkAnswer(df, Seq(Row(1, 1), Row(2, 2)))
+        val plan = df.queryExecution.executedPlan
+        assert(plan.asInstanceOf[AdaptiveSparkPlanExec].isFinalPlan)
+        // Match by name because this suite must also compile on Spark 3.4.
+        assert(collect(plan) {
+          case s: QueryStageExec if s.getClass.getSimpleName == "TableCacheQueryStageExec" => s
+        }.size == 1)
+        assert(collect(plan) { case s: CometInMemoryTableScanExec => s }.size == 1)
+        assert(collect(plan) { case s: ShuffleQueryStageExec => s }.size == 1)
+        assert(collect(plan) { case s: AQEShuffleReadExec => s }.isEmpty)
+      }
+    }
+  }
+
+  // https://github.com/apache/spark/blob/v4.1.2/sql/core/src/test/scala/org/apache/spark/sql/execution/adaptive/AdaptiveQueryExecSuite.scala#L2780-L2832
+  test("AQE SPARK-37742: use valid Comet cache statistics for join selection") {
+    withAQECache {
+      // Comet reports compressed Arrow bytes, so use a threshold below the compressed
+      // large cache as well as below its logical estimate. The single-row side still fits.
+      withSQLConf(
+        SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "1024",
+        SQLConf.ADAPTIVE_OPTIMIZER_EXCLUDED_RULES.key ->
+          "org.apache.spark.sql.execution.adaptive.AQEPropagateEmptyRelation") {
+        withTempView("cache_large", "cache_other", "cache_small") {
+          val key = "00112233445566778899"
+          Seq.fill(60000)(key).toDF("key").createOrReplaceTempView("cache_large")
+          Seq
+            .fill(60000)("11223344556677889900")
+            .toDF("key")
+            .createOrReplaceTempView("cache_other")
+          Seq(key).toDF("key").createOrReplaceTempView("cache_small")
+          val cached = spark.sql("SELECT key AS newKey FROM cache_large").cache()
+          val relation =
+            spark.sharedState.cacheManager.lookupCachedData(cached).get.cachedRepresentation
+          assert(!relation.cacheBuilder.isCachedColumnBuffersLoaded)
+          val df = spark.sql("""
+            SELECT t3.newKey FROM
+              (SELECT t1.newKey FROM (SELECT key AS newKey FROM cache_large) t1
+               JOIN cache_small t2 ON t1.newKey = t2.key) t3
+            JOIN cache_other t4 ON t3.newKey = t4.key
+            UNION
+            SELECT t1.newKey FROM (SELECT key AS newKey FROM cache_large) t1
+            JOIN cache_other t2 ON t1.newKey = t2.key
+          """)
+          checkAnswer(df, Seq.empty[Row])
+          val plan = df.queryExecution.executedPlan
+          assert(plan.asInstanceOf[AdaptiveSparkPlanExec].isFinalPlan)
+          assert(collect(plan) { case s: CometInMemoryTableScanExec => s }.nonEmpty)
+          assert(collect(plan) {
+            case j @ (_: CometBroadcastHashJoinExec | _: BroadcastHashJoinExec) => j
+          }.size == 1)
+          assert(collect(plan) { case j @ (_: CometSortMergeJoinExec | _: SortMergeJoinExec) =>
+            j
+          }.size == 2)
+          val batches = relation.cacheBuilder.cachedColumnBuffers.collect()
+          assert(batches.forall(
+            _.getClass.getName == "org.apache.spark.sql.comet.execution.arrow.CometCachedBatch"))
+          assert(batches.map(_.numRows.toLong).sum == 60000L)
+          val stats = relation.computeStats()
+          assert(stats.rowCount.contains(BigInt(60000)))
+          assert(stats.sizeInBytes == batches.map(_.sizeInBytes).sum)
+          assert(stats.sizeInBytes > 1024L)
+        }
+      }
+    }
   }
 
   test("CometInMemoryTableScan over CometCachedBatch") {
@@ -348,6 +481,156 @@ class CometInMemoryCacheSuite extends CometTestBase {
       assert(plan.contains("CometHashAggregate"))
 
       spark.catalog.clearCache()
+    }
+  }
+
+  test("Comet in-memory cache statistics preserve typed bounds and null counts") {
+    withSQLConf(
+      CometConf.COMET_ENABLED.key -> "false",
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
+      val types = Seq(
+        "boolean",
+        "tinyint",
+        "smallint",
+        "int",
+        "bigint",
+        "float",
+        "double",
+        "decimal(10,2)",
+        "decimal(38,2)",
+        "string",
+        "date",
+        "timestamp",
+        "timestamp_ntz",
+        "binary")
+      val expressions = types.zipWithIndex.map { case (dt, i) =>
+        val value = dt match {
+          case "date" => "date_add(DATE '2000-01-01', cast(v AS INT))"
+          case "timestamp" | "timestamp_ntz" =>
+            s"cast(date_add(DATE '2000-01-01', cast(v AS INT)) AS $dt)"
+          case "string" | "binary" => s"cast(concat('字', cast(v AS STRING)) AS $dt)"
+          case _ => s"cast(v AS $dt)"
+        }
+        s"$value AS c$i"
+      }
+      // Leading nulls, updates in both directions, duplicate values, all-null and single-value
+      // columns exercise initialization as well as the primitive and reference bounds loops.
+      Seq("(NULL), (2), (-3), (0), (1), (2), (NULL)", "(NULL), (NULL)", "(NULL), (1)").foreach {
+        values =>
+          val df = spark
+            .sql(s"SELECT ${expressions.mkString(", ")} FROM VALUES $values AS t(v)")
+            .coalesce(1)
+          // Compute the reference through Spark before caching, using its internal value types.
+          df.createOrReplaceTempView("typed_stats_input")
+          val expected = spark
+            .sql(
+              s"SELECT ${types.indices.flatMap(i => Seq(s"min(c$i)", s"max(c$i)")).mkString(", ")} " +
+                "FROM typed_stats_input")
+            .queryExecution
+            .toRdd
+            .map(_.copy())
+            .collect()
+            .head
+          val expectedNulls = df.filter("c0 IS NULL").count().toInt
+          val expectedRows = df.count().toInt
+          def checkStats(view: String): Unit = {
+            val relation = spark.sharedState.cacheManager.lookupCachedData(spark.table(view)).get
+            val batches = relation.cachedRepresentation.cacheBuilder.cachedColumnBuffers.collect()
+            assert(batches.length == 1)
+            val stats = batches.head.asInstanceOf[SimpleMetricsCachedBatch].stats
+            df.schema.fields.zipWithIndex.foreach { case (field, i) =>
+              if (field.dataType == BinaryType) {
+                assert(stats.isNullAt(i * 5) && stats.isNullAt(i * 5 + 1))
+              } else {
+                assert(stats.get(i * 5, field.dataType) == expected.get(i * 2, field.dataType))
+                assert(
+                  stats.get(i * 5 + 1, field.dataType) ==
+                    expected.get(i * 2 + 1, field.dataType))
+              }
+              assert(stats.getInt(i * 5 + 2) == expectedNulls)
+              assert(stats.getInt(i * 5 + 3) == expectedRows)
+            }
+          }
+
+          df.cache()
+          try {
+            df.count()
+            checkStats("typed_stats_input")
+          } finally {
+            df.unpersist(blocking = true)
+            spark.catalog.dropTempView("typed_stats_input")
+          }
+
+          withSparkColumnarCache("typed_stats_columnar")(path => df.write.parquet(path)) {
+            val relation = spark.sharedState.cacheManager
+              .lookupCachedData(spark.table("typed_stats_columnar"))
+              .get
+              .cachedRepresentation
+            assert(relation.cacheBuilder.cachedPlan.supportsColumnar)
+            checkStats("typed_stats_columnar")
+          }
+      }
+    }
+  }
+
+  test("Comet in-memory cache statistics preserve numeric extremes and floating-point ordering") {
+    withSQLConf(
+      CometConf.COMET_ENABLED.key -> "false",
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
+      val df = spark
+        .sql("""
+        SELECT
+          CAST(if(id = 0, -128, 127) AS TINYINT) AS b,
+          CAST(if(id = 0, -32768, 32767) AS SMALLINT) AS s,
+          CAST(if(id = 0, -2147483648, 2147483647) AS INT) AS i,
+          if(id = 0, -9223372036854775808L, 9223372036854775807L) AS l,
+          CAST(v AS FLOAT) AS f,
+          CAST(v AS DOUBLE) AS d,
+          CAST(if(id = 0, '0.0', '-0.0') AS FLOAT) AS fz,
+          CAST(if(id = 0, '0.0', '-0.0') AS DOUBLE) AS dz
+        FROM VALUES (0, '0.0'), (1, '-0.0'), (2, '-Infinity'), (3, 'Infinity'), (4, 'NaN')
+        AS t(id, v)
+      """)
+        .coalesce(1)
+
+      def checkStats(view: String): Unit = {
+        val relation = spark.sharedState.cacheManager.lookupCachedData(spark.table(view)).get
+        val batches = relation.cachedRepresentation.cacheBuilder.cachedColumnBuffers.collect()
+        assert(batches.length == 1)
+        val stats = batches.head.asInstanceOf[SimpleMetricsCachedBatch].stats
+        assert(stats.getByte(0) == Byte.MinValue && stats.getByte(1) == Byte.MaxValue)
+        assert(stats.getShort(5) == Short.MinValue && stats.getShort(6) == Short.MaxValue)
+        assert(stats.getInt(10) == Int.MinValue && stats.getInt(11) == Int.MaxValue)
+        assert(stats.getLong(15) == Long.MinValue && stats.getLong(16) == Long.MaxValue)
+        assert(stats.getFloat(20) == Float.NegativeInfinity && stats.getFloat(21).isNaN)
+        assert(stats.getDouble(25) == Double.NegativeInfinity && stats.getDouble(26).isNaN)
+        // Spark aggregates consider signed zeros equal; the cache stores Java's total ordering.
+        assert(
+          java.lang.Float.floatToRawIntBits(stats.getFloat(30)) ==
+            java.lang.Float.floatToRawIntBits(-0.0f))
+        assert(java.lang.Float.floatToRawIntBits(stats.getFloat(31)) == 0)
+        assert(
+          java.lang.Double.doubleToRawLongBits(stats.getDouble(35)) ==
+            java.lang.Double.doubleToRawLongBits(-0.0d))
+        assert(java.lang.Double.doubleToRawLongBits(stats.getDouble(36)) == 0L)
+        (0 until 8).foreach { c =>
+          assert(stats.getInt(c * 5 + 2) == 0)
+          assert(stats.getInt(c * 5 + 3) == 5)
+        }
+      }
+
+      df.createOrReplaceTempView("extreme_stats_input")
+      df.cache()
+      try {
+        df.count()
+        checkStats("extreme_stats_input")
+      } finally {
+        df.unpersist(blocking = true)
+        spark.catalog.dropTempView("extreme_stats_input")
+      }
+      withSparkColumnarCache("extreme_stats_columnar")(path => df.write.parquet(path)) {
+        checkStats("extreme_stats_columnar")
+      }
     }
   }
 

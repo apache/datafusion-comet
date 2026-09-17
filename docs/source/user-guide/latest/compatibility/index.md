@@ -139,6 +139,9 @@ so users hunting an unexpected value have a single place to check:
   parses in Spark and returns `NULL` in Comet, while a value padded with non-ASCII whitespace such
   as `U+3000` returns `NULL` in Spark and parses in Comet
   ([#5149](https://github.com/apache/datafusion-comet/issues/5149)).
+- **Explicit positive timestamp years:** Spark accepts strings such as `+7528` as the start
+  of that year, while Comet's native string-to-timestamp cast returns NULL in non-ANSI mode
+  ([#5716](https://github.com/apache/datafusion-comet/issues/5716)).
 - Native `RANGE` window frames with an explicit `PRECEDING` / `FOLLOWING` offset diverge from
   Spark when the boundary arithmetic overflows for `DATE` or `DECIMAL` `ORDER BY` columns
   ([#5022](https://github.com/apache/datafusion-comet/issues/5022)).

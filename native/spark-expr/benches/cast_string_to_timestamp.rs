@@ -30,11 +30,22 @@ const BATCH_SIZE: usize = 8192;
 fn criterion_benchmark(c: &mut Criterion) {
     let expr = Arc::new(Column::new("a", 0)) as Arc<dyn PhysicalExpr>;
 
-    // Input shapes, chosen to cover each branch `timestamp_parser` can take: the canonical
-    // form, the fractional-second form, an offset suffix (which takes the extract-offset
-    // path), a date-only string, whitespace padding (the trim), and a mix that includes
-    // invalid values so the null path is measured too.
+    // Cover single-digit segments, empty fractions, rejected date-only zones, canonical
+    // timestamps, microseconds, offset extraction, date-only input, whitespace padding,
+    // and a mix containing invalid values so the null path is measured too.
     let batches = [
+        (
+            "single_digit_segments",
+            create_batch(|i| format!("2020-{:02}-{}T1:2:3", i % 12 + 1, i % 9 + 1)),
+        ),
+        (
+            "empty_fraction",
+            create_batch(|i| format!("2020-01-{:02}T12:34:56.", i % 28 + 1)),
+        ),
+        (
+            "date_only_zone",
+            create_batch(|i| format!("2020-01-{:02}Z", i % 28 + 1)),
+        ),
         (
             "canonical",
             create_batch(|i| {
@@ -151,7 +162,7 @@ fn criterion_benchmark(c: &mut Criterion) {
             for (name, batch) in &batches {
                 // ANSI raises on the first invalid value, so timing it against a batch that is
                 // mostly invalid would measure the error path rather than the parser.
-                if mode == EvalMode::Ansi && *name == "mixed" {
+                if mode == EvalMode::Ansi && matches!(*name, "mixed" | "date_only_zone") {
                     continue;
                 }
                 let cast = Cast::new(
@@ -169,8 +180,8 @@ fn criterion_benchmark(c: &mut Criterion) {
         }
     }
 
-    // The Spark 4 path adds a leading-whitespace check for T-prefixed time-only strings, so it
-    // is measured separately on the inputs where that check can fire.
+    // Measure the cost of Spark 4's leading-whitespace/T-prefix check. Neither padded nor
+    // mixed combines both conditions, so these inputs never take its rejection branch.
     let mut group = c.benchmark_group("cast_string_to_timestamp/spark4_legacy");
     for name in ["padded", "mixed"] {
         let batch = &batches.iter().find(|(n, _)| *n == name).unwrap().1;
