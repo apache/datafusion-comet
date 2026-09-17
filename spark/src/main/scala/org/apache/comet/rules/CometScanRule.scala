@@ -49,7 +49,7 @@ import org.apache.comet.CometSparkSessionExtensions.{isCometLoaded, isSpark35Plu
 import org.apache.comet.DataTypeSupport.isComplexType
 import org.apache.comet.iceberg.{CometIcebergNativeScanMetadata, IcebergReflection}
 import org.apache.comet.objectstore.NativeConfig
-import org.apache.comet.parquet.CometParquetUtils.{encryptionEnabled, isEncryptionConfigSupported}
+import org.apache.comet.parquet.CometParquetUtils.{encryptionEnabled, isEncryptionConfigSupported, readFieldId}
 import org.apache.comet.serde.operator.{CometIcebergNativeScan, CometNativeScan}
 import org.apache.comet.shims.{CometTypeShim, ShimCometStreaming, ShimFileFormat, ShimSubqueryBroadcast}
 
@@ -1094,6 +1094,22 @@ case class CometScanRule(session: SparkSession)
 
 case class CometScanTypeChecker() extends DataTypeSupport with CometTypeShim {
 
+  /**
+   * `isTypeSupported` only ever sees a field's *data type*, so nothing there can compare two
+   * top-level fields. Spark's field id ambiguity applies at the schema root too, so check it
+   * here.
+   */
+  override def isSchemaSupported(
+      schema: StructType,
+      fallbackReasons: ListBuffer[String]): Boolean = {
+    if (duplicateFieldIds(schema.fields)) {
+      fallbackReasons += "duplicate Parquet field ids among top-level fields"
+      false
+    } else {
+      super.isSchemaSupported(schema, fallbackReasons)
+    }
+  }
+
   override def isTypeSupported(
       dt: DataType,
       name: String,
@@ -1118,10 +1134,20 @@ case class CometScanTypeChecker() extends DataTypeSupport with CometTypeShim {
         false
       case s: StructType if s.fields.isEmpty =>
         false
+      case StructType(fields) if duplicateFieldIds(fields) =>
+        // Under field id matching Spark resolves each requested field to the one Parquet field
+        // carrying its id and raises when more than one answers. Comet reads such a struct
+        // positionally instead, so hand the read back to Spark and let it report the ambiguity.
+        fallbackReasons += s"Unsupported ${name}: struct with duplicate Parquet field ids"
+        false
       case _ =>
         super.isTypeSupported(dt, name, fallbackReasons)
     }
   }
+
+  /** True when the session resolves Parquet fields by id and `fields` repeat one. */
+  private def duplicateFieldIds(fields: Array[StructField]): Boolean =
+    readFieldId(SQLConf.get) && DataTypeSupport.hasDuplicateFieldIds(fields)
 }
 
 object CometScanRule extends Logging {
