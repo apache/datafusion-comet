@@ -34,6 +34,7 @@ if __name__ == "__main__":
     ignore_list = [
         "org.apache.comet.parquet.ParquetReadSuite", # abstract
         "org.apache.comet.parquet.ParquetReadFromS3Suite", # manual test suite
+        "org.apache.comet.parquet.ParquetReadFromFakeHadoopFsSuite", # manual test suite (loads libhdfs, see #5023)
         "org.apache.comet.IcebergReadFromS3Suite", # manual test suite
         "org.apache.comet.cloud.s3.CometS3CredentialBridgeSuite", # manual test suite
         "org.apache.comet.shuffle.CelebornReflectionCompatibilitySuite", # dedicated version matrix

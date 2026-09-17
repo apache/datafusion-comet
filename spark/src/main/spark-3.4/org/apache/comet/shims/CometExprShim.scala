@@ -23,7 +23,7 @@ import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.expressions.aggregate.Sum
 
 import org.apache.comet.expressions.CometEvalMode
-import org.apache.comet.serde.{CometExpressionSerde, CometStringDecode}
+import org.apache.comet.serde.{CometEncode, CometExpressionSerde, CometStringDecode}
 import org.apache.comet.serde.ExprOuterClass.{BinaryOutputStyle, Expr}
 
 /**
@@ -37,7 +37,7 @@ trait CometExprShim {
 
   def sparkVersionSpecificStringExpressions
       : Map[Class[_ <: Expression], CometExpressionSerde[_]] =
-    Map(classOf[StringDecode] -> CometStringDecode)
+    Map(classOf[StringDecode] -> CometStringDecode, classOf[Encode] -> CometEncode)
   def sparkVersionSpecificMathExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] =
     Map.empty
   def sparkVersionSpecificMiscExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] =

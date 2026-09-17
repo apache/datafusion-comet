@@ -23,7 +23,7 @@ import scala.util.Random
 
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.{Column, CometTestBase, DataFrame, Row}
-import org.apache.spark.sql.catalyst.expressions.{Alias, Cast, FromUnixTime, Literal, StructsToJson, TruncDate, TruncTimestamp}
+import org.apache.spark.sql.catalyst.expressions.{Alias, Cast, FromUnixTime, InSet, Literal, StructsToJson, TruncDate, TruncTimestamp}
 import org.apache.spark.sql.catalyst.optimizer.{ConvertToLocalRelation, OptimizeIn, SimplifyExtractValueOps}
 import org.apache.spark.sql.comet.CometProjectExec
 import org.apache.spark.sql.execution.{ProjectExec, SparkPlan}
@@ -39,8 +39,6 @@ import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator}
 class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   import testImplicits._
 
-  val ARITHMETIC_OVERFLOW_EXCEPTION_MSG =
-    """[ARITHMETIC_OVERFLOW] integer overflow. If necessary set "spark.sql.ansi.enabled" to "false" to bypass this error"""
   val DIVIDE_BY_ZERO_EXCEPTION_MSG =
     """Division by zero. Use `try_divide` to tolerate divisor being 0 and return NULL instead"""
 
@@ -1687,10 +1685,11 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("test in(set)/not in(set)") {
     Seq("100", "0").foreach { inSetThreshold =>
-      Seq(false, true).foreach { dictionary =>
+      for (dictionary <- Seq(false, true); codegen <- Seq("false", "true")) {
         withSQLConf(
           SQLConf.OPTIMIZER_INSET_CONVERSION_THRESHOLD.key -> inSetThreshold,
-          "parquet.enable.dictionary" -> dictionary.toString) {
+          "parquet.enable.dictionary" -> dictionary.toString,
+          CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> codegen) {
           val table = "names"
           withTable(table) {
             sql(s"create table $table(id int, name varchar(20)) using parquet")
@@ -1698,9 +1697,15 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
               s"insert into $table values(1, 'James'), (1, 'Jones'), (2, 'Smith'), (3, 'Smith')," +
                 "(NULL, 'Jones'), (4, NULL)")
 
-            checkSparkAnswerAndOperator(s"SELECT * FROM $table WHERE id in (1, 2, 4, NULL)")
-            checkSparkAnswerAndOperator(
-              s"SELECT * FROM $table WHERE name in ('Smith', 'Brown', NULL)")
+            val nativeName = if (inSetThreshold == "0") "inset" else "in"
+            checkSparkAnswerAndImpl(
+              s"SELECT * FROM $table WHERE id in (1, 2, 4, NULL)",
+              native = Seq(nativeName),
+              dispatched = Seq.empty)
+            checkSparkAnswerAndImpl(
+              s"SELECT * FROM $table WHERE name in ('Smith', 'Brown', NULL)",
+              native = Seq(nativeName),
+              dispatched = Seq.empty)
 
             // TODO: why with not in, the plan is only `LocalTableScan`?
             checkSparkAnswerAndOperator(s"SELECT * FROM $table WHERE id not in (1)")
@@ -1725,12 +1730,34 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       withParquetTable(data, "tbl") {
         // An unset config exercises the version-dependent default, which follows ANSI mode on
         // Spark 4.0+ and is always the legacy behavior on Spark 3.x.
-        for (legacy <- Seq(Some("true"), Some("false"), None); ansi <- Seq("true", "false")) {
+        for {
+          legacy <- Seq(Some("true"), Some("false"), None)
+          ansi <- Seq("true", "false")
+          codegen <- Seq("true", "false")
+        } {
           val legacyConf = legacy.map("spark.sql.legacy.nullInEmptyListBehavior" -> _).toSeq
-          withSQLConf(Seq(SQLConf.ANSI_ENABLED.key -> ansi) ++ legacyConf: _*) {
-            val df = sql("SELECT _1 AS a FROM tbl")
-              .select(col("a"), col("a").isin(), !col("a").isin())
-            checkSparkAnswer(df)
+          withSQLConf(
+            Seq(
+              SQLConf.ANSI_ENABLED.key -> ansi,
+              CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> codegen) ++ legacyConf: _*) {
+            val input = sql("SELECT _1 AS a FROM tbl")
+            val emptySet = InSet(input.queryExecution.analyzed.output.head, Set.empty[Any])
+            val df = input.select(
+              col("a"),
+              col("a").isin(),
+              !col("a").isin(),
+              getColumnFromExpression(emptySet))
+            val legacyEnabled = !CometSparkSessionExtensions.isSpark35Plus ||
+              legacy.map(_.toBoolean).getOrElse(!isSpark40Plus || !ansi.toBoolean)
+            if (!legacyEnabled) {
+              checkSparkAnswerAndImpl(df, native = Seq("in", "inset"))
+            } else if (codegen.toBoolean) {
+              checkSparkAnswerAndImpl(df, dispatched = Seq("in", "inset"))
+            } else {
+              checkSparkAnswerAndFallbackReason(
+                df,
+                s"in: ${CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key}=false")
+            }
           }
         }
       }
@@ -1849,6 +1876,32 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           checkSparkAnswerAndOperator(
             "SELECT col, year(col), month(col), day(col), weekday(col), " +
               s" dayofweek(col), dayofyear(col), weekofyear(col), quarter(col) FROM $table")
+        }
+      }
+    }
+  }
+
+  test("dayofweek/weekday over a date column, including ancient dates") {
+    Seq(false, true).foreach { dictionary =>
+      // 0001-01-01 predates the Gregorian cutover, and Spark 3.x refuses to write such a date to
+      // parquet unless the rebase mode is set (Spark 4 already defaults to CORRECTED). CORRECTED
+      // writes the value as-is in the proleptic Gregorian calendar, which is the calendar the
+      // results are compared in, so it does not affect what dayofweek/weekday return.
+      withSQLConf(
+        "parquet.enable.dictionary" -> dictionary.toString,
+        SQLConf.PARQUET_REBASE_MODE_IN_WRITE.key -> "CORRECTED") {
+        val table = "test"
+        withTable(table) {
+          sql(s"create table $table(col date) using parquet")
+          // The week around the epoch pins both numbering conventions (1970-01-01 is a
+          // Thursday); the rest cover a leap day, the Gregorian century rules, and an ancient
+          // date on the far side of the Gregorian cutover.
+          sql(s"""insert into $table values
+                 | (date('1969-12-28')), (date('1970-01-01')), (date('1970-01-04')),
+                 | (date('1900-01-01')), (date('2000-02-29')), (date('2024-02-29')),
+                 | (date('0001-01-01')), (date('9999-12-31')), (null)""".stripMargin)
+          checkSparkAnswerAndOperator(
+            s"SELECT col, dayofweek(col), weekday(col) FROM $table ORDER BY col")
         }
       }
     }
@@ -2944,12 +2997,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
                               |  from tbl
                               |  """.stripMargin)
 
-        checkSparkAnswerMaybeThrows(res) match {
-          case (Some(sparkExc), Some(cometExc)) =>
-            assert(cometExc.getMessage.contains(ARITHMETIC_OVERFLOW_EXCEPTION_MSG))
-            assert(sparkExc.getMessage.contains("overflow"))
-          case _ => fail("Exception should be thrown")
-        }
+        checkSparkError(res, "ARITHMETIC_OVERFLOW")
       }
     }
   }
@@ -2964,12 +3012,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
                               |  _1 - _2
                               |  from tbl
                               |  """.stripMargin)
-        checkSparkAnswerMaybeThrows(res) match {
-          case (Some(sparkExc), Some(cometExc)) =>
-            assert(cometExc.getMessage.contains(ARITHMETIC_OVERFLOW_EXCEPTION_MSG))
-            assert(sparkExc.getMessage.contains("overflow"))
-          case _ => fail("Exception should be thrown")
-        }
+        checkSparkError(res, "ARITHMETIC_OVERFLOW")
       }
     }
   }
@@ -2985,12 +3028,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
                               |  from tbl
                               |  """.stripMargin)
 
-        checkSparkAnswerMaybeThrows(res) match {
-          case (Some(sparkExc), Some(cometExc)) =>
-            assert(cometExc.getMessage.contains(ARITHMETIC_OVERFLOW_EXCEPTION_MSG))
-            assert(sparkExc.getMessage.contains("overflow"))
-          case _ => fail("Exception should be thrown")
-        }
+        checkSparkError(res, "ARITHMETIC_OVERFLOW")
       }
     }
   }
@@ -3005,12 +3043,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
                               |  from tbl
                               |  """.stripMargin)
 
-        checkSparkAnswerMaybeThrows(res) match {
-          case (Some(sparkExc), Some(cometExc)) =>
-            assert(cometExc.getMessage.contains(DIVIDE_BY_ZERO_EXCEPTION_MSG))
-            assert(sparkExc.getMessage.contains("Division by zero"))
-          case _ => fail("Exception should be thrown")
-        }
+        checkSparkError(res, "DIVIDE_BY_ZERO")
       }
     }
   }
@@ -3025,12 +3058,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
                               |  from tbl
                               |  """.stripMargin)
 
-        checkSparkAnswerMaybeThrows(res) match {
-          case (Some(sparkExc), Some(cometExc)) =>
-            assert(cometExc.getMessage.contains(DIVIDE_BY_ZERO_EXCEPTION_MSG))
-            assert(sparkExc.getMessage.contains("Division by zero"))
-          case _ => fail("Exception should be thrown")
-        }
+        checkSparkError(res, "DIVIDE_BY_ZERO")
       }
     }
   }
@@ -3046,6 +3074,8 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
                 |  from tbl
                 |  """.stripMargin)
 
+          // Integral divide still raises an unconverted Arrow error under ANSI.
+          // https://github.com/apache/datafusion-comet/issues/5072
           checkSparkAnswerMaybeThrows(res) match {
             case (Some(sparkException), Some(cometException)) =>
               assert(sparkException.getMessage.contains(DIVIDE_BY_ZERO_EXCEPTION_MSG))
@@ -3495,17 +3525,21 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     assert(Compatible().nativeOptIn.isEmpty)
   }
 
-  test("RLike literal pattern shows native opt-in, non-literal does not") {
+  test("RLike out-of-subset literal shows native opt-in, in-subset and non-literal do not") {
     withTable("t") {
       spark.sql("create table t(s string, p string) using parquet")
       spark.sql("insert into t values ('abc','a.*'), ('xyz','z')")
-      val lit = spark.sql("select s rlike 'a.*' as r from t")
+      val unsafeLit = spark.sql("select s rlike 'a.*' as r from t")
+      val safeLit = spark.sql("select s rlike 'abc[0-9]+' as r from t")
       val nonLit = spark.sql("select s rlike p as r from t")
-      val explainLit =
-        new ExtendedExplainInfo().generateExtendedInfo(lit.queryExecution.executedPlan)
+      val explainUnsafe =
+        new ExtendedExplainInfo().generateExtendedInfo(unsafeLit.queryExecution.executedPlan)
+      val explainSafe =
+        new ExtendedExplainInfo().generateExtendedInfo(safeLit.queryExecution.executedPlan)
       val explainNonLit =
         new ExtendedExplainInfo().generateExtendedInfo(nonLit.queryExecution.executedPlan)
-      assert(explainLit.contains("native implementation of RLike"))
+      assert(explainUnsafe.contains("native implementation of RLike"))
+      assert(!explainSafe.contains("native implementation of RLike"))
       assert(!explainNonLit.contains("native implementation of RLike"))
     }
   }
