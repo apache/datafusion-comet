@@ -410,3 +410,11 @@ harness = false
 [[bench]]
 name = "aggregate_stats"
 harness = false
+
+[[bench]]
+name = "nondeterministic"
+harness = false
+
+[[bench]]
+name = "json_array_length"
+harness = false

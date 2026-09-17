@@ -202,6 +202,7 @@ jobs:
               org.apache.spark.sql.comet.CometDppFallbackRepro3949Suite
               org.apache.spark.sql.comet.CometShuffleFallbackStickinessSuite
               org.apache.spark.sql.comet.PlanDataInjectorSuite
+              org.apache.spark.sql.comet.PlanDataInjectorShuffleLifecycleSuite
               org.apache.spark.sql.comet.CometDecimalArithmeticViewSuite
               org.apache.spark.sql.comet.CometDecimalPromotionSuite
               org.apache.spark.sql.comet.CometScanWithPlanDataSuite
@@ -280,8 +281,8 @@ jobs:
           path: native/target/release/
 
       # Restore cargo registry cache (for any cargo commands that might run)
-      - name: Cache Cargo registry
-        uses: actions/cache@v6
+      - name: Restore Cargo registry
+        uses: actions/cache/restore@v6
         with:
           path: |
             ~/.cargo/registry
