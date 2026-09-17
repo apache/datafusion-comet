@@ -101,7 +101,7 @@ use tokio::sync::mpsc;
 use crate::execution::memory_pools::{create_memory_pool, parse_memory_pool_config};
 use crate::execution::operators::{ScanExec, ShuffleScanExec};
 use crate::execution::shuffle::{
-    decode_remote_shuffle_batch, read_ipc_compressed, CompressionCodec,
+    decode_remote_shuffle_batch, read_ipc_compressed, CompressionCodec, ShuffleWriterExec,
 };
 use crate::execution::spark_plan::SparkPlan;
 
@@ -130,6 +130,18 @@ fn log_jemalloc_usage() {
     let allocated = stats::allocated::mib().unwrap();
     e.advance().unwrap();
     log_memory_usage("jemalloc_allocated", allocated.read().unwrap() as u64);
+}
+
+/// Reports the bytes currently handed out by the Rust global allocator, process-wide.
+///
+/// Logged alongside the per-thread pool reservations so the two can be compared directly: a large
+/// and growing excess is native memory the pool is not accounting for.
+#[cfg(feature = "alloc-accounting")]
+fn log_native_allocated() {
+    log_memory_usage(
+        "native_allocated",
+        crate::alloc_accounting::current_balance() as u64,
+    );
 }
 
 /// Registry of active memory pools per Rust thread ID.
@@ -1089,6 +1101,8 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
         if exec_context.tracing_enabled {
             #[cfg(feature = "jemalloc")]
             log_jemalloc_usage();
+            #[cfg(feature = "alloc-accounting")]
+            log_native_allocated();
             log_memory_usage(
                 &exec_context.tracing_memory_metric_name,
                 total_reserved_for_thread(exec_context.rust_thread_id) as u64,
@@ -1184,6 +1198,60 @@ fn get_execution_context<'a>(id: i64) -> &'a mut ExecutionContext {
             .as_mut()
             .expect("Comet execution context shouldn't be null!")
     }
+}
+
+/// Returns the partition offsets published by a finished native shuffle write.
+///
+/// The returned array holds `num_output_partitions + 1` offsets, the last being the total data
+/// file length.
+#[no_mangle]
+pub extern "system" fn Java_org_apache_comet_Native_getShufflePartitionOffsets(
+    e: EnvUnowned,
+    _class: JClass,
+    exec_context: jlong,
+) -> jlongArray {
+    try_unwrap_or_throw(&e, |env| {
+        let context = get_execution_context(exec_context);
+
+        let root_op = context.root_op.as_ref().ok_or_else(|| {
+            CometError::Internal(
+                "Cannot read shuffle partition offsets before the plan has been executed"
+                    .to_string(),
+            )
+        })?;
+
+        // `ExecutionPlan` has `Any` as a supertrait but no `as_any` method of its own, so upcast
+        // the trait object before downcasting to the writer.
+        let writer = (root_op.native_plan.as_ref() as &dyn std::any::Any)
+            .downcast_ref::<ShuffleWriterExec>()
+            .ok_or_else(|| {
+                CometError::Internal(
+                    "Shuffle partition offsets are only available on a native shuffle write plan"
+                        .to_string(),
+                )
+            })?;
+
+        let offsets = writer
+            .partition_offsets()
+            .ok_or_else(|| {
+                CometError::Internal(
+                    "Shuffle partition offsets are not published by a remote shuffle destination"
+                        .to_string(),
+                )
+            })?
+            .get()
+            .ok_or_else(|| {
+                CometError::Internal(
+                    "Shuffle writer has not published its partition offsets; the plan was not \
+                     drained to completion"
+                        .to_string(),
+                )
+            })?;
+
+        let long_array = env.new_long_array(offsets.len())?;
+        long_array.set_region(env, 0, offsets)?;
+        Ok(long_array.into_raw())
+    })
 }
 
 /// Used by Comet shuffle external sorter to write sorted records to disk.
