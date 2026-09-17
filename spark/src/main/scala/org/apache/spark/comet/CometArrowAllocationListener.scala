@@ -44,9 +44,9 @@ import org.apache.comet.CometConf
  * listener of the allocator that '''owns''' the buffer, on whichever thread happens to drop the
  * last reference, and `AllocationListener` is handed nothing but a size. Binding the listener to
  * an allocator is therefore the only way to attribute a release, and reading `TaskContext` inside
- * the callbacks would get it wrong: the JVM UDF path exports a JVM-owned vector to native, which
- * drops it later from a Tokio worker with no task context installed. That release would be lost,
- * leaving the task charged for memory it had already freed, batch after batch.
+ * the callbacks would get it wrong: a shuffle-read batch handed on to a native operator is pinned
+ * by native and dropped later from a Tokio worker with no task context installed. That release
+ * would be lost, leaving the task charged for memory it had already freed, batch after batch.
  *
  * '''Reporting only.''' A short grant is logged and the allocation proceeds, because Arrow
  * allocation on these paths cannot fail today and making it fail is a behavioural change that
@@ -57,9 +57,13 @@ import org.apache.comet.CometConf
  * '''Neither callback may throw.''' Arrow's `AllocationListener` documents that, and
  * `BaseAllocator.buffer` marks the allocation successful before calling `onAllocation`, so
  * throwing from here loses the buffer Arrow has already created and never hands back. Spark's
- * acquisition is fallible -- it runs other consumers' `spill`, which turns a task interrupt into
- * a `RuntimeException` and an I/O failure into a `SparkOutOfMemoryError` -- so every call into
- * the memory manager is wrapped and reported rather than propagated.
+ * acquisition is fallible in three ways, and only the first is caught by `NonFatal`: it runs
+ * other consumers' `spill`, which turns a task interrupt into a `RuntimeException` and an I/O
+ * failure into a `SparkOutOfMemoryError`, and the execution pool itself parks in `lock.wait()`,
+ * so killing a task can raise a plain `InterruptedException` here. Every call into the memory
+ * manager is wrapped and reported rather than propagated, and an interrupt additionally re-arms
+ * the thread's flag so the cancellation is not swallowed. A failed acquisition can also leave the
+ * task charged for bytes Spark never reported back; see [[acquire]].
  *
  * '''Lock order.''' [[getUsed]] and [[spill]] must stay lock-free, because Spark calls both while
  * holding the `TaskMemoryManager` monitor, and [[adjust]] holds this listener's monitor across
@@ -128,6 +132,7 @@ private[comet] class CometArrowAllocationListener(taskMemoryManager: TaskMemoryM
         }
       }
     } catch {
+      case e: InterruptedException => reportAndReinterrupt(e)
       case NonFatal(e) => warnOnMemoryManagerFailure(e)
       case e: SparkOutOfMemoryError => warnOnMemoryManagerFailure(e)
     }
@@ -143,9 +148,13 @@ private[comet] class CometArrowAllocationListener(taskMemoryManager: TaskMemoryM
     try {
       adjust()
     } catch {
-      // Both of these are reachable: `acquireExecutionMemory` runs other consumers' `spill`, and
-      // `TaskMemoryManager` rethrows an interrupt as a RuntimeException and an IOException as a
-      // SparkOutOfMemoryError, which is an Error and so slips past NonFatal.
+      // Growth handles its own failures in `acquire`, so this is the net for the release path and
+      // for anything unforeseen. All three are reachable from the memory manager:
+      // `acquireExecutionMemory` runs other consumers' `spill`, `TaskMemoryManager` turns an
+      // interrupted spill into a RuntimeException and an IOException into a SparkOutOfMemoryError,
+      // and the execution pool itself parks in `lock.wait()`. The last two slip past NonFatal,
+      // which excludes Errors and InterruptedException.
+      case e: InterruptedException => reportAndReinterrupt(e)
       case NonFatal(e) => warnOnMemoryManagerFailure(e)
       case e: SparkOutOfMemoryError => warnOnMemoryManagerFailure(e)
     }
@@ -159,7 +168,7 @@ private[comet] class CometArrowAllocationListener(taskMemoryManager: TaskMemoryM
         // Requesting the bare deficit would land exactly on `liveBytes` for any buffer at or above
         // the block size, sending the very next allocation straight back into Spark's lock.
         val request = roundUpToBlock(liveBytes - reserved)
-        val granted = taskMemoryManager.acquireExecutionMemory(request, this)
+        val granted = acquire(request)
         reserved += granted
         if (granted < request) {
           warnOnShortGrant(request, granted)
@@ -174,6 +183,58 @@ private[comet] class CometArrowAllocationListener(taskMemoryManager: TaskMemoryM
         }
       }
     }
+  }
+
+  /**
+   * Asks Spark for `request` bytes and returns what this consumer ends up holding, which is not
+   * always what Spark returns.
+   *
+   * `acquireExecutionMemory` takes its first grant from the pool and only then asks other
+   * consumers to spill, so when a spill throws it has already charged the task for bytes it never
+   * reports back. Nothing would release them: [[taskCompleted]] only knows about `reserved`, and
+   * Spark itself only reclaims them in `cleanUpAllAllocatedMemory` at the very end of the task,
+   * so until then they are headroom nobody can use. They are adopted here instead, measured as
+   * the change in what the pool says this task holds.
+   *
+   * That measurement is an estimate, but a safe one. Another consumer in the same task cannot
+   * acquire concurrently, because `acquireExecutionMemory` holds the `TaskMemoryManager` monitor
+   * throughout, so the only interference is a concurrent release, which makes the figure too
+   * small rather than too large; and `request` bounds it from above either way. Too small
+   * degrades to what would have happened anyway.
+   */
+  private def acquire(request: Long): Long = {
+    val heldBefore = taskMemoryManager.getMemoryConsumptionForThisTask
+    try {
+      taskMemoryManager.acquireExecutionMemory(request, this)
+    } catch {
+      case e: InterruptedException =>
+        reportAndReinterrupt(e)
+        adoptOrphanedGrant(heldBefore, request)
+      case NonFatal(e) =>
+        warnOnMemoryManagerFailure(e)
+        adoptOrphanedGrant(heldBefore, request)
+      case e: SparkOutOfMemoryError =>
+        warnOnMemoryManagerFailure(e)
+        adoptOrphanedGrant(heldBefore, request)
+    }
+  }
+
+  private def adoptOrphanedGrant(heldBefore: Long, request: Long): Long = {
+    val orphaned = taskMemoryManager.getMemoryConsumptionForThisTask - heldBefore
+    math.max(0L, math.min(orphaned, request))
+  }
+
+  /**
+   * An interrupt cannot be allowed out of an Arrow callback any more than anything else can, but
+   * swallowing the cancellation would be wrong too. Spark's execution pool parks in `lock.wait()`
+   * when a task is below its fair share, so killing a task lands here, and `NonFatal`
+   * deliberately excludes `InterruptedException`. Re-arming the flag leaves the cancellation for
+   * the task to observe at its next interruptible point, which is the only place it can act on it
+   * anyway.
+   */
+  private def reportAndReinterrupt(e: InterruptedException): Unit = {
+    Thread.currentThread().interrupt()
+    warnOnMemoryManagerFailure(e)
   }
 }
 

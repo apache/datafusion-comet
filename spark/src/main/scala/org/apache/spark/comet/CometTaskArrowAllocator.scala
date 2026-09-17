@@ -37,15 +37,25 @@ import org.apache.comet.{CometArrowAllocator, CometConf}
  * [[CometArrowAllocationListener]], so the bytes it hands out are reported to that task's
  * `TaskMemoryManager`. The allocator, not the calling thread, is what identifies the owner:
  * Arrow's `AllocationListener` is given only a size, and a buffer is released on whichever thread
- * drops the last reference, which for anything exported over the C Data Interface is a Comet
- * Tokio worker with no task context installed. Child allocators cut from the returned allocator
- * inherit its listener, so the paths that make their own children are covered too.
+ * drops the last reference, which for anything that reaches native over the C Data Interface is a
+ * Comet Tokio worker with no task context installed. Child allocators cut from the returned
+ * allocator inherit its listener, so the paths that make their own children are covered too.
  *
- * Callers that get no task -- the driver, broadcast coalescing, the cached batch serializer --
- * and callers running with Comet's on-heap mode get the unaccounted process-wide root instead,
- * which is what they used before this existed. Buffers imported over the C Data Interface must
- * also use the root: they wrap memory the native side owns and frees, and charging them to Spark
- * would double count bytes an operator has already reserved in Comet's native pool.
+ * '''This is for buffers the JVM owns.''' Anything allocated to be handed straight to native --
+ * `NativeUtil`, the JVM UDF result, `CometNativeArrowSource.stream` -- uses the unaccounted root
+ * instead, and so does anything imported from native. Native's pool is the authority for bytes
+ * native holds: whichever DataFusion operator retains the batch reserves those buffers through
+ * Comet's unified pool, which charges the same Spark task, so reporting them here as well would
+ * reserve the same memory twice and could reject an allocation that fits. The same fallback
+ * covers callers with no task to charge -- the driver, broadcast coalescing, the cached batch
+ * serializer
+ * -- and Comet's on-heap mode, where charging an off-heap consumer would be wrong.
+ *
+ * What this does not fix is a buffer that is used in the JVM and only later handed to native, a
+ * shuffle-read batch feeding a native operator being the common shape. Its allocation site cannot
+ * know, so it stays charged here while native may also reserve it. Coordinating reservation
+ * ownership across the FFI boundary needs changes on both sides; see
+ * [[https://github.com/apache/datafusion-comet/issues/5997]].
  *
  * '''Lifetime.''' The task allocator cannot simply be closed when the task ends. The process-wide
  * allocator exists precisely because Arrow buffers can outlive the task that created them, and

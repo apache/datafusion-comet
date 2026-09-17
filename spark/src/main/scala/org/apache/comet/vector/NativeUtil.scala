@@ -26,7 +26,6 @@ import org.apache.arrow.util.AutoCloseables
 import org.apache.arrow.vector.VectorSchemaRoot
 import org.apache.arrow.vector.dictionary.DictionaryProvider
 import org.apache.spark.SparkException
-import org.apache.spark.comet.CometTaskArrowAllocator
 import org.apache.spark.sql.comet.execution.arrow.ConstantColumnVectors
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.execution.vectorized.ConstantColumnVector
@@ -48,14 +47,16 @@ import org.apache.comet.CometArrowAllocator
 class NativeUtil extends AutoCloseable {
   import Utils._
 
-  /** Accounted to this task, because the structs allocated below are JVM-owned. */
-  private val allocator = CometTaskArrowAllocator.forCurrentTask()
+  // The unaccounted root, on both sides of the boundary this class straddles. Imported buffers
+  // wrap memory the native side owns and frees, already charged to Comet's native pool. Everything
+  // allocated here goes the other way -- the FFI structs, the materialised constant vectors, the
+  // exported vectors -- and whichever native operator retains a batch reserves those same buffers
+  // in Comet's pool, which charges the same Spark task. Reporting either direction to Spark would
+  // count native memory a second time.
+  private val allocator = CometArrowAllocator
 
   /** ArrowImporter does not hold any state and does not need to be closed */
-  // Imported buffers wrap memory the native side owns and frees, already charged to Comet's native
-  // pool, so they go through the unaccounted root rather than this task's allocator. Importing
-  // through the latter would report them to Spark as if they were JVM Arrow bytes.
-  private val importer = new ArrowImporter(CometArrowAllocator)
+  private val importer = new ArrowImporter(allocator)
 
   /**
    * Dictionary provider to use for the lifetime of this instance of NativeUtil. The dictionary

@@ -50,9 +50,10 @@ object CometArrowAllocationListenerBenchmark extends BenchmarkBase {
 
   override def runBenchmarkSuite(mainArgs: Array[String]): Unit = {
     runBenchmark("JVM Arrow allocations reported to Spark") {
-      // The FFI struct shape: NativeUtil allocates two of these per column per batch, and they
-      // never come close to a block, so the listener should never reach Spark after the first one.
-      allocateAndRelease("small FFI structs", bufferSize = 128L, buffersPerIteration = 512)
+      // Many sub-block buffers, the shape a codegen output vector's validity and offset buffers
+      // take. None of them comes close to a block, so the listener should never reach Spark after
+      // the first one.
+      allocateAndRelease("small buffers", bufferSize = 128L, buffersPerIteration = 512)
       // A wide batch: many medium buffers alive at once, one block boundary crossed per few
       // buffers on the way up and the same on the way down.
       allocateAndRelease(

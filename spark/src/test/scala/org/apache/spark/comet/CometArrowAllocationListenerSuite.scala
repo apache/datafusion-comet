@@ -129,12 +129,13 @@ class CometArrowAllocationListenerSuite extends AnyFunSuite {
     }
   }
 
-  test("the process-wide root is not accounted, which is what FFI imports rely on") {
+  test("the process-wide root is not accounted, which is what the FFI paths rely on") {
     withTask() { task =>
       // Establish the task allocator first, so this asserts "not charged" rather than "no task".
       CometTaskArrowAllocator.forCurrentTask()
-      // Buffers imported over the C Data Interface wrap memory the native side owns and frees,
-      // already charged to Comet's native pool, so they are allocated from the listener-less root.
+      // Both directions across the C Data Interface use the listener-less root: imported buffers
+      // wrap memory the native side owns, and buffers allocated for export are reserved again by
+      // whichever native operator retains the batch, through a pool that charges the same task.
       val buf = CometArrowAllocator.buffer(blockSize)
       try {
         assert(reservedFor(task) == 0L)
@@ -168,9 +169,10 @@ class CometArrowAllocationListenerSuite extends AnyFunSuite {
       val buf = CometTaskArrowAllocator.forCurrentTask().buffer(blockSize)
       assert(reservedFor(task) == blockSize)
 
-      // This is what the JVM UDF path does: it exports a JVM-owned vector, and Rust drops it later
-      // from a Tokio worker that has no task context installed. Reading TaskContext in onRelease
-      // would ignore this release and leave the task charged for memory it had already freed.
+      // This is what happens when a shuffle-read batch is handed on to a native operator: native
+      // pins it and drops it later from a Tokio worker with no task context installed. Reading
+      // TaskContext in onRelease would ignore this release and leave the task charged for memory
+      // it had already freed.
       onDetachedThread(buf.close())
 
       assert(reservedFor(task) == 0L)
@@ -275,6 +277,54 @@ class CometArrowAllocationListenerSuite extends AnyFunSuite {
     }
   }
 
+  test("an interrupt while spilling is re-armed rather than thrown or swallowed") {
+    // Spark's execution pool parks in `lock.wait()` when a task is below its fair share, so a task
+    // kill raises a plain InterruptedException out of `acquireExecutionMemory`. `NonFatal` excludes
+    // it, so before this it escaped `onAllocation` and Arrow lost the buffer it had just created.
+    // TestMemoryManager never parks, so the interrupt is injected through a failing spill instead.
+    withTask(pool = blockSize) { task =>
+      val hostile =
+        new FailingSpillConsumer(task.taskMemoryManager, new InterruptedException("task killed"))
+      assert(hostile.take(blockSize) == blockSize)
+
+      val allocator = CometTaskArrowAllocator.forCurrentTask()
+      val buf = allocator.buffer(blockSize)
+      try {
+        assert(allocator.getAllocatedMemory == blockSize)
+        assert(reservedFor(task) == 0L)
+      } finally {
+        buf.close()
+      }
+      assert(allocator.getAllocatedMemory == 0L)
+      // Cleared here as well as asserted, so the flag does not leak into the next test.
+      assert(Thread.interrupted(), "the interrupt was swallowed instead of being re-armed")
+    }
+  }
+
+  test("a partial grant lost to a failing spill is adopted rather than stranded") {
+    // One block already taken, one still in the pool, and a two-block request: Spark hands over the
+    // block it has and only then asks the other consumer to spill, which throws. It never reports
+    // the block it already took, so nothing would release it before the task ended.
+    withTask(pool = blockSize * 2) { task =>
+      val hostile =
+        new FailingSpillConsumer(task.taskMemoryManager, new IOException("spill failed"))
+      assert(hostile.take(blockSize) == blockSize)
+
+      val allocator = CometTaskArrowAllocator.forCurrentTask()
+      val buf = allocator.buffer(blockSize * 2)
+      try {
+        assert(reservedFor(task) == blockSize)
+        assert(task.taskMemoryManager.getMemoryConsumptionForThisTask == blockSize * 2)
+      } finally {
+        buf.close()
+      }
+      assert(reservedFor(task) == 0L)
+      // Only the other consumer's block is left. Without adopting the orphan this would still be
+      // two blocks, with one of them charged to the task and owned by nobody.
+      assert(task.taskMemoryManager.getMemoryConsumptionForThisTask == blockSize)
+    }
+  }
+
   // ---------------------------------------------------------------------------------------------
   // Lock order. Spark calls getUsed and spill while holding the TaskMemoryManager monitor, and the
   // listener holds its own monitor while waiting for that one.
@@ -341,7 +391,8 @@ class CometArrowAllocationListenerSuite extends AnyFunSuite {
   // Fixtures.
   // ---------------------------------------------------------------------------------------------
 
-  private class FailingSpillConsumer(tmm: TaskMemoryManager, failure: IOException)
+  /** Holds memory and refuses to give it back, so `trySpillAndAcquire` throws on its behalf. */
+  private class FailingSpillConsumer(tmm: TaskMemoryManager, failure: Exception)
       extends MemoryConsumer(tmm, 0L, MemoryMode.OFF_HEAP) {
     def take(bytes: Long): Long = acquireMemory(bytes)
     override def spill(size: Long, trigger: MemoryConsumer): Long = throw failure
