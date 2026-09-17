@@ -233,11 +233,15 @@ fn main() {
 
         // Legacy association, for traces recorded before the process-wide total existed: compare
         // the latest allocation against the running per-thread sum after every counter event.
-        // There is nothing to pair on in those traces, so this keeps them analyzable on the terms
-        // the tool always used, over-count and all.
+        // There is nothing to pair on in those traces, so this is the best they support.
+        //
+        // A comparison needs one sample of each side, not a positive one. A reservation that has
+        // been observed at zero is a real value, and allocation standing above it is exactly the
+        // signal worth finding: memory still held after the pool released it. Requiring a positive
+        // total instead would drop those samples silently.
         let per_thread_sum: u64 = pool_by_thread.values().sum();
         legacy.observe_total(per_thread_sum);
-        if latest_allocated > 0 && per_thread_sum > 0 {
+        if source.is_some() && !pool_by_thread.is_empty() {
             legacy.compare(event.ts, latest_allocated, per_thread_sum);
         }
     }
@@ -270,9 +274,11 @@ fn main() {
             pool_by_thread.len()
         );
         println!(
-            "WARNING: this trace predates {POOL_TOTAL_COUNTER}. Summing the per-thread counters\n\
-             over-counts: a task-shared pool reports its full reservation on every thread that\n\
-             references it, so the totals below are upper bounds and the excess is understated."
+            "WARNING: this trace predates {POOL_TOTAL_COUNTER}, so the total below is the sum of\n\
+             the per-thread counters. That is not the same measure: a shared pool reports its full\n\
+             reservation on every thread referencing it, which inflates the total, while a thread\n\
+             that has not reported yet contributes nothing, which deflates it. The excess below can\n\
+             err in either direction."
         );
     }
     println!("Peak {source}:   {}", format_bytes(peak_allocated));

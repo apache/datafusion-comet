@@ -84,49 +84,51 @@ summed to obtain it: a shared pool reports its full reservation on every thread 
 summing multiplies it by the thread count. The allocation counter and the total are emitted back to back on
 one thread when a traced plan finishes executing, and the tool compares only samples paired that way, so a
 fresh allocation is never measured against a stale reservation. Traces recorded before that counter existed
-are still analyzed from the per-thread sum, and the tool warns that the total over-counts. The tool analyzes
+are still analyzed from the per-thread sum, and the tool warns that the sum is not the same measure. The tool
+analyzes
 `native_allocated` when the trace contains it, since that counts only what Rust code holds from the
 allocator, and otherwise falls back to `jemalloc_allocated`. The output names the counter it used. A trace
 with neither counter is rejected.
 
-Sample output, here for a trace recorded before `comet_memory_reserved_total` existed:
+Sample output, with the violation table and the per-thread list elided:
 
 ```
 === Comet Trace Memory Analysis ===
 
-Counter events parsed: 193104
-Allocation counter:    jemalloc_allocated
-Pool total source:     sum of 8 per-thread counters
-WARNING: this trace predates comet_memory_reserved_total. Summing the per-thread counters
-over-counts: a task-shared pool reports its full reservation on every thread that
-references it, so the totals below are upper bounds and the excess is understated.
-Peak jemalloc_allocated:   3068.2 MB
-Peak pool total:           2864.6 MB
-Peak excess (jemalloc_allocated - pool): 364.6 MB
+Counter events parsed: 2946
+Allocation counter:    native_allocated
+Pool total source:     comet_memory_reserved_total (process-wide)
+Peak native_allocated:   395.9 MB
+Peak pool total:           250.9 MB
+Peak excess (native_allocated - pool): 171.2 MB
 
-WARNING: jemalloc_allocated exceeded pool reservation at 138 sampled points:
+WARNING: native_allocated exceeded pool reservation at 87 sampled points:
 
-     Time (us)  jemalloc_allocated      pool_total          excess
+     Time (us)    native_allocated      pool_total          excess
 ------------------------------------------------------------------
-        179578            210.8 MB          0.1 MB        210.7 MB
-        429663            420.5 MB        145.1 MB        275.5 MB
-       1304969           2122.5 MB       1797.2 MB        325.2 MB
-      21974838            407.0 MB         42.3 MB        364.6 MB
-      33543599              5.5 MB          0.1 MB          5.3 MB
+         14662             19.0 MB          0.7 MB         18.3 MB
+        109895             48.2 MB         22.4 MB         25.8 MB
+       1623833             94.0 MB         71.4 MB         22.6 MB
+       3315951            193.8 MB        167.8 MB         26.0 MB
+       4107671            233.7 MB        199.9 MB         33.8 MB
+       ...
+       5441547            389.3 MB        218.1 MB        171.2 MB
+       6445070            235.6 MB        209.8 MB         25.8 MB
 
 --- Final per-thread pool reservations ---
 
-  thread_60_comet_memory_reserved: 0.0 MB
-  thread_95_comet_memory_reserved: 0.0 MB
-  thread_96_comet_memory_reserved: 0.0 MB
+  thread_60_comet_memory_reserved: 39.2 MB
+  thread_61_comet_memory_reserved: 48.3 MB
+  thread_62_comet_memory_reserved: 27.2 MB
   ...
 
-  Total: 0.0 MB
+  Total: 245.8 MB
 ```
 
-Some excess is expected (allocator metadata and fragmentation for `jemalloc_allocated`, and non-pool
-allocations like Arrow IPC buffers for either counter). Large or growing excess may indicate memory that is
-not being tracked by the pool.
+A steady excess is expected, since not every native allocation goes through a pool (Arrow IPC buffers, for
+instance), and `jemalloc_allocated` additionally includes the allocator's own metadata and fragmentation. An
+excess that grows over the run, as it does from 26 MB to 171 MB above, is the signal worth chasing: that is
+memory the pool is not accounting for.
 
 ## Definition of Labels
 
