@@ -51,15 +51,21 @@ runs:
         cd apache-spark
         git apply ../dev/diffs/${{inputs.spark-version}}.diff
 
-    - name: Cache Maven dependencies
-      uses: actions/cache@v4
+    - name: Restore Maven dependencies
+      id: maven-cache
+      uses: actions/cache/restore@v4
       with:
         path: |
           ~/.m2/repository
           /root/.m2/repository
         key: ${{ runner.os }}-spark-sql-${{ hashFiles('common/**/pom.xml', 'spark/**/pom.xml') }}
+        # No Spark SQL workflow has a push-to-main tier, so nothing writes
+        # `spark-sql-` any more (see the save step below). `java-maven-` is the
+        # entry the TPC-H/TPC-DS jobs write on push to main; a Maven repository
+        # is always safe to start from a superset or a subset of itself.
         restore-keys: |
           ${{ runner.os }}-spark-sql-
+          ${{ runner.os }}-java-maven-
 
     - name: Build Comet (with native)
       if: ${{ inputs.skip-native-build != 'true' }}
@@ -93,3 +99,18 @@ runs:
               "$(dirname "$pom")/_remote.repositories"
           done
         done
+
+    # No Spark SQL workflow has a push-to-main tier today, so in practice this
+    # never fires. The guard is here so the step starts writing if one is ever
+    # added, and never writes from a pull request or a `gh-readonly-queue/*`
+    # branch, where the entry cannot be restored by any later run and only
+    # evicts main's from the shared budget. See "Large caches are written on
+    # main only" in ../../workflows/README.md.
+    - name: Save Maven dependencies
+      if: ${{ github.ref == 'refs/heads/main' && steps.maven-cache.outputs.cache-hit != 'true' }}
+      uses: actions/cache/save@v4
+      with:
+        path: |
+          ~/.m2/repository
+          /root/.m2/repository
+        key: ${{ runner.os }}-spark-sql-${{ hashFiles('common/**/pom.xml', 'spark/**/pom.xml') }}

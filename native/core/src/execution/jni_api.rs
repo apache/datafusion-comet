@@ -31,7 +31,7 @@ use std::collections::HashSet;
 use arrow::array::{Array, RecordBatch, UInt32Array};
 use arrow::compute::{take, TakeOptions};
 use arrow::datatypes::DataType as ArrowDataType;
-use datafusion::common::{DataFusionError, Result as DataFusionResult, ScalarValue};
+use datafusion::common::{DataFusionError, Result as DataFusionResult};
 use datafusion::execution::disk_manager::DiskManagerMode;
 use datafusion::execution::memory_pool::MemoryPool;
 use datafusion::execution::runtime_env::RuntimeEnvBuilder;
@@ -41,7 +41,8 @@ use datafusion::{
     physical_plan::{display::DisplayableExecutionPlan, SendableRecordBatchStream},
     prelude::{SessionConfig, SessionContext},
 };
-use datafusion_comet_proto::spark_operator::{Operator, ShuffleScan};
+use datafusion_comet_proto::spark_expression::agg_expr::ExprStruct as AggExprStruct;
+use datafusion_comet_proto::spark_operator::{AggregateMode, Operator, ShuffleScan};
 use datafusion_comet_spark_expr::url_funcs::{CometParseUrl, CometTryParseUrl};
 use datafusion_spark::function::array::array_contains::SparkArrayContains;
 use datafusion_spark::function::array::repeat::SparkArrayRepeat;
@@ -100,7 +101,7 @@ use tokio::sync::mpsc;
 use crate::execution::memory_pools::{create_memory_pool, parse_memory_pool_config};
 use crate::execution::operators::{ScanExec, ShuffleScanExec};
 use crate::execution::shuffle::{
-    decode_remote_shuffle_batch, read_ipc_compressed, CompressionCodec,
+    decode_remote_shuffle_batch, read_ipc_compressed, CompressionCodec, ShuffleWriterExec,
 };
 use crate::execution::spark_plan::SparkPlan;
 
@@ -129,6 +130,18 @@ fn log_jemalloc_usage() {
     let allocated = stats::allocated::mib().unwrap();
     e.advance().unwrap();
     log_memory_usage("jemalloc_allocated", allocated.read().unwrap() as u64);
+}
+
+/// Reports the bytes currently handed out by the Rust global allocator, process-wide.
+///
+/// Logged alongside the per-thread pool reservations so the two can be compared directly: a large
+/// and growing excess is native memory the pool is not accounting for.
+#[cfg(feature = "alloc-accounting")]
+fn log_native_allocated() {
+    log_memory_usage(
+        "native_allocated",
+        crate::alloc_accounting::current_balance() as u64,
+    );
 }
 
 /// Registry of active memory pools per Rust thread ID.
@@ -551,6 +564,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
                 max_temp_directory_size,
                 task_cpus as usize,
                 &spark_config,
+                &spark_plan,
             )?;
 
             let plan_creation_time = start.elapsed();
@@ -668,6 +682,42 @@ pub extern "system" fn Java_org_apache_comet_Native_setShufflePartitionPusher(
     })
 }
 
+/// Only admit the validated native-shuffle path. A session belongs to one fused Spark plan,
+/// so an unsafe partial aggregate disables skipping for the whole plan, including its children.
+/// This deliberately gives up some opportunities rather than changing execution contexts per op.
+fn configure_skip_partial_aggregation(config: &mut SessionConfig, plan: &Operator) {
+    fn supported(plan: &Operator) -> bool {
+        let supported_aggregate = match &plan.op_struct {
+            Some(OpStruct::HashAgg(agg)) => match AggregateMode::try_from(agg.mode) {
+                // Final never skips. Still inspect its children below.
+                Ok(AggregateMode::Final) => true,
+                Ok(AggregateMode::Partial) => {
+                    agg.expr_modes
+                        .iter()
+                        .all(|mode| *mode == AggregateMode::Partial as i32)
+                        && agg.agg_exprs.iter().all(|expr| {
+                            matches!(&expr.expr_struct, Some(AggExprStruct::Count(count))
+                                if count.children.len() == 1)
+                        })
+                }
+                // PartialMerge is represented as native Partial, but consumes states, not rows.
+                _ => false,
+            },
+            _ => true,
+        };
+        supported_aggregate && plan.children.iter().all(supported)
+    }
+
+    if !matches!(&plan.op_struct, Some(OpStruct::ShuffleWriter(_))) || !supported(plan) {
+        // Enforce safety after config pass-through: a testing override cannot make unsupported
+        // accumulators convertible. DF 55 removed supports_convert_to_state().
+        config
+            .options_mut()
+            .execution
+            .skip_partial_aggregation_probe_ratio_threshold = 1.1;
+    }
+}
+
 /// Configure DataFusion session context.
 fn prepare_datafusion_session_context(
     batch_size: usize,
@@ -676,6 +726,7 @@ fn prepare_datafusion_session_context(
     max_temp_directory_size: u64,
     task_cpus: usize,
     spark_config: &HashMap<String, String>,
+    spark_plan: &Operator,
 ) -> CometResult<SessionContext> {
     let paths = local_dirs.into_iter().map(PathBuf::from).collect();
     let disk_manager = DiskManagerBuilder::default()
@@ -689,17 +740,7 @@ fn prepare_datafusion_session_context(
         // This DataFusion context is within the scope of an executing Spark Task. We want to set
         // its internal parallelism to the number of CPUs allocated to Spark Tasks. This can be
         // modified by changing spark.task.cpus in the Spark config.
-        .with_batch_size(batch_size)
-        // DataFusion partial aggregates can emit duplicate rows so we disable the
-        // skip partial aggregation feature because this is not compatible with Spark's
-        // use of partial aggregates.
-        .set(
-            "datafusion.execution.skip_partial_aggregation_probe_ratio_threshold",
-            // this is the threshold of number of groups / number of rows and the
-            // maximum value is 1.0, so we set the threshold a little higher just
-            // to be safe
-            &ScalarValue::Float64(Some(1.1)),
-        );
+        .with_batch_size(batch_size);
 
     // Translate the Comet-namespaced row-level pushdown flag into the equivalent
     // DataFusion session options. `pushdown_filters` enables the parquet reader's
@@ -725,6 +766,8 @@ fn prepare_datafusion_session_context(
             session_config = session_config.set_str(&df_key, value);
         }
     }
+
+    configure_skip_partial_aggregation(&mut session_config, spark_plan);
 
     let runtime = rt_config.build()?;
 
@@ -1058,6 +1101,8 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
         if exec_context.tracing_enabled {
             #[cfg(feature = "jemalloc")]
             log_jemalloc_usage();
+            #[cfg(feature = "alloc-accounting")]
+            log_native_allocated();
             log_memory_usage(
                 &exec_context.tracing_memory_metric_name,
                 total_reserved_for_thread(exec_context.rust_thread_id) as u64,
@@ -1153,6 +1198,60 @@ fn get_execution_context<'a>(id: i64) -> &'a mut ExecutionContext {
             .as_mut()
             .expect("Comet execution context shouldn't be null!")
     }
+}
+
+/// Returns the partition offsets published by a finished native shuffle write.
+///
+/// The returned array holds `num_output_partitions + 1` offsets, the last being the total data
+/// file length.
+#[no_mangle]
+pub extern "system" fn Java_org_apache_comet_Native_getShufflePartitionOffsets(
+    e: EnvUnowned,
+    _class: JClass,
+    exec_context: jlong,
+) -> jlongArray {
+    try_unwrap_or_throw(&e, |env| {
+        let context = get_execution_context(exec_context);
+
+        let root_op = context.root_op.as_ref().ok_or_else(|| {
+            CometError::Internal(
+                "Cannot read shuffle partition offsets before the plan has been executed"
+                    .to_string(),
+            )
+        })?;
+
+        // `ExecutionPlan` has `Any` as a supertrait but no `as_any` method of its own, so upcast
+        // the trait object before downcasting to the writer.
+        let writer = (root_op.native_plan.as_ref() as &dyn std::any::Any)
+            .downcast_ref::<ShuffleWriterExec>()
+            .ok_or_else(|| {
+                CometError::Internal(
+                    "Shuffle partition offsets are only available on a native shuffle write plan"
+                        .to_string(),
+                )
+            })?;
+
+        let offsets = writer
+            .partition_offsets()
+            .ok_or_else(|| {
+                CometError::Internal(
+                    "Shuffle partition offsets are not published by a remote shuffle destination"
+                        .to_string(),
+                )
+            })?
+            .get()
+            .ok_or_else(|| {
+                CometError::Internal(
+                    "Shuffle writer has not published its partition offsets; the plan was not \
+                     drained to completion"
+                        .to_string(),
+                )
+            })?;
+
+        let long_array = env.new_long_array(offsets.len())?;
+        long_array.set_region(env, 0, offsets)?;
+        Ok(long_array.into_raw())
+    })
 }
 
 /// Used by Comet shuffle external sorter to write sorted records to disk.
@@ -1590,6 +1689,120 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_columnarToRowClose(
 mod tests {
     use super::*;
     use datafusion::execution::memory_pool::{MemoryConsumer, UnboundedMemoryPool};
+    use datafusion_comet_proto::spark_expression::{AggExpr, Count, Expr, Sum};
+    use datafusion_comet_proto::spark_operator::{HashAggregate, ShuffleWriter};
+
+    #[test]
+    fn skip_partial_eligibility_is_fail_closed() {
+        let count = AggExpr {
+            expr_struct: Some(AggExprStruct::Count(Count {
+                children: vec![Expr::default()],
+            })),
+            ..Default::default()
+        };
+        let sum = AggExpr {
+            expr_struct: Some(AggExprStruct::Sum(Sum::default())),
+            ..Default::default()
+        };
+        let partial = HashAggregate {
+            grouping_exprs: vec![Expr::default()],
+            agg_exprs: vec![count.clone()],
+            mode: AggregateMode::Partial as i32,
+            ..Default::default()
+        };
+        let writer = |agg: HashAggregate| Operator {
+            op_struct: Some(OpStruct::ShuffleWriter(ShuffleWriter::default())),
+            children: vec![Operator {
+                op_struct: Some(OpStruct::HashAgg(agg)),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let ratio = |plan: &Operator, requested: f64| {
+            let mut config = SessionConfig::new();
+            config
+                .options_mut()
+                .execution
+                .skip_partial_aggregation_probe_rows_threshold = 37;
+            config
+                .options_mut()
+                .execution
+                .skip_partial_aggregation_probe_ratio_threshold = requested;
+            configure_skip_partial_aggregation(&mut config, plan);
+            assert_eq!(
+                config
+                    .options()
+                    .execution
+                    .skip_partial_aggregation_probe_rows_threshold,
+                37
+            );
+            config
+                .options()
+                .execution
+                .skip_partial_aggregation_probe_ratio_threshold
+        };
+
+        for agg in [
+            partial.clone(),
+            HashAggregate {
+                agg_exprs: vec![],
+                ..partial.clone()
+            },
+            HashAggregate {
+                agg_exprs: vec![count.clone(), count],
+                ..partial.clone()
+            },
+        ] {
+            let plan = writer(agg);
+            assert_eq!(ratio(&plan, 0.8), 0.8);
+            assert_eq!(ratio(&plan, 0.5), 0.5);
+            assert_eq!(ratio(&plan, 1.1), 1.1);
+            // Non-native shuffle / standalone native blocks stay disabled.
+            assert_eq!(ratio(&plan.children[0], 0.8), 1.1);
+        }
+
+        for agg in [
+            HashAggregate {
+                agg_exprs: vec![sum],
+                ..partial.clone()
+            },
+            HashAggregate {
+                agg_exprs: vec![AggExpr::default()],
+                ..partial.clone()
+            },
+            HashAggregate {
+                agg_exprs: vec![AggExpr {
+                    expr_struct: Some(AggExprStruct::Count(Count {
+                        children: vec![Expr::default(), Expr::default()],
+                    })),
+                    ..Default::default()
+                }],
+                ..partial.clone()
+            },
+            HashAggregate {
+                mode: AggregateMode::PartialMerge as i32,
+                ..partial.clone()
+            },
+            HashAggregate {
+                expr_modes: vec![AggregateMode::PartialMerge as i32],
+                ..partial.clone()
+            },
+            HashAggregate {
+                mode: 99,
+                ..partial.clone()
+            },
+        ] {
+            let plan = writer(agg);
+            assert_eq!(ratio(&plan, 0.8), 1.1);
+            // An eligible sibling or a Final parent must not hide the unsafe child.
+            let mut nested = writer(HashAggregate {
+                mode: AggregateMode::Final as i32,
+                ..partial.clone()
+            });
+            nested.children[0].children = plan.children;
+            assert_eq!(ratio(&nested, 0.8), 1.1);
+        }
+    }
 
     fn entry_count(thread_id: u64) -> usize {
         get_thread_memory_pools()

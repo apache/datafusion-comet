@@ -20,13 +20,25 @@
 # change touched files relevant to that workflow.
 #
 # Merging goes through GitHub's merge queue (see `rulesets` in `.asf.yaml`), so
-# there are two tiers:
+# there are three tiers:
 #
-#   pull_request  fast feedback. Linux build + Spark 4.1 + Iceberg 1.11.
-#   merge_group   the authoritative gate. Everything the PR tier runs, plus
-#                 the macOS build, the benchmark compile check, Spark
-#                 3.4/3.5/4.0 and Iceberg 1.8/1.9/1.10, evaluated against
-#                 the merge result rather than the PR head.
+#   pull_request  fast feedback. The Linux build only, with its test matrix
+#                 run against the default Spark profile (4.1) alone.
+#   merge_group   the authoritative gate. The PR tier plus the macOS build,
+#                 the benchmark compile check, the Delta contrib build gate,
+#                 the PyArrow UDF suite, Spark SQL on Spark 4.1 and Iceberg
+#                 1.11, evaluated against the merge result rather than the
+#                 PR head. One Spark version and one Iceberg version, both
+#                 the default profile's.
+#   schedule      the nightly regression sweep of everything else: the Linux
+#                 test matrix against the other Spark profiles, Spark SQL on
+#                 Spark 3.5 and 4.0, and Iceberg 1.8/1.9/1.10, routed by the
+#                 same path filters over what landed on main since the last
+#                 green nightly. A failure opens (or comments on) an issue
+#                 labelled `ci-nightly-failure`.
+#
+# Spark 3.4 is deprecated and sits outside all three tiers: it runs only when
+# a pull request carries `run-spark-3.4-tests`, or from a manual dispatch.
 #
 # Which tier a job sits in is POLICY in dev/ci/compute-changes.py, not an
 # expression here. Heavy jobs deliberately have no `push` tier: the queue
@@ -34,17 +46,29 @@
 # push to main would double the cost of every merge. Two exceptions: `docs`
 # deploys to asf-site and must run after the commit is on main, and the Linux
 # build runs on push so that main's actions/cache entries stay fresh (caches
-# saved on the queue's throwaway branch are deleted with it).
+# saved on the queue's throwaway branch are deleted with it). That second
+# exception runs in `cache-refresh-only` mode: the cache writers and nothing
+# else, because the queue has already tested the tree that landed.
 
-name: CI
+# Project-qualified on purpose. Several Apache DataFusion repositories -- the
+# core project and the other subprojects -- have a top-level workflow, and an
+# unqualified `CI` is indistinguishable from theirs anywhere runs from more
+# than one repository are listed together: the personal Actions dashboard,
+# notification emails, and cross-repository search. Nothing depends on this
+# string; every reference to this workflow, in `.asf.yaml`, `dev/ci/`, and the
+# docs, goes through the file name, and the required status check is the
+# `Required Checks` job name below.
+name: Comet CI
 
 # A `labeled` event (e.g. the run-spark-*-tests gates, or dependabot's automatic
 # `dependencies` label added ~1s after open) fires at the same commit as the
 # opened/synchronize run. Keying the group on the label name keeps labeled runs
-# in their own subgroup so they never cancel the real commit run; opened and
-# synchronize both map to `commit` so a new push still supersedes its predecessor.
+# in their own subgroup so they never cancel the real commit run. Every other
+# run is keyed on its event name: opened, synchronize and reopened all map to
+# `pull_request`, so a new push still supersedes its predecessor, while a
+# scheduled run at the tip of main never cancels that commit's push run.
 concurrency:
-  group: ${{ github.repository }}-${{ github.head_ref || github.sha }}-${{ github.workflow }}-${{ github.event.action == 'labeled' && github.event.label.name || 'commit' }}
+  group: ${{ github.repository }}-${{ github.head_ref || github.sha }}-${{ github.workflow }}-${{ github.event.action == 'labeled' && github.event.label.name || github.event_name }}
   cancel-in-progress: true
 
 on:
@@ -54,6 +78,11 @@ on:
   push:
     branches:
       - main
+  schedule:
+    # 06:00 UTC daily: after the evening's merges in the Americas and before
+    # the working day starts in Europe, so a red nightly is waiting when the
+    # first people look. Miri runs at 04:00 and the snapshot publish at 03:00.
+    - cron: '0 6 * * *'
   workflow_dispatch:
 
 jobs:
@@ -85,7 +114,12 @@ jobs:
         uses: actions/setup-java@v6
         with:
           distribution: temurin
-          java-version: 11
+          java-version: 17
+
+      # Preflight gates every other job, so a single failed download of the
+      # Maven distribution here would fail the whole run.
+      - name: Bootstrap Maven
+        uses: ./.github/actions/maven-bootstrap
 
       - name: Apache RAT license check
         run: ./mvnw -B -N apache-rat:check
@@ -151,15 +185,25 @@ jobs:
     name: Detect changes
     needs: preflight
     runs-on: ubuntu-slim
+    # `actions: read` is for dev/ci/nightly-base.py, which lists previous
+    # scheduled runs to pick the nightly's diff base.
+    permissions:
+      actions: read
+      contents: read
     outputs:
       build_linux:  ${{ steps.compute.outputs.build_linux }}
+      build_linux_full: ${{ steps.compute.outputs.build_linux_full }}
+      build_linux_all_profiles: ${{ steps.compute.outputs.build_linux_all_profiles }}
       build_macos:  ${{ steps.compute.outputs.build_macos }}
       benchmark:    ${{ steps.compute.outputs.benchmark }}
+      delta_gate:   ${{ steps.compute.outputs.delta_gate }}
+      pyarrow_udf:  ${{ steps.compute.outputs.pyarrow_udf }}
       docs:         ${{ steps.compute.outputs.docs }}
       spark_3_4:    ${{ steps.compute.outputs.spark_3_4 }}
       spark_3_5:    ${{ steps.compute.outputs.spark_3_5 }}
       spark_4_0:    ${{ steps.compute.outputs.spark_4_0 }}
       spark_4_1:    ${{ steps.compute.outputs.spark_4_1 }}
+      spark_4_1_hive: ${{ steps.compute.outputs.spark_4_1_hive }}
       iceberg_1_8:  ${{ steps.compute.outputs.iceberg_1_8 }}
       iceberg_1_9:  ${{ steps.compute.outputs.iceberg_1_9 }}
       iceberg_1_10: ${{ steps.compute.outputs.iceberg_1_10 }}
@@ -185,6 +229,7 @@ jobs:
           MQ_HEAD_SHA:  ${{ github.event.merge_group.head_sha }}
           PUSH_BEFORE:  ${{ github.event.before }}
           PUSH_AFTER:   ${{ github.sha }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           : > changed_files.txt
@@ -193,6 +238,29 @@ jobs:
             # every output true for this event so a manual run can exercise
             # any gated job.
             :
+          elif [[ "$EVENT_NAME" == "schedule" ]]; then
+            # The nightly's base is the commit the last successful scheduled
+            # run tested, so everything that landed since is covered exactly
+            # once and a red nightly keeps its commits in scope until a green
+            # one supersedes it. A quiet day diffs to nothing and runs
+            # nothing; so does a docs-only day.
+            #
+            # Without a base -- the first nightly, an API error, or a base no
+            # longer on main -- run the whole tier by treating every tracked
+            # file as changed, the same way the first push to a branch does
+            # below. Guessing a narrower base would be worse than running
+            # nothing: a window that starts after a commit no nightly has
+            # covered yet skips the suites that commit needs, goes green
+            # anyway, and then becomes the base for tomorrow, dropping that
+            # coverage for good.
+            prev=$(python3 dev/ci/nightly-base.py)
+            if [[ -n "$prev" ]] && git merge-base --is-ancestor "$prev" HEAD 2>/dev/null; then
+              echo "Nightly base: $prev"
+              git diff --name-only "$prev"..HEAD > changed_files.txt
+            else
+              echo "Nightly base unknown; running the whole nightly tier"
+              git ls-tree -r --name-only HEAD > changed_files.txt
+            fi
           elif [[ "$EVENT_NAME" == "pull_request" ]]; then
             git diff --name-only "$PR_BASE_SHA"..."$PR_HEAD_SHA" > changed_files.txt
           elif [[ "$EVENT_NAME" == "merge_group" ]]; then
@@ -226,8 +294,32 @@ jobs:
   pr_build_linux:
     name: PR Build (Linux)
     needs: changes
-    if: needs.changes.outputs.build_linux == 'true'
+    # Three POLICY outputs feed one call, the same shape as spark_4_1 below.
+    # `build_linux` decides whether the workflow runs at all; `build_linux_full`
+    # whether it runs the lints and the test matrix as well as the jobs that
+    # populate main's actions/cache entries; `build_linux_all_profiles` whether
+    # the test matrix covers every Spark profile or only the default one. The
+    # combinations that occur:
+    #
+    #   pull request          linux, full            -> profiles: pr
+    #   ... with the label    linux, full, all       -> profiles: all
+    #   `labeled` run         all                    -> profiles: nightly
+    #   merge queue           linux, full            -> profiles: pr
+    #   nightly               all                    -> profiles: nightly
+    #   push to main          linux                  -> cache-refresh-only
+    #
+    # Only push to main sets `build_linux` without `build_linux_full`, which is
+    # the whole point: the queue has already tested that tree, so the push run
+    # is there for the caches alone. A `labeled` run and the nightly set only
+    # the third, and then run just the profiles the PR and queue tiers skip.
+    if: needs.changes.outputs.build_linux == 'true' || needs.changes.outputs.build_linux_all_profiles == 'true'
     uses: ./.github/workflows/pr_build_linux.yml
+    with:
+      cache-refresh-only: ${{ needs.changes.outputs.build_linux_full != 'true' && needs.changes.outputs.build_linux_all_profiles != 'true' }}
+      profiles: >-
+        ${{ needs.changes.outputs.build_linux_all_profiles != 'true' && 'pr'
+            || needs.changes.outputs.build_linux_full != 'true' && 'nightly'
+            || 'all' }}
 
   pr_build_macos:
     name: PR Build (macOS)
@@ -243,6 +335,26 @@ jobs:
     if: needs.changes.outputs.benchmark == 'true'
     uses: ./.github/workflows/pr_benchmark_check.yml
 
+  delta_build_gate:
+    name: Delta Contrib Build Gate
+    needs: changes
+    # Queue-only by default; PRs need the `run-delta-build-gate` label.
+    if: needs.changes.outputs.delta_gate == 'true'
+    # The called workflow needs only a checkout.
+    permissions:
+      contents: read
+    uses: ./.github/workflows/delta_build_gate.yml
+
+  pyarrow_udf_test:
+    name: PyArrow UDF Tests
+    needs: changes
+    # Queue-only by default; PRs need the `run-pyarrow-udf-tests` label.
+    if: needs.changes.outputs.pyarrow_udf == 'true'
+    # The called workflow needs only a checkout.
+    permissions:
+      contents: read
+    uses: ./.github/workflows/pyarrow_udf_test.yml
+
   docs:
     name: Deploy Comet site
     needs: changes
@@ -253,18 +365,30 @@ jobs:
   spark_3_4:
     name: Spark SQL Tests (Spark 3.4)
     needs: changes
-    # Queue-only by default; PRs need the `run-spark-3.4-tests` label.
+    # Spark 3.4 is deprecated, so this is the one test job the merge queue does
+    # not run: it needs the `run-spark-3.4-tests` label on a pull request, or a
+    # manual workflow_dispatch.
+    #
+    # It is still in `required_checks.needs`, but be precise about what that
+    # buys. Adding the label fires a `labeled` event, and on that event the
+    # aggregator deliberately publishes the advisory `Required Checks (label
+    # run)` name instead of the required one (see its comment below), so a red
+    # 3.4 there leaves the commit's existing verdict alone. 3.4 only counts
+    # toward the required `Required Checks` on a pull_request event that is not
+    # `labeled` -- a push with the label already applied. With no queue run left
+    # to catch it, that push is the only thing that turns a 3.4 failure into a
+    # merge blocker.
     if: needs.changes.outputs.spark_3_4 == 'true'
     uses: ./.github/workflows/spark_sql_test_reusable.yml
     with:
       spark-short: '3.4'
       spark-full: '3.4.3'
-      java: 11
+      java: 17
 
   spark_3_5:
     name: Spark SQL Tests (Spark 3.5)
     needs: changes
-    # Queue-only by default; PRs need the `run-spark-3.5-tests` label.
+    # Nightly by default; PRs need the `run-spark-3.5-tests` label.
     if: needs.changes.outputs.spark_3_5 == 'true'
     uses: ./.github/workflows/spark_sql_test_reusable.yml
     with:
@@ -275,9 +399,8 @@ jobs:
   spark_4_0:
     name: Spark SQL Tests (Spark 4.0)
     needs: changes
-    # Queue-only by default; PRs need the `run-spark-4.0-tests` label. Swapped
-    # with spark_4_1 on the `oom` branch to validate the memory caps against
-    # Spark 4.1 by default.
+    # Nightly by default; PRs need the `run-spark-4.0-tests` label. Spark 4.1
+    # is the one Spark SQL suite the queue runs, being the default profile.
     if: needs.changes.outputs.spark_4_0 == 'true'
     uses: ./.github/workflows/spark_sql_test_reusable.yml
     with:
@@ -288,17 +411,27 @@ jobs:
   spark_4_1:
     name: Spark SQL Tests (Spark 4.1)
     needs: changes
-    if: needs.changes.outputs.spark_4_1 == 'true'
+    # Queue-only by default, like every other Spark SQL suite. Two POLICY
+    # outputs feed one call, so the queue gets every module from a single
+    # 40-minute build instead of two. `spark_4_1` covers catalyst and the
+    # sql_core shards; `spark_4_1_hive` adds the sql_hive shards. On a pull
+    # request `run-spark-4.1-tests` sets both, and `run-spark-4.1-hive-tests`
+    # sets only the second, which then runs only the hive rows.
+    if: needs.changes.outputs.spark_4_1 == 'true' || needs.changes.outputs.spark_4_1_hive == 'true'
     uses: ./.github/workflows/spark_sql_test_reusable.yml
     with:
       spark-short: '4.1'
       spark-full: '4.1.3'
       java: 17
+      modules: >-
+        ${{ needs.changes.outputs.spark_4_1 != 'true' && 'hive'
+            || needs.changes.outputs.spark_4_1_hive != 'true' && 'core'
+            || 'all' }}
 
   iceberg_1_8:
     name: Iceberg Spark SQL Tests (Iceberg 1.8)
     needs: changes
-    # Queue-only by default; PRs need the `run-iceberg-tests` label.
+    # Nightly by default; PRs need the `run-iceberg-tests` label.
     if: needs.changes.outputs.iceberg_1_8 == 'true'
     uses: ./.github/workflows/iceberg_spark_test_reusable.yml
     with:
@@ -306,12 +439,12 @@ jobs:
       iceberg-full: '1.8.1'
       spark-short: '3.4'
       spark-full: '3.4.3'
-      java: 11
+      java: 17
 
   iceberg_1_9:
     name: Iceberg Spark SQL Tests (Iceberg 1.9)
     needs: changes
-    # Queue-only by default; PRs need the `run-iceberg-tests` label.
+    # Nightly by default; PRs need the `run-iceberg-tests` label.
     if: needs.changes.outputs.iceberg_1_9 == 'true'
     uses: ./.github/workflows/iceberg_spark_test_reusable.yml
     with:
@@ -324,8 +457,7 @@ jobs:
   iceberg_1_10:
     name: Iceberg Spark SQL Tests (Iceberg 1.10)
     needs: changes
-    # Queue-only by default; PRs need the `run-iceberg-tests` label. Iceberg 1.11
-    # (Spark 4.1) is the PR-gated Iceberg job; 1.10 covers the Spark 3.5 path.
+    # Nightly by default; PRs need the `run-iceberg-tests` label.
     if: needs.changes.outputs.iceberg_1_10 == 'true'
     uses: ./.github/workflows/iceberg_spark_test_reusable.yml
     with:
@@ -338,7 +470,9 @@ jobs:
   iceberg_1_11:
     name: Iceberg Spark SQL Tests (Iceberg 1.11)
     needs: changes
-    # Runs on every PR: Iceberg 1.11 is our only Spark 4.1 Iceberg coverage.
+    # Queue-only by default; PRs need the `run-iceberg-tests` label. Iceberg
+    # 1.11 is our only Spark 4.1 Iceberg coverage, which is why it is the one
+    # Iceberg version the queue runs while 1.8/1.9/1.10 run nightly.
     if: needs.changes.outputs.iceberg_1_11 == 'true'
     uses: ./.github/workflows/iceberg_spark_test_reusable.yml
     with:
@@ -390,6 +524,8 @@ jobs:
       - pr_build_linux
       - pr_build_macos
       - pr_benchmark_check
+      - delta_build_gate
+      - pyarrow_udf_test
       - spark_3_4
       - spark_3_5
       - spark_4_0
@@ -412,3 +548,67 @@ jobs:
         run: |
           echo "::error::One or more upstream jobs did not succeed. See the results above."
           exit 1
+
+  # ---------------------------------------------------------------------------
+  # nightly_report: a red nightly has no pull request to show up on, and a
+  # scheduled run only emails whoever last touched the workflow file, so
+  # without this a regression in the nightly tier sits unnoticed on the
+  # Actions tab. On the scheduled event, and only when `required_checks` is
+  # not green, it opens an issue labelled `ci-nightly-failure` listing the
+  # failed jobs, or comments on the one that is already open so consecutive
+  # red nights accumulate in one place instead of one issue a day. Closing
+  # the issue is how the failure is acknowledged; the next red night opens a
+  # new one.
+  #
+  # It sits downstream of the aggregator rather than of the nightly jobs
+  # themselves so the job list here does not have to be kept in step with
+  # POLICY.
+  # ---------------------------------------------------------------------------
+  nightly_report:
+    name: Nightly failure report
+    needs: required_checks
+    if: always() && github.event_name == 'schedule' && needs.required_checks.result != 'success'
+    permissions:
+      actions: read
+      issues: write
+    runs-on: ubuntu-slim
+    steps:
+      - uses: actions/github-script@v9
+        with:
+          script: |
+            const label = 'ci-nightly-failure';
+            const { owner, repo } = context.repo;
+            const runUrl = `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`;
+            const shortSha = context.sha.slice(0, 10);
+            const day = new Date().toISOString().slice(0, 10);
+
+            const jobs = await github.paginate(github.rest.actions.listJobsForWorkflowRun, {
+              owner, repo, run_id: context.runId, filter: 'latest', per_page: 100,
+            });
+            const failed = jobs
+              .filter((job) => job.conclusion === 'failure' || job.conclusion === 'cancelled')
+              .map((job) => `- [${job.name}](${job.html_url}) (${job.conclusion})`);
+
+            const body = [
+              `The nightly CI run against \`main\` at ${shortSha} did not pass: ${runUrl}`,
+              '',
+              failed.length ? 'Jobs that did not succeed:' : 'No individual job reported a failure; see the run for details.',
+              ...failed,
+              '',
+              'The nightly tier runs the Spark and Iceberg versions the merge queue does not',
+              '(see `POLICY` in `dev/ci/compute-changes.py`). Close this issue once the failure',
+              'is understood; the next red nightly opens a new one.',
+            ].join('\n');
+
+            const { data: open } = await github.rest.issues.listForRepo({
+              owner, repo, labels: label, state: 'open', per_page: 1,
+            });
+            if (open.length > 0) {
+              await github.rest.issues.createComment({ owner, repo, issue_number: open[0].number, body });
+              core.info(`Commented on #${open[0].number}`);
+            } else {
+              const { data: issue } = await github.rest.issues.create({
+                owner, repo, title: `Nightly CI failed on ${day}`, body, labels: [label],
+              });
+              core.info(`Opened #${issue.number}`);
+            }
