@@ -29,11 +29,11 @@ use crate::{
     spark_ceil, spark_day_name, spark_decimal_div, spark_decimal_integral_div, spark_floor,
     spark_isnan, spark_lpad, spark_make_decimal, spark_month_name, spark_read_side_padding,
     spark_round, spark_rpad, spark_sequence, spark_to_time, spark_unhex, spark_unscaled_value,
-    EvalMode, SparkArrayExtrema, SparkArrayPositionFunc, SparkArraySlice, SparkArraysOverlap, SparkContains,
-    SparkDateDiff, SparkDateFromUnixDate, SparkDateTrunc, SparkDayOfWeek, SparkFlatten,
-    SparkIcebergBucket, SparkIcebergTemporalTransform, SparkIcebergTruncate, SparkMakeDate,
-    SparkMakeInterval, SparkMakeTime, SparkMapExtract, SparkNextDay, SparkSecondsToTimestamp,
-    SparkSizeFunc, SparkWeekDay,
+    EvalMode, SparkArrayExtrema, SparkArrayPositionFunc, SparkArraySlice, SparkArraysOverlap,
+    SparkContains, SparkDateDiff, SparkDateFromUnixDate, SparkDateTrunc, SparkDayOfWeek,
+    SparkFlatten, SparkIcebergBucket, SparkIcebergTemporalTransform, SparkIcebergTruncate,
+    SparkMakeDate, SparkMakeInterval, SparkMakeTime, SparkMapExtract, SparkNextDay,
+    SparkSecondsToTimestamp, SparkSizeFunc, SparkWeekDay,
 };
 use arrow::datatypes::DataType;
 use datafusion::common::{DataFusionError, Result as DataFusionResult};
