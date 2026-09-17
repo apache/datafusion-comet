@@ -62,12 +62,13 @@ runs:
       shell: bash
       run: echo "hash=${{ hashFiles('**/pom.xml') }}" >> "$GITHUB_OUTPUT"
 
-    - name: Cache Maven dependencies
+    - name: Restore Maven dependencies
       # TODO: remove next line after working again
       #  temporarily work around https://github.com/actions/runner-images/issues/13341
       #  by disabling caching for macOS
       if: ${{ runner.os != 'macOS' }}
-      uses: actions/cache@v5
+      id: maven-cache
+      uses: actions/cache/restore@v5
       with:
         path: |
           ~/.m2/repository
@@ -176,3 +177,16 @@ runs:
          if-no-files-found: ignore
          retention-days: 7 # 1 week for test reports
          overwrite: true
+
+    # Saved only on main, and only on a green run: an entry written from a pull request or a
+    # `gh-readonly-queue/*` branch cannot be restored by any later run, and it
+    # evicts main's from the shared budget. See "Large caches are written on
+    # main only" in ../../workflows/README.md.
+    - name: Save Maven dependencies
+      if: ${{ runner.os != 'macOS' && github.ref == 'refs/heads/main' && steps.maven-cache.outputs.cache-hit != 'true' }}
+      uses: actions/cache/save@v5
+      with:
+        path: |
+          ~/.m2/repository
+          /root/.m2/repository
+        key: ${{ runner.os }}-java-maven-${{ steps.maven-cache-key.outputs.hash }}
