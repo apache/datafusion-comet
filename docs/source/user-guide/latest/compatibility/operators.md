@@ -19,6 +19,22 @@ under the License.
 
 # Operator Compatibility
 
+## Sampling
+
+Comet runs `SampleExec` natively when sampling is performed without replacement, which covers
+`DataFrame.sample`, SQL `TABLESAMPLE`, and `DataFrame.randomSplit`. The native implementation
+reproduces Spark's per-row `XORShiftRandom` draw sequence, so for a given seed it selects the same
+rows as Spark.
+
+Because the sampler consumes one random value per row, sampling directly above a scan, filter, or
+projection reproduces Spark's selection. Above an operator where Comet may emit rows in a different
+order than Spark, such as a join or an aggregate, the result is still a valid sample of the same
+expected size, but not necessarily the same rows.
+
+Sampling with replacement (`df.sample(withReplacement = true, ...)`) falls back to Spark, because
+it draws from a Poisson distribution that Comet does not implement natively
+([#5109](https://github.com/apache/datafusion-comet/issues/5109)).
+
 ## Window Functions
 
 Comet runs `WindowExec` natively and it is enabled by default (`spark.comet.exec.window.enabled`). A broad set of
@@ -55,14 +71,25 @@ incorrect result. When any single window expression in a `WindowExec` falls back
   window are not supported by Spark either.
 - Any `PARTITION BY` or `ORDER BY` expression that Comet cannot serialize.
 
-`WindowGroupLimitExec` (window-based limit pushdown) is not yet supported and falls back to Spark
-([#4837](https://github.com/apache/datafusion-comet/issues/4837)).
+`WindowGroupLimitExec` (window-based limit pushdown for `ROW_NUMBER`, `RANK`, and `DENSE_RANK`)
+runs natively; it is controlled by `spark.comet.exec.windowGroupLimit.enabled` (default: true).
+
+**Falls back to Spark:**
+
+- Any `PARTITION BY` or `ORDER BY` key whose type carries a non-default `StringType` collation
+  (e.g. `UTF8_LCASE`). The native operator detects partitions and order-key peer groups by
+  comparing Arrow row-encoded keys for byte equality, which splits peers that Spark ties.
+
+**Known incompatibilities:**
+
+- Signed-zero ordering (`-0.0` vs `+0.0`) diverges from Spark's `RankLimitIterator`; see
+  [floating-point ordering](./floating-point.md#ordering-signed-zero-00-vs-00).
 
 ## Round-Robin Partitioning
 
 Comet's native shuffle implementation of round-robin partitioning (`df.repartition(n)`) is not compatible with
 Spark's implementation and is disabled by default. It can be enabled by setting
-`spark.comet.native.shuffle.partitioning.roundrobin.enabled=true`.
+`spark.comet.shuffle.native.partitioning.roundrobin.enabled=true`.
 
 **Why the incompatibility exists:**
 

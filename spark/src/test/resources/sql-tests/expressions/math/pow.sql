@@ -15,27 +15,42 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
+-- pow runs natively and matches Spark exactly, including edge cases such as pow(0, -1) = Infinity.
+
 statement
 CREATE TABLE test_pow(base double, exp double) USING parquet
 
+-- Rows cover: ordinary values, nulls, signed zero, positive/negative infinity in both base and
+-- exponent, subnormal values, and the |base| == 1 with non-finite exponent case where Java's
+-- Math.pow returns NaN but C99 pow (Rust powf) returns 1.
 statement
-INSERT INTO test_pow VALUES (0.0, -1), (2.0, 3.0), (0.0, 0.0), (-1.0, 2.0), (-1.0, 0.5), (2.0, -1.0), (NULL, 2.0), (2.0, NULL), (cast('NaN' as double), 2.0), (cast('Infinity' as double), 2.0), (2.0, cast('Infinity' as double))
+INSERT INTO test_pow VALUES
+  (0.0, -1.0), (2.0, 3.0), (0.0, 0.0), (-1.0, 2.0), (-1.0, 0.5), (2.0, -1.0),
+  (NULL, 2.0), (2.0, NULL),
+  (cast('NaN' as double), 2.0), (cast('Infinity' as double), 2.0), (2.0, cast('Infinity' as double)),
+  (cast('-0.0' as double), -1.0), (cast('-0.0' as double), -2.0), (cast('-0.0' as double), 3.0), (cast('-0.0' as double), 2.0),
+  (cast('-Infinity' as double), 2.0), (cast('-Infinity' as double), 3.0), (cast('-Infinity' as double), -1.0),
+  (2.0, cast('-Infinity' as double)), (0.5, cast('-Infinity' as double)),
+  (1.0, cast('Infinity' as double)), (-1.0, cast('Infinity' as double)), (1.0, cast('-Infinity' as double)),
+  (1.0, cast('NaN' as double)), (-1.0, cast('NaN' as double)),
+  (cast('4.9E-324' as double), 2.0), (2.0, cast('4.9E-324' as double))
 
--- query tolerance=1e-6
-query expect_fallback(Power has correctness issues)
+-- Every pair above yields an exact double, so use exact comparison (no tolerance) to assert the
+-- NaN and signed-Infinity edge cases rather than silently skipping them: a tolerance comparison
+-- makes no assertion at all for NaN and ignores the sign of Infinity. Exact comparison is
+-- payload-insensitive for NaN (the test framework canonicalizes it) but not for signed zero, so
+-- the -0.0 results are asserted exactly.
+query
 SELECT pow(base, exp) FROM test_pow
 
 -- column + literal
--- query tolerance=1e-6
-query expect_fallback(Power has correctness issues)
+query tolerance=1e-6
 SELECT pow(base, 2.0) FROM test_pow
 
 -- literal + column
--- query tolerance=1e-6
-query expect_fallback(Power has correctness issues)
+query tolerance=1e-6
 SELECT pow(2.0, exp) FROM test_pow
 
 -- literal + literal
--- query tolerance=1e-6
-query expect_fallback(Power has correctness issues)
+query tolerance=1e-6
 SELECT pow(2.0, 3.0), pow(0.0, 0.0), pow(-1.0, 2.0), pow(NULL, 2.0)

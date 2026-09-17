@@ -29,6 +29,8 @@ rm -rf comet-0.13
 rm -rf comet-0.14
 rm -rf comet-0.15
 rm -rf comet-0.16
+rm -rf comet-0.17
+rm -rf comet-1.0
 python3 generate-versions.py
 
 # Generate dynamic content (configs, compatibility matrices) for latest docs

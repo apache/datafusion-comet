@@ -54,6 +54,7 @@ When a UDF is rejected, the reason surfaces through Comet's standard fallback di
 
 - Non-deterministic expressions referenced from the argument tree (`rand`, `uuid`, `monotonically_increasing_id`) produce per-partition sequences consistent with Spark.
 - `TaskContext.get()` inside the user function returns the driving Spark task's context.
+- The Spark task thread's context ClassLoader is propagated to the thread that runs the user function, so functions defined in jars supplied with `--jars` / `spark.jars` resolve the same way they do under Spark's own execution.
 - The user function must be closure-serializable; the same function that works with Spark's executor execution works here.
 
 ## Known limitations

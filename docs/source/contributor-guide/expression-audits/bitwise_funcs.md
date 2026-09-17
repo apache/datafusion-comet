@@ -80,7 +80,7 @@
 ## shiftrightunsigned
 
 - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
-- Spark 3.5.8 (audited 2026-05-27): baseline. `ShiftRightUnsigned(left, right) extends BinaryExpression`; uses Java's `>>>` (zero-fill) semantics. Comet wires as `CometScalarFunction("shiftrightunsigned")` (added in #4375).
+- Spark 3.5.8 (audited 2026-05-27): baseline. `ShiftRightUnsigned(left, right) extends BinaryExpression`; uses Java's `>>>` (zero-fill) semantics. Comet wires as `CometScalarFunction("shiftrightunsigned")` (added in [#4375](https://github.com/apache/datafusion-comet/pull/4375)).
 - Spark 4.0.1 (audited 2026-05-27): now extends the shared `BitShiftOperation` trait; eval semantics unchanged. The `>>>` operator alias is added at the parser level.
 - Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.
 

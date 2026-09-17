@@ -43,7 +43,7 @@ INSERT INTO test_array_max_double VALUES
   (array(CAST('Infinity' AS DOUBLE), 1.0, 2.0)),
   (array(CAST('-Infinity' AS DOUBLE), 1.0, 2.0)),
   (array(CAST('NaN' AS DOUBLE), CAST('Infinity' AS DOUBLE), CAST('-Infinity' AS DOUBLE))),
-  (array(0.0, -0.0, 1.0)),
+  (array(0.0, double('-0.0'), 1.0)),
   (NULL),
   (array())
 
@@ -62,7 +62,7 @@ INSERT INTO test_array_max_float VALUES
   (array(CAST('NaN' AS FLOAT), NULL, CAST(1.0 AS FLOAT))),
   (array(CAST('Infinity' AS FLOAT), CAST(1.0 AS FLOAT))),
   (array(CAST('-Infinity' AS FLOAT), CAST(1.0 AS FLOAT))),
-  (array(CAST(0.0 AS FLOAT), CAST(-0.0 AS FLOAT))),
+  (array(CAST(0.0 AS FLOAT), float('-0.0'))),
   (NULL),
   (array())
 

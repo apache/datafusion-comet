@@ -1,4 +1,4 @@
-CometNativeColumnarToRow
+CometColumnarToRow
 +- CometTakeOrderedAndProject
    +- CometHashAggregate
       +- CometExchange
@@ -10,7 +10,7 @@ CometNativeColumnarToRow
                :        +- CometUnion
                :           :- CometFilter
                :           :  :  +- Subquery
-               :           :  :     +- CometNativeColumnarToRow
+               :           :  :     +- CometColumnarToRow
                :           :  :        +- CometHashAggregate
                :           :  :           +- CometExchange
                :           :  :              +- CometHashAggregate
@@ -471,7 +471,7 @@ CometNativeColumnarToRow
                :                 +- CometUnion
                :                    :- CometFilter
                :                    :  :  +- Subquery
-               :                    :  :     +- CometNativeColumnarToRow
+               :                    :  :     +- CometColumnarToRow
                :                    :  :        +- CometHashAggregate
                :                    :  :           +- CometExchange
                :                    :  :              +- CometHashAggregate
@@ -932,7 +932,7 @@ CometNativeColumnarToRow
                :                 +- CometUnion
                :                    :- CometFilter
                :                    :  :  +- Subquery
-               :                    :  :     +- CometNativeColumnarToRow
+               :                    :  :     +- CometColumnarToRow
                :                    :  :        +- CometHashAggregate
                :                    :  :           +- CometExchange
                :                    :  :              +- CometHashAggregate
@@ -1393,7 +1393,7 @@ CometNativeColumnarToRow
                :                 +- CometUnion
                :                    :- CometFilter
                :                    :  :  +- Subquery
-               :                    :  :     +- CometNativeColumnarToRow
+               :                    :  :     +- CometColumnarToRow
                :                    :  :        +- CometHashAggregate
                :                    :  :           +- CometExchange
                :                    :  :              +- CometHashAggregate
@@ -1854,7 +1854,7 @@ CometNativeColumnarToRow
                                  +- CometUnion
                                     :- CometFilter
                                     :  :  +- Subquery
-                                    :  :     +- CometNativeColumnarToRow
+                                    :  :     +- CometColumnarToRow
                                     :  :        +- CometHashAggregate
                                     :  :           +- CometExchange
                                     :  :              +- CometHashAggregate
@@ -2307,4 +2307,4 @@ CometNativeColumnarToRow
                                                             +- CometFilter
                                                                +- CometNativeScan parquet spark_catalog.default.date_dim
 
-Comet accelerated 2167 out of 2302 eligible operators (94%). Final plan contains 6 transitions between Spark and Comet.
+Comet accelerated 2207 out of 2212 eligible operators (99%). Final plan contains 6 transitions between Spark and Comet. Accelerated expressions: 16 native, 0 codegen dispatch.

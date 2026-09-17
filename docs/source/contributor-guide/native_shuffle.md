@@ -43,7 +43,7 @@ Comet Native (columnar) → ColumnarToRowExec → rows → JVM Shuffle → Arrow
 
 Native shuffle (`CometExchange`) is selected when all of the following conditions are met:
 
-1. **Shuffle mode allows native**: `spark.comet.exec.shuffle.mode` is `native` or `auto`.
+1. **Shuffle mode allows native**: `spark.comet.shuffle.mode` is `native` or `auto`.
 
 2. **Child plan is a Comet native operator**: The child must be a `CometPlan` that produces
    columnar output. Row-based Spark operators require JVM shuffle.
@@ -193,8 +193,10 @@ For range partitioning:
 
 ### Single Partition
 
-The simplest case: all rows go to partition 0. Uses `SinglePartitionShufflePartitioner` which
-simply concatenates batches to reach the configured batch size.
+The simplest case: all rows go to partition 0. Uses `SinglePartitionShufflePartitioner`, which
+streams each batch straight to the writer, whose `BatchCoalescer` combines small batches up to the
+configured batch size. Batches already at least that size pass through unchanged, so a large input
+batch is written as a single block that may exceed the batch size.
 
 ### Round Robin Partitioning
 
@@ -214,7 +216,9 @@ sizes.
 Native shuffle uses DataFusion's memory management with spilling support:
 
 - **Memory pool**: Tracks memory usage across the shuffle operation.
-- **Spill threshold**: When buffered data exceeds the threshold, partitions spill to disk.
+- **Spill triggers**: Partitions spill to disk when the memory pool denies an allocation, or
+  when the buffered bytes reach `spark.comet.shuffle.native.maxBufferBytes`. That config defaults to
+  0, which disables the fixed limit and leaves memory pressure as the only trigger.
 - **Per-partition spilling**: Each partition has its own spill file. Multiple spills for a
   partition are concatenated when writing the final output.
 - **Scratch space**: Reusable buffers for partition ID computation to reduce allocations.
@@ -228,7 +232,7 @@ The `MultiPartitionShuffleRepartitioner` manages:
 ## Compression
 
 Native shuffle supports multiple compression codecs configured via
-`spark.comet.exec.shuffle.compression.codec`:
+`spark.comet.shuffle.compression.codec`:
 
 | Codec    | Description                                            |
 | -------- | ------------------------------------------------------ |
@@ -242,14 +246,14 @@ independently compressed, allowing parallel decompression during reads.
 
 ## Configuration
 
-| Config                                            | Default | Description                              |
-| ------------------------------------------------- | ------- | ---------------------------------------- |
-| `spark.comet.exec.shuffle.enabled`                | `true`  | Enable Comet shuffle                     |
-| `spark.comet.exec.shuffle.mode`                   | `auto`  | Shuffle mode: `native`, `jvm`, or `auto` |
-| `spark.comet.exec.shuffle.compression.codec`      | `zstd`  | Compression codec                        |
-| `spark.comet.exec.shuffle.compression.zstd.level` | `1`     | Zstd compression level                   |
-| `spark.comet.shuffle.write.buffer.size`           | `1MB`   | Write buffer size                        |
-| `spark.comet.columnar.shuffle.batch.size`         | `8192`  | Target rows per batch                    |
+| Config                                       | Default | Description                              |
+| -------------------------------------------- | ------- | ---------------------------------------- |
+| `spark.comet.shuffle.enabled`                | `true`  | Enable Comet shuffle                     |
+| `spark.comet.shuffle.mode`                   | `auto`  | Shuffle mode: `native`, `jvm`, or `auto` |
+| `spark.comet.shuffle.compression.codec`      | `zstd`  | Compression codec                        |
+| `spark.comet.shuffle.compression.zstd.level` | `1`     | Zstd compression level                   |
+| `spark.comet.shuffle.native.writeBufferSize` | `1MB`   | Write buffer size                        |
+| `spark.comet.shuffle.jvm.batchSize`          | `8192`  | Target rows per batch                    |
 
 ## Comparison with JVM Shuffle
 

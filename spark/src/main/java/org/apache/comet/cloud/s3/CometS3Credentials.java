@@ -21,11 +21,14 @@ package org.apache.comet.cloud.s3;
 
 import java.util.Objects;
 
+import org.apache.comet.annotation.Public;
+
 /**
  * Credentials returned by a {@link CometS3CredentialProvider}. Field names are read back over JNI
  * by name and are part of the cross-language contract. {@code sessionToken} is null for non-STS
  * credentials; {@code expirationEpochMillis} of {@code 0} means "unknown".
  */
+@Public
 public final class CometS3Credentials {
 
   private final String accessKeyId;

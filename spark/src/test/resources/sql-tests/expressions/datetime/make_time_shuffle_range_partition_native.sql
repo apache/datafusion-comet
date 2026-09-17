@@ -17,7 +17,7 @@
 
 -- MinSparkVersion: 4.1
 -- Config: spark.sql.timeType.enabled=true
--- Config: spark.comet.exec.shuffle.mode=native
+-- Config: spark.comet.shuffle.mode=native
 
 statement
 CREATE TABLE test_make_time_range_shuffle_native(hours int, minutes int, secs decimal(16,6)) USING parquet

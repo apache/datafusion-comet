@@ -21,7 +21,16 @@ package org.apache.comet
 
 import org.apache.spark.SparkConf
 import org.apache.spark.sql._
+import org.apache.spark.sql.catalyst.expressions.AttributeReference
+import org.apache.spark.sql.catalyst.plans.logical.LocalRelation
+import org.apache.spark.sql.catalyst.plans.physical.{RoundRobinPartitioning, SinglePartition}
+import org.apache.spark.sql.comet.CometScanWrapper
+import org.apache.spark.sql.comet.execution.shuffle.{CometCelebornShuffleManager, CometColumnarShuffle, CometShuffleExchangeExec}
+import org.apache.spark.sql.execution.exchange.ShuffleExchangeExec
 import org.apache.spark.sql.internal.SQLConf
+import org.apache.spark.sql.types.LongType
+
+import org.apache.comet.serde.OperatorOuterClass
 
 class CometSparkSessionExtensionsSuite extends CometTestBase {
 
@@ -31,7 +40,7 @@ class CometSparkSessionExtensionsSuite extends CometTestBase {
     val conf = new SQLConf
     // Disable Comet shuffle so this test can focus on other checks without needing
     // spark.shuffle.manager to be set.
-    conf.setConfString(CometConf.COMET_EXEC_SHUFFLE_ENABLED.key, "false")
+    conf.setConfString(CometConf.COMET_SHUFFLE_ENABLED.key, "false")
 
     conf.setConfString(CometConf.COMET_ENABLED.key, "false")
     assert(!isCometLoaded(conf))
@@ -61,15 +70,65 @@ class CometSparkSessionExtensionsSuite extends CometTestBase {
     assert(!isCometLoaded(conf))
 
     // Opt out: shuffle.enabled=false. Comet should load (assumes native lib is available).
-    conf.setConfString(CometConf.COMET_EXEC_SHUFFLE_ENABLED.key, "false")
+    conf.setConfString(CometConf.COMET_SHUFFLE_ENABLED.key, "false")
     assert(isCometLoaded(conf))
 
     // shuffle.enabled=true with the Comet shuffle manager registered: Comet should load.
-    conf.setConfString(CometConf.COMET_EXEC_SHUFFLE_ENABLED.key, "true")
+    conf.setConfString(CometConf.COMET_SHUFFLE_ENABLED.key, "true")
     conf.setConfString(
       "spark.shuffle.manager",
       "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
     assert(isCometLoaded(conf))
+  }
+
+  test("the composite manager is recognized without requiring the optional Celeborn client") {
+    val conf = new SQLConf
+    conf.setConfString(CometConf.COMET_ENABLED.key, "true")
+    conf.setConfString(CometConf.COMET_SHUFFLE_ENABLED.key, "true")
+    conf.setConfString(CometConf.COMET_SHUFFLE_MODE.key, "native")
+    conf.setConfString("spark.shuffle.manager", classOf[CometCelebornShuffleManager].getName)
+    assert(isCometShuffleManagerEnabled(conf))
+    assert(isCometLoaded(conf))
+    // A session-only setting must not replace this suite's actual local shuffle manager.
+    assert(!isCometShuffleEnabled(conf))
+  }
+
+  test("the stock Celeborn manager cannot accept Comet shuffle dependencies") {
+    val conf = new SQLConf
+    conf.setConfString(CometConf.COMET_ENABLED.key, "true")
+    conf.setConfString(CometConf.COMET_SHUFFLE_ENABLED.key, "true")
+    conf.setConfString(
+      "spark.shuffle.manager",
+      "org.apache.spark.shuffle.celeborn.SparkShuffleManager")
+    assert(!isCometShuffleManagerEnabled(conf))
+    assert(!isCometShuffleEnabled(conf))
+    assert(!isCometLoaded(conf))
+  }
+
+  test("local auto mode retains Comet columnar fallback for unsupported native partitioning") {
+    withSQLConf(
+      CometConf.COMET_SHUFFLE_MODE.key -> "auto",
+      CometConf.COMET_SHUFFLE_NATIVE_ROUND_ROBIN_PARTITIONING_ENABLED.key -> "false") {
+      val leaf = spark.sessionState.planner
+        .plan(LocalRelation(Seq(AttributeReference("value", LongType)())))
+        .next()
+      val child = CometScanWrapper(OperatorOuterClass.Operator.getDefaultInstance, leaf)
+      val exchange = ShuffleExchangeExec(RoundRobinPartitioning(2), child)
+      assert(CometShuffleExchangeExec.shuffleSupported(exchange).contains(CometColumnarShuffle))
+    }
+  }
+
+  test("local JVM shuffle remains available when native execution is disabled") {
+    withSQLConf(
+      CometConf.COMET_SHUFFLE_MODE.key -> "jvm",
+      CometConf.COMET_EXEC_ENABLED.key -> "false") {
+      val child = spark.sessionState.planner
+        .plan(LocalRelation(Seq(AttributeReference("value", LongType)())))
+        .next()
+      val exchange = ShuffleExchangeExec(SinglePartition, child)
+      assert(isCometShuffleEnabled(spark.sessionState.conf))
+      assert(CometShuffleExchangeExec.shuffleSupported(exchange).contains(CometColumnarShuffle))
+    }
   }
 
   test("Arrow properties") {
@@ -123,7 +182,7 @@ class CometSparkSessionExtensionsSuite extends CometTestBase {
     val conf = new SparkConf()
 
     val sqlConf = new SQLConf
-    sqlConf.setConfString(CometConf.COMET_ONHEAP_SHUFFLE_MEMORY_FACTOR.key, "0.2")
+    sqlConf.setConfString(CometConf.COMET_SHUFFLE_JVM_MEMORY_FACTOR.key, "0.2")
 
     // Minimum Comet memory overhead is 384MB
     assert(

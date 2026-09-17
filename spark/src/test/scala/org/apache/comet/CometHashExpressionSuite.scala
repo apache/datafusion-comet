@@ -21,8 +21,9 @@ package org.apache.comet
 
 import scala.util.Random
 
-import org.apache.spark.sql.CometTestBase
+import org.apache.spark.sql.{CometTestBase, Row}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
+import org.apache.spark.sql.types.{IntegerType, StructField, StructType}
 
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator, ParquetGenerator, SchemaGenOptions}
 
@@ -256,6 +257,100 @@ class CometHashExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelpe
     }
   }
 
+  test("hash - null struct with a required child field") {
+    // `c` is nullable but its child is REQUIRED, so Spark writes
+    // `optional group c { required int32 a; }`. On read the child leaf has nowhere to record a
+    // null of its own, so its buffer holds a value at exactly the rows where the struct is null.
+    // That is the shape where the parent's null mask has to reach the children; a struct built in
+    // the plan, or one whose child is also nullable, has null children there and hides the bug.
+    withTempPath { dir =>
+      val schema = StructType(
+        Seq(
+          StructField(
+            "c",
+            StructType(Seq(StructField("a", IntegerType, nullable = false))),
+            nullable = true)))
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        val rows = Seq(Row(Row(1)), Row(null), Row(Row(3)), Row(null))
+        spark
+          .createDataFrame(spark.sparkContext.parallelize(rows), schema)
+          .coalesce(1)
+          .write
+          .parquet(dir.toString)
+      }
+      spark.read.parquet(dir.toString).createOrReplaceTempView("null_struct_t")
+      checkSparkAnswerAndOperator("SELECT hash(c), xxhash64(c) FROM null_struct_t ORDER BY 1, 2")
+    }
+  }
+
+  test("hash - null struct whose child is itself a struct") {
+    // The union has to recurse: the outer struct's nulls reach the inner struct, whose own
+    // children are required and so carry values under the null.
+    withTempPath { dir =>
+      val inner = StructType(Seq(StructField("x", IntegerType, nullable = false)))
+      val schema = StructType(
+        Seq(
+          StructField(
+            "c",
+            StructType(Seq(StructField("b", inner, nullable = false))),
+            nullable = true)))
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        val rows = Seq(Row(Row(Row(1))), Row(null), Row(Row(Row(3))), Row(null))
+        spark
+          .createDataFrame(spark.sparkContext.parallelize(rows), schema)
+          .coalesce(1)
+          .write
+          .parquet(dir.toString)
+      }
+      spark.read.parquet(dir.toString).createOrReplaceTempView("null_nested_struct_t")
+      checkSparkAnswerAndOperator(
+        "SELECT hash(c), xxhash64(c) FROM null_nested_struct_t ORDER BY 1, 2")
+    }
+  }
+
+  test("hash - list element wrapping a null struct with a required child field") {
+    // The per-element path in `hash_list_array!`, which #5567 made usable as a shuffle key.
+    //
+    // Wrapping the struct rather than using it as the element directly is what makes this
+    // reachable: `array(named_struct('tag', 1, 'b', c))` produces an element that is itself
+    // valid, so it is copied rather than rebuilt, and the null `c` inside it keeps the child
+    // values Parquet wrote under it. Using `c` as the element directly does not reproduce,
+    // because a null element is rebuilt on the way in and the hidden values go with it.
+    //
+    // So this covers a null struct nested inside a valid element. The unit test in murmur3.rs
+    // covers the complementary shape, where the element itself is the null struct.
+    withTempPath { dir =>
+      val schema = StructType(
+        Seq(
+          StructField(
+            "c",
+            StructType(Seq(StructField("a", IntegerType, nullable = false))),
+            nullable = true)))
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        val rows = Seq(Row(Row(1)), Row(null), Row(Row(3)), Row(null))
+        spark
+          .createDataFrame(spark.sparkContext.parallelize(rows), schema)
+          .coalesce(1)
+          .write
+          .parquet(dir.toString)
+      }
+      spark.read.parquet(dir.toString).createOrReplaceTempView("wrapped_null_struct_t")
+
+      checkSparkAnswerAndOperator("""
+        SELECT
+          hash(array(named_struct('tag', 1, 'b', c))),
+          xxhash64(array(named_struct('tag', 1, 'b', c)))
+        FROM wrapped_null_struct_t ORDER BY 1, 2""")
+
+      // Two elements, so the hash of the second chains onto the first.
+      checkSparkAnswerAndOperator("""
+        SELECT
+          hash(array(named_struct('tag', 1, 'b', c), named_struct('tag', 2, 'b', c))),
+          xxhash64(array(named_struct('tag', 1, 'b', c), named_struct('tag', 2, 'b', c)))
+        FROM wrapped_null_struct_t ORDER BY 1, 2""")
+    }
+  }
+
   test("hash - struct with array field") {
     withTable("t") {
       sql("CREATE TABLE t(c STRUCT<a: INT, b: ARRAY<STRING>>) USING parquet")
@@ -426,6 +521,50 @@ class CometHashExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelpe
           checkSparkAnswerAndOperator("SELECT c, hash(c) FROM t")
         }
       }
+    }
+  }
+
+  test("hash - array of struct") {
+    // `array<struct<..>>` is the shape the batched nested-element path handles, so this is the
+    // Spark oracle for it: the rows differ in length, and cover an empty array, a null array, null
+    // struct elements and null fields, which are the cases where the element scheduling could
+    // assign a seed to the wrong row without changing the row count. `checkSparkAnswerAndOperator`
+    // also asserts Comet actually ran it natively, so a fallback on both sides cannot hide a
+    // mismatch.
+    withTable("t") {
+      sql("CREATE TABLE t(id INT, c ARRAY<STRUCT<a: INT, b: STRING>>) USING parquet")
+      sql("""INSERT INTO t VALUES
+            (1, array(named_struct('a', 1, 'b', 'x'))),
+            (2, array(named_struct('a', 1, 'b', 'x'), named_struct('a', 2, 'b', 'yy'))),
+            (3, array(named_struct('a', -1, 'b', ''), named_struct('a', 0, 'b', 'z'),
+                      named_struct('a', 7, 'b', 'w'))),
+            (4, array()),
+            (5, null),
+            (6, array(named_struct('a', null, 'b', 'nullfield'))),
+            (7, array(cast(null as struct<a: INT, b: STRING>))),
+            (8, array(named_struct('a', 9, 'b', null), named_struct('a', 9, 'b', null))),
+            (9, array(named_struct('a', 1, 'b', 'x'), named_struct('a', 1, 'b', 'x')))""")
+      checkSparkAnswerAndOperator("SELECT id, hash(c), xxhash64(c) FROM t ORDER BY id")
+    }
+  }
+
+  test("hash - array of struct not eligible for batching") {
+    // Nested elements retain the per-element path. Compare with Spark and also cover chaining
+    // a flat-struct column with a nested column in one hash call.
+    withTable("t") {
+      sql("""CREATE TABLE t(
+              id INT,
+              nested ARRAY<STRUCT<l: ARRAY<INT>>>,
+              plain ARRAY<STRUCT<a: INT, b: STRING>>)
+            USING parquet""")
+      sql("""INSERT INTO t VALUES
+            (1, array(named_struct('l', array(1, 2))), array(named_struct('a', 1, 'b', 'x'))),
+            (2, array(named_struct('l', array()), named_struct('l', array(3))),
+                array(named_struct('a', 2, 'b', 'y'))),
+            (3, array(named_struct('l', cast(null as array<int>))), null),
+            (4, null, array(named_struct('a', 3, 'b', 'z')))""")
+      checkSparkAnswerAndOperator(
+        "SELECT id, hash(nested), xxhash64(nested), hash(plain, nested) FROM t ORDER BY id")
     }
   }
 

@@ -162,14 +162,17 @@ Common patterns include:
 
 Several bugs relate to how Comet plans hash aggregates across stage boundaries. The key issue is
 that Spark's AQE may materialize a Comet partial aggregate but then run the final aggregate in
-Spark (or vice versa), and the intermediate formats may not be compatible. See the
-[EPIC #2892](https://github.com/apache/datafusion-comet/issues/2892) for the full picture.
+Spark (or vice versa), and the intermediate formats may not be compatible. The closed
+EPIC [#2892](https://github.com/apache/datafusion-comet/issues/2892) collects the historical
+reports and is a good starting point when a new one comes in.
 
 ### Native Writer Bugs
 
-The native Parquet writer has a cluster of known test failures tracked as individual issues
-(#3417–#3430). These are lower priority since the native writer is still maturing, but they
-should be addressed before the writer is promoted to production-ready status.
+The native Parquet writer has a cluster of known test failures tracked as individual issues, from
+[#3417](https://github.com/apache/datafusion-comet/issues/3417) to
+[#3430](https://github.com/apache/datafusion-comet/issues/3430). These are lower priority since the
+native writer is still maturing, but they should be addressed before the writer is promoted to
+production-ready status.
 
 ## How to Help with Triage
 

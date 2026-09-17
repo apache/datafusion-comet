@@ -18,7 +18,7 @@
 use arrow::compute::unary;
 use arrow::datatypes::{DataType, Schema};
 use arrow::{
-    array::{as_primitive_array, Float32Array, Float64Array},
+    array::{as_primitive_array, ArrayRef, Float32Array, Float64Array},
     datatypes::{Float32Type, Float64Type},
     record_batch::RecordBatch,
 };
@@ -53,6 +53,24 @@ impl NormalizeNaNAndZero {
     pub fn new(data_type: DataType, child: Arc<dyn PhysicalExpr>) -> Self {
         Self { data_type, child }
     }
+
+    /// Normalize scalar floating-point comparison keys, leaving other types unchanged.
+    /// Sorting and range-partition boundaries must use the same representation.
+    pub fn normalize_array(array: &ArrayRef) -> ArrayRef {
+        match array.data_type() {
+            DataType::Float32 => {
+                let input = as_primitive_array::<Float32Type>(array);
+                let result: Float32Array = unary(input, normalize_float);
+                Arc::new(result)
+            }
+            DataType::Float64 => {
+                let input = as_primitive_array::<Float64Type>(array);
+                let result: Float64Array = unary(input, normalize_float);
+                Arc::new(result)
+            }
+            _ => Arc::clone(array),
+        }
+    }
 }
 
 impl PhysicalExpr for NormalizeNaNAndZero {
@@ -73,17 +91,8 @@ impl PhysicalExpr for NormalizeNaNAndZero {
         let array = cv.into_array(batch.num_rows())?;
 
         match &self.data_type {
-            DataType::Float32 => {
-                let input = as_primitive_array::<Float32Type>(&array);
-                // Use unary which operates directly on values buffer without intermediate allocation
-                let result: Float32Array = unary(input, normalize_float);
-                Ok(ColumnarValue::Array(Arc::new(result)))
-            }
-            DataType::Float64 => {
-                let input = as_primitive_array::<Float64Type>(&array);
-                // Use unary which operates directly on values buffer without intermediate allocation
-                let result: Float64Array = unary(input, normalize_float);
-                Ok(ColumnarValue::Array(Arc::new(result)))
+            DataType::Float32 | DataType::Float64 => {
+                Ok(ColumnarValue::Array(Self::normalize_array(&array)))
             }
             dt => panic!("Unexpected data type {dt:?}"),
         }
@@ -107,7 +116,7 @@ impl PhysicalExpr for NormalizeNaNAndZero {
 /// Normalize a floating point value by converting all NaN representations to a canonical NaN
 /// and negative zero to positive zero. This is used for Spark's comparison semantics.
 #[inline]
-fn normalize_float<T: num::Float>(v: T) -> T {
+pub(crate) fn normalize_float<T: num::Float>(v: T) -> T {
     if v.is_nan() {
         T::nan()
     } else if v == T::neg_zero() {

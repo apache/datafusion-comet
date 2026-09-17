@@ -22,7 +22,6 @@ package org.apache.comet.serde
 import org.apache.spark.sql.catalyst.expressions.{Attribute, ToPrettyString}
 import org.apache.spark.sql.types.DataTypes
 
-import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
 import org.apache.comet.expressions.{CometCast, CometEvalMode}
 import org.apache.comet.serde.QueryPlanSerde.{binaryOutputStyle, exprToProtoInternal}
 
@@ -57,7 +56,6 @@ object CometToPrettyString extends CometExpressionSerde[ToPrettyString] {
           .build()
         Some(ExprOuterClass.Expr.newBuilder().setToPrettyString(tps).build())
       case _ =>
-        withFallbackReason(expr, expr.child)
         None
     }
   }

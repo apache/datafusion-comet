@@ -45,7 +45,7 @@
 ## map_from_arrays
 
 - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
-- Spark 3.5.8 (audited 2026-05-27): baseline. `MapFromArrays(left, right) extends BinaryExpression with NullIntolerant`; Spark uses `ArrayBasedMapBuilder` to detect duplicate keys (subject to `spark.sql.mapKeyDedupPolicy`) and rejects null keys with `RuntimeException("Cannot use null as map key")`. Comet `CometMapFromArrays` wraps the inputs in `CaseWhen(IsNotNull(left) AND IsNotNull(right), map(left, right), null)` so NULL-array inputs return NULL rather than triggering the previously reported native crash (#3327).
+- Spark 3.5.8 (audited 2026-05-27): baseline. `MapFromArrays(left, right) extends BinaryExpression with NullIntolerant`; Spark uses `ArrayBasedMapBuilder` to detect duplicate keys (subject to `spark.sql.mapKeyDedupPolicy`) and rejects null keys with `RuntimeException("Cannot use null as map key")`. Comet `CometMapFromArrays` wraps the inputs in `CaseWhen(IsNotNull(left) AND IsNotNull(right), map(left, right), null)` so NULL-array inputs return NULL rather than triggering the previously reported native crash ([#3327](https://github.com/apache/datafusion-comet/issues/3327)).
 - Spark 4.0.1 (audited 2026-05-27): semantics unchanged; `NullIntolerant` trait replaced by `nullIntolerant: Boolean`.
 - Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.
 
@@ -64,6 +64,11 @@
 - Spark 4.0.1 (audited 2026-05-27): semantics unchanged.
 - Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.
 
+## map_sort
+
+- Performance (tuned locally 2026-09-13; [PR #5901](https://github.com/apache/datafusion-comet/pull/5901), related to [#5900](https://github.com/apache/datafusion-comet/issues/5900)): reuse per-batch prefix-tuple sorting scratch for multi-entry `Utf8`/`Int32` maps and bulk-fill all-empty offsets, preserving the singleton path from [#5887](https://github.com/apache/datafusion-comet/pull/5887). Against upstream including #5887, matched 2–10-entry forward normalization was about 3x faster; 2–50-entry maps improved 28–39% in the full run and 33–39% in independent paired confirmation. Benchmarks: `native/spark-expr/benches/map_sort.rs`, `hash.rs`, and `common/matched_maps.rs`.
+- Performance (tuned locally 2026-09-12; [PR #5887](https://github.com/apache/datafusion-comet/pull/5887)): skip Arrow sort dispatch for eligible flat singleton keys, with a batch check and specialized fallback loop for batches without singletons. In the local DataFusion 55.0.0 development cohort, matched singleton normalization measured 19–22x faster in the full run and 18.4x in an independent forward-order confirmation. Benchmarks: `native/spark-expr/benches/map_sort.rs`, `hash.rs`, and `common/matched_maps.rs`; 92 cases cover normalization, hashing, combined execution, nulls, slices, mixed cardinalities, and long Unicode values. Flagged regressions did not remain stable through independent and reversed-order confirmation.
+
 ## map_values
 
 - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
@@ -76,6 +81,6 @@
 - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
 - Spark 3.5.8 (audited 2026-05-27): baseline. `StringToMap(text, pairDelim, keyValueDelim) extends TernaryExpression`; splits `text` on `pairDelim`, then each pair on `keyValueDelim` (default `","` and `":"`). Uses `ArrayBasedMapBuilder` for duplicate-key handling. Wired as `CometScalarFunction("str_to_map")`.
 - Spark 4.0.1 (audited 2026-05-27): `inputTypes` widened to `StringTypeNonCSAICollation`; uses `CollationAwareUTF8String.splitSQL` with a `collationId`. Runtime unchanged for `UTF8_BINARY`.
-- Spark 4.1.1 (audited 2026-05-27): adds the `legacySplitTruncate` flag (driven by `spark.sql.legacy.truncateForEmptyRegexSplit`) to both `splitSQL` calls (https://github.com/apache/datafusion-comet/issues/4477). The Comet native impl does not honour this flag; behaviour matches the non-legacy default.
+- Spark 4.1.1 (audited 2026-05-27): adds the `legacySplitTruncate` flag (driven by `spark.sql.legacy.truncateForEmptyRegexSplit`) to both `splitSQL` calls. The Comet native impl always behaves as if the flag were false, so `CometStrToMap` reads the config by string key and reports `Incompatible` when it is enabled; the `CodegenDispatchFallback` trait then routes the expression through the JVM codegen dispatcher rather than falling the whole projection back to Spark. Non-UTF8_BINARY collations on the input or the delimiters are handled the same way.
 
 [Spark Expression Support]: ../../user-guide/latest/expressions.md

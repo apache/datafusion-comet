@@ -28,3 +28,20 @@ SELECT crc32(col), crc32(cast(a as string)), crc32(cast(b as string)) FROM test
 -- literal arguments
 query
 SELECT crc32('Spark SQL')
+
+-- Binary inputs must be hashed as bytes, including invalid UTF-8 and embedded NULs.
+statement
+CREATE TABLE test_crc32_binary(b BINARY) USING parquet
+
+statement
+INSERT INTO test_crc32_binary VALUES
+  (X'00FF80'), (X'610062'), (X'E88BB9E69E9C'),
+  (X'313233343536373839'), (X''), (NULL)
+
+query
+SELECT crc32(b) FROM test_crc32_binary
+
+-- The checksum of '123456789' exceeds the signed 32-bit range.
+query
+SELECT crc32(X'313233343536373839'), crc32(X'00FF80'), crc32(X'610062'),
+  crc32(X''), crc32(CAST(NULL AS BINARY))

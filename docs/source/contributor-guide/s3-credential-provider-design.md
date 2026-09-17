@@ -40,7 +40,7 @@ An earlier iteration used `ServiceLoader` discovery. That was rejected because:
 - ServiceLoader makes activation implicit on classpath presence. A vendor JAR drifting onto a cluster could silently change S3 auth behavior. The config key makes activation explicit.
 - The activation key (`fs.s3a.comet.credential.provider.class`, with per-bucket override) follows the same shape as `fs.s3a.bucket.<name>.aws.credentials.provider`, so operators do not learn a new pattern.
 
-Activation is modeled on `parquet.crypto.factory.class` (Parquet Modular Encryption KMS, see Comet #2447): the user names a single vendor class and the vendor dispatches across multiple credential backends inside that class if they need to. This mirrors how Iceberg's `DecryptionPropertiesFactory` already behaves for Parquet keys.
+Activation is modeled on `parquet.crypto.factory.class` (Parquet Modular Encryption KMS, see Comet [#2447](https://github.com/apache/datafusion-comet/pull/2447)): the user names a single vendor class and the vendor dispatches across multiple credential backends inside that class if they need to. This mirrors how Iceberg's `DecryptionPropertiesFactory` already behaves for Parquet keys.
 
 ## Why `(FQCN, dispatchKey, catalogProperties)` keying
 

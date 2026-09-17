@@ -1,4 +1,4 @@
-CometNativeColumnarToRow
+CometColumnarToRow
 +- CometTakeOrderedAndProject
    +- CometHashAggregate
       +- CometColumnarExchange
@@ -6,7 +6,7 @@ CometNativeColumnarToRow
             +- Project
                +- Filter
                   +-  BroadcastHashJoin [COMET: Unsupported join type ExistenceJoin(exists#1)]
-                     :- CometNativeColumnarToRow
+                     :- CometColumnarToRow
                      :  +- CometProject
                      :     +- CometBroadcastHashJoin
                      :        :- CometProject
@@ -38,9 +38,9 @@ CometNativeColumnarToRow
                      :              +- CometFilter
                      :                 +- CometNativeScan parquet spark_catalog.default.item
                      +- BroadcastExchange
-                        +- CometNativeColumnarToRow
+                        +- CometColumnarToRow
                            +- CometProject
                               +- CometFilter
                                  +- CometNativeScan parquet spark_catalog.default.item
 
-Comet accelerated 35 out of 41 eligible operators (85%). Final plan contains 3 transitions between Spark and Comet.
+Comet accelerated 36 out of 41 eligible operators (87%). Final plan contains 3 transitions between Spark and Comet. Accelerated expressions: 9 native, 0 codegen dispatch.

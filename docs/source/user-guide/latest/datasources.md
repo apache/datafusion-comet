@@ -61,6 +61,20 @@ Comet supports most standard storage systems, such as local file system and obje
 
 The Apache DataFusion Comet Rust-based reader seamlessly scans files from remote HDFS for [supported formats](#supported-spark-data-sources)
 
+```{warning}
+HDFS support is experimental and is not covered by continuous integration. Comet reads HDFS through
+`libhdfs`, which registers a thread-local destructor that detaches the calling thread from the JVM
+regardless of which component attached it
+([HDFS-16021](https://issues.apache.org/jira/browse/HDFS-16021), still open upstream). Comet
+attaches its own worker threads, so a worker that has read from HDFS can crash the JVM with a
+`SIGSEGV` when it later exits
+([#5023](https://github.com/apache/datafusion-comet/issues/5023)). The crash surfaces well after
+the HDFS read itself, typically while an unrelated query is running.
+```
+
+Native Iceberg scans do not support HDFS-backed tables; those scans fall back to Spark. See the
+[Comet and Iceberg Guide](iceberg.md).
+
 ### Building Comet with HDFS support
 
 To build Comet with remote HDFS support it is required to have a JDK installed.
@@ -165,6 +179,14 @@ JAVA_HOME="/opt/homebrew/opt/openjdk@17" make release PROFILES="-Pspark-4.1" RUS
 
 Or use `spark-shell` with HDFS support as described [above](#building-comet-with-hdfs-support)
 
+Comet also has a test suite that exercises a native scan through `libhdfs` against a fake Hadoop
+filesystem, so it needs no cluster. Because of the crash described above it is excluded from CI and
+run by hand:
+
+```shell
+./mvnw test -Dtest=none -Dsuites="org.apache.comet.parquet.ParquetReadFromFakeHadoopFsSuite"
+```
+
 ## S3
 
 Comet's Parquet scan completely offloads data loading to Rust. It uses the
@@ -216,6 +238,68 @@ Beyond credential providers, Comet's Parquet scan supports additional S3 configu
 
 All configuration options support bucket-specific overrides using the pattern `fs.s3a.bucket.{bucket-name}.{option}`.
 
+### S3-Compliant Filesystem Schemes
+
+Some environments front an S3-compatible service (MinIO, Ceph RGW, Cloudflare R2, Wasabi, and
+similar) with a vendor-branded Hadoop filesystem client that registers its own URL scheme, for
+example `blob://`, instead of `s3://` or `s3a://`. Comet can treat such schemes as aliases for
+`s3://` so the native Parquet and Iceberg scans read them directly, without the caller rewriting
+URLs.
+
+This is opt-in and disabled by default. Enable it by listing the schemes to treat as S3-compliant
+aliases in `spark.hadoop.fs.comet.s3Compliant.schemes` (Hadoop key
+`fs.comet.s3Compliant.schemes`), a comma-separated, case-insensitive list. This mirrors the
+existing `fs.comet.libhdfs.schemes` config.
+
+```shell
+--conf spark.hadoop.fs.comet.s3Compliant.schemes=blob
+```
+
+Multiple schemes can be listed together:
+
+```shell
+--conf spark.hadoop.fs.comet.s3Compliant.schemes=blob,minio,r2
+```
+
+With no configuration, Comet claims none of these aliases, so for example a `blob://` path falls
+back to Spark unchanged. The empty default is deliberate: short scheme names like `blob` are not
+unique to S3-compatible storage. Azure Blob Storage is the clearest example, so claiming `blob://`
+unconditionally would risk misrouting paths that were never meant for Comet's S3 client. Only add a
+scheme here if you intend Comet to treat it as S3-compatible.
+
+For each scheme `<s>` listed in `fs.comet.s3Compliant.schemes`, Comet also reads vendor-style,
+per-authority Hadoop keys of the form `fs.<s>.<authority>.<property>` (the authority is typically
+the bucket or account name from the URL) and translates them into the `fs.s3a.*` surface described
+above. The recognized vendor-style properties and their `fs.s3a.*` targets are:
+
+| Vendor property (`fs.<s>.<authority>.<property>`) | Translated `fs.s3a.*` suffix |
+| ------------------------------------------------- | ---------------------------- |
+| `awsAccessKeyId`                                  | `access.key`                 |
+| `awsSecretAccessKey`                              | `secret.key`                 |
+| `awsSessionToken`                                 | `session.token`              |
+| `endpoint`                                        | `endpoint`                   |
+| `region`                                          | `endpoint.region`            |
+| `pathStyleAccess`                                 | `path.style.access`          |
+
+Unrecognized `fs.<s>.<authority>.*` properties are ignored.
+
+A URL with no authority, such as the triple-slash `blob:///bucket/key` form, reports its authority
+as the literal string `default`. For that case, list the keys under `fs.<s>.default.<property>`.
+Comet resolves `default` to the bucket taken from the URL path (`bucket` here) and applies the
+translated settings at that bucket's scope, exactly as if they had been written under
+`fs.<s>.bucket.<property>`.
+
+When `fs.<s>.<authority>.endpoint` is set, Comet defaults path-style access to enabled for that
+bucket, since most non-AWS S3-compatible services require it. This is only a default: set
+`fs.s3a.bucket.<bucket>.path.style.access` (or the equivalent per-scheme key) explicitly to
+override it.
+
+Once translated, these values are applied at the same `fs.s3a.bucket.{bucket-name}.*` scope
+described in [Additional S3 Configuration Options](#additional-s3-configuration-options), so the
+credential providers and options documented above also apply to alias-scheme URLs. The same
+translation feeds the native Iceberg scan; see
+[Object store configuration (S3)](iceberg.md#object-store-configuration-s3) in the Iceberg guide.
+
 ### Examples
 
 The following examples demonstrate how to configure S3 access using different authentication methods.
@@ -252,7 +336,7 @@ Comet's S3 support has the following limitations:
 
 1. **Partial Hadoop S3A configuration support**: Not all Hadoop S3A configurations are currently supported. Only the configurations listed in the tables above are translated and applied to the underlying `object_store` crate.
 
-2. **Custom credential providers**: Custom implementations of AWS credential providers are not supported. The implementation only supports the standard credential providers listed in the table above. We are planning to add support for custom credential providers through a JNI-based adapter that will allow calling Java credential providers from Rust code. See [issue #1829](https://github.com/apache/datafusion-comet/issues/1829) for more details.
+2. **Custom credential providers**: Custom implementations of AWS credential providers are not supported. The implementation only supports the standard credential providers listed in the table above. We are planning to add support for custom credential providers through a JNI-based adapter that will allow calling Java credential providers from Rust code. See [#1829](https://github.com/apache/datafusion-comet/issues/1829) for more details.
 
 ## Azure
 

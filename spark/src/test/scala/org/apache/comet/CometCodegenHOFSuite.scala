@@ -96,6 +96,20 @@ class CometCodegenHOFSuite
     }
   }
 
+  test("ArrayExists respects three-valued logic through codegen dispatcher") {
+    withArrayIntTable("(array(1, null, 3)), (array(1, 2, 3)), (array()), (null)") {
+      Seq(false, true).foreach { followThreeValuedLogic =>
+        withSQLConf(
+          "spark.sql.legacy.followThreeValuedLogicInArrayExists" ->
+            followThreeValuedLogic.toString) {
+          assertCodegenRan {
+            checkSparkAnswerAndOperator(sql("SELECT exists(a, x -> x > 10) FROM t"))
+          }
+        }
+      }
+    }
+  }
+
   test("HOF query produces correct results across two collects (per-task isolation regression)") {
     // Regresses the per-task `boundExpr` isolation. When the dispatcher's compile cache lived on
     // the companion object, multiple tasks shared one `boundExpr` and concurrent partitions

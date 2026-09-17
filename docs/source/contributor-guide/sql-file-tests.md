@@ -125,6 +125,16 @@ Skips the file when running on a Spark version older than the specified version.
 -- MinSparkVersion: 3.5
 ```
 
+#### `MaxSparkVersion`
+
+Skips the file when running on a Spark version newer than the specified version (inclusive of
+that version). Use it together with `MinSparkVersion` in a paired fixture when a behavior
+changed between versions and each range needs its own expected output or error class.
+
+```sql
+-- MaxSparkVersion: 3.5
+```
+
 ### Statements
 
 A `statement` block executes DDL or DML and does not check results. Use this for `CREATE TABLE`
@@ -169,9 +179,17 @@ SELECT some_expression(v) FROM test_table
 Checks results with a numeric tolerance. Useful for floating-point functions where small
 differences are acceptable.
 
+The comparison ignores the sign of zero (`+0.0` matches `-0.0`) and the sign of infinity
+(`+Infinity` matches `-Infinity`). Keep tolerance for ordinary values and add a plain
+`query` for cases whose expected result is signed zero or signed infinity.
+
 ```sql
 query tolerance=0.0001
 SELECT cos(v) FROM test_trig
+
+-- csc(-0.0) == -Infinity; a tolerance check would also accept +Infinity
+query
+SELECT csc(double('-0.0'))
 ```
 
 #### `query expect_fallback(<reason>)`
@@ -183,6 +201,35 @@ given string.
 query expect_fallback(unsupported expression)
 SELECT unsupported_func(v) FROM test_table
 ```
+
+#### `query expect_dispatch(<names>)` / `query expect_native(<names>)`
+
+Checks results and coverage like a plain `query`, and additionally asserts how Comet evaluated
+the named expressions.
+
+Comet runs an expression either natively (a DataFusion expression) or through the JVM codegen
+dispatcher (Spark's own `doGenCode` compiled into an Arrow batch kernel). Both produce
+Spark-matching results, so a plain `query` cannot tell them apart. Use these modes on fixtures
+where the mechanism is the point of the test, typically an expression whose support depends on
+its argument type.
+
+```sql
+-- BinaryType has no native path and must route through the dispatcher
+query expect_dispatch(bit_length)
+SELECT bit_length(b) FROM test_bit_length_binary
+
+-- StringType must stay on the native path
+query expect_native(bit_length)
+SELECT bit_length(s) FROM test_bit_length
+```
+
+Names are comma-separated. A name is the expression's `prettyName` lowercased (`bit_length`,
+`octet_length`, `rlike`), which is not always the SQL alias used to invoke it. Naming an
+expression asserts both that it ran through the expected mechanism and that it did not run
+through the other one.
+
+A query carries one mode, so a query mixing a native and a dispatched expression has to be split
+into two queries, one per mode.
 
 #### `query ignore(<reason>)`
 
@@ -235,6 +282,11 @@ SELECT array(1, 2, 3)[10]
    when you expect Comet to run the expression natively. Use `query spark_answer_only` when
    native execution is not yet expected.
 
+   If the expression's serde routes some input types to a native DataFusion expression and
+   others through the JVM codegen dispatcher, use `expect_native(...)` and `expect_dispatch(...)`
+   for those queries. A plain `query` cannot tell the two mechanisms apart, so the split is
+   otherwise untested.
+
 6. Run the tests to verify:
 
    ```shell
@@ -242,6 +294,17 @@ SELECT array(1, 2, 3)[10]
    ```
 
 ### Tips for writing thorough tests
+
+#### Pin the mechanism where the serde chooses one
+
+Reach for `expect_native(...)` / `expect_dispatch(...)` whenever the fixture's own comments
+explain which path an input takes. That comment is a claim about behavior, and these modes are
+what turn it into a test. Expressions worth annotating are the ones whose support level depends
+on argument type or on a config: `round` (float and double dispatch, decimal and integral stay
+native), `lower` / `upper` (dispatch by default), and anything mixing in `CodegenDispatchFallback`.
+
+A query carries a single mode, so a query that mixes both mechanisms has to be split. That split
+is usually worth doing on its own: it forces you to say which argument takes which path.
 
 #### Cover all combinations of literal and column arguments
 
@@ -294,6 +357,16 @@ common ones include:
 - **Zero, negative, and very large numbers** -- for numeric functions
 - **Boundary values** -- `INT_MIN`, `INT_MAX`, `NaN`, `Infinity`, `-Infinity` for numeric
   types
+- **Signed zero** -- Spark parses a bare `-0.0` as `decimal(1,1)`, which has no signed
+  zero, so coercion to `float`/`double` yields `+0.0`. `CAST(-0.0 AS DOUBLE)` and
+  `CAST(-0.0 AS FLOAT)` have the same problem because the cast source is still the
+  decimal literal. Use `double('-0.0')` or `float('-0.0')` (equivalently
+  `CAST('-0.0' AS DOUBLE)`). Spark's array comparator also treats `+0.0` and `-0.0` as
+  equal, so `sort_array(...)` is not a unique projection when both signs are present
+  (the SQL test comparator distinguishes the bits). Prefer a sign-aware form such as
+  `sort_array(transform(arr, x -> cast(x AS string)))`. A `query tolerance=...` check
+  likewise treats the two zero signs as equal, and `+Infinity` / `-Infinity` as equal,
+  so signed-zero and signed-infinity results need a separate plain `query`.
 - **Special characters and multibyte UTF-8** -- for string functions (e.g. `'é'`, `'中文'`,
   `'\t'`)
 - **Empty arrays/maps** -- for collection functions

@@ -43,6 +43,7 @@ import org.apache.spark.sql.comet.CometPlanChecker
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometNativeShuffle, CometShuffleExchangeExec}
 import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
+import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
 import org.apache.spark.sql.internal._
 import org.apache.spark.sql.test._
 import org.apache.spark.sql.types.{DecimalType, StructType}
@@ -67,6 +68,14 @@ abstract class CometTestBase
   protected val shuffleManager: String =
     "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager"
 
+  protected def assertExchangeReuseOver[T](plan: SparkPlan, clue: String)(
+      pf: PartialFunction[SparkPlan, T]): Unit = {
+    val reused = collect(plan) {
+      case exchange: ReusedExchangeExec if collect(exchange.child)(pf).nonEmpty => exchange
+    }
+    assert(reused.nonEmpty, s"$clue:\n$plan")
+  }
+
   protected def sparkConf: SparkConf = {
     val conf = new SparkConf()
     conf.set("spark.hadoop.fs.file.impl", classOf[DebugFilesystem].getName)
@@ -80,13 +89,17 @@ abstract class CometTestBase
     conf.set(CometConf.COMET_ENABLED.key, "true")
     conf.set(CometConf.COMET_ONHEAP_ENABLED.key, "true")
     conf.set(CometConf.COMET_EXEC_ENABLED.key, "true")
-    conf.set(CometConf.COMET_EXEC_SHUFFLE_ENABLED.key, "true")
+    conf.set(CometConf.COMET_SHUFFLE_ENABLED.key, "true")
     conf.set(CometConf.COMET_SPARK_TO_ARROW_ENABLED.key, "true")
     conf.set(CometConf.COMET_NATIVE_SCAN_ENABLED.key, "true")
     conf.set(CometConf.COMET_PARQUET_UNSIGNED_SMALL_INT_CHECK.key, "false")
     conf.set(CometConf.COMET_SCAN_ALLOW_DISABLED_PARQUET_VECTORIZED_READER.key, "true")
     conf.set(CometConf.COMET_ONHEAP_MEMORY_OVERHEAD.key, "2g")
     conf.set(CometConf.COMET_EXEC_SORT_MERGE_JOIN_WITH_JOIN_FILTER_ENABLED.key, "true")
+    // Fail loudly if a serde declines an operator without stating why, rather than letting the
+    // generic "<operator> is not supported" message mask the missing reason.
+    // See https://github.com/apache/datafusion-comet/issues/5230.
+    conf.set(CometConf.COMET_STRICT_FALLBACK_REASONS.key, "true")
     // SortOrder is incompatible for mixed zero and negative zero floating point values, but
     // this is an edge case, and we expect most users to allow sorts on floating point, so we
     // enable this for the tests
@@ -111,6 +124,9 @@ abstract class CometTestBase
     }
   }
 
+  protected def causeChain(error: Throwable): Seq[Throwable] =
+    Iterator.iterate(error)(_.getCause).takeWhile(_ != null).toSeq
+
   protected def internalCheckSparkAnswer(
       df: => DataFrame,
       assertCometNative: Boolean,
@@ -118,11 +134,11 @@ abstract class CometTestBase
       excludedClasses: Seq[Class[_]] = Seq.empty,
       withTol: Option[Double] = None): (SparkPlan, SparkPlan) = {
 
-    var expected: Array[Row] = Array.empty
+    var expected: Seq[Row] = Seq.empty
     var sparkPlan = null.asInstanceOf[SparkPlan]
     withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
       val dfSpark = datasetOfRows(spark, df.logicalPlan)
-      expected = dfSpark.collect()
+      expected = dfSpark.collect().toSeq
       sparkPlan = dfSpark.queryExecution.executedPlan
     }
     val dfComet = datasetOfRows(spark, df.logicalPlan)
@@ -336,6 +352,84 @@ abstract class CometTestBase
   }
 
   /**
+   * Check for the correct results, that Comet replaced all possible operators, and that the named
+   * expressions ran through the mechanism the caller expects.
+   *
+   * Comet evaluates an expression one of three ways: natively (a DataFusion expression), through
+   * the JVM codegen dispatcher (Spark's own `doGenCode` compiled into an Arrow batch kernel), or
+   * not at all (the operator falls back to Spark). Only the third is visible to
+   * [[checkSparkAnswerAndOperator]]; the first two produce Spark-matching results by
+   * construction, so a serde that quietly widens from native to dispatch (losing the native
+   * kernel) or narrows from dispatch to native (losing Spark-exact semantics) passes every other
+   * assertion here. Use this to pin which one actually ran.
+   *
+   * Names are the expression's `prettyName` lowercased, as [[ExtendedExplainInfo]] reports them
+   * (`bit_length`, `octet_length`, `rlike`), not necessarily the SQL alias used to invoke it: a
+   * function registered with `setAlias` reports the invoked alias, everything else reports its
+   * own `prettyName`.
+   *
+   * For fallback assertions use [[checkSparkAnswerAndFallbackReason]] instead.
+   */
+  protected def checkSparkAnswerAndImpl(
+      df: => DataFrame,
+      native: Seq[String] = Seq.empty,
+      dispatched: Seq[String] = Seq.empty): (SparkPlan, SparkPlan) = {
+    val (sparkPlan, cometPlan) = checkSparkAnswerAndOperator(df)
+    assertExpressionImpl(cometPlan, native, dispatched)
+    (sparkPlan, cometPlan)
+  }
+
+  /** Check for the correct results and the expected per-expression implementation. */
+  protected def checkSparkAnswerAndImpl(
+      query: String,
+      native: Seq[String],
+      dispatched: Seq[String]): (SparkPlan, SparkPlan) = {
+    checkSparkAnswerAndImpl(sql(query), native, dispatched)
+  }
+
+  /**
+   * Assert how Comet evaluated the named expressions in an already-executed Comet plan. Split out
+   * from [[checkSparkAnswerAndImpl]] so callers holding a plan can reuse it, and so the assertion
+   * itself is testable.
+   *
+   * Each name must appear in its expected set and must be absent from the other, so naming an
+   * expression is a claim about which mechanism ran it rather than a claim that it ran somehow.
+   */
+  protected def assertExpressionImpl(
+      cometPlan: SparkPlan,
+      native: Seq[String],
+      dispatched: Seq[String]): Unit = {
+    val explainInfo = new ExtendedExplainInfo()
+    val actualNative = explainInfo.getNativeExpressions(cometPlan)
+    val actualDispatched = explainInfo.getCodegenDispatchExpressions(cometPlan)
+    def detail: String =
+      s"native=[${actualNative.mkString(", ")}] " +
+        s"codegen-dispatched=[${actualDispatched.mkString(", ")}]"
+    native.foreach { name =>
+      if (actualDispatched.contains(name)) {
+        fail(
+          s"Expected `$name` to run as a native expression but it ran through the JVM " +
+            s"codegen dispatcher. Actual: $detail")
+      }
+      if (!actualNative.contains(name)) {
+        fail(s"Expected `$name` to run as a native expression but it did not. Actual: $detail")
+      }
+    }
+    dispatched.foreach { name =>
+      if (actualNative.contains(name)) {
+        fail(
+          s"Expected `$name` to run through the JVM codegen dispatcher but it ran as a " +
+            s"native expression. Actual: $detail")
+      }
+      if (!actualDispatched.contains(name)) {
+        fail(
+          s"Expected `$name` to run through the JVM codegen dispatcher but it did not. " +
+            s"Actual: $detail")
+      }
+    }
+  }
+
+  /**
    * Try executing the query against Spark and Comet and return the results or the exception.
    *
    * This method does not check that Comet replaced any operators or that the results match in the
@@ -357,6 +451,33 @@ abstract class CometTestBase
       case _ =>
         (expected.failed.toOption, actual.failed.toOption)
     }
+  }
+
+  /** Checks native execution and Spark exception type, error class and SQLSTATE parity. */
+  protected def checkSparkError(
+      df: DataFrame,
+      errorClass: String): SparkThrowable with Throwable = {
+    checkCometOperators(stripAQEPlan(df.queryExecution.executedPlan))
+    val (sparkError, cometError) = checkSparkAnswerMaybeThrows(df)
+
+    def structuredError(
+        error: Option[Throwable],
+        engine: String): SparkThrowable with Throwable = {
+      val failure = error.getOrElse(fail(s"$engine did not fail with $errorClass"))
+      val chain = causeChain(failure)
+      assert(!chain.exists(_.isInstanceOf[CometNativeException]), s"$engine: $failure")
+      chain.collect { case e: SparkThrowable with Throwable => e }.lastOption.getOrElse {
+        fail(s"$engine did not throw a SparkThrowable: $failure")
+      }
+    }
+
+    val expected = structuredError(sparkError, "Spark")
+    val actual = structuredError(cometError, "Comet")
+    assert(expected.getErrorClass == errorClass)
+    assert(actual.getClass == expected.getClass)
+    assert(actual.getErrorClass == errorClass)
+    assert(actual.getSqlState == expected.getSqlState)
+    actual
   }
 
   /**
@@ -429,8 +550,17 @@ abstract class CometTestBase
     case s: java.lang.Short => s.shortValue
     case i: java.lang.Integer => i.intValue
     case l: java.lang.Long => l.longValue
-    case f: java.lang.Float => f.floatValue
-    case d: java.lang.Double => d.doubleValue
+    // `QueryTest.compare` compares floating point values by raw bits so that 0.0 and -0.0 are
+    // distinguished. A side effect is that it also distinguishes NaN payloads, which are not
+    // specified: `Math.pow` and friends may return any NaN, and the payload the JVM produces
+    // differs across architectures, so a native kernel and Spark can return NaNs that print
+    // identically but compare unequal. Spark fixed this in `compare` itself for 4.1.2 and 4.2.0
+    // ("in some hardware NaN can be represented with different bits, so first check for it"), but
+    // 3.4, 3.5, 4.0 and 4.1.1 still compare raw bits. Canonicalize NaN here so every supported
+    // version asserts NaN-ness without asserting the payload. Signed zero is deliberately left
+    // alone: distinguishing it is the reason the raw-bit comparison exists.
+    case f: java.lang.Float => if (f.isNaN) Float.NaN else f.floatValue
+    case d: java.lang.Double => if (d.isNaN) Double.NaN else d.doubleValue
     case x => x
   }
 
@@ -1171,7 +1301,7 @@ abstract class CometTestBase
       df: DataFrame,
       cometExchangeNum: Int,
       native: Boolean): Seq[CometShuffleExchangeExec] = {
-    if (CometConf.COMET_EXEC_SHUFFLE_ENABLED.get()) {
+    if (CometConf.COMET_SHUFFLE_ENABLED.get()) {
       val sparkPlan = stripAQEPlan(df.queryExecution.executedPlan)
 
       val cometShuffleExecs = sparkPlan.collect { case b: CometShuffleExchangeExec => b }
@@ -1216,7 +1346,7 @@ abstract class CometTestBase
    *       "select arr from tbl",
    *       sqlConf = Seq(
    *         CometConf.COMET_SCAN_UNSIGNED_SMALL_INT_SAFETY_CHECK.key -> "true",
-   *         "spark.comet.explainFallback.enabled" -> "false"
+   *         "spark.comet.explain.fallback.enabled" -> "false"
    *       ),
    *       debugCometDF = df => {
    *         df.printSchema()

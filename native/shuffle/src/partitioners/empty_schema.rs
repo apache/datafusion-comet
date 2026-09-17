@@ -26,7 +26,7 @@ use tokio::time::Instant;
 /// A partitioner for zero-column schemas (e.g. queries where ColumnPruning removes all columns).
 /// This handles shuffles for operations like COUNT(*) that produce empty-schema record batches
 /// but contain a valid row count. Accumulates the total row count and writes a single
-/// zero-column IPC batch to partition 0. All other partitions get empty entries in the index file.
+/// zero-column IPC batch to partition 0. All other partitions are finalized without data.
 pub(crate) struct EmptySchemaShufflePartitioner<T: PartitionWriter> {
     partition_writer: T,
     schema: SchemaRef,

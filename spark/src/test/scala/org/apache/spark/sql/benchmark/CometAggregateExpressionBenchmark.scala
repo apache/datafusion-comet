@@ -125,6 +125,21 @@ object CometAggregateExpressionBenchmark extends CometBenchmarkBase {
       "percentile_double_high_card",
       "SELECT percentile(c_double, 0.5) FROM parquetV1Table GROUP BY high_card_grp"))
 
+  // approx_count_distinct (Spark's HyperLogLogPlusPlus). c_int has ~10000 distinct values.
+  private val approxCountDistinctAggregates = List(
+    AggExprConfig(
+      "approx_count_distinct_int",
+      "SELECT approx_count_distinct(c_int) FROM parquetV1Table GROUP BY grp"),
+    AggExprConfig(
+      "approx_count_distinct_string",
+      "SELECT approx_count_distinct(CAST(c_int AS STRING)) FROM parquetV1Table GROUP BY grp"),
+    AggExprConfig(
+      "approx_count_distinct_global",
+      "SELECT approx_count_distinct(c_int) FROM parquetV1Table"),
+    AggExprConfig(
+      "approx_count_distinct_high_card",
+      "SELECT approx_count_distinct(c_int) FROM parquetV1Table GROUP BY high_card_grp"))
+
   // Approximate percentile (Greenwald-Khanna). All numeric input types and the
   // scalar, array, and explicit-accuracy forms run natively.
   private val approxPercentileAggregates = List(
@@ -153,6 +168,28 @@ object CometAggregateExpressionBenchmark extends CometBenchmarkBase {
       "approx_percentile_double_high_card",
       "SELECT approx_percentile(c_double, 0.5) FROM parquetV1Table GROUP BY high_card_grp"))
 
+  // max_by / min_by run natively only when both the value and ordering are fixed-length types (a
+  // variable-length value or ordering forces Spark's SortAggregate, which Comet does not run).
+  private val maxMinByAggregates = List(
+    AggExprConfig("max_by_int", "SELECT max_by(c_int, c_long) FROM parquetV1Table GROUP BY grp"),
+    AggExprConfig(
+      "max_by_double",
+      "SELECT max_by(c_double, c_int) FROM parquetV1Table GROUP BY grp"),
+    AggExprConfig(
+      "max_by_decimal",
+      "SELECT max_by(c_decimal, c_int) FROM parquetV1Table GROUP BY grp"),
+    AggExprConfig(
+      "max_by_high_card",
+      "SELECT max_by(c_int, c_long) FROM parquetV1Table GROUP BY high_card_grp"),
+    AggExprConfig("max_by_global", "SELECT max_by(c_int, c_long) FROM parquetV1Table"),
+    AggExprConfig("min_by_int", "SELECT min_by(c_int, c_long) FROM parquetV1Table GROUP BY grp"),
+    AggExprConfig(
+      "min_by_double",
+      "SELECT min_by(c_double, c_int) FROM parquetV1Table GROUP BY grp"),
+    AggExprConfig(
+      "min_by_high_card",
+      "SELECT min_by(c_int, c_long) FROM parquetV1Table GROUP BY high_card_grp"))
+
   override def runCometBenchmark(mainArgs: Array[String]): Unit = {
     val values = 1024 * 1024
 
@@ -176,7 +213,8 @@ object CometAggregateExpressionBenchmark extends CometBenchmarkBase {
 
           val allAggregates = basicAggregates ++ statisticalAggregates ++ bitwiseAggregates ++
             multiKeyAggregates ++ multiAggregates ++ decimalAggregates ++
-            highCardinalityAggregates ++ percentileAggregates ++ approxPercentileAggregates
+            highCardinalityAggregates ++ percentileAggregates ++ approxPercentileAggregates ++
+            approxCountDistinctAggregates ++ maxMinByAggregates
 
           allAggregates.foreach { config =>
             runExpressionBenchmark(config.name, v, config.query, config.extraCometConfigs)

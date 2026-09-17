@@ -22,7 +22,6 @@ package org.apache.comet.serde
 import org.apache.spark.sql.catalyst.expressions.{Ascending, Attribute, Descending, NullsFirst, NullsLast, SortOrder}
 
 import org.apache.comet.CometConf
-import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
 import org.apache.comet.serde.QueryPlanSerde.exprToProtoInternal
 
 object CometSortOrder extends CometExpressionSerde[SortOrder] {
@@ -66,7 +65,6 @@ object CometSortOrder extends CometExpressionSerde[SortOrder] {
           .setSortOrder(sortOrderBuilder)
           .build())
     } else {
-      withFallbackReason(expr, expr.child)
       None
     }
   }

@@ -103,7 +103,7 @@ statement
 CREATE TABLE test_avg_negative(d double) USING parquet
 
 statement
-INSERT INTO test_avg_negative VALUES (-1.5), (-2.5), (-3.5), (-0.0)
+INSERT INTO test_avg_negative VALUES (-1.5), (-2.5), (-3.5), (double('-0.0'))
 
 query tolerance=1e-6
 SELECT avg(d) FROM test_avg_negative

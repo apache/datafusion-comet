@@ -17,7 +17,7 @@
 
 -- try_to_timestamp() under CORRECTED timeParserPolicy.
 -- Strict java.time parsing returns null for inputs that legacy would accept.
--- MinSparkVersion: 4.0
+-- MinSparkVersion: 3.4
 -- Config: spark.sql.legacy.timeParserPolicy=CORRECTED
 -- Config: spark.sql.session.timeZone=UTC
 
@@ -32,5 +32,5 @@ INSERT INTO test_try_to_ts_strict VALUES
   ('2024-01-01garbage'),
   ('2024')
 
-query spark_answer_only
+query
 SELECT s, try_to_timestamp(s, 'yyyy-MM-dd') FROM test_try_to_ts_strict ORDER BY s

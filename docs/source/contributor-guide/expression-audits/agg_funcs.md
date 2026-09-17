@@ -21,6 +21,13 @@
 
 > Audit notes for expressions in this category that have been audited. Absence of an entry means the expression has not been audited yet, not that it is unsupported. See the user guide [Spark Expression Support] for current support status.
 
+## approx_count_distinct
+
+- Spark 3.4.3 (2026-07-03): registered as `expression[HyperLogLogPlusPlus]("approx_count_distinct")`, an `ImperativeAggregate` that hashes each non-null input with `XxHash64` (seed 42, floats normalized via `NormalizeNaNAndZero`) and keeps a HyperLogLog++ register buffer of `numWords` `Long`s (10 six-bit registers per word). The cardinality is estimated with linear counting for small inputs and bias-corrected HLL otherwise. Comet ports `HyperLogLogPlusPlusHelper` exactly, including the bias-correction tables, reuses Comet's Spark-compatible `xxhash64` for hashing, and stores the register buffer in Spark's identical packed-`Long` layout, so results are bit-identical to Spark and the partial-aggregation state matches Spark's `aggBufferSchema` (enabling mixed Comet/Spark partial and final aggregation). `relativeSD` (default 0.05) sets the precision `p`. Comet supports the input types its `xxhash64` hashes identically to Spark: boolean, integral, floating-point, `DecimalType` with precision <= 18, date/time, default-collation (UTF8_BINARY) string, and binary. Wider decimals (hashed through `BigDecimal`) and collated strings (hashed via the collation sort key) fall back to Spark.
+- Spark 3.5.8 (2026-07-03): algorithm and tables identical to 3.4.3.
+- Spark 4.0.1 (2026-07-03): `HyperLogLogPlusPlusHelper` moved to `catalyst.util` and `XxHash64Function.hash` gained collation parameters, but for the default `UTF8_BINARY` collation and non-string types the hash value is unchanged, so results match 3.4.3.
+- Spark 4.1.1 (2026-07-03): identical to 4.0.1.
+
 ## any
 
 - Spark 3.4.3 (audited 2026-05-26): registered as a SQL alias of `BoolOr`, which extends `RuntimeReplaceableAggregate` with `replacement = Max(child)`. Catalyst rewrites `any(x)` to `max(x)` before Comet sees the plan, so `any` is served by `CometMax` on a `BooleanType` column.
@@ -44,6 +51,34 @@
 - Spark 3.5.8 (2026-05-26)
 - Spark 4.0.1 (2026-05-26)
 
+## collect_list
+
+- Spark 3.4.3 (audited 2026-06-24): `CollectList` extends `Collect[ArrayBuffer[Any]]`, returns `ArrayType(child.dataType, containsNull = false)`, ignores NULL inputs in `update()` (Hive-compatible semantics), and yields an empty array as `defaultResult`. `nullable = false`. No `checkInputDataTypes` override, so any input type is accepted (including STRUCT, ARRAY, MAP). Registered as both `collect_list` and `array_agg` aliases in `FunctionRegistry`.
+- Spark 3.5.8 (audited 2026-06-24): identical to 3.4.3.
+- Spark 4.0.1 (audited 2026-06-24): only structural change is adding `with UnaryLike[Expression]` to the case class (no behavior change).
+- Spark 4.1.1 (audited 2026-06-24): identical to 4.0.1.
+- Comet implementation: `CometCollectList` (`native/spark-expr/src/agg_funcs/collect.rs`) delegates the ungrouped path to `datafusion_spark::function::aggregate::collect::SparkCollectList`, which wraps `ArrayAggAccumulator` with `ignore_nulls = true` and converts a final NULL accumulator state to an empty array (matching Spark's `defaultResult`); grouped aggregation uses Comet's own `GroupsAccumulator`, which retains the input arrays and gathers them into group order on emit. The native return type is `List(Field, containsNull = true)`, while Spark uses `containsNull = false`. Because nulls are filtered before insertion, no nulls actually appear in the array, so this is a schema-shape difference only and tests using `checkSparkAnswerAndOperator` accept it (the same pattern applies to [collect_set](#collect-set)).
+- Buffer shape (applies equally to `collect_set`): both are `TypedImperativeAggregate`s, so Spark's `aggBufferAttributes` declares the intermediate buffer as `BinaryType` (serialized state) while the native accumulator's `state_fields` is a `List`. `CometBaseAggregate.adjustOutputForNativeState` rewrites the Comet-side Partial output to the list shape. Neither collector can split a Partial and Final across Comet and Spark, and a multi-stage distinct rewrite (which inserts a `PartialMerge` stage) forces the whole chain back to Spark ([#4724](https://github.com/apache/datafusion-comet/issues/4724)).
+- Performance (tuned 2026-09-09, PR [#5803](https://github.com/apache/datafusion-comet/pull/5803)): grouped `collect_list` used to run through DataFusion's `GroupsAccumulatorAdapter`, which keeps one boxed `Accumulator` per group and slices every batch into a per-group `update_batch` call. `CollectListGroupsAccumulator` instead records a `(group, row range)` contribution per batch and rearranges them with a counting sort on emit, gathering long runs with `concat` and scattered rows with `interleave`. 16-99% faster ([#5797](https://github.com/apache/datafusion-comet/issues/5797)). Benchmark: `benches/collect.rs`.
+- Spark 4.2 (preview): `CollectList` and `CollectSet` gain an `ignoreNulls` field (default `true`); `RESPECT NULLS` sets it to `false` and keeps null elements. The native path always drops nulls, so `CometCollectShim` reads the field per Spark version (always `true` on 3.4-4.1) and `CometCollectList` / `CometCollectSet` report `Unsupported` when it is `false`, falling back to Spark.
+
+## collect_set
+
+- Spark 3.4.3 (audited 2026-07-27): `CollectSet` extends `Collect[mutable.HashSet[Any]]`, returns `ArrayType(child.dataType, containsNull = false)`, ignores NULL inputs in `update()` (the same Hive-compatible semantics as `collect_list`), and yields an empty array as `defaultResult`. `nullable = false`. Unlike `CollectList` it overrides `checkInputDataTypes` and rejects any input whose type recursively contains a `MapType` (`UNSUPPORTED_INPUT_TYPE`). `convertToBufferElement` copies the value with `InternalRow.copyValue`, except for `BinaryType`, which is wrapped in an `UnsafeArrayData` so that byte arrays dedup by content rather than by identity. Deduplication is Scala `mutable.HashSet` equality on the boxed value, which for floating-point types is numeric `==`: repeated `NaN`s are each kept as separate elements, while `0.0` and `-0.0` collapse to one. Registered only as `collect_set` in `FunctionRegistry` (there is no second alias, unlike `collect_list`/`array_agg`).
+- Spark 3.5.8 (audited 2026-07-27): identical to 3.4.3.
+- Spark 4.0.1 (audited 2026-07-27): adds `with UnaryLike[Expression]` to the case class, and `checkInputDataTypes` additionally requires `UnsafeRowUtils.isBinaryStable(child.dataType)`, so non-default-collation strings are rejected along with maps. Deduplication semantics unchanged.
+- Spark 4.1.1 (audited 2026-07-27): identical to 4.0.1.
+- Comet implementation: `CometCollectSet` (`native/spark-expr/src/agg_funcs/collect.rs`) delegates the ungrouped path to `datafusion_spark::function::aggregate::collect::SparkCollectSet`, which wraps `DistinctArrayAggAccumulator` with `ignore_nulls = true` in a `NullToEmptyListAccumulator` so a final NULL accumulator state becomes an empty array; grouped aggregation uses Comet's own `GroupsAccumulator`, which keeps the distinct values row-encoded in one arena keyed by `(group, value)`. Deduplication is still `arrow::row` encoded-byte equality, so which values collapse together is unchanged; the emitted order is now insertion order rather than hash-table order. The `containsNull` mismatch against Spark's declared output type, and its rationale, are identical to [collect_list](#collect-list).
+- Performance (tuned 2026-09-09, PR [#5803](https://github.com/apache/datafusion-comet/pull/5803)): as for [collect_list](#collect-list), grouped `collect_set` no longer goes through `GroupsAccumulatorAdapter`. `CollectSetGroupsAccumulator` encodes each batch once for all of its groups and deduplicates against an open-addressed index over a shared arena, replacing one hash table plus one owned `Row` per distinct value per group. 60-93% faster ([#5797](https://github.com/apache/datafusion-comet/issues/5797)). Benchmark: `benches/collect.rs`.
+- `CometCollectSet` reports `Incompatible` for float and double input when `spark.comet.exec.strictFloatingPoint=true`, because the native distinct comparison treats `NaN == NaN` and collapses repeated `NaN`s into a single element while Spark keeps each one. The native path for floating-point input is then opt-in via `spark.comet.expression.CollectSet.allowIncompatible=true`. All other input types are `Compatible`.
+
+## max_by
+
+- Spark 3.4.3 (2026-07-03): `MaxBy` is a 2-argument `DeclarativeAggregate` registered as `expression[MaxBy]("max_by")`. Buffer is `(valueWithExtremumOrdering, extremumOrdering)`; null orderings are ignored, the value paired with the maximum ordering is returned (and may itself be null), and an all-null-ordering group yields null. Comet implements a native `max_by` aggregate. Only fixed-length value and ordering types are accelerated: a variable-length or nested type (string, binary, struct) falls back to Spark. On its own such a type never reaches Comet, because Spark plans it as `SortAggregate`, which Comet does not convert. The serde check still matters when a `TypedImperativeAggregate` in the same aggregate switches Spark to `ObjectHashAggregate`, since Arrow's row format would compare a string ordering as raw UTF-8 bytes where Spark compares collation sort keys. `max_by` is non-deterministic when several rows tie on the maximum ordering, matching Spark's documented behavior.
+- Spark 3.5.8 (2026-07-03): aggregate logic identical to 3.4.3.
+- Spark 4.0.1 (2026-07-03): aggregate logic identical to 3.4.3; only the `@ExpressionDescription` example and note text differ.
+- Spark 4.1.1 (2026-07-03): aggregate logic identical to 3.4.3. The 3-argument top-k form `max_by(x, y, k)` arrived in Spark 4.2 (`MaxMinByK.scala`, absent on `branch-4.1`), so it is absent from 3.4 through 4.1 and present on the 4.2 profile this repo builds. `MaxByBuilder.build` still returns a plain `MaxBy` for the 2-argument call, and the 3-argument call becomes `MaxMinByK`, a different class with no serde registration, so Comet handles only the 2-argument form and the top-k form falls back.
+
 ## median
 
 - Spark 3.4.3 (audited 2026-06-24): `Median(child)` is a `RuntimeReplaceableAggregate` with `replacement = Percentile(child, Literal(0.5))`. Catalyst rewrites `median(x)` to `percentile(x, 0.5)` before Comet sees the plan, so it is served by `CometPercentile`.
@@ -51,12 +86,19 @@
 - Spark 4.0.1 (audited 2026-06-24): `replacement` becomes `lazy val`; semantics unchanged.
 - Spark 4.1.1 (audited 2026-06-24): identical to 4.0.1.
 
+## min_by
+
+- Spark 3.4.3 (2026-07-03): `MinBy` shares the abstract `MaxMinBy` `DeclarativeAggregate` with `MaxBy`, differing only in the comparison direction (`least` / `<` instead of `greatest` / `>`). Registered as `expression[MinBy]("min_by")`. Null orderings are ignored, the value paired with the minimum ordering is returned (and may itself be null), and an all-null-ordering group yields null. Comet serves it through the same native `MaxMinBy` aggregate as `max_by`, with the same fixed-length value and ordering restriction (variable-length or nested types fall back to Spark). Non-deterministic on ties, matching Spark.
+- Spark 3.5.8 (2026-07-03): aggregate logic identical to 3.4.3.
+- Spark 4.0.1 (2026-07-03): aggregate logic identical to 3.4.3; only the `@ExpressionDescription` example and note text differ.
+- Spark 4.1.1 (2026-07-03): aggregate logic identical to 3.4.3. The 3-argument top-k form `min_by(x, y, k)` arrived in Spark 4.2 alongside `max_by(x, y, k)`; `MinByBuilder.build` returns a plain `MinBy` for the 2-argument call, so Comet handles only the 2-argument form and the top-k form falls back.
+
 ## percentile
 
 - Spark 3.4.3 (audited 2026-06-24): `Percentile(child, percentageExpression, frequencyExpression, ..., reverse)` over `PercentileBase`. Exact percentile using `index = p * (n - 1)` linear interpolation, NULL inputs skipped, empty/all-null group returns NULL. `CometPercentile` maps the single-literal-percentage, default-frequency, numeric-input, ascending form to DataFusion's `percentile_cont` (same interpolation). Array-of-percentages, a non-default frequency argument, descending order, and interval inputs fall back to Spark.
 - Spark 3.5.8 (audited 2026-06-24): ordering centralized via `PhysicalDataType.ordering`; behavior identical to 3.4.3.
 - Spark 4.0.1 (audited 2026-06-24): adds `PercentileCont`/`PercentileDisc` builders and `SupportsOrderingWithinGroup`, enabling `percentile_cont(p) WITHIN GROUP (ORDER BY col)`, which rewrites to `Percentile(col, p, reverse)`. The ascending form runs natively; the `DESC` form sets `reverse = true` and falls back to Spark because the native `percentile_cont` always interpolates in ascending order.
 - Spark 4.1.1 (audited 2026-06-24): identical to 4.0.1.
-- `CometPercentile` reports `Incompatible` for the otherwise-supported form because DataFusion's `percentile_cont` quantizes the interpolation weight to 6 decimal places (`INTERPOLATION_PRECISION = 1e6`), so a deeply-interpolated value can differ from Spark by up to roughly `(upper - lower) * 1e-6`. The native path is opt-in via `spark.comet.expression.Percentile.allowIncompatible=true` ([#4719](https://github.com/apache/datafusion-comet/issues/4719)).
+- `CometPercentile` reports `Compatible` for the single-literal-percentage, default-frequency, numeric-input, ascending form and runs it natively by default. Every other form is `Unsupported` and falls back to Spark.
 
 [Spark Expression Support]: ../../user-guide/latest/expressions.md

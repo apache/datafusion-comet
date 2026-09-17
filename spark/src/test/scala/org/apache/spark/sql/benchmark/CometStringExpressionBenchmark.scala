@@ -20,6 +20,7 @@
 package org.apache.spark.sql.benchmark
 
 import org.apache.comet.CometConf
+import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
 
 /**
  * Configuration for a string expression benchmark.
@@ -57,6 +58,10 @@ object CometStringExpressionBenchmark extends CometBenchmarkBase {
     StringExprConfig("initCap", "select initCap(c1) from parquetV1Table"),
     StringExprConfig("instr", "select instr(c1, '123') from parquetV1Table"),
     StringExprConfig("length", "select length(c1) from parquetV1Table"),
+    StringExprConfig("levenshtein", "select levenshtein(c1, 'test') from parquetV1Table"),
+    StringExprConfig(
+      "levenshtein_threshold",
+      "select levenshtein(c1, 'test', 3) from parquetV1Table"),
     StringExprConfig("like", "select c1 like '%123%' from parquetV1Table"),
     StringExprConfig("lower", "select lower(c1) from parquetV1Table"),
     StringExprConfig("lpad", "select lpad(c1, 150, 'x') from parquetV1Table"),
@@ -71,27 +76,55 @@ object CometStringExpressionBenchmark extends CometBenchmarkBase {
     StringExprConfig("rlike", "select c1 rlike '[0-9]+' from parquetV1Table"),
     StringExprConfig("rpad", "select rpad(c1, 150, 'x') from parquetV1Table"),
     StringExprConfig("rtrim", "select rtrim(c1) from parquetV1Table"),
-    StringExprConfig("space", "select space(2) from parquetV1Table"),
+    // `space` takes its length from a column rather than a literal. Given a literal, Comet's
+    // native `space` receives a `ColumnarValue::Scalar`, builds one string per batch and lets
+    // DataFusion broadcast it, while Spark's `StringSpace` calls `UTF8String.blankString` once
+    // per row. The plans look symmetric but the work is not.
+    StringExprConfig("space", "select space(c2) from parquetV1Table"),
     StringExprConfig("startswith", "select startswith(c1, '1') from parquetV1Table"),
     StringExprConfig("substring", "select substring(c1, 1, 100) from parquetV1Table"),
     StringExprConfig("translate", "select translate(c1, '123456', 'aBcDeF') from parquetV1Table"),
     StringExprConfig("trim", "select trim(c1) from parquetV1Table"),
     StringExprConfig("upper", "select upper(c1) from parquetV1Table"))
 
+  // Collated cases are Spark 4.0+ only, since the COLLATE syntax does not parse on 3.4 and 3.5.
+  // CometLevenshtein reports collated input as Unsupported and CodegenDispatchFallback runs it
+  // through the JVM codegen dispatcher, so these measure the dispatcher rather than the native
+  // kernel. See https://github.com/apache/datafusion-comet/issues/5591.
+  private val collatedStringExpressions =
+    if (isSpark40Plus) {
+      List(
+        StringExprConfig(
+          "levenshtein_collated",
+          "select levenshtein(c1 collate utf8_lcase, 'test' collate utf8_lcase)" +
+            " from parquetV1Table"),
+        StringExprConfig(
+          "levenshtein_threshold_collated",
+          "select levenshtein(c1 collate utf8_lcase, 'test' collate utf8_lcase, 3)" +
+            " from parquetV1Table"))
+    } else {
+      List.empty
+    }
+
   override def runCometBenchmark(mainArgs: Array[String]): Unit = {
     runBenchmarkWithTable("String expressions", 1024) { v =>
       withTempPath { dir =>
         withTempTable("parquetV1Table") {
+          // c2 gives expressions that take a length or a count something to vary over per row.
+          // `pmod` keeps it non-negative, so `space(c2)` builds a string on every row rather
+          // than returning empty for the negative half of the input.
           prepareTable(
             dir,
-            spark.sql(s"SELECT REPEAT(CAST(value AS STRING), 10) AS c1 FROM $tbl"))
+            spark.sql(
+              "SELECT REPEAT(CAST(value AS STRING), 10) AS c1," +
+                s" CAST(PMOD(value, 200) AS INT) AS c2 FROM $tbl"))
 
           val extraConfigs = Map(
             CometConf.getExprAllowIncompatConfigKey("Upper") -> "true",
             CometConf.getExprAllowIncompatConfigKey("Lower") -> "true",
             CometConf.getExprAllowIncompatConfigKey("InitCap") -> "true")
 
-          stringExpressions.foreach { config =>
+          (stringExpressions ++ collatedStringExpressions).foreach { config =>
             val allConfigs = extraConfigs ++ config.extraCometConfigs
             runBenchmark(config.name) {
               runExpressionBenchmark(config.name, v, config.query, allConfigs)

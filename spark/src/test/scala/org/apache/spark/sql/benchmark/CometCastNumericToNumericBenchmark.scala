@@ -81,6 +81,15 @@ object CometCastNumericToNumericBenchmark extends CometBenchmarkBase {
     ("DECIMAL(10,2)", "c_decimal", "LONG"),
     ("DECIMAL(10,2)", "c_decimal", "DOUBLE"))
 
+  // Float and double to decimal. The native cast rounds the binary product when that provably
+  // agrees with Spark and otherwise formats the shortest decimal string, so low-scale targets
+  // exercise the arithmetic path and high-scale targets exercise the string path.
+  private val floatToDecimalPairs = Seq(
+    ("FLOAT", "c_float", "DECIMAL(10,2)"),
+    ("FLOAT", "c_float", "DECIMAL(38,18)"),
+    ("DOUBLE", "c_double", "DECIMAL(10,2)"),
+    ("DOUBLE", "c_double", "DECIMAL(38,18)"))
+
   private def generateConfigs(
       pairs: Seq[(String, String, String)]): Seq[CastNumericToNumericConfig] = {
     for {
@@ -137,7 +146,8 @@ object CometCastNumericToNumericBenchmark extends CometBenchmarkBase {
             generateConfigs(floatPairs) ++
             generateConfigs(intToFloatPairs) ++
             generateConfigs(floatToIntPairs) ++
-            generateConfigs(decimalPairs)).foreach { config =>
+            generateConfigs(decimalPairs) ++
+            generateConfigs(floatToDecimalPairs)).foreach { config =>
             runExpressionBenchmark(config.name, v, config.query, config.extraCometConfigs)
           }
         }

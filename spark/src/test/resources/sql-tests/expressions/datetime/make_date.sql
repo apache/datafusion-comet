@@ -135,6 +135,9 @@ SELECT make_date(0, 1, 1)
 query
 SELECT make_date(-1, 1, 1)
 
+query
+SELECT make_date(300000, 6, 15), make_date(300000, 2, 29)
+
 -- month boundaries - last day of each month
 query
 SELECT make_date(2023, 1, 31)

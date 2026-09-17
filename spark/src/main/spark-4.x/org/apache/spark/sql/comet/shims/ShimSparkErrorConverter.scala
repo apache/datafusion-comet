@@ -23,8 +23,7 @@ import java.io.FileNotFoundException
 
 import scala.util.matching.Regex
 
-import org.apache.spark.QueryContext
-import org.apache.spark.SparkException
+import org.apache.spark.{QueryContext, SparkException, SparkIllegalArgumentException}
 import org.apache.spark.sql.errors.QueryExecutionErrors
 import org.apache.spark.sql.execution.datasources.SchemaColumnConvertNotSupportedException
 import org.apache.spark.sql.types._
@@ -179,10 +178,35 @@ trait ShimSparkErrorConverter {
         Some(QueryExecutionErrors.exceedMapSizeLimitError(params("size").toString.toInt))
 
       case "CollectionSizeLimitExceeded" =>
+        // Pass the count as its decimal string since the reported length can exceed Long range.
         Some(
           QueryExecutionErrors.createArrayWithElementsExceedLimitError(
-            "array",
-            params("numElements").toString.toLong))
+            params.getOrElse("functionName", "array").toString,
+            params("numElements").toString))
+
+      case "SequenceIllegalBoundaries" =>
+        // Matches what Spark 4.x codegen throws for sequence boundaries.
+        Some(
+          new SparkIllegalArgumentException(
+            errorClass = "_LEGACY_ERROR_TEMP_3243",
+            messageParameters = Map(
+              "start" -> params("start").toString,
+              "stop" -> params("stop").toString,
+              "step" -> params("step").toString)))
+
+      case "SequenceBatchTooLarge" =>
+        // Comet-specific per-batch limit for native `sequence`. Point the user at
+        // spark.comet.batchSize since Spark itself has no equivalent guard.
+        Some(
+          new SparkException(
+            "Comet's native `sequence` kernel cannot materialize a batch with " +
+              s"${params("totalElements")} total elements: it exceeds the per-batch " +
+              "limit or the allocator refused the reservation. Lower " +
+              "`spark.comet.batchSize` so fewer rows are grouped per batch.",
+            null))
+
+      case "Internal" =>
+        Some(SparkException.internalError(params("message").toString))
 
       case "NotNullAssertViolation" =>
         Some(
@@ -200,6 +224,17 @@ trait ShimSparkErrorConverter {
           QueryExecutionErrors.ansiDateTimeParseError(
             new Exception(params("message").toString),
             params("suggestedFunc").toString))
+
+      case "IllegalDayOfWeek" =>
+        Some(
+          new SparkIllegalArgumentException(
+            errorClass = "ILLEGAL_DAY_OF_WEEK",
+            messageParameters = Map("string" -> params("string").toString)))
+
+      case "DatetimeFieldOutOfBounds" =>
+        Some(
+          QueryExecutionErrors.ansiDateTimeArgumentOutOfRange(
+            new java.time.DateTimeException(params("rangeMessage").toString)))
 
       case "InvalidFractionOfSecond" =>
         Some(QueryExecutionErrors.invalidFractionOfSecondError(params("value").toString.toDouble))

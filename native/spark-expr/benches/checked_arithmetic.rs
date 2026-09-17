@@ -18,6 +18,7 @@
 use arrow::array::{ArrayRef, Float64Array, Int32Array, Int64Array};
 use arrow::datatypes::DataType;
 use criterion::{criterion_group, criterion_main, Criterion};
+use datafusion::common::ScalarValue;
 use datafusion::physical_plan::ColumnarValue;
 use datafusion_comet_spark_expr::{checked_add, checked_div, checked_mul, checked_sub, EvalMode};
 use std::hint::black_box;
@@ -95,6 +96,21 @@ fn criterion_benchmark(c: &mut Criterion) {
             ColumnarValue::Array(f64_array(0x9e37_79b9, nulls)),
         ];
 
+        let i32_scalar_right_args = [
+            ColumnarValue::Array(i32_array(0x1234_5678, nulls)),
+            ColumnarValue::Scalar(ScalarValue::Int32(Some(42))),
+        ];
+
+        let i32_scalar_left_args = [
+            ColumnarValue::Scalar(ScalarValue::Int32(Some(42))),
+            ColumnarValue::Array(i32_array(0x1234_5678, nulls)),
+        ];
+
+        let i64_scalar_args = [
+            ColumnarValue::Array(i64_array(0x1234_5678, nulls)),
+            ColumnarValue::Scalar(ScalarValue::Int64(Some(100))),
+        ];
+
         group.bench_function(format!("checked_add_i32_ansi_{label}"), |b| {
             b.iter(|| {
                 black_box(checked_add(
@@ -140,6 +156,36 @@ fn criterion_benchmark(c: &mut Criterion) {
                 black_box(checked_div(
                     black_box(&f64_args),
                     &DataType::Float64,
+                    EvalMode::Ansi,
+                ))
+            })
+        });
+
+        group.bench_function(format!("checked_add_i32_scalar_right_ansi_{label}"), |b| {
+            b.iter(|| {
+                black_box(checked_add(
+                    black_box(&i32_scalar_right_args),
+                    &DataType::Int32,
+                    EvalMode::Ansi,
+                ))
+            })
+        });
+
+        group.bench_function(format!("checked_add_i32_scalar_left_ansi_{label}"), |b| {
+            b.iter(|| {
+                black_box(checked_add(
+                    black_box(&i32_scalar_left_args),
+                    &DataType::Int32,
+                    EvalMode::Ansi,
+                ))
+            })
+        });
+
+        group.bench_function(format!("checked_mul_i64_scalar_ansi_{label}"), |b| {
+            b.iter(|| {
+                black_box(checked_mul(
+                    black_box(&i64_scalar_args),
+                    &DataType::Int64,
                     EvalMode::Ansi,
                 ))
             })

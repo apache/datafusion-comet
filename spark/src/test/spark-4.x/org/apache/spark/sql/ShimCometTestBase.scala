@@ -49,6 +49,14 @@ trait ShimCometTestBase {
   }
 
   def createMakeDecimalColumn(child: Expression, precision: Int, scale: Int): Column = {
-    new Column(ExpressionColumnNode.apply(MakeDecimal(child, precision, scale, true)))
+    createMakeDecimalColumn(child, precision, scale, nullOnOverflow = true)
+  }
+
+  def createMakeDecimalColumn(
+      child: Expression,
+      precision: Int,
+      scale: Int,
+      nullOnOverflow: Boolean): Column = {
+    new Column(ExpressionColumnNode.apply(MakeDecimal(child, precision, scale, nullOnOverflow)))
   }
 }
