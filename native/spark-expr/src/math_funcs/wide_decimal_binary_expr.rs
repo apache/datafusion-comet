@@ -20,10 +20,11 @@
 //! Instead of building a 4-node expression tree (Cast→BinaryExpr→Cast→Cast), this performs
 //! i256 intermediate arithmetic in a single expression, producing only one output array.
 
+use crate::error::unwrap_arrow_external_error;
 use crate::math_funcs::utils::get_precision_scale;
-use crate::EvalMode;
+use crate::{EvalMode, SparkError};
 use arrow::array::{Array, ArrayRef, AsArray, Decimal128Array};
-use arrow::datatypes::{i256, DataType, Decimal128Type, Schema};
+use arrow::datatypes::{format_decimal_str, i256, DataType, Decimal128Type, Schema};
 use arrow::error::ArrowError;
 use arrow::record_batch::RecordBatch;
 use datafusion::common::Result;
@@ -215,7 +216,7 @@ impl PhysicalExpr for WideDecimalBinaryExpr {
         let bound = max_for_precision(p_out);
         let neg_bound = i256::ZERO.wrapping_sub(bound);
 
-        let result: Decimal128Array = match op {
+        let result: std::result::Result<Decimal128Array, ArrowError> = match op {
             WideDecimalOp::Add | WideDecimalOp::Subtract => {
                 let max_scale = std::cmp::max(s1, s2);
                 let l_scale_up = i256_pow10((max_scale - s1) as u32);
@@ -249,8 +250,8 @@ impl PhysicalExpr for WideDecimalBinaryExpr {
                     } else {
                         raw
                     };
-                    check_overflow_and_convert(result, bound, neg_bound, eval_mode)
-                })?
+                    check_overflow_and_convert(result, bound, neg_bound, p_out, s_out, eval_mode)
+                })
             }
             WideDecimalOp::Multiply => {
                 let natural_scale = s1 + s2;
@@ -276,10 +277,11 @@ impl PhysicalExpr for WideDecimalBinaryExpr {
                     } else {
                         raw
                     };
-                    check_overflow_and_convert(result, bound, neg_bound, eval_mode)
-                })?
+                    check_overflow_and_convert(result, bound, neg_bound, p_out, s_out, eval_mode)
+                })
             }
         };
+        let result = result.map_err(unwrap_arrow_external_error)?;
 
         let result = if eval_mode != EvalMode::Ansi {
             result.null_if_overflow_precision(p_out)
@@ -336,11 +338,25 @@ fn check_overflow_and_convert(
     result: i256,
     bound: i256,
     neg_bound: i256,
+    precision: u8,
+    scale: i8,
     eval_mode: EvalMode,
 ) -> Result<i128, ArrowError> {
     if result > bound || result < neg_bound {
         if eval_mode == EvalMode::Ansi {
-            return Err(ArrowError::ComputeError("Arithmetic overflow".to_string()));
+            let unscaled = result.to_string();
+            // Arrow's formatter truncates to its precision argument. This value is already
+            // known to overflow, so pass its actual digit count to preserve every digit.
+            // Spark reports the pre-toPrecision value instead; see
+            // https://github.com/apache/datafusion-comet/issues/5211.
+            let digits = unscaled.trim_start_matches('-').len();
+            return Err(ArrowError::ExternalError(Box::new(
+                SparkError::NumericValueOutOfRange {
+                    value: format_decimal_str(&unscaled, digits, scale),
+                    precision,
+                    scale,
+                },
+            )));
         }
         // Sentinel value — will be nullified by null_if_overflow_precision
         Ok(i128::MAX)
@@ -355,6 +371,7 @@ mod tests {
     use arrow::array::Decimal128Array;
     use arrow::datatypes::{Field, Schema};
     use arrow::record_batch::RecordBatch;
+    use datafusion::common::DataFusionError;
     use datafusion::physical_expr::expressions::Column;
 
     fn make_batch(
@@ -507,10 +524,42 @@ mod tests {
     }
 
     #[test]
-    fn test_overflow_ansi_mode_returns_error() {
-        let batch = make_batch(vec![Some(5)], 38, 0, vec![Some(5)], 38, 0);
-        let result = eval_expr(&batch, WideDecimalOp::Add, 1, 0, EvalMode::Ansi);
-        assert!(result.is_err());
+    fn test_overflow_ansi_mode_returns_spark_error() {
+        let cases = [
+            (
+                make_batch(vec![Some(5)], 38, 1, vec![Some(5)], 38, 1),
+                WideDecimalOp::Add,
+                1,
+                1,
+                "1.0",
+            ),
+            (
+                make_batch(vec![Some(99)], 2, 1, vec![Some(10)], 2, 1),
+                WideDecimalOp::Multiply,
+                1,
+                0,
+                "10",
+            ),
+        ];
+
+        for (batch, op, precision, scale, expected_value) in cases {
+            let result = eval_expr(&batch, op, precision, scale, EvalMode::Ansi);
+            match result {
+                Err(DataFusionError::External(error)) => match error.downcast_ref::<SparkError>() {
+                    Some(SparkError::NumericValueOutOfRange {
+                        value,
+                        precision: actual_precision,
+                        scale: actual_scale,
+                    }) => {
+                        assert_eq!(value, expected_value);
+                        assert_eq!(*actual_precision, precision);
+                        assert_eq!(*actual_scale, scale);
+                    }
+                    other => panic!("expected NumericValueOutOfRange, got {other:?}"),
+                },
+                other => panic!("expected external SparkError, got {other:?}"),
+            }
+        }
     }
 
     #[test]
