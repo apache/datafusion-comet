@@ -407,60 +407,39 @@ which jobs do run on main and therefore do write.
 ## Reusing Linux native builds
 
 The Linux, Spark SQL, Iceberg and manual writer workflows call
-`.github/actions/build-native-ci` after checkout and `setup-builder`. An exact
-cache hit restores `native/target/ci/libcomet.so` and skips Cargo. A miss restores
-an incremental cache and runs `cargo build --locked --profile ci`. Artifacts and
-downstream tests use the same paths in either case.
-`--locked` deliberately fails when a manifest change requires updating
-`native/Cargo.lock`; contributors must commit that lockfile update with the change.
+`.github/actions/build-native-ci` after checkout and `setup-builder`. PR, queue,
+scheduled and manual runs restore `native/target/ci/libcomet.so` and skip Cargo
+on an exact library match. Only
+pushes to `main` save caches: main skips Cargo when both the library and incremental
+cache match exactly, and builds when either lacks an exact match to replenish it.
+An incremental cache hit alone never replaces compilation. Builds use
+`cargo build --locked --profile ci`; manifest changes requiring a lockfile update
+must include that update to `native/Cargo.lock`. Artifact paths remain unchanged.
 
-`dev/ci/native-cache-key.py` snapshots tracked native/protobuf/dependency files,
-Cargo configuration and the native build recipes before Cargo generates source
-files. The key also includes Rust versions, installed system package
-versions, architecture, JDK release/path and the build environment: Cargo/Rust
-settings, C/C++ compiler and flag overrides (including target-specific variants),
-and the HDFS library overrides used by the default dependencies. The helper targets
-our official Rust container and `setup-builder`. Adding external tools or files
-requires updating this contract; recording an override's path does not identify
-arbitrary contents stored there.
+`dev/ci/native-cache-key.py` snapshots native sources, protobufs, dependencies,
+Cargo configuration and shared build/setup actions before source generation.
+It includes Rust versions, installed package versions, architecture, JDK
+release/path, and Cargo/Rust, C/C++ compiler/flag and HDFS environment overrides.
+Caller workflows are excluded because their selected tools and environment are
+observed directly. Spark edits, documentation, generated files and disabled
+contrib sources preserve the key; contrib manifests remain inputs for `--locked`.
+Benchmarks enter only the debug key. The input lists and glob matcher are shared
+with main's routing in `compute-changes.py`; code generation uses `x86-64-v3`.
 
-The shared build and setup actions are fingerprinted; the four caller workflows
-are not. Their selected Rust/JDK versions and build environment are observed
-directly, so editing a test matrix or shard does not force a native rebuild.
-Spark-only edits, documentation and generated files also preserve the key;
-native/protobuf changes invalidate it. Optional contrib crates contribute
-their manifests, which Cargo resolves even with their features disabled, but not
-their Rust sources or standalone lockfiles. Benchmarks enter the debug cache key
-but not the library key. The input lists and glob matcher are shared with main's
-cache routing in `compute-changes.py`. The shared action uses portable `x86-64-v3`
-code generation.
+The helper supports the official Rust container and `setup-builder`. Introducing
+external tools or files requires updating that contract: an override's path does
+not identify arbitrary contents stored there. Both binary and incremental keys
+retain package and JDK identity because native dependencies compile against JNI
+headers and link `libjvm`, and Cargo does not fully track external tool/header
+changes. Unrelated package updates can therefore cause conservative misses.
 
-The incremental cache contains the effective `CARGO_HOME` registry/git directories
-and `native/target`. In the Rust container, correcting `~/.cargo` to
-`/usr/local/cargo` adds the registry and Git checkouts that the old entry did not
-contain. The incremental entry therefore grows alongside the addition of the
-separate finished-library entry.
-Its dependency prefix permits reuse after source changes
-within the same build environment, but every restore still invokes Cargo.
-Environment changes also invalidate this fallback: native dependencies compile C
-against JNI headers and cache build-script outputs that Cargo does not fully
-invalidate after external compiler or JDK changes. This can miss after unrelated
-package updates, but prevents reusing those objects under a new library key.
-The Rust test job uses a separate debug key and continues to run all checks and tests.
-
-Only pushes to `main` save either cache. Main always compiles to keep the
-incremental cache warm. Other runs consume matching entries; a cold or evicted
-cache builds normally. Changes to shared native inputs owned by other workflows
-also trigger main's cache warmer. GitHub Actions handles cache storage and
-restoration.
-
-Preflight tests key invalidation, generated-file stability, container checkout
-ownership, and that every binary-key input triggers main's cache warmer. On the
-first main push that populates these namespaces, report the compressed cache
-sizes in bytes for both the finished library and the incremental Cargo entry,
-using the cache-save logs or Actions cache API. Then verify a hosted library hit
-by checking that `Restore native library cache` reports an exact hit and the
-Cargo steps skip, while the normal artifact upload and downstream tests pass.
+The incremental cache holds `native/target` and the effective `CARGO_HOME`
+registry/Git directories. Correcting the container's path to `/usr/local/cargo`
+adds previously uncached dependencies, increasing the shared cache budget needed
+alongside the finished library. Its fallback permits source changes within the
+same dependency/build environment. Rust checks and tests always run with their
+separate debug cache. Preflight checks fingerprint invalidation, main's routing,
+and the action's cache-hit/miss behavior.
 
 ## Retrying flaky network operations
 

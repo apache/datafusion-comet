@@ -37,8 +37,8 @@ runs:
       with:
         path: native/target/ci/libcomet.so
         key: ${{ steps.key.outputs.binary-key }}
-        # Main still builds to keep its incremental Cargo cache warm. Lookup
-        # only avoids downloading a library that this run will not execute.
+        # Main restores the incremental cache below, including libcomet.so.
+        # A lookup avoids downloading the same library separately.
         lookup-only: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
 
     - name: Restore incremental Cargo cache
@@ -54,13 +54,13 @@ runs:
         restore-keys: ${{ steps.key.outputs.restore-prefix }}
 
     - name: Build native library (CI profile)
-      if: steps.binary-cache.outputs.cache-hit != 'true' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+      if: steps.binary-cache.outputs.cache-hit != 'true' || (github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.cargo-cache.outputs.cache-hit != 'true')
       shell: bash
       run: |
         cd native
-        # A target-directory cache is only an incremental build aid. Cargo
-        # must run even on an exact target-cache hit; only the separately
-        # keyed library cache can replace compilation.
+        # A library miss always builds, even on an exact incremental hit.
+        # Main also builds to populate a missing incremental entry; two exact
+        # hits already supply the library and leave neither cache to publish.
         cargo build --locked --profile ci
 
     - name: Save native library cache

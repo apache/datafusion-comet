@@ -134,8 +134,10 @@ jobs:
       - name: Check Iceberg shard inventory validation
         run: python3 dev/ci/test-iceberg-shards.py
 
-      - name: Check native cache keys
-        run: python3 dev/ci/test-native-cache-key.py
+      - name: Check native caching
+        run: |
+          python3 dev/ci/test-native-cache-key.py
+          python3 dev/ci/test-native-cache-workflow.py
 
       - name: Check CI config invariants
         run: python3 dev/ci/check-ci-config.py
