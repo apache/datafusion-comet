@@ -17,46 +17,11 @@
 
 name: PyArrow UDF Tests
 
-concurrency:
-  group: ${{ github.repository }}-${{ github.head_ref || github.sha }}-${{ github.workflow }}
-  cancel-in-progress: true
-
+# Reusable: invoked by ci.yml. Triggering, path filters, and concurrency
+# live in the umbrella workflow. The list of files this suite covers is the
+# `pyarrow_udf` entry in FILTERS in dev/ci/compute-changes.py.
 on:
-  push:
-    branches:
-      - main
-    paths: &feature-paths
-      - "pom.xml"
-      - "common/pom.xml"
-      - "native/shuffle/src/spark_unsafe/row.rs"
-      - "spark/pom.xml"
-      - "spark/src/main/java/org/apache/comet/vector/**"
-      - "spark/src/main/java/org/apache/spark/sql/comet/execution/shuffle/SpillWriter.java"
-      - "spark/src/main/scala/org/apache/comet/CometConf.scala"
-      - "spark/src/main/scala/org/apache/comet/rules/EliminateRedundantTransitions.scala"
-      - "spark/src/main/scala/org/apache/comet/vector/**"
-      - "spark/src/main/scala/org/apache/spark/sql/comet/CometMapInBatchExec.scala"
-      - "spark/src/main/scala/org/apache/spark/sql/comet/shims/MapInBatchInfo.scala"
-      - "spark/src/main/spark-3.4/org/apache/spark/sql/comet/shims/ShimCometMapInBatch.scala"
-      - "spark/src/main/spark-3.5/org/apache/spark/sql/comet/shims/ShimCometMapInBatch.scala"
-      - "spark/src/main/spark-4.0/org/apache/spark/sql/comet/shims/ShimCometMapInBatch.scala"
-      - "spark/src/main/spark-4.0/org/apache/spark/sql/execution/python/CometArrowPythonRunner.scala"
-      - "spark/src/main/spark-4.1/org/apache/spark/sql/comet/shims/ShimCometMapInBatch.scala"
-      - "spark/src/main/spark-4.1/org/apache/spark/sql/execution/python/CometArrowPythonRunner.scala"
-      - "spark/src/main/spark-4.2/org/apache/spark/sql/comet/shims/ShimCometMapInBatch.scala"
-      - "spark/src/main/spark-4.2/org/apache/spark/sql/execution/python/CometArrowPythonRunner.scala"
-      - "spark/src/main/spark-4.x/org/apache/spark/sql/comet/shims/Spark4xMapInBatchSupport.scala"
-      - "spark/src/main/spark-4.x/org/apache/spark/sql/execution/python/CometArrowPythonRunnerBase.scala"
-      - "spark/src/test/resources/pyspark/conftest.py"
-      - "spark/src/test/resources/pyspark/test_pyarrow_udf.py"
-      - "spark/src/test/resources/pyspark/test_pyarrow_udf_dictionary_shuffle.py"
-      - "spark/src/test/spark-3.5/org/apache/spark/sql/comet/CometMapInBatchSuite.scala"
-      - "spark/src/test/spark-4.x/org/apache/spark/sql/comet/CometMapInBatchSuite.scala"
-      - "spark/src/test/spark-4.x/org/apache/spark/sql/execution/python/CometArrowPythonRunnerSuite.scala"
-      - ".github/workflows/pyarrow_udf_test.yml"
-  pull_request:
-    paths: *feature-paths
-  workflow_dispatch:
+  workflow_call:
 
 permissions:
   contents: read
@@ -101,8 +66,9 @@ jobs:
           rust-version: ${{ env.RUST_VERSION }}
           jdk-version: 17
 
-      - name: Cache Maven dependencies
-        uses: actions/cache@v6
+      - name: Restore Maven dependencies
+        id: maven-cache
+        uses: actions/cache/restore@v6
         with:
           path: |
             ~/.m2/repository
@@ -137,3 +103,16 @@ jobs:
             spark/src/test/resources/pyspark/test_pyarrow_udf.py
           /tmp/venv/bin/python -m pytest -v \
             spark/src/test/resources/pyspark/test_pyarrow_udf_dictionary_shuffle.py
+
+      # Saved only on main: an entry written from a pull request or a
+      # `gh-readonly-queue/*` branch cannot be restored by any later run, and
+      # it evicts main's from the shared budget. See "Large caches are written
+      # on main only" in README.md.
+      - name: Save Maven dependencies
+        if: ${{ github.ref == 'refs/heads/main' && steps.maven-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v6
+        with:
+          path: |
+            ~/.m2/repository
+            /root/.m2/repository
+          key: ${{ runner.os }}-java-maven-${{ hashFiles('**/pom.xml') }}-pyarrow-udf-${{ matrix.pyspark }}
