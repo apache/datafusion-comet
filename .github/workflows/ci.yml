@@ -50,7 +50,15 @@
 # exception runs in `cache-refresh-only` mode: the cache writers and nothing
 # else, because the queue has already tested the tree that landed.
 
-name: CI
+# Project-qualified on purpose. Several Apache DataFusion repositories -- the
+# core project and the other subprojects -- have a top-level workflow, and an
+# unqualified `CI` is indistinguishable from theirs anywhere runs from more
+# than one repository are listed together: the personal Actions dashboard,
+# notification emails, and cross-repository search. Nothing depends on this
+# string; every reference to this workflow, in `.asf.yaml`, `dev/ci/`, and the
+# docs, goes through the file name, and the required status check is the
+# `Required Checks` job name below.
+name: Comet CI
 
 # A `labeled` event (e.g. the run-spark-*-tests gates, or dependabot's automatic
 # `dependencies` label added ~1s after open) fires at the same commit as the
