@@ -20,11 +20,14 @@
 package org.apache.spark.comet
 
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicBoolean
 
 import org.apache.arrow.memory.AllocationListener
 import org.apache.spark.{SparkEnv, TaskContext}
 import org.apache.spark.internal.Logging
 import org.apache.spark.memory.{MemoryConsumer, MemoryMode, TaskMemoryManager}
+
+import org.apache.comet.CometConf
 
 /**
  * Reports JVM-side Arrow allocations to Spark's memory manager.
@@ -41,8 +44,9 @@ import org.apache.spark.memory.{MemoryConsumer, MemoryMode, TaskMemoryManager}
  *
  * It deliberately does not enforce. A short grant from Spark is logged and the allocation
  * proceeds, because Arrow allocation on these paths cannot fail today and making it fail is a
- * behavioural change that belongs in its own commit. See
- * [[https://github.com/apache/datafusion-comet/issues/5997]].
+ * behavioural change that belongs in its own commit. Note that enforcement belongs in
+ * `onPreAllocation`, the only callback permitted to throw, and `onFailedAllocation`, not here.
+ * See [[https://github.com/apache/datafusion-comet/issues/5997]].
  *
  * Three cases are handled by doing nothing, each for a different reason:
  *   - No active task. Broadcast coalescing and the cached batch serializer can allocate from the
@@ -53,15 +57,11 @@ import org.apache.spark.memory.{MemoryConsumer, MemoryMode, TaskMemoryManager}
  *     precisely because buffers can outlive the task that created them, so the task's reservation
  *     is dropped at task end and later releases are ignored rather than double-counted.
  */
-class CometArrowAllocationListener extends AllocationListener with Logging {
+class CometArrowAllocationListener extends AllocationListener {
 
   import CometArrowAllocationListener._
 
   private val reservations = new ConcurrentHashMap[Long, TaskReservation]()
-
-  @volatile private var configResolved = false
-  @volatile private var accountingEnabled = true
-  @volatile private var blockSize = DEFAULT_BLOCK_SIZE
 
   override def onAllocation(size: Long): Unit = {
     val reservation = reservationForCurrentTask()
@@ -85,30 +85,14 @@ class CometArrowAllocationListener extends AllocationListener with Logging {
 
   private[comet] def trackedTaskCount: Int = reservations.size()
 
-  /**
-   * Resolves configuration from the `SparkConf` rather than a `SQLConf` entry. This listener is
-   * attached to a `val` in a package object, so it is constructed on first touch of
-   * `CometArrowAllocator`, which can happen before any `SparkSession` exists and on executors
-   * where `SQLConf` does not carry Comet's settings. `SparkEnv` is absent until the executor is
-   * up, so the read is retried until it succeeds rather than cached from a null environment.
-   */
-  private def resolveConfig(): Unit = {
-    if (!configResolved) {
-      val env = SparkEnv.get
-      if (env != null) {
-        accountingEnabled = env.conf.getBoolean(ACCOUNTING_ENABLED_KEY, defaultValue = true)
-        blockSize = env.conf.getSizeAsBytes(BLOCK_SIZE_KEY, DEFAULT_BLOCK_SIZE_STRING)
-        configResolved = true
-      }
-    }
-  }
-
   private def reservationForCurrentTask(): TaskReservation = {
-    resolveConfig()
-    if (!accountingEnabled) return null
-
+    // Cheapest check first, and the one that eliminates the most callers: the driver, broadcast
+    // coalescing and the cached batch serializer all allocate with no task in scope. Reading the
+    // config before this would also mean re-reading `SparkEnv` on every allocation in a process
+    // that never has one.
     val taskContext = TaskContext.get()
     if (taskContext == null) return null
+    if (!accountingEnabled) return null
 
     val taskMemoryManager = taskContext.taskMemoryManager()
     if (taskMemoryManager == null ||
@@ -120,7 +104,10 @@ class CometArrowAllocationListener extends AllocationListener with Logging {
     val existing = reservations.get(taskAttemptId)
     if (existing != null) return existing
 
-    val created = new TaskReservation(taskMemoryManager, blockSize, this)
+    // Deliberately not `computeIfAbsent`: `addTaskCompletionListener` runs the callback inline if
+    // the task has already completed, and that callback removes from this same map, which is a
+    // recursive update inside a mapping function. Registering outside the map operation avoids it.
+    val created = new TaskReservation(taskMemoryManager)
     val previous = reservations.putIfAbsent(taskAttemptId, created)
     if (previous != null) return previous
 
@@ -132,39 +119,48 @@ class CometArrowAllocationListener extends AllocationListener with Logging {
     }
     created
   }
+}
 
-  private[comet] def warnOnShortGrant(requested: Long, granted: Long): Unit = {
-    if (!shortGrantLogged) {
-      shortGrantLogged = true
+object CometArrowAllocationListener extends Logging {
+
+  /**
+   * Batching granularity for reservations. Arrow allocates per buffer and
+   * `acquireExecutionMemory` takes an executor-wide lock, so the reservation is grown and shrunk
+   * in whole blocks and only block-crossing changes reach Spark. Deliberately not configurable:
+   * it trades lock chatter against reservation slack and has no plausible per-workload tuning.
+   */
+  private val BLOCK_SIZE = 1024L * 1024L
+
+  private val shortGrantLogged = new AtomicBoolean(false)
+
+  /**
+   * Resolved once per JVM. The listener is attached to a `val` in a package object, so it is
+   * constructed on first touch of `CometArrowAllocator`, which can happen before any
+   * `SparkSession` exists and on executors where `SQLConf` does not carry Comet's settings. This
+   * is only read once a `TaskContext` exists, by which point an executor has a `SparkEnv`; the
+   * `Option` guard covers tests that install a task context without one.
+   */
+  private lazy val accountingEnabled: Boolean = Option(SparkEnv.get).forall { env =>
+    env.conf.getBoolean(
+      CometConf.COMET_ARROW_ALLOCATOR_ACCOUNTING_ENABLED.key,
+      CometConf.COMET_ARROW_ALLOCATOR_ACCOUNTING_ENABLED.defaultValue.get)
+  }
+
+  private def roundUpToBlock(bytes: Long): Long =
+    ((bytes + BLOCK_SIZE - 1) / BLOCK_SIZE) * BLOCK_SIZE
+
+  private def warnOnShortGrant(requested: Long, granted: Long): Unit = {
+    if (shortGrantLogged.compareAndSet(false, true)) {
       logWarning(
         s"Spark granted $granted of $requested bytes requested for JVM Arrow allocations. " +
           "The allocation proceeds regardless, so this is a reporting gap rather than a failure. " +
-          s"Set $ACCOUNTING_ENABLED_KEY=false to stop reporting these allocations to Spark.")
+          s"Set ${CometConf.COMET_ARROW_ALLOCATOR_ACCOUNTING_ENABLED.key}=false to stop " +
+          "reporting these allocations to Spark.")
     }
   }
 
-  @volatile private var shortGrantLogged = false
-}
-
-object CometArrowAllocationListener {
-
-  val ACCOUNTING_ENABLED_KEY = "spark.comet.arrowAllocator.accounting.enabled"
-  val BLOCK_SIZE_KEY = "spark.comet.arrowAllocator.accounting.blockSize"
-
-  private val DEFAULT_BLOCK_SIZE_STRING = "1m"
-  private val DEFAULT_BLOCK_SIZE = 1024L * 1024L
-
-  /**
-   * One task's reservation against Spark's off-heap pool.
-   *
-   * Arrow allocates per buffer, and `acquireExecutionMemory` takes locks, so reserving for every
-   * buffer would be needlessly chatty. Instead the reservation is grown and shrunk in whole
-   * blocks and only block-crossing changes reach Spark.
-   */
-  private class TaskReservation(
-      taskMemoryManager: TaskMemoryManager,
-      blockSize: Long,
-      listener: CometArrowAllocationListener)
+  /** One task's reservation against Spark's off-heap pool. */
+  private class TaskReservation(taskMemoryManager: TaskMemoryManager)
       extends MemoryConsumer(taskMemoryManager, 0L, MemoryMode.OFF_HEAP) {
 
     // Named `usedBytes` rather than `used` on purpose: `MemoryConsumer` already declares a
@@ -177,9 +173,10 @@ object CometArrowAllocationListener {
     override def spill(size: Long, trigger: MemoryConsumer): Long = 0L
 
     /**
-     * Reports our own tally. The inherited `used` counter stays at zero because this consumer
-     * never calls `acquireMemory` or `allocatePage`; Arrow has already obtained the memory and we
-     * are only accounting for it.
+     * Reports our own tally. Spark reads this for spill-victim ordering, `showMemoryUsage` and
+     * end-of-task leak reporting. The inherited `used` counter stays at zero because this
+     * consumer never calls `acquireMemory` or `allocatePage`; Arrow has already obtained the
+     * memory and we are only accounting for it.
      */
     override def getUsed: Long = synchronized(usedBytes)
 
@@ -187,26 +184,27 @@ object CometArrowAllocationListener {
 
     def allocated(size: Long): Unit = synchronized {
       usedBytes += size
-      while (reserved < usedBytes) {
-        val request = math.max(blockSize, usedBytes - reserved)
+      if (reserved < usedBytes) {
+        // Round up so `reserved` stays a block multiple and growth always leaves headroom.
+        // Requesting the bare deficit would land exactly on `usedBytes` for any buffer at or above
+        // the block size, sending the very next allocation straight back into Spark's lock.
+        val request = roundUpToBlock(usedBytes - reserved)
         val granted = taskMemoryManager.acquireExecutionMemory(request, this)
-        if (granted <= 0L) {
-          listener.warnOnShortGrant(request, granted)
-          return
-        }
         reserved += granted
         if (granted < request) {
-          listener.warnOnShortGrant(request, granted)
-          return
+          warnOnShortGrant(request, granted)
         }
       }
     }
 
     def released(size: Long): Unit = synchronized {
       usedBytes = math.max(0L, usedBytes - size)
-      while (reserved - usedBytes >= blockSize) {
-        taskMemoryManager.releaseExecutionMemory(blockSize, this)
-        reserved -= blockSize
+      // Returned in one call rather than one per block: `releaseExecutionMemory` synchronizes on
+      // the executor-wide pool, so a per-block loop would take that lock once per megabyte freed.
+      val excess = ((reserved - usedBytes) / BLOCK_SIZE) * BLOCK_SIZE
+      if (excess > 0L) {
+        taskMemoryManager.releaseExecutionMemory(excess, this)
+        reserved -= excess
       }
     }
 

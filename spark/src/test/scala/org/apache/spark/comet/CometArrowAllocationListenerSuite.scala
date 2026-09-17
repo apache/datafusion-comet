@@ -35,34 +35,37 @@ import org.apache.spark.memory.{TaskMemoryManager, TestMemoryManager}
 class CometArrowAllocationListenerSuite extends AnyFunSuite {
 
   private val blockSize = 1024L * 1024L
+  private val poolBytes = 64L * 1024 * 1024
+  private val taskAttemptId = 1L
 
   test("allocations are charged to the current task in whole blocks") {
-    withOffHeapTask(taskAttemptId = 1L) { listener =>
+    withTask() { listener =>
       // Far smaller than a block, so the reservation should round up to exactly one block.
       listener.onAllocation(128L)
-      assert(listener.reservedBytesForTask(1L) == blockSize)
+      assert(listener.reservedBytesForTask(taskAttemptId) == blockSize)
 
       // Still inside the first block, so Spark is not asked again.
       listener.onAllocation(1024L)
-      assert(listener.reservedBytesForTask(1L) == blockSize)
+      assert(listener.reservedBytesForTask(taskAttemptId) == blockSize)
     }
   }
 
-  test("a request larger than a block reserves enough to cover it") {
-    withOffHeapTask(taskAttemptId = 2L) { listener =>
+  test("a request larger than a block rounds up to a block multiple") {
+    withTask() { listener =>
       listener.onAllocation(blockSize * 3 + 7L)
-      assert(listener.reservedBytesForTask(2L) >= blockSize * 3 + 7L)
+      // Rounded up rather than sized to the exact deficit, so growth leaves headroom and the next
+      // small allocation does not go straight back into Spark.
+      assert(listener.reservedBytesForTask(taskAttemptId) == blockSize * 4)
     }
   }
 
   test("releasing returns whole blocks to Spark") {
-    withOffHeapTask(taskAttemptId = 3L) { listener =>
+    withTask() { listener =>
       listener.onAllocation(blockSize * 2)
-      val afterAllocation = listener.reservedBytesForTask(3L)
-      assert(afterAllocation >= blockSize * 2)
+      assert(listener.reservedBytesForTask(taskAttemptId) == blockSize * 2)
 
       listener.onRelease(blockSize * 2)
-      assert(listener.reservedBytesForTask(3L) == 0L)
+      assert(listener.reservedBytesForTask(taskAttemptId) == 0L)
     }
   }
 
@@ -76,34 +79,27 @@ class CometArrowAllocationListenerSuite extends AnyFunSuite {
   }
 
   test("on-heap mode is not accounted") {
-    val memoryManager = new TestMemoryManager(new SparkConf(false))
-    memoryManager.limit(64L * 1024 * 1024)
-    val taskMemoryManager = new TaskMemoryManager(memoryManager, 4L)
-    withTaskContext(taskMemoryManager, taskAttemptId = 4L) {
-      val listener = new CometArrowAllocationListener
+    withTask(offHeap = false) { listener =>
       listener.onAllocation(blockSize)
       // Comet's on-heap mode exists so the Spark SQL suite can run without off-heap memory.
-      // Charging an off-heap consumer there would be wrong, so nothing is tracked.
+      // Charging an off-heap consumer there would be wrong, so nothing is tracked. Distinguishing
+      // "not tracked" from "tracked with zero reserved" is why trackedTaskCount is asserted here.
       assert(listener.trackedTaskCount == 0)
-      assert(listener.reservedBytesForTask(4L) == 0L)
+      assert(listener.reservedBytesForTask(taskAttemptId) == 0L)
     }
   }
 
-  private def withOffHeapTask(taskAttemptId: Long)(
-      f: CometArrowAllocationListener => Unit): Unit = {
+  private def withTask(offHeap: Boolean = true)(f: CometArrowAllocationListener => Unit): Unit = {
     val conf = new SparkConf(false)
-      .set("spark.memory.offHeap.enabled", "true")
-      .set("spark.memory.offHeap.size", "64m")
-    val memoryManager = new TestMemoryManager(conf)
-    memoryManager.limit(64L * 1024 * 1024)
-    val taskMemoryManager = new TaskMemoryManager(memoryManager, taskAttemptId)
-    withTaskContext(taskMemoryManager, taskAttemptId) {
-      f(new CometArrowAllocationListener)
+    if (offHeap) {
+      conf
+        .set("spark.memory.offHeap.enabled", "true")
+        .set("spark.memory.offHeap.size", poolBytes.toString)
     }
-  }
+    val memoryManager = new TestMemoryManager(conf)
+    memoryManager.limit(poolBytes)
+    val taskMemoryManager = new TaskMemoryManager(memoryManager, taskAttemptId)
 
-  private def withTaskContext(taskMemoryManager: TaskMemoryManager, taskAttemptId: Long)(
-      body: => Unit): Unit = {
     val taskContext = new TaskContextImpl(
       stageId = 0,
       stageAttemptNumber = 0,
@@ -120,7 +116,7 @@ class CometArrowAllocationListenerSuite extends AnyFunSuite {
 
     TaskContext.setTaskContext(taskContext)
     try {
-      body
+      f(new CometArrowAllocationListener)
     } finally {
       try {
         taskMemoryManager.cleanUpAllAllocatedMemory()
