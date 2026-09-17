@@ -339,6 +339,73 @@ than once carries its version inputs, e.g.
 and also that every `download-artifact` name is produced by an upload in the
 same workflow.
 
+## Large caches are written on main only
+
+An `actions/cache` entry is scoped to the ref that wrote it. A run can restore
+entries from its own ref and from the default branch, and nothing else. So a
+cache written from `refs/pull/*/merge` is visible only to another run of that
+same pull request, and one written from the merge queue's
+`gh-readonly-queue/*` branch is visible to nobody at all, because the queue
+deletes that branch when it is done with it.
+
+Both still count against the repository's shared cache budget, which is
+evicted least-recently-used. Writing them therefore has no upside and one
+large downside: it pushes main's entries out, and main's entries are the only
+ones a future pull request can use.
+
+That is what happened. On 2026-09-15 the repository held 12.27 GiB across 14
+entries: 9.22 GiB on a single `gh-readonly-queue/*` branch, 3.01 GiB on
+`refs/pull/*/merge` refs, and nothing whatsoever on main. Every one of the
+seven near-identical `Linux-java-maven-*` Maven repositories was a
+write-only copy. With main's `cargo-ci` entry evicted, all eight native
+builds in a merge-queue run missed their cache and paid a cold ~26 minute
+compile; the same build with a hit takes 2m21s.
+
+The rule, then: any cache holding a Maven repository (`~/.m2/repository`) or a
+cargo tree (`~/.cargo/registry`, `~/.cargo/git`, `native/target`) is
+**restored everywhere and saved only on push to main**:
+
+```yaml
+- name: Restore Maven dependencies
+  id: maven-cache
+  uses: actions/cache/restore@v6
+  with:
+    path: |
+      ~/.m2/repository
+      /root/.m2/repository
+    key: ${{ runner.os }}-java-maven-${{ hashFiles('**/pom.xml') }}-lint
+    restore-keys: |
+      ${{ runner.os }}-java-maven-
+
+# ... the steps that populate it ...
+
+- name: Save Maven dependencies
+  if: ${{ github.ref == 'refs/heads/main' && steps.maven-cache.outputs.cache-hit != 'true' }}
+  uses: actions/cache/save@v6
+  with:
+    path: |
+      ~/.m2/repository
+      /root/.m2/repository
+    key: ${{ runner.os }}-java-maven-${{ hashFiles('**/pom.xml') }}-lint
+```
+
+The bare `actions/cache@vN` form cannot express this: it saves in an implicit
+post step that no `if:` can reach. `dev/ci/check-ci-config.py` rejects it for
+any of the paths above, and rejects a `save` that is missing the `github.ref`
+guard. `publish_snapshot.yml` is exempt in `CACHE_SAVE_SCOPE_EXEMPT`, because
+it runs from main on a schedule already.
+
+The TPC-H and TPC-DS dataset caches keep the read-write form and are out of
+scope entirely: `./tpch` and `./tpcds-sf-1` are a few hundred MB, they are not
+dependency trees, and they are keyed on this workflow file, so a pull request
+that edits it would regenerate the data on every run rather than once.
+
+A job that only ever runs on a pull request or in the queue keeps the guard
+anyway, and so never writes. That is deliberate — it restores from main's
+entry through `restore-keys` and downloads whatever else it needs, which is
+what a cold pull request already did. See the push-tier discussion above for
+which jobs do run on main and therefore do write.
+
 ## Retrying flaky network operations
 
 **Maven.** `.mvn/maven.config` tunes the Maven Resolver HTTP transport: six
