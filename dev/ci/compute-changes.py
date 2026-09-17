@@ -71,6 +71,7 @@ FILTERS = {
         ".github/workflows/ci.yml",
         ".github/workflows/pr_build_linux.yml",
         ".github/actions/setup-builder/**",
+        ".github/actions/build-native-ci/**",
         ".github/actions/java-test/**",
         ".github/actions/maven-bootstrap/**",
         ".github/actions/rust-test/**",
@@ -420,10 +421,10 @@ FILTERS = {
         "mvnw",
     ],
 }
-# These inputs are shared by the Linux native producers. Keep the routes in
-# one place so an action-only cache change exercises each applicable consumer.
+# Spark and Iceberg producers share these recipes. Linux routes the action
+# above and already covers the Python helpers through dev/ci/**.
 for _native_consumer in (
-    "build_linux", "spark_3_4", "spark_3_5", "spark_4_0", "spark_4_1",
+    "spark_3_4", "spark_3_5", "spark_4_0", "spark_4_1",
     "iceberg_1_8", "iceberg_1_9", "iceberg_1_10", "iceberg_1_11",
 ):
     FILTERS[_native_consumer].extend(NATIVE_CACHE_RECIPES)
@@ -593,7 +594,8 @@ def compute(files, event):
     }
     # Use the fingerprint's exact patterns and matcher for main's producer,
     # including inputs owned by other workflows, without broadening PR jobs.
-    if event.get("name") == "push" and matches(NATIVE_LIBRARY_INPUTS, files):
+    if (event.get("name") == "push" and event_allows("build_linux", event)
+            and matches(NATIVE_LIBRARY_INPUTS, files)):
         selected["build_linux"] = True
     return selected
 
