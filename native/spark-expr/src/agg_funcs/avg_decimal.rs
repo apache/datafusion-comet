@@ -228,8 +228,6 @@ struct AvgDecimalAccumulator {
 }
 
 impl AvgDecimalAccumulator {
-    /// Create an empty sum/count buffer. Precisions and scales describe unscaled i128
-    /// sums and the decimal result; the shared registry supplies optional error context.
     pub fn new(
         sum_scale: i8,
         sum_precision: u8,
@@ -265,21 +263,9 @@ impl AvgDecimalAccumulator {
         }
         datafusion::common::DataFusionError::from(error)
     }
-
-    /// Add one non-null, unscaled input at a valid index. Overflow nulls the sum
-    /// permanently; evaluation reports the ANSI error after aggregation finishes.
-    fn update_single(&mut self, values: &Decimal128Array, idx: usize) {
-        let value = unsafe { values.value_unchecked(idx) };
-        self.sum = self
-            .sum
-            .and_then(|sum| sum.checked_add(value))
-            .filter(|sum| Decimal128Type::is_valid_decimal_precision(*sum, self.sum_precision));
-        self.count += 1;
-    }
 }
 
 impl Accumulator for AvgDecimalAccumulator {
-    /// Return Spark's sum/count buffer: zero for an empty sum, null for overflow.
     fn state(&mut self) -> Result<Vec<ScalarValue>> {
         Ok(vec![
             ScalarValue::Decimal128(self.sum, self.sum_precision, self.sum_scale),
@@ -287,24 +273,16 @@ impl Accumulator for AvgDecimalAccumulator {
         ])
     }
 
-    /// Accumulate non-null decimal inputs in place; overflow is deferred to evaluation.
     fn update_batch(&mut self, values: &[ArrayRef]) -> Result<()> {
         if self.sum.is_none() {
             return Ok(());
         }
-        let values = &values[0];
-        let data = values.as_primitive::<Decimal128Type>();
-        if values.null_count() == 0 {
-            for i in 0..data.len() {
-                self.update_single(data, i);
-            }
-        } else {
-            for i in 0..data.len() {
-                if data.is_null(i) {
-                    continue;
-                }
-                self.update_single(data, i);
-            }
+        for value in values[0].as_primitive::<Decimal128Type>().iter().flatten() {
+            self.sum = self
+                .sum
+                .and_then(|sum| sum.checked_add(value))
+                .filter(|sum| Decimal128Type::is_valid_decimal_precision(*sum, self.sum_precision));
+            self.count += 1;
         }
         Ok(())
     }
@@ -329,8 +307,6 @@ impl Accumulator for AvgDecimalAccumulator {
         Ok(())
     }
 
-    /// Return the average without consuming state. Empty input returns null; overflow
-    /// returns an ANSI error or null in other modes, even if its count was null in transit.
     fn evaluate(&mut self) -> Result<ScalarValue> {
         if self.sum.is_none() && self.eval_mode == EvalMode::Ansi {
             let error = decimal_sum_overflow_error("avg");
@@ -435,8 +411,6 @@ impl AvgDecimalGroupsAccumulator {
         datafusion::common::DataFusionError::from(error)
     }
 
-    /// Add one non-null input to an existing group. Overflow permanently nulls its
-    /// state; ANSI errors are deferred until that group is evaluated.
     #[inline]
     fn update_single(&mut self, group_index: usize, value: i128) {
         let (new_sum, is_overflow) = self.sums[group_index].overflowing_add(value);
@@ -548,8 +522,6 @@ impl GroupsAccumulator for AvgDecimalGroupsAccumulator {
         Ok(())
     }
 
-    /// Consume the requested group prefix and return its averages. Empty groups return
-    /// null; overflow returns null or an ANSI error after the prefix has been consumed.
     fn evaluate(&mut self, emit_to: EmitTo) -> Result<ArrayRef> {
         let nulls = build_bool_state(&mut self.is_not_null, &emit_to);
         let counts = emit_to.take_needed(&mut self.counts);
@@ -656,8 +628,6 @@ fn avg(sum: i128, count: i128, target_min: i128, target_max: i128, scaler: i128)
 mod tests {
     use super::*;
 
-    /// Make an empty accumulator with identical sum/result scales so test values do
-    /// not need rescaling. The mode controls whether overflow evaluates to an error.
     fn accumulator(mode: EvalMode) -> AvgDecimalAccumulator {
         AvgDecimalAccumulator::new(
             38,
@@ -670,7 +640,6 @@ mod tests {
         )
     }
 
-    /// Empty/all-null partials emit zero buffers; merging them still evaluates to null.
     #[test]
     fn empty_partial_state_matches_spark() -> Result<()> {
         let mut partial = accumulator(EvalMode::Ansi);
@@ -692,7 +661,8 @@ mod tests {
         final_acc.merge_batch(&state)?;
         assert_eq!(final_acc.evaluate()?, ScalarValue::Decimal128(None, 38, 38));
 
-        let values = Decimal128Array::from(vec![100, 300]).with_precision_and_scale(38, 38)?;
+        let values = Decimal128Array::from(vec![Some(100), None, Some(300)])
+            .with_precision_and_scale(38, 38)?;
         final_acc.update_batch(&[Arc::new(values)])?;
         final_acc.merge_batch(&state)?;
         assert_eq!(
@@ -702,50 +672,30 @@ mod tests {
         Ok(())
     }
 
-    /// A compensating value in the overflow batch cannot revive the sum. Its null
-    /// marker survives a final merge followed by a valid empty partial.
     #[test]
     fn scalar_overflow_stays_null() -> Result<()> {
         for mode in [EvalMode::Ansi, EvalMode::Legacy] {
-            let mut partial = accumulator(mode);
             let max = 10_i128.pow(38) - 1;
+            let mut updated = accumulator(mode);
+            // A cancelling value cannot revive a sum that already overflowed.
             let values =
                 Decimal128Array::from(vec![max, max, -max]).with_precision_and_scale(38, 38)?;
-            partial.update_batch(&[Arc::new(values)])?;
-            let state = partial.state()?;
-            assert_eq!(state[0], ScalarValue::Decimal128(None, 38, 38));
-            let state = state
-                .into_iter()
-                .map(|value| value.to_array_of_size(1))
-                .collect::<Result<Vec<_>>>()?;
-            let mut final_acc = accumulator(mode);
-            final_acc.merge_batch(&state)?;
-            let empty = accumulator(mode)
-                .state()?
-                .into_iter()
-                .map(|value| value.to_array_of_size(1))
-                .collect::<Result<Vec<_>>>()?;
-            final_acc.merge_batch(&empty)?;
-            if mode == EvalMode::Ansi {
-                let error = final_acc.evaluate().unwrap_err().to_string();
-                assert!(error.contains("ARITHMETIC_OVERFLOW"), "{error}");
-            } else {
-                assert_eq!(final_acc.evaluate()?, ScalarValue::Decimal128(None, 38, 38));
+            updated.update_batch(&[Arc::new(values)])?;
+
+            let mut merged = accumulator(mode);
+            let sums = Decimal128Array::from(vec![6 * 10_i128.pow(37); 2])
+                .with_precision_and_scale(38, 38)?;
+            merged.merge_batch(&[Arc::new(sums), Arc::new(Int64Array::from(vec![1, 1]))])?;
+            for mut acc in [updated, merged] {
+                assert_eq!(acc.state()?[0], ScalarValue::Decimal128(None, 38, 38));
+                if mode == EvalMode::Ansi {
+                    let error = acc.evaluate().unwrap_err().to_string();
+                    assert!(error.contains("ARITHMETIC_OVERFLOW"), "{error}");
+                } else {
+                    assert_eq!(acc.evaluate()?, ScalarValue::Decimal128(None, 38, 38));
+                }
             }
         }
-        Ok(())
-    }
-
-    /// Individually valid partial sums can overflow the decimal precision on merge.
-    #[test]
-    fn scalar_merge_overflow() -> Result<()> {
-        let mut acc = accumulator(EvalMode::Ansi);
-        let sums =
-            Decimal128Array::from(vec![6 * 10_i128.pow(37); 2]).with_precision_and_scale(38, 38)?;
-        acc.merge_batch(&[Arc::new(sums), Arc::new(Int64Array::from(vec![1, 1]))])?;
-        assert_eq!(acc.state()?[0], ScalarValue::Decimal128(None, 38, 38));
-        let error = acc.evaluate().unwrap_err().to_string();
-        assert!(error.contains("ARITHMETIC_OVERFLOW"), "{error}");
         Ok(())
     }
 

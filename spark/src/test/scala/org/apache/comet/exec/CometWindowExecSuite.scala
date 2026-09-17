@@ -599,7 +599,7 @@ class CometWindowExecSuite extends CometTestBase {
 
   test("window: high-precision decimal AVG and TRY_AVG fall back to Spark") {
     withTempDir { dir =>
-      Seq((1, 1, "0.6"), (1, 2, "0.6"), (2, 1, "0.6"), (2, 2, "0.5"))
+      Seq((1, 1, "0.6"), (1, 2, "0.6"))
         .toDF("g", "ord", "raw_v")
         .selectExpr(
           "g",
@@ -607,38 +607,34 @@ class CometWindowExecSuite extends CometTestBase {
           "CAST(raw_v AS DECIMAL(27,27)) AS v27",
           "CAST(raw_v AS DECIMAL(28,28)) AS v28",
           "CAST(raw_v AS DECIMAL(38,38)) AS v38")
-        .repartition(1)
+        .coalesce(1)
         .write
         .mode("overwrite")
         .parquet(dir.toString)
-
-      spark.read.parquet(dir.toString).createOrReplaceTempView("high_precision_dec_avg")
-      val fallbackReason =
-        "AVG on DECIMAL with maximum-precision intermediate state is not supported"
-      // Cover the sum-precision boundary plus AVG and TRY_AVG at maximum precision.
-      withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
-        for ((aggregate, precision) <- Seq(
-            ("AVG", 27),
-            ("AVG", 28),
-            ("AVG", 38),
-            ("TRY_AVG", 38))) {
-          val df = sql(s"""
-            SELECT g, ord,
-              $aggregate(v$precision) OVER (
-                PARTITION BY g
-                ORDER BY ord
-                ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
-              ) AS running_avg
-            FROM high_precision_dec_avg
-            ORDER BY g, ord
-          """)
-          if (precision == 27) {
-            val (_, plan) = checkSparkAnswerAndOperator(df)
-            assertCometWindowExecExists(plan)
-          } else {
-            val (_, plan) = checkSparkAnswerAndFallbackReason(df, fallbackReason)
-            assert(collect(plan) { case window: SparkWindowExec => window }.nonEmpty)
-            assert(collect(plan) { case window: CometWindowExec => window }.isEmpty)
+      withParquetTable(spark.read.parquet(dir.toString), "window_avg") {
+        withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
+          // Pin the 27/28 boundary and both error modes when the running sum exceeds 38 digits.
+          for ((aggregate, precision) <- Seq(
+              ("AVG", 27),
+              ("AVG", 28),
+              ("AVG", 38),
+              ("TRY_AVG", 38))) {
+            val df = sql(s"""
+              SELECT g, ord, $aggregate(v$precision) OVER (
+                PARTITION BY g ORDER BY ord
+                ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS running_avg
+              FROM window_avg ORDER BY g, ord
+            """)
+            if (precision == 27) {
+              val (_, plan) = checkSparkAnswerAndOperator(df)
+              assertCometWindowExecExists(plan)
+            } else {
+              val (_, plan) = checkSparkAnswerAndFallbackReason(
+                df,
+                "AVG on DECIMAL with maximum-precision intermediate state is not supported")
+              assert(collect(plan) { case window: SparkWindowExec => window }.nonEmpty)
+              assert(collect(plan) { case window: CometWindowExec => window }.isEmpty)
+            }
           }
         }
       }

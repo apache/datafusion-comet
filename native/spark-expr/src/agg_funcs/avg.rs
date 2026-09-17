@@ -146,7 +146,6 @@ pub struct AvgAccumulator {
 }
 
 impl Accumulator for AvgAccumulator {
-    /// Return Spark's sum/count buffer, including a zero sum before any input arrives.
     fn state(&mut self) -> Result<Vec<ScalarValue>> {
         Ok(vec![
             ScalarValue::Float64(Some(self.sum)),
@@ -154,7 +153,6 @@ impl Accumulator for AvgAccumulator {
         ])
     }
 
-    /// Add non-null values and their count to the buffer; floating-point overflow is valid.
     fn update_batch(&mut self, values: &[ArrayRef]) -> Result<()> {
         let values = values[0].as_primitive::<Float64Type>();
         self.count += (values.len() - values.null_count()) as i64;
@@ -164,7 +162,6 @@ impl Accumulator for AvgAccumulator {
         Ok(())
     }
 
-    /// Add partial sums and counts to the buffer without consuming the input arrays.
     fn merge_batch(&mut self, states: &[ArrayRef]) -> Result<()> {
         // counts are summed
         self.count += sum(states[1].as_primitive::<Int64Type>()).unwrap_or_default();
@@ -176,7 +173,6 @@ impl Accumulator for AvgAccumulator {
         Ok(())
     }
 
-    /// Return the average without consuming state, or null when no non-null input arrived.
     fn evaluate(&mut self) -> Result<ScalarValue> {
         if self.count == 0 {
             Ok(ScalarValue::Float64(None))
@@ -357,7 +353,6 @@ mod tests {
     use super::*;
     use arrow::array::Float64Array;
 
-    /// Empty and all-null partials must emit Spark's zero sum while evaluating to null.
     #[test]
     fn empty_partial_state_matches_spark() -> Result<()> {
         let mut partial = AvgAccumulator::default();

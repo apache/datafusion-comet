@@ -147,9 +147,8 @@ so users hunting an unexpected value have a single place to check:
   Spark when the boundary arithmetic overflows for `DATE` or `DECIMAL` `ORDER BY` columns
   ([#5022](https://github.com/apache/datafusion-comet/issues/5022)).
 - Grouped ANSI decimal `AVG` can evaluate an overflowing group in a batch even when Spark would
-  stop before that group at `LIMIT`. Comet falls back to Spark by default, including queries that
-  consume every group. The [aggregate operator opt-ins](operators.md#aggregation) restore native
-  execution while accepting this difference.
+  stop before that group at `LIMIT`. It remains natively enabled with this error-timing difference;
+  disabling `spark.comet.exec.aggregate.enabled` restores Spark's aggregate evaluation.
 - High-precision decimal `SUM` in ungrouped codegen aggregation, `ObjectHashAggregateExec`, and
   expanding window frames can record an intermediate overflow permanently, while Spark recovers
   when later values cancel it. Comet then returns `NULL` in legacy mode or raises an error under ANSI,
