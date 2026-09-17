@@ -97,33 +97,8 @@ jobs:
           rust-version: ${{ env.RUST_VERSION }}
           jdk-version: ${{ inputs.java }}
 
-      - name: Restore Cargo cache
-        uses: actions/cache/restore@v6
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            native/target
-          key: ${{ runner.os }}-cargo-ci-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}-${{ hashFiles('native/**/*.rs') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-ci-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}-
-
-      - name: Build native library (CI profile)
-        run: |
-          cd native
-          cargo build --profile ci
-        env:
-          RUSTFLAGS: "-Ctarget-cpu=x86-64-v3 -Clink-arg=-fuse-ld=bfd"
-
-      - name: Save Cargo cache
-        uses: actions/cache/save@v6
-        if: github.ref == 'refs/heads/main'
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            native/target
-          key: ${{ runner.os }}-cargo-ci-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}-${{ hashFiles('native/**/*.rs') }}
+      - name: Build or restore native library
+        uses: ./.github/actions/build-native-ci
 
       - name: Upload native library
         uses: ./.github/actions/upload-artifact-retry
