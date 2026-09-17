@@ -86,7 +86,6 @@ area:expressions:
 area:joins:
   - changed-files:
       - any-glob-to-any-file:
-          - 'native/core/src/execution/operators/dynamic_filter.rs'
           - 'native/core/src/execution/operators/dynamic_filter/**'
           - 'spark/src/main/scala/org/apache/comet/rules/RewriteJoin.scala'
           - 'spark/src/main/scala/org/apache/comet/rules/CometPlanAdaptiveDynamicPruningFilters.scala'
