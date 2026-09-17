@@ -23,6 +23,7 @@ import java.util.Properties
 
 import org.scalatest.funsuite.AnyFunSuite
 
+import org.apache.arrow.memory.{AllocationListener, RootAllocator}
 import org.apache.spark.{SparkConf, TaskContext, TaskContextImpl}
 import org.apache.spark.executor.TaskMetrics
 import org.apache.spark.memory.{TaskMemoryManager, TestMemoryManager}
@@ -66,6 +67,36 @@ class CometArrowAllocationListenerSuite extends AnyFunSuite {
 
       listener.onRelease(blockSize * 2)
       assert(listener.reservedBytesForTask(taskAttemptId) == 0L)
+    }
+  }
+
+  test("a child allocator with no listener is not charged, but the root still is") {
+    withTask() { listener =>
+      val root = new RootAllocator(listener, Long.MaxValue)
+      val imported =
+        root.newChildAllocator("imported", AllocationListener.NOOP, 0, Long.MaxValue)
+      try {
+        // This is how FFI-imported buffers, which wrap memory the native side owns, stay out of
+        // Spark's accounting: Arrow notifies only the allocating allocator's own listener, never
+        // its ancestors, so the root's listener does not see the child's allocation.
+        val importedBuf = imported.buffer(blockSize)
+        try {
+          assert(listener.trackedTaskCount == 0)
+
+          // The same root does still charge for JVM-owned allocations made directly against it.
+          val jvmBuf = root.buffer(blockSize)
+          try {
+            assert(listener.reservedBytesForTask(taskAttemptId) >= blockSize)
+          } finally {
+            jvmBuf.close()
+          }
+        } finally {
+          importedBuf.close()
+        }
+      } finally {
+        imported.close()
+        root.close()
+      }
     }
   }
 

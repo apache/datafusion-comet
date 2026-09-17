@@ -31,7 +31,7 @@ import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.execution.vectorized.ConstantColumnVector
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
-import org.apache.comet.CometArrowAllocator
+import org.apache.comet.{CometArrowAllocator, CometImportedArrowAllocator}
 
 /**
  * Provides functionality for importing Arrow vectors from native code and wrapping them as
@@ -51,7 +51,10 @@ class NativeUtil extends AutoCloseable {
   private val allocator = CometArrowAllocator
 
   /** ArrowImporter does not hold any state and does not need to be closed */
-  private val importer = new ArrowImporter(allocator)
+  // Imported buffers wrap memory the native side owns and frees, so they are charged to Comet's
+  // native pool, not to Spark. Importing through the root allocator would report them to Spark as
+  // if they were JVM Arrow bytes and double count them. See CometImportedArrowAllocator.
+  private val importer = new ArrowImporter(CometImportedArrowAllocator)
 
   /**
    * Dictionary provider to use for the lifetime of this instance of NativeUtil. The dictionary

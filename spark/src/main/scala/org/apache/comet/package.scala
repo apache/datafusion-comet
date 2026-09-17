@@ -21,7 +21,7 @@ package org.apache
 
 import java.util.Properties
 
-import org.apache.arrow.memory.RootAllocator
+import org.apache.arrow.memory.{AllocationListener, RootAllocator}
 import org.apache.spark.comet.CometArrowAllocationListener
 import org.apache.spark.internal.Logging
 
@@ -40,6 +40,26 @@ package object comet {
    */
   val CometArrowAllocator =
     new RootAllocator(new CometArrowAllocationListener, Long.MaxValue)
+
+  /**
+   * The allocator for buffers imported over the Arrow C Data Interface.
+   *
+   * An imported buffer wraps memory that the native side owns and frees, but Arrow's
+   * `wrapForeignAllocation` still reports it to the allocator's listener at full buffer capacity,
+   * as though a JVM-side allocation had happened. Importing through [[CometArrowAllocator]] would
+   * therefore charge Spark for native bytes, double counting whatever an operator has already
+   * reserved in Comet's native pool, and the error would grow with batch throughput.
+   *
+   * Arrow notifies only the allocating allocator's own listener, never its ancestors, so a child
+   * with no listener keeps these buffers out of Spark's accounting. It stays a child of the root
+   * so that reference counting and lifetime are unchanged.
+   */
+  val CometImportedArrowAllocator =
+    CometArrowAllocator.newChildAllocator(
+      "comet-imported-ffi",
+      AllocationListener.NOOP,
+      0,
+      Long.MaxValue)
 
   /**
    * Provides access to build information about the Comet libraries. This will be used by the

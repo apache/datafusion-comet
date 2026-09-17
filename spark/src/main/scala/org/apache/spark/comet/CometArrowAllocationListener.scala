@@ -48,6 +48,12 @@ import org.apache.comet.CometConf
  * `onPreAllocation`, the only callback permitted to throw, and `onFailedAllocation`, not here.
  * See [[https://github.com/apache/datafusion-comet/issues/5997]].
  *
+ * Buffers imported over the C Data Interface never reach this listener at all. They wrap memory
+ * the native side owns, so Comet imports them through `CometImportedArrowAllocator`, a child with
+ * no listener. Charging them here would double count bytes already reserved in Comet's native
+ * pool. Arrow notifies only the allocating allocator's own listener, which is what makes that
+ * separation work.
+ *
  * Three cases are handled by doing nothing, each for a different reason:
  *   - No active task. Broadcast coalescing and the cached batch serializer can allocate from the
  *     driver or a non-task thread, where there is no task to charge.
