@@ -26,7 +26,7 @@ import scala.collection.mutable
 import org.apache.spark.sql.ExtendedExplainGenerator
 import org.apache.spark.sql.catalyst.expressions.{Attribute, BoundReference, Expression, Literal, ScalaUDF}
 import org.apache.spark.sql.catalyst.trees.{TreeNode, TreeNodeTag}
-import org.apache.spark.sql.comet.{CometColumnarToRowExec, CometNativeColumnarToRowExec, CometPlan, CometSparkToColumnarExec}
+import org.apache.spark.sql.comet.{CometColumnarToRowExec, CometEmptyRelationExec, CometNativeColumnarToRowExec, CometPlan, CometSparkToColumnarExec}
 import org.apache.spark.sql.execution.{ColumnarToRowExec, InputAdapter, ReusedSubqueryExec, RowToColumnarExec, SparkPlan, WholeStageCodegenExec}
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AQEShuffleReadExec, QueryStageExec}
 import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
@@ -99,6 +99,13 @@ class ExtendedExplainInfo extends ExtendedExplainGenerator {
     info.toSet
   }
 
+  private def executionInnerChildren(node: TreeNode[_]): Seq[TreeNode[_]] = node match {
+    // Spark's treeString displays the eliminated plan, but it does not execute and must not
+    // contribute Spark operators, fallback reasons, or expressions to Comet's reporting.
+    case _: CometEmptyRelationExec => Seq.empty
+    case _ => node.innerChildren
+  }
+
   // get all plan nodes, breadth first traversal, then returned the reversed list so
   // leaf nodes are first
   private def sortup(node: TreeNode[_]): mutable.Queue[TreeNode[_]] = {
@@ -107,8 +114,9 @@ class ExtendedExplainInfo extends ExtendedExplainGenerator {
     while (traversed.nonEmpty) {
       val s = traversed.dequeue()
       ordered += s
-      if (s.innerChildren.nonEmpty) {
-        s.innerChildren.foreach {
+      val innerChildrenLocal = executionInnerChildren(s)
+      if (innerChildrenLocal.nonEmpty) {
+        innerChildrenLocal.foreach {
           case c @ (_: TreeNode[_]) => traversed.enqueue(getActualPlan(c))
           case _ =>
         }
@@ -174,7 +182,7 @@ class ExtendedExplainInfo extends ExtendedExplainGenerator {
     outString.append(str)
     outString.append("\n")
 
-    val innerChildrenLocal = node.innerChildren
+    val innerChildrenLocal = executionInnerChildren(node)
     if (innerChildrenLocal.nonEmpty) {
       innerChildrenLocal.init.foreach {
         case c @ (_: TreeNode[_]) =>
