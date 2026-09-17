@@ -36,7 +36,17 @@ pub(super) fn has_float_leaf(dt: &DataType) -> bool {
 
 /// Recursively rebuilds nested arrays with `-0.0` normalized to `0.0` and NaN canonicalized
 /// in any Float32/Float64 leaves.
+///
+/// Subtrees without a float leaf are returned as is. The guard is applied at every level, not
+/// just by the caller, so that a float-free sibling of a float field is never rebuilt. That
+/// keeps the rebuild proportional to the float data, and it also leaves empty structs alone:
+/// `StructArray::new` cannot infer a length from zero columns and would panic. An empty struct
+/// reaches this code through Iceberg's `_partition` metadata column on an unpartitioned table.
 pub(super) fn normalize_nested_floats(array: &ArrayRef) -> ArrayRef {
+    if !has_float_leaf(array.data_type()) {
+        return Arc::clone(array);
+    }
+
     match array.data_type() {
         DataType::Float32 => {
             let normalized: Float32Array =
@@ -96,8 +106,9 @@ pub(super) fn normalize_nested_floats(array: &ArrayRef) -> ArrayRef {
 mod tests {
     use super::*;
     use arrow::array::Float64Builder;
+    use arrow::array::Int32Array;
     use arrow::array::ListBuilder;
-    use arrow::datatypes::Field;
+    use arrow::datatypes::{Field, Fields};
 
     #[test]
     fn test_has_float_leaf() {
@@ -158,6 +169,71 @@ mod tests {
 
         assert_eq!(inner.value(0).to_bits(), 0.0f64.to_bits());
         assert_eq!(inner.value(1).to_bits(), f64::NAN.to_bits());
+    }
+
+    /// An empty struct sibling of a float field must survive normalization. Iceberg exposes
+    /// `_partition` as `struct<>` on an unpartitioned table, and rebuilding it would panic
+    /// because `StructArray::new` cannot infer a length from zero columns.
+    #[test]
+    fn test_normalize_struct_with_empty_struct_sibling() {
+        let x = Float64Array::from(vec![Some(-0.0), Some(1.0)]);
+        let partition = StructArray::new_empty_fields(2, None);
+        let fields = vec![
+            Arc::new(Field::new("x", DataType::Float64, true)),
+            Arc::new(Field::new("p", partition.data_type().clone(), true)),
+        ];
+        let arr: ArrayRef = Arc::new(StructArray::new(
+            fields.into(),
+            vec![Arc::new(x), Arc::new(partition)],
+            None,
+        ));
+
+        let normalized = normalize_nested_floats(&arr);
+        let normalized = normalized.as_struct();
+
+        let col_x = normalized.column(0).as_primitive::<Float64Type>();
+        assert_eq!(col_x.value(0).to_bits(), 0.0f64.to_bits());
+        assert_eq!(col_x.value(1), 1.0);
+
+        let col_p = normalized.column(1).as_struct();
+        assert_eq!(col_p.num_columns(), 0);
+        assert_eq!(col_p.len(), 2);
+    }
+
+    /// A float-free subtree is returned as is rather than rebuilt. The child here is a nested
+    /// struct, which the recursive arms would otherwise rebuild into a fresh array.
+    #[test]
+    fn test_normalize_leaves_float_free_subtree_untouched() {
+        let inner_fields: Fields = vec![Arc::new(Field::new("i", DataType::Int32, true))].into();
+        let inner: ArrayRef = Arc::new(StructArray::new(
+            inner_fields.clone(),
+            vec![Arc::new(Int32Array::from(vec![Some(1), Some(2)]))],
+            None,
+        ));
+        let floats = Float64Array::from(vec![Some(-0.0), Some(1.0)]);
+        let fields: Fields = vec![
+            Arc::new(Field::new("s", DataType::Struct(inner_fields), true)),
+            Arc::new(Field::new("f", DataType::Float64, true)),
+        ]
+        .into();
+        let arr: ArrayRef = Arc::new(StructArray::new(
+            fields,
+            vec![Arc::clone(&inner), Arc::new(floats)],
+            None,
+        ));
+
+        let normalized = normalize_nested_floats(&arr);
+        let normalized = normalized.as_struct();
+
+        assert!(Arc::ptr_eq(normalized.column(0), &inner));
+        assert_eq!(
+            normalized
+                .column(1)
+                .as_primitive::<Float64Type>()
+                .value(0)
+                .to_bits(),
+            0.0f64.to_bits()
+        );
     }
 
     #[test]

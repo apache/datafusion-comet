@@ -546,10 +546,11 @@ fn needs_comparator(dt: &DataType) -> bool {
 mod tests {
     use super::*;
     use arrow::array::{
-        Float64Builder, Int32Array, Int32Builder, ListArray, ListBuilder, StructBuilder,
+        Float64Array, Float64Builder, Int32Array, Int32Builder, ListArray, ListBuilder,
+        StructArray, StructBuilder,
     };
     use arrow::buffer::{NullBuffer, OffsetBuffer};
-    use arrow::datatypes::Field;
+    use arrow::datatypes::{Field, Fields};
 
     fn make_list_array(
         values: &Int32Array,
@@ -1093,6 +1094,42 @@ mod tests {
         }
         list_builder.append(true);
         list_builder.finish()
+    }
+
+    /// Regression test for an empty struct alongside a float field. Iceberg exposes
+    /// `_partition` as `struct<>` on an unpartitioned table, so
+    /// `arrays_overlap(array(named_struct('x', x, 'p', _partition)), ...)` reaches the
+    /// nested path with a zero column struct child. Rebuilding that child used to panic.
+    #[test]
+    fn test_struct_with_empty_struct_field_overlap() -> Result<()> {
+        fn make_list(values: Vec<f64>) -> ListArray {
+            let len = values.len();
+            let x: ArrayRef = Arc::new(Float64Array::from(values));
+            let partition: ArrayRef = Arc::new(StructArray::new_empty_fields(len, None));
+            let fields: Fields = vec![
+                Arc::new(Field::new("x", DataType::Float64, true)),
+                Arc::new(Field::new("p", partition.data_type().clone(), true)),
+            ]
+            .into();
+            let element: ArrayRef =
+                Arc::new(StructArray::new(fields.clone(), vec![x, partition], None));
+            ListArray::new(
+                Arc::new(Field::new("item", DataType::Struct(fields), true)),
+                OffsetBuffer::new((0..=len as i32).collect::<Vec<_>>().into()),
+                element,
+                None,
+            )
+        }
+
+        // One row per element, mirroring `SELECT ... FROM t` over values 1.0 and 2.0.
+        let left = make_list(vec![1.0, 2.0]);
+        let right = make_list(vec![1.0, 2.0]);
+
+        let result = arrays_overlap_list::<i32>(&left, &right)?;
+        let result = result.as_any().downcast_ref::<BooleanArray>().unwrap();
+        assert!(result.value(0));
+        assert!(result.value(1));
+        Ok(())
     }
 
     #[test]
