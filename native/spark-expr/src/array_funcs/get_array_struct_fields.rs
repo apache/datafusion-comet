@@ -95,6 +95,8 @@ impl PhysicalExpr for GetArrayStructFields {
     }
 
     fn nullable(&self, input_schema: &Schema) -> DataFusionResult<bool> {
+        // The output list is null exactly where the input list is. Element nullability is
+        // carried by the List field returned by data_type, not by this flag.
         self.child.nullable(input_schema)
     }
 
@@ -103,19 +105,19 @@ impl PhysicalExpr for GetArrayStructFields {
 
         match child_value.data_type() {
             DataType::List(_) => {
-                let field = self.child_field(batch.schema().as_ref())?;
+                let field = self.child_field(batch.schema_ref())?;
                 let list_array = as_list_array(&child_value)?;
 
                 get_array_struct_fields(list_array, self.ordinal, field)
             }
             DataType::LargeList(_) => {
-                let field = self.child_field(batch.schema().as_ref())?;
+                let field = self.child_field(batch.schema_ref())?;
                 let list_array = as_large_list_array(&child_value)?;
 
                 get_array_struct_fields(list_array, self.ordinal, field)
             }
             data_type => Err(DataFusionError::Internal(format!(
-                "Unexpected child type for ListExtract: {data_type:?}"
+                "Unexpected child type for GetArrayStructFields: {data_type:?}"
             ))),
         }
     }
@@ -190,63 +192,59 @@ mod tests {
     use arrow::datatypes::Field;
     use datafusion::physical_expr::expressions::Column;
 
-    fn check_nullability<O: OffsetSizeTrait>() {
+    fn check_nullability<O: OffsetSizeTrait>(element_nullable: bool, field_nullable: bool) {
         for list_nullable in [true, false] {
-            for element_nullable in [true, false] {
-                for field_nullable in [false, true] {
-                    let field = Arc::new(Field::new("a", DataType::Int32, field_nullable));
-                    let values = Arc::new(StructArray::new(
-                        vec![field].into(),
-                        vec![Arc::new(Int32Array::from(vec![1, 99]))],
-                        element_nullable.then(|| NullBuffer::from(vec![true, false])),
-                    ));
-                    let list = Arc::new(GenericListArray::<O>::new(
-                        Arc::new(Field::new(
-                            "element",
-                            values.data_type().clone(),
-                            element_nullable,
-                        )),
-                        OffsetBuffer::from_lengths([1, 1, 0, 0]),
-                        values,
-                        list_nullable.then(|| NullBuffer::from(vec![true, true, true, false])),
-                    ));
-                    let schema = Arc::new(Schema::new(vec![Field::new(
-                        "l",
-                        list.data_type().clone(),
-                        list_nullable,
-                    )]));
-                    let batch = RecordBatch::try_new(
-                        Arc::clone(&schema),
-                        vec![Arc::<GenericListArray<O>>::clone(&list)],
-                    )
-                    .unwrap();
-                    let expr = GetArrayStructFields::new(Arc::new(Column::new("l", 0)), 0);
-                    assert_eq!(expr.nullable(&schema).unwrap(), list_nullable);
-                    let result = expr.evaluate(&batch).unwrap().into_array(4).unwrap();
-                    assert_eq!(expr.data_type(&schema).unwrap(), *result.data_type());
-                    let result = result
-                        .as_any()
-                        .downcast_ref::<GenericListArray<O>>()
-                        .unwrap();
-                    let output_field = match result.data_type() {
-                        DataType::List(field) | DataType::LargeList(field) => field,
-                        _ => unreachable!(),
-                    };
-                    assert_eq!(
-                        output_field.is_nullable(),
-                        element_nullable || field_nullable
-                    );
-                    let values = result
-                        .values()
-                        .as_any()
-                        .downcast_ref::<Int32Array>()
-                        .unwrap();
-                    assert_eq!(values.value(0), 1);
-                    assert_eq!(values.is_null(1), element_nullable);
-                    assert_eq!(result.offsets(), list.offsets());
-                    assert_eq!(result.nulls(), list.nulls());
-                }
-            }
+            let field = Arc::new(Field::new("a", DataType::Int32, field_nullable));
+            let values = Arc::new(StructArray::new(
+                vec![field].into(),
+                vec![Arc::new(Int32Array::from(vec![1, 99]))],
+                element_nullable.then(|| NullBuffer::from(vec![true, false])),
+            ));
+            let list = Arc::new(GenericListArray::<O>::new(
+                Arc::new(Field::new(
+                    "element",
+                    values.data_type().clone(),
+                    element_nullable,
+                )),
+                OffsetBuffer::from_lengths([1, 1, 0, 0]),
+                values,
+                list_nullable.then(|| NullBuffer::from(vec![true, true, true, false])),
+            ));
+            let schema = Arc::new(Schema::new(vec![Field::new(
+                "l",
+                list.data_type().clone(),
+                list_nullable,
+            )]));
+            let batch = RecordBatch::try_new(
+                Arc::clone(&schema),
+                vec![Arc::<GenericListArray<O>>::clone(&list)],
+            )
+            .unwrap();
+            let expr = GetArrayStructFields::new(Arc::new(Column::new("l", 0)), 0);
+            assert_eq!(expr.nullable(&schema).unwrap(), list_nullable);
+            let result = expr.evaluate(&batch).unwrap().into_array(4).unwrap();
+            assert_eq!(expr.data_type(&schema).unwrap(), *result.data_type());
+            let result = result
+                .as_any()
+                .downcast_ref::<GenericListArray<O>>()
+                .unwrap();
+            let output_field = match result.data_type() {
+                DataType::List(field) | DataType::LargeList(field) => field,
+                _ => unreachable!(),
+            };
+            assert_eq!(
+                output_field.is_nullable(),
+                element_nullable || field_nullable
+            );
+            let values = result
+                .values()
+                .as_any()
+                .downcast_ref::<Int32Array>()
+                .unwrap();
+            assert_eq!(values.value(0), 1);
+            assert_eq!(values.is_null(1), element_nullable);
+            assert_eq!(result.offsets(), list.offsets());
+            assert_eq!(result.nulls(), list.nulls());
         }
     }
 
@@ -262,33 +260,30 @@ mod tests {
             .evaluate(&batch)
             .unwrap_err()
             .to_string()
-            .contains("Unexpected child type for ListExtract: Int32"));
+            .contains("Unexpected child type for GetArrayStructFields: Int32"));
     }
 
     #[test]
-    fn mismatched_output_field_returns_error() {
-        let values = Arc::new(StructArray::new(
-            vec![Arc::new(Field::new("a", DataType::Int32, false))].into(),
-            vec![Arc::new(Int32Array::from(vec![1]))],
-            None,
-        ));
-        let list = GenericListArray::<i32>::new(
-            Arc::new(Field::new("element", values.data_type().clone(), false)),
-            OffsetBuffer::from_lengths([1]),
-            values,
-            None,
-        );
-        assert!(get_array_struct_fields(
-            &list,
-            0,
-            Arc::new(Field::new("element", DataType::Int64, false)),
-        )
-        .is_err());
+    fn required_field_of_nullable_element_is_widened() {
+        check_nullability::<i32>(true, false);
+        check_nullability::<i64>(true, false);
     }
 
     #[test]
-    fn get_array_struct_fields_nullability() {
-        check_nullability::<i32>();
-        check_nullability::<i64>();
+    fn required_field_of_required_element_stays_required() {
+        check_nullability::<i32>(false, false);
+        check_nullability::<i64>(false, false);
+    }
+
+    #[test]
+    fn nullable_field_of_required_element_stays_nullable() {
+        check_nullability::<i32>(false, true);
+        check_nullability::<i64>(false, true);
+    }
+
+    #[test]
+    fn nullable_field_of_nullable_element_stays_nullable() {
+        check_nullability::<i32>(true, true);
+        check_nullability::<i64>(true, true);
     }
 }

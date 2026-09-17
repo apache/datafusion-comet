@@ -623,18 +623,14 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
         attributeMap.get(columnName).flatMap { attribute =>
           import Constants.Operations._
           import OperatorOuterClass.IcebergPredicateOperator
-          if (pageIndexUnsupportedColumns.contains(columnName)) {
-            // Any predicate on this column, including a unary IS [NOT] NULL, would reach the page
-            // index and fail, so drop the whole predicate; the post-scan CometFilter enforces it.
+          // iceberg-rust binds accessors only for primitive fields. Containers cannot be partition
+          // columns, so exact partition selection cannot remove their null checks from the
+          // post-scan filter. That filter also enforces predicates unsupported by the page index.
+          if (pageIndexUnsupportedColumns.contains(columnName) ||
+            isComplexType(attribute.dataType)) {
             None
           } else {
             operation match {
-              // iceberg-rust has accessors only for primitive fields, not containers. Keep
-              // the post-scan filter without sending residuals that would warn on every task.
-              // Containers cannot be partition columns, so Iceberg cannot remove their null
-              // checks from the post-scan filter through exact partition selection.
-              case IS_NULL | IS_NOT_NULL | NOT_NULL if isComplexType(attribute.dataType) =>
-                None
               case IS_NULL => Some(unaryPredicate(columnName, IcebergPredicateOperator.IsNull))
               case IS_NOT_NULL | NOT_NULL =>
                 Some(unaryPredicate(columnName, IcebergPredicateOperator.NotNull))

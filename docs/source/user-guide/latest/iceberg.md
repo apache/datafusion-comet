@@ -94,9 +94,14 @@ The native Iceberg reader supports the following features:
 
 - Equality and comparison predicates (`=`, `!=`, `>`, `>=`, `<`, `<=`)
 - Logical operators (`AND`, `OR`)
-- NULL checks (`IS NULL`, `IS NOT NULL`)
+- NULL checks (`IS NULL`, `IS NOT NULL`) on primitive columns
 - `IN` and `NOT IN` list operations
 - `BETWEEN` operations
+
+NULL checks on struct, array, and map columns still use native scans and return correct
+results, but are not pushed into iceberg-rust, which binds accessors only for primitive fields.
+These residuals provide no native row-group pruning, nor do conjunctions containing them;
+safe partial pruning is tracked in [#5883](https://github.com/apache/datafusion-comet/issues/5883).
 
 **Partitioning:**
 
@@ -111,15 +116,6 @@ The native Iceberg reader supports the following features:
 - Local filesystem
 - Hadoop Distributed File System (HDFS)
 - S3-compatible storage (AWS S3, MinIO)
-
-### Predicate pushdown vs native scanning
-
-Native scanning does not imply that every predicate is evaluated inside iceberg-rust.
-List, map, and struct NULL checks can use native scans. Their residuals are omitted
-at serialization time; the retained post-scan filter enforces them. Empty collections
-and collections containing null elements are non-null, matching Spark. A conjunction
-containing one of these residuals currently loses native row-group pruning for primitive conjuncts;
-safe partial pruning is tracked in [#5883](https://github.com/apache/datafusion-comet/issues/5883).
 
 ### REST Catalog
 

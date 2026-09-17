@@ -26,28 +26,24 @@ import java.nio.charset.StandardCharsets.UTF_8
 import scala.collection.mutable
 import scala.jdk.CollectionConverters._
 
-import org.apache.iceberg.Schema
-import org.apache.iceberg.catalog.TableIdentifier
 import org.apache.iceberg.data.IcebergGenerics
 import org.apache.iceberg.expressions.Expressions
-import org.apache.iceberg.spark.{Spark3Util, SparkCatalog}
-import org.apache.iceberg.types.Types
+import org.apache.iceberg.spark.Spark3Util
 import org.apache.spark.CometListenerBusUtils
 import org.apache.spark.scheduler.{SparkListener, SparkListenerTaskEnd}
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
-import org.apache.spark.sql.catalyst.expressions.{AttributeReference, DynamicPruningExpression}
+import org.apache.spark.sql.catalyst.expressions.DynamicPruningExpression
 import org.apache.spark.sql.comet._
 import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
 import org.apache.spark.sql.execution.{InSubqueryExec, ReusedSubqueryExec, SparkPlan, SubqueryExec}
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AdaptiveSparkPlanHelper, BroadcastQueryStageExec}
 import org.apache.spark.sql.execution.exchange.{ReusedExchangeExec, ShuffleExchangeExec}
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{ArrayType, IntegerType, MapType, StringType, StructType, TimestampType}
+import org.apache.spark.sql.types.{ArrayType, StringType, StructType, TimestampType}
 
 import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus, isSpark41Plus, isSpark42Plus}
 import org.apache.comet.iceberg.{IcebergReflection, RESTCatalogHelper}
 import org.apache.comet.serde.OperatorOuterClass
-import org.apache.comet.serde.operator.CometIcebergNativeScan
 import org.apache.comet.testing.{FuzzDataGenerator, SchemaGenOptions}
 
 /**
@@ -2218,29 +2214,6 @@ class CometIcebergNativeSuite
     }
   }
 
-  test("complex type null residuals are not serialized") {
-    assume(icebergAvailable, "Iceberg not available in classpath")
-
-    for (dataType <- Seq(
-        ArrayType(IntegerType),
-        MapType(StringType, IntegerType),
-        new StructType().add("value", IntegerType));
-      predicate <- Seq(Expressions.isNull("value"), Expressions.notNull("value"))) {
-      withClue(s"$dataType: $predicate") {
-        assert(CometIcebergNativeScan
-          .icebergExprToProto(predicate, Seq(AttributeReference("value", dataType)()), Set.empty)
-          .isEmpty)
-      }
-    }
-    assert(
-      CometIcebergNativeScan
-        .icebergExprToProto(
-          Expressions.notNull("value"),
-          Seq(AttributeReference("value", IntegerType)()),
-          Set.empty)
-        .nonEmpty)
-  }
-
   test("required field projection preserves null array elements") {
     assume(icebergAvailable, "Iceberg not available in classpath")
 
@@ -2253,18 +2226,11 @@ class CometIcebergNativeSuite
         CometConf.COMET_EXEC_ENABLED.key -> "true",
         CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
         val tableName = "test_cat.db.required_array_field_test"
-        val catalog = spark.sessionState.catalogManager
-          .catalog("test_cat")
-          .asInstanceOf[SparkCatalog]
-        val element =
-          Types.StructType.of(Types.NestedField.required(4, "a", Types.IntegerType.get()))
-        val schema = new Schema(
-          Types.NestedField.required(1, "id", Types.IntegerType.get()),
-          Types.NestedField.optional(2, "l", Types.ListType.ofOptional(3, element)))
         try {
-          catalog.icebergCatalog.createTable(
-            TableIdentifier.of("db", "required_array_field_test"),
-            schema)
+          spark.sql(s"""
+            CREATE TABLE $tableName (id INT NOT NULL, l ARRAY<STRUCT<a: INT NOT NULL>>)
+            USING iceberg
+          """)
           spark.sql(s"""
             INSERT INTO $tableName VALUES
               (1, array(named_struct('a', 1))),
@@ -2273,19 +2239,18 @@ class CometIcebergNativeSuite
               (4, array(NULL)),
               (5, array(NULL, named_struct('a', 2)))
           """)
-          assert(
-            catalog.icebergCatalog
-              .loadTable(TableIdentifier.of("db", "required_array_field_test"))
-              .schema()
-              .findField("l.element.a")
-              .isRequired)
+          // Assert the shape reaching the expression, not just the catalog's declared schema.
+          val list = spark.table(tableName).schema("l").dataType.asInstanceOf[ArrayType]
+          val element = list.elementType.asInstanceOf[StructType]
+          assert(list.containsNull, s"expected nullable list elements, got $list")
+          assert(!element("a").nullable, s"expected a required element field, got $element")
           val query = s"SELECT id, l.a FROM $tableName"
           val (_, cometPlan) = checkSparkAnswer(query)
           assertSingleNativeScan(cometPlan)
           assert(
             collect(cometPlan) { case project: CometProjectExec => project }.nonEmpty,
             s"$cometPlan")
-          checkAnswer(
+          checkCometAnswer(
             spark.sql(query),
             Seq(
               Row(1, Seq(1)),
@@ -2293,6 +2258,68 @@ class CometIcebergNativeSuite
               Row(3, Seq.empty[Int]),
               Row(4, Seq(null)),
               Row(5, Seq(null, 2))))
+        } finally {
+          spark.sql(s"DROP TABLE IF EXISTS $tableName")
+        }
+      }
+    }
+  }
+
+  test("complex type null checks and generators preserve container semantics") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+        val tableName = "test_cat.db.null_check_test"
+        try {
+          spark.sql(s"""
+            CREATE TABLE $tableName (
+              id INT, l ARRAY<STRUCT<a: INT>>, m MAP<STRING, STRUCT<a: INT>>, s STRUCT<a: INT>
+            ) USING iceberg
+          """)
+          // Container nullness is distinct from emptiness, null elements and null struct fields.
+          spark.sql(s"""
+            INSERT INTO $tableName VALUES
+              (1, array(named_struct('a', 1)), map('k', named_struct('a', 1)), named_struct('a', 1)),
+              (2, NULL, NULL, NULL),
+              (3, array(), map(), named_struct('a', NULL)),
+              (4, array(NULL), map('k', NULL), named_struct('a', NULL)),
+              (5, array(named_struct('a', NULL)), map('k', named_struct('a', NULL)), named_struct('a', NULL))
+          """)
+          for (column <- Seq("l", "m", "s"); predicate <- Seq("IS NULL", "IS NOT NULL")) {
+            val query = s"SELECT id FROM $tableName WHERE $column $predicate"
+            withClue(query) {
+              val (_, cometPlan) = checkSparkAnswer(query)
+              val expected =
+                if (predicate == "IS NULL") Seq(Row(2)) else Seq(1, 3, 4, 5).map(Row(_))
+              checkCometAnswer(spark.sql(query), expected)
+              val scans = collectIcebergNativeScans(cometPlan)
+              assert(scans.length == 1, s"$cometPlan")
+              // Planning commonData leaks manifest streams on Iceberg versions before 1.8.0.
+              if (icebergVersionAtLeast(1, 8)) {
+                val common = OperatorOuterClass.IcebergScanCommon.parseFrom(scans.head.commonData)
+                assert(
+                  common.getResidualPoolCount == 0,
+                  s"unexpected complex-column residual: $query")
+              }
+            }
+          }
+
+          // Spark infers IS NOT NULL below ordinary generators, but not outer generators.
+          // Compare generated rows, including null elements, with Spark for both generator forms.
+          // Native scanning does not imply residual pushdown.
+          for (column <- Seq("l", "m"); generator <- Seq("explode", "explode_outer")) {
+            val query = s"SELECT id, $generator($column) FROM $tableName"
+            withClue(query) {
+              val (_, cometPlan) = checkSparkAnswer(query)
+              assertSingleNativeScan(cometPlan)
+            }
+          }
         } finally {
           spark.sql(s"DROP TABLE IF EXISTS $tableName")
         }
@@ -2480,9 +2507,8 @@ class CometIcebergNativeSuite
             (3, 'Charlie', array(1, 7, 8))
         """)
 
-        // The element predicate is not pushed to iceberg-rust (Iceberg Java only pushes NOT
-        // NULL, which iceberg-rust rejects); the residual is skipped and the post-scan Comet
-        // filter enforces it while the scan stays native
+        // Iceberg Java pushes only NOT NULL here, which iceberg-rust rejects, so nothing is
+        // pushed; the post-scan filter enforces the predicate and the scan stays native.
         checkIcebergNativeScan(
           "SELECT * FROM test_cat.db.array_element_filter_test WHERE array_contains(values, 1) ORDER BY id")
 
@@ -2519,9 +2545,8 @@ class CometIcebergNativeSuite
             (3, 'Charlie', array(1, 2, 3))
         """)
 
-        // The whole-array equality is not pushed to iceberg-rust (Iceberg Java only pushes NOT
-        // NULL, which iceberg-rust rejects); the residual is skipped and the post-scan Comet
-        // filter enforces it while the scan stays native
+        // Iceberg Java pushes only NOT NULL here, which iceberg-rust rejects, so nothing is
+        // pushed; the post-scan filter enforces the predicate and the scan stays native.
         checkIcebergNativeScan(
           "SELECT * FROM test_cat.db.array_value_filter_test WHERE values = array(1, 2, 3) ORDER BY id")
 
@@ -2595,9 +2620,8 @@ class CometIcebergNativeSuite
             (3, 'Charlie', map('age', 30, 'score', 80))
         """)
 
-        // The map-key predicate is not pushed to iceberg-rust (Iceberg Java only pushes NOT
-        // NULL, which iceberg-rust rejects); the residual is skipped and the post-scan Comet
-        // filter enforces it while the scan stays native
+        // Iceberg Java pushes only NOT NULL here, which iceberg-rust rejects, so nothing is
+        // pushed; the post-scan filter enforces the predicate and the scan stays native.
         checkIcebergNativeScan(
           "SELECT * FROM test_cat.db.map_key_filter_test WHERE properties['age'] = 30 ORDER BY id")
 
