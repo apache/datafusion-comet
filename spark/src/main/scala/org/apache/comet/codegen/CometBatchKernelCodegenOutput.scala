@@ -26,11 +26,11 @@ import org.apache.arrow.memory.BufferAllocator
 import org.apache.arrow.vector._
 import org.apache.arrow.vector.complex.{ListVector, MapVector, StructVector}
 import org.apache.arrow.vector.types.pojo.{ArrowType, Field}
+import org.apache.spark.comet.CometTaskArrowAllocator
 import org.apache.spark.sql.catalyst.expressions.codegen.CodegenContext
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.types._
 
-import org.apache.comet.CometArrowAllocator
 import org.apache.comet.shims.CometTypeShim
 
 /**
@@ -87,21 +87,23 @@ private[codegen] object CometBatchKernelCodegenOutput extends CometTypeShim {
    * Closes the vector on any failure so a partially-initialized tree doesn't leak buffers.
    */
   def allocateOutput(field: Field, numRows: Int, estimatedBytes: Int): FieldVector = {
+    // JVM-owned codegen output, accounted to the task that is running the kernel.
+    val allocator = CometTaskArrowAllocator.forCurrentTask()
     val vec: FieldVector = field.getType match {
       case _: ArrowType.List | _: ArrowType.LargeList | _: ArrowType.FixedSizeList =>
-        val v = new RenamedListVector(field, CometArrowAllocator)
+        val v = new RenamedListVector(field, allocator)
         v.initializeChildrenFromFields(field.getChildren)
         v
       case _: ArrowType.Map =>
-        val v = new RenamedMapVector(field, CometArrowAllocator)
+        val v = new RenamedMapVector(field, allocator)
         v.initializeChildrenFromFields(field.getChildren)
         v
       case _: ArrowType.Struct =>
-        val v = new RenamedStructVector(field, CometArrowAllocator)
+        val v = new RenamedStructVector(field, allocator)
         v.initializeChildrenFromFields(field.getChildren)
         v
       case _ =>
-        field.createVector(CometArrowAllocator).asInstanceOf[FieldVector]
+        field.createVector(allocator).asInstanceOf[FieldVector]
     }
     try {
       vec.setInitialCapacity(numRows)

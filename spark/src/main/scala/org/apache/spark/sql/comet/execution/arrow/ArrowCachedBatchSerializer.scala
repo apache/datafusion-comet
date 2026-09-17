@@ -25,6 +25,7 @@ import scala.collection.JavaConverters._
 import scala.util.control.NonFatal
 
 import org.apache.spark.TaskContext
+import org.apache.spark.comet.CometTaskArrowAllocator
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression, GenericInternalRow, IsNotNull, IsNull, UnsafeProjection}
@@ -38,8 +39,6 @@ import org.apache.spark.sql.vectorized.{ColumnarBatch, ColumnVector}
 import org.apache.spark.storage.StorageLevel
 import org.apache.spark.unsafe.types.UTF8String
 import org.apache.spark.util.io.ChunkedByteBuffer
-
-import org.apache.comet.CometArrowAllocator
 
 /**
  * Cached batch format used when Comet writes Spark in-memory cache data.
@@ -356,7 +355,10 @@ class ArrowCachedBatchSerializer extends SimpleMetricsCachedBatchSerializer {
         Utils.serializeBatchColumns(batch)
       } else {
         val arrowBatch =
-          CometArrowConverters.columnarBatchToArrowBatch(batch, arrowSchema, CometArrowAllocator)
+          CometArrowConverters.columnarBatchToArrowBatch(
+            batch,
+            arrowSchema,
+            CometTaskArrowAllocator.forCurrentTask())
         try Utils.serializeBatchColumns(arrowBatch)
         finally arrowBatch.close()
       }
@@ -624,7 +626,7 @@ class ArrowCachedBatchSerializer extends SimpleMetricsCachedBatchSerializer {
           // the Unix epoch regardless of session timezone, so no values are converted. It also
           // matches Comet's native schema, avoiding a cast at the native boundary.
           CometArrowStream.NATIVE_TIMEZONE,
-          CometArrowAllocator)
+          CometTaskArrowAllocator.forCurrentTask())
 
         encodeBatches(iter, schema)
       }

@@ -19,111 +19,161 @@
 
 package org.apache.spark.comet
 
-import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.{AtomicBoolean, AtomicLong}
+
+import scala.util.control.NonFatal
 
 import org.apache.arrow.memory.AllocationListener
-import org.apache.spark.{SparkEnv, TaskContext}
 import org.apache.spark.internal.Logging
-import org.apache.spark.memory.{MemoryConsumer, MemoryMode, TaskMemoryManager}
+import org.apache.spark.memory.{MemoryConsumer, MemoryMode, SparkOutOfMemoryError, TaskMemoryManager}
 
 import org.apache.comet.CometConf
 
 /**
- * Reports JVM-side Arrow allocations to Spark's memory manager.
+ * Accounts one task's JVM-side Arrow allocations against Spark's off-heap execution pool.
  *
  * `CometArrowAllocator` is a process-wide `RootAllocator` with no limit, so until now the
  * off-heap bytes it hands out were counted by nobody: not Spark's `TaskMemoryManager`, and not
  * Comet's native memory pool. They are still resident in the container, which makes them a blind
- * spot when an executor is killed for exceeding its memory limit.
+ * spot when an executor is killed for exceeding its memory limit. This closes the reporting half
+ * of that gap: the bytes appear in `TaskMemoryManager.showMemoryUsage` and are arbitrated against
+ * Spark's other off-heap consumers.
  *
- * This listener closes the reporting half of that gap. Every allocation is charged to a
- * [[MemoryConsumer]] belonging to the task that made it, so the bytes appear in
- * `TaskMemoryManager.showMemoryUsage` and are arbitrated against Spark's other off-heap
- * consumers.
+ * '''Ownership.''' One instance is created per task and attached to that task's Arrow allocator
+ * by [[CometTaskArrowAllocator]]. Arrow reports an allocation and its matching release to the
+ * listener of the allocator that '''owns''' the buffer, on whichever thread happens to drop the
+ * last reference, and `AllocationListener` is handed nothing but a size. Binding the listener to
+ * an allocator is therefore the only way to attribute a release, and reading `TaskContext` inside
+ * the callbacks would get it wrong: the JVM UDF path exports a JVM-owned vector to native, which
+ * drops it later from a Tokio worker with no task context installed. That release would be lost,
+ * leaving the task charged for memory it had already freed, batch after batch.
  *
- * It deliberately does not enforce. A short grant from Spark is logged and the allocation
- * proceeds, because Arrow allocation on these paths cannot fail today and making it fail is a
- * behavioural change that belongs in its own commit. Note that enforcement belongs in
- * `onPreAllocation`, the only callback permitted to throw, and `onFailedAllocation`, not here.
- * See [[https://github.com/apache/datafusion-comet/issues/5997]].
+ * '''Reporting only.''' A short grant is logged and the allocation proceeds, because Arrow
+ * allocation on these paths cannot fail today and making it fail is a behavioural change that
+ * belongs in its own commit. Enforcement belongs in `onPreAllocation`, the only callback
+ * permitted to throw, and in `onFailedAllocation`, not here. See
+ * [[https://github.com/apache/datafusion-comet/issues/5997]].
  *
- * Buffers imported over the C Data Interface never reach this listener at all. They wrap memory
- * the native side owns, so Comet imports them through `CometImportedArrowAllocator`, a child with
- * no listener. Charging them here would double count bytes already reserved in Comet's native
- * pool. Arrow notifies only the allocating allocator's own listener, which is what makes that
- * separation work.
+ * '''Neither callback may throw.''' Arrow's `AllocationListener` documents that, and
+ * `BaseAllocator.buffer` marks the allocation successful before calling `onAllocation`, so
+ * throwing from here loses the buffer Arrow has already created and never hands back. Spark's
+ * acquisition is fallible -- it runs other consumers' `spill`, which turns a task interrupt into
+ * a `RuntimeException` and an I/O failure into a `SparkOutOfMemoryError` -- so every call into
+ * the memory manager is wrapped and reported rather than propagated.
  *
- * Three cases are handled by doing nothing, each for a different reason:
- *   - No active task. Broadcast coalescing and the cached batch serializer can allocate from the
- *     driver or a non-task thread, where there is no task to charge.
- *   - On-heap mode. Comet's on-heap mode exists so the Spark SQL suite can run without off-heap
- *     memory configured; charging an off-heap consumer there would be wrong.
- *   - A buffer released after its allocating task has finished. The allocator is process-wide
- *     precisely because buffers can outlive the task that created them, so the task's reservation
- *     is dropped at task end and later releases are ignored rather than double-counted.
+ * '''Lock order.''' [[getUsed]] and [[spill]] must stay lock-free, because Spark calls both while
+ * holding the `TaskMemoryManager` monitor, and [[adjust]] holds this listener's monitor across
+ * `acquireExecutionMemory`, which takes that monitor. Were the snapshot to take this monitor
+ * instead, a native reservation arriving through `CometTaskMemoryManager` on a Comet Tokio thread
+ * could hold Spark's monitor and wait for ours while an Arrow allocation on the same task held
+ * ours and waited for Spark's.
  */
-class CometArrowAllocationListener extends AllocationListener {
+private[comet] class CometArrowAllocationListener(taskMemoryManager: TaskMemoryManager)
+    extends MemoryConsumer(taskMemoryManager, 0L, MemoryMode.OFF_HEAP)
+    with AllocationListener {
 
   import CometArrowAllocationListener._
 
-  private val reservations = new ConcurrentHashMap[Long, TaskReservation]()
+  /**
+   * Bytes Arrow currently holds on this task's behalf. An atomic rather than a guarded field so
+   * that [[getUsed]] can read it without taking this listener's monitor; see the lock order note
+   * above.
+   */
+  private val live = new AtomicLong(0L)
+
+  /** Bytes currently reserved with Spark. Guarded by this listener's monitor. */
+  private var reserved = 0L
+
+  /** Set once the owning task has finished. Volatile so [[getUsed]] can read it lock-free. */
+  @volatile private var completed = false
 
   override def onAllocation(size: Long): Unit = {
-    val reservation = reservationForCurrentTask()
-    if (reservation != null) {
-      reservation.allocated(size)
-    }
+    live.addAndGet(size)
+    adjustQuietly()
   }
 
   override def onRelease(size: Long): Unit = {
-    val reservation = reservationForCurrentTask()
-    if (reservation != null) {
-      reservation.released(size)
+    live.addAndGet(-size)
+    adjustQuietly()
+  }
+
+  /**
+   * Reports our own tally. Spark reads this for spill-victim ordering, `showMemoryUsage` and
+   * end-of-task leak reporting. The inherited `used` counter stays at zero because this consumer
+   * never calls `acquireMemory` or `allocatePage`; Arrow has already obtained the memory and we
+   * are only accounting for it.
+   *
+   * Reports zero once the task has finished, so that buffers deliberately allowed to outlive
+   * their task are not reported by `cleanUpAllAllocatedMemory` as a Spark memory leak.
+   */
+  override def getUsed: Long = if (completed) 0L else math.max(0L, live.get())
+
+  /** Comet's native operators cannot be made to spill from here. See issue #5997. */
+  override def spill(size: Long, trigger: MemoryConsumer): Long = 0L
+
+  /**
+   * Drops the whole reservation and stops accounting.
+   *
+   * Called from the owning task's completion listener. Anything still alive afterwards is a
+   * buffer that outlives its task, which the process-wide allocator exists to allow; those
+   * releases are ignored rather than charged to whichever task happens to be running by then.
+   */
+  private[comet] def taskCompleted(): Unit = {
+    try {
+      synchronized {
+        completed = true
+        if (reserved > 0L) {
+          taskMemoryManager.releaseExecutionMemory(reserved, this)
+          reserved = 0L
+        }
+      }
+    } catch {
+      case NonFatal(e) => warnOnMemoryManagerFailure(e)
+      case e: SparkOutOfMemoryError => warnOnMemoryManagerFailure(e)
     }
   }
 
-  /** Bytes currently reserved with Spark on behalf of the given task. Visible for testing. */
-  private[comet] def reservedBytesForTask(taskAttemptId: Long): Long = {
-    val reservation = reservations.get(taskAttemptId)
-    if (reservation == null) 0L else reservation.reservedBytes
+  /** Bytes Arrow currently holds on this task's behalf. Visible for testing. */
+  private[comet] def liveBytes: Long = live.get()
+
+  /** Bytes currently reserved with Spark on this task's behalf. Visible for testing. */
+  private[comet] def reservedBytes: Long = synchronized(reserved)
+
+  private def adjustQuietly(): Unit = {
+    try {
+      adjust()
+    } catch {
+      // Both of these are reachable: `acquireExecutionMemory` runs other consumers' `spill`, and
+      // `TaskMemoryManager` rethrows an interrupt as a RuntimeException and an IOException as a
+      // SparkOutOfMemoryError, which is an Error and so slips past NonFatal.
+      case NonFatal(e) => warnOnMemoryManagerFailure(e)
+      case e: SparkOutOfMemoryError => warnOnMemoryManagerFailure(e)
+    }
   }
 
-  private[comet] def trackedTaskCount: Int = reservations.size()
-
-  private def reservationForCurrentTask(): TaskReservation = {
-    // Cheapest check first, and the one that eliminates the most callers: the driver, broadcast
-    // coalescing and the cached batch serializer all allocate with no task in scope. Reading the
-    // config before this would also mean re-reading `SparkEnv` on every allocation in a process
-    // that never has one.
-    val taskContext = TaskContext.get()
-    if (taskContext == null) return null
-    if (!accountingEnabled) return null
-
-    val taskMemoryManager = taskContext.taskMemoryManager()
-    if (taskMemoryManager == null ||
-      taskMemoryManager.getTungstenMemoryMode != MemoryMode.OFF_HEAP) {
-      return null
-    }
-
-    val taskAttemptId = taskContext.taskAttemptId()
-    val existing = reservations.get(taskAttemptId)
-    if (existing != null) return existing
-
-    // Deliberately not `computeIfAbsent`: `addTaskCompletionListener` runs the callback inline if
-    // the task has already completed, and that callback removes from this same map, which is a
-    // recursive update inside a mapping function. Registering outside the map operation avoids it.
-    val created = new TaskReservation(taskMemoryManager)
-    val previous = reservations.putIfAbsent(taskAttemptId, created)
-    if (previous != null) return previous
-
-    taskContext.addTaskCompletionListener[Unit] { _ =>
-      val finished = reservations.remove(taskAttemptId)
-      if (finished != null) {
-        finished.close()
+  private def adjust(): Unit = synchronized {
+    if (!completed) {
+      val liveBytes = math.max(0L, live.get())
+      if (reserved < liveBytes) {
+        // Round up so `reserved` stays a block multiple and growth always leaves headroom.
+        // Requesting the bare deficit would land exactly on `liveBytes` for any buffer at or above
+        // the block size, sending the very next allocation straight back into Spark's lock.
+        val request = roundUpToBlock(liveBytes - reserved)
+        val granted = taskMemoryManager.acquireExecutionMemory(request, this)
+        reserved += granted
+        if (granted < request) {
+          warnOnShortGrant(request, granted)
+        }
+      } else {
+        // Returned in one call rather than one per block: `releaseExecutionMemory` synchronizes on
+        // the executor-wide pool, so a per-block loop would take that lock once per megabyte freed.
+        val excess = ((reserved - liveBytes) / BLOCK_SIZE) * BLOCK_SIZE
+        if (excess > 0L) {
+          taskMemoryManager.releaseExecutionMemory(excess, this)
+          reserved -= excess
+        }
       }
     }
-    created
   }
 }
 
@@ -135,22 +185,10 @@ object CometArrowAllocationListener extends Logging {
    * in whole blocks and only block-crossing changes reach Spark. Deliberately not configurable:
    * it trades lock chatter against reservation slack and has no plausible per-workload tuning.
    */
-  private val BLOCK_SIZE = 1024L * 1024L
+  private[comet] val BLOCK_SIZE = 1024L * 1024L
 
   private val shortGrantLogged = new AtomicBoolean(false)
-
-  /**
-   * Resolved once per JVM. The listener is attached to a `val` in a package object, so it is
-   * constructed on first touch of `CometArrowAllocator`, which can happen before any
-   * `SparkSession` exists and on executors where `SQLConf` does not carry Comet's settings. This
-   * is only read once a `TaskContext` exists, by which point an executor has a `SparkEnv`; the
-   * `Option` guard covers tests that install a task context without one.
-   */
-  private lazy val accountingEnabled: Boolean = Option(SparkEnv.get).forall { env =>
-    env.conf.getBoolean(
-      CometConf.COMET_ARROW_ALLOCATOR_ACCOUNTING_ENABLED.key,
-      CometConf.COMET_ARROW_ALLOCATOR_ACCOUNTING_ENABLED.defaultValue.get)
-  }
+  private val memoryManagerFailureLogged = new AtomicBoolean(false)
 
   private def roundUpToBlock(bytes: Long): Long =
     ((bytes + BLOCK_SIZE - 1) / BLOCK_SIZE) * BLOCK_SIZE
@@ -165,61 +203,15 @@ object CometArrowAllocationListener extends Logging {
     }
   }
 
-  /** One task's reservation against Spark's off-heap pool. */
-  private class TaskReservation(taskMemoryManager: TaskMemoryManager)
-      extends MemoryConsumer(taskMemoryManager, 0L, MemoryMode.OFF_HEAP) {
-
-    // Named `usedBytes` rather than `used` on purpose: `MemoryConsumer` already declares a
-    // `protected long used`, and a private field of that name narrows the inherited member, which
-    // the compiler rejects as weaker access privileges in overriding.
-    private var usedBytes: Long = 0L
-    private var reserved: Long = 0L
-
-    /** Comet's native operators cannot be made to spill from here. See issue #5997. */
-    override def spill(size: Long, trigger: MemoryConsumer): Long = 0L
-
-    /**
-     * Reports our own tally. Spark reads this for spill-victim ordering, `showMemoryUsage` and
-     * end-of-task leak reporting. The inherited `used` counter stays at zero because this
-     * consumer never calls `acquireMemory` or `allocatePage`; Arrow has already obtained the
-     * memory and we are only accounting for it.
-     */
-    override def getUsed: Long = synchronized(usedBytes)
-
-    def reservedBytes: Long = synchronized(reserved)
-
-    def allocated(size: Long): Unit = synchronized {
-      usedBytes += size
-      if (reserved < usedBytes) {
-        // Round up so `reserved` stays a block multiple and growth always leaves headroom.
-        // Requesting the bare deficit would land exactly on `usedBytes` for any buffer at or above
-        // the block size, sending the very next allocation straight back into Spark's lock.
-        val request = roundUpToBlock(usedBytes - reserved)
-        val granted = taskMemoryManager.acquireExecutionMemory(request, this)
-        reserved += granted
-        if (granted < request) {
-          warnOnShortGrant(request, granted)
-        }
-      }
-    }
-
-    def released(size: Long): Unit = synchronized {
-      usedBytes = math.max(0L, usedBytes - size)
-      // Returned in one call rather than one per block: `releaseExecutionMemory` synchronizes on
-      // the executor-wide pool, so a per-block loop would take that lock once per megabyte freed.
-      val excess = ((reserved - usedBytes) / BLOCK_SIZE) * BLOCK_SIZE
-      if (excess > 0L) {
-        taskMemoryManager.releaseExecutionMemory(excess, this)
-        reserved -= excess
-      }
-    }
-
-    def close(): Unit = synchronized {
-      if (reserved > 0L) {
-        taskMemoryManager.releaseExecutionMemory(reserved, this)
-        reserved = 0L
-      }
-      usedBytes = 0L
+  private def warnOnMemoryManagerFailure(e: Throwable): Unit = {
+    if (memoryManagerFailureLogged.compareAndSet(false, true)) {
+      logWarning(
+        "Failed to report a JVM Arrow allocation to Spark's memory manager. The allocation " +
+          "itself is unaffected, so this is a reporting gap rather than a failure, but Spark's " +
+          "view of these bytes will be short until the task ends. " +
+          s"Set ${CometConf.COMET_ARROW_ALLOCATOR_ACCOUNTING_ENABLED.key}=false to stop " +
+          "reporting these allocations to Spark.",
+        e)
     }
   }
 }

@@ -27,6 +27,7 @@ import org.apache.arrow.memory.BufferAllocator
 import org.apache.arrow.vector.ipc.ArrowReader
 import org.apache.arrow.vector.types.pojo.{Field, FieldType, Schema}
 import org.apache.spark.TaskContext
+import org.apache.spark.comet.CometTaskArrowAllocator
 import org.apache.spark.internal.Logging
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.comet.util.Utils
@@ -34,7 +35,6 @@ import org.apache.spark.sql.execution.SparkPlan
 import org.apache.spark.sql.types.StructType
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
-import org.apache.comet.CometArrowAllocator
 import org.apache.comet.vector.{CometDictionaryVector, CometVector, NativeUtil}
 
 /**
@@ -230,7 +230,8 @@ object CometArrowStream extends Logging {
       name: String,
       readerFactory: BufferAllocator => ArrowReader): Iterator[ArrowArrayStream] = {
     val context = TaskContext.get()
-    val allocator = CometArrowAllocator.newChildAllocator(name, 0, Long.MaxValue)
+    val allocator =
+      CometTaskArrowAllocator.forCurrentTask().newChildAllocator(name, 0, Long.MaxValue)
     var reader: ArrowReader = null
     var arrowStream: ArrowArrayStream = null
     try {
@@ -274,7 +275,8 @@ object CometArrowStream extends Logging {
       name: String,
       readerFactory: BufferAllocator => ArrowReader): Iterator[ColumnarBatch] = {
     val context = TaskContext.get()
-    val allocator = CometArrowAllocator.newChildAllocator(name, 0, Long.MaxValue)
+    val allocator =
+      CometTaskArrowAllocator.forCurrentTask().newChildAllocator(name, 0, Long.MaxValue)
     val reader =
       try readerFactory(allocator)
       catch {

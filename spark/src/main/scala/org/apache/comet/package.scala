@@ -21,8 +21,7 @@ package org.apache
 
 import java.util.Properties
 
-import org.apache.arrow.memory.{AllocationListener, BufferAllocator, RootAllocator}
-import org.apache.spark.comet.CometArrowAllocationListener
+import org.apache.arrow.memory.RootAllocator
 import org.apache.spark.internal.Logging
 
 package object comet {
@@ -34,32 +33,17 @@ package object comet {
    * finished later than the close of the allocator, the allocator will think the memory is
    * leaked. To avoid this, we use a single allocator for the whole execution process.
    *
-   * The allocator itself is unlimited, but [[CometArrowAllocationListener]] reports every
-   * allocation to Spark's memory manager so that these off-heap bytes are no longer invisible to
-   * Spark's accounting. It reports without enforcing, so allocation here still cannot fail.
-   */
-  val CometArrowAllocator =
-    new RootAllocator(new CometArrowAllocationListener, Long.MaxValue)
-
-  /**
-   * The allocator for buffers imported over the Arrow C Data Interface.
+   * It carries no allocation listener, so allocating from it directly is not reported to Spark's
+   * memory manager. That is what buffers imported over the Arrow C Data Interface want: they wrap
+   * memory the native side owns and frees, already charged to Comet's native pool, and Arrow's
+   * `wrapForeignAllocation` would otherwise report the full buffer capacity as though a JVM-side
+   * allocation had happened.
    *
-   * An imported buffer wraps memory that the native side owns and frees, but Arrow's
-   * `wrapForeignAllocation` still reports it to the allocator's listener at full buffer capacity,
-   * as though a JVM-side allocation had happened. Importing through [[CometArrowAllocator]] would
-   * therefore charge Spark for native bytes, double counting whatever an operator has already
-   * reserved in Comet's native pool, and the error would grow with batch throughput.
-   *
-   * Arrow notifies only the allocating allocator's own listener, never its ancestors, so a child
-   * with no listener keeps these buffers out of Spark's accounting. It stays a child of the root
-   * so that reference counting and lifetime are unchanged.
+   * JVM-owned allocations should go through `CometTaskArrowAllocator.forCurrentTask()` instead,
+   * which cuts a per-task child whose listener reports the bytes to Spark. Off a task it hands
+   * back this allocator, so the driver-side paths are unchanged.
    */
-  val CometImportedArrowAllocator: BufferAllocator =
-    CometArrowAllocator.newChildAllocator(
-      "comet-imported-ffi",
-      AllocationListener.NOOP,
-      0,
-      Long.MaxValue)
+  val CometArrowAllocator = new RootAllocator(Long.MaxValue)
 
   /**
    * Provides access to build information about the Comet libraries. This will be used by the

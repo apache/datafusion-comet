@@ -64,36 +64,51 @@ Enabling Comet does not add one new memory consumer, it adds several, and they a
 accounted by the same party. This inventory is worth internalizing before reading the rest of the
 page:
 
-| Allocator                                                  | Lives in    | Bounded by                                                    | Visible to Spark? |
-| ---------------------------------------------------------- | ----------- | ------------------------------------------------------------- | ----------------- |
-| Spark execution + storage (on-heap)                        | JVM heap    | `spark.executor.memory` and the unified memory manager        | Yes               |
-| Spark Tungsten (off-heap)                                  | Off-heap    | `spark.memory.offHeap.size` via `TaskMemoryManager`           | Yes               |
-| Comet native (Rust global allocator)                       | Native heap | `memory_limit` (see below), enforced only via the memory pool | No                |
-| Comet JVM Arrow (`CometArrowAllocator`)                    | Off-heap    | **Nothing**, but reported to `TaskMemoryManager`              | Yes               |
-| Comet imported FFI buffers (`CometImportedArrowAllocator`) | Native heap | Comet's native memory pool, when an operator reserved them    | No                |
-| Comet JVM shuffle pages                                    | Off-heap    | `spark.memory.offHeap.size` via `TaskMemoryManager`           | Yes               |
+| Allocator                                    | Lives in    | Bounded by                                                    | Visible to Spark? |
+| -------------------------------------------- | ----------- | ------------------------------------------------------------- | ----------------- |
+| Spark execution + storage (on-heap)          | JVM heap    | `spark.executor.memory` and the unified memory manager        | Yes               |
+| Spark Tungsten (off-heap)                    | Off-heap    | `spark.memory.offHeap.size` via `TaskMemoryManager`           | Yes               |
+| Comet native (Rust global allocator)         | Native heap | `memory_limit` (see below), enforced only via the memory pool | No                |
+| Comet JVM Arrow, in a task (task allocator)  | Off-heap    | **Nothing**, but reported to `TaskMemoryManager`              | Yes               |
+| Comet JVM Arrow, off a task, and FFI imports | Off-heap    | **Nothing**: a `RootAllocator(Long.MaxValue)`                 | No                |
+| Comet JVM shuffle pages                      | Off-heap    | `spark.memory.offHeap.size` via `TaskMemoryManager`           | Yes               |
 
-Two observations follow.
+Several observations follow.
 
-**Comet's JVM-side Arrow allocator is reported to Spark, but still unbounded.** `CometArrowAllocator`
-(`spark/src/main/scala/org/apache/comet/package.scala`) is a single process-wide
-`new RootAllocator(Long.MaxValue)`. Child allocators are cut from it for FFI stream export
-(`CometNativeArrowSource`), broadcast coalescing, and `CometSparkToColumnarExec`. A
-`CometArrowAllocationListener` on the root charges each allocation to a `MemoryConsumer` for the
-task that made it, in whole blocks, so these bytes now appear in `showMemoryUsage` and are
+**Comet's JVM-side Arrow allocations inside a task are reported to Spark, but still unbounded.**
+`CometArrowAllocator` (`spark/src/main/scala/org/apache/comet/package.scala`) is a single
+process-wide `new RootAllocator(Long.MaxValue)`. Child allocators are cut from it for FFI stream
+export (`CometNativeArrowSource`), broadcast coalescing, and `CometSparkToColumnarExec`. JVM-owned
+allocations do not use the root directly: `CometTaskArrowAllocator.forCurrentTask()` hands each
+task a child carrying its own `CometArrowAllocationListener`, which charges the bytes to a
+`MemoryConsumer` for that task in whole blocks, so they appear in `showMemoryUsage` and are
 arbitrated against Spark's other off-heap consumers. The limit is still `Long.MaxValue`: the
 listener reports without enforcing, so an allocation here cannot fail, though the bytes do consume
 the off-heap pool and other consumers see correspondingly less headroom. Set
 `spark.comet.arrowAllocator.accounting.enabled=false` to stop reporting them.
 
-**Buffers imported over the C Data Interface are deliberately excluded from that accounting.**
+**The owner is the allocator, not the calling thread.** Arrow hands `AllocationListener` nothing
+but a size, and it reports a release on whichever thread drops the last reference, which for
+anything exported over the C Data Interface is a Tokio worker with no task context installed.
+Attributing by `TaskContext` would therefore drop those releases and leave a task charged for
+memory it had already freed. Binding one listener to one task's allocator is what makes the release
+land on the task that allocated. Children cut from a task allocator inherit its listener, so the
+paths that make their own children are covered without knowing about any of this.
+
+**Anything allocated from the root itself is not accounted, which is what FFI imports want.**
 Arrow's `wrapForeignAllocation` reports an imported buffer to the allocator's listener at full
 capacity even though no JVM-side allocation happened, so charging them would count native memory
 that Comet's own pool has already reserved, with the error growing in proportion to batch
-throughput. Imports therefore go through `CometImportedArrowAllocator`, a child allocator with no
-listener; Arrow notifies only the allocating allocator's own listener and never its ancestors. The
-import sites are `NativeUtil` and `CometUdfBridge`. Export, IPC and materialisation keep the
-charging root.
+throughput. `NativeUtil` and `CometUdfBridge` therefore import through the listener-less root,
+while export, IPC and materialisation use the task allocator. The driver, broadcast coalescing and
+the cached batch serializer also fall back to the root when there is no task to charge, as does
+Comet's on-heap mode.
+
+**A task allocator is closed only once it has been drained.** The process-wide allocator exists
+because Arrow buffers can outlive the task that created them, and Arrow treats closing an allocator
+that still owns bytes as a leak. At task completion the Spark reservation is dropped and the
+allocator is closed if it is empty; otherwise it is parked and closed by a later task once the
+stragglers are released, since `BaseAllocator` keeps every child in a map until it closes.
 
 **The JVM shuffle allocator is an ordinary Spark consumer.** `CometShuffleMemoryAllocator.getInstance`
 returns `CometUnifiedShuffleMemoryAllocator`, a Spark `MemoryConsumer` drawing from
@@ -218,13 +233,13 @@ accounting (if any) saw the bytes appear. Whether the buffer is _reserved_ in Co
 separate decision, made by whichever operator holds it, and that operator neither knows nor cares
 which side of the boundary the bytes came from.
 
-**JVM → native (`ScanExec`).** The JVM allocates the Arrow buffers from a child of
-`CometArrowAllocator` and exports the whole per-partition iterator once as an `ArrowArrayStream`.
+**JVM → native (`ScanExec`).** The JVM allocates the Arrow buffers from a child of the task
+allocator and exports the whole per-partition iterator once as an `ArrowArrayStream`.
 `ScanExec` imports each batch through `AlignedArrowStreamReader` with `CopyMode::UnpackOrClone`:
 dictionary columns are unpacked into new native arrays, everything else is an `Arc` clone of the
 imported buffers. Those bytes stay where Java Arrow put them and are pinned for as long as any native
-reference survives. They are invisible to Spark's `TaskMemoryManager`, and `CometArrowAllocator` is
-unbounded, so nobody charged for them at allocation time. Whether they are charged _later_ depends
+reference survives. They are reported to Spark's `TaskMemoryManager` at allocation time, but nothing
+caps them, because the task allocator reports without enforcing. Whether they are charged _later_ depends
 on who holds them. DataFusion's `ExternalSorter` reserves `get_reserved_bytes_for_record_batch` for
 every batch it retains, and the hash join build side reserves `get_record_batch_memory_size` for
 each incoming batch; both read buffer sizes off the `ArrayData` and apply equally to imported
@@ -299,7 +314,7 @@ hard ceiling on the sum of everything in the container. That cgroup counts, amon
 - JVM non-heap: metaspace, code cache, thread stacks, GC structures, Netty direct buffers,
 - Spark's own off-heap allocations,
 - **all of Comet's native allocations**,
-- Comet's JVM-side Arrow buffers (`CometArrowAllocator`),
+- Comet's JVM-side Arrow buffers (`CometArrowAllocator` and the per-task allocators cut from it),
 - page cache charged to the cgroup by the container's file I/O, including spill files.
 
 Only the first and a portion of the third are visible to Spark's accounting. When the total crosses
@@ -334,9 +349,11 @@ much they matter:
   the fact. There is no runtime value that an operator, a metric, or a policy could read.
 - **`spark.comet.exec.memoryPool.fraction` is a manual proxy for the gap.** It asks operators to
   guess a per-workload haircut rather than measuring anything.
-- **`CometArrowAllocator` is unbounded.** Its allocations are now reported to Spark's memory
-  manager, so they are no longer invisible, but nothing caps them: the listener reports without
-  enforcing, and enforcing would mean failing allocations on paths that cannot fail today.
+- **`CometArrowAllocator` is unbounded.** Allocations made inside a task are now reported to
+  Spark's memory manager, so they are no longer invisible, but nothing caps them: the listener
+  reports without enforcing, and enforcing would mean failing allocations on paths that cannot fail
+  today. Allocations made off a task, and buffers imported over the C Data Interface, are not
+  reported at all.
 - **Buffer and reservation lifetimes are independent across the FFI boundary.** A batch can be
   resident on either side with no reservation covering it, because reservations are made and
   withdrawn by individual operators while the bytes outlive them.

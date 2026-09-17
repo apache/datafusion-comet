@@ -209,9 +209,11 @@ public class CometUdfBridge {
             });
     assert udf != null : "reflective instantiation returned null for " + udfClassName;
 
-    BufferAllocator allocator = org.apache.comet.package$.MODULE$.CometArrowAllocator();
-    BufferAllocator importAllocator =
-        org.apache.comet.package$.MODULE$.CometImportedArrowAllocator();
+    // The result vector below is JVM-owned, so it is allocated from this task's accounted
+    // allocator. Rust retains it through `from_ffi` and drops it later from a Tokio worker with no
+    // task context installed, which is exactly why the accounting is bound to the allocator rather
+    // than to the releasing thread.
+    BufferAllocator allocator = org.apache.spark.comet.CometTaskArrowAllocator.forCurrentTask();
 
     ValueVector[] inputs = new ValueVector[inputArrayPtrs.length];
     ValueVector result = null;
@@ -219,10 +221,11 @@ public class CometUdfBridge {
       for (int i = 0; i < inputArrayPtrs.length; i++) {
         ArrowArray inArr = ArrowArray.wrap(inputArrayPtrs[i]);
         ArrowSchema inSch = ArrowSchema.wrap(inputSchemaPtrs[i]);
-        // Imported from native memory that the native side owns and frees, so it is deliberately
-        // not reported to Spark's memory manager. The export below still uses the root allocator,
-        // whose allocations are JVM-owned.
-        inputs[i] = Data.importVector(importAllocator, inArr, inSch, null);
+        // Imported from native memory that the native side owns and frees, already charged to
+        // Comet's native pool, so it goes through the unaccounted root allocator.
+        inputs[i] =
+            Data.importVector(
+                org.apache.comet.package$.MODULE$.CometArrowAllocator(), inArr, inSch, null);
       }
 
       result = udf.evaluate(inputs, numRows);
