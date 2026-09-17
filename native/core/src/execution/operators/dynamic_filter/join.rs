@@ -27,189 +27,26 @@
 use std::fmt::Formatter;
 use std::sync::Arc;
 
-use arrow::compute::filter_record_batch;
 use arrow::datatypes::DataType;
-use datafusion::common::cast::as_boolean_array;
 use datafusion::common::config::ConfigOptions;
 use datafusion::common::tree_node::TreeNodeRecursion;
-use datafusion::common::{internal_err, JoinType, NullEquality, Result, ScalarValue, Statistics};
-use datafusion::datasource::physical_plan::ParquetSource;
-use datafusion::datasource::source::DataSourceExec;
+use datafusion::common::{JoinType, NullEquality, Result, Statistics};
 use datafusion::execution::TaskContext;
-use datafusion::logical_expr::{ColumnarValue, Operator};
-use datafusion::physical_expr::expressions::{
-    lit, BinaryExpr, Column, DynamicFilterPhysicalExpr, IsNotNullExpr,
-};
+use datafusion::physical_expr::expressions::{lit, Column, DynamicFilterPhysicalExpr};
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::distribution_requirements::InputDistributionRequirements;
-use datafusion::physical_plan::execution_plan::CardinalityEffect;
 use datafusion::physical_plan::joins::{HashJoinExec, PartitionMode};
 use datafusion::physical_plan::metrics::{ExecutionPlanMetricsSet, MetricBuilder, MetricsSet};
 use datafusion::physical_plan::statistics::{ChildStats, StatisticsArgs};
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{
-    apply_expression_roots, ChildrenPropertiesMode, DisplayAs, DisplayFormatType, ExecutionPlan,
-    ExecutionPlanProperties, PlanProperties, ReplaceChildrenOptions, SendableRecordBatchStream,
+    ChildrenPropertiesMode, DisplayAs, DisplayFormatType, ExecutionPlan, ExecutionPlanProperties,
+    PlanProperties, ReplaceChildrenOptions, SendableRecordBatchStream,
 };
 use futures::StreamExt;
 
-use super::CometFilterExec;
-use crate::parquet::file_error_context::ParquetErrorContext;
-
-/// A task-local consumer of DataFusion's build-side runtime filter.
-#[derive(Debug)]
-pub(crate) struct DynamicFilterExec {
-    input: Arc<dyn ExecutionPlan>,
-    predicate: Arc<DynamicFilterPhysicalExpr>,
-    metrics: ExecutionPlanMetricsSet,
-}
-
-impl DynamicFilterExec {
-    fn new(input: Arc<dyn ExecutionPlan>, predicate: Arc<DynamicFilterPhysicalExpr>) -> Self {
-        Self {
-            input,
-            predicate,
-            metrics: ExecutionPlanMetricsSet::new(),
-        }
-    }
-}
-
-impl DisplayAs for DynamicFilterExec {
-    fn fmt_as(&self, _t: DisplayFormatType, f: &mut Formatter) -> std::fmt::Result {
-        write!(f, "CometDynamicFilterExec")
-    }
-}
-
-impl ExecutionPlan for DynamicFilterExec {
-    fn name(&self) -> &str {
-        "CometDynamicFilterExec"
-    }
-
-    fn properties(&self) -> &Arc<PlanProperties> {
-        // Removing rows preserves the input's schema, ordering and partitioning.
-        self.input.properties()
-    }
-
-    fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
-        vec![&self.input]
-    }
-
-    fn apply_expressions(
-        &self,
-        f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> Result<TreeNodeRecursion>,
-    ) -> Result<TreeNodeRecursion> {
-        apply_expression_roots([Arc::clone(&self.predicate) as Arc<dyn PhysicalExpr>], f)
-    }
-
-    fn maintains_input_order(&self) -> Vec<bool> {
-        vec![true]
-    }
-
-    fn cardinality_effect(&self) -> CardinalityEffect {
-        CardinalityEffect::LowerEqual
-    }
-
-    fn with_new_children(
-        self: Arc<Self>,
-        children: Vec<Arc<dyn ExecutionPlan>>,
-    ) -> Result<Arc<dyn ExecutionPlan>> {
-        self.replace_children(
-            children,
-            ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
-        )
-    }
-
-    fn replace_children(
-        self: Arc<Self>,
-        mut children: Vec<Arc<dyn ExecutionPlan>>,
-        _options: ReplaceChildrenOptions,
-    ) -> Result<Arc<dyn ExecutionPlan>> {
-        if children.len() != 1 {
-            return internal_err!("CometDynamicFilterExec requires one child");
-        }
-        Ok(Arc::new(Self::new(
-            children.remove(0),
-            Arc::clone(&self.predicate),
-        )))
-    }
-
-    fn reset_state(self: Arc<Self>) -> Result<Arc<dyn ExecutionPlan>> {
-        // HashJoinExec resets its producer on reexecution. Never retain a previous
-        // build's domain in the consumer. A reset plan safely bypasses filtering;
-        // ordinary Spark task attempts each construct a fresh, connected plan.
-        let predicate = Arc::new(DynamicFilterPhysicalExpr::new(
-            self.predicate.children().into_iter().cloned().collect(),
-            lit(true),
-        ));
-        Ok(Arc::new(Self::new(Arc::clone(&self.input), predicate)))
-    }
-
-    fn execute(
-        &self,
-        partition: usize,
-        context: Arc<TaskContext>,
-    ) -> Result<SendableRecordBatchStream> {
-        let children = self.predicate.children();
-        let [key] = children.as_slice() else {
-            return internal_err!("CometDynamicFilterExec requires one join-key column");
-        };
-        let Some(key) = key.downcast_ref::<Column>() else {
-            return internal_err!("CometDynamicFilterExec requires a direct join-key column");
-        };
-        let key_index = key.index();
-        let predicate = Arc::clone(&self.predicate)
-            .with_new_children(vec![Arc::new(Column::new(key.name(), 0))])?;
-        let input = self.input.execute(partition, context)?;
-        let evaluated =
-            MetricBuilder::new(&self.metrics).counter("dynamic_filter_rows_evaluated", partition);
-        let pruned =
-            MetricBuilder::new(&self.metrics).counter("dynamic_filter_rows_pruned", partition);
-        let bypassed =
-            MetricBuilder::new(&self.metrics).counter("dynamic_filter_rows_bypassed", partition);
-        // Only dedicated metrics: merging this helper into the Spark join must not
-        // add its input/output counts or elapsed time to the join's existing metrics.
-        let eval_time =
-            MetricBuilder::new(&self.metrics).subset_time("dynamic_filter_eval_time", partition);
-        let stream = input.map(move |batch| {
-            let batch = batch?;
-            let _timer = eval_time.timer();
-            // AND may prefilter its input before evaluating hash membership. A
-            // zero-copy key projection keeps payload columns out of that temporary
-            // batch. The remapped expression still observes live producer updates.
-            let key_batch = batch.project(&[key_index])?;
-            match predicate.evaluate(&key_batch)? {
-                // DataFusion leaves this placeholder unchanged until the complete
-                // build is available, or if it declines to populate the filter.
-                ColumnarValue::Scalar(ScalarValue::Boolean(Some(true))) => {
-                    bypassed.add(batch.num_rows());
-                    Ok(batch)
-                }
-                ColumnarValue::Scalar(ScalarValue::Boolean(Some(false) | None)) => {
-                    evaluated.add(batch.num_rows());
-                    pruned.add(batch.num_rows());
-                    Ok(batch.slice(0, 0))
-                }
-                ColumnarValue::Array(mask) => {
-                    let filtered = filter_record_batch(&batch, as_boolean_array(&mask)?)?;
-                    evaluated.add(batch.num_rows());
-                    pruned.add(batch.num_rows() - filtered.num_rows());
-                    Ok(filtered)
-                }
-                _ => internal_err!("Join dynamic filter must evaluate to a Boolean"),
-            }
-        });
-        // Return even empty batches. Each poll consumes at most one input batch,
-        // so a selective filter cannot drain a ready input in an unbounded loop.
-        Ok(Box::pin(RecordBatchStreamAdapter::new(
-            self.schema(),
-            stream,
-        )))
-    }
-
-    fn metrics(&self) -> Option<MetricsSet> {
-        Some(self.metrics.clone_inner())
-    }
-}
+use super::parquet_reader::try_attach_parquet_reader_filter;
+use super::DynamicFilterExec;
 
 /// A permanent plan must not own a completed join's filter or build accumulator:
 /// those can retain the hash map after its stream-owned reservation is released.
@@ -227,100 +64,6 @@ pub(crate) struct DynamicFilterJoinExec {
 struct RuntimeDynamicFilterJoin {
     join: HashJoinExec,
     reader_filter_attached: bool,
-}
-
-/// Recognize only direct-column null checks joined by AND, without evaluating
-/// or changing the predicate. Every accepted leaf is deterministic, infallible,
-/// and only discards rows, so reader pruning cannot suppress expression errors
-/// or alter stateful evaluation. All other expressions remain a boundary.
-fn is_direct_column_null_checks(predicate: &Arc<dyn PhysicalExpr>) -> bool {
-    if let Some(binary) = predicate.downcast_ref::<BinaryExpr>() {
-        return binary.op() == &Operator::And
-            && is_direct_column_null_checks(binary.left())
-            && is_direct_column_null_checks(binary.right());
-    }
-    predicate
-        .downcast_ref::<IsNotNullExpr>()
-        .is_some_and(|is_not_null| is_not_null.arg().is::<Column>())
-}
-
-fn try_attach_parquet_reader_filter(
-    input: &Arc<dyn ExecutionPlan>,
-    predicate: Arc<DynamicFilterPhysicalExpr>,
-    config: &ConfigOptions,
-) -> Result<Option<Arc<dyn ExecutionPlan>>> {
-    // Filtering before a fetch can change which rows are selected by its limit.
-    if input.fetch().is_some() {
-        log::debug!("Join dynamic filter reader pushdown skipped: probe has a fetch limit");
-        return Ok(None);
-    }
-    // Spark inserts IS NOT NULL residuals above equijoin inputs, including AND
-    // chains of inferred null checks. A reader predicate can cross those direct
-    // checks because both operations only discard rows. Keep every other filter
-    // as a boundary: reader pruning would change which rows reach stateful
-    // expressions and can suppress expression errors.
-    if let Some(filter) = input.downcast_ref::<CometFilterExec>() {
-        if filter.has_projection() {
-            log::debug!(
-                "Join dynamic filter reader pushdown skipped: probe FilterExec has a projection"
-            );
-            return Ok(None);
-        }
-        if !is_direct_column_null_checks(filter.predicate()) {
-            log::debug!(
-                "Join dynamic filter reader pushdown skipped: probe filter is not direct column IS NOT NULL checks"
-            );
-            return Ok(None);
-        }
-        let Some(reader) =
-            try_attach_parquet_reader_filter(filter.input(), Arc::clone(&predicate), config)?
-        else {
-            return Ok(None);
-        };
-        return match filter.with_execution_input(reader) {
-            Ok(updated) => Ok(Some(updated)),
-            Err(error) => {
-                log::debug!(
-                    "Join dynamic filter reader pushdown skipped: probe filter rebuild failed: {error}"
-                );
-                Ok(None)
-            }
-        };
-    }
-    let Some(scan) = input.downcast_ref::<DataSourceExec>() else {
-        log::debug!(
-            "Join dynamic filter reader pushdown skipped: probe root is {}",
-            input.name()
-        );
-        return Ok(None);
-    };
-    if scan.downcast_to_file_source::<ParquetSource>().is_none()
-        && scan
-            .downcast_to_file_source::<ParquetErrorContext>()
-            .is_none()
-    {
-        log::debug!("Join dynamic filter reader pushdown skipped: probe is not Parquet");
-        return Ok(None);
-    }
-
-    let predicate: Arc<dyn PhysicalExpr> = predicate;
-    let propagation = match scan
-        .data_source()
-        .try_pushdown_filters(vec![predicate], config)
-    {
-        Ok(propagation) => propagation,
-        Err(error) => {
-            log::debug!(
-                "Join dynamic filter reader pushdown skipped: predicate remapping failed: {error}"
-            );
-            return Ok(None);
-        }
-    };
-    let Some(data_source) = propagation.updated_node else {
-        log::debug!("Join dynamic filter reader pushdown skipped: Parquet declined the predicate");
-        return Ok(None);
-    };
-    Ok(Some(Arc::new(scan.clone().with_data_source(data_source))))
 }
 
 impl DynamicFilterJoinExec {
@@ -352,11 +95,12 @@ impl DynamicFilterJoinExec {
             &self.config,
         )?;
         let reader_filter_attached = reader.is_some();
-        let consumer = Arc::new(DynamicFilterExec {
-            input: reader.unwrap_or_else(|| Arc::clone(self.template.right())),
-            predicate: Arc::clone(&predicate),
-            metrics: self.metrics.clone(),
-        });
+        let consumer = Arc::new(DynamicFilterExec::new(
+            reader.unwrap_or_else(|| Arc::clone(self.template.right())),
+            Arc::clone(&predicate),
+            self.metrics.clone(),
+            "dynamic_filter_join",
+        ));
         // In particular, do not share CollectLeft's cached build future with the
         // template, another execution, or a reset plan.
         let join = self
@@ -497,9 +241,9 @@ impl ExecutionPlan for DynamicFilterJoinExec {
     ) -> Result<SendableRecordBatchStream> {
         let runtime = self.build_runtime_join()?;
         let attachment_metric = if runtime.reader_filter_attached {
-            "dynamic_filter_reader_filters_attached"
+            "dynamic_filter_join_filters_attached"
         } else {
-            "dynamic_filter_reader_filters_skipped"
+            "dynamic_filter_join_filters_skipped"
         };
         MetricBuilder::new(&self.metrics)
             .counter(attachment_metric, partition)
