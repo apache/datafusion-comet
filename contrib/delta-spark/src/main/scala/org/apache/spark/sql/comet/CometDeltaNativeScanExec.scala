@@ -203,6 +203,7 @@ case class CometDeltaNativeScanExec(
       Map(sourceKey -> commonData),
       Map(sourceKey -> perPartitionData),
       serializedPlan,
+      PlanDataInjector.planFingerprint(serializedPlan),
       perPartitionData.length,
       output.length,
       nativeMetrics,

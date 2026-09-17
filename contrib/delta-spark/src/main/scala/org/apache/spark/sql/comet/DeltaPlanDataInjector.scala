@@ -32,6 +32,9 @@ import org.apache.comet.serde.OperatorOuterClass.Operator
  */
 class DeltaPlanDataInjector extends PlanDataInjector {
 
+  // The partition-invariant half of a DeltaSparkScan: common + delta_common, no file partition.
+  override type Prepared = OperatorOuterClass.DeltaSparkScan
+
   override val opStructCase: Operator.OpStructCase = Operator.OpStructCase.CONTRIB_SCAN
 
   override def canInject(op: Operator): Boolean =
@@ -43,13 +46,13 @@ class DeltaPlanDataInjector extends PlanDataInjector {
   override def getKey(op: Operator): Option[String] =
     Some(DeltaSparkScanEnvelope.unpack(op).getDeltaCommon.getSourceKey)
 
-  override def inject(
-      op: Operator,
-      commonBytes: Array[Byte],
-      partitionBytes: Array[Byte]): Operator = {
-    // commonBytes is a DeltaSparkScan proto carrying common + delta_common (no file partition);
+  // commonBytes is a DeltaSparkScan proto carrying common + delta_common (no file partition).
+  // Parsing it dominates inject() on wide schemas; injectPlanData memoizes the result per stage.
+  override def prepareCommon(commonBytes: Array[Byte]): Prepared =
+    OperatorOuterClass.DeltaSparkScan.parseFrom(commonBytes)
+
+  override def inject(op: Operator, common: Prepared, partitionBytes: Array[Byte]): Operator = {
     // partitionBytes is a DeltaSparkScan proto carrying only this partition's file list.
-    val common = OperatorOuterClass.DeltaSparkScan.parseFrom(commonBytes)
     val partitionOnly = OperatorOuterClass.DeltaSparkScan.parseFrom(partitionBytes)
 
     val scanBuilder = OperatorOuterClass.DeltaSparkScan
