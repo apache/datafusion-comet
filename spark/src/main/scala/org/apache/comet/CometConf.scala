@@ -853,12 +853,14 @@ object CometConf extends ShimCometConf {
   val COMET_ARROW_ALLOCATOR_ACCOUNTING_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.arrowAllocator.accounting.enabled")
       .category(CATEGORY_TUNING)
-      .doc("When enabled, JVM-side Arrow allocations are reported to Spark's memory manager so that " +
-        "they are visible to Spark's off-heap accounting rather than being invisible to every " +
-        "budget. Reporting only: an allocation is never failed by this setting, but the bytes " +
-        "do consume the off-heap pool, so other consumers see correspondingly less headroom. " +
-        "Disable to restore the previous behaviour of not accounting for these allocations. " +
-        s"$TUNING_GUIDE.")
+      .doc(
+        "When enabled, JVM-side Arrow allocations are reported to Spark's memory " +
+          "manager, so they are visible to Spark's off-heap accounting rather than to no " +
+          "budget at all. Reporting only: this setting never fails an allocation, but the " +
+          "bytes do consume the off-heap pool, so other consumers see correspondingly less " +
+          "headroom. Disable to restore the previous behaviour of not accounting for these " +
+          "allocations. " +
+          s"$TUNING_GUIDE.")
       .booleanConf
       .createWithDefault(true)
 
