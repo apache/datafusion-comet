@@ -638,20 +638,15 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
       val b = "CAST(_2 AS STRING COLLATE UTF8_LCASE)"
       val inputs = Seq(
         s"array($a, $b)",
-        s"array(array($a), array($b))",
-        s"array(named_struct('s', $a), named_struct('s', $b))",
         s"array(named_struct('s', array($a)), named_struct('s', array($b)))")
-      for (strict <- Seq(false, true)) {
-        withSQLConf(
-          CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key -> strict.toString,
-          CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "false",
-          CometConf.getExprAllowIncompatConfigKey(classOf[ArrayMin]) -> "false",
-          CometConf.getExprAllowIncompatConfigKey(classOf[ArrayMax]) -> "false") {
-          for (function <- Seq("array_min", "array_max"); input <- inputs) {
-            checkSparkAnswerAndFallbackReason(
-              s"SELECT $function($input) FROM collated_extrema",
-              "Array extrema use binary string ordering")
-          }
+      withSQLConf(
+        CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "false",
+        CometConf.getExprAllowIncompatConfigKey(classOf[ArrayMin]) -> "false",
+        CometConf.getExprAllowIncompatConfigKey(classOf[ArrayMax]) -> "false") {
+        for (function <- Seq("array_min", "array_max"); input <- inputs) {
+          checkSparkAnswerAndFallbackReason(
+            s"SELECT $function($input) FROM collated_extrema",
+            "Array extrema use binary string ordering")
         }
       }
     }

@@ -20,11 +20,10 @@ use std::sync::Arc;
 
 use arrow::array::{
     make_array, make_comparator, new_empty_array, Array, ArrayRef, AsArray, DynComparator,
-    FixedSizeListArray, GenericListArray, GenericListViewArray, MutableArrayData, OffsetSizeTrait,
-    PrimitiveArray, PrimitiveBuilder, StructArray, UInt64Array,
+    ListArray, MutableArrayData, PrimitiveArray, PrimitiveBuilder, StructArray, UInt32Array,
 };
 use arrow::buffer::NullBuffer;
-use arrow::compute::{cast, take, SortOptions};
+use arrow::compute::{take, SortOptions};
 use arrow::datatypes::{ArrowPrimitiveType, DataType, Float32Type, Float64Type};
 use datafusion::common::{exec_err, Result, ScalarValue};
 use datafusion::functions_nested::min_max::{array_max_udf, array_min_udf};
@@ -85,7 +84,10 @@ impl ScalarUDFImpl for SparkArrayExtrema {
         if matches!(input, ColumnarValue::Array(array) if array.is_empty()) {
             return Ok(ColumnarValue::Array(new_empty_array(&element_type)));
         }
-        if !needs_spark_ordering(&element_type) {
+        if !matches!(
+            element_type,
+            DataType::Float32 | DataType::Float64 | DataType::List(_) | DataType::Struct(_)
+        ) {
             return self.datafusion_udf.invoke_with_args(args);
         }
 
@@ -94,13 +96,8 @@ impl ScalarUDFImpl for SparkArrayExtrema {
             ColumnarValue::Array(array) => Arc::clone(array),
             ColumnarValue::Scalar(value) => value.to_array()?,
         };
-        let result = match array.data_type() {
-            DataType::List(_) => array_extrema(array.as_list::<i32>(), self.is_min)?,
-            DataType::LargeList(_) => array_extrema(array.as_list::<i64>(), self.is_min)?,
-            // The delegated return_type above rejects an outer FixedSizeList. Supporting it as
-            // a nested element in spark_comparator does not broaden the function's signature.
-            other => return exec_err!("{} does not support type {other}", self.name()),
-        };
+        // Spark arrays use Arrow's 32-bit List layout.
+        let result = array_extrema(array.as_list::<i32>(), self.is_min)?;
 
         if is_scalar {
             Ok(ColumnarValue::Scalar(ScalarValue::try_from_array(
@@ -112,28 +109,10 @@ impl ScalarUDFImpl for SparkArrayExtrema {
     }
 }
 
-fn needs_spark_ordering(data_type: &DataType) -> bool {
-    matches!(
-        data_type,
-        DataType::Float32
-            | DataType::Float64
-            | DataType::List(_)
-            | DataType::LargeList(_)
-            | DataType::FixedSizeList(_, _)
-            | DataType::ListView(_)
-            | DataType::LargeListView(_)
-            | DataType::Struct(_)
-            | DataType::Dictionary(_, _)
-    )
-}
-
-fn array_extrema<O: OffsetSizeTrait>(
-    array: &GenericListArray<O>,
-    is_min: bool,
-) -> Result<ArrayRef> {
+fn array_extrema(array: &ListArray, is_min: bool) -> Result<ArrayRef> {
     match array.value_type() {
-        DataType::Float32 => Ok(Arc::new(float_extrema::<O, Float32Type>(array, is_min))),
-        DataType::Float64 => Ok(Arc::new(float_extrema::<O, Float64Type>(array, is_min))),
+        DataType::Float32 => Ok(Arc::new(float_extrema::<Float32Type>(array, is_min))),
+        DataType::Float64 => Ok(Arc::new(float_extrema::<Float64Type>(array, is_min))),
         _ => nested_extrema(array, is_min),
     }
 }
@@ -143,10 +122,7 @@ fn array_extrema<O: OffsetSizeTrait>(
 /// Checking only Arrow's winner cannot establish that its answer agrees with Spark:
 /// for max([-NaN, 1.0]), Arrow's total ordering selects 1.0 while Spark selects NaN.
 /// A corrective scan triggered only by a zero or NaN winner would miss that case.
-fn float_extrema<O: OffsetSizeTrait, T: ArrowPrimitiveType>(
-    array: &GenericListArray<O>,
-    is_min: bool,
-) -> PrimitiveArray<T>
+fn float_extrema<T: ArrowPrimitiveType>(array: &ListArray, is_min: bool) -> PrimitiveArray<T>
 where
     T::Native: Float,
 {
@@ -157,8 +133,8 @@ where
     for (row, offsets) in array.offsets().windows(2).enumerate() {
         let mut best: Option<T::Native> = None;
         if array.is_valid(row) {
-            let start = offsets[0].as_usize();
-            let end = offsets[1].as_usize();
+            let start = offsets[0] as usize;
+            let end = offsets[1] as usize;
             for (index, &candidate) in buffer[start..end].iter().enumerate() {
                 if nulls.is_some_and(|nulls| nulls.is_null(start + index)) {
                     continue;
@@ -183,14 +159,10 @@ where
     result.finish()
 }
 
-fn nested_extrema<O: OffsetSizeTrait>(
-    array: &GenericListArray<O>,
-    is_min: bool,
-) -> Result<ArrayRef> {
+fn nested_extrema(array: &ListArray, is_min: bool) -> Result<ArrayRef> {
     let values = array.values();
     let compare = spark_comparator(values)?;
-    // Dictionary keys can refer to null values even when the keys themselves are valid.
-    let nulls = values.logical_nulls();
+    let nulls = values.nulls();
     let ordering = if is_min {
         Ordering::Less
     } else {
@@ -200,8 +172,8 @@ fn nested_extrema<O: OffsetSizeTrait>(
     for (row, offsets) in array.offsets().windows(2).enumerate() {
         let mut best = None;
         if array.is_valid(row) {
-            for candidate in offsets[0].as_usize()..offsets[1].as_usize() {
-                if nulls.as_ref().is_some_and(|nulls| nulls.is_null(candidate)) {
+            for candidate in offsets[0] as usize..offsets[1] as usize {
+                if nulls.is_some_and(|nulls| nulls.is_null(candidate)) {
                     continue;
                 }
                 if best.is_none_or(|current| compare(candidate, current) == ordering) {
@@ -209,40 +181,30 @@ fn nested_extrema<O: OffsetSizeTrait>(
                 }
             }
         }
-        indices.push(best.map(|index| index as u64));
+        indices.push(best.map(|index| index as u32));
     }
-    // Take from the original values, not comparator-normalized or reconstructed values.
-    // This preserves nested fields, dictionary types, signed zeros, and NaN payloads.
-    take_extrema_values(values, &UInt64Array::from(indices))
+    take_extrema_values(values, &UInt32Array::from(indices))
 }
 
-fn take_extrema_values(values: &ArrayRef, indices: &UInt64Array) -> Result<ArrayRef> {
-    let nulls = || {
-        Some(
-            indices
-                .iter()
-                .map(|index| index.is_some_and(|index| values.is_valid(index as usize)))
-                .collect::<NullBuffer>(),
-        )
-    };
+fn take_extrema_values(values: &ArrayRef, indices: &UInt32Array) -> Result<ArrayRef> {
     match values.data_type() {
-        DataType::List(field) | DataType::LargeList(field) => {
-            // Winners are distinct, so flat-list take cannot amplify the source here.
-            // Nested children can amplify capacity recursively even with one output row.
-            if indices.len() <= values.len() && !field.data_type().is_nested() {
-                let mut result = take(values.as_ref(), indices, None)?;
-                // Arrow estimates child capacity from all inputs, including large losers.
-                // Release unused capacity before downstream operators reserve this result.
-                result.shrink_to_fit();
-                return Ok(result);
-            }
+        // Arrow's flat-list take is faster, but its child capacity estimate can
+        // grow excessively for sparse outputs or recursively nested children.
+        DataType::List(field)
+            if indices.len() <= values.len() && !field.data_type().is_nested() =>
+        {
+            let mut result = take(values.as_ref(), indices, None)?;
+            result.shrink_to_fit();
+            Ok(result)
+        }
+        DataType::List(_) => {
+            // Start nested children empty, copying only the selected values.
             let data = values.to_data();
-            // Start children empty, including fixed-width children nested inside lists.
             let mut result = MutableArrayData::new(vec![&data], true, 0);
             for index in indices.iter() {
                 match index.filter(|&index| values.is_valid(index as usize)) {
-                    Some(index) => result.extend(0, index as usize, index as usize + 1),
-                    None => result.extend_nulls(1),
+                    Some(index) => result.try_extend(0, index as usize, index as usize + 1)?,
+                    None => result.try_extend_nulls(1)?,
                 }
             }
             Ok(make_array(result.freeze()))
@@ -254,32 +216,17 @@ fn take_extrema_values(values: &ArrayRef, indices: &UInt64Array) -> Result<Array
                 .iter()
                 .map(|column| take_extrema_values(column, indices))
                 .collect::<Result<Vec<_>>>()?;
+            let nulls = indices
+                .iter()
+                .map(|index| index.is_some_and(|index| values.is_valid(index as usize)))
+                .collect::<NullBuffer>();
             Ok(Arc::new(StructArray::try_new_with_length(
                 fields.clone(),
                 columns,
-                nulls(),
+                Some(nulls),
                 indices.len(),
             )?))
         }
-        DataType::FixedSizeList(field, size) => {
-            let child_indices: UInt64Array = indices
-                .iter()
-                .flat_map(|index| {
-                    let index = index.filter(|&index| values.is_valid(index as usize));
-                    (0..*size as u64)
-                        .map(move |offset| index.map(|index| index * *size as u64 + offset))
-                })
-                .collect();
-            let children =
-                take_extrema_values(values.as_fixed_size_list().values(), &child_indices)?;
-            Ok(Arc::new(FixedSizeListArray::try_new(
-                Arc::clone(field),
-                *size,
-                children,
-                nulls(),
-            )?))
-        }
-        // Preserve dictionary keys and shared ListView values with their existing kernels.
         _ => Ok(take(values.as_ref(), indices, None)?),
     }
 }
@@ -290,16 +237,22 @@ fn spark_comparator(array: &ArrayRef) -> Result<DynComparator> {
     match array.data_type() {
         DataType::Float32 => Ok(float_comparator::<Float32Type>(array)),
         DataType::Float64 => Ok(float_comparator::<Float64Type>(array)),
-        DataType::List(_) => list_comparator(array.as_list::<i32>()),
-        DataType::LargeList(_) => list_comparator(array.as_list::<i64>()),
-        DataType::ListView(_) => list_view_comparator(array.as_list_view::<i32>()),
-        DataType::LargeListView(_) => list_view_comparator(array.as_list_view::<i64>()),
-        DataType::FixedSizeList(_, _) => {
-            let array = array.as_fixed_size_list();
+        DataType::List(_) => {
+            let array = array.as_list::<i32>();
             let compare = spark_comparator(array.values())?;
-            let size = array.value_length() as usize;
-            Ok(nulls_first(array.logical_nulls(), move |left, right| {
-                compare_ranges(left * size, size, right * size, size, &compare)
+            let offsets = array.offsets().clone();
+            Ok(nulls_first(array.nulls().cloned(), move |left, right| {
+                let left_start = offsets[left] as usize;
+                let right_start = offsets[right] as usize;
+                let left_len = offsets[left + 1] as usize - left_start;
+                let right_len = offsets[right + 1] as usize - right_start;
+                for offset in 0..left_len.min(right_len) {
+                    let ordering = compare(left_start + offset, right_start + offset);
+                    if ordering != Ordering::Equal {
+                        return ordering;
+                    }
+                }
+                left_len.cmp(&right_len)
             }))
         }
         DataType::Struct(_) => {
@@ -309,20 +262,13 @@ fn spark_comparator(array: &ArrayRef) -> Result<DynComparator> {
                 .iter()
                 .map(spark_comparator)
                 .collect::<Result<Vec<_>>>()?;
-            Ok(nulls_first(array.logical_nulls(), move |left, right| {
+            Ok(nulls_first(array.nulls().cloned(), move |left, right| {
                 fields
                     .iter()
                     .map(|compare| compare(left, right))
                     .find(|&ordering| ordering != Ordering::Equal)
                     .unwrap_or(Ordering::Equal)
             }))
-        }
-        DataType::Dictionary(_, value_type) => {
-            // Decode only for comparisons. Recursing after decoding also covers
-            // dictionaries whose values are nested arrays or structs with floats.
-            // Comparator construction happens once per child array/batch, not per comparison;
-            // the decoded array is retained by the comparator for the subsequent index scan.
-            spark_comparator(&cast(array.as_ref(), value_type)?)
         }
         _ => Ok(make_comparator(
             array.as_ref(),
@@ -340,7 +286,7 @@ where
     T::Native: Float,
 {
     let values = array.as_primitive::<T>().values().clone();
-    nulls_first(array.logical_nulls(), move |left, right| {
+    nulls_first(array.nulls().cloned(), move |left, right| {
         let left = values[left];
         let right = values[right];
         if left == right || (left.is_nan() && right.is_nan()) {
@@ -351,55 +297,6 @@ where
             Ordering::Less
         }
     })
-}
-
-fn list_comparator<O: OffsetSizeTrait>(array: &GenericListArray<O>) -> Result<DynComparator> {
-    let compare = spark_comparator(array.values())?;
-    let offsets = array.offsets().clone();
-    Ok(nulls_first(array.logical_nulls(), move |left, right| {
-        let left_start = offsets[left].as_usize();
-        let right_start = offsets[right].as_usize();
-        compare_ranges(
-            left_start,
-            offsets[left + 1].as_usize() - left_start,
-            right_start,
-            offsets[right + 1].as_usize() - right_start,
-            &compare,
-        )
-    }))
-}
-
-fn list_view_comparator<O: OffsetSizeTrait>(
-    array: &GenericListViewArray<O>,
-) -> Result<DynComparator> {
-    let compare = spark_comparator(array.values())?;
-    let offsets = array.offsets().clone();
-    let sizes = array.sizes().clone();
-    Ok(nulls_first(array.logical_nulls(), move |left, right| {
-        compare_ranges(
-            offsets[left].as_usize(),
-            sizes[left].as_usize(),
-            offsets[right].as_usize(),
-            sizes[right].as_usize(),
-            &compare,
-        )
-    }))
-}
-
-fn compare_ranges(
-    left_start: usize,
-    left_len: usize,
-    right_start: usize,
-    right_len: usize,
-    compare: &DynComparator,
-) -> Ordering {
-    for offset in 0..left_len.min(right_len) {
-        let ordering = compare(left_start + offset, right_start + offset);
-        if ordering != Ordering::Equal {
-            return ordering;
-        }
-    }
-    left_len.cmp(&right_len)
 }
 
 fn nulls_first(

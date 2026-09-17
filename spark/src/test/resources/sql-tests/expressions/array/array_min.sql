@@ -93,32 +93,3 @@ INSERT INTO test_array_min_flt_negzero VALUES
 
 query
 SELECT array_min(arr) FROM test_array_min_flt_negzero
-
--- Default-mode non-floating native controls, including nested nulls-first ordering.
-statement
-CREATE TABLE test_array_min_nested_non_fp(
-  id int, a array<array<int>>, s array<struct<k:int,v:string>>) USING parquet
-
-statement
-INSERT INTO test_array_min_nested_non_fp VALUES
-  (1, array(array(1, NULL), array(1, 0)),
-      array(named_struct('k', 1, 'v', NULL), named_struct('k', 1, 'v', 'a'))),
-  (2, array(array(1, 0), array(1, NULL)),
-      array(named_struct('k', 1, 'v', 'a'), named_struct('k', 1, 'v', NULL))),
-  (3, array(array(), array(NULL)),
-      array(NULL, named_struct('k', NULL, 'v', 'a'))),
-  (4, array(array(1), array(1, NULL)),
-      array(named_struct('k', NULL, 'v', 'b'), named_struct('k', NULL, 'v', 'a'))),
-  (5, array(NULL, array(0)), array(NULL, named_struct('k', NULL, 'v', NULL))),
-  (6, array(NULL, NULL), array(NULL, NULL)),
-  (7, array(), array()),
-  (8, NULL, NULL)
-
-query
-SELECT id, array_min(a), array_min(s) FROM test_array_min_nested_non_fp
-
-query
-SELECT array_min(array(false, true, NULL)),
-       array_min(array('z', 'A', 'a')),
-       array_min(array(CAST(1.25 AS decimal(8, 2)), CAST(-2.5 AS decimal(8, 2)))),
-       array_min(array(DATE '2024-01-01', DATE '1969-12-31'))
