@@ -39,11 +39,12 @@ import org.apache.spark.sql.{CometTestBase, DataFrame, Dataset, Row}
 import org.apache.spark.sql.catalyst.expressions.AttributeReference
 import org.apache.spark.sql.catalyst.plans.logical.LocalRelation
 import org.apache.spark.sql.catalyst.plans.physical.HashPartitioning
-import org.apache.spark.sql.comet.{CometExec, CometLocalTableScanExec, CometMetricNode, CometScanWrapper, CometSparkToColumnarExec, CometTakeOrderedAndProjectExec}
+import org.apache.spark.sql.comet.{CometExec, CometHashAggregateExec, CometLocalTableScanExec, CometMetricNode, CometNativeScanExec, CometScanWrapper, CometSparkToColumnarExec, CometTakeOrderedAndProjectExec}
 import org.apache.spark.sql.comet.execution.arrow.CometArrowStream
 import org.apache.spark.sql.comet.execution.shuffle.{CometNativeShuffle, CometShuffleExchangeExec}
 import org.apache.spark.sql.execution.LocalTableScanExec
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
+import org.apache.spark.sql.execution.aggregate.ObjectHashAggregateExec
 import org.apache.spark.sql.execution.exchange.ShuffleExchangeExec
 import org.apache.spark.sql.functions.{col, count, spark_partition_id, sum}
 import org.apache.spark.sql.internal.SQLConf
@@ -494,6 +495,35 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
               checkSparkAnswer(shuffled)
             }
           }
+        }
+      }
+    }
+  }
+
+  test("wide decimal shuffle fallback keeps collection aggregate buffers in Spark") {
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.USE_OBJECT_HASH_AGG.key -> "true",
+      CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "true") {
+      withParquetTable((0 until 100).map(i => (i % 3, i % 7)), "decimal_shuffle") {
+        for (precision <- Seq(18, 38); function <- Seq("collect_list", "collect_set")) {
+          val key = s"CAST(_1 AS DECIMAL($precision, 0))"
+          val df =
+            sql(s"SELECT $key, sort_array($function(_2)) FROM decimal_shuffle GROUP BY $key")
+          val plan = df.queryExecution.executedPlan
+          val nativeExpected = precision <= 18
+          assert(
+            plan.collect { case _: CometHashAggregateExec => 1 }.sum ==
+              (if (nativeExpected) 2 else 0),
+            plan.treeString)
+          assert(
+            plan.collect { case _: ObjectHashAggregateExec => 1 }.sum ==
+              (if (nativeExpected) 0 else 2),
+            plan.treeString)
+          // Restoring Spark's aggregate buffers must retain the accelerated input scan.
+          assert(plan.collect { case _: CometNativeScanExec => 1 }.sum == 1, plan.treeString)
+          checkCometExchange(df, if (nativeExpected) 1 else 0, native = true)
+          checkSparkAnswer(df)
         }
       }
     }
