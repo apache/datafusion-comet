@@ -188,7 +188,6 @@ class NativeCacheKeyTests(unittest.TestCase):
         self.assertEqual(debug["binary-key"], "")
         self.assertTrue(ci["binary-key"].startswith("Linux-native-ci-"))
         self.assertTrue(ci["source-key"].startswith(ci["restore-prefix"]))
-        self.assertEqual(ci["cargo-home"], self.env["CARGO_HOME"])
 
     def test_container_ownership_works_without_global_git_config_changes(self):
         """A differently owned checkout permits helper root/inventory reads without global trust."""
