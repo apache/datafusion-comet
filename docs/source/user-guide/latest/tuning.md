@@ -90,6 +90,28 @@ leading to out-of-memory exceptions. To work around this issue, it is possible t
 set `spark.comet.exec.memoryPool.fraction` to a value less than `1.0` to restrict the amount of memory that can be
 reserved by Comet.
 
+### Container memory guard (experimental)
+
+Restricting what Comet may _reserve_ does not restrict what the container actually uses. The
+kernel kills an executor on its total resident memory, which includes the JVM heap, Comet's native
+allocations, JVM-side Arrow buffers, Spark's own off-heap memory and mapped files. When that
+happens the whole executor dies, losing every task running on it along with its cached blocks and
+shuffle files.
+
+Setting `spark.comet.exec.memoryGuard.enabled` to `true` makes Comet sample the container's memory
+usage from the cgroup at batch boundaries and fail the current task once usage reaches
+`spark.comet.exec.memoryGuard.threshold` (default `0.9`) of the container limit. Spark retries a
+failed task, so the cost is far lower than losing the executor.
+
+The limit is read from the cgroup rather than from Spark's memory settings, because the cgroup is
+what the kernel enforces. It requires a cgroup memory limit to be set, which is the normal case
+under Kubernetes and YARN, and is a no-op where no limit is readable or off Linux.
+
+Two limitations are worth knowing. Checks happen between batches, so a single operator that grows
+sharply within one batch can still exceed the limit before the guard observes it; this narrows the
+window rather than closing it. And the guard fails the task rather than trying to spill first,
+because memory that was never reserved through the pool is not released by spilling.
+
 For more details about Spark off-heap memory mode, please refer to [Spark documentation].
 
 [Spark documentation]: https://spark.apache.org/docs/latest/configuration.html

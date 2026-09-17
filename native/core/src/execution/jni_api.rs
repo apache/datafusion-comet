@@ -109,11 +109,12 @@ use crate::execution::tracing::{
     get_thread_id, log_memory_usage, trace_begin, trace_end, with_trace,
 };
 
+use crate::execution::memory_guard::MemoryGuard;
 use crate::execution::memory_pools::logging_pool::LoggingMemoryPool;
 use crate::execution::spark_config::{
     SparkConfig, COMET_DEBUG_ENABLED, COMET_DEBUG_MEMORY, COMET_EXPLAIN_NATIVE_ENABLED,
-    COMET_MAX_TEMP_DIRECTORY_SIZE, COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED,
-    COMET_TRACING_ENABLED, SPARK_EXECUTOR_CORES,
+    COMET_MAX_TEMP_DIRECTORY_SIZE, COMET_MEMORY_GUARD_ENABLED, COMET_MEMORY_GUARD_THRESHOLD,
+    COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED, COMET_TRACING_ENABLED, SPARK_EXECUTOR_CORES,
 };
 use crate::parquet::encryption_support::{CometEncryptionFactory, ENCRYPTION_FACTORY_ID};
 use datafusion_comet_proto::spark_operator::operator::OpStruct;
@@ -415,6 +416,9 @@ struct ExecutionContext {
     pub metrics_last_update_time: Instant,
     /// Counter to avoid checking time on every poll iteration (reduces syscalls)
     pub poll_count_since_metrics_check: u32,
+    /// Fails this task when the container is close to its memory limit, so the kernel does not
+    /// kill the whole executor instead. `None` when disabled or when no cgroup limit is readable.
+    pub memory_guard: Option<MemoryGuard>,
     /// The time it took to create the native plan and configure the context
     pub plan_creation_time: Duration,
     /// DataFusion SessionContext
@@ -567,6 +571,29 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
                 &spark_plan,
             )?;
 
+            // Fails this task when the container approaches its memory limit, so the kernel does
+            // not kill the executor and take every task on it. Disabled unless asked for, and
+            // absent when no cgroup limit is readable (outside containers, or off Linux).
+            let memory_guard = if spark_config.get_bool(COMET_MEMORY_GUARD_ENABLED) {
+                let threshold = spark_config
+                    .get(COMET_MEMORY_GUARD_THRESHOLD)
+                    .and_then(|v| v.parse::<f64>().ok())
+                    .unwrap_or(0.9);
+                let guard = MemoryGuard::new(threshold, Duration::from_millis(100));
+                // Report what it resolved to, once per plan. A guard that silently reads nothing
+                // is worse than no guard, so this has to be visible.
+                match &guard {
+                    Some(g) => info!("Comet memory guard active: {}", g.describe()),
+                    None => warn!(
+                        "{COMET_MEMORY_GUARD_ENABLED}=true but no cgroup memory limit is \
+                         readable, so the guard is inactive."
+                    ),
+                }
+                guard
+            } else {
+                None
+            };
+
             let plan_creation_time = start.elapsed();
 
             let metrics_update_interval = if metrics_update_interval > 0 {
@@ -623,6 +650,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
                 metrics_update_interval,
                 metrics_last_update_time: Instant::now(),
                 poll_count_since_metrics_check: 0,
+                memory_guard,
                 plan_creation_time,
                 session_ctx: session,
                 debug_native,
@@ -1030,6 +1058,12 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
                 match rx.blocking_recv() {
                     Some(Ok(batch)) => {
                         update_metrics(env, exec_context)?;
+                        // Async path: the only regular checkpoint is per batch handed back.
+                        if let Some(trip) =
+                            exec_context.memory_guard.as_mut().and_then(|g| g.check())
+                        {
+                            return Err(memory_guard_error(trip).into());
+                        }
                         return prepare_output(
                             env,
                             array_addrs,
@@ -1070,6 +1104,13 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
                                 &exec_context.tracing_memory_metric_name,
                                 total_reserved_for_thread(exec_context.rust_thread_id) as u64,
                             );
+                        }
+                        // ScanExec path: piggybacks on the existing 100-poll checkpoint, so the
+                        // guard costs one small file read per 100 polls at most.
+                        if let Some(trip) =
+                            exec_context.memory_guard.as_mut().and_then(|g| g.check())
+                        {
+                            return Err(memory_guard_error(trip).into());
                         }
                     }
 
@@ -1147,6 +1188,21 @@ pub extern "system" fn Java_org_apache_comet_Native_releasePlan(
         // Flush metrics last, as it is the only fallible step here.
         update_metrics(env, &mut execution_context)
     })
+}
+
+/// Turns a guard trip into the error Spark sees.
+///
+/// `ResourcesExhausted` reaches the JVM as `CometNativeException`, which `CometExecIterator`
+/// logs with the task id and rethrows, so Spark fails and retries this one task rather than the
+/// kernel killing the executor and losing every task on it.
+fn memory_guard_error(trip: crate::execution::memory_guard::Trip) -> DataFusionError {
+    DataFusionError::ResourcesExhausted(format!(
+        "Comet memory guard: the container is using {} bytes of its {} byte limit, at or above \
+         the {} byte trip point. Failing this task so the executor is not killed. Raise \
+         spark.comet.exec.memoryGuard.threshold, give the container more memory, or disable this \
+         with spark.comet.exec.memoryGuard.enabled=false",
+        trip.usage, trip.limit, trip.trip_at
+    ))
 }
 
 fn update_metrics(env: &mut Env, exec_context: &mut ExecutionContext) -> CometResult<()> {

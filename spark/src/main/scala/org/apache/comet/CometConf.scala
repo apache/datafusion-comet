@@ -840,6 +840,30 @@ object CometConf extends ShimCometConf {
     .stringConf
     .createWithDefault("greedy_task_shared")
 
+  val COMET_MEMORY_GUARD_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.exec.memoryGuard.enabled")
+      .category(CATEGORY_TUNING)
+      .doc("When enabled, Comet samples the container's memory usage from the cgroup at batch " +
+        "boundaries and fails the current task once usage reaches " +
+        "`spark.comet.exec.memoryGuard.threshold` of the container limit. The point is to lose " +
+        "one task, which Spark retries, rather than have the kernel kill the executor and take " +
+        "every task, cached block and shuffle file with it. Requires a cgroup memory limit, so " +
+        "it is a no-op outside containers and off Linux. Experimental and off by default. " +
+        s"$TUNING_GUIDE.")
+      .booleanConf
+      .createWithDefault(false)
+
+  val COMET_MEMORY_GUARD_THRESHOLD: ConfigEntry[Double] =
+    conf("spark.comet.exec.memoryGuard.threshold")
+      .category(CATEGORY_TUNING)
+      .doc("Fraction of the container memory limit at which " +
+        "`spark.comet.exec.memoryGuard.enabled` fails the current task. The limit is read from " +
+        "the cgroup, so it covers the JVM heap and everything else in the container, not just " +
+        "Comet. " +
+        s"$TUNING_GUIDE.")
+      .doubleConf
+      .createWithDefault(0.9)
+
   val COMET_OFFHEAP_MEMORY_POOL_FRACTION: ConfigEntry[Double] =
     conf("spark.comet.exec.memoryPool.fraction")
       .category(CATEGORY_TUNING)

@@ -25,6 +25,7 @@ pub mod operators;
 pub(crate) mod planner;
 pub mod serde;
 pub use datafusion_comet_shuffle as shuffle;
+pub(crate) mod memory_guard;
 mod memory_pools;
 pub(crate) mod sort;
 pub(crate) mod spark_config;
