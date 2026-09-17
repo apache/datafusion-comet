@@ -159,9 +159,8 @@ fn criterion_benchmark(c: &mut Criterion) {
 
     // Composed-nullable: models `pow(a + 2.5D, b)` where null slots carry a real
     // payload (Arrow arithmetic preserves the null bit but overwrites the value).
-    // Sweeps null density to locate the crossover between the raw-buffer kernels
-    // (unary/binary) and a null-skipping path.
-    for null_pct in [50usize, 70, 80, 90, 99] {
+    // Sweeps null density from sparse to nearly all-null.
+    for null_pct in [10usize, 30, 50, 70, 90, 99] {
         let a = create_f64_array_with_payload_in_nulls(rows, null_pct);
         let b = create_f64_array_with_payload_in_nulls(rows, null_pct);
 
@@ -203,7 +202,7 @@ fn criterion_benchmark(c: &mut Criterion) {
     // underlying payload, which is the exact shape the reviewer flagged for a null-skipping
     // kernel. Timing includes both the Arrow `add` and the `spark_pow` call so it reflects
     // the real query cost, not a pre-materialised intermediate. Two shapes:
-    //   1. `pow(a + 2.5D, 3)` — array/scalar dispatch (`pow_array_scalar_null_aware`)
+    //   1. `pow(a + 2.5D, 3)` — array/scalar dispatch (`pow_array_scalar`)
     //   2. `pow(a + 2.5D, b)` — array/array dispatch (`pow_binary`), with
     //      nullable `a` and a non-null array of finite fractional exponents.
     let exp_arg = ColumnarValue::Scalar(ScalarValue::Float64(Some(3.0)));
@@ -213,7 +212,7 @@ fn criterion_benchmark(c: &mut Criterion) {
             .map(|i| 1.25 + (i % 10) as f64 * 0.1)
             .collect::<Vec<_>>(),
     ));
-    for null_pct in [50usize, 70, 80, 90, 99] {
+    for null_pct in [10usize, 30, 50, 70, 90, 99] {
         let base: ArrayRef = create_f64_array_with_null_pct(rows, null_pct);
         let scalar = Arc::clone(&two_point_five);
         let exp = exp_arg.clone();
@@ -247,11 +246,10 @@ fn criterion_benchmark(c: &mut Criterion) {
             },
         );
     }
-    // Independent null masks on both operands: `pow(a + 2.5D, b + 2.5D)`. Each operand is
-    // below the dense-null threshold on its own, but the output null density is roughly
-    // `1 - (1 - p)^2` (about 91% at 70% per operand), so the dispatch must look at the
-    // combined mask rather than either operand alone. Both additions are timed.
-    for null_pct in [50u64, 70, 74, 80] {
+    // Independent null masks on both operands: `pow(a + 2.5D, b + 2.5D)`. The output null
+    // density is roughly `1 - (1 - p)^2` (about 91% at 70% per operand), so dispatch must
+    // use the combined mask rather than either operand alone. Both additions are timed.
+    for null_pct in [10u64, 30, 50, 70] {
         let a: ArrayRef = create_f64_array_with_hashed_nulls(rows, null_pct, 1);
         let b: ArrayRef = create_f64_array_with_hashed_nulls(rows, null_pct, 2);
         let scalar = Arc::clone(&two_point_five);
