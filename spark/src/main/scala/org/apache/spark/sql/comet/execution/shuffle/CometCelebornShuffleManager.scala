@@ -33,6 +33,7 @@ import org.apache.spark.internal.config.{DYN_ALLOCATION_ENABLED, DYN_ALLOCATION_
 import org.apache.spark.rpc.{RpcCallContext, RpcEndpointRef, RpcEnv, ThreadSafeRpcEndpoint}
 import org.apache.spark.scheduler.OutputCommitCoordinator
 import org.apache.spark.shuffle.{BaseShuffleHandle, ShuffleBlockResolver, ShuffleHandle, ShuffleManager, ShuffleReader, ShuffleReadMetricsReporter, ShuffleWriteMetricsReporter, ShuffleWriter}
+import org.apache.spark.sql.comet.PlanDataInjector
 import org.apache.spark.util.RpcUtils
 
 import org.apache.comet.CometConf
@@ -298,6 +299,7 @@ class CometCelebornShuffleManager private[shuffle] (
             Option(nativeGenerationCoordinator).foreach(_.unregisterShuffle(shuffleId))
           }
         },
+        () => PlanDataInjector.releasePreparedShuffle(shuffleId),
         () => removed = backend.unregisterShuffle(shuffleId))
     cleanupAll(cleanup)
     removed
@@ -321,7 +323,10 @@ class CometCelebornShuffleManager private[shuffle] (
           }
         }) ++ ownedNativeClients.keySet().asScala.toSeq.map { client => () =>
         CelebornShufflePusherFactory.releaseClient(client)
-      } ++ Seq[() => Unit](() => ownedNativeClients.clear(), () => nativeShuffleClients.clear()))
+      } ++ Seq[() => Unit](
+        () => ownedNativeClients.clear(),
+        () => nativeShuffleClients.clear(),
+        () => PlanDataInjector.releaseAll()))
   }
 
   private def cleanupAll(actions: Seq[() => Unit]): Unit = {
