@@ -53,12 +53,13 @@ execution, subject to their other restrictions.
 
 To allow native grouped ANSI decimal `AVG` despite this incompatibility, set
 `spark.comet.operator.HashAggregateExec.allowIncompatible=true` and
-`spark.comet.operator.ObjectHashAggregateExec.allowIncompatible=true`. Each setting controls the
-corresponding Spark operator; other aggregate functions in the query can affect which operator
-Spark chooses. These settings are false by default. Native finalization can evaluate a batch or all
-groups before returning output, so an overflow in a group that a consumer such as `LIMIT` never
-reads may still fail the query. Deferring overflow errors until finalization does not provide
-Spark's row-by-row lazy evaluation.
+`spark.comet.operator.ObjectHashAggregateExec.allowIncompatible=true`. These settings apply to the
+entire named operator and accept every case it classifies as incompatible, including cases added
+in future releases. Other aggregate functions in the query can affect which operator Spark chooses.
+These settings are false by default. Native finalization can evaluate a batch or all groups before
+returning output, so an overflow in a group that a consumer such as `LIMIT` never reads may still
+fail the query. Deferring overflow errors until finalization does not provide Spark's row-by-row
+lazy evaluation.
 
 The opt-ins do not allow decimal aggregate buffers to cross between Spark and Comet, or lift the
 ungrouped and window AVG restrictions. High-precision decimal `AVG` with object aggregation also

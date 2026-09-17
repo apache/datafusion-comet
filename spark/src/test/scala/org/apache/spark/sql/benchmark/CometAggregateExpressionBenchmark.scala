@@ -20,6 +20,7 @@
 package org.apache.spark.sql.benchmark
 
 import org.apache.spark.benchmark.Benchmark
+import org.apache.spark.sql.Row
 import org.apache.spark.sql.comet.CometHashAggregateExec
 import org.apache.spark.sql.execution.aggregate.HashAggregateExec
 import org.apache.spark.sql.internal.SQLConf
@@ -69,7 +70,8 @@ object CometAggregateExpressionBenchmark extends CometBenchmarkBase {
         withTempTable("parquetV1Table") {
           val query = "SELECT k, AVG(v) AS a FROM parquetV1Table " +
             "GROUP BY k ORDER BY k LIMIT 100"
-          val expected = withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+          var expected = Seq.empty[Row]
+          withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
             prepareTable(
               dir,
               spark
@@ -79,7 +81,7 @@ object CometAggregateExpressionBenchmark extends CometBenchmarkBase {
                   "CAST(id % 97 AS DECIMAL(20, 2)) AS v"))
             val input = spark.table("parquetV1Table")
             assert(input.rdd.getNumPartitions == partitions)
-            spark.sql(query).collect().toSeq
+            expected = spark.sql(query).collect().toSeq
           }
           val benchmark = new Benchmark("grouped_ansi_decimal_avg", rows, output = output)
           val modes = Seq(false, true)
@@ -102,63 +104,6 @@ object CometAggregateExpressionBenchmark extends CometBenchmarkBase {
             }
           }
           if (!validateOnly) benchmark.run()
-        }
-      }
-    }
-  }
-
-  /**
-   * Run with `--wide-decimal-shuffle` on both revisions to measure the cost of routing wide
-   * decimal hash keys through Spark's partition assignments. Fixture generation, result checks,
-   * and plan reporting are not timed. The benchmark session uses local[1]. Add `--reverse` to
-   * reverse the order of the native and auto cases, or `--validate-only` to check the fixture,
-   * results and plans without collecting timings.
-   */
-  private def wideDecimalShuffleBenchmark(reverse: Boolean, validateOnly: Boolean): Unit = {
-    val rows = 1024 * 1024
-    val groups = 10000
-    val partitions = 4
-    val filePartitionBytes = 16 * 1024 * 1024
-    withSQLConf(
-      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
-      SQLConf.SHUFFLE_PARTITIONS.key -> partitions.toString,
-      // Keep each file in one split, and prevent Spark from combining files into one task.
-      SQLConf.FILES_MAX_PARTITION_BYTES.key -> filePartitionBytes.toString,
-      SQLConf.FILES_OPEN_COST_IN_BYTES.key -> filePartitionBytes.toString) {
-      withTempPath { dir =>
-        withTempTable("parquetV1Table") {
-          prepareTable(
-            dir,
-            spark
-              .range(0L, rows.toLong, 1L, partitions)
-              .selectExpr(
-                s"CAST(id % $groups AS DECIMAL(38, 2)) AS k",
-                "CAST(id % 97 AS DECIMAL(20, 2)) AS v"))
-          val query = "SELECT k, AVG(v) FROM parquetV1Table GROUP BY k"
-          val expected = withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
-            val input = spark.table("parquetV1Table")
-            assert(input.rdd.getNumPartitions == partitions)
-            spark.sql(query).collect().toSeq.sortBy(_.getDecimal(0))
-          }
-          val modes = Seq("native", "auto")
-          for (mode <- (if (reverse) modes.reverse else modes)) {
-            val configs = Map(
-              CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
-              CometConf.COMET_SHUFFLE_MODE.key -> mode)
-            withSQLConf(
-              (configs.toSeq ++ Seq(
-                CometConf.COMET_ENABLED.key -> "true",
-                CometConf.COMET_EXEC_ENABLED.key -> "true")): _*) {
-              val df = spark.sql(query)
-              assert(df.collect().toSeq.sortBy(_.getDecimal(0)) == expected)
-              val plan = df.queryExecution.executedPlan
-              println(s"Wide-decimal shuffle mode=$mode")
-              println(plan.treeString)
-            }
-            if (!validateOnly) {
-              runExpressionBenchmark(s"wide_decimal_shuffle_$mode", rows, query, configs)
-            }
-          }
         }
       }
     }
@@ -324,12 +269,6 @@ object CometAggregateExpressionBenchmark extends CometBenchmarkBase {
   override def runCometBenchmark(mainArgs: Array[String]): Unit = {
     if (mainArgs.contains("--grouped-ansi-avg")) {
       groupedAnsiAvgBenchmark(
-        mainArgs.contains("--reverse"),
-        mainArgs.contains("--validate-only"))
-      return
-    }
-    if (mainArgs.contains("--wide-decimal-shuffle")) {
-      wideDecimalShuffleBenchmark(
         mainArgs.contains("--reverse"),
         mainArgs.contains("--validate-only"))
       return

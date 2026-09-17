@@ -451,12 +451,16 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
    */
   def aggsNotSupportingSparkPartialToNativeFinal(
       aggExprs: Seq[AggregateExpression]): Seq[AggregateFunction] = {
-    aggExprs.map(_.aggregateFunction).filterNot { fn =>
-      aggrSerdeMap.get(fn.getClass).exists { handler =>
+    aggExprs.map(_.aggregateFunction).filterNot(supportsSparkPartialToNativeFinal)
+  }
+
+  private def supportsSparkPartialToNativeFinal(fn: AggregateFunction): Boolean = {
+    aggrSerdeMap.get(fn.getClass) match {
+      case Some(handler) =>
         handler
           .asInstanceOf[CometAggregateExpressionSerde[AggregateFunction]]
           .supportsSparkPartialToNativeFinal(fn)
-      }
+      case None => false
     }
   }
 
