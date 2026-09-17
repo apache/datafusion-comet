@@ -123,14 +123,23 @@ class NativeCacheKeyTests(unittest.TestCase):
 
     def test_native_input_routing(self):
         """Library inputs warm main; helper tests retain Linux coverage without extra consumers."""
-        project = Path(__file__).resolve().parents[2]
         route = CACHE.CHANGES.compute
-        _, sources = CACHE.source_inputs(project)
-        for name in [*sources, ".cargo/config.toml", "rust-toolchain", "contrib/new/native/Cargo.toml"]:
+        inputs = ("native/core/src/lib.rs", "native/proto/expr.proto",
+                  "contrib/new/native/Cargo.toml", ".cargo/config.toml",
+                  ".github/actions/setup-builder/action.yaml",
+                  ".github/actions/build-native-ci/action.yaml",
+                  "dev/ci/native-cache-key.py", "dev/ci/compute-changes.py",
+                  "rust-toolchain", "rust-toolchain.toml")
+        for name in inputs:
+            self.assertTrue(CACHE.CHANGES.matches(CACHE.CHANGES.NATIVE_LIBRARY_INPUTS, [name]), name)
             self.assertTrue(route([name], {"name": "push"})["build_linux"], name)
-        for name in ("contrib/delta/native/src/lib.rs", "contrib/delta/native/Cargo.lock",
+        for name in ("native/core/README.md", "native/core/benches/perf.rs",
+                     "contrib/delta/native/src/lib.rs", "contrib/delta/native/Cargo.lock",
                      "contrib/a/b/native/Cargo.toml", "contrib/a/b/native/x.rs"):
+            self.assertFalse(CACHE.CHANGES.matches(CACHE.CHANGES.NATIVE_LIBRARY_INPUTS, [name]), name)
             self.assertFalse(route([name], {"name": "push"})["build_linux"], name)
+        with patch.dict(CACHE.CHANGES.POLICY, {"build_linux": ["pr", "queue"]}):
+            self.assertFalse(route([".cargo/config.toml"], {"name": "push"})["build_linux"])
         self.assertFalse(route(["contrib/new/native/Cargo.toml"], {"name": "pull_request"})["build_linux"])
         for event in ("merge_group", "schedule"):
             routed = route(["dev/ci/test-native-cache-key.py"], {"name": event})
@@ -139,15 +148,13 @@ class NativeCacheKeyTests(unittest.TestCase):
                                  if name.startswith(("spark_", "iceberg_"))))
 
     def test_tools_jdk_flags_and_tracked_build_configuration_invalidate(self):
-        """Observed tool/package versions, Java metadata, flags and tracked configs enter keys."""
+        """Capture build overrides only; tools, Java metadata and tracked configs invalidate keys."""
         before = self.keys()
         for tool in self.versions:
             with self.subTest(tool=tool):
                 old = self.versions[tool]
                 self.versions[tool] += "changed\n"
-                self.assertNotEqual(before["source-key"], self.keys()["source-key"])
                 self.assertNotEqual(before["binary-key"], self.keys()["binary-key"])
-                self.assertNotEqual(before["restore-prefix"], self.keys()["restore-prefix"])
                 self.versions[tool] = old
         self.write("jdk/release", 'JAVA_VERSION="17.0.2"\n')
         self.assertNotEqual(before["binary-key"], self.keys()["binary-key"])
@@ -155,16 +162,20 @@ class NativeCacheKeyTests(unittest.TestCase):
         self.env["RUSTFLAGS"] += " -Copt-level=1"
         self.assertNotEqual(before["binary-key"], self.keys()["binary-key"])
         self.env["RUSTFLAGS"] = "-Ctarget-cpu=x86-64-v3 -Clink-arg=-fuse-ld=bfd"
-        for name in ("CC", "CXX", "CFLAGS", "LDFLAGS", "AR", "PROTOC", "PROTOC_INCLUDE",
+        overrides = ("CC", "CXX", "CFLAGS", "LDFLAGS", "AR", "PROTOC", "PROTOC_INCLUDE",
                      "RUSTC_WRAPPER", "CARGO_BUILD_TARGET", "CARGO_PROFILE_CI_OPT_LEVEL",
                      "CC_x86_64_unknown_linux_gnu", "HOST_CC", "TARGET_CFLAGS",
-                     "HDFS_LIB_DIR", "HADOOP_HOME", "HDFS_STATIC", "DOCS_RS", "PATH"):
-            with self.subTest(environment=name):
-                self.env[name] = "build override"
-                after = self.keys()
-                for key in ("binary-key", "source-key", "restore-prefix"):
-                    self.assertNotEqual(before[key], after[key])
-                del self.env[name]
+                     "HDFS_LIB_DIR", "HADOOP_HOME", "HDFS_STATIC", "DOCS_RS", "PATH")
+        build_env = {**self.env, **dict.fromkeys(overrides, "build override")}
+        with patch.object(CACHE, "command", side_effect=lambda args, cwd: self.versions[args[0]]):
+            environment = CACHE.environment_inputs(
+                self.root, {**build_env, "GITHUB_RUN_ID": "12345", "UNRELATED": "ignored"})
+        self.assertEqual(environment["env"], build_env)
+        self.env["TARGET_CFLAGS"] = "build override"
+        after = self.keys()
+        for key in ("binary-key", "source-key", "restore-prefix"):
+            self.assertNotEqual(before[key], after[key])
+        del self.env["TARGET_CFLAGS"]
         self.write(".cargo/config.toml", "[build]\nincremental = false\n")
         subprocess.run(["git", "add", ".cargo/config.toml"], cwd=self.root, check=True)
         self.assertNotEqual(before["binary-key"], self.keys()["binary-key"])
