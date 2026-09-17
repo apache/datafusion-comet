@@ -39,7 +39,9 @@ class CometArrowPythonRunner(
     pythonRunnerConf: Map[String, String],
     override val pythonMetrics: Map[String, SQLMetric],
     jobArtifactUUID: Option[String],
-    sessionUUID: Option[String])
+    sessionUUID: Option[String],
+    override val arrowMaxRecordsPerBatch: Int,
+    override val arrowMaxBytesPerBatch: Long)
     extends BasePythonRunner[Iterator[ColumnarBatch], ColumnarBatch](
       funcs.map(_._1),
       evalType,
