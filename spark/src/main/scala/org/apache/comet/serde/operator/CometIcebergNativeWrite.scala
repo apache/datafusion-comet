@@ -84,8 +84,10 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
   // `oss` is deliberately absent: iceberg-rust has an OSS backend, but Comet does not forward
   // `oss.*` catalog properties to it and no functional test covers the path, so an OSS write
   // could silently drop endpoint/credential configuration. Fail closed until it is covered.
+  //
+  // `hdfs` IS present: its NameNode endpoints are forwarded below, so nothing is dropped.
   private val SupportedStorageSchemes: Set[String] =
-    Set("file", "memory", "s3", "s3a", "gs")
+    Set("file", "memory", "s3", "s3a", "gs", "hdfs")
   private val MinUnsupportedFormatVersion = 3
   private val ParquetWritePropertyPrefix = "write.parquet."
   private val ParquetMrPropertyPrefix = "parquet."
@@ -651,7 +653,11 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
     val hadoopDerivedProperties = CometIcebergNativeScan.hadoopToIcebergS3Properties(
       NativeConfig.extractObjectStoreOptions(writeHadoopConf, dataUri),
       dataBucket)
-    val catalogProperties = hadoopDerivedProperties ++ fileIOProperties
+    // Before `fileIOProperties` so an explicit catalog `hdfs.name-node` wins, as on the scan path.
+    val hadoopDerivedHdfsProperties =
+      CometIcebergNativeScan.hadoopToIcebergHdfsProperties(dataUri, writeHadoopConf)
+    val catalogProperties =
+      hadoopDerivedProperties ++ hadoopDerivedHdfsProperties ++ fileIOProperties
 
     val common = IcebergWriteProtoTranslation.buildCommon(
       catalogProperties = catalogProperties,
