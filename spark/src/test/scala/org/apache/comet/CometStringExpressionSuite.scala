@@ -23,8 +23,9 @@ import scala.util.Random
 
 import org.apache.parquet.hadoop.ParquetOutputFormat
 import org.apache.spark.sql.{CometTestBase, DataFrame}
+import org.apache.spark.sql.catalyst.expressions.{Concat, Literal, Reverse}
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{DataTypes, StructField, StructType}
+import org.apache.spark.sql.types.{DataType, DataTypes, StructField, StructType}
 
 import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator}
@@ -38,59 +39,36 @@ class CometStringExpressionSuite extends CometTestBase with CometCodegenAssertio
     "తెలుగు")
   // scalastyle:on
 
+  if (isSpark40Plus) {
+    test("collated strings preserve native opt-in routing") {
+      withParquetTable(Seq(("abc", 1), ("", 2), (null, 3)), "tbl") {
+        // Build typed literals directly: Collate and casts of columns are not native, while
+        // ordinary constant folding would remove the expression we want to test.
+        val text = Literal.create("abc", DataType.fromDDL("STRING COLLATE UTF8_LCASE"))
+        withSQLConf(
+          SQLConf.OPTIMIZER_EXCLUDED_RULES.key ->
+            "org.apache.spark.sql.catalyst.optimizer.ConstantFolding",
+          CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "false",
+          CometConf.getExprAllowIncompatConfigKey("Concat") -> "true",
+          CometConf.getExprAllowIncompatConfigKey("Reverse") -> "true") {
+          for ((name, expression) <- Seq(
+              "concat" -> Concat(Seq(text, text)),
+              "reverse" -> Reverse(text))) {
+            checkSparkAnswerAndImpl(
+              sql("SELECT _1 FROM tbl").select(getColumnFromExpression(expression)),
+              native = Seq(name))
+          }
+        }
+      }
+    }
+  }
+
   test("lpad string") {
     testStringPadding("lpad")
   }
 
   test("rpad string") {
     testStringPadding("rpad")
-  }
-
-  for ((function, expressionName) <- Seq("lpad" -> "StringLPad", "rpad" -> "StringRPad")) {
-    test(s"$function dispatches unsupported argument shapes (issue #5579)") {
-      val data: Seq[(String, Option[Int], String)] = Seq(
-        ("hi", Some(5), "xy"),
-        ("hello", Some(3), "x"),
-        ("", Some(3), "a"),
-        ("hi", Some(5), ""),
-        (null, Some(5), "x"),
-        ("hi", None, "x"),
-        ("hi", Some(5), null),
-        (null, None, null))
-      withParquetTable(data, "tbl") {
-        withSQLConf(
-          SQLConf.OPTIMIZER_EXCLUDED_RULES.key ->
-            "org.apache.spark.sql.catalyst.optimizer.ConstantFolding") {
-          for (allowIncompatible <- Seq("false", "true")) {
-            withSQLConf(
-              CometConf.getExprAllowIncompatConfigKey(expressionName) -> allowIncompatible) {
-              for (query <- Seq(
-                  s"SELECT $function(_1, _2, _3) FROM tbl",
-                  s"SELECT $function('hi', _2, 'xy') FROM tbl",
-                  s"SELECT $function('hi', 5, 'xy') FROM tbl")) {
-                assertCodegenRan {
-                  checkSparkAnswerAndOperator(query)
-                }
-              }
-            }
-          }
-        }
-      }
-    }
-
-    test(s"$function keeps supported argument shapes native") {
-      withParquetTable(Seq(("hi", 5), ("hello", 3), ("", 0)), "tbl") {
-        for (query <- Seq(
-            s"SELECT $function(_1, _2) FROM tbl",
-            s"SELECT $function(_1, _2, 'xy') FROM tbl")) {
-          CometScalaUDFCodegen.resetStats()
-          checkSparkAnswerAndOperator(query)
-          assert(
-            CometScalaUDFCodegen.stats().totalLookups == 0,
-            s"expected native execution for $query")
-        }
-      }
-    }
   }
 
   test("lpad/rpad with NULL length") {

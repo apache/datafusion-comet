@@ -110,8 +110,10 @@ The native Iceberg reader supports the following features:
 **Storage:**
 
 - Local filesystem
-- Hadoop Distributed File System (HDFS)
 - S3-compatible storage (AWS S3, MinIO)
+- Google Cloud Storage (`gs`) and Alibaba Cloud OSS (`oss`)
+
+HDFS-backed tables are not supported by the native Iceberg reader and fall back to Spark.
 
 ### REST Catalog
 

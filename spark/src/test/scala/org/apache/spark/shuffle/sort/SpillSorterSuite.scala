@@ -265,4 +265,58 @@ class SpillSorterSuite extends AnyFunSuite with BeforeAndAfterEach {
     }
   }
 
+  test("pointer array growth is sized from the array, not from the data pages") {
+    // Use the unified (off-heap) allocator so that every allocation made by this sorter is
+    // visible through `getUsed` on an allocator that is private to this test.
+    val offHeapConf = new SparkConf(false)
+      .set("spark.memory.offHeap.enabled", "true")
+      .set("spark.memory.offHeap.size", "64m")
+    val offHeapMemoryManager = new TestMemoryManager(offHeapConf)
+    offHeapMemoryManager.limit(64L * 1024 * 1024)
+    val offHeapTaskMemoryManager = new TaskMemoryManager(offHeapMemoryManager, 0)
+    val allocator =
+      CometShuffleMemoryAllocator.getInstance(
+        offHeapConf,
+        offHeapTaskMemoryManager,
+        PAGE_SIZE.toLong)
+    // The block manager is only touched when spilling, which this test never does.
+    val sorter = new CometShuffleExternalSorter(
+      allocator,
+      null,
+      TaskContext.empty(),
+      INITIAL_SIZE,
+      2,
+      offHeapConf,
+      new ShuffleWriteMetrics(),
+      createTestSchema())
+
+    try {
+      val recordData = new Array[Byte](16)
+      def insert(i: Int): Unit =
+        sorter.insertRecord(
+          recordData,
+          Platform.BYTE_ARRAY_OFFSET.toLong,
+          recordData.length,
+          i % 2)
+
+      val initialArrayBytes = INITIAL_SIZE * 8L
+      assert(allocator.getUsed === initialArrayBytes)
+
+      insert(0)
+      val pageBytes = allocator.getUsed - initialArrayBytes
+      assert(pageBytes >= PAGE_SIZE)
+
+      // With radix sort enabled the in-memory sorter uses half the array for records, so the
+      // pointer array is grown when the (INITIAL_SIZE / 2 + 1)th record arrives. Growth must
+      // double the pointer array, not request an array sized from the data pages as well.
+      val recordsToTriggerGrowth = INITIAL_SIZE / 2 + 1
+      (1 until recordsToTriggerGrowth).foreach(insert)
+      assert(sorter.getPeakMemoryUsedBytes === pageBytes + 2 * initialArrayBytes)
+      assert(allocator.getUsed === pageBytes + 2 * initialArrayBytes)
+    } finally {
+      sorter.cleanupResources()
+      assert(offHeapTaskMemoryManager.cleanUpAllAllocatedMemory() === 0L)
+    }
+  }
+
 }
