@@ -269,7 +269,7 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | `dayofmonth` | ✅ | Native |  |
 | `dayofweek` | ✅ | Native |  |
 | `dayofyear` | ✅ | Native |  |
-| `extract` | ✅ | — |  |
+| `extract` | ✅ | — | `SECOND FROM TIME` is native for Spark 4.1+ with `Decimal(8,6)` output |
 | `from_unixtime` | ✅ | Hybrid |  |
 | `from_utc_timestamp` | ✅ | Hybrid | Routes through the JVM codegen dispatcher by default (handles all timezone forms); the native path is opt-in via allowIncompatible ([details](compatibility/expressions/datetime.md)) |
 | `hour` | ✅ | Native |  |
@@ -541,9 +541,9 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | `like` | ✅ | Hybrid |  |
 | `not` | ✅ | Native |  |
 | `or` | ✅ | Native |  |
-| `regexp` | ✅ | Hybrid | Falls back by default; opt-in via allowIncompatible ([details](compatibility/regex.md)) |
-| `regexp_like` | ✅ | Hybrid | Falls back by default; opt-in via allowIncompatible ([details](compatibility/regex.md)) |
-| `rlike` | ✅ | Hybrid | Falls back by default; opt-in via allowIncompatible ([details](compatibility/regex.md)) |
+| `regexp` | ✅ | Hybrid | In-subset literals run natively; others fall back by default ([details](compatibility/regex.md)) |
+| `regexp_like` | ✅ | Hybrid | In-subset literals run natively; others fall back by default ([details](compatibility/regex.md)) |
+| `rlike` | ✅ | Hybrid | In-subset literals run natively; others fall back by default ([details](compatibility/regex.md)) |
 
 ---
 

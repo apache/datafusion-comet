@@ -21,10 +21,11 @@
 use arrow::array::{Int64Array, RecordBatch, StringArray};
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use arrow::ipc::reader::StreamReader;
-use arrow::ipc::writer::IpcWriteContext;
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use datafusion::physical_plan::metrics::Time;
-use datafusion_comet_shuffle::{read_ipc_compressed, CompressionCodec, ShuffleBlockWriter};
+use datafusion_comet_shuffle::{
+    read_ipc_compressed, CompressionCodec, ShuffleBlockWriter, ShuffleCodecContext,
+};
 use std::hint::black_box;
 use std::io::Cursor;
 use std::sync::Arc;
@@ -73,7 +74,7 @@ fn batch_of(num_columns: usize, num_rows: usize) -> RecordBatch {
 /// One encoded block, with the 16-byte Comet header stripped.
 fn encode_block(batch: &RecordBatch, codec: CompressionCodec) -> Vec<u8> {
     let writer = ShuffleBlockWriter::try_new(batch.schema().as_ref(), codec).unwrap();
-    let mut context = IpcWriteContext::default();
+    let mut context = ShuffleCodecContext::default();
     let mut buffer = Vec::new();
     let mut cursor = Cursor::new(&mut buffer);
     writer
