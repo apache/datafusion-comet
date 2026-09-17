@@ -64,8 +64,9 @@ jobs:
           rust-version: ${{ env.RUST_VERSION }}
           jdk-version: ${{ matrix.profile.java_version }}
 
-      - name: Cache Maven dependencies
-        uses: actions/cache@v6
+      - name: Restore Maven dependencies
+        id: maven-cache
+        uses: actions/cache/restore@v6
         with:
           path: |
             ~/.m2/repository
@@ -117,6 +118,19 @@ jobs:
         run: |
           SPARK_HOME=$(pwd) COMET_CONF_DIR=$(pwd)/conf ./mvnw -B -Prelease -Pspark-${{ matrix.profile.spark }},delta test -pl contrib/delta-spark
 
+      # Saved only on main: an entry written from a pull request or a
+      # `gh-readonly-queue/*` branch cannot be restored by any later run, and
+      # it evicts main's from the shared budget. See "Large caches are written
+      # on main only" in README.md.
+      - name: Save Maven dependencies
+        if: ${{ github.ref == 'refs/heads/main' && steps.maven-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v6
+        with:
+          path: |
+            ~/.m2/repository
+            /root/.m2/repository
+          key: ${{ runner.os }}-java-maven-${{ hashFiles('**/pom.xml') }}-delta-${{ matrix.profile.spark }}
+
   # The container jobs above have no Docker socket, so CometDeltaS3Suite cancels itself
   # there. This job runs it on the plain runner, where Testcontainers can start MinIO.
   contrib-delta-s3:
@@ -144,8 +158,9 @@ jobs:
           rustup default ${{ env.RUST_VERSION }}
           rustup component add rustfmt clippy
 
-      - name: Cache Maven dependencies
-        uses: actions/cache@v6
+      - name: Restore Maven dependencies
+        id: maven-cache
+        uses: actions/cache/restore@v6
         with:
           path: |
             ~/.m2/repository
@@ -184,6 +199,15 @@ jobs:
         run: |
           docker info > /dev/null
           SPARK_HOME=$(pwd) COMET_CONF_DIR=$(pwd)/conf ./mvnw -B -Prelease -Pspark-3.5,delta test -pl contrib/delta-spark -DwildcardSuites=org.apache.comet.contrib.delta.CometDeltaS3Suite
+
+      # Saved only on main, for the same reason as the container job above.
+      - name: Save Maven dependencies
+        if: ${{ github.ref == 'refs/heads/main' && steps.maven-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v6
+        with:
+          path: |
+            ~/.m2/repository
+          key: ${{ runner.os }}-java-maven-${{ hashFiles('**/pom.xml') }}-delta-3.5
 
   # `delta` is in the default feature set, so no regular job builds without it;
   # this keeps the feature-off build and its "built without the delta feature"
