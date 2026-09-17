@@ -21,7 +21,7 @@ package org.apache
 
 import java.util.Properties
 
-import org.apache.arrow.memory.{AllocationListener, RootAllocator}
+import org.apache.arrow.memory.{AllocationListener, BufferAllocator, RootAllocator}
 import org.apache.spark.comet.CometArrowAllocationListener
 import org.apache.spark.internal.Logging
 
@@ -54,7 +54,7 @@ package object comet {
    * with no listener keeps these buffers out of Spark's accounting. It stays a child of the root
    * so that reference counting and lifetime are unchanged.
    */
-  val CometImportedArrowAllocator =
+  val CometImportedArrowAllocator: BufferAllocator =
     CometArrowAllocator.newChildAllocator(
       "comet-imported-ffi",
       AllocationListener.NOOP,
