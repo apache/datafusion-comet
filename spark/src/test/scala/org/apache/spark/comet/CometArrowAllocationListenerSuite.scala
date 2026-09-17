@@ -19,119 +19,374 @@
 
 package org.apache.spark.comet
 
+import java.io.{InterruptedIOException, IOException}
 import java.util.Properties
+import java.util.concurrent.atomic.{AtomicLong, AtomicReference}
 
 import org.scalatest.funsuite.AnyFunSuite
 
-import org.apache.arrow.memory.{AllocationListener, RootAllocator}
+import org.apache.arrow.memory.BufferAllocator
 import org.apache.spark.{SparkConf, TaskContext, TaskContextImpl}
 import org.apache.spark.executor.TaskMetrics
-import org.apache.spark.memory.{TaskMemoryManager, TestMemoryManager}
+import org.apache.spark.memory.{MemoryConsumer, MemoryMode, TaskMemoryManager, TestMemoryManager}
+
+import org.apache.comet.CometArrowAllocator
 
 /**
- * Tests that JVM Arrow allocations are reported to Spark, and, just as importantly, that the
- * paths where they cannot be reported fail quietly rather than throwing. Arrow allocation on
- * these paths cannot fail today and this listener must not change that.
+ * Tests that JVM Arrow allocations are reported to Spark, that they are reported against the task
+ * that made them rather than whichever task happens to be on the releasing thread, and, just as
+ * importantly, that the paths where they cannot be reported fail quietly rather than throwing.
+ * Arrow allocation on these paths cannot fail today and this listener must not change that.
  */
 class CometArrowAllocationListenerSuite extends AnyFunSuite {
 
-  private val blockSize = 1024L * 1024L
+  private val blockSize = CometArrowAllocationListener.BLOCK_SIZE
   private val poolBytes = 64L * 1024 * 1024
-  private val taskAttemptId = 1L
+
+  /** Task attempt ids are keys in a process-wide map, so no two tests may share one. */
+  private val nextTaskAttemptId = new AtomicLong(1000L)
+
+  // ---------------------------------------------------------------------------------------------
+  // Reservation arithmetic. Driven through the listener directly, since Arrow's rounding policy
+  // would otherwise decide the sizes under test.
+  // ---------------------------------------------------------------------------------------------
 
   test("allocations are charged to the current task in whole blocks") {
-    withTask() { listener =>
+    withTask() { task =>
+      val listener = new CometArrowAllocationListener(task.taskMemoryManager)
+
       // Far smaller than a block, so the reservation should round up to exactly one block.
       listener.onAllocation(128L)
-      assert(listener.reservedBytesForTask(taskAttemptId) == blockSize)
+      assert(listener.reservedBytes == blockSize)
 
       // Still inside the first block, so Spark is not asked again.
       listener.onAllocation(1024L)
-      assert(listener.reservedBytesForTask(taskAttemptId) == blockSize)
+      assert(listener.reservedBytes == blockSize)
+
+      listener.taskCompleted()
     }
   }
 
   test("a request larger than a block rounds up to a block multiple") {
-    withTask() { listener =>
+    withTask() { task =>
+      val listener = new CometArrowAllocationListener(task.taskMemoryManager)
       listener.onAllocation(blockSize * 3 + 7L)
       // Rounded up rather than sized to the exact deficit, so growth leaves headroom and the next
       // small allocation does not go straight back into Spark.
-      assert(listener.reservedBytesForTask(taskAttemptId) == blockSize * 4)
+      assert(listener.reservedBytes == blockSize * 4)
+      listener.taskCompleted()
     }
   }
 
   test("releasing returns whole blocks to Spark") {
-    withTask() { listener =>
+    withTask() { task =>
+      val listener = new CometArrowAllocationListener(task.taskMemoryManager)
       listener.onAllocation(blockSize * 2)
-      assert(listener.reservedBytesForTask(taskAttemptId) == blockSize * 2)
+      assert(listener.reservedBytes == blockSize * 2)
 
       listener.onRelease(blockSize * 2)
-      assert(listener.reservedBytesForTask(taskAttemptId) == 0L)
+      assert(listener.reservedBytes == 0L)
+      listener.taskCompleted()
     }
   }
 
-  test("a child allocator with no listener is not charged, but the root still is") {
-    withTask() { listener =>
-      val root = new RootAllocator(listener, Long.MaxValue)
-      val imported =
-        root.newChildAllocator("imported", AllocationListener.NOOP, 0, Long.MaxValue)
-      try {
-        // This is how FFI-imported buffers, which wrap memory the native side owns, stay out of
-        // Spark's accounting: Arrow notifies only the allocating allocator's own listener, never
-        // its ancestors, so the root's listener does not see the child's allocation.
-        val importedBuf = imported.buffer(blockSize)
-        try {
-          assert(listener.trackedTaskCount == 0)
+  // ---------------------------------------------------------------------------------------------
+  // Which allocator is handed out, and what it charges.
+  // ---------------------------------------------------------------------------------------------
 
-          // The same root does still charge for JVM-owned allocations made directly against it.
-          val jvmBuf = root.buffer(blockSize)
-          try {
-            assert(listener.reservedBytesForTask(taskAttemptId) >= blockSize)
-          } finally {
-            jvmBuf.close()
-          }
+  test("a real Arrow allocation from the task allocator is charged to that task") {
+    withTask() { task =>
+      val allocator = CometTaskArrowAllocator.forCurrentTask()
+      assert(allocator ne CometArrowAllocator)
+      val buf = allocator.buffer(blockSize)
+      try {
+        assert(reservedFor(task) == blockSize)
+        assert(task.taskMemoryManager.getMemoryConsumptionForThisTask == blockSize)
+      } finally {
+        buf.close()
+      }
+      assert(reservedFor(task) == 0L)
+    }
+  }
+
+  test("a child of the task allocator is charged to the same task") {
+    withTask() { task =>
+      // The Python runner and the native Arrow source cut their own children. Arrow passes the
+      // parent's listener down, so they are accounted without knowing anything about it.
+      val child =
+        CometTaskArrowAllocator.forCurrentTask().newChildAllocator("probe", 0L, Long.MaxValue)
+      try {
+        val buf = child.buffer(blockSize)
+        try {
+          assert(reservedFor(task) == blockSize)
         } finally {
-          importedBuf.close()
+          buf.close()
         }
       } finally {
-        imported.close()
-        root.close()
+        child.close()
+      }
+      assert(reservedFor(task) == 0L)
+    }
+  }
+
+  test("the process-wide root is not accounted, which is what FFI imports rely on") {
+    withTask() { task =>
+      // Establish the task allocator first, so this asserts "not charged" rather than "no task".
+      CometTaskArrowAllocator.forCurrentTask()
+      // Buffers imported over the C Data Interface wrap memory the native side owns and frees,
+      // already charged to Comet's native pool, so they are allocated from the listener-less root.
+      val buf = CometArrowAllocator.buffer(blockSize)
+      try {
+        assert(reservedFor(task) == 0L)
+      } finally {
+        buf.close()
       }
     }
   }
 
-  test("no active task is a no-op rather than an error") {
+  test("no active task uses the unaccounted root allocator") {
     TaskContext.unset()
-    val listener = new CometArrowAllocationListener
     // Broadcast coalescing and the cached batch serializer can allocate off a task thread.
-    listener.onAllocation(4096L)
-    listener.onRelease(4096L)
-    assert(listener.trackedTaskCount == 0)
+    assert(CometTaskArrowAllocator.forCurrentTask() eq CometArrowAllocator)
   }
 
-  test("on-heap mode is not accounted") {
-    withTask(offHeap = false) { listener =>
-      listener.onAllocation(blockSize)
+  test("on-heap mode uses the unaccounted root allocator") {
+    withTask(offHeap = false) { task =>
       // Comet's on-heap mode exists so the Spark SQL suite can run without off-heap memory.
-      // Charging an off-heap consumer there would be wrong, so nothing is tracked. Distinguishing
-      // "not tracked" from "tracked with zero reserved" is why trackedTaskCount is asserted here.
-      assert(listener.trackedTaskCount == 0)
-      assert(listener.reservedBytesForTask(taskAttemptId) == 0L)
+      // Charging an off-heap consumer there would be wrong.
+      assert(CometTaskArrowAllocator.forCurrentTask() eq CometArrowAllocator)
+      assert(CometTaskArrowAllocator.listenerForTask(task.taskAttemptId).isEmpty)
     }
   }
 
-  private def withTask(offHeap: Boolean = true)(f: CometArrowAllocationListener => Unit): Unit = {
+  // ---------------------------------------------------------------------------------------------
+  // Ownership: a release is attributed to the task that allocated, not to the releasing thread.
+  // ---------------------------------------------------------------------------------------------
+
+  test("a release on a thread with no task context is charged to the allocating task") {
+    withTask() { task =>
+      val buf = CometTaskArrowAllocator.forCurrentTask().buffer(blockSize)
+      assert(reservedFor(task) == blockSize)
+
+      // This is what the JVM UDF path does: it exports a JVM-owned vector, and Rust drops it later
+      // from a Tokio worker that has no task context installed. Reading TaskContext in onRelease
+      // would ignore this release and leave the task charged for memory it had already freed.
+      onDetachedThread(buf.close())
+
+      assert(reservedFor(task) == 0L)
+      assert(task.taskMemoryManager.getMemoryConsumptionForThisTask == 0L)
+    }
+  }
+
+  test("a release under a different task does not touch that task's accounting") {
+    withTask() { taskA =>
+      val bufA = CometTaskArrowAllocator.forCurrentTask().buffer(blockSize)
+      withTask() { taskB =>
+        val bufB = CometTaskArrowAllocator.forCurrentTask().buffer(blockSize)
+        assert(reservedFor(taskB) == blockSize)
+
+        // A's buffer, released while B's context is on the thread. B must not pay for it.
+        bufA.close()
+
+        assert(reservedFor(taskB) == blockSize)
+        assert(reservedFor(taskA) == 0L)
+        bufB.close()
+      }
+    }
+  }
+
+  // ---------------------------------------------------------------------------------------------
+  // Task completion, and buffers that outlive their task.
+  // ---------------------------------------------------------------------------------------------
+
+  test("task completion releases the whole reservation and closes the allocator") {
+    val task = newTask()
+    val allocatorName = withInstalledTask(task) {
+      val allocator = CometTaskArrowAllocator.forCurrentTask()
+      val buf = allocator.buffer(blockSize)
+      assert(task.taskMemoryManager.getMemoryConsumptionForThisTask == blockSize)
+      buf.close()
+
+      task.context.markTaskCompleted(None)
+
+      assert(CometTaskArrowAllocator.listenerForTask(task.taskAttemptId).isEmpty)
+      assert(task.taskMemoryManager.getMemoryConsumptionForThisTask == 0L)
+      allocator.getName
+    }
+    assert(!rootChildNames().contains(allocatorName))
+  }
+
+  test("a buffer outliving its task parks the allocator until it is released") {
+    val task = newTask()
+    withInstalledTask(task) {
+      val allocator = CometTaskArrowAllocator.forCurrentTask()
+      val buf = allocator.buffer(blockSize)
+
+      task.context.markTaskCompleted(None)
+
+      // The reservation goes back to Spark even though the buffer is still alive: the task is
+      // over, and leaving it charged would be reported as a Spark memory leak.
+      assert(task.taskMemoryManager.getMemoryConsumptionForThisTask == 0L)
+      assert(CometTaskArrowAllocator.listenerForTask(task.taskAttemptId).isEmpty)
+      // Arrow treats closing an allocator that still owns bytes as a leak, so it has to stay open.
+      assert(rootChildNames().contains(allocator.getName))
+
+      // A late release is ignored rather than charged to whoever is running by then...
+      buf.close()
+      assert(task.taskMemoryManager.getMemoryConsumptionForThisTask == 0L)
+
+      // ...and the drained allocator is reaped by the next task, so the root does not accumulate
+      // one child per task attempt.
+      withTask() { _ => CometTaskArrowAllocator.forCurrentTask() }
+      assert(!rootChildNames().contains(allocator.getName))
+    }
+  }
+
+  // ---------------------------------------------------------------------------------------------
+  // Failure containment: Spark's acquisition is fallible, Arrow's callbacks are not allowed to be.
+  // ---------------------------------------------------------------------------------------------
+
+  for ((label, failure) <- Seq(
+      "an I/O failure" -> new IOException("spill failed"),
+      "an interrupt" -> new InterruptedIOException("task killed"))) {
+    test(s"$label while spilling does not fail or leak the Arrow allocation") {
+      // Exactly one block of budget, already taken by a consumer that refuses to spill, so the
+      // listener's acquisition has to go through Spark's spill path and comes back throwing.
+      withTask(pool = blockSize) { task =>
+        val hostile = new FailingSpillConsumer(task.taskMemoryManager, failure)
+        assert(hostile.take(blockSize) == blockSize)
+
+        val allocator = CometTaskArrowAllocator.forCurrentTask()
+        // `BaseAllocator.buffer` marks the allocation successful before calling `onAllocation`, so
+        // throwing from the listener would lose this buffer: Arrow neither returns nor frees it.
+        val buf = allocator.buffer(blockSize)
+        try {
+          assert(allocator.getAllocatedMemory == blockSize)
+          // Nothing was reserved, which is what says the acquisition really did go down the spill
+          // path and throw rather than quietly succeeding and making this test vacuous.
+          assert(reservedFor(task) == 0L)
+        } finally {
+          buf.close()
+        }
+        // Zero here is the leak check: a buffer Arrow created but never handed back would still
+        // be counted.
+        assert(allocator.getAllocatedMemory == 0L)
+      }
+    }
+  }
+
+  // ---------------------------------------------------------------------------------------------
+  // Lock order. Spark calls getUsed and spill while holding the TaskMemoryManager monitor, and the
+  // listener holds its own monitor while waiting for that one.
+  // ---------------------------------------------------------------------------------------------
+
+  test("the usage snapshot does not take the reservation monitor") {
+    withTask() { task =>
+      val buf = CometTaskArrowAllocator.forCurrentTask().buffer(blockSize)
+      try {
+        val listener = CometTaskArrowAllocator.listenerForTask(task.taskAttemptId).get
+        val used = new AtomicLong(-1L)
+        val spilled = new AtomicLong(-1L)
+        listener.synchronized {
+          // A native reservation arriving through CometTaskMemoryManager on a Tokio thread holds
+          // Spark's monitor here. If either call waited on this one, it would deadlock against an
+          // Arrow allocation on the same task that already holds this monitor and wants Spark's.
+          val probe = new Thread(() => {
+            used.set(listener.getUsed)
+            spilled.set(listener.spill(blockSize, listener))
+          })
+          probe.setDaemon(true)
+          probe.setName("lock-order-probe")
+          probe.start()
+          probe.join(30000L)
+          assert(!probe.isAlive, "getUsed or spill blocked on the reservation monitor")
+        }
+        assert(used.get == blockSize)
+        assert(spilled.get == 0L)
+      } finally {
+        buf.close()
+      }
+    }
+  }
+
+  test("concurrent Arrow and native reservations make progress") {
+    // Two blocks of budget shared by both consumers, so most requests are short and Spark walks
+    // its consumer list, calling getUsed on the Arrow listener while holding its own monitor.
+    withTask(pool = blockSize * 2) { task =>
+      val allocator = CometTaskArrowAllocator.forCurrentTask()
+      val native = new NativeLikeConsumer(task.taskMemoryManager)
+      val failure = new AtomicReference[Throwable]()
+
+      val arrowThread = loopingThread("arrow-allocations", failure) {
+        val buf = allocator.buffer(blockSize)
+        buf.close()
+      }
+      val nativeThread = loopingThread("native-reservations", failure) {
+        native.release(native.reserve(blockSize))
+      }
+
+      Seq(arrowThread, nativeThread).foreach(_.start())
+      Seq(arrowThread, nativeThread).foreach { t =>
+        t.join(60000L)
+        assert(!t.isAlive, s"${t.getName} did not finish; concurrent reservations deadlocked")
+      }
+
+      Option(failure.get).foreach(e => fail("a worker failed", e))
+      assert(allocator.getAllocatedMemory == 0L)
+      native.release(native.used())
+    }
+  }
+
+  // ---------------------------------------------------------------------------------------------
+  // Fixtures.
+  // ---------------------------------------------------------------------------------------------
+
+  private class FailingSpillConsumer(tmm: TaskMemoryManager, failure: IOException)
+      extends MemoryConsumer(tmm, 0L, MemoryMode.OFF_HEAP) {
+    def take(bytes: Long): Long = acquireMemory(bytes)
+    override def spill(size: Long, trigger: MemoryConsumer): Long = throw failure
+  }
+
+  /** Stands in for `CometTaskMemoryManager`: reserves from Spark directly and never spills. */
+  private class NativeLikeConsumer(tmm: TaskMemoryManager)
+      extends MemoryConsumer(tmm, 0L, MemoryMode.OFF_HEAP) {
+    private val reserved = new AtomicLong(0L)
+    override def spill(size: Long, trigger: MemoryConsumer): Long = 0L
+    override def getUsed: Long = reserved.get()
+    def used(): Long = reserved.get()
+    def reserve(bytes: Long): Long = {
+      val granted = tmm.acquireExecutionMemory(bytes, this)
+      reserved.addAndGet(granted)
+      granted
+    }
+    def release(bytes: Long): Unit = {
+      if (bytes > 0L) {
+        reserved.addAndGet(-bytes)
+        tmm.releaseExecutionMemory(bytes, this)
+      }
+    }
+  }
+
+  private case class TaskFixture(
+      taskAttemptId: Long,
+      context: TaskContextImpl,
+      taskMemoryManager: TaskMemoryManager)
+
+  private def reservedFor(task: TaskFixture): Long =
+    CometTaskArrowAllocator.reservedBytesForTask(task.taskAttemptId)
+
+  private def newTask(offHeap: Boolean = true, pool: Long = poolBytes): TaskFixture = {
     val conf = new SparkConf(false)
     if (offHeap) {
       conf
         .set("spark.memory.offHeap.enabled", "true")
-        .set("spark.memory.offHeap.size", poolBytes.toString)
+        .set("spark.memory.offHeap.size", pool.toString)
     }
     val memoryManager = new TestMemoryManager(conf)
-    memoryManager.limit(poolBytes)
+    memoryManager.limit(pool)
+    val taskAttemptId = nextTaskAttemptId.getAndIncrement()
     val taskMemoryManager = new TaskMemoryManager(memoryManager, taskAttemptId)
-
-    val taskContext = new TaskContextImpl(
+    val context = new TaskContextImpl(
       stageId = 0,
       stageAttemptNumber = 0,
       partitionId = 0,
@@ -144,16 +399,71 @@ class CometArrowAllocationListenerSuite extends AnyFunSuite {
       taskMetrics = TaskMetrics.empty,
       cpus = 1,
       resources = Map.empty)
+    TaskFixture(taskAttemptId, context, taskMemoryManager)
+  }
 
-    TaskContext.setTaskContext(taskContext)
+  /** Installs the task on this thread, restoring whatever was there before. */
+  private def withInstalledTask[T](task: TaskFixture)(f: => T): T = {
+    val previous = TaskContext.get()
+    TaskContext.setTaskContext(task.context)
     try {
-      f(new CometArrowAllocationListener)
+      f
     } finally {
       try {
-        taskMemoryManager.cleanUpAllAllocatedMemory()
+        // Fires the completion listener that drops the reservation; harmless if already run.
+        task.context.markTaskCompleted(None)
+        task.taskMemoryManager.cleanUpAllAllocatedMemory()
       } finally {
-        TaskContext.unset()
+        if (previous == null) TaskContext.unset() else TaskContext.setTaskContext(previous)
       }
     }
+  }
+
+  private def withTask(offHeap: Boolean = true, pool: Long = poolBytes)(
+      f: TaskFixture => Unit): Unit = {
+    val task = newTask(offHeap, pool)
+    withInstalledTask(task)(f(task))
+  }
+
+  /** Runs the body on a fresh thread, which by construction carries no task context. */
+  private def onDetachedThread(body: => Unit): Unit = {
+    val failure = new AtomicReference[Throwable]()
+    val thread = new Thread(() => {
+      try body
+      catch { case t: Throwable => failure.set(t) }
+    })
+    thread.setDaemon(true)
+    thread.setName("detached-release")
+    thread.start()
+    thread.join(30000L)
+    assert(!thread.isAlive, "the detached release did not finish")
+    Option(failure.get).foreach(t => throw t)
+  }
+
+  private def loopingThread(name: String, failure: AtomicReference[Throwable])(
+      body: => Unit): Thread = {
+    val thread = new Thread(() => {
+      try {
+        var i = 0
+        while (i < 500) {
+          body
+          i += 1
+        }
+      } catch {
+        case t: Throwable => failure.compareAndSet(null, t)
+      }
+    })
+    thread.setDaemon(true)
+    thread.setName(name)
+    thread
+  }
+
+  private def rootChildNames(): Set[String] = {
+    val names = Set.newBuilder[String]
+    val children = CometArrowAllocator.getChildAllocators.iterator()
+    while (children.hasNext) {
+      names += children.next().asInstanceOf[BufferAllocator].getName
+    }
+    names.result()
   }
 }
