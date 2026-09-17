@@ -192,6 +192,23 @@ impl Drop for ThreadMemoryPoolRegistration {
     }
 }
 
+/// Sums `reserved()` over `pools`, skipping any pool whose identity is already in `seen`.
+///
+/// Execution contexts routinely share one pool — every context in a task under the task-shared
+/// pool types, every context in the process under the global ones — and each of them registers
+/// it, so a walk of the registry has to deduplicate by pool identity or it reports one
+/// reservation several times.
+fn sum_distinct_pools<'a>(
+    pools: impl IntoIterator<Item = &'a Arc<dyn MemoryPool>>,
+    seen: &mut HashSet<*const ()>,
+) -> usize {
+    pools
+        .into_iter()
+        .filter(|pool| seen.insert(Arc::as_ptr(pool) as *const ()))
+        .map(|pool| pool.reserved())
+        .sum()
+}
+
 /// Unregister a context's pool and return the remaining total reserved for the thread.
 fn unregister_and_total(thread_id: u64, context_id: i64) -> usize {
     let mut map = get_thread_memory_pools().lock();
@@ -201,14 +218,7 @@ fn unregister_and_total(thread_id: u64, context_id: i64) -> usize {
             map.remove(&thread_id);
             return 0;
         }
-        let mut seen = HashSet::new();
-        return pools
-            .values()
-            .filter_map(|p| {
-                let ptr = Arc::as_ptr(p) as *const ();
-                seen.insert(ptr).then(|| p.reserved())
-            })
-            .sum::<usize>();
+        return sum_distinct_pools(pools.values(), &mut HashSet::new());
     }
     0
 }
@@ -216,19 +226,25 @@ fn unregister_and_total(thread_id: u64, context_id: i64) -> usize {
 fn total_reserved_for_thread(thread_id: u64) -> usize {
     let map = get_thread_memory_pools().lock();
     map.get(&thread_id)
-        .map(|pools| {
-            // Deduplicate pools that share the same underlying allocation
-            // (e.g. task-shared pools registered by multiple execution contexts)
-            let mut seen = HashSet::new();
-            pools
-                .values()
-                .filter_map(|p| {
-                    let ptr = Arc::as_ptr(p) as *const ();
-                    seen.insert(ptr).then(|| p.reserved())
-                })
-                .sum::<usize>()
-        })
+        .map(|pools| sum_distinct_pools(pools.values(), &mut HashSet::new()))
         .unwrap_or(0)
+}
+
+/// Total bytes reserved across every pool registered for tracing, process-wide.
+///
+/// This is the figure to compare against a process-wide allocation counter. It covers every pool
+/// type, because each plan registers whichever pool `create_memory_pool` gave it, and it counts a
+/// pool once however many contexts or threads hold it.
+///
+/// The per-thread `thread_NNN_comet_memory_reserved` counters must not be summed to obtain it: a
+/// shared pool reports its full reservation on every thread that references it, so adding them
+/// across threads multiplies that pool by its thread count.
+fn total_reserved_across_threads() -> usize {
+    let map = get_thread_memory_pools().lock();
+    let mut seen = HashSet::new();
+    map.values()
+        .map(|pools| sum_distinct_pools(pools.values(), &mut seen))
+        .sum()
 }
 
 fn parse_usize_env_var(name: &str) -> Option<usize> {
@@ -1112,7 +1128,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
             // it reports a shared pool's full reservation once per referencing thread.
             log_memory_usage(
                 "comet_memory_reserved_total",
-                crate::execution::memory_pools::total_reserved_across_tasks() as u64,
+                total_reserved_across_threads() as u64,
             );
         }
 
@@ -1641,7 +1657,9 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_columnarToRowClose(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use datafusion::execution::memory_pool::{MemoryConsumer, UnboundedMemoryPool};
+    use datafusion::execution::memory_pool::{
+        MemoryConsumer, MemoryReservation, UnboundedMemoryPool,
+    };
     use datafusion_comet_proto::spark_expression::{AggExpr, Count, Expr, Sum};
     use datafusion_comet_proto::spark_operator::{HashAggregate, ShuffleWriter};
 
@@ -1767,6 +1785,7 @@ mod tests {
 
     #[test]
     fn thread_memory_pool_registration_is_scoped_and_deduplicates_base_pool() {
+        let _guard = serial();
         const THREAD_ID: u64 = u64::MAX;
         let pool: Arc<dyn MemoryPool> = Arc::new(UnboundedMemoryPool::default());
         let reservation = MemoryConsumer::new("test").register(&pool);
@@ -1815,5 +1834,89 @@ mod tests {
         drop(reservation);
         drop(pool);
         assert!(weak.upgrade().is_none());
+    }
+
+    /// `THREAD_MEMORY_POOLS` is process-wide and the crate's tests run in parallel, so any test
+    /// that registers a pool perturbs another's view of the process-wide total. The tests below
+    /// take this lock so their deltas are exact; without it they observe each other's pools.
+    static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn serial() -> std::sync::MutexGuard<'static, ()> {
+        SERIAL
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    fn reserving(bytes: usize) -> (Arc<dyn MemoryPool>, MemoryReservation) {
+        let pool: Arc<dyn MemoryPool> = Arc::new(UnboundedMemoryPool::default());
+        let reservation = MemoryConsumer::new("test").register(&pool);
+        reservation.grow(bytes);
+        (pool, reservation)
+    }
+
+    /// The property that makes this total comparable against a process-wide allocation counter,
+    /// and the one summing the per-thread counters gets wrong: a pool shared by several contexts
+    /// on several threads contributes its reservation once.
+    #[test]
+    fn a_shared_pool_is_counted_once_however_many_contexts_hold_it() {
+        let _guard = serial();
+        let before = total_reserved_across_threads();
+        let (pool, reservation) = reserving(4096);
+
+        let _first = ThreadMemoryPoolRegistration::new(11, 1, Arc::clone(&pool));
+        assert_eq!(
+            total_reserved_across_threads() - before,
+            4096,
+            "a registered pool's reservation must appear in the total"
+        );
+
+        // A second context in the same task, and a third on another thread, both register the
+        // same pool. Summing the per-thread counters would report 4096 three times over.
+        let _second = ThreadMemoryPoolRegistration::new(11, 2, Arc::clone(&pool));
+        let _third = ThreadMemoryPoolRegistration::new(12, 3, Arc::clone(&pool));
+        assert_eq!(
+            total_reserved_across_threads() - before,
+            4096,
+            "a shared pool must be counted once, not once per holder"
+        );
+        assert_eq!(total_reserved_for_thread(11), 4096);
+        assert_eq!(total_reserved_for_thread(12), 4096);
+
+        drop(reservation);
+    }
+
+    /// The total has to cover every pool type, not just the task-shared ones: `greedy`,
+    /// `fair_spill`, the `_global` variants and `unbounded` all bypass the task-shared registry,
+    /// and reporting zero for them would make the analyzer call live reservations untracked.
+    #[test]
+    fn independent_pools_each_contribute_to_the_total() {
+        let _guard = serial();
+        let before = total_reserved_across_threads();
+        let (first_pool, first_reservation) = reserving(4096);
+        let (second_pool, second_reservation) = reserving(8192);
+
+        let _first = ThreadMemoryPoolRegistration::new(13, 1, first_pool);
+        let _second = ThreadMemoryPoolRegistration::new(13, 2, second_pool);
+        assert_eq!(total_reserved_across_threads() - before, 4096 + 8192);
+
+        drop(first_reservation);
+        drop(second_reservation);
+    }
+
+    #[test]
+    fn released_pools_leave_the_total() {
+        let _guard = serial();
+        let before = total_reserved_across_threads();
+        let (pool, reservation) = reserving(8192);
+        {
+            let _registration = ThreadMemoryPoolRegistration::new(14, 1, pool);
+            assert_eq!(total_reserved_across_threads() - before, 8192);
+        }
+        assert_eq!(
+            total_reserved_across_threads(),
+            before,
+            "unregistering the last context must remove the pool from the total"
+        );
+        drop(reservation);
     }
 }

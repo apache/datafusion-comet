@@ -94,22 +94,6 @@ impl Drop for TaskSharedMemoryPool {
     }
 }
 
-/// Total bytes reserved across every live task-shared pool, process-wide.
-///
-/// Each registry entry is one task attempt's pool, so summing the entries counts each pool exactly
-/// once. This is deliberately not the sum of the per-thread `thread_NNN_comet_memory_reserved`
-/// tracing counters: each of those reports the full reservation of a shared pool once per thread
-/// that references it, so adding them across threads multiplies a task-shared pool by its thread
-/// count.
-pub(crate) fn total_reserved_across_tasks() -> usize {
-    TASK_SHARED_MEMORY_POOLS
-        .lock()
-        .values()
-        .filter_map(Weak::upgrade)
-        .map(|pool| pool.reserved())
-        .sum()
-}
-
 /// Returns the memory pool shared by every native plan in `task_attempt_id`, creating it with
 /// `create` if no live pool exists for the task. The returned `Arc` is the RAII handle: the pool
 /// stays registered until the last reference to it drops.
@@ -137,7 +121,6 @@ pub(crate) fn acquire_task_shared_pool(
 mod tests {
     use super::*;
     use datafusion::execution::memory_pool::UnboundedMemoryPool;
-    use std::sync::{Mutex, MutexGuard};
 
     /// Tests share the process-wide pool map, so each uses its own task attempt id.
     fn acquire(task_attempt_id: i64) -> Arc<dyn MemoryPool> {
@@ -148,64 +131,6 @@ mod tests {
         TASK_SHARED_MEMORY_POOLS
             .lock()
             .contains_key(&task_attempt_id)
-    }
-
-    /// `TASK_SHARED_MEMORY_POOLS` is process-wide and the crate's tests run in parallel, so any
-    /// test that reserves memory perturbs another's view of the total. The two tests below take
-    /// this lock so their deltas are exact; without it they observe each other's reservations.
-    static SERIAL: Mutex<()> = Mutex::new(());
-
-    fn serial() -> MutexGuard<'static, ()> {
-        SERIAL
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-    }
-
-    /// The property the per-thread tracing counters get wrong: a task-shared pool contributes its
-    /// reservation once, however many execution contexts hold it.
-    #[test]
-    fn a_task_shared_pool_is_counted_once_however_many_contexts_hold_it() {
-        let _guard = serial();
-        let before = total_reserved_across_tasks();
-
-        let first = acquire(-1010);
-        let reservation = MemoryConsumer::new("counted").register(&first);
-        reservation.try_grow(4096).unwrap();
-        let with_one_context = total_reserved_across_tasks();
-        assert_eq!(
-            with_one_context - before,
-            4096,
-            "a live pool's reservation must appear in the total"
-        );
-
-        // A second execution context in the same task resolves to the same pool. The total must
-        // not double: summing the per-thread counters instead is exactly what over-counts.
-        let second = acquire(-1010);
-        assert!(Arc::ptr_eq(&first, &second));
-        assert_eq!(
-            total_reserved_across_tasks(),
-            with_one_context,
-            "a shared pool must be counted once, not once per holder"
-        );
-
-        drop(reservation);
-    }
-
-    #[test]
-    fn released_pools_leave_the_total() {
-        let _guard = serial();
-        let before = total_reserved_across_tasks();
-        {
-            let pool = acquire(-1011);
-            let reservation = MemoryConsumer::new("transient").register(&pool);
-            reservation.try_grow(8192).unwrap();
-            assert_eq!(total_reserved_across_tasks() - before, 8192);
-        }
-        assert_eq!(
-            total_reserved_across_tasks(),
-            before,
-            "dropping the last reference must remove the pool from the total"
-        );
     }
 
     #[test]
