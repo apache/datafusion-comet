@@ -24,11 +24,12 @@ import org.scalatest.funsuite.AnyFunSuite
 import org.apache.spark.SparkConf
 import org.apache.spark.serializer.JavaSerializer
 import org.apache.spark.sql.catalyst.InternalRow
-import org.apache.spark.sql.catalyst.expressions.{Add, AddMonths, BoundReference, Cast, Coalesce, Concat, CreateArray, CreateMap, DateFormatClass, ElementAt, Expression, GetStructField, IntegralDivide, LeafExpression, Length, Literal, MakeTimestamp, MicrosToTimestamp, MillisToTimestamp, MonthsBetween, Nondeterministic, Rand, Size, Substring, ToUnixTimestamp, Unevaluable, UnixMicros, UnixMillis, UnixSeconds, Upper}
+import org.apache.spark.sql.catalyst.expressions.{Add, AddMonths, ArrayMax, ArrayMin, BoundReference, Cast, Coalesce, Concat, CreateArray, CreateMap, DateFormatClass, ElementAt, Expression, GetStructField, IntegralDivide, LeafExpression, Length, Literal, MakeTimestamp, MicrosToTimestamp, MillisToTimestamp, MonthsBetween, Nondeterministic, Rand, Size, Substring, ToUnixTimestamp, Unevaluable, UnixMicros, UnixMillis, UnixSeconds, Upper}
 import org.apache.spark.sql.catalyst.expressions.codegen.{CodeFormatter, CodegenContext, CodegenFallback, ExprCode}
 import org.apache.spark.sql.types._
 import org.apache.spark.unsafe.types.UTF8String
 
+import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
 import org.apache.comet.codegen.CometBatchKernelCodegen
 import org.apache.comet.codegen.CometBatchKernelCodegen.{ArrayColumnSpec, ArrowColumnSpec, MapColumnSpec, ScalarColumnSpec, StructColumnSpec, StructFieldSpec}
 import org.apache.comet.udf.codegen.CometScalaUDFCodegen
@@ -1432,6 +1433,50 @@ class CometCodegenSourceSuite extends AnyFunSuite {
       assert(
         src.contains("public java.lang.Object generate(Object[] references)"),
         s"$name: generated source missing kernel class entry point")
+    }
+  }
+
+  test("array extrema preserve collations through closure serialization and codegen") {
+    assume(isSpark40Plus, "COLLATE requires Spark 4.0")
+    val collated = DataType.fromDDL("STRING COLLATE UTF8_LCASE")
+    assert(collated != StringType)
+    val serializer = new JavaSerializer(new SparkConf()).newInstance()
+
+    def inputSpec(dt: DataType): ArrowColumnSpec = dt match {
+      case _: StringType => ScalarColumnSpec(varCharVectorClass, nullable = true)
+      case ArrayType(elementType, _) =>
+        ArrayColumnSpec(nullable = true, elementType, inputSpec(elementType))
+      case st: StructType =>
+        StructColumnSpec(
+          nullable = true,
+          st.fields
+            .map(f => StructFieldSpec(f.name, f.dataType, f.nullable, inputSpec(f.dataType)))
+            .toSeq)
+      case other => fail(s"unexpected input type $other")
+    }
+
+    val elementTypes = Seq(
+      collated,
+      ArrayType(collated),
+      StructType(Seq(StructField("s", collated))),
+      StructType(Seq(StructField("s", ArrayType(collated)))))
+    for (elementType <- elementTypes) {
+      val inputType = ArrayType(elementType)
+      val input = BoundReference(0, inputType, nullable = true)
+      for (expr <- Seq(ArrayMin(input), ArrayMax(input))) {
+        withClue(s"${expr.prettyName} over $inputType: ") {
+          // The dispatcher transports the bound Catalyst tree separately from the Arrow schema,
+          // which represents collated strings as UTF-8 bytes without a collation ID.
+          val restored = serializer.deserialize[Expression](serializer.serialize(expr))
+          assert(restored.dataType == elementType)
+          assert(restored.children.head.dataType == inputType)
+          assert(CometBatchKernelCodegen.canHandle(restored).isEmpty)
+          val src = gen(restored, inputSpec(inputType))
+          assert(
+            src.contains(".semanticCompare("),
+            s"expected Spark's collation-aware string comparison; got:\n$src")
+        }
+      }
     }
   }
 
