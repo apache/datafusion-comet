@@ -404,10 +404,7 @@ jobs:
         id: cargo-cache
         uses: actions/cache/restore@v6
         with:
-          path: |
-            ${{ steps.cargo-key.outputs.cargo-home }}/registry
-            ${{ steps.cargo-key.outputs.cargo-home }}/git
-            native/target
+          path: native/target
           key: ${{ steps.cargo-key.outputs.source-key }}
           restore-keys: ${{ steps.cargo-key.outputs.restore-prefix }}
 
@@ -420,10 +417,7 @@ jobs:
         # at the same sha would only re-archive an entry that already exists.
         if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.cargo-cache.outputs.cache-hit != 'true'
         with:
-          path: |
-            ${{ steps.cargo-key.outputs.cargo-home }}/registry
-            ${{ steps.cargo-key.outputs.cargo-home }}/git
-            native/target
+          path: native/target
           key: ${{ steps.cargo-key.outputs.source-key }}
 
   linux-test:

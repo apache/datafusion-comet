@@ -422,9 +422,9 @@ which jobs do run on main and therefore do write.
 The Linux, Spark SQL, Iceberg and manual writer workflows call
 `.github/actions/build-native-ci` after checkout and `setup-builder`. PR, queue,
 scheduled and manual runs restore `native/target/ci/libcomet.so` and skip Cargo
-on an exact library match. Only
-pushes to `main` save caches: main skips Cargo when both the library and incremental
-cache match exactly, and builds when either lacks an exact match to replenish it.
+on an exact library match. Only pushes to `main` save caches. Main skips Cargo
+when both the library and incremental cache match exactly, and builds when either
+lacks an exact match to replenish it.
 An incremental cache hit alone never replaces compilation. Builds use
 `cargo build --locked --profile ci`; manifest changes requiring a lockfile update
 must include that update to `native/Cargo.lock`. Artifact paths remain unchanged.
@@ -446,13 +446,12 @@ retain package and JDK identity because native dependencies compile against JNI
 headers and link `libjvm`, and Cargo does not fully track external tool/header
 changes. Unrelated package updates can therefore cause conservative misses.
 
-The incremental cache holds `native/target` and the effective `CARGO_HOME`
-registry/Git directories. Correcting the container's path to `/usr/local/cargo`
-adds previously uncached dependencies, increasing the shared cache budget needed
-alongside the finished library. Its fallback permits source changes within the
-same dependency/build environment. Rust checks and tests always run with their
-separate debug cache. Preflight checks fingerprint invalidation, main's routing,
-and the action's cache-hit/miss behavior.
+The CI and debug incremental caches hold only `native/target`, including compiled
+dependencies. Cargo fetches registry and Git dependency sources as needed; those
+downloads are not duplicated in the repository's limited cache storage. Fallback
+restores permit source changes within the same dependency/build environment.
+Rust checks and tests always run with their separate debug cache. Preflight checks
+fingerprint invalidation, main's routing, and the action's cache-hit/miss behavior.
 
 ## Retrying flaky network operations
 
