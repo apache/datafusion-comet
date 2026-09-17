@@ -48,6 +48,9 @@ object CometCachedBatchHelper {
   def columnStreamSizes(batch: CachedBatch): Seq[Long] =
     batch.asInstanceOf[CometCachedBatch].columns.map(_.size).toSeq
 
+  def columnsAreDeltaEncoded(batch: CachedBatch): Seq[Boolean] =
+    batch.asInstanceOf[CometCachedBatch].deltaEncoded.toSeq
+
   /**
    * Replace one column's stream with bytes that cannot be decoded, in place.
    *

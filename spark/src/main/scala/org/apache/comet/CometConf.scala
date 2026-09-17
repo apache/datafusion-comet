@@ -264,16 +264,20 @@ object CometConf extends ShimCometConf {
     conf("spark.comet.exec.inMemoryCache.enabled")
       .category(CATEGORY_EXEC)
       .doc(
-        "Whether to enable Comet native execution for in-memory cached tables. Its value at " +
-          "startup also decides whether CometDriverPlugin installs Comet's cache serializer, " +
-          "which stores cached data in Arrow format. Because spark.sql.cache.serializer is a " +
+        "Whether to enable Comet native scans and fused Spark reads of in-memory cached tables. " +
+          "Requires spark.comet.enabled=true. At startup, this setting also decides whether " +
+          "CometDriverPlugin installs Comet's cache serializer, which stores cached data in " +
+          "Arrow format. Because spark.sql.cache.serializer is a " +
           "static config, the cached format is fixed for the application, and disabling this " +
-          "at runtime only sends cached scans back to Spark's execution path. Relations whose " +
-          "schema Comet's Arrow writer does not support are always cached in Spark's default " +
+          "or spark.comet.enabled at runtime sends cached scans back to Spark's execution path " +
+          "without the fused reader. Relations whose schema Comet's Arrow writer does not " +
+          "support are always cached in Spark's default " +
           "format. Each cached column is stored as its own compressed Arrow IPC stream, so a " +
-          "scan decodes only the columns it projected. Reads that feed Spark operators rather " +
-          "than Comet ones still pay a row conversion the default format avoids, and can be " +
-          "slower than Spark's cache. With spark.kryo.registrationRequired=true, also set " +
+          "scan decodes only the columns it projected. Eligible Spark whole-stage codegen " +
+          "consumers read cached vectors directly when vectorized cache reading is enabled; " +
+          "other Spark row consumers use a reusable row buffer. Decoding costs can still make " +
+          "wide numeric reads slower than Spark's default cache. With " +
+          "spark.kryo.registrationRequired=true, also set " +
           "spark.kryo.registrator=org.apache.comet.CometKryoRegistrator before creating the " +
           "SparkContext, otherwise caching fails as soon as a block is serialized, including " +
           "the disk half of the default MEMORY_AND_DISK storage level.")
