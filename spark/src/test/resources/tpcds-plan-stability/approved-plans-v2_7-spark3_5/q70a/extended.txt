@@ -5,7 +5,7 @@ CometColumnarToRow
          +- CometSort
             +- CometExchange
                +- CometHashAggregate
-                  +- CometExchange
+                  +- CometColumnarExchange
                      +- CometHashAggregate
                         +- CometUnion
                            :- CometHashAggregate
