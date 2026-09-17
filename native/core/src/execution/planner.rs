@@ -29,6 +29,8 @@ pub mod operator_registry;
 // and calls into that crate.
 #[cfg(feature = "contrib-delta")]
 mod delta_scan;
+#[cfg(feature = "contrib-lance")]
+mod lance_scan;
 
 use crate::execution::operators::init_csv_datasource_exec;
 use crate::execution::operators::AlignedArrowStreamReader;
@@ -588,9 +590,12 @@ impl PhysicalPlanner {
                             DataType::Duration(TimeUnit::Microsecond) => {
                                 ScalarValue::DurationMicrosecond(Some(*value))
                             }
+                            DataType::Time64(TimeUnit::Nanosecond) => {
+                                ScalarValue::Time64Nanosecond(Some(*value))
+                            }
                             dt => {
                                 return Err(GeneralError(format!(
-                                    "Expected 'Int64', 'Timestamp', or 'Duration(Microsecond)' for LongVal, but found {dt:?}"
+                                    "Expected 'Int64', 'Timestamp', 'Duration(Microsecond)', or 'Time64(Nanosecond)' for LongVal, but found {dt:?}"
                                 )))
                             }
                         },
@@ -1884,10 +1889,14 @@ impl PhysicalPlanner {
                 if let Some(result) = delta_scan::try_plan_contrib_scan(self, spark_plan, contrib) {
                     return result;
                 }
+                #[cfg(feature = "contrib-lance")]
+                if let Some(result) = lance_scan::try_plan_contrib_scan(self, spark_plan, contrib) {
+                    return result;
+                }
                 Err(GeneralError(format!(
                     "Received a contrib_scan operator (type_url: {}) but core was built without a \
-                     contrib that handles it. Rebuild with the matching contrib feature -- e.g. \
-                     `-Pcontrib-delta` (Maven) + `--features contrib-delta` (Cargo) for Delta Lake.",
+                     contrib that handles it. Rebuild with the matching Maven profile and Cargo \
+                     feature.",
                     contrib.type_url
                 )))
             }
@@ -6268,12 +6277,14 @@ mod tests {
                 assert_eq!(metrics.metrics["build_input_rows"], 4);
                 if enabled {
                     assert_eq!(metrics.metrics["input_rows"], 3);
-                    assert_eq!(metrics.metrics["dynamic_filter_rows_evaluated"], 100);
-                    assert_eq!(metrics.metrics["dynamic_filter_rows_pruned"], 97);
-                    assert_eq!(metrics.metrics["dynamic_filter_rows_bypassed"], 0);
+                    assert_eq!(metrics.metrics["dynamic_filter_join_rows_evaluated"], 100);
+                    assert_eq!(metrics.metrics["dynamic_filter_join_rows_pruned"], 97);
+                    assert_eq!(metrics.metrics["dynamic_filter_join_rows_bypassed"], 0);
                 } else {
                     assert_eq!(metrics.metrics["input_rows"], 100);
-                    assert!(!metrics.metrics.contains_key("dynamic_filter_rows_pruned"));
+                    assert!(!metrics
+                        .metrics
+                        .contains_key("dynamic_filter_join_rows_pruned"));
                 }
             }
         }
