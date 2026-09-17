@@ -728,14 +728,11 @@ exceeds the threshold, partitions spill to temporary files.</p></li>
 <li><p>Writes compressed IPC stream</p></li>
 </ul>
 </li>
-<li><p><strong>Output files</strong>: Two files are produced:</p>
-<ul class="simple">
-<li><p><strong>Data file</strong>: Concatenated partition data</p></li>
-<li><p><strong>Index file</strong>: Array of 8-byte little-endian offsets marking partition boundaries</p></li>
-</ul>
-</li>
-<li><p><strong>Commit</strong>: Back in JVM, <code class="docutils literal notranslate"><span class="pre">CometNativeShuffleWriter</span></code> reads the index file to get partition
-lengths and commits via Spark’s <code class="docutils literal notranslate"><span class="pre">IndexShuffleBlockResolver</span></code>.</p></li>
+<li><p><strong>Output</strong>: One data file holds the concatenated partition data. The writer records the byte
+offset where each partition begins, plus the total length, and keeps them in memory.</p></li>
+<li><p><strong>Commit</strong>: Back in JVM, <code class="docutils literal notranslate"><span class="pre">CometNativeShuffleWriter</span></code> fetches the offsets with
+<code class="docutils literal notranslate"><span class="pre">Native.getShufflePartitionOffsets</span></code>, converts them to partition lengths, and commits via
+Spark’s <code class="docutils literal notranslate"><span class="pre">IndexShuffleBlockResolver.writeMetadataFileAndCommit</span></code>, which writes Spark’s index file.</p></li>
 </ol>
 </section>
 <section id="read-path">
