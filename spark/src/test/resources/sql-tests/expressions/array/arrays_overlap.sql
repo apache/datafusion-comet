@@ -233,6 +233,16 @@ INSERT INTO test_overlap_nested VALUES (array(array(1, 2), array(3, 4)), array(a
 query
 SELECT a, b, arrays_overlap(a, b) FROM test_overlap_nested
 
+-- nested floating-point signed-zero behavior differs from Spark
+statement
+CREATE TABLE test_overlap_nested_dbl(a array<array<double>>, b array<array<double>>) USING parquet
+
+statement
+INSERT INTO test_overlap_nested_dbl VALUES (array(array(0.0D)), array(array(-0.0D))), (array(array(double('NaN'))), array(array(double('NaN'))))
+
+query ignore(https://github.com/apache/datafusion-comet/issues/5191)
+SELECT a, b, arrays_overlap(a, b) FROM test_overlap_nested_dbl
+
 -- struct element arrays
 statement
 CREATE TABLE test_overlap_struct(a array<struct<x:int, y:int>>, b array<struct<x:int, y:int>>) USING parquet
