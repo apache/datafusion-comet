@@ -58,6 +58,51 @@ heap and to Spark's own off-heap accounting, yet they land squarely in container
 therefore maintains its own budget that is meant to shadow the physical one, and the accuracy of
 that shadow is the central problem this page is about.
 
+## Memory layout
+
+Two views of the same container. The first is what Spark and Comet were configured to use, which is
+what sizes the pod. The second is what the kernel actually counts, which is what the OOM killer acts
+on. Both total the same limit, and the regions do not line up.
+
+The figures are from one measured executor: TPC-H SF100 Q9, a single executor at a 9 GiB pod limit,
+cgroup v2, reading Parquet from local disk.
+
+```text
+container limit (cgroup memory.max) = 9216 MB
+  = spark.executor.memory + spark.executor.memoryOverhead + spark.memory.offHeap.size
+
+VIEW A - what Spark configures, and what sizes the pod request
++------------------------------+------------------------------+------------------+
+| JVM heap            4096 MB  | off-heap budget     4096 MB  | overhead 1024 MB |
+| spark.executor.memory        | spark.memory.offHeap.size    | memoryOverhead   |
+|                              |                              |                  |
+| GC-managed                   | read TWICE, by two           | metaspace, code  |
+|                              | allocators that never        | cache, thread    |
+|                              | compare notes:               | stacks, GC       |
+|                              |   - Spark Tungsten (all)     |                  |
+|                              |   - Comet pool (x fraction)  |                  |
+|                              | Arrow Java sits outside      |                  |
+|                              | both, bounded by nothing     |                  |
++------------------------------+------------------------------+------------------+
+
+VIEW B - what the kernel counts, and what the OOM killer acts on
++----------------------------------------+---------------------------------------+
+| anon              peak 5044 MB (55%)   | file (page cache)      ~4171 MB       |
+| JVM heap + every native allocation     | parquet reads, spill files            |
+| not reclaimable: this is what kills    | reclaimable: grows to fill free space |
++----------------------------------------+---------------------------------------+
+  memory.current = anon + file -> pinned at 9215 / 9216 MB for the whole query
+```
+
+The off-heap column is the one to look at twice. `spark.memory.offHeap.size` is not divided between
+Spark and Comet: it is read once by Spark's `TaskMemoryManager` as the budget for Tungsten
+consumers, and again by Comet to size its native pool. Neither observes the other's real usage. See
+[Where Comet's budget comes from](#where-comets-budget-comes-from).
+
+Read together, the two views explain how a budget can look healthy while the container sits at its
+ceiling, and why the reverse is also possible. `anon` is the part the kernel cannot reclaim, so a
+kill decision turns on it; `file` is page cache the kernel gives back on demand.
+
 ## Who allocates what
 
 Enabling Comet does not add one new memory consumer, it adds several, and they are not all
@@ -261,7 +306,7 @@ diverge for several structural reasons:
 
 The practical consequence is that `reserved()` is a lower bound on Comet's real footprint, and the
 gap is workload-dependent. `spark.comet.exec.memoryPool.fraction` exists purely so operators can
-hand-tune a haircut that covers the gap for their workload.
+hand-tune a margin that covers the gap for their workload.
 
 To measure the gap on a real query, enable tracing with the `jemalloc` feature and compare
 `jemalloc_allocated` against the summed `thread_NNN_comet_memory_reserved` values; see
@@ -304,6 +349,14 @@ Two facts follow that are easy to get wrong:
 2. **`spark.executor.memoryOverhead` is the only slack in the container**, and the JVM's own
    non-heap usage already consumes a large part of it. Comet's overshoot beyond its declared
    reservations eats into the same allowance.
+3. **`memory.current` is not a usable pressure signal.** The cgroup counter includes reclaimable
+   page cache, which grows to fill whatever the container is not otherwise using. On the executor
+   measured in [Memory layout](#memory-layout) it reached the limit within about twelve seconds of
+   startup and stayed there for the whole query, while `anon` never exceeded 55% of the limit. A
+   container sitting at `memory.max` is the normal steady state of any workload that reads files,
+   not a sign of distress, so a threshold on `memory.current` fires on healthy queries and raising
+   the threshold only delays that. The non-reclaimable portion, `anon` plus unevictable from
+   `memory.stat`, is the quantity that predicts a kill.
 
 YARN behaves analogously. The container size is the same sum, and the NodeManager kills containers
 that exceed it, but the kill is done by the NodeManager's monitor rather than the kernel, so it is
@@ -320,11 +373,15 @@ much they matter:
   with the `jemalloc` feature and compare `jemalloc_allocated` against summed reservations after
   the fact. There is no runtime value that an operator, a metric, or a policy could read.
 - **`spark.comet.exec.memoryPool.fraction` is a manual proxy for the gap.** It asks operators to
-  guess a per-workload haircut rather than measuring anything.
+  guess a per-workload margin rather than measuring anything.
 - **`CometArrowAllocator` is unbounded** and participates in no budget.
 - **Buffer and reservation lifetimes are independent across the FFI boundary.** A batch can be
   resident on either side with no reservation covering it, because reservations are made and
   withdrawn by individual operators while the bytes outlive them.
+- **No usable container-level pressure signal.** `memory.current` cannot be thresholded, because
+  page cache saturates it on any workload that reads files (see
+  [What the container sees](#what-the-container-sees)). A policy that wants to act on real container
+  pressure has to read the non-reclaimable portion of `memory.stat`, or PSI (`memory.pressure`).
 - **Spark cannot trigger native spilling.** `NativeMemoryConsumer.spill()` returns `0`, so native
   reservations are released only when a native operator decides to spill on its own failed
   `try_grow`. JVM consumers in the same task can be starved behind them.
