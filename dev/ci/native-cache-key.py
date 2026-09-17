@@ -111,7 +111,6 @@ def cache_keys(profile, dependencies, sources, environment):
     """
     prefix = f"Linux-cargo-{profile}-v3-{digest([environment, dependencies])}-"
     return {
-        "cargo-home": environment["cargo_home"],
         "source-key": prefix + digest(sources),
         "restore-prefix": prefix,
         "binary-key": f"Linux-native-ci-v2-{digest([environment, sources])}" if profile == "ci" else "",

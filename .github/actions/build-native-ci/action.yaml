@@ -46,10 +46,7 @@ runs:
       if: steps.binary-cache.outputs.cache-hit != 'true' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
       uses: actions/cache/restore@v6
       with:
-        path: |
-          ${{ steps.key.outputs.cargo-home }}/registry
-          ${{ steps.key.outputs.cargo-home }}/git
-          native/target
+        path: native/target
         key: ${{ steps.key.outputs.source-key }}
         restore-keys: ${{ steps.key.outputs.restore-prefix }}
 
@@ -74,8 +71,5 @@ runs:
       if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.cargo-cache.outputs.cache-hit != 'true'
       uses: actions/cache/save@v6
       with:
-        path: |
-          ${{ steps.key.outputs.cargo-home }}/registry
-          ${{ steps.key.outputs.cargo-home }}/git
-          native/target
+        path: native/target
         key: ${{ steps.key.outputs.source-key }}
