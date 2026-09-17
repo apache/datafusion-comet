@@ -32,6 +32,26 @@ preflight checks first (license headers, Markdown formatting, workflow linting, 
 checks), computes which heavy jobs the changed files are relevant to, and fans out to those jobs.
 Which jobs run also depends on the event:
 
+```mermaid
+flowchart LR
+  PR([pull request]) --> PRTIER
+  PR -. with label .-> QUEUE
+  PR -. with label .-> NIGHTLY
+  PR -. with label .-> S34
+  MQ([merge queue]) --> PRTIER
+  MQ --> QUEUE
+  CRON([schedule<br>06:00 UTC]) --> NIGHTLY
+  PUSH([push to main]) --> CACHE
+
+  PRTIER["PR tier<br>Linux build, lint, Rust tests<br>TPC-H / TPC-DS<br>Comet suites, Spark 4.1"]
+  QUEUE["Queue tier, on top of the PR tier<br>Spark SQL, Spark 4.1<br>Iceberg 1.11<br>macOS build and Comet suites<br>Benchmark check, Delta gate<br>PyArrow UDF, Spark 4.0 / 4.1 / 4.2"]
+  NIGHTLY["Nightly tier<br>Comet suites, Spark 3.4 / 3.5 / 4.0 / 4.2<br>Spark SQL, Spark 3.5 / 4.0<br>Iceberg 1.8 / 1.9 / 1.10"]
+  S34["Neither tier<br>Spark SQL, Spark 3.4"]
+  CACHE["Cache-refresh-only mode<br>the four cache-writing jobs, plus Lint"]
+```
+
+Suite by suite:
+
 | Suite                                             | Pull request | Merge queue | Nightly |
 | ------------------------------------------------- | ------------ | ----------- | ------- |
 | Linux build, lint, Rust tests, TPC-H/TPC-DS       | yes          | yes         | no      |
@@ -285,7 +305,7 @@ tested everything. Confirm the suites actually ran:
 ```sh
 run=$(gh api "repos/apache/datafusion-comet/actions/workflows/ci.yml/runs?event=schedule&per_page=1" \
         --jq '.workflow_runs[0].id')
-gh run view "$run" --json jobs \
+gh run view "$run" --repo apache/datafusion-comet --json jobs \
   --jq '[.jobs[] | select(.name | test("^(Spark SQL|Iceberg Spark SQL) Tests"))]
         | group_by(.conclusion)[] | "\(length)\t\(.[0].conclusion)"'
 ```
