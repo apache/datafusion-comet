@@ -1,0 +1,107 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+name: "Download Artifact (with retry)"
+description: >
+  Drop-in replacement for actions/download-artifact that retries the download
+  three times. The artifact client only retries 429/500/502/503/504, so a
+  ListArtifacts answered "(403) Forbidden: Error from intermediary" fails the
+  step before a single byte is fetched. There is no input to widen that list,
+  Actions has no built-in step retry, and third-party retry wrappers are not on
+  the Apache allowed-actions list. See .github/workflows/README.md.
+
+  Unlike the upload wrapper, a retry here has no side effect to undo: a failed
+  attempt leaves at most a partial extraction under `path`, which the next
+  attempt overwrites file by file.
+
+# Inputs are the subset of actions/download-artifact@v8 that this repository
+# uses. The boolean default has to be a real 'false' string because
+# core.getBooleanInput() throws on an empty value.
+inputs:
+  name:
+    description: 'Name of the artifact to download (empty means every artifact in the run)'
+    required: false
+    default: ''
+  path:
+    description: 'Destination path (empty means the workspace)'
+    required: false
+    default: ''
+  pattern:
+    description: 'Glob matching the artifacts to download; ignored when name is set'
+    required: false
+    default: ''
+  merge-multiple:
+    description: 'Extract every matched artifact straight into path rather than into one directory each'
+    required: false
+    default: 'false'
+
+# `||` yields the first non-empty operand, so this picks whichever attempt ran.
+outputs:
+  download-path:
+    description: 'Path of artifact download'
+    value: ${{ steps.attempt-1.outputs.download-path || steps.attempt-2.outputs.download-path || steps.attempt-3.outputs.download-path }}
+
+runs:
+  using: "composite"
+  steps:
+    # continue-on-error keeps a failed attempt from failing the job while still
+    # recording outcome == 'failure', which the later attempts gate on. The last
+    # attempt omits it so a genuinely missing artifact still fails loudly.
+    - name: Download ${{ inputs.name || inputs.pattern || 'all artifacts' }} (attempt 1 of 3)
+      id: attempt-1
+      uses: actions/download-artifact@v8
+      continue-on-error: true
+      with:
+        name: ${{ inputs.name }}
+        path: ${{ inputs.path }}
+        pattern: ${{ inputs.pattern }}
+        merge-multiple: ${{ inputs.merge-multiple }}
+
+    - name: Wait before retrying ${{ inputs.name || inputs.pattern || 'all artifacts' }}
+      if: ${{ steps.attempt-1.outcome == 'failure' }}
+      shell: bash
+      run: |
+        echo "::warning::Download of '${{ inputs.name || inputs.pattern || 'all artifacts' }}' failed; retrying in 15s (attempt 2 of 3)."
+        sleep 15
+
+    - name: Download ${{ inputs.name || inputs.pattern || 'all artifacts' }} (attempt 2 of 3)
+      id: attempt-2
+      if: ${{ steps.attempt-1.outcome == 'failure' }}
+      uses: actions/download-artifact@v8
+      continue-on-error: true
+      with:
+        name: ${{ inputs.name }}
+        path: ${{ inputs.path }}
+        pattern: ${{ inputs.pattern }}
+        merge-multiple: ${{ inputs.merge-multiple }}
+
+    - name: Wait before final retry of ${{ inputs.name || inputs.pattern || 'all artifacts' }}
+      if: ${{ steps.attempt-1.outcome == 'failure' && steps.attempt-2.outcome == 'failure' }}
+      shell: bash
+      run: |
+        echo "::warning::Download of '${{ inputs.name || inputs.pattern || 'all artifacts' }}' failed again; retrying in 45s (attempt 3 of 3)."
+        sleep 45
+
+    - name: Download ${{ inputs.name || inputs.pattern || 'all artifacts' }} (attempt 3 of 3)
+      id: attempt-3
+      if: ${{ steps.attempt-1.outcome == 'failure' && steps.attempt-2.outcome == 'failure' }}
+      uses: actions/download-artifact@v8
+      with:
+        name: ${{ inputs.name }}
+        path: ${{ inputs.path }}
+        pattern: ${{ inputs.pattern }}
+        merge-multiple: ${{ inputs.merge-multiple }}

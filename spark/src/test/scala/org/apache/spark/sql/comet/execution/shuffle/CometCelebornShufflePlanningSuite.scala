@@ -476,13 +476,14 @@ class CometCelebornShufflePlanningSuite extends CometTestBase {
       percentile <- Seq("percentile", "percentile_approx")
       mergeFunction <- Seq("first", "last")
     } {
-      test(s"unsupported $mergeFunction merge preserves $percentile buffers with AQE=$adaptive") {
+      test(s"disabled $mergeFunction preserves $percentile buffers with AQE=$adaptive") {
         manager.withPlanningSupport(CelebornNativeShufflePlanningSupport()) {
           withSQLConf(
             SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString,
             SQLConf.SHUFFLE_PARTITIONS.key -> "4",
+            s"spark.comet.expression.${mergeFunction.capitalize}.enabled" -> "false",
             CometConf.COMET_SHUFFLE_MODE.key -> "native") {
-            // FIRST/LAST cannot merge natively. Tag the incompatible percentile producer
+            // Disable FIRST/LAST to exercise fallback. Tag the incompatible percentile producer
             // before the first DISTINCT exchange is materialized, not just at the later
             // exchange that falls back. Its grouping key makes FIRST/LAST deterministic.
             val query = spark
