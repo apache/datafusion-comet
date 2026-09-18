@@ -75,7 +75,7 @@ A Comet-side cache would have to either expose a tuning knob (TTL, max size, evi
 
 ## The IRSA web-identity provider is the exception that does cache
 
-The "no Comet-side cache" rule above is about the vendor *bridge*. There is one Comet-owned credential provider that deliberately does cache: the EKS/IRSA web-identity provider in `native/core/src/cloud/s3/web_identity.rs`. It is not a vendor path -- there is no JVM SPI involved -- so the reasoning above does not apply.
+The "no Comet-side cache" rule above is about the vendor _bridge_. There is one Comet-owned credential provider that deliberately does cache: the EKS/IRSA web-identity provider in `native/core/src/cloud/s3/web_identity.rs`. It is not a vendor path -- there is no JVM SPI involved -- so the reasoning above does not apply.
 
 It exists because the default credential chain mishandles STS throttling on IRSA. `AssumeRoleWithWebIdentity` is called per reader thread; a concurrent startup burst throttles STS; the default chain does not retry and falls through to the EKS node instance role, which lacks bucket access, turning a transient throttle into a hard `403`. When both `AWS_WEB_IDENTITY_TOKEN_FILE` and `AWS_ROLE_ARN` are set and no explicit credentials are configured, both scan paths install `WebIdentityCredentialProvider` instead of the default chain (Parquet: the `None` branch of `s3.rs::create_store`; Iceberg: `iceberg_common.rs::build_s3_credential_loader` returns a `CustomAwsCredentialLoader` instead of `Ok(None)`). It:
 

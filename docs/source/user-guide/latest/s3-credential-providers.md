@@ -116,12 +116,12 @@ It stands aside when you have configured credentials explicitly -- a Comet bridg
 
 Tuning is rarely needed. The knobs, with their defaults, are read from the Parquet `fs.s3a.` config bag or the Iceberg catalog properties:
 
-| Setting (bare key) | Default | Meaning |
-|---|---|---|
-| `comet.s3.credentials.webIdentity.enabled` | `true` | Set `false` to opt out and use the default chain. |
-| `comet.s3.credentials.webIdentity.maxAttempts` | `5` | STS attempts before the assume-role call is treated as failed. |
-| `comet.s3.credentials.webIdentity.minTtlSeconds` | `300` | Refresh this many seconds before expiry. |
-| `comet.s3.credentials.webIdentity.refreshJitterSeconds` | `60` | Upper bound on the extra per-process refresh jitter. |
+| Setting (bare key)                                      | Default | Meaning                                                        |
+| ------------------------------------------------------- | ------- | -------------------------------------------------------------- |
+| `comet.s3.credentials.webIdentity.enabled`              | `true`  | Set `false` to opt out and use the default chain.              |
+| `comet.s3.credentials.webIdentity.maxAttempts`          | `5`     | STS attempts before the assume-role call is treated as failed. |
+| `comet.s3.credentials.webIdentity.minTtlSeconds`        | `300`   | Refresh this many seconds before expiry.                       |
+| `comet.s3.credentials.webIdentity.refreshJitterSeconds` | `60`    | Upper bound on the extra per-process refresh jitter.           |
 
 For example, to disable it for Parquet globally or raise the retry count for one Iceberg catalog:
 
