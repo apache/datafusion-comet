@@ -33,9 +33,11 @@
 //!      fallback -- so a transient throttle surfaces as a retryable error instead of a
 //!      wrong-identity credential.
 //!   3. Shared, jittered cache. One assumed-role credential is cached per process, keyed by
-//!      (role_arn, token_file, region), and shared across all reader threads and scans. Refresh
-//!      fires ahead of expiry by `min_ttl` plus a per-process random jitter so cluster-wide
-//!      refreshes do not synchronize into another burst.
+//!      identity (role_arn, token_file, region) and the resolved retry/refresh settings, and shared
+//!      across all reader threads and scans that resolve to the same key. Refresh fires ahead of
+//!      expiry by `min_ttl` plus a per-process random jitter so cluster-wide refreshes do not
+//!      synchronize into another burst; a failed refresh is briefly remembered so a throttled burst
+//!      costs one STS call rather than one per reader.
 //!
 //! The same struct is exposed as both `object_store::CredentialProvider` (raw Parquet path) and
 //! reqsign's `ProvideCredential` (Iceberg via opendal / `CustomAwsCredentialLoader`), mirroring
@@ -43,7 +45,7 @@
 
 use std::collections::HashMap;
 use std::sync::{Arc, OnceLock, RwLock};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use aws_config::provider_config::ProviderConfig;
@@ -78,6 +80,13 @@ const DEFAULT_ENABLED: bool = true;
 const DEFAULT_MAX_ATTEMPTS: u32 = 5;
 const DEFAULT_MIN_TTL_SECS: u64 = 300;
 const DEFAULT_JITTER_SECS: u64 = 60;
+
+/// After a refresh exhausts its STS retries and fails, waiters within this window get the failure
+/// without each firing their own assume-role call. Bounds STS pressure during a sustained throttle
+/// (one call per entry per window instead of one per reader) while still letting the credential
+/// recover shortly after. Kept short: the SDK has already spent its retry budget by the time we
+/// record a failure.
+const FAILURE_COOLDOWN: Duration = Duration::from_secs(1);
 
 /// Detected IRSA identity plus the resolved tuning knobs. Cheap to clone; the expensive AWS SDK
 /// provider lives in the process-wide `SharedEntry` keyed by `entry_key`.
@@ -129,27 +138,40 @@ impl WebIdentityConfig {
             role_arn: self.role_arn.clone(),
             token_file: self.token_file.clone(),
             region: self.region.clone(),
+            max_attempts: self.max_attempts,
+            min_ttl: self.min_ttl,
+            max_jitter: self.max_jitter,
         }
     }
 }
 
-/// Process-wide cache key. One assumed-role credential is shared per distinct identity.
+/// Process-wide cache key. A credential is shared per distinct identity AND resolved settings, so a
+/// catalog that configures its own retry/refresh knobs gets its own entry with its own
+/// configuration honored -- independent of which scan initializes first. Two callers with the same
+/// identity and the same settings still share one entry (and one STS call).
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct EntryKey {
     role_arn: String,
     token_file: String,
     region: Option<String>,
+    max_attempts: u32,
+    min_ttl: Duration,
+    max_jitter: Duration,
 }
 
 /// The shared, cached credential for one identity. `provider` is the AWS SDK web-identity provider
 /// built once; `cached` holds the last credential; `refresh_jitter` is drawn once per process so
-/// each executor refreshes at a slightly different time.
+/// each executor refreshes at a slightly different time. `last_failure_at` coalesces a burst of
+/// readers that hit a persistent throttle into a single STS call.
 #[derive(Debug)]
 struct SharedEntry {
     provider: Arc<dyn ProvideCredentials>,
     cached: RwLock<Option<Credentials>>,
     /// Single-flights refreshes so a burst of readers triggers exactly one STS call.
     refresh_lock: tokio::sync::Mutex<()>,
+    /// When the last refresh failed. Waiters within `FAILURE_COOLDOWN` of this get the failure
+    /// without re-calling STS, so a failed burst costs one call rather than one per reader.
+    last_failure_at: RwLock<Option<Instant>>,
     min_ttl: Duration,
     refresh_jitter: Duration,
 }
@@ -173,24 +195,45 @@ impl SharedEntry {
         }
     }
 
+    /// `Some(error)` if a refresh failed within the last `FAILURE_COOLDOWN`, so callers can bail out
+    /// instead of piling another assume-role call onto a throttled STS.
+    fn in_failure_cooldown(&self) -> Option<String> {
+        let at = (*self.last_failure_at.read().unwrap())?;
+        (at.elapsed() < FAILURE_COOLDOWN).then(|| {
+            "web-identity credential refresh failed recently; backing off before retrying STS"
+                .to_string()
+        })
+    }
+
     /// Fetches a fresh credential, refreshing from STS at most once at a time. On a refresh error
-    /// the error propagates -- we never fall back to a lower-privilege identity.
+    /// the error propagates -- we never fall back to a lower-privilege identity -- and is briefly
+    /// remembered so concurrent waiters do not each re-issue the same throttled call.
     async fn credentials(&self) -> Result<Credentials, String> {
         if let Some(cred) = self.fresh() {
             return Ok(cred);
         }
+        if let Some(err) = self.in_failure_cooldown() {
+            return Err(err);
+        }
         let _guard = self.refresh_lock.lock().await;
-        // Re-check: another task may have refreshed while we waited on the lock.
+        // Re-check: another task may have refreshed (or just failed) while we waited on the lock.
         if let Some(cred) = self.fresh() {
             return Ok(cred);
         }
-        let cred = self
-            .provider
-            .provide_credentials()
-            .await
-            .map_err(|e| format!("web-identity assume-role failed: {e}"))?;
-        *self.cached.write().unwrap() = Some(cred.clone());
-        Ok(cred)
+        if let Some(err) = self.in_failure_cooldown() {
+            return Err(err);
+        }
+        match self.provider.provide_credentials().await {
+            Ok(cred) => {
+                *self.cached.write().unwrap() = Some(cred.clone());
+                *self.last_failure_at.write().unwrap() = None;
+                Ok(cred)
+            }
+            Err(e) => {
+                *self.last_failure_at.write().unwrap() = Some(Instant::now());
+                Err(format!("web-identity assume-role failed: {e}"))
+            }
+        }
     }
 }
 
@@ -226,6 +269,7 @@ async fn shared_entry(cfg: &WebIdentityConfig) -> Arc<SharedEntry> {
         provider,
         cached: RwLock::new(None),
         refresh_lock: tokio::sync::Mutex::new(()),
+        last_failure_at: RwLock::new(None),
         min_ttl: cfg.min_ttl,
         refresh_jitter: jitter,
     });
@@ -341,6 +385,11 @@ impl IcebergProvideCredential for WebIdentityCredentialProvider {
 /// so only when the caller has no explicit credentials configured and IRSA is detected; otherwise
 /// the caller keeps its default chain. `resolve` reads a bare setting key (e.g. `KEY_MAX_ATTEMPTS`)
 /// from whichever config bag the caller owns. Both scan paths share this one decision.
+///
+/// It also stands aside when explicit static credentials are set in the environment
+/// (`AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY`). Both the AWS SDK default chain (Parquet) and
+/// opendal/reqsign (Iceberg) rank environment credentials ahead of web-identity, so taking over
+/// would silently switch identity from the user's explicit keys to the service-account role.
 pub fn take_over_if_irsa<F>(
     explicit_credentials: bool,
     resolve: F,
@@ -348,10 +397,16 @@ pub fn take_over_if_irsa<F>(
 where
     F: Fn(&str) -> Option<String>,
 {
-    if explicit_credentials {
+    if explicit_credentials || explicit_env_credentials() {
         return None;
     }
     WebIdentityConfig::detect_with(resolve).map(WebIdentityCredentialProvider::new)
+}
+
+/// True if explicit static credentials are present in the environment. These outrank web-identity
+/// in every default chain, so the take-over must not shadow them.
+fn explicit_env_credentials() -> bool {
+    non_empty_env("AWS_ACCESS_KEY_ID").is_some() && non_empty_env("AWS_SECRET_ACCESS_KEY").is_some()
 }
 
 fn system_time_to_timestamp(t: SystemTime) -> reqsign_core::Result<Timestamp> {
@@ -396,6 +451,7 @@ fn parse_u32(value: Option<String>, default: u32) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use aws_credential_types::provider::error::CredentialsError;
     use aws_credential_types::provider::future as creds_future;
     use aws_smithy_runtime_api::client::http::{
         HttpClient, HttpConnector, HttpConnectorFuture, HttpConnectorSettings, SharedHttpConnector,
@@ -543,6 +599,7 @@ mod tests {
             provider: Arc::new(provider),
             cached: RwLock::new(None),
             refresh_lock: tokio::sync::Mutex::new(()),
+            last_failure_at: RwLock::new(None),
             min_ttl: cfg.min_ttl,
             refresh_jitter: Duration::ZERO,
         }
@@ -593,11 +650,13 @@ mod tests {
 
     /// A stand-in for the AWS SDK provider that counts how many times it is asked to resolve, so
     /// tests can assert on caching and single-flighting without hitting STS. Each call sleeps
-    /// briefly to widen the window in which concurrent callers overlap.
+    /// briefly to widen the window in which concurrent callers overlap. When `fail` is set it
+    /// always errors, standing in for a persistently throttled STS.
     #[derive(Debug)]
     struct CountingProvider {
         calls: Arc<AtomicUsize>,
         expiry: Option<SystemTime>,
+        fail: bool,
     }
 
     impl ProvideCredentials for CountingProvider {
@@ -607,11 +666,15 @@ mod tests {
         {
             let calls = Arc::clone(&self.calls);
             let expiry = self.expiry;
+            let fail = self.fail;
             creds_future::ProvideCredentials::new(async move {
                 // Blocking sleep is fine here: waiters are parked on the async refresh lock, not on
                 // this worker thread.
                 std::thread::sleep(Duration::from_millis(20));
                 calls.fetch_add(1, Ordering::SeqCst);
+                if fail {
+                    return Err(CredentialsError::not_loaded_no_source());
+                }
                 let mut builder = Credentials::builder()
                     .access_key_id("AKID")
                     .secret_access_key("SECRET")
@@ -624,21 +687,43 @@ mod tests {
         }
     }
 
+    fn shared_entry_from(provider: CountingProvider, min_ttl: Duration) -> Arc<SharedEntry> {
+        Arc::new(SharedEntry {
+            provider: Arc::new(provider),
+            cached: RwLock::new(None),
+            refresh_lock: tokio::sync::Mutex::new(()),
+            last_failure_at: RwLock::new(None),
+            min_ttl,
+            refresh_jitter: Duration::ZERO,
+        })
+    }
+
     fn entry_with(
         expiry: Option<SystemTime>,
         min_ttl: Duration,
     ) -> (Arc<SharedEntry>, Arc<AtomicUsize>) {
         let calls = Arc::new(AtomicUsize::new(0));
-        let entry = Arc::new(SharedEntry {
-            provider: Arc::new(CountingProvider {
+        let entry = shared_entry_from(
+            CountingProvider {
                 calls: Arc::clone(&calls),
                 expiry,
-            }),
-            cached: RwLock::new(None),
-            refresh_lock: tokio::sync::Mutex::new(()),
+                fail: false,
+            },
             min_ttl,
-            refresh_jitter: Duration::ZERO,
-        });
+        );
+        (entry, calls)
+    }
+
+    fn failing_entry() -> (Arc<SharedEntry>, Arc<AtomicUsize>) {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let entry = shared_entry_from(
+            CountingProvider {
+                calls: Arc::clone(&calls),
+                expiry: None,
+                fail: true,
+            },
+            Duration::from_secs(300),
+        );
         (entry, calls)
     }
 
@@ -668,6 +753,37 @@ mod tests {
         let mut disabled = HashMap::new();
         disabled.insert(KEY_ENABLED.to_string(), "false".to_string());
         assert!(detect(&disabled).is_none());
+        clear_irsa_env();
+    }
+
+    #[test]
+    fn explicit_env_credentials_keep_precedence_over_irsa() {
+        // With IRSA present AND explicit static env credentials set, the default chain would have
+        // used the env credentials (Environment -> Profile -> WebIdentity). The take-over must
+        // stand aside so it does not silently switch identity to the service-account role.
+        let _guard = lock_env();
+        clear_irsa_env();
+        std::env::set_var(ENV_TOKEN_FILE, "/var/run/secrets/token");
+        std::env::set_var(ENV_ROLE_ARN, "arn:aws:iam::1:role/app");
+
+        // No env creds -> take over.
+        std::env::remove_var("AWS_ACCESS_KEY_ID");
+        std::env::remove_var("AWS_SECRET_ACCESS_KEY");
+        assert!(
+            take_over_if_irsa(false, |_| None).is_some(),
+            "IRSA with no explicit credentials should take over"
+        );
+
+        // Explicit static env creds -> stand aside.
+        std::env::set_var("AWS_ACCESS_KEY_ID", "AKIAEXAMPLE");
+        std::env::set_var("AWS_SECRET_ACCESS_KEY", "secret");
+        assert!(
+            take_over_if_irsa(false, |_| None).is_none(),
+            "explicit env credentials must keep precedence over the IRSA take-over"
+        );
+
+        std::env::remove_var("AWS_ACCESS_KEY_ID");
+        std::env::remove_var("AWS_SECRET_ACCESS_KEY");
         clear_irsa_env();
     }
 
@@ -726,6 +842,52 @@ mod tests {
             calls.load(Ordering::SeqCst),
             1,
             "a burst of readers must trigger exactly one STS call"
+        );
+    }
+
+    #[test]
+    fn concurrent_failed_refresh_is_coalesced() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let (entry, calls) = failing_entry();
+        rt.block_on(async {
+            let futures = (0..8).map(|_| entry.credentials()).collect::<Vec<_>>();
+            for result in futures::future::join_all(futures).await {
+                assert!(
+                    result.is_err(),
+                    "a throttled refresh must surface as an error"
+                );
+            }
+        });
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "a failed burst must coalesce into one STS call, not one per reader"
+        );
+    }
+
+    #[test]
+    fn entry_key_includes_resolved_settings() {
+        // Two callers with the same identity but different tuning must NOT share an entry, so each
+        // catalog's configured retry/refresh knobs are honored regardless of init order.
+        let base = WebIdentityConfig {
+            role_arn: "arn:aws:iam::1:role/app".to_string(),
+            token_file: "/token".to_string(),
+            region: Some("us-east-1".to_string()),
+            max_attempts: 5,
+            min_ttl: Duration::from_secs(300),
+            max_jitter: Duration::from_secs(60),
+        };
+        let mut more_attempts = base.clone();
+        more_attempts.max_attempts = 8;
+        assert_ne!(
+            base.entry_key(),
+            more_attempts.entry_key(),
+            "different maxAttempts must not share a cache entry"
+        );
+        assert_eq!(
+            base.entry_key(),
+            base.clone().entry_key(),
+            "identical identity and settings must share one entry"
         );
     }
 
