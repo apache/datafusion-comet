@@ -252,8 +252,9 @@ case class CometScanRule(session: SparkSession)
     //
     // EXCEPT schemes the user routes through libhdfs via `spark.hadoop.fs.comet.libhdfs.schemes`
     // (e.g. `hdfs`, or a test `fake`): those ARE natively readable through the libhdfs object_store
-    // bridge, so they must NOT be declined here (regression guarded by
-    // ParquetReadFromFakeHadoopFsSuite).
+    // bridge, so they must NOT be declined here. The claim decision is guarded in CI by
+    // CometScanSchemeFallbackSuite; end-to-end execution through libhdfs is guarded by
+    // ParquetReadFromFakeHadoopFsSuite, which is a manual suite (see its scaladoc).
     //
     // The default mirrors the native side: when the config is unset, `is_hdfs_scheme`
     // (native/core/src/parquet/parquet_support.rs) treats `hdfs` as natively readable, and
@@ -653,8 +654,8 @@ case class CometScanRule(session: SparkSession)
         // V3 adds column types iceberg-rust cannot read (variant, geometry, geography, unknown)
         // and column default values; those are handled by the allow-list and default-value checks
         // below, which fall back per-table. This gate only bounds the format version. Deletion
-        // vectors (a V3 delete feature) are handled by the delete-file gate, which still falls back
-        // for non-Parquet (Puffin) deletes since native deletion-vector reads are not yet wired.
+        // vectors (a V3 delete feature) are read natively; the delete-file gate accepts their
+        // Puffin format.
         val formatVersion = IcebergReflection.getFormatVersion(metadata.table)
         val formatVersionSupported = formatVersion match {
           case Some(v) =>
@@ -914,15 +915,17 @@ case class CometScanRule(session: SparkSession)
               val deleteFileClass =
                 IcebergReflection.loadClass(IcebergReflection.ClassNames.DELETE_FILE)
               taskValidation.deleteFiles.asScala.foreach { deleteFile =>
-                // iceberg-rust only reads Parquet delete files. Avro/ORC positional or
-                // equality deletes must be applied by Spark.
+                // iceberg-rust reads Parquet delete files (position and equality) and Puffin
+                // deletion vectors. Avro/ORC deletes must be applied by Spark.
                 IcebergReflection.getFileFormat(contentFileClass, deleteFile) match {
-                  case Some(fmt) if fmt.equalsIgnoreCase(IcebergReflection.FileFormats.PARQUET) =>
+                  case Some(fmt)
+                      if fmt.equalsIgnoreCase(IcebergReflection.FileFormats.PARQUET) ||
+                        fmt.equalsIgnoreCase(IcebergReflection.FileFormats.PUFFIN) =>
                   case Some(fmt) =>
                     hasUnsupportedDeletes = true
                     fallbackReasons +=
                       s"Delete file format '$fmt' is not supported by iceberg-rust. " +
-                        "Only Parquet delete files can be applied natively."
+                        "Only Parquet and Puffin delete files can be applied natively."
                   case None =>
                     hasUnsupportedDeletes = true
                     logWarning(

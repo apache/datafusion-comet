@@ -41,19 +41,6 @@ use log4rs::{
     Config,
 };
 
-#[cfg(all(
-    not(target_env = "msvc"),
-    feature = "jemalloc",
-    not(feature = "mimalloc")
-))]
-use tikv_jemallocator::Jemalloc;
-
-#[cfg(all(
-    feature = "mimalloc",
-    not(all(not(target_env = "msvc"), feature = "jemalloc"))
-))]
-use mimalloc::MiMalloc;
-
 // Re-export from jvm-bridge crate for internal use
 pub use datafusion_comet_jni_bridge::errors;
 pub use datafusion_comet_jni_bridge::JAVA_VM;
@@ -65,6 +52,7 @@ pub mod jvm_bridge {
 
 use errors::{try_unwrap_or_throw, CometError, CometResult};
 
+pub mod alloc_accounting;
 pub mod cloud;
 pub mod execution;
 pub mod parquet;
@@ -72,20 +60,67 @@ pub mod parquet;
 #[cfg(debug_assertions)]
 pub mod debug;
 
+// Global allocator selection. `backend` names the allocator the feature set asks for: jemalloc
+// where it builds, otherwise mimalloc, otherwise the system allocator. The three cfgs partition
+// every feature combination, so exactly one `backend` exists and a combination matching none would
+// fail to compile rather than install nothing and leave the accounting metric reading zero.
+
+/// jemalloc, on targets where it builds, unless mimalloc was also requested.
 #[cfg(all(
     not(target_env = "msvc"),
     feature = "jemalloc",
     not(feature = "mimalloc")
 ))]
-#[global_allocator]
-static GLOBAL: Jemalloc = Jemalloc;
+mod backend {
+    pub type Backend = tikv_jemallocator::Jemalloc;
+    pub const BACKEND: Backend = tikv_jemallocator::Jemalloc;
+    pub const NAME: &str = "jemalloc";
+}
 
+/// mimalloc, unless a usable jemalloc was also requested.
 #[cfg(all(
     feature = "mimalloc",
     not(all(not(target_env = "msvc"), feature = "jemalloc"))
 ))]
+mod backend {
+    pub type Backend = mimalloc::MiMalloc;
+    pub const BACKEND: Backend = mimalloc::MiMalloc;
+    pub const NAME: &str = "mimalloc";
+}
+
+/// The system allocator: the complement of the two cases above, which covers neither feature, a
+/// jemalloc request on MSVC, and both features together.
+#[cfg(not(any(
+    all(
+        not(target_env = "msvc"),
+        feature = "jemalloc",
+        not(feature = "mimalloc")
+    ),
+    all(
+        feature = "mimalloc",
+        not(all(not(target_env = "msvc"), feature = "jemalloc"))
+    )
+)))]
+mod backend {
+    pub type Backend = std::alloc::System;
+    pub const BACKEND: Backend = std::alloc::System;
+    pub const NAME: &str = "system";
+}
+
+/// The name of the allocator backend this build selected: `"jemalloc"`, `"mimalloc"` or
+/// `"system"`. The selection is decided here and nowhere else, so the `alloc_overhead` benchmark's
+/// liveness check reads it from here rather than re-deriving it from the feature set.
+#[doc(hidden)]
+pub use backend::NAME as ALLOCATOR_BACKEND;
+
+#[cfg(not(feature = "alloc-accounting"))]
 #[global_allocator]
-static GLOBAL: MiMalloc = MiMalloc;
+static GLOBAL: backend::Backend = backend::BACKEND;
+
+#[cfg(feature = "alloc-accounting")]
+#[global_allocator]
+static GLOBAL: alloc_accounting::AccountingAllocator<backend::Backend> =
+    alloc_accounting::AccountingAllocator::new(backend::BACKEND);
 
 #[no_mangle]
 pub extern "system" fn Java_org_apache_comet_NativeBase_init(

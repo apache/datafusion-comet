@@ -255,6 +255,8 @@ object CometConf extends ShimCometConf {
     createExecEnabledConfig("takeOrderedAndProject", defaultValue = true)
   val COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED: ConfigEntry[Boolean] =
     createExecEnabledConfig("localTableScan", defaultValue = false)
+  val COMET_EXEC_EMPTY_RELATION_ENABLED: ConfigEntry[Boolean] =
+    createExecEnabledConfig("emptyRelation", defaultValue = true)
   val COMET_EXEC_SAMPLE_ENABLED: ConfigEntry[Boolean] =
     createExecEnabledConfig("sample", defaultValue = true)
 
@@ -380,6 +382,19 @@ object CometConf extends ShimCometConf {
       .category(CATEGORY_EXEC)
       .doc("Experimental feature to force Spark to replace SortMergeJoin with ShuffledHashJoin " +
         s"for improved performance. This feature is not stable yet. $TUNING_GUIDE.")
+      .booleanConf
+      .createWithDefault(false)
+
+  val COMET_EXEC_JOIN_DYNAMIC_FILTER_ENABLED: ConfigEntry[Boolean] =
+    conf(s"$COMET_EXEC_CONFIG_PREFIX.join.dynamicFilter.enabled")
+      .category(CATEGORY_EXEC)
+      .doc(
+        "Experimental opt-in: use a completed native hash join build's key domain to prune " +
+          "eligible native Parquet row groups and filter probe batches before the hash probe. " +
+          "Supports inner joins with one direct signed integer key and one native partition " +
+          "per input, including both Spark build sides. The probe filter remains active " +
+          "when reader pruning is unavailable. Unsupported joins retain their existing " +
+          "execution path. Filters do not cross Spark exchanges or JVM/Arrow boundaries.")
       .booleanConf
       .createWithDefault(false)
 
@@ -624,11 +639,11 @@ object CometConf extends ShimCometConf {
     .withAlternative("spark.comet.shuffle.preferDictionary.ratio")
     .category(CATEGORY_SHUFFLE)
     .doc(
-      "The ratio of total values to distinct values in a string column to decide whether to " +
-        "prefer dictionary encoding when shuffling the column. If the ratio is higher than " +
-        "this config, dictionary encoding will be used on shuffling string column. This config " +
-        "is effective if it is higher than 1.0. Note that this " +
-        "config is only used when `spark.comet.shuffle.mode` is `jvm`.")
+      "The ratio of total values to distinct values in a string or binary column to decide " +
+        "whether to prefer dictionary encoding when shuffling the column. If the ratio is " +
+        "higher than this config, dictionary encoding will be used when shuffling the column. " +
+        "This config is effective if it is higher than 1.0. Note that this config is only " +
+        "used when `spark.comet.shuffle.mode` is `jvm`.")
     .doubleConf
     .createWithDefault(10.0)
 

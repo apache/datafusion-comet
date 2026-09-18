@@ -57,6 +57,23 @@ case class ExpectFallback(reason: String) extends QueryAssertionMode
 case class Ignore(reason: String) extends QueryAssertionMode
 
 /**
+ * Checks results and coverage like [[CheckCoverageAndAnswer]], and additionally asserts that
+ * Comet ran each named expression through the JVM codegen dispatcher rather than lowering it to a
+ * native DataFusion expression.
+ *
+ * Matching results cannot distinguish the two mechanisms, so without this a serde that gains a
+ * native path (or loses its dispatcher route) changes how the query executes while every other
+ * assertion in the fixture stays green.
+ */
+case class ExpectDispatch(names: Seq[String]) extends QueryAssertionMode
+
+/**
+ * The native counterpart of [[ExpectDispatch]]: asserts Comet lowered each named expression to a
+ * native DataFusion expression rather than routing it through the JVM codegen dispatcher.
+ */
+case class ExpectNative(names: Seq[String]) extends QueryAssertionMode
+
+/**
  * Asserts that both Spark and Comet raise an error whose message contains `pattern`.
  *
  * Fixtures that combine `ExpectError` with `spark.comet.exec.scalaUDF.codegen.enabled=true` must
@@ -177,6 +194,8 @@ object SqlFileTestParser {
   private val FallbackPattern = """query\s+expect_fallback\((.+)\)""".r
   private val IgnorePattern = """query\s+ignore\((.+)\)""".r
   private val ErrorPattern = """query\s+expect_error\((.+)\)""".r
+  private val DispatchPattern = """query\s+expect_dispatch\((.+)\)""".r
+  private val NativePattern = """query\s+expect_native\((.+)\)""".r
 
   private def parseQueryAssertionMode(directive: String): QueryAssertionMode = {
     directive match {
@@ -186,6 +205,10 @@ object SqlFileTestParser {
         Ignore(reason.trim)
       case ErrorPattern(pattern) =>
         ExpectError(pattern.trim)
+      case DispatchPattern(names) =>
+        ExpectDispatch(splitNames(names))
+      case NativePattern(names) =>
+        ExpectNative(splitNames(names))
       case _ =>
         val parts = directive.split("\\s+")
         if (parts.length == 1) return CheckCoverageAndAnswer
@@ -197,6 +220,13 @@ object SqlFileTestParser {
         }
     }
   }
+
+  /**
+   * Split a comma-separated expression-name list, dropping empties so `expect_dispatch(a, b,)`
+   * and stray whitespace do not produce a name that can never match.
+   */
+  private def splitNames(names: String): Seq[String] =
+    names.split(",").map(_.trim).filter(_.nonEmpty).toSeq
 
   /** Collect SQL lines until a blank line or end of file. */
   private def collectSql(lines: Seq[String], start: Int): (String, Int) = {
