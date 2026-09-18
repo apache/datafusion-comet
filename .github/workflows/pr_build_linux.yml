@@ -545,6 +545,7 @@ jobs:
               org.apache.comet.rules.CometScanContribSuite
               org.apache.comet.rules.CometScanSchemeFallbackSuite
               org.apache.comet.rules.CometExecRuleSuite
+              org.apache.comet.rules.CometPlanOnlySuite
               org.apache.spark.sql.comet.CometPlanEqualitySuite
               org.apache.comet.rules.CometEmptyRelationExecRuleSuite
               org.apache.comet.rules.RevertNativeForTransitionHeavyStagesSuite
