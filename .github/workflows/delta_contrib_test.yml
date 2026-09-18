@@ -199,6 +199,10 @@ jobs:
         run: |
           docker info > /dev/null
           SPARK_HOME=$(pwd) COMET_CONF_DIR=$(pwd)/conf ./mvnw -B -Prelease -Pspark-3.5,delta test -pl contrib/delta-spark -DwildcardSuites=org.apache.comet.contrib.delta.CometDeltaS3Suite
+        env:
+          # This job exists only to run the suite, so a Docker or MinIO failure must fail
+          # it instead of cancelling every test, which the container jobs above rely on.
+          COMET_DELTA_S3_REQUIRED: "1"
 
       # Saved only on main, for the same reason as the container job above.
       - name: Save Maven dependencies

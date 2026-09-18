@@ -19,6 +19,8 @@
 
 package org.apache.comet.contrib.delta
 
+import java.util.Locale
+
 import scala.util.{Failure, Success, Try}
 
 import org.testcontainers.DockerClientFactory
@@ -52,6 +54,11 @@ import org.apache.comet.CometS3TestBase
  * named. `beforeAll` mirrors this: it probes Docker BEFORE calling `CometS3TestBase#beforeAll`,
  * because that trait's `sparkConf` dereferences `minioContainer` unconditionally, and starting
  * the Spark session (let alone a container) is exactly what a Docker-less run must not do.
+ *
+ * That fail-soft default makes a zero-coverage run look green, so the CI job that exists only to
+ * run this suite sets `COMET_DELTA_S3_REQUIRED=1`, which turns a missing Docker daemon or a
+ * failed MinIO start into a thrown `beforeAll`: the suite aborts and `scalatest-maven-plugin`
+ * fails.
  */
 class CometDeltaS3Suite extends CometDeltaTestBase with CometS3TestBase with Logging {
 
@@ -75,15 +82,21 @@ class CometDeltaS3Suite extends CometDeltaTestBase with CometS3TestBase with Log
   private var dockerAvailable = false
 
   override def beforeAll(): Unit = {
+    val required = CometDeltaS3Suite.s3Required(sys.env.get(CometDeltaS3Suite.S3_REQUIRED_ENV))
     dockerAvailable = DockerClientFactory.instance().isDockerAvailable
+    if (!dockerAvailable && required) {
+      throw new IllegalStateException(
+        CometDeltaS3Suite.requiredFailureMessage("no Docker daemon is reachable"))
+    }
     if (dockerAvailable) {
-      // Fail soft: this suite runs unconditionally in CI (no allowlist to omit it from, see the
-      // class doc above), and testcontainers networking inside a CI job container is unverified
-      // -- MinIO is a sibling container there, so `getS3URL` may resolve to an address that is
-      // wrong from inside the job container. If startup or bucket creation blows up, log the
-      // resolved URL (the signal needed to diagnose a first bad CI run), flip `dockerAvailable`
-      // back off so every test cancels via `assume` instead of aborting the whole suite, and
-      // best-effort stop whatever container did come up.
+      // Fail soft unless COMET_DELTA_S3_REQUIRED arms the hard failure: this suite runs
+      // unconditionally in CI (no allowlist to omit it from, see the class doc above), and
+      // testcontainers networking inside a CI job container is unverified -- MinIO is a sibling
+      // container there, so `getS3URL` may resolve to an address that is wrong from inside the
+      // job container. If startup or bucket creation blows up, log the resolved URL (the signal
+      // needed to diagnose a first bad CI run), flip `dockerAvailable` back off so every test
+      // cancels via `assume` instead of aborting the whole suite, and best-effort stop whatever
+      // container did come up.
       Try {
         super.beforeAll() // CometS3TestBase starts MinIO, then CometTestBase starts the session.
         createBucketIfNotExists(cloneBucketName)
@@ -93,10 +106,7 @@ class CometDeltaS3Suite extends CometDeltaTestBase with CometS3TestBase with Log
           logInfo(s"CometDeltaS3Suite: MinIO reachable at ${minioContainer.getS3URL}")
         case Failure(e) =>
           val resolvedUrl = Try(minioContainer.getS3URL).getOrElse("<unresolvable>")
-          logWarning(
-            s"CometDeltaS3Suite: MinIO setup failed (resolved S3 URL: $resolvedUrl); " +
-              "skipping all tests in this suite",
-            e)
+          val cause = s"MinIO setup failed (resolved S3 URL: $resolvedUrl)"
           dockerAvailable = false
           // Tear down here, synchronously: super.beforeAll() may have partially succeeded
           // (e.g. the Spark session started but createBucketIfNotExists(cloneBucketName)
@@ -107,6 +117,10 @@ class CometDeltaS3Suite extends CometDeltaTestBase with CometS3TestBase with Log
           // (CometS3TestBase#afterAll, tolerates a container that never started), so this is
           // safe to call unconditionally here regardless of how far beforeAll got.
           Try(super.afterAll())
+          if (required) {
+            throw new IllegalStateException(CometDeltaS3Suite.requiredFailureMessage(cause), e)
+          }
+          logWarning(s"CometDeltaS3Suite: $cause; skipping all tests in this suite", e)
       }
     }
   }
@@ -272,4 +286,22 @@ class CometDeltaS3Suite extends CometDeltaTestBase with CometS3TestBase with Log
       }
     }
   }
+}
+
+object CometDeltaS3Suite {
+
+  /** Environment variable that turns a Docker-less or MinIO-less run into a suite failure. */
+  val S3_REQUIRED_ENV = "COMET_DELTA_S3_REQUIRED"
+
+  /**
+   * Whether the run must fail rather than cancel when MinIO is unavailable. Strict on purpose:
+   * only `1` and `true` (trimmed, case-insensitive) arm it; anything else, including `yes` and
+   * `0`, keeps the fail-soft default so a typo cannot arm or disarm the switch unnoticed.
+   */
+  private[delta] def s3Required(value: Option[String]): Boolean =
+    value.map(_.trim.toLowerCase(Locale.ROOT)).exists(v => v == "1" || v == "true")
+
+  /** Names the env var and the cause so a red CI run reads directly from the failure line. */
+  private[delta] def requiredFailureMessage(cause: String): String =
+    s"$S3_REQUIRED_ENV is set but $cause; failing CometDeltaS3Suite instead of cancelling it"
 }
