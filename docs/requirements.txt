@@ -20,6 +20,10 @@ sphinx>=7.0,<8.0
 sphinx-reredirects
 pydata-sphinx-theme>=0.16.1,<0.17.0
 myst-parser>=2.0,<4.0
-sphinxcontrib-mermaid>=1.0,<3.0
+# 2.1 is the first release that skips the client-side mermaid.js machinery when
+# mermaid_output_format is not 'raw'. On older versions the diagrams still render as
+# build-time SVG, but every page carrying one also gets a dead cdn.jsdelivr.net script
+# tag that the ASF Content-Security-Policy blocks. See docs/source/conf.py.
+sphinxcontrib-mermaid>=2.1,<3.0
 maturin
 jinja2

@@ -53,9 +53,8 @@ extensions = [
     'sphinx.ext.napoleon',
     'myst_parser',
     'sphinx_reredirects',
-    # Renders the ```mermaid fences in the contributor guide. The diagrams are drawn in
-    # the browser by mermaid.js, which sphinxcontrib-mermaid loads from cdn.jsdelivr.net
-    # at the version pinned by its `mermaid_version` default.
+    # Renders the ```mermaid fences in the contributor guide. See mermaid_output_format
+    # below: the diagrams are drawn at build time, not in the reader's browser.
     'sphinxcontrib.mermaid',
 ]
 
@@ -68,6 +67,21 @@ source_suffix = {
 # code block, so the same source renders as a diagram here and on github.com, which
 # understands that fence natively.
 myst_fence_as_directive = ['mermaid']
+
+# Draw the diagrams at build time with mermaid-cli (mmdc) instead of shipping mermaid.js to
+# the browser. The default 'raw' format emits `import mermaid from "https://cdn.jsdelivr.net/..."`,
+# and the ASF serves *.apache.org with a Content-Security-Policy whose script-src allows only
+# 'self' plus a few apache.org hosts, so that import is blocked and no diagram ever renders on
+# the published site. Pre-rendered SVG is served from 'self' and needs no script at all.
+# apache/arrow sets this for the same reason.
+#
+# This makes mmdc a build dependency: `npm install -g @mermaid-js/mermaid-cli`. Without it the
+# build still succeeds but logs a warning and drops the diagrams. See docs/README.md.
+mermaid_output_format = 'svg'
+
+# Render on a transparent background so one SVG suits both the light and dark site themes;
+# mmdc otherwise bakes in a white background.
+mermaid_params = ['-b', 'transparent']
 
 # Add any paths that contain templates here, relative to this directory.
 templates_path = ['_templates']
