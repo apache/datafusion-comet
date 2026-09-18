@@ -41,10 +41,12 @@ class CometPublicApiSuite extends AnyFunSuite {
   private val expected: Set[String] = Set(
     "org.apache.spark.CometPlugin",
     "org.apache.comet.ExtendedExplainInfo",
+    "org.apache.comet.cloud.s3.AwsSdkCredentialProviderAdapter",
     "org.apache.comet.cloud.s3.CometS3AccessMode",
     "org.apache.comet.cloud.s3.CometS3CredentialContext",
     "org.apache.comet.cloud.s3.CometS3CredentialProvider",
-    "org.apache.comet.cloud.s3.CometS3Credentials")
+    "org.apache.comet.cloud.s3.CometS3Credentials",
+    "org.apache.comet.cloud.s3.HadoopS3ACredentialProviderAdapter")
 
   test("the public API is exactly the set enumerated in the versioning policy") {
     val classesDir = mainClassesDir()

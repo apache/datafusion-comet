@@ -93,6 +93,19 @@ The full unfiltered FileIO property bag crosses JNI as `catalog_properties`. The
 
 `IcebergScanExec` derives a redacting `Debug` so plan dumps and tracing do not leak the property bag.
 
+## Property-bag handling on the Parquet path
+
+The Parquet path forwards the `fs.s3a.*` config subset as `catalog_properties`, so an SPI provider can read the Hadoop config it needs. `forward_catalog_properties` in `native/core/src/parquet/objectstore/s3.rs` drops the static-credential secrets (`*.access.key`, `*.secret.key`, `*.session.token`) before forwarding: the built-in adapters exist for the case where static keys are not used, and keeping secrets out avoids widening the blast radius and putting them in the dispatcher's `catalogProperties` cache key. (Earlier this map was empty on the Parquet path; providers that relied on that now receive the filtered subset.)
+
+## Built-in adapters
+
+Comet ships two reference SPI implementations under `org.apache.comet.cloud.s3`, so standard provider classes that the native Rust list does not match work with a config change instead of bespoke code:
+
+- `HadoopS3ACredentialProviderAdapter` delegates to Hadoop S3A's own provider construction (`S3AUtils.createAWSCredentialProviderSet` on Hadoop 3.3.x, `CredentialProviderListFactory.createAWSCredentialProviderList` on 3.4+).
+- `AwsSdkCredentialProviderAdapter` wraps a raw AWS SDK provider named in `fs.s3a.comet.credential.adapter.class`.
+
+Each has a spark-3.x (SDK v1) and a spark-4.x (SDK v2) body under the same FQCN, selected by the `shims.majorVerSrc` source set, so each Comet build compiles against exactly the one AWS SDK its Hadoop line ships. The SDK and `hadoop-aws` are `provided` scope only (see the `hadoop-aws.version` property in the root `pom.xml`), so Comet does not bundle a second copy.
+
 ## Returns or throws, not a fall-through value
 
 The SPI returns a `CometS3Credentials` or throws. There is no sentinel "I do not know" return. Vendors that are only authoritative for some paths resolve the default AWS chain themselves for the rest and return the result. This matches the contract on every other AWS credential SPI in the JVM ecosystem (AWS SDK v1/v2, Hadoop S3A, Iceberg `VendedCredentialsProvider`).

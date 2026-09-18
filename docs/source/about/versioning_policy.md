@@ -212,6 +212,15 @@ The SPI consists of:
 - `CometS3Credentials`, the value a provider returns.
 - `CometS3CredentialContext` and `CometS3AccessMode`, describing the request being served.
 
+Comet also ships two built-in implementations of the SPI as public API, so their class names are a
+stable config contract:
+
+- `HadoopS3ACredentialProviderAdapter`, which delegates to Hadoop S3A's own provider construction.
+- `AwsSdkCredentialProviderAdapter`, which wraps a raw AWS SDK provider named in config.
+
+See the [S3 Credential Providers](../user-guide/latest/s3-credential-providers.md) guide for the
+adapters and how to enable them.
+
 Additive changes are allowed in a minor release, for example a new accessor on
 `CometS3CredentialContext`, because a vendor jar compiled against an earlier `1.x` continues to
 load and run. Any change that would break such a jar, including adding an abstract method to

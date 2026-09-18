@@ -79,8 +79,10 @@ pub fn create_store(
         source: "Missing bucket name in S3 URL".into(),
     })?;
 
-    // Parquet path: catalog_properties is empty; vendors here read from Hadoop conf.
-    let empty_props: HashMap<String, String> = HashMap::new();
+    // Parquet path: forward the fs.s3a.* config subset (minus static-credential secrets) so an
+    // SPI provider can read the Hadoop config it needs (e.g. the built-in adapters read
+    // fs.s3a.aws.credentials.provider). See s3-credential-provider-design.md.
+    let forwarded_props = forward_catalog_properties(configs);
     builder = match lookup_provider_class(configs, bucket) {
         Some(provider_class) => {
             // Fail rather than fall back to the default chain, which could resolve to the wrong
@@ -91,7 +93,7 @@ pub fn create_store(
                 bucket,
                 url.path(),
                 AccessMode::Read,
-                &empty_props,
+                &forwarded_props,
             )
             .map_err(|e| object_store::Error::Generic {
                 store: "S3",
@@ -332,6 +334,23 @@ fn lookup_provider_class<'a>(
     bucket: &str,
 ) -> Option<&'a str> {
     get_config_trimmed(configs, bucket, PROVIDER_CLASS_PROPERTY).filter(|s| !s.is_empty())
+}
+
+/// Suffixes of `fs.s3a.*` keys that carry static-credential secrets. These are deliberately not
+/// forwarded to the SPI: the adapters exist for the case where static keys are not used, and
+/// forwarding secrets would widen the blast radius and put them in the dispatcher cache-key hash.
+const SECRET_KEY_SUFFIXES: [&str; 3] = [".access.key", ".secret.key", ".session.token"];
+
+/// Builds the `catalog_properties` map forwarded to the SPI on the Parquet path: the `fs.s3a.*`
+/// subset with static-credential secrets removed. HashMap equality is order-independent, so the
+/// dispatcher instance-cache key stays stable regardless of iteration order.
+fn forward_catalog_properties(configs: &HashMap<String, String>) -> HashMap<String, String> {
+    configs
+        .iter()
+        .filter(|(k, _)| k.starts_with("fs.s3a."))
+        .filter(|(k, _)| !SECRET_KEY_SUFFIXES.iter().any(|suffix| k.ends_with(suffix)))
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect()
 }
 
 // Hadoop S3A credential provider constants
@@ -1021,6 +1040,40 @@ mod tests {
         assert_eq!(secret_key, Some("test_secret_key"));
         let session_token = get_config_trimmed(&configs, "test-bucket-2", "session.token");
         assert_eq!(session_token, Some("test_session_token"));
+    }
+
+    #[test]
+    fn test_forward_catalog_properties_filters_scope_and_secrets() {
+        let mut configs: HashMap<String, String> = HashMap::new();
+        configs.insert(
+            "fs.s3a.aws.credentials.provider".to_string(),
+            "com.amazonaws.auth.DefaultAWSCredentialsProviderChain".to_string(),
+        );
+        configs.insert("fs.s3a.endpoint".to_string(), "s3.example.com".to_string());
+        configs.insert(
+            format!("fs.s3a.comet.{PROVIDER_CLASS_PROPERTY}"),
+            "org.apache.comet.cloud.s3.HadoopS3ACredentialProviderAdapter".to_string(),
+        );
+        // Secrets must not be forwarded (global and per-bucket variants).
+        configs.insert("fs.s3a.access.key".to_string(), "AK".to_string());
+        configs.insert("fs.s3a.secret.key".to_string(), "SK".to_string());
+        configs.insert("fs.s3a.session.token".to_string(), "ST".to_string());
+        configs.insert(
+            "fs.s3a.bucket.b.secret.key".to_string(),
+            "bucket-secret".to_string(),
+        );
+        // Non-fs.s3a.* keys are out of scope.
+        configs.insert("spark.master".to_string(), "local".to_string());
+
+        let forwarded = forward_catalog_properties(&configs);
+
+        assert!(forwarded.contains_key("fs.s3a.aws.credentials.provider"));
+        assert!(forwarded.contains_key("fs.s3a.endpoint"));
+        assert!(!forwarded.contains_key("fs.s3a.access.key"));
+        assert!(!forwarded.contains_key("fs.s3a.secret.key"));
+        assert!(!forwarded.contains_key("fs.s3a.session.token"));
+        assert!(!forwarded.contains_key("fs.s3a.bucket.b.secret.key"));
+        assert!(!forwarded.contains_key("spark.master"));
     }
 
     #[test]

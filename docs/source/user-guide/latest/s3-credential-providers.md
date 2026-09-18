@@ -36,6 +36,39 @@ You probably do, if any of these are true:
 - You have a custom Iceberg `client.factory` that injects a configured S3 client.
 - Spark queries against your S3 paths work, but the same queries with Comet enabled fail with 403.
 
+## Built-in adapters
+
+If a native Parquet scan fails with `Unsupported credential provider: <class>` (for example `com.amazonaws.auth.DefaultAWSCredentialsProviderChain`), the class you named in `fs.s3a.aws.credentials.provider` is one that plain Spark/Hadoop accepts but Comet's native reader does not reimplement. Comet ships two built-in `CometS3CredentialProvider` adapters that fix this with a one-line config change; you leave your existing `fs.s3a.aws.credentials.provider` untouched.
+
+These adapters cover the Parquet native scan path only. Enabling one is opt-in: naming it is what activates it, and Comet's existing native provider handling is unchanged for everyone else.
+
+### `HadoopS3ACredentialProviderAdapter` (recommended)
+
+Delegates to Hadoop S3A's own provider construction, so it accepts everything the `fs.s3a.aws.credentials.provider` chain accepts (the default chain, web-identity, assumed-role, custom signers, per-bucket config). This is the general answer for the failure above.
+
+```
+spark.hadoop.fs.s3a.comet.credential.provider.class=org.apache.comet.cloud.s3.HadoopS3ACredentialProviderAdapter
+# leave your existing config as-is, for example:
+spark.hadoop.fs.s3a.aws.credentials.provider=com.amazonaws.auth.DefaultAWSCredentialsProviderChain
+```
+
+It needs no extra config: it reads the standard `fs.s3a.aws.credentials.provider` (and the per-bucket `fs.s3a.bucket.<bucket>.aws.credentials.provider`) itself. Static keys (`fs.s3a.access.key` / `fs.s3a.secret.key`) are the one case it does not cover, because Comet does not forward those secrets to the adapter; those already work through Comet's native path without an adapter.
+
+### `AwsSdkCredentialProviderAdapter`
+
+Wraps a single raw AWS SDK credential-provider class that is not registered through S3A. Name the delegate in a separate key:
+
+```
+spark.hadoop.fs.s3a.comet.credential.provider.class=org.apache.comet.cloud.s3.AwsSdkCredentialProviderAdapter
+spark.hadoop.fs.s3a.comet.credential.adapter.class=<FQCN of your credential provider>
+# per-bucket variant:
+spark.hadoop.fs.s3a.bucket.<bucket>.comet.credential.adapter.class=<FQCN>
+```
+
+### Which one, and which Spark version
+
+Use `HadoopS3ACredentialProviderAdapter` unless you have a plain SDK provider not wired through S3A. Both class names are the same on every Comet build; each build automatically uses the AWS SDK its Hadoop line ships (v1 on the Spark 3.4/3.5 builds, v2 on 4.0+), so you configure one name and get the right implementation.
+
 ## Enabling a bridge
 
 A bridge is activated by naming the vendor's class in a Spark config. Putting a JAR on the classpath alone has no effect; the config key must be set.
@@ -87,6 +120,8 @@ With the config set and the JAR on the classpath, executor logs show on first S3
 Without the config set, no credential-related log lines appear at startup; native readers use the default AWS credential chain.
 
 ## Troubleshooting
+
+**`Generic S3 error: Unsupported credential provider: <class>`** (native Parquet scan). The class in `fs.s3a.aws.credentials.provider` is one Hadoop S3A accepts but Comet's native reader does not reimplement. Name `HadoopS3ACredentialProviderAdapter` as the Comet provider class (see [Built-in adapters](#built-in-adapters)) and leave your existing config alone.
 
 **`CometS3CredentialProvider class not found: <name>`**. The class named in the config is not on the executor classpath. Re-check `--jars` / `spark.jars`. On YARN or Kubernetes, confirm the JAR actually reached the executor and not only the driver.
 
