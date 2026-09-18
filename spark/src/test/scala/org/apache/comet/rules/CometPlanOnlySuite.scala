@@ -312,7 +312,7 @@ class CometPlanOnlySuite extends CometTestBase {
       s"expected the diagnostic to name the changed setting, got:\n${changed.head}")
     assert(
       !changed.head.contains("Comet accelerated"),
-      s"expected no coverage numbers from a configuration the query never ran under, got:\n" +
+      "expected no coverage numbers from a configuration the query never ran under, got:\n" +
         changed.head)
   }
 
