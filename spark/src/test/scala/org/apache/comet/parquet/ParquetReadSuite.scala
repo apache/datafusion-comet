@@ -2169,7 +2169,10 @@ abstract class ParquetReadSuite extends CometTestBase {
     }
   }
 
-  test("duplicate field id inside a struct is rejected without a cast") {
+  test("duplicate field id inside a struct is rejected when a requested id matches two fields") {
+    // The requested struct names one id that two file fields carry. A requested schema that
+    // repeats an id itself is declined at planning time, so this is the shape the native scan
+    // still has to refuse; the reader factory validates it while loading the footer.
     withSQLConf(SQLConf.PARQUET_FIELD_ID_READ_ENABLED.key -> "true") {
       withTempPath { dir =>
         val schema =
@@ -2181,6 +2184,9 @@ abstract class ParquetReadSuite extends CometTestBase {
                 .add("y", LongType, true, withId(1)),
               true,
               withId(2))
+        val readSchema =
+          new StructType()
+            .add("s", new StructType().add("x", LongType, true, withId(1)), true, withId(2))
 
         val writeData = Seq(Row(Row(42L, 43L)))
         spark
@@ -2189,8 +2195,13 @@ abstract class ParquetReadSuite extends CometTestBase {
           .mode("overwrite")
           .parquet(dir.getCanonicalPath)
 
+        val df = spark.read.schema(readSchema).parquet(dir.getCanonicalPath)
+        val scans = stripAQEPlan(df.queryExecution.executedPlan).collect {
+          case scan: CometNativeScanExec => scan
+        }
+        assert(scans.nonEmpty, "expected CometNativeScanExec in the plan")
         val cause = intercept[SparkException] {
-          spark.read.schema(schema).parquet(dir.getCanonicalPath).collect()
+          df.collect()
         }.getCause
         assert(
           cause.isInstanceOf[RuntimeException] &&
@@ -2233,15 +2244,12 @@ abstract class ParquetReadSuite extends CometTestBase {
           footerReader.close()
         }
 
+        // Requesting one of the two id-1 fields keeps the scan native, since a requested schema
+        // that repeats an id is declined at planning time. The reader factory validates every
+        // id-bearing requested schema while loading the footer, with or without metadata.
         val readSchema =
           new StructType()
-            .add(
-              "s",
-              new StructType()
-                .add("x", LongType, true, withId(1))
-                .add("y", LongType, true, withId(1)),
-              true,
-              withId(2))
+            .add("s", new StructType().add("x", LongType, true, withId(1)), true, withId(2))
         val df = spark.read.schema(readSchema).parquet(path.toString)
         // Spark's own reader raises the same error, so make sure the native scan is what runs.
         val scans = stripAQEPlan(df.queryExecution.executedPlan).collect {
