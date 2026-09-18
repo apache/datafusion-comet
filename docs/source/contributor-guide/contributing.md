@@ -38,6 +38,37 @@ To assign yourself an issue, comment `take` on the issue. To unassign yourself, 
 
 We use [GitHub issues](https://github.com/apache/datafusion-comet/issues) for bug reports and feature requests.
 
+## Review expectations
+
+Comet follows the usual Apache model: a pull request needs an approval from a committer before it
+can be merged, and any committer can give it. What that rule does not capture is that the people
+who know a given area are spread across many time zones. A change queued a few hours after it was
+opened has only been seen by whoever happened to be awake.
+
+So leave a non-trivial pull request open for at least 24 hours after it is ready for review, even
+once it has an approval. The delay is not the point; giving a full day means everyone who might
+recognize a problem gets a chance to look, including whoever wrote the code being changed.
+
+Read "non-trivial" generously. A second pair of eyes is usually worth waiting for on:
+
+- new or changed behavior in the planner, the serde, a native operator, or a Spark shim
+- a change to a default, a configuration name, or a public API
+- a new dependency, or a bump that crosses a major version
+- performance work whose numbers a reviewer might want to reproduce
+- anything under `dev/diffs/`
+
+Changes that do not need the wait: documentation and comment fixes, test-only additions, routine
+dependency bumps, and repairs to a broken build or a red `main`, where waiting costs more than the
+review would catch.
+
+Nothing enforces this. No check fails if you merge early, and the merge queue does not know how
+long a pull request has been open. It is a convention, and it exists because the costs are not
+symmetric: an hour saved on a merge is worth much less than a design problem caught before it
+lands.
+
+If a change is not getting the attention you think it needs, ask for it — in the Comet Slack or
+Discord channel, or on the community call below.
+
 ## Asking for Help
 
 The Comet project uses the same Slack and Discord channels as the main Apache DataFusion project. See details at
