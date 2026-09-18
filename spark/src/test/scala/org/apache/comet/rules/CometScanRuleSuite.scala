@@ -19,7 +19,11 @@
 
 package org.apache.comet.rules
 
+import java.util.{Arrays, LinkedHashMap}
+
+import scala.jdk.CollectionConverters._
 import scala.util.Random
+import scala.util.Try
 
 import org.apache.spark.sql._
 import org.apache.spark.sql.comet._
@@ -28,6 +32,7 @@ import org.apache.spark.sql.execution.adaptive.QueryStageExec
 import org.apache.spark.sql.types.{DataTypes, StructField, StructType}
 
 import org.apache.comet.CometConf
+import org.apache.comet.serde.OperatorOuterClass
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator}
 
 /**
@@ -181,4 +186,104 @@ class CometScanRuleSuite extends CometTestBase {
     }
   }
 
+  test("Lance native scan config defaults to disabled") {
+    assert(!CometConf.COMET_LANCE_NATIVE_ENABLED.get())
+  }
+
+  test("Lance native scan serde reflects descriptor common fields and split fragments") {
+    val serde = loadContribLanceSerde.getOrElse {
+      cancel("contrib-lance profile is not enabled")
+    }
+
+    val requiredSchema = StructType(
+      Seq(
+        StructField("id", DataTypes.IntegerType, nullable = false),
+        StructField("name", DataTypes.StringType, nullable = true)))
+    val projectedSchema = StructType(Seq(StructField("id", DataTypes.IntegerType, false)))
+    val descriptor = new FakeLanceNativeScanPlan(requiredSchema, projectedSchema)
+
+    val (common, partitions) = serializeFakeLanceDescriptor(serde, descriptor)
+
+    assert(common.getScanId == "scan-123")
+    assert(common.getDatasetUri == "s3://bucket/table.lance")
+    assert(common.getResolvedVersion == 42L)
+    assert(common.getDescriptorVersion == 1)
+    assert(common.getBatchSize == 4096)
+    assert(common.getNativeScanPlanClass.contains("FakeLanceNativeScanPlan"))
+    assert(common.getStorageOptionsMap.get("region") == "us-west-2")
+    assert(common.getStorageOptionsMap.get("endpoint") == "http://127.0.0.1:9000")
+    assert(common.getRequiredSchemaList.asScala.map(_.getName) == Seq("id", "name"))
+    assert(common.getProjectedSchemaList.asScala.map(_.getName) == Seq("id"))
+    assert(common.hasFilterSql)
+    assert(common.getFilterSql == "id > 10")
+    assert(common.hasLimit)
+    assert(common.getLimit == 100L)
+    assert(common.hasOffset)
+    assert(common.getOffset == 5L)
+
+    assert(partitions.length == 2)
+    assert(partitions(0).getPartition.getPartitionIndex == 0)
+    assert(partitions(0).getPartition.getFragmentIdsList.asScala.map(_.intValue()) == Seq(7, 8))
+    assert(partitions(1).getPartition.getPartitionIndex == 1)
+    assert(partitions(1).getPartition.getFragmentIdsList.asScala.map(_.intValue()) == Seq(9))
+  }
+
+  private def loadContribLanceSerde: Option[AnyRef] =
+    Try {
+      Class
+        .forName("org.apache.comet.serde.operator.CometLanceNativeScan$")
+        .getField("MODULE$")
+        .get(null)
+        .asInstanceOf[AnyRef]
+    }.toOption
+
+  private def serializeFakeLanceDescriptor(serde: AnyRef, descriptor: AnyRef)
+      : (OperatorOuterClass.LanceScanCommon, Array[OperatorOuterClass.LanceScan]) = {
+    val method = serde.getClass.getMethods
+      .find(method =>
+        method.getName == "serializeNativePlan" && method.getParameterTypes.length == 1)
+      .getOrElse {
+        throw new AssertionError("CometLanceNativeScan.serializeNativePlan was not found")
+      }
+
+    val serialized = method
+      .invoke(serde, descriptor)
+      .asInstanceOf[Product]
+    val commonBytes = serialized.productElement(0).asInstanceOf[Array[Byte]]
+    val partitionBytes = serialized.productElement(1).asInstanceOf[Array[Array[Byte]]]
+
+    (
+      OperatorOuterClass.LanceScanCommon.parseFrom(commonBytes),
+      partitionBytes.map(OperatorOuterClass.LanceScan.parseFrom))
+  }
+
+  private class FakeLanceNativeScanPlan(requiredSchema: StructType, projectedSchema: StructType) {
+    private val storageOptions = new LinkedHashMap[String, String]()
+    storageOptions.put("region", "us-west-2")
+    storageOptions.put("endpoint", "http://127.0.0.1:9000")
+
+    def getDescriptorVersion(): Int = 1
+    def getScanId(): String = "scan-123"
+    def getDatasetUri(): String = "s3://bucket/table.lance"
+    def getResolvedVersion(): Long = 42L
+    def getSparkReadSchemaJson(): String = requiredSchema.json
+    def getProjectedReadSchemaJson(): String = projectedSchema.json
+    def hasPushedFilterSql(): Boolean = true
+    def getPushedFilterSql(): String = "id > 10"
+    def hasLimit(): Boolean = true
+    def getLimit(): Long = 100L
+    def hasOffset(): Boolean = true
+    def getOffset(): Long = 5L
+    def getBatchSize(): Int = 4096
+    def getStorageOptions(): java.util.Map[String, String] = storageOptions
+    def getSplits(): java.util.List[FakeLanceNativeScanSplit] =
+      Arrays.asList(
+        new FakeLanceNativeScanSplit(0, Arrays.asList(Int.box(7), Int.box(8))),
+        new FakeLanceNativeScanSplit(1, Arrays.asList(Int.box(9))))
+  }
+
+  private class FakeLanceNativeScanSplit(splitIndex: Int, fragmentIds: java.util.List[Integer]) {
+    def getSplitIndex(): Int = splitIndex
+    def getFragmentIds(): java.util.List[Integer] = fragmentIds
+  }
 }
