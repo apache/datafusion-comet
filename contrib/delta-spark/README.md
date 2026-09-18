@@ -59,8 +59,9 @@ install is the trap the contributor guide warns about:
 ```
 
 Run the test suites the same way (`test` instead of `install` on the second
-line). CI runs them
-on Spark 3.5, 4.0, and 4.1 via `.github/workflows/delta_contrib_test.yml`.
+line). CI runs them via `.github/workflows/delta_contrib_test.yml`: on Spark
+3.5 in the merge queue, and on 4.0 and 4.1 nightly or on a pull request
+carrying the `run-delta-tests` label.
 `CometDeltaS3Suite` starts MinIO through Testcontainers and cancels itself when
 no Docker daemon is reachable; setting `COMET_DELTA_S3_REQUIRED=1`, as the
 `contrib-delta-s3` CI job does, turns that cancel into a suite failure.

@@ -17,10 +17,19 @@
 
 name: Delta Contrib Tests
 
-# Reusable: invoked by ci.yml. Triggering, path filters, and concurrency
-# live in the umbrella workflow.
+# Reusable: invoked by ci.yml once per Spark profile. Triggering, path
+# filters, and concurrency live in the umbrella workflow.
 on:
   workflow_call:
+    inputs:
+      spark:
+        description: 'Spark minor version, e.g. 3.5'
+        required: true
+        type: string
+      java:
+        description: 'JDK major version, e.g. 17'
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -39,22 +48,10 @@ env:
 jobs:
 
   contrib-delta:
-    name: Delta contrib (Spark ${{ matrix.profile.spark }})
+    name: Delta contrib (Spark ${{ inputs.spark }})
     runs-on: ubuntu-24.04
     container:
       image: amd64/rust
-    strategy:
-      matrix:
-        profile:
-          - spark: "3.5"
-            java_version: "17"
-          - spark: "4.0"
-            java_version: "17"
-          - spark: "4.1"
-            java_version: "17"
-          # spark-4.2 is intentionally absent: the contrib profile is dormant
-          # until a Delta release supports Spark 4.2.
-      fail-fast: false
     steps:
       - uses: actions/checkout@v7
 
@@ -62,7 +59,7 @@ jobs:
         uses: ./.github/actions/setup-builder
         with:
           rust-version: ${{ env.RUST_VERSION }}
-          jdk-version: ${{ matrix.profile.java_version }}
+          jdk-version: ${{ inputs.java }}
 
       - name: Restore Maven dependencies
         id: maven-cache
@@ -71,7 +68,7 @@ jobs:
           path: |
             ~/.m2/repository
             /root/.m2/repository
-          key: ${{ runner.os }}-java-maven-${{ hashFiles('**/pom.xml') }}-delta-${{ matrix.profile.spark }}
+          key: ${{ runner.os }}-java-maven-${{ hashFiles('**/pom.xml') }}-delta-${{ inputs.spark }}
           restore-keys: |
             ${{ runner.os }}-java-maven-
 
@@ -112,11 +109,11 @@ jobs:
       - name: Install Comet core jars
         run: |
           # The delta profile is what produces the spark test-jar the contrib suites depend on.
-          ./mvnw -B -q -Prelease -Pspark-${{ matrix.profile.spark }},delta install -pl common,spark -DskipTests -Dspotless.check.skip=true
+          ./mvnw -B -q -Prelease -Pspark-${{ inputs.spark }},delta install -pl common,spark -DskipTests -Dspotless.check.skip=true
 
       - name: Run Delta contrib test suites
         run: |
-          SPARK_HOME=$(pwd) COMET_CONF_DIR=$(pwd)/conf ./mvnw -B -Prelease -Pspark-${{ matrix.profile.spark }},delta test -pl contrib/delta-spark
+          SPARK_HOME=$(pwd) COMET_CONF_DIR=$(pwd)/conf ./mvnw -B -Prelease -Pspark-${{ inputs.spark }},delta test -pl contrib/delta-spark
 
       # Saved only on main: an entry written from a pull request or a
       # `gh-readonly-queue/*` branch cannot be restored by any later run, and
@@ -129,12 +126,14 @@ jobs:
           path: |
             ~/.m2/repository
             /root/.m2/repository
-          key: ${{ runner.os }}-java-maven-${{ hashFiles('**/pom.xml') }}-delta-${{ matrix.profile.spark }}
+          key: ${{ runner.os }}-java-maven-${{ hashFiles('**/pom.xml') }}-delta-${{ inputs.spark }}
 
-  # The container jobs above have no Docker socket, so CometDeltaS3Suite cancels itself
+  # The container job above has no Docker socket, so CometDeltaS3Suite cancels itself
   # there. This job runs it on the plain runner, where Testcontainers can start MinIO.
   contrib-delta-s3:
     name: Delta contrib S3 suite (Spark 3.5, MinIO)
+    # Pinned to Spark 3.5, so only that caller runs it: once per ci.yml run.
+    if: inputs.spark == '3.5'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
@@ -201,7 +200,7 @@ jobs:
           SPARK_HOME=$(pwd) COMET_CONF_DIR=$(pwd)/conf ./mvnw -B -Prelease -Pspark-3.5,delta test -pl contrib/delta-spark -DwildcardSuites=org.apache.comet.contrib.delta.CometDeltaS3Suite
         env:
           # This job exists only to run the suite, so a Docker or MinIO failure must fail
-          # it instead of cancelling every test, which the container jobs above rely on.
+          # it instead of cancelling every test, which the container job above relies on.
           COMET_DELTA_S3_REQUIRED: "1"
 
       # Saved only on main, for the same reason as the container job above.
@@ -218,6 +217,8 @@ jobs:
   # error arm (planner.rs cfg(not(feature = "delta"))) from becoming dead code.
   feature-off-build:
     name: Feature-off native build
+    # Spark-independent, so only the 3.5 caller runs it: once per ci.yml run.
+    if: inputs.spark == '3.5'
     runs-on: ubuntu-24.04
     container:
       image: amd64/rust
@@ -253,6 +254,8 @@ jobs:
   # Python; keep it import-clean on one supported interpreter.
   dev-scripts-python:
     name: Delta dev scripts (Python)
+    # Spark-independent, so only the 3.5 caller runs it: once per ci.yml run.
+    if: inputs.spark == '3.5'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7

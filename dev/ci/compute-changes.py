@@ -398,7 +398,7 @@ FILTERS = {
         ".mvn/**",
         "mvnw",
     ],
-    "delta": [
+    "delta_3_5": [
         "contrib/delta-spark/**",
         "!**.md",
         "native/**/src/**",
@@ -418,10 +418,17 @@ FILTERS = {
         ".github/workflows/delta_contrib_test.yml",
         ".github/actions/setup-builder/**",
     ],
+    # Same inputs as delta_3_5: the Delta contrib workflow is called once per
+    # Spark profile, and the three calls share one path filter. Populated
+    # below, after the dict, so the lists cannot drift.
+    "delta_4_0": [],
+    "delta_4_1": [],
 }
 FILTERS["spark_4_1_hive"] = FILTERS["spark_4_1"]
 FILTERS["build_linux_full"] = FILTERS["build_linux"]
 FILTERS["build_linux_all_profiles"] = FILTERS["build_linux"]
+FILTERS["delta_4_0"] = FILTERS["delta_3_5"]
+FILTERS["delta_4_1"] = FILTERS["delta_3_5"]
 
 # Which events may run each job, independent of the path filters above.
 #
@@ -531,10 +538,12 @@ POLICY = {
     "iceberg_1_9": ["nightly", "label:run-iceberg-tests"],
     "iceberg_1_10": ["nightly", "label:run-iceberg-tests"],
     "iceberg_1_11": ["queue", "label:run-iceberg-tests"],
-    # The Delta contrib suites run against Spark 3.5, 4.0 and 4.1 in one
-    # workflow. Queue-only, like the build-level gates: the queue runs it
-    # before anything lands, and the label brings the run forward.
-    "delta": ["queue", "label:run-delta-tests"],
+    # Same shape for the Delta contrib suites: Spark 3.5 is the profile the
+    # MinIO and feature-off jobs already pin, so it is the one the queue runs;
+    # 4.0 and 4.1 run nightly. One label opts a pull request into all three.
+    "delta_3_5": ["queue", "label:run-delta-tests"],
+    "delta_4_0": ["nightly", "label:run-delta-tests"],
+    "delta_4_1": ["nightly", "label:run-delta-tests"],
 }
 
 
