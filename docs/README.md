@@ -29,6 +29,10 @@ inside a Python virtualenv.
 
 - Python
 - `pip install -r requirements.txt`
+- Node, and `npm install -g @mermaid-js/mermaid-cli` for the `mmdc` command
+
+`mmdc` draws the ```` ```mermaid ```` fences into SVG when the docs are built. Without it on
+`PATH` the build still succeeds, but logs a warning and leaves those diagrams out of the pages.
 
 ## Build & Preview
 
