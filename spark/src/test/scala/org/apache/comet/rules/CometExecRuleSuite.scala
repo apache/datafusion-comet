@@ -150,19 +150,23 @@ class CometExecRuleSuite extends CometTestBase {
         val ordinary = Seq(1.0d, 3.0d).map(literal)
         val infinities = Seq(Double.PositiveInfinity, Double.NegativeInfinity).map(literal)
         val nullLiteral = Literal.create(null, dataType)
-        val lists: Seq[(Seq[Expression], Boolean)] = Seq(
-          ordinary -> false,
-          (ordinary :+ nullLiteral) -> false,
-          infinities -> false,
-          (infinities :+ nullLiteral) -> false,
-          Seq(nullLiteral) -> false,
-          Seq(value, other) -> true) ++
+        val lists: Seq[(Seq[Expression], Boolean, Int)] = Seq(
+          (ordinary, false, 0),
+          (ordinary :+ nullLiteral, false, 0),
+          (infinities, false, 0),
+          (infinities :+ nullLiteral, false, 0),
+          (Seq(nullLiteral), false, 0),
+          (Seq(value, other), true, 0)) ++
           Seq(Double.PositiveInfinity, Double.NegativeInfinity)
-            .map(v => (ordinary :+ literal(v)) -> false) ++
-          Seq(Double.NaN, 0.0d, -0.0d)
-            .flatMap(v => Seq(ordinary, infinities).map(list => (list :+ literal(v)) -> true)) ++
-          (if (isSpark35Plus) Seq(Seq.empty[Expression] -> false) else Nil)
-        for ((list, needsNormalization) <- lists;
+            .map(v => (ordinary :+ literal(v), false, 0)) ++
+          Seq(Double.NaN)
+            .flatMap(v => Seq(ordinary, infinities).map(list => (list :+ literal(v), true, 0))) ++
+          Seq(0.0d, -0.0d)
+            .flatMap(v =>
+              Seq(ordinary, infinities).map(list => (list :+ literal(v), false, 1))) ++
+          Seq((ordinary ++ Seq(literal(0.0d), literal(-0.0d)), false, 0)) ++
+          (if (isSpark35Plus) Seq((Seq.empty[Expression], false, 0)) else Nil)
+        for ((list, needsNormalization, extraStaticCandidates) <- lists;
           asSet <- Seq(false, true) if !asSet || list.forall(_.isInstanceOf[Literal]);
           negate <- Seq(false, true);
           alreadyNormalized <- Seq(false, true)) {
@@ -192,7 +196,7 @@ class CometExecRuleSuite extends CometTestBase {
             } else {
               assert(serializedValue.hasBound)
             }
-            assert(serialized.getIn.getListsCount == list.size)
+            assert(serialized.getIn.getListsCount == list.size + extraStaticCandidates)
             for (i <- list.indices) {
               val candidate = serialized.getIn.getLists(i)
               if (list(i).isInstanceOf[Literal]) {
@@ -201,6 +205,9 @@ class CometExecRuleSuite extends CometTestBase {
                 assert(candidate.hasNormalizeNanAndZero)
                 assert(candidate.getNormalizeNanAndZero.getChild.hasBound)
               }
+            }
+            for (i <- list.size until list.size + extraStaticCandidates) {
+              assert(serialized.getIn.getLists(i).hasLiteral)
             }
           }
         }
@@ -221,8 +228,8 @@ class CometExecRuleSuite extends CometTestBase {
             val value = AttributeReference("value", dataType)()
             val other = AttributeReference("other", dataType)()
             val literals = dataType match {
-              case FloatType => Seq(Literal(0.0f), Literal(3.0f))
-              case DoubleType => Seq(Literal(0.0d), Literal(3.0d))
+              case FloatType => Seq(Literal(Float.NaN), Literal(3.0f))
+              case DoubleType => Seq(Literal(Double.NaN), Literal(3.0d))
             }
             // Exercise temporary literals and normalizers in both the value and the list.
             val in =
@@ -273,7 +280,9 @@ class CometExecRuleSuite extends CometTestBase {
             val predicate = if (literalValue) {
               s"CAST(1 AS ${dataType.sql}) IN ($column, -$column)"
             } else {
-              s"$column IN (CAST(0 AS ${dataType.sql}), CAST(3 AS ${dataType.sql}))"
+              // Keep a dynamic candidate here: all-literal non-NaN zero lists now stay static and
+              // intentionally avoid the normalization wrappers this fallback test exercises.
+              s"$column IN (CAST(0 AS ${dataType.sql}), -$column)"
             }
             val expression = if (negate) s"NOT ($predicate)" else predicate
             val df = sql(s"SELECT $expression AS hit FROM range(0, 4, 1, 1)")

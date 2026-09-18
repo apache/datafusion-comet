@@ -366,6 +366,16 @@ object ComparisonUtils {
   val inUnsupportedReasons: Seq[String] =
     Seq(nonDefaultCollationDocReason, legacyNullInEmptyListReason)
 
+  /**
+   * Normalize one top-level floating-point membership operand to Spark's NaN and signed-zero
+   * equality. Literal normalization is folded immediately so it remains a scalar literal; a
+   * dynamic expression gets Spark's normalization wrapper; non-floating operands are unchanged.
+   *
+   * @param expr
+   *   The value or candidate operand being serialized.
+   * @return
+   *   The operand to serialize, possibly folded or wrapped for Spark-compatible equality.
+   */
   private def normalizeInOperand(expr: Expression): Expression = expr.dataType match {
     case FloatType | DoubleType =>
       expr match {
@@ -379,6 +389,79 @@ object ComparisonUtils {
     case _ => expr
   }
 
+  /**
+   * Keep an all-literal floating-point membership list on DataFusion's static-filter path while
+   * matching Spark's signed-zero equality. DataFusion hashes the raw floating-point bits for a
+   * static list, so a list containing one zero sign also needs the other sign. A NaN literal or a
+   * dynamic candidate cannot be made equivalent by enumeration and must use normalization
+   * instead.
+   *
+   * @param list
+   *   The original Spark `IN` / `InSet` candidates.
+   * @return
+   *   `Some` with a static candidate list, including any missing opposite-signed zeros, or `None`
+   *   when the caller must normalize the membership operands.
+   */
+  private def staticFloatingInList(list: Seq[Expression]): Option[Seq[Expression]] = {
+    val canStayStatic = list.forall {
+      case Literal(null, _) => true
+      case Literal(v: Float, FloatType) => !java.lang.Float.isNaN(v)
+      case Literal(v: Double, DoubleType) => !java.lang.Double.isNaN(v)
+      case _ => false
+    }
+    if (!canStayStatic) {
+      None
+    } else {
+      val hasPositiveFloatZero = list.exists {
+        case Literal(v: Float, FloatType) =>
+          java.lang.Float.floatToRawIntBits(v) == java.lang.Float.floatToRawIntBits(0.0f)
+        case _ => false
+      }
+      val hasNegativeFloatZero = list.exists {
+        case Literal(v: Float, FloatType) =>
+          java.lang.Float.floatToRawIntBits(v) == java.lang.Float.floatToRawIntBits(-0.0f)
+        case _ => false
+      }
+      val hasPositiveDoubleZero = list.exists {
+        case Literal(v: Double, DoubleType) =>
+          java.lang.Double.doubleToRawLongBits(v) == java.lang.Double.doubleToRawLongBits(0.0d)
+        case _ => false
+      }
+      val hasNegativeDoubleZero = list.exists {
+        case Literal(v: Double, DoubleType) =>
+          java.lang.Double.doubleToRawLongBits(v) == java.lang.Double.doubleToRawLongBits(-0.0d)
+        case _ => false
+      }
+      val missingZeroSigns = Seq(
+        if (hasPositiveFloatZero && !hasNegativeFloatZero) Some(Literal(-0.0f)) else None,
+        if (hasNegativeFloatZero && !hasPositiveFloatZero) Some(Literal(0.0f)) else None,
+        if (hasPositiveDoubleZero && !hasNegativeDoubleZero) Some(Literal(-0.0d)) else None,
+        if (hasNegativeDoubleZero && !hasPositiveDoubleZero) Some(Literal(0.0d))
+        else None).flatten
+      Some(list ++ missingZeroSigns)
+    }
+  }
+
+  /**
+   * Serialize Spark membership while preserving Spark-compatible top-level floating-point
+   * equality and DataFusion's static-filter pruning whenever that is safe.
+   *
+   * @param expr
+   *   The original membership expression, used as the fallback-reason owner.
+   * @param value
+   *   The value being tested for membership.
+   * @param list
+   *   The membership candidates.
+   * @param inputs
+   *   The attributes available for bound-expression serialization.
+   * @param binding
+   *   Whether attributes should be bound to input ordinals.
+   * @param negate
+   *   Whether to serialize `NOT IN` rather than `IN`.
+   * @return
+   *   The native membership protobuf, or `None` after copying any synthesized-expression fallback
+   *   reasons back to `expr`.
+   */
   def in(
       expr: Expression,
       value: Expression,
@@ -386,19 +469,21 @@ object ComparisonUtils {
       inputs: Seq[Attribute],
       binding: Boolean,
       negate: Boolean): Option[Expr] = {
-    // NaNs and either sign of zero cannot match a non-NaN nonzero literal. Leave such lists
-    // unwrapped so native Parquet scans can still prune using the column's statistics.
-    val needsNormalization = !list.forall {
-      case Literal(null, _) => true
-      case Literal(v: Float, FloatType) => !java.lang.Float.isNaN(v) && v != 0.0f
-      case Literal(v: Double, DoubleType) => !java.lang.Double.isNaN(v) && v != 0.0d
-      case _ => false
+    val serializedOperands: (Expression, Seq[Expression]) = value.dataType match {
+      case FloatType | DoubleType =>
+        staticFloatingInList(list) match {
+          // All-literal non-NaN lists stay static so native Parquet scans can still prune using
+          // column statistics. Enumerating both zero signs makes raw-bit membership match Spark.
+          case Some(staticList) => value -> staticList
+          // NaN literals and dynamic candidates need both sides normalized, including fused NOT IN.
+          case None => normalizeInOperand(value) -> list.map(normalizeInOperand)
+        }
+      // Nested floating-point leaves are intentionally outside this scalar normalization path.
+      case _ => value -> list
     }
-    // Otherwise normalize both sides for Spark's NaN/zero equality, including fused NOT IN.
-    val normalizedValue = if (needsNormalization) normalizeInOperand(value) else value
-    val normalizedList = if (needsNormalization) list.map(normalizeInOperand) else list
-    val valueExpr = exprToProtoInternal(normalizedValue, inputs, binding)
-    val listExprs = normalizedList.map(exprToProtoInternal(_, inputs, binding))
+    val (serializedValue, serializedList) = serializedOperands
+    val valueExpr = exprToProtoInternal(serializedValue, inputs, binding)
+    val listExprs = serializedList.map(exprToProtoInternal(_, inputs, binding))
     if (valueExpr.isDefined && listExprs.forall(_.isDefined)) {
       val builder = ExprOuterClass.In.newBuilder()
       builder.setInValue(valueExpr.get)
@@ -410,10 +495,11 @@ object ComparisonUtils {
           .setIn(builder)
           .build())
     } else {
-      // Normalization creates temporary wrappers and literals outside the original tree. Keep
-      // their failure reasons on the membership expression so the operator can explain fallback.
-      liftFallbackReasons(normalizedValue, expr)
-      normalizedList.foreach(liftFallbackReasons(_, expr))
+      // Normalization and static-list expansion create temporary wrappers and literals outside the
+      // original tree. Keep their failure reasons on the membership expression so the operator can
+      // explain fallback.
+      liftFallbackReasons(serializedValue, expr)
+      serializedList.foreach(liftFallbackReasons(_, expr))
       None
     }
   }
