@@ -103,9 +103,10 @@ batch reserves those buffers itself -- `ExternalSorter` through `get_reserved_by
 the hash join build side through `get_record_batch_memory_size`, both of which read sizes off the
 `ArrayData` and so count imported buffers -- and through a unified pool that charges the same Spark
 task. Reporting either direction on the JVM side would reserve the same memory twice and could
-reject an allocation that fits. So `NativeUtil`, the JVM UDF result in `CometUdfBridge`, and
-`CometNativeArrowSource.stream` all use the listener-less root; IPC reads, codegen output, the
-cached batch serializer and `CometNativeArrowSource.readerBatchIter` use the task allocator. The
+reject an allocation that fits. So `NativeUtil`, the JVM UDF result in `CometUdfBridge`
+together with the codegen output vector it exports, and `CometNativeArrowSource.stream` all use
+the listener-less root; IPC reads, the cached batch serializer and
+`CometNativeArrowSource.readerBatchIter` use the task allocator. The
 driver, broadcast coalescing and the cached batch serializer also fall back to the root when there
 is no task to charge, as does Comet's on-heap mode.
 
