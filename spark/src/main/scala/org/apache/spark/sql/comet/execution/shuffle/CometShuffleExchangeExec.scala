@@ -49,7 +49,7 @@ import org.apache.spark.util.random.XORShiftRandom
 
 import com.google.common.base.Objects
 
-import org.apache.comet.{CometConf, CometExplainInfo}
+import org.apache.comet.{CometConf, CometExplainInfo, DataTypeSupport}
 import org.apache.comet.CometConf.{COMET_SHUFFLE_ENABLED, COMET_SHUFFLE_MODE}
 import org.apache.comet.CometSparkSessionExtensions.{cometCelebornShuffleFallbackReason, hasFallbackReason, isCometCelebornShuffleManagerEnabled, isCometShuffleManagerEnabled, isSpark40Plus, withFallbackReasons}
 import org.apache.comet.serde.{Compatible, OperatorOuterClass, QueryPlanSerde, SupportLevel, Unsupported}
@@ -480,7 +480,7 @@ object CometShuffleExchangeExec
         fields.nonEmpty && fields.forall(f => supportedSerializableDataType(f.dataType)) &&
         // Java Arrow keys struct children by name, so the FFI import of a decoded batch
         // fails on duplicate field names
-        fields.map(f => f.name).distinct.length == fields.length
+        !DataTypeSupport.hasDuplicateFieldNames(fields)
       case ArrayType(elementType, _) =>
         supportedSerializableDataType(elementType)
       case MapType(keyType, valueType, _) =>
@@ -607,7 +607,7 @@ object CometShuffleExchangeExec
       case StructType(fields) =>
         fields.nonEmpty && fields.forall(f => supportedSerializableDataType(f.dataType)) &&
         // Java Arrow stream reader cannot work on duplicate field name
-        fields.map(f => f.name).distinct.length == fields.length
+        !DataTypeSupport.hasDuplicateFieldNames(fields)
       case ArrayType(elementType, _) =>
         supportedSerializableDataType(elementType)
       case MapType(keyType, valueType, _) =>
