@@ -435,6 +435,11 @@ private[comet] object PlanDataInjector extends Logging {
         // executeQuery, leaving DPP unresolved and forcing a sync-on-this await inside
         // the serializedPartitionData lazy val initializer (a known deadlock surface).
         iceberg.ensureSubqueriesResolved()
+        // Post the Iceberg planning metrics to the SQL UI here rather than only from the scan's
+        // doExecuteColumnar: when the scan is fused under a parent native operator, its own
+        // doExecuteColumnar never runs, so this walk is the only execution-time hook that reaches
+        // it. Safe to also call for a root scan (re-posting the same values is a no-op).
+        iceberg.sendDriverMetrics()
         if (iceberg.commonData.nonEmpty && iceberg.perPartitionData.nonEmpty) {
           // A self-join/self-merge can put two scans of the same table (same metadata_location)
           // in one native plan. Computing the key via IcebergPlanDataInjector.getKey, the same

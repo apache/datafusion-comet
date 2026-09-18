@@ -2048,6 +2048,106 @@ class CometIcebergNativeSuite
     }
   }
 
+  test("Iceberg planning metrics and scan time are posted to the SQL UI") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        spark.sql("""
+          CREATE TABLE test_cat.db.driver_metrics_test (
+            id INT,
+            value DOUBLE
+          ) USING iceberg
+        """)
+        spark
+          .range(10000)
+          .selectExpr("CAST(id AS INT)", "CAST(id * 1.5 AS DOUBLE) as value")
+          .coalesce(1)
+          .write
+          .format("iceberg")
+          .mode("append")
+          .saveAsTable("test_cat.db.driver_metrics_test")
+
+        val df = spark.sql("SELECT * FROM test_cat.db.driver_metrics_test WHERE id < 5000")
+        val scanNodes = df.queryExecution.executedPlan
+          .collectLeaves()
+          .collect { case s: CometIcebergNativeScanExec => s }
+        assert(scanNodes.nonEmpty, "Expected a CometIcebergNativeScanExec node")
+
+        df.collect()
+        CometListenerBusUtils.waitUntilEmpty(spark.sparkContext)
+
+        // Read the metrics the Spark SQL UI actually renders, from the status store. It resolves
+        // metric name -> accumulator id -> final aggregated value the way the UI does, so it does
+        // not depend on which scan node instance executed. Reading SQLMetric.value on the node (as
+        // other tests do) works for the driver-computed value but does not prove the value reaches
+        // the UI, which is exactly the gap this fix closes.
+        val store = spark.sharedState.statusStore
+
+        // Of the CREATE / INSERT / SELECT executions, the SELECT is the one whose scan node
+        // declares the Iceberg planning metrics.
+        val candidateExecIds = store
+          .executionsList()
+          .map(_.executionId)
+          .filter(id =>
+            store.execution(id).exists(_.metrics.exists(_.name == "totalDataManifest")))
+        assert(
+          candidateExecIds.nonEmpty,
+          "no SQL execution exposed the Iceberg scan planning metrics")
+        val execId = candidateExecIds.max
+
+        val nameToAccId =
+          store.execution(execId).get.metrics.map(m => m.name -> m.accumulatorId).toMap
+        val uiValues = store.executionMetrics(execId)
+
+        // Every planning metric must have a value in the UI store. Without the driver post its
+        // accumulator id never receives an update, so the store holds no entry for it.
+        Seq(
+          "totalDataManifest",
+          "scannedDataManifests",
+          "resultDataFiles",
+          "totalDataFileSize",
+          "totalPlanningDuration").foreach { name =>
+          val accId =
+            nameToAccId.getOrElse(name, fail(s"planning metric $name missing from scan node"))
+          assert(
+            uiValues.contains(accId),
+            s"planning metric $name (accId=$accId) has no value in the SQL UI store; " +
+              "the driver metric was not posted")
+        }
+
+        // Counts known to be non-zero for this table should render as non-zero in the UI.
+        assert(
+          uiValues(nameToAccId("totalDataManifest")).trim != "0",
+          s"totalDataManifest should be non-zero, got " +
+            s"${uiValues(nameToAccId("totalDataManifest"))}")
+        assert(
+          uiValues(nameToAccId("resultDataFiles")).trim != "0",
+          s"resultDataFiles should be non-zero, got ${uiValues(nameToAccId("resultDataFiles"))}")
+
+        // Scan time (native elapsed_compute) is declared on the scan node and tracked in the UI.
+        // The status store keys base metrics by their display name, not the native metric key, so
+        // it appears as "scan time" here (unlike the Iceberg planning metrics, which are registered
+        // under their Iceberg names).
+        assert(
+          nameToAccId.contains("scan time"),
+          s"scan time should be declared on the scan node; metrics=${nameToAccId.keySet}")
+        assert(
+          uiValues.contains(nameToAccId("scan time")),
+          "scan time should have a value in the SQL UI store")
+
+        spark.sql("DROP TABLE test_cat.db.driver_metrics_test")
+      }
+    }
+  }
+
   test("verify manifest pruning metrics") {
     assume(icebergAvailable, "Iceberg not available in classpath")
 
