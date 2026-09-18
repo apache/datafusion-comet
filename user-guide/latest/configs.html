@@ -906,7 +906,7 @@ under the License.
 <td><p>true</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.strictFloatingPoint</span></code></p></td>
-<td><p>When enabled, fall back to Spark for floating-point operations that may differ from Spark, such as when comparing or sorting -0.0 and 0.0. For more information, refer to the <a class="reference external" href="https://datafusion.apache.org/comet/user-guide/latest/compatibility/index.html">Comet Compatibility Guide</a>.</p></td>
+<td><p>When enabled, fall back to Spark for floating-point operations that may differ from Spark, such as comparing -0.0 and 0.0, sorting floating-point values nested in arrays, structs, or maps, or sorting the elements of a floating-point array with <code class="docutils literal notranslate"><span class="pre">sort_array</span></code>. Scalar <code class="docutils literal notranslate"><span class="pre">ORDER</span> <span class="pre">BY</span></code>, window ordering and range partitioning keys are unaffected, because Comet normalizes those comparison keys to match Spark. For more information, refer to the <a class="reference external" href="https://datafusion.apache.org/comet/user-guide/latest/compatibility/index.html">Comet Compatibility Guide</a>.</p></td>
 <td><p>false</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.transitionRevert.enabled</span></code></p></td>

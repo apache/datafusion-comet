@@ -796,9 +796,11 @@ are normalized; returned values retain their original NaN representations and ze
 <p>Native sorting of floating-point values nested in arrays or structs still uses Arrow’s raw total
 ordering. Nested keys can therefore produce different ordering or rank results from Spark; see
 <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/5507">#5507</a>.</p>
-<p>The existing <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.strictFloatingPoint=true</span></code> fallback policy is unchanged, including
-its conservative fallback for scalar floating-point sort keys. Narrowing that scalar-sort
-admission policy is tracked in <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/5506">#5506</a>.</p>
+<p>Because those scalar comparison keys match Spark, <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.strictFloatingPoint=true</span></code> no
+longer forces a fallback for them: scalar <code class="docutils literal notranslate"><span class="pre">FLOAT</span></code> and <code class="docutils literal notranslate"><span class="pre">DOUBLE</span></code> sort keys, window and rank order
+keys, and range partitioning keys all stay native under strict mode. Floating-point values nested
+in arrays, structs, or maps still fall back under strict mode, because their ordering is the raw
+total ordering described above.</p>
 </section>
 </section>
 
