@@ -21,7 +21,7 @@ use std::sync::OnceLock;
 use url::Url;
 
 use crate::cloud::s3::credential_bridge::{AccessMode, CometS3CredentialBridge};
-use crate::cloud::s3::web_identity::{WebIdentityConfig, WebIdentityCredentialProvider};
+use crate::cloud::s3::web_identity::take_over_if_irsa;
 use crate::execution::jni_api::get_runtime;
 use async_trait::async_trait;
 use aws_config::{
@@ -109,17 +109,11 @@ pub fn create_store(
             // respected -- it takes the normal `build_credential_provider` path below.
             let explicit_provider = get_config_trimmed(configs, bucket, "aws.credentials.provider")
                 .is_some_and(|s| !s.is_empty());
-            let web_identity = if explicit_provider {
-                None
-            } else {
-                WebIdentityConfig::detect_with(|key| {
-                    get_config_trimmed(configs, bucket, key).map(|s| s.to_string())
-                })
-            };
+            let web_identity = take_over_if_irsa(explicit_provider, |key| {
+                get_config_trimmed(configs, bucket, key).map(|s| s.to_string())
+            });
             match web_identity {
-                Some(cfg) => {
-                    builder.with_credentials(Arc::new(WebIdentityCredentialProvider::new(cfg)))
-                }
+                Some(provider) => builder.with_credentials(Arc::new(provider)),
                 None => {
                     match get_runtime()
                         .block_on(build_credential_provider(configs, bucket, min_ttl))?

@@ -61,6 +61,8 @@ use reqsign_core::{
     ProvideCredential as IcebergProvideCredential,
 };
 
+use crate::cloud::s3::credential_bridge::DEFAULT_EXPIRY_WHEN_UNKNOWN;
+
 /// EKS-projected env vars that signal IRSA is in effect. Both must be present.
 const ENV_TOKEN_FILE: &str = "AWS_WEB_IDENTITY_TOKEN_FILE";
 const ENV_ROLE_ARN: &str = "AWS_ROLE_ARN";
@@ -76,10 +78,6 @@ const DEFAULT_ENABLED: bool = true;
 const DEFAULT_MAX_ATTEMPTS: u32 = 5;
 const DEFAULT_MIN_TTL_SECS: u64 = 300;
 const DEFAULT_JITTER_SECS: u64 = 60;
-
-/// Fallback expiry when a credential reports none. Web-identity credentials always carry an
-/// expiry, so this only guards against a malformed STS response. Matches the bridge's bound.
-const DEFAULT_EXPIRY_WHEN_UNKNOWN: Duration = Duration::from_secs(300);
 
 /// Detected IRSA identity plus the resolved tuning knobs. Cheap to clone; the expensive AWS SDK
 /// provider lives in the process-wide `SharedEntry` keyed by `entry_key`.
@@ -107,7 +105,7 @@ impl WebIdentityConfig {
     {
         let token_file = non_empty_env(ENV_TOKEN_FILE)?;
         let role_arn = non_empty_env(ENV_ROLE_ARN)?;
-        if !parse_bool(resolve(KEY_ENABLED), DEFAULT_ENABLED) {
+        if !parse_setting(resolve(KEY_ENABLED), DEFAULT_ENABLED) {
             return None;
         }
         Some(Self {
@@ -115,21 +113,15 @@ impl WebIdentityConfig {
             token_file,
             region: non_empty_env("AWS_REGION").or_else(|| non_empty_env("AWS_DEFAULT_REGION")),
             max_attempts: parse_u32(resolve(KEY_MAX_ATTEMPTS), DEFAULT_MAX_ATTEMPTS),
-            min_ttl: Duration::from_secs(parse_u64(
+            min_ttl: Duration::from_secs(parse_setting(
                 resolve(KEY_MIN_TTL_SECS),
                 DEFAULT_MIN_TTL_SECS,
             )),
-            max_jitter: Duration::from_secs(parse_u64(
+            max_jitter: Duration::from_secs(parse_setting(
                 resolve(KEY_JITTER_SECS),
                 DEFAULT_JITTER_SECS,
             )),
         })
-    }
-
-    /// Convenience for the Iceberg path, whose catalog bag is a flat `HashMap` keyed by the bare
-    /// setting names.
-    pub fn detect(props: &HashMap<String, String>) -> Option<Self> {
-        Self::detect_with(|key| props.get(key).cloned())
     }
 
     fn entry_key(&self) -> EntryKey {
@@ -263,16 +255,28 @@ async fn base_provider_config(cfg: &WebIdentityConfig) -> ProviderConfig {
 }
 
 /// The credential provider handed to `object_store` (Parquet) and, via
-/// `CustomAwsCredentialLoader`, to opendal (Iceberg). Holds only the cheap config; the shared
-/// state lives in the process registry.
-#[derive(Clone, Debug)]
+/// `CustomAwsCredentialLoader`, to opendal (Iceberg). Holds only the cheap config plus a lazily
+/// resolved handle to the process-wide shared entry, so the per-request path skips the registry
+/// lock after the first fetch.
+#[derive(Debug)]
 pub struct WebIdentityCredentialProvider {
     config: WebIdentityConfig,
+    entry: tokio::sync::OnceCell<Arc<SharedEntry>>,
 }
 
 impl WebIdentityCredentialProvider {
     pub fn new(config: WebIdentityConfig) -> Self {
-        Self { config }
+        Self {
+            config,
+            entry: tokio::sync::OnceCell::new(),
+        }
+    }
+
+    /// Resolves (once per provider) the shared entry for this identity. The entry itself is shared
+    /// process-wide via the registry; this just memoizes the lookup so repeated fetches avoid the
+    /// registry lock and the per-call `EntryKey` allocation.
+    async fn entry(&self) -> &Arc<SharedEntry> {
+        self.entry.get_or_init(|| shared_entry(&self.config)).await
     }
 }
 
@@ -281,14 +285,15 @@ impl CredentialProvider for WebIdentityCredentialProvider {
     type Credential = AwsCredential;
 
     async fn get_credential(&self) -> object_store::Result<Arc<AwsCredential>> {
-        let entry = shared_entry(&self.config).await;
-        let cred = entry
-            .credentials()
-            .await
-            .map_err(|e| object_store::Error::Generic {
-                store: "S3",
-                source: e.into(),
-            })?;
+        let cred =
+            self.entry()
+                .await
+                .credentials()
+                .await
+                .map_err(|e| object_store::Error::Generic {
+                    store: "S3",
+                    source: e.into(),
+                })?;
         Ok(Arc::new(AwsCredential {
             key_id: cred.access_key_id().to_string(),
             secret_key: cred.secret_access_key().to_string(),
@@ -304,7 +309,7 @@ impl IcebergProvideCredential for WebIdentityCredentialProvider {
         &self,
         _ctx: &Context,
     ) -> reqsign_core::Result<Option<Self::Credential>> {
-        let entry = shared_entry(&self.config).await;
+        let entry = self.entry().await;
         let cred = entry
             .credentials()
             .await
@@ -332,6 +337,23 @@ impl IcebergProvideCredential for WebIdentityCredentialProvider {
     }
 }
 
+/// Decides whether the Comet web-identity provider should take over credential resolution. It does
+/// so only when the caller has no explicit credentials configured and IRSA is detected; otherwise
+/// the caller keeps its default chain. `resolve` reads a bare setting key (e.g. `KEY_MAX_ATTEMPTS`)
+/// from whichever config bag the caller owns. Both scan paths share this one decision.
+pub fn take_over_if_irsa<F>(
+    explicit_credentials: bool,
+    resolve: F,
+) -> Option<WebIdentityCredentialProvider>
+where
+    F: Fn(&str) -> Option<String>,
+{
+    if explicit_credentials {
+        return None;
+    }
+    WebIdentityConfig::detect_with(resolve).map(WebIdentityCredentialProvider::new)
+}
+
 fn system_time_to_timestamp(t: SystemTime) -> reqsign_core::Result<Timestamp> {
     let millis = t
         .duration_since(UNIX_EPOCH)
@@ -356,22 +378,18 @@ fn non_empty_env(key: &str) -> Option<String> {
 
 /// Parses a setting value, falling back to `default`. Env fallback is intentionally omitted for
 /// tunables: IRSA config travels in the config bag, and env is reserved for the IRSA signal itself.
-fn parse_bool(value: Option<String>, default: bool) -> bool {
+fn parse_setting<T: std::str::FromStr>(value: Option<String>, default: T) -> T {
     value
-        .and_then(|v| v.trim().parse::<bool>().ok())
+        .and_then(|v| v.trim().parse::<T>().ok())
         .unwrap_or(default)
 }
 
+/// Like `parse_setting` but rejects zero (and negatives): a non-positive attempt budget makes no
+/// sense, so it falls back to `default`.
 fn parse_u32(value: Option<String>, default: u32) -> u32 {
     value
         .and_then(|v| v.trim().parse::<u32>().ok())
         .filter(|v| *v > 0)
-        .unwrap_or(default)
-}
-
-fn parse_u64(value: Option<String>, default: u64) -> u64 {
-    value
-        .and_then(|v| v.trim().parse::<u64>().ok())
         .unwrap_or(default)
 }
 
@@ -630,17 +648,18 @@ mod tests {
         // test that mutates the same IRSA env vars.
         let _guard = lock_env();
         clear_irsa_env();
+        let detect = |props: &HashMap<String, String>| {
+            let props = props.clone();
+            WebIdentityConfig::detect_with(move |key| props.get(key).cloned())
+        };
         let props = HashMap::new();
-        assert!(WebIdentityConfig::detect(&props).is_none());
+        assert!(detect(&props).is_none());
 
         std::env::set_var(ENV_TOKEN_FILE, "/var/run/secrets/token");
-        assert!(
-            WebIdentityConfig::detect(&props).is_none(),
-            "token file alone is not IRSA"
-        );
+        assert!(detect(&props).is_none(), "token file alone is not IRSA");
 
         std::env::set_var(ENV_ROLE_ARN, "arn:aws:iam::1:role/app");
-        let cfg = WebIdentityConfig::detect(&props).expect("both vars present -> IRSA");
+        let cfg = detect(&props).expect("both vars present -> IRSA");
         assert_eq!(cfg.role_arn, "arn:aws:iam::1:role/app");
         assert_eq!(cfg.token_file, "/var/run/secrets/token");
         assert_eq!(cfg.max_attempts, DEFAULT_MAX_ATTEMPTS);
@@ -648,7 +667,7 @@ mod tests {
         // Same env, but the feature toggled off -> no take-over.
         let mut disabled = HashMap::new();
         disabled.insert(KEY_ENABLED.to_string(), "false".to_string());
-        assert!(WebIdentityConfig::detect(&disabled).is_none());
+        assert!(detect(&disabled).is_none());
         clear_irsa_env();
     }
 
@@ -720,7 +739,7 @@ mod tests {
             9
         );
         assert_eq!(
-            parse_u64(props.get(KEY_MIN_TTL_SECS).cloned(), DEFAULT_MIN_TTL_SECS),
+            parse_setting::<u64>(props.get(KEY_MIN_TTL_SECS).cloned(), DEFAULT_MIN_TTL_SECS),
             120
         );
         // Zero and garbage fall back to the default.
@@ -730,7 +749,7 @@ mod tests {
             DEFAULT_MAX_ATTEMPTS
         );
         assert_eq!(
-            parse_u64(props.get(KEY_JITTER_SECS).cloned(), DEFAULT_JITTER_SECS),
+            parse_setting::<u64>(props.get(KEY_JITTER_SECS).cloned(), DEFAULT_JITTER_SECS),
             DEFAULT_JITTER_SECS
         );
     }
