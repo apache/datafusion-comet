@@ -30,5 +30,5 @@ SELECT abs(i) FROM routing_intervals
 query expect_fallback(abs: spark.comet.exec.scalaUDF.codegen.enabled=false)
 SELECT abs(make_dt_interval(i)), abs(make_ym_interval(i)) FROM routing_intervals
 
-query expect_fallback(make_interval: spark.comet.exec.scalaUDF.codegen.enabled=false)
+query expect_native(make_interval)
 SELECT make_interval(i, 0, 0, 0, 0, 0, 0) FROM routing_intervals
