@@ -34,6 +34,12 @@ pub struct CometS3CredentialDispatcher<'a> {
     pub method_ensure_initialized_ret: ReturnType,
     pub method_get_credentials_for_path: JStaticMethodID,
     pub method_get_credentials_for_path_ret: ReturnType,
+    /// Static entry point that returns the vendor's advertised policy-location prefixes for a
+    /// given `(handle, bucket, path, mode)` request, or an empty list when the registered
+    /// provider only implements the base `CometS3CredentialProvider` interface. Used at
+    /// `object_store` cache construction to key one entry per distinct scope on a bucket.
+    pub method_get_policy_locations_for: JStaticMethodID,
+    pub method_get_policy_locations_for_ret: ReturnType,
     pub field_access_key_id: JFieldID,
     pub field_secret_access_key: JFieldID,
     pub field_session_token: JFieldID,
@@ -63,6 +69,12 @@ impl<'a> CometS3CredentialDispatcher<'a> {
                 ),
             )?,
             method_get_credentials_for_path_ret: ReturnType::Object,
+            method_get_policy_locations_for: env.get_static_method_id(
+                JNIString::new(Self::JVM_CLASS),
+                jni::jni_str!("getPolicyLocationsFor"),
+                jni::jni_sig!("(JLjava/lang/String;Ljava/lang/String;I)Ljava/util/List;"),
+            )?,
+            method_get_policy_locations_for_ret: ReturnType::Object,
             field_access_key_id: env.get_field_id(
                 &credentials_class,
                 jni::jni_str!("accessKeyId"),
