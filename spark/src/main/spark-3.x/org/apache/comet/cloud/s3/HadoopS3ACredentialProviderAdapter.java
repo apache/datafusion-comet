@@ -67,6 +67,7 @@ public class HadoopS3ACredentialProviderAdapter implements CometS3CredentialProv
       if (delegate == null) {
         Configuration conf =
             S3AUtils.propagateBucketOptions(AdapterSupport.toConfiguration(properties), bucket);
+        AdapterSupport.patchSecurityCredentialProviders(conf);
         URI uri = new URI("s3a://" + bucket + "/");
         delegate = S3AUtils.createAWSCredentialProviderSet(uri, conf);
       }

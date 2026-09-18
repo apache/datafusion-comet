@@ -79,12 +79,13 @@ pub fn create_store(
         source: "Missing bucket name in S3 URL".into(),
     })?;
 
-    // Parquet path: forward the fs.s3a.* config subset (minus static-credential secrets) so an
-    // SPI provider can read the Hadoop config it needs (e.g. the built-in adapters read
-    // fs.s3a.aws.credentials.provider). See s3-credential-provider-design.md.
-    let forwarded_props = forward_catalog_properties(configs);
     builder = match lookup_provider_class(configs, bucket) {
         Some(provider_class) => {
+            // Parquet path: forward the fs.s3a.* config subset (minus static-credential secrets) so
+            // the SPI provider can read the Hadoop config it needs (e.g. the built-in adapters read
+            // fs.s3a.aws.credentials.provider). Only built when a bridge is actually configured.
+            // See s3-credential-provider-design.md.
+            let forwarded_props = forward_catalog_properties(configs);
             // Fail rather than fall back to the default chain, which could resolve to the wrong
             // identity for a user who explicitly named a provider.
             let bridge = CometS3CredentialBridge::new(

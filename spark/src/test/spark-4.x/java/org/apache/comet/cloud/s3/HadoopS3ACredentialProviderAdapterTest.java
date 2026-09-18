@@ -19,9 +19,14 @@
 
 package org.apache.comet.cloud.s3;
 
+import java.io.File;
+import java.nio.file.Files;
 import java.util.HashMap;
 import java.util.Map;
 
+import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.security.alias.CredentialProvider;
+import org.apache.hadoop.security.alias.CredentialProviderFactory;
 import org.junit.Test;
 
 import static org.junit.Assert.assertEquals;
@@ -73,5 +78,33 @@ public class HadoopS3ACredentialProviderAdapterTest {
     CometS3Credentials creds = resolve(props, "my-bucket");
     assertEquals("AKBUCKET", creds.getAccessKeyId());
     assertEquals("SKBUCKET", creds.getSecretAccessKey());
+  }
+
+  @Test
+  public void resolvesKeysFromCredentialStoreViaS3aProviderPath() throws Exception {
+    // Secrets live only in a Hadoop credential store (a jceks file), not in fs.s3a.access.key. The
+    // adapter must promote fs.s3a.security.credential.provider.path into the generic
+    // hadoop.security.credential.provider.path (as S3AFileSystem.initialize does) so
+    // SimpleAWSCredentialsProvider's conf.getPassword lookup finds them.
+    File dir = Files.createTempDirectory("comet-creds").toFile();
+    dir.deleteOnExit();
+    String jceks = "jceks://file" + new File(dir, "s3a.jceks").getAbsolutePath();
+
+    Configuration provConf = new Configuration();
+    provConf.set(CredentialProviderFactory.CREDENTIAL_PROVIDER_PATH, jceks);
+    CredentialProvider store = CredentialProviderFactory.getProviders(provConf).get(0);
+    store.createCredentialEntry("fs.s3a.access.key", "STOREAK".toCharArray());
+    store.createCredentialEntry("fs.s3a.secret.key", "STORESK".toCharArray());
+    store.flush();
+
+    Map<String, String> props = new HashMap<>();
+    props.put(
+        "fs.s3a.aws.credentials.provider",
+        "org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider");
+    props.put("fs.s3a.security.credential.provider.path", jceks);
+
+    CometS3Credentials creds = resolve(props, "my-bucket");
+    assertEquals("STOREAK", creds.getAccessKeyId());
+    assertEquals("STORESK", creds.getSecretAccessKey());
   }
 }

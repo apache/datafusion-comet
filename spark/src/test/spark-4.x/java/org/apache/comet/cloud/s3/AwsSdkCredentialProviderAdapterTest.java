@@ -59,6 +59,15 @@ public class AwsSdkCredentialProviderAdapterTest {
   }
 
   @Test
+  public void builderFactoryWithPrivateImplWorks() throws Exception {
+    // The builder() returns a public interface backed by a private impl; the adapter must resolve
+    // build() off the public declared type, not the private runtime class.
+    Map<String, String> props = new HashMap<>();
+    props.put(KEY, V2BuilderProvider.class.getName());
+    assertEquals("builder-ak", resolve(props).getAccessKeyId());
+  }
+
+  @Test
   public void missingDelegateClassThrows() {
     IllegalStateException e =
         assertThrows(IllegalStateException.class, () -> resolve(new HashMap<>()));

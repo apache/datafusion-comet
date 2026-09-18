@@ -47,12 +47,14 @@ class HadoopS3ACredentialProviderAdapterBridgeSuite
 
   override protected val testBucketName = "hadoop-adapter-bucket"
 
-  // The AWS default-chain FQCN for whichever SDK the active Spark/Hadoop line ships (v2 on Spark
-  // 4.x, v1 on 3.x). Neither is in Comet's native provider list.
+  // The AWS default-chain FQCN must match what the active Hadoop-aws line's provider factory
+  // accepts, not merely which SDK jar is on the test classpath: the v2 SDK is present on the
+  // Spark 3.x test classpath too (Iceberg's S3 test deps), but Hadoop 3.3.4's factory only accepts
+  // the v1 interface. CredentialProviderListFactory exists only in Hadoop 3.4+ (the v2 line), so
+  // its presence is the reliable per-profile signal. Neither class is in Comet's native list.
   private val defaultChainClass: String =
     if (Try(
-        Class.forName(
-          "software.amazon.awssdk.auth.credentials.DefaultCredentialsProvider")).isSuccess) {
+        Class.forName("org.apache.hadoop.fs.s3a.auth.CredentialProviderListFactory")).isSuccess) {
       "software.amazon.awssdk.auth.credentials.DefaultCredentialsProvider"
     } else {
       "com.amazonaws.auth.DefaultAWSCredentialsProviderChain"

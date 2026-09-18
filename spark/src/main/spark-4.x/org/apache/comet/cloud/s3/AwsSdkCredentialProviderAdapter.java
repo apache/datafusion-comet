@@ -94,7 +94,10 @@ public class AwsSdkCredentialProviderAdapter implements CometS3CredentialProvide
     Method builder = AdapterSupport.staticMethod(clazz, "builder");
     if (builder != null) {
       Object b = builder.invoke(null);
-      Method build = b.getClass().getMethod("build");
+      // Resolve build() from builder()'s declared (public) return type, not b.getClass(): a
+      // provider may return a public builder interface backed by a private implementation class,
+      // and a Method from that private class throws IllegalAccessException on invoke.
+      Method build = builder.getReturnType().getMethod("build");
       return (AwsCredentialsProvider) build.invoke(b);
     }
     return (AwsCredentialsProvider) clazz.getDeclaredConstructor().newInstance();

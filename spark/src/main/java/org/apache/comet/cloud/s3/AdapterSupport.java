@@ -71,4 +71,23 @@ final class AdapterSupport {
       return null;
     }
   }
+
+  /**
+   * Replicates the step {@code S3AFileSystem.initialize} performs before building the provider
+   * list: promote the S3A credential-store path ({@code fs.s3a.security.credential.provider.path})
+   * into Hadoop's generic {@code hadoop.security.credential.provider.path}, so a provider that
+   * looks up a secret through Hadoop's credential-provider API can see the configured store. The
+   * factory methods the adapters call do not do this on their own. The S3A path takes precedence
+   * over any generic path already set. Call after {@code propagateBucketOptions} so per-bucket
+   * store paths are already promoted to the base key.
+   */
+  static void patchSecurityCredentialProviders(Configuration conf) {
+    String s3aPath = conf.getTrimmed("fs.s3a.security.credential.provider.path");
+    if (s3aPath == null || s3aPath.isEmpty()) {
+      return;
+    }
+    String generic = conf.getTrimmed("hadoop.security.credential.provider.path");
+    String merged = (generic == null || generic.isEmpty()) ? s3aPath : s3aPath + "," + generic;
+    conf.set("hadoop.security.credential.provider.path", merged);
+  }
 }
