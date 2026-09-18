@@ -35,8 +35,18 @@ INSERT INTO test_str_to_map_dedup VALUES
 query
 SELECT str_to_map('a:1,b:2,a:3')
 
+-- `a` keeps the position of its first occurrence and takes its last value, as
+-- `ArrayBasedMapBuilder` does: {a -> 3, b -> 2}. Maps compare equal in any entry order, so
+-- `map_keys` and `map_values` pin the order.
+query
+SELECT map_keys(str_to_map('a:1,b:2,a:3')), map_values(str_to_map('a:1,b:2,a:3'))
+
 query
 SELECT str_to_map(s) FROM test_str_to_map_dedup
+
+-- the same rows with their entry order pinned
+query
+SELECT map_keys(str_to_map(s)), map_values(str_to_map(s)) FROM test_str_to_map_dedup
 
 query
 SELECT str_to_map(s, ',', ':') FROM test_str_to_map_dedup

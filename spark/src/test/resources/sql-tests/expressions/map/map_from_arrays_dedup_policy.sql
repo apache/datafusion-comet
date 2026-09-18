@@ -30,6 +30,8 @@ INSERT INTO test_map_from_arrays_dedup VALUES
   (array('a', 'b', 'c'), array(1, 2, 3)),
   (array('a', 'a', 'b'), array(1, 2, 3)),
   (array('x', 'x'), array(10, 20)),
+  (array('a', 'b', 'a'), array(1, 2, 3)),
+  (array('a', 'a', 'b'), array(1, NULL, 3)),
   (array(), array()),
   (NULL, array(99))
 
@@ -41,9 +43,24 @@ SELECT map_from_arrays(array('a', 'a', 'b'), array(1, 2, 3))
 query
 SELECT map_from_arrays(array('a', 'a', 'a'), array(1, 2, 3))
 
+-- a repeated key keeps the position of its first occurrence and takes its last value, as
+-- `ArrayBasedMapBuilder` does: {a -> 3, b -> 2}. Maps compare equal in any entry order, so
+-- `map_keys` and `map_values` pin the order.
+query
+SELECT map_keys(map_from_arrays(array('a', 'b', 'a'), array(1, 2, 3))),
+       map_values(map_from_arrays(array('a', 'b', 'a'), array(1, 2, 3)))
+
+-- a NULL can be the value that wins
+query
+SELECT map_from_arrays(array('a', 'a', 'b'), array(1, NULL, 3))
+
 -- column input, including rows without duplicates and a NULL row
 query
 SELECT map_from_arrays(k, v) FROM test_map_from_arrays_dedup
+
+-- the same rows with their entry order pinned
+query
+SELECT map_keys(map_from_arrays(k, v)), map_values(map_from_arrays(k, v)) FROM test_map_from_arrays_dedup
 
 -- LAST_WIN does not weaken the NULL key check
 query expect_error(NULL_MAP_KEY)

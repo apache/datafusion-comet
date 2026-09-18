@@ -30,6 +30,8 @@ INSERT INTO test_map_from_entries_dedup VALUES
   (array(struct('a', 1), struct('b', 2), struct('c', 3))),
   (array(struct('a', 1), struct('a', 2), struct('b', 3))),
   (array(struct('x', 10), struct('x', 20))),
+  (array(struct('a', 1), struct('b', 2), struct('a', 3))),
+  (array(struct('a', 1), struct('a', CAST(NULL AS INT)), struct('b', 3))),
   (array()),
   (NULL)
 
@@ -41,9 +43,24 @@ SELECT map_from_entries(array(struct('a', 1), struct('a', 2), struct('b', 3)))
 query
 SELECT map_from_entries(array(struct('a', 1), struct('a', 2), struct('a', 3)))
 
+-- a repeated key keeps the position of its first occurrence and takes its last value, as
+-- `ArrayBasedMapBuilder` does: {a -> 3, b -> 2}. Maps compare equal in any entry order, so
+-- `map_keys` and `map_values` pin the order.
+query
+SELECT map_keys(map_from_entries(array(struct('a', 1), struct('b', 2), struct('a', 3)))),
+       map_values(map_from_entries(array(struct('a', 1), struct('b', 2), struct('a', 3))))
+
+-- a NULL can be the value that wins
+query
+SELECT map_from_entries(array(struct('a', 1), struct('a', CAST(NULL AS INT)), struct('b', 3)))
+
 -- column input, including rows without duplicates and a NULL row
 query
 SELECT map_from_entries(entries) FROM test_map_from_entries_dedup
+
+-- the same rows with their entry order pinned
+query
+SELECT map_keys(map_from_entries(entries)), map_values(map_from_entries(entries)) FROM test_map_from_entries_dedup
 
 -- LAST_WIN does not weaken the NULL key check
 query expect_error(NULL_MAP_KEY)

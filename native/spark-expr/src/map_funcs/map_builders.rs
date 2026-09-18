@@ -636,6 +636,34 @@ mod tests {
     }
 
     #[test]
+    fn map_from_arrays_keeps_a_duplicate_key_in_its_first_position_under_last_win() {
+        // `ArrayBasedMapBuilder` fixes a key's slot at its first occurrence and only replaces
+        // the value, so `[1, 2, 1]` with `[a, b, c]` is `{1 -> c, 2 -> b}`, never
+        // `{2 -> b, 1 -> c}`.
+        let keys = int_list(Int32Array::from(vec![1, 2, 1]), &[0, 3], None);
+        let values = string_list(
+            StringArray::from(vec![Some("a"), Some("b"), Some("c")]),
+            &[0, 3],
+            None,
+        );
+        let result = map_result(
+            invoke(
+                &SparkMapFromArrays::default(),
+                vec![keys, values],
+                MapKeyDedupPolicy::LastWin,
+            )
+            .unwrap(),
+        );
+        assert_eq!(result.value_offsets(), &[0, 2]);
+        assert_eq!(
+            result.keys().as_primitive::<Int32Type>().values().as_ref(),
+            &[1, 2]
+        );
+        let values = result.values().as_string::<i32>();
+        assert_eq!((values.value(0), values.value(1)), ("c", "b"));
+    }
+
+    #[test]
     fn map_from_entries_rejects_null_key() {
         let entries = entry_list(
             Int32Array::from(vec![Some(1), None]),
@@ -696,6 +724,31 @@ mod tests {
     }
 
     #[test]
+    fn map_from_entries_keeps_a_duplicate_key_in_its_first_position_under_last_win() {
+        let entries = entry_list(
+            Int32Array::from(vec![1, 2, 1]),
+            StringArray::from(vec![Some("a"), Some("b"), Some("c")]),
+            &[0, 3],
+            None,
+        );
+        let result = map_result(
+            invoke(
+                &SparkMapFromEntries::default(),
+                vec![entries],
+                MapKeyDedupPolicy::LastWin,
+            )
+            .unwrap(),
+        );
+        assert_eq!(result.value_offsets(), &[0, 2]);
+        assert_eq!(
+            result.keys().as_primitive::<Int32Type>().values().as_ref(),
+            &[1, 2]
+        );
+        let values = result.values().as_string::<i32>();
+        assert_eq!((values.value(0), values.value(1)), ("c", "b"));
+    }
+
+    #[test]
     fn str_to_map_reports_the_duplicate_key() {
         let text: ArrayRef = Arc::new(StringArray::from(vec![Some("a:1,b:2,a:3")]));
         let err = invoke(
@@ -723,6 +776,11 @@ mod tests {
             .unwrap(),
         );
         assert_eq!(result.value_offsets(), &[0, 2]);
+        // `a` keeps the slot of its first occurrence and takes its last value.
+        let keys = result.keys().as_string::<i32>();
+        let values = result.values().as_string::<i32>();
+        assert_eq!((keys.value(0), values.value(0)), ("a", "3"));
+        assert_eq!((keys.value(1), values.value(1)), ("b", "2"));
     }
 
     /// A `LIMIT` above a projection hands the kernel a sliced list. The mask the upstream helper
