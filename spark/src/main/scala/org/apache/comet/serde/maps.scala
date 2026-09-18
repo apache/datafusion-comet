@@ -25,7 +25,7 @@ import org.apache.spark.sql.types._
 
 import org.apache.comet.CometConf.COMET_EXEC_STRICT_FLOATING_POINT
 import org.apache.comet.DataTypeSupport.isComplexType
-import org.apache.comet.serde.QueryPlanSerde.{createBinaryExpr, exprToProtoInternal, hasNonDefaultStringCollation, scalarFunctionExprToProto}
+import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, hasNonDefaultStringCollation, scalarFunctionExprToProto}
 import org.apache.comet.shims.CometTypeShim
 
 /**
@@ -205,12 +205,16 @@ object CometMapFromArrays extends CometExpressionSerde[MapFromArrays] {
     MapBuilderSupport.keySupport(expr.dataType.keyType)
 
   /**
-   * Native `map_from_arrays` already returns a NULL map for a NULL input array, so the `CaseWhen`
-   * below guards evaluation order rather than the result. `BinaryExpression.eval` returns as soon
-   * as the left input is NULL and never evaluates the right one, so under ANSI a failing cast in
-   * the values argument never runs for a row whose keys array is NULL. Comet evaluates both
-   * argument subtrees, so without the guard that cast raises where Spark returns NULL. Wrapping
-   * the call lets the `AND` short-circuit skip the values expression.
+   * Native `map_from_arrays` already returns a NULL map for a NULL input array, so the guards
+   * below are about evaluation order rather than the result. `BinaryExpression.eval` returns as
+   * soon as the left input is NULL and never evaluates the right one, so under ANSI a failing
+   * cast in the values argument never runs for a row whose keys array is NULL. Nesting one
+   * `CaseWhen` per argument reproduces that: DataFusion evaluates a THEN branch only on the rows
+   * its WHEN selected, so the values expression is never evaluated for a row whose keys array is
+   * NULL. A single `keys IS NOT NULL AND values IS NOT NULL` guard is not enough, because
+   * DataFusion's `AND` skips its right side only when the left side is false on every row of the
+   * batch, or on most of them; a batch where most rows do have keys evaluates the values
+   * expression on all of them, the NULL-keys rows included.
    *
    * @see
    *   https://github.com/apache/datafusion-comet/pull/5854#discussion_r4016898751
@@ -225,34 +229,28 @@ object CometMapFromArrays extends CometExpressionSerde[MapFromArrays] {
     val valueType = expr.right.dataType.asInstanceOf[ArrayType].elementType
     val returnType = MapType(keyType = keyType, valueType = valueType)
     for {
-      andBinaryExprProto <- createAndBinaryExpr(expr, inputs, binding)
+      keysNotNullExprProto <- exprToProtoInternal(IsNotNull(expr.left), inputs, binding)
+      valuesNotNullExprProto <- exprToProtoInternal(IsNotNull(expr.right), inputs, binding)
       mapFromArraysExprProto <- scalarFunctionExprToProto("map_from_arrays", keysExpr, valuesExpr)
       nullLiteralExprProto <- exprToProtoInternal(Literal(null, returnType), inputs, binding)
     } yield {
-      val caseWhenExprProto = ExprOuterClass.CaseWhen
+      val valuesGuardProto = ExprOuterClass.CaseWhen
         .newBuilder()
-        .addWhen(andBinaryExprProto)
+        .addWhen(valuesNotNullExprProto)
         .addThen(mapFromArraysExprProto)
+        .setElseExpr(nullLiteralExprProto)
+        .build()
+      val keysGuardProto = ExprOuterClass.CaseWhen
+        .newBuilder()
+        .addWhen(keysNotNullExprProto)
+        .addThen(ExprOuterClass.Expr.newBuilder().setCaseWhen(valuesGuardProto).build())
         .setElseExpr(nullLiteralExprProto)
         .build()
       ExprOuterClass.Expr
         .newBuilder()
-        .setCaseWhen(caseWhenExprProto)
+        .setCaseWhen(keysGuardProto)
         .build()
     }
-  }
-
-  private def createAndBinaryExpr(
-      expr: MapFromArrays,
-      inputs: Seq[Attribute],
-      binding: Boolean): Option[ExprOuterClass.Expr] = {
-    createBinaryExpr(
-      expr,
-      IsNotNull(expr.left),
-      IsNotNull(expr.right),
-      inputs,
-      binding,
-      (builder, binaryExpr) => builder.setAnd(binaryExpr))
   }
 }
 

@@ -153,14 +153,26 @@ class CometMapExpressionSuite extends CometTestBase {
 
   // Spark's `BinaryExpression.eval` returns NULL the moment the left input is NULL and never
   // evaluates the right one, so a failing cast in the values argument does not run for a row whose
-  // keys array is NULL. Comet evaluates both argument subtrees, so the serde keeps a `CaseWhen`
-  // guard: its `AND` lets the native side skip the values expression once the keys are known NULL.
+  // keys array is NULL. The serde nests one `CaseWhen` per argument so the native side evaluates
+  // the values expression only on rows whose keys array is not NULL. The rows with keys outnumber
+  // the row without on purpose, and all of them sit in one batch: a single `AND` guard skips its
+  // right side only when the left side is false on every row of the batch, or on most of them, so
+  // this batch would evaluate the cast on the NULL-keys row as well.
   // https://github.com/apache/datafusion-comet/pull/5854#discussion_r4016898751
   test("map_from_arrays - a null keys array skips the values expression under ANSI") {
     withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
       withTable("map_short_circuit") {
-        sql("CREATE TABLE map_short_circuit(k ARRAY<INT>, v STRING) USING parquet")
-        sql("INSERT INTO map_short_circuit VALUES (NULL, 'bad')")
+        // One partition, so every row lands in the same file and the same batch.
+        withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+          spark
+            .range(0, 5, 1, 1)
+            .selectExpr(
+              "IF(id = 0, CAST(NULL AS ARRAY<INT>), array(CAST(id AS INT))) AS k",
+              "IF(id = 0, 'bad', CAST(id AS STRING)) AS v")
+            .write
+            .format("parquet")
+            .saveAsTable("map_short_circuit")
+        }
         checkSparkAnswerAndOperator(
           sql("SELECT map_from_arrays(k, array(CAST(v AS INT))) FROM map_short_circuit"))
       }
