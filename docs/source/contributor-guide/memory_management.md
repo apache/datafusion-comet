@@ -390,13 +390,18 @@ hard ceiling on the sum of everything in the container. That cgroup counts, amon
 - Comet's JVM-side Arrow buffers (`CometArrowAllocator`),
 - page cache charged to the cgroup by the container's file I/O, including spill files.
 
-Everything the cgroup counts, and who accounts for each part:
+Everything the cgroup counts, which configuration value sizes it, and who accounts for each part:
 
 ```mermaid
 flowchart TB
+  subgraph CFG["what you configure, summing to the pod limit"]
+    EM["spark.executor.memory"]
+    MO["spark.executor.memoryOverhead"]
+    OH["spark.memory.offHeap.size"]
+  end
   subgraph CG["pod cgroup memory.max, kernel OOM kill above this"]
     subgraph SEEN["visible to Spark's accounting"]
-      HEAP["JVM heap<br>execution and storage<br>spark.executor.memory"]
+      HEAP["JVM heap<br>execution and storage"]
       TUNG["Spark Tungsten off-heap<br>TaskMemoryManager"]
       SHUFP["Comet JVM shuffle pages<br>CometUnifiedShuffleMemoryAllocator"]
       NATRES["Comet native heap, reserved<br>operators that call try_grow<br>declared to Spark over JNI, never measured"]
@@ -409,6 +414,11 @@ flowchart TB
       FRAG["allocator overhead<br>fragmentation, padding<br>jemalloc retained and dirty pages"]
     end
   end
+  EM --> HEAP
+  OH --> TUNG
+  OH --> SHUFP
+  OH -->|"scaled by spark.comet.exec.memoryPool.fraction"| NATRES
+  MO -.->|"no budget, just slack"| NONE
 ```
 
 Spark's accounting covers the first group, though not in the same sense throughout it. The JVM
@@ -417,6 +427,11 @@ allocated. A native reservation is a number an operator declared before allocati
 succeeds only once `CometTaskMemoryManager` has charged Spark's off-heap execution pool over JNI, so
 the budget really is spent, but nothing measured the bytes and the reservation is only a lower bound
 on them. The second group is outside every accounting layer.
+
+The configuration maps onto those regions unevenly. `spark.memory.offHeap.size` alone sizes three of
+them, including Comet's native reservations, which are neither off-heap in Spark's sense nor
+allocated by the JVM. `spark.executor.memoryOverhead` sizes none of them: it buys no budget that any
+consumer can draw on, and only widens the container far enough to absorb the second group.
 
 When the total crosses `memory.max`, the kernel OOM killer kills the process. The failure mode is
 significantly worse than a task-level OOM: every task running on that executor dies, every cached
