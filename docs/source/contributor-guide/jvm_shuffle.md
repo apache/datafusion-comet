@@ -191,4 +191,4 @@ Selection logic in `CometShuffleManager.shouldBypassMergeSort()`:
 | ---------------------------------------- | ----------------------------------- |
 | `spark.comet.shuffle.jvm.batchSize`      | Rows per Arrow batch                |
 | `spark.comet.shuffle.jvm.spillThreshold` | Row count threshold for spill       |
-| `spark.comet.shuffle.compression.codec`  | Compression codec (zstd, lz4, etc.) |
+| `spark.comet.shuffle.compression.codec`  | Compression codec, `lz4` by default |

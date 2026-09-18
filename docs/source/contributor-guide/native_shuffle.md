@@ -115,11 +115,20 @@ Native shuffle (`CometExchange`) is selected when all of the following condition
 
 ### Rust Side
 
-| File                    | Location                             | Description                                                                          |
-| ----------------------- | ------------------------------------ | ------------------------------------------------------------------------------------ |
-| `shuffle_writer.rs`     | `native/core/src/execution/shuffle/` | `ShuffleWriterExec` plan and partitioners. Main shuffle logic.                       |
-| `codec.rs`              | `native/core/src/execution/shuffle/` | `ShuffleBlockWriter` for Arrow IPC encoding with compression. Also handles decoding. |
-| `comet_partitioning.rs` | `native/core/src/execution/shuffle/` | `CometPartitioning` enum defining partition schemes (Hash, Range, Single).           |
+The native shuffle implementation is its own workspace crate, `datafusion-comet-shuffle`, rooted at
+`native/shuffle/`. Paths below are relative to `native/shuffle/src/`.
+
+| File                               | Description                                                                                                                      |
+| ---------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `shuffle_writer.rs`                | `ShuffleWriterExec`, the DataFusion `ExecutionPlan` that drives partitioning and writing.                                        |
+| `comet_partitioning.rs`            | `CometPartitioning` enum defining the partition schemes (Hash, Range, Single, RoundRobin).                                       |
+| `partitioners/multi_partition.rs`  | `MultiPartitionShuffleRepartitioner` for hash, range, and round robin partitioning.                                              |
+| `partitioners/single_partition.rs` | `SinglePartitionShufflePartitioner` for the single partition case.                                                               |
+| `writers/shuffle_block_writer.rs`  | `ShuffleBlockWriter` and the `CompressionCodec` enum. Arrow IPC encoding with compression.                                       |
+| `writers/partition_writer.rs`      | The `PartitionWriter` trait. Implemented by `LocalPartitionWriter` (`writers/local/`) and `RssPartitionWriter` (`writers/rss/`). |
+| `writers/buf_batch_writer.rs`      | `BufBatchWriter`, which coalesces sub-`batch_size` batches through Arrow's `BatchCoalescer` before serializing.                  |
+| `writers/local/spill.rs`           | `PartitionedSpill`, which owns the per-partition spill file and its byte ranges.                                                 |
+| `ipc.rs`                           | `read_ipc_compressed` and `read_ipc_compressed_validated`, the decode side used by the shuffle reader.                           |
 
 ## Data Flow
 
@@ -223,11 +232,21 @@ Native shuffle uses DataFusion's memory management with spilling support:
   partition are concatenated when writing the final output.
 - **Scratch space**: Reusable buffers for partition ID computation to reduce allocations.
 
-The `MultiPartitionShuffleRepartitioner` manages:
+The `MultiPartitionShuffleRepartitioner` holds:
 
-- `PartitionBuffer`: In-memory buffer for each partition
-- `SpillFile`: Temporary file for spilled data
-- Memory tracking via `MemoryConsumer` trait
+- `buffered_batches`, a `Vec<RecordBatch>` of incoming batches, alongside `partition_indices`
+  recording which rows of those batches belong to each partition. Rows are not copied into
+  per-partition buffers as they arrive.
+- `reservation`, a `MemoryReservation` charged for the bytes each buffered batch newly pins.
+  `pinned_buffers` tracks backing buffer start addresses so one allocation shared by many sliced
+  batches is charged once rather than once per slice. Charging a per-batch size instead would
+  overstate memory by the slice count and spill spuriously.
+- `max_buffer_bytes`, the optional fixed spill threshold described above. `None` leaves pool
+  pressure as the only trigger.
+- `scratch`, reusable buffers for partition ID computation.
+
+The spill file itself is owned by `PartitionedSpill` in `writers/local/spill.rs`, which wraps
+DataFusion's `SpillFile` and tracks the byte range each spill occupies.
 
 ## Compression
 
@@ -250,7 +269,7 @@ independently compressed, allowing parallel decompression during reads.
 | -------------------------------------------- | ------- | ---------------------------------------- |
 | `spark.comet.shuffle.enabled`                | `true`  | Enable Comet shuffle                     |
 | `spark.comet.shuffle.mode`                   | `auto`  | Shuffle mode: `native`, `jvm`, or `auto` |
-| `spark.comet.shuffle.compression.codec`      | `zstd`  | Compression codec                        |
+| `spark.comet.shuffle.compression.codec`      | `lz4`   | Compression codec                        |
 | `spark.comet.shuffle.compression.zstd.level` | `1`     | Zstd compression level                   |
 | `spark.comet.shuffle.native.writeBufferSize` | `1MB`   | Write buffer size                        |
 | `spark.comet.shuffle.jvm.batchSize`          | `8192`  | Target rows per batch                    |
