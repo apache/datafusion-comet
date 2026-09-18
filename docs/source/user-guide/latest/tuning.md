@@ -73,11 +73,14 @@ disabled even when configuration overrides are enabled.
 
 ## Memory Tuning
 
-It is necessary to specify how much memory Comet can use in addition to memory already allocated to Spark. In some
-cases, it may be possible to reduce the amount of memory allocated to Spark so that overall memory allocation is
-the same or lower than the original configuration. In other cases, enabling Comet may require allocating more memory
-than before. See the [Determining How Much Memory to Allocate] section for more details.
+Comet needs memory of its own, but that memory is not an extra allocation layered on top of the executor. Comet
+draws on the off-heap pool that `spark.memory.offHeap.size` already sizes, and under a resource manager that pool
+sits inside the executor's container budget rather than above it. Enabling Comet therefore re-divides an
+executor's memory at least as much as it increases it. In some cases you can reduce the memory allocated to the
+JVM heap enough that the overall allocation is the same or lower than before; in other cases Comet does need more.
+See [How Comet's Memory Fits in the Executor Container] and [Determining How Much Memory to Allocate] for details.
 
+[How Comet's Memory Fits in the Executor Container]: #how-comets-memory-fits-in-the-executor-container
 [Determining How Much Memory to Allocate]: #determining-how-much-memory-to-allocate
 
 ### Configuring Comet Memory
@@ -126,11 +129,60 @@ The `fair_unified` pool prevents operators from using more than an even fraction
 the query has multiple operators that will likely all need to spill. Sometimes it will cause spills even
 when there is sufficient memory in order to leave enough memory for other operators.
 
+Today the pool is stricter than that description. The check compares the request against the pool's _total_
+usage rather than the requesting operator's own share, so once more than one operator is registered the task as
+a whole is limited to `pool_size / num_reservations`, not each operator individually. Expect `fair_unified` to
+spill earlier than the paragraph above implies on queries with several concurrent operators. This is tracked as
+[#5961](https://github.com/apache/datafusion-comet/issues/5961).
+
 The `greedy_unified` pool type implements a greedy first-come first-serve limit. This pool works well for queries that do not
 need to spill or have a single spillable operator.
 
 [shuffle]: #shuffle
 [Advanced Memory Tuning]: #advanced-memory-tuning
+
+### How Comet's Memory Fits in the Executor Container
+
+Under a resource manager, the executor's container is sized from the sum of the Spark memory settings:
+
+```text
+container size = spark.executor.memory
+               + spark.executor.memoryOverhead   (default max(0.1 * executor.memory, 384 MiB))
+               + spark.memory.offHeap.size
+               + pyspark memory                  (Python applications only)
+```
+
+On Kubernetes this sum is both the pod's memory request and its memory limit, so the kernel kills the executor
+once the process as a whole exceeds it. On YARN the NodeManager applies the same sum and kills containers that
+grow past it. Two consequences matter when tuning Comet.
+
+**`spark.memory.offHeap.size` is part of that sum, not headroom on top of it.** Raising it to give Comet more
+room raises the container by the same amount, so the scheduler places fewer executors on each node. If the node
+is already full, the memory has to come out of `spark.executor.memory`.
+
+**`spark.executor.memoryOverhead` is the container's only slack, and it sizes no budget at all.** No memory pool
+draws on it and no consumer can reserve from it. It is what absorbs everything that no accounting layer counts:
+JVM metaspace, code cache, thread stacks and Netty direct buffers, page cache charged to the container by file
+I/O including spill files, allocator fragmentation, and the part of Comet's native usage that exceeds what its
+operators reserved. The JVM's own non-heap usage already consumes much of the default, and Comet's unreserved
+native memory competes for what is left.
+
+That asymmetry is what decides which setting to reach for when an executor is killed by its container rather
+than failing a task:
+
+| Setting                                      | Effect on the container | Effect on Comet's budget | Cost                                                                          |
+| -------------------------------------------- | ----------------------- | ------------------------ | ----------------------------------------------------------------------------- |
+| `spark.executor.memoryOverhead` higher       | Wider                   | Unchanged                | Fewer executors per node                                                      |
+| `spark.comet.exec.memoryPool.fraction` lower | Unchanged               | Smaller                  | Comet spills earlier, so queries take longer                                  |
+| `spark.memory.offHeap.size` higher           | Wider                   | Larger                   | Fewer executors per node, and the unaccounted overshoot grows with the budget |
+
+Raising `spark.memory.offHeap.size` is the intuitive response to a container kill and the least reliable one. It
+does widen the container, but it also raises the ceiling on what Comet is allowed to reserve, so the unaccounted
+memory that caused the kill grows alongside the room made for it. Prefer the other two settings when the pool is
+not the thing that overflowed.
+
+For the full picture of who allocates what, and which parts of it any layer can see, see
+[Memory Management](../../contributor-guide/memory_management.md) in the contributor guide.
 
 ### Determining How Much Memory to Allocate
 
@@ -177,6 +229,37 @@ executor running `N` concurrent tasks may use up to `N` times this value on shar
 If the limit is reached, further spills fail and the query errors out. Raise this on workloads
 with large sort/aggregate/shuffle spills, or lower it to protect executors on shared disks
 (remembering to divide by task concurrency to reason about the aggregate).
+
+### Diagnosing Out-of-Memory Failures
+
+Three separate budgets can be exceeded, they fail in visibly different ways, and only one of them is fixed by
+giving Comet a larger pool. Work out which one you hit before changing any setting:
+
+| What you see                                                               | Budget exceeded      | Scope of the failure                                               |
+| -------------------------------------------------------------------------- | -------------------- | ------------------------------------------------------------------ |
+| `ExecutorLostFailure` with exit code 137, or a pod reported as `OOMKilled` | The container        | The whole executor, killed by the kernel or the NodeManager        |
+| Exit code 52 with `java.lang.OutOfMemoryError` in the executor log         | JVM heap             | The whole executor; Spark treats heap exhaustion as fatal          |
+| A task fails with `SparkOutOfMemoryError` and the executor keeps running   | Spark's memory pools | One task, and the query can still succeed when the task is retried |
+
+A container kill is by far the most expensive of the three: every task on that executor dies, its cached blocks
+are lost and have to be recomputed, and the shuffle files it wrote become unavailable to downstream fetches. The
+driver reports only `ExecutorLostFailure`, so the exit code is what distinguishes it from heap exhaustion.
+
+If Comet's pool was nowhere near its limit when the container was killed, the memory went somewhere the pool
+does not track, and the settings in
+[How Comet's Memory Fits in the Executor Container](#how-comets-memory-fits-in-the-executor-container) are the
+ones to adjust. Reducing `spark.comet.batchSize` also helps directly, since the unreserved part of Comet's
+footprint scales with batch size times column count and is largest on wide or deeply nested schemas. Two
+settings show what the pool was doing: `spark.comet.debug.memory=true` logs every reservation as it grows and
+shrinks, and `spark.comet.explain.native.enabled=true` reports per-operator metrics including spill counts.
+
+A `SparkOutOfMemoryError` with the executor still running is the opposite case: the pool did its job and an
+operator could not spill its way out of the limit. Raising `spark.memory.offHeap.size` is the right response to
+that one, keeping in mind that it widens the container too, so the node has to have the room.
+
+It is also worth checking whether the operators in the plan can spill at all. `ShuffledHashJoin` cannot, so
+`spark.comet.exec.forceShuffledHashJoin=true` converts a spillable sort-merge join into one that is not; see
+[Optimizing Joins](#optimizing-joins).
 
 ## Parquet Reader Tuning
 
