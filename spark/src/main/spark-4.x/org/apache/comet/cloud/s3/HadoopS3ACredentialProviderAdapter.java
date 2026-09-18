@@ -20,7 +20,6 @@
 package org.apache.comet.cloud.s3;
 
 import java.net.URI;
-import java.util.HashMap;
 import java.util.Map;
 
 import org.apache.hadoop.conf.Configuration;
@@ -44,8 +43,7 @@ import org.apache.comet.annotation.Public;
 @Public
 public class HadoopS3ACredentialProviderAdapter implements CometS3CredentialProvider {
 
-  private volatile Map<String, String> properties = new HashMap<>();
-  private volatile String resolvedBucket;
+  private Map<String, String> properties;
   private volatile AwsCredentialsProvider delegate;
 
   @Override
@@ -61,19 +59,16 @@ public class HadoopS3ACredentialProviderAdapter implements CometS3CredentialProv
   }
 
   private AwsCredentialsProvider ensureDelegate(String bucket) throws Exception {
-    // The dispatcher caches one instance per bucket, so bucket is effectively constant here; the
-    // guard is defensive.
     AwsCredentialsProvider local = delegate;
-    if (local != null && bucket.equals(resolvedBucket)) {
+    if (local != null) {
       return local;
     }
     synchronized (this) {
-      if (delegate == null || !bucket.equals(resolvedBucket)) {
+      if (delegate == null) {
         Configuration conf =
             S3AUtils.propagateBucketOptions(AdapterSupport.toConfiguration(properties), bucket);
         URI uri = new URI("s3a://" + bucket + "/");
         delegate = CredentialProviderListFactory.createAWSCredentialProviderList(uri, conf);
-        resolvedBucket = bucket;
       }
       return delegate;
     }

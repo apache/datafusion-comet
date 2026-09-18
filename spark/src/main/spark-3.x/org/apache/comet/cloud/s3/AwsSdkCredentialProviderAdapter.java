@@ -21,9 +21,7 @@ package org.apache.comet.cloud.s3;
 
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Method;
-import java.lang.reflect.Modifier;
 import java.net.URI;
-import java.util.HashMap;
 import java.util.Map;
 
 import com.amazonaws.auth.AWSCredentialsProvider;
@@ -49,8 +47,7 @@ public class AwsSdkCredentialProviderAdapter implements CometS3CredentialProvide
 
   static final String DELEGATE_CLASS_PROPERTY = "comet.credential.adapter.class";
 
-  private volatile Map<String, String> properties = new HashMap<>();
-  private volatile String resolvedBucket;
+  private Map<String, String> properties;
   private volatile AWSCredentialsProvider delegate;
 
   @Override
@@ -67,13 +64,12 @@ public class AwsSdkCredentialProviderAdapter implements CometS3CredentialProvide
 
   private AWSCredentialsProvider ensureDelegate(String bucket) throws Exception {
     AWSCredentialsProvider local = delegate;
-    if (local != null && bucket.equals(resolvedBucket)) {
+    if (local != null) {
       return local;
     }
     synchronized (this) {
-      if (delegate == null || !bucket.equals(resolvedBucket)) {
+      if (delegate == null) {
         delegate = instantiate(bucket);
-        resolvedBucket = bucket;
       }
       return delegate;
     }
@@ -105,7 +101,7 @@ public class AwsSdkCredentialProviderAdapter implements CometS3CredentialProvide
     if (confOnly != null) {
       return (AWSCredentialsProvider) confOnly.newInstance(conf);
     }
-    Method getInstance = staticMethod(clazz, "getInstance");
+    Method getInstance = AdapterSupport.staticMethod(clazz, "getInstance");
     if (getInstance != null) {
       return (AWSCredentialsProvider) getInstance.invoke(null);
     }
@@ -115,15 +111,6 @@ public class AwsSdkCredentialProviderAdapter implements CometS3CredentialProvide
   private static Constructor<?> constructor(Class<?> clazz, Class<?>... params) {
     try {
       return clazz.getConstructor(params);
-    } catch (NoSuchMethodException e) {
-      return null;
-    }
-  }
-
-  private static Method staticMethod(Class<?> clazz, String name) {
-    try {
-      Method m = clazz.getMethod(name);
-      return Modifier.isStatic(m.getModifiers()) ? m : null;
     } catch (NoSuchMethodException e) {
       return null;
     }

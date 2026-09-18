@@ -20,8 +20,6 @@
 package org.apache.comet.cloud.s3;
 
 import java.lang.reflect.Method;
-import java.lang.reflect.Modifier;
-import java.util.HashMap;
 import java.util.Map;
 
 import software.amazon.awssdk.auth.credentials.AwsCredentialsProvider;
@@ -45,8 +43,7 @@ public class AwsSdkCredentialProviderAdapter implements CometS3CredentialProvide
 
   static final String DELEGATE_CLASS_PROPERTY = "comet.credential.adapter.class";
 
-  private volatile Map<String, String> properties = new HashMap<>();
-  private volatile String resolvedBucket;
+  private Map<String, String> properties;
   private volatile AwsCredentialsProvider delegate;
 
   @Override
@@ -63,13 +60,12 @@ public class AwsSdkCredentialProviderAdapter implements CometS3CredentialProvide
 
   private AwsCredentialsProvider ensureDelegate(String bucket) throws Exception {
     AwsCredentialsProvider local = delegate;
-    if (local != null && bucket.equals(resolvedBucket)) {
+    if (local != null) {
       return local;
     }
     synchronized (this) {
-      if (delegate == null || !bucket.equals(resolvedBucket)) {
+      if (delegate == null) {
         delegate = instantiate(bucket);
-        resolvedBucket = bucket;
       }
       return delegate;
     }
@@ -91,26 +87,17 @@ public class AwsSdkCredentialProviderAdapter implements CometS3CredentialProvide
     }
     // SDK v2 instantiation conventions, in order: static create(), static builder().build(),
     // public no-arg constructor.
-    Method create = staticMethod(clazz, "create");
+    Method create = AdapterSupport.staticMethod(clazz, "create");
     if (create != null) {
       return (AwsCredentialsProvider) create.invoke(null);
     }
-    Method builder = staticMethod(clazz, "builder");
+    Method builder = AdapterSupport.staticMethod(clazz, "builder");
     if (builder != null) {
       Object b = builder.invoke(null);
       Method build = b.getClass().getMethod("build");
       return (AwsCredentialsProvider) build.invoke(b);
     }
     return (AwsCredentialsProvider) clazz.getDeclaredConstructor().newInstance();
-  }
-
-  private static Method staticMethod(Class<?> clazz, String name) {
-    try {
-      Method m = clazz.getMethod(name);
-      return Modifier.isStatic(m.getModifiers()) ? m : null;
-    } catch (NoSuchMethodException e) {
-      return null;
-    }
   }
 
   @Override

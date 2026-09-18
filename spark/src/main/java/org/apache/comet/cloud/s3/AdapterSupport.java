@@ -19,11 +19,13 @@
 
 package org.apache.comet.cloud.s3;
 
+import java.lang.reflect.Method;
+import java.lang.reflect.Modifier;
 import java.util.Map;
 
 import org.apache.hadoop.conf.Configuration;
 
-/** Config helpers shared by the built-in S3 credential provider adapters. */
+/** Config and reflection helpers shared by the built-in S3 credential provider adapters. */
 final class AdapterSupport {
 
   private AdapterSupport() {}
@@ -44,9 +46,9 @@ final class AdapterSupport {
   }
 
   /**
-   * Per-bucket then global lookup, mirroring Comet's native {@code fs.s3a} resolution:
-   * {@code fs.s3a.bucket.<bucket>.<property>} wins over {@code fs.s3a.<property>}. Returns null if
-   * neither is set (after trimming).
+   * Per-bucket then global lookup, mirroring Comet's native {@code fs.s3a} resolution: {@code
+   * fs.s3a.bucket.<bucket>.<property>} wins over {@code fs.s3a.<property>}. Returns null if neither
+   * is set (after trimming).
    */
   static String lookup(Map<String, String> props, String bucket, String property) {
     String perBucket = props.get("fs.s3a.bucket." + bucket + "." + property);
@@ -58,5 +60,15 @@ final class AdapterSupport {
       return global.trim();
     }
     return null;
+  }
+
+  /** Returns the public static no-arg method {@code name} on {@code clazz}, or null if absent. */
+  static Method staticMethod(Class<?> clazz, String name) {
+    try {
+      Method m = clazz.getMethod(name);
+      return Modifier.isStatic(m.getModifiers()) ? m : null;
+    } catch (NoSuchMethodException e) {
+      return null;
+    }
   }
 }
