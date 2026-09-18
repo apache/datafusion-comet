@@ -51,6 +51,27 @@ object CometArrayRemove
   }
 }
 
+/**
+ * Shared gate for serdes whose native NULL guard (`CASE WHEN child IS NOT NULL`) serializes the
+ * child twice: a stateful child drifts between the two copies, so it is declined and Spark
+ * evaluates it once, through the JVM codegen dispatcher where the serde mixes in
+ * `CodegenDispatchFallback` and through a fallback otherwise. Nullability is not consulted: a
+ * non-nullable stateful child only stays in step because DataFusion skips the filter when the
+ * guard matches every row, which is not a contract to lean on.
+ */
+private[serde] object NullGuardSupport {
+
+  val nondeterministicReason: String =
+    "a nondeterministic operand: the native NULL guard serializes the operand twice, " +
+      "and the two copies of a stateful operand drift apart"
+
+  /** `Unsupported` when any of `children` is nondeterministic, otherwise `None`. */
+  def nondeterministicChild(children: Seq[Expression]): Option[SupportLevel] =
+    children
+      .find(child => !child.deterministic)
+      .map(_ => Unsupported(Some(nondeterministicReason)))
+}
+
 object CometArrayAppend extends CometExpressionSerde[ArrayAppend] with ArraysBase {
 
   override def convert(

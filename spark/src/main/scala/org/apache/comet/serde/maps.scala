@@ -198,11 +198,16 @@ object CometMapFromArrays extends CometExpressionSerde[MapFromArrays] {
   override def getIncompatibleReasons(): Seq[String] =
     Seq(MapBuilderSupport.collationKeyReason)
 
+  override def getUnsupportedReasons(): Seq[String] =
+    Seq(NullGuardSupport.nondeterministicReason)
+
   override def getCompatibleNotes(): Seq[String] =
     Seq(MapBuilderSupport.floatingPointKeyNote)
 
   override def getSupportLevel(expr: MapFromArrays): SupportLevel =
-    MapBuilderSupport.keySupport(expr.dataType.keyType)
+    NullGuardSupport
+      .nondeterministicChild(expr.children)
+      .getOrElse(MapBuilderSupport.keySupport(expr.dataType.keyType))
 
   /**
    * Native `map_from_arrays` already returns a NULL map for a NULL input array, so the guards
@@ -216,8 +221,14 @@ object CometMapFromArrays extends CometExpressionSerde[MapFromArrays] {
    * batch, or on most of them; a batch where most rows do have keys evaluates the values
    * expression on all of them, the NULL-keys rows included.
    *
+   * Each guard serializes its child a second time inside the `map_from_arrays` call, so a
+   * stateful child would advance independently in each copy and the result would drift from
+   * Spark; `getSupportLevel` declines a nondeterministic child for that reason.
+   *
    * @see
    *   https://github.com/apache/datafusion-comet/pull/5854#discussion_r4016898751
+   * @see
+   *   https://github.com/apache/datafusion-comet/pull/5854#discussion_r4043896247
    */
   override def convert(
       expr: MapFromArrays,

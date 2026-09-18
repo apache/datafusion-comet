@@ -65,3 +65,16 @@ SELECT map_keys(map_from_arrays(k, v)), map_values(map_from_arrays(k, v)) FROM t
 -- LAST_WIN does not weaken the NULL key check
 query expect_error(NULL_MAP_KEY)
 SELECT map_from_arrays(array('a', NULL), array(1, 2))
+
+statement
+CREATE TABLE test_map_from_arrays_dedup_nondet(id bigint) USING parquet
+
+statement
+INSERT INTO test_map_from_arrays_dedup_nondet SELECT id FROM range(0, 16)
+
+-- A nondeterministic child used to fall back for the policy alone. The serde's null guards
+-- serialize each child twice, so a stateful child would drift between the two copies; it is
+-- declined and the projection falls back to Spark, which evaluates it once.
+-- `map_from_arrays_nondeterministic_child.sql` has the default-policy cases.
+query expect_fallback(nondeterministic operand)
+SELECT id, map_from_arrays(IF(monotonically_increasing_id() % 2 != 0, array(1), NULL), array(2)) FROM test_map_from_arrays_dedup_nondet

@@ -179,6 +179,29 @@ class CometMapExpressionSuite extends CometTestBase {
     }
   }
 
+  // Both null guards serialize their child a second time inside the `map_from_arrays` call, so a
+  // stateful child advances independently in each copy: with `monotonically_increasing_id()`
+  // deciding which rows have keys, the guard's copy sees every row while the constructor's copy
+  // sees only the rows the guard selected, and half of the expected maps come back NULL (#5781).
+  // Such a child is declined, so the projection runs in Spark, which evaluates it once. Under
+  // LAST_WIN this case used to fall back for the policy alone; the decline keeps it correct now
+  // that the policy runs natively.
+  // https://github.com/apache/datafusion-comet/pull/5854#discussion_r4043896247
+  test("map_from_arrays - a nondeterministic child falls back under LAST_WIN") {
+    withSQLConf(SQLConf.MAP_KEY_DEDUP_POLICY.key -> "LAST_WIN") {
+      withTable("map_nondeterministic") {
+        // One partition, so both copies of the child would see the same sixteen-row batch.
+        withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+          spark.range(0, 16, 1, 1).write.format("parquet").saveAsTable("map_nondeterministic")
+        }
+        checkSparkAnswerAndFallbackReason(
+          "SELECT id, map_from_arrays(IF(monotonically_increasing_id() % 2 != 0, array(1), NULL), " +
+            "array(2)) FROM map_nondeterministic",
+          "nondeterministic operand")
+      }
+    }
+  }
+
   test("map_from_arrays - a null input array gives a null map") {
     withMapBuilderTable { table =>
       checkSparkAnswerAndOperator(
