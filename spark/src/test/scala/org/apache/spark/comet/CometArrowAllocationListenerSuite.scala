@@ -28,7 +28,7 @@ import org.scalatest.funsuite.AnyFunSuite
 import org.apache.arrow.memory.BufferAllocator
 import org.apache.spark.{SparkConf, TaskContext, TaskContextImpl}
 import org.apache.spark.executor.TaskMetrics
-import org.apache.spark.memory.{MemoryConsumer, MemoryMode, TaskMemoryManager, TestMemoryManager}
+import org.apache.spark.memory.{MemoryConsumer, MemoryManager, MemoryMode, SparkOutOfMemoryError, TaskMemoryManager, TestMemoryManager}
 
 import org.apache.comet.CometArrowAllocator
 
@@ -325,6 +325,57 @@ class CometArrowAllocationListenerSuite extends AnyFunSuite {
     }
   }
 
+  test("a concurrent acquisition is not adopted as this listener's lost grant") {
+    // The orphan is measured as a change in the task's total consumption, which Spark reports per
+    // task rather than per consumer. If another consumer could acquire between the snapshot taken
+    // before the acquisition and the acquisition itself, its bytes would be adopted here and handed
+    // back when this listener next shrank, leaving two consumers holding the same bytes between
+    // them. Both snapshots and the call therefore run as one transaction under the
+    // TaskMemoryManager monitor. This forces the interleaving that transaction exists to exclude.
+    val spare = 1024L
+    val task = newTask(pool = blockSize * 2 + spare)
+    withInstalledTask(task) {
+      val hostile =
+        new FailingSpillConsumer(task.taskMemoryManager, new IOException("spill failed"))
+      assert(hostile.take(blockSize) == blockSize)
+
+      val interloper = new PlainConsumer(task.taskMemoryManager)
+      // Once the acquisition has taken what was left, the pool is empty and Spark answers the
+      // interloper by asking the hostile consumer to spill, which throws. That is a legitimate
+      // outcome for the interloper and not what is under test here; what it ends up holding is.
+      val interloperThread = daemonThread("interloper") {
+        try interloper.take(spare)
+        catch { case _: SparkOutOfMemoryError => }
+      }
+
+      // Fires once, in place of the snapshot taken before the acquisition: exactly the window the
+      // transaction has to close. The interloper either runs to completion here, which is the bug,
+      // or blocks on the monitor the acquisition is holding, which is the fix.
+      task.snapshotHook.set(() => {
+        interloperThread.start()
+        awaitBlockedOrFinished(interloperThread)
+      })
+
+      val allocator = CometTaskArrowAllocator.forCurrentTask()
+      val buf = allocator.buffer(blockSize * 2)
+      try {
+        interloperThread.join(30000L)
+        assert(
+          !interloperThread.isAlive,
+          "the interloper never finished; the transaction deadlocked")
+        // Nothing is claimed twice: what the listener adopted has to fit alongside what the other
+        // two consumers hold. Without the transaction the listener adopts the interloper's bytes on
+        // top of its own grant, and this sum comes out over what the task actually holds.
+        assert(
+          listenerFor(task).reservedBytes + hostile.getUsed + interloper.getUsed ==
+            task.taskMemoryManager.getMemoryConsumptionForThisTask,
+          "the listener adopted bytes belonging to another consumer")
+      } finally {
+        buf.close()
+      }
+    }
+  }
+
   // ---------------------------------------------------------------------------------------------
   // Lock order. Spark calls getUsed and spill while holding the TaskMemoryManager monitor, and the
   // listener holds its own monitor while waiting for that one.
@@ -398,6 +449,32 @@ class CometArrowAllocationListenerSuite extends AnyFunSuite {
     override def spill(size: Long, trigger: MemoryConsumer): Long = throw failure
   }
 
+  /** Any other consumer in the task: takes memory, and cannot give it back. */
+  private class PlainConsumer(tmm: TaskMemoryManager)
+      extends MemoryConsumer(tmm, 0L, MemoryMode.OFF_HEAP) {
+    def take(bytes: Long): Long = acquireMemory(bytes)
+    override def spill(size: Long, trigger: MemoryConsumer): Long = 0L
+  }
+
+  /**
+   * Runs one action immediately after the usage snapshot the listener takes before asking Spark
+   * for memory, so a test can drive what happens in the window between that snapshot and the
+   * acquisition. The real value is read first, which is what makes the window the one under test:
+   * running the action before the read would fold whatever it does into the snapshot itself.
+   */
+  private class HookedTaskMemoryManager(
+      memoryManager: MemoryManager,
+      taskAttemptId: Long,
+      hook: AtomicReference[Runnable])
+      extends TaskMemoryManager(memoryManager, taskAttemptId) {
+    override def getMemoryConsumptionForThisTask(): Long = {
+      val held = super.getMemoryConsumptionForThisTask()
+      val pending = hook.getAndSet(null)
+      if (pending != null) pending.run()
+      held
+    }
+  }
+
   /** Stands in for `CometTaskMemoryManager`: reserves from Spark directly and never spills. */
   private class NativeLikeConsumer(tmm: TaskMemoryManager)
       extends MemoryConsumer(tmm, 0L, MemoryMode.OFF_HEAP) {
@@ -421,10 +498,14 @@ class CometArrowAllocationListenerSuite extends AnyFunSuite {
   private case class TaskFixture(
       taskAttemptId: Long,
       context: TaskContextImpl,
-      taskMemoryManager: TaskMemoryManager)
+      taskMemoryManager: TaskMemoryManager,
+      snapshotHook: AtomicReference[Runnable])
 
   private def reservedFor(task: TaskFixture): Long =
     CometTaskArrowAllocator.reservedBytesForTask(task.taskAttemptId)
+
+  private def listenerFor(task: TaskFixture): CometArrowAllocationListener =
+    CometTaskArrowAllocator.listenerForTask(task.taskAttemptId).get
 
   private def newTask(offHeap: Boolean = true, pool: Long = poolBytes): TaskFixture = {
     val conf = new SparkConf(false)
@@ -436,7 +517,9 @@ class CometArrowAllocationListenerSuite extends AnyFunSuite {
     val memoryManager = new TestMemoryManager(conf)
     memoryManager.limit(pool)
     val taskAttemptId = nextTaskAttemptId.getAndIncrement()
-    val taskMemoryManager = new TaskMemoryManager(memoryManager, taskAttemptId)
+    val snapshotHook = new AtomicReference[Runnable]()
+    val taskMemoryManager =
+      new HookedTaskMemoryManager(memoryManager, taskAttemptId, snapshotHook)
     val context = new TaskContextImpl(
       stageId = 0,
       stageAttemptNumber = 0,
@@ -450,7 +533,7 @@ class CometArrowAllocationListenerSuite extends AnyFunSuite {
       taskMetrics = TaskMetrics.empty,
       cpus = 1,
       resources = Map.empty)
-    TaskFixture(taskAttemptId, context, taskMemoryManager)
+    TaskFixture(taskAttemptId, context, taskMemoryManager, snapshotHook)
   }
 
   /** Installs the task on this thread, restoring whatever was there before. */
@@ -489,6 +572,28 @@ class CometArrowAllocationListenerSuite extends AnyFunSuite {
     thread.join(30000L)
     assert(!thread.isAlive, "the detached release did not finish")
     Option(failure.get).foreach(t => throw t)
+  }
+
+  /** An unstarted daemon thread, so a test can choose the moment it runs. */
+  private def daemonThread(name: String)(body: => Unit): Thread = {
+    val thread = new Thread(() => body)
+    thread.setDaemon(true)
+    thread.setName(name)
+    thread
+  }
+
+  /**
+   * Waits until the thread is either blocked on a monitor or finished, whichever happens first,
+   * so that a test can tell the two orderings apart without depending on timing.
+   */
+  private def awaitBlockedOrFinished(thread: Thread): Unit = {
+    val deadline = System.currentTimeMillis() + 30000L
+    var state = thread.getState
+    while (state != Thread.State.BLOCKED && state != Thread.State.TERMINATED &&
+      System.currentTimeMillis() < deadline) {
+      Thread.sleep(1L)
+      state = thread.getState
+    }
   }
 
   private def loopingThread(name: String, failure: AtomicReference[Throwable])(

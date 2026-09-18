@@ -65,12 +65,15 @@ import org.apache.comet.CometConf
  * the thread's flag so the cancellation is not swallowed. A failed acquisition can also leave the
  * task charged for bytes Spark never reported back; see [[acquire]].
  *
- * '''Lock order.''' [[getUsed]] and [[spill]] must stay lock-free, because Spark calls both while
- * holding the `TaskMemoryManager` monitor, and [[adjust]] holds this listener's monitor across
- * `acquireExecutionMemory`, which takes that monitor. Were the snapshot to take this monitor
- * instead, a native reservation arriving through `CometTaskMemoryManager` on a Comet Tokio thread
- * could hold Spark's monitor and wait for ours while an Arrow allocation on the same task held
- * ours and waited for Spark's.
+ * '''Lock order.''' This listener's monitor is taken before Spark's and never the other way
+ * round: [[adjust]] holds ours across `acquireExecutionMemory`, and [[acquire]] additionally
+ * takes the `TaskMemoryManager` monitor itself, so that the two usage snapshots either side of
+ * that call cannot be split by another consumer. [[getUsed]] and [[spill]] must therefore stay
+ * lock-free, because Spark calls both while holding its own monitor: were either to take ours, a
+ * native reservation arriving through `CometTaskMemoryManager` on a Comet Tokio thread could hold
+ * Spark's monitor and wait for ours while an Arrow allocation on the same task held ours and
+ * waited for Spark's. For the same reason, nothing reachable from a `spill` callback may allocate
+ * JVM Arrow memory.
  */
 private[comet] class CometArrowAllocationListener(taskMemoryManager: TaskMemoryManager)
     extends MemoryConsumer(taskMemoryManager, 0L, MemoryMode.OFF_HEAP)
@@ -196,13 +199,20 @@ private[comet] class CometArrowAllocationListener(taskMemoryManager: TaskMemoryM
    * so until then they are headroom nobody can use. They are adopted here instead, measured as
    * the change in what the pool says this task holds.
    *
-   * That measurement is an estimate, but a safe one. Another consumer in the same task cannot
-   * acquire concurrently, because `acquireExecutionMemory` holds the `TaskMemoryManager` monitor
-   * throughout, so the only interference is a concurrent release, which makes the figure too
-   * small rather than too large; and `request` bounds it from above either way. Too small
-   * degrades to what would have happened anyway.
+   * Spark reports that figure per task rather than per consumer, so it only measures '''our'''
+   * grant if nothing else in the task can move it while we are looking. Both snapshots and the
+   * acquisition therefore run as one transaction under the `TaskMemoryManager` monitor. That is
+   * the same monitor `acquireExecutionMemory` takes and holds for its whole duration, spills
+   * included, and it is reentrant, so taking it here only widens that window to cover the two
+   * reads. Every acquisition in the task funnels through that method, so with it held no other
+   * consumer can take memory between a snapshot and the call and have it adopted here.
+   *
+   * What the monitor does not cover is a release, which reaches the pool without it. Another
+   * consumer returning memory, or a spill that frees some bytes before throwing, makes the figure
+   * too small, which is the safe direction: too small degrades to what would have happened
+   * anyway. `request` bounds it from above.
    */
-  private def acquire(request: Long): Long = {
+  private def acquire(request: Long): Long = taskMemoryManager.synchronized {
     val heldBefore = taskMemoryManager.getMemoryConsumptionForThisTask
     try {
       taskMemoryManager.acquireExecutionMemory(request, this)
