@@ -202,9 +202,6 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-java-maven-
 
-      - name: Bootstrap Maven
-        uses: ./.github/actions/maven-bootstrap
-
       - name: Run scalafix check
         run: |
           ./mvnw -B package -DskipTests scalafix:scalafix -Dscalafix.mode=CHECK -Psemanticdb ${{ matrix.profile.maven_opts }}
@@ -274,9 +271,6 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-java-maven-
 
-      - name: Bootstrap Maven
-        uses: ./.github/actions/maven-bootstrap
-
       - name: Compile (skip tests)
         run: ./mvnw -B install -DskipTests -Dmaven.test.skip=true -Pspark-4.1
 
@@ -325,9 +319,6 @@ jobs:
           key: ${{ runner.os }}-java-maven-${{ hashFiles('**/pom.xml') }}-celeborn-${{ matrix.celeborn_version }}
           restore-keys: |
             ${{ runner.os }}-java-maven-
-
-      - name: Bootstrap Maven
-        uses: ./.github/actions/maven-bootstrap
 
       - name: Verify reflected Celeborn internals
         env:
@@ -480,6 +471,7 @@ jobs:
           - name: "scans"
             value: |
               org.apache.comet.parquet.CometParquetWriterSuite
+              org.apache.comet.parquet.CometEmptyRelationParquetWriterSuite
               org.apache.comet.parquet.ParquetReadV1Suite
               org.apache.comet.parquet.ParquetReadV2Suite
               org.apache.comet.parquet.ParquetTimestampLtzAsNtzSuite
@@ -528,6 +520,7 @@ jobs:
               org.apache.comet.exec.CometAggregateSuite
               org.apache.comet.exec.CometExec3_4PlusSuite
               org.apache.comet.exec.CometExecSuite
+              org.apache.comet.exec.CometEmptyRelationExecSuite
               org.apache.comet.exec.CometInMemoryCacheSuite
               org.apache.comet.exec.CometInMemoryCacheKryoSuite
               org.apache.comet.exec.CometGenerateExecSuite
@@ -553,6 +546,7 @@ jobs:
               org.apache.comet.rules.CometScanSchemeFallbackSuite
               org.apache.comet.rules.CometExecRuleSuite
               org.apache.spark.sql.comet.CometPlanEqualitySuite
+              org.apache.comet.rules.CometEmptyRelationExecRuleSuite
               org.apache.comet.rules.RevertNativeForTransitionHeavyStagesSuite
               org.apache.spark.sql.CometTPCDSQuerySuite
               org.apache.spark.sql.CometTPCDSQueryTestSuite
@@ -710,11 +704,6 @@ jobs:
           path: ./tpch
           key: tpch-${{ hashFiles('.github/workflows/pr_build_linux.yml') }}
 
-      # Without this, a transient repo.maven.apache.org blip fails the whole
-      # job before anything is compiled.
-      - name: Bootstrap Maven
-        uses: ./.github/actions/maven-bootstrap
-
       - name: Build project
         run: |
           ./mvnw -B -Prelease install -DskipTests
@@ -788,11 +777,6 @@ jobs:
         with:
           path: ./tpcds-sf-1
           key: tpcds-${{ hashFiles('.github/workflows/pr_build_linux.yml') }}
-
-      # Without this, a transient repo.maven.apache.org blip fails the whole
-      # job before anything is compiled.
-      - name: Bootstrap Maven
-        uses: ./.github/actions/maven-bootstrap
 
       - name: Build project
         run: |
