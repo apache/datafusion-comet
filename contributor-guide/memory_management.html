@@ -63,6 +63,364 @@ under the License.
     <script src="../_static/documentation_options.js?v=5929fcd5"></script>
     <script src="../_static/doctools.js?v=9a2dae69"></script>
     <script src="../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script type="module">import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11.12.1/dist/mermaid.esm.min.mjs";
+
+
+
+
+
+const initStyles = () => {
+    const defaultStyle = document.createElement('style');
+    defaultStyle.textContent = "pre.mermaid {\n    /* Same as .mermaid-container > pre */\n    display: block;\n    width: 100%;\n}\n\npre.mermaid > svg {\n    /* Same as .mermaid-container > pre > svg */\n    height: 500px;\n    width: 100%;\n    max-width: 100% !important;\n}";
+    document.head.appendChild(defaultStyle);
+
+    const fullscreenStyle = document.createElement('style');
+    fullscreenStyle.textContent = ".mermaid-container {\n    position: relative;\n    display: flex;\n    flex-direction: row;\n    width: 100%;\n}\n\n.mermaid-container > pre {\n    display: block;\n    width: 100%;\n}\n\n.mermaid-container > pre > svg {\n    height: 500px;\n    width: 100%;\n    max-width: 100% !important;\n}\n\n.mermaid-fullscreen-btn {\n    position: absolute;\n    width: 28px;\n    height: 28px;\n    background: rgba(255, 255, 255, 0.95);\n    border: 1px solid rgba(0, 0, 0, 0.3);\n    border-radius: 4px;\n    cursor: pointer;\n    display: flex;\n    align-items: center;\n    justify-content: center;\n    transition: all 0.2s;\n    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.2);\n    font-size: 14px;\n    line-height: 1;\n    padding: 0;\n    color: #333;\n}\n\n.mermaid-fullscreen-btn:hover {\n    opacity: 100% !important;\n    background: rgba(255, 255, 255, 1);\n    box-shadow: 0 3px 10px rgba(0, 0, 0, 0.3);\n    transform: scale(1.1);\n}\n\n.mermaid-fullscreen-btn.dark-theme {\n    background: rgba(50, 50, 50, 0.95);\n    border: 1px solid rgba(255, 255, 255, 0.3);\n    color: #e0e0e0;\n}\n\n.mermaid-fullscreen-btn.dark-theme:hover {\n    background: rgba(60, 60, 60, 1);\n    box-shadow: 0 3px 10px rgba(255, 255, 255, 0.2);\n}\n\n.mermaid-fullscreen-modal {\n    display: none;\n    position: fixed !important;\n    top: 0 !important;\n    left: 0 !important;\n    width: 95vw;\n    height: 100vh;\n    background: rgba(255, 255, 255, 0.98);\n    z-index: 9999;\n    padding: 20px;\n    overflow: auto;\n}\n\n.mermaid-fullscreen-modal.dark-theme {\n    background: rgba(0, 0, 0, 0.98);\n}\n\n.mermaid-fullscreen-modal.active {\n    display: flex;\n    align-items: center;\n    justify-content: center;\n}\n\n.mermaid-container-fullscreen {\n    position: relative;\n    width: 95vw;\n    height: 90vh;\n    max-width: 95vw;\n    max-height: 90vh;\n    background: white;\n    border-radius: 8px;\n    padding: 20px;\n    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3);\n    overflow: auto;\n    display: flex;\n    align-items: center;\n    justify-content: center;\n}\n\n.mermaid-container-fullscreen.dark-theme {\n    background: #1a1a1a;\n    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.8);\n}\n\n.mermaid-container-fullscreen pre.mermaid {\n    width: 100%;\n    height: 100%;\n    display: flex;\n    align-items: center;\n    justify-content: center;\n}\n\n.mermaid-container-fullscreen .mermaid svg {\n    height: 100% !important;\n    width: 100% !important;\n    cursor: grab;\n}\n\n.mermaid-fullscreen-close {\n    position: fixed !important;\n    top: 20px !important;\n    right: 20px !important;\n    width: 40px;\n    height: 40px;\n    background: rgba(255, 255, 255, 0.95);\n    border: 1px solid rgba(0, 0, 0, 0.2);\n    border-radius: 50%;\n    cursor: pointer;\n    z-index: 10000;\n    display: flex;\n    align-items: center;\n    justify-content: center;\n    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);\n    transition: all 0.2s;\n    font-size: 24px;\n    line-height: 1;\n    color: #333;\n}\n\n.mermaid-fullscreen-close:hover {\n    background: white;\n    box-shadow: 0 6px 16px rgba(0, 0, 0, 0.4);\n    transform: scale(1.1);\n}\n\n.mermaid-fullscreen-close.dark-theme {\n    background: rgba(50, 50, 50, 0.95);\n    border: 1px solid rgba(255, 255, 255, 0.2);\n    color: #e0e0e0;\n}\n\n.mermaid-fullscreen-close.dark-theme:hover {\n    background: rgba(60, 60, 60, 1);\n    box-shadow: 0 6px 16px rgba(255, 255, 255, 0.2);\n}\n\n.mermaid-fullscreen-modal .mermaid-fullscreen-btn {\n    display: none !important;\n}";
+    document.head.appendChild(fullscreenStyle);
+}
+
+// Detect if page has dark background
+const isDarkTheme = () => {
+    // We use a set of heuristics:
+    // 1. Check for common dark mode classes or attributes
+    // 2. Check computed background color brightness
+    if (document.documentElement.classList.contains('dark') ||
+        document.documentElement.getAttribute('data-theme') === 'dark' ||
+        document.body.classList.contains('dark') ||
+        document.body.getAttribute('data-theme') === 'dark') {
+        // console.log("Dark theme detected via class/attribute");
+        return true;
+    }
+    if (document.documentElement.classList.contains('light') ||
+        document.documentElement.getAttribute('data-theme') === 'light' ||
+        document.body.classList.contains('light') ||
+        document.body.getAttribute('data-theme') === 'light') {
+        // console.log("Light theme detected via class/attribute");
+        return false;
+    }
+    if (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) {
+        // console.log("Dark theme detected via prefers-color-scheme");
+        return true;
+    }
+    const bgColor = window.getComputedStyle(document.body).backgroundColor;
+    const match = bgColor.match(/rgb\((\d+),\s*(\d+),\s*(\d+)/);
+    if (match) {
+        const r = parseInt(match[1]);
+        const g = parseInt(match[2]);
+        const b = parseInt(match[3]);
+        const brightness = (r * 299 + g * 587 + b * 114) / 1000;
+        // console.log("Background color brightness:", brightness);
+        return brightness < 128;
+    }
+    // console.log("No dark or light theme detected, defaulting to light theme");
+    return false;
+};
+
+let darkTheme = isDarkTheme();
+let modal = null;
+let modalContent = null;
+let previousScrollOffset = [window.scrollX, window.scrollY];
+let _lazyObserver = null;
+let _renderQueue = Promise.resolve();
+let closeModal = () => {};
+
+document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && modal?.classList.contains('active')) {
+        closeModal();
+    }
+});
+
+// Apply d3 zoom to each SVG. Idempotent: an SVG already wrapped is skipped,
+// so this is safe to call both for the initial batch and for diagrams that
+// render lazily once they become visible.
+const addZoomToSvgs = (svgs) => {
+    svgs.each(function() {
+        if (this.getAttribute('data-zoom-applied') === 'true') return;
+        var svg = d3.select(this);
+        svg.html("<g class='wrapper'>" + svg.html() + "</g>");
+        var inner = svg.select("g");
+        var zoom = d3.zoom().on("zoom", function(event) {
+            inner.attr("transform", event.transform);
+        });
+        svg.call(zoom);
+        this.setAttribute('data-zoom-applied', 'true');
+    });
+};
+
+const runMermaid = async (rerun) => {
+    console.log("Running mermaid diagrams, rerun =", rerun);
+    // clear all existing mermaid charts
+    let all_mermaids = document.querySelectorAll(".mermaid");
+
+    if (rerun) {
+        // Disconnect any previous lazy rendering observer
+        if (_lazyObserver) {
+            _lazyObserver.disconnect();
+            _lazyObserver = null;
+        }
+
+        all_mermaids.forEach((el) => {
+            el.removeAttribute('data-mermaid-deferred');
+            el.removeAttribute('data-mermaid-render-failed');
+            if(!el.hasAttribute("data-original-code")) {
+                // store original code
+                // console.log(`Storing original code for first run: `, el.innerHTML);
+                el.setAttribute('data-original-code', el.innerHTML);
+            }
+            if(el.getAttribute("data-processed") === "true") {
+                // remove and restore original
+                el.removeAttribute("data-processed");
+                // console.log(`Restoring original code for re-run: `, el.getAttribute('data-original-code'));
+                el.innerHTML = el.getAttribute('data-original-code');
+            } else {
+                // store original code
+                // console.log(`Storing original code for re-run: `, el.innerHTML);
+                el.setAttribute('data-original-code', el.innerHTML);
+            }
+        });
+
+        // Separate visible and hidden elements. Mermaid's layout engine measures
+        // text dimensions via the DOM, which fails for elements hidden by a parent
+        // (e.g., Reveal.js non-active slides, sphinx-design unopened tabs),
+        // producing broken SVGs. Render visible elements now, defer hidden ones.
+        const visible = [];
+        const hidden = [];
+        all_mermaids.forEach((el) => {
+            // offsetParent is null for display:none ancestors.
+            // getClientRects().length > 0 catches position:fixed elements
+            // (which also have null offsetParent but are still visible).
+            if (el.offsetParent !== null || el.getClientRects().length > 0) {
+                visible.push(el);
+            } else {
+                hidden.push(el);
+                el.setAttribute('data-mermaid-deferred', 'true');
+            }
+        });
+
+        if (visible.length > 0) {
+            try {
+                await mermaid.run({ nodes: visible });
+            } catch (e) {
+                console.error("Mermaid rendering failed:", e);
+            }
+        }
+
+        // Lazily render hidden elements when they become visible.
+        // Uses a promise chain (_renderQueue) to serialize rendering,
+        // since IntersectionObserver may report multiple entries at once
+        // and mermaid.run() is not safe to call concurrently.
+        if (hidden.length > 0) {
+            if (typeof IntersectionObserver === 'undefined') {
+                console.warn("IntersectionObserver not available; hidden mermaid diagrams will not render.");
+            } else {
+                _renderQueue = Promise.resolve();
+                _lazyObserver = new IntersectionObserver((entries) => {
+                    for (const entry of entries) {
+                        if (entry.isIntersecting && entry.target.getAttribute("data-processed") !== "true") {
+                            _lazyObserver.unobserve(entry.target);
+                            const el = entry.target;
+                            _renderQueue = _renderQueue.then(async () => {
+                                try {
+                                    await mermaid.run({ nodes: [el] });
+                                    el.removeAttribute('data-mermaid-deferred');
+                                    // Apply zoom to the now-rendered diagram, matching
+                                    // the decoration visible diagrams receive.
+                                    if (false) {
+                                        addZoomToSvgs(d3.selectAll("").select(function() {
+                                            return this.querySelector("svg");
+                                        }));
+                                    }
+                                } catch (e) {
+                                    console.error("Mermaid deferred rendering failed:", e);
+                                    el.removeAttribute('data-mermaid-deferred');
+                                    el.setAttribute('data-mermaid-render-failed', 'true');
+                                }
+                            });
+                        }
+                    }
+                });
+                hidden.forEach((el) => _lazyObserver.observe(el));
+            }
+        }
+    }
+
+    all_mermaids = document.querySelectorAll(".mermaid");
+    // Exclude deferred (hidden) and render-failed elements from completion checks
+    const mermaids_active = document.querySelectorAll(".mermaid:not([data-mermaid-deferred]):not([data-mermaid-render-failed])");
+    const mermaids_processed = document.querySelectorAll(".mermaid:not([data-mermaid-deferred]):not([data-mermaid-render-failed])[data-processed='true']");
+
+    if (false) {
+        const mermaids_to_add_zoom = 0 === -1 ? mermaids_active.length : 0;
+        if(mermaids_to_add_zoom > 0) {
+            var svgs = d3.selectAll("").select(function() {
+                return this.querySelector("svg");
+            });
+            // Wait until every active (visible) diagram has rendered. Deferred
+            // diagrams are excluded, so a fixed d3_node_count that counts a
+            // hidden diagram no longer loops forever waiting for its SVG.
+            if(mermaids_active.length !== mermaids_processed.length) {
+                setTimeout(() => runMermaid(false), 200);
+                return;
+            }
+            addZoomToSvgs(svgs);
+        }
+    } else if(mermaids_active.length !== mermaids_processed.length) {
+        // Wait for mermaid to process all diagrams
+        setTimeout(() => runMermaid(false), 200);
+        return;
+    }
+
+    // Stop here if not adding fullscreen capability
+    if (!true) return;
+
+    if (modal !== null ) {
+        // Destroy existing modal
+        modal.remove();
+        modal = null;
+        modalContent = null;
+    }
+
+    modal = document.createElement('div');
+    modal.className = 'mermaid-fullscreen-modal' + (darkTheme ? ' dark-theme' : '');
+    modal.setAttribute('role', 'dialog');
+    modal.setAttribute('aria-modal', 'true');
+    modal.setAttribute('aria-label', 'Fullscreen diagram viewer');
+    modal.innerHTML = `
+        <button class="mermaid-fullscreen-close${darkTheme ? ' dark-theme' : ''}" aria-label="Close fullscreen">✕</button>
+        <div class="mermaid-container-fullscreen${darkTheme ? ' dark-theme' : ''}"></div>
+    `;
+    document.body.appendChild(modal);
+
+    modalContent = modal.querySelector('.mermaid-container-fullscreen');
+    const closeBtn = modal.querySelector('.mermaid-fullscreen-close');
+
+    closeModal = () => {
+        modal.classList.remove('active');
+        modalContent.innerHTML = '';
+        document.body.style.overflow = ''
+        window.scrollTo({left: previousScrollOffset[0], top: previousScrollOffset[1], behavior: 'instant'});
+    };
+
+    closeBtn.addEventListener('click', closeModal);
+    modal.addEventListener('click', (e) => {
+        if (e.target === modal) closeModal();
+    });
+    document.querySelectorAll('.mermaid').forEach((mermaidDiv) => {
+        if (mermaidDiv.parentNode.classList.contains('mermaid-container') ||
+            mermaidDiv.closest('.mermaid-fullscreen-modal')) {
+            // Already processed, adjust button class if needed
+            const existingBtn = mermaidDiv.parentNode.querySelector('.mermaid-fullscreen-btn');
+            if (existingBtn) {
+                existingBtn.className = 'mermaid-fullscreen-btn' + (darkTheme ? ' dark-theme' : '');
+            }
+            return;
+        }
+
+        const container = document.createElement('div');
+        container.className = 'mermaid-container';
+        mermaidDiv.parentNode.insertBefore(container, mermaidDiv);
+        container.appendChild(mermaidDiv);
+
+        const fullscreenBtn = document.createElement('button');
+        fullscreenBtn.className = 'mermaid-fullscreen-btn' + (darkTheme ? ' dark-theme' : '');
+        fullscreenBtn.setAttribute('aria-label', 'View diagram in fullscreen');
+        fullscreenBtn.textContent = "\u26f6";
+        fullscreenBtn.style.opacity = "50%";
+
+        // Calculate dynamic position based on diagram's margin and padding
+        const diagramStyle = window.getComputedStyle(mermaidDiv);
+        const marginTop = parseFloat(diagramStyle.marginTop) || 0;
+        const marginRight = parseFloat(diagramStyle.marginRight) || 0;
+        const paddingTop = parseFloat(diagramStyle.paddingTop) || 0;
+        const paddingRight = parseFloat(diagramStyle.paddingRight) || 0;
+        fullscreenBtn.style.top = `${marginTop + paddingTop + 4}px`;
+        fullscreenBtn.style.right = `${marginRight + paddingRight + 4}px`;
+
+        fullscreenBtn.addEventListener('click', () => {
+            previousScrollOffset = [window.scrollX, window.scrollY];
+            const clone = mermaidDiv.cloneNode(true);
+            modalContent.innerHTML = '';
+            modalContent.appendChild(clone);
+
+            const svg = clone.querySelector('svg');
+            if (svg) {
+                svg.removeAttribute('width');
+                svg.removeAttribute('height');
+                svg.style.width = '100%';
+                svg.style.height = 'auto';
+                svg.style.maxWidth = '100%';
+                svg.style.display = 'block';
+
+                if (false) {
+                    setTimeout(() => {
+                        const g = svg.querySelector('g');
+                        if (g) {
+                            var svgD3 = d3.select(svg);
+                            svgD3.html("<g class='wrapper'>" + svgD3.html() + "</g>");
+                            var inner = svgD3.select("g");
+                            var zoom = d3.zoom().on("zoom", function(event) {
+                                inner.attr("transform", event.transform);
+                            });
+                            svgD3.call(zoom);
+                        }
+                    }, 100);
+                }
+            }
+
+            modal.classList.add('active');
+            document.body.style.overflow = 'hidden';
+        });
+        container.appendChild(fullscreenBtn);
+    });
+};
+
+
+
+const load = async () => {
+    initStyles();
+
+
+    await runMermaid(true);
+
+    const reRunIfThemeChanges = async () => {
+        const newDarkTheme = isDarkTheme();
+        if (newDarkTheme !== darkTheme) {
+            darkTheme = newDarkTheme;
+            console.log("Theme change detected, re-running mermaid with", darkTheme ? "dark" : "default", "theme");
+            await mermaid.initialize(
+                {...{"startOnLoad": false},
+                ...{ darkMode: darkTheme, theme: darkTheme ? "dark" : "default" },
+                }
+            );
+            await runMermaid(true);
+        }
+    };
+
+    // Update theme classes when theme changes
+    const themeObserver = new MutationObserver(reRunIfThemeChanges);
+    themeObserver.observe(document.documentElement, {
+        attributes: true,
+        attributeFilter: ['class', 'style', 'data-theme']
+    });
+    themeObserver.observe(document.body, {
+        attributes: true,
+        attributeFilter: ['class', 'style', 'data-theme']
+    });
+};
+
+
+
+
+
+console.log("Initializing mermaid with", darkTheme ? "dark" : "default", "theme");
+mermaid.initialize(
+    {...{"startOnLoad": false},
+    ...{ darkMode: darkTheme, theme: darkTheme ? "dark" : "default" },
+    }
+);
+
+window.addEventListener("load", load);
+window.runMermaid = runMermaid;</script>
     <script>DOCUMENTATION_OPTIONS.pagename = 'contributor-guide/memory_management';</script>
     <script async="true" defer="true" src="https://buttons.github.io/buttons.js"></script>
     <script src="../_static/comet-ux.js?v=97577a30"></script>
@@ -594,10 +952,10 @@ for, so that failure is confined to the task and the executor keeps running. An 
 calls <code class="docutils literal notranslate"><span class="pre">System.exit(SparkExitCode.OOM)</span></code> (exit code 52). Real heap exhaustion therefore usually costs
 the whole executor, not one task. An executor loss on its own does not tell you which budget was
 exceeded; the exit code does.</p>
-<p>Comet’s difficulty is that its allocations are made by Rust code, so they are invisible to the JVM
-heap and to Spark’s own off-heap accounting, yet they land squarely in container RSS. Comet
-therefore maintains its own budget that is meant to shadow the physical one, and the accuracy of
-that shadow is the central problem this page is about.</p>
+<p>Comet’s difficulty is that its allocations are made by Rust code, so no JVM allocator produces them
+and no JVM metric measures them, yet they land squarely in container RSS. Comet therefore maintains
+its own budget that is meant to shadow the physical one, and declares it to Spark so that the two
+compete for a single number. The accuracy of that shadow is the central problem this page is about.</p>
 </section>
 <section id="who-allocates-what">
 <h2>Who allocates what<a class="headerlink" href="#who-allocates-what" title="Link to this heading">#</a></h2>
@@ -626,7 +984,7 @@ page:</p>
 <tr class="row-even"><td><p>Comet native (Rust global allocator)</p></td>
 <td><p>Native heap</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">memory_limit</span></code> (see below), enforced only via the memory pool</p></td>
-<td><p>No</p></td>
+<td><p>Reservations only</p></td>
 </tr>
 <tr class="row-odd"><td><p>Comet JVM Arrow (<code class="docutils literal notranslate"><span class="pre">CometArrowAllocator</span></code>)</p></td>
 <td><p>Off-heap</p></td>
@@ -641,7 +999,27 @@ page:</p>
 </tbody>
 </table>
 </div>
-<p>Two observations follow.</p>
+<p>Several observations follow.</p>
+<p><strong>“Off-heap” and “native heap” are not the same thing.</strong> Both sit outside the JVM heap and both
+count toward container RSS, which is what makes them easy to conflate, but they differ in who
+allocates the bytes and in who is able to see them.</p>
+<ul class="simple">
+<li><p><strong>Off-heap</strong> is allocated by JVM code: <code class="docutils literal notranslate"><span class="pre">sun.misc.Unsafe</span></code> for Spark’s Tungsten pages, and Arrow’s
+Unsafe-backed allocator for Comet’s Java Arrow buffers. A JVM-side allocator makes the call, so a
+JVM-side consumer is in a position to report it, and <code class="docutils literal notranslate"><span class="pre">spark.memory.offHeap.size</span></code> together with
+<code class="docutils literal notranslate"><span class="pre">TaskMemoryManager</span></code> arbitrates it.</p></li>
+<li><p><strong>Native heap</strong> is allocated by Rust through its global allocator, in the same process. No JVM
+code makes the call, so no JVM-side allocator or metric ever measures these bytes. The only layer
+that sees any of them is Comet’s own memory pool, and then only the portion that operators
+explicitly reserve. That portion is still charged to Spark, as the next paragraph describes; what
+is never reserved is measured by nothing and budgeted by nobody.</p></li>
+</ul>
+<p><strong>The budget is shared even though the memory is not.</strong> <code class="docutils literal notranslate"><span class="pre">memory_limit</span></code> is derived from
+<code class="docutils literal notranslate"><span class="pre">spark.memory.offHeap.size</span></code> (see <a class="reference internal" href="#where-comet-s-budget-comes-from">Where Comet’s budget comes from</a>),
+and in both off-heap pool types every native reservation is forwarded to Spark’s off-heap execution
+pool over JNI. A native allocation therefore consumes the same accounting budget as a Tungsten page
+while occupying entirely different memory. Raising <code class="docutils literal notranslate"><span class="pre">spark.memory.offHeap.size</span></code> raises the ceiling
+for both at once, and raises the pod’s memory request by the same amount.</p>
 <p><strong>Comet’s JVM-side Arrow allocator is unbounded and accounted by nobody.</strong> <code class="docutils literal notranslate"><span class="pre">CometArrowAllocator</span></code>
 (<code class="docutils literal notranslate"><span class="pre">spark/src/main/scala/org/apache/comet/package.scala</span></code>) is a single process-wide
 <code class="docutils literal notranslate"><span class="pre">new</span> <span class="pre">RootAllocator(Long.MaxValue)</span></code>. Child allocators are cut from it for FFI stream export
@@ -653,6 +1031,70 @@ ceiling and no backpressure.</p>
 returns <code class="docutils literal notranslate"><span class="pre">CometUnifiedShuffleMemoryAllocator</span></code>, a Spark <code class="docutils literal notranslate"><span class="pre">MemoryConsumer</span></code> drawing from
 <code class="docutils literal notranslate"><span class="pre">spark.memory.offHeap.size</span></code>, so shuffle pages are arbitrated against Spark’s other consumers in the
 same task like any other allocation.</p>
+<p>Which allocator each call site uses, and who ends up charged for the bytes:</p>
+<pre  class="mermaid">
+        flowchart LR
+  subgraph SITES[&quot;JVM Arrow allocation sites&quot;]
+    NU[&quot;NativeUtil&lt;br&gt;FFI structs, imports, exports&quot;]
+    UDF[&quot;CometUdfBridge&lt;br&gt;JVM UDF inputs and result&quot;]
+    CGO[&quot;CometBatchKernelCodegenOutput&lt;br&gt;codegen UDF output&quot;]
+    SR[&quot;StreamReader&lt;br&gt;shuffle and IPC reads&quot;]
+    NAS[&quot;CometNativeArrowSource&lt;br&gt;stream and readerBatchIter&quot;]
+    CACHE[&quot;ArrowCachedBatchSerializer&quot;]
+    PY[&quot;CometArrowPythonRunnerBase&quot;]
+    BC[&quot;Utils broadcast-coalesce&quot;]
+  end
+
+  ROOT[&quot;CometArrowAllocator&lt;br&gt;RootAllocator, no limit&lt;br&gt;no allocation listener&quot;]
+  SHUF[&quot;Comet JVM shuffle pages&lt;br&gt;CometUnifiedShuffleMemoryAllocator&quot;]
+  NPOOL[&quot;Comet native memory pool&lt;br&gt;declared reservations only&quot;]
+  TMM[&quot;Spark off-heap execution pool&lt;br&gt;TaskMemoryManager&quot;]
+  NOBODY[&quot;accounted by nobody&quot;]
+
+  NU --&gt; ROOT
+  UDF --&gt; ROOT
+  CGO --&gt; ROOT
+  SR --&gt; ROOT
+  NAS --&gt; ROOT
+  CACHE --&gt; ROOT
+  PY --&gt; ROOT
+  BC --&gt; ROOT
+  ROOT --&gt; NOBODY
+  SHUF --&gt; TMM
+  NPOOL --&gt;|&quot;CometTaskMemoryManager over JNI&quot;| TMM
+    </pre><section id="constraints-on-a-comet-memory-consumer">
+<h3>Constraints on a Comet memory consumer<a class="headerlink" href="#constraints-on-a-comet-memory-consumer" title="Link to this heading">#</a></h3>
+<p><code class="docutils literal notranslate"><span class="pre">CometTaskMemoryManager</span></code> is the one place where Comet code acts as a Spark <code class="docutils literal notranslate"><span class="pre">MemoryConsumer</span></code>, and the
+rules below are why it is written the way it is. Each is easy to break by accident.</p>
+<p><strong><code class="docutils literal notranslate"><span class="pre">getUsed</span></code> and <code class="docutils literal notranslate"><span class="pre">spill</span></code> must stay lock-free.</strong> Spark calls both while already holding the
+<code class="docutils literal notranslate"><span class="pre">TaskMemoryManager</span></code> monitor, which is why <code class="docutils literal notranslate"><span class="pre">NativeMemoryConsumer.getUsed</span></code> reads an <code class="docutils literal notranslate"><span class="pre">AtomicLong</span></code> and
+<code class="docutils literal notranslate"><span class="pre">spill</span></code> returns without touching guarded state. A consumer that took a monitor of its own in either
+method would risk a deadlock: a native reservation arriving over JNI on a Comet Tokio worker holds
+Spark’s monitor and would wait for the consumer’s, while whatever held the consumer’s waited for
+Spark’s. For the same reason, nothing reachable from a <code class="docutils literal notranslate"><span class="pre">spill</span></code> callback may allocate memory that
+routes back through the same consumer.</p>
+<p><strong><code class="docutils literal notranslate"><span class="pre">scala.util.control.NonFatal</span></code> does not contain an acquisition.</strong> <code class="docutils literal notranslate"><span class="pre">acquireExecutionMemory</span></code> fails in
+three ways and <code class="docutils literal notranslate"><span class="pre">NonFatal</span></code> catches only the first. It runs other consumers’ <code class="docutils literal notranslate"><span class="pre">spill</span></code>, where
+<code class="docutils literal notranslate"><span class="pre">TaskMemoryManager</span></code> turns an interrupted spill into a <code class="docutils literal notranslate"><span class="pre">RuntimeException</span></code> and an <code class="docutils literal notranslate"><span class="pre">IOException</span></code> into a
+<code class="docutils literal notranslate"><span class="pre">SparkOutOfMemoryError</span></code>, which extends <code class="docutils literal notranslate"><span class="pre">OutOfMemoryError</span></code> and is therefore an <code class="docutils literal notranslate"><span class="pre">Error</span></code>. Separately,
+<code class="docutils literal notranslate"><span class="pre">ExecutionMemoryPool.acquireMemory</span></code> parks in <code class="docutils literal notranslate"><span class="pre">lock.wait()</span></code> when a task is below its fair share, so
+killing a task raises a plain <code class="docutils literal notranslate"><span class="pre">InterruptedException</span></code>, which <code class="docutils literal notranslate"><span class="pre">NonFatal</span></code> excludes by name. Comet
+reaches this method from native over JNI, so whatever escapes crosses the JNI boundary.</p>
+<p><strong>Spark exposes no per-consumer usage figure.</strong> <code class="docutils literal notranslate"><span class="pre">TaskMemoryManager.getMemoryConsumptionForThisTask</span></code>
+is task-wide, and a consumer that reaches <code class="docutils literal notranslate"><span class="pre">acquireExecutionMemory</span></code> directly rather than through
+<code class="docutils literal notranslate"><span class="pre">MemoryConsumer.acquireMemory</span></code> keeps an inherited <code class="docutils literal notranslate"><span class="pre">used</span></code> of zero. That is why <code class="docutils literal notranslate"><span class="pre">NativeMemoryConsumer</span></code>
+overrides <code class="docutils literal notranslate"><span class="pre">getUsed</span></code> to report Comet’s own tally instead: without it, Spark’s spill-victim ordering
+and <code class="docutils literal notranslate"><span class="pre">showMemoryUsage</span></code> would believe the consumer held nothing.</p>
+<p><strong>A partial grant can be stranded.</strong> <code class="docutils literal notranslate"><span class="pre">acquireExecutionMemory</span></code> takes its first grant from the pool
+before asking other consumers to spill, so when a spill throws, the task has been charged for bytes
+the call never returns. Nothing releases them until Spark’s final task cleanup, so they are headroom
+nobody can use for the rest of the task. Any caller that swallows the exception has to reconcile
+that grant, and the only figure available for doing so is the task-wide one above.</p>
+<p><strong>A consumer whose <code class="docutils literal notranslate"><span class="pre">spill</span></code> returns zero takes budget it can never give back.</strong>
+<code class="docutils literal notranslate"><span class="pre">NativeMemoryConsumer.spill</span></code> returns <code class="docutils literal notranslate"><span class="pre">0</span></code>, so Spark can select it as a spill victim and reclaim
+nothing from it; it is only ever a spill trigger. The bytes it holds are real, so other consumers in
+the same task see correspondingly less headroom and can spill earlier than they otherwise would.</p>
+</section>
 </section>
 <section id="where-comet-s-budget-comes-from">
 <h2>Where Comet’s budget comes from<a class="headerlink" href="#where-comet-s-budget-comes-from" title="Link to this heading">#</a></h2>
@@ -822,7 +1264,15 @@ heap.</p></li>
 retained/dirty page cache all add resident bytes that no layer above the allocator can see.
 Freeing memory does not necessarily return pages to the OS.</p></li>
 <li><p><strong>Non-Rust allocations.</strong> Memory allocated by C dependencies through libc <code class="docutils literal notranslate"><span class="pre">malloc</span></code>, and anything
-<code class="docutils literal notranslate"><span class="pre">mmap</span></code>ed, never passes through Rust’s <code class="docutils literal notranslate"><span class="pre">GlobalAlloc</span></code>.</p></li>
+<code class="docutils literal notranslate"><span class="pre">mmap</span></code>ed, never passes through Rust’s <code class="docutils literal notranslate"><span class="pre">GlobalAlloc</span></code>, so neither the memory pool nor the
+<code class="docutils literal notranslate"><span class="pre">jemalloc_allocated</span></code> metric sees it. In a default build the C dependencies are libzstd
+(<code class="docutils literal notranslate"><span class="pre">zstd-sys</span></code>, behind the Parquet <code class="docutils literal notranslate"><span class="pre">zstd</span></code> codec), libhdfs (<code class="docutils literal notranslate"><span class="pre">hdfs-sys</span></code>, pulled in by the default
+<code class="docutils literal notranslate"><span class="pre">hdfs-opendal</span></code> feature), and the TLS stack used for cloud object stores (<code class="docutils literal notranslate"><span class="pre">aws-lc-sys</span></code>). Building
+with the <code class="docutils literal notranslate"><span class="pre">jemalloc</span></code> or <code class="docutils literal notranslate"><span class="pre">mimalloc</span></code> feature adds the allocator itself (<code class="docutils literal notranslate"><span class="pre">tikv-jemalloc-sys</span></code>,
+<code class="docutils literal notranslate"><span class="pre">libmimalloc-sys</span></code>). It is worth knowing which dependencies are <em>not</em> C, because several names
+suggest otherwise: the other Parquet codecs are pure Rust in this build, <code class="docutils literal notranslate"><span class="pre">snap</span></code> for Snappy,
+<code class="docutils literal notranslate"><span class="pre">lz4_flex</span></code> for LZ4 and <code class="docutils literal notranslate"><span class="pre">zlib-rs</span></code> for gzip, as is <code class="docutils literal notranslate"><span class="pre">libbz2-rs-sys</span></code> despite its name, so those
+allocations do pass through <code class="docutils literal notranslate"><span class="pre">GlobalAlloc</span></code> and are counted.</p></li>
 <li><p><strong>Batches in flight across the FFI boundary.</strong> Reservations stop at the operator that made them.
 Imported JVM batches are reserved only while a reserving operator holds them, and exported native
 batches have usually been released by the time the JVM receives them yet stay resident until the
@@ -830,7 +1280,7 @@ JVM closes them (see <a class="reference internal" href="#crossing-the-ffi-bound
 </ul>
 <p>The practical consequence is that <code class="docutils literal notranslate"><span class="pre">reserved()</span></code> is a lower bound on Comet’s real footprint, and the
 gap is workload-dependent. <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.memoryPool.fraction</span></code> exists purely so operators can
-hand-tune a haircut that covers the gap for their workload.</p>
+hand-tune a margin that covers the gap for their workload.</p>
 <p>To measure the gap on a real query, enable tracing with the <code class="docutils literal notranslate"><span class="pre">jemalloc</span></code> feature and compare
 <code class="docutils literal notranslate"><span class="pre">jemalloc_allocated</span></code> against the summed <code class="docutils literal notranslate"><span class="pre">thread_NNN_comet_memory_reserved</span></code> values; see
 <a class="reference internal" href="tracing.html#analyzing-memory-usage"><span class="std std-ref">Tracing</span></a>.</p>
@@ -855,11 +1305,34 @@ hard ceiling on the sum of everything in the container. That cgroup counts, amon
 <li><p>Comet’s JVM-side Arrow buffers (<code class="docutils literal notranslate"><span class="pre">CometArrowAllocator</span></code>),</p></li>
 <li><p>page cache charged to the cgroup by the container’s file I/O, including spill files.</p></li>
 </ul>
-<p>Only the first and a portion of the third are visible to Spark’s accounting. When the total crosses
-<code class="docutils literal notranslate"><span class="pre">memory.max</span></code>, the kernel OOM killer kills the process. The failure mode is significantly worse than
-a task-level OOM: every task running on that executor dies, every cached block it held is lost and
-must be recomputed, and the shuffle files it produced become unavailable to downstream fetches.
-Spark’s driver sees only <code class="docutils literal notranslate"><span class="pre">ExecutorLostFailure</span></code> with exit code 137.</p>
+<p>Everything the cgroup counts, and who accounts for each part:</p>
+<pre  class="mermaid">
+        flowchart TB
+  subgraph CG[&quot;pod cgroup memory.max, kernel OOM kill above this&quot;]
+    subgraph SEEN[&quot;visible to Spark's accounting&quot;]
+      HEAP[&quot;JVM heap&lt;br&gt;execution and storage&lt;br&gt;spark.executor.memory&quot;]
+      TUNG[&quot;Spark Tungsten off-heap&lt;br&gt;TaskMemoryManager&quot;]
+      SHUFP[&quot;Comet JVM shuffle pages&lt;br&gt;CometUnifiedShuffleMemoryAllocator&quot;]
+      NATRES[&quot;Comet native heap, reserved&lt;br&gt;operators that call try_grow&lt;br&gt;declared to Spark over JNI, never measured&quot;]
+    end
+    subgraph NONE[&quot;accounted by nobody&quot;]
+      NATUND[&quot;Comet native heap, undeclared&lt;br&gt;kernels, array builders, decompression&lt;br&gt;Parquet metadata, object_store, tokio&quot;]
+      ARROWR[&quot;Comet JVM Arrow&lt;br&gt;CometArrowAllocator, unbounded&quot;]
+      NONHEAP[&quot;JVM non-heap&lt;br&gt;metaspace, code cache, thread stacks&lt;br&gt;GC structures, Netty direct buffers&quot;]
+      PAGEC[&quot;page cache charged to the cgroup&lt;br&gt;file I/O, including spill files&quot;]
+      FRAG[&quot;allocator overhead&lt;br&gt;fragmentation, padding&lt;br&gt;jemalloc retained and dirty pages&quot;]
+    end
+  end
+    </pre><p>Spark’s accounting covers the first group, though not in the same sense throughout it. The JVM
+heap, Tungsten pages and Comet’s shuffle pages are allocated by JVM code that reports what it
+allocated. A native reservation is a number an operator declared before allocating: <code class="docutils literal notranslate"><span class="pre">try_grow</span></code>
+succeeds only once <code class="docutils literal notranslate"><span class="pre">CometTaskMemoryManager</span></code> has charged Spark’s off-heap execution pool over JNI, so
+the budget really is spent, but nothing measured the bytes and the reservation is only a lower bound
+on them. The second group is outside every accounting layer.</p>
+<p>When the total crosses <code class="docutils literal notranslate"><span class="pre">memory.max</span></code>, the kernel OOM killer kills the process. The failure mode is
+significantly worse than a task-level OOM: every task running on that executor dies, every cached
+block it held is lost and must be recomputed, and the shuffle files it produced become unavailable
+to downstream fetches. Spark’s driver sees only <code class="docutils literal notranslate"><span class="pre">ExecutorLostFailure</span></code> with exit code 137.</p>
 <p>Two facts follow that are easy to get wrong:</p>
 <ol class="arabic simple">
 <li><p><strong><code class="docutils literal notranslate"><span class="pre">spark.memory.offHeap.size</span></code> is part of the pod limit, not extra headroom on top of it.</strong>
@@ -885,7 +1358,7 @@ much they matter:</p>
 with the <code class="docutils literal notranslate"><span class="pre">jemalloc</span></code> feature and compare <code class="docutils literal notranslate"><span class="pre">jemalloc_allocated</span></code> against summed reservations after
 the fact. There is no runtime value that an operator, a metric, or a policy could read.</p></li>
 <li><p><strong><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.memoryPool.fraction</span></code> is a manual proxy for the gap.</strong> It asks operators to
-guess a per-workload haircut rather than measuring anything.</p></li>
+guess a per-workload margin rather than measuring anything.</p></li>
 <li><p><strong><code class="docutils literal notranslate"><span class="pre">CometArrowAllocator</span></code> is unbounded</strong> and participates in no budget.</p></li>
 <li><p><strong>Buffer and reservation lifetimes are independent across the FFI boundary.</strong> A batch can be
 resident on either side with no reservation covering it, because reservations are made and
@@ -990,7 +1463,10 @@ is not.</p></li>
   <nav class="bd-toc-nav page-toc" aria-labelledby="pst-page-navigation-heading-2">
     <ul class="visible nav section-nav flex-column">
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#overview">Overview</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#who-allocates-what">Who allocates what</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#who-allocates-what">Who allocates what</a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#constraints-on-a-comet-memory-consumer">Constraints on a Comet memory consumer</a></li>
+</ul>
+</li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#where-comet-s-budget-comes-from">Where Comet’s budget comes from</a><ul class="nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#resolving-the-pool-type">Resolving the pool type</a></li>
 </ul>

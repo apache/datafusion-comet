@@ -658,7 +658,7 @@ two differ, it logs one deduplicated warning naming the operator, column, and ty
 │ ColumnarBatch    │               │ FFI_ArrowArray   │
 │ ┌──────────────┐ │               │ ┌──────────────┐ │
 │ │ ArrowBuf     │─┼──────────────&gt;│ │ buffers[0]   │ │
-│ │ (off-heap)   │ │               │ │ (pointer)    │ │
+│ │ (handle)     │ │               │ │ (pointer)    │ │
 │ └──────────────┘ │               │ └──────────────┘ │
 └──────────────────┘               └──────────────────┘
         │                                   │
@@ -775,7 +775,7 @@ until then.</p>
 </section>
 <section id="wrapper-object-lifecycle-native-jvm">
 <h3>Wrapper Object Lifecycle (Native → JVM)<a class="headerlink" href="#wrapper-object-lifecycle-native-jvm" title="Link to this heading">#</a></h3>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>Time    Native Memory              JVM Heap              Off-heap/Native
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>Time    Native Memory              JVM Heap              Data location
 ────────────────────────────────────────────────────────────────────────
 t0      RecordBatch produced       -                     Data in native
         in DataFusion

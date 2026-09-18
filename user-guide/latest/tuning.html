@@ -828,11 +828,26 @@ than before. See the <a class="reference internal" href="#determining-how-much-m
 <section id="configuring-comet-memory">
 <h3>Configuring Comet Memory<a class="headerlink" href="#configuring-comet-memory" title="Link to this heading">#</a></h3>
 <p>Comet shares an off-heap memory pool with Spark. The size of the pool is
-specified by <code class="docutils literal notranslate"><span class="pre">spark.memory.offHeap.size</span></code>.</p>
-<p>Comet’s memory accounting isn’t 100% accurate and this can result in Comet using more memory than it reserves,
-leading to out-of-memory exceptions. To work around this issue, it is possible to
-set <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.memoryPool.fraction</span></code> to a value less than <code class="docutils literal notranslate"><span class="pre">1.0</span></code> to restrict the amount of memory that can be
-reserved by Comet.</p>
+specified by <code class="docutils literal notranslate"><span class="pre">spark.memory.offHeap.size</span></code>. The pool is a shared <em>budget</em> rather than a shared
+allocator: Comet’s native operators allocate from the Rust heap rather than from JVM off-heap
+memory, but every reservation they make is charged against this same pool, so Comet and Spark’s own
+off-heap consumers draw down one number.</p>
+<p>Comet’s memory pool only tracks memory that an operator explicitly reserves, which in practice means the batches
+an operator deliberately accumulates: the sort buffer, the build side of a hash join, hash aggregation state, and the
+shuffle writer’s buffered partitions. Memory that is not reserved is invisible to the pool no matter how much of it
+there is. That includes:</p>
+<ul class="simple">
+<li><p>per-batch working memory in expression kernels and Arrow array builders,</p></li>
+<li><p>decompression buffers and Parquet reader structures,</p></li>
+<li><p>object store request buffers and the async runtime’s own machinery,</p></li>
+<li><p>Arrow buffers allocated on the JVM side, which no budget covers at all,</p></li>
+<li><p>allocator overhead: buffer padding, size-class rounding, fragmentation, and pages the allocator retains after a
+free rather than returning to the operating system.</p></li>
+</ul>
+<p>Reserved memory is therefore a lower bound on what Comet really uses, and how far below it sits depends on the
+workload. This is why Comet can stay within the pool’s limit and still push the executor past its container limit.
+To leave room for the part that is not counted, set <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.memoryPool.fraction</span></code> to a value less than
+<code class="docutils literal notranslate"><span class="pre">1.0</span></code>, which restricts the amount of memory Comet is allowed to reserve.</p>
 <p>For more details about Spark off-heap memory mode, please refer to <a class="reference external" href="https://spark.apache.org/docs/latest/configuration.html">Spark documentation</a>.</p>
 <p>Comet implements multiple memory pool implementations. The type of pool can be specified with <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.memoryPool</span></code>.</p>
 <p>The valid pool types are:</p>
