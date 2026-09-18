@@ -91,10 +91,20 @@ impl NegativeExpr {
         if self.fail_on_error {
             return false;
         }
+        // `neg_wrapping` wraps exactly the `downcast_integer!` types and hands everything else to
+        // `neg`, which errors instead of wrapping. The unsigned half already returned above, so
+        // what is left of that set is exactly `is_signed_integer()`. Gating on it ties this
+        // predicate to the kernel: a type that grows a wrapping path in `evaluate` cannot start
+        // claiming a reversed ordering by default, it has to be admitted here deliberately.
+        if !data_type.is_signed_integer() {
+            return false;
+        }
         match signed_integer_min(&data_type) {
             // A null lower bound is unbounded below, so it reaches the minimum.
             Some(min) => range.lower().is_null() || range.lower() <= &min,
-            None => false,
+            // A signed integer width `signed_integer_min` does not list yet. Assume it wraps
+            // rather than claim an ordering the kernel could violate.
+            None => true,
         }
     }
 }
@@ -104,6 +114,9 @@ impl NegativeExpr {
 /// type: `neg_wrapping` wraps only the eight integer types and hands the rest to `neg`, which
 /// negates a float exactly and raises an error rather than wrapping for decimal, duration and
 /// interval.
+///
+/// Callers reach this only after `DataType::is_signed_integer`, so the arms below must stay in
+/// step with that predicate. A signed width missing from here is treated as wrapping.
 fn signed_integer_min(data_type: &DataType) -> Option<ScalarValue> {
     Some(match data_type {
         DataType::Int8 => ScalarValue::Int8(Some(i8::MIN)),
@@ -525,6 +538,35 @@ mod tests {
         ] {
             assert_spark_overflow(eval_scalar(scalar, true).unwrap_err(), from_type);
         }
+    }
+
+    /// The legacy scalar path disagrees with the legacy array path right beside it. `evaluate`
+    /// skips the overflow checks when `fail_on_error` is false and hands the scalar to
+    /// `ScalarValue::arithmetic_negate`, which negates with `neg_checked` whatever the mode, so
+    /// the type minimum errors here while the array path wraps it. Spark wraps in non-ANSI, so
+    /// the array path is the one that matches. Both halves are pinned rather than fixed, since
+    /// the scalar path predates this change. Tracked in
+    /// <https://github.com/apache/datafusion-comet/issues/6015>.
+    #[test]
+    fn test_legacy_scalar_negation_of_min_errors_unlike_the_array_path() {
+        for scalar in [
+            ScalarValue::Int8(Some(i8::MIN)),
+            ScalarValue::Int16(Some(i16::MIN)),
+            ScalarValue::Int32(Some(i32::MIN)),
+            ScalarValue::Int64(Some(i64::MIN)),
+        ] {
+            assert!(
+                eval_scalar(scalar.clone(), false).is_err(),
+                "{scalar:?}: legacy scalar negation of the type minimum errors today"
+            );
+        }
+
+        // Same value, same mode, array path: wraps onto itself instead of erroring.
+        let array: ArrayRef = Arc::new(Int32Array::from(vec![i32::MIN]));
+        let ColumnarValue::Array(result) = eval_array(array, false).unwrap() else {
+            panic!("expected array result")
+        };
+        assert_eq!(result.as_primitive::<Int32Type>().value(0), i32::MIN);
     }
 
     fn ordered(descending: bool, nulls_first: bool) -> SortProperties {
