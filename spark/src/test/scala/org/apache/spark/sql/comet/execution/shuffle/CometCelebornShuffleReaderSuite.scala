@@ -1627,6 +1627,10 @@ class CometCelebornShuffleReaderSuite extends CometTestBase {
     context.markTaskCompleted(None)
   }
 
+  test("decoder iterators share one task-scoped read buffer without reallocating") {
+    NativeBatchDecoderIteratorLifecycleChecks.reusesTaskScopedBufferAcrossIterators()
+  }
+
   test("decoder cleanup releases a prefetched batch that was not consumed") {
     NativeBatchDecoderIteratorLifecycleChecks.closesPrefetchedBatch()
   }
