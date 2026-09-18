@@ -179,6 +179,12 @@ Selection logic in `CometShuffleManager.shouldBypassMergeSort()`:
 3. Native code (`Native.decodeShuffleBlock()`) decompresses and decodes to Arrow arrays
 4. Arrow FFI imports arrays as `ColumnarBatch`
 
+This is the path taken when the consumer is a Spark operator. When a Comet native operator consumes
+the shuffle output and `spark.comet.shuffle.directRead.enabled` is set, steps 2 through 4 are skipped:
+the raw compressed blocks are handed to native code, which decodes them inside the plan. JVM shuffle
+writes the same Arrow IPC block format as native shuffle, so direct read applies to both. See
+[Direct Read](native_shuffle.md#direct-read-shufflescan) for the mechanism.
+
 ## Memory Management
 
 - `CometShuffleMemoryAllocator`: Custom allocator for off-heap memory pages
@@ -187,8 +193,9 @@ Selection logic in `CometShuffleManager.shouldBypassMergeSort()`:
 
 ## Configuration
 
-| Config                                   | Description                         |
-| ---------------------------------------- | ----------------------------------- |
-| `spark.comet.shuffle.jvm.batchSize`      | Rows per Arrow batch                |
-| `spark.comet.shuffle.jvm.spillThreshold` | Row count threshold for spill       |
-| `spark.comet.shuffle.compression.codec`  | Compression codec, `lz4` by default |
+| Config                                   | Description                                       |
+| ---------------------------------------- | ------------------------------------------------- |
+| `spark.comet.shuffle.jvm.batchSize`      | Rows per Arrow batch                              |
+| `spark.comet.shuffle.jvm.spillThreshold` | Row count threshold for spill                     |
+| `spark.comet.shuffle.compression.codec`  | Compression codec, `lz4` by default               |
+| `spark.comet.shuffle.directRead.enabled` | Decode blocks natively on read, `true` by default |

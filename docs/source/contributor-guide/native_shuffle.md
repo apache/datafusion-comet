@@ -169,6 +169,19 @@ The native shuffle implementation is its own workspace crate, `datafusion-comet-
 
 ### Read Path
 
+There are two read paths, and which one runs is decided at plan serialization time rather than at
+read time. See [Direct Read](#direct-read-shufflescan) below for how the choice is made.
+
+**Direct read**, the default, decodes inside the native plan:
+
+1. `CometBlockStoreShuffleReader.readAsRawStream()` concatenates the fetched block streams and
+   skips decoding entirely.
+2. `CometShuffleBlockIterator` hands native one compressed block at a time.
+3. The native `ShuffleScanExec` decodes each block with `read_ipc_compressed` and feeds the
+   resulting `RecordBatch` straight into the plan. No Arrow FFI export or import happens.
+
+**JVM decode**, used when direct read does not apply:
+
 1. `CometBlockStoreShuffleReader` fetches shuffle blocks via `ShuffleBlockFetcherIterator`.
 
 2. For each block, `NativeBatchDecoderIterator`:
@@ -180,6 +193,63 @@ The native shuffle implementation is its own workspace crate, `datafusion-comet-
 3. Native code decompresses and deserializes the Arrow IPC stream.
 
 4. Arrow FFI transfers the `RecordBatch` to JVM as a `ColumnarBatch`.
+
+## Direct Read (ShuffleScan)
+
+Direct read lets a native operator consume shuffle output without the batch ever being decoded in
+the JVM or crossing Arrow FFI. It is controlled by `spark.comet.shuffle.directRead.enabled`, which
+defaults to `true` and requires `spark.comet.shuffle.enabled`. It applies to both native shuffle and
+JVM columnar shuffle, because both write the same Arrow IPC block format.
+
+### How the path is selected
+
+`CometExchangeSink.shouldUseShuffleScan` (`spark/src/main/scala/org/apache/comet/serde/operator/CometSink.scala`)
+decides during plan serialization. When the sink's input is a Comet shuffle exchange, it emits a
+`ShuffleScan` operator in place of the usual `Scan`. If any output type fails
+`supportedSinkDataType`, it records the fallback reason `Unsupported data type for shuffle direct read`
+and the slot serializes as a regular `Scan` instead.
+
+**The protobuf is the source of truth for which slots are direct read, not the config.**
+`findShuffleScanIndices` (`operators.scala`) walks the serialized plan, counting scan slots in order
+and collecting the indices that carry a `ShuffleScan`. JVM-side input dispatch reads that set rather
+than re-checking the config, so the two cannot disagree. Anything changing the serde condition has to
+leave that walk consistent with it.
+
+### How blocks reach native
+
+`CometExecRDD.resolveInputObjects` fills one input slot per scan input, in scan-input order:
+
+- A slot in `shuffleScanIndices` gets a `CometShuffleBlockIterator`, obtained from
+  `CometShuffledBatchRDD.computeAsShuffleBlockIterator`. A slot marked as a shuffle scan whose RDD is
+  not a `CometShuffledBatchRDD` throws `CometRuntimeException`.
+- Every other slot gets the `ArrowArrayStream` exported by the ordinary FFI path.
+
+`CometShuffleBlockIterator` reads a 16-byte header per block: an 8-byte compressed length, which
+includes the field count but not itself, followed by an 8-byte field count that is discarded because
+the schema comes from the `ShuffleScan` protobuf fields. The compressed body is read into a reused
+`DirectByteBuffer`, **valid only until the next `hasNext()` call**. Native must fully consume it
+before pulling the next block, which `read_ipc_compressed` satisfies because it allocates fresh
+native memory for the decoded data.
+
+### Native side
+
+`ShuffleScanExec` (`native/core/src/execution/operators/shuffle_scan.rs`) pulls blocks through the
+iterator's `hasNext()` and `getBuffer()` JNI methods and decodes them with `read_ipc_compressed`.
+Two details matter when changing it:
+
+- `get_next_batch` is called from outside `poll_next`, because JNI calls cannot be made from tokio
+  worker threads. A change that moves the JNI call into the stream's `poll_next` breaks this.
+- Dictionary-encoded columns are unpacked to their value type by `unpack_dictionary`, so the schema
+  the plan sees matches the declared `ShuffleScan` fields.
+
+Blocks are validated before decoding when `CometShuffleBlockIterator.requiresValidation()` is true,
+which happens when the underlying stream implements `CometShuffleReadFailureHandler` so a corrupt
+block can be reported back as a shuffle read failure rather than a native decode panic.
+
+Celeborn reuses the same expected-schema contract from the JVM side. `CometCelebornShuffleReader`
+builds a `ShuffleScan` message from the dependency's output attributes and passes it to
+`NativeBatchDecoderIterator`, so remote logical types are validated before Arrow import and an
+unsupported type fails before any shuffle resource is acquired.
 
 ## Partitioning
 
@@ -265,14 +335,15 @@ independently compressed, allowing parallel decompression during reads.
 
 ## Configuration
 
-| Config                                       | Default | Description                              |
-| -------------------------------------------- | ------- | ---------------------------------------- |
-| `spark.comet.shuffle.enabled`                | `true`  | Enable Comet shuffle                     |
-| `spark.comet.shuffle.mode`                   | `auto`  | Shuffle mode: `native`, `jvm`, or `auto` |
-| `spark.comet.shuffle.compression.codec`      | `lz4`   | Compression codec                        |
-| `spark.comet.shuffle.compression.zstd.level` | `1`     | Zstd compression level                   |
-| `spark.comet.shuffle.native.writeBufferSize` | `1MB`   | Write buffer size                        |
-| `spark.comet.shuffle.jvm.batchSize`          | `8192`  | Target rows per batch                    |
+| Config                                       | Default | Description                                               |
+| -------------------------------------------- | ------- | --------------------------------------------------------- |
+| `spark.comet.shuffle.enabled`                | `true`  | Enable Comet shuffle                                      |
+| `spark.comet.shuffle.mode`                   | `auto`  | Shuffle mode: `native`, `jvm`, or `auto`                  |
+| `spark.comet.shuffle.directRead.enabled`     | `true`  | Decode shuffle blocks in native code, bypassing Arrow FFI |
+| `spark.comet.shuffle.compression.codec`      | `lz4`   | Compression codec                                         |
+| `spark.comet.shuffle.compression.zstd.level` | `1`     | Zstd compression level                                    |
+| `spark.comet.shuffle.native.writeBufferSize` | `1MB`   | Write buffer size                                         |
+| `spark.comet.shuffle.jvm.batchSize`          | `8192`  | Target rows per batch                                     |
 
 ## Comparison with JVM Shuffle
 
