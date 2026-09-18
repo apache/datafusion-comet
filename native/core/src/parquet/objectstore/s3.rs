@@ -101,12 +101,13 @@ pub fn create_store(
             builder.with_credentials(Arc::new(bridge))
         }
         None => {
-            // IRSA take-over. When no explicit `aws.credentials.provider` is configured, the
-            // default AWS chain places IMDS/instance-role after web-identity, so a throttled
-            // AssumeRoleWithWebIdentity silently downgrades to the node role -> hard S3 403. On
-            // EKS/IRSA use the Comet web-identity provider instead (retries the throttle, no
-            // node-role fallback, shared jittered cache). Any explicit provider config is
-            // respected -- it takes the normal `build_credential_provider` path below.
+            // IRSA take-over. On EKS/IRSA, resolve web-identity credentials with the Comet
+            // provider (retries the STS throttle, shares one credential per process, coalesces a
+            // failed burst) instead of the plain default chain, which does not retry the throttle
+            // and gives every reader its own assume-role call. It is web-identity-only, so it never
+            // falls back to a lower-privilege identity. It stands aside for any explicit
+            // credentials -- a configured `aws.credentials.provider` or static env credentials --
+            // so it only changes the otherwise-default behavior.
             let explicit_provider = get_config_trimmed(configs, bucket, "aws.credentials.provider")
                 .is_some_and(|s| !s.is_empty());
             let web_identity = take_over_if_irsa(explicit_provider, |key| {

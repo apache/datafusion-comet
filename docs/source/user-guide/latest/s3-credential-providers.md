@@ -112,7 +112,7 @@ When Comet detects IRSA (both `AWS_WEB_IDENTITY_TOKEN_FILE` and `AWS_ROLE_ARN` a
 - never falls back to the node instance role -- a throttle that outlasts the retries surfaces as a retryable error instead of a wrong-identity `403`, and
 - caches one assumed-role credential per executor process, shared across all reader threads and scans, and refreshes it ahead of expiry with a per-process jitter so cluster-wide refreshes do not synchronize into another burst.
 
-It stands aside when you have configured credentials explicitly -- a Comet bridge class, an `fs.s3a.aws.credentials.provider` (Parquet), or catalog static keys / `client.assume-role.arn` (Iceberg) -- so this only changes the otherwise-default behavior.
+It stands aside whenever credentials are configured explicitly -- a Comet bridge class, an `fs.s3a.aws.credentials.provider` (Parquet), catalog static keys / `client.assume-role.arn` (Iceberg), or static credentials in the environment (`AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY`, which outrank web-identity in the default chain). So it only changes the otherwise-default behavior and never switches away from an identity you set explicitly.
 
 Tuning is rarely needed. The knobs, with their defaults, are read from the Parquet `fs.s3a.` config bag or the Iceberg catalog properties:
 
