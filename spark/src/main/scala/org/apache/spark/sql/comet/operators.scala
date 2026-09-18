@@ -465,6 +465,7 @@ private[comet] object PlanDataInjector extends Logging {
       // directly -- there is no silent "not a leaf" skip.
       case s: CometLeafExec with CometScanWithPlanData =>
         s.ensureSubqueriesResolved()
+        s.sendDriverMetrics()
         if (s.commonData.nonEmpty && s.perPartitionData.nonEmpty) {
           (Map(s.sourceKey -> s.commonData), Map(s.sourceKey -> s.perPartitionData))
         } else {
@@ -1200,6 +1201,15 @@ abstract class CometLeafExec extends CometNativeExec with LeafExecNode {
     prepare()
     waitForSubqueries()
   }
+
+  /**
+   * Posts any driver-side SQL metrics this leaf scan computes (e.g. Iceberg planning metrics) to
+   * the SQL UI. Like [[ensureSubqueriesResolved]], it is called from
+   * [[PlanDataInjector.findAllPlanData]] at execution time, which is the only hook that reaches a
+   * leaf scan fused under a parent `CometNativeExec` (its own `doExecuteColumnar` never runs).
+   * Default is a no-op; leaf scans with driver-computed metrics override it.
+   */
+  def sendDriverMetrics(): Unit = {}
 }
 
 /**

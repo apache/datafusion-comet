@@ -2124,13 +2124,11 @@ class CometIcebergNativeSuite
         }
 
         // Counts known to be non-zero for this table should render as non-zero in the UI.
-        assert(
-          uiValues(nameToAccId("totalDataManifest")).trim != "0",
-          s"totalDataManifest should be non-zero, got " +
-            s"${uiValues(nameToAccId("totalDataManifest"))}")
-        assert(
-          uiValues(nameToAccId("resultDataFiles")).trim != "0",
-          s"resultDataFiles should be non-zero, got ${uiValues(nameToAccId("resultDataFiles"))}")
+        Seq("totalDataManifest", "resultDataFiles").foreach { name =>
+          assert(
+            uiValues(nameToAccId(name)).trim != "0",
+            s"$name should be non-zero, got ${uiValues(nameToAccId(name))}")
+        }
 
         // Scan time (native elapsed_compute) is declared on the scan node and tracked in the UI.
         // The status store keys base metrics by their display name, not the native metric key, so

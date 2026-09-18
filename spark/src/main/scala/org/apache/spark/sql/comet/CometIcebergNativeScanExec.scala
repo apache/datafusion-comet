@@ -236,10 +236,10 @@ case class CometIcebergNativeScanExec(
    * doExecuteColumnar: when this scan is fused under a parent native operator (e.g. a CometFilter
    * for a pushed predicate), the parent runs the whole subtree as one RDD and this node's
    * doExecuteColumnar is never invoked. CometNativeExec.findAllPlanData walks the subtree at
-   * execution time and reaches every Iceberg scan, so it calls this too. Re-posting the same
-   * values is harmless.
+   * execution time and reaches every leaf scan (calling this leaf lifecycle hook alongside
+   * ensureSubqueriesResolved), so it calls this too. Re-posting the same values is harmless.
    */
-  private[comet] def sendDriverMetrics(): Unit = {
+  override def sendDriverMetrics(): Unit = {
     if (icebergPlanningMetrics.isEmpty) {
       return
     }
