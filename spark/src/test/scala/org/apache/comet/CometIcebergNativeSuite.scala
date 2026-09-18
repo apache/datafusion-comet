@@ -39,9 +39,9 @@ import org.apache.spark.sql.execution.{InSubqueryExec, ReusedSubqueryExec, Spark
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AdaptiveSparkPlanHelper, BroadcastQueryStageExec}
 import org.apache.spark.sql.execution.exchange.{ReusedExchangeExec, ShuffleExchangeExec}
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{StringType, TimestampType}
+import org.apache.spark.sql.types.{ArrayType, StringType, StructType, TimestampType}
 
-import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus, isSpark42Plus}
+import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus, isSpark41Plus, isSpark42Plus}
 import org.apache.comet.iceberg.{IcebergReflection, RESTCatalogHelper}
 import org.apache.comet.serde.OperatorOuterClass
 import org.apache.comet.testing.{FuzzDataGenerator, SchemaGenOptions}
@@ -598,6 +598,182 @@ class CometIcebergNativeSuite
     }
   }
 
+  // V3 tables store positional deletes as deletion vectors (Puffin blobs) instead of position
+  // delete files. This verifies Comet reads a V3 table's deletion vectors natively and applies
+  // them, matching Spark.
+  test("MOR V3 table with DELETION VECTORS - verify deletes are applied") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    // Format version 3 (and its deletion vectors) requires Iceberg 1.11+. Older Iceberg
+    // rejects `format-version=3` at table creation.
+    assume(icebergVersionAtLeast(1, 11), "Iceberg V3 tables require Iceberg 1.11+")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        spark.sql("""
+          CREATE TABLE test_cat.db.dv_delete_test (
+            id INT,
+            name STRING,
+            value DOUBLE
+          ) USING iceberg
+          TBLPROPERTIES (
+            'format-version' = '3',
+            'write.delete.mode' = 'merge-on-read',
+            'write.merge.mode' = 'merge-on-read'
+          )
+        """)
+
+        spark.sql("""
+          INSERT INTO test_cat.db.dv_delete_test
+          VALUES
+            (1, 'Alice', 10.5), (2, 'Bob', 20.3), (3, 'Charlie', 30.7),
+            (4, 'Diana', 15.2), (5, 'Eve', 25.8), (6, 'Frank', 35.0),
+            (7, 'Grace', 12.1), (8, 'Hank', 22.5)
+        """)
+
+        spark.sql("DELETE FROM test_cat.db.dv_delete_test WHERE id IN (2, 4, 6)")
+
+        // Confirm the delete produced a deletion vector (a Puffin delete file), not a parquet
+        // position-delete file or a copy-on-write rewrite, so this test actually exercises the
+        // deletion-vector read path.
+        val deleteFormats = spark
+          .sql("SELECT file_format FROM test_cat.db.dv_delete_test.files WHERE content = 1")
+          .collect()
+          .map(_.getString(0))
+          .toSet
+        assert(
+          deleteFormats.contains("PUFFIN"),
+          s"expected a deletion vector (PUFFIN delete file) but found: $deleteFormats")
+
+        checkIcebergNativeScan("SELECT * FROM test_cat.db.dv_delete_test ORDER BY id")
+
+        spark.sql("DROP TABLE test_cat.db.dv_delete_test")
+      }
+    }
+  }
+
+  // A DELETE writes one deletion vector per data file it touches, and Iceberg's DV writer packs
+  // every vector produced by one write task into a single Puffin file. Vectors that apply to
+  // different data files therefore share a delete-file path and differ only by their content
+  // offset, which is what makes the delete-file pool's identity key load-bearing: keyed on the
+  // path alone (as the pool was before deletion vectors), the second and later vectors dedup into
+  // the first and their data files come back with the deleted rows still in them. Keyed on the
+  // whole message they stay distinct, and the path they share is interned separately so it is
+  // still serialized once.
+  test("V3 deletion vectors sharing one Puffin file are interned but not collapsed") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    assume(icebergVersionAtLeast(1, 11), "Iceberg V3 tables require Iceberg 1.11+")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        // The DELETE's position-delta write is hash-distributed, so a single shuffle partition
+        // routes every data file's deletes to one write task and therefore into one Puffin file.
+        // Left to its own devices the write can land one Puffin file per data file, in which case
+        // no path is shared and the collapse this test guards against cannot happen at all.
+        SQLConf.SHUFFLE_PARTITIONS.key -> "1",
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        spark.sql("""
+          CREATE TABLE test_cat.db.dv_shared_puffin (id INT, name STRING)
+          USING iceberg
+          TBLPROPERTIES (
+            'format-version' = '3',
+            'write.delete.mode' = 'merge-on-read',
+            'write.merge.mode' = 'merge-on-read'
+          )
+        """)
+
+        // One INSERT per data file. The vectors must reference distinct data files, since that is
+        // what a collapse loses: the surviving vector is applied to its own data file only.
+        val dataFiles = 3
+        val rowsPerFile = 10
+        for (f <- 0 until dataFiles) {
+          val values =
+            (1 to rowsPerFile).map(i => s"(${f * 100 + i}, 'n${f * 100 + i}')").mkString(", ")
+          spark.sql(s"INSERT INTO test_cat.db.dv_shared_puffin VALUES $values")
+        }
+
+        // A single DELETE hitting one row in every data file: one vector per file, one Puffin file.
+        val deletedIds = (0 until dataFiles).map(f => f * 100 + 1)
+        spark.sql(
+          s"DELETE FROM test_cat.db.dv_shared_puffin WHERE id IN (${deletedIds.mkString(", ")})")
+
+        // Confirm the write actually produced the shared-Puffin layout before asserting anything
+        // about it, so a change in how Iceberg packs vectors fails here rather than turning the
+        // assertions below into a vacuous pass.
+        val deleteFiles = spark
+          .sql("SELECT file_format, file_path FROM test_cat.db.dv_shared_puffin.files " +
+            "WHERE content = 1")
+          .collect()
+          .map(r => (r.getString(0), r.getString(1)))
+          .toSeq
+        assert(
+          deleteFiles.length == dataFiles &&
+            deleteFiles.forall(_._1 == "PUFFIN") &&
+            deleteFiles.map(_._2).distinct.length == 1,
+          s"expected $dataFiles deletion vectors packed into one Puffin file, got: $deleteFiles")
+
+        // Correctness: a collapse leaves the other data files' deleted rows in the result, so this
+        // fails on row content before any of the serde assertions below are reached.
+        val (_, cometPlan) =
+          checkSparkAnswerAndOperator("SELECT * FROM test_cat.db.dv_shared_puffin ORDER BY id")
+        assertSingleNativeScan(cometPlan)
+
+        val commonBytes = collectIcebergNativeScans(cometPlan).head.commonData
+        val common = OperatorOuterClass.IcebergScanCommon.parseFrom(commonBytes)
+
+        val vectors = common.getDeleteFilePoolList.asScala.toSeq
+        assert(
+          vectors.length == dataFiles,
+          s"expected $dataFiles pooled deletion vectors, one per data file, but got " +
+            s"${vectors.length}: vectors sharing a Puffin path were deduplicated into one")
+        assert(
+          vectors.forall(_.getFileFormat == IcebergReflection.FileFormats.PUFFIN),
+          "expected every pooled delete file to be a deletion vector, got " +
+            s"${vectors.map(_.getFileFormat).distinct}")
+
+        // The coordinates that distinguish vectors sharing a path. Each names a different data
+        // file and a different blob within the Puffin file; record_count must be set because
+        // iceberg-rust rejects a vector whose declared cardinality is absent.
+        assert(
+          vectors.map(_.getReferencedDataFile).distinct.length == dataFiles,
+          "expected a distinct referenced data file per vector, got " +
+            s"${vectors.map(_.getReferencedDataFile)}")
+        assert(
+          vectors.map(_.getContentOffset).distinct.length == dataFiles,
+          s"expected a distinct content offset per vector, got ${vectors.map(_.getContentOffset)}")
+        assert(
+          vectors.forall(v => v.hasRecordCount && v.getRecordCount > 0),
+          s"expected every vector to carry a record count, got ${vectors.map(_.getRecordCount)}")
+
+        // All of them point at the one interned path, which is serialized exactly once however
+        // many vectors reference it.
+        val pathPool = common.getDeleteFilePathPoolList.asScala.toSeq
+        assert(
+          pathPool.length == 1 && vectors.map(_.getFilePathIdx).distinct == Seq(0),
+          s"expected one interned Puffin path referenced by every vector, got pool $pathPool " +
+            s"and indices ${vectors.map(_.getFilePathIdx)}")
+        assert(
+          countByteOccurrences(commonBytes, pathPool.head.getBytes(UTF_8)) == 1,
+          s"Puffin path ${pathPool.head} serialized more than once in IcebergScanCommon " +
+            s"(${commonBytes.length} bytes)")
+
+        spark.sql("DROP TABLE test_cat.db.dv_shared_puffin")
+      }
+    }
+  }
+
   // Under Iceberg's default partition delete granularity, one position-delete file applies to every
   // data file in the partition with a compatible sequence number (DeleteFileIndex.forDataFile).
   // Interleaving inserts and deletes staggers data-file sequence numbers, so each FileScanTask sees
@@ -657,8 +833,7 @@ class CometIcebergNativeSuite
         val commonBytes = scans.head.commonData
         val common = OperatorOuterClass.IcebergScanCommon.parseFrom(commonBytes)
 
-        val distinctPaths =
-          common.getDeleteFilePoolList.asScala.map(_.getFilePath).toSeq
+        val distinctPaths = common.getDeleteFilePathPoolList.asScala.toSeq
         val totalReferences =
           common.getDeleteFilesPoolList.asScala.map(_.getDeleteFileIndicesCount).sum
 
@@ -2214,8 +2389,121 @@ class CometIcebergNativeSuite
     }
   }
 
+  test("required field projection preserves null array elements") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+        val tableName = "test_cat.db.required_array_field_test"
+        try {
+          spark.sql(s"""
+            CREATE TABLE $tableName (id INT NOT NULL, l ARRAY<STRUCT<a: INT NOT NULL>>)
+            USING iceberg
+          """)
+          spark.sql(s"""
+            INSERT INTO $tableName VALUES
+              (1, array(named_struct('a', 1))),
+              (2, NULL),
+              (3, array()),
+              (4, array(NULL)),
+              (5, array(NULL, named_struct('a', 2)))
+          """)
+          // Assert the shape reaching the expression, not just the catalog's declared schema.
+          val list = spark.table(tableName).schema("l").dataType.asInstanceOf[ArrayType]
+          val element = list.elementType.asInstanceOf[StructType]
+          assert(list.containsNull, s"expected nullable list elements, got $list")
+          assert(!element("a").nullable, s"expected a required element field, got $element")
+          val query = s"SELECT id, l.a FROM $tableName"
+          val (_, cometPlan) = checkSparkAnswer(query)
+          assertSingleNativeScan(cometPlan)
+          assert(
+            collect(cometPlan) { case project: CometProjectExec => project }.nonEmpty,
+            s"$cometPlan")
+          checkCometAnswer(
+            spark.sql(query),
+            Seq(
+              Row(1, Seq(1)),
+              Row(2, null),
+              Row(3, Seq.empty[Int]),
+              Row(4, Seq(null)),
+              Row(5, Seq(null, 2))))
+        } finally {
+          spark.sql(s"DROP TABLE IF EXISTS $tableName")
+        }
+      }
+    }
+  }
+
+  test("complex type null checks and generators preserve container semantics") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+        val tableName = "test_cat.db.null_check_test"
+        try {
+          spark.sql(s"""
+            CREATE TABLE $tableName (
+              id INT, l ARRAY<STRUCT<a: INT>>, m MAP<STRING, STRUCT<a: INT>>, s STRUCT<a: INT>
+            ) USING iceberg
+          """)
+          // Container nullness is distinct from emptiness, null elements and null struct fields.
+          spark.sql(s"""
+            INSERT INTO $tableName VALUES
+              (1, array(named_struct('a', 1)), map('k', named_struct('a', 1)), named_struct('a', 1)),
+              (2, NULL, NULL, NULL),
+              (3, array(), map(), named_struct('a', NULL)),
+              (4, array(NULL), map('k', NULL), named_struct('a', NULL)),
+              (5, array(named_struct('a', NULL)), map('k', named_struct('a', NULL)), named_struct('a', NULL))
+          """)
+          for (column <- Seq("l", "m", "s"); predicate <- Seq("IS NULL", "IS NOT NULL")) {
+            val query = s"SELECT id FROM $tableName WHERE $column $predicate"
+            withClue(query) {
+              val (_, cometPlan) = checkSparkAnswer(query)
+              val expected =
+                if (predicate == "IS NULL") Seq(Row(2)) else Seq(1, 3, 4, 5).map(Row(_))
+              checkCometAnswer(spark.sql(query), expected)
+              val scans = collectIcebergNativeScans(cometPlan)
+              assert(scans.length == 1, s"$cometPlan")
+              // Planning commonData leaks manifest streams on Iceberg versions before 1.8.0.
+              if (icebergVersionAtLeast(1, 8)) {
+                val common = OperatorOuterClass.IcebergScanCommon.parseFrom(scans.head.commonData)
+                assert(
+                  common.getResidualPoolCount == 0,
+                  s"unexpected complex-column residual: $query")
+              }
+            }
+          }
+
+          // Spark infers IS NOT NULL below ordinary generators, but not outer generators.
+          // Compare generated rows, including null elements, with Spark for both generator forms.
+          // Native scanning does not imply residual pushdown.
+          for (column <- Seq("l", "m"); generator <- Seq("explode", "explode_outer")) {
+            val query = s"SELECT id, $generator($column) FROM $tableName"
+            withClue(query) {
+              val (_, cometPlan) = checkSparkAnswer(query)
+              assertSingleNativeScan(cometPlan)
+            }
+          }
+        } finally {
+          spark.sql(s"DROP TABLE IF EXISTS $tableName")
+        }
+      }
+    }
+  }
+
   // Complex type filter tests
-  test("complex type filter - struct column IS NULL") {
+  test("complex type filter - struct column IS NULL and IS NOT NULL") {
     assume(icebergAvailable, "Iceberg not available in classpath")
 
     withTempIcebergDir { warehouseDir =>
@@ -2240,12 +2528,14 @@ class CometIcebergNativeSuite
           VALUES
             (1, 'Alice', struct('NYC', 10001)),
             (2, 'Bob', struct('LA', 90001)),
-            (3, 'Charlie', NULL)
+            (3, 'Charlie', NULL),
+            (4, 'Dana', struct(CAST(NULL AS STRING), CAST(NULL AS INT)))
         """)
 
-        checkIcebergNativeScanFallback(
-          "SELECT * FROM test_cat.db.struct_filter_test WHERE address IS NULL ORDER BY id",
-          "iceberg-rust does not support IS NULL on complex type columns")
+        checkIcebergNativeScan(
+          "SELECT * FROM test_cat.db.struct_filter_test WHERE address IS NULL ORDER BY id")
+        checkIcebergNativeScan(
+          "SELECT * FROM test_cat.db.struct_filter_test WHERE address IS NOT NULL ORDER BY id")
 
         spark.sql("DROP TABLE test_cat.db.struct_filter_test")
       }
@@ -2318,9 +2608,9 @@ class CometIcebergNativeSuite
             (3, 'Charlie', named_struct('city', 'NYC', 'zip', 10001))
         """)
 
-        checkIcebergNativeScanFallback(
-          "SELECT * FROM test_cat.db.struct_value_filter_test WHERE address = named_struct('city', 'NYC', 'zip', 10001) ORDER BY id",
-          "Iceberg Java does not push down whole-struct equality filters")
+        // Spark retains the whole-struct equality filter above the native scan.
+        checkIcebergNativeScan(
+          "SELECT * FROM test_cat.db.struct_value_filter_test WHERE address = named_struct('city', 'NYC', 'zip', 10001) ORDER BY id")
 
         spark.sql("DROP TABLE test_cat.db.struct_value_filter_test")
       }
@@ -2355,9 +2645,9 @@ class CometIcebergNativeSuite
             (3, 'Charlie', NULL)
         """)
 
-        checkIcebergNativeScanFallback(
-          "SELECT * FROM test_cat.db.array_filter_test WHERE values IS NULL ORDER BY id",
-          "iceberg-rust does not support IS NULL on complex type columns")
+        // The scan stays native; the retained post-scan filter enforces the list null check.
+        checkIcebergNativeScan(
+          "SELECT * FROM test_cat.db.array_filter_test WHERE values IS NULL ORDER BY id")
 
         spark.sql("DROP TABLE test_cat.db.array_filter_test")
       }
@@ -2392,9 +2682,10 @@ class CometIcebergNativeSuite
             (3, 'Charlie', array(1, 7, 8))
         """)
 
-        checkIcebergNativeScanFallback(
-          "SELECT * FROM test_cat.db.array_element_filter_test WHERE array_contains(values, 1) ORDER BY id",
-          "Iceberg Java only pushes down NOT NULL, which iceberg-rust rejects")
+        // Iceberg Java pushes only NOT NULL here, which iceberg-rust rejects, so nothing is
+        // pushed; the post-scan filter enforces the predicate and the scan stays native.
+        checkIcebergNativeScan(
+          "SELECT * FROM test_cat.db.array_element_filter_test WHERE array_contains(values, 1) ORDER BY id")
 
         spark.sql("DROP TABLE test_cat.db.array_element_filter_test")
       }
@@ -2429,9 +2720,10 @@ class CometIcebergNativeSuite
             (3, 'Charlie', array(1, 2, 3))
         """)
 
-        checkIcebergNativeScanFallback(
-          "SELECT * FROM test_cat.db.array_value_filter_test WHERE values = array(1, 2, 3) ORDER BY id",
-          "Iceberg Java only pushes down NOT NULL, which iceberg-rust rejects")
+        // Iceberg Java pushes only NOT NULL here, which iceberg-rust rejects, so nothing is
+        // pushed; the post-scan filter enforces the predicate and the scan stays native.
+        checkIcebergNativeScan(
+          "SELECT * FROM test_cat.db.array_value_filter_test WHERE values = array(1, 2, 3) ORDER BY id")
 
         spark.sql("DROP TABLE test_cat.db.array_value_filter_test")
       }
@@ -2466,9 +2758,9 @@ class CometIcebergNativeSuite
             (3, 'Charlie', NULL)
         """)
 
-        checkIcebergNativeScanFallback(
-          "SELECT * FROM test_cat.db.map_filter_test WHERE properties IS NULL ORDER BY id",
-          "iceberg-rust does not support IS NULL on complex type columns")
+        // The scan stays native; the retained post-scan filter enforces the map null check.
+        checkIcebergNativeScan(
+          "SELECT * FROM test_cat.db.map_filter_test WHERE properties IS NULL ORDER BY id")
 
         spark.sql("DROP TABLE test_cat.db.map_filter_test")
       }
@@ -2503,9 +2795,10 @@ class CometIcebergNativeSuite
             (3, 'Charlie', map('age', 30, 'score', 80))
         """)
 
-        checkIcebergNativeScanFallback(
-          "SELECT * FROM test_cat.db.map_key_filter_test WHERE properties['age'] = 30 ORDER BY id",
-          "Iceberg Java only pushes down NOT NULL, which iceberg-rust rejects")
+        // Iceberg Java pushes only NOT NULL here, which iceberg-rust rejects, so nothing is
+        // pushed; the post-scan filter enforces the predicate and the scan stays native.
+        checkIcebergNativeScan(
+          "SELECT * FROM test_cat.db.map_key_filter_test WHERE properties['age'] = 30 ORDER BY id")
 
         spark.sql("DROP TABLE test_cat.db.map_key_filter_test")
       }
@@ -5759,6 +6052,124 @@ class CometIcebergNativeSuite
           assert(
             reason.get.contains("Conflicting partition fields"),
             s"Expected a conflicting-partition-fields reason, got: ${reason.get}")
+        } finally {
+          spark.sql(s"DROP TABLE IF EXISTS $table PURGE")
+        }
+      }
+    }
+  }
+
+  test("forward compatibility - read a table whose spec uses an unknown transform") {
+    // Iceberg's forward-compatibility contract: a reader must be able to read a table partitioned
+    // by a transform it does not know (one a newer writer produced). Iceberg Java parses such a
+    // transform into an UnknownTransform whose toString is the original name, e.g. "zero", and
+    // resolves its partition type as string -- so the field is NOT dropped from the spec and the
+    // scan task carries a real partition value for it. Serializing that name verbatim makes
+    // PartitionSpec deserialization fail in iceberg-rust, leaving the task holding partition values
+    // with no spec, which FileScanTask validation rejects ("Non-empty FileScanTask partition
+    // requires a partition spec") and the whole scan dies.
+    // Upstream coverage is TestForwardCompatibility.testSparkCanReadUnknownTransform, which builds
+    // the table through Iceberg's low-level manifest writers; here the same shape is reached by
+    // writing an identity-partitioned table and then rewriting its spec's transform, which keeps
+    // the test on APIs that are stable across the Iceberg versions Comet builds against.
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    // Spark 4.1 validates a V2 relation's metadata columns on every read, which forces
+    // SparkTable.metadataColumns() -> Partitioning.partitionType() and rejects an unknown transform
+    // in the analyzer, with or without Comet. Upstream disabled its own copy of this test on 4.1 for
+    // the same reason (SPARK-55626), so there is no read left to accelerate there.
+    assume(
+      !isSpark41Plus,
+      "SPARK-55626: Spark 4.1+ cannot read a table with an unknown transform")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.fwd_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.fwd_cat.type" -> "hadoop",
+        "spark.sql.catalog.fwd_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        // The rewrite below edits metadata behind the catalog's back, so don't let it serve the
+        // pre-rewrite TableMetadata from cache.
+        "spark.sql.catalog.fwd_cat.cache-enabled" -> "false",
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        val table = "fwd_cat.db.unknown_transform"
+        try {
+          spark.sql(s"""
+            CREATE TABLE $table (id BIGINT, data STRING)
+            USING iceberg PARTITIONED BY (id)
+          """)
+          spark.sql(s"""
+            INSERT INTO $table
+            VALUES (1, 'a'), (2, 'b'), (2, 'c'), (3, NULL)
+          """)
+
+          import org.apache.iceberg.catalog.TableIdentifier
+          import org.apache.iceberg.spark.SparkCatalog
+
+          val sparkCatalog = spark.sessionState.catalogManager
+            .catalog("fwd_cat")
+            .asInstanceOf[SparkCatalog]
+          val iceTable = sparkCatalog
+            .icebergCatalog()
+            .loadTable(TableIdentifier.of("db", "unknown_transform"))
+
+          val tableLocationUri = iceTable.location()
+          val tableDir =
+            if (tableLocationUri.contains(":")) new File(new java.net.URI(tableLocationUri))
+            else new File(tableLocationUri)
+          val metadataDir = new File(tableDir, "metadata")
+          val versionPattern = "^v(\\d+)\\.metadata\\.json$".r
+          val currentVersion = metadataDir
+            .listFiles()
+            .flatMap(f => versionPattern.findFirstMatchIn(f.getName).map(_.group(1).toInt))
+            .max
+          val currentMetadataFile = new File(metadataDir, s"v$currentVersion.metadata.json")
+          val currentMetadataJson =
+            new String(java.nio.file.Files.readAllBytes(currentMetadataFile.toPath), UTF_8)
+
+          val mapper = new com.fasterxml.jackson.databind.ObjectMapper()
+          val root = mapper
+            .readTree(currentMetadataJson)
+            .asInstanceOf[com.fasterxml.jackson.databind.node.ObjectNode]
+          // Retarget the one spec the data was written under at a transform no Iceberg release
+          // defines. The manifests keep the partition values the identity spec recorded, exactly as
+          // upstream's fake-spec manifest does.
+          val specFields = root
+            .get("partition-specs")
+            .asInstanceOf[com.fasterxml.jackson.databind.node.ArrayNode]
+            .elements()
+            .asScala
+            .flatMap(_.get("fields").elements().asScala)
+            .toSeq
+          assert(specFields.size == 1, s"expected one partition field, got $specFields")
+          specFields.foreach(
+            _.asInstanceOf[com.fasterxml.jackson.databind.node.ObjectNode]
+              .put("transform", "zero"))
+
+          val newMetadataJson = mapper.writeValueAsString(root)
+          // Round-trip through Iceberg's own parser so a malformed edit fails here rather than
+          // producing an unloadable table, and so this test also pins that Iceberg still accepts an
+          // unknown transform at load time (the premise of the whole scenario).
+          val reparsed = org.apache.iceberg.TableMetadataParser.fromJson(newMetadataJson)
+          assert(
+            reparsed.spec().fields().get(0).transform().toString == "zero",
+            "Iceberg no longer preserves an unknown transform's name")
+
+          val newVersion = currentVersion + 1
+          java.nio.file.Files.write(
+            new File(metadataDir, s"v$newVersion.metadata.json").toPath,
+            newMetadataJson.getBytes(UTF_8))
+          java.nio.file.Files.write(
+            new File(metadataDir, "version-hint.text").toPath,
+            newVersion.toString.getBytes(UTF_8))
+
+          // Read by path, with no projection on top, for the same reason upstream's test does:
+          // resolving a Project's metadataOutput forces SparkTable.metadataColumns(), whose
+          // _partition type comes from Partitioning.partitionType() -- which rejects an unknown
+          // transform outright, in Spark's analyzer, with or without Comet. A bare relation scan is
+          // therefore the whole of what any reader can do with such a table.
+          checkIcebergNativeScan(spark.read.format("iceberg").load(tableDir.getAbsolutePath))
         } finally {
           spark.sql(s"DROP TABLE IF EXISTS $table PURGE")
         }

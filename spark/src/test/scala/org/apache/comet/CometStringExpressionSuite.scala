@@ -23,8 +23,9 @@ import scala.util.Random
 
 import org.apache.parquet.hadoop.ParquetOutputFormat
 import org.apache.spark.sql.{CometTestBase, DataFrame}
+import org.apache.spark.sql.catalyst.expressions.{Concat, Literal, Reverse}
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{DataTypes, StructField, StructType}
+import org.apache.spark.sql.types.{DataType, DataTypes, StructField, StructType}
 
 import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator}
@@ -37,6 +38,30 @@ class CometStringExpressionSuite extends CometTestBase with CometCodegenAssertio
     "é", // unicode '\\u{e9}'
     "తెలుగు")
   // scalastyle:on
+
+  if (isSpark40Plus) {
+    test("collated strings preserve native opt-in routing") {
+      withParquetTable(Seq(("abc", 1), ("", 2), (null, 3)), "tbl") {
+        // Build typed literals directly: Collate and casts of columns are not native, while
+        // ordinary constant folding would remove the expression we want to test.
+        val text = Literal.create("abc", DataType.fromDDL("STRING COLLATE UTF8_LCASE"))
+        withSQLConf(
+          SQLConf.OPTIMIZER_EXCLUDED_RULES.key ->
+            "org.apache.spark.sql.catalyst.optimizer.ConstantFolding",
+          CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "false",
+          CometConf.getExprAllowIncompatConfigKey("Concat") -> "true",
+          CometConf.getExprAllowIncompatConfigKey("Reverse") -> "true") {
+          for ((name, expression) <- Seq(
+              "concat" -> Concat(Seq(text, text)),
+              "reverse" -> Reverse(text))) {
+            checkSparkAnswerAndImpl(
+              sql("SELECT _1 FROM tbl").select(getColumnFromExpression(expression)),
+              native = Seq(name))
+          }
+        }
+      }
+    }
+  }
 
   test("lpad string") {
     testStringPadding("lpad")
@@ -109,14 +134,10 @@ class CometStringExpressionSuite extends CometTestBase with CometCodegenAssertio
             // all arguments are literal, so Spark constant folding will kick in
             // and pad function will not be evaluated by Comet
             checkSparkAnswerAndOperator(sql)
-          } else if (isLiteralStr) {
-            checkSparkAnswerAndFallbackReason(
-              sql,
-              "Scalar values are not supported for the `str` argument")
-          } else if (!isLiteralPad) {
-            checkSparkAnswerAndFallbackReason(
-              sql,
-              "Only scalar values are supported for the `pad` argument")
+          } else if (isLiteralStr || !isLiteralPad) {
+            assertCodegenRan {
+              checkSparkAnswerAndOperator(sql)
+            }
           } else {
             checkSparkAnswerAndOperator(sql)
           }
@@ -726,18 +747,34 @@ class CometStringExpressionSuite extends CometTestBase with CometCodegenAssertio
     // scalastyle:on
   }
 
+  test("concat_ws with scalar subqueries over a multi-row batch") {
+    withSQLConf(CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "false") {
+      withParquetTable((1 to 32).map(i => (i, "row")), "fact") {
+        withParquetTable(Seq(Tuple1("a"), Tuple1("b")), "lookup") {
+          for (subquery <- Seq(
+              "(SELECT max(_1) FROM lookup)",
+              "(SELECT max(_1) FROM lookup WHERE _1 = 'missing')")) {
+            checkSparkAnswerAndOperator(s"SELECT _1, concat_ws($subquery) FROM fact")
+            checkSparkAnswerAndOperator(s"SELECT _1, concat_ws(',', $subquery) FROM fact")
+            checkSparkAnswerAndOperator(
+              s"SELECT _1, concat_ws(',', array('x', NULL, ''), $subquery) FROM fact")
+          }
+        }
+      }
+    }
+  }
+
   test("concat_ws with array<string> arguments") {
-    // https://github.com/apache/datafusion-comet/issues/5675
-    // Spark flattens array<string> arguments into the strings to join (skipping null elements).
-    // DataFusion's concat_ws rejects list arguments, so these calls run through the JVM codegen
-    // dispatcher (Spark's own doGenCode inside the Comet pipeline) instead of the native path.
     val data: Seq[(Seq[String], String)] = Seq(
       (Seq("a", "b"), "c d"),
       (Seq("x", null, "y"), "z"),
       (Seq("only"), ""),
       (Seq.empty[String], "w"),
       (null, "v"),
-      (Seq("p", "q"), null))
+      (Seq("p", "q"), null),
+      (Seq(null, "", "\u00e9"), "|"),
+      (Seq(null, null), ""),
+      (null, null))
     withParquetTable(data, "tbl") {
       val arrayArgQueries = Seq(
         "SELECT concat_ws(',', _1, _2) FROM tbl",
@@ -745,18 +782,16 @@ class CometStringExpressionSuite extends CometTestBase with CometCodegenAssertio
         "SELECT concat_ws(',', _1) FROM tbl",
         "SELECT concat_ws('-', _1, _2, _1) FROM tbl",
         "SELECT concat_ws(',', split(_2, ' ')) FROM tbl",
-        "SELECT concat_ws(',', split(_2, ' '), _1) FROM tbl")
-      for (query <- arrayArgQueries) {
-        // Spark's answer, the whole plan stays in Comet, and the codegen dispatcher actually ran.
-        assertCodegenRan {
-          checkSparkAnswerAndOperator(query)
-        }
-      }
-      // With the dispatcher disabled there is no in-pipeline path, so the projection falls back
-      // to Spark with the serde's reason instead of failing at native execution.
-      withSQLConf(CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "false") {
+        "SELECT concat_ws(',', split(_2, ' '), _1) FROM tbl",
+        "SELECT concat_ws(_2, _1, 'tail', _1) FROM tbl",
+        "SELECT concat_ws('', _1, _2, array('x', NULL, 'y')) FROM tbl",
+        "SELECT concat_ws(NULL, _1, _2) FROM tbl",
+        "SELECT concat_ws(_2) FROM tbl")
+      withSQLConf(
+        CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "false",
+        "spark.comet.expression.StringSplit.allowIncompatible" -> "true") {
         for (query <- arrayArgQueries) {
-          checkSparkAnswerAndFallbackReason(query, "`concat_ws` with `array<string>` arguments")
+          checkSparkAnswerAndOperator(query)
         }
       }
       // A NULL separator produces NULL regardless of the argument types and stays native.

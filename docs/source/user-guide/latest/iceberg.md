@@ -89,14 +89,20 @@ The native Iceberg reader supports the following features:
 - Positional deletes
 - Equality deletes
 - Mixed delete types
+- Deletion vectors (v3)
 
 **Filter pushdown:**
 
 - Equality and comparison predicates (`=`, `!=`, `>`, `>=`, `<`, `<=`)
 - Logical operators (`AND`, `OR`)
-- NULL checks (`IS NULL`, `IS NOT NULL`)
+- NULL checks (`IS NULL`, `IS NOT NULL`) on primitive columns
 - `IN` and `NOT IN` list operations
 - `BETWEEN` operations
+
+NULL checks on struct, array, and map columns still use native scans and return correct
+results, but are not pushed into iceberg-rust, which binds accessors only for primitive fields.
+These residuals provide no native row-group pruning, nor do conjunctions containing them;
+safe partial pruning is tracked in [#5883](https://github.com/apache/datafusion-comet/issues/5883).
 
 **Partitioning:**
 
@@ -109,8 +115,10 @@ The native Iceberg reader supports the following features:
 **Storage:**
 
 - Local filesystem
-- Hadoop Distributed File System (HDFS)
 - S3-compatible storage (AWS S3, MinIO)
+- Google Cloud Storage (`gs`) and Alibaba Cloud OSS (`oss`)
+
+HDFS-backed tables are not supported by the native Iceberg reader and fall back to Spark.
 
 ### REST Catalog
 
@@ -170,7 +178,7 @@ The following scenarios will fall back to the JVM Iceberg reader:
 - v3 tables with columns that declare an initial default value
 - v3 column types the native reader cannot read (`variant`, `geometry`, `geography`, `unknown`)
 - Encrypted tables with 192-bit data keys (no AES-192-GCM in the underlying crypto)
-- Deletion vectors (v3 Puffin deletes); positional and equality deletes in Parquet are supported
+- Delete files in a format other than Parquet or Puffin (Avro or ORC positional/equality deletes)
 - Iceberg writes (reads are accelerated, writes use Spark)
 - Tables backed by Avro or ORC data files (only Parquet is accelerated)
 - Tables partitioned on `BINARY` or `DECIMAL` (with precision >28) columns
