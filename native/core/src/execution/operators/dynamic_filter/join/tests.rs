@@ -667,6 +667,7 @@ fn parquet_probe(
         false,
         false,
         false,
+        false,
     )
     .unwrap();
     (file, scan)
@@ -769,6 +770,7 @@ async fn reader_filter_crosses_null_check_conjunction_and_retains_residual() {
             false,
             false,
             &session,
+            false,
             false,
             false,
             false,
