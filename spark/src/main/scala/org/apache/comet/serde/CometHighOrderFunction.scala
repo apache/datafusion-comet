@@ -20,6 +20,7 @@
 package org.apache.comet.serde
 
 import scala.jdk.CollectionConverters._
+import scala.util.control.NonFatal
 
 import org.apache.spark.sql.catalyst.expressions.{Attribute, HigherOrderFunction, LambdaFunction => SparkLambdaFunction, NamedLambdaVariable => SparkNamedLambdaVariable}
 
@@ -57,10 +58,20 @@ case class CometHighOrderFunction[T <: HigherOrderFunction](name: String)
     if (!CometConf.COMET_EXEC_HIGHER_ORDER_FUNCTION_NATIVE_ENABLED.get()) {
       return CometScalaUDF.emitJvmCodegenDispatch(expr, inputs, binding)
     }
-    highOrderFunction2Proto(expr, inputs, binding)
-      .orElse {
-        CometScalaUDF.emitJvmCodegenDispatch(expr, inputs, binding)
+    val hofProto =
+      try {
+        highOrderFunction2Proto(expr, inputs, binding)
+      } catch {
+        // Speculative serialization traverses the lambda body where certain expressions
+        // eagerly evaluate literal arguments (e.g., CometCast calling cast.eval()).
+        // In ANSI mode, guarded branches of conditional expressions (e.g., CASE WHEN)
+        // may throw during planning even though they are never reached at runtime.
+        // Decline the native path cleanly and let execution fall back to JVM codegen dispatch.
+        case NonFatal(_) => None
       }
+    hofProto.orElse {
+      CometScalaUDF.emitJvmCodegenDispatch(expr, inputs, binding)
+    }
   }
 
   private def highOrderFunction2Proto(
