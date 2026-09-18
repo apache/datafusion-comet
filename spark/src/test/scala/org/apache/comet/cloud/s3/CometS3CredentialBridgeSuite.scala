@@ -229,4 +229,86 @@ class CometS3CredentialBridgeSuite
       spark.sql("DROP TABLE iso_b.db.t")
     }
   }
+
+  // ---------------------------------------------------------------------
+  // Scope-aware object_store cache scenarios
+  //
+  // The Rust unit tests in native/core/src/parquet/objectstore/retry.rs cover the retry-on-403
+  // wrapper end-to-end (pass-through, rebuild-then-retry, second-403 propagation, idempotency,
+  // error surface, 401-not-retried, Send+Sync, Arc<Mutex> composition). Minio does not enforce
+  // per-prefix denial out of the box, so the full "overreport-then-403-recover" path is proven
+  // in Rust rather than here. The two IT scenarios below exercise the Java/JNI + native-cache
+  // plumbing: the scope hint reaches Rust and the cache preserves scope granularity.
+  // ---------------------------------------------------------------------
+
+  test("scoped provider: two reads inside the same scope share one object_store entry") {
+    val scopePrefix = s"s3a://$testBucketName/scope-share/"
+    val fileA = scopePrefix + "a.parquet"
+    val fileB = scopePrefix + "b.parquet"
+
+    spark.range(0, 100).write.format("parquet").mode(SaveMode.Overwrite).save(fileA)
+    spark.range(100, 200).write.format("parquet").mode(SaveMode.Overwrite).save(fileB)
+
+    // Both files fall under the same advisory scope prefix. The native cache should key on the
+    // (bucket, prefix-set) tuple and reuse the same object_store entry for both reads.
+    MinioCometS3CredentialProvider.resetCounters()
+    MinioCometS3CredentialProvider.installPolicyLocations(
+      java.util.List.of(scopePrefix))
+
+    val dfA = spark.read.format("parquet").load(fileA).agg(sum(col("id")))
+    assertHasCometParquetScan(dfA.queryExecution.executedPlan)
+    assert(dfA.first().getLong(0) == (0L until 100L).sum)
+
+    val callsAfterFirst = MinioCometS3CredentialProvider.callCount()
+    val policyCallsAfterFirst = MinioCometS3CredentialProvider.policyCallCount()
+
+    val dfB = spark.read.format("parquet").load(fileB).agg(sum(col("id")))
+    assertHasCometParquetScan(dfB.queryExecution.executedPlan)
+    assert(dfB.first().getLong(0) == (100L until 200L).sum)
+
+    // The scope-hint fetch fires once per cache miss. Two reads under the same scope should not
+    // provoke a second scope-hint fetch on the same bucket key — the cache lookup covers the
+    // second path via the existing ScopeEntry.
+    assert(
+      MinioCometS3CredentialProvider.policyCallCount() == policyCallsAfterFirst,
+      s"Scope hint refetched on second read within same scope: " +
+        s"$policyCallsAfterFirst -> ${MinioCometS3CredentialProvider.policyCallCount()}")
+    assert(
+      MinioCometS3CredentialProvider.callCount() > callsAfterFirst,
+      "Credential provider was not consulted for the second read — cache entry seems missing")
+  }
+
+  test("scoped provider: reads under disjoint scopes get separate object_store entries") {
+    val scopeA = s"s3a://$testBucketName/scope-fork-a/"
+    val scopeB = s"s3a://$testBucketName/scope-fork-b/"
+    val fileA = scopeA + "file.parquet"
+    val fileB = scopeB + "file.parquet"
+
+    spark.range(0, 50).write.format("parquet").mode(SaveMode.Overwrite).save(fileA)
+    spark.range(50, 130).write.format("parquet").mode(SaveMode.Overwrite).save(fileB)
+
+    MinioCometS3CredentialProvider.resetCounters()
+
+    // First read: install a hint that only covers scope-fork-a/. Native cache seeds a ScopeEntry
+    // for that prefix under the shared (bucket, config_hash, backend) key.
+    MinioCometS3CredentialProvider.installPolicyLocations(java.util.List.of(scopeA))
+    val dfA = spark.read.format("parquet").load(fileA).agg(sum(col("id")))
+    assertHasCometParquetScan(dfA.queryExecution.executedPlan)
+    assert(dfA.first().getLong(0) == (0L until 50L).sum)
+
+    val policyCallsAfterA = MinioCometS3CredentialProvider.policyCallCount()
+
+    // Second read: swap the hint to only cover scope-fork-b/. The path does not match the first
+    // ScopeEntry (scope-fork-a/), so find_matching_scope returns None and the cache issues a fresh
+    // bridge lookup — driving a second scope-hint fetch and a distinct object_store entry.
+    MinioCometS3CredentialProvider.installPolicyLocations(java.util.List.of(scopeB))
+    val dfB = spark.read.format("parquet").load(fileB).agg(sum(col("id")))
+    assertHasCometParquetScan(dfB.queryExecution.executedPlan)
+    assert(dfB.first().getLong(0) == (50L until 130L).sum)
+
+    assert(
+      MinioCometS3CredentialProvider.policyCallCount() > policyCallsAfterA,
+      s"Second read under a disjoint scope did not trigger a fresh scope-hint fetch " +
+        s"(policy calls: $policyCallsAfterA -> ${MinioCometS3CredentialProvider.policyCallCount()})")
+  }
 }

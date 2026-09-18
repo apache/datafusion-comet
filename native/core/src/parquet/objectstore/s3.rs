@@ -57,9 +57,71 @@ use std::{
 ///
 /// * `(Box<dyn ObjectStore>, Path)` - The object store and path of the S3 object store.
 ///
-pub fn create_store(
+/// Look up the configured `CometS3CredentialProvider` FQCN and, if present, construct a
+/// bridge to it.  Callers on the SPI-aware code path (`parquet_support`) invoke this to
+/// obtain the bridge *before* store construction so they can query
+/// [`CometS3CredentialBridge::fetch_policy_locations`] and key their cache accordingly, then
+/// hand the same bridge to [`create_store_with_bridge`].
+///
+/// Returns:
+/// * `Ok(None)` — no `comet.credential.provider.class` configured for this bucket.
+/// * `Ok(Some(bridge))` — SPI resolved and initialized.
+/// * `Err(_)` — SPI class was named but initialization failed; caller should propagate.
+pub fn try_construct_bridge(
     url: &Url,
     configs: &HashMap<String, String>,
+) -> Result<Option<Arc<CometS3CredentialBridge>>, object_store::Error> {
+    try_construct_bridge_with_path(url, configs, None)
+}
+
+/// Same as [`try_construct_bridge`] but binds the bridge to `override_path` when set. The
+/// SPI-aware `parquet_support` cache uses this on the rebuild path so the bridge's baked-in
+/// path becomes the location that just 403'd, and `fetch_policy_locations` reports the
+/// vendor's scope for the *actual failing request* rather than the path baked in at initial
+/// construction time.
+pub fn try_construct_bridge_with_path(
+    url: &Url,
+    configs: &HashMap<String, String>,
+    override_path: Option<&str>,
+) -> Result<Option<Arc<CometS3CredentialBridge>>, object_store::Error> {
+    let bucket = url.host_str().ok_or_else(|| object_store::Error::Generic {
+        store: "S3",
+        source: "Missing bucket name in S3 URL".into(),
+    })?;
+    let Some(provider_class) = lookup_provider_class(configs, bucket) else {
+        return Ok(None);
+    };
+    // Parquet path: catalog_properties is empty; vendors here read from Hadoop conf.
+    let empty_props: HashMap<String, String> = HashMap::new();
+    let path_for_bridge = override_path.unwrap_or_else(|| url.path());
+    let bridge = CometS3CredentialBridge::new(
+        provider_class,
+        bucket,
+        bucket,
+        path_for_bridge,
+        AccessMode::Read,
+        &empty_props,
+    )
+    .map_err(|e| object_store::Error::Generic {
+        store: "S3",
+        source: format!("CometS3CredentialBridge init failed for {bucket}: {e}").into(),
+    })?;
+    Ok(Some(Arc::new(bridge)))
+}
+
+/// Build an S3 `ObjectStore` from a caller-supplied bridge (or absence thereof).
+///
+/// When `bridge` is `Some`, it is installed as the credential provider directly and no AWS
+/// credential-chain resolution is performed.  This is the entrypoint used by the SPI-aware
+/// `parquet_support` cache after it has fetched the bridge's advertised policy scope.
+///
+/// When `bridge` is `None`, the function falls back to the standard AWS credential chain
+/// (Hadoop-style `fs.s3a.aws.credentials.provider` resolution + `min_ttl`-bounded caching),
+/// preserving `create_store`'s legacy behavior for non-SPI callers.
+pub fn create_store_with_bridge(
+    url: &Url,
+    configs: &HashMap<String, String>,
+    bridge: Option<Arc<CometS3CredentialBridge>>,
     min_ttl: Duration,
 ) -> Result<(Box<dyn ObjectStore>, Path), object_store::Error> {
     let (scheme, path) = ObjectStoreScheme::parse(url)?;
@@ -79,26 +141,11 @@ pub fn create_store(
         source: "Missing bucket name in S3 URL".into(),
     })?;
 
-    // Parquet path: catalog_properties is empty; vendors here read from Hadoop conf.
-    let empty_props: HashMap<String, String> = HashMap::new();
-    builder = match lookup_provider_class(configs, bucket) {
-        Some(provider_class) => {
-            // Fail rather than fall back to the default chain, which could resolve to the wrong
-            // identity for a user who explicitly named a provider.
-            let bridge = CometS3CredentialBridge::new(
-                provider_class,
-                bucket,
-                bucket,
-                url.path(),
-                AccessMode::Read,
-                &empty_props,
-            )
-            .map_err(|e| object_store::Error::Generic {
-                store: "S3",
-                source: format!("CometS3CredentialBridge init failed for {bucket}: {e}").into(),
-            })?;
-            builder.with_credentials(Arc::new(bridge))
-        }
+    // Fail rather than fall back to the default chain when a bridge was named but the caller
+    // decided not to construct it — the ambiguity would let a user who asked for a specific
+    // vendor identity silently get the default one.
+    builder = match bridge {
+        Some(bridge) => builder.with_credentials(bridge),
         None => {
             match get_runtime().block_on(build_credential_provider(configs, bucket, min_ttl))? {
                 Some(provider) => builder.with_credentials(Arc::new(provider)),
@@ -988,7 +1035,8 @@ mod tests {
             .with_credential_provider(HADOOP_ANONYMOUS)
             .with_region("us-east-1")
             .build();
-        let (_object_store, path) = create_store(&url, &configs, Duration::from_secs(300)).unwrap();
+        let (_object_store, path) =
+            create_store_with_bridge(&url, &configs, None, Duration::from_secs(300)).unwrap();
         assert_eq!(
             path,
             Path::from("/comet/spark-warehouse/part-00000.snappy.parquet")

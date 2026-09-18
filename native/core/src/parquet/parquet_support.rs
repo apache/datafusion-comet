@@ -17,6 +17,7 @@
 
 use crate::execution::operators::ExecutionError;
 use crate::parquet::name_fold::fold_names;
+use crate::parquet::objectstore::retry::{RebuildFn, RetryOn403ObjectStore};
 use arrow::array::{
     make_array, FixedSizeBinaryArray, GenericListViewArray, MapArray, OffsetSizeTrait, StringArray,
 };
@@ -699,7 +700,23 @@ fn create_hdfs_object_store(
 /// The hash covers the object-store configuration. The boolean is `true` for the
 /// Hadoop backend (including custom schemes routed through Hadoop), `false` for native.
 type ObjectStoreCacheKey = (String, u64, bool);
-type ObjectStoreCache = RwLock<HashMap<ObjectStoreCacheKey, Arc<dyn ObjectStore>>>;
+
+/// A single cached store together with the vendor's advertised policy scope. `prefixes` is
+/// interpreted as follows:
+/// * empty ⇒ this store covers every path under its `ObjectStoreCacheKey` (the historical
+///   single-entry-per-bucket semantics, and the fallback for non-SPI callers).
+/// * non-empty ⇒ path must have one of these as a prefix for this store to service it. This
+///   corresponds to a `CometS3ScopedCredentialProvider::getPolicyLocationsFor` report.
+///
+/// A `Vec<ScopeEntry>` per key means multiple scopes on the same bucket coexist without
+/// evicting each other; each Spark scan for a distinct scope gets its own credentials.
+#[derive(Clone)]
+struct ScopeEntry {
+    prefixes: Vec<String>,
+    store: Arc<dyn ObjectStore>,
+}
+
+type ObjectStoreCache = RwLock<HashMap<ObjectStoreCacheKey, Vec<ScopeEntry>>>;
 
 /// Process-wide cache keyed by `(physical_scheme://host:port, config_hash, hdfs_backend)`.
 /// Backend identity is separate from the normalized URL: a configuration can route `s3`
@@ -735,9 +752,68 @@ type ObjectStoreCache = RwLock<HashMap<ObjectStoreCacheKey, Arc<dyn ObjectStore>
 /// (e.g. `fs.s3a.access.key` / `fs.s3a.secret.key`) produce a different `config_hash` when
 /// those values change, which causes a new store to be created and inserted under the new
 /// key; the old entry is harmlessly superseded.
+///
+/// ## Scope-aware entries (S3 SPI path)
+///
+/// When the S3 `CometS3CredentialProvider` implements the
+/// `CometS3ScopedCredentialProvider` sub-interface, its `getPolicyLocationsFor` report is
+/// carried alongside the store as a `ScopeEntry`. Multiple entries can coexist under one key
+/// so that distinct policy scopes on the same bucket each get their own credentials without
+/// evicting each other. Base (non-scoped) providers land as a single entry with empty
+/// `prefixes`, preserving the historical single-entry-per-bucket behavior. The advisory
+/// nature of the scope hint is enforced by wrapping each SPI store in
+/// [`RetryOn403ObjectStore`], whose rebuild closure re-fires the SPI with the failing path
+/// in context and *appends* a new scope entry to this cache — leaving any pre-existing
+/// entries intact so disjoint scoped stores on the same bucket continue to coexist. See
+/// `docs/source/contributor-guide/s3-credential-provider-design.md` for the full contract.
 fn object_store_cache() -> &'static ObjectStoreCache {
     static CACHE: OnceLock<ObjectStoreCache> = OnceLock::new();
     CACHE.get_or_init(|| RwLock::new(HashMap::new()))
+}
+
+/// True when `path` is covered by `prefixes`. Empty `prefixes` is a catchall.
+fn path_covered(path: &str, prefixes: &[String]) -> bool {
+    if prefixes.is_empty() {
+        return true;
+    }
+    prefixes.iter().any(|p| path.starts_with(p.as_str()))
+}
+
+/// Length of the longest prefix in `prefixes` that covers `path`. Empty `prefixes` is a
+/// catchall and returns 0 (so any covering scoped entry wins the tie-break); returns `None`
+/// when nothing matches.
+fn longest_covering_prefix_len(path: &str, prefixes: &[String]) -> Option<usize> {
+    if prefixes.is_empty() {
+        return Some(0);
+    }
+    prefixes
+        .iter()
+        .filter(|p| path.starts_with(p.as_str()))
+        .map(|p| p.len())
+        .max()
+}
+
+/// Locate the scope entry whose covering prefix is the longest match for `path`. Ties break
+/// by insertion order (earliest wins). Catchall entries (`prefixes.is_empty()`) match with
+/// effective length 0, so any properly-scoped covering entry wins — the catchall is the
+/// fallback of last resort.
+///
+/// Multiple scoped entries can legitimately overlap once the 403-retry wrapper has appended
+/// a narrower scope alongside a pre-existing broader one; longest-match routes each request
+/// to the narrowest applicable session so nested scopes on the same bucket resolve
+/// deterministically without depending on insertion order.
+fn find_matching_scope<'a>(entries: &'a [ScopeEntry], path: &str) -> Option<&'a ScopeEntry> {
+    let mut best: Option<(usize, &'a ScopeEntry)> = None;
+    for entry in entries {
+        let Some(len) = longest_covering_prefix_len(path, &entry.prefixes) else {
+            continue;
+        };
+        match best {
+            Some((best_len, _)) if len <= best_len => {}
+            _ => best = Some((len, entry)),
+        }
+    }
+    best.map(|(_, entry)| entry)
 }
 
 /// Compute a hash of the object store configuration for cache keying.
@@ -812,18 +888,49 @@ pub(crate) fn prepare_object_store_with_configs(
     let config_hash = hash_object_store_configs(object_store_configs);
     let cache_key = (url_key.clone(), config_hash, is_hdfs_scheme);
 
-    // Check the cache first to reuse existing object store instances.
-    // This enables HTTP connection pooling and avoids redundant DNS lookups.
+    // For S3-native URLs, ask the SPI (if configured) for its policy-scope report *before*
+    // consulting the cache. The report keys the cache entry — otherwise two scans for
+    // disjoint scopes would collide on one bucket and evict each other's credentials.
+    // A base (non-scoped) provider yields an empty prefix list, which is the same shape as
+    // "no SPI configured" and matches the historical single-entry-per-bucket cache.
+    let (bridge_opt, scope_prefixes): (
+        Option<Arc<crate::cloud::s3::credential_bridge::CometS3CredentialBridge>>,
+        Vec<String>,
+    ) = if scheme == "s3" && !is_hdfs_scheme {
+        match objectstore::s3::try_construct_bridge(&url, object_store_configs) {
+            Ok(Some(bridge)) => {
+                let prefixes = bridge.fetch_policy_locations().unwrap_or_else(|e| {
+                    debug!("fetch_policy_locations failed, treating as catchall: {e}");
+                    Vec::new()
+                });
+                (Some(bridge), prefixes)
+            }
+            Ok(None) => (None, Vec::new()),
+            Err(e) => return Err(ExecutionError::GeneralError(e.to_string())),
+        }
+    } else {
+        (None, Vec::new())
+    };
+
+    let requested_path = url.path().to_string();
+
+    // Check the cache first to reuse existing object store instances.  Scope-aware lookup:
+    // find the first entry whose prefixes cover this request's path. This yields the same
+    // reuse semantics as before for base/non-SPI callers (single catchall entry per key) and
+    // enables per-scope reuse when the vendor implements the SPI.
     let cached = {
         let cache = object_store_cache()
             .read()
             .map_err(|e| ExecutionError::GeneralError(format!("Object store cache error: {e}")))?;
-        cache.get(&cache_key).cloned()
+        cache
+            .get(&cache_key)
+            .and_then(|entries| find_matching_scope(entries, &requested_path))
+            .map(|entry| Arc::clone(&entry.store))
     };
 
     let (object_store, object_store_path): (Arc<dyn ObjectStore>, Path) =
         if let Some(store) = cached {
-            debug!("Reusing cached object store for {url_key}");
+            debug!("Reusing cached object store for {url_key} (path {requested_path})");
             let path = Path::from_url_path(url.path())
                 .map_err(|e| ExecutionError::GeneralError(e.to_string()))?;
             (store, path)
@@ -832,7 +939,12 @@ pub(crate) fn prepare_object_store_with_configs(
             let (store, path): (Box<dyn ObjectStore>, Path) = if is_hdfs_scheme {
                 create_hdfs_object_store(&url)
             } else if scheme == "s3" {
-                objectstore::s3::create_store(&url, object_store_configs, Duration::from_secs(300))
+                objectstore::s3::create_store_with_bridge(
+                    &url,
+                    object_store_configs,
+                    bridge_opt.clone(),
+                    Duration::from_secs(300),
+                )
             } else if is_azure_scheme(scheme) {
                 objectstore::azure::create_store(&url, object_store_configs)
             } else {
@@ -840,10 +952,83 @@ pub(crate) fn prepare_object_store_with_configs(
             }
             .map_err(|e| ExecutionError::GeneralError(e.to_string()))?;
 
-            let store: Arc<dyn ObjectStore> = Arc::from(store);
-            // Insert into cache
+            let raw_store: Arc<dyn ObjectStore> = Arc::from(store);
+
+            // Wrap SPI-backed stores in the 403-retry safety net. Non-SPI paths keep their
+            // plain store so we don't add overhead for the base credential chain (which is
+            // already correct without the wrapper).
+            let store: Arc<dyn ObjectStore> = if bridge_opt.is_some() {
+                let cache_key_for_rebuild = cache_key.clone();
+                let url_for_rebuild = url.clone();
+                let configs_for_rebuild: HashMap<String, String> = object_store_configs.clone();
+                let rebuild: RebuildFn = Arc::new(move |failing_path: Option<&Path>| {
+                    // Fresh bridge → fresh SPI dispatch → fresh credentials scoped for the
+                    // actual failing request. We rebind the bridge's baked-in path to the
+                    // 403'd location (falling back to the URL's path when the retry site did
+                    // not supply one) so `fetch_policy_locations` returns the vendor's scope
+                    // for *this* request rather than whatever the initial construction picked.
+                    let failing_path_str = failing_path.map(|p| format!("/{p}"));
+                    let rebuilt_bridge = objectstore::s3::try_construct_bridge_with_path(
+                        &url_for_rebuild,
+                        &configs_for_rebuild,
+                        failing_path_str.as_deref(),
+                    )
+                    .map_err(|e| object_store::Error::Generic {
+                        store: "S3",
+                        source: format!("rebuild bridge failed: {e}").into(),
+                    })?;
+                    // Query the vendor for the fresh session's scope hint. Errors normalize
+                    // to an empty prefix list (catchall for the new entry only) — matching
+                    // the fallback the initial builder uses on the same call.
+                    let fresh_prefixes = if let Some(bridge) = rebuilt_bridge.as_ref() {
+                        bridge.fetch_policy_locations().unwrap_or_else(|e| {
+                            debug!("fetch_policy_locations on rebuild failed: {e}");
+                            Vec::new()
+                        })
+                    } else {
+                        Vec::new()
+                    };
+                    let (rebuilt_raw, _path) = objectstore::s3::create_store_with_bridge(
+                        &url_for_rebuild,
+                        &configs_for_rebuild,
+                        rebuilt_bridge,
+                        Duration::from_secs(300),
+                    )?;
+                    let rebuilt: Arc<dyn ObjectStore> = Arc::from(rebuilt_raw);
+                    // Append the new scope entry alongside any pre-existing ones. The old
+                    // entry stays: the vendor may still legitimately serve its original scope
+                    // even though the failing path fell outside it. Longest-prefix match on
+                    // the lookup side ensures each request routes to the narrowest applicable
+                    // session.
+                    if let Ok(mut cache) = object_store_cache().write() {
+                        let entries = cache.entry(cache_key_for_rebuild.clone()).or_default();
+                        // Deduplicate: a concurrent rebuild may have already inserted an
+                        // entry with the same prefixes.
+                        if !entries.iter().any(|e| e.prefixes == fresh_prefixes) {
+                            entries.push(ScopeEntry {
+                                prefixes: fresh_prefixes,
+                                store: Arc::clone(&rebuilt),
+                            });
+                        }
+                    }
+                    Ok(rebuilt)
+                });
+                Arc::new(RetryOn403ObjectStore::new(raw_store, rebuild)) as Arc<dyn ObjectStore>
+            } else {
+                raw_store
+            };
+
+            // Insert into cache under the SPI-reported scope. Concurrent misses would each
+            // build a store; the first insert for a given scope wins and subsequent ones are
+            // dropped to avoid duplicates.
             if let Ok(mut cache) = object_store_cache().write() {
-                cache.insert(cache_key, Arc::clone(&store));
+                let entries = cache.entry(cache_key.clone()).or_default();
+                if !entries.iter().any(|e| e.prefixes == scope_prefixes) {
+                    entries.push(ScopeEntry {
+                        prefixes: scope_prefixes.clone(),
+                        store: Arc::clone(&store),
+                    });
+                }
             }
             (store, path)
         };
@@ -982,7 +1167,7 @@ mod tests {
 
     use super::{
         hash_object_store_configs, object_store_cache, prepare_object_store_with_configs,
-        ObjectStoreBackend,
+        ObjectStoreBackend, ScopeEntry,
     };
     use bytes::Bytes;
     use datafusion::execution::object_store::ObjectStoreUrl;
@@ -1029,7 +1214,13 @@ mod tests {
         {
             let mut cache = object_store_cache().write().unwrap();
             for (key, store) in keys.iter().zip(&stores) {
-                cache.insert(key.clone(), Arc::clone(store));
+                cache.insert(
+                    key.clone(),
+                    vec![ScopeEntry {
+                        prefixes: Vec::new(),
+                        store: Arc::clone(store),
+                    }],
+                );
             }
         }
 
@@ -1169,10 +1360,13 @@ mod tests {
             false,
         );
         let store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
-        object_store_cache()
-            .write()
-            .unwrap()
-            .insert(key.clone(), Arc::clone(&store));
+        object_store_cache().write().unwrap().insert(
+            key.clone(),
+            vec![ScopeEntry {
+                prefixes: Vec::new(),
+                store: Arc::clone(&store),
+            }],
+        );
         let mut previous = None;
         for schemes in [["s3", "s3a"], ["s3a", "s3"]] {
             let runtime = Arc::new(RuntimeEnv::default());
@@ -1207,10 +1401,13 @@ mod tests {
             true,
         );
         let hdfs_store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
-        object_store_cache()
-            .write()
-            .unwrap()
-            .insert(key.clone(), Arc::clone(&hdfs_store));
+        object_store_cache().write().unwrap().insert(
+            key.clone(),
+            vec![ScopeEntry {
+                prefixes: Vec::new(),
+                store: Arc::clone(&hdfs_store),
+            }],
+        );
         let (hdfs_url, _, hdfs_backend) = prepare_object_store_with_configs(
             Arc::clone(&runtime),
             "file:///comet-isolation-file-routing.parquet".into(),
@@ -1911,5 +2108,107 @@ mod tests {
             err.to_string().contains("Hdfs support is not enabled"),
             "unexpected error: {err}"
         );
+    }
+
+    /// Empty prefixes must match every path (base-provider semantics), non-empty prefixes must
+    /// require a starts-with match.
+    #[test]
+    fn path_covered_treats_empty_prefixes_as_catchall() {
+        use super::path_covered;
+        assert!(path_covered("/a/b/c", &[]));
+        assert!(path_covered("", &[]));
+        assert!(path_covered("/warehouse/db/tbl/part-0", &["/warehouse/db/tbl/".into()]));
+        // Non-matching prefix.
+        assert!(!path_covered(
+            "/warehouse/other/part",
+            &["/warehouse/db/tbl/".into()]
+        ));
+        // Multiple prefixes: any match suffices.
+        assert!(path_covered(
+            "/mask/data/x",
+            &["/warehouse/db/".into(), "/mask/data/".into()],
+        ));
+    }
+
+    /// `find_matching_scope` walks all entries and returns the one whose covering prefix is
+    /// longest (narrower scopes beat broader ones); catchall (empty prefixes) matches with
+    /// length 0 and only wins when nothing else covers the path.
+    #[test]
+    fn find_matching_scope_returns_longest_matching_entry() {
+        use super::{find_matching_scope, ScopeEntry};
+        let broad = ScopeEntry {
+            prefixes: vec!["/warehouse/".into()],
+            store: Arc::new(object_store::memory::InMemory::new()) as Arc<dyn ObjectStore>,
+        };
+        let narrow = ScopeEntry {
+            prefixes: vec!["/warehouse/db/private/".into()],
+            store: Arc::new(object_store::memory::InMemory::new()) as Arc<dyn ObjectStore>,
+        };
+        let catchall = ScopeEntry {
+            prefixes: vec![],
+            store: Arc::new(object_store::memory::InMemory::new()) as Arc<dyn ObjectStore>,
+        };
+
+        // Nested scoped entries: the narrower prefix wins even when the broader entry was
+        // inserted first (insertion order must NOT decide this).
+        let entries = vec![broad.clone(), narrow.clone(), catchall.clone()];
+        let hit = find_matching_scope(&entries, "/warehouse/db/private/table/part-0").unwrap();
+        assert_eq!(hit.prefixes, narrow.prefixes);
+
+        // Path outside the narrow entry falls back to the broad one, not the catchall.
+        let hit = find_matching_scope(&entries, "/warehouse/db/other/part-0").unwrap();
+        assert_eq!(hit.prefixes, broad.prefixes);
+
+        // Path outside every scoped prefix falls back to the catchall.
+        let hit = find_matching_scope(&entries, "/other-bucket-content/part-0").unwrap();
+        assert!(hit.prefixes.is_empty());
+    }
+
+    /// Ties on covering-prefix length break by insertion order (earliest wins).
+    #[test]
+    fn find_matching_scope_breaks_ties_by_insertion_order() {
+        use super::{find_matching_scope, ScopeEntry};
+        let first = ScopeEntry {
+            prefixes: vec!["/a/".into()],
+            store: Arc::new(object_store::memory::InMemory::new()) as Arc<dyn ObjectStore>,
+        };
+        let second = ScopeEntry {
+            prefixes: vec!["/a/".into()],
+            store: Arc::new(object_store::memory::InMemory::new()) as Arc<dyn ObjectStore>,
+        };
+        let entries = vec![first.clone(), second];
+        let hit = find_matching_scope(&entries, "/a/file").unwrap();
+        assert!(
+            Arc::ptr_eq(&hit.store, &first.store),
+            "earlier insertion wins ties"
+        );
+    }
+
+    /// A cache slot with a single scoped entry short-circuits: matching path returns it,
+    /// non-matching path returns None (catchall must be explicitly present to serve as
+    /// fallback).
+    #[test]
+    fn find_matching_scope_single_entry_short_circuits() {
+        use super::{find_matching_scope, ScopeEntry};
+        let only = ScopeEntry {
+            prefixes: vec!["/only/".into()],
+            store: Arc::new(object_store::memory::InMemory::new()) as Arc<dyn ObjectStore>,
+        };
+        let entries = vec![only.clone()];
+        let hit = find_matching_scope(&entries, "/only/foo");
+        assert!(hit.is_some());
+        assert!(find_matching_scope(&entries, "/elsewhere/foo").is_none());
+    }
+
+    /// With no entries covering the path and no catchall present, lookup returns None.
+    #[test]
+    fn find_matching_scope_returns_none_without_cover() {
+        use super::{find_matching_scope, ScopeEntry};
+        let scoped = ScopeEntry {
+            prefixes: vec!["/a/".into()],
+            store: Arc::new(object_store::memory::InMemory::new()) as Arc<dyn ObjectStore>,
+        };
+        let entries = vec![scoped];
+        assert!(find_matching_scope(&entries, "/b/file").is_none());
     }
 }

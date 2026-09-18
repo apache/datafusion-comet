@@ -67,10 +67,12 @@ pub enum AccessMode {
 /// above (Comet's scope-aware `object_store` cache in `parquet_support`) reads
 /// [`Self::fetch_policy_locations`] once at construction so it can key a distinct
 /// `CometS3CredentialBridge` per scope on the bucket, and wraps the resulting store in a
-/// 403-retry safety net that re-fires the SPI with the failing path in context if S3 rejects a
-/// read outside the advertised scope. Scoped vendors (`CometS3ScopedCredentialProvider`
-/// implementors) narrow the effective identity from per-bucket to per-scope; base providers
-/// retain the per-bucket identity that predates the sub-interface.
+/// 403-retry safety net. On 403 the wrapper constructs a *fresh* bridge bound to the failing
+/// path and re-consults the SPI, so the vendor's scope hint reflects the actual failing
+/// request and a new scope entry is appended to the cache alongside the pre-existing one.
+/// Scoped vendors (`CometS3ScopedCredentialProvider` implementors) narrow the effective
+/// identity from per-bucket to per-scope; base providers retain the per-bucket identity that
+/// predates the sub-interface.
 pub struct CometS3CredentialBridge {
     provider_class: String,
     dispatch_key: String,
