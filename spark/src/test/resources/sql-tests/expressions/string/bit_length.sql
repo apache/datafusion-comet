@@ -28,8 +28,7 @@ SELECT bit_length(s) FROM test_bit_length
 query
 SELECT bit_length('hello'), bit_length(''), bit_length(NULL)
 
--- BinaryType input falls back to Spark; the native DataFusion impl rejects Binary at runtime,
--- so the serde gates Binary as Unsupported (matching the existing CometLength shape).
+-- BinaryType input falls back to Spark; benchmarked slower via the codegen dispatcher.
 statement
 CREATE TABLE test_bit_length_binary(b binary) USING parquet
 
