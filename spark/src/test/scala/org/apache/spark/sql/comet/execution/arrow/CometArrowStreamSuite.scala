@@ -19,6 +19,7 @@
 
 package org.apache.spark.sql.comet.execution.arrow
 
+import java.io.ByteArrayInputStream
 import java.nio.ByteOrder
 import java.nio.charset.StandardCharsets
 
@@ -30,16 +31,19 @@ import org.scalatest.matchers.should.Matchers
 
 import org.apache.arrow.memory.{AllocationListener, RootAllocator}
 import org.apache.arrow.vector.{BaseFixedWidthVector, BaseValueVector, BigIntVector, BitVector, DecimalVector, IntervalMonthDayNanoVector, IntVector, VarCharVector, VectorSchemaRoot}
+import org.apache.arrow.vector.complex.StructVector
 import org.apache.arrow.vector.dictionary.{Dictionary => ArrowDictionary}
 import org.apache.arrow.vector.dictionary.DictionaryProvider.MapDictionaryProvider
+import org.apache.arrow.vector.ipc.ArrowStreamReader
 import org.apache.arrow.vector.types.pojo.{ArrowType, DictionaryEncoding, Field, FieldType, Schema}
 import org.apache.spark.sql.catalyst.expressions.{GenericInternalRow, SpecializedGetters}
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.execution.vectorized.{ConstantColumnVector, Dictionary, OffHeapColumnVector, OnHeapColumnVector}
-import org.apache.spark.sql.types.{ArrayType, BooleanType, ByteType, CalendarIntervalType, DataType, DateType, DayTimeIntervalType, Decimal, DecimalType, DoubleType, FloatType, IntegerType, LongType, ShortType, StringType, StructField, StructType, TimestampNTZType, TimestampType, YearMonthIntervalType}
+import org.apache.spark.sql.types.{ArrayType, BooleanType, ByteType, CalendarIntervalType, DataType, DateType, DayTimeIntervalType, Decimal, DecimalType, DoubleType, FloatType, IntegerType, LongType, Metadata, MetadataBuilder, ShortType, StringType, StructField, StructType, TimestampNTZType, TimestampType, YearMonthIntervalType}
 import org.apache.spark.sql.vectorized.{ColumnarArray, ColumnarBatch, ColumnVector}
-import org.apache.spark.unsafe.types.CalendarInterval
+import org.apache.spark.unsafe.types.{CalendarInterval, UTF8String}
 
+import org.apache.comet.serde.QueryPlanSerde
 import org.apache.comet.vector.{CometPlainVector, CometVector, NativeUtil}
 
 /**
@@ -60,6 +64,83 @@ class CometArrowStreamSuite extends AnyFunSuite with Matchers {
   private def batchOf(vectors: CometVector*): ColumnarBatch = {
     val numRows = if (vectors.isEmpty) 0 else vectors.head.getValueVector.getValueCount
     new ColumnarBatch(vectors.toArray, numRows)
+  }
+
+  test("scalar subquery IPC omits nested Parquet field IDs retained by the planned type") {
+    def fieldId(id: Long) = new MetadataBuilder().putLong("parquet.field.id", id).build()
+    val nestedType = StructType(
+      Seq(
+        StructField("label", StringType, nullable = true, fieldId(41)),
+        StructField("value", LongType, nullable = false, fieldId(42))))
+    val valueType = StructType(
+      Seq(
+        StructField("number", IntegerType, nullable = false, fieldId(10)),
+        StructField("untagged", StringType, nullable = true),
+        StructField("nested", nestedType, nullable = true, fieldId(30))))
+    val row = new GenericInternalRow(
+      Array[Any](17, null, new GenericInternalRow(Array[Any](UTF8String.fromString("尾"), -91L))))
+
+    val planned = QueryPlanSerde.serializeDataType(valueType).get.getTypeInfo.getStruct
+    val plannedMetadata = planned.getFieldMetadataList.asScala.map(_.getMetadataMap.asScala.toMap)
+    plannedMetadata.toSeq shouldBe Seq(
+      Map("PARQUET:field_id" -> "10"),
+      Map.empty[String, String],
+      Map("PARQUET:field_id" -> "30"))
+    val plannedNested = planned.getFieldDatatypes(2).getTypeInfo.getStruct
+    val plannedNestedMetadata =
+      plannedNested.getFieldMetadataList.asScala.map(_.getMetadataMap.asScala.toMap)
+    plannedNestedMetadata.toSeq shouldBe Seq(
+      Map("PARQUET:field_id" -> "41"),
+      Map("PARQUET:field_id" -> "42"))
+
+    // Read the real JVM serializer's IPC bytes. A synthetic Rust-only schema would not establish
+    // whether the JVM actually drops the metadata that native struct reconstruction restores.
+    val bytes = CometArrowConverters.serializeScalarSubquery(row, valueType)
+    val allocator = new RootAllocator(Long.MaxValue)
+    val reader = new ArrowStreamReader(new ByteArrayInputStream(bytes), allocator)
+    try {
+      reader.loadNextBatch() shouldBe true
+      val root = reader.getVectorSchemaRoot
+      root.getRowCount shouldBe 1
+      root.getFieldVectors.size() shouldBe 1
+      val valueField = root.getSchema.getFields.get(0)
+      valueField.getName shouldBe "value"
+      valueField.isNullable shouldBe true
+      val fields = valueField.getChildren.asScala
+      fields.map(_.getName).toSeq shouldBe Seq("number", "untagged", "nested")
+      fields.map(_.isNullable).toSeq shouldBe Seq(false, true, true)
+      val wireMetadata = fields.map(_.getMetadata.asScala.toMap)
+      wireMetadata.toSeq shouldBe Seq.fill(3)(Map.empty[String, String])
+      wireMetadata should not equal plannedMetadata
+      val nestedFields = fields(2).getChildren.asScala
+      nestedFields.map(_.getName).toSeq shouldBe Seq("label", "value")
+      nestedFields.map(_.isNullable).toSeq shouldBe Seq(true, false)
+      val wireNestedMetadata = nestedFields.map(_.getMetadata.asScala.toMap)
+      wireNestedMetadata.toSeq shouldBe Seq.fill(2)(Map.empty[String, String])
+      wireNestedMetadata should not equal plannedNestedMetadata
+
+      // The mismatch is metadata, not a different result, field order, type, or nullability.
+      val untaggedNestedType = StructType(nestedType.map(_.copy(metadata = Metadata.empty)))
+      val untaggedType = StructType(
+        Seq(
+          StructField("number", IntegerType, nullable = false),
+          StructField("untagged", StringType, nullable = true),
+          StructField("nested", untaggedNestedType, nullable = true)))
+      Utils.fromArrowField(valueField) shouldBe untaggedType
+      Utils.fromArrowField(valueField) should not equal valueType
+      val value = root.getVector(0).asInstanceOf[StructVector]
+      value.isNull(0) shouldBe false
+      value.getChildByOrdinal(0).asInstanceOf[IntVector].get(0) shouldBe 17
+      value.getChildByOrdinal(1).isNull(0) shouldBe true
+      val nested = value.getChildByOrdinal(2).asInstanceOf[StructVector]
+      nested.isNull(0) shouldBe false
+      nested.getChildByOrdinal(0).getObject(0).toString shouldBe "尾"
+      nested.getChildByOrdinal(1).asInstanceOf[BigIntVector].get(0) shouldBe -91L
+      reader.loadNextBatch() shouldBe false
+    } finally {
+      reader.close()
+      allocator.close()
+    }
   }
 
   test("CalendarIntervalType round-trips through Arrow writer and Comet vector") {
