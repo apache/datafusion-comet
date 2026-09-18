@@ -587,26 +587,53 @@ class DeltaScanContribSuite extends CometDeltaTestBase {
         Seq(tableRootPath.toUri))
   }
 
-  test("user guide documents the native Delta scan config verbatim") {
-    // Guards against the config's `.doc` drifting out of sync with the hand-written user-guide
-    // page (the generated table only covers `docs/source/user-guide/latest`, so there is no
-    // build-time check tying the two together).
-    val docsPath = DeltaScanContribSuite.findRepoFile("docs/source/user-guide/latest/delta.md")
-    docsPath match {
-      case None =>
-        cancel(
-          "Could not locate docs/source/user-guide/latest/delta.md from this checkout; " +
-            "skipping the docs drift guard.")
-      case Some(file) =>
-        val contents = scala.io.Source.fromFile(file, "UTF-8").mkString
-        assert(
-          contents.contains(DeltaScanConf.COMET_DELTA_NATIVE_ENABLED.key),
-          s"Expected ${file.getAbsolutePath} to mention " +
-            s"${DeltaScanConf.COMET_DELTA_NATIVE_ENABLED.key}")
-        assert(
-          contents.contains(DeltaScanConf.COMET_DELTA_NATIVE_ENABLED.doc),
-          s"Expected ${file.getAbsolutePath} to contain the config's doc string verbatim")
+  test("user guide documents every native Delta scan config verbatim, with its default") {
+    // The config table on the user-guide page is hand-maintained: the doc build cannot see
+    // DeltaSparkConfigProvider with the current module layout, so this is the only check tying
+    // each entry's key, doc string, and default to the row GenerateDocs would render.
+    val file = DeltaScanContribSuite
+      .findRepoFile("docs/source/user-guide/latest/delta.md")
+      .getOrElse(
+        fail("Could not locate docs/source/user-guide/latest/delta.md from this checkout; " +
+          "set -Dcomet.repo.root or run from the repo or module root"))
+    val source = scala.io.Source.fromFile(file, "UTF-8")
+    val tableRows =
+      try source.getLines().filter(_.startsWith("| `")).toList
+      finally source.close()
+    // Renders the row GenerateDocs emits for an entry with a plain default and no env var, which
+    // is every entry today; an entry using either needs the extra text added here as well.
+    val expectedRows = DeltaScanConf.all.map { conf =>
+      s"| `${conf.key}` | ${conf.doc.trim} | ${conf.defaultValueString} |"
     }
+    expectedRows.foreach { row =>
+      assert(
+        tableRows.contains(row),
+        s"Expected ${file.getAbsolutePath} to contain this table row verbatim:\n$row\n" +
+          s"Rows present:\n${tableRows.mkString("\n")}")
+    }
+    val staleRows = tableRows.filterNot(expectedRows.contains)
+    assert(
+      staleRows.isEmpty,
+      s"${file.getAbsolutePath} has table rows matching no entry in DeltaScanConf.all:\n" +
+        staleRows.mkString("\n"))
+  }
+
+  test("CometDeltaS3Suite.s3Required arms the hard failure only for 1 or true") {
+    // Trimmed and case-insensitive so a padded or upper-cased workflow value still counts;
+    // anything else, including yes and 0, keeps the fail-soft default so a typo cannot arm it.
+    assert(!CometDeltaS3Suite.s3Required(None))
+    Seq("1", "true", "TRUE ", " True").foreach { v =>
+      assert(CometDeltaS3Suite.s3Required(Some(v)), s"'$v' should arm the hard failure")
+    }
+    Seq("", " ", "0", "false", "yes", "on", "required", "11").foreach { v =>
+      assert(!CometDeltaS3Suite.s3Required(Some(v)), s"'$v' must not arm the hard failure")
+    }
+  }
+
+  test("CometDeltaS3Suite.requiredFailureMessage names the env var and the cause") {
+    val message = CometDeltaS3Suite.requiredFailureMessage("no Docker daemon is reachable")
+    assert(message.contains(CometDeltaS3Suite.S3_REQUIRED_ENV))
+    assert(message.contains("no Docker daemon is reachable"))
   }
 
   /**
