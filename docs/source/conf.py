@@ -53,12 +53,21 @@ extensions = [
     'sphinx.ext.napoleon',
     'myst_parser',
     'sphinx_reredirects',
+    # Renders the ```mermaid fences in the contributor guide. The diagrams are drawn in
+    # the browser by mermaid.js, which sphinxcontrib-mermaid loads from cdn.jsdelivr.net
+    # at the version pinned by its `mermaid_version` default.
+    'sphinxcontrib.mermaid',
 ]
 
 source_suffix = {
     '.rst': 'restructuredtext',
     '.md': 'markdown',
 }
+
+# Route ```mermaid fences to the mermaid directive rather than treating them as a literal
+# code block, so the same source renders as a diagram here and on github.com, which
+# understands that fence natively.
+myst_fence_as_directive = ['mermaid']
 
 # Add any paths that contain templates here, relative to this directory.
 templates_path = ['_templates']
