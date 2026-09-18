@@ -16,3 +16,4 @@
 // under the License.
 
 pub mod credential_bridge;
+pub mod web_identity;

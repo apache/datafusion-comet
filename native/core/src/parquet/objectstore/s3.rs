@@ -21,6 +21,7 @@ use std::sync::OnceLock;
 use url::Url;
 
 use crate::cloud::s3::credential_bridge::{AccessMode, CometS3CredentialBridge};
+use crate::cloud::s3::web_identity::{WebIdentityConfig, WebIdentityCredentialProvider};
 use crate::execution::jni_api::get_runtime;
 use async_trait::async_trait;
 use aws_config::{
@@ -100,9 +101,33 @@ pub fn create_store(
             builder.with_credentials(Arc::new(bridge))
         }
         None => {
-            match get_runtime().block_on(build_credential_provider(configs, bucket, min_ttl))? {
-                Some(provider) => builder.with_credentials(Arc::new(provider)),
-                None => builder.with_skip_signature(true),
+            // IRSA take-over. When no explicit `aws.credentials.provider` is configured, the
+            // default AWS chain places IMDS/instance-role after web-identity, so a throttled
+            // AssumeRoleWithWebIdentity silently downgrades to the node role -> hard S3 403. On
+            // EKS/IRSA use the Comet web-identity provider instead (retries the throttle, no
+            // node-role fallback, shared jittered cache). Any explicit provider config is
+            // respected -- it takes the normal `build_credential_provider` path below.
+            let explicit_provider = get_config_trimmed(configs, bucket, "aws.credentials.provider")
+                .is_some_and(|s| !s.is_empty());
+            let web_identity = if explicit_provider {
+                None
+            } else {
+                WebIdentityConfig::detect_with(|key| {
+                    get_config_trimmed(configs, bucket, key).map(|s| s.to_string())
+                })
+            };
+            match web_identity {
+                Some(cfg) => {
+                    builder.with_credentials(Arc::new(WebIdentityCredentialProvider::new(cfg)))
+                }
+                None => {
+                    match get_runtime()
+                        .block_on(build_credential_provider(configs, bucket, min_ttl))?
+                    {
+                        Some(provider) => builder.with_credentials(Arc::new(provider)),
+                        None => builder.with_skip_signature(true),
+                    }
+                }
             }
         }
     };

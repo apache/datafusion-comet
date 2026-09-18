@@ -73,6 +73,18 @@ Comet's bridge does not maintain a TTL cache, schedule refresh, or broadcast cat
 
 A Comet-side cache would have to either expose a tuning knob (TTL, max size, eviction policy) and grow over time, or be hardcoded and surprise vendors whose policies disagree. The bridge intentionally has neither and forwards every call.
 
+## The IRSA web-identity provider is the exception that does cache
+
+The "no Comet-side cache" rule above is about the vendor *bridge*. There is one Comet-owned credential provider that deliberately does cache: the EKS/IRSA web-identity provider in `native/core/src/cloud/s3/web_identity.rs`. It is not a vendor path -- there is no JVM SPI involved -- so the reasoning above does not apply.
+
+It exists because the default credential chain mishandles STS throttling on IRSA. `AssumeRoleWithWebIdentity` is called per reader thread; a concurrent startup burst throttles STS; the default chain does not retry and falls through to the EKS node instance role, which lacks bucket access, turning a transient throttle into a hard `403`. When both `AWS_WEB_IDENTITY_TOKEN_FILE` and `AWS_ROLE_ARN` are set and no explicit credentials are configured, both scan paths install `WebIdentityCredentialProvider` instead of the default chain (Parquet: the `None` branch of `s3.rs::create_store`; Iceberg: `iceberg_common.rs::build_s3_credential_loader` returns a `CustomAwsCredentialLoader` instead of `Ok(None)`). It:
+
+- uses the AWS SDK `WebIdentityTokenCredentialsProvider`, whose STS client retries throttling with backoff + jitter (`maxAttempts` configurable),
+- is web-identity ONLY, with no IMDS/instance-role fallback, so a throttle that outlasts the retries errors instead of downgrading, and
+- caches one credential per process keyed by `(role_arn, token_file, region)`, single-flights refreshes so a reader burst triggers one STS call, and jitters the refresh deadline per process so cluster-wide refreshes desync.
+
+Unlike the bridge, this provider owns the whole credential lifecycle (there is no vendor to delegate to), which is why caching lives here. The knobs are read from the config bag with sensible defaults; see the user guide "EKS / IRSA" section. It stands aside for any explicit credential configuration (a bridge class, `fs.s3a.aws.credentials.provider`, or catalog static keys / `client.assume-role.arn`), so it only changes the otherwise-default behavior.
+
 ## Path-specific behavior
 
 `object_store::CredentialProvider` and `reqsign_core::ProvideCredential` differ in what they consume:
