@@ -79,3 +79,7 @@ SELECT map_from_arrays(array('a', 'a'), array(1, 2))
 -- fixture readable.
 query expect_error(must have the same length)
 SELECT map_from_arrays(array('a', 'b'), array(1))
+
+-- and in the other direction
+query expect_error(must have the same length)
+SELECT map_from_arrays(array('a'), array(1, 2))
