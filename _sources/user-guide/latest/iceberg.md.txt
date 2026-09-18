@@ -95,9 +95,14 @@ The native Iceberg reader supports the following features:
 
 - Equality and comparison predicates (`=`, `!=`, `>`, `>=`, `<`, `<=`)
 - Logical operators (`AND`, `OR`)
-- NULL checks (`IS NULL`, `IS NOT NULL`)
+- NULL checks (`IS NULL`, `IS NOT NULL`) on primitive columns
 - `IN` and `NOT IN` list operations
 - `BETWEEN` operations
+
+NULL checks on struct, array, and map columns still use native scans and return correct
+results, but are not pushed into iceberg-rust, which binds accessors only for primitive fields.
+These residuals provide no native row-group pruning, nor do conjunctions containing them;
+safe partial pruning is tracked in [#5883](https://github.com/apache/datafusion-comet/issues/5883).
 
 **Partitioning:**
 

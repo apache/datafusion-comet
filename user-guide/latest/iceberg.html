@@ -846,10 +846,14 @@ Spark (no AES-192-GCM in the underlying crypto).</p></li>
 <ul class="simple">
 <li><p>Equality and comparison predicates (<code class="docutils literal notranslate"><span class="pre">=</span></code>, <code class="docutils literal notranslate"><span class="pre">!=</span></code>, <code class="docutils literal notranslate"><span class="pre">&gt;</span></code>, <code class="docutils literal notranslate"><span class="pre">&gt;=</span></code>, <code class="docutils literal notranslate"><span class="pre">&lt;</span></code>, <code class="docutils literal notranslate"><span class="pre">&lt;=</span></code>)</p></li>
 <li><p>Logical operators (<code class="docutils literal notranslate"><span class="pre">AND</span></code>, <code class="docutils literal notranslate"><span class="pre">OR</span></code>)</p></li>
-<li><p>NULL checks (<code class="docutils literal notranslate"><span class="pre">IS</span> <span class="pre">NULL</span></code>, <code class="docutils literal notranslate"><span class="pre">IS</span> <span class="pre">NOT</span> <span class="pre">NULL</span></code>)</p></li>
+<li><p>NULL checks (<code class="docutils literal notranslate"><span class="pre">IS</span> <span class="pre">NULL</span></code>, <code class="docutils literal notranslate"><span class="pre">IS</span> <span class="pre">NOT</span> <span class="pre">NULL</span></code>) on primitive columns</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">IN</span></code> and <code class="docutils literal notranslate"><span class="pre">NOT</span> <span class="pre">IN</span></code> list operations</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">BETWEEN</span></code> operations</p></li>
 </ul>
+<p>NULL checks on struct, array, and map columns still use native scans and return correct
+results, but are not pushed into iceberg-rust, which binds accessors only for primitive fields.
+These residuals provide no native row-group pruning, nor do conjunctions containing them;
+safe partial pruning is tracked in <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/5883">#5883</a>.</p>
 <p><strong>Partitioning:</strong></p>
 <ul class="simple">
 <li><p>Standard partitioning with partition pruning</p></li>
