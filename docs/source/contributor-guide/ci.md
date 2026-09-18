@@ -32,6 +32,26 @@ preflight checks first (license headers, Markdown formatting, workflow linting, 
 checks), computes which heavy jobs the changed files are relevant to, and fans out to those jobs.
 Which jobs run also depends on the event:
 
+```mermaid
+flowchart LR
+  PR([pull request]) --> PRTIER
+  PR -. with label .-> QUEUE
+  PR -. with label .-> NIGHTLY
+  PR -. with label .-> S34
+  MQ([merge queue]) --> PRTIER
+  MQ --> QUEUE
+  CRON([schedule<br>06:00 UTC]) --> NIGHTLY
+  PUSH([push to main]) --> CACHE
+
+  PRTIER["PR tier<br>Linux build, lint, Rust tests<br>TPC-H / TPC-DS<br>Comet suites, Spark 4.1"]
+  QUEUE["Queue tier, on top of the PR tier<br>Spark SQL, Spark 4.1<br>Iceberg 1.11<br>macOS build and Comet suites<br>Benchmark check, Delta gate<br>PyArrow UDF, Spark 4.0 / 4.1 / 4.2"]
+  NIGHTLY["Nightly tier<br>Comet suites, Spark 3.4 / 3.5 / 4.0 / 4.2<br>Spark SQL, Spark 3.5 / 4.0<br>Iceberg 1.8 / 1.9 / 1.10"]
+  S34["Neither tier<br>Spark SQL, Spark 3.4"]
+  CACHE["Cache-refresh-only mode<br>the four cache-writing jobs, plus Lint"]
+```
+
+Suite by suite:
+
 | Suite                                             | Pull request | Merge queue | Nightly |
 | ------------------------------------------------- | ------------ | ----------- | ------- |
 | Linux build, lint, Rust tests, TPC-H/TPC-DS       | yes          | yes         | no      |
@@ -243,6 +263,58 @@ stays in one place. When you pick up a nightly failure:
 
 Dispatching `ci.yml` from the Actions page with **Run workflow** runs every tier, including the
 nightly suites, if you need a result before the next scheduled run.
+
+## Checking that the scheduled runs are healthy
+
+A scheduled run has no pull request to turn red, so when one breaks, nothing puts it in front of
+anyone. Comet has three daily schedules plus a weekly one, and two of the daily ones report nothing
+when they fail:
+
+| Workflow               | Cron (UTC)   | Reports a failure?                    |
+| ---------------------- | ------------ | ------------------------------------- |
+| `publish_snapshot.yml` | `0 3 * * *`  | no                                    |
+| `miri.yml`             | `0 4 * * *`  | no                                    |
+| `ci.yml` nightly tier  | `0 6 * * *`  | yes, a `ci-nightly-failure` issue     |
+| `codeql.yml`           | `16 4 * * 1` | yes, to the repository's Security tab |
+
+So the two without a reporting step have to be looked at deliberately. Check all of them at once:
+
+```sh
+for wf in ci.yml miri.yml publish_snapshot.yml; do
+  gh api "repos/apache/datafusion-comet/actions/workflows/$wf/runs?event=schedule&per_page=5" \
+    --jq ".workflow_runs[] | \"$wf\t\(.created_at[0:10])\t\(.conclusion)\t\(.html_url)\""
+done
+```
+
+Read the output for two different things:
+
+- **A missing row.** If the most recent run is not from the last day or two, the schedule itself
+  stopped firing. GitHub drops scheduled runs under load and disables them entirely in a repository
+  with no activity for 60 days, and it does not announce either. Confirm the workflow is still
+  enabled with `gh api repos/apache/datafusion-comet/actions/workflows --jq '.workflows[] | "\(.state)\t\(.path)"'`,
+  and re-enable it from the Actions page if it is `disabled_inactivity`.
+- **A run of failures.** One red night is a flake or a real regression, and for `ci.yml` there is an
+  issue open about it. Several consecutive red nights on `miri.yml` or `publish_snapshot.yml` means
+  nobody has looked; treat the streak, not the newest run, as the thing to explain.
+
+For the `ci.yml` nightly, green on its own does not mean the suites ran. Path filters and the diff
+base are both allowed to select nothing — a documentation-only day legitimately runs no suite at
+all — and a run that tested nothing reports exactly the same green `Required Checks` as a run that
+tested everything. Confirm the suites actually ran:
+
+```sh
+run=$(gh api "repos/apache/datafusion-comet/actions/workflows/ci.yml/runs?event=schedule&per_page=1" \
+        --jq '.workflow_runs[0].id')
+gh run view "$run" --repo apache/datafusion-comet --json jobs \
+  --jq '[.jobs[] | select(.name | test("^(Spark SQL|Iceberg Spark SQL) Tests"))]
+        | group_by(.conclusion)[] | "\(length)\t\(.[0].conclusion)"'
+```
+
+A healthy run over a day of normal merges reports about 40 successes, with the handful of skips
+being the suites that belong to the queue tier rather than the nightly one — Spark 3.4, Spark 4.1
+and Iceberg 1.11. If everything is skipped, open the run's `Detect changes` job: it logs the
+`Nightly base:` commit it diffed against and the list of changed files, which is enough to tell a
+genuinely quiet day from a base that has drifted.
 
 ## Reproducing a suite failure locally
 
