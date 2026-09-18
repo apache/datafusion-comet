@@ -559,6 +559,14 @@ Comet is enabled when we run the tests.</p>
 <li><p>Modify SQLTestUtilsBase to load Comet when <code class="docutils literal notranslate"><span class="pre">ENABLE_COMET</span></code> environment variable exists</p></li>
 </ul>
 <p>Here are the steps involved in running the Spark SQL tests with Comet, using Spark 3.4.3 for this example.</p>
+<p><code class="docutils literal notranslate"><span class="pre">dev/local-ci.sh</span></code> runs all of the steps below the way CI runs them:</p>
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>dev/local-ci.sh<span class="w"> </span>spark<span class="w">                </span><span class="c1"># every matrix row</span>
+dev/local-ci.sh<span class="w"> </span>spark<span class="w"> </span>catalyst<span class="w">       </span><span class="c1"># one row</span>
+dev/local-ci.sh<span class="w"> </span>spark<span class="w"> </span><span class="m">3</span>.4<span class="w"> </span>catalyst<span class="w">   </span><span class="c1"># a non-default Spark version</span>
+</pre></div>
+</div>
+<p>See <a class="reference internal" href="ci.html#reproducing-a-suite-failure-locally"><span class="std std-ref">Continuous Integration</span></a>. The manual steps below
+are still the reference, and are what you want when creating or updating a diff file.</p>
 <section id="install-comet">
 <h2>1. Install Comet<a class="headerlink" href="#install-comet" title="Link to this heading">#</a></h2>
 <p>Run <code class="docutils literal notranslate"><span class="pre">make</span> <span class="pre">release</span></code> in Comet to install the Comet JAR into the local Maven repository, specifying the Spark version.</p>

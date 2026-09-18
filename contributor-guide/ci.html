@@ -1283,11 +1283,51 @@ genuinely quiet day from a base that has drifted.</p>
 </section>
 <section id="reproducing-a-suite-failure-locally">
 <h2>Reproducing a suite failure locally<a class="headerlink" href="#reproducing-a-suite-failure-locally" title="Link to this heading">#</a></h2>
-<p>The Spark SQL suites outside the PR tier run Spark’s own test suite against Comet, with the
-version’s diff from <code class="docutils literal notranslate"><span class="pre">dev/diffs/</span></code> applied. See <a class="reference internal" href="spark-sql-tests.html"><span class="std std-doc">Spark SQL Tests</span></a> for how to run
-one locally, and <a class="reference internal" href="iceberg-spark-tests.html"><span class="std std-doc">Iceberg Spark Tests</span></a> for the Iceberg equivalents. For the
-Comet test suites that run on macOS, <code class="docutils literal notranslate"><span class="pre">make</span> <span class="pre">test-jvm</span></code> on a Mac runs the same suites the workflow
-does; the macOS job differs from Linux only in the platform.</p>
+<p><code class="docutils literal notranslate"><span class="pre">dev/local-ci.sh</span></code> builds the same sandbox a runner builds and runs the Spark SQL or Iceberg
+workflow:</p>
+<div class="highlight-sh notranslate"><div class="highlight"><pre><span></span>dev/local-ci.sh<span class="w"> </span>spark<span class="w">                </span><span class="c1"># everything the Spark job runs</span>
+dev/local-ci.sh<span class="w"> </span>spark<span class="w"> </span>sql_core-1<span class="w">     </span><span class="c1"># just the shard that failed</span>
+dev/local-ci.sh<span class="w"> </span>iceberg<span class="w">              </span><span class="c1"># everything the Iceberg job runs</span>
+dev/local-ci.sh<span class="w"> </span>iceberg<span class="w"> </span>shard-2
+dev/local-ci.sh<span class="w"> </span>spark<span class="w"> </span><span class="m">3</span>.5<span class="w"> </span>sql_core-1<span class="w"> </span><span class="c1"># a nightly-tier version, named explicitly</span>
+dev/local-ci.sh<span class="w"> </span>--print-config<span class="w">       </span><span class="c1"># what it read from ci.yml and dev/ci</span>
+</pre></div>
+</div>
+<p>The version defaults to the one the merge queue gates on. That, the matrix rows and the shard count
+are read from the workflow files and from <code class="docutils literal notranslate"><span class="pre">dev/ci/</span></code>, so a local shard runs what the CI shard of the
+same name runs. It prepares first (native build, Comet install, patched Spark or Iceberg source
+under <code class="docutils literal notranslate"><span class="pre">$COMET_LOCAL_CI_HOME</span></code>, default <code class="docutils literal notranslate"><span class="pre">/tmp/comet-local-ci</span></code>), then runs the tests, compiling only
+the sbt projects the selected rows need.</p>
+<p><code class="docutils literal notranslate"><span class="pre">SKIP_PREPARE=1</span></code> runs the tests only. It skips the <strong>Comet install</strong> too, so do not use it after
+changing Comet or the run tests the previously installed JAR and goes green regardless.</p>
+<p>When more than one Spark row is selected they all run <strong>at once</strong>, each in its own copy of the
+prepared tree, which is what CI does: seven matrix rows, seven runners, seven extracted trees.
+Because each row owns a tree there is no shared sbt server, <code class="docutils literal notranslate"><span class="pre">target/</span></code> or metastore tmpdir, so the
+per-row settings stay identical to CI’s. On APFS and btrfs the copies are copy-on-write, so a 4 GB
+tree costs kilobytes until the rows write their own reports.</p>
+<p>Seven concurrent sbt processes would interleave unreadably, so each row logs to
+<code class="docutils literal notranslate"><span class="pre">$COMET_LOCAL_CI_HOME/logs-spark-&lt;version&gt;/&lt;row&gt;.log</span></code>, named on the line that reports the row
+starting. Each row then reports again when it finishes, with its elapsed time, and a failing row
+prints the last 20 lines of its log. Follow a row live with <code class="docutils literal notranslate"><span class="pre">tail</span> <span class="pre">-f</span></code>. The trees persist so the
+reports stay readable. A single row runs in the prepared tree with no copy. Iceberg targets still run
+one after another.</p>
+<p>Four caveats:</p>
+<ul class="simple">
+<li><p>The sandbox lives under <code class="docutils literal notranslate"><span class="pre">/tmp</span></code>, so a reboot or a tmp reaper means downloading and compiling again.
+Point <code class="docutils literal notranslate"><span class="pre">COMET_LOCAL_CI_HOME</span></code> somewhere durable to keep it.</p></li>
+<li><p>Running every row at once wants the memory and disk for it: seven sbt processes each forking a
+test JVM, and seven trees diverging from their copy-on-write base. Select fewer rows, or one, on a
+smaller machine.</p></li>
+<li><p>Preparing deletes <code class="docutils literal notranslate"><span class="pre">org/apache/parquet</span></code> from your local Maven repository as the workflows do, and
+additionally sweeps the <strong>whole</strong> repository for POMs with no sibling JAR. That is a shared cache,
+so other projects will re-download. <code class="docutils literal notranslate"><span class="pre">--print-config</span></code> touches nothing.</p></li>
+<li><p>CI is x86_64 Linux built with <code class="docutils literal notranslate"><span class="pre">-Ctarget-cpu=x86-64-v3</span></code>, so a pass elsewhere covers Scala, serde
+and planner behavior but not x86-specific native codegen.</p></li>
+</ul>
+<p>The underlying steps are documented in <a class="reference internal" href="spark-sql-tests.html"><span class="std std-doc">Spark SQL Tests</span></a> and
+<a class="reference internal" href="iceberg-spark-tests.html"><span class="std std-doc">Iceberg Spark Tests</span></a>, which are also where the diff-regeneration workflow
+lives. For the Comet test suites that run on macOS, <code class="docutils literal notranslate"><span class="pre">make</span> <span class="pre">test-jvm</span></code> on a Mac runs the same suites
+the workflow does. The macOS job differs from Linux only in the platform.</p>
 </section>
 <section id="changing-ci-itself">
 <h2>Changing CI itself<a class="headerlink" href="#changing-ci-itself" title="Link to this heading">#</a></h2>

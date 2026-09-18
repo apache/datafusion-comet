@@ -318,11 +318,57 @@ genuinely quiet day from a base that has drifted.
 
 ## Reproducing a suite failure locally
 
-The Spark SQL suites outside the PR tier run Spark's own test suite against Comet, with the
-version's diff from `dev/diffs/` applied. See [Spark SQL Tests](spark-sql-tests.md) for how to run
-one locally, and [Iceberg Spark Tests](iceberg-spark-tests.md) for the Iceberg equivalents. For the
-Comet test suites that run on macOS, `make test-jvm` on a Mac runs the same suites the workflow
-does; the macOS job differs from Linux only in the platform.
+`dev/local-ci.sh` builds the same sandbox a runner builds and runs the Spark SQL or Iceberg
+workflow:
+
+```sh
+dev/local-ci.sh spark                # everything the Spark job runs
+dev/local-ci.sh spark sql_core-1     # just the shard that failed
+dev/local-ci.sh iceberg              # everything the Iceberg job runs
+dev/local-ci.sh iceberg shard-2
+dev/local-ci.sh spark 3.5 sql_core-1 # a nightly-tier version, named explicitly
+dev/local-ci.sh --print-config       # what it read from ci.yml and dev/ci
+```
+
+The version defaults to the one the merge queue gates on. That, the matrix rows and the shard count
+are read from the workflow files and from `dev/ci/`, so a local shard runs what the CI shard of the
+same name runs. It prepares first (native build, Comet install, patched Spark or Iceberg source
+under `$COMET_LOCAL_CI_HOME`, default `/tmp/comet-local-ci`), then runs the tests, compiling only
+the sbt projects the selected rows need.
+
+`SKIP_PREPARE=1` runs the tests only. It skips the **Comet install** too, so do not use it after
+changing Comet or the run tests the previously installed JAR and goes green regardless.
+
+When more than one Spark row is selected they all run **at once**, each in its own copy of the
+prepared tree, which is what CI does: seven matrix rows, seven runners, seven extracted trees.
+Because each row owns a tree there is no shared sbt server, `target/` or metastore tmpdir, so the
+per-row settings stay identical to CI's. On APFS and btrfs the copies are copy-on-write, so a 4 GB
+tree costs kilobytes until the rows write their own reports.
+
+Seven concurrent sbt processes would interleave unreadably, so each row logs to
+`$COMET_LOCAL_CI_HOME/logs-spark-<version>/<row>.log`, named on the line that reports the row
+starting. Each row then reports again when it finishes, with its elapsed time, and a failing row
+prints the last 20 lines of its log. Follow a row live with `tail -f`. The trees persist so the
+reports stay readable. A single row runs in the prepared tree with no copy. Iceberg targets still run
+one after another.
+
+Four caveats:
+
+- The sandbox lives under `/tmp`, so a reboot or a tmp reaper means downloading and compiling again.
+  Point `COMET_LOCAL_CI_HOME` somewhere durable to keep it.
+- Running every row at once wants the memory and disk for it: seven sbt processes each forking a
+  test JVM, and seven trees diverging from their copy-on-write base. Select fewer rows, or one, on a
+  smaller machine.
+- Preparing deletes `org/apache/parquet` from your local Maven repository as the workflows do, and
+  additionally sweeps the **whole** repository for POMs with no sibling JAR. That is a shared cache,
+  so other projects will re-download. `--print-config` touches nothing.
+- CI is x86_64 Linux built with `-Ctarget-cpu=x86-64-v3`, so a pass elsewhere covers Scala, serde
+  and planner behavior but not x86-specific native codegen.
+
+The underlying steps are documented in [Spark SQL Tests](spark-sql-tests.md) and
+[Iceberg Spark Tests](iceberg-spark-tests.md), which are also where the diff-regeneration workflow
+lives. For the Comet test suites that run on macOS, `make test-jvm` on a Mac runs the same suites
+the workflow does. The macOS job differs from Linux only in the platform.
 
 ## Changing CI itself
 
