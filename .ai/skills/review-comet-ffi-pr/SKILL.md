@@ -90,15 +90,29 @@ ownership. A new input shape needs a reader, not a special case elsewhere.
 
 ## 3. Vector Types and Export Dispatch
 
-`NativeUtil.exportBatch()` matches on the concrete vector type. The `CometVector` hierarchy is
-`CometDecodedVector` with Plain, Dictionary, List, Map, and Struct subclasses, plus
-`CometSelectionVector` and `CometDelegateVector`.
+`NativeUtil.exportBatch()` matches on the column type and has exactly two cases. A `CometVector`
+exports its underlying `FieldVector` through `Data.exportVector`, passing the dictionary provider
+only when the field carries a dictionary. Spark's own `ConstantColumnVector` is materialized into a
+fresh Arrow vector first, because native takes Arrow arrays only. Anything else throws
+`"Comet execution only takes Arrow Arrays"`.
 
-- [ ] A new `CometVector` subclass has a case in `exportBatch()`
-- [ ] The case ordering is right. `CometSelectionVector` must be matched **before** the general
-      `CometVector` case, or the selection is silently dropped and the exported batch has the wrong
-      rows.
-- [ ] Selection vectors are applied where `scan.rs` expects them, in `ScanExec::get_next()`
+The `CometVector` hierarchy is the abstract `CometVector`, the abstract `CometDecodedVector` under
+it, and the concrete `CometPlainVector`, `CometDictionaryVector`, `CometListVector`,
+`CometMapVector`, and `CometStructVector`. All of them export through the one `CometVector` case, so
+a new subclass needs no new case as long as `getValueVector` returns an Arrow vector.
+
+- [ ] A new column type that is **not** a `CometVector` needs its own case, and needs to say who
+      owns the vector it materializes. The `ConstantColumnVector` case allocates a new Arrow vector
+      per batch, which is a real cost on a hot path.
+- [ ] A new `CometVector` subclass whose `getValueVector` is synthesized rather than owned has a
+      defined lifetime relative to the export.
+- [ ] Import is symmetric. `ScanExec::pull_next` runs every imported column through
+      `import_column`, which decodes invalid UTF-8 to Spark's rendering before
+      `copy_or_unpack_array` with `CopyMode::UnpackOrClone`. A PR that adds a column type has to say
+      what that pair does to it.
+- [ ] The row-count check still holds. `exportBatch` requires every column to report the same value
+      count and throws otherwise, which is the guard that catches a vector exported at the wrong
+      length.
 
 ## 4. Alignment and Schema
 

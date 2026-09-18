@@ -42,13 +42,30 @@ piece is the most common way to break the other.
 
 ## 1. Which Implementation
 
-| Implementation                        | Selected when                                                                                                  |
-| ------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
-| Native, `CometExchange`               | `shuffle.mode` is `native` or `auto`, child is a `CometPlan`, supported partitioning, primitive partition keys |
-| JVM columnar, `CometColumnarExchange` | `shuffle.mode` is `jvm`, or the child is row-based, or partition keys are complex types                        |
+| Implementation                        | Selected when                                                                                             |
+| ------------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| Native, `CometExchange`               | `shuffle.mode` is `native` or `auto`, child is a `CometPlan`, supported partitioning, supported key types |
+| JVM columnar, `CometColumnarExchange` | `shuffle.mode` is `jvm`, or the child is row-based, or a partition key type native shuffle cannot handle  |
 
-Complex types are fully supported as **data** columns in both. The primitive-only restriction
-applies to **partition keys** for `HashPartitioning` and `RangePartitioning` only.
+Complex types are fully supported as **data** columns in both. The restriction is on **partition
+keys**, and it is not the same rule for the two partitionings:
+
+- **`RangePartitioning` is primitive-only, unconditionally.**
+  `supportedRangePartitioningDataType` rejects every nested type, because native cannot sort them,
+  and rejects collated strings, because Comet compares raw bytes. It also rejects float and double
+  when `spark.comet.exec.strictFloatingPoint` is on.
+- **`HashPartitioning` is primitive-only by default only.** With
+  `spark.comet.shuffle.native.partitioning.hash.nested.enabled=true` (default `false`),
+  `supportedHashPartitioningDataType` admits structs and arrays recursively, and maps on Spark
+  4.0+, where Spark's `mapsort` normalization makes physical entry order irrelevant. The recursion
+  still rejects a collated string at any depth, and a map on Spark 3.x. A map key also has to
+  clear the separate expression check on the inserted `mapsort(...)`, which `CometMapSort`
+  (`spark/src/main/spark-4.x/`) supports for scalar map keys only.
+  `CometNativeShuffleSuite` covers both settings of the config.
+
+A native exchange on a struct or array hash key is therefore not automatically a bug. Check the
+config before calling it one, and do not carry the range-partitioning rule over to hash
+partitioning.
 
 - [ ] A PR that widens what native shuffle supports updates the fallback conditions in
       `CometShuffleExchangeExec` **and** both docs' "When X is Used" lists
@@ -64,11 +81,13 @@ Partitioning is where shuffle silently produces wrong answers rather than failin
 - [ ] **Hash partitioning uses Murmur3 with seed 42** and `partition_id = hash % num_partitions`,
       matching Spark. Any change to the hash, the seed, or the modulo changes which rows land in
       which partition, which breaks a join between a Comet-shuffled side and a Spark-shuffled side.
-- [ ] **Round robin is hash-based on purpose.** Comet assigns partitions from a Murmur3 hash rather
-      than cycling row by row, because determinism across task retries is required for correctness
-      under fault tolerance. A PR that implements "true" round robin to fix skew breaks that. The
-      known cost is that low-cardinality data distributes unevenly, and that is the accepted
-      trade-off.
+- [ ] **Round robin is hash-based on purpose, and off by default.** Comet assigns partitions from a
+      Murmur3 hash rather than cycling row by row, because determinism across task retries is
+      required for correctness under fault tolerance. A PR that implements "true" round robin to fix
+      skew breaks that. Two costs are accepted: low-cardinality data distributes unevenly, and
+      unsorted rows land in different partitions than Spark's `UnsafeRow`-sorted assignment would
+      put them, which is why `spark.comet.shuffle.native.partitioning.roundrobin.enabled` defaults
+      to `false`. Sorted output is identical either way.
 - [ ] **Range partitioning bounds come from the driver.** Spark's `RangePartitioner` samples and
       computes boundaries, they are serialized into the native plan, and native does a binary
       search over comparable-row-format keys. A change to the comparison or the row encoding must
@@ -104,9 +123,15 @@ budgets.
 
 **Native shuffle** uses the DataFusion memory pool. Partitions spill when the pool denies an
 allocation, or when buffered bytes reach `spark.comet.shuffle.native.maxBufferBytes`, which
-defaults to `0`, meaning the fixed limit is disabled and memory pressure is the only trigger. Each
-partition has its own spill file and multiple spills for a partition are concatenated when the
-final output is written.
+defaults to `0`, meaning the fixed limit is disabled and memory pressure is the only trigger.
+
+**The local writer spills every partition into one file per task, not one file per partition.**
+`PartitionedSpill` (`native/shuffle/src/writers/local/spill.rs`) opens a single DataFusion spill
+file lazily on the first spill and records, per partition, the byte ranges holding that partition's
+blocks in write order. `finish_partition` copies a partition's ranges into the output file in that
+order. `spilling_every_partition_creates_one_file` asserts the file count after spilling 64
+partitions three times. The single-partition writer does not spill, and neither does the RSS
+writer, which pushes blocks to the remote service instead.
 
 **JVM shuffle** allocates off-heap pages through `CometShuffleMemoryAllocator`, which is an
 ordinary Spark `MemoryConsumer` drawing from `spark.memory.offHeap.size`. `CometDiskBlockWriter`
@@ -114,6 +139,10 @@ coordinates spilling across partition writers, largest first. `TooLargePageExcep
 that a single record does not fit in a page.
 
 - [ ] A PR that adds buffering on either path says where the reservation is
+- [ ] A change to native spill bookkeeping keeps the recorded ranges and the file in sync.
+      `PartitionedSpill` sets a `failed` flag on a partial write because a mid-write failure makes
+      every later range untrustworthy, and a range that runs past the end of a truncated file must
+      fail the task rather than write a short partition.
 - [ ] A PR that changes spill thresholds has benchmark evidence, because spilling too late is an
       OOM and spilling too early is a throughput loss
 - [ ] Scratch buffers reused for partition-id computation are correctly reset between batches
@@ -164,8 +193,9 @@ Ask specifically:
 - [ ] Is the **other** shuffle path tested, if the change touched anything shared?
 - [ ] Is the Celeborn path tested, if the change touched the manager, dependency, writer, or reader?
 - [ ] Are multiple partitions and an actual spill exercised, rather than one small batch?
-- [ ] Are complex types covered as data columns, and is the primitive-key restriction tested at its
-      boundary?
+- [ ] Are complex types covered as data columns, and is the partition-key restriction tested at its
+      boundary, on **both** settings of
+      `spark.comet.shuffle.native.partitioning.hash.nested.enabled`?
 - [ ] For a partitioning change, is there a test that the same input produces the same partition
       assignment as Spark, not just that the total row count matches?
 

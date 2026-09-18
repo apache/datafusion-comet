@@ -49,14 +49,26 @@ Native shuffle (`CometExchange`) is selected when all of the following condition
    columnar output. Row-based Spark operators require JVM shuffle.
 
 3. **Supported partitioning type**: Native shuffle supports:
+
    - `HashPartitioning`
    - `RangePartitioning`
    - `SinglePartition`
-   - `RoundRobinPartitioning`
+   - `RoundRobinPartitioning`, disabled by default via
+     `spark.comet.shuffle.native.partitioning.roundrobin.enabled`, because Comet's hash-based
+     assignment puts unsorted rows in different partitions than Spark does
 
-4. **Supported partition key types**: For `HashPartitioning` and `RangePartitioning`, partition
-   keys must be primitive types. Complex types (struct, array, map) as partition keys require
-   JVM shuffle. Note that complex types are fully supported as data columns in native shuffle.
+4. **Supported partition key types**: The rule differs by partitioning, and neither restricts data
+   columns. Complex types are fully supported as data columns in native shuffle.
+   - `RangePartitioning` keys must be primitive. `supportedRangePartitioningDataType` rejects every
+     nested type, because native cannot sort them, and rejects collated strings, because Comet
+     compares raw bytes. Float and double are also rejected when
+     `spark.comet.exec.strictFloatingPoint` is enabled.
+   - `HashPartitioning` keys must be primitive **by default**. Setting
+     `spark.comet.shuffle.native.partitioning.hash.nested.enabled` to `true` admits structs and
+     arrays as keys, checked recursively to their leaves, and maps on Spark 4.0 and later, where
+     Spark's `mapsort` normalization makes physical entry order irrelevant. A collated string at any
+     depth still disqualifies the key. The config defaults to `false` pending measurement of the
+     nested hashing paths, so by default a complex hash key falls back to JVM shuffle.
 
 ## Architecture
 
@@ -127,7 +139,7 @@ The native shuffle implementation is its own workspace crate, `datafusion-comet-
 | `writers/shuffle_block_writer.rs`  | `ShuffleBlockWriter` and the `CompressionCodec` enum. Arrow IPC encoding with compression.                                       |
 | `writers/partition_writer.rs`      | The `PartitionWriter` trait. Implemented by `LocalPartitionWriter` (`writers/local/`) and `RssPartitionWriter` (`writers/rss/`). |
 | `writers/buf_batch_writer.rs`      | `BufBatchWriter`, which coalesces sub-`batch_size` batches through Arrow's `BatchCoalescer` before serializing.                  |
-| `writers/local/spill.rs`           | `PartitionedSpill`, which owns the per-partition spill file and its byte ranges.                                                 |
+| `writers/local/spill.rs`           | `PartitionedSpill`, the one spill file shared by every output partition, and its per-partition byte ranges.                      |
 | `ipc.rs`                           | `read_ipc_compressed` and `read_ipc_compressed_validated`, the decode side used by the shuffle reader.                           |
 
 ## Data Flow
@@ -137,6 +149,7 @@ The native shuffle implementation is its own workspace crate, `datafusion-comet-
 1. **Plan construction**: `CometNativeShuffleWriter` builds a protobuf operator tree with a
    `ShuffleWriter` operator at the root and `childNativeOp` as its child. `childNativeOp` takes
    one of two shapes:
+
    - The child plan's `nativeOp` directly, when `CometShuffleExchangeExec`'s child is a
      `CometNativeExec` subtree. The upstream operators run inside the same `CometExecIterator`
      as the writer, with no JVM-to-native batch boundary between them.
@@ -149,6 +162,7 @@ The native shuffle implementation is its own workspace crate, `datafusion-comet-
 2. **Native execution**: A single `CometExecIterator` per partition runs the unified plan.
 
 3. **Partitioning**: `ShuffleWriterExec` receives batches and routes to the appropriate partitioner:
+
    - `MultiPartitionShuffleRepartitioner`: For hash/range/round-robin partitioning
    - `SinglePartitionShufflePartitioner`: For single partition (simpler path)
 
@@ -156,6 +170,7 @@ The native shuffle implementation is its own workspace crate, `datafusion-comet-
    exceeds the threshold, partitions spill to temporary files.
 
 5. **Encoding**: `ShuffleBlockWriter` encodes each partition's data as compressed Arrow IPC:
+
    - Writes compression type header
    - Writes field count header
    - Writes compressed IPC stream
@@ -185,6 +200,7 @@ read time. See [Direct Read](#direct-read-shufflescan) below for how the choice 
 1. `CometBlockStoreShuffleReader` fetches shuffle blocks via `ShuffleBlockFetcherIterator`.
 
 2. For each block, `NativeBatchDecoderIterator`:
+
    - Reads the 8-byte compressed length header
    - Reads the 8-byte field count header
    - Reads the compressed IPC data
@@ -204,10 +220,17 @@ JVM columnar shuffle, because both write the same Arrow IPC block format.
 ### How the path is selected
 
 `CometExchangeSink.shouldUseShuffleScan` (`spark/src/main/scala/org/apache/comet/serde/operator/CometSink.scala`)
-decides during plan serialization. When the sink's input is a Comet shuffle exchange, it emits a
-`ShuffleScan` operator in place of the usual `Scan`. If any output type fails
-`supportedSinkDataType`, it records the fallback reason `Unsupported data type for shuffle direct read`
-and the slot serializes as a regular `Scan` instead.
+decides during plan serialization. When direct read is enabled and the sink's input is a Comet shuffle
+exchange, `convertToShuffleScan` emits a `ShuffleScan` operator. When either is false the sink falls
+through to the base `CometSink.convert`, which emits the usual `Scan`.
+
+The two are not alternatives on failure. If any output type fails `supportedSinkDataType`,
+`convertToShuffleScan` records the fallback reason `Unsupported data type for shuffle direct read`
+and returns `None`. It does not retry as a regular `Scan`, and retrying would not help, because
+`CometSink.convert` gates on the same `supportedSinkDataType`. `CometExecRule` calls this as
+`convertToComet(s, CometExchangeSink).getOrElse(s)`, so `None` leaves the original Spark shuffle stage
+in the plan. An unsupported output type therefore means the stage is not converted natively at all,
+not that it is served over the FFI read path instead.
 
 **The protobuf is the source of truth for which slots are direct read, not the config.**
 `findShuffleScanIndices` (`operators.scala`) walks the serialized plan, counting scan slots in order
@@ -290,6 +313,11 @@ assignment only provides even distribution when the data has sufficient variatio
 hashed columns. Data with low cardinality or identical values may result in skewed partition
 sizes.
 
+Because Spark assigns round robin partitions by sorting rows on their binary `UnsafeRow` form,
+which Arrow's layout does not reproduce, unsorted output can land in different partitions than
+Spark's. Sorted output is identical. That difference is why
+`spark.comet.shuffle.native.partitioning.roundrobin.enabled` defaults to `false`.
+
 ## Memory Management
 
 Native shuffle uses DataFusion's memory management with spilling support:
@@ -298,8 +326,9 @@ Native shuffle uses DataFusion's memory management with spilling support:
 - **Spill triggers**: Partitions spill to disk when the memory pool denies an allocation, or
   when the buffered bytes reach `spark.comet.shuffle.native.maxBufferBytes`. That config defaults to
   0, which disables the fixed limit and leaves memory pressure as the only trigger.
-- **Per-partition spilling**: Each partition has its own spill file. Multiple spills for a
-  partition are concatenated when writing the final output.
+- **One spill file per task**: Every output partition spills into the same file, not one file per
+  partition. `PartitionedSpill` records the byte ranges each partition's blocks occupy, in write
+  order, and the final output copies a partition's ranges back in that order.
 - **Scratch space**: Reusable buffers for partition ID computation to reduce allocations.
 
 The `MultiPartitionShuffleRepartitioner` holds:
@@ -315,8 +344,11 @@ The `MultiPartitionShuffleRepartitioner` holds:
   pressure as the only trigger.
 - `scratch`, reusable buffers for partition ID computation.
 
-The spill file itself is owned by `PartitionedSpill` in `writers/local/spill.rs`, which wraps
-DataFusion's `SpillFile` and tracks the byte range each spill occupies.
+The spill file is owned by `PartitionedSpill` in `writers/local/spill.rs`. It holds one DataFusion
+`SpillFile`, created lazily on the first spill and shared by every output partition, and tracks per
+partition the byte ranges holding that partition's blocks in write order. A partial write sets a
+`failed` flag, because a write that stops midway leaves the recorded ranges unable to describe the
+file. The single-partition writer writes straight to the output file and never spills.
 
 ## Compression
 
@@ -335,15 +367,21 @@ independently compressed, allowing parallel decompression during reads.
 
 ## Configuration
 
-| Config                                       | Default | Description                                               |
-| -------------------------------------------- | ------- | --------------------------------------------------------- |
-| `spark.comet.shuffle.enabled`                | `true`  | Enable Comet shuffle                                      |
-| `spark.comet.shuffle.mode`                   | `auto`  | Shuffle mode: `native`, `jvm`, or `auto`                  |
-| `spark.comet.shuffle.directRead.enabled`     | `true`  | Decode shuffle blocks in native code, bypassing Arrow FFI |
-| `spark.comet.shuffle.compression.codec`      | `lz4`   | Compression codec                                         |
-| `spark.comet.shuffle.compression.zstd.level` | `1`     | Zstd compression level                                    |
-| `spark.comet.shuffle.native.writeBufferSize` | `1MB`   | Write buffer size                                         |
-| `spark.comet.shuffle.jvm.batchSize`          | `8192`  | Target rows per batch                                     |
+| Config                                                              | Default | Description                                                   |
+| ------------------------------------------------------------------- | ------- | ------------------------------------------------------------- |
+| `spark.comet.shuffle.enabled`                                       | `true`  | Enable Comet shuffle                                          |
+| `spark.comet.shuffle.mode`                                          | `auto`  | Shuffle mode: `native`, `jvm`, or `auto`                      |
+| `spark.comet.shuffle.directRead.enabled`                            | `true`  | Decode shuffle blocks in native code, bypassing Arrow FFI     |
+| `spark.comet.shuffle.compression.codec`                             | `lz4`   | Compression codec                                             |
+| `spark.comet.shuffle.compression.zstd.level`                        | `1`     | Zstd compression level                                        |
+| `spark.comet.shuffle.native.writeBufferSize`                        | `1MB`   | Write buffer size                                             |
+| `spark.comet.shuffle.native.maxBufferBytes`                         | `0`     | Fixed spill threshold. `0` disables it, leaving pool pressure |
+| `spark.comet.shuffle.native.partitioning.hash.enabled`              | `true`  | Allow `HashPartitioning` on the native path                   |
+| `spark.comet.shuffle.native.partitioning.hash.nested.enabled`       | `false` | Allow struct and array hash keys, and map keys on Spark 4.0+  |
+| `spark.comet.shuffle.native.partitioning.range.enabled`             | `true`  | Allow `RangePartitioning` on the native path                  |
+| `spark.comet.shuffle.native.partitioning.roundrobin.enabled`        | `false` | Allow `RoundRobinPartitioning` on the native path             |
+| `spark.comet.shuffle.native.partitioning.roundrobin.maxHashColumns` | `0`     | Columns to hash for round robin. `0` hashes all of them       |
+| `spark.comet.shuffle.jvm.batchSize`                                 | `8192`  | Target rows per batch                                         |
 
 ## Comparison with JVM Shuffle
 
