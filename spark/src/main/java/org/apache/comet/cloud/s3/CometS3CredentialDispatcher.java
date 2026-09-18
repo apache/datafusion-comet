@@ -22,6 +22,7 @@ package org.apache.comet.cloud.s3;
 import java.lang.reflect.InvocationTargetException;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
@@ -118,6 +119,39 @@ public final class CometS3CredentialDispatcher {
     }
     return registered.provider.getCredentialsForPath(
         new CometS3CredentialContext(bucket, path, accessMode));
+  }
+
+  /**
+   * Invoked by native code when constructing a scope-aware {@code ObjectStore} cache entry. Returns
+   * the vendor's advertised policy scope for the given context, or an empty list when the provider
+   * only implements the base {@link CometS3CredentialProvider} interface (no scope hint available).
+   *
+   * <p>Never throws for the base-interface case; a scoped provider's own exceptions propagate so
+   * the caller can decide to fall back to broad caching.
+   */
+  public static List<String> getPolicyLocationsFor(
+      long handle, String bucket, String path, int mode) throws Exception {
+    if (mode < 0 || mode >= MODES.length) {
+      throw new IllegalArgumentException("Invalid CometS3AccessMode ordinal: " + mode);
+    }
+    RegisteredProvider registered = INSTANCES.get(handle);
+    if (registered == null) {
+      throw new IllegalStateException(
+          "CometS3CredentialProvider handle "
+              + handle
+              + " was not initialized; "
+              + "ensureInitialized must be called before getPolicyLocationsFor");
+    }
+    if (!(registered.provider instanceof CometS3ScopedCredentialProvider)) {
+      // Base-interface provider: no scope hint. Native side treats an empty list as
+      // "single-entry-per-bucket behavior" — the pre-scope-aware cache semantics.
+      return Collections.emptyList();
+    }
+    CometS3AccessMode accessMode = MODES[mode];
+    CometS3ScopedCredentialProvider scoped = (CometS3ScopedCredentialProvider) registered.provider;
+    List<String> hint =
+        scoped.getPolicyLocationsFor(new CometS3CredentialContext(bucket, path, accessMode));
+    return hint == null ? Collections.emptyList() : hint;
   }
 
   private static CometS3CredentialProvider instantiate(String providerClassName) {
