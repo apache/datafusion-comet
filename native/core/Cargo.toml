@@ -102,6 +102,11 @@ lazy_static = "1.4"
 assertables = "10"
 hex = "0.4.3"
 datafusion-functions-nested = { version = "55.1.0" }
+# Types for a hand-rolled in-memory HTTP client that exercises the web-identity STS retry path
+# without a socket. All are already in the dependency graph (transitive via aws-config).
+aws-smithy-runtime-api = "1.16.0"
+aws-smithy-types = "1.6.3"
+http = "1.5.0"
 
 [features]
 backtrace = ["datafusion/backtrace"]
