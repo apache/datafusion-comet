@@ -27,6 +27,7 @@ import org.apache.arrow.memory.BufferAllocator
 import org.apache.arrow.vector.ipc.ArrowReader
 import org.apache.arrow.vector.types.pojo.{Field, FieldType, Schema}
 import org.apache.spark.TaskContext
+import org.apache.spark.comet.CometTaskArrowAllocator
 import org.apache.spark.internal.Logging
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.comet.util.Utils
@@ -230,6 +231,10 @@ object CometArrowStream extends Logging {
       name: String,
       readerFactory: BufferAllocator => ArrowReader): Iterator[ArrowArrayStream] = {
     val context = TaskContext.get()
+    // A child of the unaccounted root, not of the task allocator: every byte allocated here is
+    // exported to native and exists only for native to consume. Whichever native operator retains
+    // the batch reserves those same buffers in Comet's pool, which charges the same Spark task, so
+    // reporting them on this side too would reserve the same memory twice.
     val allocator = CometArrowAllocator.newChildAllocator(name, 0, Long.MaxValue)
     var reader: ArrowReader = null
     var arrowStream: ArrowArrayStream = null
@@ -274,7 +279,10 @@ object CometArrowStream extends Logging {
       name: String,
       readerFactory: BufferAllocator => ArrowReader): Iterator[ColumnarBatch] = {
     val context = TaskContext.get()
-    val allocator = CometArrowAllocator.newChildAllocator(name, 0, Long.MaxValue)
+    // Accounted, unlike `stream`: these batches are consumed in the JVM, so nothing on the native
+    // side reserves them.
+    val allocator =
+      CometTaskArrowAllocator.forCurrentTask().newChildAllocator(name, 0, Long.MaxValue)
     val reader =
       try readerFactory(allocator)
       catch {

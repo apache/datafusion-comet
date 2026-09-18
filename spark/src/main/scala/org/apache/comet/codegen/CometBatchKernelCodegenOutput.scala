@@ -87,21 +87,27 @@ private[codegen] object CometBatchKernelCodegenOutput extends CometTypeShim {
    * Closes the vector on any failure so a partially-initialized tree doesn't leak buffers.
    */
   def allocateOutput(field: Field, numRows: Int, estimatedBytes: Int): FieldVector = {
+    // The unaccounted root, because this vector is allocated to be handed to native. Its only
+    // caller is `CometScalaUDFCodegen.evaluate`, whose result `CometUdfBridge` exports over the C
+    // Data Interface before closing its own reference. Whichever DataFusion operator retains the
+    // batch reserves these same buffers through Comet's unified pool, which charges the same Spark
+    // task, so reporting them here as well would reserve the same memory twice.
+    val allocator: BufferAllocator = CometArrowAllocator
     val vec: FieldVector = field.getType match {
       case _: ArrowType.List | _: ArrowType.LargeList | _: ArrowType.FixedSizeList =>
-        val v = new RenamedListVector(field, CometArrowAllocator)
+        val v = new RenamedListVector(field, allocator)
         v.initializeChildrenFromFields(field.getChildren)
         v
       case _: ArrowType.Map =>
-        val v = new RenamedMapVector(field, CometArrowAllocator)
+        val v = new RenamedMapVector(field, allocator)
         v.initializeChildrenFromFields(field.getChildren)
         v
       case _: ArrowType.Struct =>
-        val v = new RenamedStructVector(field, CometArrowAllocator)
+        val v = new RenamedStructVector(field, allocator)
         v.initializeChildrenFromFields(field.getChildren)
         v
       case _ =>
-        field.createVector(CometArrowAllocator).asInstanceOf[FieldVector]
+        field.createVector(allocator).asInstanceOf[FieldVector]
     }
     try {
       vec.setInitialCapacity(numRows)

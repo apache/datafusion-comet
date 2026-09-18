@@ -32,6 +32,19 @@ package object comet {
    * Until the reference count is zero, the memory will not be released. If the consumer side is
    * finished later than the close of the allocator, the allocator will think the memory is
    * leaked. To avoid this, we use a single allocator for the whole execution process.
+   *
+   * It carries no allocation listener, so allocating from it directly is not reported to Spark's
+   * memory manager. That is what memory on either side of the C Data Interface wants. Imported
+   * buffers wrap memory the native side owns and frees, already charged to Comet's native pool,
+   * and Arrow's `wrapForeignAllocation` would otherwise report the full buffer capacity as though
+   * a JVM-side allocation had happened. Buffers allocated to be exported are the mirror image:
+   * whichever native operator retains the batch reserves them through Comet's unified pool, which
+   * charges the same Spark task, so reporting them here too would reserve the same memory twice.
+   *
+   * Allocations that live and die in the JVM should go through
+   * `CometTaskArrowAllocator.forCurrentTask()` instead, which cuts a per-task child whose
+   * listener reports the bytes to Spark. Off a task it hands back this allocator, so the
+   * driver-side paths are unchanged.
    */
   val CometArrowAllocator = new RootAllocator(Long.MaxValue)
 

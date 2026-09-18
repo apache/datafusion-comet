@@ -47,7 +47,12 @@ import org.apache.comet.CometArrowAllocator
 class NativeUtil extends AutoCloseable {
   import Utils._
 
-  /** Use the global allocator */
+  // The unaccounted root, on both sides of the boundary this class straddles. Imported buffers
+  // wrap memory the native side owns and frees, already charged to Comet's native pool. Everything
+  // allocated here goes the other way -- the FFI structs, the materialised constant vectors, the
+  // exported vectors -- and whichever native operator retains a batch reserves those same buffers
+  // in Comet's pool, which charges the same Spark task. Reporting either direction to Spark would
+  // count native memory a second time.
   private val allocator = CometArrowAllocator
 
   /** ArrowImporter does not hold any state and does not need to be closed */

@@ -852,6 +852,21 @@ object CometConf extends ShimCometConf {
       .doubleConf
       .createWithDefault(1.0)
 
+  val COMET_ARROW_ALLOCATOR_ACCOUNTING_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.arrowAllocator.accounting.enabled")
+      .category(CATEGORY_TUNING)
+      .doc(
+        "When enabled, JVM-side Arrow allocations made inside a Spark task are reported to " +
+          "Spark's memory manager, so they are visible to Spark's off-heap accounting rather " +
+          "than to no budget at all. Reporting only: this setting never fails an allocation, " +
+          "but the bytes do consume the off-heap pool, so other consumers see correspondingly " +
+          "less headroom. Buffers imported over the Arrow C Data Interface are never reported, " +
+          "because the memory belongs to the native side. Disable to restore the previous " +
+          "behaviour of not accounting for these allocations. " +
+          s"$TUNING_GUIDE.")
+      .booleanConf
+      .createWithDefault(true)
+
   val COMET_NATIVE_LOAD_REQUIRED: ConfigEntry[Boolean] = conf("spark.comet.nativeLoadRequired")
     .category(CATEGORY_EXEC)
     .doc(

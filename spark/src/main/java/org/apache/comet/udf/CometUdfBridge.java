@@ -209,6 +209,10 @@ public class CometUdfBridge {
             });
     assert udf != null : "reflective instantiation returned null for " + udfClassName;
 
+    // The unaccounted root on both sides. The inputs wrap native memory that the native side owns
+    // and frees, and the result below is exported straight back to native, where whichever
+    // operator retains the batch reserves those same buffers in Comet's pool and so charges the
+    // same Spark task. Reporting either direction to Spark would count native memory a second time.
     BufferAllocator allocator = org.apache.comet.package$.MODULE$.CometArrowAllocator();
 
     ValueVector[] inputs = new ValueVector[inputArrayPtrs.length];
