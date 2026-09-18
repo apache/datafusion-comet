@@ -20,6 +20,7 @@
 //! Replaces the pattern `CheckOverflow(Cast(expr, Decimal128(p2,s2)), Decimal128(p2,s2))`
 //! with a single expression that rescales and validates precision in one pass.
 
+use crate::{spark_cast, EvalMode, SparkCastOptions};
 use arrow::compute::CastOptions;
 use arrow::datatypes::{DataType, Schema};
 use arrow::record_batch::RecordBatch;
@@ -116,13 +117,22 @@ impl PhysicalExpr for DecimalRescaleCheckOverflow {
             )));
         }
 
-        arg.cast_to(
-            &DataType::Decimal128(self.output_precision, self.output_scale),
-            Some(&CastOptions {
-                safe: !self.fail_on_error,
-                ..Default::default()
-            }),
-        )
+        let to_type = DataType::Decimal128(self.output_precision, self.output_scale);
+        if self.fail_on_error {
+            spark_cast(
+                arg,
+                &to_type,
+                &SparkCastOptions::new_without_timezone(EvalMode::Ansi, false),
+            )
+        } else {
+            arg.cast_to(
+                &to_type,
+                Some(&CastOptions {
+                    safe: true,
+                    ..Default::default()
+                }),
+            )
+        }
     }
 
     fn children(&self) -> Vec<&Arc<dyn PhysicalExpr>> {
@@ -152,11 +162,35 @@ impl PhysicalExpr for DecimalRescaleCheckOverflow {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::SparkError;
     use arrow::array::{Array, ArrayRef, AsArray, Decimal128Array};
     use arrow::datatypes::{Decimal128Type, Field, Schema};
     use arrow::record_batch::RecordBatch;
     use datafusion::common::ScalarValue;
     use datafusion::physical_expr::expressions::Column;
+
+    fn assert_numeric_value_out_of_range(
+        error: DataFusionError,
+        expected_value: &str,
+        expected_precision: u8,
+        expected_scale: i8,
+    ) {
+        match error {
+            DataFusionError::External(error) => match error.downcast_ref::<SparkError>() {
+                Some(SparkError::NumericValueOutOfRange {
+                    value,
+                    precision,
+                    scale,
+                }) => {
+                    assert_eq!(value, expected_value);
+                    assert_eq!(*precision, expected_precision);
+                    assert_eq!(*scale, expected_scale);
+                }
+                other => panic!("expected NumericValueOutOfRange, got {other:?}"),
+            },
+            other => panic!("expected external SparkError, got {other:?}"),
+        }
+    }
 
     fn make_batch(values: Vec<Option<i128>>, precision: u8, scale: i8) -> RecordBatch {
         let arr =
@@ -243,9 +277,9 @@ mod tests {
 
     #[test]
     fn test_overflow_error_in_ansi_mode() {
-        let batch = make_batch(vec![Some(10)], 38, 0);
-        let result = eval_expr(&batch, 0, 3, 2, true);
-        assert!(result.is_err());
+        let batch = make_batch(vec![Some(-1000)], 10, 2);
+        let error = eval_expr(&batch, 2, 3, 2, true).unwrap_err();
+        assert_numeric_value_out_of_range(error, "-10.00", 3, 2);
     }
 
     #[test]
@@ -388,26 +422,26 @@ mod tests {
 
     #[test]
     fn test_scalar_overflow_ansi_returns_error() {
-        // fail_on_error=true must propagate the error, not silently return None
         let schema = Schema::new(vec![Field::new("col", DataType::Decimal128(38, 0), true)]);
         let batch = RecordBatch::new_empty(Arc::new(schema));
+        let value = 10i128.pow(38) - 1;
         let expr = DecimalRescaleCheckOverflow::new(
-            Arc::new(ScalarChild(Some(10), 38, 0)),
+            Arc::new(ScalarChild(Some(value), 38, 0)),
             0,
-            3,
-            2,
-            true, // fail_on_error = true
+            38,
+            1,
+            true,
         );
-        let result = expr.evaluate(&batch);
-        assert!(result.is_err()); // must be error, not Ok(None)
+        let error = expr.evaluate(&batch).unwrap_err();
+        assert_numeric_value_out_of_range(error, &value.to_string(), 38, 1);
     }
 
     #[test]
     fn test_large_scale_delta_returns_error() {
-        // delta = output_scale - input_scale = 38 - (-1) = 39
-        // 10i128.pow(39) would overflow, so we must reject gracefully
-        let batch = make_batch(vec![Some(1)], 38, -1);
-        let result = eval_expr(&batch, -1, 38, 38, false);
-        assert!(result.is_err());
+        // delta = output_scale - input_scale = 38 - (-1) = 39.
+        // Arrow's decimal cast rejects this scale change rather than overflowing i128.
+        let batch = make_batch(vec![Some(1), Some(0), None], 38, -1);
+        assert!(eval_expr(&batch, -1, 38, 38, false).is_err());
+        assert!(eval_expr(&batch, -1, 38, 38, true).is_err());
     }
 }
