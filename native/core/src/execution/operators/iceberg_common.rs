@@ -25,7 +25,7 @@ use iceberg::io::{FileIO, FileIOBuilder, StorageFactory};
 use iceberg_storage_opendal::{CustomAwsCredentialLoader, OpenDalStorageFactory};
 
 use crate::cloud::s3::credential_bridge::{AccessMode, CometS3CredentialBridge};
-use crate::cloud::s3::web_identity::{WebIdentityConfig, WebIdentityCredentialProvider};
+use crate::cloud::s3::web_identity::take_over_if_irsa;
 use crate::parquet::objectstore::s3_blob_fs_support::{
     is_s3_compliant_alias_scheme, BlobHostPromotingS3StorageFactory,
 };
@@ -175,14 +175,14 @@ fn build_s3_credential_loader(
         // Comet web-identity provider (retry on STS throttle, no node-role downgrade, shared
         // jittered cache) instead of leaving it to opendal's default reqsign chain, which
         // downgrades to the node instance role under throttling. Non-IRSA setups (static keys,
-        // env, profile) keep the default chain via Ok(None). We also defer to any credentials the
-        // user configured explicitly in the catalog (static keys or an assume-role arn) -- explicit
+        // env, profile) keep the default chain. We also defer to any credentials the user
+        // configured explicitly in the catalog (static keys or an assume-role arn) -- explicit
         // config always wins, same as a named provider class does.
-        if has_explicit_s3_credentials(catalog_properties) {
-            return Ok(None);
-        }
-        return Ok(WebIdentityConfig::detect(catalog_properties)
-            .map(|cfg| CustomAwsCredentialLoader::new(WebIdentityCredentialProvider::new(cfg))));
+        let explicit = has_explicit_s3_credentials(catalog_properties);
+        return Ok(
+            take_over_if_irsa(explicit, |key| catalog_properties.get(key).cloned())
+                .map(CustomAwsCredentialLoader::new),
+        );
     };
     // Fall back to the bucket when the table has no catalog identity (e.g. HadoopTables loaded by
     // raw path).
