@@ -22,9 +22,10 @@ package org.apache.comet.parquet
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.comet.{CometNativeWriteExec, CometWriteFilesExec}
 import org.apache.spark.sql.execution.{QueryExecution, SparkPlan}
+import org.apache.spark.sql.execution.command.DataWritingCommandExec
 import org.apache.spark.sql.internal.SQLConf
 
-import org.apache.comet.CometConf
+import org.apache.comet.{CometConf, CometExplainInfo}
 import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
 
 abstract class CometParquetWriterTestBase extends CometTestBase {
@@ -103,14 +104,38 @@ abstract class CometParquetWriterTestBase extends CometTestBase {
 
   /**
    * The operator that carries a native write, which differs by Spark version: on 4.0+ Comet
-   * replaces only `WriteFilesExec` with [[CometWriteFilesExec]] and leaves Spark's write framework
-   * in place, while on 3.x it replaces the whole `DataWritingCommandExec` with
+   * replaces only `WriteFilesExec` with [[CometWriteFilesExec]] and leaves Spark's write
+   * framework in place, while on 3.x it replaces the whole `DataWritingCommandExec` with
    * [[CometNativeWriteExec]]. See `CometWriteFiles` / `CometDataWritingCommand`.
    */
   protected def isNativeWriteExec(plan: SparkPlan): Boolean = plan match {
     case _: CometWriteFilesExec => isSpark40Plus
     case _: CometNativeWriteExec => !isSpark40Plus
     case _ => false
+  }
+
+  protected def assertHasCometNativeWriteExec(plan: SparkPlan): Unit = {
+    var nativeWriteCount = 0
+    plan.foreach(p => if (isNativeWriteExec(p)) nativeWriteCount += 1)
+
+    assert(
+      nativeWriteCount == 1,
+      "Expected exactly one native write operator in the plan, but found " +
+        s"$nativeWriteCount:\n${plan.treeString}")
+
+    if (isSpark40Plus) {
+      // On 4.0+ the command is left in the plan on purpose for a fully native write, so it must
+      // not be reported as a fallback - otherwise extended explain tells users an accelerated
+      // write was not accelerated, and skews the "Comet accelerated N of M operators" count.
+      plan.foreach {
+        case d: DataWritingCommandExec =>
+          val reasons = d.getTagValue(CometExplainInfo.FALLBACK_REASONS).getOrElse(Set.empty)
+          assert(
+            reasons.isEmpty,
+            s"A fully native write must not tag ${d.nodeName} as a fallback, got: $reasons")
+        case _ =>
+      }
+    }
   }
 
   protected def assertNoCometNativeWriteExec(plan: SparkPlan): Unit = {

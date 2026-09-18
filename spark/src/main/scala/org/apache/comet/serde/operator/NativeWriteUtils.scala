@@ -147,6 +147,13 @@ object NativeWriteUtils {
    *     the basename is always the literal `part`. A basename holding `?` or `#` is the dangerous
    *     one: the native URL parser truncates there, so *every* task writes a file with the same
    *     truncated name and they overwrite each other during commit.
+   *
+   * The basename is checked by running [[hdfsPathDivergence]] over the path it produces rather
+   * than over the name alone. Everything else `getFilename` interpolates -- the split number, the
+   * job id and the codec extension -- is Comet-independent ASCII, so the probe below covers the
+   * whole committed file name. Sharing the one predicate with [[checkNativeWriteDestination]] is
+   * also what keeps planning from admitting a basename the task guard then aborts on: a literal
+   * `%` is invisible to [[needsNativeUrlEscaping]] but not to `java.net.URI`.
    */
   def escapedHdfsDestination(outputPath: String, fileNamePrefix: String): Option[String] = {
     if (!outputPath.startsWith("hdfs:")) return None
@@ -155,14 +162,10 @@ object NativeWriteUtils {
         "HDFS output paths needing URI escaping are not supported: the native writer would " +
           s"write to the escaped path while Spark commits the unescaped one ($shown)")
       .orElse {
-        if (needsNativeUrlEscaping(fileNamePrefix)) {
-          Some(
-            "HDFS output file names needing URI escaping are not supported: " +
-              s"$BASE_OUTPUT_NAME=$fileNamePrefix would make the native writer create a " +
-              "different file from the one Spark commits")
-        } else {
-          None
-        }
+        hdfsPathDivergence(s"$outputPath/$fileNamePrefix").map(_ =>
+          "HDFS output file names needing URI escaping are not supported: " +
+            s"$BASE_OUTPUT_NAME=$fileNamePrefix would make the native writer create a " +
+            "different file from the one Spark commits")
       }
   }
 

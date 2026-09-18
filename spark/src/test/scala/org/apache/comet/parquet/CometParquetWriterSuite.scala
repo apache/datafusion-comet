@@ -1012,12 +1012,28 @@ class CometParquetWriterSuite extends CometParquetWriterTestBase {
     // else: the native URL parser treats them as delimiters and truncates, so every task would
     // write the same file name and they would overwrite each other during commit.
     val plainHdfs = "hdfs://ns/plain/output.parquet"
-    Seq("part?x", "part#x", "part with space", s"caf$eAcute").foreach { basename =>
+    val declinedBasenames = Seq(
+      "part?x",
+      "part#x",
+      "part with space",
+      s"caf$eAcute",
+      // A literal `%` is the case the native-escaping set alone cannot see: the `url` parser
+      // leaves `%` untouched, so only Java's escaping catches it. `part%25` is the same
+      // character arriving as an escape sequence rather than as a stray sign.
+      "part%foo",
+      "part%25",
+      // Escaped by `java.net.URI` but not by the native parser, so likewise only the Java half
+      // of the check sees them.
+      "part[0]",
+      "part^x",
+      "part|x")
+    declinedBasenames.foreach { basename =>
       assert(
         NativeWriteUtils.escapedHdfsDestination(plainHdfs, basename).isDefined,
         s"expected basename '$basename' to be declined")
     }
-    Seq("part", "out", "data_v2", "part-of-it").foreach { basename =>
+    val acceptedBasenames = Seq("part", "out", "data_v2", "part-of-it")
+    acceptedBasenames.foreach { basename =>
       assert(
         NativeWriteUtils.escapedHdfsDestination(plainHdfs, basename).isEmpty,
         s"expected basename '$basename' to be accepted")
@@ -1038,6 +1054,29 @@ class CometParquetWriterSuite extends CometParquetWriterTestBase {
     intercept[UnsupportedOperationException] {
       NativeWriteUtils.checkNativeWriteDestination(
         "hdfs://ns/out/_temporary/0/attempt_1_m_0_0/part?x-00000-abc-c000.snappy.parquet")
+    }
+
+    // The two guards have to agree exactly. Planning admitting something the task guard then
+    // rejects is not a safe direction to be wrong in: the write has already been accepted, so
+    // the job aborts at execution time instead of quietly falling back to Spark's writer. Check
+    // that on the name `HadoopMapReduceCommitProtocol.getFilename` actually builds.
+    def committedPath(basename: String): String =
+      s"$plainHdfs/_temporary/0/_temporary/attempt_202609091700_0001_m_000000_0/" +
+        s"$basename-00000-a1b2c3d4-e5f6-c000.snappy.parquet"
+    (declinedBasenames ++ acceptedBasenames).foreach { basename =>
+      val declinedAtPlanning =
+        NativeWriteUtils.escapedHdfsDestination(plainHdfs, basename).isDefined
+      val rejectedAtRuntime =
+        try {
+          NativeWriteUtils.checkNativeWriteDestination(committedPath(basename))
+          false
+        } catch {
+          case _: UnsupportedOperationException => true
+        }
+      assert(
+        declinedAtPlanning == rejectedAtRuntime,
+        s"basename '$basename': declined at planning = $declinedAtPlanning, but the task guard " +
+          s"on ${committedPath(basename)} says $rejectedAtRuntime")
     }
   }
 
@@ -1096,6 +1135,37 @@ class CometParquetWriterSuite extends CometParquetWriterTestBase {
         assert(
           namePattern.pattern.matcher(name).matches(),
           s"File name '$name' does not match Spark's part-file naming convention")
+      }
+    }
+  }
+
+  test("a custom output basename is honored on local storage") {
+    assume(isSpark40Plus, "Requires the WriteFilesExec seam")
+    // `escapedHdfsDestination` gates the basename on HDFS only, where the native URL parser would
+    // rename the file out from under the committer. Local writes hand the path to the native
+    // writer verbatim, so this is the control that keeps that guard from being widened: `part%foo`
+    // is declined on HDFS and has to keep working here.
+    Seq("out", "part%foo").foreach { basename =>
+      withTempPath { dir =>
+        val outputPath = new File(dir, "output.parquet").getAbsolutePath
+        withTempPath { srcDir =>
+          val df = materializeAsCometSource(
+            (1 to 100).map(i => (i, s"n_$i")).toDF("id", "name"),
+            new File(srcDir, "src.parquet").getAbsolutePath)
+          withNativeWriter {
+            val plan = captureWritePlan(
+              p => df.write.option(NativeWriteUtils.BASE_OUTPUT_NAME, basename).parquet(p),
+              outputPath)
+            assertHasCometNativeWriteExec(plan)
+          }
+          val written =
+            new File(outputPath).listFiles().map(_.getName).filter(_.endsWith(".parquet"))
+          assert(
+            written.nonEmpty && written.forall(_.startsWith(s"$basename-")),
+            s"expected every data file to be named '$basename-...', found: " +
+              written.mkString(", "))
+          checkAnswer(spark.read.parquet(outputPath), df)
+        }
       }
     }
   }
@@ -1190,10 +1260,9 @@ class CometParquetWriterSuite extends CometParquetWriterTestBase {
     // of the output must see the write's schema, not fail. Comet reaches this in two ways - if the
     // native child has one partition producing no batches, the partition-0 branch of executeTask
     // writes a metadata-only file; if it produces zero partitions, doExecuteWrite swaps in a dummy
-    // single-partition RDD to get to the same branch. This test exercises the reachable path
-    // (filtered Comet scan yielding an empty batch iterator); the zero-partition swap is defensive
-    // because CometWriteFiles.requiresNativeChildren rules out the sources (LocalTableScan) that
-    // would otherwise produce a zero-partition RDD.
+    // single-partition RDD to get to the same branch. This test exercises the first; the
+    // zero-partition swap is reached by an AQE-collapsed empty relation and is covered by
+    // CometEmptyRelationParquetWriterSuite.
     withTempPath { dir =>
       val outputPath = new File(dir, "output.parquet").getAbsolutePath
       val sourcePath = new File(dir, "source.parquet").getAbsolutePath
@@ -1443,30 +1512,6 @@ class CometParquetWriterSuite extends CometParquetWriterTestBase {
         .filter(_.getName.startsWith("part-"))
         .map(_.getName)
         .toSet
-    }
-  }
-
-  private def assertHasCometNativeWriteExec(plan: SparkPlan): Unit = {
-    var nativeWriteCount = 0
-    plan.foreach(p => if (isNativeWriteExec(p)) nativeWriteCount += 1)
-
-    assert(
-      nativeWriteCount == 1,
-      "Expected exactly one native write operator in the plan, but found " +
-        s"$nativeWriteCount:\n${plan.treeString}")
-
-    if (isSpark40Plus) {
-      // On 4.0+ the command is left in the plan on purpose for a fully native write, so it must
-      // not be reported as a fallback - otherwise extended explain tells users an accelerated
-      // write was not accelerated, and skews the "Comet accelerated N of M operators" count.
-      plan.foreach {
-        case d: DataWritingCommandExec =>
-          val reasons = d.getTagValue(CometExplainInfo.FALLBACK_REASONS).getOrElse(Set.empty)
-          assert(
-            reasons.isEmpty,
-            s"A fully native write must not tag ${d.nodeName} as a fallback, got: $reasons")
-        case _ =>
-      }
     }
   }
 
