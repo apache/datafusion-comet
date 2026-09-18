@@ -53,10 +53,10 @@ calls `System.exit(SparkExitCode.OOM)` (exit code 52). Real heap exhaustion ther
 the whole executor, not one task. An executor loss on its own does not tell you which budget was
 exceeded; the exit code does.
 
-Comet's difficulty is that its allocations are made by Rust code, so they are invisible to the JVM
-heap and to Spark's own off-heap accounting, yet they land squarely in container RSS. Comet
-therefore maintains its own budget that is meant to shadow the physical one, and the accuracy of
-that shadow is the central problem this page is about.
+Comet's difficulty is that its allocations are made by Rust code, so no JVM allocator produces them
+and no JVM metric measures them, yet they land squarely in container RSS. Comet therefore maintains
+its own budget that is meant to shadow the physical one, and declares it to Spark so that the two
+compete for a single number. The accuracy of that shadow is the central problem this page is about.
 
 ## Who allocates what
 
@@ -68,7 +68,7 @@ page:
 | --------------------------------------- | ----------- | ------------------------------------------------------------- | ----------------- |
 | Spark execution + storage (on-heap)     | JVM heap    | `spark.executor.memory` and the unified memory manager        | Yes               |
 | Spark Tungsten (off-heap)               | Off-heap    | `spark.memory.offHeap.size` via `TaskMemoryManager`           | Yes               |
-| Comet native (Rust global allocator)    | Native heap | `memory_limit` (see below), enforced only via the memory pool | No                |
+| Comet native (Rust global allocator)    | Native heap | `memory_limit` (see below), enforced only via the memory pool | Reservations only |
 | Comet JVM Arrow (`CometArrowAllocator`) | Off-heap    | **Nothing**: a `RootAllocator(Long.MaxValue)`                 | No                |
 | Comet JVM shuffle pages                 | Off-heap    | `spark.memory.offHeap.size` via `TaskMemoryManager`           | Yes               |
 
@@ -83,8 +83,10 @@ allocates the bytes and in who is able to see them.
   JVM-side consumer is in a position to report it, and `spark.memory.offHeap.size` together with
   `TaskMemoryManager` arbitrates it.
 - **Native heap** is allocated by Rust through its global allocator, in the same process. No JVM
-  code is involved and no JVM metric counts it, so the only layer that sees any of it is Comet's own
-  memory pool, and then only the portion that operators explicitly reserve.
+  code makes the call, so no JVM-side allocator or metric ever measures these bytes. The only layer
+  that sees any of them is Comet's own memory pool, and then only the portion that operators
+  explicitly reserve. That portion is still charged to Spark, as the next paragraph describes; what
+  is never reserved is measured by nothing and budgeted by nobody.
 
 **The budget is shared even though the memory is not.** `memory_limit` is derived from
 `spark.memory.offHeap.size` (see [Where Comet's budget comes from](#where-comets-budget-comes-from)),
@@ -397,9 +399,7 @@ flowchart TB
       HEAP["JVM heap<br>execution and storage<br>spark.executor.memory"]
       TUNG["Spark Tungsten off-heap<br>TaskMemoryManager"]
       SHUFP["Comet JVM shuffle pages<br>CometUnifiedShuffleMemoryAllocator"]
-    end
-    subgraph DECL["declared to Comet's native pool only"]
-      NATRES["Comet native heap<br>operators that call try_grow"]
+      NATRES["Comet native heap, reserved<br>operators that call try_grow<br>declared to Spark over JNI, never measured"]
     end
     subgraph NONE["accounted by nobody"]
       NATUND["Comet native heap, undeclared<br>kernels, array builders, decompression<br>Parquet metadata, object_store, tokio"]
@@ -411,11 +411,17 @@ flowchart TB
   end
 ```
 
-Only the first and a portion of the third are visible to Spark's accounting. When the total crosses
-`memory.max`, the kernel OOM killer kills the process. The failure mode is significantly worse than
-a task-level OOM: every task running on that executor dies, every cached block it held is lost and
-must be recomputed, and the shuffle files it produced become unavailable to downstream fetches.
-Spark's driver sees only `ExecutorLostFailure` with exit code 137.
+Spark's accounting covers the first group, though not in the same sense throughout it. The JVM
+heap, Tungsten pages and Comet's shuffle pages are allocated by JVM code that reports what it
+allocated. A native reservation is a number an operator declared before allocating: `try_grow`
+succeeds only once `CometTaskMemoryManager` has charged Spark's off-heap execution pool over JNI, so
+the budget really is spent, but nothing measured the bytes and the reservation is only a lower bound
+on them. The second group is outside every accounting layer.
+
+When the total crosses `memory.max`, the kernel OOM killer kills the process. The failure mode is
+significantly worse than a task-level OOM: every task running on that executor dies, every cached
+block it held is lost and must be recomputed, and the shuffle files it produced become unavailable
+to downstream fetches. Spark's driver sees only `ExecutorLostFailure` with exit code 137.
 
 Two facts follow that are easy to get wrong:
 
