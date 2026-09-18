@@ -19,6 +19,19 @@ under the License.
 
 # Operator Compatibility
 
+## Empty Relations
+
+On Spark 4.0 and later, Comet supports `EmptyRelationExec` as a native input. It is enabled by
+default and can be disabled with `spark.comet.exec.emptyRelation.enabled=false`. The operator
+preserves Spark's output attributes and zero partitions; the eliminated logical subtree is not
+executed.
+
+Supported parent joins and aggregates remain eligible for native execution. Global aggregates
+still return one row (`COUNT = 0`, `SUM = NULL`), and grouped aggregates return no rows. Independent
+operator restrictions and aggregate buffer compatibility checks still apply.
+Parquet writes whose input plans contain an empty relation use Spark's writer to preserve
+readable empty output files and their schema metadata.
+
 ## Sampling
 
 Comet runs `SampleExec` natively when sampling is performed without replacement, which covers
