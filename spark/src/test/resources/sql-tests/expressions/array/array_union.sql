@@ -15,6 +15,9 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
+-- No negative zeros in this fixture; signed-zero compatibility is tested in array_set_signed_zero*.
+-- Config: spark.comet.expression.ArrayUnion.allowIncompatible=true
+
 statement
 CREATE TABLE test_array_union(a array<int>, b array<int>) USING parquet
 
@@ -143,28 +146,6 @@ INSERT INTO test_union_float VALUES (array(cast(1.0 as float), cast(2.0 as float
 
 query
 SELECT a, b, array_union(a, b) FROM test_union_float
-
--- negative zero (column-sourced). Spark keeps -0.0 distinct from 0.0 while Comet
--- (DataFusion) collapses them, so array_union([0.0], [-0.0]) is [0.0, -0.0] in Spark
--- but [0.0] in Comet. NormalizeFloatingNumbers only rewrites literals, not parquet
--- columns. Skip until Spark normalizes these zeros (Spark 4.2+, SPARK-54918).
-statement
-CREATE TABLE test_union_dbl_negzero(a array<double>, b array<double>) USING parquet
-
-statement
-INSERT INTO test_union_dbl_negzero VALUES (array(0.0), array(double('-0.0')))
-
-query ignore(https://issues.apache.org/jira/browse/SPARK-54918)
-SELECT a, b, array_union(a, b) FROM test_union_dbl_negzero
-
-statement
-CREATE TABLE test_union_flt_negzero(a array<float>, b array<float>) USING parquet
-
-statement
-INSERT INTO test_union_flt_negzero VALUES (array(cast(0.0 as float)), array(float('-0.0')))
-
-query ignore(https://issues.apache.org/jira/browse/SPARK-54918)
-SELECT a, b, array_union(a, b) FROM test_union_flt_negzero
 
 -- boolean arrays
 query

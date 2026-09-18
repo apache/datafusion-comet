@@ -62,7 +62,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
     // through CometArrayFilter -> CometArrayCompact -> DataFusion's array_compact. On Spark
     // 4.0+ the rewrite is wrapped in KnownNotContainsNull, stripped by Spark4xCometExprShim.
     classOf[ArrayContains] -> CometArrayContains,
-    classOf[ArrayDistinct] -> CometScalarFunction("array_distinct"),
+    classOf[ArrayDistinct] -> CometArrayDistinct,
     classOf[ArrayExcept] -> CometArrayExcept,
     classOf[ArrayFilter] -> CometArrayFilter,
     classOf[ArrayInsert] -> CometArrayInsert,
