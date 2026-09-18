@@ -95,6 +95,16 @@ under the License.
     <guava.version>33.2.1-jre</guava.version>
     <testcontainers.version>1.21.4</testcontainers.version>
     <amazon-awssdk-v2.version>2.31.51</amazon-awssdk-v2.version>
+    <!-- AWS SDK v1, present at runtime on Hadoop 3.3.x (spark-3.x profiles). Used at provided
+         scope (the aws-java-sdk-s3 module) to compile the built-in S3 credential adapters and to
+         satisfy hadoop-aws 3.3.4's S3AUtils API during incremental compilation. Matches the
+         version hadoop-aws 3.3.4 bundles. -->
+    <aws-java-sdk-v1.version>1.12.262</aws-java-sdk-v1.version>
+    <!-- hadoop-aws, provided scope, to compile the built-in S3 credential adapters against the S3A
+         provider factory. Default tracks the default shim source set (spark-4.x -> SDK v2, needs
+         Hadoop 3.4.x's CredentialProviderListFactory); the spark-3.4 / spark-3.5 profiles override
+         it down to 3.3.x (SDK v1). hadoop.version itself (hadoop-client) is not changed. -->
+    <hadoop-aws.version>3.4.1</hadoop-aws.version>
     <jni.dir>${project.basedir}/../native/target/debug</jni.dir>
     <platform>darwin</platform>
     <arch>x86_64</arch>
@@ -668,6 +678,7 @@ under the License.
         <scala.binary.version>2.12</scala.binary.version>
         <spark.version>3.4.3</spark.version>
         <spark.version.short>3.4</spark.version.short>
+        <hadoop-aws.version>3.3.4</hadoop-aws.version>
         <parquet.version>1.13.1</parquet.version>
         <semanticdb.version>4.8.8</semanticdb.version>
         <slf4j.version>2.0.6</slf4j.version>
@@ -687,6 +698,7 @@ under the License.
         <scala.binary.version>2.12</scala.binary.version>
         <spark.version>3.5.9</spark.version>
         <spark.version.short>3.5</spark.version.short>
+        <hadoop-aws.version>3.3.4</hadoop-aws.version>
         <parquet.version>1.13.1</parquet.version>
         <semanticdb.version>4.8.8</semanticdb.version>
         <slf4j.version>2.0.7</slf4j.version>
