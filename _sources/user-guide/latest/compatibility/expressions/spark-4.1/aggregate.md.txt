@@ -39,7 +39,7 @@ The following cases are not supported by Comet and always fall back to Spark, re
 
 The following incompatibilities cause `CollectSet` to fall back to Spark by default. Set `spark.comet.expression.CollectSet.allowIncompatible=true` to enable Comet acceleration despite these differences.
 
-- Comet deduplicates NaN values (treats `NaN == NaN`) while Spark treats each NaN as a distinct value. When `spark.comet.exec.strictFloatingPoint=true`, `collect_set` on floating-point types falls back to Spark unless `spark.comet.expression.CollectSet.allowIncompatible=true` is set.
+- Before Spark 4.2, Comet deduplicates NaN values (treats `NaN == NaN`) while Spark treats each NaN as a distinct value. Comet treats -0.0 and 0.0 as distinct while Spark treats them as equal. When `spark.comet.exec.strictFloatingPoint=true`, `collect_set` on floating-point types falls back to Spark on those versions unless `spark.comet.expression.CollectSet.allowIncompatible=true` is set.
 
 ## First
 
