@@ -285,12 +285,24 @@ under the License.
     <profile>
       <id>spark-3.4</id>
       <dependencies>
-        <!-- AWS SDK v1 for the built-in S3 credential adapters (spark-3.x source set). -->
+        <!--
+          AWS SDK v1 for the built-in S3 credential adapters (spark-3.x source set). Use the s3
+          module, not just core: it supplies com.amazonaws.auth.* for the adapter AND the
+          com.amazonaws.services.s3.model.* classes that hadoop-aws 3.3.4's S3AUtils API references
+          (the incremental compiler extracts that API). commons-logging is excluded because
+          jcl-over-slf4j already provides those classes (duplicate-class enforcer).
+        -->
         <dependency>
           <groupId>com.amazonaws</groupId>
-          <artifactId>aws-java-sdk-core</artifactId>
+          <artifactId>aws-java-sdk-s3</artifactId>
           <version>${aws-java-sdk-v1.version}</version>
           <scope>provided</scope>
+          <exclusions>
+            <exclusion>
+              <groupId>commons-logging</groupId>
+              <artifactId>commons-logging</artifactId>
+            </exclusion>
+          </exclusions>
         </dependency>
         <dependency>
           <groupId>org.apache.iceberg</groupId>
@@ -324,12 +336,24 @@ under the License.
         <delta.version>3.3.2</delta.version>
       </properties>
       <dependencies>
-        <!-- AWS SDK v1 for the built-in S3 credential adapters (spark-3.x source set). -->
+        <!--
+          AWS SDK v1 for the built-in S3 credential adapters (spark-3.x source set). Use the s3
+          module, not just core: it supplies com.amazonaws.auth.* for the adapter AND the
+          com.amazonaws.services.s3.model.* classes that hadoop-aws 3.3.4's S3AUtils API references
+          (the incremental compiler extracts that API). commons-logging is excluded because
+          jcl-over-slf4j already provides those classes (duplicate-class enforcer).
+        -->
         <dependency>
           <groupId>com.amazonaws</groupId>
-          <artifactId>aws-java-sdk-core</artifactId>
+          <artifactId>aws-java-sdk-s3</artifactId>
           <version>${aws-java-sdk-v1.version}</version>
           <scope>provided</scope>
+          <exclusions>
+            <exclusion>
+              <groupId>commons-logging</groupId>
+              <artifactId>commons-logging</artifactId>
+            </exclusion>
+          </exclusions>
         </dependency>
         <dependency>
           <groupId>org.apache.iceberg</groupId>

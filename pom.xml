@@ -95,8 +95,9 @@ under the License.
     <guava.version>33.2.1-jre</guava.version>
     <testcontainers.version>1.21.4</testcontainers.version>
     <amazon-awssdk-v2.version>2.31.51</amazon-awssdk-v2.version>
-    <!-- AWS SDK v1 core, present at runtime on Hadoop 3.3.x (spark-3.x profiles). Used at provided
-         scope to compile the built-in S3 credential adapters (spark-3.x source set). Matches the
+    <!-- AWS SDK v1, present at runtime on Hadoop 3.3.x (spark-3.x profiles). Used at provided
+         scope (the aws-java-sdk-s3 module) to compile the built-in S3 credential adapters and to
+         satisfy hadoop-aws 3.3.4's S3AUtils API during incremental compilation. Matches the
          version hadoop-aws 3.3.4 bundles. -->
     <aws-java-sdk-v1.version>1.12.262</aws-java-sdk-v1.version>
     <!-- hadoop-aws, provided scope, to compile the built-in S3 credential adapters against the S3A
