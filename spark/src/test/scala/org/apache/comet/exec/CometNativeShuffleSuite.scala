@@ -1143,38 +1143,24 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
     (doubleValue, i)
   }
 
-  test("range partitioning on floating-point falls back when strictFloatingPoint=true") {
-    withSQLConf(
-      CometConf.COMET_SHUFFLE_NATIVE_RANGE_PARTITIONING_ENABLED.key -> "true",
-      CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key -> "true",
-      // Bypass the CometSortOrder-level Incompatible check so that only
-      // supportedRangePartitioningDataType is exercised as the guard.
-      CometConf.getExprAllowIncompatConfigKey("SortOrder") -> "true") {
-      withParquetTable(floatingPointRangePartitionData, "tbl") {
-        Seq(("FLOAT", "FloatType"), ("DOUBLE", "DoubleType")).foreach {
-          case (sqlType, sparkType) =>
+  // The native range partitioner normalizes its comparison keys and its sampled boundary rows the
+  // same way the native sort does, so scalar floating-point keys match Spark's ordering whether or
+  // not strict floating point is on. Neither gate needs the allowIncompatible escape hatch.
+  Seq("true", "false").foreach { strict =>
+    test(
+      "range partitioning on floating-point uses native shuffle when " +
+        s"strictFloatingPoint=$strict") {
+      withSQLConf(
+        CometConf.COMET_SHUFFLE_NATIVE_RANGE_PARTITIONING_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key -> strict,
+        CometConf.getExprAllowIncompatConfigKey("SortOrder") -> "false") {
+        withParquetTable(floatingPointRangePartitionData, "tbl") {
+          Seq("FLOAT", "DOUBLE").foreach { sqlType =>
             val df = sql(s"SELECT CAST(_1 AS $sqlType) AS c, _2 FROM tbl")
               .repartitionByRange(4, $"c")
 
-            checkSparkAnswerAndFallbackReason(
-              df,
-              s"Range partitioning on $sparkType is not 100% compatible with Spark")
-        }
-      }
-    }
-  }
-
-  test(
-    "range partitioning on floating-point uses native shuffle when strictFloatingPoint=false") {
-    withSQLConf(
-      CometConf.COMET_SHUFFLE_NATIVE_RANGE_PARTITIONING_ENABLED.key -> "true",
-      CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key -> "false") {
-      withParquetTable(floatingPointRangePartitionData, "tbl") {
-        Seq("FLOAT", "DOUBLE").foreach { sqlType =>
-          val df = sql(s"SELECT CAST(_1 AS $sqlType) AS c, _2 FROM tbl")
-            .repartitionByRange(4, $"c")
-
-          checkShuffleAnswer(df, 1)
+            checkShuffleAnswer(df, 1)
+          }
         }
       }
     }
