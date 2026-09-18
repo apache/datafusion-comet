@@ -413,6 +413,38 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("floating IN with a column candidate normalizes signed zeros") {
+    withSQLConf(
+      SQLConf.PARQUET_FILTER_PUSHDOWN_ENABLED.key -> "false",
+      "spark.sql.optimizer.inSetConversionThreshold" -> "10") {
+      val rows = Seq(
+        (0, Some(-0.0d), Some(0.0d)),
+        (1, Some(0.0d), Some(-0.0d)),
+        (2, Some(1.0d), Some(2.0d)),
+        (3, None, Some(0.0d)))
+      withParquetDataFrame(rows, withDictionary = false) { df =>
+        // The first candidate is another column, so DataFusion evaluates dynamic equality rather
+        // than a static literal filter. The second candidate keeps Spark from rewriting a
+        // singleton IN to ordinary equality before Comet serializes it.
+        val predicate = df("_2").isin(df("_3"), lit(13.0d))
+        val projected = df.select(df("_1"), predicate)
+        val optimized = projected.queryExecution.optimizedPlan
+        val membership = optimized.expressions.flatMap(_.collect {
+          case in: org.apache.spark.sql.catalyst.expressions.In => in
+        })
+        assert(
+          membership.size == 1 &&
+            membership.forall(_.list.exists(candidate => !candidate.isInstanceOf[Literal])),
+          optimized.toString)
+
+        checkSparkAnswerAndOperator(projected, Seq(classOf[CometProjectExec]))
+        checkSparkAnswerAndOperator(
+          df.filter(predicate).select("_1"),
+          Seq(classOf[CometFilterExec]))
+      }
+    }
+  }
+
   test("parquet default values") {
     withTable("t1") {
       sql("create table t1(col1 boolean) using parquet")
