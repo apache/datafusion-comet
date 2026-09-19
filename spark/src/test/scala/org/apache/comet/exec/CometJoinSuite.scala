@@ -1514,4 +1514,56 @@ class CometJoinSuite extends CometTestBase {
       }
     }
   }
+
+  test("ExistenceJoin via BroadcastHashJoin (EXISTS combined with OR)") {
+    withSQLConf(
+      CometConf.COMET_EXEC_EXISTENCE_JOIN_ENABLED.key -> "true",
+      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "10MB",
+      SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "10MB") {
+      withParquetTable((0 until 100).map(i => (i, if (i % 3 == 0) "US" else "EU")), "tbl_a") {
+        withParquetTable((0 until 30).map(i => (i, i + 1)), "tbl_b") {
+          val df = sql("SELECT * FROM tbl_a a " +
+            "WHERE a._2 = 'US' OR EXISTS (SELECT /*+ BROADCAST(b) */ 1 FROM tbl_b b WHERE b._1 = a._1)")
+          checkSparkAnswerAndOperator(
+            df,
+            Seq(classOf[CometBroadcastExchangeExec], classOf[CometBroadcastHashJoinExec]))
+        }
+      }
+    }
+  }
+
+  test("ExistenceJoin via ShuffledHashJoin (EXISTS combined with OR)") {
+    withSQLConf(
+      CometConf.COMET_EXEC_EXISTENCE_JOIN_ENABLED.key -> "true",
+      SQLConf.PREFER_SORTMERGEJOIN.key -> "false",
+      "spark.sql.join.forceApplyShuffledHashJoin" -> "true",
+      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+      SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
+      withParquetTable((0 until 100).map(i => (i, if (i % 3 == 0) "US" else "EU")), "tbl_a") {
+        withParquetTable((0 until 30).map(i => (i, i + 1)), "tbl_b") {
+          val df = sql(
+            "SELECT * FROM tbl_a a " +
+              "WHERE a._2 = 'US' OR EXISTS (SELECT 1 FROM tbl_b b WHERE b._1 = a._1)")
+          checkSparkAnswerAndOperator(df, Seq(classOf[CometHashJoinExec]))
+        }
+      }
+    }
+  }
+
+  test("ExistenceJoin via SortMergeJoin (EXISTS combined with OR)") {
+    withSQLConf(
+      CometConf.COMET_EXEC_EXISTENCE_JOIN_ENABLED.key -> "true",
+      SQLConf.PREFER_SORTMERGEJOIN.key -> "true",
+      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+      SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
+      withParquetTable((0 until 100).map(i => (i, if (i % 3 == 0) "US" else "EU")), "tbl_a") {
+        withParquetTable((0 until 30).map(i => (i, i + 1)), "tbl_b") {
+          val df = sql(
+            "SELECT * FROM tbl_a a " +
+              "WHERE a._2 = 'US' OR EXISTS (SELECT 1 FROM tbl_b b WHERE b._1 = a._1)")
+          checkSparkAnswerAndOperator(df, Seq(classOf[CometSortMergeJoinExec]))
+        }
+      }
+    }
+  }
 }
