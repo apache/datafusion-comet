@@ -45,19 +45,26 @@ in the [Compatibility Guide] for more information, such as known limitations per
 We recommend only using Comet with Spark versions where we currently have both Comet and Spark tests enabled in CI.
 Other versions may work well enough for development and evaluation purposes.
 
+Comet requires JDK 17 or later. JDK 11 is no longer supported as of the 1.1.0 release.
+
 ```{warning}
-JDK 11 and Spark 3.4 support are deprecated as of the 1.0.0 release and will be removed in the 1.1.0 release.
-We recommend moving to JDK 17 or later and Spark 3.5 or later.
+Spark 3.4 support is deprecated as of the 1.0.0 release and will be removed in a future release.
+Apache Spark's own SQL test suite is no longer run against Spark 3.4 on every change; it runs only
+on demand. We recommend moving to Spark 3.5 or later.
 ```
 
 | Spark Version | Java Version | Scala Version | Comet Tests in CI | Spark SQL Tests in CI |
 | ------------- | ------------ | ------------- | ----------------- | --------------------- |
-| 3.4.3         | 11/17        | 2.12/2.13     | Yes               | Yes                   |
-| 3.5.9         | 11/17        | 2.12/2.13     | Yes               | Yes                   |
+| 3.4.3         | 17           | 2.12/2.13     | Yes               | On demand             |
+| 3.5.9         | 17           | 2.12/2.13     | Yes               | Yes                   |
 | 4.0.4         | 17/21        | 2.13          | Yes               | Yes                   |
 | 4.1.3         | 17/21        | 2.13          | Yes               | Yes                   |
 
 Note that we do not test the full matrix of supported Java and Scala versions in CI for every Spark version.
+
+"On demand" in the table above means the suite is not run automatically before a change is merged.
+A contributor can still run it against an individual pull request, but Spark 3.4 is no longer
+covered by default.
 
 Experimental support is provided for the following versions of Apache Spark and is intended for development/testing
 use only and should not be used in production yet.
@@ -73,8 +80,45 @@ Cloud Service Providers.
 
 <!-- IF_SNAPSHOT -->
 
-This documentation is for the current development version of Comet. Published jar files are only available for released versions.
-To use this version of Comet, see [Building from source](source.md).
+This documentation is for the current development version of Comet, which has not been released. Nightly snapshot
+jar files for this version are published to the
+[ASF snapshot repository](https://repository.apache.org/content/repositories/snapshots/org/apache/datafusion/) for the
+amd64 and arm64 architectures for Linux. For Apple macOS, it is currently necessary to
+[build from source](source.md).
+
+Snapshots are unreleased development builds provided for testing and evaluation only. They are not Apache releases,
+have not been voted on, and should not be used in production. Older snapshots are removed from the repository
+periodically.
+
+A new snapshot is published each night that new commits land on the `main` branch. Every snapshot carries the same
+version, `$COMET_VERSION`, so Maven-based tooling resolves the most recent one automatically. The
+[Publish Snapshot](https://github.com/apache/datafusion-comet/actions/workflows/publish_snapshot.yml) workflow log
+records the commit each snapshot was built from.
+
+The following artifacts are published:
+
+- `comet-spark-spark3.4_2.12`
+- `comet-spark-spark3.5_2.12`
+- `comet-spark-spark4.0_2.13`
+- `comet-spark-spark4.1_2.13`
+
+To download a snapshot jar, browse to the artifact directory in the snapshot repository, for example
+[comet-spark-spark4.1_2.13/$COMET_VERSION](https://repository.apache.org/content/repositories/snapshots/org/apache/datafusion/comet-spark-spark4.1_2.13/$COMET_VERSION/),
+and pick the jar with the newest timestamp. Then use it as described in
+[Run Spark Shell with Comet enabled](#run-spark-shell-with-comet-enabled).
+
+Alternatively, let Spark resolve the newest snapshot directly:
+
+```shell
+$SPARK_HOME/bin/spark-shell \
+    --repositories https://repository.apache.org/content/repositories/snapshots/ \
+    --packages org.apache.datafusion:comet-spark-spark4.1_2.13:$COMET_VERSION \
+    --conf spark.plugins=org.apache.spark.CometPlugin \
+    --conf spark.shuffle.manager=org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager \
+    --conf spark.comet.explain.fallback.enabled=true \
+    --conf spark.memory.offHeap.enabled=true \
+    --conf spark.memory.offHeap.size=4g
+```
 
 <!-- ENDIF -->
 
@@ -137,15 +181,19 @@ Create a test Parquet source
 scala> (0 until 10).toDF("a").write.mode("overwrite").parquet("/tmp/test")
 ```
 
-Comet will log output similar to:
+Comet will log output similar to this on Spark 4.0 and later:
 
 ```shell
 INFO core/src/lib.rs: Comet native library version $COMET_VERSION initialized
 WARN CometExecRule: Comet cannot execute some parts of this plan natively (set spark.comet.explain.fallback.enabled=false to disable this logging):
-  Execute InsertIntoHadoopFsRelationCommand [COMET: Native support for operator DataWritingCommandExec is disabled. Set spark.comet.parquet.write.enabled=true to enable it.]
-+- WriteFiles
+  Execute InsertIntoHadoopFsRelationCommand
++- WriteFiles [COMET: Native support for operator WriteFilesExec is disabled. Set spark.comet.parquet.write.enabled=true to enable it.]
    +-  LocalTableScan [COMET: Native support for operator LocalTableScanExec is disabled. Set spark.comet.exec.localTableScan.enabled=true to enable it.]
 ```
+
+On Spark 3.4 and 3.5 the native writer replaces the whole write command rather than just the
+per-task write, so the same message appears on `Execute InsertIntoHadoopFsRelationCommand` and
+names `DataWritingCommandExec`.
 
 Query the data from the test source and check:
 

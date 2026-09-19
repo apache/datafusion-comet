@@ -139,7 +139,7 @@ jobs:
           rust-version: ${{ env.RUST_VERSION }}
           jdk-version: ${{ inputs.java }}
       - name: Download native library
-        uses: actions/download-artifact@v8
+        uses: ./.github/actions/download-artifact-retry
         with:
           name: native-lib-iceberg-${{ inputs.iceberg-full }}-spark-${{ inputs.spark-full }}-jdk${{ inputs.java }}
           path: native/target/release/
@@ -180,7 +180,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: Download Iceberg shard inventories
-        uses: actions/download-artifact@v8
+        uses: ./.github/actions/download-artifact-retry
         with:
           # Download all attempts: a failed-job rerun retains earlier successful
           # shards. The checker selects the latest inventory for each index.
@@ -207,7 +207,7 @@ jobs:
           rust-version: ${{ env.RUST_VERSION }}
           jdk-version: ${{ inputs.java }}
       - name: Download native library
-        uses: actions/download-artifact@v8
+        uses: ./.github/actions/download-artifact-retry
         with:
           name: native-lib-iceberg-${{ inputs.iceberg-full }}-spark-${{ inputs.spark-full }}-jdk${{ inputs.java }}
           path: native/target/release/
@@ -242,7 +242,7 @@ jobs:
           rust-version: ${{ env.RUST_VERSION }}
           jdk-version: ${{ inputs.java }}
       - name: Download native library
-        uses: actions/download-artifact@v8
+        uses: ./.github/actions/download-artifact-retry
         with:
           name: native-lib-iceberg-${{ inputs.iceberg-full }}-spark-${{ inputs.spark-full }}-jdk${{ inputs.java }}
           path: native/target/release/
