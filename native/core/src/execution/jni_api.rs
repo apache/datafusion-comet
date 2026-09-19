@@ -980,9 +980,12 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
                 // so we should always execute partition 0.
                 let stream = root_op.native_plan.execute(0, task_ctx)?;
 
-                if exec_context.scans.is_empty() && exec_context.shuffle_scans.is_empty() {
+                if exec_context.input_sources.is_empty() {
                     // No JVM data sources — spawn onto tokio so the executor
                     // thread parks in blocking_recv instead of busy-polling.
+                    // Lazy broadcasts are JVM sources too, despite not appearing
+                    // in `scans`. Keep their streams owned by ExecutionContext so
+                    // releasePlan drops native readers before JVM task cleanup.
                     //
                     // Channel capacity of 2 allows the producer to work one batch
                     // ahead while the consumer processes the current one via JNI,
