@@ -32,6 +32,17 @@ Here is an overview of the changes that we need to make to Spark:
 
 Here are the steps involved in running the Spark SQL tests with Comet, using Spark 3.4.3 for this example.
 
+`dev/local-ci.sh` runs all of the steps below the way CI runs them:
+
+```shell
+dev/local-ci.sh spark                # every matrix row
+dev/local-ci.sh spark catalyst       # one row
+dev/local-ci.sh spark 3.4 catalyst   # a non-default Spark version
+```
+
+See [Continuous Integration](ci.md#reproducing-a-suite-failure-locally). The manual steps below
+are still the reference, and are what you want when creating or updating a diff file.
+
 ## 1. Install Comet
 
 Run `make release` in Comet to install the Comet JAR into the local Maven repository, specifying the Spark version.
