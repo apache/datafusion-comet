@@ -21,6 +21,7 @@ use std::sync::OnceLock;
 use url::Url;
 
 use crate::cloud::s3::credential_bridge::{AccessMode, CometS3CredentialBridge};
+use crate::cloud::s3::web_identity::take_over_if_irsa;
 use crate::execution::jni_api::get_runtime;
 use async_trait::async_trait;
 use aws_config::{
@@ -100,9 +101,28 @@ pub fn create_store(
             builder.with_credentials(Arc::new(bridge))
         }
         None => {
-            match get_runtime().block_on(build_credential_provider(configs, bucket, min_ttl))? {
+            // IRSA take-over. On EKS/IRSA, resolve web-identity credentials with the Comet
+            // provider (retries the STS throttle, shares one credential per process, coalesces a
+            // failed burst) instead of the plain default chain, which does not retry the throttle
+            // and gives every reader its own assume-role call. It is web-identity-only, so it never
+            // falls back to a lower-privilege identity. It stands aside for any explicit
+            // credentials -- a configured `aws.credentials.provider` or static env credentials --
+            // so it only changes the otherwise-default behavior.
+            let explicit_provider = get_config_trimmed(configs, bucket, "aws.credentials.provider")
+                .is_some_and(|s| !s.is_empty());
+            let web_identity = take_over_if_irsa(explicit_provider, |key| {
+                get_config_trimmed(configs, bucket, key).map(|s| s.to_string())
+            });
+            match web_identity {
                 Some(provider) => builder.with_credentials(Arc::new(provider)),
-                None => builder.with_skip_signature(true),
+                None => {
+                    match get_runtime()
+                        .block_on(build_credential_provider(configs, bucket, min_ttl))?
+                    {
+                        Some(provider) => builder.with_credentials(Arc::new(provider)),
+                        None => builder.with_skip_signature(true),
+                    }
+                }
             }
         }
     };
