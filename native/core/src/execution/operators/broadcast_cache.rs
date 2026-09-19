@@ -23,54 +23,47 @@
 //! Successful entries keep only weak references, so the last active probe can
 //! drop the prepared hash table. Its owner returns the Spark storage charge when
 //! the last lease drops or, if earlier, on executor retirement. A later task
-//! wave may build the same table again. Resource failures briefly reject
-//! matching loads to avoid repeated partial work; other errors and canceled
-//! loaders leave the key retryable. Retiring a SparkEnv generation clears its
-//! lookups without revoking leases already held by active probes.
+//! wave may build the same table again. Resource failures reject waiting tasks
+//! together; subsequent tasks can retry. Errors and canceled loaders leave the
+//! key retryable. Retiring a SparkEnv generation clears its lookups without
+//! revoking leases already held by active probes.
 
 use std::collections::HashMap;
 use std::future::Future;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Weak};
-use std::time::{Duration, Instant};
 
 use arrow::datatypes::SchemaRef;
 use datafusion::common::{resources_datafusion_err, DataFusionError, Result};
 use futures::channel::oneshot;
 use parking_lot::Mutex;
 
-/// Share failed admission across a task wave without permanently disabling reuse
-/// when executor storage pressure changes. Rejections occupy bounded cache slots.
-const RESOURCE_RETRY_DELAY: Duration = Duration::from_secs(5);
-
 /// Identifies a compatible materialization: the Spark broadcast, its declared
-/// build and probe schemas, and ordered build key columns must all match.
+/// build schema and ordered build key columns must all match. Probe columns do
+/// not affect the build. Comet always uses NullEqualsNothing for physical keys.
 /// SparkEnv generation is scoped by the enclosing cache, not by this key.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub(super) struct BuildKey {
     pub broadcast_id: i64,
     pub schema: SchemaRef,
-    pub probe_schema: SchemaRef,
     pub key_columns: Vec<usize>,
 }
 
-/// Per-key state: one loader with waiters, a weak active build, or a short-lived
-/// resource rejection. No entry owns a prepared build after loading finishes.
+/// A loader hands each waiter a lease or an admission rejection. Successful
+/// entries keep only weak references after loading finishes.
 #[derive(Debug)]
 enum Entry<T> {
     Loading(Vec<oneshot::Sender<Option<Arc<T>>>>),
     Ready(Weak<T>),
-    Rejected(Instant),
 }
 
-/// Bounds keys, unfinished loads, weak ready entries and temporary rejections
+/// Bounds unfinished loads and weak ready entries
 /// without retaining prepared builds. The payload byte cap belongs to the
 /// allocation pool; callers own strong references returned by `get_or_load`.
 #[derive(Debug)]
 pub(super) struct BuildCache<T> {
-    entries: Mutex<HashMap<BuildKey, Entry<T>>>,
+    // None means retired. Retirement and publication use this same lock.
+    entries: Mutex<Option<HashMap<BuildKey, Entry<T>>>>,
     max_entries: usize,
-    retired: AtomicBool,
 }
 
 impl<T> BuildCache<T> {
@@ -78,16 +71,15 @@ impl<T> BuildCache<T> {
     /// payload memory or install any task/context ownership.
     pub fn new(max_entries: usize) -> Self {
         Self {
-            entries: Mutex::new(HashMap::new()),
+            entries: Mutex::new(Some(HashMap::new())),
             max_entries,
-            retired: AtomicBool::new(false),
         }
     }
 
     /// Returns an active build or elects one loader for this task wave. Waiting
     /// tasks receive strong references before the loader can drop its build.
     /// A canceled load wakes waiters to retry; a resource error from the loader
-    /// is shared briefly so peers take ordinary fallback instead of repeating
+    /// is shared with waiters so peers take ordinary fallback instead of repeating
     /// partial preparation. Other errors remain uncached. Entry-capacity failure
     /// occurs before `load` runs. The boolean is true on a hit or waited load.
     pub async fn get_or_load<F, Fut>(&self, key: BuildKey, load: F) -> Result<(Arc<T>, bool)>
@@ -100,15 +92,12 @@ impl<T> BuildCache<T> {
             Wait(oneshot::Receiver<Option<Arc<T>>>),
             Load,
         }
-        let mut load = Some(load);
         loop {
             let action = {
-                let mut entries = self.entries.lock();
-                if self.retired.load(Ordering::Relaxed) {
-                    return Err(resources_datafusion_err!(
-                        "Broadcast build cache is retired"
-                    ));
-                }
+                let mut state = self.entries.lock();
+                let entries = state
+                    .as_mut()
+                    .ok_or_else(|| resources_datafusion_err!("Broadcast build cache is retired"))?;
                 match entries.get_mut(&key) {
                     Some(Entry::Ready(value)) => match value.upgrade() {
                         Some(value) => Action::Hit(value),
@@ -119,17 +108,6 @@ impl<T> BuildCache<T> {
                             continue;
                         }
                     },
-                    Some(Entry::Rejected(retry_at)) => {
-                        if Instant::now() < *retry_at {
-                            return Err(DataFusionError::ResourcesExhausted(
-                                "Broadcast build cache admission rejected".into(),
-                            ));
-                        }
-                        // Expired rejections contain no payload or task ownership.
-                        // Re-enter election so only one caller retries admission.
-                        entries.remove(&key);
-                        continue;
-                    }
                     Some(Entry::Loading(waiters)) => {
                         let (sender, receiver) = oneshot::channel();
                         waiters.push(sender);
@@ -137,13 +115,10 @@ impl<T> BuildCache<T> {
                     }
                     None => {
                         if entries.len() >= self.max_entries {
-                            // The cap also counts bookkeeping for old waves;
-                            // reclaim dead weak refs and expired rejections.
-                            let now = Instant::now();
+                            // Reclaim metadata for completed task waves.
                             entries.retain(|_, entry| match entry {
                                 Entry::Loading(_) => true,
                                 Entry::Ready(value) => value.strong_count() != 0,
-                                Entry::Rejected(retry_at) => *retry_at > now,
                             });
                             if entries.len() >= self.max_entries {
                                 return Err(resources_datafusion_err!(
@@ -158,30 +133,29 @@ impl<T> BuildCache<T> {
             };
             match action {
                 Action::Hit(value) => return Ok((value, true)),
-                Action::Wait(receiver) => {
-                    if let Ok(Some(value)) = receiver.await {
-                        if !self.retired.load(Ordering::Relaxed) {
-                            return Ok((value, true));
-                        }
+                Action::Wait(receiver) => match receiver.await {
+                    Ok(Some(value)) => return Ok((value, true)),
+                    Ok(None) => {
+                        return Err(resources_datafusion_err!(
+                            "Broadcast build cache admission rejected"
+                        ));
                     }
-                    // Shared rejection or loader cancellation re-enters election.
-                }
+                    // Cancellation or a data error lets another task load.
+                    Err(_) => continue,
+                },
                 Action::Load => {
                     let guard = LoadGuard {
                         cache: self,
                         key: key.clone(),
                         active: true,
                     };
-                    match load.take().expect("only the elected caller loads")().await {
+                    match load().await {
                         Ok(value) => {
-                            guard.publish(Entry::Ready(Arc::downgrade(&value)), Some(&value));
+                            guard.publish(Some(&value));
                             return Ok((value, false));
                         }
                         Err(DataFusionError::ResourcesExhausted(error)) => {
-                            guard.publish(
-                                Entry::Rejected(Instant::now() + RESOURCE_RETRY_DELAY),
-                                None,
-                            );
+                            guard.publish(None);
                             return Err(DataFusionError::ResourcesExhausted(error));
                         }
                         Err(error) => return Err(error),
@@ -191,15 +165,10 @@ impl<T> BuildCache<T> {
         }
     }
 
-    /// Retires all lookup entries on native-runtime shutdown. Active leases keep
-    /// their values and charges; loading callers cannot republish after retirement.
-    /// Dropping senders wakes waiting tasks without retaining any task future.
+    /// Retires lookups without revoking active builds. Dropping senders wakes
+    /// waiting tasks; loading callers cannot republish after retirement.
     pub fn clear(&self) {
-        let entries = {
-            let mut entries = self.entries.lock();
-            self.retired.store(true, Ordering::Relaxed);
-            std::mem::take(&mut *entries)
-        };
+        let entries = self.entries.lock().take();
         drop(entries);
     }
 }
@@ -213,17 +182,19 @@ struct LoadGuard<'a, T> {
 }
 
 impl<T> LoadGuard<'_, T> {
-    /// Publishes a weak lookup or rejection and hands the build to waiting tasks.
+    /// Publishes a weak lookup and hands the build or rejection to waiting tasks.
     /// Runtime shutdown may already have retired the slot; canceled loaders
     /// cannot publish into a newer environment.
-    fn publish(mut self, entry: Entry<T>, value: Option<&Arc<T>>) {
+    fn publish(mut self, value: Option<&Arc<T>>) {
         let removed = {
-            let mut entries = self.cache.entries.lock();
-            let removed = if matches!(entries.get(&self.key), Some(Entry::Loading(_))) {
-                entries.insert(self.key.clone(), entry)
-            } else {
-                None
-            };
+            let mut state = self.cache.entries.lock();
+            let removed = state.as_mut().and_then(|entries| {
+                let removed = entries.remove(&self.key);
+                if let Some(value) = value {
+                    entries.insert(self.key.clone(), Entry::Ready(Arc::downgrade(value)));
+                }
+                removed
+            });
             self.active = false;
             removed
         };
@@ -242,12 +213,8 @@ impl<T> Drop for LoadGuard<'_, T> {
             return;
         }
         let removed = {
-            let mut entries = self.cache.entries.lock();
-            if matches!(entries.get(&self.key), Some(Entry::Loading(_))) {
-                entries.remove(&self.key)
-            } else {
-                None
-            }
+            let mut state = self.cache.entries.lock();
+            state.as_mut().and_then(|entries| entries.remove(&self.key))
         };
         drop(removed);
     }
@@ -264,7 +231,6 @@ mod tests {
         BuildKey {
             broadcast_id: id,
             schema: Arc::new(Schema::empty()),
-            probe_schema: Arc::new(Schema::empty()),
             key_columns: vec![],
         }
     }
@@ -326,7 +292,8 @@ mod tests {
             .get_or_load(key(3), || async { Ok(Arc::new(3)) })
             .await
             .unwrap();
-        let entries = cache.entries.lock();
+        let state = cache.entries.lock();
+        let entries = state.as_ref().unwrap();
         assert_eq!(entries.len(), 2);
         assert!(!entries.contains_key(&key(1)));
         assert!(entries.contains_key(&key(2)));
@@ -336,7 +303,7 @@ mod tests {
     }
 
     /// A failed loader rejects its waiters without repeating preparation. The
-    /// next task can load the same key after the short resource cooldown.
+    /// next task can retry when executor memory pressure changes.
     #[tokio::test]
     async fn admission_failure_is_shared_then_retried() {
         let cache = BuildCache::<usize>::new(1);
@@ -361,17 +328,6 @@ mod tests {
             Err(DataFusionError::ResourcesExhausted(_))
         ));
         assert_eq!(loads.load(Ordering::SeqCst), 1);
-        assert!(cache
-            .get_or_load(key(1), || async { panic!("cooldown must bypass loading") })
-            .await
-            .is_err());
-        {
-            let mut entries = cache.entries.lock();
-            let Entry::Rejected(retry_at) = entries.get_mut(&key(1)).unwrap() else {
-                panic!("resource denial must install a rejection");
-            };
-            *retry_at = Instant::now();
-        }
         let (value, hit) = cache
             .get_or_load(key(1), || async {
                 loads.fetch_add(1, Ordering::SeqCst);
@@ -417,21 +373,35 @@ mod tests {
 
     #[tokio::test]
     async fn leases_survive_retirement_and_bound_admission() {
-        let cache = BuildCache::new(1);
+        use futures::{poll, FutureExt};
+
+        let cache = BuildCache::new(2);
         let (lease, _) = cache
             .get_or_load(key(1), || async { Ok(Arc::new(9)) })
             .await
             .unwrap();
+        let (complete, loading) = oneshot::channel();
+        let mut loader = Box::pin(cache.get_or_load(key(2), || async {
+            loading.await.unwrap();
+            Ok(Arc::new(10))
+        }));
+        assert!(poll!(&mut loader).is_pending());
+        let mut waiter =
+            Box::pin(cache.get_or_load(key(2), || async { panic!("retired waiter cannot load") }));
+        assert!(poll!(&mut waiter).is_pending());
         assert!(cache
-            .get_or_load(key(2), || async { panic!("must not load") })
+            .get_or_load(key(3), || async { panic!("must not load") })
             .await
             .is_err());
         cache.clear();
         assert_eq!(*lease, 9);
+        assert!(waiter.now_or_never().unwrap().is_err());
+        complete.send(()).unwrap();
+        assert_eq!(*loader.await.unwrap().0, 10);
         assert!(cache
             .get_or_load(key(2), || async { panic!("retired cache cannot load") })
             .await
             .is_err());
-        assert!(cache.entries.lock().is_empty());
+        assert!(cache.entries.lock().is_none());
     }
 }

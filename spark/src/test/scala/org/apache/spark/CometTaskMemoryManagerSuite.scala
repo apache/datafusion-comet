@@ -108,13 +108,18 @@ class CometTaskMemoryManagerSuite extends AnyFunSuite {
   private def withTaskMemoryManager(f: TaskMemoryManager => Unit): Unit = {
     val memoryManager = new TestMemoryManager(new SparkConf())
     memoryManager.limit(1024)
-    val taskMemoryManager = new TaskMemoryManager(memoryManager, 0L)
+    withTaskMemoryManager(memoryManager, 0L)(f)
+  }
+
+  private def withTaskMemoryManager(memoryManager: MemoryManager, taskAttemptId: Long)(
+      f: TaskMemoryManager => Unit): Unit = {
+    val taskMemoryManager = new TaskMemoryManager(memoryManager, taskAttemptId)
     val taskContext = new TaskContextImpl(
       stageId = 0,
       stageAttemptNumber = 0,
       partitionId = 0,
       numPartitions = 1,
-      taskAttemptId = 0L,
+      taskAttemptId = taskAttemptId,
       attemptNumber = 0,
       taskMemoryManager = taskMemoryManager,
       localProperties = new Properties,
@@ -141,46 +146,13 @@ class CometTaskMemoryManagerSuite extends AnyFunSuite {
     field.get(manager).asInstanceOf[MemoryConsumer]
   }
 
-  /**
-   * Runs f under the supplied executor memory manager and task identity. Completion releases all
-   * task execution memory and unsets TaskContext even if f throws; executor storage is
-   * independent.
-   */
-  private def withTaskContext[T](memoryManager: MemoryManager, taskAttemptId: Long)(
-      f: => T): T = {
-    val taskMemoryManager = new TaskMemoryManager(memoryManager, taskAttemptId)
-    val taskContext = new TaskContextImpl(
-      stageId = 0,
-      stageAttemptNumber = 0,
-      partitionId = 0,
-      numPartitions = 1,
-      taskAttemptId = taskAttemptId,
-      attemptNumber = 0,
-      taskMemoryManager = taskMemoryManager,
-      localProperties = new Properties,
-      metricsSystem = null,
-      taskMetrics = TaskMetrics.empty,
-      cpus = 1,
-      resources = Map.empty)
-    TaskContext.setTaskContext(taskContext)
-    try {
-      f
-    } finally {
-      try {
-        taskMemoryManager.cleanUpAllAllocatedMemory()
-      } finally {
-        TaskContext.unset()
-      }
-    }
-  }
-
   /** Runs f with Spark off-heap storage and an isolated executor owner. */
-  private def withBroadcastMemory[T](limit: Long, sparkLimit: Long = 4096L)(
-      f: (AnyRef, MemoryManager, CometBroadcastMemoryManager) => T): T = {
+  private def withBroadcastMemory(limit: Long)(
+      f: (AnyRef, MemoryManager, CometBroadcastMemoryManager) => Unit): Unit = {
     val environment = new Object
     val conf = new SparkConf(false)
       .set("spark.memory.offHeap.enabled", "true")
-      .set("spark.memory.offHeap.size", sparkLimit.toString)
+      .set("spark.memory.offHeap.size", "4096")
     val memoryManager = UnifiedMemoryManager(conf, 1)
     val owner =
       CometBroadcastMemoryManager.getOrCreate(environment, memoryManager, true, limit)
@@ -194,7 +166,7 @@ class CometTaskMemoryManagerSuite extends AnyFunSuite {
 
   test("prepared broadcast storage survives actual task-memory cleanup") {
     withBroadcastMemory(1024L) { (environment, memoryManager, owner) =>
-      withTaskContext(memoryManager, 4500000L) {
+      withTaskMemoryManager(memoryManager, 4500000L) { _ =>
         val taskOwner = new CometTaskMemoryManager(1L, 4500000L)
         assert(taskOwner.acquireMemory(128L) == 128L)
         assert(owner.acquireMemory(256L) == 256L)
@@ -205,7 +177,7 @@ class CometTaskMemoryManagerSuite extends AnyFunSuite {
       assert(TaskContext.get() == null)
       assert(memoryManager.offHeapExecutionMemoryUsed == 0L)
       assert(memoryManager.offHeapStorageMemoryUsed == 256L)
-      withTaskContext(memoryManager, 4500001L) {
+      withTaskMemoryManager(memoryManager, 4500001L) { _ =>
         val reused =
           CometBroadcastMemoryManager.getOrCreate(environment, memoryManager, true, 1024L)
         assert(reused eq owner)
@@ -217,28 +189,12 @@ class CometTaskMemoryManagerSuite extends AnyFunSuite {
     }
   }
 
-  test("prepared broadcast admission enforces its cap before changing storage accounting") {
-    withBroadcastMemory(256L) { (_, memoryManager, owner) =>
-      assert(owner.acquireMemory(192L) == 192L)
-      assert(owner.acquireMemory(65L) == 0L)
-      assert(owner.getUsedMemory == 192L)
-      assert(memoryManager.offHeapStorageMemoryUsed == 192L)
-      assert(owner.acquireMemory(64L) == 64L)
-      assert(owner.getUsedMemory == 256L)
-      owner.releaseMemory(256L)
-      assert(memoryManager.offHeapStorageMemoryUsed == 0L)
-    }
-  }
-
   test("prepared broadcast admission returns no grant when Spark storage cannot fit it") {
     withBroadcastMemory(8192L) { (_, memoryManager, owner) =>
       // This request fits the native cap but exceeds the entire Spark off-heap pool. Spark's
       // real storage admission rejects it before attempting MemoryStore eviction.
       assert(owner.acquireMemory(4097L) == 0L)
       assert(owner.getUsedMemory == 0L)
-      assert(memoryManager.offHeapStorageMemoryUsed == 0L)
-      assert(owner.acquireMemory(256L) == 256L)
-      owner.releaseMemory(256L)
       assert(memoryManager.offHeapStorageMemoryUsed == 0L)
     }
   }
@@ -261,8 +217,13 @@ class CometTaskMemoryManagerSuite extends AnyFunSuite {
         val grants = requests.map(_.get(10L, TimeUnit.SECONDS))
         assert(grants.sorted == Seq(0L, 200L))
         assert(memoryManager.offHeapStorageMemoryUsed == 200L)
-        owner.releaseMemory(200L)
+        assert(owner.acquireMemory(56L) == 56L)
+        assert(owner.acquireMemory(1L) == 0L)
+        assert(owner.getUsedMemory == 256L)
+        assert(memoryManager.offHeapStorageMemoryUsed == 256L)
+        owner.releaseMemory(256L)
         assert(owner.getUsedMemory == 0L)
+        assert(memoryManager.offHeapStorageMemoryUsed == 0L)
       } finally {
         start.countDown()
         executor.shutdownNow()

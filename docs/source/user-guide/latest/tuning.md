@@ -188,9 +188,8 @@ off-heap memory. The feature is disabled by default.
 The implementation covers non-spilling inner broadcast joins with direct column keys,
 matching key types, and fixed-width or plain UTF8 build columns. Residual join conditions remain
 local to each consuming task. Dictionary, view, binary, and nested build columns remain unsupported.
-Unsupported joins keep ordinary task-local execution. Lookup is separated by executor generation
-and uses the actual broadcast ID, build and probe schemas, and ordered keys. Cached builds omit
-unused IN-list membership data; aliases of the same exchange can share a build.
+Unsupported joins keep ordinary task-local execution. Tasks can share a build when they use the
+same broadcast, build schema, and ordered build keys, even if their probe schemas differ.
 
 `spark.comet.broadcast.reuse.maxMemory` defaults to `1g`. It caps native prepared-build allocations
 through Spark off-heap storage memory while tasks are preparing or using a build. When the last

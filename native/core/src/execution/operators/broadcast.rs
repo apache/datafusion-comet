@@ -78,10 +78,6 @@ use crate::jvm_bridge::JVMClasses;
 type PreparedCache = BuildCache<PreparedHashJoinBuild>;
 type CacheGeneration = Option<(i64, Arc<PreparedCache>)>;
 
-// DataFusion charges each retained batch before polling for the next one.
-// Bound the extra charge held by the producer during that handoff.
-const MAX_COPY_BATCH_BYTES: usize = 32 * 1024 * 1024;
-
 // Lookup crosses Spark task/plan boundaries while builds are active. This
 // executor-lifetime registry holds only weak references, capped at 64 keys.
 // The registry fences SparkEnv generations; keys use actual Broadcast.id, not
@@ -190,13 +186,6 @@ impl MemoryPool for BroadcastMemoryPool {
     fn try_grow(&self, _: &MemoryReservation, bytes: usize) -> Result<()> {
         if bytes == 0 {
             return Ok(());
-        }
-        // Reject a build allocation above its byte cap before asking Spark.
-        // Spark's owner still checks the total across concurrent loader pools.
-        if bytes > self.limit.saturating_sub(self.reserved()) {
-            return Err(DataFusionError::ResourcesExhausted(
-                "Broadcast build allocation exceeds its byte cap".into(),
-            ));
         }
         if self.acquire(bytes)? == 0 {
             return Err(resources_datafusion_err!(
@@ -332,7 +321,6 @@ impl BroadcastInputExec {
         Box::pin(BroadcastStream {
             source: Arc::clone(self),
             reader: None,
-            pending_batch: None,
             copy_reservation,
         })
     }
@@ -388,13 +376,12 @@ impl ExecutionPlan for BroadcastInputExec {
 struct BroadcastStream {
     source: Arc<BroadcastInputExec>,
     reader: Option<AlignedArrowStreamReader>,
-    pending_batch: Option<RecordBatch>,
     copy_reservation: Option<MemoryReservation>,
 }
 
 impl BroadcastStream {
-    /// Releases the last temporary copy grant and reads or continues splitting
-    /// one batch. Cache preparation admits a conservative bound before copying
+    /// Releases the last temporary copy grant and reads the next batch.
+    /// Cache preparation admits a conservative bound before copying
     /// supported physical buffers. An ineligible encoding returns a resource
     /// error so the caller can reopen the broadcast for ordinary execution.
     fn next_batch(&mut self) -> Result<Option<RecordBatch>> {
@@ -404,31 +391,14 @@ impl BroadcastStream {
         if self.reader.is_none() {
             self.reader = Some(self.source.open()?);
         }
-        let already_split = self.pending_batch.is_some();
-        let batch = match self.pending_batch.take() {
-            Some(batch) => batch,
-            None => {
-                let Some(batch) = self.reader.as_mut().unwrap().next() else {
-                    return Ok(None);
-                };
-                batch?
-            }
+        let Some(batch) = self.reader.as_mut().unwrap().next() else {
+            return Ok(None);
         };
+        let batch = batch?;
         let schema = self.source.schema();
         if batch.num_columns() != schema.fields().len() {
             return internal_err!("Broadcast column count mismatch");
         }
-        let rows = if self.copy_reservation.is_some() {
-            copy_batch_rows(&batch, &schema, MAX_COPY_BATCH_BYTES, already_split)?
-        } else {
-            batch.num_rows()
-        };
-        let batch = if rows < batch.num_rows() {
-            self.pending_batch = Some(batch.slice(rows, batch.num_rows() - rows));
-            batch.slice(0, rows)
-        } else {
-            batch
-        };
         let columns = if let Some(reservation) = &mut self.copy_reservation {
             copy_broadcast_columns(&batch, &schema, reservation)?
         } else {
@@ -531,36 +501,6 @@ fn broadcast_copy_bytes(batch: &RecordBatch, schema: &Schema) -> Result<usize> {
             .ok_or_else(|| resources_datafusion_err!("Broadcast copy size overflow"))?;
     }
     Ok(bound)
-}
-
-/// Largest prefix whose independent native copy fits one handoff.
-/// Keep small batches whole to avoid extra concatenation work. Once a large
-/// batch is split, continue until all its rows are copied. DataFusion separately
-/// admits the compact output while the copied input batches are still live.
-fn copy_batch_rows(
-    batch: &RecordBatch,
-    schema: &Schema,
-    target: usize,
-    already_split: bool,
-) -> Result<usize> {
-    if batch.num_rows() == 0 {
-        return Ok(0);
-    }
-    let bytes = broadcast_copy_bytes(batch, schema)?;
-    if bytes <= target || (!already_split && bytes <= 2 * target) {
-        return Ok(batch.num_rows());
-    }
-    let mut fits = 1;
-    let mut too_large = batch.num_rows();
-    while fits + 1 < too_large {
-        let middle = fits + (too_large - fits) / 2;
-        if broadcast_copy_bytes(&batch.slice(0, middle), schema)? <= target {
-            fits = middle;
-        } else {
-            too_large = middle;
-        }
-    }
-    Ok(fits)
 }
 
 /// Validate every column and admit all copies before allocating any of them.
@@ -699,7 +639,6 @@ impl ExecutionPlan for CachedBroadcastJoinExec {
         let key = BuildKey {
             broadcast_id: source.broadcast_id,
             schema: source.schema(),
-            probe_schema: join.right().schema(),
             key_columns: join
                 .on()
                 .iter()
@@ -748,7 +687,7 @@ impl ExecutionPlan for CachedBroadcastJoinExec {
                     }
                     let execution = Arc::new(
                         join.builder()
-                            .with_prepared_build(Arc::clone(&prepared))?
+                            .with_prepared_build(Arc::clone(&prepared))
                             .build()?,
                     );
                     (execution, Some(prepared))
@@ -865,15 +804,10 @@ pub(crate) fn reuse_broadcast_build_with_metrics(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow::array::{
-        ArrayData, Decimal128Array, DictionaryArray, Int64Array, Int8Array, StringBuilder,
-    };
+    use arrow::array::{ArrayData, DictionaryArray, Int8Array};
     use arrow::buffer::Buffer;
     use arrow::datatypes::Int8Type;
-    use datafusion::common::utils::memory::get_record_batch_memory_size;
     use datafusion::execution::memory_pool::GreedyMemoryPool;
-    use datafusion::physical_plan::empty::EmptyExec;
-    use datafusion::physical_plan::joins::HashJoinExecBuilder;
     use std::ptr::NonNull;
     use std::sync::Weak;
 
@@ -888,145 +822,6 @@ mod tests {
 
     fn pool(limit: usize) -> Arc<dyn MemoryPool> {
         Arc::new(GreedyMemoryPool::new(limit))
-    }
-
-    #[tokio::test]
-    async fn large_broadcast_build_admits_compaction_and_releases_storage() -> Result<()> {
-        let rows = 280;
-        let payload = "x".repeat(256 * 1024);
-        let mut strings = StringBuilder::with_capacity(rows, rows * payload.len());
-        for _ in 0..rows {
-            strings.append_value(&payload);
-        }
-        let source = batch(vec![
-            Arc::new(Int64Array::from_iter_values(0..rows as i64)),
-            Arc::new(strings.finish()),
-        ]);
-        let schema = source.schema();
-        let source_bytes = get_record_batch_memory_size(&source);
-        assert!(source_bytes > 64 * 1024 * 1024);
-        let bound = broadcast_copy_bytes(&source, &schema)?;
-        let limit = bound + source_bytes / 2;
-        let medium = source.slice(0, rows / 2);
-        assert!(broadcast_copy_bytes(&medium, &schema)? > MAX_COPY_BATCH_BYTES);
-        assert_eq!(
-            copy_batch_rows(&medium, &schema, MAX_COPY_BATCH_BYTES, false)?,
-            medium.num_rows()
-        );
-        let join = HashJoinExecBuilder::new(
-            Arc::new(EmptyExec::new(Arc::clone(&schema))),
-            Arc::new(EmptyExec::new(Arc::new(Schema::new(vec![Field::new(
-                "c0",
-                DataType::Int64,
-                true,
-            )])))),
-            vec![(
-                Arc::new(Column::new("c0", 0)),
-                Arc::new(Column::new("c0", 0)),
-            )],
-            JoinType::Inner,
-        )
-        .with_partition_mode(PartitionMode::CollectLeft)
-        .build()?;
-        let copied_stream = |target, pool: &Arc<dyn MemoryPool>| {
-            let source = source.clone();
-            let schema = Arc::clone(&schema);
-            let reservation = MemoryConsumer::new("test broadcast copy").register(pool);
-            let stream = futures::stream::try_unfold(
-                (source, 0, reservation),
-                move |(source, offset, mut reservation)| async move {
-                    reservation.free();
-                    if offset == source.num_rows() {
-                        return Ok::<_, DataFusionError>(None);
-                    }
-                    let remainder = source.slice(offset, source.num_rows() - offset);
-                    let rows =
-                        copy_batch_rows(&remainder, &remainder.schema(), target, offset != 0)?;
-                    let columns = copy_broadcast_columns(
-                        &remainder.slice(0, rows),
-                        &remainder.schema(),
-                        &mut reservation,
-                    )?;
-                    let copied = RecordBatch::try_new(remainder.schema(), columns)?;
-                    Ok(Some((copied, (source, offset + rows, reservation))))
-                },
-            );
-            Box::pin(RecordBatchStreamAdapter::new(schema, stream)) as SendableRecordBatchStream
-        };
-        let constrained = pool(limit);
-        let whole = join
-            .prepare_build(
-                copied_stream(usize::MAX, &constrained),
-                Arc::clone(&constrained),
-                Arc::new(Default::default()),
-            )
-            .await;
-        assert!(matches!(whole, Err(DataFusionError::ResourcesExhausted(_))));
-        assert_eq!(constrained.reserved(), 0);
-
-        // Public DataFusion compacts the copied inputs into one batch. Its
-        // reservation must also admit that output while inputs remain alive.
-        // Chunking the JVM-to-native handoff does not remove this overlap.
-        let chunked = join
-            .prepare_build(
-                copied_stream(MAX_COPY_BATCH_BYTES, &constrained),
-                Arc::clone(&constrained),
-                Arc::new(Default::default()),
-            )
-            .await;
-        assert!(matches!(
-            chunked,
-            Err(DataFusionError::ResourcesExhausted(_))
-        ));
-        assert_eq!(constrained.reserved(), 0);
-
-        let compact_pool = pool(3 * bound);
-        let prepared = join
-            .prepare_build(
-                copied_stream(MAX_COPY_BATCH_BYTES, &compact_pool),
-                Arc::clone(&compact_pool),
-                Arc::new(Default::default()),
-            )
-            .await?;
-        assert_eq!(prepared.num_rows(), rows);
-        assert_eq!(compact_pool.reserved(), prepared.reserved_bytes());
-        assert!(prepared.reserved_bytes() < 3 * bound);
-        drop(prepared);
-        assert_eq!(compact_pool.reserved(), 0);
-        Ok(())
-    }
-
-    #[test]
-    fn uncached_broadcast_replay_uses_safe_scan_casts_for_schema_drift() {
-        let decimal: ArrayRef = Arc::new(
-            Decimal128Array::from(vec![Some(12300), Some(24400), None, Some(-100)])
-                .with_precision_and_scale(38, 2)
-                .unwrap(),
-        );
-        let unchanged: ArrayRef = Arc::new(Int64Array::from(vec![7, 8, 9, 10]));
-        let input = batch(vec![decimal, Arc::clone(&unchanged)]);
-        let schema = Schema::new(vec![
-            Field::new("small_value", DataType::Int8, true),
-            Field::new("unchanged", DataType::Int64, true),
-        ]);
-
-        // The physical decimal cannot be copied into the declared Int8 cache
-        // layout. An admission miss must replay this same input without error.
-        let pool = pool(usize::MAX);
-        let mut reservation = MemoryConsumer::new("test schema drift").register(&pool);
-        assert!(matches!(
-            copy_broadcast_columns(&input, &schema, &mut reservation),
-            Err(DataFusionError::ResourcesExhausted(_))
-        ));
-        assert_eq!(reservation.size(), 0);
-
-        let columns = cast_uncached_broadcast_columns(&input, &schema).unwrap();
-        let small = columns[0].as_any().downcast_ref::<Int8Array>().unwrap();
-        assert_eq!(
-            small,
-            &Int8Array::from(vec![Some(123), None, None, Some(-1)])
-        );
-        assert!(Arc::ptr_eq(&columns[1], &unchanged));
     }
 
     /// Model unchecked FFI string buffers without ever reading them as &str.
@@ -1074,6 +869,13 @@ mod tests {
             DictionaryArray::<Int8Type>::new(Int8Array::from(vec![Some(1), None, Some(0)]), values);
         let input = batch(vec![Arc::new(dictionary)]);
         let schema = Schema::new(vec![Field::new("decoded", DataType::Utf8, true)]);
+        let pool = pool(usize::MAX);
+        let mut reservation = MemoryConsumer::new("test dictionary replay").register(&pool);
+        assert!(matches!(
+            copy_broadcast_columns(&input, &schema, &mut reservation),
+            Err(DataFusionError::ResourcesExhausted(_))
+        ));
+        assert_eq!(pool.reserved(), 0);
         let columns = cast_uncached_broadcast_columns(&input, &schema).unwrap();
         let strings = columns[0].as_any().downcast_ref::<StringArray>().unwrap();
         assert_eq!(
