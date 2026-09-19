@@ -35,6 +35,7 @@
 
 ## sum (window)
 
-- 4.1.1, audited 2026-06-25: `SUM(<decimal>)` over a sliding window frame (lower bound not `UNBOUNDED PRECEDING`) falls back to Spark. The native sliding path would use DataFusion's built-in `sum`, which wraps on overflow rather than returning Spark's NULL, and overflow cannot be detected at plan time, so the whole sliding decimal `SUM` case falls back. Ever-expanding frames use Comet's overflow-aware `SumDecimal` UDAF and run natively, matching Spark including overflow-to-NULL. Bigint sliding `SUM` overflow matches Spark (both wrap) and stays native.
+- 4.1.1, audited 2026-06-25: `SUM(<decimal>)` over a sliding window frame (lower bound not `UNBOUNDED PRECEDING`) falls back to Spark. The native sliding path would use DataFusion's built-in `sum`, which wraps on overflow rather than returning Spark's NULL, and overflow cannot be detected at plan time, so the whole sliding decimal `SUM` case falls back. Ever-expanding frames use Comet's overflow-aware `SumDecimal` UDAF and run natively, matching Spark including overflow-to-NULL. Bigint sliding `SUM` overflow matches Spark in legacy mode (both wrap) and stays native.
+- 3.5.9 and 4.1.3, audited 2026-09-19: Integral sliding `SUM` in ANSI or TRY mode also requires fallback: the DataFusion accumulator wraps instead of throwing or returning NULL. The guard uses the aggregate's evaluation mode, so `try_sum` falls back even with ANSI disabled. Legacy sliding sums and ever-expanding integral sums retain native execution.
 
 [Spark Expression Support]: ../../user-guide/latest/expressions.md

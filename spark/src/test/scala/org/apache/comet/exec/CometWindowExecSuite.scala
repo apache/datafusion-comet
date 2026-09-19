@@ -64,6 +64,16 @@ class CometWindowExecSuite extends CometTestBase {
     assert(cometWindowExecs.nonEmpty)
   }
 
+  private def checkSlidingIntegralSum(df: DataFrame): Unit = {
+    if (SQLConf.get.ansiEnabled) {
+      checkSparkAnswerAndFallbackReason(
+        df,
+        "ANSI/TRY SUM on integral types with a sliding window frame is not supported")
+    } else {
+      checkSparkAnswerAndOperator(df)
+    }
+  }
+
   private def sparkWindowExpressions(plan: SparkPlan): Seq[Expression] = {
     collect(plan) { case w: SparkWindowExec =>
       w.windowExpression
@@ -528,6 +538,8 @@ class CometWindowExecSuite extends CometTestBase {
   test("Windows support") {
     Seq("true", "false").foreach(aqeEnabled =>
       withSQLConf(
+        // This native coverage matrix includes legacy sliding integral sums.
+        SQLConf.ANSI_ENABLED.key -> "false",
         CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
         SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqeEnabled) {
         withParquetTable((0 until 10).map(i => (i, 10 - i)), "t1") { // TODO: test nulls
@@ -835,7 +847,7 @@ class CometWindowExecSuite extends CometTestBase {
           SUM(c) OVER (PARTITION BY a ORDER BY b, c ROWS BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING) as sum_c
         FROM window_test
       """)
-      checkSparkAnswerAndOperator(df)
+      checkSlidingIntegralSum(df)
     }
   }
 
@@ -875,7 +887,7 @@ class CometWindowExecSuite extends CometTestBase {
           SUM(c) OVER (PARTITION BY a ORDER BY b, c ROWS BETWEEN 2 PRECEDING AND CURRENT ROW) as sum_c
         FROM window_test
       """)
-      checkSparkAnswerAndOperator(df)
+      checkSlidingIntegralSum(df)
     }
   }
 
@@ -1346,7 +1358,7 @@ class CometWindowExecSuite extends CometTestBase {
           SUM(c) OVER (PARTITION BY a ORDER BY b RANGE BETWEEN 2 PRECEDING AND 2 FOLLOWING) as sum_c
         FROM window_test
       """)
-      checkSparkAnswerAndOperator(df)
+      checkSlidingIntegralSum(df)
     }
   }
 

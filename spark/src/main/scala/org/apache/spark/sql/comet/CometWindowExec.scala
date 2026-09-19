@@ -34,9 +34,11 @@ import com.google.common.base.Objects
 
 import org.apache.comet.{CometConf, ConfigEntry}
 import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
+import org.apache.comet.expressions.CometEvalMode
 import org.apache.comet.serde.{AggSerde, CometOperatorSerde, LiteralOuterClass, OperatorOuterClass}
 import org.apache.comet.serde.OperatorOuterClass.Operator
 import org.apache.comet.serde.QueryPlanSerde.{aggExprToProto, exprToProto, scalarFunctionExprToProto, serializeDataType}
+import org.apache.comet.shims.CometEvalModeUtil
 
 object CometWindowExec extends CometOperatorSerde[WindowExec] {
 
@@ -341,6 +343,15 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
               withFallbackReason(
                 windowExpr,
                 "SUM on DECIMAL with a sliding window frame is not supported")
+              return None
+            // The sliding accumulator also wraps integer sums, ignoring ANSI/TRY overflow.
+            case s: Sum
+                if s.dataType == LongType &&
+                  CometEvalModeUtil.fromSparkEvalMode(CometEvalModeUtil.sumEvalMode(s)) !=
+                  CometEvalMode.LEGACY =>
+              withFallbackReason(
+                windowExpr,
+                "ANSI/TRY SUM on integral types with a sliding window frame is not supported")
               return None
             case a: Average if a.dataType.isInstanceOf[DecimalType] =>
               withFallbackReason(
