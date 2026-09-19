@@ -22,14 +22,13 @@ package org.apache.spark.sql.comet
 import org.apache.spark.TaskContext
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
-import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeReference}
+import org.apache.spark.sql.catalyst.expressions.Attribute
 import org.apache.spark.sql.catalyst.expressions.UnsafeProjection
 import org.apache.spark.sql.comet.execution.arrow.CometArrowStream
 import org.apache.spark.sql.comet.util.{Utils => CometUtils}
 import org.apache.spark.sql.connector.write.{BatchWrite, WriterCommitMessage}
 import org.apache.spark.sql.execution.{SparkPlan, UnaryExecNode}
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
-import org.apache.spark.sql.types.BinaryType
 import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.spark.util.TaskFailureListener
 
@@ -52,8 +51,12 @@ import org.apache.comet.serde.OperatorOuterClass.Operator
  * @param nativeOp
  *   Template operator carrying the `IcebergWrite` proto. Per-task `partition_id` /
  *   `task_attempt_id` get stamped on a copy at execution time.
+ * @param originalPlan
+ *   The JVM Iceberg write operator restored when Comet reverts a transition-heavy stage.
  * @param child
  *   Comet native child (must be a [[CometNativeExec]] so columnar batches flow through FFI).
+ * @param output
+ *   Commit-message output attributes copied from the JVM Iceberg write plan.
  * @param batchWrite
  *   Shared with the outer [[IcebergCommitExec]] -- the same instance the strategy materialised
  *   via `write.toBatch`. Used here only to provide the `dataLocation` / partition spec needed by
@@ -64,19 +67,14 @@ import org.apache.comet.serde.OperatorOuterClass.Operator
  */
 case class CometIcebergWriteExec(
     nativeOp: Operator,
+    @transient override val originalPlan: IcebergWriteExec,
     child: SparkPlan,
+    override val output: Seq[Attribute],
     @transient batchWrite: BatchWrite,
     @transient table: AnyRef,
     partitionSpecId: Int)
     extends CometNativeExec
     with UnaryExecNode {
-
-  override def originalPlan: SparkPlan = child
-
-  // Same output schema as IcebergWriteExec so the outer IcebergCommitExec consumes the
-  // commit messages identically regardless of which inner exec emitted them.
-  override def output: Seq[Attribute] = Seq(
-    AttributeReference(IcebergWriteExec.CommitMessageColumn, BinaryType, nullable = false)())
 
   // Native exec emits a single Binary column; the surrounding command framework expects rows, so
   // the outer commit exec calls executeCollect on us. supportsColumnar = false keeps Spark from
