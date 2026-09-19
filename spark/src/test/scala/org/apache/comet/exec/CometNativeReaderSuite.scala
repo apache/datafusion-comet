@@ -929,6 +929,112 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
     }
   }
 
+  private def withFieldId(name: String, id: Int): StructField =
+    StructField(
+      name,
+      LongType,
+      nullable = true,
+      new MetadataBuilder().putLong("parquet.field.id", id.toLong).build())
+
+  /**
+   * Write a one-row file and assert Comet hands the read back to Spark under field id matching,
+   * and keeps it native without.
+   *
+   * The file must carry no key-value metadata: arrow-rs folds Spark's metadata into the physical
+   * schema, so a Spark-written file never compares equal to the requested schema and always
+   * reaches the expression adapter that would have caught the ambiguity. `writeDirect` is what
+   * keeps the metadata out. See https://github.com/apache/datafusion-comet/issues/5801.
+   */
+  private def checkDuplicateFieldIdsFallBack(
+      messageType: String,
+      writeRecord: RecordConsumer => Unit,
+      readSchema: StructType): Unit = withTempPath { dir =>
+    writeDirect(
+      new Path(dir.getCanonicalPath, "duplicate-field-ids.parquet").toString,
+      messageType,
+      writeRecord)
+
+    withSQLConf(SQLConf.PARQUET_FIELD_ID_READ_ENABLED.key -> "true") {
+      val df = spark.read.schema(readSchema).parquet(dir.getCanonicalPath)
+      val plan = df.queryExecution.executedPlan
+      assert(
+        collect(plan) { case scan: CometNativeScanExec => scan }.isEmpty,
+        s"expected no native scan, got:\n$plan")
+      val error = intercept[Exception](df.collect())
+      assert(
+        causeChain(error).exists(e =>
+          String.valueOf(e.getMessage).contains("""Found duplicate field(s) "1"""")),
+        s"unexpected error: $error")
+    }
+
+    withSQLConf(SQLConf.PARQUET_FIELD_ID_READ_ENABLED.key -> "false") {
+      val df = spark.read.schema(readSchema).parquet(dir.getCanonicalPath)
+      assert(
+        collect(df.queryExecution.executedPlan) { case scan: CometNativeScanExec =>
+          scan
+        }.nonEmpty,
+        "expected a native scan with field id matching off")
+      checkSparkAnswer(df)
+    }
+  }
+
+  test("native scan declines a nested struct whose fields repeat a Parquet field id") {
+    // Spark resolves each requested field to the one Parquet field carrying its id and raises when
+    // more than one answers. DataFusion's opener skips the expression adapter when the file's
+    // physical schema compares equal to the logical schema and no predicate is pushed, so the
+    // native scan read this positionally and returned rows where Spark raises.
+    checkDuplicateFieldIdsFallBack(
+      """message spark_schema {
+        |  optional group s {
+        |    optional int64 x = 1;
+        |    optional int64 y = 1;
+        |  }
+        |}
+      """.stripMargin,
+      { rc: RecordConsumer =>
+        rc.startMessage()
+        rc.startField("s", 0)
+        rc.startGroup()
+        rc.startField("x", 0)
+        rc.addLong(10L)
+        rc.endField("x", 0)
+        rc.startField("y", 1)
+        rc.addLong(20L)
+        rc.endField("y", 1)
+        rc.endGroup()
+        rc.endField("s", 0)
+        rc.endMessage()
+      },
+      StructType(
+        Seq(
+          StructField(
+            "s",
+            StructType(Seq(withFieldId("x", 1), withFieldId("y", 1))),
+            nullable = true))))
+  }
+
+  test("native scan declines top-level fields that repeat a Parquet field id") {
+    // The same ambiguity one level up. It reaches the guard through a different override, because
+    // `isTypeSupported` only sees field data types and so never compares two top-level fields.
+    checkDuplicateFieldIdsFallBack(
+      """message spark_schema {
+        |  optional int64 x = 1;
+        |  optional int64 y = 1;
+        |}
+      """.stripMargin,
+      { rc: RecordConsumer =>
+        rc.startMessage()
+        rc.startField("x", 0)
+        rc.addLong(10L)
+        rc.endField("x", 0)
+        rc.startField("y", 1)
+        rc.addLong(20L)
+        rc.endField("y", 1)
+        rc.endMessage()
+      },
+      StructType(Seq(withFieldId("x", 1), withFieldId("y", 1))))
+  }
+
   /** Write a Parquet file using a raw RecordConsumer for full schema control. */
   private def writeDirect(
       path: String,

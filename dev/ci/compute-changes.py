@@ -71,6 +71,10 @@ FILTERS = {
     # `cache-refresh-only` input. Populated below, after the dict, so the two
     # lists cannot drift.
     "build_linux_full": [],
+    # A third POLICY decision on the same inputs: whether the linux-test matrix
+    # runs every Spark profile or only the PR-tier one. ci.yml folds it into
+    # the reusable workflow's `profiles` input. Populated below as well.
+    "build_linux_all_profiles": [],
     "build_macos": [
         "native/**",
         "common/**",
@@ -89,6 +93,7 @@ FILTERS = {
         ".github/actions/java-test/**",
         ".github/actions/upload-artifact-retry/**",
         ".github/actions/download-artifact-retry/**",
+        ".github/actions/maven-bootstrap/**",
         "!**.md",
         "!native/core/benches/**",
         "!native/spark-expr/benches/**",
@@ -119,6 +124,7 @@ FILTERS = {
         ".github/workflows/ci.yml",
         ".github/workflows/delta_build_gate.yml",
         ".github/actions/setup-builder/**",
+        ".github/actions/maven-bootstrap/**",
         "!**.md",
         "!native/core/benches/**",
         "!native/spark-expr/benches/**",
@@ -160,6 +166,7 @@ FILTERS = {
         ".github/workflows/ci.yml",
         ".github/workflows/pyarrow_udf_test.yml",
         ".github/actions/setup-builder/**",
+        ".github/actions/maven-bootstrap/**",
     ],
     "docs": [
         ".asf.yaml",
@@ -198,6 +205,7 @@ FILTERS = {
         ".github/actions/setup-spark-builder/**",
         ".github/actions/upload-artifact-retry/**",
         ".github/actions/download-artifact-retry/**",
+        ".github/actions/maven-bootstrap/**",
         ".mvn/**",
         "mvnw",
     ],
@@ -225,6 +233,7 @@ FILTERS = {
         ".github/actions/setup-spark-builder/**",
         ".github/actions/upload-artifact-retry/**",
         ".github/actions/download-artifact-retry/**",
+        ".github/actions/maven-bootstrap/**",
         ".mvn/**",
         "mvnw",
     ],
@@ -252,6 +261,7 @@ FILTERS = {
         ".github/actions/setup-spark-builder/**",
         ".github/actions/upload-artifact-retry/**",
         ".github/actions/download-artifact-retry/**",
+        ".github/actions/maven-bootstrap/**",
         ".mvn/**",
         "mvnw",
     ],
@@ -279,6 +289,7 @@ FILTERS = {
         ".github/actions/setup-spark-builder/**",
         ".github/actions/upload-artifact-retry/**",
         ".github/actions/download-artifact-retry/**",
+        ".github/actions/maven-bootstrap/**",
         ".mvn/**",
         "mvnw",
     ],
@@ -308,6 +319,7 @@ FILTERS = {
         "dev/ci/test-iceberg-shards.py",
         ".github/actions/upload-artifact-retry/**",
         ".github/actions/download-artifact-retry/**",
+        ".github/actions/maven-bootstrap/**",
         ".mvn/**",
         "mvnw",
     ],
@@ -332,6 +344,7 @@ FILTERS = {
         "dev/ci/test-iceberg-shards.py",
         ".github/actions/upload-artifact-retry/**",
         ".github/actions/download-artifact-retry/**",
+        ".github/actions/maven-bootstrap/**",
         ".mvn/**",
         "mvnw",
     ],
@@ -356,6 +369,7 @@ FILTERS = {
         "dev/ci/test-iceberg-shards.py",
         ".github/actions/upload-artifact-retry/**",
         ".github/actions/download-artifact-retry/**",
+        ".github/actions/maven-bootstrap/**",
         ".mvn/**",
         "mvnw",
     ],
@@ -380,17 +394,20 @@ FILTERS = {
         "dev/ci/test-iceberg-shards.py",
         ".github/actions/upload-artifact-retry/**",
         ".github/actions/download-artifact-retry/**",
+        ".github/actions/maven-bootstrap/**",
         ".mvn/**",
         "mvnw",
     ],
 }
 FILTERS["spark_4_1_hive"] = FILTERS["spark_4_1"]
 FILTERS["build_linux_full"] = FILTERS["build_linux"]
+FILTERS["build_linux_all_profiles"] = FILTERS["build_linux"]
 
 # Which events may run each job, independent of the path filters above.
 #
 #   "pr"              every pull request
 #   "queue"           the merge queue, i.e. a merge_group event
+#   "nightly"         the scheduled run against main, once a day
 #   "push"            push to main
 #   "label:<name>"    a pull request carrying that label
 #
@@ -399,11 +416,21 @@ FILTERS["build_linux_full"] = FILTERS["build_linux"]
 # requests or opt-in, never both -- and check-ci-config.py rejects a job that
 # lists both rather than letting the label quietly win.
 #
-# Almost everything is "queue": the merge queue is the authoritative gate, and
-# it tests the merge result rather than the PR head. "push" is reserved for
-# work that can only happen once a commit is on main. Adding "push" back to a
-# test job would make every merge run it twice, once in the queue and once
-# after, which is the thing the queue was adopted to avoid.
+# The merge queue is the authoritative gate: it tests the merge result rather
+# than the PR head, and every "queue" job has to pass before a change lands.
+# "nightly" is for the suites that catch a regression on a Spark or Iceberg
+# version other than the default one: about 870 of the 1,900 runner-minutes a
+# queue run cost in September 2026, and the most common reason a queue run
+# went red on a good tree (issue #5870). A regression there is real but rare,
+# and a day's delay in seeing it costs less than running the suites on every
+# merge. The scheduled run diffs main against the commit the last successful
+# scheduled run tested and routes through FILTERS like any other event. A job
+# is "queue" or "nightly", never both; check-ci-config.py enforces that.
+#
+# "push" is reserved for work that can only happen once a commit is on main.
+# Adding "push" back to a test job would make every merge run it twice, once
+# in the queue and once after, which is the thing the queue was adopted to
+# avoid.
 POLICY = {
     # The one test job that also runs on push to main, and only because of
     # actions/cache scoping: a pull request can restore caches saved on its
@@ -415,7 +442,7 @@ POLICY = {
     # restore-keys prefix match.
     #
     # On push that is the *only* thing it is for. The queue already tested the
-    # exact tree that landed, so re-running the lints and the 5x4 linux-test
+    # exact tree that landed, so re-running the lints and the linux-test
     # matrix there tests nothing, and they are 514 of the 587 runner-minutes a
     # push run costs. The split below keeps the cache writers on push and moves
     # everything else behind `build_linux_full`.
@@ -425,6 +452,16 @@ POLICY = {
     # input, so dropping "push" here is what trims the push tier down to the
     # jobs that write an actions/cache entry. See issue #5929.
     "build_linux_full": ["pr", "queue"],
+    # The linux-test matrix's Spark profiles other than the default one. The
+    # five profiles cost about the same each, roughly 2,300 runner-minutes a
+    # day apiece on pull requests in mid-September 2026, and together they
+    # were three quarters of the Linux build. A pull request and the queue run
+    # the Comet test suites against Spark 4.1 only; the nightly run covers the
+    # other four. The lint-java matrix still compiles Spark 3.4/3.5/4.0 on
+    # every pull request, so what waits for the nightly is runtime behaviour,
+    # not a shim that fails to build. ci.yml turns this output into the
+    # workflow's `profiles` input.
+    "build_linux_all_profiles": ["nightly", "label:run-all-spark-profiles"],
     # macOS runners are the scarcest capacity we have, and the Linux build
     # already covers rustfmt and the Rust/JVM compile on every PR. The label
     # is for a change that touches platform-specific code.
@@ -447,21 +484,33 @@ POLICY = {
     # demand -- the label on a pull request, or a workflow_dispatch -- so
     # anyone who wants to check a change against 3.4 still can.
     "spark_3_4": ["label:run-spark-3.4-tests"],
-    "spark_3_5": ["queue", "label:run-spark-3.5-tests"],
-    "spark_4_0": ["queue", "label:run-spark-4.0-tests"],
-    # Spark 4.1 is the default build profile, so it is the cheapest early
-    # warning that a change is wrong and stays in the PR tier. Only the
-    # catalyst and sql_core shards, though: over Aug 12 to Sep 11 2026 the
-    # three sql_hive shards cost about 65 runner-hours a day on pull requests
-    # and were the only failing job on 7 PR runs, against 33 for sql_core, and
-    # their 67-minute shard set the PR tier's wall clock. See issue #5870.
-    "spark_4_1": ["pr", "queue"],
-    "spark_4_1_hive": ["queue", "label:run-spark-4.1-hive-tests"],
-    "iceberg_1_8": ["queue", "label:run-iceberg-tests"],
-    "iceberg_1_9": ["queue", "label:run-iceberg-tests"],
-    "iceberg_1_10": ["queue", "label:run-iceberg-tests"],
-    # Iceberg 1.11 is our only Spark 4.1 Iceberg coverage, so it is not opt-in.
-    "iceberg_1_11": ["pr", "queue"],
+    # Spark 4.1 is the default build profile and the one Spark SQL suite the
+    # queue runs; 3.5 and 4.0 run nightly, or on a pull request with their
+    # label.
+    "spark_3_5": ["nightly", "label:run-spark-3.5-tests"],
+    "spark_4_0": ["nightly", "label:run-spark-4.0-tests"],
+    # No Spark SQL suite runs on a plain pull request. Spark 4.1 was the last
+    # one in the PR tier, first whole (issue #5870 pulled the sql_hive shards
+    # out) and then catalyst and sql_core alone. What changed is how often a
+    # pull request is pushed: with agent-driven review and agent-driven
+    # replies to review, a PR now goes through several more rounds before it
+    # is queued, and each round paid for the whole 4.1 build. The queue still
+    # runs every shard before anything lands; the two labels bring the run
+    # forward. `run-spark-4.1-tests` selects the whole suite, so it appears on
+    # both outputs; `run-spark-4.1-hive-tests` selects only the hive shards.
+    "spark_4_1": ["queue", "label:run-spark-4.1-tests"],
+    "spark_4_1_hive": [
+        "queue",
+        "label:run-spark-4.1-tests",
+        "label:run-spark-4.1-hive-tests",
+    ],
+    # Same shape for Iceberg: 1.11 is the only Spark 4.1 coverage, so it is
+    # the one Iceberg version the queue runs; the three older versions run
+    # nightly. One label opts a pull request into all four.
+    "iceberg_1_8": ["nightly", "label:run-iceberg-tests"],
+    "iceberg_1_9": ["nightly", "label:run-iceberg-tests"],
+    "iceberg_1_10": ["nightly", "label:run-iceberg-tests"],
+    "iceberg_1_11": ["queue", "label:run-iceberg-tests"],
 }
 
 
@@ -485,6 +534,8 @@ def event_allows(job, event):
         return "push" in tiers
     if name == "merge_group":
         return "queue" in tiers
+    if name == "schedule":
+        return "nightly" in tiers
     if name != "pull_request":
         return False
 

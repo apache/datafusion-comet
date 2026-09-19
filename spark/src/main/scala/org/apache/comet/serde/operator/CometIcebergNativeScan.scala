@@ -40,6 +40,7 @@ import org.apache.spark.sql.types._
 import com.google.protobuf.ByteString
 
 import org.apache.comet.{CometConf, ConfigEntry}
+import org.apache.comet.DataTypeSupport.isComplexType
 import org.apache.comet.iceberg.{CometIcebergNativeScanMetadata, IcebergReflection}
 import org.apache.comet.objectstore.NativeConfig
 import org.apache.comet.serde.{CometOperatorSerde, OperatorOuterClass}
@@ -722,9 +723,11 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
         attributeMap.get(columnName).flatMap { attribute =>
           import Constants.Operations._
           import OperatorOuterClass.IcebergPredicateOperator
-          if (pageIndexUnsupportedColumns.contains(columnName)) {
-            // Any predicate on this column, including a unary IS [NOT] NULL, would reach the page
-            // index and fail, so drop the whole predicate; the post-scan CometFilter enforces it.
+          // iceberg-rust binds accessors only for primitive fields. Containers cannot be partition
+          // columns, so exact partition selection cannot remove their null checks from the
+          // post-scan filter. That filter also enforces predicates unsupported by the page index.
+          if (pageIndexUnsupportedColumns.contains(columnName) ||
+            isComplexType(attribute.dataType)) {
             None
           } else {
             operation match {

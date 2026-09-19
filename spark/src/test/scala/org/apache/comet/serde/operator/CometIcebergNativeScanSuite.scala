@@ -22,6 +22,10 @@ package org.apache.comet.serde.operator
 import org.scalatest.funsuite.AnyFunSuite
 import org.scalatest.matchers.should.Matchers
 
+import org.apache.iceberg.expressions.Expressions
+import org.apache.spark.sql.catalyst.expressions.AttributeReference
+import org.apache.spark.sql.types.{ArrayType, IntegerType, MapType, StringType, StructType}
+
 /**
  * Unit tests for [[CometIcebergNativeScan.hadoopToIcebergS3Properties]]. The pinned iceberg-rust
  * S3 parser reads ONLY global `s3.*` keys (never `s3.bucket.*`), so the function drops per-bucket
@@ -29,6 +33,27 @@ import org.scalatest.matchers.should.Matchers
  * a lightweight `AnyFunSuite` (no Spark session) suffices.
  */
 class CometIcebergNativeScanSuite extends AnyFunSuite with Matchers {
+
+  test("complex type null residuals are not serialized") {
+    // Container predicates stay in the post-scan filter, not the native residual pool.
+    for (dataType <- Seq(
+        ArrayType(IntegerType),
+        MapType(StringType, IntegerType),
+        new StructType().add("value", IntegerType));
+      predicate <- Seq(Expressions.isNull("value"), Expressions.notNull("value"))) {
+      withClue(s"$dataType: $predicate") {
+        CometIcebergNativeScan
+          .icebergExprToProto(predicate, Seq(AttributeReference("value", dataType)()), Set.empty)
+          .isEmpty shouldBe true
+      }
+    }
+    CometIcebergNativeScan
+      .icebergExprToProto(
+        Expressions.notNull("value"),
+        Seq(AttributeReference("value", IntegerType)()),
+        Set.empty)
+      .nonEmpty shouldBe true
+  }
 
   private def translate(
       props: Map[String, String],

@@ -2101,6 +2101,7 @@ dependencies = [
  "datafusion",
  "serde",
  "serde_json",
+ "simdutf8",
  "thiserror 2.0.20",
 ]
 
