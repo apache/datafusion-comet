@@ -375,7 +375,6 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       classOf[TryEval] -> CometTryEval,
       classOf[UnscaledValue] -> CometUnscaledValue,
       classOf[Uuid] -> CometUuid,
-      classOf[UnscaledValue] -> CometUnscaledValue,
       classOf[NamedLambdaVariable] -> CometNamedLambdaVariable)
   private[comet] val miscExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] =
     baseMiscExpressions ++ sparkVersionSpecificMiscExpressions
