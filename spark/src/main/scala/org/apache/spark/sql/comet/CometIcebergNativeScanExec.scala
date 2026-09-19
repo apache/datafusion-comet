@@ -19,6 +19,8 @@
 
 package org.apache.spark.sql.comet
 
+import java.util.concurrent.ConcurrentHashMap
+
 import scala.jdk.CollectionConverters._
 
 import org.apache.spark.rdd.RDD
@@ -26,6 +28,7 @@ import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression, SortOrder}
 import org.apache.spark.sql.catalyst.plans.QueryPlan
 import org.apache.spark.sql.catalyst.plans.physical.{Partitioning, UnknownPartitioning}
+import org.apache.spark.sql.execution.SQLExecution
 import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
 import org.apache.spark.sql.vectorized.ColumnarBatch
@@ -68,6 +71,31 @@ case class CometIcebergNativeScanExec(
   override val nodeName: String = "CometIcebergNativeScan"
 
   /**
+   * `originalPlan` rebuilt with the current top-level `runtimeFilters`. Spark's
+   * PlanAdaptiveDynamicPruningFilters and our transformExpressionsUp passes rewrite the top-level
+   * `runtimeFilters` (visible via productIterator), but `originalPlan` is @transient and not
+   * touched by transformAllExpressions. serializePartitions reads runtime filters via `inputRDD
+   * -> filteredPartitions`, so an out-of-sync originalPlan would re-translate the original
+   * (unresolved) InSubqueryExec and throw "no subquery result". This makes the top-level
+   * runtimeFilters the single source of truth at serialization time. Iceberg reports its planning
+   * metrics on the instance whose `inputRDD` ran, so [[LazyIcebergMetric]] reads them from here.
+   */
+  @transient private lazy val plannedOriginalPlan: BatchScanExec = {
+    // Canonicalized instances set originalPlan = null and are not meant to be executed.
+    // If we ever reach this lazy val on a canonicalized form, fail loud rather than NPE
+    // deep inside originalPlan.inputRDD.
+    assert(
+      originalPlan != null,
+      "plan data accessed on a canonicalized CometIcebergNativeScanExec; " +
+        "this lazy val should only execute on non-canonical instances")
+    if (originalPlan.runtimeFilters != runtimeFilters) {
+      originalPlan.copy(runtimeFilters = runtimeFilters)
+    } else {
+      originalPlan
+    }
+  }
+
+  /**
    * Lazy partition serialization, deferred until execution time. Triggered from `commonData` /
    * `perPartitionData` (via `PlanDataInjector.findAllPlanData`) and from
    * `LazyIcebergMetric.value` (via Iceberg planning metrics). Lazy val semantics ensure single
@@ -82,35 +110,36 @@ case class CometIcebergNativeScanExec(
    * by every construction site), so values resolved through `waitForSubqueries` are visible on
    * both sides.
    */
-  @transient private lazy val serializedPartitionData: (Array[Byte], Array[Array[Byte]]) = {
-    // Canonicalized instances set originalPlan = null and are not meant to be executed.
-    // If we ever reach this lazy val on a canonicalized form, fail loud rather than NPE
-    // deep inside originalPlan.inputRDD.
-    assert(
-      originalPlan != null,
-      "serializedPartitionData accessed on a canonicalized CometIcebergNativeScanExec; " +
-        "this lazy val should only execute on non-canonical instances")
-    // Rebuild originalPlan with the current top-level runtimeFilters before serializing.
-    // Spark's PlanAdaptiveDynamicPruningFilters and our transformExpressionsUp passes rewrite
-    // the top-level `runtimeFilters` (visible via productIterator), but `originalPlan` is
-    // @transient and not touched by transformAllExpressions. serializePartitions reads runtime
-    // filters via originalPlan.inputRDD -> filteredPartitions, so an out-of-sync originalPlan
-    // would re-translate the original (unresolved) InSubqueryExec and throw "no subquery
-    // result". This makes the top-level runtimeFilters the single source of truth at
-    // serialization time.
-    val effectiveOriginalPlan =
-      if (originalPlan.runtimeFilters != runtimeFilters) {
-        originalPlan.copy(runtimeFilters = runtimeFilters)
-      } else {
-        originalPlan
-      }
+  @transient private lazy val serializedPartitionData: (Array[Byte], Array[Array[Byte]]) =
     CometIcebergNativeScan.serializePartitions(
-      effectiveOriginalPlan,
+      plannedOriginalPlan,
       output,
       nativeIcebergScanMetadata)
+
+  /**
+   * The SQL UI aggregates accumulator updates instead of reading driver-side values, so the
+   * planning metrics reach it only as a driver metric update, posted from the first read of
+   * `commonData` inside each SQL execution. Spark keeps driver updates as a list, so a second
+   * post within one execution would double the displayed totals, while a re-executed Dataset
+   * reuses this plan and needs its own post. `perPartitionData` does not post: it also backs
+   * `numPartitions`, which planning could read before the execution is live.
+   */
+  @transient private lazy val planningMetricsPostedTo = ConcurrentHashMap.newKeySet[String]()
+
+  private def postPlanningMetrics(): Unit = {
+    val executionId = sparkContext.getLocalProperty(SQLExecution.EXECUTION_ID_KEY)
+    if (executionId != null && planningMetricsPostedTo.add(executionId)) {
+      SQLMetrics.postDriverMetricUpdates(
+        sparkContext,
+        executionId,
+        icebergPlanningMetrics.values.toSeq)
+    }
   }
 
-  def commonData: Array[Byte] = serializedPartitionData._1
+  def commonData: Array[Byte] = {
+    postPlanningMetrics()
+    serializedPartitionData._1
+  }
 
   def perPartitionData: Array[Array[Byte]] = serializedPartitionData._2
 
@@ -160,8 +189,9 @@ case class CometIcebergNativeScanExec(
    * and throw at executeCollect(). Lazy value access ensures planning runs only when the value is
    * actually needed, by which time CometPlanAdaptiveDynamicPruningFilters has converted the SAB.
    *
-   * Overrides merge/reset because executor accumulator updates carry 0 (these are driver-side
-   * planning metrics) and would zero out the resolved value at end of stage.
+   * Overrides merge/reset so nothing can zero out the resolved value: these are driver-side
+   * planning metrics, and [[CometMetricNode.fromCometPlan]] keeps them out of the tree that tasks
+   * update.
    */
   private class LazyIcebergMetric(metricType: String, metricName: String)
       extends SQLMetric(metricType, 0) {
@@ -172,7 +202,7 @@ case class CometIcebergNativeScanExec(
       // and inputRDD -> filteredPartitions skips DPP, caching an unfiltered result.
       ensureSubqueriesResolved()
       val _ = serializedPartitionData
-      originalPlan.metrics.get(metricName).map(_.value).getOrElse(0L)
+      plannedOriginalPlan.metrics.get(metricName).map(_.value).getOrElse(0L)
     }
 
     override def merge(other: AccumulatorV2[Long, Long]): Unit = {}
@@ -184,7 +214,8 @@ case class CometIcebergNativeScanExec(
    * Iceberg planning metrics, declared eagerly from originalPlan.metrics names/types but with
    * values resolved lazily via [[LazyIcebergMetric]]. Constructing this map enumerates only the
    * metric definitions (scan.supportedCustomMetrics), which is a metadata call that does not
-   * trigger Iceberg planning.
+   * trigger Iceberg planning. Registered under Iceberg's descriptions so the SQL UI labels them
+   * as it labels `BatchScan`.
    */
   @transient private lazy val icebergPlanningMetrics: Map[String, LazyIcebergMetric] = {
     if (originalPlan == null) {
@@ -192,13 +223,16 @@ case class CometIcebergNativeScanExec(
     } else {
       originalPlan.metrics
         .filterNot { case (name, _) =>
-          // Filter out metrics that are now runtime metrics incremented on the native side
+          // numOutputRows and numSplits are runtime metrics incremented on the native side;
+          // numDeletes has no native counterpart (iceberg-rust's ScanMetrics only count bytes).
           name == "numOutputRows" || name == "numDeletes" || name == "numSplits"
         }
         .map { case (name, metric) =>
           val mappedType = mapMetricType(name, metric.metricType)
           val lazyMetric = new LazyIcebergMetric(mappedType, name)
-          sparkContext.register(lazyMetric, name)
+          // Comet formats sizes and durations, so drop Iceberg's unit hints from the labels.
+          val label = metric.name.getOrElse(name).stripSuffix(" (ms)").stripSuffix(" (bytes)")
+          sparkContext.register(lazyMetric, label)
           name -> lazyMetric
         }
     }
@@ -214,6 +248,10 @@ case class CometIcebergNativeScanExec(
 
     baseMetrics ++ icebergPlanningMetrics + ("num_splits" -> numSplitsMetric)
   }
+
+  /** The metrics native execution updates; the planning metrics are set on the driver only. */
+  private[comet] def runtimeMetrics: Map[String, SQLMetric] =
+    metrics -- icebergPlanningMetrics.keys
 
   /** Executes using CometExecRDD - planning data is computed lazily on first access. */
   override def doExecuteColumnar(): RDD[ColumnarBatch] = {

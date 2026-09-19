@@ -2043,6 +2043,32 @@ class CometIcebergNativeSuite
           metrics("resultDataFiles").value > 0,
           "resultDataFiles should still be > 0 after execution")
 
+        // The SQL UI aggregates posted accumulator updates rather than reading driver-side
+        // values, so the planning metrics must reach it as driver metric updates.
+        CometListenerBusUtils.waitUntilEmpty(spark.sparkContext)
+        val statusStore = spark.sharedState.statusStore
+        val executionId = statusStore.executionsList().map(_.executionId).max
+        val uiMetrics = statusStore.executionMetrics(executionId)
+        val uiResultDataFiles = uiMetrics.get(metrics("resultDataFiles").id)
+        assert(
+          uiResultDataFiles
+            .map(_.replace(",", "").toLong)
+            .contains(metrics("resultDataFiles").value),
+          s"SQL UI should show resultDataFiles, got $uiResultDataFiles")
+        val uiTotalDataFileSize = uiMetrics.get(metrics("totalDataFileSize").id)
+        assert(
+          uiTotalDataFileSize.exists(!_.contains("0.0 B")),
+          s"SQL UI should show totalDataFileSize without task zeros, got $uiTotalDataFileSize")
+        val uiMetricName = statusStore
+          .execution(executionId)
+          .get
+          .metrics
+          .find(_.accumulatorId == metrics("resultDataFiles").id)
+          .map(_.name)
+        assert(
+          uiMetricName.exists(_ != "resultDataFiles"),
+          s"SQL UI should label planning metrics like Iceberg's BatchScan, got $uiMetricName")
+
         spark.sql("DROP TABLE test_cat.db.metrics_test")
       }
     }
@@ -3621,6 +3647,12 @@ class CometIcebergNativeSuite
           s"Expected CometIcebergNativeScanExec but found none. Plan:\n$cometPlan")
         val numPartitions = icebergScans.head.numPartitions
         assert(numPartitions == 1, s"Expected DPP to prune to 1 partition but got $numPartitions")
+        // Planning ran on the copy carrying the resolved DPP filters; the metrics are read from
+        // that copy rather than from originalPlan, whose accumulators stay at zero.
+        val resultDataFiles = icebergScans.head.metrics("resultDataFiles").value
+        assert(
+          resultDataFiles > 0,
+          s"Expected the planning metrics of the DPP scan, got resultDataFiles=$resultDataFiles")
 
         // Verify AQE DPP used CometSubqueryBroadcastExec with broadcast reuse
         if (isSpark35Plus) {

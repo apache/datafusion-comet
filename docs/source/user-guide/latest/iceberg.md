@@ -263,3 +263,16 @@ the expression fall back to Spark.
 The native Iceberg reader populates Spark's task-level `inputMetrics.bytesRead` (visible in the Spark UI Stages tab) using the `bytes_read` counter from iceberg-rust's `ScanMetrics`. This counter includes bytes read from both data files and delete files.
 
 Iceberg Java does not explicitly report `bytesRead` to Spark's task input metrics. On the iceberg Java path, any `bytesRead` value comes from Hadoop's filesystem-level I/O counters, not from Iceberg itself. Because Comet's native reader and the Hadoop filesystem use different counting mechanisms, the exact byte counts will differ between the two paths.
+
+### SQL tab metrics
+
+`CometIcebergNativeScan` reports Iceberg's planning metrics (manifests and data files scanned or
+skipped, planning duration, total data and delete file sizes) under the same labels as Iceberg's
+`BatchScan`. They are posted from the driver, for each execution, once the scan's partitions are
+planned.
+
+iceberg-rust applies the residual predicate Comet hands it as a row filter inside the scan, so
+`number of output rows`, and with it the task-level `recordsRead`, count the rows that pass it. They
+are therefore lower than the `BatchScan` figures on the Iceberg Java path, where every row leaves
+the scan and is filtered by the `Filter` above it. `number of row deletes applied` has no native
+counterpart: iceberg-rust's `ScanMetrics` exposes bytes read only.

@@ -546,6 +546,9 @@ object CometMetricNode {
    */
   def fromCometPlan(cometPlan: SparkPlan): CometMetricNode = {
     val nodeMetrics = cometPlan match {
+      // Driver-only planning metrics stay out of the tasks' accumulators, which would otherwise
+      // report zeros into the SQL UI's per-task statistics.
+      case scan: CometIcebergNativeScanExec => scan.runtimeMetrics
       case _: CometPlan => cometPlan.metrics
       case _ =>
         try cometPlan.metrics
