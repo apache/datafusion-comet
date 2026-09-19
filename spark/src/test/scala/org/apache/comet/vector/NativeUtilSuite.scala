@@ -440,7 +440,7 @@ class NativeUtilSuite extends CometTestBase {
       assert(
         charged > foreign,
         s"expected the import allocator to hold more than the $foreign bytes of imported " +
-          s"buffers, since the importer allocates its own ArrowArray struct there, but it held " +
+          "buffers, since the importer allocates its own ArrowArray struct there, but it held " +
           s"$charged bytes")
     } finally {
       if (imported != null) {
