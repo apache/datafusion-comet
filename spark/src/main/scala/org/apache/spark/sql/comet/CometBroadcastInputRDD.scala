@@ -19,20 +19,13 @@
 
 package org.apache.spark.sql.comet
 
-/*
- * Aligns a lazy broadcast input with each probe partition. The driver captures the schema and
- * memory cap; executor compute passes on Spark's actual Broadcast handle without reading its
- * payload. Without a reuse owner, CometExecRDD opens an ordinary Arrow stream. With an owner,
- * native execution chooses whether to reuse a build or open a stream for this task.
- */
-
 import org.apache.spark.{CometBroadcastMemoryManager, OneToOneDependency, Partition, TaskContext}
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.types.StructType
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
 /**
- * Broadcast input slots that preserve the actual Broadcast handle without constructing a decoder.
+ * Align broadcast handles with probe partitions without computing the parent's decoded batches.
  * The schema and memory cap are captured on the driver; executor SQLConf cannot alter admission.
  */
 private[comet] class CometBroadcastInputRDD(
@@ -42,13 +35,9 @@ private[comet] class CometBroadcastInputRDD(
     name: String)
     extends RDD[CometBroadcastInput](batches.context, Seq(new OneToOneDependency(batches))) {
 
-  /** Reuse the parent's aligned broadcast partitions without evaluating their payloads. */
   override protected def getPartitions: Array[Partition] =
     firstParent[ColumnarBatch].partitions
 
-  /**
-   * Construct one lazy marker and its early cleanup listener; this never invokes Broadcast.value.
-   */
   override def compute(split: Partition, context: TaskContext): Iterator[CometBroadcastInput] = {
     val partition = split.asInstanceOf[CometBatchPartition]
     Iterator.single(

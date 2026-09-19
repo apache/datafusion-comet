@@ -19,13 +19,6 @@
 
 package org.apache.spark.sql.comet.execution.arrow
 
-/*
- * Owns one Arrow C stream export for a task-local broadcast input. Each export gets an independent
- * reader and child allocator, with cleanup owned by the parent input's task listener. Native
- * move-import transfers the C release callback out of the Java wrapper; closing the wrapper
- * also releases any export native code never claimed.
- */
-
 import org.apache.arrow.c.{ArrowArrayStream, Data}
 import org.apache.arrow.memory.BufferAllocator
 import org.apache.arrow.util.AutoCloseables
@@ -37,9 +30,8 @@ import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.comet.CometArrowAllocator
 
 /**
- * Explicit owner for a lazily exported broadcast stream's wrapper and allocator. Its parent
- * marker installs the task listener before native execution, so opening this owner must not
- * install a later listener that could close the export before the native reader drops it.
+ * Owns an exported broadcast stream's wrapper and allocator. Cleanup belongs to the input's early
+ * task listener; registering another listener here would run before native releases its reader.
  */
 private[comet] class CometBroadcastArrowStream private (
     val stream: ArrowArrayStream,
@@ -48,20 +40,19 @@ private[comet] class CometBroadcastArrowStream private (
   private var closed = false
 
   /**
-   * Release an export if native never claimed it, then free the C wrapper and allocator. Native
-   * move-import clears the release pointer, making release a no-op for already claimed streams.
-   * The parent calls this after native drops its reader and batch references; repeated calls do
-   * nothing.
+   * Native move-import clears the release pointer. Release therefore cleans up only unclaimed
+   * exports; the parent has already dropped native readers before closing the wrapper/allocator.
    */
   override def close(): Unit = synchronized {
     if (!closed) {
       closed = true
-      var failure: Throwable = null
       try stream.release()
-      catch { case error: Throwable => failure = error }
-      if (failure == null) AutoCloseables.close(stream, allocator)
-      else AutoCloseables.close(failure, stream, allocator)
-      if (failure != null) throw failure
+      catch {
+        case failure: Throwable =>
+          AutoCloseables.close(failure, stream, allocator)
+          throw failure
+      }
+      AutoCloseables.close(stream, allocator)
     }
   }
 }
@@ -69,9 +60,8 @@ private[comet] class CometBroadcastArrowStream private (
 private[comet] object CometBroadcastArrowStream {
 
   /**
-   * Reconcile the source's actual Arrow schema and export an owned stream without task listeners.
-   * On any failure close the source, reader, wrapper and allocator before rethrowing the original
-   * error. Source ownership transfers to the exported reader's release callback on success.
+   * Transfer source ownership to the export's release callback, unwinding partial acquisition on
+   * failure. The physical schema must match the decoded vectors, including fallback casts.
    */
   def open(
       source: Iterator[ColumnarBatch] with AutoCloseable,

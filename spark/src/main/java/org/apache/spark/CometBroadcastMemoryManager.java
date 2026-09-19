@@ -19,12 +19,6 @@
 
 package org.apache.spark;
 
-/*
- * Bridges native broadcast build allocations to Spark's executor storage memory. Creating an
- * owner reserves no storage; native loaders request off-heap grants only when they build. Active
- * probe streams can keep those grants across task boundaries. Each SparkEnv has its own owner
- * generation, so retiring an executor never charges a replacement executor for old leases.
- */
 import java.lang.ref.WeakReference;
 
 import org.apache.spark.memory.MemoryManager;
@@ -33,9 +27,9 @@ import org.apache.spark.storage.BlockId;
 import org.apache.spark.storage.BroadcastBlockId;
 
 /**
- * Executor-owned storage accounting for prepared native broadcasts. This class lives in
- * org.apache.spark to use Spark's storage memory API. One cap covers loading and leased builds;
- * CometPlugin clears the native cache before retiring this owner at shutdown.
+ * Charges prepared broadcasts to Spark off-heap storage across task boundaries. One cap covers
+ * loading and active builds in a SparkEnv generation; retired owners never charge a replacement
+ * environment. Lives in org.apache.spark to access Spark's storage memory API.
  */
 public final class CometBroadcastMemoryManager {
   private static long nextGeneration;
@@ -136,17 +130,15 @@ public final class CometBroadcastMemoryManager {
     used -= size;
   }
 
-  /** Returns the outstanding native grants, including leases remaining after retirement. */
+  /** Includes outstanding native leases after retirement has returned their Spark charge. */
   public synchronized long getUsedMemory() {
     return used;
   }
 
-  /** Returns this owner's immutable generation, which distinguishes replacement SparkEnvs. */
   public long getGeneration() {
     return generation;
   }
 
-  /** Returns the immutable byte cap shared by all prepared builds using this owner. */
   public long getLimit() {
     return limit;
   }
