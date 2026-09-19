@@ -20,9 +20,10 @@
 package org.apache.spark.comet
 
 import org.apache.spark.TaskContext
+import org.apache.spark.memory.TaskMemoryManager
 
 /**
- * Package-private access shim for `TaskContext.setTaskContext` / `TaskContext.unset`.
+ * Package-private access shim for Spark APIs scoped to the `org.apache.spark` package tree.
  *
  * Both methods are declared `protected[spark]` on Spark's `TaskContext` companion, so they are
  * reachable from code inside the `org.apache.spark` package tree but not from `org.apache.comet`.
@@ -38,4 +39,7 @@ object CometTaskContextShim {
   def set(taskContext: TaskContext): Unit = TaskContext.setTaskContext(taskContext)
 
   def unset(): Unit = TaskContext.unset()
+
+  def taskMemoryManager(taskContext: TaskContext): TaskMemoryManager =
+    taskContext.taskMemoryManager()
 }

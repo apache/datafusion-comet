@@ -95,7 +95,7 @@ trait CometCodegenAssertions {
   protected def runKernel[T](expr: Expression, numRows: Int)(read: CometVector => T): T = {
     val kernel = CometBatchKernelCodegen.compile(expr, IndexedSeq.empty).newInstance()
     val field = CometBatchKernelCodegen.toFfiArrowField("out", expr.dataType, nullable = true)
-    val out = CometBatchKernelCodegen.allocateOutput(field, numRows, 0)
+    val out = CometBatchKernelCodegen.allocateOutput(CometArrowAllocator, field, numRows, 0)
     try {
       kernel.init(0)
       kernel.process(Array.empty[ValueVector], out, numRows)
