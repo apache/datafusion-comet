@@ -134,7 +134,9 @@ class CometMapExpressionSuite extends CometTestBase {
         CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> codegenEnabled) {
         withTable("map_null_keys") {
           withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
-            // Keep null and non-null keys in one batch. Only the null-key row divides by zero.
+            // Keep null and non-null keys in one batch. Only the null-key row divides by zero,
+            // and only that row has two values for no keys. Spark skips both evaluation and
+            // length validation before constructing the non-null rows' maps.
             spark
               .range(0, 3, 1, 1)
               .selectExpr("CAST(id AS INT) AS k")
@@ -144,7 +146,7 @@ class CometMapExpressionSuite extends CometTestBase {
           }
           val query = """SELECT map_from_arrays(
                         |  CASE WHEN k = 0 THEN CAST(NULL AS ARRAY<INT>) ELSE array(1) END,
-                        |  array(1 / k))
+                        |  CASE WHEN k = 0 THEN array(1 / k, 2) ELSE array(1 / k) END)
                         |FROM map_null_keys""".stripMargin
           val plan = sql(query).queryExecution.executedPlan
           assert(new ExtendedExplainInfo().getNativeExpressions(plan).contains("map_from_arrays"))
@@ -176,9 +178,9 @@ class CometMapExpressionSuite extends CometTestBase {
             val plan = sql(query).queryExecution.executedPlan
             assert(
               new ExtendedExplainInfo().getNativeExpressions(plan).contains("map_from_arrays"))
-            val (sparkError, cometError) = checkSparkAnswerMaybeThrows(sql(query))
-            assert(sparkError.exists(_.getMessage.contains("same length")))
-            assert(cometError.exists(_.getMessage.contains("same length")))
+            // Spark exposes this through the same legacy condition on every supported version.
+            // checkSparkError also verifies the exception class and SQLSTATE match Spark.
+            checkSparkError(sql(query), "_LEGACY_ERROR_TEMP_2128")
           }
         }
       }

@@ -21,6 +21,8 @@ use datafusion::common::{exec_err, utils::take_function_args, Result};
 use datafusion::functions_nested::map::MapFunc;
 use datafusion::logical_expr::{ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl, Signature};
 
+use crate::SparkError;
+
 /// Checks row boundaries before the DataFusion `map` used by CometMapFromArrays.
 #[derive(Debug, Default, PartialEq, Eq, Hash)]
 pub(crate) struct SparkMapFromArrays {
@@ -63,6 +65,13 @@ impl ScalarUDFImpl for SparkMapFromArrays {
     }
 }
 
+/// Verifies that each visible row where both arrays are non-null has matching entry counts.
+///
+/// The caller expands scalar operands into arrays of the requested batch size before calling this
+/// function, so `keys` and `values` are row-aligned list-like arrays. Rows with either null
+/// array are skipped because Spark returns a null map before enforcing key/value lengths. A
+/// mismatched non-null row returns Spark's structured map-size error; unsupported list types still
+/// return the DataFusion execution error produced by `list_length`.
 fn validate_list_lengths(keys: &ArrayRef, values: &ArrayRef) -> Result<()> {
     // The upstream array path uses key offsets for both flattened children without checking
     // each row's lengths. Do not let batched operands silently pair across map rows.
@@ -72,12 +81,16 @@ fn validate_list_lengths(keys: &ArrayRef, values: &ArrayRef) -> Result<()> {
             && values.is_valid(row)
             && list_length(keys, row)? != list_length(values, row)?
         {
-            return exec_err!("map requires key and value lists to have the same length");
+            return Err(SparkError::MapKeyValueDiffSizes.into());
         }
     }
     Ok(())
 }
 
+/// Returns the element count for one row of a supported Arrow list array.
+///
+/// This accepts variable-width and fixed-width list encodings. It returns a DataFusion execution
+/// error when the caller provides a non-list array rather than guessing an incompatible shape.
 fn list_length(array: &ArrayRef, row: usize) -> Result<i64> {
     match array.data_type() {
         DataType::List(_) => Ok(i64::from(array.as_list::<i32>().value_length(row))),
