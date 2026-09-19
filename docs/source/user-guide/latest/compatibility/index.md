@@ -147,10 +147,12 @@ so users hunting an unexpected value have a single place to check:
   ([#5022](https://github.com/apache/datafusion-comet/issues/5022)).
 - Ungrouped decimal `SUM` keeps an unbounded intermediate and checks the result precision only
   when a partial is written out or the sum is evaluated, which matches Spark's whole-stage codegen
-  path. With `spark.sql.codegen.wholeStage=false` Spark's ungrouped aggregate buffers in an
-  `UnsafeRow` and latches as soon as a running sum leaves the precision, so an intermediate
-  overflow that later cancels out returns `NULL` (or raises under ANSI) in Spark but the recovered
-  value in Comet. Spark's own decimal overflow tests accept either outcome.
+  path. Without codegen Spark buffers the aggregate in an `UnsafeRow` and latches as soon as a
+  running sum leaves the precision. Comet falls back at precision 38 when codegen is disabled by
+  `spark.sql.codegen.wholeStage` or by an imperative sibling aggregate, but not when Spark
+  disables it for a stage with more than `spark.sql.codegen.maxFields` fields or after a codegen
+  compile failure, where an intermediate overflow that later cancels out returns `NULL` (or raises
+  under ANSI) in Spark but the recovered value in Comet.
 
 ## Object store cache
 

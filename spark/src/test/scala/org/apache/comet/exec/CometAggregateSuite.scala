@@ -1545,6 +1545,75 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("decimal sum without codegen falls back at maximum precision") {
+    // Without codegen Spark buffers the ungrouped sum in an UnsafeRow and latches once it
+    // leaves the precision; an imperative sibling such as approx_count_distinct or the
+    // whole-stage switch turns codegen off, and falling back keeps Spark's answer.
+    val reason = "Ungrouped decimal SUM at maximum precision without codegen cannot match " +
+      "Spark's latching UnsafeRow buffer"
+    Seq(true, false).foreach { ansiEnabled =>
+      withSQLConf(
+        SQLConf.ANSI_ENABLED.key -> ansiEnabled.toString,
+        CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
+        CometConf.COMET_SHUFFLE_MODE.key -> "native") {
+        withMaxPrecisionDecimalTable(intermediateOverflowRows, "dec_no_codegen") {
+          assertDecimalSumFallsBackLikeSpark(
+            sql("SELECT SUM(v), approx_count_distinct(k) FROM dec_no_codegen"),
+            reason,
+            ansiEnabled,
+            Row(null, 1L))
+          withSQLConf(SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "false") {
+            assertDecimalSumFallsBackLikeSpark(
+              sql("SELECT SUM(v) FROM dec_no_codegen"),
+              reason,
+              ansiEnabled,
+              Row(null))
+          }
+        }
+      }
+    }
+    // With headroom above the input precision the imperative sibling keeps the aggregate native.
+    withTempPath { dir =>
+      intermediateOverflowRows
+        .toDF("k", "raw_v")
+        .selectExpr("k", "CAST(raw_v AS DECIMAL(10,2)) AS v")
+        .coalesce(1)
+        .write
+        .parquet(dir.toString)
+      withParquetTable(dir.toString, "dec_no_codegen_small") {
+        checkSparkAnswerAndOperator(
+          "SELECT SUM(v), approx_count_distinct(k) FROM dec_no_codegen_small")
+      }
+    }
+  }
+
+  /**
+   * Asserts that `df` runs the aggregate in Spark with `reason` recorded and gives Spark's
+   * latched result: `expected` in legacy mode, and the same failure as Spark under ANSI.
+   */
+  private def assertDecimalSumFallsBackLikeSpark(
+      df: DataFrame,
+      reason: String,
+      ansiEnabled: Boolean,
+      expected: Row): Unit = {
+    if (ansiEnabled) {
+      val (sparkError, cometError) = checkSparkAnswerMaybeThrows(df)
+      assert(
+        sparkError.isDefined && cometError.isDefined,
+        s"expected both engines to fail, got Spark $sparkError and Comet $cometError")
+    } else {
+      checkSparkAnswerAndFallbackReason(df, reason)
+      val answer = df.collect().toSeq
+      assert(answer == Seq(expected), s"without codegen returned $answer, expected $expected")
+    }
+    val nativeAggregates = stripAQEPlan(df.queryExecution.executedPlan).collect {
+      case agg: CometHashAggregateExec => agg
+    }
+    assert(
+      nativeAggregates.isEmpty,
+      s"expected the aggregate to run in Spark, got $nativeAggregates")
+  }
+
   test("decimal sum with object hash aggregate falls back at maximum precision") {
     withSQLConf(
       SQLConf.USE_OBJECT_HASH_AGG.key -> "true",
