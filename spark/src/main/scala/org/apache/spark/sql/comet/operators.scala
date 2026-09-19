@@ -31,7 +31,7 @@ import org.apache.spark.internal.Logging
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{Ascending, Attribute, AttributeSeq, AttributeSet, Expression, ExpressionSet, Generator, NamedExpression, SortOrder, XXH64}
-import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, AggregateMode, CollectList, CollectSet, Final, Mode, Partial, PartialMerge, Percentile}
+import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, AggregateMode, CollectList, CollectSet, Final, ImperativeAggregate, Mode, Partial, PartialMerge, Percentile, Sum}
 import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, BuildSide}
 import org.apache.spark.sql.catalyst.plans._
 import org.apache.spark.sql.catalyst.plans.physical._
@@ -1847,6 +1847,20 @@ case class CometUnionExec(
 
 trait CometBaseAggregate {
 
+  /**
+   * Whether a decimal SUM's result precision is DecimalType.MAX_PRECISION, the only case with no
+   * headroom above the input where an intermediate overflow can change the answer.
+   */
+  protected def hasMaxPrecisionDecimalSum(op: BaseAggregateExec): Boolean =
+    op.aggregateExpressions.exists(_.aggregateFunction match {
+      case sum: Sum =>
+        sum.dataType match {
+          case decimal: DecimalType => decimal.precision == DecimalType.MAX_PRECISION
+          case _ => false
+        }
+      case _ => false
+    })
+
   def doConvert(
       aggregate: BaseAggregateExec,
       builder: Operator.Builder,
@@ -2199,6 +2213,20 @@ object CometHashAggregateExec
       op.aggregateExpressions.exists(_.mode == Final)) {
       return Unsupported(Some("Final aggregates disabled via test config"))
     }
+    // Without codegen Spark buffers an ungrouped aggregate in an UnsafeRow, which latches a
+    // decimal sum that leaves the precision, while the native ungrouped accumulator keeps the
+    // unbounded intermediate. Spark turns codegen off for an imperative aggregate, by config,
+    // or when the operator's output or an input carries more fields than its codegen limit.
+    val codegenOff = !op.conf.wholeStageEnabled ||
+      op.aggregateExpressions.exists(_.aggregateFunction.isInstanceOf[ImperativeAggregate]) ||
+      WholeStageCodegenExec.isTooManyFields(op.conf, op.schema) ||
+      op.children.exists(child => WholeStageCodegenExec.isTooManyFields(op.conf, child.schema))
+    if (op.groupingExpressions.isEmpty && codegenOff && hasMaxPrecisionDecimalSum(op)) {
+      return Unsupported(
+        Some(
+          "Ungrouped decimal SUM at maximum precision without codegen cannot match Spark's " +
+            "latching UnsafeRow buffer"))
+    }
     Compatible()
   }
 
@@ -2257,6 +2285,15 @@ object CometObjectHashAggregateExec
         Some(
           "Comet shuffle is not enabled, so converting ObjectHashAggregate would split the " +
             "aggregate across Comet and Spark"))
+    }
+    // Spark's object aggregation buffers the intermediate decimal sum unbounded, while Comet's
+    // grouped accumulator latches to null once a running sum leaves the precision, so the
+    // grouped case declines. Decimal AVG has the same gap and is tracked separately.
+    if (op.groupingExpressions.nonEmpty && hasMaxPrecisionDecimalSum(op)) {
+      return Unsupported(
+        Some(
+          "Grouped decimal SUM at maximum precision cannot match Spark's unbounded object " +
+            "aggregation buffer"))
     }
     Compatible()
   }
