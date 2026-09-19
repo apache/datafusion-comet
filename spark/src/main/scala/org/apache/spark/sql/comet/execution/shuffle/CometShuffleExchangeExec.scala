@@ -452,9 +452,10 @@ object CometShuffleExchangeExec
       case MapType(keyType, valueType, _) if nestedHashPartitioningEnabled =>
         // Map entry order is not semantically meaningful, so two equal maps must hash alike.
         // Spark 4.0+ normalizes a map shuffle key by wrapping it in `mapsort(...)`, which is
-        // gated separately by CometMapSort (scalar map keys only) and, when unsupported, fails
-        // the expression check below. Earlier Spark versions insert no such normalization, so
-        // Comet would hash physical entry order and could route equal maps differently.
+        // gated separately by CometMapSort. Scalar keys use native map_sort; other orderable key
+        // types can use Spark's generated MapSort code through the JVM dispatcher. Earlier Spark
+        // versions insert no such normalization, so Comet would hash physical entry order and
+        // could route equal maps differently.
         isSpark40Plus &&
         supportedHashPartitioningDataType(keyType) &&
         supportedHashPartitioningDataType(valueType)
