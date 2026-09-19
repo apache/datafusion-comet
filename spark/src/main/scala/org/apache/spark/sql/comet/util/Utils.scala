@@ -51,6 +51,7 @@ import org.apache.comet.vector.CometVector
 
 object Utils extends CometTypeShim with Logging {
   private val NATIVE_IPC_LZ4_PREFIX = Array[Byte](0x4c, 0x5a, 0x34, 0x5f)
+  private val VariantExtensionName = "arrow.parquet.variant"
 
   def getConfPath(confFileName: String): String = {
     sys.env
@@ -82,11 +83,18 @@ object Utils extends CometTypeShim with Logging {
         val elementType = fromArrowField(elementField)
         ArrayType(elementType, containsNull = elementField.isNullable)
       case ArrowType.Struct.INSTANCE =>
-        val fields = field.getChildren().asScala.map { child =>
-          val dt = fromArrowField(child)
-          StructField(child.getName, dt, child.isNullable)
-        }
-        StructType(fields.toSeq)
+        Option(field.getMetadata)
+          .flatMap(metadata =>
+            Option(metadata.get(ArrowType.ExtensionType.EXTENSION_METADATA_KEY_NAME)))
+          .filter(_ == VariantExtensionName)
+          .flatMap(_ => variantType)
+          .getOrElse {
+            val fields = field.getChildren().asScala.map { child =>
+              val dt = fromArrowField(child)
+              StructField(child.getName, dt, child.isNullable)
+            }
+            StructType(fields.toSeq)
+          }
       case arrowType => fromArrowType(arrowType)
     }
   }
@@ -452,7 +460,18 @@ object Utils extends CometTypeShim with Logging {
                 targetRoot = VectorSchemaRoot.create(sourceRoot.getSchema, allocator)
                 targetRoot.allocateNew()
               }
-              VectorSchemaRootAppender.append(targetRoot, sourceRoot)
+              try {
+                VectorSchemaRootAppender.append(targetRoot, sourceRoot)
+              } catch {
+                case e: IllegalArgumentException =>
+                  logWarning(
+                    "Arrow batches cannot be appended during BroadcastExchange coalescing; " +
+                      "skipping coalesce",
+                    e)
+                  targetRoot.close()
+                  targetRoot = null
+                  return (buffers, 0L, 0L)
+              }
               totalRows += sourceRoot.getRowCount
               batchCount += 1
             }

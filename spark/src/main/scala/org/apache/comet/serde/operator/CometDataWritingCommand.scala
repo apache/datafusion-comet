@@ -19,17 +19,16 @@
 
 package org.apache.comet.serde.operator
 
-import java.net.URI
-import java.util.Locale
-
 import scala.jdk.CollectionConverters._
 
-import org.apache.parquet.hadoop.ParquetOutputFormat
 import org.apache.spark.SparkException
-import org.apache.spark.sql.comet.{CometNativeExec, CometNativeWriteExec}
+import org.apache.spark.sql.comet.{CometEmptyRelationExec, CometNativeExec, CometNativeWriteExec, CometScanWrapper}
+import org.apache.spark.sql.execution.SparkPlan
+import org.apache.spark.sql.execution.adaptive.QueryStageExec
 import org.apache.spark.sql.execution.command.DataWritingCommandExec
 import org.apache.spark.sql.execution.datasources.{InsertIntoHadoopFsRelationCommand, WriteFilesExec}
 import org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormat
+import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
 import org.apache.spark.sql.internal.SQLConf
 
 import org.apache.comet.{CometConf, ConfigEntry}
@@ -37,16 +36,12 @@ import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
 import org.apache.comet.objectstore.NativeConfig
 import org.apache.comet.serde.{CometOperatorSerde, Incompatible, OperatorOuterClass, SupportLevel, Unsupported}
 import org.apache.comet.serde.OperatorOuterClass.Operator
-import org.apache.comet.serde.QueryPlanSerde.serializeDataType
 
 /**
  * CometOperatorSerde implementation for DataWritingCommandExec that converts Parquet write
  * operations to use Comet's native Parquet writer.
  */
 object CometDataWritingCommand extends CometOperatorSerde[DataWritingCommandExec] {
-
-  private val supportedCompressionCodes =
-    Set("none", "uncompressed", "snappy", "lz4", "zstd", "gzip")
 
   override def enabledConfig: Option[ConfigEntry[Boolean]] =
     Some(CometConf.COMET_NATIVE_PARQUET_WRITE_ENABLED)
@@ -60,10 +55,26 @@ object CometDataWritingCommand extends CometOperatorSerde[DataWritingCommandExec
       case cmd: InsertIntoHadoopFsRelationCommand =>
         cmd.fileFormat match {
           case _: ParquetFileFormat =>
+            // AQE can replace the write input with a zero-partition empty relation. Keep
+            // Spark's writer, which creates an empty task to preserve the output file schema.
+            // The native writer only maps existing partitions; see #5303. This guard is
+            // conservative: an empty relation below an exchange can have nonzero partitions
+            // at the write input. Revisit the guard when native empty-file handling is fixed.
+            if (hasEmptyRelationInput(op.child)) {
+              return Unsupported(Some(
+                "Parquet writes with empty-relation inputs require Spark's empty-file handling"))
+            }
+
             if (!cmd.outputPath.toString.startsWith("file:") && !cmd.outputPath.toString
                 .startsWith("hdfs:")) {
               return Unsupported(Some("Supported output filesystems: local, HDFS"))
             }
+
+            NativeWriteUtils
+              // This writer names its own files `part-<partition>-<attempt>.parquet`, so the
+              // prefix is fixed rather than read from `mapreduce.output.basename`.
+              .escapedHdfsDestination(cmd.outputPath.toString, "part")
+              .foreach(reason => return Unsupported(Some(reason)))
 
             if (cmd.bucketSpec.isDefined) {
               return Unsupported(Some("Bucketed writes are not supported"))
@@ -73,8 +84,8 @@ object CometDataWritingCommand extends CometOperatorSerde[DataWritingCommandExec
               return Unsupported(Some("Partitioned writes are not supported"))
             }
 
-            val codec = parseCompressionCodec(cmd)
-            if (!supportedCompressionCodes.contains(codec)) {
+            val codec = NativeWriteUtils.parseCompressionCodec(cmd.options)
+            if (!NativeWriteUtils.supportedCompressionCodecs.contains(codec)) {
               return Unsupported(Some(s"Unsupported compression codec: $codec"))
             }
 
@@ -87,6 +98,14 @@ object CometDataWritingCommand extends CometOperatorSerde[DataWritingCommandExec
     }
   }
 
+  private def hasEmptyRelationInput(plan: SparkPlan): Boolean = plan match {
+    case _: CometEmptyRelationExec => true
+    case wrapper: CometScanWrapper => hasEmptyRelationInput(wrapper.originalPlan)
+    case stage: QueryStageExec => hasEmptyRelationInput(stage.plan)
+    case reused: ReusedExchangeExec => hasEmptyRelationInput(reused.child)
+    case _ => plan.children.exists(hasEmptyRelationInput)
+  }
+
   override def convert(
       op: DataWritingCommandExec,
       builder: Operator.Builder,
@@ -95,38 +114,20 @@ object CometDataWritingCommand extends CometOperatorSerde[DataWritingCommandExec
     try {
       val cmd = op.cmd.asInstanceOf[InsertIntoHadoopFsRelationCommand]
 
-      val scanOp = OperatorOuterClass.Scan
-        .newBuilder()
-        .setSource(cmd.query.nodeName)
-
-      // Add fields from the query output schema
-      val scanTypes = cmd.query.output.flatMap { attr =>
-        serializeDataType(attr.dataType)
+      val scanOperator = NativeWriteUtils.buildFfiScan(cmd.query, op.id) match {
+        case Some(scan) => scan
+        case None =>
+          withFallbackReason(op, "Cannot serialize data types for native write")
+          return None
       }
-
-      if (scanTypes.length != cmd.query.output.length) {
-        withFallbackReason(op, "Cannot serialize data types for native write")
-        return None
-      }
-
-      scanTypes.foreach(scanOp.addFields)
-
-      val scanOperator = Operator
-        .newBuilder()
-        .setPlanId(op.id)
-        .setScan(scanOp.build())
-        .build()
 
       val outputPath = cmd.outputPath.toString
 
-      val codec = parseCompressionCodec(cmd) match {
-        case "snappy" => OperatorOuterClass.CompressionCodec.Snappy
-        case "lz4" => OperatorOuterClass.CompressionCodec.Lz4
-        case "zstd" => OperatorOuterClass.CompressionCodec.Zstd
-        case "gzip" => OperatorOuterClass.CompressionCodec.Gzip
-        case "none" | "uncompressed" => OperatorOuterClass.CompressionCodec.None
-        case other =>
-          withFallbackReason(op, s"Unsupported compression codec: $other")
+      val plannedCodec = NativeWriteUtils.parseCompressionCodec(cmd.options)
+      val codec = NativeWriteUtils.protoCompressionCodec(plannedCodec) match {
+        case Some(codec) => codec
+        case None =>
+          withFallbackReason(op, s"Unsupported compression codec: $plannedCodec")
           return None
       }
 
@@ -145,8 +146,11 @@ object CometDataWritingCommand extends CometOperatorSerde[DataWritingCommandExec
       // Collect S3/cloud storage configurations
       val session = op.session
       val hadoopConf = session.sessionState.newHadoopConfWithOptions(cmd.options)
+      // `outputPath` is `Path.toString`, which is not a valid URI string: it leaves spaces and
+      // literal `%` unescaped, so `URI.create` would throw (and the catch below would silently
+      // give the write back to Spark). Going through `Path` escapes them again.
       val objectStoreOptions =
-        NativeConfig.extractObjectStoreOptions(hadoopConf, URI.create(outputPath))
+        NativeConfig.extractObjectStoreOptions(hadoopConf, cmd.outputPath.toUri)
       objectStoreOptions.foreach { case (key, value) =>
         writerOpBuilder.putObjectStoreOptions(key, value)
       }
@@ -208,20 +212,6 @@ object CometDataWritingCommand extends CometOperatorSerde[DataWritingCommandExec
       }
 
     CometNativeWriteExec(nativeOp, childPlan, outputPath, cmd.mode, committer, jobId)
-  }
-
-  private def parseCompressionCodec(cmd: InsertIntoHadoopFsRelationCommand) = {
-    // `compression`, `parquet.compression` (i.e., ParquetOutputFormat.COMPRESSION), and
-    // `spark.sql.parquet.compression.codec` are in order of precedence from highest to
-    // lowest, matching Spark's own ParquetOptions.compressionCodecClassName.
-    cmd.options
-      .get("compression")
-      .orElse(cmd.options.get(ParquetOutputFormat.COMPRESSION))
-      .getOrElse(
-        SQLConf.get.getConfString(
-          SQLConf.PARQUET_COMPRESSION.key,
-          SQLConf.PARQUET_COMPRESSION.defaultValueString))
-      .toLowerCase(Locale.ROOT)
   }
 
 }

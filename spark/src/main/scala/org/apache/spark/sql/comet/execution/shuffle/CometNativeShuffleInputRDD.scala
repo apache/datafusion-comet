@@ -45,6 +45,20 @@ private[shuffle] class CometNativeShuffleInputRDD(
       sc,
       inputRDDs.map(rdd => new OneToOneDependency(rdd))) {
 
+  /**
+   * Give local fallback its own scheduling RDD over the original upstream inputs. Spark aborts
+   * jobs whose RDD ancestry contains the failed stage's RDD, so reusing this instance or wrapping
+   * it in a narrow dependency lets a late remote failure abort the local replacement as well.
+   */
+  private[shuffle] def copyForLocalShuffle(): CometNativeShuffleInputRDD =
+    new CometNativeShuffleInputRDD(
+      context,
+      inputRDDs,
+      numPartitionsParam,
+      shuffleScanIndices,
+      spillMetricNode,
+      perPartitionByKey)
+
   override protected def getPartitions: Array[Partition] =
     (0 until numPartitionsParam).map { i =>
       // Resolve leaf-RDD partitions on the driver here (where their @transient fields are still

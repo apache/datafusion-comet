@@ -51,7 +51,18 @@ class CometShuffledBatchRDD(
     SortShuffleManager.FETCH_SHUFFLE_BLOCKS_IN_BATCH_ENABLED_KEY,
     SQLConf.get.fetchShuffleBlocksInBatch.toString)
 
-  override def getDependencies: Seq[Dependency[_]] = List(dependency)
+  // Start without waiting so constructing a join or union can start every independent input.
+  // Spark resolves dependencies on the submitting thread before queueing a downstream job;
+  // freeze the selected destination there, before Spark caches this RDD's dependency graph.
+  // Cache fixed partition metadata first: parents such as UnionRDD read it while discovering
+  // dependencies, and must not wait for the RDD lock held by a concurrent getDependencies call.
+  partitions
+  CometCelebornShuffleMaterialization.forDependency(dependency)
+
+  override def getDependencies: Seq[Dependency[_]] = {
+    dependency = CometCelebornShuffleMaterialization.selectForRead(dependency)
+    List(dependency)
+  }
 
   override val partitioner: Option[Partitioner] =
     if (partitionSpecs.forall(_.isInstanceOf[CoalescedPartitionSpec])) {
@@ -92,12 +103,14 @@ class CometShuffledBatchRDD(
     }
   }
 
-  private def createReader(split: Partition, context: TaskContext): CometShuffleReader[_, _] = {
+  private def createReader(
+      split: Partition,
+      context: TaskContext): (CometShuffleReader[_, _], SQLShuffleReadMetricsReporter) = {
     val tempMetrics = context.taskMetrics().createTempShuffleReadMetrics()
     // `SQLShuffleReadMetricsReporter` will update its own metrics for SQL exchange operator,
     // as well as the `tempMetrics` for basic shuffle metrics.
     val sqlMetricsReporter = new SQLShuffleReadMetricsReporter(tempMetrics, metrics)
-    split.asInstanceOf[ShuffledRowRDDPartition].spec match {
+    val reader = split.asInstanceOf[ShuffledRowRDDPartition].spec match {
       case CoalescedPartitionSpec(startReducerIndex, endReducerIndex, _) =>
         SparkEnv.get.shuffleManager
           .getReader(
@@ -144,6 +157,7 @@ class CometShuffledBatchRDD(
             sqlMetricsReporter)
           .asInstanceOf[CometShuffleReader[_, _]]
     }
+    (reader, sqlMetricsReporter)
   }
 
   /**
@@ -153,12 +167,20 @@ class CometShuffledBatchRDD(
   def computeAsShuffleBlockIterator(
       split: Partition,
       context: TaskContext): CometShuffleBlockIterator = {
-    val reader = createReader(split, context)
-    new CometShuffleBlockIterator(reader.readAsRawStream())
+    val readerAndMetrics: (CometShuffleReader[_, _], SQLShuffleReadMetricsReporter) =
+      createReader(split, context)
+    // Register before CometExecIterator so Spark's LIFO completion order closes the native stream
+    // before merging. Task completion also preserves partial metrics for failed attempts.
+    context.addTaskCompletionListener[Unit] { _ =>
+      context.taskMetrics().mergeShuffleReadMetrics()
+    }
+    new CometShuffleBlockIterator(
+      readerAndMetrics._1.readAsRawStream(),
+      readerAndMetrics._2.incRecordsRead)
   }
 
   override def compute(split: Partition, context: TaskContext): Iterator[ColumnarBatch] = {
-    val reader = createReader(split, context)
+    val reader: CometShuffleReader[_, _] = createReader(split, context)._1
     // TODO: Reads IPC by native code
     reader.read().asInstanceOf[Iterator[Product2[Int, ColumnarBatch]]].map(_._2)
   }

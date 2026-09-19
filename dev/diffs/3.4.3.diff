@@ -1,5 +1,5 @@
 diff --git a/pom.xml b/pom.xml
-index d3544881af1..ff963395ec3 100644
+index d3544881af1..32d0589450b 100644
 --- a/pom.xml
 +++ b/pom.xml
 @@ -148,6 +148,8 @@
@@ -2226,20 +2226,6 @@ index 104b4e416cd..835aaa18e39 100644
  
          case _ =>
            throw new AnalysisException("Can not match ParquetTable in the query.")
-diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetIOSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetIOSuite.scala
-index 8670d95c65e..b624c3811dd 100644
---- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetIOSuite.scala
-+++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetIOSuite.scala
-@@ -1335,7 +1335,8 @@ class ParquetIOSuite extends QueryTest with ParquetTest with SharedSparkSession
-     }
-   }
- 
--  test("SPARK-40128 read DELTA_LENGTH_BYTE_ARRAY encoded strings") {
-+  test("SPARK-40128 read DELTA_LENGTH_BYTE_ARRAY encoded strings",
-+      IgnoreComet("Comet doesn't support DELTA encoding yet")) {
-     withAllParquetReaders {
-       checkAnswer(
-         // "fruit" column in this file is encoded using DELTA_LENGTH_BYTE_ARRAY.
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetQuerySuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetQuerySuite.scala
 index 29cb224c878..62e3ab96004 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetQuerySuite.scala
@@ -2547,6 +2533,62 @@ index d083cac48ff..3c11bcde807 100644
  
    import testImplicits._
  
+diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/streaming/state/RocksDBStateStoreIntegrationSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/streaming/state/RocksDBStateStoreIntegrationSuite.scala
+index dc505963b4d..79184d73023 100644
+--- a/sql/core/src/test/scala/org/apache/spark/sql/execution/streaming/state/RocksDBStateStoreIntegrationSuite.scala
++++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/streaming/state/RocksDBStateStoreIntegrationSuite.scala
+@@ -23,12 +23,16 @@ import scala.collection.JavaConverters
+ 
+ import org.scalatest.time.{Minute, Span}
+ 
++import org.apache.spark.sql.IgnoreCometSuite
+ import org.apache.spark.sql.execution.streaming.{MemoryStream, StreamingQueryWrapper}
+ import org.apache.spark.sql.functions.count
+ import org.apache.spark.sql.internal.SQLConf
+ import org.apache.spark.sql.streaming._
+ 
+-class RocksDBStateStoreIntegrationSuite extends StreamTest {
++// Comet: skip this suite under Comet. Comet falls back to Spark for every streaming plan
++// (see CometExecRule and CometScanRule), so these tests exercise no Comet code path.
++// See https://github.com/apache/datafusion-comet/issues/5986
++class RocksDBStateStoreIntegrationSuite extends StreamTest with IgnoreCometSuite {
+   import testImplicits._
+ 
+   test("RocksDBStateStore") {
+diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/streaming/state/RocksDBStateStoreSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/streaming/state/RocksDBStateStoreSuite.scala
+index a5993fdfe0d..9a378af944d 100644
+--- a/sql/core/src/test/scala/org/apache/spark/sql/execution/streaming/state/RocksDBStateStoreSuite.scala
++++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/streaming/state/RocksDBStateStoreSuite.scala
+@@ -22,7 +22,8 @@ import java.util.UUID
+ import scala.util.Random
+ 
+ import org.apache.hadoop.conf.Configuration
+-import org.scalatest.BeforeAndAfter
++import org.scalactic.source.Position
++import org.scalatest.{BeforeAndAfter, Tag}
+ 
+ import org.apache.spark.SparkConf
+ import org.apache.spark.sql.LocalSparkSession.withSparkSession
+@@ -38,6 +39,19 @@ import org.apache.spark.util.Utils
+ class RocksDBStateStoreSuite extends StateStoreSuiteBase[RocksDBStateStoreProvider]
+   with BeforeAndAfter {
+ 
++  // Comet: skip this suite under Comet. The tests target RocksDB state-store internals
++  // (StateStore get/put/commit), not SQL execution paths. This suite does not extend
++  // SQLTestUtils on 3.4, so IgnoreCometSuite cannot be mixed in and the check is inline.
++  // See https://github.com/apache/datafusion-comet/issues/5986
++  override protected def test(testName: String, testTags: Tag*)(testFun: => Any)
++      (implicit pos: Position): Unit = {
++    if (SparkSession.isCometEnabled) {
++      ignore(testName + " (disabled when Comet is on)", testTags: _*)(testFun)
++    } else {
++      super.test(testName, testTags: _*)(testFun)
++    }
++  }
++
+   before {
+     StateStore.stop()
+     require(!StateStore.isMaintenanceRunning)
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/sources/BucketedReadSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/sources/BucketedReadSuite.scala
 index 266bb343526..50408a27a0a 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/sources/BucketedReadSuite.scala

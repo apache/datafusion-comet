@@ -81,6 +81,12 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim with Come
   /**
    * Type surface the kernel covers on both input and output sides. Recursive: complex types are
    * supported when their children are.
+   *
+   * Duplicate struct field names are excluded, an output-side rule: Arrow addresses a
+   * `StructVector`'s children by name, so `named_struct('x', 10, 'x', 20)` collapses into a
+   * single child and the generated writer NPEs on the missing ordinal-1 vector.
+   * `CometCreateNamedStruct` declines them on the native path for the same reason, but a struct
+   * nested inside a dispatcher-built value (a `CreateMap` value) never reaches that check.
    */
   def isSupportedDataType(dt: DataType): Boolean = dt match {
     case BooleanType | ByteType | ShortType | IntegerType | LongType => true
@@ -91,7 +97,11 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim with Come
     case dt if isTimeType(dt) => true
     case _: YearMonthIntervalType | _: DayTimeIntervalType | CalendarIntervalType => true
     case ArrayType(inner, _) => isSupportedDataType(inner)
-    case st: StructType => st.fields.forall(f => isSupportedDataType(f.dataType))
+    case st: StructType =>
+      // `fieldNames` rebuilds an array on each call, so read it once.
+      val names = st.fieldNames
+      names.distinct.length == names.length &&
+      st.fields.forall(f => isSupportedDataType(f.dataType))
     case mt: MapType => isSupportedDataType(mt.keyType) && isSupportedDataType(mt.valueType)
     case _ => false
   }
@@ -437,10 +447,13 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim with Come
    *   - The root is `NullIntolerant`, so a null input really does mean a null result.
    *   - Every node in the tree is null-propagating ([[allNullIntolerant]]); a `Coalesce` / `If` /
    *     `CaseWhen` anywhere would break the chain.
+   *   - No node other than a `Literal` is foldable ([[noSurvivingFoldableSubtree]]); a foldable
+   *     subtree that `ConstantFolding` left in place is one that threw while folding, and Spark
+   *     may evaluate it -- and raise -- ahead of an input's null check.
    *   - Either the tree reads exactly one ordinal, or every direct child of the root is a leaf
    *     ([[rootChildrenAreLeaves]]). Both shapes make the short-circuit exact:
-   *     - One ordinal: there is nothing left for Spark to evaluate ahead of that ordinal's own
-   *       null check.
+   *     - One ordinal: with no surviving foldable subtree, there is nothing left for Spark to
+   *       evaluate ahead of that ordinal's own null check.
    *     - Leaf-only children: the tree is one level deep, so the only code Spark runs ahead of
    *       its null checks is `BoundReference` / `Literal` reads, which cannot raise. Any error
    *       comes from the root's own logic, which runs only once every input is known non-null --
@@ -457,7 +470,25 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim with Come
    */
   private def canShortCircuitNulls(expr: Expression, inputOrdinals: Seq[Int]): Boolean =
     inputOrdinals.nonEmpty && isNullIntolerant(expr) && allNullIntolerant(expr) &&
+      noSurvivingFoldableSubtree(expr) &&
       (inputOrdinals.size == 1 || rootChildrenAreLeaves(expr))
+
+  /**
+   * True iff no node in the tree other than a `Literal` is foldable. One of the conditions on
+   * [[canShortCircuitNulls]], and what closes the single-ordinal hole left by #5218 (see #5608).
+   *
+   * `ConstantFolding` has already run by the time the dispatcher sees the tree, so a surviving
+   * foldable non-`Literal` node is precisely one that threw while folding: the rule tags such a
+   * node `FAILED_TO_EVALUATE` and leaves it in place rather than folding it. That is exactly the
+   * subtree Spark may evaluate -- and raise from -- ahead of an input's null check. `Literal`s
+   * are foldable by definition and must be exempt, or the fast path would be lost for the common
+   * shapes (`upper(substring(s, 1, 2))`, `conv(a, b, c)`, ...).
+   */
+  private def noSurvivingFoldableSubtree(expr: Expression): Boolean =
+    !expr.exists {
+      case _: Literal => false
+      case other => other.foldable
+    }
 
   /**
    * True iff every direct child of the root is a leaf (`BoundReference` or `Literal`), i.e. the

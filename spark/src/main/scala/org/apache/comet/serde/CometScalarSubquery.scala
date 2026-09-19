@@ -26,28 +26,35 @@ import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
 import org.apache.comet.serde.QueryPlanSerde.{serializeDataType, supportedDataType}
 
 object CometScalarSubquery extends CometExpressionSerde[ScalarSubquery] {
+
+  override def getUnsupportedReasons(): Seq[String] = Seq(
+    "Not all data types are supported for scalar subquery results")
+
+  override def getSupportLevel(expr: ScalarSubquery): SupportLevel =
+    if (supportedDataType(expr.dataType)) {
+      Compatible()
+    } else {
+      Unsupported(Some(s"Unsupported data type: ${expr.dataType}"))
+    }
+
   override def convert(
       expr: ScalarSubquery,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    if (supportedDataType(expr.dataType)) {
-      val dataType = serializeDataType(expr.dataType)
-      if (dataType.isEmpty) {
-        withFallbackReason(
-          expr,
-          s"Failed to serialize datatype ${expr.dataType} for scalar subquery")
-        return None
-      }
-
-      val builder = ExprOuterClass.Subquery
-        .newBuilder()
-        .setId(expr.exprId.id)
-        .setDatatype(dataType.get)
-      Some(ExprOuterClass.Expr.newBuilder().setSubquery(builder).build())
-    } else {
-      withFallbackReason(expr, s"Unsupported data type: ${expr.dataType}")
-      None
+    // getSupportLevel has already screened the data type with `supportedDataType`. That is a
+    // different predicate from `serializeDataType`, which can still decline, so keep this check.
+    val dataType = serializeDataType(expr.dataType)
+    if (dataType.isEmpty) {
+      withFallbackReason(
+        expr,
+        s"Failed to serialize datatype ${expr.dataType} for scalar subquery")
+      return None
     }
 
+    val builder = ExprOuterClass.Subquery
+      .newBuilder()
+      .setId(expr.exprId.id)
+      .setDatatype(dataType.get)
+    Some(ExprOuterClass.Expr.newBuilder().setSubquery(builder).build())
   }
 }

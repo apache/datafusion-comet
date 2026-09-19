@@ -24,7 +24,7 @@ use crate::agg_funcs::covariance::{CovarianceAccumulator, CovarianceGroupsAccumu
 use crate::agg_funcs::stddev::StddevAccumulator;
 use crate::agg_funcs::variance::VarianceGroupsAccumulator;
 use arrow::compute::filter;
-use datafusion::common::{Result, ScalarValue};
+use datafusion::common::{not_impl_err, Result, ScalarValue};
 use datafusion::logical_expr::function::{AccumulatorArgs, StateFieldsArgs};
 use datafusion::logical_expr::{
     Accumulator, AggregateUDFImpl, EmitTo, GroupsAccumulator, Signature, Volatility,
@@ -335,7 +335,6 @@ impl GroupsAccumulator for CorrelationGroupsAccumulator {
         &mut self,
         values: &[ArrayRef],
         group_indices: &[usize],
-        opt_filter: Option<&BooleanArray>,
         total_num_groups: usize,
     ) -> Result<()> {
         assert_eq!(values.len(), 6, "six state columns to merge_batch");
@@ -358,11 +357,11 @@ impl GroupsAccumulator for CorrelationGroupsAccumulator {
         ];
 
         self.covar
-            .merge_batch(&covar_state, group_indices, opt_filter, total_num_groups)?;
+            .merge_batch(&covar_state, group_indices, total_num_groups)?;
         self.var1
-            .merge_batch(&var1_state, group_indices, opt_filter, total_num_groups)?;
+            .merge_batch(&var1_state, group_indices, total_num_groups)?;
         self.var2
-            .merge_batch(&var2_state, group_indices, opt_filter, total_num_groups)?;
+            .merge_batch(&var2_state, group_indices, total_num_groups)?;
         Ok(())
     }
 
@@ -440,6 +439,14 @@ impl GroupsAccumulator for CorrelationGroupsAccumulator {
             Arc::clone(&var1_state[2]),
             Arc::clone(&var2_state[2]),
         ])
+    }
+
+    fn convert_to_state(
+        &self,
+        _values: &[ArrayRef],
+        _opt_filter: Option<&BooleanArray>,
+    ) -> Result<Vec<ArrayRef>> {
+        not_impl_err!("Input batch conversion to state not implemented")
     }
 
     fn size(&self) -> usize {
