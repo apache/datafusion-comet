@@ -47,6 +47,14 @@ converted into Arrow format, allowing the Comet pipeline to take over after that
 Comet does not provide a Rust-based JSON scan, but when `spark.comet.convert.json.enabled` is enabled, data is immediately
 converted into Arrow format, allowing the Comet pipeline to take over after that.
 
+### Spark-to-Comet conversion types
+
+Spark-to-Comet conversion supports `ARRAY<STRING>` with binary string semantics, including
+nullable arrays and nullable elements, both as top-level fields and inside supported structs.
+This applies to Spark row and columnar inputs when conversion is enabled for the source.
+Other array element types, nested arrays, arrays of structs, maps, and non-binary string
+collations remain unsupported at this conversion boundary. Source defaults are unchanged.
+
 ## Data Catalogs
 
 ### Apache Iceberg
