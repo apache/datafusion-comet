@@ -924,6 +924,112 @@ class CometIcebergNativeSuite
     }
   }
 
+  // One data file, one row group, many pages: nothing can be pruned at file or row-group
+  // granularity, so a narrow id range reads fewer bytes than the full scan only by skipping
+  // pages inside that row group. This pins iceberg-rust page-index skipping in the native scan.
+  test("native scan skips pages within a single row group") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        // A 512 MB row group holds every row and 2000-row pages give the id column many pages.
+        // Uncompressed storage keeps the sorted id column large, so reading all of its pages
+        // is visible against the bound below: the parquet row filter alone skips payload pages
+        // once the predicate is evaluated, and only page-index row selection also skips the id
+        // pages, which is what this test pins. With row selection disabled the range read is
+        // 8.6 MB of the 20.6 MB file and fails the bound; enabled, it is 0.6 MB.
+        spark.sql("""
+          CREATE TABLE test_cat.db.page_skip_test (
+            id BIGINT,
+            payload STRING
+          ) USING iceberg
+          TBLPROPERTIES (
+            'write.parquet.row-group-size-bytes' = '536870912',
+            'write.parquet.page-size-bytes' = '16384',
+            'write.parquet.page-row-limit' = '2000',
+            'write.parquet.compression-codec' = 'uncompressed'
+          )
+        """)
+
+        val numRows = 1000000L
+        val payloadLength = 16L
+        spark
+          .range(numRows)
+          .repartition(1)
+          .sortWithinPartitions("id")
+          .selectExpr("id", "substr(sha2(cast(id AS STRING), 256), 1, 16) AS payload")
+          .write
+          .format("iceberg")
+          .mode("append")
+          .saveAsTable("test_cat.db.page_skip_test")
+
+        val files = spark
+          .sql("SELECT file_path FROM test_cat.db.page_skip_test.files")
+          .collect()
+        assert(files.length == 1, s"expected one data file, got ${files.mkString(", ")}")
+        val dataFilePath = files.head.getString(0)
+
+        // Check the fixture shape in the footer so it cannot silently degrade into a layout
+        // where file-level or row-group-level pruning would explain the byte savings.
+        val reader = org.apache.parquet.hadoop.ParquetFileReader.open(
+          org.apache.parquet.hadoop.util.HadoopInputFile.fromPath(
+            new org.apache.hadoop.fs.Path(dataFilePath),
+            spark.sessionState.newHadoopConf()))
+        val idPages =
+          try {
+            val rowGroups = reader.getRowGroups
+            assert(rowGroups.size == 1, s"expected one row group, got ${rowGroups.size}")
+            val idChunk = rowGroups
+              .get(0)
+              .getColumns
+              .asScala
+              .find(_.getPath.toDotString == "id")
+              .getOrElse(fail("id column chunk not found"))
+            reader.readOffsetIndex(idChunk).getPageCount
+          } finally {
+            reader.close()
+          }
+        assert(idPages > 50, s"expected more than 50 id pages, got $idPages")
+
+        def runAndCollectScan(sql: String): (CometIcebergNativeScanExec, Long) = {
+          val df = spark.sql(sql)
+          val rows = df.collect()
+          val scans = collectIcebergNativeScans(df.queryExecution.executedPlan)
+          assert(scans.length == 1, s"expected one native scan, got ${scans.length}")
+          (scans.head, rows.head.getLong(0))
+        }
+
+        val (fullScan, fullSum) =
+          runAndCollectScan("SELECT sum(length(payload)) FROM test_cat.db.page_skip_test")
+        assert(fullSum == numRows * payloadLength)
+        val fullBytes = fullScan.metrics("bytes_scanned").value
+        assert(fullBytes > 0, s"bytes_scanned for the full read should be > 0, got $fullBytes")
+
+        val (rangeScan, rangeSum) = runAndCollectScan(
+          "SELECT sum(length(payload)) FROM test_cat.db.page_skip_test " +
+            "WHERE id BETWEEN 1000 AND 1100")
+        assert(rangeSum == 101L * payloadLength)
+        assert(rangeScan.metrics("output_rows").value == 101)
+        val rangeBytes = rangeScan.metrics("bytes_scanned").value
+
+        assert(fullScan.metrics("num_splits").value == 1)
+        assert(rangeScan.metrics("num_splits").value == 1)
+        assert(
+          rangeBytes * 5 < fullBytes,
+          "range query should read under 20% of the full read via page skipping: " +
+            s"range=$rangeBytes, full=$fullBytes, id pages=$idPages")
+
+      }
+    }
+  }
+
   test("MOR table with EQUALITY deletes - verify deletes are applied") {
     assume(icebergAvailable, "Iceberg not available in classpath")
 
