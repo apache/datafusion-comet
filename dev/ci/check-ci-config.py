@@ -105,6 +105,7 @@ BUILD_JOBS = {
     "spark_4_0",
     "spark_4_1",
     "spark_4_1_hive",
+    "spark_4_2",
     "iceberg_1_8",
     "iceberg_1_9",
     "iceberg_1_10",
@@ -186,10 +187,16 @@ NIGHTLY_TIER = {
 # `schedule` cases below assert its absence rather than quietly accept it
 # coming back.
 SPARK_DEPRECATED = {"spark_3_4"}
+# Spark 4.2 is experimental rather than deprecated, but it is routed the same
+# way: outside the queue and nightly tiers entirely, reachable through
+# `run-spark-4.2-tests` on a pull request or a workflow_dispatch. Keeping it
+# in its own set is what makes the `merge_group` and `schedule` cases below
+# assert its absence rather than quietly accept it arriving.
+SPARK_EXPERIMENTAL = {"spark_4_2"}
 # One label opts a pull request into every Iceberg version, whichever tier
 # each sits in.
 ICEBERG_OPT_IN = {"iceberg_1_8", "iceberg_1_9", "iceberg_1_10", "iceberg_1_11"}
-ALL_JOBS = QUEUE_TIER | NIGHTLY_TIER | SPARK_DEPRECATED | {"docs"}
+ALL_JOBS = QUEUE_TIER | NIGHTLY_TIER | SPARK_DEPRECATED | SPARK_EXPERIMENTAL | {"docs"}
 assert not QUEUE_TIER & NIGHTLY_TIER, "a job is queue or nightly, never both"
 
 POLICY_CASES = [
@@ -333,6 +340,21 @@ POLICY_CASES = [
             "labels": ["run-spark-3.4-tests"],
         },
         {"spark_3_4"},
+    ),
+    # Spark 4.2 is experimental and routed like 3.4: the label is the only way
+    # it reaches a pull request, and it pulls in no other Spark version.
+    (
+        {"name": "pull_request", "action": "synchronize", "labels": ["run-spark-4.2-tests"]},
+        PR_TIER | {"spark_4_2"},
+    ),
+    (
+        {
+            "name": "pull_request",
+            "action": "labeled",
+            "label": "run-spark-4.2-tests",
+            "labels": ["run-spark-4.2-tests"],
+        },
+        {"spark_4_2"},
     ),
     (
         {"name": "pull_request", "action": "synchronize", "labels": ["run-iceberg-tests"]},
