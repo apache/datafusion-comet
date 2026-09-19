@@ -525,8 +525,6 @@ object CometShuffleExchangeExec
       case SinglePartition =>
       // we already checked that the input types are supported
       case RangePartitioning(orderings, _) =>
-        val strictFloatingPoint = CometConf.COMET_EXEC_STRICT_FLOATING_POINT.get(conf)
-
         /**
          * Determine which data types are supported as partition columns in native shuffle.
          *
@@ -537,8 +535,10 @@ object CometShuffleExchangeExec
         def supportedRangePartitioningDataType(dt: DataType): Boolean = dt match {
           // Collated strings require collation-aware ordering; Comet only compares raw bytes.
           case st: StringType if isStringCollationType(st) => false
-          case _: FloatType | _: DoubleType =>
-            !strictFloatingPoint
+          // The native range partitioner normalizes its comparison keys and its sampled boundary
+          // rows the same way the native sort does, so scalar floats match Spark's ordering even
+          // under spark.comet.exec.strictFloatingPoint=true.
+          case _: FloatType | _: DoubleType => true
           case _: BooleanType | _: ByteType | _: ShortType | _: IntegerType | _: LongType |
               _: StringType | _: BinaryType | _: TimestampType | _: TimestampNTZType |
               _: DecimalType | _: DateType =>
@@ -562,15 +562,7 @@ object CometShuffleExchangeExec
         }
         for (dt <- orderings.map(_.dataType).distinct) {
           if (!supportedRangePartitioningDataType(dt)) {
-            val reason = dt match {
-              case _: FloatType | _: DoubleType if strictFloatingPoint =>
-                s"Range partitioning on $dt is not 100% compatible with Spark, and Comet is " +
-                  s"running with ${CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key}=true. " +
-                  s"${CometConf.COMPAT_GUIDE}"
-              case _ =>
-                s"unsupported range partitioning data type for native shuffle: $dt"
-            }
-            reasons += reason
+            reasons += s"unsupported range partitioning data type for native shuffle: $dt"
           }
         }
       case RoundRobinPartitioning(_) =>
