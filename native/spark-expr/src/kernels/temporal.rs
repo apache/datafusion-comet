@@ -32,10 +32,53 @@ use arrow::array::{
 };
 use arrow::{
     array::*,
-    datatypes::{DataType, TimeUnit},
+    datatypes::{DataType, Field, TimeUnit},
 };
+use datafusion::{
+    common::{config::ConfigOptions, ScalarValue},
+    logical_expr::{ColumnarValue, ScalarFunctionArgs},
+};
+use datafusion_functions::datetime;
 
 use crate::SparkError;
+
+/// Invoke DataFusion's physical `date_trunc` implementation with a scalar granularity.
+///
+/// Spark syntax normalization and compatibility fallback decisions deliberately live outside
+/// this helper so the upstream execution boundary stays obvious.
+fn datafusion_date_trunc(
+    array: ArrayRef,
+    granularity: &'static str,
+) -> Result<ArrayRef, SparkError> {
+    let data_type = array.data_type().clone();
+    let number_rows = array.len();
+    let args = vec![
+        ColumnarValue::Scalar(ScalarValue::Utf8(Some(granularity.to_string()))),
+        ColumnarValue::Array(array),
+    ];
+    let arg_fields = args
+        .iter()
+        .enumerate()
+        .map(|(index, value)| {
+            Arc::new(Field::new(
+                format!("date_trunc_arg_{index}"),
+                value.data_type(),
+                true,
+            ))
+        })
+        .collect();
+
+    datetime::date_trunc()
+        .invoke_with_args(ScalarFunctionArgs {
+            args,
+            arg_fields,
+            number_rows,
+            return_field: Arc::new(Field::new("date_trunc", data_type, true)),
+            config_options: Arc::new(ConfigOptions::default()),
+        })
+        .and_then(|value| value.to_array(number_rows))
+        .map_err(|error| SparkError::Internal(error.to_string()))
+}
 
 // Copied from arrow_arith/temporal.rs
 macro_rules! return_compute_error_with {
@@ -353,19 +396,38 @@ fn date_trunc_fn_for_format(format: &str) -> Result<DateTruncFn, SparkError> {
         })
 }
 
-/// Optimized date truncation for Date32 arrays
-/// Works directly with days since epoch instead of converting to/from NaiveDateTime
+const MICROS_PER_DAY: i64 = 86_400_000_000;
+
+#[inline]
+fn fits_timestamp_nanosecond(micros: i64) -> bool {
+    micros.checked_mul(1_000).is_some()
+}
+
+/// DataFusion's coarse truncation first converts the input to nanoseconds. Although an input near
+/// the lower TimestampNanosecond bound can itself be represented, truncating it may move the
+/// result before that bound: for example, `1677-09-22` truncated to YEAR becomes `1677-01-01`.
+/// The result can move backward by 365 days (366 when starting from December 31 in a leap year),
+/// and timezone gap handling can shift it by a few more hours. Round that worst case up to 370
+/// days so both DataFusion's input and coarse-truncation result remain representable. The
+/// effective microsecond interval is approximately `1678-09-26T00:12:43.145225Z` through
+/// `2262-04-11T23:47:16.854775Z`; because Date32 values are UTC midnight, its first upstream date
+/// is 1678-09-27 and its last is 2262-04-11.
+#[inline]
+fn fits_datafusion_coarse_trunc_range(micros: i64) -> bool {
+    const LOWER_NANOSECOND_MICROS: i64 = i64::MIN / 1_000;
+    const COARSE_TRUNC_MARGIN_MICROS: i64 = 370 * MICROS_PER_DAY;
+
+    fits_timestamp_nanosecond(micros)
+        && micros >= LOWER_NANOSECOND_MICROS + COARSE_TRUNC_MARGIN_MICROS
+}
+
+/// Truncate Date32 values directly in days since the epoch.
+///
+/// Routing Date32 through DataFusion's timestamp kernel requires two casts and temporary arrays,
+/// which is materially slower than this single-pass implementation.
 fn date_trunc_date32(array: &Date32Array, format: String) -> Result<Date32Array, SparkError> {
-    // Select the truncation function based on format
     let trunc_fn = date_trunc_fn_for_format(&format)?;
-
-    // Apply truncation to each element
-    let result: Date32Array = array
-        .iter()
-        .map(|opt_days| opt_days.and_then(trunc_fn))
-        .collect();
-
-    Ok(result)
+    Ok(array.iter().map(|value| value.and_then(trunc_fn)).collect())
 }
 
 ///
@@ -584,6 +646,25 @@ type NtzTruncFn = fn(NaiveDateTime) -> Option<NaiveDateTime>;
 /// Truncates a `DateTime<Tz>`, returning `None` if the result is out of range.
 type TzTruncFn = fn(DateTime<Tz>) -> Option<DateTime<Tz>>;
 
+/// The Spark `date_trunc` spellings and their canonical DataFusion granularities.
+const TIMESTAMP_TRUNC_ALIASES: [(&str, &str); 15] = [
+    ("YEAR", "year"),
+    ("YYYY", "year"),
+    ("YY", "year"),
+    ("QUARTER", "quarter"),
+    ("MONTH", "month"),
+    ("MON", "month"),
+    ("MM", "month"),
+    ("WEEK", "week"),
+    ("DAY", "day"),
+    ("DD", "day"),
+    ("HOUR", "hour"),
+    ("MINUTE", "minute"),
+    ("SECOND", "second"),
+    ("MILLISECOND", "millisecond"),
+    ("MICROSECOND", "microsecond"),
+];
+
 /// The `timestamp_trunc` formats Spark accepts for the NTZ path, and the truncation each one
 /// selects. All entries are ASCII, so `eq_ignore_ascii_case` on the raw input matches Spark
 /// without allocating.
@@ -653,6 +734,19 @@ fn tz_trunc_fn_for_format(format: &str) -> Result<TzTruncFn, SparkError> {
         })
 }
 
+/// Normalize Spark `date_trunc` aliases without accepting additional DataFusion spellings.
+fn normalize_timestamp_trunc_format(format: &str) -> Result<&'static str, SparkError> {
+    TIMESTAMP_TRUNC_ALIASES
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case(format))
+        .map(|(_, granularity)| *granularity)
+        .ok_or_else(|| {
+            SparkError::Internal(format!(
+                "Unsupported format: {format:?} for function 'timestamp_trunc'"
+            ))
+        })
+}
+
 /// Truncate a TimestampNTZ array without any timezone conversion.
 /// NTZ values are timezone-independent; we treat the raw microseconds as a naive datetime.
 fn timestamp_trunc_ntz<T>(
@@ -678,6 +772,99 @@ where
         .collect();
 
     Ok(result)
+}
+
+/// The scalar-format implementation retained for values outside DataFusion 55.1's internal
+/// TimestampNanosecond range. Row-format paths continue to call the same underlying helpers.
+fn timestamp_trunc_legacy(
+    array: &TimestampMicrosecondArray,
+    format: &str,
+) -> Result<TimestampMicrosecondArray, SparkError> {
+    let builder = TimestampMicrosecondBuilder::with_capacity(array.len());
+    let iter = ArrayIter::new(array);
+    match array.data_type() {
+        DataType::Timestamp(TimeUnit::Microsecond, None) => {
+            timestamp_trunc_ntz(array, format.to_string())
+        }
+        DataType::Timestamp(TimeUnit::Microsecond, Some(tz)) => {
+            let trunc_fn = tz_trunc_fn_for_format(format)?;
+            as_timestamp_tz_with_op::<&TimestampMicrosecondArray, TimestampMicrosecondType, _>(
+                iter,
+                builder,
+                tz,
+                |dt| as_micros_from_unix_epoch_utc(trunc_fn(dt)),
+            )
+        }
+        dt => return_compute_error_with!(
+            "Unsupported input type '{:?}' for function 'timestamp_trunc'",
+            dt
+        ),
+    }
+}
+
+fn datafusion_timestamp_trunc_requires_nanos(granularity: &str, has_timezone: bool) -> bool {
+    match granularity {
+        "microsecond" | "millisecond" | "second" | "minute" => false,
+        "hour" | "day" => has_timezone,
+        "week" | "month" | "quarter" | "year" => true,
+        _ => unreachable!("granularity was normalized before compatibility dispatch"),
+    }
+}
+
+fn timestamp_trunc_upstream(
+    array: &TimestampMicrosecondArray,
+    format: &str,
+) -> Result<TimestampMicrosecondArray, SparkError> {
+    let granularity = normalize_timestamp_trunc_format(format)?;
+    let requires_nanos =
+        datafusion_timestamp_trunc_requires_nanos(granularity, array.timezone().is_some());
+
+    if !requires_nanos
+        || array
+            .iter()
+            .flatten()
+            .all(fits_datafusion_coarse_trunc_range)
+    {
+        let result = datafusion_date_trunc(Arc::new(array.clone()), granularity)?;
+        return Ok(result
+            .as_any()
+            .downcast_ref::<TimestampMicrosecondArray>()
+            .expect("DataFusion date_trunc timestamp result mismatch")
+            .clone());
+    }
+
+    let upstream_input = TimestampMicrosecondArray::from_iter(
+        array
+            .iter()
+            .map(|value| value.filter(|micros| fits_datafusion_coarse_trunc_range(*micros))),
+    )
+    .with_timezone_opt(array.timezone());
+    let legacy_input = TimestampMicrosecondArray::from_iter(
+        array
+            .iter()
+            .map(|value| value.filter(|micros| !fits_datafusion_coarse_trunc_range(*micros))),
+    )
+    .with_timezone_opt(array.timezone());
+
+    let upstream = datafusion_date_trunc(Arc::new(upstream_input), granularity)?;
+    let upstream = upstream
+        .as_any()
+        .downcast_ref::<TimestampMicrosecondArray>()
+        .expect("DataFusion date_trunc timestamp result mismatch");
+    let legacy = timestamp_trunc_legacy(&legacy_input, format)?;
+
+    Ok(
+        TimestampMicrosecondArray::from_iter(array.iter().enumerate().map(|(index, value)| {
+            value.map(|micros| {
+                if fits_datafusion_coarse_trunc_range(micros) {
+                    upstream.value(index)
+                } else {
+                    legacy.value(index)
+                }
+            })
+        }))
+        .with_timezone_opt(array.timezone()),
+    )
 }
 
 /// Truncate a single NTZ value and append to builder
@@ -711,19 +898,14 @@ where
     T: ArrowTemporalType + ArrowNumericType,
     i64: From<T::Native>,
 {
-    let builder = TimestampMicrosecondBuilder::with_capacity(array.len());
-    let iter = ArrayIter::new(array);
     match array.data_type() {
-        DataType::Timestamp(TimeUnit::Microsecond, None) => {
-            // TimestampNTZ: operate directly on naive microsecond values without timezone
-            timestamp_trunc_ntz(array, format)
-        }
-        DataType::Timestamp(TimeUnit::Microsecond, Some(tz)) => {
-            let trunc_fn = tz_trunc_fn_for_format(&format)?;
-            as_timestamp_tz_with_op::<&PrimitiveArray<T>, T, _>(iter, builder, tz, |dt| {
-                as_micros_from_unix_epoch_utc(trunc_fn(dt))
-            })
-        }
+        DataType::Timestamp(TimeUnit::Microsecond, _) => timestamp_trunc_upstream(
+            array
+                .as_any()
+                .downcast_ref::<TimestampMicrosecondArray>()
+                .expect("TimestampMicrosecond type mismatch"),
+            &format,
+        ),
         dt => return_compute_error_with!(
             "Unsupported input type '{:?}' for function 'timestamp_trunc'",
             dt
@@ -897,37 +1079,240 @@ where
 #[cfg(test)]
 mod tests {
     use crate::kernels::temporal::{
-        date_trunc, date_trunc_array_fmt_dyn, timestamp_trunc, timestamp_trunc_array_fmt_dyn,
+        date_trunc, date_trunc_array_fmt_dyn, date_trunc_dyn, timestamp_trunc,
+        timestamp_trunc_array_fmt_dyn, timestamp_trunc_dyn,
     };
+    use crate::SparkError;
     use arrow::array::{
         builder::{PrimitiveDictionaryBuilder, StringDictionaryBuilder},
         iterator::ArrayIter,
         types::{Date32Type, Int32Type, TimestampMicrosecondType},
         Array, Date32Array, PrimitiveArray, StringArray, TimestampMicrosecondArray,
     };
+    use chrono::{DateTime, Datelike, NaiveDate};
     use std::sync::Arc;
 
+    fn epoch_days(date: &str) -> i32 {
+        NaiveDate::parse_from_str(date, "%Y-%m-%d")
+            .unwrap()
+            .num_days_from_ce()
+            - 719_163
+    }
+
+    fn assert_date_trunc(format: &str, input: &[Option<&str>], expected: &[Option<&str>]) {
+        let input = Date32Array::from(
+            input
+                .iter()
+                .map(|date| date.map(epoch_days))
+                .collect::<Vec<_>>(),
+        );
+        let expected = Date32Array::from(
+            expected
+                .iter()
+                .map(|date| date.map(epoch_days))
+                .collect::<Vec<_>>(),
+        );
+        assert_eq!(date_trunc(&input, format.to_string()).unwrap(), expected);
+    }
+
+    fn instant_micros(instant: &str) -> i64 {
+        DateTime::parse_from_rfc3339(instant)
+            .unwrap()
+            .timestamp_micros()
+    }
+
+    fn assert_timestamp_trunc(
+        format: &str,
+        timezone: Option<&str>,
+        input: &[Option<&str>],
+        expected: &[Option<&str>],
+    ) {
+        let input = TimestampMicrosecondArray::from(
+            input
+                .iter()
+                .map(|instant| instant.map(instant_micros))
+                .collect::<Vec<_>>(),
+        )
+        .with_timezone_opt(timezone);
+        let expected = TimestampMicrosecondArray::from(
+            expected
+                .iter()
+                .map(|instant| instant.map(instant_micros))
+                .collect::<Vec<_>>(),
+        )
+        .with_timezone_opt(timezone);
+        assert_eq!(
+            timestamp_trunc(&input, format.to_string()).unwrap(),
+            expected
+        );
+    }
+
     #[test]
-    #[cfg_attr(miri, ignore)] // test takes too long with miri
     fn test_date_trunc() {
-        let size = 1000;
-        let mut vec: Vec<i32> = Vec::with_capacity(size);
-        for i in 0..size {
-            vec.push(i as i32);
+        for format in ["YEAR", "YYYY", "YY", "year", "Year", "yEaR"] {
+            assert_date_trunc(format, &[Some("2024-05-17")], &[Some("2024-01-01")]);
         }
-        let array = Date32Array::from(vec);
-        for fmt in [
-            "YEAR", "YYYY", "YY", "QUARTER", "MONTH", "MON", "MM", "WEEK",
-        ] {
-            match date_trunc(&array, fmt.to_string()) {
-                Ok(a) => {
-                    for i in 0..size {
-                        assert!(array.values().get(i) >= a.values().get(i))
-                    }
-                }
-                _ => unreachable!(),
-            }
+        for format in ["MONTH", "MON", "MM", "month", "Mon"] {
+            assert_date_trunc(format, &[Some("2024-05-17")], &[Some("2024-05-01")]);
         }
+
+        assert_date_trunc(
+            "QUARTER",
+            &[
+                Some("2024-01-01"),
+                Some("2024-03-31"),
+                Some("2024-04-01"),
+                Some("2024-06-30"),
+                Some("2024-07-01"),
+                Some("2024-10-01"),
+            ],
+            &[
+                Some("2024-01-01"),
+                Some("2024-01-01"),
+                Some("2024-04-01"),
+                Some("2024-04-01"),
+                Some("2024-07-01"),
+                Some("2024-10-01"),
+            ],
+        );
+
+        assert_date_trunc(
+            "week",
+            &[
+                Some("2024-05-13"),
+                Some("2024-05-14"),
+                Some("2024-05-19"),
+                Some("2024-05-01"),
+                Some("2024-01-01"),
+                Some("2023-12-31"),
+            ],
+            &[
+                Some("2024-05-13"),
+                Some("2024-05-13"),
+                Some("2024-05-13"),
+                Some("2024-04-29"),
+                Some("2024-01-01"),
+                Some("2023-12-25"),
+            ],
+        );
+
+        let dates = [
+            Some("2024-02-29"),
+            Some("2000-02-29"),
+            Some("1900-02-28"),
+            Some("1969-12-31"),
+            Some("1960-02-29"),
+            Some("1900-01-01"),
+            // The input fits TimestampNanosecond, but truncating it to YEAR does not.
+            Some("1677-09-22"),
+            // Valid Spark Date32 outside TimestampNanosecond's range. DataFusion 55.1
+            // date_trunc internally converts coarse granularities to nanoseconds.
+            Some("3333-05-17"),
+            None,
+        ];
+        assert_date_trunc(
+            "YEAR",
+            &dates,
+            &[
+                Some("2024-01-01"),
+                Some("2000-01-01"),
+                Some("1900-01-01"),
+                Some("1969-01-01"),
+                Some("1960-01-01"),
+                Some("1900-01-01"),
+                Some("1677-01-01"),
+                Some("3333-01-01"),
+                None,
+            ],
+        );
+        assert_date_trunc(
+            "QUARTER",
+            &dates,
+            &[
+                Some("2024-01-01"),
+                Some("2000-01-01"),
+                Some("1900-01-01"),
+                Some("1969-10-01"),
+                Some("1960-01-01"),
+                Some("1900-01-01"),
+                Some("1677-07-01"),
+                Some("3333-04-01"),
+                None,
+            ],
+        );
+        assert_date_trunc(
+            "MONTH",
+            &dates,
+            &[
+                Some("2024-02-01"),
+                Some("2000-02-01"),
+                Some("1900-02-01"),
+                Some("1969-12-01"),
+                Some("1960-02-01"),
+                Some("1900-01-01"),
+                Some("1677-09-01"),
+                Some("3333-05-01"),
+                None,
+            ],
+        );
+        assert_date_trunc(
+            "WEEK",
+            &dates,
+            &[
+                Some("2024-02-26"),
+                Some("2000-02-28"),
+                Some("1900-02-26"),
+                Some("1969-12-29"),
+                Some("1960-02-29"),
+                Some("1900-01-01"),
+                Some("1677-09-20"),
+                Some("3333-05-11"),
+                None,
+            ],
+        );
+
+        let input = Date32Array::from(vec![epoch_days("2024-05-17")]);
+        for format in ["DAY", "HOUR", "SECOND", "invalid", " YEAR ", ""] {
+            let SparkError::Internal(message) = date_trunc(&input, format.to_string()).unwrap_err()
+            else {
+                panic!("expected an internal unsupported-format error");
+            };
+            assert_eq!(
+                message,
+                format!("Unsupported format: {format:?} for function 'date_trunc'")
+            );
+        }
+    }
+
+    #[test]
+    fn test_date_trunc_scalar_format_dictionary() {
+        let mut builder = PrimitiveDictionaryBuilder::<Int32Type, Date32Type>::new();
+        builder.append(epoch_days("2024-05-17")).unwrap();
+        builder.append(epoch_days("2024-06-30")).unwrap();
+        builder.append(epoch_days("2024-05-17")).unwrap();
+        builder.append_null();
+        builder.append(epoch_days("1969-12-31")).unwrap();
+        let input = builder.finish();
+        let input_keys = input.keys().clone();
+
+        let result = date_trunc_dyn(&input, "MONTH".to_string()).unwrap();
+        let result = result
+            .as_any()
+            .downcast_ref::<arrow::array::DictionaryArray<Int32Type>>()
+            .unwrap();
+        assert_eq!(result.keys(), &input_keys);
+
+        let decoded = result.downcast_dict::<Date32Array>().unwrap();
+        assert_eq!(
+            decoded.into_iter().collect::<Vec<_>>(),
+            vec![
+                Some(epoch_days("2024-05-01")),
+                Some(epoch_days("2024-06-01")),
+                Some(epoch_days("2024-05-01")),
+                None,
+                Some(epoch_days("1969-12-01")),
+            ]
+        );
     }
 
     #[test]
@@ -1047,40 +1432,180 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore)] // test takes too long with miri
     fn test_timestamp_trunc() {
-        let size = 1000;
-        let mut vec: Vec<i64> = Vec::with_capacity(size);
-        for i in 0..size {
-            vec.push(i as i64);
+        let input = [Some("2024-05-17T12:34:56.123456Z"), None];
+        for format in ["YEAR", "YYYY", "YY", "year", "Year", "yEaR"] {
+            assert_timestamp_trunc(
+                format,
+                Some("UTC"),
+                &input,
+                &[Some("2024-01-01T00:00:00Z"), None],
+            );
         }
-        let array = TimestampMicrosecondArray::from(vec).with_timezone_utc();
-        for fmt in [
-            "YEAR",
-            "YYYY",
-            "YY",
-            "QUARTER",
-            "MONTH",
-            "MON",
-            "MM",
-            "WEEK",
-            "DAY",
-            "DD",
-            "HOUR",
-            "MINUTE",
-            "SECOND",
-            "MILLISECOND",
-            "MICROSECOND",
+        for format in ["MONTH", "MON", "MM", "month", "Mon"] {
+            assert_timestamp_trunc(
+                format,
+                Some("UTC"),
+                &input,
+                &[Some("2024-05-01T00:00:00Z"), None],
+            );
+        }
+        for (format, expected) in [
+            ("QUARTER", "2024-04-01T00:00:00Z"),
+            ("WEEK", "2024-05-13T00:00:00Z"),
+            ("DAY", "2024-05-17T00:00:00Z"),
+            ("DD", "2024-05-17T00:00:00Z"),
+            ("HOUR", "2024-05-17T12:00:00Z"),
+            ("MINUTE", "2024-05-17T12:34:00Z"),
+            ("SECOND", "2024-05-17T12:34:56Z"),
+            ("MILLISECOND", "2024-05-17T12:34:56.123Z"),
+            ("MICROSECOND", "2024-05-17T12:34:56.123456Z"),
         ] {
-            match timestamp_trunc(&array, fmt.to_string()) {
-                Ok(a) => {
-                    for i in 0..size {
-                        assert!(array.values().get(i) >= a.values().get(i))
-                    }
-                }
-                _ => unreachable!(),
-            }
+            assert_timestamp_trunc(format, Some("UTC"), &input, &[Some(expected), None]);
         }
+
+        let invalid_input =
+            TimestampMicrosecondArray::from(vec![instant_micros("2024-05-17T12:34:56Z")])
+                .with_timezone_utc();
+        for format in ["MILLISECONDS", "invalid", " DAY ", ""] {
+            let SparkError::Internal(message) =
+                timestamp_trunc(&invalid_input, format.to_string()).unwrap_err()
+            else {
+                panic!("expected an internal unsupported-format error");
+            };
+            assert_eq!(
+                message,
+                format!("Unsupported format: {format:?} for function 'timestamp_trunc'")
+            );
+        }
+    }
+
+    #[test]
+    fn test_timestamp_trunc_wide_range_fallback() {
+        let input = [
+            Some("2024-05-17T12:34:56.123456Z"),
+            Some("3333-05-17T12:34:56.123456Z"),
+            Some("1969-12-31T23:59:59.123456Z"),
+            Some("1677-09-22T00:00:00Z"),
+            None,
+        ];
+        assert_timestamp_trunc(
+            "YEAR",
+            Some("UTC"),
+            &input,
+            &[
+                Some("2024-01-01T00:00:00Z"),
+                Some("3333-01-01T00:00:00Z"),
+                Some("1969-01-01T00:00:00Z"),
+                Some("1677-01-01T00:00:00Z"),
+                None,
+            ],
+        );
+        assert_timestamp_trunc(
+            "QUARTER",
+            Some("UTC"),
+            &input,
+            &[
+                Some("2024-04-01T00:00:00Z"),
+                Some("3333-04-01T00:00:00Z"),
+                Some("1969-10-01T00:00:00Z"),
+                Some("1677-07-01T00:00:00Z"),
+                None,
+            ],
+        );
+        assert_timestamp_trunc(
+            "WEEK",
+            Some("UTC"),
+            &input,
+            &[
+                Some("2024-05-13T00:00:00Z"),
+                Some("3333-05-11T00:00:00Z"),
+                Some("1969-12-29T00:00:00Z"),
+                Some("1677-09-20T00:00:00Z"),
+                None,
+            ],
+        );
+    }
+
+    #[test]
+    fn test_timestamp_trunc_dst_gap_and_overlap() {
+        assert_timestamp_trunc(
+            "HOUR",
+            Some("America/Los_Angeles"),
+            &[
+                Some("2024-11-03T08:30:15.123456Z"),
+                Some("2024-11-03T09:30:15.123456Z"),
+            ],
+            &[Some("2024-11-03T08:00:00Z"), Some("2024-11-03T09:00:00Z")],
+        );
+        assert_timestamp_trunc(
+            "DAY",
+            Some("America/New_York"),
+            &[
+                Some("2024-03-10T06:30:15.123456Z"),
+                Some("2024-03-10T07:30:15.123456Z"),
+                Some("2024-11-03T06:30:15.123456Z"),
+            ],
+            &[
+                Some("2024-03-10T05:00:00Z"),
+                Some("2024-03-10T05:00:00Z"),
+                Some("2024-11-03T04:00:00Z"),
+            ],
+        );
+        // Sao Paulo advanced from 23:59:59 on November 3 directly to 01:00 on November 4.
+        // Spark resolves DAY for a post-gap instant to that day's first valid local time.
+        assert_timestamp_trunc(
+            "DAY",
+            Some("America/Sao_Paulo"),
+            &[
+                Some("2018-11-04T02:30:15.123456Z"),
+                Some("2018-11-04T03:30:15.123456Z"),
+            ],
+            &[Some("2018-11-03T03:00:00Z"), Some("2018-11-04T03:00:00Z")],
+        );
+    }
+
+    #[test]
+    fn test_timestamp_trunc_scalar_format_dictionary() {
+        let mut builder = PrimitiveDictionaryBuilder::<Int32Type, TimestampMicrosecondType>::new();
+        builder
+            .append(instant_micros("2024-05-17T12:34:56Z"))
+            .unwrap();
+        builder
+            .append(instant_micros("2024-06-30T23:59:59Z"))
+            .unwrap();
+        builder
+            .append(instant_micros("2024-05-17T12:34:56Z"))
+            .unwrap();
+        builder.append_null();
+        let input = builder.finish();
+        let input = input.with_values(Arc::new(
+            input
+                .values()
+                .as_any()
+                .downcast_ref::<TimestampMicrosecondArray>()
+                .unwrap()
+                .clone()
+                .with_timezone_utc(),
+        ));
+        let input_keys = input.keys().clone();
+
+        let result = timestamp_trunc_dyn(&input, "MONTH".to_string()).unwrap();
+        let result = result
+            .as_any()
+            .downcast_ref::<arrow::array::DictionaryArray<Int32Type>>()
+            .unwrap();
+        assert_eq!(result.keys(), &input_keys);
+        let decoded = result.downcast_dict::<TimestampMicrosecondArray>().unwrap();
+        assert_eq!(
+            decoded.into_iter().collect::<Vec<_>>(),
+            vec![
+                Some(instant_micros("2024-05-01T00:00:00Z")),
+                Some(instant_micros("2024-06-01T00:00:00Z")),
+                Some(instant_micros("2024-05-01T00:00:00Z")),
+                None,
+            ]
+        );
     }
 
     #[test]
