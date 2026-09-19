@@ -44,6 +44,7 @@ import org.apache.spark.sql.execution.aggregate.{BaseAggregateExec, HashAggregat
 import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
 import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, BroadcastNestedLoopJoinExec, HashJoin, ShuffledHashJoinExec, SortMergeJoinExec}
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
+import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{ArrayType, BooleanType, ByteType, DataType, DateType, DecimalType, DoubleType, FloatType, IntegerType, LongType, MapType, ShortType, StringType, StructField, StructType, TimestampNTZType, TimestampType}
 import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.spark.util.SerializableConfiguration
@@ -546,7 +547,8 @@ private[comet] case class NativeExecContext(
     // binary when this context rides on the non-transient CometShuffleDependency.nativeShuffleSpec.
     @transient perPartitionByKey: Map[String, Array[Array[Byte]]],
     shuffleScanIndices: Set[Int],
-    hasScanInput: Boolean) {
+    hasScanInput: Boolean,
+    mapKeyDedupPolicy: String = SQLConf.get.getConf(SQLConf.MAP_KEY_DEDUP_POLICY).toString) {
   // Catch shape divergence (e.g. broadcast scans with different partition counts after DPP
   // filtering) at construction so consumers don't trip ArrayIndexOutOfBoundsException at
   // partition idx access time.
@@ -569,6 +571,22 @@ abstract class CometNativeExec extends CometExec {
 
   /** The Comet native operator */
   def nativeOp: Operator
+
+  /**
+   * The `spark.sql.mapKeyDedupPolicy` the native map constructors in this plan build their maps
+   * with, read the first time the plan is executed and kept from then on.
+   *
+   * Spark's `ArrayBasedMapBuilder` is a lazy field of the map expression, so it reads the policy
+   * when the expression is first evaluated and the expression keeps that builder for every later
+   * action. Neither materializing nor explaining a plan evaluates anything, so a Dataset
+   * explained under one policy and then executed under another builds its maps under the second
+   * one, and a Dataset executed twice across a change keeps the first one. A `lazy val` on this
+   * node gives the same two properties: it is forced by the first `doExecuteColumnar`, which
+   * `explain` does not reach, and the node lives in the cached `executedPlan`, so later actions
+   * reuse the value.
+   */
+  private[comet] lazy val mapKeyDedupPolicy: String =
+    SQLConf.get.getConf(SQLConf.MAP_KEY_DEDUP_POLICY).toString
 
   override protected def doPrepare(): Unit = prepareSubqueries(this)
 
@@ -624,7 +642,8 @@ abstract class CometNativeExec extends CometExec {
       ctx.subqueries,
       ctx.broadcastedHadoopConfForEncryption,
       ctx.encryptedFilePaths,
-      ctx.shuffleScanIndices) {
+      ctx.shuffleScanIndices,
+      mapKeyDedupPolicy = Some(ctx.mapKeyDedupPolicy)) {
       override def compute(split: Partition, context: TaskContext): Iterator[ColumnarBatch] = {
         val res = super.compute(split, context)
         if (ctx.hasScanInput) {
@@ -825,7 +844,8 @@ abstract class CometNativeExec extends CometExec {
       commonByKey = commonByKey,
       perPartitionByKey = perPartitionByKey,
       shuffleScanIndices = shuffleScanIndices,
-      hasScanInput = sparkPlans.exists(_.isInstanceOf[CometNativeScanExec]))
+      hasScanInput = sparkPlans.exists(_.isInstanceOf[CometNativeScanExec]),
+      mapKeyDedupPolicy = mapKeyDedupPolicy)
   }
 
   /**

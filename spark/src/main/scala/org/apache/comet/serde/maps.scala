@@ -136,21 +136,10 @@ object CometMapExtract extends CometExpressionSerde[GetMapValue] {
 /**
  * Shared gate for the native map constructors (`map_from_arrays`, `map_from_entries`), which
  * reproduce Spark's `ArrayBasedMapBuilder`: they reject a `NULL` key with `NULL_MAP_KEY` and
- * follow `spark.sql.mapKeyDedupPolicy`, which every constructor carries with its expression.
+ * follow `spark.sql.mapKeyDedupPolicy`, whose value Comet forwards to the native session as
+ * `datafusion.spark.map_key_dedup_policy`.
  */
 private object MapBuilderSupport {
-
-  /**
-   * The `spark.sql.mapKeyDedupPolicy` a map constructor carries into the native plan.
-   *
-   * Spark's `ArrayBasedMapBuilder` reads the policy when the expression is first evaluated and
-   * the expression keeps that builder, so a Dataset executed again after the session setting
-   * changed still builds its maps under the policy it started with. Reading the setting here,
-   * when the plan is converted, gives the native plan the same lifetime: the converted plan is
-   * reused across actions, so the policy travels with the expression rather than being read again
-   * by each native iterator.
-   */
-  def dedupPolicy: String = SQLConf.get.getConf(SQLConf.MAP_KEY_DEDUP_POLICY).toString
 
   /**
    * Floating-point keys differ from Spark only on 4.0 and later, and differently per function.
@@ -245,25 +234,17 @@ object CometMapFromArrays extends CometExpressionSerde[MapFromArrays] {
       expr: MapFromArrays,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
+    val keysExpr = exprToProtoInternal(expr.left, inputs, binding)
+    val valuesExpr = exprToProtoInternal(expr.right, inputs, binding)
     val keyType = expr.left.dataType.asInstanceOf[ArrayType].elementType
     val valueType = expr.right.dataType.asInstanceOf[ArrayType].elementType
     val returnType = MapType(keyType = keyType, valueType = valueType)
     for {
       keysNotNullExprProto <- exprToProtoInternal(IsNotNull(expr.left), inputs, binding)
       valuesNotNullExprProto <- exprToProtoInternal(IsNotNull(expr.right), inputs, binding)
-      keysExprProto <- exprToProtoInternal(expr.left, inputs, binding)
-      valuesExprProto <- exprToProtoInternal(expr.right, inputs, binding)
+      mapFromArraysExprProto <- scalarFunctionExprToProto("map_from_arrays", keysExpr, valuesExpr)
       nullLiteralExprProto <- exprToProtoInternal(Literal(null, returnType), inputs, binding)
     } yield {
-      val mapFromArraysExprProto = ExprOuterClass.Expr
-        .newBuilder()
-        .setMapFromArrays(
-          ExprOuterClass.MapFromArrays
-            .newBuilder()
-            .setKeys(keysExprProto)
-            .setValues(valuesExprProto)
-            .setMapKeyDedupPolicy(MapBuilderSupport.dedupPolicy))
-        .build()
       val valuesGuardProto = ExprOuterClass.CaseWhen
         .newBuilder()
         .addWhen(valuesNotNullExprProto)
@@ -285,7 +266,7 @@ object CometMapFromArrays extends CometExpressionSerde[MapFromArrays] {
 }
 
 object CometMapFromEntries
-    extends CometExpressionSerde[MapFromEntries]
+    extends CometScalarFunction[MapFromEntries]("map_from_entries")
     with CodegenDispatchFallback {
   val keyUnsupportedReason =
     "`BinaryType` is not supported as a map key in `map_from_entries`"
@@ -307,25 +288,10 @@ object CometMapFromEntries
       MapBuilderSupport.keySupport(expr.dataType.keyType)
     }
   }
-
-  override def convert(
-      expr: MapFromEntries,
-      inputs: Seq[Attribute],
-      binding: Boolean): Option[ExprOuterClass.Expr] =
-    exprToProtoInternal(expr.child, inputs, binding).map { entriesExprProto =>
-      ExprOuterClass.Expr
-        .newBuilder()
-        .setMapFromEntries(
-          ExprOuterClass.MapFromEntries
-            .newBuilder()
-            .setEntries(entriesExprProto)
-            .setMapKeyDedupPolicy(MapBuilderSupport.dedupPolicy))
-        .build()
-    }
 }
 
 object CometStrToMap
-    extends CometExpressionSerde[StringToMap]
+    extends CometScalarFunction[StringToMap]("str_to_map")
     with CometTypeShim
     with CodegenDispatchFallback {
 
@@ -355,25 +321,6 @@ object CometStrToMap
       Compatible(None)
     }
   }
-
-  override def convert(
-      expr: StringToMap,
-      inputs: Seq[Attribute],
-      binding: Boolean): Option[ExprOuterClass.Expr] =
-    for {
-      textExprProto <- exprToProtoInternal(expr.text, inputs, binding)
-      pairDelimExprProto <- exprToProtoInternal(expr.pairDelim, inputs, binding)
-      keyValueDelimExprProto <- exprToProtoInternal(expr.keyValueDelim, inputs, binding)
-    } yield ExprOuterClass.Expr
-      .newBuilder()
-      .setStrToMap(
-        ExprOuterClass.StrToMap
-          .newBuilder()
-          .setText(textExprProto)
-          .setPairDelimiter(pairDelimExprProto)
-          .setKeyValueDelimiter(keyValueDelimExprProto)
-          .setMapKeyDedupPolicy(MapBuilderSupport.dedupPolicy))
-      .build()
 }
 
 object CometCreateMap extends CometCodegenDispatch[CreateMap]

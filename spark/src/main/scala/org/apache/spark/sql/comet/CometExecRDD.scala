@@ -67,7 +67,8 @@ private[spark] class CometExecRDD(
     broadcastedHadoopConfForEncryption: Option[Broadcast[SerializableConfiguration]] = None,
     encryptedFilePaths: Seq[String] = Seq.empty,
     shuffleScanIndices: Set[Int] = Set.empty,
-    @transient perPartitionFilePaths: Array[Seq[String]] = Array.empty)
+    @transient perPartitionFilePaths: Array[Seq[String]] = Array.empty,
+    mapKeyDedupPolicy: Option[String] = None)
     extends RDD[ColumnarBatch](sc, inputRDDs.map(rdd => new OneToOneDependency(rdd))) {
 
   // Determine partition count: from inputs if available, otherwise from parameter
@@ -133,7 +134,8 @@ private[spark] class CometExecRDD(
       broadcastedHadoopConfForEncryption,
       encryptedFilePaths,
       shuffleBlockIters,
-      taskFilePaths = partition.filePaths)
+      taskFilePaths = partition.filePaths,
+      mapKeyDedupPolicy = mapKeyDedupPolicy)
 
     // Register ScalarSubqueries so native code can look them up
     subqueries.foreach(sub => CometScalarSubquery.setSubquery(it.id, sub))

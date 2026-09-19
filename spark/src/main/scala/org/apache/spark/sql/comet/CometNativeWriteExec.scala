@@ -180,6 +180,7 @@ case class CometNativeWriteExec(
     val capturedCommitter = committer
     val capturedJobTrackerID = jobTrackerID
     val capturedNativeOp = nativeOp
+    val capturedMapKeyDedupPolicy = mapKeyDedupPolicy
     val capturedAccumulator = taskCommitMessagesAccum // Capture accumulator for use in tasks
 
     // Execute native write operation with task-level commit protocol
@@ -242,7 +243,8 @@ case class CometNativeWriteExec(
         numPartitions,
         partitionId,
         None,
-        Seq.empty)
+        Seq.empty,
+        mapKeyDedupPolicy = Some(capturedMapKeyDedupPolicy))
 
       // Wrap the iterator to handle task commit/abort and capture TaskCommitMessage
       new Iterator[ColumnarBatch] {

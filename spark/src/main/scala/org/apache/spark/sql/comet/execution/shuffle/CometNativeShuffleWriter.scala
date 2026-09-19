@@ -198,7 +198,8 @@ class CometNativeShuffleWriter[K, V](
       ctx.broadcastedHadoopConfForEncryption,
       ctx.encryptedFilePaths,
       shuffleBlockIters,
-      shufflePartitionPusher = remoteDestination.map(_.callback))
+      shufflePartitionPusher = remoteDestination.map(_.callback),
+      mapKeyDedupPolicy = Some(ctx.mapKeyDedupPolicy))
 
     // Register subqueries against the iterator id so native callbacks resolve them to values.
     ctx.subqueries.foreach { sub =>

@@ -248,13 +248,8 @@ class CometMapExpressionSuite extends CometTestBase {
       withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
         spark.range(0, 1, 1, 1).write.parquet(path)
       }
-      def query(): DataFrame = spark.read
-        .parquet(path)
-        .selectExpr(
-          "map_from_arrays(array(id, id), array(1, 2)) AS a",
-          "map_from_entries(array(struct(id, 1), struct(id, 2))) AS e",
-          "str_to_map(concat(CAST(id AS STRING), ':1,', CAST(id AS STRING), ':2')) AS s")
-      val lastWin = Seq(Row(Map(0L -> 2), Map(0L -> 2), Map("0" -> "2")))
+      def query(): DataFrame = mapPolicyQuery(path)
+      val lastWin = mapPolicyLastWin
       for (cometEnabled <- Seq("false", "true")) {
         withSQLConf(CometConf.COMET_ENABLED.key -> cometEnabled) {
           // Executed under LAST_WIN, the Dataset keeps that policy once EXCEPTION is set.
@@ -280,6 +275,62 @@ class CometMapExpressionSuite extends CometTestBase {
       }
     }
   }
+
+  // Spark initializes `ArrayBasedMapBuilder`, and with it reads the policy, when the expression is
+  // first evaluated. Materializing the plan does not evaluate anything, so a Dataset explained
+  // under one policy and then executed under another builds its maps under the second one. Comet
+  // converts its plan when `executedPlan` is materialized, which `explain()` also triggers, so the
+  // policy cannot be read there.
+  // https://github.com/apache/datafusion-comet/pull/5854#issuecomment-5744116922
+  test("map constructors capture the dedup policy at first execution, not at planning") {
+    // AQE converts each query stage as it runs, which hides the difference between the two moments.
+    withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
+      withTempPath { dir =>
+        val path = dir.getCanonicalPath
+        withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+          spark.range(0, 1, 1, 1).write.parquet(path)
+        }
+        for (cometEnabled <- Seq("false", "true")) {
+          withSQLConf(CometConf.COMET_ENABLED.key -> cometEnabled) {
+            // Explained under EXCEPTION, first executed under LAST_WIN: LAST_WIN builds the maps,
+            // and keeps doing so once the setting goes back.
+            withSQLConf(SQLConf.MAP_KEY_DEDUP_POLICY.key -> "EXCEPTION") {
+              val df = mapPolicyQuery(path)
+              val plan = df.queryExecution.executedPlan
+              if (cometEnabled == "true") {
+                checkCometOperators(stripAQEPlan(plan))
+              }
+              withSQLConf(SQLConf.MAP_KEY_DEDUP_POLICY.key -> "LAST_WIN") {
+                checkAnswer(df, mapPolicyLastWin)
+                withSQLConf(SQLConf.MAP_KEY_DEDUP_POLICY.key -> "EXCEPTION") {
+                  checkAnswer(df, mapPolicyLastWin)
+                }
+              }
+            }
+            // Explained under LAST_WIN, first executed under EXCEPTION: EXCEPTION rejects the
+            // duplicate.
+            withSQLConf(SQLConf.MAP_KEY_DEDUP_POLICY.key -> "LAST_WIN") {
+              val df = mapPolicyQuery(path)
+              df.queryExecution.executedPlan
+              withSQLConf(SQLConf.MAP_KEY_DEDUP_POLICY.key -> "EXCEPTION") {
+                assertDuplicateMapKey(df)
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  /** One row whose three map constructors each see the duplicate key `0`. */
+  private def mapPolicyQuery(path: String): DataFrame = spark.read
+    .parquet(path)
+    .selectExpr(
+      "map_from_arrays(array(id, id), array(1, 2)) AS a",
+      "map_from_entries(array(struct(id, 1), struct(id, 2))) AS e",
+      "str_to_map(concat(CAST(id AS STRING), ':1,', CAST(id AS STRING), ':2')) AS s")
+
+  private def mapPolicyLastWin: Seq[Row] = Seq(Row(Map(0L -> 2), Map(0L -> 2), Map("0" -> "2")))
 
   private def assertDuplicateMapKey(df: DataFrame): Unit = {
     val error = intercept[Throwable](df.collect())

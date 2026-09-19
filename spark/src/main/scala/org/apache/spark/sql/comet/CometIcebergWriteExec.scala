@@ -238,6 +238,7 @@ case class CometIcebergWriteExec(
     // column each (see `build_output_schema` in `iceberg_write.rs`).
     val numOutputCols = 2
     val capturedNativeOp = nativeOp
+    val capturedMapKeyDedupPolicy = mapKeyDedupPolicy
 
     childRDD.mapPartitionsInternal { iter =>
       val partitionId = TaskContext.getPartitionId()
@@ -277,7 +278,8 @@ case class CometIcebergWriteExec(
         numPartitions,
         partitionId,
         None,
-        Seq.empty)
+        Seq.empty,
+        mapKeyDedupPolicy = Some(capturedMapKeyDedupPolicy))
 
       execIterator
     }
