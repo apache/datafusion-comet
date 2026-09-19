@@ -197,4 +197,3 @@ rows/bytes, and preparation time. Probe metrics remain per task. A successful pr
 normally be followed by cache hits from other tasks using that broadcast. Validate elapsed query
 time and executor memory with the feature both enabled and disabled before enabling it broadly;
 reuse counts alone do not establish a query speedup.
-

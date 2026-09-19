@@ -25,7 +25,6 @@ import org.apache.arrow.c.ArrowArrayStream
 import org.apache.arrow.util.AutoCloseables
 import org.apache.spark.{CometBroadcastMemoryManager, TaskContext}
 import org.apache.spark.broadcast.Broadcast
-import org.apache.spark.comet.CometTaskContextShim
 import org.apache.spark.sql.comet.execution.arrow.{ArrowReaderIterator, CometBroadcastArrowStream}
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.types.{BooleanType, ByteType, DateType, DecimalType, DoubleType, FloatType, IntegerType, LongType, ShortType, StringType, StructType, TimestampNTZType, TimestampType}
@@ -62,12 +61,11 @@ class CometBroadcastInput private[comet] (
    */
   def openStream(): ArrowArrayStream = synchronized {
     require(!closed, "Cannot open a completed broadcast input")
-    withTaskContext {
-      val source = new BroadcastBatchIterator
-      val stream = CometBroadcastArrowStream.open(source, schema, name)
-      streams += stream
-      stream.stream
-    }
+    context.killTaskIfInterrupted()
+    val source = new BroadcastBatchIterator
+    val stream = CometBroadcastArrowStream.open(source, schema, name)
+    streams += stream
+    stream.stream
   }
 
   override def close(): Unit = synchronized {
@@ -80,22 +78,6 @@ class CometBroadcastInput private[comet] (
   }
 
   /**
-   * JNI callbacks can run outside Spark's executor thread. Decode and check cancellation with the
-   * captured task, then restore the calling thread's context.
-   */
-  private def withTaskContext[T](body: => T): T = {
-    val previous = TaskContext.get()
-    CometTaskContextShim.set(context)
-    try {
-      context.killTaskIfInterrupted()
-      body
-    } finally {
-      if (previous == null) CometTaskContextShim.unset()
-      else CometTaskContextShim.set(previous)
-    }
-  }
-
-  /**
    * Opening a stream may decode its first chunk for schema reconciliation. Early close releases
    * that IPC reader without opening the remaining chunks.
    */
@@ -104,7 +86,8 @@ class CometBroadcastInput private[comet] (
     private var batches: Iterator[ColumnarBatch] = Iterator.empty
     private var stopped = false
 
-    override def hasNext: Boolean = withTaskContext {
+    override def hasNext: Boolean = {
+      context.killTaskIfInterrupted()
       if (stopped) false
       else {
         while (!batches.hasNext && chunks.hasNext) {
