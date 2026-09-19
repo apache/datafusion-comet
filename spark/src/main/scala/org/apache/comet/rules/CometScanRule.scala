@@ -46,10 +46,9 @@ import org.apache.spark.sql.types._
 import org.apache.comet.{CometConf, DataTypeSupport, NativeBase}
 import org.apache.comet.CometConf._
 import org.apache.comet.CometSparkSessionExtensions.{isCometLoaded, isSpark35Plus, withFallbackReason, withFallbackReasons}
-import org.apache.comet.DataTypeSupport.isComplexType
 import org.apache.comet.iceberg.{CometIcebergNativeScanMetadata, IcebergReflection}
 import org.apache.comet.objectstore.NativeConfig
-import org.apache.comet.parquet.CometParquetUtils.{encryptionEnabled, isEncryptionConfigSupported}
+import org.apache.comet.parquet.CometParquetUtils.{encryptionEnabled, isEncryptionConfigSupported, readFieldId}
 import org.apache.comet.serde.operator.{CometIcebergNativeScan, CometNativeScan}
 import org.apache.comet.shims.{CometTypeShim, ShimCometStreaming, ShimFileFormat, ShimSubqueryBroadcast}
 
@@ -832,59 +831,6 @@ case class CometScanRule(session: SparkSession)
             true
           }
 
-        // Get filter expressions for complex predicates check
-        val filterExpressionsOpt = IcebergReflection.getFilterExpressions(scanExec.scan)
-
-        // IS NULL/NOT NULL on complex types fail because iceberg-rust's accessor creation
-        // only handles primitive fields. Nested field filters work because Iceberg Java
-        // pre-binds them to field IDs. Element/key access filters don't push down to FileScanTasks.
-        val complexTypePredicatesSupported = filterExpressionsOpt
-          .map { filters =>
-            // Empty filters can't trigger accessor issues
-            if (filters.isEmpty) {
-              true
-            } else {
-              val readSchema = scanExec.scan.readSchema()
-
-              // Identify complex type columns that would trigger accessor creation failures
-              val complexColumns = readSchema
-                .filter(field => isComplexType(field.dataType))
-                .map(_.name)
-                .toSet
-
-              // Detect IS NULL/NOT NULL on complex columns (pattern: is_null(ref(name="col")))
-              // Nested field filters use different patterns and don't trigger this issue
-              val hasComplexNullCheck = filters.asScala.exists { expr =>
-                val exprStr = expr.toString
-                val isNullCheck = exprStr.contains("is_null") || exprStr.contains("not_null")
-                if (isNullCheck) {
-                  complexColumns.exists { colName =>
-                    exprStr.contains(s"""ref(name="$colName")""")
-                  }
-                } else {
-                  false
-                }
-              }
-
-              if (hasComplexNullCheck) {
-                fallbackReasons += "IS NULL / IS NOT NULL predicates on complex type columns " +
-                  "(struct/array/map) are not yet supported by iceberg-rust " +
-                  "(nested field filters like address.city = 'NYC' are supported)"
-                false
-              } else {
-                true
-              }
-            }
-          }
-          .getOrElse {
-            // Fall back to Spark if reflection fails - cannot verify safety
-            val msg =
-              "Iceberg reflection failure: Could not check for complex type predicates"
-            logError(msg)
-            fallbackReasons += msg
-            false
-          }
-
         // Check for unsupported transform functions in residual expressions
         // iceberg-rust can only handle identity transforms in residuals; all other transforms
         // (truncate, bucket, year, month, day, hour) must fall back to Spark
@@ -1026,8 +972,7 @@ case class CometScanRule(session: SparkSession)
           defaultValuesSupported && schemaTypesSupported && encryptionKeyLengthSupported &&
           taskValidation.allParquet && allSupportedFilesystems && allLocationsOpenable &&
           metadataSchemeSupported && partitionTypesSupported && unifiedPartitionTypeSupported &&
-          complexTypePredicatesSupported && transformFunctionsSupported &&
-          deleteFileTypesSupported && dppSubqueriesSupported) {
+          transformFunctionsSupported && deleteFileTypesSupported && dppSubqueriesSupported) {
           CometBatchScanExec(
             scanExec.clone().asInstanceOf[BatchScanExec],
             runtimeFilters = scanExec.runtimeFilters,
@@ -1091,6 +1036,22 @@ case class CometScanRule(session: SparkSession)
 
 case class CometScanTypeChecker() extends DataTypeSupport with CometTypeShim {
 
+  /**
+   * `isTypeSupported` only ever sees a field's *data type*, so nothing there can compare two
+   * top-level fields. Spark's field id ambiguity applies at the schema root too, so check it
+   * here.
+   */
+  override def isSchemaSupported(
+      schema: StructType,
+      fallbackReasons: ListBuffer[String]): Boolean = {
+    if (duplicateFieldIds(schema.fields)) {
+      fallbackReasons += "duplicate Parquet field ids among top-level fields"
+      false
+    } else {
+      super.isSchemaSupported(schema, fallbackReasons)
+    }
+  }
+
   override def isTypeSupported(
       dt: DataType,
       name: String,
@@ -1115,10 +1076,20 @@ case class CometScanTypeChecker() extends DataTypeSupport with CometTypeShim {
         false
       case s: StructType if s.fields.isEmpty =>
         false
+      case StructType(fields) if duplicateFieldIds(fields) =>
+        // Under field id matching Spark resolves each requested field to the one Parquet field
+        // carrying its id and raises when more than one answers. Comet reads such a struct
+        // positionally instead, so hand the read back to Spark and let it report the ambiguity.
+        fallbackReasons += s"Unsupported ${name}: struct with duplicate Parquet field ids"
+        false
       case _ =>
         super.isTypeSupported(dt, name, fallbackReasons)
     }
   }
+
+  /** True when the session resolves Parquet fields by id and `fields` repeat one. */
+  private def duplicateFieldIds(fields: Array[StructField]): Boolean =
+    readFieldId(SQLConf.get) && DataTypeSupport.hasDuplicateFieldIds(fields)
 }
 
 object CometScanRule extends Logging {

@@ -53,10 +53,10 @@ calls `System.exit(SparkExitCode.OOM)` (exit code 52). Real heap exhaustion ther
 the whole executor, not one task. An executor loss on its own does not tell you which budget was
 exceeded; the exit code does.
 
-Comet's difficulty is that its allocations are made by Rust code, so they are invisible to the JVM
-heap and to Spark's own off-heap accounting, yet they land squarely in container RSS. Comet
-therefore maintains its own budget that is meant to shadow the physical one, and the accuracy of
-that shadow is the central problem this page is about.
+Comet's difficulty is that its allocations are made by Rust code, so no JVM allocator produces them
+and no JVM metric measures them, yet they land squarely in container RSS. Comet therefore maintains
+its own budget that is meant to shadow the physical one, and declares it to Spark so that the two
+compete for a single number. The accuracy of that shadow is the central problem this page is about.
 
 ## Who allocates what
 
@@ -68,11 +68,32 @@ page:
 | --------------------------------------- | ----------- | ------------------------------------------------------------- | ----------------- |
 | Spark execution + storage (on-heap)     | JVM heap    | `spark.executor.memory` and the unified memory manager        | Yes               |
 | Spark Tungsten (off-heap)               | Off-heap    | `spark.memory.offHeap.size` via `TaskMemoryManager`           | Yes               |
-| Comet native (Rust global allocator)    | Native heap | `memory_limit` (see below), enforced only via the memory pool | No                |
+| Comet native (Rust global allocator)    | Native heap | `memory_limit` (see below), enforced only via the memory pool | Reservations only |
 | Comet JVM Arrow (`CometArrowAllocator`) | Off-heap    | **Nothing**: a `RootAllocator(Long.MaxValue)`                 | No                |
 | Comet JVM shuffle pages                 | Off-heap    | `spark.memory.offHeap.size` via `TaskMemoryManager`           | Yes               |
 
-Two observations follow.
+Several observations follow.
+
+**"Off-heap" and "native heap" are not the same thing.** Both sit outside the JVM heap and both
+count toward container RSS, which is what makes them easy to conflate, but they differ in who
+allocates the bytes and in who is able to see them.
+
+- **Off-heap** is allocated by JVM code: `sun.misc.Unsafe` for Spark's Tungsten pages, and Arrow's
+  Unsafe-backed allocator for Comet's Java Arrow buffers. A JVM-side allocator makes the call, so a
+  JVM-side consumer is in a position to report it, and `spark.memory.offHeap.size` together with
+  `TaskMemoryManager` arbitrates it.
+- **Native heap** is allocated by Rust through its global allocator, in the same process. No JVM
+  code makes the call, so no JVM-side allocator or metric ever measures these bytes. The only layer
+  that sees any of them is Comet's own memory pool, and then only the portion that operators
+  explicitly reserve. That portion is still charged to Spark, as the next paragraph describes; what
+  is never reserved is measured by nothing and budgeted by nobody.
+
+**The budget is shared even though the memory is not.** `memory_limit` is derived from
+`spark.memory.offHeap.size` (see [Where Comet's budget comes from](#where-comets-budget-comes-from)),
+and in both off-heap pool types every native reservation is forwarded to Spark's off-heap execution
+pool over JNI. A native allocation therefore consumes the same accounting budget as a Tungsten page
+while occupying entirely different memory. Raising `spark.memory.offHeap.size` raises the ceiling
+for both at once, and raises the pod's memory request by the same amount.
 
 **Comet's JVM-side Arrow allocator is unbounded and accounted by nobody.** `CometArrowAllocator`
 (`spark/src/main/scala/org/apache/comet/package.scala`) is a single process-wide
@@ -86,6 +107,78 @@ ceiling and no backpressure.
 returns `CometUnifiedShuffleMemoryAllocator`, a Spark `MemoryConsumer` drawing from
 `spark.memory.offHeap.size`, so shuffle pages are arbitrated against Spark's other consumers in the
 same task like any other allocation.
+
+Which allocator each call site uses, and who ends up charged for the bytes:
+
+```mermaid
+flowchart LR
+  subgraph SITES["JVM Arrow allocation sites"]
+    NU["NativeUtil<br>FFI structs, imports, exports"]
+    UDF["CometUdfBridge<br>JVM UDF inputs and result"]
+    CGO["CometBatchKernelCodegenOutput<br>codegen UDF output"]
+    SR["StreamReader<br>shuffle and IPC reads"]
+    NAS["CometNativeArrowSource<br>stream and readerBatchIter"]
+    CACHE["ArrowCachedBatchSerializer"]
+    PY["CometArrowPythonRunnerBase"]
+    BC["Utils broadcast-coalesce"]
+  end
+
+  ROOT["CometArrowAllocator<br>RootAllocator, no limit<br>no allocation listener"]
+  SHUF["Comet JVM shuffle pages<br>CometUnifiedShuffleMemoryAllocator"]
+  NPOOL["Comet native memory pool<br>declared reservations only"]
+  TMM["Spark off-heap execution pool<br>TaskMemoryManager"]
+  NOBODY["accounted by nobody"]
+
+  NU --> ROOT
+  UDF --> ROOT
+  CGO --> ROOT
+  SR --> ROOT
+  NAS --> ROOT
+  CACHE --> ROOT
+  PY --> ROOT
+  BC --> ROOT
+  ROOT --> NOBODY
+  SHUF --> TMM
+  NPOOL -->|"CometTaskMemoryManager over JNI"| TMM
+```
+
+### Constraints on a Comet memory consumer
+
+`CometTaskMemoryManager` is the one place where Comet code acts as a Spark `MemoryConsumer`, and the
+rules below are why it is written the way it is. Each is easy to break by accident.
+
+**`getUsed` and `spill` must stay lock-free.** Spark calls both while already holding the
+`TaskMemoryManager` monitor, which is why `NativeMemoryConsumer.getUsed` reads an `AtomicLong` and
+`spill` returns without touching guarded state. A consumer that took a monitor of its own in either
+method would risk a deadlock: a native reservation arriving over JNI on a Comet Tokio worker holds
+Spark's monitor and would wait for the consumer's, while whatever held the consumer's waited for
+Spark's. For the same reason, nothing reachable from a `spill` callback may allocate memory that
+routes back through the same consumer.
+
+**`scala.util.control.NonFatal` does not contain an acquisition.** `acquireExecutionMemory` fails in
+three ways and `NonFatal` catches only the first. It runs other consumers' `spill`, where
+`TaskMemoryManager` turns an interrupted spill into a `RuntimeException` and an `IOException` into a
+`SparkOutOfMemoryError`, which extends `OutOfMemoryError` and is therefore an `Error`. Separately,
+`ExecutionMemoryPool.acquireMemory` parks in `lock.wait()` when a task is below its fair share, so
+killing a task raises a plain `InterruptedException`, which `NonFatal` excludes by name. Comet
+reaches this method from native over JNI, so whatever escapes crosses the JNI boundary.
+
+**Spark exposes no per-consumer usage figure.** `TaskMemoryManager.getMemoryConsumptionForThisTask`
+is task-wide, and a consumer that reaches `acquireExecutionMemory` directly rather than through
+`MemoryConsumer.acquireMemory` keeps an inherited `used` of zero. That is why `NativeMemoryConsumer`
+overrides `getUsed` to report Comet's own tally instead: without it, Spark's spill-victim ordering
+and `showMemoryUsage` would believe the consumer held nothing.
+
+**A partial grant can be stranded.** `acquireExecutionMemory` takes its first grant from the pool
+before asking other consumers to spill, so when a spill throws, the task has been charged for bytes
+the call never returns. Nothing releases them until Spark's final task cleanup, so they are headroom
+nobody can use for the rest of the task. Any caller that swallows the exception has to reconcile
+that grant, and the only figure available for doing so is the task-wide one above.
+
+**A consumer whose `spill` returns zero takes budget it can never give back.**
+`NativeMemoryConsumer.spill` returns `0`, so Spark can select it as a spill victim and reclaim
+nothing from it; it is only ever a spill trigger. The bytes it holds are real, so other consumers in
+the same task see correspondingly less headroom and can spill earlier than they otherwise would.
 
 ## Where Comet's budget comes from
 
@@ -253,7 +346,15 @@ diverge for several structural reasons:
   retained/dirty page cache all add resident bytes that no layer above the allocator can see.
   Freeing memory does not necessarily return pages to the OS.
 - **Non-Rust allocations.** Memory allocated by C dependencies through libc `malloc`, and anything
-  `mmap`ed, never passes through Rust's `GlobalAlloc`.
+  `mmap`ed, never passes through Rust's `GlobalAlloc`, so neither the memory pool nor the
+  `jemalloc_allocated` metric sees it. In a default build the C dependencies are libzstd
+  (`zstd-sys`, behind the Parquet `zstd` codec), libhdfs (`hdfs-sys`, pulled in by the default
+  `hdfs-opendal` feature), and the TLS stack used for cloud object stores (`aws-lc-sys`). Building
+  with the `jemalloc` or `mimalloc` feature adds the allocator itself (`tikv-jemalloc-sys`,
+  `libmimalloc-sys`). It is worth knowing which dependencies are _not_ C, because several names
+  suggest otherwise: the other Parquet codecs are pure Rust in this build, `snap` for Snappy,
+  `lz4_flex` for LZ4 and `zlib-rs` for gzip, as is `libbz2-rs-sys` despite its name, so those
+  allocations do pass through `GlobalAlloc` and are counted.
 - **Batches in flight across the FFI boundary.** Reservations stop at the operator that made them.
   Imported JVM batches are reserved only while a reserving operator holds them, and exported native
   batches have usually been released by the time the JVM receives them yet stay resident until the
@@ -261,7 +362,7 @@ diverge for several structural reasons:
 
 The practical consequence is that `reserved()` is a lower bound on Comet's real footprint, and the
 gap is workload-dependent. `spark.comet.exec.memoryPool.fraction` exists purely so operators can
-hand-tune a haircut that covers the gap for their workload.
+hand-tune a margin that covers the gap for their workload.
 
 To measure the gap on a real query, enable tracing with the `jemalloc` feature and compare
 `jemalloc_allocated` against the summed `thread_NNN_comet_memory_reserved` values; see
@@ -289,11 +390,38 @@ hard ceiling on the sum of everything in the container. That cgroup counts, amon
 - Comet's JVM-side Arrow buffers (`CometArrowAllocator`),
 - page cache charged to the cgroup by the container's file I/O, including spill files.
 
-Only the first and a portion of the third are visible to Spark's accounting. When the total crosses
-`memory.max`, the kernel OOM killer kills the process. The failure mode is significantly worse than
-a task-level OOM: every task running on that executor dies, every cached block it held is lost and
-must be recomputed, and the shuffle files it produced become unavailable to downstream fetches.
-Spark's driver sees only `ExecutorLostFailure` with exit code 137.
+Everything the cgroup counts, and who accounts for each part:
+
+```mermaid
+flowchart TB
+  subgraph CG["pod cgroup memory.max, kernel OOM kill above this"]
+    subgraph SEEN["visible to Spark's accounting"]
+      HEAP["JVM heap<br>execution and storage<br>spark.executor.memory"]
+      TUNG["Spark Tungsten off-heap<br>TaskMemoryManager"]
+      SHUFP["Comet JVM shuffle pages<br>CometUnifiedShuffleMemoryAllocator"]
+      NATRES["Comet native heap, reserved<br>operators that call try_grow<br>declared to Spark over JNI, never measured"]
+    end
+    subgraph NONE["accounted by nobody"]
+      NATUND["Comet native heap, undeclared<br>kernels, array builders, decompression<br>Parquet metadata, object_store, tokio"]
+      ARROWR["Comet JVM Arrow<br>CometArrowAllocator, unbounded"]
+      NONHEAP["JVM non-heap<br>metaspace, code cache, thread stacks<br>GC structures, Netty direct buffers"]
+      PAGEC["page cache charged to the cgroup<br>file I/O, including spill files"]
+      FRAG["allocator overhead<br>fragmentation, padding<br>jemalloc retained and dirty pages"]
+    end
+  end
+```
+
+Spark's accounting covers the first group, though not in the same sense throughout it. The JVM
+heap, Tungsten pages and Comet's shuffle pages are allocated by JVM code that reports what it
+allocated. A native reservation is a number an operator declared before allocating: `try_grow`
+succeeds only once `CometTaskMemoryManager` has charged Spark's off-heap execution pool over JNI, so
+the budget really is spent, but nothing measured the bytes and the reservation is only a lower bound
+on them. The second group is outside every accounting layer.
+
+When the total crosses `memory.max`, the kernel OOM killer kills the process. The failure mode is
+significantly worse than a task-level OOM: every task running on that executor dies, every cached
+block it held is lost and must be recomputed, and the shuffle files it produced become unavailable
+to downstream fetches. Spark's driver sees only `ExecutorLostFailure` with exit code 137.
 
 Two facts follow that are easy to get wrong:
 
@@ -320,7 +448,7 @@ much they matter:
   with the `jemalloc` feature and compare `jemalloc_allocated` against summed reservations after
   the fact. There is no runtime value that an operator, a metric, or a policy could read.
 - **`spark.comet.exec.memoryPool.fraction` is a manual proxy for the gap.** It asks operators to
-  guess a per-workload haircut rather than measuring anything.
+  guess a per-workload margin rather than measuring anything.
 - **`CometArrowAllocator` is unbounded** and participates in no budget.
 - **Buffer and reservation lifetimes are independent across the FFI boundary.** A batch can be
   resident on either side with no reservation covering it, because reservations are made and
