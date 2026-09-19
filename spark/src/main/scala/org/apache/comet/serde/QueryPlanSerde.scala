@@ -301,6 +301,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       classOf[MakeDTInterval] -> CometMakeDTInterval,
       classOf[MakeInterval] -> CometMakeInterval,
       classOf[MultiplyDTInterval] -> CometMultiplyDTInterval,
+      classOf[MultiplyYMInterval] -> CometMultiplyYMInterval,
       classOf[TimestampAdd] -> CometTimestampAdd,
       classOf[TimestampDiff] -> CometTimestampDiff,
       classOf[MicrosToTimestamp] -> CometMicrosToTimestamp,
