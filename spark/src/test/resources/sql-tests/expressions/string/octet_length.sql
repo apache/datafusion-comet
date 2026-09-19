@@ -29,7 +29,8 @@ query
 SELECT octet_length('hello'), octet_length(''), octet_length(NULL)
 
 -- BinaryType input falls back to Spark; the native DataFusion impl rejects Binary at runtime,
--- so the serde gates Binary as Unsupported (matching the existing CometLength shape).
+-- so the serde gates Binary as Unsupported; `length` no longer needs the gate since it runs on
+-- the datafusion-spark kernel, which handles binary input.
 statement
 CREATE TABLE test_octet_length_binary(b binary) USING parquet
 
