@@ -2215,9 +2215,12 @@ object CometHashAggregateExec
     }
     // Without codegen Spark buffers an ungrouped aggregate in an UnsafeRow, which latches a
     // decimal sum that leaves the precision, while the native ungrouped accumulator keeps the
-    // unbounded intermediate. Spark turns codegen off for an imperative aggregate or by config.
+    // unbounded intermediate. Spark turns codegen off for an imperative aggregate, by config,
+    // or when the operator's output or an input carries more fields than its codegen limit.
     val codegenOff = !op.conf.wholeStageEnabled ||
-      op.aggregateExpressions.exists(_.aggregateFunction.isInstanceOf[ImperativeAggregate])
+      op.aggregateExpressions.exists(_.aggregateFunction.isInstanceOf[ImperativeAggregate]) ||
+      WholeStageCodegenExec.isTooManyFields(op.conf, op.schema) ||
+      op.children.exists(child => WholeStageCodegenExec.isTooManyFields(op.conf, child.schema))
     if (op.groupingExpressions.isEmpty && codegenOff && hasMaxPrecisionDecimalSum(op)) {
       return Unsupported(
         Some(
