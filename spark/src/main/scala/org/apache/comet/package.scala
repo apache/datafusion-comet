@@ -40,10 +40,16 @@ package object comet {
    *
    * Arrow charges an imported buffer to whichever allocator wraps it, so imports taken directly
    * against [[CometArrowAllocator]] are indistinguishable from buffers the JVM allocated itself.
-   * Holding them in their own child keeps the two separable for tracing. The child reserves
-   * nothing, so every byte still escalates to the parent and the root keeps reporting the total.
-   * Like the root, it is never closed: imported buffers are reference counted and routinely
-   * outlive the task that imported them.
+   * Holding them in their own child keeps the two separable for tracing.
+   *
+   * What lands here is not exclusively foreign memory: Arrow's importer allocates the owning
+   * `ArrowArray` struct from this allocator, and `BitVectorHelper.loadValidityBuffer` allocates a
+   * validity bitmap here when an imported vector is all-valid or all-null and carries no validity
+   * buffer. Both are small and both are bytes the JVM allocated, so treat this as what the import
+   * path holds rather than as an exact foreign-byte count. The child reserves nothing, so every
+   * byte still escalates to the parent and the root keeps reporting the total. Like the root, it
+   * is never closed: imported buffers are reference counted and routinely outlive the task that
+   * imported them.
    */
   val CometArrowImportAllocator: BufferAllocator =
     CometArrowAllocator.newChildAllocator("comet-ffi-imports", 0, Long.MaxValue)

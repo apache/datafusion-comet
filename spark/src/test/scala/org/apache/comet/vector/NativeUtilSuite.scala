@@ -411,6 +411,45 @@ class NativeUtilSuite extends CometTestBase {
     }
   }
 
+  test("the import allocator also holds the JVM-side cost of importing") {
+    // Characterization, not an aspiration: Arrow's importer allocates the owning ArrowArray
+    // struct from the import allocator (ArrayImporter calls ArrowArray.allocateNew(allocator)),
+    // and loadValidityBuffer allocates a validity bitmap there when an imported vector is
+    // all-valid and carries no validity buffer. So the import allocator holds more than the
+    // foreign buffers, and jvm_arrow_allocated minus jvm_arrow_imported understates the JVM's own
+    // Arrow memory by that much. Compared against every imported buffer, not just the data one,
+    // so the excess measured here is JVM-allocated rather than the foreign validity buffer.
+    val numRows = 4096
+    val col = new ConstantColumnVector(numRows, IntegerType)
+    col.setInt(42)
+    val batch = new ColumnarBatch(Array[ColumnVector](col), numRows)
+
+    val nativeUtil = new NativeUtil
+    var imported: ColumnarBatch = null
+    val before = CometArrowImportAllocator.getAllocatedMemory
+    try {
+      val (arrayAddrs, schemaAddrs, _) = nativeUtil.exportBatchToAddresses(batch)
+      val vectors =
+        nativeUtil.importVector(
+          arrayAddrs.map(ArrowArray.wrap),
+          schemaAddrs.map(ArrowSchema.wrap))
+      imported = new ColumnarBatch(vectors.toArray, numRows)
+
+      val charged = CometArrowImportAllocator.getAllocatedMemory - before
+      val foreign = vectors.head.getValueVector.getBuffers(false).map(_.capacity()).sum
+      assert(
+        charged > foreign,
+        s"expected the import allocator to hold more than the $foreign bytes of imported " +
+          s"buffers, since the importer allocates its own ArrowArray struct there, but it held " +
+          s"$charged bytes")
+    } finally {
+      if (imported != null) {
+        imported.close()
+      }
+      nativeUtil.close()
+    }
+  }
+
   test("Variant schema identity round-trips through native Arrow FFI") {
     val variantType = Utils.variantType.getOrElse {
       cancel("VariantType requires Spark 4.0+")

@@ -53,10 +53,27 @@ object ImportAllocatorProbeUdf {
   @volatile var inputAllocator: Option[BufferAllocator] = None
 }
 
+/**
+ * A UDF that allocates its output from the allocator that owns its inputs.
+ *
+ * The `CometUDF` interface permits this, and nothing about it is wrong from the UDF's side. It
+ * matters here because that allocator is the FFI import allocator, so without intervention the
+ * output would be charged to it and counted as imported memory.
+ */
+class InputAllocatorOutputUdf extends CometUDF {
+  override def evaluate(inputs: Array[ValueVector], numRows: Int): ValueVector = {
+    val out = new IntVector("out", inputs.head.getAllocator)
+    out.allocateNew(numRows)
+    (0 until numRows).foreach(row => out.setSafe(row, 7))
+    out.setValueCount(numRows)
+    out
+  }
+}
+
 class CometUdfBridgeSuite extends AnyFunSuite {
 
-  test("evaluate imports its input vectors against the FFI import allocator") {
-    val numRows = 4
+  /** Exports a single-column batch and invokes the bridge against it. */
+  private def withBridgeCall(udfClassName: String, numRows: Int)(check: () => Unit): Unit = {
     val col = new ConstantColumnVector(numRows, IntegerType)
     col.setInt(42)
     val batch = new ColumnarBatch(Array[ColumnVector](col), numRows)
@@ -68,7 +85,7 @@ class CometUdfBridgeSuite extends AnyFunSuite {
 
       try {
         CometUdfBridge.evaluate(
-          classOf[ImportAllocatorProbeUdf].getName,
+          udfClassName,
           inputArrayAddrs,
           inputSchemaAddrs,
           outArrays(0).memoryAddress(),
@@ -77,11 +94,9 @@ class CometUdfBridgeSuite extends AnyFunSuite {
           null,
           null)
 
-        assert(
-          ImportAllocatorProbeUdf.inputAllocator.contains(CometArrowImportAllocator),
-          "the UDF's inputs were imported against " +
-            s"${ImportAllocatorProbeUdf.inputAllocator.map(_.getName)}, so their bytes are not " +
-            "reported as imported memory")
+        // Checked before releasing the exported structs: the export keeps the result's buffers
+        // alive, so whichever allocator owns them is still charged at this point.
+        check()
       } finally {
         outArrays(0).release()
         outArrays(0).close()
@@ -90,6 +105,33 @@ class CometUdfBridgeSuite extends AnyFunSuite {
       }
     } finally {
       nativeUtil.close()
+    }
+  }
+
+  test("evaluate imports its input vectors against the FFI import allocator") {
+    withBridgeCall(classOf[ImportAllocatorProbeUdf].getName, 4) { () =>
+      assert(
+        ImportAllocatorProbeUdf.inputAllocator.contains(CometArrowImportAllocator),
+        "the UDF's inputs were imported against " +
+          s"${ImportAllocatorProbeUdf.inputAllocator.map(_.getName)}, so their bytes are not " +
+          "reported as imported memory")
+    }
+  }
+
+  test("a UDF output allocated from the input allocator is not left charged as imported") {
+    // The CometUDF interface lets a UDF allocate its result from inputs.head.getAllocator, which
+    // is the import allocator. Data.exportVector does not re-own the buffers, so without a
+    // transfer the output stays charged to the import allocator for as long as the export holds
+    // it, and jvm_arrow_imported counts JVM-created bytes as imported native memory.
+    val numRows = 4096
+    val before = CometArrowImportAllocator.getAllocatedMemory
+
+    withBridgeCall(classOf[InputAllocatorOutputUdf].getName, numRows) { () =>
+      val during = CometArrowImportAllocator.getAllocatedMemory
+      assert(
+        during - before < numRows.toLong * 4,
+        s"the UDF's output is still charged to the import allocator ($before -> $during bytes, " +
+          s"output is ${numRows * 4} bytes), so it would be reported as imported native memory")
     }
   }
 }
