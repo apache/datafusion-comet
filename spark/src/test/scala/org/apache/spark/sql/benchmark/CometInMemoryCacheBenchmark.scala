@@ -37,7 +37,10 @@ object CometInMemoryCacheBenchmark extends CometBenchmarkBase {
   private val numRows = 5 * 1000 * 1000
   private val cacheTable = "comet_cache_bench"
   private val sourceTable = "comet_cache_bench_src"
-  @volatile private var statsResult: (Array[Any], Array[Any], Array[Int]) = _
+  // A sink for the benchmarked call's result: written but never read, so that neither the
+  // compiler nor the JIT can treat `gatherColumnStats` as dead code. Not `private`, because
+  // a private field that is only ever written is what `-Ywarn-unused:privates` reports.
+  @volatile var statsResult: (Array[Any], Array[Any], Array[Int]) = _
 
   override def getSparkSession: SparkSession = {
     val conf = new SparkConf()
@@ -75,7 +78,7 @@ object CometInMemoryCacheBenchmark extends CometBenchmarkBase {
 
     withTempTable(sourceTable, cacheTable) {
       spark
-        .range(0, numRows, 1, 16)
+        .range(0, numRows.toLong, 1, 16)
         .selectExpr(
           "id",
           "id % 1000 AS k",
@@ -124,15 +127,15 @@ object CometInMemoryCacheBenchmark extends CometBenchmarkBase {
       var r = 0
       while (r < batchSize) {
         columns(0).putLong(r, r.toLong)
-        columns(1).putLong(r, r % 1000)
-        columns(2).putLong(r, r + 1)
+        columns(1).putLong(r, (r % 1000).toLong)
+        columns(2).putLong(r, (r + 1).toLong)
         columns(3).putByteArray(r, s"str_a_${r % 100000}".getBytes(StandardCharsets.UTF_8))
         columns(4).putByteArray(r, s"str_b_${r % 7919}".getBytes(StandardCharsets.UTF_8))
         columns(5).putByteArray(r, s"str_c_$r".getBytes(StandardCharsets.UTF_8))
         r += 1
       }
       val serializer = new ArrowCachedBatchSerializer
-      val benchmark = new Benchmark("in-memory cache statistics", numRows, output = output)
+      val benchmark = new Benchmark("in-memory cache statistics", numRows.toLong, output = output)
       // One case measures this collector across commits; Spark's default cache has its own collector.
       benchmark.addCase("Comet statistics collector") { _ =>
         var i = 0
@@ -154,7 +157,7 @@ object CometInMemoryCacheBenchmark extends CometBenchmarkBase {
         verifyPlan(query, nativeCacheEnabled = true)
       }
 
-      val benchmark = new Benchmark(name, numRows, output = output)
+      val benchmark = new Benchmark(name, numRows.toLong, output = output)
 
       benchmark.addCase("Spark cache scan + CometSparkColumnarToColumnar") { _ =>
         withSQLConf(cacheConf(nativeCacheEnabled = false): _*) {

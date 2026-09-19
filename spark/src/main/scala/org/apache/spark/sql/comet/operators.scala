@@ -135,7 +135,7 @@ private[comet] object PlanDataInjector extends Logging {
    * xxhash64 and runs at memory speed over the byte array.
    */
   def planFingerprint(planBytes: Array[Byte]): Long =
-    XXH64.hashUnsafeBytes(planBytes, Platform.BYTE_ARRAY_OFFSET, planBytes.length, 42L)
+    XXH64.hashUnsafeBytes(planBytes, Platform.BYTE_ARRAY_OFFSET.toLong, planBytes.length, 42L)
 
   /**
    * A prepared common message together with the exact finalized bytes it was prepared from.
@@ -288,8 +288,9 @@ private[comet] object PlanDataInjector extends Logging {
   // SparkContext in the JVM, so a recreated context would otherwise keep stacking new scan keys
   // under ids the last context already used. The shuffle managers call this from
   // unregisterShuffle.
-  private[comet] def releasePreparedShuffle(shuffleId: Int): Unit =
-    shufflePreparedCommons.remove(Integer.valueOf(shuffleId))
+  private[comet] def releasePreparedShuffle(shuffleId: Int): Unit = {
+    val _ = shufflePreparedCommons.remove(Integer.valueOf(shuffleId))
+  }
 
   // Both stores are JVM-wide statics that assume one active SparkContext per JVM, so the shuffle
   // managers drop them together from stop, before the next context can fill them.

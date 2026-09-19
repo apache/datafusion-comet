@@ -70,7 +70,7 @@ object CometSequenceBenchmark extends CometBenchmarkBase {
 
           sequenceQueries.foreach { case (name, query) =>
             runBenchmark(name) {
-              runExpressionBenchmark(name, v, query)
+              runExpressionBenchmark(name, v.toLong, query)
             }
           }
         }

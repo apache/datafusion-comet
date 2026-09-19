@@ -65,7 +65,7 @@ object CometHashExpressionBenchmark extends CometBenchmarkBase {
             """))
 
           hashExpressions.foreach { config =>
-            runExpressionBenchmark(config.name, v, config.query, config.extraCometConfigs)
+            runExpressionBenchmark(config.name, v.toLong, config.query, config.extraCometConfigs)
           }
         }
       }
@@ -124,7 +124,7 @@ object CometHashExpressionBenchmark extends CometBenchmarkBase {
             HashExprConfig("hash_decimal", "SELECT hash(c_decimal) FROM parquetV1Table"))
 
           primitiveHashBenchmarks.foreach { config =>
-            runExpressionBenchmark(config.name, v, config.query, config.extraCometConfigs)
+            runExpressionBenchmark(config.name, v.toLong, config.query, config.extraCometConfigs)
           }
         }
       }
@@ -175,7 +175,7 @@ object CometHashExpressionBenchmark extends CometBenchmarkBase {
               "SELECT hash(c_struct_multi) FROM parquetV1Table"))
 
           complexHashBenchmarks.foreach { config =>
-            runExpressionBenchmark(config.name, v, config.query, config.extraCometConfigs)
+            runExpressionBenchmark(config.name, v.toLong, config.query, config.extraCometConfigs)
           }
         }
       }
@@ -232,7 +232,7 @@ object CometHashExpressionBenchmark extends CometBenchmarkBase {
               "SELECT hash(c_array_of_struct) FROM parquetV1Table"))
 
           nestedHashBenchmarks.foreach { config =>
-            runExpressionBenchmark(config.name, v, config.query, config.extraCometConfigs)
+            runExpressionBenchmark(config.name, v.toLong, config.query, config.extraCometConfigs)
           }
         }
       }

@@ -38,7 +38,7 @@ object CometGetJsonObjectBenchmark extends CometBenchmarkBase {
           prepareTable(
             dir,
             spark
-              .range(numRows)
+              .range(numRows.toLong)
               .map { i =>
                 val name = s"user_$i"
                 val age = (i % 80 + 18).toInt
@@ -76,7 +76,11 @@ object CometGetJsonObjectBenchmark extends CometBenchmarkBase {
 
           benchmarks.foreach { config =>
             runBenchmark(config.name) {
-              runExpressionBenchmark(config.name, v, config.query, config.extraCometConfigs)
+              runExpressionBenchmark(
+                config.name,
+                v.toLong,
+                config.query,
+                config.extraCometConfigs)
             }
           }
         }

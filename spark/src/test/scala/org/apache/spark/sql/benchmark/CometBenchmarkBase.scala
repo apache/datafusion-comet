@@ -103,7 +103,7 @@ trait CometBenchmarkBase
       // generator, so that results are comparable across runs. Seeding a driver-side `Random`
       // would not work here: the closure runs per row on the executor.
       spark
-        .range(values)
+        .range(values.toLong)
         .map(i =>
           if (useDictionary) CometBenchmarkBase.mix64(i) % 5 else CometBenchmarkBase.mix64(i))
         .createOrReplaceTempView(tbl)
@@ -374,7 +374,7 @@ trait CometBenchmarkBase
 
     val div = if (useDictionary) 5 else values
     spark
-      .range(values)
+      .range(values.toLong)
       .map(_ % div)
       .select((($"value" - 500) / 100.0) cast decimal as Symbol("dec"))
   }

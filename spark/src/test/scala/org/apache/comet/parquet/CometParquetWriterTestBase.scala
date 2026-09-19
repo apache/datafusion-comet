@@ -75,7 +75,7 @@ abstract class CometParquetWriterTestBase extends CometTestBase {
       var iterations = 0
 
       while (capturedPlan.isEmpty && iterations < maxIterations) {
-        Thread.sleep(checkIntervalMs)
+        Thread.sleep(checkIntervalMs.toLong)
         iterations += 1
       }
 
