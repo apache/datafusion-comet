@@ -21,7 +21,6 @@ package org.apache.spark.sql.comet
 
 import scala.jdk.CollectionConverters._
 
-import org.apache.spark.{Partition, TaskContext}
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression, SortOrder}
@@ -234,13 +233,7 @@ case class CometIcebergNativeScanExec(
       defaultNumPartitions = perPartitionData.length,
       numOutputCols = output.length,
       nativeMetrics = nativeMetrics,
-      subqueries = Seq.empty) {
-      override def compute(split: Partition, context: TaskContext): Iterator[ColumnarBatch] = {
-        val res = super.compute(split, context)
-        Option(context).foreach(nativeMetrics.reportScanInputMetrics)
-        res
-      }
-    }
+      subqueries = Seq.empty)
   }
 
   /**

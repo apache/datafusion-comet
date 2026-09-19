@@ -25,7 +25,6 @@ import scala.collection.mutable
 import scala.collection.mutable.ArrayBuffer
 import scala.jdk.CollectionConverters._
 
-import org.apache.spark.{Partition, TaskContext}
 import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.internal.Logging
 import org.apache.spark.rdd.RDD
@@ -760,8 +759,7 @@ private[comet] case class NativeExecContext(
     // slice, never this map. Keeping it off the wire stops it from bloating the broadcast task
     // binary when this context rides on the non-transient CometShuffleDependency.nativeShuffleSpec.
     @transient perPartitionByKey: Map[String, Array[Array[Byte]]],
-    shuffleScanIndices: Set[Int],
-    hasScanInput: Boolean) {
+    shuffleScanIndices: Set[Int]) {
   // Catch shape divergence (e.g. broadcast scans with different partition counts after DPP
   // filtering) at construction so consumers don't trip ArrayIndexOutOfBoundsException at
   // partition idx access time.
@@ -840,15 +838,7 @@ abstract class CometNativeExec extends CometExec {
       ctx.subqueries,
       ctx.broadcastedHadoopConfForEncryption,
       ctx.encryptedFilePaths,
-      ctx.shuffleScanIndices) {
-      override def compute(split: Partition, context: TaskContext): Iterator[ColumnarBatch] = {
-        val res = super.compute(split, context)
-        if (ctx.hasScanInput) {
-          Option(context).foreach(nativeMetrics.reportScanInputMetrics)
-        }
-        res
-      }
-    }
+      ctx.shuffleScanIndices)
   }
 
   /**
@@ -1040,8 +1030,7 @@ abstract class CometNativeExec extends CometExec {
       encryptedFilePaths = encryptedFilePaths,
       commonByKey = commonByKey,
       perPartitionByKey = perPartitionByKey,
-      shuffleScanIndices = shuffleScanIndices,
-      hasScanInput = sparkPlans.exists(_.isInstanceOf[CometNativeScanExec]))
+      shuffleScanIndices = shuffleScanIndices)
   }
 
   /**

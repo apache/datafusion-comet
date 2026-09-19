@@ -196,8 +196,7 @@ class CometNativeShuffleInputRDDSuite extends CometTestBase {
         encryptedFilePaths = Seq.empty,
         commonByKey = Map.empty,
         perPartitionByKey = perPartitionByKey,
-        shuffleScanIndices = Set.empty,
-        hasScanInput = false)
+        shuffleScanIndices = Set.empty)
       val spec = NativeShuffleSpec(Operator.getDefaultInstance, childMetricNode, execContext)
       val dep = new CometShuffleDependency[Int, ColumnarBatch, ColumnarBatch](
         _rdd = rdd,
