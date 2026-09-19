@@ -278,8 +278,9 @@ Internal fused expression that replaces the `CheckOverflow(Cast(expr, Decimal128
 
 ## width_bucket
 
-- Spark 3.5.8 (audited 2026-05-27): introduced; not available in 3.4.3.
+- Spark 3.4.3 (audited 2026-09-14): present in catalyst and the function registry with the same semantics as 3.5.8.
+- Spark 3.5.8 (audited 2026-05-27): baseline.
 - Spark 4.0.1, 4.1.1 (audited 2026-05-27): same semantics; `NullIntolerant` -> `nullIntolerant: Boolean` refactor.
-- Known limitation: wired via per-version `CometExprShim` rather than a `CometExpressionSerde`, so it bypasses the support-level framework and the auto-generated compatibility doc ([#4485](https://github.com/apache/datafusion-comet/issues/4485)). Native path uses datafusion-spark `SparkWidthBucket`; interval input types are not exercised by Comet tests.
+- Wiring (audited 2026-09-14): `CometWidthBucket`, a `CometCodegenDispatch` registered once in the shared math group, so it goes through the support-level framework and the compatibility doc on every Spark line. `width_bucket.sql` exercises double and both interval input types.
 
 [Spark Expression Support]: ../../user-guide/latest/expressions.md
