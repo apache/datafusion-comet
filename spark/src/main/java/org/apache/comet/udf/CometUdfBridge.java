@@ -27,6 +27,7 @@ import org.apache.arrow.c.Data;
 import org.apache.arrow.memory.BufferAllocator;
 import org.apache.arrow.vector.FieldVector;
 import org.apache.arrow.vector.ValueVector;
+import org.apache.arrow.vector.util.TransferPair;
 import org.apache.spark.TaskContext;
 import org.apache.spark.comet.CometTaskContextShim;
 import org.apache.spark.util.TaskCompletionListener;
@@ -210,14 +211,18 @@ public class CometUdfBridge {
     assert udf != null : "reflective instantiation returned null for " + udfClassName;
 
     BufferAllocator allocator = org.apache.comet.package$.MODULE$.CometArrowAllocator();
+    // See CometArrowImportAllocator: imported inputs are charged there, the exported result
+    // below stays on the root.
+    BufferAllocator importAllocator = org.apache.comet.package$.MODULE$.CometArrowImportAllocator();
 
     ValueVector[] inputs = new ValueVector[inputArrayPtrs.length];
     ValueVector result = null;
+    ValueVector transferred = null;
     try {
       for (int i = 0; i < inputArrayPtrs.length; i++) {
         ArrowArray inArr = ArrowArray.wrap(inputArrayPtrs[i]);
         ArrowSchema inSch = ArrowSchema.wrap(inputSchemaPtrs[i]);
-        inputs[i] = Data.importVector(allocator, inArr, inSch, null);
+        inputs[i] = Data.importVector(importAllocator, inArr, inSch, null);
       }
 
       result = udf.evaluate(inputs, numRows);
@@ -232,9 +237,21 @@ public class CometUdfBridge {
                 + " rows, expected "
                 + numRows);
       }
+      // The UDF may allocate its result from the allocator it found on its inputs, which is
+      // the import allocator. Data.exportVector does not re-own the buffers, so the result
+      // would stay charged there for as long as the export holds it and be reported as
+      // imported native memory. TransferPair moves ownership without copying the payload.
+      FieldVector toExport = (FieldVector) result;
+      if (result.getAllocator() != allocator) {
+        TransferPair transferPair = result.getTransferPair(allocator);
+        transferPair.transfer();
+        transferred = transferPair.getTo();
+        toExport = (FieldVector) transferred;
+      }
+
       ArrowArray outArr = ArrowArray.wrap(outArrayPtr);
       ArrowSchema outSch = ArrowSchema.wrap(outSchemaPtr);
-      Data.exportVector(allocator, (FieldVector) result, null, outArr, outSch);
+      Data.exportVector(allocator, toExport, null, outArr, outSch);
     } finally {
       for (ValueVector v : inputs) {
         if (v != null) {
@@ -248,6 +265,13 @@ public class CometUdfBridge {
       if (result != null) {
         try {
           result.close();
+        } catch (RuntimeException ignored) {
+          // do not mask the original throwable
+        }
+      }
+      if (transferred != null) {
+        try {
+          transferred.close();
         } catch (RuntimeException ignored) {
           // do not mask the original throwable
         }
