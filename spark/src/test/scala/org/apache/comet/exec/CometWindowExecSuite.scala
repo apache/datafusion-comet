@@ -117,8 +117,15 @@ class CometWindowExecSuite extends CometTestBase {
     digits.toString()
   }
 
-  for (orderColumn <- Seq("f", "d")) {
-    test(s"window group limit: $orderColumn NaN and signed zero peers at the cutoff") {
+  for {
+    orderColumn <- Seq("f", "d")
+    // Scalar floating-point order keys are admitted under strict floating point (#5506), so the
+    // native plan and the rank distribution must be identical either way.
+    strictFloatingPoint <- Seq("false", "true")
+  } {
+    test(
+      s"window group limit: $orderColumn NaN and signed zero peers at the cutoff " +
+        s"(strictFloatingPoint=$strictFloatingPoint)") {
       assume(isSpark35Plus, "WindowGroupLimit was added in Spark 3.5")
 
       val positiveFloatNaN = java.lang.Float.intBitsToFloat(0x7fc00001)
@@ -159,7 +166,10 @@ class CometWindowExecSuite extends CometTestBase {
       withSQLConf(
         SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
         SQLConf.SHUFFLE_PARTITIONS.key -> "1",
-        CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key -> "false",
+        CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key -> strictFloatingPoint,
+        // Defaults to true under CometTestBase; pin it so strict mode exercises the shipped
+        // admission policy rather than the test harness's escape hatch.
+        CometConf.getExprAllowIncompatConfigKey("SortOrder") -> "false",
         CometConf.COMET_EXEC_WINDOW_GROUP_LIMIT_ENABLED.key -> "true") {
         withTempView("floating_window_peers") {
           // LocalTableScan preserves NaN payloads, unlike a Parquet round trip. Check the input
@@ -195,6 +205,38 @@ class CometWindowExecSuite extends CometTestBase {
             // Canonical comparison keys must not alter the selected rows' floating values.
             assertRawBits(actual)
           }
+        }
+      }
+    }
+  }
+
+  for (orderColumn <- Seq("f", "d")) {
+    test(s"window: scalar floating-point order key under strict floating point ($orderColumn)") {
+      // Deliberately not gated on Spark 3.5, unlike the WindowGroupLimit tests above, so the
+      // admission narrowed in #5506 has window coverage on every supported Spark version.
+      // The default RANGE frame spans all peers, so -0.0 and +0.0 landing in one peer group is
+      // directly visible in the running sum, and the result does not depend on tie order.
+      withTempDir { dir =>
+        val path = new Path(dir.toString, "window_strict_fp").toString
+        Seq(
+          (1, -0.0f, -0.0d),
+          (2, 0.0f, 0.0d),
+          (3, 1.0f, 1.0d),
+          (4, -1.0f, -1.0d),
+          (5, Float.NaN, Double.NaN))
+          .toDF("id", "f", "d")
+          .write
+          .parquet(path)
+        spark.read.parquet(path).createOrReplaceTempView("window_strict_fp")
+
+        withSQLConf(
+          CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key -> "true",
+          CometConf.getExprAllowIncompatConfigKey("SortOrder") -> "false",
+          CometConf.COMET_EXEC_WINDOW_GROUP_LIMIT_ENABLED.key -> "false") {
+          checkSparkAnswerAndOperator(
+            sql(s"""SELECT id, SUM(id) OVER (ORDER BY $orderColumn) AS running
+                   |FROM window_strict_fp ORDER BY id""".stripMargin),
+            Seq(classOf[CometWindowExec]))
         }
       }
     }

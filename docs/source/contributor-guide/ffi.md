@@ -132,7 +132,7 @@ JVM Heap:                           Native Memory:
 │ ColumnarBatch    │               │ FFI_ArrowArray   │
 │ ┌──────────────┐ │               │ ┌──────────────┐ │
 │ │ ArrowBuf     │─┼──────────────>│ │ buffers[0]   │ │
-│ │ (off-heap)   │ │               │ │ (pointer)    │ │
+│ │ (handle)     │ │               │ │ (pointer)    │ │
 │ └──────────────┘ │               │ └──────────────┘ │
 └──────────────────┘               └──────────────────┘
         │                                   │
@@ -253,7 +253,7 @@ pub extern "system" fn Java_..._exportVector(
 ### Wrapper Object Lifecycle (Native → JVM)
 
 ```
-Time    Native Memory              JVM Heap              Off-heap/Native
+Time    Native Memory              JVM Heap              Data location
 ────────────────────────────────────────────────────────────────────────
 t0      RecordBatch produced       -                     Data in native
         in DataFusion

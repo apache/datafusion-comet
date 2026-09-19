@@ -29,9 +29,9 @@ import org.apache.parquet.hadoop.ParquetFileReader
 import org.apache.parquet.hadoop.metadata.CompressionCodecName
 import org.apache.parquet.hadoop.util.HadoopInputFile
 import org.apache.parquet.schema.{MessageType, Type}
-import org.apache.spark.sql.{AnalysisException, CometTestBase, DataFrame, Row, SaveMode}
+import org.apache.spark.sql.{AnalysisException, DataFrame, Row, SaveMode}
 import org.apache.spark.sql.comet.{CometBatchScanExec, CometNativeScanExec, CometNativeWriteExec, CometScanExec}
-import org.apache.spark.sql.execution.{FileSourceScanExec, QueryExecution, SparkPlan}
+import org.apache.spark.sql.execution.{FileSourceScanExec, SparkPlan}
 import org.apache.spark.sql.execution.command.DataWritingCommandExec
 import org.apache.spark.sql.functions.{array, map, struct, when}
 import org.apache.spark.sql.internal.SQLConf
@@ -41,7 +41,7 @@ import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.isSpark35Plus
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator, SchemaGenOptions}
 
-class CometParquetWriterSuite extends CometTestBase {
+class CometParquetWriterSuite extends CometParquetWriterTestBase {
 
   import testImplicits._
 
@@ -881,14 +881,6 @@ class CometParquetWriterSuite extends CometTestBase {
     inputPath
   }
 
-  private def withNativeWriter(f: => Unit): Unit = {
-    withSQLConf(
-      CometConf.COMET_NATIVE_PARQUET_WRITE_ENABLED.key -> "true",
-      CometConf.COMET_OPERATOR_DATA_WRITING_COMMAND_ALLOW_INCOMPAT.key -> "true",
-      CometConf.COMET_EXEC_ENABLED.key -> "true",
-      SQLConf.SESSION_LOCAL_TIMEZONE.key -> "America/Halifax")(f)
-  }
-
   // Persist `df` to `sourcePath` with Comet disabled and return a DataFrame that reads it back,
   // so the source plan is a Comet scan (satisfying CometExecRule.requiresNativeChildren).
   private def materializeAsCometSource(df: DataFrame, sourcePath: String): DataFrame = {
@@ -911,58 +903,6 @@ class CometParquetWriterSuite extends CometTestBase {
     }
   }
 
-  /**
-   * Captures the execution plan during a write operation.
-   *
-   * @param writeOp
-   *   The write operation to execute (takes output path as parameter)
-   * @param outputPath
-   *   The path to write to
-   * @return
-   *   The captured execution plan
-   */
-  private def captureWritePlan(writeOp: String => Unit, outputPath: String): SparkPlan = {
-    var capturedPlan: Option[QueryExecution] = None
-
-    val listener = new org.apache.spark.sql.util.QueryExecutionListener {
-      override def onSuccess(funcName: String, qe: QueryExecution, durationNs: Long): Unit = {
-        if (funcName == "save" || funcName.contains("command")) {
-          capturedPlan = Some(qe)
-        }
-      }
-
-      override def onFailure(
-          funcName: String,
-          qe: QueryExecution,
-          exception: Exception): Unit = {}
-    }
-
-    spark.listenerManager.register(listener)
-
-    try {
-      writeOp(outputPath)
-
-      // Wait for listener to be called with timeout
-      val maxWaitTimeMs = 15000
-      val checkIntervalMs = 100
-      val maxIterations = maxWaitTimeMs / checkIntervalMs
-      var iterations = 0
-
-      while (capturedPlan.isEmpty && iterations < maxIterations) {
-        Thread.sleep(checkIntervalMs)
-        iterations += 1
-      }
-
-      assert(
-        capturedPlan.isDefined,
-        s"Listener was not called within ${maxWaitTimeMs}ms - no execution plan captured")
-
-      stripAQEPlan(capturedPlan.get.executedPlan)
-    } finally {
-      spark.listenerManager.unregister(listener)
-    }
-  }
-
   private def assertHasCometNativeWriteExec(plan: SparkPlan): Unit = {
     var nativeWriteCount = 0
     plan.foreach {
@@ -980,22 +920,6 @@ class CometParquetWriterSuite extends CometTestBase {
     assert(
       nativeWriteCount == 1,
       s"Expected exactly one CometNativeWriteExec in the plan, but found $nativeWriteCount:\n${plan.treeString}")
-  }
-
-  private def assertNoCometNativeWriteExec(plan: SparkPlan): Unit = {
-    val hasNativeWrite = plan.exists {
-      case _: CometNativeWriteExec => true
-      case d: DataWritingCommandExec =>
-        d.child.exists {
-          case _: CometNativeWriteExec => true
-          case _ => false
-        }
-      case _ => false
-    }
-
-    assert(
-      !hasNativeWrite,
-      s"Expected no CometNativeWriteExec in the plan, but found one:\n${plan.treeString}")
   }
 
   private def writeWithCometNativeWriteExec(
