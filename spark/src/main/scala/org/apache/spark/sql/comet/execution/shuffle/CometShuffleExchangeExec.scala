@@ -49,7 +49,7 @@ import org.apache.spark.util.random.XORShiftRandom
 
 import com.google.common.base.Objects
 
-import org.apache.comet.{CometConf, CometExplainInfo}
+import org.apache.comet.{CometConf, CometExplainInfo, DataTypeSupport}
 import org.apache.comet.CometConf.{COMET_SHUFFLE_ENABLED, COMET_SHUFFLE_MODE}
 import org.apache.comet.CometSparkSessionExtensions.{cometCelebornShuffleFallbackReason, hasFallbackReason, isCometCelebornShuffleManagerEnabled, isCometShuffleManagerEnabled, isSpark40Plus, withFallbackReasons}
 import org.apache.comet.serde.{Compatible, OperatorOuterClass, QueryPlanSerde, SupportLevel, Unsupported}
@@ -481,7 +481,7 @@ object CometShuffleExchangeExec
         fields.nonEmpty && fields.forall(f => supportedSerializableDataType(f.dataType)) &&
         // Java Arrow keys struct children by name, so the FFI import of a decoded batch
         // fails on duplicate field names
-        fields.map(f => f.name).distinct.length == fields.length
+        !DataTypeSupport.hasDuplicateFieldNames(fields)
       case ArrayType(elementType, _) =>
         supportedSerializableDataType(elementType)
       case MapType(keyType, valueType, _) =>
@@ -526,8 +526,6 @@ object CometShuffleExchangeExec
       case SinglePartition =>
       // we already checked that the input types are supported
       case RangePartitioning(orderings, _) =>
-        val strictFloatingPoint = CometConf.COMET_EXEC_STRICT_FLOATING_POINT.get(conf)
-
         /**
          * Determine which data types are supported as partition columns in native shuffle.
          *
@@ -538,8 +536,10 @@ object CometShuffleExchangeExec
         def supportedRangePartitioningDataType(dt: DataType): Boolean = dt match {
           // Collated strings require collation-aware ordering; Comet only compares raw bytes.
           case st: StringType if isStringCollationType(st) => false
-          case _: FloatType | _: DoubleType =>
-            !strictFloatingPoint
+          // The native range partitioner normalizes its comparison keys and its sampled boundary
+          // rows the same way the native sort does, so scalar floats match Spark's ordering even
+          // under spark.comet.exec.strictFloatingPoint=true.
+          case _: FloatType | _: DoubleType => true
           case _: BooleanType | _: ByteType | _: ShortType | _: IntegerType | _: LongType |
               _: StringType | _: BinaryType | _: TimestampType | _: TimestampNTZType |
               _: DecimalType | _: DateType =>
@@ -563,15 +563,7 @@ object CometShuffleExchangeExec
         }
         for (dt <- orderings.map(_.dataType).distinct) {
           if (!supportedRangePartitioningDataType(dt)) {
-            val reason = dt match {
-              case _: FloatType | _: DoubleType if strictFloatingPoint =>
-                s"Range partitioning on $dt is not 100% compatible with Spark, and Comet is " +
-                  s"running with ${CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key}=true. " +
-                  s"${CometConf.COMPAT_GUIDE}"
-              case _ =>
-                s"unsupported range partitioning data type for native shuffle: $dt"
-            }
-            reasons += reason
+            reasons += s"unsupported range partitioning data type for native shuffle: $dt"
           }
         }
       case RoundRobinPartitioning(_) =>
@@ -608,7 +600,7 @@ object CometShuffleExchangeExec
       case StructType(fields) =>
         fields.nonEmpty && fields.forall(f => supportedSerializableDataType(f.dataType)) &&
         // Java Arrow stream reader cannot work on duplicate field name
-        fields.map(f => f.name).distinct.length == fields.length
+        !DataTypeSupport.hasDuplicateFieldNames(fields)
       case ArrayType(elementType, _) =>
         supportedSerializableDataType(elementType)
       case MapType(keyType, valueType, _) =>

@@ -295,6 +295,19 @@ class CometInMemoryCacheSuite extends CometTestBase {
     }
   }
 
+  // Column expression and the reason the serializer has to decline it.
+  private val unsupportedForArrowCache = Seq(
+    // Interval types have no Arrow vector in Utils.getFieldVector. Without the schema check in
+    // the serializer, caching this relation fails outright with "Unsupported Arrow Vector for
+    // serialize: class org.apache.arrow.vector.DurationVector".
+    "make_dt_interval(0, 0, 0, id) AS payload",
+    // Java Arrow keys a struct vector's children by name, so the two `a` children collapse into
+    // one and the batch fails its arity check coming back across the C data interface. Without
+    // the check, this is cached in Comet's format and the read dies with
+    // "ArrowArray struct has 2 children (expected 1)".
+    // See https://github.com/apache/datafusion-comet/issues/5605.
+    "named_struct('a', id, 'a', id + 1) AS payload")
+
   test("Comet cache serializer delegates unsupported types to Spark's cache format") {
     withSQLConf(
       SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
@@ -303,53 +316,45 @@ class CometInMemoryCacheSuite extends CometTestBase {
       CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> "true",
       "spark.comet.sparkToColumnar.enabled" -> "true") {
 
-      spark.catalog.clearCache()
+      for (column <- unsupportedForArrowCache) {
+        spark.catalog.clearCache()
 
-      // Interval types have no Arrow vector in Utils.getFieldVector. Without the schema check in
-      // the serializer, caching this relation fails outright with "Unsupported Arrow Vector for
-      // serialize: class org.apache.arrow.vector.DurationVector".
-      spark
-        .sql("""
-          SELECT id AS key, make_dt_interval(0, 0, 0, id) AS dt
-          FROM range(1000)
-        """)
-        .createOrReplaceTempView("default_cached_batch")
+        spark
+          .sql(s"SELECT id AS key, $column FROM range(1000)")
+          .createOrReplaceTempView("default_cached_batch")
 
-      spark.catalog.cacheTable("default_cached_batch")
-      spark.table("default_cached_batch").count()
+        spark.catalog.cacheTable("default_cached_batch")
+        spark.table("default_cached_batch").count()
 
-      assert(
-        cachedBatchTypes("default_cached_batch").sameElements(
-          Array("org.apache.spark.sql.execution.columnar.DefaultCachedBatch")))
+        assert(
+          cachedBatchTypes("default_cached_batch").sameElements(
+            Array("org.apache.spark.sql.execution.columnar.DefaultCachedBatch")),
+          s"$column was cached in Comet's format")
 
-      // Columnar read path, delegated to Spark's serializer.
-      val columnarDf = spark.sql("""
-        SELECT key, dt
-        FROM default_cached_batch
-        WHERE key >= 10 AND key < 20
-      """)
-      assert(columnarDf.collect().length == 10)
-      checkSparkAnswer(columnarDf)
-
-      val columnarPlan = columnarDf.queryExecution.executedPlan.toString()
-      assert(!columnarPlan.contains("CometInMemoryTableScan"))
-
-      // Row read path: disabling the vectorized cache reader makes Spark use
-      // convertCachedBatchToInternalRow.
-      withSQLConf(SQLConf.CACHE_VECTORIZED_READER_ENABLED.key -> "false") {
-        val rowDf = spark.sql("""
-          SELECT dt
+        // Columnar read path, delegated to Spark's serializer.
+        val columnarDf = spark.sql("""
+          SELECT key, payload
           FROM default_cached_batch
           WHERE key >= 10 AND key < 20
         """)
-        assert(rowDf.collect().length == 10)
-        checkSparkAnswer(rowDf)
+        checkSparkAnswer(columnarDf)
+        assert(
+          !columnarDf.queryExecution.executedPlan.toString().contains("CometInMemoryTableScan"))
 
-        val rowPlan = rowDf.queryExecution.executedPlan.toString()
-        assert(!rowPlan.contains("CometInMemoryTableScan"))
+        // Row read path: disabling the vectorized cache reader makes Spark use
+        // convertCachedBatchToInternalRow.
+        withSQLConf(SQLConf.CACHE_VECTORIZED_READER_ENABLED.key -> "false") {
+          val rowDf = spark.sql("""
+            SELECT payload
+            FROM default_cached_batch
+            WHERE key >= 10 AND key < 20
+          """)
+          checkSparkAnswer(rowDf)
+          assert(!rowDf.queryExecution.executedPlan.toString().contains("CometInMemoryTableScan"))
+        }
+
+        spark.catalog.clearCache()
       }
-
-      spark.catalog.clearCache()
     }
   }
 
