@@ -293,6 +293,33 @@ FILTERS = {
         ".mvn/**",
         "mvnw",
     ],
+    "spark_4_2": [
+        "native/**/src/**",
+        "native/**/Cargo.toml",
+        "native/Cargo.lock",
+        "common/src/main/**",
+        "common/pom.xml",
+        "spark/src/main/**",
+        "!spark/src/main/spark-3.4/**",
+        "!spark/src/main/spark-3.5/**",
+        "!spark/src/main/spark-3.x/**",
+        "!spark/src/main/spark-4.0/**",
+        "!spark/src/main/spark-4.1/**",
+        "!spark/src/main/scala/org/apache/comet/GenerateDocs.scala",
+        "spark/pom.xml",
+        "dev/diffs/4.2.0.diff",
+        "pom.xml",
+        "rust-toolchain.toml",
+        ".github/workflows/ci.yml",
+        ".github/workflows/spark_sql_test_reusable.yml",
+        "dev/ci/spark-sql-modules.py",
+        ".github/actions/setup-builder/**",
+        ".github/actions/setup-spark-builder/**",
+        ".github/actions/upload-artifact-retry/**",
+        ".github/actions/download-artifact-retry/**",
+        ".mvn/**",
+        "mvnw",
+    ],
     # Same inputs as spark_4_1: this is not a separate job but a second
     # POLICY decision for the same call, selecting the sql_hive matrix rows.
     # ci.yml folds the two outputs into the reusable workflow's `modules`
@@ -504,6 +531,11 @@ POLICY = {
         "label:run-spark-4.1-tests",
         "label:run-spark-4.1-hive-tests",
     ],
+    # Spark 4.2 support is new and experimental, so like the deprecated 3.4
+    # suite it sits outside all three tiers: it runs from `run-spark-4.2-tests`
+    # on a pull request, or a workflow_dispatch, and gates no merge. Folding it
+    # into the nightly is the follow-up once the version has settled.
+    "spark_4_2": ["label:run-spark-4.2-tests"],
     # Same shape for Iceberg: 1.11 is the only Spark 4.1 coverage, so it is
     # the one Iceberg version the queue runs; the three older versions run
     # nightly. One label opts a pull request into all four.

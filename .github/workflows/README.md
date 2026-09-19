@@ -43,6 +43,12 @@ required one, so a red 3.4 there changes nothing. It is the next push with
 the label still applied that runs 3.4 under `Required Checks`, and with the
 queue run gone that push is the only thing that makes a 3.4 failure blocking.
 
+`spark_4_2` is outside the tiers for the opposite reason: Spark 4.2 support
+is new and experimental rather than deprecated. It runs only when a pull
+request carries `run-spark-4.2-tests`, or from a `workflow_dispatch`, and the
+same label-run caveat above applies to it. Moving it into the nightly sweep
+is a follow-up once the version has settled.
+
 Heavy jobs have no `push` tier. The queue already tested the exact tree that
 lands, so re-running them on push to main would double the cost of every
 merge. Two jobs are still on `push`: `docs`, because it deploys to `asf-site`
@@ -107,6 +113,7 @@ tiers partition the list and that the `pr` tier is exactly the default profile.
   label or dispatch only                                        spark_4_1 sql_hive  run-spark-4.1-hive-tests
   ----------------------                                        iceberg_1_11        run-iceberg-tests
   spark_3_4  run-spark-3.4-tests
+  spark_4_2  run-spark-4.2-tests
                                       nightly tier, or PR with label
                                       ------------------------------
                                       pr_build_linux      run-all-spark-profiles
@@ -134,6 +141,9 @@ tiers partition the list and that the `pr` tier is exactly the default profile.
                                 |  issue                |
                                 +-----------------------+
 
+                                                  spark_4_2
+                                            (workflow_dispatch only)
+
   reusable workflows invoked via `uses:`:
     pr_build_linux.yml         spark_sql_test_reusable.yml
     pr_build_macos.yml         iceberg_spark_test_reusable.yml
@@ -157,6 +167,7 @@ tiers partition the list and that the `pr` tier is exactly the default profile.
 | `spark_4_1`          | merge group, **or** PR with `run-spark-4.1-tests`; the `sql_hive` shards alone with `run-spark-4.1-hive-tests`                                                                                                                                         | Spark 4.1 sources                   |
 | `spark_3_4`          | PR with `run-spark-3.4-tests`, or dispatch                                                                                                                                                                                                             | Spark 3.4 sources                   |
 | `spark_4_0`          | nightly, **or** PR with `run-spark-4.0-tests`                                                                                                                                                                                                          | Spark 4.0 sources                   |
+| `spark_4_2`          | PR with `run-spark-4.2-tests`, or dispatch                                                                                                                                                                                                             | Spark 4.2 sources                   |
 | `iceberg_1_11`       | merge group, **or** PR with `run-iceberg-tests`                                                                                                                                                                                                        | Iceberg sources                     |
 | `iceberg_1_8`        | nightly, **or** PR with `run-iceberg-tests`                                                                                                                                                                                                            | Iceberg sources                     |
 | `iceberg_1_9`        | nightly, **or** PR with `run-iceberg-tests`                                                                                                                                                                                                            | Iceberg sources                     |
@@ -261,16 +272,16 @@ umbrella doesn't watch, or operate independently of the rest of CI:
 
 ## Reusable workflows (called by `ci.yml`)
 
-| File                              | Called from `ci.yml` job(s)                                  |
-| --------------------------------- | ------------------------------------------------------------ |
-| `pr_build_linux.yml`              | `pr_build_linux`                                             |
-| `pr_build_macos.yml`              | `pr_build_macos`                                             |
-| `pr_benchmark_check.yml`          | `pr_benchmark_check`                                         |
-| `delta_build_gate.yml`            | `delta_build_gate`                                           |
-| `pyarrow_udf_test.yml`            | `pyarrow_udf_test`                                           |
-| `docs.yaml`                       | `docs`                                                       |
-| `spark_sql_test_reusable.yml`     | `spark_3_4`, `spark_3_5`, `spark_4_0`, `spark_4_1`           |
-| `iceberg_spark_test_reusable.yml` | `iceberg_1_8`, `iceberg_1_9`, `iceberg_1_10`, `iceberg_1_11` |
+| File                              | Called from `ci.yml` job(s)                                     |
+| --------------------------------- | --------------------------------------------------------------- |
+| `pr_build_linux.yml`              | `pr_build_linux`                                                |
+| `pr_build_macos.yml`              | `pr_build_macos`                                                |
+| `pr_benchmark_check.yml`          | `pr_benchmark_check`                                            |
+| `delta_build_gate.yml`            | `delta_build_gate`                                              |
+| `pyarrow_udf_test.yml`            | `pyarrow_udf_test`                                              |
+| `docs.yaml`                       | `docs`                                                          |
+| `spark_sql_test_reusable.yml`     | `spark_3_4`, `spark_3_5`, `spark_4_0`, `spark_4_1`, `spark_4_2` |
+| `iceberg_spark_test_reusable.yml` | `iceberg_1_8`, `iceberg_1_9`, `iceberg_1_10`, `iceberg_1_11`    |
 
 ## Changing what runs when
 

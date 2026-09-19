@@ -85,6 +85,14 @@ on:
     - cron: '0 6 * * *'
   workflow_dispatch:
 
+# Least-privilege default for the whole pipeline: every job here builds and tests,
+# and nothing needs to write back to the repository. Jobs that call reusable
+# workflows inherit this, and a callee can only narrow it further -- so the one
+# job that does need to write (docs, which pushes the built site to asf-site)
+# raises it to `contents: write` on itself.
+permissions:
+  contents: read
+
 jobs:
   # ---------------------------------------------------------------------------
   # preflight: cheap checks that gate everything else. Failure short-circuits
@@ -204,6 +212,7 @@ jobs:
       spark_4_0:    ${{ steps.compute.outputs.spark_4_0 }}
       spark_4_1:    ${{ steps.compute.outputs.spark_4_1 }}
       spark_4_1_hive: ${{ steps.compute.outputs.spark_4_1_hive }}
+      spark_4_2:    ${{ steps.compute.outputs.spark_4_2 }}
       iceberg_1_8:  ${{ steps.compute.outputs.iceberg_1_8 }}
       iceberg_1_9:  ${{ steps.compute.outputs.iceberg_1_9 }}
       iceberg_1_10: ${{ steps.compute.outputs.iceberg_1_10 }}
@@ -360,6 +369,10 @@ jobs:
     needs: changes
     # docs deploys to asf-site, so only run on push-to-main (or a manual dispatch).
     if: needs.changes.outputs.docs == 'true'
+    # docs.yaml commits and pushes the generated site to the asf-site branch, so
+    # this job needs write access on top of the read-only default above.
+    permissions:
+      contents: write
     uses: ./.github/workflows/docs.yaml
 
   spark_3_4:
@@ -427,6 +440,22 @@ jobs:
         ${{ needs.changes.outputs.spark_4_1 != 'true' && 'hive'
             || needs.changes.outputs.spark_4_1_hive != 'true' && 'core'
             || 'all' }}
+
+  spark_4_2:
+    name: Spark SQL Tests (Spark 4.2)
+    needs: changes
+    # On demand only for now: Spark 4.2 support is brand new, so it sits
+    # outside the pull request, queue and nightly tiers, exactly like the
+    # deprecated 3.4 suite. It runs from `run-spark-4.2-tests` on a pull
+    # request, or from a workflow_dispatch; POLICY in compute-changes.py is
+    # where that is expressed, not an event check here. Folding it into the
+    # nightly is a follow-up once the version has settled.
+    if: needs.changes.outputs.spark_4_2 == 'true'
+    uses: ./.github/workflows/spark_sql_test_reusable.yml
+    with:
+      spark-short: '4.2'
+      spark-full: '4.2.0'
+      java: 17
 
   iceberg_1_8:
     name: Iceberg Spark SQL Tests (Iceberg 1.8)
@@ -530,6 +559,7 @@ jobs:
       - spark_3_5
       - spark_4_0
       - spark_4_1
+      - spark_4_2
       - iceberg_1_8
       - iceberg_1_9
       - iceberg_1_10
