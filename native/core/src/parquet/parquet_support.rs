@@ -1258,6 +1258,15 @@ mod tests {
         assert!(Arc::ptr_eq(&store_a, &same_store_a));
         assert_ne!(url_a, url_b);
         assert!(!Arc::ptr_eq(&store_a, &store_b));
+        // Later registrations must not replace the store resolved by an earlier URL.
+        assert!(Arc::ptr_eq(
+            &runtime.object_store(&url_a).unwrap(),
+            &store_a
+        ));
+        assert!(Arc::ptr_eq(
+            &runtime.object_store(&url_b).unwrap(),
+            &store_b
+        ));
     }
 
     /// Parses the url, registers the object store, and returns a tuple of the object store url and object store path
