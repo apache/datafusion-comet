@@ -39,7 +39,7 @@ private[shuffle] class CometNativeShuffleInputRDD(
     var inputRDDs: Seq[RDD[_]],
     numPartitionsParam: Int,
     shuffleScanIndices: Set[Int],
-    spillMetricNode: CometMetricNode,
+    taskMetricNode: CometMetricNode,
     @transient perPartitionByKey: Map[String, Array[Array[Byte]]] = Map.empty)
     extends RDD[Product2[Int, ColumnarBatch]](
       sc,
@@ -56,7 +56,7 @@ private[shuffle] class CometNativeShuffleInputRDD(
       inputRDDs,
       numPartitionsParam,
       shuffleScanIndices,
-      spillMetricNode,
+      taskMetricNode,
       perPartitionByKey)
 
   override protected def getPartitions: Array[Partition] =
@@ -78,7 +78,11 @@ private[shuffle] class CometNativeShuffleInputRDD(
   override def compute(
       split: Partition,
       context: TaskContext): Iterator[Product2[Int, ColumnarBatch]] = {
-    spillMetricNode.reportSpillMetrics(context)
+    // Registered before the input producers and the writer's iterator so these listeners run
+    // after every nested native block and the writer plan have published their final metrics.
+    // The leaf scans run inside the writer's plan, so no CometExecRDD reports them.
+    taskMetricNode.reportSpillMetrics(context)
+    taskMetricNode.reportScanInputMetrics(context)
     val partition = split.asInstanceOf[CometNativeShuffleInputPartition]
     val (inputObjects, shuffleBlockIters) =
       CometExecRDD.resolveInputObjects(

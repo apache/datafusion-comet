@@ -114,7 +114,8 @@ case class CometMetricNode(metrics: Map[String, SQLMetric], children: Seq[CometM
    * completion listener publishes final SQL metrics before this listener runs, including when the
    * iterator was not drained. Increments rather than sets so several scan trees in one task, and
    * input reported by other sources, all add up; as in [[reportSpillMetrics]], each accumulator
-   * is claimed once per task so overlapping or repeated registrations count it once.
+   * is claimed once per task so overlapping trees do not double count. A coalesced task reports
+   * what its last native plan left in the shared accumulators, as the SQL metrics themselves do.
    */
   def reportScanInputMetrics(ctx: TaskContext): Unit = {
     val seenMetrics = CometMetricNode.taskSeenMetrics(ctx)

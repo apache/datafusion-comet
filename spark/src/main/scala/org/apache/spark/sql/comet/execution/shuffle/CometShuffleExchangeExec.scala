@@ -777,7 +777,7 @@ object CometShuffleExchangeExec
       Seq(streamRDD),
       rdd.getNumPartitions,
       shuffleScanIndices = Set.empty,
-      spillMetricNode = CometMetricNode(metrics, Seq(childMetricNode)))
+      taskMetricNode = CometMetricNode(metrics, Seq(childMetricNode)))
 
     val ctx = NativeExecContext(
       inputs = Seq(streamRDD),
