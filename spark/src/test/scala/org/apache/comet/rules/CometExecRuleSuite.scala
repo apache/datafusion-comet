@@ -55,8 +55,8 @@ class CometExecRuleSuite extends CometTestBase {
 
   // The observers are active only during the DPP lifecycle regression below. AQE can prepare
   // subqueries on different threads, so publish the callbacks and pair each thread's invocations.
-  @volatile private var beforeCometPreparation: SparkPlan => Unit = _ => ()
-  @volatile private var afterCometPreparation: SparkPlan => Unit = _ => ()
+  @volatile private var beforeCometPreparation: SparkPlan => Unit = (_: SparkPlan) => ()
+  @volatile private var afterCometPreparation: SparkPlan => Unit = (_: SparkPlan) => ()
 
   override protected def createSparkSession: SparkSessionType = {
     SparkSession.clearActiveSession()
