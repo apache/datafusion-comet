@@ -1078,10 +1078,15 @@ case class CometScanRule(session: SparkSession)
     val typeChecker = CometScanTypeChecker()
     // Admit Variant only at a required root in ordinary Parquet. Recursive and Iceberg type
     // checks continue to use CometScanTypeChecker's stricter support rules.
-    val schemaSupported = scanExec.requiredSchema.fields.forall { field =>
-      isVariantType(field.dataType) ||
-      typeChecker.isTypeSupported(field.dataType, field.name, fallbackReasons)
+    val requiredSchemaChecker = new CometScanTypeChecker {
+      override def isTypeSupported(
+          dt: DataType,
+          name: String,
+          reasons: ListBuffer[String]): Boolean =
+        isVariantType(dt) || typeChecker.isTypeSupported(dt, name, reasons)
     }
+    val schemaSupported =
+      requiredSchemaChecker.isSchemaSupported(scanExec.requiredSchema, fallbackReasons)
     if (!schemaSupported) {
       withFallbackReason(
         scanExec,
