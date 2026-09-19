@@ -210,6 +210,10 @@ public class CometUdfBridge {
     assert udf != null : "reflective instantiation returned null for " + udfClassName;
 
     BufferAllocator allocator = org.apache.comet.package$.MODULE$.CometArrowAllocator();
+    // Imported inputs are charged to their own allocator so that tracing can tell Arrow
+    // memory the JVM allocated apart from memory imported from native. The result below is
+    // exported from the root, because a UDF result really is memory the JVM allocated.
+    BufferAllocator importAllocator = org.apache.comet.package$.MODULE$.CometArrowImportAllocator();
 
     ValueVector[] inputs = new ValueVector[inputArrayPtrs.length];
     ValueVector result = null;
@@ -217,7 +221,7 @@ public class CometUdfBridge {
       for (int i = 0; i < inputArrayPtrs.length; i++) {
         ArrowArray inArr = ArrowArray.wrap(inputArrayPtrs[i]);
         ArrowSchema inSch = ArrowSchema.wrap(inputSchemaPtrs[i]);
-        inputs[i] = Data.importVector(allocator, inArr, inSch, null);
+        inputs[i] = Data.importVector(importAllocator, inArr, inSch, null);
       }
 
       result = udf.evaluate(inputs, numRows);

@@ -22,6 +22,7 @@ package org.apache.comet.vector
 import java.io.IOException
 import java.nio.charset.StandardCharsets
 
+import scala.jdk.CollectionConverters._
 import scala.util.Using
 
 import org.apache.arrow.c.{ArrowArray, ArrowSchema, Data}
@@ -38,6 +39,7 @@ import org.apache.spark.sql.execution.vectorized.ConstantColumnVector
 import org.apache.spark.sql.types.{IntegerType, StringType, StructField, StructType}
 import org.apache.spark.sql.vectorized.{ColumnarBatch, ColumnVector}
 
+import org.apache.comet.{arrowMemoryMetrics, CometArrowAllocator, CometArrowImportAllocator}
 import org.apache.comet.CometConf
 import org.apache.comet.serde.{OperatorOuterClass, QueryPlanSerde}
 
@@ -363,6 +365,77 @@ class NativeUtilSuite extends CometTestBase {
       assert(ids.forall(_ == 7), s"expected all id 7, got $ids")
       val nameNulls = (0 until numRows).map(i => imported.column(2).getStruct(i).isNullAt(1))
       assert(nameNulls.forall(identity), s"expected all name null, got $nameNulls")
+    } finally {
+      if (imported != null) {
+        imported.close()
+      }
+      nativeUtil.close()
+    }
+  }
+
+  test("importVector charges imported buffers to a dedicated allocator") {
+    // The tracing counters report Arrow memory the JVM allocated separately from memory imported
+    // from native over the C Data Interface. Arrow charges an imported buffer to whichever
+    // allocator wraps it (BaseAllocator.wrapForeignAllocation calls allocateBytes), so the two
+    // are only separable if imports are routed to their own allocator instead of the shared root.
+    val numRows = 4
+    val col = new ConstantColumnVector(numRows, IntegerType)
+    col.setInt(42)
+    val batch = new ColumnarBatch(Array[ColumnVector](col), numRows)
+
+    val nativeUtil = new NativeUtil
+    var imported: ColumnarBatch = null
+    try {
+      val (arrayAddrs, schemaAddrs, _) = nativeUtil.exportBatchToAddresses(batch)
+      val vectors =
+        nativeUtil.importVector(
+          arrayAddrs.map(ArrowArray.wrap),
+          schemaAddrs.map(ArrowSchema.wrap))
+      imported = new ColumnarBatch(vectors.toArray, numRows)
+
+      assert(
+        CometArrowAllocator.getChildAllocators.asScala.exists(_ eq CometArrowImportAllocator),
+        "the FFI import allocator must be a child of the root, so the root keeps reporting the " +
+          "total across both")
+      assert(
+        CometArrowImportAllocator.getAllocatedMemory > 0,
+        "imported buffers were charged somewhere other than the FFI import allocator")
+    } finally {
+      if (imported != null) {
+        imported.close()
+      }
+      nativeUtil.close()
+    }
+  }
+
+  test("Arrow memory counters report imported memory as part of the total") {
+    // The tracing counters are only interpretable if the root's total includes the import
+    // allocator's bytes: subscribers derive JVM-allocated Arrow memory as allocated - imported.
+    val numRows = 4
+    val col = new ConstantColumnVector(numRows, IntegerType)
+    col.setInt(42)
+    val batch = new ColumnarBatch(Array[ColumnVector](col), numRows)
+
+    val nativeUtil = new NativeUtil
+    var imported: ColumnarBatch = null
+    try {
+      val (arrayAddrs, schemaAddrs, _) = nativeUtil.exportBatchToAddresses(batch)
+      val vectors =
+        nativeUtil.importVector(
+          arrayAddrs.map(ArrowArray.wrap),
+          schemaAddrs.map(ArrowSchema.wrap))
+      imported = new ColumnarBatch(vectors.toArray, numRows)
+
+      val metrics = arrowMemoryMetrics.toMap
+      assert(
+        metrics.keySet == Set("jvm_arrow_allocated", "jvm_arrow_imported"),
+        s"unexpected counter labels: ${metrics.keySet}")
+      assert(
+        metrics("jvm_arrow_imported") > 0,
+        "the imported counter ignored a live imported batch")
+      assert(
+        metrics("jvm_arrow_allocated") >= metrics("jvm_arrow_imported"),
+        "the total must include imported bytes, otherwise allocated - imported is meaningless")
     } finally {
       if (imported != null) {
         imported.close()

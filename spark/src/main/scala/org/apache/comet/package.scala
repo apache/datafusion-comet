@@ -21,7 +21,7 @@ package org.apache
 
 import java.util.Properties
 
-import org.apache.arrow.memory.RootAllocator
+import org.apache.arrow.memory.{BufferAllocator, RootAllocator}
 import org.apache.spark.internal.Logging
 
 package object comet {
@@ -34,6 +34,31 @@ package object comet {
    * leaked. To avoid this, we use a single allocator for the whole execution process.
    */
   val CometArrowAllocator = new RootAllocator(Long.MaxValue)
+
+  /**
+   * The allocator that owns Arrow buffers imported from native code over the C Data Interface.
+   *
+   * Arrow charges an imported buffer to whichever allocator wraps it, so imports taken directly
+   * against [[CometArrowAllocator]] are indistinguishable from buffers the JVM allocated itself.
+   * Holding them in their own child keeps the two separable for tracing. The child reserves
+   * nothing, so every byte still escalates to the parent and the root keeps reporting the total.
+   * Like the root, it is never closed: imported buffers are reference counted and routinely
+   * outlive the task that imported them.
+   */
+  val CometArrowImportAllocator: BufferAllocator =
+    CometArrowAllocator.newChildAllocator("comet-ffi-imports", 0, Long.MaxValue)
+
+  /**
+   * Tracing counters for Arrow memory held on the JVM side, as (label, bytes) pairs.
+   *
+   * `jvm_arrow_allocated` is everything the root accounts for, which includes the imported
+   * buffers that `jvm_arrow_imported` reports, because the import allocator is a child that
+   * reserves nothing. The difference is the Arrow memory the JVM allocated itself; the imported
+   * part is native memory, which `native_allocated` counts as well.
+   */
+  def arrowMemoryMetrics: Seq[(String, Long)] = Seq(
+    "jvm_arrow_allocated" -> CometArrowAllocator.getAllocatedMemory,
+    "jvm_arrow_imported" -> CometArrowImportAllocator.getAllocatedMemory)
 
   /**
    * Provides access to build information about the Comet libraries. This will be used by the
