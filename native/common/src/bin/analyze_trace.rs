@@ -23,6 +23,7 @@
 //! Usage:
 //!   cargo run --bin analyze_trace -- <path-to-comet-event-trace.json>
 
+use datafusion_comet_common::tracing::POOL_TOTAL_METRIC as POOL_TOTAL_COUNTER;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader};
@@ -37,13 +38,13 @@ use std::{env, fs::File};
 /// analyzed.
 const ALLOCATED_COUNTERS: [&str; 2] = ["native_allocated", "jemalloc_allocated"];
 
-/// The process-wide total of Comet's memory pool reservations.
-///
-/// Preferred over summing the per-thread `thread_NNN_comet_memory_reserved` counters. Those report
-/// the full reservation of a task-shared pool once per thread that references it, so adding them
-/// across threads multiplies a shared pool by its thread count. A trace without this counter is
-/// still analyzed from the per-thread sum, with a warning, so older traces remain readable.
-const POOL_TOTAL_COUNTER: &str = "comet_memory_reserved_total";
+// The process-wide total of Comet's memory pool reservations, imported from the producer so the
+// two cannot drift apart.
+//
+// Preferred over summing the per-thread `thread_NNN_comet_memory_reserved` counters. Those report
+// the full reservation of a task-shared pool once per thread that references it, so adding them
+// across threads multiplies a shared pool by its thread count. A trace without this counter is
+// still analyzed from the per-thread sum, with a warning, so older traces remain readable.
 
 /// A single Chrome trace event (only the fields we care about).
 #[derive(Deserialize)]

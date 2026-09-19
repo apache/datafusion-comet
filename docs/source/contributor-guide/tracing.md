@@ -79,16 +79,19 @@ cargo run --bin analyze_trace -- /path/to/comet-event-trace.json
 The tool reads counter events from the trace log. Because tracing logs metrics per thread, `native_allocated`
 and `jemalloc_allocated` are process-wide values (the same global allocation reported from whichever thread
 logs it). The total tracked memory comes from `comet_memory_reserved_total`, which covers every pool type and
-counts each pool once process-wide. The per-thread `thread_NNN_comet_memory_reserved` values must not be
-summed to obtain it: a shared pool reports its full reservation on every thread that references it, so
-summing multiplies it by the thread count. The allocation counter and the total are emitted back to back on
-one thread when a traced plan finishes executing, and the tool compares only samples paired that way, so a
-fresh allocation is never measured against a stale reservation. Traces recorded before that counter existed
-are still analyzed from the per-thread sum, and the tool warns that the sum is not the same measure. The tool
-analyzes
-`native_allocated` when the trace contains it, since that counts only what Rust code holds from the
-allocator, and otherwise falls back to `jemalloc_allocated`. The output names the counter it used. A trace
-with neither counter is rejected.
+counts each pool once process-wide. Every plan registers its pool for this total, including plans running
+with tracing disabled, because the allocation counter it is compared against covers them too. The per-thread
+`thread_NNN_comet_memory_reserved` values must not be summed to obtain it: a shared pool reports its full
+reservation on every thread that references it, so summing multiplies it by the thread count.
+
+The allocation counter and the total are emitted back to back on one thread when a traced plan finishes
+executing, and the tool compares only samples paired that way, so a fresh allocation is never measured
+against a stale reservation. Traces recorded before that counter existed are still analyzed from the
+per-thread sum, and the tool warns that the sum is not the same measure.
+
+The tool analyzes `native_allocated` when the trace contains it, since that counts only what Rust code holds
+from the allocator, and otherwise falls back to `jemalloc_allocated`. The output names the counter it used. A
+trace with neither counter is rejected.
 
 Sample output, with the violation table and the per-thread list elided:
 
