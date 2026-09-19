@@ -1394,6 +1394,53 @@ mod tests {
         );
     }
 
+    /// Pins the set of characters the `url` crate rewrites inside a path.
+    ///
+    /// `create_hdfs_object_store` hands `url.path()` to `object_store::path::Path::parse`, so a
+    /// character that the parser escapes - or, for `?` and `#`, treats as a delimiter and
+    /// truncates at - makes the native writer create a different file from the one Spark's commit
+    /// protocol chose and later commits. Job commit still succeeds, so the data simply ends up
+    /// somewhere nobody looks.
+    ///
+    /// `NativeWriteUtils.nativeUrlEscapedAscii` on the JVM side keeps a copy of this set and
+    /// declines such destinations during planning. Nothing else would notice if a `url` upgrade
+    /// moved a character between the two groups and quietly reopened that hole, so assert the set
+    /// here rather than in the Scala test, which can only check the copy against itself.
+    #[test]
+    fn url_path_rewritten_characters() {
+        use url::Url;
+
+        let rewritten: String = (' '..='~')
+            .filter(|c| {
+                let url = Url::parse(&format!("hdfs://ns/pre{c}post/output")).unwrap();
+                url.path() != format!("/pre{c}post/output")
+            })
+            .collect();
+
+        assert_eq!(
+            rewritten, " \"#<>?`{}",
+            "the ASCII characters `url` rewrites inside a path changed; update \
+             NativeWriteUtils.nativeUrlEscapedAscii and its tests to match"
+        );
+
+        // Every non-ASCII byte is percent-encoded regardless of the encode set. This is the half
+        // a `java.net.URI` raw/decoded comparison cannot see, because Java leaves non-ASCII path
+        // characters alone.
+        for name in [
+            "caf\u{e9}",                // precomposed e-acute
+            "cafe\u{301}",              // "e" plus a combining acute accent
+            "\u{65e5}\u{672c}\u{8a9e}", // CJK
+            "\u{1f642}",                // astral plane
+        ] {
+            let url = Url::parse(&format!("hdfs://ns/{name}/output")).unwrap();
+            assert_ne!(
+                url.path(),
+                format!("/{name}/output"),
+                "expected `url` to percent-encode the non-ASCII name {name}"
+            );
+        }
+    }
+
     #[cfg(not(feature = "hdfs-opendal"))]
     #[test]
     fn test_prepare_object_store() {
