@@ -1,7 +1,7 @@
 ---
 name: review-comet-pr
-description: Review a DataFusion Comet pull request for Spark compatibility and implementation correctness. Provides guidance to a reviewer rather than posting comments directly.
-argument-hint: <pr-number>
+description: Review DataFusion Comet changes for Spark compatibility and implementation correctness. Pass a PR number to review an open pull request, or pass nothing to review the uncommitted and unpushed changes in the local working tree before a PR exists. Provides guidance rather than posting comments or editing code directly.
+argument-hint: "[pr-number] (omit to review local changes)"
 ---
 
 <!--
@@ -23,9 +23,23 @@ specific language governing permissions and limitations
 under the License.
 -->
 
-Review Comet PR #$ARGUMENTS
+Review Comet changes: `$ARGUMENTS`
 
-## Before You Start
+## Choose the Review Mode
+
+This skill runs in one of two modes. Pick the mode first, because it decides how you obtain the diff and what you can check.
+
+**PR mode** - `$ARGUMENTS` is a PR number (or a PR URL). You are reviewing an open pull request on `apache/datafusion-comet`, usually on someone else's behalf.
+
+**Local mode** - `$ARGUMENTS` is empty, or is the word `local`. You are reviewing changes in the working tree before a PR exists. This is the mode an author uses on their own branch before opening a PR.
+
+Everything from "Review Workflow" step 2 onward applies to both modes. Only the setup below, step 1, step 6, and the output format differ.
+
+---
+
+## Before You Start (PR Mode)
+
+Skip this whole section in local mode.
 
 ### Gather PR Metadata
 
@@ -53,15 +67,67 @@ gh pr view $ARGUMENTS --repo apache/datafusion-comet --comments
 
 ---
 
+## Before You Start (Local Mode)
+
+Skip this whole section in PR mode.
+
+### Establish the Base Branch
+
+Find the commit the branch diverged from. Prefer the Apache remote when the clone has one, because a fork's `origin/main` can be stale:
+
+```bash
+for ref in apache/main upstream/main origin/main main; do
+  if git rev-parse --verify --quiet "$ref" >/dev/null; then BASE="$ref"; break; fi
+done
+echo "Base: $BASE ($(git rev-parse --short "$BASE"))"
+```
+
+If the base is a remote-tracking ref, fetch it first so the diff is not computed against a stale copy:
+
+```bash
+case "$BASE" in */*) git fetch "${BASE%%/*}" main ;; esac
+```
+
+If the branch has no commits yet and all the work is uncommitted, the base is still `$BASE` and the commands below pick the changes up anyway.
+
+### Check What Is Uncommitted
+
+An author running this before opening a PR often has work that is not committed yet. Review it too, and tell them which findings are in committed versus uncommitted code:
+
+```bash
+git status --short
+```
+
+---
+
 ## Review Workflow
 
 ### 1. Gather Context
 
-Read the changed files and understand the area of the codebase being modified:
+Read the changed files and understand the area of the codebase being modified.
+
+**PR mode:**
 
 ```bash
 # View the diff
 gh pr diff $ARGUMENTS --repo apache/datafusion-comet
+```
+
+**Local mode.** Review committed and uncommitted work together, so nothing the author is about to push goes unreviewed:
+
+```bash
+# Committed changes on this branch
+git diff --stat "$BASE"...HEAD
+git diff "$BASE"...HEAD
+
+# Uncommitted changes (staged and unstaged) on top of that
+git diff HEAD
+```
+
+Untracked files do not appear in `git diff`. List them and read any that are part of the change, because a new serde file, Rust module, or SQL test file is often the most important file in the change:
+
+```bash
+git ls-files --others --exclude-standard
 ```
 
 For expression PRs, check how similar expressions are implemented in the codebase. Look at the serde files in `spark/src/main/scala/org/apache/comet/serde/` and Rust implementations in `native/spark-expr/src/`.
@@ -230,7 +296,7 @@ SELECT known_buggy_expr(v) FROM test_table
 
 **For PRs that add new expressions, performance is not optional.** The whole point of Comet is to be faster than Spark. If a new expression is not faster, it may not be worth adding.
 
-1. **Check that the PR includes microbenchmark results.** The PR description should contain benchmark numbers comparing Comet vs Spark for the new expression. If benchmark results are missing, flag this as a required addition.
+1. **Check that the PR includes microbenchmark results.** The PR description should contain benchmark numbers comparing Comet vs Spark for the new expression. If benchmark results are missing, flag this as a required addition. In local mode there is no description yet, so check instead whether the author has benchmark numbers ready to paste into the PR, and flag it if they do not.
 
 2. **Look for a microbenchmark implementation.** Expression benchmarks live in `spark/src/test/scala/org/apache/spark/sql/benchmark/`. Check whether the PR adds a benchmark for the new expression.
 
@@ -248,9 +314,9 @@ SELECT known_buggy_expr(v) FROM test_table
 
 5. **If benchmark results show Comet is slower than Spark**, flag this clearly. The PR should explain why the regression is acceptable or include a plan to optimize.
 
-### 6. Check CI Test Failures
+### 6. Check Test Results
 
-**Always check the CI status and summarize any test failures in your review.**
+**PR mode: always check the CI status and summarize any test failures in your review.**
 
 ```bash
 # View CI check status
@@ -259,6 +325,28 @@ gh pr checks $ARGUMENTS --repo apache/datafusion-comet
 # View failed check details
 gh pr checks $ARGUMENTS --repo apache/datafusion-comet --failed
 ```
+
+**Local mode: there is no CI yet, so run the checks the author can still act on before pushing.** Do not run the full test suite. Pick what the change actually touches, and report what passed, what failed, and what you chose not to run.
+
+```bash
+# Formatting and style, cheap and a common CI failure
+make format
+./mvnw spotless:check scalastyle:check
+
+# Rust changes
+cd native && cargo clippy --all-targets -- -D warnings && cargo test
+```
+
+For JVM tests, run only the suites the change affects, for example:
+
+```bash
+./mvnw test -Dsuites="org.apache.comet.CometSqlFileTestSuite <substring>" -Dtest=none
+```
+
+Two things to call out in local mode that CI would otherwise catch later:
+
+- A local build does not cover every supported Spark version. If the change touches shims or version-sensitive APIs, say that the profile matrix is unverified, since a change that compiles under the default profile can still break another one.
+- A new test suite has to be registered in CI. Check that the fully qualified suite name was added to both `.github/workflows/pr_build_linux.yml` and `.github/workflows/pr_build_macos.yml`, which `dev/ci/check-suites.py` enforces. Otherwise the suite silently never runs.
 
 ### 7. Documentation Check
 
@@ -313,12 +401,22 @@ Every finding must be actionable. Before writing a comment, decide whether it is
 
 ## Output Format
 
-Present your review as guidance for the reviewer. Structure your output as:
+Present your review as guidance. Never apply the changes yourself, in either mode.
+
+**PR mode:**
 
 1. **PR Summary** - Brief description of what the PR does
 2. **CI Status** - Summary of CI check results
 3. **Findings** - Your analysis organized by area (Spark compatibility, implementation, tests, etc.)
 4. **Suggested Review Comments** - Specific comments the reviewer could leave on the PR, with file and line references where applicable. Everything here is something you expect the author to address. Anything that did not clear that bar should not appear.
+
+**Local mode:**
+
+1. **Change Summary** - Brief description of what the change does, and whether it is committed, uncommitted, or both
+2. **Local Verification** - What you ran, what passed, what failed, and what you deliberately did not run
+3. **Findings** - The same analysis over the same areas
+4. **Address Before Opening the PR** - The findings the author should fix now, with file and line references. Same bar as above. If nothing cleared it, say so plainly rather than padding the list.
+5. **For the PR Description** - Anything the author will need when filling in the PR template, such as missing benchmark numbers, or a compatibility caveat worth calling out to reviewers
 
 ## Review Tone and Style
 
@@ -339,6 +437,8 @@ Instead:
 - Frame concerns as questions or suggestions when possible
 - Acknowledge what the PR does well before raising concerns
 
-## Do Not Post Comments
+## Do Not Post Comments or Apply Fixes
 
 **IMPORTANT: Never post comments or reviews on the PR directly.** This skill is for providing guidance to a human reviewer. Present all findings and suggested comments to the user. The user will decide what to post.
+
+**In local mode, never edit the code either.** Report the findings and stop. The author decides what to change, and that keeps the review honest about what it actually found. If they want the fixes applied, they will ask in a follow-up.
