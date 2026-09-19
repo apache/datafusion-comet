@@ -31,6 +31,7 @@ use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::ExecutionPlan;
 
 use super::super::CometFilterExec;
+use crate::parquet::file_error_context::ParquetErrorContext;
 
 /// Recognize only direct-column null checks joined by AND, without evaluating
 /// or changing the predicate. Every accepted leaf is deterministic, infallible,
@@ -97,7 +98,11 @@ pub(super) fn try_attach_parquet_reader_filter(
         );
         return Ok(None);
     };
-    if scan.downcast_to_file_source::<ParquetSource>().is_none() {
+    if scan.downcast_to_file_source::<ParquetSource>().is_none()
+        && scan
+            .downcast_to_file_source::<ParquetErrorContext>()
+            .is_none()
+    {
         log::debug!("Join dynamic filter reader pushdown skipped: probe is not Parquet");
         return Ok(None);
     }

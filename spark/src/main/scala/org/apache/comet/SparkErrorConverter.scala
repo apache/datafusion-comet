@@ -86,9 +86,7 @@ object SparkErrorConverter extends ShimSparkErrorConverter {
     val json = parse(e.getMessage)
     val errorJson = json.extract[ErrorJson]
     val rawParams = errorJson.params.getOrElse(Map.empty)
-    // CannotReadFile carries the offending file path natively only for the object_store NotFound
-    // case; for corrupt/truncated parquet the native error has no path, so fall back to the
-    // per-task file list threaded in from CometExecIterator.
+    // File-read errors without a native path use the per-task file list from CometExecIterator.
     val params =
       if (errorJson.errorType == "CannotReadFile"
         && rawParams.get("filePath").forall(p => p == null || p.toString.isEmpty)
@@ -117,8 +115,13 @@ object SparkErrorConverter extends ShimSparkErrorConverter {
 
     val summary: String = errorJson.summary.getOrElse("")
 
-    // Delegate to version-specific shim - let conversion exceptions propagate
-    val optEx = convertErrorType(errorJson.errorType, errorClass, params, sparkContext, summary)
+    // Math.multiplyExact throws a plain JVM exception in every Spark version, without an
+    // ANSI error class or configuration advice. Delegate other errors to the version-specific shim.
+    val optEx = if (errorJson.errorType == "LongOverflow") {
+      Some(new ArithmeticException("long overflow"))
+    } else {
+      convertErrorType(errorJson.errorType, errorClass, params, sparkContext, summary)
+    }
     optEx match {
       case Some(exception) =>
         // successfully converted - return the proper typed exception
