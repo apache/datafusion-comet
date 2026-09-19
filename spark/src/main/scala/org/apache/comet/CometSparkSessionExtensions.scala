@@ -249,31 +249,27 @@ object CometSparkSessionExtensions extends Logging {
 
   /**
    * Whether we should override Spark memory configuration for Comet. This only returns true when
-   * Comet native execution is enabled and/or Comet shuffle is enabled and Comet doesn't use
-   * off-heap mode (unified memory manager).
+   * Comet native execution is enabled and/or Comet shuffle is enabled.
    */
   def shouldOverrideMemoryConf(conf: SparkConf): Boolean = {
     val cometEnabled = getBooleanConf(conf, CometConf.COMET_ENABLED)
     val cometShuffleEnabled = getBooleanConf(conf, CometConf.COMET_SHUFFLE_ENABLED)
     val cometExecEnabled = getBooleanConf(conf, CometConf.COMET_EXEC_ENABLED)
-    val offHeapMode = CometSparkSessionExtensions.isOffHeapEnabled(conf)
-    cometEnabled && (cometShuffleEnabled || cometExecEnabled) && !offHeapMode
+    cometEnabled && (cometShuffleEnabled || cometExecEnabled)
   }
 
   /**
-   * Determines required memory overhead in MB per executor process for Comet when running in
-   * on-heap mode.
+   * Determines required memory overhead in MB per executor process for Comet.
+   *
+   * This applies in both on-heap and off-heap mode. Off-heap mode shares a memory _budget_ with
+   * Spark via `spark.memory.offHeap.size`, but the bytes themselves are allocated by the Rust
+   * global allocator in the native heap, and everything Comet allocates without reserving it
+   * against that budget is invisible to every accounting layer. The executor container needs room
+   * for it either way.
    */
   def getCometMemoryOverheadInMiB(sparkConf: SparkConf): Long = {
-    if (isOffHeapEnabled(sparkConf)) {
-      // when running in off-heap mode we use unified memory management to share
-      // off-heap memory with Spark so do not add overhead
-      return 0
-    }
     ConfigHelpers.byteFromString(
-      sparkConf.get(
-        COMET_ONHEAP_MEMORY_OVERHEAD.key,
-        COMET_ONHEAP_MEMORY_OVERHEAD.defaultValueString),
+      sparkConf.get(COMET_MEMORY_OVERHEAD.key, COMET_MEMORY_OVERHEAD.defaultValueString),
       ByteUnit.MiB)
   }
 
@@ -281,8 +277,7 @@ object CometSparkSessionExtensions extends Logging {
     conf.getBoolean(entry.key, entry.defaultValue.get)
 
   /**
-   * Calculates required memory overhead in bytes per executor process for Comet when running in
-   * on-heap mode.
+   * Calculates required memory overhead in bytes per executor process for Comet.
    */
   def getCometMemoryOverhead(sparkConf: SparkConf): Long = {
     ByteUnit.MiB.toBytes(getCometMemoryOverheadInMiB(sparkConf))

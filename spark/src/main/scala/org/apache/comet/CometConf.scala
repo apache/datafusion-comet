@@ -317,11 +317,13 @@ object CometConf extends ShimCometConf {
     .booleanConf
     .createWithDefault(false)
 
-  val COMET_ONHEAP_MEMORY_OVERHEAD: ConfigEntry[Long] = conf("spark.comet.memoryOverhead")
-    .category(CATEGORY_TESTING)
+  val COMET_MEMORY_OVERHEAD: ConfigEntry[Long] = conf("spark.comet.memoryOverhead")
+    .category(CATEGORY_TUNING)
     .doc(
-      "The amount of additional memory to be allocated per executor process for Comet, in MiB, " +
-        "when running Spark in on-heap mode.")
+      "The amount of additional memory to be allocated per executor process for Comet, in MiB. " +
+        "Comet adds this to `spark.executor.memoryOverhead` so that the executor container has " +
+        "room for the native allocations Comet makes outside the JVM heap. In on-heap mode this " +
+        "value is also the size of Comet's native memory pool.")
     .bytesConf(ByteUnit.MiB)
     .createWithDefault(1024)
 

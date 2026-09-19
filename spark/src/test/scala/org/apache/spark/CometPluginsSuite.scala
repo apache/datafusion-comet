@@ -24,7 +24,7 @@ import java.io.File
 import org.apache.spark.sql.{CometTestBase, SaveMode}
 import org.apache.spark.sql.internal.StaticSQLConf
 
-import org.apache.comet.COMET_VERSION
+import org.apache.comet.{COMET_VERSION, CometConf}
 
 class CometPluginsSuite extends CometTestBase {
   override protected def sparkConf: SparkConf = {
@@ -135,7 +135,7 @@ class CometPluginsSuite extends CometTestBase {
     val execMemOverhead3 = spark.sparkContext.getConf.get("spark.executor.memoryOverhead")
     val execMemOverhead4 = spark.sparkContext.conf.get("spark.executor.memoryOverhead")
 
-    // 2GB + 384MB (default Comet memory overhead)
+    // 2GB + 1024MB (default spark.comet.memoryOverhead)
     assert(execMemOverhead1 == "3072M")
     assert(execMemOverhead2 == "3072M")
     assert(execMemOverhead3 == "3072M")
@@ -163,7 +163,7 @@ class CometPluginsDefaultSuite extends CometTestBase {
     val execMemOverhead4 = spark.sparkContext.conf.get("spark.executor.memoryOverhead")
 
     // Spark executor memory overhead = executor memory (1G) * memoryOverheadFactor (0.5) = 512MB
-    // 512MB + 384MB (default Comet memory overhead)
+    // 512MB + 1024MB (default spark.comet.memoryOverhead)
     assert(execMemOverhead1 == "1536M")
     assert(execMemOverhead2 == "1536M")
     assert(execMemOverhead3 == "1536M")
@@ -211,21 +211,50 @@ class CometPluginsUnifiedModeOverrideSuite extends CometTestBase {
     conf.set("spark.memory.offHeap.size", "2G")
     conf.set("spark.comet.shuffle.enabled", "true")
     conf.set("spark.comet.exec.enabled", "true")
-    conf.set("spark.comet.memory.overhead.factor", "0.5")
+    conf.set(CometConf.COMET_MEMORY_OVERHEAD.key, "512M")
     conf
   }
 
   /*
-   * Since using unified memory executor memory should not be overridden
+   * Off-heap mode shares a memory budget with Spark, but Comet's native allocations that are not
+   * reserved against that budget still need room in the executor container, so the overhead is
+   * increased in off-heap mode too.
    */
-  test("executor memory overhead is not overridden") {
+  test("executor memory overhead is overridden in off-heap mode") {
     val execMemOverhead1 = spark.conf.get("spark.executor.memoryOverhead")
     val execMemOverhead2 = spark.sessionState.conf.getConfString("spark.executor.memoryOverhead")
     val execMemOverhead3 = spark.sparkContext.getConf.get("spark.executor.memoryOverhead")
     val execMemOverhead4 = spark.sparkContext.conf.get("spark.executor.memoryOverhead")
 
-    // in unified memory mode, comet memory overhead is
-    // spark.memory.offHeap.size (2G) * spark.comet.memory.overhead.factor (0.5) = 1G  and the overhead is not overridden
+    // 1G + 512MB (spark.comet.memoryOverhead)
+    assert(execMemOverhead1 == "1536M")
+    assert(execMemOverhead2 == "1536M")
+    assert(execMemOverhead3 == "1536M")
+    assert(execMemOverhead4 == "1536M")
+  }
+}
+
+class CometPluginsUnifiedModeNonOverrideSuite extends CometTestBase {
+  override protected def sparkConf: SparkConf = {
+    val conf = new SparkConf()
+    conf.set("spark.driver.memory", "1G")
+    conf.set("spark.executor.memory", "1G")
+    conf.set("spark.executor.memoryOverhead", "1G")
+    conf.set("spark.plugins", "org.apache.spark.CometPlugin")
+    conf.set("spark.comet.enabled", "true")
+    conf.set("spark.memory.offHeap.enabled", "true")
+    conf.set("spark.memory.offHeap.size", "2G")
+    conf.set("spark.comet.shuffle.enabled", "false")
+    conf.set("spark.comet.exec.enabled", "false")
+    conf
+  }
+
+  test("executor memory overhead is not overridden when Comet is not executing anything") {
+    val execMemOverhead1 = spark.conf.get("spark.executor.memoryOverhead")
+    val execMemOverhead2 = spark.sessionState.conf.getConfString("spark.executor.memoryOverhead")
+    val execMemOverhead3 = spark.sparkContext.getConf.get("spark.executor.memoryOverhead")
+    val execMemOverhead4 = spark.sparkContext.conf.get("spark.executor.memoryOverhead")
+
     assert(execMemOverhead1 == "1G")
     assert(execMemOverhead2 == "1G")
     assert(execMemOverhead3 == "1G")

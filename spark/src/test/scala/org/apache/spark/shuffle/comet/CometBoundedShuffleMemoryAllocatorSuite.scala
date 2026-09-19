@@ -37,7 +37,7 @@ class CometBoundedShuffleMemoryAllocatorSuite extends AnyFunSuite {
   private def newAllocator(): CometBoundedShuffleMemoryAllocator = {
     val conf = new SparkConf(false)
       .set("spark.memory.offHeap.enabled", "false")
-      .set(CometConf.COMET_ONHEAP_MEMORY_OVERHEAD.key, "1m")
+      .set(CometConf.COMET_MEMORY_OVERHEAD.key, "1m")
     val taskMemoryManager = new TaskMemoryManager(new TestMemoryManager(conf), 0)
     val sqlConf = new SQLConf
     sqlConf.setConfString(CometConf.COMET_SHUFFLE_JVM_MEMORY_FACTOR.key, "1.0")

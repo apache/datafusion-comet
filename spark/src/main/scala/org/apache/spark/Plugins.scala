@@ -98,7 +98,9 @@ class CometDriverPlugin extends DriverPlugin with Logging with ShimCometDriverPl
            - Updated Spark executor memory overhead: ${newExecMemOverhead}MB
          """)
     } else {
-      logInfo("Comet is running in unified memory mode and sharing off-heap memory with Spark")
+      logInfo(
+        "Not overriding Spark executor memory overhead because neither Comet execution nor " +
+          "Comet shuffle is enabled")
     }
 
     extraConfs
