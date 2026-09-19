@@ -19,11 +19,14 @@
 
 package org.apache.comet.serde
 
-import org.apache.spark.sql.CometTestBase
+import org.apache.spark.SparkThrowable
+import org.apache.spark.sql.{CometTestBase, Row}
 import org.apache.spark.sql.catalyst.expressions.{Abs, Cos, Expression, Literal, Round, Unevaluable}
+import org.apache.spark.sql.comet.CometNativeScanExec
+import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{DataType, DoubleType, IntegerType}
 
-import org.apache.comet.{CometExplainInfo, CometSparkSessionExtensions}
+import org.apache.comet.{CometConf, CometExplainInfo, CometSparkSessionExtensions}
 
 /**
  * Synthetic expression whose constructor declares `evalMode`, used to prove class-level detection
@@ -214,6 +217,41 @@ class CometScalarFunctionSuite extends CometTestBase {
         .convert(withContext, Seq.empty, binding = true)
         .isEmpty)
     assertRejectReason(withContext, "CometScalarFunction", "evalContext")
+  }
+
+  test("literal cast failure in an unvisited conditional branch does not fail planning") {
+    withTempPath { path =>
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        spark
+          .range(2)
+          .selectExpr("id", "CAST(id AS STRING) AS value")
+          .coalesce(1)
+          .write
+          .parquet(path.getCanonicalPath)
+      }
+      withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
+        withParquetTable(path.getCanonicalPath, "cast_branch_rows") {
+          val cast = "CAST(IF(id = 1, 'bad', value) AS INT)"
+          val masked = s"SELECT $cast AS parsed FROM cast_branch_rows LIMIT 1"
+          withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+            assert(sql(masked).collect().toSeq == Seq(Row(0)))
+          }
+          val (_, plan) = checkSparkAnswerAndFallbackReason(
+            masked,
+            "Literal cast requires Spark's conditional evaluation")
+          assert(collect(plan) { case scan: CometNativeScanExec => scan }.nonEmpty)
+          val (sparkError, cometError) =
+            checkSparkAnswerMaybeThrows(sql(s"SELECT $cast FROM cast_branch_rows"))
+          assert(sparkError.nonEmpty && cometError.nonEmpty)
+          val errors = Seq(sparkError.get, cometError.get).map { error =>
+            causeChain(error).collect { case e: SparkThrowable => e }.last
+          }
+          assert(errors.forall(_.getErrorClass == "CAST_INVALID_INPUT"))
+          assert(errors(0).getClass == errors(1).getClass)
+          assert(errors(0).getSqlState == errors(1).getSqlState)
+        }
+      }
+    }
   }
 
   test("CometScalarFunction allows non-ANSI expressions") {
