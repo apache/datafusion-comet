@@ -29,9 +29,9 @@ import org.apache.parquet.hadoop.ParquetFileReader
 import org.apache.parquet.hadoop.metadata.CompressionCodecName
 import org.apache.parquet.hadoop.util.HadoopInputFile
 import org.apache.parquet.schema.{MessageType, Type}
-import org.apache.spark.sql.{AnalysisException, CometTestBase, DataFrame, Row, SaveMode}
+import org.apache.spark.sql.{AnalysisException, DataFrame, Row, SaveMode}
 import org.apache.spark.sql.comet.{CometBatchScanExec, CometNativeColumnarToRowExec, CometNativeScanExec, CometNativeWriteExec, CometScanExec, CometSparkToColumnarExec}
-import org.apache.spark.sql.execution.{ColumnarToRowTransition, FileSourceScanExec, QueryExecution, SparkPlan, SQLExecution}
+import org.apache.spark.sql.execution.{ColumnarToRowTransition, FileSourceScanExec, SparkPlan, SQLExecution}
 import org.apache.spark.sql.execution.command.DataWritingCommandExec
 import org.apache.spark.sql.execution.datasources.WriteFilesExec
 import org.apache.spark.sql.functions.{array, map, struct, when}
@@ -1049,58 +1049,6 @@ class CometParquetWriterSuite extends CometParquetWriterTestBase {
     delete(new File(path))
   }
 
-  /**
-   * Captures the execution plan during a write operation.
-   *
-   * @param writeOp
-   *   The write operation to execute (takes output path as parameter)
-   * @param outputPath
-   *   The path to write to
-   * @return
-   *   The captured execution plan
-   */
-  private def captureWritePlan(writeOp: String => Unit, outputPath: String): SparkPlan = {
-    var capturedPlan: Option[QueryExecution] = None
-
-    val listener = new org.apache.spark.sql.util.QueryExecutionListener {
-      override def onSuccess(funcName: String, qe: QueryExecution, durationNs: Long): Unit = {
-        if (funcName == "save" || funcName.contains("command")) {
-          capturedPlan = Some(qe)
-        }
-      }
-
-      override def onFailure(
-          funcName: String,
-          qe: QueryExecution,
-          exception: Exception): Unit = {}
-    }
-
-    spark.listenerManager.register(listener)
-
-    try {
-      writeOp(outputPath)
-
-      // Wait for listener to be called with timeout
-      val maxWaitTimeMs = 15000
-      val checkIntervalMs = 100
-      val maxIterations = maxWaitTimeMs / checkIntervalMs
-      var iterations = 0
-
-      while (capturedPlan.isEmpty && iterations < maxIterations) {
-        Thread.sleep(checkIntervalMs)
-        iterations += 1
-      }
-
-      assert(
-        capturedPlan.isDefined,
-        s"Listener was not called within ${maxWaitTimeMs}ms - no execution plan captured")
-
-      stripAQEPlan(capturedPlan.get.executedPlan)
-    } finally {
-      spark.listenerManager.unregister(listener)
-    }
-  }
-
   private def assertHasCometNativeWriteExec(plan: SparkPlan): Unit = {
     var nativeWriteCount = 0
     plan.foreach {
@@ -1118,22 +1066,6 @@ class CometParquetWriterSuite extends CometParquetWriterTestBase {
     assert(
       nativeWriteCount == 1,
       s"Expected exactly one CometNativeWriteExec in the plan, but found $nativeWriteCount:\n${plan.treeString}")
-  }
-
-  private def assertNoCometNativeWriteExec(plan: SparkPlan): Unit = {
-    val hasNativeWrite = plan.exists {
-      case _: CometNativeWriteExec => true
-      case d: DataWritingCommandExec =>
-        d.child.exists {
-          case _: CometNativeWriteExec => true
-          case _ => false
-        }
-      case _ => false
-    }
-
-    assert(
-      !hasNativeWrite,
-      s"Expected no CometNativeWriteExec in the plan, but found one:\n${plan.treeString}")
   }
 
   private def assertRestoredParquetWriteCommand(plan: SparkPlan): Unit = {
