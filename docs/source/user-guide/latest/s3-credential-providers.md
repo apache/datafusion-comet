@@ -201,6 +201,33 @@ public CometS3Credentials getCredentialsForPath(CometS3CredentialContext ctx) th
 }
 ```
 
+### Scope hints via `CometS3ScopedCredentialProvider`
+
+The base `CometS3CredentialProvider` gives Comet one credential per (bucket, path) call. Vendors whose credentials are inherently *scoped* — a single STS session covers `s3://bucket/prefix-A/**` but not `s3://bucket/prefix-B/**` — can implement the opt-in sub-interface `CometS3ScopedCredentialProvider` to let Comet keep multiple scoped stores side-by-side in a single bucket instead of caching a single session and 403-ing when it is asked to serve a path outside its scope.
+
+```java
+package org.apache.comet.cloud.s3;
+
+public interface CometS3ScopedCredentialProvider extends CometS3CredentialProvider {
+    /**
+     * Advisory list of path prefixes (or absolute s3://... URIs) the credential
+     * returned by {@link #getCredentialsForPath(CometS3CredentialContext)} for
+     * the same {@code context} is valid against.  An empty list means "unknown /
+     * catchall"; Comet then falls back to the pre-existing single-entry-per-bucket
+     * behavior.
+     */
+    java.util.List<String> getPolicyLocationsFor(CometS3CredentialContext context);
+}
+```
+
+Comet uses the hint to key the native `object_store` registry as `(bucket, config_hash, backend, scope_prefixes)` instead of the base three-tuple, so two prefixes with disjoint scopes each get their own store. **The hint is advisory.** S3 itself is authoritative: if the vendor overreports a scope and S3 returns 403 anyway, the native cache transparently rebuilds the store under a widened (catchall) scope, retries the operation once, and continues. A second 403 propagates to Spark as a real error.
+
+**When you want this.** Overreporting has a runtime cost — a rebuild round-trip and a permanent widen of that bucket's cache — so only implement the sub-interface when your credential surface is genuinely per-prefix and stable at plan time. A vendor that always vends a bucket-wide session should stay on the base interface.
+
+**Interaction with `initialize`.** Scope hints are per-request, exactly like `getCredentialsForPath`. Comet does not cache them across requests; if your vendor's scope evolves during a job you may return a different list on each call.
+
+**Backward compatibility.** Existing implementations that only implement `CometS3CredentialProvider` (not the `Scoped` sub-interface) behave exactly as before — Comet keys and caches per-bucket, and the 403-retry path stays inactive.
+
 ### Composing multiple credential backends
 
 A single configured provider class is the dispatcher. If a vendor needs to route across several credential backends (per bucket, per path prefix, per tenant), the dispatch lives inside the vendor's class:
