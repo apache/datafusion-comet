@@ -801,6 +801,14 @@ converted into Arrow format, allowing the Comet pipeline to take over after that
 <p>Comet does not provide a Rust-based JSON scan, but when <code class="docutils literal notranslate"><span class="pre">spark.comet.convert.json.enabled</span></code> is enabled, data is immediately
 converted into Arrow format, allowing the Comet pipeline to take over after that.</p>
 </section>
+<section id="spark-to-comet-conversion-types">
+<h3>Spark-to-Comet conversion types<a class="headerlink" href="#spark-to-comet-conversion-types" title="Link to this heading">#</a></h3>
+<p>Spark-to-Comet conversion supports <code class="docutils literal notranslate"><span class="pre">ARRAY&lt;STRING&gt;</span></code> with binary string semantics, including
+nullable arrays and nullable elements, both as top-level fields and inside supported structs.
+This applies to Spark row and columnar inputs when conversion is enabled for the source.
+Other array element types, nested arrays, arrays of structs, maps, and non-binary string
+collations remain unsupported at this conversion boundary. Source defaults are unchanged.</p>
+</section>
 </section>
 <section id="data-catalogs">
 <h2>Data Catalogs<a class="headerlink" href="#data-catalogs" title="Link to this heading">#</a></h2>
@@ -1336,6 +1344,7 @@ As with S3, standard Hadoop ABFS configurations (the <code class="docutils liter
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#apache-iceberg">Apache Iceberg</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#csv">CSV</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#json">JSON</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#spark-to-comet-conversion-types">Spark-to-Comet conversion types</a></li>
 </ul>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#data-catalogs">Data Catalogs</a><ul class="nav section-nav flex-column">
