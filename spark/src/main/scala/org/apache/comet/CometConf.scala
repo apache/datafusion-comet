@@ -259,6 +259,8 @@ object CometConf extends ShimCometConf {
     createExecEnabledConfig("emptyRelation", defaultValue = true)
   val COMET_EXEC_SAMPLE_ENABLED: ConfigEntry[Boolean] =
     createExecEnabledConfig("sample", defaultValue = true)
+  val COMET_EXEC_MERGE_ROWS_ENABLED: ConfigEntry[Boolean] =
+    createExecEnabledConfig("mergeRows", defaultValue = false)
 
   val COMET_EXEC_IN_MEMORY_CACHE_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.exec.inMemoryCache.enabled")
