@@ -68,12 +68,6 @@ By default, `InitCap` is evaluated in the JVM using Spark's own code-generated i
 
 - Treats hyphen as a word separator (e.g. `robert rose-smith` produces `Robert Rose-Smith` instead of Spark's `Robert Rose-smith`) (https://github.com/apache/datafusion-comet/issues/1052)
 
-## Length
-
-The following cases are not supported by Comet and always fall back to Spark, regardless of any `allowIncompatible` setting:
-
-- `BinaryType` input is not supported
-
 ## Levenshtein
 
 The following cases have no native implementation and always run in the JVM using Spark's code-generated implementation (inside the Comet pipeline):

@@ -933,9 +933,10 @@ under the License.
 <section id="width-bucket">
 <h2>width_bucket<a class="headerlink" href="#width-bucket" title="Link to this heading">#</a></h2>
 <ul class="simple">
-<li><p>Spark 3.5.8 (audited 2026-05-27): introduced; not available in 3.4.3.</p></li>
+<li><p>Spark 3.4.3 (audited 2026-09-14): present in catalyst and the function registry with the same semantics as 3.5.8.</p></li>
+<li><p>Spark 3.5.8 (audited 2026-05-27): baseline.</p></li>
 <li><p>Spark 4.0.1, 4.1.1 (audited 2026-05-27): same semantics; <code class="docutils literal notranslate"><span class="pre">NullIntolerant</span></code> -&gt; <code class="docutils literal notranslate"><span class="pre">nullIntolerant:</span> <span class="pre">Boolean</span></code> refactor.</p></li>
-<li><p>Known limitation: wired via per-version <code class="docutils literal notranslate"><span class="pre">CometExprShim</span></code> rather than a <code class="docutils literal notranslate"><span class="pre">CometExpressionSerde</span></code>, so it bypasses the support-level framework and the auto-generated compatibility doc (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4485">#4485</a>). Native path uses datafusion-spark <code class="docutils literal notranslate"><span class="pre">SparkWidthBucket</span></code>; interval input types are not exercised by Comet tests.</p></li>
+<li><p>Wiring (audited 2026-09-14): <code class="docutils literal notranslate"><span class="pre">CometWidthBucket</span></code>, a <code class="docutils literal notranslate"><span class="pre">CometCodegenDispatch</span></code> registered once in the shared math group, so it goes through the support-level framework and the compatibility doc on every Spark line. <code class="docutils literal notranslate"><span class="pre">width_bucket.sql</span></code> exercises double and both interval input types.</p></li>
 </ul>
 </section>
 </section>
