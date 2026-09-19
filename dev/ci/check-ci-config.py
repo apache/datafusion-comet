@@ -158,26 +158,30 @@ ROUTING_CASES = [
 # The PR tier is the Linux build and nothing else. Every Spark SQL and Iceberg
 # suite waits for the queue or the nightly run, or for its label.
 PR_TIER = {"build_linux", "build_linux_full"}
-# The queue adds one Spark version (4.1, the default profile) and one Iceberg
-# version (1.11, the only Spark 4.1 coverage), plus the build-level gates.
+# The queue adds one Spark version (4.1, the default profile), one Iceberg
+# version (1.11, the only Spark 4.1 coverage) and one Delta profile (3.5, the
+# one its MinIO and feature-off jobs pin), plus the build-level gates.
 QUEUE_TIER = PR_TIER | {
     "spark_4_1",
     "spark_4_1_hive",
     "iceberg_1_11",
+    "delta_3_5",
     "build_macos",
     "benchmark",
     "delta_gate",
     "pyarrow_udf",
 }
-# Every other Spark and Iceberg version, and the linux-test matrix's other
-# Spark profiles (`build_linux_all_profiles`, part of the Linux build's call
-# rather than a job of its own), run once a night against main instead.
+# Every other Spark, Iceberg and Delta version, and the linux-test matrix's
+# other Spark profiles (`build_linux_all_profiles`, part of the Linux build's
+# call rather than a job of its own), run once a night against main instead.
 NIGHTLY_TIER = {
     "spark_3_5",
     "spark_4_0",
     "iceberg_1_8",
     "iceberg_1_9",
     "iceberg_1_10",
+    "delta_4_0",
+    "delta_4_1",
     "build_linux_all_profiles",
 }
 # Spark 3.4 is deprecated and sits outside the queue and nightly tiers
@@ -189,6 +193,9 @@ SPARK_DEPRECATED = {"spark_3_4"}
 # One label opts a pull request into every Iceberg version, whichever tier
 # each sits in.
 ICEBERG_OPT_IN = {"iceberg_1_8", "iceberg_1_9", "iceberg_1_10", "iceberg_1_11"}
+# Likewise one label for every Delta profile: the queue-tier 3.5 and the
+# nightly-tier 4.0 and 4.1.
+DELTA_OPT_IN = {"delta_3_5", "delta_4_0", "delta_4_1"}
 ALL_JOBS = QUEUE_TIER | NIGHTLY_TIER | SPARK_DEPRECATED | {"docs"}
 assert not QUEUE_TIER & NIGHTLY_TIER, "a job is queue or nightly, never both"
 
@@ -218,6 +225,21 @@ POLICY_CASES = [
     (
         {"name": "pull_request", "action": "synchronize", "labels": ["run-spark-3.5-tests"]},
         PR_TIER | {"spark_3_5"},
+    ),
+    # The Delta label adds every Delta profile, the queue-tier one and the
+    # two nightly-tier ones alike.
+    (
+        {"name": "pull_request", "action": "synchronize", "labels": ["run-delta-tests"]},
+        PR_TIER | DELTA_OPT_IN,
+    ),
+    (
+        {
+            "name": "pull_request",
+            "action": "labeled",
+            "label": "run-delta-tests",
+            "labels": ["run-delta-tests"],
+        },
+        DELTA_OPT_IN,
     ),
     # The macOS build and the benchmark compile check are queue-only, each
     # with its own label. Neither label pulls in the other.

@@ -81,6 +81,7 @@ to read more.
    :caption: Integrations
    :hidden:
 
+   Delta Lake <delta>
    Iceberg Guide <iceberg>
    Iceberg Writes <iceberg-writes>
    S3 Credential Providers <s3-credential-providers>
