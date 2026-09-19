@@ -22,7 +22,8 @@ package org.apache.comet
 import scala.util.Random
 
 import org.apache.hadoop.fs.Path
-import org.apache.spark.sql.CometTestBase
+import org.apache.spark.SparkThrowable
+import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.catalyst.expressions.ArrayContains
 import org.apache.spark.sql.functions._
 import org.apache.spark.sql.internal.SQLConf
@@ -233,6 +234,57 @@ class CometMapExpressionSuite extends CometTestBase {
         checkSparkAnswerAndOperator(sql(query))
       }
     }
+  }
+
+  // Spark's `ArrayBasedMapBuilder` reads `spark.sql.mapKeyDedupPolicy` when the expression is
+  // first evaluated and keeps that builder, so a Dataset executed again after the setting changed
+  // still builds its maps under the policy it started with. Comet captures the policy when it
+  // converts the plan, which the Dataset reuses across actions, so both engines keep it; reading
+  // the setting again for every native iterator would apply the new one instead.
+  // https://github.com/apache/datafusion-comet/pull/5854#discussion_r4049790875
+  test("map constructors keep the dedup policy of an executed Dataset") {
+    withTempPath { dir =>
+      val path = dir.getCanonicalPath
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        spark.range(0, 1, 1, 1).write.parquet(path)
+      }
+      def query(): DataFrame = spark.read
+        .parquet(path)
+        .selectExpr(
+          "map_from_arrays(array(id, id), array(1, 2)) AS a",
+          "map_from_entries(array(struct(id, 1), struct(id, 2))) AS e",
+          "str_to_map(concat(CAST(id AS STRING), ':1,', CAST(id AS STRING), ':2')) AS s")
+      val lastWin = Seq(Row(Map(0L -> 2), Map(0L -> 2), Map("0" -> "2")))
+      for (cometEnabled <- Seq("false", "true")) {
+        withSQLConf(CometConf.COMET_ENABLED.key -> cometEnabled) {
+          // Executed under LAST_WIN, the Dataset keeps that policy once EXCEPTION is set.
+          withSQLConf(SQLConf.MAP_KEY_DEDUP_POLICY.key -> "LAST_WIN") {
+            val df = query()
+            checkAnswer(df, lastWin)
+            if (cometEnabled == "true") {
+              checkCometOperators(stripAQEPlan(df.queryExecution.executedPlan))
+            }
+            withSQLConf(SQLConf.MAP_KEY_DEDUP_POLICY.key -> "EXCEPTION") {
+              checkAnswer(df, lastWin)
+            }
+          }
+          // Executed under EXCEPTION, the Dataset keeps raising once LAST_WIN is set.
+          withSQLConf(SQLConf.MAP_KEY_DEDUP_POLICY.key -> "EXCEPTION") {
+            val df = query()
+            assertDuplicateMapKey(df)
+            withSQLConf(SQLConf.MAP_KEY_DEDUP_POLICY.key -> "LAST_WIN") {
+              assertDuplicateMapKey(df)
+            }
+          }
+        }
+      }
+    }
+  }
+
+  private def assertDuplicateMapKey(df: DataFrame): Unit = {
+    val error = intercept[Throwable](df.collect())
+    val sparkError = causeChain(error).collect { case e: SparkThrowable => e }.lastOption
+    assert(sparkError.exists(_.getErrorClass == "DUPLICATED_MAP_KEY"), s"$error")
   }
 
   test("map_from_entries - null key is rejected") {

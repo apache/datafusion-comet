@@ -18,10 +18,13 @@
 //! Spark-compatible `map_from_arrays`, `map_from_entries` and `str_to_map`.
 //!
 //! The `datafusion-spark` kernels build the `MapArray` and already follow Spark's
-//! `spark.sql.mapKeyDedupPolicy`, which Comet forwards as
-//! `datafusion.spark.map_key_dedup_policy`. These wrappers add the checks Spark's
-//! `ArrayBasedMapBuilder` performs before inserting an entry, and restate the upstream errors
-//! as the Spark error classes `SparkErrorConverter` turns back into `QueryExecutionErrors`:
+//! `spark.sql.mapKeyDedupPolicy`, which they read as `datafusion.spark.map_key_dedup_policy`
+//! from the session options. Each wrapper carries the policy the plan captured when it was
+//! converted instead, so an executed plan keeps its policy the way Spark's `ArrayBasedMapBuilder`
+//! keeps the one it was created with, and hands the kernel session options that say so. The
+//! wrappers also add the checks `ArrayBasedMapBuilder` performs before inserting an entry, and
+//! restate the upstream errors as the Spark error classes `SparkErrorConverter` turns back into
+//! `QueryExecutionErrors`:
 //!
 //! - a key array and value array of different lengths raise `[MAP_KEY_VALUE_DIFF_SIZES]`, which
 //!   Spark checks before it builds anything;
@@ -37,7 +40,7 @@ use arrow::array::{Array, ArrayRef, AsArray, StructArray, UInt32Array};
 use arrow::buffer::NullBuffer;
 use arrow::compute::take;
 use arrow::datatypes::{DataType, FieldRef};
-use datafusion::common::config::MapKeyDedupPolicy;
+use datafusion::common::config::{ConfigOptions, MapKeyDedupPolicy};
 use datafusion::common::{exec_err, DataFusionError, HashSet, Result, ScalarValue};
 use datafusion::logical_expr::{
     ColumnarValue, ReturnFieldArgs, ScalarFunctionArgs, ScalarUDFImpl, Signature,
@@ -45,25 +48,30 @@ use datafusion::logical_expr::{
 use datafusion_spark::function::map::map_from_arrays::MapFromArrays as DataFusionMapFromArrays;
 use datafusion_spark::function::map::map_from_entries::MapFromEntries as DataFusionMapFromEntries;
 use datafusion_spark::function::map::str_to_map::SparkStrToMap as DataFusionStrToMap;
+use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 /// Spark-compatible `map_from_arrays(keys, values)`.
-#[derive(Debug, PartialEq, Eq, Hash)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct SparkMapFromArrays {
     inner: DataFusionMapFromArrays,
-}
-
-impl Default for SparkMapFromArrays {
-    fn default() -> Self {
-        Self::new()
-    }
+    policy: MapKeyDedupPolicy,
 }
 
 impl SparkMapFromArrays {
-    pub fn new() -> Self {
+    /// `policy` is the `spark.sql.mapKeyDedupPolicy` captured when the plan was converted.
+    pub fn new(policy: MapKeyDedupPolicy) -> Self {
         Self {
             inner: DataFusionMapFromArrays::new(),
+            policy,
         }
+    }
+}
+
+impl Hash for SparkMapFromArrays {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.inner.hash(state);
+        last_value_wins(self.policy).hash(state);
     }
 }
 
@@ -85,11 +93,11 @@ impl ScalarUDFImpl for SparkMapFromArrays {
     }
 
     fn invoke_with_args(&self, args: ScalarFunctionArgs) -> Result<ColumnarValue> {
-        let mut args = expand_scalars(args)?;
+        let mut args = expand_scalars(with_policy(args, self.policy))?;
         compact_list_arguments(&mut args)?;
         match args.args.as_slice() {
             [ColumnarValue::Array(keys), ColumnarValue::Array(values)] => {
-                validate_map_from_arrays(keys, values, last_value_wins(&args))?
+                validate_map_from_arrays(keys, values, last_value_wins(self.policy))?
             }
             other => return exec_err!("map_from_arrays expects 2 arguments, got {}", other.len()),
         }
@@ -100,22 +108,26 @@ impl ScalarUDFImpl for SparkMapFromArrays {
 }
 
 /// Spark-compatible `map_from_entries(entries)`.
-#[derive(Debug, PartialEq, Eq, Hash)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct SparkMapFromEntries {
     inner: DataFusionMapFromEntries,
-}
-
-impl Default for SparkMapFromEntries {
-    fn default() -> Self {
-        Self::new()
-    }
+    policy: MapKeyDedupPolicy,
 }
 
 impl SparkMapFromEntries {
-    pub fn new() -> Self {
+    /// `policy` is the `spark.sql.mapKeyDedupPolicy` captured when the plan was converted.
+    pub fn new(policy: MapKeyDedupPolicy) -> Self {
         Self {
             inner: DataFusionMapFromEntries::new(),
+            policy,
         }
+    }
+}
+
+impl Hash for SparkMapFromEntries {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.inner.hash(state);
+        last_value_wins(self.policy).hash(state);
     }
 }
 
@@ -137,11 +149,11 @@ impl ScalarUDFImpl for SparkMapFromEntries {
     }
 
     fn invoke_with_args(&self, args: ScalarFunctionArgs) -> Result<ColumnarValue> {
-        let mut args = expand_scalars(args)?;
+        let mut args = expand_scalars(with_policy(args, self.policy))?;
         compact_list_arguments(&mut args)?;
         match args.args.as_slice() {
             [ColumnarValue::Array(entries)] => {
-                validate_map_from_entries(entries, last_value_wins(&args))?
+                validate_map_from_entries(entries, last_value_wins(self.policy))?
             }
             other => return exec_err!("map_from_entries expects 1 argument, got {}", other.len()),
         }
@@ -152,22 +164,26 @@ impl ScalarUDFImpl for SparkMapFromEntries {
 }
 
 /// Spark-compatible `str_to_map(text[, pair_delim[, key_value_delim]])`.
-#[derive(Debug, PartialEq, Eq, Hash)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct SparkStrToMap {
     inner: DataFusionStrToMap,
-}
-
-impl Default for SparkStrToMap {
-    fn default() -> Self {
-        Self::new()
-    }
+    policy: MapKeyDedupPolicy,
 }
 
 impl SparkStrToMap {
-    pub fn new() -> Self {
+    /// `policy` is the `spark.sql.mapKeyDedupPolicy` captured when the plan was converted.
+    pub fn new(policy: MapKeyDedupPolicy) -> Self {
         Self {
             inner: DataFusionStrToMap::new(),
+            policy,
         }
+    }
+}
+
+impl Hash for SparkStrToMap {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.inner.hash(state);
+        last_value_wins(self.policy).hash(state);
     }
 }
 
@@ -192,7 +208,7 @@ impl ScalarUDFImpl for SparkStrToMap {
         // Splitting a string cannot produce a NULL key, so only the duplicate-key error needs
         // restating here.
         self.inner
-            .invoke_with_args(args)
+            .invoke_with_args(with_policy(args, self.policy))
             .map_err(|error| as_spark_error(error, DuplicateKeyFormat::Quoted))
     }
 }
@@ -210,9 +226,20 @@ fn expand_scalars(mut args: ScalarFunctionArgs) -> Result<ScalarFunctionArgs> {
     Ok(args)
 }
 
-/// Whether the session asks for Spark's `LAST_WIN` duplicate key policy.
-fn last_value_wins(args: &ScalarFunctionArgs) -> bool {
-    args.config_options.spark.map_key_dedup_policy == MapKeyDedupPolicy::LastWin
+/// Whether `policy` is Spark's `LAST_WIN` duplicate key policy.
+fn last_value_wins(policy: MapKeyDedupPolicy) -> bool {
+    policy == MapKeyDedupPolicy::LastWin
+}
+
+/// Hands the kernel the policy the plan captured. The kernels read it from the session options
+/// as `datafusion.spark.map_key_dedup_policy`, so those are replaced when they say otherwise.
+fn with_policy(mut args: ScalarFunctionArgs, policy: MapKeyDedupPolicy) -> ScalarFunctionArgs {
+    if args.config_options.spark.map_key_dedup_policy != policy {
+        let mut options = ConfigOptions::clone(&args.config_options);
+        options.spark.map_key_dedup_policy = policy;
+        args.config_options = Arc::new(options);
+    }
+    args
 }
 
 /// Rebuilds any list argument whose entries do not start at offset zero.
@@ -484,10 +511,16 @@ mod tests {
         ))
     }
 
-    fn invoke(
+    fn invoke(udf: &dyn ScalarUDFImpl, args: Vec<ArrayRef>) -> Result<ColumnarValue> {
+        invoke_with_session_policy(udf, args, MapKeyDedupPolicy::default())
+    }
+
+    /// Invokes `udf` in a session whose `datafusion.spark.map_key_dedup_policy` is
+    /// `session_policy`, which the wrapper's own policy must take precedence over.
+    fn invoke_with_session_policy(
         udf: &dyn ScalarUDFImpl,
         args: Vec<ArrayRef>,
-        policy: MapKeyDedupPolicy,
+        session_policy: MapKeyDedupPolicy,
     ) -> Result<ColumnarValue> {
         let arg_fields: Vec<FieldRef> = args
             .iter()
@@ -500,7 +533,7 @@ mod tests {
             scalar_arguments: &scalar_arguments,
         })?;
         let mut config = ConfigOptions::default();
-        config.spark.map_key_dedup_policy = policy;
+        config.spark.map_key_dedup_policy = session_policy;
         let number_rows = args.first().map(|arg| arg.len()).unwrap_or(0);
         udf.invoke_with_args(ScalarFunctionArgs {
             args: args.into_iter().map(ColumnarValue::Array).collect(),
@@ -525,9 +558,8 @@ mod tests {
         let keys = int_list(Int32Array::from(vec![Some(1), None]), &[0, 2], None);
         let values = string_list(StringArray::from(vec![Some("a"), Some("b")]), &[0, 2], None);
         let err = invoke(
-            &SparkMapFromArrays::default(),
+            &SparkMapFromArrays::new(MapKeyDedupPolicy::Exception),
             vec![keys, values],
-            MapKeyDedupPolicy::Exception,
         )
         .unwrap_err()
         .to_string();
@@ -549,9 +581,8 @@ mod tests {
         );
         let result = map_result(
             invoke(
-                &SparkMapFromArrays::default(),
+                &SparkMapFromArrays::new(MapKeyDedupPolicy::Exception),
                 vec![keys, values],
-                MapKeyDedupPolicy::Exception,
             )
             .unwrap(),
         );
@@ -564,9 +595,8 @@ mod tests {
         let keys = int_list(Int32Array::from(vec![1, 2]), &[0, 2], None);
         let values = string_list(StringArray::from(vec![Some("a")]), &[0, 1], None);
         let err = invoke(
-            &SparkMapFromArrays::default(),
+            &SparkMapFromArrays::new(MapKeyDedupPolicy::Exception),
             vec![keys, values],
-            MapKeyDedupPolicy::Exception,
         )
         .unwrap_err()
         .to_string();
@@ -580,9 +610,8 @@ mod tests {
         let keys = int_list(Int32Array::from(vec![7, 7]), &[0, 2], None);
         let values = string_list(StringArray::from(vec![Some("a"), Some("b")]), &[0, 2], None);
         let err = invoke(
-            &SparkMapFromArrays::default(),
+            &SparkMapFromArrays::new(MapKeyDedupPolicy::Exception),
             vec![keys, values],
-            MapKeyDedupPolicy::Exception,
         )
         .unwrap_err()
         .to_string();
@@ -606,9 +635,8 @@ mod tests {
         ));
         let values = string_list(StringArray::from(vec![Some("1"), Some("2")]), &[0, 2], None);
         let err = invoke(
-            &SparkMapFromArrays::default(),
+            &SparkMapFromArrays::new(MapKeyDedupPolicy::Exception),
             vec![keys, values],
-            MapKeyDedupPolicy::Exception,
         )
         .unwrap_err()
         .to_string();
@@ -624,9 +652,8 @@ mod tests {
         let values = string_list(StringArray::from(vec![Some("a"), Some("b")]), &[0, 2], None);
         let result = map_result(
             invoke(
-                &SparkMapFromArrays::default(),
+                &SparkMapFromArrays::new(MapKeyDedupPolicy::LastWin),
                 vec![keys, values],
-                MapKeyDedupPolicy::LastWin,
             )
             .unwrap(),
         );
@@ -648,9 +675,8 @@ mod tests {
         );
         let result = map_result(
             invoke(
-                &SparkMapFromArrays::default(),
+                &SparkMapFromArrays::new(MapKeyDedupPolicy::LastWin),
                 vec![keys, values],
-                MapKeyDedupPolicy::LastWin,
             )
             .unwrap(),
         );
@@ -664,6 +690,31 @@ mod tests {
     }
 
     #[test]
+    fn the_plan_policy_wins_over_the_session_option() {
+        // The plan captured its policy when it was converted; whatever the native session holds
+        // at execution time must not override it.
+        let keys = || int_list(Int32Array::from(vec![7, 7]), &[0, 2], None);
+        let values = || string_list(StringArray::from(vec![Some("a"), Some("b")]), &[0, 2], None);
+        let err = invoke_with_session_policy(
+            &SparkMapFromArrays::new(MapKeyDedupPolicy::Exception),
+            vec![keys(), values()],
+            MapKeyDedupPolicy::LastWin,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("[DUPLICATED_MAP_KEY]"), "{err}");
+        let result = map_result(
+            invoke_with_session_policy(
+                &SparkMapFromArrays::new(MapKeyDedupPolicy::LastWin),
+                vec![keys(), values()],
+                MapKeyDedupPolicy::Exception,
+            )
+            .unwrap(),
+        );
+        assert_eq!(result.value_offsets(), &[0, 1]);
+    }
+
+    #[test]
     fn map_from_entries_rejects_null_key() {
         let entries = entry_list(
             Int32Array::from(vec![Some(1), None]),
@@ -672,9 +723,8 @@ mod tests {
             None,
         );
         let err = invoke(
-            &SparkMapFromEntries::default(),
+            &SparkMapFromEntries::new(MapKeyDedupPolicy::Exception),
             vec![entries],
-            MapKeyDedupPolicy::Exception,
         )
         .unwrap_err()
         .to_string();
@@ -692,9 +742,8 @@ mod tests {
         );
         let result = map_result(
             invoke(
-                &SparkMapFromEntries::default(),
+                &SparkMapFromEntries::new(MapKeyDedupPolicy::Exception),
                 vec![entries],
-                MapKeyDedupPolicy::Exception,
             )
             .unwrap(),
         );
@@ -712,9 +761,8 @@ mod tests {
         );
         let result = map_result(
             invoke(
-                &SparkMapFromEntries::default(),
+                &SparkMapFromEntries::new(MapKeyDedupPolicy::LastWin),
                 vec![entries],
-                MapKeyDedupPolicy::LastWin,
             )
             .unwrap(),
         );
@@ -733,9 +781,8 @@ mod tests {
         );
         let result = map_result(
             invoke(
-                &SparkMapFromEntries::default(),
+                &SparkMapFromEntries::new(MapKeyDedupPolicy::LastWin),
                 vec![entries],
-                MapKeyDedupPolicy::LastWin,
             )
             .unwrap(),
         );
@@ -752,9 +799,8 @@ mod tests {
     fn str_to_map_reports_the_duplicate_key() {
         let text: ArrayRef = Arc::new(StringArray::from(vec![Some("a:1,b:2,a:3")]));
         let err = invoke(
-            &SparkStrToMap::default(),
+            &SparkStrToMap::new(MapKeyDedupPolicy::Exception),
             vec![text],
-            MapKeyDedupPolicy::Exception,
         )
         .unwrap_err()
         .to_string();
@@ -768,12 +814,7 @@ mod tests {
     fn str_to_map_honours_last_win() {
         let text: ArrayRef = Arc::new(StringArray::from(vec![Some("a:1,b:2,a:3")]));
         let result = map_result(
-            invoke(
-                &SparkStrToMap::default(),
-                vec![text],
-                MapKeyDedupPolicy::LastWin,
-            )
-            .unwrap(),
+            invoke(&SparkStrToMap::new(MapKeyDedupPolicy::LastWin), vec![text]).unwrap(),
         );
         assert_eq!(result.value_offsets(), &[0, 2]);
         // `a` keeps the slot of its first occurrence and takes its last value.
@@ -796,9 +837,8 @@ mod tests {
         );
         let result = map_result(
             invoke(
-                &SparkMapFromArrays::default(),
+                &SparkMapFromArrays::new(MapKeyDedupPolicy::Exception),
                 vec![keys.slice(1, 1), values.slice(1, 1)],
-                MapKeyDedupPolicy::Exception,
             )
             .unwrap(),
         );
@@ -827,9 +867,8 @@ mod tests {
         );
         let result = map_result(
             invoke(
-                &SparkMapFromEntries::default(),
+                &SparkMapFromEntries::new(MapKeyDedupPolicy::Exception),
                 vec![entries.slice(1, 1)],
-                MapKeyDedupPolicy::Exception,
             )
             .unwrap(),
         );
@@ -863,9 +902,8 @@ mod tests {
             None,
         );
         let err = invoke(
-            &SparkMapFromArrays::default(),
+            &SparkMapFromArrays::new(MapKeyDedupPolicy::Exception),
             vec![keys, values],
-            MapKeyDedupPolicy::Exception,
         )
         .unwrap_err()
         .to_string();
@@ -886,9 +924,8 @@ mod tests {
             None,
         );
         let err = invoke(
-            &SparkMapFromArrays::default(),
+            &SparkMapFromArrays::new(MapKeyDedupPolicy::Exception),
             vec![keys, values],
-            MapKeyDedupPolicy::Exception,
         )
         .unwrap_err()
         .to_string();
@@ -909,9 +946,8 @@ mod tests {
             None,
         );
         let err = invoke(
-            &SparkMapFromArrays::default(),
+            &SparkMapFromArrays::new(MapKeyDedupPolicy::Exception),
             vec![keys, values],
-            MapKeyDedupPolicy::Exception,
         )
         .unwrap_err()
         .to_string();
@@ -927,9 +963,8 @@ mod tests {
             None,
         );
         let err = invoke(
-            &SparkMapFromEntries::default(),
+            &SparkMapFromEntries::new(MapKeyDedupPolicy::Exception),
             vec![entries],
-            MapKeyDedupPolicy::Exception,
         )
         .unwrap_err()
         .to_string();
@@ -950,9 +985,8 @@ mod tests {
             None,
         );
         let err = invoke(
-            &SparkMapFromArrays::default(),
+            &SparkMapFromArrays::new(MapKeyDedupPolicy::LastWin),
             vec![keys, values],
-            MapKeyDedupPolicy::LastWin,
         )
         .unwrap_err()
         .to_string();

@@ -111,7 +111,7 @@ use crate::execution::memory_pools::logging_pool::LoggingMemoryPool;
 use crate::execution::spark_config::{
     SparkConfig, COMET_DEBUG_ENABLED, COMET_DEBUG_MEMORY, COMET_EXPLAIN_NATIVE_ENABLED,
     COMET_MAX_TEMP_DIRECTORY_SIZE, COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED,
-    COMET_TRACING_ENABLED, SPARK_EXECUTOR_CORES, SPARK_MAP_KEY_DEDUP_POLICY,
+    COMET_TRACING_ENABLED, SPARK_EXECUTOR_CORES,
 };
 use crate::parquet::encryption_support::{CometEncryptionFactory, ENCRYPTION_FACTORY_ID};
 use datafusion_comet_proto::spark_operator::operator::OpStruct;
@@ -740,15 +740,6 @@ fn prepare_datafusion_session_context(
             session_config.set_str("datafusion.execution.parquet.pushdown_filters", "true");
         session_config =
             session_config.set_str("datafusion.execution.parquet.reorder_filters", "true");
-    }
-
-    // `map_from_arrays`, `map_from_entries` and `str_to_map` build their maps with the
-    // duplicate-key policy Spark's `ArrayBasedMapBuilder` uses. DataFusion spells the same
-    // setting `datafusion.spark.map_key_dedup_policy` and takes the same `EXCEPTION` /
-    // `LAST_WIN` values. Set before the `spark.comet.datafusion.*` testing escape hatch
-    // pass-through below, so an explicit override of the DataFusion key still wins.
-    if let Some(policy) = spark_config.get(SPARK_MAP_KEY_DEDUP_POLICY) {
-        session_config = session_config.set_str("datafusion.spark.map_key_dedup_policy", policy);
     }
 
     // Pass through DataFusion configs from Spark.
