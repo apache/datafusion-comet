@@ -1051,9 +1051,13 @@ omitted from the tables below and may be reconsidered based on demand:</p>
 </tr>
 </thead>
 <tbody>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">DataWritingCommandExec</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">WriteFilesExec</span></code></p></td>
 <td><p>⚠️</p></td>
-<td><p>Experimental native Parquet writes, disabled by default (opt-in).</p></td>
+<td><p>Spark 4.0+. Experimental native Parquet writes, disabled by default (opt-in). Non-partitioned, non-bucketed writes only, and not when <code class="docutils literal notranslate"><span class="pre">spark.sql.files.maxRecordsPerFile</span></code> is set.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">DataWritingCommandExec</span></code></p></td>
+<td><p>⚠️</p></td>
+<td><p>Spark 3.4/3.5 only. Experimental native Parquet writes, disabled by default (opt-in). Replaced by <code class="docutils literal notranslate"><span class="pre">WriteFilesExec</span></code> on Spark 4.0+ and removed with Spark 3.x support.</p></td>
 </tr>
 </tbody>
 </table>

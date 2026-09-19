@@ -576,12 +576,26 @@ columnar output. Row-based Spark operators require JVM shuffle.</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">HashPartitioning</span></code></p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">RangePartitioning</span></code></p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">SinglePartition</span></code></p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">RoundRobinPartitioning</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">RoundRobinPartitioning</span></code>, disabled by default via
+<code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.native.partitioning.roundrobin.enabled</span></code>, because Comet’s hash-based
+assignment puts unsorted rows in different partitions than Spark does</p></li>
 </ul>
 </li>
-<li><p><strong>Supported partition key types</strong>: For <code class="docutils literal notranslate"><span class="pre">HashPartitioning</span></code> and <code class="docutils literal notranslate"><span class="pre">RangePartitioning</span></code>, partition
-keys must be primitive types. Complex types (struct, array, map) as partition keys require
-JVM shuffle. Note that complex types are fully supported as data columns in native shuffle.</p></li>
+<li><p><strong>Supported partition key types</strong>: The rule differs by partitioning, and neither restricts data
+columns. Complex types are fully supported as data columns in native shuffle.</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">RangePartitioning</span></code> keys must be primitive. <code class="docutils literal notranslate"><span class="pre">supportedRangePartitioningDataType</span></code> rejects every
+nested type, because native cannot sort them, and rejects collated strings, because Comet
+compares raw bytes. Float and double are also rejected when
+<code class="docutils literal notranslate"><span class="pre">spark.comet.exec.strictFloatingPoint</span></code> is enabled.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">HashPartitioning</span></code> keys must be primitive <strong>by default</strong>. Setting
+<code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.native.partitioning.hash.nested.enabled</span></code> to <code class="docutils literal notranslate"><span class="pre">true</span></code> admits structs and
+arrays as keys, checked recursively to their leaves, and maps on Spark 4.0 and later, where
+Spark’s <code class="docutils literal notranslate"><span class="pre">mapsort</span></code> normalization makes physical entry order irrelevant. A collated string at any
+depth still disqualifies the key. The config defaults to <code class="docutils literal notranslate"><span class="pre">false</span></code> pending measurement of the
+nested hashing paths, so by default a complex hash key falls back to JVM shuffle.</p></li>
+</ul>
+</li>
 </ol>
 </section>
 <section id="architecture">
@@ -668,25 +682,41 @@ JVM shuffle. Note that complex types are fully supported as data columns in nati
 </section>
 <section id="rust-side">
 <h3>Rust Side<a class="headerlink" href="#rust-side" title="Link to this heading">#</a></h3>
+<p>The native shuffle implementation is its own workspace crate, <code class="docutils literal notranslate"><span class="pre">datafusion-comet-shuffle</span></code>, rooted at
+<code class="docutils literal notranslate"><span class="pre">native/shuffle/</span></code>. Paths below are relative to <code class="docutils literal notranslate"><span class="pre">native/shuffle/src/</span></code>.</p>
 <div class="pst-scrollable-table-container"><table class="table">
 <thead>
 <tr class="row-odd"><th class="head"><p>File</p></th>
-<th class="head"><p>Location</p></th>
 <th class="head"><p>Description</p></th>
 </tr>
 </thead>
 <tbody>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">shuffle_writer.rs</span></code></p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">native/core/src/execution/shuffle/</span></code></p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">ShuffleWriterExec</span></code> plan and partitioners. Main shuffle logic.</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">ShuffleWriterExec</span></code>, the DataFusion <code class="docutils literal notranslate"><span class="pre">ExecutionPlan</span></code> that drives partitioning and writing.</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">codec.rs</span></code></p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">native/core/src/execution/shuffle/</span></code></p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">ShuffleBlockWriter</span></code> for Arrow IPC encoding with compression. Also handles decoding.</p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">comet_partitioning.rs</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">CometPartitioning</span></code> enum defining the partition schemes (Hash, Range, Single, RoundRobin).</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">comet_partitioning.rs</span></code></p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">native/core/src/execution/shuffle/</span></code></p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">CometPartitioning</span></code> enum defining partition schemes (Hash, Range, Single).</p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">partitioners/multi_partition.rs</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">MultiPartitionShuffleRepartitioner</span></code> for hash, range, and round robin partitioning.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">partitioners/single_partition.rs</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">SinglePartitionShufflePartitioner</span></code> for the single partition case.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">writers/shuffle_block_writer.rs</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">ShuffleBlockWriter</span></code> and the <code class="docutils literal notranslate"><span class="pre">CompressionCodec</span></code> enum. Arrow IPC encoding with compression.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">writers/partition_writer.rs</span></code></p></td>
+<td><p>The <code class="docutils literal notranslate"><span class="pre">PartitionWriter</span></code> trait. Implemented by <code class="docutils literal notranslate"><span class="pre">LocalPartitionWriter</span></code> (<code class="docutils literal notranslate"><span class="pre">writers/local/</span></code>) and <code class="docutils literal notranslate"><span class="pre">RssPartitionWriter</span></code> (<code class="docutils literal notranslate"><span class="pre">writers/rss/</span></code>).</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">writers/buf_batch_writer.rs</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">BufBatchWriter</span></code>, which coalesces sub-<code class="docutils literal notranslate"><span class="pre">batch_size</span></code> batches through Arrow’s <code class="docutils literal notranslate"><span class="pre">BatchCoalescer</span></code> before serializing.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">writers/local/spill.rs</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">PartitionedSpill</span></code>, the one spill file shared by every output partition, and its per-partition byte ranges.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">ipc.rs</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">read_ipc_compressed</span></code> and <code class="docutils literal notranslate"><span class="pre">read_ipc_compressed_validated</span></code>, the decode side used by the shuffle reader.</p></td>
 </tr>
 </tbody>
 </table>
@@ -737,6 +767,17 @@ Spark’s <code class="docutils literal notranslate"><span class="pre">IndexShuf
 </section>
 <section id="read-path">
 <h3>Read Path<a class="headerlink" href="#read-path" title="Link to this heading">#</a></h3>
+<p>There are two read paths, and which one runs is decided at plan serialization time rather than at
+read time. See <a class="reference internal" href="#direct-read-shufflescan">Direct Read</a> below for how the choice is made.</p>
+<p><strong>Direct read</strong>, the default, decodes inside the native plan:</p>
+<ol class="arabic simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">CometBlockStoreShuffleReader.readAsRawStream()</span></code> concatenates the fetched block streams and
+skips decoding entirely.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">CometShuffleBlockIterator</span></code> hands native one compressed block at a time.</p></li>
+<li><p>The native <code class="docutils literal notranslate"><span class="pre">ShuffleScanExec</span></code> decodes each block with <code class="docutils literal notranslate"><span class="pre">read_ipc_compressed</span></code> and feeds the
+resulting <code class="docutils literal notranslate"><span class="pre">RecordBatch</span></code> straight into the plan. No Arrow FFI export or import happens.</p></li>
+</ol>
+<p><strong>JVM decode</strong>, used when direct read does not apply:</p>
 <ol class="arabic simple">
 <li><p><code class="docutils literal notranslate"><span class="pre">CometBlockStoreShuffleReader</span></code> fetches shuffle blocks via <code class="docutils literal notranslate"><span class="pre">ShuffleBlockFetcherIterator</span></code>.</p></li>
 <li><p>For each block, <code class="docutils literal notranslate"><span class="pre">NativeBatchDecoderIterator</span></code>:</p>
@@ -750,6 +791,67 @@ Spark’s <code class="docutils literal notranslate"><span class="pre">IndexShuf
 <li><p>Native code decompresses and deserializes the Arrow IPC stream.</p></li>
 <li><p>Arrow FFI transfers the <code class="docutils literal notranslate"><span class="pre">RecordBatch</span></code> to JVM as a <code class="docutils literal notranslate"><span class="pre">ColumnarBatch</span></code>.</p></li>
 </ol>
+</section>
+</section>
+<section id="direct-read-shufflescan">
+<h2>Direct Read (ShuffleScan)<a class="headerlink" href="#direct-read-shufflescan" title="Link to this heading">#</a></h2>
+<p>Direct read lets a native operator consume shuffle output without the batch ever being decoded in
+the JVM or crossing Arrow FFI. It is controlled by <code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.directRead.enabled</span></code>, which
+defaults to <code class="docutils literal notranslate"><span class="pre">true</span></code> and requires <code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.enabled</span></code>. It applies to both native shuffle and
+JVM columnar shuffle, because both write the same Arrow IPC block format.</p>
+<section id="how-the-path-is-selected">
+<h3>How the path is selected<a class="headerlink" href="#how-the-path-is-selected" title="Link to this heading">#</a></h3>
+<p><code class="docutils literal notranslate"><span class="pre">CometExchangeSink.shouldUseShuffleScan</span></code> (<code class="docutils literal notranslate"><span class="pre">spark/src/main/scala/org/apache/comet/serde/operator/CometSink.scala</span></code>)
+decides during plan serialization. When direct read is enabled and the sink’s input is a Comet shuffle
+exchange, <code class="docutils literal notranslate"><span class="pre">convertToShuffleScan</span></code> emits a <code class="docutils literal notranslate"><span class="pre">ShuffleScan</span></code> operator. When either is false the sink falls
+through to the base <code class="docutils literal notranslate"><span class="pre">CometSink.convert</span></code>, which emits the usual <code class="docutils literal notranslate"><span class="pre">Scan</span></code>.</p>
+<p>The two are not alternatives on failure. If any output type fails <code class="docutils literal notranslate"><span class="pre">supportedSinkDataType</span></code>,
+<code class="docutils literal notranslate"><span class="pre">convertToShuffleScan</span></code> records the fallback reason <code class="docutils literal notranslate"><span class="pre">Unsupported</span> <span class="pre">data</span> <span class="pre">type</span> <span class="pre">for</span> <span class="pre">shuffle</span> <span class="pre">direct</span> <span class="pre">read</span></code>
+and returns <code class="docutils literal notranslate"><span class="pre">None</span></code>. It does not retry as a regular <code class="docutils literal notranslate"><span class="pre">Scan</span></code>, and retrying would not help, because
+<code class="docutils literal notranslate"><span class="pre">CometSink.convert</span></code> gates on the same <code class="docutils literal notranslate"><span class="pre">supportedSinkDataType</span></code>. <code class="docutils literal notranslate"><span class="pre">CometExecRule</span></code> calls this as
+<code class="docutils literal notranslate"><span class="pre">convertToComet(s,</span> <span class="pre">CometExchangeSink).getOrElse(s)</span></code>, so <code class="docutils literal notranslate"><span class="pre">None</span></code> leaves the original Spark shuffle stage
+in the plan. An unsupported output type therefore means the stage is not converted natively at all,
+not that it is served over the FFI read path instead.</p>
+<p><strong>The protobuf is the source of truth for which slots are direct read, not the config.</strong>
+<code class="docutils literal notranslate"><span class="pre">findShuffleScanIndices</span></code> (<code class="docutils literal notranslate"><span class="pre">operators.scala</span></code>) walks the serialized plan, counting scan slots in order
+and collecting the indices that carry a <code class="docutils literal notranslate"><span class="pre">ShuffleScan</span></code>. JVM-side input dispatch reads that set rather
+than re-checking the config, so the two cannot disagree. Anything changing the serde condition has to
+leave that walk consistent with it.</p>
+</section>
+<section id="how-blocks-reach-native">
+<h3>How blocks reach native<a class="headerlink" href="#how-blocks-reach-native" title="Link to this heading">#</a></h3>
+<p><code class="docutils literal notranslate"><span class="pre">CometExecRDD.resolveInputObjects</span></code> fills one input slot per scan input, in scan-input order:</p>
+<ul class="simple">
+<li><p>A slot in <code class="docutils literal notranslate"><span class="pre">shuffleScanIndices</span></code> gets a <code class="docutils literal notranslate"><span class="pre">CometShuffleBlockIterator</span></code>, obtained from
+<code class="docutils literal notranslate"><span class="pre">CometShuffledBatchRDD.computeAsShuffleBlockIterator</span></code>. A slot marked as a shuffle scan whose RDD is
+not a <code class="docutils literal notranslate"><span class="pre">CometShuffledBatchRDD</span></code> throws <code class="docutils literal notranslate"><span class="pre">CometRuntimeException</span></code>.</p></li>
+<li><p>Every other slot gets the <code class="docutils literal notranslate"><span class="pre">ArrowArrayStream</span></code> exported by the ordinary FFI path.</p></li>
+</ul>
+<p><code class="docutils literal notranslate"><span class="pre">CometShuffleBlockIterator</span></code> reads a 16-byte header per block: an 8-byte compressed length, which
+includes the field count but not itself, followed by an 8-byte field count that is discarded because
+the schema comes from the <code class="docutils literal notranslate"><span class="pre">ShuffleScan</span></code> protobuf fields. The compressed body is read into a reused
+<code class="docutils literal notranslate"><span class="pre">DirectByteBuffer</span></code>, <strong>valid only until the next <code class="docutils literal notranslate"><span class="pre">hasNext()</span></code> call</strong>. Native must fully consume it
+before pulling the next block, which <code class="docutils literal notranslate"><span class="pre">read_ipc_compressed</span></code> satisfies because it allocates fresh
+native memory for the decoded data.</p>
+</section>
+<section id="native-side">
+<h3>Native side<a class="headerlink" href="#native-side" title="Link to this heading">#</a></h3>
+<p><code class="docutils literal notranslate"><span class="pre">ShuffleScanExec</span></code> (<code class="docutils literal notranslate"><span class="pre">native/core/src/execution/operators/shuffle_scan.rs</span></code>) pulls blocks through the
+iterator’s <code class="docutils literal notranslate"><span class="pre">hasNext()</span></code> and <code class="docutils literal notranslate"><span class="pre">getBuffer()</span></code> JNI methods and decodes them with <code class="docutils literal notranslate"><span class="pre">read_ipc_compressed</span></code>.
+Two details matter when changing it:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">get_next_batch</span></code> is called from outside <code class="docutils literal notranslate"><span class="pre">poll_next</span></code>, because JNI calls cannot be made from tokio
+worker threads. A change that moves the JNI call into the stream’s <code class="docutils literal notranslate"><span class="pre">poll_next</span></code> breaks this.</p></li>
+<li><p>Dictionary-encoded columns are unpacked to their value type by <code class="docutils literal notranslate"><span class="pre">unpack_dictionary</span></code>, so the schema
+the plan sees matches the declared <code class="docutils literal notranslate"><span class="pre">ShuffleScan</span></code> fields.</p></li>
+</ul>
+<p>Blocks are validated before decoding when <code class="docutils literal notranslate"><span class="pre">CometShuffleBlockIterator.requiresValidation()</span></code> is true,
+which happens when the underlying stream implements <code class="docutils literal notranslate"><span class="pre">CometShuffleReadFailureHandler</span></code> so a corrupt
+block can be reported back as a shuffle read failure rather than a native decode panic.</p>
+<p>Celeborn reuses the same expected-schema contract from the JVM side. <code class="docutils literal notranslate"><span class="pre">CometCelebornShuffleReader</span></code>
+builds a <code class="docutils literal notranslate"><span class="pre">ShuffleScan</span></code> message from the dependency’s output attributes and passes it to
+<code class="docutils literal notranslate"><span class="pre">NativeBatchDecoderIterator</span></code>, so remote logical types are validated before Arrow import and an
+unsupported type fails before any shuffle resource is acquired.</p>
 </section>
 </section>
 <section id="partitioning">
@@ -792,6 +894,10 @@ However, unlike true round robin which cycles through partitions row-by-row, has
 assignment only provides even distribution when the data has sufficient variation in the
 hashed columns. Data with low cardinality or identical values may result in skewed partition
 sizes.</p>
+<p>Because Spark assigns round robin partitions by sorting rows on their binary <code class="docutils literal notranslate"><span class="pre">UnsafeRow</span></code> form,
+which Arrow’s layout does not reproduce, unsorted output can land in different partitions than
+Spark’s. Sorted output is identical. That difference is why
+<code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.native.partitioning.roundrobin.enabled</span></code> defaults to <code class="docutils literal notranslate"><span class="pre">false</span></code>.</p>
 </section>
 </section>
 <section id="memory-management">
@@ -802,16 +908,29 @@ sizes.</p>
 <li><p><strong>Spill triggers</strong>: Partitions spill to disk when the memory pool denies an allocation, or
 when the buffered bytes reach <code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.native.maxBufferBytes</span></code>. That config defaults to
 0, which disables the fixed limit and leaves memory pressure as the only trigger.</p></li>
-<li><p><strong>Per-partition spilling</strong>: Each partition has its own spill file. Multiple spills for a
-partition are concatenated when writing the final output.</p></li>
+<li><p><strong>One spill file per task</strong>: Every output partition spills into the same file, not one file per
+partition. <code class="docutils literal notranslate"><span class="pre">PartitionedSpill</span></code> records the byte ranges each partition’s blocks occupy, in write
+order, and the final output copies a partition’s ranges back in that order.</p></li>
 <li><p><strong>Scratch space</strong>: Reusable buffers for partition ID computation to reduce allocations.</p></li>
 </ul>
-<p>The <code class="docutils literal notranslate"><span class="pre">MultiPartitionShuffleRepartitioner</span></code> manages:</p>
+<p>The <code class="docutils literal notranslate"><span class="pre">MultiPartitionShuffleRepartitioner</span></code> holds:</p>
 <ul class="simple">
-<li><p><code class="docutils literal notranslate"><span class="pre">PartitionBuffer</span></code>: In-memory buffer for each partition</p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">SpillFile</span></code>: Temporary file for spilled data</p></li>
-<li><p>Memory tracking via <code class="docutils literal notranslate"><span class="pre">MemoryConsumer</span></code> trait</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">buffered_batches</span></code>, a <code class="docutils literal notranslate"><span class="pre">Vec&lt;RecordBatch&gt;</span></code> of incoming batches, alongside <code class="docutils literal notranslate"><span class="pre">partition_indices</span></code>
+recording which rows of those batches belong to each partition. Rows are not copied into
+per-partition buffers as they arrive.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">reservation</span></code>, a <code class="docutils literal notranslate"><span class="pre">MemoryReservation</span></code> charged for the bytes each buffered batch newly pins.
+<code class="docutils literal notranslate"><span class="pre">pinned_buffers</span></code> tracks backing buffer start addresses so one allocation shared by many sliced
+batches is charged once rather than once per slice. Charging a per-batch size instead would
+overstate memory by the slice count and spill spuriously.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">max_buffer_bytes</span></code>, the optional fixed spill threshold described above. <code class="docutils literal notranslate"><span class="pre">None</span></code> leaves pool
+pressure as the only trigger.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">scratch</span></code>, reusable buffers for partition ID computation.</p></li>
 </ul>
+<p>The spill file is owned by <code class="docutils literal notranslate"><span class="pre">PartitionedSpill</span></code> in <code class="docutils literal notranslate"><span class="pre">writers/local/spill.rs</span></code>. It holds one DataFusion
+<code class="docutils literal notranslate"><span class="pre">SpillFile</span></code>, created lazily on the first spill and shared by every output partition, and tracks per
+partition the byte ranges holding that partition’s blocks in write order. A partial write sets a
+<code class="docutils literal notranslate"><span class="pre">failed</span></code> flag, because a write that stops midway leaves the recorded ranges unable to describe the
+file. The single-partition writer writes straight to the output file and never spills.</p>
 </section>
 <section id="compression">
 <h2>Compression<a class="headerlink" href="#compression" title="Link to this heading">#</a></h2>
@@ -860,19 +979,47 @@ independently compressed, allowing parallel decompression during reads.</p>
 <td><p><code class="docutils literal notranslate"><span class="pre">auto</span></code></p></td>
 <td><p>Shuffle mode: <code class="docutils literal notranslate"><span class="pre">native</span></code>, <code class="docutils literal notranslate"><span class="pre">jvm</span></code>, or <code class="docutils literal notranslate"><span class="pre">auto</span></code></p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.compression.codec</span></code></p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">zstd</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.directRead.enabled</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">true</span></code></p></td>
+<td><p>Decode shuffle blocks in native code, bypassing Arrow FFI</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.compression.codec</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">lz4</span></code></p></td>
 <td><p>Compression codec</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.compression.zstd.level</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.compression.zstd.level</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">1</span></code></p></td>
 <td><p>Zstd compression level</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.native.writeBufferSize</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.native.writeBufferSize</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">1MB</span></code></p></td>
 <td><p>Write buffer size</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.jvm.batchSize</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.native.maxBufferBytes</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">0</span></code></p></td>
+<td><p>Fixed spill threshold. <code class="docutils literal notranslate"><span class="pre">0</span></code> disables it, leaving pool pressure</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.native.partitioning.hash.enabled</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">true</span></code></p></td>
+<td><p>Allow <code class="docutils literal notranslate"><span class="pre">HashPartitioning</span></code> on the native path</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.native.partitioning.hash.nested.enabled</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">false</span></code></p></td>
+<td><p>Allow struct and array hash keys, and map keys on Spark 4.0+</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.native.partitioning.range.enabled</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">true</span></code></p></td>
+<td><p>Allow <code class="docutils literal notranslate"><span class="pre">RangePartitioning</span></code> on the native path</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.native.partitioning.roundrobin.enabled</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">false</span></code></p></td>
+<td><p>Allow <code class="docutils literal notranslate"><span class="pre">RoundRobinPartitioning</span></code> on the native path</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.native.partitioning.roundrobin.maxHashColumns</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">0</span></code></p></td>
+<td><p>Columns to hash for round robin. <code class="docutils literal notranslate"><span class="pre">0</span></code> hashes all of them</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.jvm.batchSize</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">8192</span></code></p></td>
 <td><p>Target rows per batch</p></td>
 </tr>
@@ -979,6 +1126,12 @@ independently compressed, allowing parallel decompression during reads.</p>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#data-flow">Data Flow</a><ul class="nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#write-path">Write Path</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#read-path">Read Path</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#direct-read-shufflescan">Direct Read (ShuffleScan)</a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#how-the-path-is-selected">How the path is selected</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#how-blocks-reach-native">How blocks reach native</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#native-side">Native side</a></li>
 </ul>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#partitioning">Partitioning</a><ul class="nav section-nav flex-column">

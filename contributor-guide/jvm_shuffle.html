@@ -572,10 +572,13 @@ Uses Spark’s partitioner for partition assignment. Can accept either row-based
 <li><p><strong>Child plan is not a Comet native operator</strong>: When the child plan is a Spark row-based operator
 (not a <code class="docutils literal notranslate"><span class="pre">CometPlan</span></code>), JVM shuffle is the only option since native shuffle requires columnar input
 from Comet operators.</p></li>
-<li><p><strong>Unsupported partition key types</strong>: For <code class="docutils literal notranslate"><span class="pre">HashPartitioning</span></code> and <code class="docutils literal notranslate"><span class="pre">RangePartitioning</span></code>, native shuffle
-only supports primitive types as partition keys. Complex types (struct, array, map) cannot be used
-as partition keys in native shuffle and will fall back to JVM columnar shuffle. Note that complex types are
-fully supported as data columns in both implementations.</p></li>
+<li><p><strong>Unsupported partition key types</strong>: <code class="docutils literal notranslate"><span class="pre">RangePartitioning</span></code> keys must be primitive, so a complex
+range key always falls back here. <code class="docutils literal notranslate"><span class="pre">HashPartitioning</span></code> keys must be primitive only by default:
+setting <code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.native.partitioning.hash.nested.enabled</span></code> to <code class="docutils literal notranslate"><span class="pre">true</span></code> keeps struct and
+array keys, and map keys on Spark 4.0 and later, on the native path. The config defaults to
+<code class="docutils literal notranslate"><span class="pre">false</span></code>, so a complex hash key falls back to JVM columnar shuffle unless it is enabled. See
+<a class="reference internal" href="native_shuffle.html#when-native-shuffle-is-used"><span class="std std-ref">Supported partition key types</span></a> for the exact
+rules. Complex types are fully supported as data columns in both implementations.</p></li>
 </ol>
 </section>
 <section id="input-handling">
@@ -774,6 +777,11 @@ to protobuf and implements the partitioning logic in native code.</p>
 <li><p>Native code (<code class="docutils literal notranslate"><span class="pre">Native.decodeShuffleBlock()</span></code>) decompresses and decodes to Arrow arrays</p></li>
 <li><p>Arrow FFI imports arrays as <code class="docutils literal notranslate"><span class="pre">ColumnarBatch</span></code></p></li>
 </ol>
+<p>This is the path taken when the consumer is a Spark operator. When a Comet native operator consumes
+the shuffle output and <code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.directRead.enabled</span></code> is set, steps 2 through 4 are skipped:
+the raw compressed blocks are handed to native code, which decodes them inside the plan. JVM shuffle
+writes the same Arrow IPC block format as native shuffle, so direct read applies to both. See
+<a class="reference internal" href="native_shuffle.html#direct-read-shufflescan"><span class="std std-ref">Direct Read</span></a> for the mechanism.</p>
 </section>
 </section>
 <section id="memory-management">
@@ -800,7 +808,10 @@ to protobuf and implements the partitioning logic in native code.</p>
 <td><p>Row count threshold for spill</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.compression.codec</span></code></p></td>
-<td><p>Compression codec (zstd, lz4, etc.)</p></td>
+<td><p>Compression codec, <code class="docutils literal notranslate"><span class="pre">lz4</span></code> by default</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.directRead.enabled</span></code></p></td>
+<td><p>Decode blocks natively on read, <code class="docutils literal notranslate"><span class="pre">true</span></code> by default</p></td>
 </tr>
 </tbody>
 </table>
