@@ -35,7 +35,7 @@ import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeReference}
 import org.apache.spark.sql.comet.{CometIcebergWriteExec, CometSparkToColumnarExec, IcebergWriteExec}
 import org.apache.spark.sql.execution.{ApplyColumnarRulesAndInsertTransitions, ColumnarToRowExec, CommandExecutionMode, LeafExecNode, SparkPlan}
-import org.apache.spark.sql.types.{BinaryType, IntegerType} 
+import org.apache.spark.sql.types.{BinaryType, IntegerType}
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
 import org.apache.comet.CometSparkSessionExtensions.isSpark35Plus
