@@ -120,7 +120,7 @@ use datafusion::physical_expr::expressions::{LambdaExpr, LambdaVariable, Literal
 use datafusion::physical_expr::window::WindowExpr;
 use datafusion::physical_expr::{HigherOrderFunctionExpr, LexOrdering};
 
-use crate::execution::lambda::{LambdaScope, LambdaScopes};
+use crate::execution::lambda::{EmptyBatchGuardExpr, LambdaScope, LambdaScopes};
 use crate::parquet::parquet_exec::init_datasource_exec;
 use arrow::array::{
     new_empty_array, Array, ArrayRef, BinaryBuilder, BooleanArray, Date32Array, Decimal128Array,
@@ -3814,7 +3814,8 @@ impl PhysicalPlanner {
             .lambda_scopes
             .with_scope(scope, || self.create_expr(lambda_body, body_schema))?;
 
-        Ok(Arc::new(LambdaExpr::try_new(param_names, body_expr)?))
+        let guarded_body = Arc::new(EmptyBatchGuardExpr::new(body_expr));
+        Ok(Arc::new(LambdaExpr::try_new(param_names, guarded_body)?))
     }
 
     fn create_scalar_function_expr(

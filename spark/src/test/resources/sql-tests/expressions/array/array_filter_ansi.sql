@@ -17,12 +17,64 @@
 
 -- Config: spark.sql.ansi.enabled=true
 
+--SET spark.sql.ansi.enabled=true
+
+-- =================================================================
+-- 1. Empty and mixed empty/null arrays (Zero-row lambda guard regression)
+-- =========================================================================
+-- In partition 0, `spark_partition_id()` evaluates to 0, producing a scalar
+-- division by zero (1 DIV 0) at runtime.
+-- For empty arrays [] and NULL rows, Spark guarantees the predicate is never invoked.
 statement
-CREATE TABLE t(a ARRAY<INT>) USING parquet;
+CREATE TABLE test_empty_arrays(a ARRAY<INT>) USING parquet;
 
 statement
-INSERT INTO t VALUES (array(-1, 0));
+INSERT INTO test_empty_arrays VALUES (array()), (NULL);
 
 query
-SELECT filter(a, x -> CASE WHEN x > 0 THEN CAST('bad' AS INT) > 0 ELSE false END)
-FROM t;
+SELECT filter(a, x -> (1 DIV spark_partition_id()) > 0) FROM test_empty_arrays;
+
+
+-- =========================================================================
+-- 2. Guarded AND short-circuiting in ANSI mode
+-- =========================================================================
+-- For x = 0, the left-hand condition evaluates to false; the right-hand
+-- expression (1 DIV x) must not be evaluated.
+statement
+CREATE TABLE test_guarded_and(a ARRAY<INT>) USING parquet;
+
+statement
+INSERT INTO test_guarded_and VALUES (array(0, 1));
+
+query
+SELECT filter(a, x -> x <> 0 AND (1 DIV x) > 0) FROM test_guarded_and;
+
+
+-- =========================================================================
+-- 3. Guarded OR short-circuiting in ANSI mode
+-- =========================================================================
+-- For x = 0, the left-hand condition evaluates to true; the right-hand
+-- expression (1 DIV x) must not be evaluated.
+statement
+CREATE TABLE test_guarded_or(a ARRAY<INT>) USING parquet;
+
+statement
+INSERT INTO test_guarded_or VALUES (array(0, 1));
+
+query
+SELECT filter(a, x -> x = 0 OR (1 DIV x) > 0) FROM test_guarded_or;
+
+
+-- =========================================================================
+-- 4. Guarded CASE WHEN in ANSI mode (Speculative serialization regression)
+-- =========================================================================
+-- All elements are <= 0, so the THEN branch containing CAST('bad' AS INT)
+-- is never reached at runtime.
+statement
+CREATE TABLE test_guarded_case(a ARRAY<INT>) USING parquet;
+
+statement
+INSERT INTO test_guarded_case VALUES (array(-1, 0));
+
+query
+SELECT filter(a, x -> CASE WHEN x > 0 THEN CAST('bad' AS INT) > 0 ELSE false END) FROM test_guarded_case;
