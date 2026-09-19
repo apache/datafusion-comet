@@ -170,7 +170,7 @@ impl ScanExec {
 /// Spark-rendered form (arrow's `from_ffi` imports string buffers unchecked), then copy/unpack.
 /// Decoding runs before unpacking so a `Dictionary(_, Utf8)` decodes its compact values, not the
 /// expanded ones.
-fn import_column(col: &ArrayRef) -> Result<ArrayRef, CometError> {
+pub(super) fn import_column(col: &ArrayRef) -> Result<ArrayRef, CometError> {
     let decoded = decode_string_arrays(col)?;
     Ok(copy_or_unpack_array(&decoded, &CopyMode::UnpackOrClone)?)
 }

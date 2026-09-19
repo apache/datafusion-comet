@@ -958,6 +958,11 @@ abstract class CometNativeExec extends CometExec {
         case _ => None
       }
 
+    /**
+     * Build an input RDD in native scan-slot order, aligning broadcast partitions to the probe.
+     * Supported opt-in broadcasts retain their actual materialization as lazy input markers;
+     * other inputs keep the existing Arrow or direct-shuffle transport.
+     */
     def asArrowStreamRDD(plan: SparkPlan, partitionCount: Int, scanSlot: Int): RDD[_] =
       plan match {
         case s: CometNativeArrowSource =>
@@ -965,11 +970,21 @@ abstract class CometNativeExec extends CometExec {
         case _ =>
           asBroadcastExchange(plan) match {
             case Some(c) =>
-              CometArrowStream.wrapColumnarBatchRDD(
-                c.executeColumnar(partitionCount),
-                c.schema,
-                CometArrowStream.NATIVE_TIMEZONE,
-                c.nodeName)
+              val batches = c.executeColumnar(partitionCount)
+              if (CometConf.COMET_BROADCAST_REUSE_ENABLED.get(conf) &&
+                CometBroadcastInput.supportsSchema(c.schema)) {
+                new CometBroadcastInputRDD(
+                  batches,
+                  c.schema,
+                  CometConf.COMET_BROADCAST_REUSE_MAX_MEMORY.get(conf),
+                  c.nodeName)
+              } else {
+                CometArrowStream.wrapColumnarBatchRDD(
+                  batches,
+                  c.schema,
+                  CometArrowStream.NATIVE_TIMEZONE,
+                  c.nodeName)
+              }
             case None if isShuffleScanInput(plan) && shuffleScanIndices.contains(scanSlot) =>
               // Direct-read shuffle: `CometShuffledBatchRDD` reaches native via
               // CometShuffleBlockIterator. Other shuffle slots fall through and get wrapped.
@@ -2879,8 +2894,27 @@ case class CometBroadcastHashJoinExec(
       left,
       right)
 
+  /**
+   * Expose reuse counters before native planning decides whether this broadcast join is eligible.
+   * Ineligible joins leave them at zero; an eligible join reports its preparations, hits, or
+   * ordinary-join fallbacks alongside the existing per-task join metrics.
+   */
   override lazy val metrics: Map[String, SQLMetric] = {
-    val joinMetrics = CometMetricNode.joinMetrics(sparkContext)
+    val joinMetrics = CometMetricNode.joinMetrics(sparkContext) ++ Map(
+      "broadcast_build_prepare_time" ->
+        SQLMetrics.createNanoTimingMetric(
+          sparkContext,
+          "Time preparing a reusable broadcast build"),
+      "broadcast_build_prepare_rows" ->
+        SQLMetrics.createMetric(sparkContext, "Rows prepared for broadcast reuse"),
+      "broadcast_build_prepare_bytes" ->
+        SQLMetrics.createSizeMetric(sparkContext, "Bytes retained by prepared broadcast builds"),
+      "broadcast_build_cache_hits" ->
+        SQLMetrics.createMetric(sparkContext, "Broadcast builds reused"),
+      "broadcast_build_cache_misses" ->
+        SQLMetrics.createMetric(sparkContext, "Broadcast builds prepared for reuse"),
+      "broadcast_build_cache_fallbacks" ->
+        SQLMetrics.createMetric(sparkContext, "Broadcast builds using uncached fallback"))
     if (nativeOp.getHashJoin.getDynamicFilterEnabled) {
       joinMetrics ++ CometMetricNode.joinDynamicFilterMetrics(sparkContext)
     } else {
