@@ -49,6 +49,17 @@ jobs:
           java-version: '17'
           cache: 'maven'
 
+      - name: Setup Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+
+      - name: Install mermaid-cli
+        # Draws the ```mermaid fences into SVG at build time. Without mmdc on PATH the build
+        # still succeeds but silently drops every diagram, so it is installed unconditionally.
+        # See mermaid_output_format in docs/source/conf.py for why the browser cannot draw them.
+        run: npm install -g @mermaid-js/mermaid-cli@11.17.0
+
       - name: Install dependencies
         run: |
           set -x
