@@ -1971,6 +1971,7 @@ dependencies = [
  "async-trait",
  "aws-config",
  "aws-credential-types",
+ "aws-runtime",
  "base64 0.23.1",
  "bytes",
  "comet-contrib-delta",

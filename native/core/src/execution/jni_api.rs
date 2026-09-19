@@ -118,6 +118,9 @@ use crate::execution::spark_config::{
     COMET_TRACING_ENABLED, SPARK_EXECUTOR_CORES,
 };
 use crate::parquet::encryption_support::{CometEncryptionFactory, ENCRYPTION_FACTORY_ID};
+use crate::parquet::objectstore::s3::{
+    ExecutorObjectStoreDefaults, COMET_DEFAULT_PROFILE_FILE_KEY,
+};
 use datafusion_comet_proto::spark_operator::operator::OpStruct;
 use log::{info, warn};
 use std::sync::OnceLock;
@@ -757,6 +760,12 @@ fn prepare_datafusion_session_context(
         session_config =
             session_config.set_str("datafusion.execution.parquet.reorder_filters", "true");
     }
+
+    // The executor JVM resolves the credentials file Hadoop's profile provider would read on
+    // this executor; scans overlay it onto their object store options.
+    session_config = session_config.with_extension(Arc::new(ExecutorObjectStoreDefaults {
+        default_profile_file: spark_config.get(COMET_DEFAULT_PROFILE_FILE_KEY).cloned(),
+    }));
 
     // Pass through DataFusion configs from Spark.
     // e.g: spark-shell --conf spark.comet.datafusion.sql_parser.parse_float_as_decimal=true
