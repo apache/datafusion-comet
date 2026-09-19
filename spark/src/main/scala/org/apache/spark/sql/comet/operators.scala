@@ -31,7 +31,7 @@ import org.apache.spark.internal.Logging
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{Ascending, Attribute, AttributeSeq, AttributeSet, Expression, ExpressionSet, Generator, NamedExpression, SortOrder, XXH64}
-import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, AggregateMode, CollectList, CollectSet, Final, Mode, Partial, PartialMerge, Percentile}
+import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, AggregateMode, CollectList, CollectSet, Final, Mode, Partial, PartialMerge, Percentile, Sum}
 import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, BuildSide}
 import org.apache.spark.sql.catalyst.plans._
 import org.apache.spark.sql.catalyst.plans.physical._
@@ -2257,6 +2257,24 @@ object CometObjectHashAggregateExec
         Some(
           "Comet shuffle is not enabled, so converting ObjectHashAggregate would split the " +
             "aggregate across Comet and Spark"))
+    }
+    // Spark's object aggregation buffers the intermediate decimal sum unbounded, while Comet's
+    // grouped accumulator latches to null once a running sum leaves the precision. Only a result
+    // precision of DecimalType.MAX_PRECISION has no headroom above the input, so only that case
+    // can diverge and declines here. Decimal AVG has the same gap and is tracked separately.
+    val hasMaxPrecisionDecimalSum = op.aggregateExpressions.exists(_.aggregateFunction match {
+      case sum: Sum =>
+        sum.dataType match {
+          case decimal: DecimalType => decimal.precision == DecimalType.MAX_PRECISION
+          case _ => false
+        }
+      case _ => false
+    })
+    if (op.groupingExpressions.nonEmpty && hasMaxPrecisionDecimalSum) {
+      return Unsupported(
+        Some(
+          "Grouped decimal SUM at maximum precision cannot match Spark's unbounded object " +
+            "aggregation buffer"))
     }
     Compatible()
   }
