@@ -42,8 +42,8 @@ import org.apache.comet.iceberg.IcebergReflection
  *
  *   1. an unpartitioned `INSERT INTO ... SELECT`, which writes one file per task with no
  *      exchange;
- *   1. the same insert into a partitioned table, where Iceberg's default hash distribution
- *      clusters each partition onto one task and the clustered writer keeps one file open;
+ *   1. the same insert into a partitioned table with a declared sort order, so the write carries
+ *      a required ordering and Iceberg selects the clustered writer, which keeps one file open;
  *   1. the same insert into a partitioned table configured for the fanout writer, which holds a
  *      file open per partition instead of requiring the exchange;
  *   1. a copy-on-write `DELETE`, where the write is a rewrite of every file that holds a matching
@@ -130,7 +130,16 @@ object CometIcebergWriteBenchmark extends CometBenchmarkBase {
       expectNativeWrite = false),
     Arm(
       "Comet scan",
-      Seq(CometConf.COMET_ENABLED.key -> "true", CometConf.COMET_EXEC_ENABLED.key -> "true"),
+      Seq(
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        // Pin the native-write flags off rather than leaning on their defaults. `new SparkConf()`
+        // inherits `-Dspark.*` system properties, so a caller's `BENCH_MAVEN_OPTS` could otherwise
+        // turn native writes on for the whole session and make this arm a second copy of the native
+        // one. `verifyArm` also rejects an unexpected `CometIcebergWriteExec`, so a leak throws
+        // rather than being timed under the wrong label.
+        CometConf.COMET_ICEBERG_WRITE_SPLIT_OPERATOR_ENABLED.key -> "false",
+        CometConf.COMET_ICEBERG_NATIVE_WRITE_ENABLED.key -> "false"),
       expectComet = true,
       expectNativeWrite = false),
     Arm(
@@ -147,23 +156,34 @@ object CometIcebergWriteBenchmark extends CometBenchmarkBase {
   /**
    * One timed statement and the table it needs.
    *
+   * @param orderBy
+   *   the column to declare as the table's local write order, applied as an `ALTER TABLE ...
+   *   WRITE` in [[resetTable]]. Set for the clustered case, whose writer Iceberg selects only
+   *   when the write has a required ordering; `None` elsewhere.
    * @param prePopulate
    *   whether the table has to hold the corpus before the statement runs, as the copy-on-write
    *   case does and the inserts do not.
    * @param expectShuffle
-   *   whether the statement's plan must contain an exchange, where that is what separates this
-   *   case from another one. `None` where the case's identity does not rest on it. The clustered
-   *   and fanout cases differ only in how Iceberg distributes rows to the writers, so if that
-   *   ever stopped holding, the two would quietly become the same measurement printed twice.
+   *   whether the statement's plan must contain an exchange. `None` where the case's identity
+   *   does not rest on it.
+   * @param expectSort
+   *   whether the statement's plan must contain a sort. This, not the exchange, is what tells the
+   *   clustered writer apart from the fanout one: Iceberg's `SparkWriteConf.useFanoutWriter` is
+   *   `fanoutEnabled || !hasOrdering`, so the clustered writer is reached exactly when the write
+   *   has the required ordering a sort node makes visible. Without this check a hash-distributed
+   *   but unordered write would pass the exchange check while silently running the fanout writer
+   *   under the clustered label, and the clustered writer would never be measured.
    */
   private case class Workload(
       title: String,
       partitionSpec: String,
       properties: Seq[String],
+      orderBy: Option[String],
       prePopulate: Boolean,
       statement: String,
       expectedRowsAfter: Long,
-      expectShuffle: Option[Boolean])
+      expectShuffle: Option[Boolean],
+      expectSort: Option[Boolean])
 
   private def workloads(values: Int): Seq[Workload] = {
     val insert = s"INSERT INTO $targetTable SELECT * FROM parquetV1Table"
@@ -176,40 +196,55 @@ object CometIcebergWriteBenchmark extends CometBenchmarkBase {
         "unpartitioned INSERT INTO ... SELECT",
         partitionSpec = "",
         properties = Nil,
+        orderBy = None,
         prePopulate = false,
         statement = insert,
         expectedRowsAfter = values.toLong,
-        expectShuffle = None),
+        expectShuffle = None,
+        expectSort = None),
       Workload(
         "partitioned INSERT INTO ... SELECT, clustered writer",
         partitionSpec = partitioned,
-        // No `write.distribution-mode`: Iceberg defaults a partitioned table to hash, which is the
-        // clustered writer this case is named for. Spelling it out would hide a change of default.
-        properties = Nil,
+        // Hash distribution alone does not reach the clustered writer. Iceberg picks the writer in
+        // `SparkWriteConf.useFanoutWriter`, which is `fanoutEnabled || !hasOrdering`: with no sort
+        // order the write has no required ordering, so it defaults to the fanout writer even under
+        // hash distribution. The clustered (rolling) writer is reached only when an ordering is
+        // required, and is only safe then, since it keeps one file open and errors if a partition
+        // it already closed reappears. So this case pins fanout off and `resetTable` declares a
+        // local sort, which turns `hasOrdering` true and routes both writers down the clustered
+        // path. The `orderBy` sort is what `expectSort` checks; the exchange alone would not.
+        properties = Seq("'write.spark.fanout.enabled'='false'"),
+        orderBy = Some(partitionColumn),
         prePopulate = false,
         statement = insert,
         expectedRowsAfter = values.toLong,
-        expectShuffle = Some(true)),
+        expectShuffle = Some(true),
+        expectSort = Some(true)),
       Workload(
         "partitioned INSERT INTO ... SELECT, fanout writer",
         partitionSpec = partitioned,
-        // The distribution has to be turned off as well as the fanout writer turned on. Left at
-        // the default, rows would arrive already clustered and the fanout writer would hold one
-        // file open at a time - the fanout path would be taken but never exercised.
+        // Turn the fanout writer on and the distribution off, so the write has neither an exchange
+        // nor a required ordering. With no ordering Iceberg would default to fanout anyway, but
+        // pinning it on keeps the case immune to a change of default, and the absent sort is what
+        // `expectSort = Some(false)` holds it to.
         properties =
           Seq("'write.spark.fanout.enabled'='true'", "'write.distribution-mode'='none'"),
+        orderBy = None,
         prePopulate = false,
         statement = insert,
         expectedRowsAfter = values.toLong,
-        expectShuffle = Some(false)),
+        expectShuffle = Some(false),
+        expectSort = Some(false)),
       Workload(
         "copy-on-write DELETE",
         partitionSpec = "",
         properties = Seq("'write.delete.mode'='copy-on-write'"),
+        orderBy = None,
         prePopulate = true,
         statement = s"DELETE FROM $targetTable WHERE $deletePredicate",
         expectedRowsAfter = values.toLong - deleted,
-        expectShuffle = None))
+        expectShuffle = None,
+        expectSort = None))
   }
 
   /**
@@ -372,7 +407,34 @@ object CometIcebergWriteBenchmark extends CometBenchmarkBase {
       }
     }
 
+    // A sort node is the plan-visible mark of the required ordering that makes Iceberg select the
+    // clustered writer rather than the fanout one (see `Workload.expectSort`). Checking it, not
+    // just the exchange, is what keeps the clustered case from silently measuring the fanout writer.
+    workload.expectSort.foreach { expected =>
+      val sorted = collectAcross(plans) { case op if op.nodeName.contains("Sort") => op }
+      if (sorted.nonEmpty != expected) {
+        val had = if (sorted.isEmpty) "none" else sorted.map(_.nodeName).distinct.mkString(", ")
+        throw new IllegalStateException(
+          s"${arm.name}: '${workload.title}' expected a sort in the plan to be $expected but " +
+            s"found $had, so it would measure the wrong writer. Iceberg reaches the clustered " +
+            s"writer only when the write has a required ordering; without one it uses the fanout " +
+            s"writer. Plans:\n${plans.mkString("\n--\n")}")
+      }
+    }
+
     val nativeWrites = collectAcross(plans) { case write: CometIcebergWriteExec => write }
+    // Checked in both directions, like the baseline Comet check above. The two Comet arms differ
+    // only in the writer, so if the JVM-writer arm ever grew a `CometIcebergWriteExec` - most
+    // likely because the native-write flags leaked in through the session defaults - it would
+    // become a second native run printed under a JVM-writer label.
+    if (!arm.expectNativeWrite && nativeWrites.nonEmpty) {
+      throw new IllegalStateException(
+        s"${arm.name}: expected the iceberg-java writer but the plan contains " +
+          s"CometIcebergWriteExec, so this case would measure the native writer under a " +
+          s"JVM-writer label. This arm pins the native-write flags off, so they are leaking in " +
+          s"from the session defaults (e.g. `-Dspark.comet.iceberg.write.enabled=true` in " +
+          s"BENCH_MAVEN_OPTS). Plans:\n${plans.mkString("\n--\n")}")
+    }
     if (arm.expectNativeWrite && nativeWrites.isEmpty) {
       warn(
         benchmark,
@@ -407,6 +469,14 @@ object CometIcebergWriteBenchmark extends CometBenchmarkBase {
       TBLPROPERTIES (${properties.mkString(", ")})
       AS SELECT * FROM parquetV1Table WHERE false
     """)
+    workload.orderBy.foreach { col =>
+      // Give the write a required ordering so Iceberg selects the clustered writer instead of
+      // defaulting to fanout. `DISTRIBUTED BY PARTITION` keeps the hash exchange so the case still
+      // shuffles; `LOCALLY ORDERED BY` adds the per-task sort the clustered writer needs to keep a
+      // single file open without erroring when a partition it already closed would reappear.
+      spark.sql(
+        s"ALTER TABLE $targetTable WRITE DISTRIBUTED BY PARTITION LOCALLY ORDERED BY $col")
+    }
     if (workload.prePopulate) {
       // Always stock Spark, whichever arm is about to be timed. The two writers roll files at
       // different points, so a table filled by the arm under test would hand each arm a different
