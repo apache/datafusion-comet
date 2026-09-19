@@ -939,7 +939,12 @@ class CometIcebergNativeSuite
         CometConf.COMET_EXEC_ENABLED.key -> "true",
         CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
 
-        // A 512 MB row group holds every row; 2000-row pages give the id column many pages.
+        // A 512 MB row group holds every row and 2000-row pages give the id column many pages.
+        // Uncompressed storage keeps the sorted id column large, so reading all of its pages
+        // is visible against the bound below: the parquet row filter alone skips payload pages
+        // once the predicate is evaluated, and only page-index row selection also skips the id
+        // pages, which is what this test pins. With row selection disabled the range read is
+        // 8.6 MB of the 20.6 MB file and fails the bound; enabled, it is 0.6 MB.
         spark.sql("""
           CREATE TABLE test_cat.db.page_skip_test (
             id BIGINT,
@@ -948,19 +953,18 @@ class CometIcebergNativeSuite
           TBLPROPERTIES (
             'write.parquet.row-group-size-bytes' = '536870912',
             'write.parquet.page-size-bytes' = '16384',
-            'write.parquet.page-row-limit' = '2000'
+            'write.parquet.page-row-limit' = '2000',
+            'write.parquet.compression-codec' = 'uncompressed'
           )
         """)
 
-        val numRows = 300000L
-        val payloadLength = 128L
+        val numRows = 1000000L
+        val payloadLength = 16L
         spark
           .range(numRows)
           .repartition(1)
           .sortWithinPartitions("id")
-          .selectExpr(
-            "id",
-            "concat(sha2(cast(id AS STRING), 256), sha2(cast(-id AS STRING), 256)) AS payload")
+          .selectExpr("id", "substr(sha2(cast(id AS STRING), 256), 1, 16) AS payload")
           .write
           .format("iceberg")
           .mode("append")
