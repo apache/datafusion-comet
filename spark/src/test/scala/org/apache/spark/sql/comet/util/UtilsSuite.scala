@@ -42,7 +42,7 @@ class UtilsSuite extends CometTestBase {
   }
 
   test("broadcast direct read is disabled by default and preserves legacy IPC") {
-    assert(!CometConf.COMET_EXEC_BROADCAST_DIRECT_READ_ENABLED.get())
+    assert(!CometConf.COMET_BROADCAST_DIRECT_READ_ENABLED.get())
 
     val batch = new ColumnarBatch(Array.empty[ColumnVector], 1)
     val (_, buf) = Utils.serializeBatches(Iterator(batch)).next()
@@ -94,6 +94,30 @@ class UtilsSuite extends CometTestBase {
     assert(decoded.map(_.numRows()).sum == numRows)
   }
 
+  test("broadcast direct-read serialization follows the configured native codec") {
+    val expectedPrefixes = Seq(
+      "lz4" -> Array[Byte](0x4c, 0x5a, 0x34, 0x5f),
+      "snappy" -> Array[Byte](0x53, 0x4e, 0x41, 0x50),
+      "zstd" -> Array[Byte](0x5a, 0x53, 0x54, 0x44))
+
+    expectedPrefixes.foreach { case (codec, expectedPrefix) =>
+      withSQLConf(
+        "spark.shuffle.compress" -> "true",
+        CometConf.COMET_SHUFFLE_COMPRESSION_CODEC.key -> codec) {
+        val batch = new ColumnarBatch(Array.empty[ColumnVector], 3)
+        val (_, buf) = Utils.serializeBroadcastBatches(Iterator(batch)).next()
+        val bytes = buf.toArray
+        assert(bytes.take(4).sameElements(expectedPrefix))
+        if (codec == "lz4") {
+          // Native prefix + LZ4 magic + FLG; BD=0x40 selects 64 KiB blocks.
+          assert(bytes(9) == 0x40.toByte)
+        }
+        assert(Utils.decodeBatches(buf, s"$codec-broadcast-test").map(_.numRows()).sum == 3)
+      }
+    }
+
+  }
+
   test("coalesceBroadcastBatches preserves native direct-read format") {
     val numRows = 4
     val numBatches = 3
@@ -117,6 +141,21 @@ class UtilsSuite extends CometTestBase {
       Utils.shouldSkipDirectBroadcastCoalesce(nativeIpc = true, Integer.MAX_VALUE.toLong + 1L))
     assert(
       !Utils.shouldSkipDirectBroadcastCoalesce(nativeIpc = false, Integer.MAX_VALUE.toLong + 1L))
+    assert(
+      !Utils.shouldSkipDirectBroadcastCoalescedOutput(nativeIpc = true, Integer.MAX_VALUE.toLong))
+    assert(
+      Utils.shouldSkipDirectBroadcastCoalescedOutput(
+        nativeIpc = true,
+        Integer.MAX_VALUE.toLong + 1L))
+    assert(
+      !Utils.shouldSkipDirectBroadcastCoalescedOutput(
+        nativeIpc = false,
+        Integer.MAX_VALUE.toLong + 1L))
+    assert(
+      !Utils.shouldSkipDirectBroadcastCoalesceForUncompressedSize(nativeIpc = true, 1L << 30))
+    assert(
+      Utils
+        .shouldSkipDirectBroadcastCoalesceForUncompressedSize(nativeIpc = true, (1L << 30) + 1L))
   }
 
   test("serializeBatches materializes ConstantColumnVector columns") {

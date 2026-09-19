@@ -75,11 +75,11 @@ impl BlockScanKind {
 /// Shuffle and broadcast scans share the same iterator protocol while retaining distinct plan
 /// names for explain output and diagnostics.
 #[derive(Debug, Clone)]
-pub struct ShuffleScanExec {
+pub struct BlockScanExec {
     kind: BlockScanKind,
     /// The ID of the execution context that owns this subquery.
     pub exec_context_id: i64,
-    /// The input source: a global reference to a JVM CometShuffleBlockIterator object.
+    /// The input source: a global reference to a JVM CometBlockIterator object.
     pub input_source: Option<Arc<Global<JObject<'static>>>>,
     /// The data types of columns in the shuffle output.
     pub data_types: Vec<DataType>,
@@ -99,7 +99,7 @@ pub struct ShuffleScanExec {
     requires_validation: bool,
 }
 
-impl ShuffleScanExec {
+impl BlockScanExec {
     pub fn new(
         exec_context_id: i64,
         input_source: Option<Arc<Global<JObject<'static>>>>,
@@ -328,7 +328,7 @@ fn schema_from_data_types(data_types: &[DataType]) -> SchemaRef {
     Arc::new(Schema::new(fields))
 }
 
-impl ExecutionPlan for ShuffleScanExec {
+impl ExecutionPlan for BlockScanExec {
     fn schema(&self) -> SchemaRef {
         Arc::clone(&self.schema)
     }
@@ -356,7 +356,7 @@ impl ExecutionPlan for ShuffleScanExec {
         partition: usize,
         _: Arc<TaskContext>,
     ) -> datafusion::common::Result<SendableRecordBatchStream> {
-        Ok(Box::pin(ShuffleScanStream::new(
+        Ok(Box::pin(BlockScanStream::new(
             self.clone(),
             partition,
             self.baseline_metrics.clone(),
@@ -376,7 +376,7 @@ impl ExecutionPlan for ShuffleScanExec {
     }
 }
 
-impl DisplayAs for ShuffleScanExec {
+impl DisplayAs for BlockScanExec {
     fn fmt_as(&self, t: DisplayFormatType, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match t {
             DisplayFormatType::Default | DisplayFormatType::Verbose => {
@@ -395,16 +395,16 @@ impl DisplayAs for ShuffleScanExec {
 }
 
 /// An async stream that feeds decoded shuffle batches into the DataFusion plan.
-struct ShuffleScanStream {
-    /// The ShuffleScanExec producing input batches.
-    shuffle_scan: ShuffleScanExec,
+struct BlockScanStream {
+    /// The BlockScanExec producing input batches.
+    shuffle_scan: BlockScanExec,
     /// Metrics.
     baseline_metrics: BaselineMetrics,
 }
 
-impl ShuffleScanStream {
+impl BlockScanStream {
     pub fn new(
-        shuffle_scan: ShuffleScanExec,
+        shuffle_scan: BlockScanExec,
         _partition: usize,
         baseline_metrics: BaselineMetrics,
     ) -> Self {
@@ -415,7 +415,7 @@ impl ShuffleScanStream {
     }
 }
 
-impl Stream for ShuffleScanStream {
+impl Stream for BlockScanStream {
     type Item = DataFusionResult<arrow::array::RecordBatch>;
 
     fn poll_next(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Option<Self::Item>> {
@@ -456,7 +456,7 @@ impl Stream for ShuffleScanStream {
     }
 }
 
-impl RecordBatchStream for ShuffleScanStream {
+impl RecordBatchStream for BlockScanStream {
     fn schema(&self) -> SchemaRef {
         self.shuffle_scan.schema()
     }
@@ -579,7 +579,7 @@ mod tests {
     fn test_broadcast_scan_has_distinct_plan_name() {
         use datafusion::physical_plan::ExecutionPlan;
 
-        let scan = super::ShuffleScanExec::new_broadcast(
+        let scan = super::BlockScanExec::new_broadcast(
             super::super::super::planner::TEST_EXEC_CONTEXT_ID,
             None,
             vec![DataType::Int32],
@@ -638,7 +638,7 @@ mod tests {
         assert_eq!(col0.value(2), 3);
     }
 
-    /// Tests that ShuffleScanExec correctly unpacks dictionary-encoded columns.
+    /// Tests that BlockScanExec correctly unpacks dictionary-encoded columns.
     /// Native shuffle may dictionary-encode string/binary columns, but the schema
     /// declares value types (e.g. Utf8). Without unpacking, RecordBatch creation
     /// fails with a schema mismatch.
@@ -705,9 +705,9 @@ mod tests {
             super::decode_shuffle_batch(body, &[DataType::Int32, DataType::Utf8], true).unwrap();
         assert_eq!(decoded.column(1).data_type(), &DataType::Utf8);
 
-        // Create ShuffleScanExec with value types (Utf8, not Dictionary) — this is
+        // Create BlockScanExec with value types (Utf8, not Dictionary) — this is
         // what the protobuf schema provides.
-        let mut scan = ShuffleScanExec::new(
+        let mut scan = BlockScanExec::new(
             super::super::super::planner::TEST_EXEC_CONTEXT_ID,
             None,
             vec![DataType::Int32, DataType::Utf8],
@@ -750,7 +750,7 @@ mod tests {
     }
 
     /// A decoded shuffle block whose nested field nullability is narrower than the catalyst-declared
-    /// type must be reconciled, not rejected. `ShuffleScanExec` used to stamp the declared schema
+    /// type must be reconciled, not rejected. `BlockScanExec` used to stamp the declared schema
     /// straight onto the block, which aborted the task on a single nested `nullable` flag even
     /// though a non-null child is a strict subset of a nullable one.
     /// See <https://github.com/apache/datafusion-comet/issues/5137>.
@@ -773,7 +773,7 @@ mod tests {
         let payload = uncompressed_shuffle_payload(&block);
         let decoded =
             super::decode_shuffle_batch(&payload, std::slice::from_ref(&declared), true).unwrap();
-        let mut scan = ShuffleScanExec::new(
+        let mut scan = BlockScanExec::new(
             super::super::super::planner::TEST_EXEC_CONTEXT_ID,
             None,
             vec![declared.clone()],
@@ -808,7 +808,7 @@ mod tests {
 
         let declared =
             DataType::Struct(Fields::from(vec![Field::new("id", DataType::Int64, true)]));
-        let mut scan = ShuffleScanExec::new(
+        let mut scan = BlockScanExec::new(
             super::super::super::planner::TEST_EXEC_CONTEXT_ID,
             None,
             vec![declared],

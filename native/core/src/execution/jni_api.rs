@@ -101,7 +101,7 @@ use tokio::runtime::{Handle, Runtime};
 use tokio::sync::mpsc;
 
 use crate::execution::memory_pools::{create_memory_pool, parse_memory_pool_config};
-use crate::execution::operators::{ScanExec, ShuffleScanExec};
+use crate::execution::operators::{BlockScanExec, ScanExec};
 use crate::execution::shuffle::{
     decode_remote_shuffle_batch, read_ipc_compressed, CompressionCodec, ShuffleWriterExec,
 };
@@ -404,7 +404,7 @@ struct ExecutionContext {
     /// The input sources for the DataFusion plan
     pub scans: Vec<ScanExec>,
     /// The shuffle and broadcast direct-block scan sources for the DataFusion plan
-    pub shuffle_scans: Vec<ShuffleScanExec>,
+    pub shuffle_scans: Vec<BlockScanExec>,
     /// The global reference of input sources for the DataFusion plan
     pub input_sources: Vec<Arc<Global<JObject<'static>>>>,
     /// The record batch stream to pull results from

@@ -52,8 +52,7 @@ import org.apache.comet.vector.NativeUtil
  * @param inputObjects
  *   Already-built native input slots, in scan-input order. Each slot is either an
  *   org.apache.arrow.c.ArrowArrayStream (consumed natively via from_raw against its
- *   memoryAddress) or a CometShuffleBlockIterator (consumed via the JNI block-iteration
- *   protocol).
+ *   memoryAddress) or a CometBlockIterator (consumed via the JNI block-iteration protocol).
  * @param protobufQueryPlan
  *   The serialized bytes of Spark execution plan.
  * @param numParts
@@ -79,7 +78,7 @@ class CometExecIterator(
     partitionIndex: Int,
     broadcastedHadoopConfForEncryption: Option[Broadcast[SerializableConfiguration]] = None,
     encryptedFilePaths: Seq[String] = Seq.empty,
-    shuffleBlockIterators: Map[Int, CometShuffleBlockIterator] = Map.empty,
+    shuffleBlockIterators: Map[Int, CometBlockIterator] = Map.empty,
     taskFilePaths: Seq[String] = Seq.empty,
     shufflePartitionPusher: Option[ShufflePartitionPusher] = None,
     capturePartitionOffsets: Boolean = false)

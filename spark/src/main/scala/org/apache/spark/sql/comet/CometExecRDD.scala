@@ -28,7 +28,7 @@ import org.apache.spark.sql.execution.ScalarSubquery
 import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.spark.util.SerializableConfiguration
 
-import org.apache.comet.{CometExecIterator, CometRuntimeException, CometShuffleBlockIterator}
+import org.apache.comet.{CometBlockIterator, CometExecIterator, CometRuntimeException}
 
 /**
  * Partition that carries per-partition planning data, avoiding closure capture of all partitions.
@@ -43,8 +43,8 @@ private[spark] class CometExecPartition(
 /**
  * Unified RDD for Comet native execution. Non-shuffle input slots are `RDD[ArrowArrayStream]`
  * (consumed natively via the C Stream Interface); direct-read shuffle and broadcast slots expose
- * `CometShuffleBlockIterator`'s JNI block protocol. Slot order matches the scan-input order in
- * the serialized native plan.
+ * `CometBlockIterator`'s JNI block protocol. Slot order matches the scan-input order in the
+ * serialized native plan.
  *
  * Solves the closure-capture problem: instead of capturing all partitions' data in the closure
  * (which gets serialized to every task), each `CometExecPartition` carries only its own data.
@@ -171,10 +171,10 @@ object CometExecRDD {
 
   /**
    * Resolve the per-partition native input slots for `createPlan`, in scan-input order. A slot is
-   * either a `CometShuffleBlockIterator` (for slots in `blockScanIndices`, fed by shuffle or
-   * broadcast block RDDs through the JNI block-iteration protocol) or the single
-   * `ArrowArrayStream` exported by another `RDD[ArrowArrayStream]`. Returned alongside the subset
-   * that are block iterators, which `CometExecIterator` needs to drive block iteration. Shared by
+   * either a `CometBlockIterator` (for slots in `blockScanIndices`, fed by shuffle or broadcast
+   * block RDDs through the JNI block-iteration protocol) or the single `ArrowArrayStream`
+   * exported by another `RDD[ArrowArrayStream]`. Returned alongside the subset that are block
+   * iterators, which `CometExecIterator` needs to drive block iteration. Shared by
    * [[CometExecRDD.compute]] and the native-shuffle path so both classify and resolve slots
    * identically.
    */
@@ -182,8 +182,8 @@ object CometExecRDD {
       inputRDDs: Seq[RDD[_]],
       inputPartitions: Array[Partition],
       blockScanIndices: Set[Int],
-      context: TaskContext): (Array[Object], Map[Int, CometShuffleBlockIterator]) = {
-    val blockIters = scala.collection.mutable.Map.empty[Int, CometShuffleBlockIterator]
+      context: TaskContext): (Array[Object], Map[Int, CometBlockIterator]) = {
+    val blockIters = scala.collection.mutable.Map.empty[Int, CometBlockIterator]
     val resolvedObjects = scala.collection.mutable.ArrayBuffer.empty[Object]
     try {
       val inputObjects: Array[Object] = inputRDDs

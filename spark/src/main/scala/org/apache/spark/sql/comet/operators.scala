@@ -978,7 +978,7 @@ abstract class CometNativeExec extends CometExec {
                 c.nodeName)
             case None if isShuffleScanInput(plan) && blockScanIndices.contains(scanSlot) =>
               // Direct-read shuffle: `CometShuffledBatchRDD` reaches native via
-              // CometShuffleBlockIterator. Other shuffle slots fall through and get wrapped.
+              // CometBlockIterator. Other shuffle slots fall through and get wrapped.
               plan.executeColumnar()
             case None =>
               CometArrowStream.wrapColumnarBatchRDD(

@@ -19,25 +19,21 @@
 
 package org.apache.comet;
 
-import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.Iterator;
 
 /** Provides codec-prefixed Arrow IPC broadcast blocks to native code via JNI. */
-public final class CometBroadcastBlockIterator extends CometShuffleBlockIterator {
+public final class CometBroadcastBlockIterator implements CometBlockIterator {
 
   private static final int INITIAL_BUFFER_SIZE = 128 * 1024;
 
   private Iterator<ByteBuffer[]> blocks;
-  private ByteBuffer dataBuf = ByteBuffer.allocateDirect(INITIAL_BUFFER_SIZE);
+  private ByteBuffer dataBuf;
   private boolean closed = false;
   private int currentBlockLength = 0;
 
   public CometBroadcastBlockIterator(Iterator<ByteBuffer[]> blocks) {
-    // Native uses the same block-iterator JNI protocol for shuffle and broadcast inputs. The
-    // superclass stream is never read because every protocol method is overridden here.
-    super(new ByteArrayInputStream(new byte[0]));
     this.blocks = blocks;
   }
 
@@ -75,8 +71,9 @@ public final class CometBroadcastBlockIterator extends CometShuffleBlockIterator
     }
 
     currentBlockLength = (int) blockSize;
-    if (dataBuf.capacity() < currentBlockLength) {
-      long doubled = Math.max((long) dataBuf.capacity() * 2L, blockSize);
+    if (dataBuf == null || dataBuf.capacity() < currentBlockLength) {
+      long currentCapacity = dataBuf == null ? INITIAL_BUFFER_SIZE : dataBuf.capacity();
+      long doubled = Math.max(currentCapacity * 2L, blockSize);
       dataBuf = ByteBuffer.allocateDirect((int) Math.min(doubled, Integer.MAX_VALUE));
     }
 
@@ -99,11 +96,23 @@ public final class CometBroadcastBlockIterator extends CometShuffleBlockIterator
   }
 
   @Override
+  public void onDecodeFailure(String message) {}
+
+  @Override
+  public boolean requiresValidation() {
+    return false;
+  }
+
+  @Override
+  public void incRecordsRead(long records) {}
+
+  @Override
   public void close() throws IOException {
     if (!closed) {
       closed = true;
       blocks = null;
-      super.close();
+      dataBuf = null;
+      currentBlockLength = 0;
     }
   }
 }

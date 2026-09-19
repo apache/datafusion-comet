@@ -24,7 +24,7 @@ import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.comet.{CometExecRDD, CometMetricNode}
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
-import org.apache.comet.CometShuffleBlockIterator
+import org.apache.comet.CometBlockIterator
 
 /**
  * Thin scheduling-anchor RDD for the native-shuffle path. Declares `OneToOneDependency` on each
@@ -55,7 +55,7 @@ private[shuffle] class CometNativeShuffleInputRDD(
       context,
       inputRDDs,
       numPartitionsParam,
-      shuffleScanIndices,
+      blockScanIndices,
       spillMetricNode,
       perPartitionByKey)
 
@@ -126,7 +126,7 @@ private[shuffle] class CometNativeShuffleInputPartition(
 private[shuffle] class CometNativeShuffleInputIterator(
     val partitionIndex: Int,
     val inputObjects: Array[Object],
-    val shuffleBlockIterators: Map[Int, CometShuffleBlockIterator],
+    val shuffleBlockIterators: Map[Int, CometBlockIterator],
     val planDataByKey: Map[String, Array[Byte]])
     extends Iterator[Product2[Int, ColumnarBatch]] {
 

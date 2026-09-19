@@ -50,7 +50,13 @@ import org.apache.comet.shims.CometTypeShim
 import org.apache.comet.vector.CometVector
 
 object Utils extends CometTypeShim with Logging {
+  // Keeps the framed output below the JNI Int limit even at the supported codecs' worst-case
+  // expansion, with room for Arrow IPC metadata. Inputs beyond this budget remain independent.
+  private val MAX_DIRECT_BROADCAST_COALESCE_UNCOMPRESSED_BYTES = 1L << 30
+  private val NATIVE_IPC_NONE_PREFIX = Array[Byte](0x4e, 0x4f, 0x4e, 0x45)
+  private val NATIVE_IPC_SNAPPY_PREFIX = Array[Byte](0x53, 0x4e, 0x41, 0x50)
   private val NATIVE_IPC_LZ4_PREFIX = Array[Byte](0x4c, 0x5a, 0x34, 0x5f)
+  private val NATIVE_IPC_ZSTD_PREFIX = Array[Byte](0x5a, 0x53, 0x54, 0x44)
   private val VariantExtensionName = "arrow.parquet.variant"
 
   def getConfPath(confFileName: String): String = {
@@ -364,8 +370,32 @@ object Utils extends CometTypeShim with Logging {
       output: ChunkedByteBufferOutputStream,
       nativeIpc: Boolean): DataOutputStream = {
     if (nativeIpc) {
-      output.write(NATIVE_IPC_LZ4_PREFIX)
-      new DataOutputStream(new net.jpountz.lz4.LZ4FrameOutputStream(output))
+      val codec = if (SparkEnv.get.conf.getBoolean("spark.shuffle.compress", true)) {
+        org.apache.comet.CometConf.COMET_SHUFFLE_COMPRESSION_CODEC.get()
+      } else {
+        "none"
+      }
+      codec match {
+        case "lz4" =>
+          output.write(NATIVE_IPC_LZ4_PREFIX)
+          new DataOutputStream(
+            new net.jpountz.lz4.LZ4FrameOutputStream(
+              output,
+              net.jpountz.lz4.LZ4FrameOutputStream.BLOCKSIZE.SIZE_64KB))
+        case "snappy" =>
+          output.write(NATIVE_IPC_SNAPPY_PREFIX)
+          new DataOutputStream(new org.xerial.snappy.SnappyFramedOutputStream(output))
+        case "zstd" =>
+          output.write(NATIVE_IPC_ZSTD_PREFIX)
+          new DataOutputStream(
+            new com.github.luben.zstd.ZstdOutputStream(
+              output,
+              org.apache.comet.CometConf.COMET_SHUFFLE_COMPRESSION_ZSTD_LEVEL.get()))
+        case "none" =>
+          output.write(NATIVE_IPC_NONE_PREFIX)
+          new DataOutputStream(output)
+        case other => throw new SparkException(s"Unsupported native IPC codec: $other")
+      }
     } else {
       val codec = CompressionCodec.createCodec(SparkEnv.get.conf)
       new DataOutputStream(codec.compressedOutputStream(output))
@@ -377,14 +407,20 @@ object Utils extends CometTypeShim with Logging {
    * keeps non-native broadcast consumers compatible when direct read is enabled.
    */
   private def compressedIpcInputStream(bytes: ChunkedByteBuffer): InputStream = {
-    val input = new PushbackInputStream(bytes.toInputStream(), NATIVE_IPC_LZ4_PREFIX.length)
-    val prefix = new Array[Byte](NATIVE_IPC_LZ4_PREFIX.length)
-    val read = input.read(prefix)
-    if (read == prefix.length && Arrays.equals(prefix, NATIVE_IPC_LZ4_PREFIX)) {
+    val prefixLength = NATIVE_IPC_LZ4_PREFIX.length
+    val input = new PushbackInputStream(bytes.toInputStream(), prefixLength)
+    val prefix = input.readNBytes(prefixLength)
+    if (Arrays.equals(prefix, NATIVE_IPC_LZ4_PREFIX)) {
       new net.jpountz.lz4.LZ4FrameInputStream(input)
+    } else if (Arrays.equals(prefix, NATIVE_IPC_SNAPPY_PREFIX)) {
+      new org.xerial.snappy.SnappyFramedInputStream(input)
+    } else if (Arrays.equals(prefix, NATIVE_IPC_ZSTD_PREFIX)) {
+      new com.github.luben.zstd.ZstdInputStream(input)
+    } else if (Arrays.equals(prefix, NATIVE_IPC_NONE_PREFIX)) {
+      input
     } else {
-      if (read > 0) {
-        input.unread(prefix, 0, read)
+      if (prefix.nonEmpty) {
+        input.unread(prefix)
       }
       CompressionCodec.createCodec(SparkEnv.get.conf).compressedInputStream(input)
     }
@@ -433,6 +469,7 @@ object Utils extends CometTypeShim with Logging {
       var targetRoot: VectorSchemaRoot = null
       var totalRows = 0L
       var batchCount = 0
+      var uncompressedBytes = 0L
 
       try {
         for (bytes <- buffers) {
@@ -456,6 +493,23 @@ object Utils extends CometTypeShim with Logging {
             }
             while (reader.loadNextBatch()) {
               val sourceRoot = reader.getVectorSchemaRoot
+              val sourceBytes = sourceRoot.getFieldVectors.asScala.foldLeft(0L) {
+                (total, vector) =>
+                  if (Long.MaxValue - total < vector.getBufferSize) Long.MaxValue
+                  else total + vector.getBufferSize
+              }
+              uncompressedBytes =
+                if (Long.MaxValue - uncompressedBytes < sourceBytes) Long.MaxValue
+                else uncompressedBytes + sourceBytes
+              if (shouldSkipDirectBroadcastCoalesceForUncompressedSize(
+                  nativeIpc,
+                  uncompressedBytes)) {
+                logInfo(
+                  s"Skipping native broadcast coalesce because the uncompressed Arrow buffers " +
+                    s"are $uncompressedBytes bytes, above the safe direct-block budget of " +
+                    s"$MAX_DIRECT_BROADCAST_COALESCE_UNCOMPRESSED_BYTES bytes")
+                return (buffers, 0L, 0L)
+              }
               if (targetRoot == null) {
                 targetRoot = VectorSchemaRoot.create(sourceRoot.getSchema, allocator)
                 targetRoot.allocateNew()
@@ -493,8 +547,6 @@ object Utils extends CometTypeShim with Logging {
           targetRoot.getRowCount.toLong == totalRows,
           s"Row count mismatch after coalesce: ${targetRoot.getRowCount} != $totalRows")
 
-        logInfo(s"Coalesced $batchCount broadcast batches into 1 ($totalRows rows)")
-
         val outputStream = new ChunkedByteBufferOutputStream(1024 * 1024, ByteBuffer.allocate)
         val compressedOutputStream = compressedIpcOutputStream(outputStream, nativeIpc)
         val writer =
@@ -506,7 +558,17 @@ object Utils extends CometTypeShim with Logging {
           writer.close()
         }
 
-        (Array(outputStream.toChunkedByteBuffer), batchCount.toLong, totalRows)
+        val coalesced = outputStream.toChunkedByteBuffer
+        if (shouldSkipDirectBroadcastCoalescedOutput(nativeIpc, coalesced.size)) {
+          logInfo(
+            s"Skipping native broadcast coalesce because the compressed output is " +
+              s"${coalesced.size} bytes, above the maximum direct block size of " +
+              s"${Integer.MAX_VALUE} bytes")
+          (buffers, 0L, 0L)
+        } else {
+          logInfo(s"Coalesced $batchCount broadcast batches into 1 ($totalRows rows)")
+          (Array(coalesced), batchCount.toLong, totalRows)
+        }
       } finally {
         if (targetRoot != null) {
           targetRoot.close()
@@ -544,6 +606,16 @@ object Utils extends CometTypeShim with Logging {
       nativeIpc: Boolean,
       totalInputBytes: Long): Boolean =
     nativeIpc && totalInputBytes > Integer.MAX_VALUE
+
+  private[comet] def shouldSkipDirectBroadcastCoalescedOutput(
+      nativeIpc: Boolean,
+      compressedOutputBytes: Long): Boolean =
+    nativeIpc && compressedOutputBytes > Integer.MAX_VALUE
+
+  private[comet] def shouldSkipDirectBroadcastCoalesceForUncompressedSize(
+      nativeIpc: Boolean,
+      uncompressedBytes: Long): Boolean =
+    nativeIpc && uncompressedBytes > MAX_DIRECT_BROADCAST_COALESCE_UNCOMPRESSED_BYTES
 
   def getBatchFieldVectors(
       batch: ColumnarBatch): (Seq[FieldVector], Option[DictionaryProvider]) = {

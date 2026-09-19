@@ -66,7 +66,7 @@ case class CometBroadcastExchangeExec(
     override val output: Seq[Attribute],
     mode: BroadcastMode,
     override val child: SparkPlan,
-    directRead: Boolean = CometConf.COMET_EXEC_BROADCAST_DIRECT_READ_ENABLED.get())
+    directRead: Boolean)
     extends BroadcastExchangeLike
     with ShimCometBroadcastExchangeExec
     with CometPlan {
@@ -87,6 +87,9 @@ case class CometBroadcastExchangeExec(
       "number of coalesced rows for broadcast"))
 
   override def doCanonicalize(): SparkPlan = {
+    // Keep the wire format in the canonical identity. JVM consumers can sniff both formats, but a
+    // native BroadcastScan requires codec-prefixed IPC, so reusing a legacy exchange for a direct
+    // reader (or vice versa) would connect the consumer to an incompatible byte stream.
     CometBroadcastExchangeExec(null, null, mode, child.canonicalized, directRead)
   }
 
@@ -112,8 +115,9 @@ case class CometBroadcastExchangeExec(
   private lazy val maxBroadcastRows = 512000000
 
   private def getByteArrayRdd(plan: SparkPlan): RDD[(Long, ChunkedByteBuffer)] = {
+    val useNativeIpc = directRead
     plan.executeColumnar().mapPartitionsInternal { iter =>
-      if (directRead) {
+      if (useNativeIpc) {
         Utils.serializeBroadcastBatches(iter)
       } else {
         Utils.serializeBatches(iter)
@@ -286,7 +290,7 @@ object CometBroadcastExchangeExec extends CometSink[BroadcastExchangeExec] {
       op: BroadcastExchangeExec,
       builder: OperatorOuterClass.Operator.Builder,
       childOp: OperatorOuterClass.Operator*): Option[OperatorOuterClass.Operator] = {
-    if (CometConf.COMET_EXEC_BROADCAST_DIRECT_READ_ENABLED.get()) {
+    if (CometConf.COMET_BROADCAST_DIRECT_READ_ENABLED.get()) {
       convertToBroadcastScan(op, builder)
     } else {
       super.convert(op, builder, childOp: _*)
