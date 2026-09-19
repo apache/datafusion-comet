@@ -49,18 +49,6 @@ package object comet {
     CometArrowAllocator.newChildAllocator("comet-ffi-imports", 0, Long.MaxValue)
 
   /**
-   * Tracing counters for Arrow memory held on the JVM side, as (label, bytes) pairs.
-   *
-   * `jvm_arrow_allocated` is everything the root accounts for, which includes the imported
-   * buffers that `jvm_arrow_imported` reports, because the import allocator is a child that
-   * reserves nothing. The difference is the Arrow memory the JVM allocated itself; the imported
-   * part is native memory, which `native_allocated` counts as well.
-   */
-  def arrowMemoryMetrics: Seq[(String, Long)] = Seq(
-    "jvm_arrow_allocated" -> CometArrowAllocator.getAllocatedMemory,
-    "jvm_arrow_imported" -> CometArrowImportAllocator.getAllocatedMemory)
-
-  /**
    * Provides access to build information about the Comet libraries. This will be used by the
    * benchmarking software to provide the source revision and repository. In addition, the build
    * information is included to aid in future debugging efforts for releases.

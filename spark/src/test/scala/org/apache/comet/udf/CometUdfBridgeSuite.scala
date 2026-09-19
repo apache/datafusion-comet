@@ -21,6 +21,7 @@ package org.apache.comet.udf
 
 import org.scalatest.funsuite.AnyFunSuite
 
+import org.apache.arrow.memory.BufferAllocator
 import org.apache.arrow.vector.{IntVector, ValueVector}
 import org.apache.spark.sql.execution.vectorized.ConstantColumnVector
 import org.apache.spark.sql.types.IntegerType
@@ -30,18 +31,16 @@ import org.apache.comet.{CometArrowAllocator, CometArrowImportAllocator}
 import org.apache.comet.vector.NativeUtil
 
 /**
- * A UDF that reports how much memory the FFI import allocator holds while its inputs are alive.
+ * A UDF that reports which allocator owns its inputs.
  *
- * The bridge closes the imported inputs before `evaluate` returns, so the only place the
- * accounting for them can be observed is from inside the call.
+ * The bridge closes the imported inputs before `evaluate` returns, so this can only be observed
+ * from inside the call.
  */
 class ImportAllocatorProbeUdf extends CometUDF {
   override def evaluate(inputs: Array[ValueVector], numRows: Int): ValueVector = {
-    ImportAllocatorProbeUdf.importAllocatedDuringCall =
-      CometArrowImportAllocator.getAllocatedMemory
+    ImportAllocatorProbeUdf.inputAllocator = Some(inputs.head.getAllocator)
 
-    // Allocated from the root: a UDF result really is memory the JVM allocated, and keeping it
-    // off the import allocator is what makes the two counters mean different things.
+    // Allocated from the root: a UDF result is memory the JVM allocated.
     val out = new IntVector("out", CometArrowAllocator)
     out.allocateNew(numRows)
     (0 until numRows).foreach(row => out.setSafe(row, 7))
@@ -51,12 +50,12 @@ class ImportAllocatorProbeUdf extends CometUDF {
 }
 
 object ImportAllocatorProbeUdf {
-  @volatile var importAllocatedDuringCall: Long = -1L
+  @volatile var inputAllocator: Option[BufferAllocator] = None
 }
 
 class CometUdfBridgeSuite extends AnyFunSuite {
 
-  test("evaluate charges imported input vectors to the FFI import allocator") {
+  test("evaluate imports its input vectors against the FFI import allocator") {
     val numRows = 4
     val col = new ConstantColumnVector(numRows, IntegerType)
     col.setInt(42)
@@ -67,33 +66,28 @@ class CometUdfBridgeSuite extends AnyFunSuite {
       val (inputArrayAddrs, inputSchemaAddrs, _) = nativeUtil.exportBatchToAddresses(batch)
       val (outArrays, outSchemas) = nativeUtil.allocateArrowStructs(1)
 
-      // Read immediately before the call rather than trusting a baseline of zero: the allocator
-      // is process-wide, so anything imported earlier in this JVM is already counted here.
-      val importedBefore = CometArrowImportAllocator.getAllocatedMemory
-      ImportAllocatorProbeUdf.importAllocatedDuringCall = -1L
+      try {
+        CometUdfBridge.evaluate(
+          classOf[ImportAllocatorProbeUdf].getName,
+          inputArrayAddrs,
+          inputSchemaAddrs,
+          outArrays(0).memoryAddress(),
+          outSchemas(0).memoryAddress(),
+          numRows,
+          null,
+          null)
 
-      CometUdfBridge.evaluate(
-        classOf[ImportAllocatorProbeUdf].getName,
-        inputArrayAddrs,
-        inputSchemaAddrs,
-        outArrays(0).memoryAddress(),
-        outSchemas(0).memoryAddress(),
-        numRows,
-        null,
-        null)
-
-      assert(
-        ImportAllocatorProbeUdf.importAllocatedDuringCall >= 0,
-        "the probe UDF never ran, so the bridge call proves nothing")
-      assert(
-        ImportAllocatorProbeUdf.importAllocatedDuringCall > importedBefore,
-        "the UDF's imported inputs were charged somewhere other than the FFI import allocator, " +
-          s"which still held $importedBefore bytes while they were alive")
-
-      outArrays(0).release()
-      outArrays(0).close()
-      outSchemas(0).release()
-      outSchemas(0).close()
+        assert(
+          ImportAllocatorProbeUdf.inputAllocator.contains(CometArrowImportAllocator),
+          "the UDF's inputs were imported against " +
+            s"${ImportAllocatorProbeUdf.inputAllocator.map(_.getName)}, so their bytes are not " +
+            "reported as imported memory")
+      } finally {
+        outArrays(0).release()
+        outArrays(0).close()
+        outSchemas(0).release()
+        outSchemas(0).close()
+      }
     } finally {
       nativeUtil.close()
     }

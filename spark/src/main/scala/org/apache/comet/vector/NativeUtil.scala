@@ -50,11 +50,7 @@ class NativeUtil extends AutoCloseable {
   /** Use the global allocator */
   private val allocator = CometArrowAllocator
 
-  /**
-   * Imports are charged to their own allocator so that tracing can tell Arrow memory the JVM
-   * allocated apart from memory imported from native. ArrowImporter does not hold any state and
-   * does not need to be closed.
-   */
+  /** ArrowImporter does not hold any state and does not need to be closed */
   private val importer = new ArrowImporter(CometArrowImportAllocator)
 
   /**

@@ -23,6 +23,16 @@ object Tracing {
 
   private val nativeLib = new Native
 
+  /**
+   * Emits the Arrow memory counters for the JVM side. `jvm_arrow_imported` is the part of
+   * `jvm_arrow_allocated` that came from native over the C Data Interface, so the difference is
+   * the Arrow memory the JVM allocated itself. See [[CometArrowImportAllocator]].
+   */
+  def logArrowMemory(): Unit = {
+    nativeLib.logMemoryUsage("jvm_arrow_allocated", CometArrowAllocator.getAllocatedMemory)
+    nativeLib.logMemoryUsage("jvm_arrow_imported", CometArrowImportAllocator.getAllocatedMemory)
+  }
+
   def withTrace[T](label: String, tracingEnabled: Boolean, fun: => T): T = {
     try {
       if (tracingEnabled) {

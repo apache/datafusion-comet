@@ -357,9 +357,7 @@ class CometExecIterator(
 
   private def traceMemoryUsage(): Unit = {
     nativeLib.logMemoryUsage("jvm_heap_used", memoryMXBean.getHeapMemoryUsage.getUsed)
-    arrowMemoryMetrics.foreach { case (name, bytes) =>
-      nativeLib.logMemoryUsage(name, bytes)
-    }
+    Tracing.logArrowMemory()
   }
 }
 
