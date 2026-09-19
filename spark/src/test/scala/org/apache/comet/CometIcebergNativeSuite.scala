@@ -924,6 +924,112 @@ class CometIcebergNativeSuite
     }
   }
 
+  // One data file, one row group, many pages: nothing can be pruned at file or row-group
+  // granularity, so a narrow id range reads fewer bytes than the full scan only by skipping
+  // pages inside that row group. This pins iceberg-rust page-index skipping in the native scan.
+  test("native scan skips pages within a single row group") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        // A 512 MB row group holds every row and 2000-row pages give the id column many pages.
+        // Uncompressed storage keeps the sorted id column large, so reading all of its pages
+        // is visible against the bound below: the parquet row filter alone skips payload pages
+        // once the predicate is evaluated, and only page-index row selection also skips the id
+        // pages, which is what this test pins. With row selection disabled the range read is
+        // 8.6 MB of the 20.6 MB file and fails the bound; enabled, it is 0.6 MB.
+        spark.sql("""
+          CREATE TABLE test_cat.db.page_skip_test (
+            id BIGINT,
+            payload STRING
+          ) USING iceberg
+          TBLPROPERTIES (
+            'write.parquet.row-group-size-bytes' = '536870912',
+            'write.parquet.page-size-bytes' = '16384',
+            'write.parquet.page-row-limit' = '2000',
+            'write.parquet.compression-codec' = 'uncompressed'
+          )
+        """)
+
+        val numRows = 1000000L
+        val payloadLength = 16L
+        spark
+          .range(numRows)
+          .repartition(1)
+          .sortWithinPartitions("id")
+          .selectExpr("id", "substr(sha2(cast(id AS STRING), 256), 1, 16) AS payload")
+          .write
+          .format("iceberg")
+          .mode("append")
+          .saveAsTable("test_cat.db.page_skip_test")
+
+        val files = spark
+          .sql("SELECT file_path FROM test_cat.db.page_skip_test.files")
+          .collect()
+        assert(files.length == 1, s"expected one data file, got ${files.mkString(", ")}")
+        val dataFilePath = files.head.getString(0)
+
+        // Check the fixture shape in the footer so it cannot silently degrade into a layout
+        // where file-level or row-group-level pruning would explain the byte savings.
+        val reader = org.apache.parquet.hadoop.ParquetFileReader.open(
+          org.apache.parquet.hadoop.util.HadoopInputFile.fromPath(
+            new org.apache.hadoop.fs.Path(dataFilePath),
+            spark.sessionState.newHadoopConf()))
+        val idPages =
+          try {
+            val rowGroups = reader.getRowGroups
+            assert(rowGroups.size == 1, s"expected one row group, got ${rowGroups.size}")
+            val idChunk = rowGroups
+              .get(0)
+              .getColumns
+              .asScala
+              .find(_.getPath.toDotString == "id")
+              .getOrElse(fail("id column chunk not found"))
+            reader.readOffsetIndex(idChunk).getPageCount
+          } finally {
+            reader.close()
+          }
+        assert(idPages > 50, s"expected more than 50 id pages, got $idPages")
+
+        def runAndCollectScan(sql: String): (CometIcebergNativeScanExec, Long) = {
+          val df = spark.sql(sql)
+          val rows = df.collect()
+          val scans = collectIcebergNativeScans(df.queryExecution.executedPlan)
+          assert(scans.length == 1, s"expected one native scan, got ${scans.length}")
+          (scans.head, rows.head.getLong(0))
+        }
+
+        val (fullScan, fullSum) =
+          runAndCollectScan("SELECT sum(length(payload)) FROM test_cat.db.page_skip_test")
+        assert(fullSum == numRows * payloadLength)
+        val fullBytes = fullScan.metrics("bytes_scanned").value
+        assert(fullBytes > 0, s"bytes_scanned for the full read should be > 0, got $fullBytes")
+
+        val (rangeScan, rangeSum) = runAndCollectScan(
+          "SELECT sum(length(payload)) FROM test_cat.db.page_skip_test " +
+            "WHERE id BETWEEN 1000 AND 1100")
+        assert(rangeSum == 101L * payloadLength)
+        assert(rangeScan.metrics("output_rows").value == 101)
+        val rangeBytes = rangeScan.metrics("bytes_scanned").value
+
+        assert(fullScan.metrics("num_splits").value == 1)
+        assert(rangeScan.metrics("num_splits").value == 1)
+        assert(
+          rangeBytes * 5 < fullBytes,
+          "range query should read under 20% of the full read via page skipping: " +
+            s"range=$rangeBytes, full=$fullBytes, id pages=$idPages")
+
+      }
+    }
+  }
+
   test("MOR table with EQUALITY deletes - verify deletes are applied") {
     assume(icebergAvailable, "Iceberg not available in classpath")
 
@@ -2043,33 +2149,112 @@ class CometIcebergNativeSuite
           metrics("resultDataFiles").value > 0,
           "resultDataFiles should still be > 0 after execution")
 
-        // The SQL UI aggregates posted accumulator updates rather than reading driver-side
-        // values, so the planning metrics must reach it as driver metric updates.
-        CometListenerBusUtils.waitUntilEmpty(spark.sparkContext)
-        val statusStore = spark.sharedState.statusStore
-        val executionId = statusStore.executionsList().map(_.executionId).max
-        val uiMetrics = statusStore.executionMetrics(executionId)
-        val uiResultDataFiles = uiMetrics.get(metrics("resultDataFiles").id)
-        assert(
-          uiResultDataFiles
-            .map(_.replace(",", "").toLong)
-            .contains(metrics("resultDataFiles").value),
-          s"SQL UI should show resultDataFiles, got $uiResultDataFiles")
-        val uiTotalDataFileSize = uiMetrics.get(metrics("totalDataFileSize").id)
-        assert(
-          uiTotalDataFileSize.exists(!_.contains("0.0 B")),
-          s"SQL UI should show totalDataFileSize without task zeros, got $uiTotalDataFileSize")
-        val uiMetricName = statusStore
-          .execution(executionId)
-          .get
-          .metrics
-          .find(_.accumulatorId == metrics("resultDataFiles").id)
-          .map(_.name)
-        assert(
-          uiMetricName.exists(_ != "resultDataFiles"),
-          s"SQL UI should label planning metrics like Iceberg's BatchScan, got $uiMetricName")
-
         spark.sql("DROP TABLE test_cat.db.metrics_test")
+      }
+    }
+  }
+
+  test("Iceberg planning metrics and scan time are posted to the SQL UI") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        spark.sql("""
+          CREATE TABLE test_cat.db.driver_metrics_test (
+            id INT,
+            value DOUBLE
+          ) USING iceberg
+        """)
+        spark
+          .range(10000)
+          .selectExpr("CAST(id AS INT)", "CAST(id * 1.5 AS DOUBLE) as value")
+          .coalesce(1)
+          .write
+          .format("iceberg")
+          .mode("append")
+          .saveAsTable("test_cat.db.driver_metrics_test")
+
+        val df = spark.sql("SELECT * FROM test_cat.db.driver_metrics_test WHERE id < 5000")
+        val scanNodes = df.queryExecution.executedPlan
+          .collectLeaves()
+          .collect { case s: CometIcebergNativeScanExec => s }
+        assert(scanNodes.nonEmpty, "Expected a CometIcebergNativeScanExec node")
+
+        df.collect()
+        CometListenerBusUtils.waitUntilEmpty(spark.sparkContext)
+
+        // Read the metrics the Spark SQL UI actually renders, from the status store. It resolves
+        // metric name -> accumulator id -> final aggregated value the way the UI does, so it does
+        // not depend on which scan node instance executed. Reading SQLMetric.value on the node (as
+        // other tests do) works for the driver-computed value but does not prove the value reaches
+        // the UI, which is exactly the gap this fix closes.
+        val store = spark.sharedState.statusStore
+
+        // Of the CREATE / INSERT / SELECT executions, the SELECT is the one whose scan node
+        // declares the Iceberg planning metrics.
+        val candidateExecIds = store
+          .executionsList()
+          .map(_.executionId)
+          .filter(id =>
+            store.execution(id).exists(_.metrics.exists(_.name == "totalDataManifest")))
+        assert(
+          candidateExecIds.nonEmpty,
+          "no SQL execution exposed the Iceberg scan planning metrics")
+        val execId = candidateExecIds.max
+
+        val nameToAccId =
+          store.execution(execId).get.metrics.map(m => m.name -> m.accumulatorId).toMap
+        val uiValues = store.executionMetrics(execId)
+
+        // Every planning metric must have a value in the UI store. Without the driver post its
+        // accumulator id never receives an update, so the store holds no entry for it.
+        Seq(
+          "totalDataManifest",
+          "scannedDataManifests",
+          "resultDataFiles",
+          "totalDataFileSize",
+          "totalPlanningDuration").foreach { name =>
+          val accId =
+            nameToAccId.getOrElse(name, fail(s"planning metric $name missing from scan node"))
+          assert(
+            uiValues.contains(accId),
+            s"planning metric $name (accId=$accId) has no value in the SQL UI store; " +
+              "the driver metric was not posted")
+        }
+
+        // Counts known to be non-zero for this table should render as non-zero in the UI.
+        Seq("totalDataManifest", "resultDataFiles").foreach { name =>
+          assert(
+            uiValues(nameToAccId(name)).trim != "0",
+            s"$name should be non-zero, got ${uiValues(nameToAccId(name))}")
+        }
+
+        // Scan time (native elapsed_compute) is declared on the scan node and tracked in the UI.
+        // The status store keys base metrics by their display name, not the native metric key, so
+        // it appears as "scan time" here (unlike the Iceberg planning metrics, which are registered
+        // under their Iceberg names).
+        assert(
+          nameToAccId.contains("scan time"),
+          s"scan time should be declared on the scan node; metrics=${nameToAccId.keySet}")
+        assert(
+          uiValues.contains(nameToAccId("scan time")),
+          "scan time should have a value in the SQL UI store")
+
+        // Planning metrics stay out of the executor metric tree, so a size metric renders as the
+        // driver's single value instead of statistics over per-task zeros.
+        val totalDataFileSize = uiValues(nameToAccId("totalDataFileSize"))
+        assert(
+          !totalDataFileSize.contains("0.0 B"),
+          s"totalDataFileSize should not carry task zeros, got $totalDataFileSize")
+
+        spark.sql("DROP TABLE test_cat.db.driver_metrics_test")
       }
     }
   }

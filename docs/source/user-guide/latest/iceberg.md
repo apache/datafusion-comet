@@ -267,9 +267,9 @@ Iceberg Java does not explicitly report `bytesRead` to Spark's task input metric
 ### SQL tab metrics
 
 `CometIcebergNativeScan` reports Iceberg's planning metrics (manifests and data files scanned or
-skipped, planning duration, total data and delete file sizes) under the same labels as Iceberg's
-`BatchScan`. They are posted from the driver, for each execution, once the scan's partitions are
-planned.
+skipped, planning duration, total data and delete file sizes) under their Iceberg names, posted
+from the driver for each execution once the scan's partitions are planned, and the native read time
+as `scan time`.
 
 iceberg-rust applies the residual predicate Comet hands it as a row filter inside the scan, so
 `number of output rows`, and with it the task-level `recordsRead`, count the rows that pass it. They
