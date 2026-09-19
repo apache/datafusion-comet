@@ -44,7 +44,7 @@ import org.apache.spark.sql.execution.aggregate.{BaseAggregateExec, HashAggregat
 import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
 import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, BroadcastNestedLoopJoinExec, HashJoin, ShuffledHashJoinExec, SortMergeJoinExec}
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
-import org.apache.spark.sql.types.{ArrayType, BooleanType, ByteType, DataType, DateType, DecimalType, DoubleType, FloatType, IntegerType, LongType, MapType, ShortType, StringType, StructField, StructType, TimestampNTZType, TimestampType}
+import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, ByteType, DataType, DateType, DecimalType, DoubleType, FloatType, IntegerType, LongType, MapType, ShortType, StringType, StructField, StructType, TimestampNTZType, TimestampType}
 import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.spark.unsafe.Platform
 import org.apache.spark.util.SerializableConfiguration
@@ -1083,8 +1083,7 @@ abstract class CometNativeExec extends CometExec {
       case _: CometScanExec | _: CometBatchScanExec | _: QueryStageExec | _: AQEShuffleReadExec |
           _: CometShuffleExchangeExec | _: CometUnionExec | _: CometTakeOrderedAndProjectExec |
           _: CometCoalesceExec | _: ReusedExchangeExec | _: CometBroadcastExchangeExec |
-          _: CometSparkToColumnarExec | _: CometLocalTableScanExec |
-          _: CometInMemoryTableScanExec =>
+          _: CometNativeArrowSource | _: CometInMemoryTableScanExec =>
         func(plan)
       case _: CometPlan =>
         // Other Comet operators, continue to traverse the tree.
@@ -3029,7 +3028,8 @@ object CometSortMergeJoinExec extends CometOperatorSerde[SortMergeJoinExec] {
   private def supportedSortMergeJoinEqualType(dataType: DataType): Boolean = dataType match {
     case st: StringType if isStringCollationType(st) => false
     case _: ByteType | _: ShortType | _: IntegerType | _: LongType | _: FloatType |
-        _: DoubleType | _: StringType | _: DateType | _: DecimalType | _: BooleanType =>
+        _: DoubleType | _: StringType | _: BinaryType | _: DateType | _: DecimalType |
+        _: BooleanType =>
       true
     case TimestampNTZType | _: TimestampType => true
     case _ => false

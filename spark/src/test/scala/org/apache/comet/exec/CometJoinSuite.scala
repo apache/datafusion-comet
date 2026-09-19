@@ -31,7 +31,7 @@ import org.apache.spark.sql.catalyst.analysis.UnresolvedRelation
 import org.apache.spark.sql.catalyst.expressions.{And, AttributeReference, IsNotNull}
 import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight}
 import org.apache.spark.sql.comet.{CometBroadcastExchangeExec, CometBroadcastHashJoinExec, CometBroadcastNestedLoopJoinExec, CometFilterExec, CometHashJoinExec, CometNativeScanExec, CometSortMergeJoinExec, CometUnionExec}
-import org.apache.spark.sql.execution.SparkPlan
+import org.apache.spark.sql.execution.{LocalTableScanExec, SparkPlan}
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AQEShuffleReadExec}
 import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
 import org.apache.spark.sql.internal.SQLConf
@@ -176,6 +176,48 @@ class CometJoinSuite extends CometTestBase {
         checkSparkAnswerAndOperator(
           sql("SELECT * FROM t1 JOIN t2 ON t1.time = t2.time"),
           Seq(classOf[CometSortMergeJoinExec]))
+      }
+    }
+  }
+
+  test("SortMergeJoin with floating-point key runs natively under strict floating point") {
+    // CometSortOrder is the admission gate for the sort orders this join synthesizes, so
+    // narrowing it for scalar floats (#5506) admits FP-keyed sort-merge joins under strict mode
+    // too. Comet does not normalize the join keys itself: it compares `join_on`, and correctness
+    // rests on Catalyst's NormalizeFloatingNumbers having already wrapped both sides. This test
+    // pins that, so a future change to that rule fails here rather than silently.
+    //
+    // The fixtures are local relations rather than Parquet tables because a Parquet round trip
+    // canonicalizes every NaN payload, which would collapse the two NaN cases into one.
+    val left = Seq(
+      (1, -0.0d),
+      (2, 0.0d),
+      (3, 1.0d),
+      (4, java.lang.Double.longBitsToDouble(0x7ff8000000000002L)),
+      (5, java.lang.Double.longBitsToDouble(0xfff8000000000002L)))
+    val right = Seq(
+      (10, 0.0d),
+      (20, -0.0d),
+      (30, 1.0d),
+      (40, java.lang.Double.longBitsToDouble(0xfff8000000000002L)),
+      (50, Double.NaN))
+
+    withSQLConf(
+      CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key -> "true",
+      CometConf.getExprAllowIncompatConfigKey("SortOrder") -> "false",
+      SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+      SQLConf.PREFER_SORTMERGEJOIN.key -> "true") {
+      withTempView("fp_left", "fp_right") {
+        left.toDF("lid", "k").createOrReplaceTempView("fp_left")
+        right.toDF("rid", "k").createOrReplaceTempView("fp_right")
+
+        // LocalTableScanExec has no native counterpart enabled by default and is only the source
+        // of the unmodified key bits here.
+        checkSparkAnswerAndOperator(
+          sql("SELECT l.lid, r.rid FROM fp_left l JOIN fp_right r ON l.k = r.k"),
+          Seq(classOf[CometSortMergeJoinExec]),
+          classOf[LocalTableScanExec])
       }
     }
   }
@@ -366,16 +408,16 @@ class CometJoinSuite extends CometTestBase {
                 assert(join.metrics("output_rows").value == 4L)
                 val probeRows = join.metrics("input_rows").value
                 if (enabled) {
-                  val evaluated = join.metrics("dynamic_filter_rows_evaluated").value
-                  val pruned = join.metrics("dynamic_filter_rows_pruned").value
-                  val bypassed = join.metrics("dynamic_filter_rows_bypassed").value
+                  val evaluated = join.metrics("dynamic_filter_join_rows_evaluated").value
+                  val pruned = join.metrics("dynamic_filter_join_rows_pruned").value
+                  val bypassed = join.metrics("dynamic_filter_join_rows_bypassed").value
                   assert(evaluated > 0L && pruned > 0L)
                   assert(probeRows + pruned == evaluated + bypassed)
                   assert(probeRows < unfilteredProbeRows)
                   assert(evaluated + bypassed <= unfilteredProbeRows)
-                  assert(join.metrics("dynamic_filter_eval_time").value > 0L)
+                  assert(join.metrics("dynamic_filter_join_eval_time").value > 0L)
                 } else {
-                  assert(!join.metrics.contains("dynamic_filter_rows_pruned"))
+                  assert(!join.metrics.contains("dynamic_filter_join_rows_pruned"))
                   unfilteredProbeRows = probeRows
                 }
               }
@@ -456,10 +498,8 @@ class CometJoinSuite extends CometTestBase {
                   val bytes = scanMetrics("bytes_scanned").value
                   assert(joins.head.metrics("output_rows").value == 1L)
                   if (enabled) {
-                    assert(
-                      joins.head.metrics("dynamic_filter_reader_filters_attached").value > 0L)
-                    assert(
-                      joins.head.metrics("dynamic_filter_reader_filters_skipped").value == 0L)
+                    assert(joins.head.metrics("dynamic_filter_join_filters_attached").value > 0L)
+                    assert(joins.head.metrics("dynamic_filter_join_filters_skipped").value == 0L)
                     assert(
                       probeFilters.head.metrics("output_rows").value > 0L,
                       "Execution-local reader attachment must preserve probe filter metrics")
@@ -545,10 +585,10 @@ class CometJoinSuite extends CometTestBase {
                 assert(probeScans.head.metrics("row_groups_pruned_statistics").value == 0L)
 
                 if (enabled) {
-                  assert(joins.head.metrics("dynamic_filter_reader_filters_attached").value == 0L)
-                  assert(joins.head.metrics("dynamic_filter_reader_filters_skipped").value == 1L)
-                  assert(joins.head.metrics("dynamic_filter_rows_evaluated").value == 1L)
-                  assert(joins.head.metrics("dynamic_filter_rows_pruned").value == 0L)
+                  assert(joins.head.metrics("dynamic_filter_join_filters_attached").value == 0L)
+                  assert(joins.head.metrics("dynamic_filter_join_filters_skipped").value == 1L)
+                  assert(joins.head.metrics("dynamic_filter_join_rows_evaluated").value == 1L)
+                  assert(joins.head.metrics("dynamic_filter_join_rows_pruned").value == 0L)
                 }
               }
             }
@@ -579,8 +619,8 @@ class CometJoinSuite extends CometTestBase {
             val joins = nativeHashJoins(plan)
             assert(joins.size == 1, s"Expected native hash join:\n$plan")
             if (build.size == 100) {
-              assert(joins.head.metrics("dynamic_filter_rows_evaluated").value > 0L)
-              assert(joins.head.metrics("dynamic_filter_rows_pruned").value == 0L)
+              assert(joins.head.metrics("dynamic_filter_join_rows_evaluated").value > 0L)
+              assert(joins.head.metrics("dynamic_filter_join_rows_pruned").value == 0L)
             }
           }
         }
@@ -612,8 +652,8 @@ class CometJoinSuite extends CometTestBase {
             val (_, plan) = checkSparkAnswerAndOperator(sql(query))
             val native = nativeHashJoins(plan)
             assert(native.size == 1, s"Expected native hash join:\n$plan")
-            assert(native.head.metrics("dynamic_filter_rows_evaluated").value == 0L)
-            assert(native.head.metrics("dynamic_filter_rows_pruned").value == 0L)
+            assert(native.head.metrics("dynamic_filter_join_rows_evaluated").value == 0L)
+            assert(native.head.metrics("dynamic_filter_join_rows_pruned").value == 0L)
           }
           // NOT IN must still observe build-side NULLs; never attach a filter here.
           withSQLConf(
@@ -625,7 +665,7 @@ class CometJoinSuite extends CometTestBase {
             val native = collect(plan) { case join: CometBroadcastHashJoinExec => join }
             assert(native.size == 1, s"Expected native null-aware anti join:\n$plan")
             assert(native.head.nativeOp.getHashJoin.getNullAwareAntiJoin)
-            assert(native.head.metrics("dynamic_filter_rows_evaluated").value == 0L)
+            assert(native.head.metrics("dynamic_filter_join_rows_evaluated").value == 0L)
           }
         }
       }
@@ -650,14 +690,14 @@ class CometJoinSuite extends CometTestBase {
           assert(join.buildSide == BuildRight)
           assert(join.nativeOp.getHashJoin.getDynamicFilterEnabled)
           assert(join.metrics("output_rows").value == 65536L)
-          assert(join.metrics("dynamic_filter_rows_evaluated").value > 0L)
-          assert(join.metrics("dynamic_filter_reader_filters_attached").value > 0L)
+          assert(join.metrics("dynamic_filter_join_rows_evaluated").value > 0L)
+          assert(join.metrics("dynamic_filter_join_filters_attached").value > 0L)
           val probeScans = collect(plan) {
             case scan: CometNativeScanExec if scan.output.size == 1 => scan
           }
           assert(probeScans.size == 1, s"Expected one native byte probe scan:\n$plan")
           val probeRows = probeScans.head.metrics("output_rows").value
-          val residualPruned = join.metrics("dynamic_filter_rows_pruned").value
+          val residualPruned = join.metrics("dynamic_filter_join_rows_pruned").value
           assert(
             probeRows < 2L || residualPruned > 0L,
             "Expected the reader or residual filter to prune probe key 2, " +
