@@ -102,6 +102,7 @@ use crate::execution::shuffle::{CometPartitioning, CompressionCodec};
 use crate::execution::spark_plan::SparkPlan;
 use crate::parquet::objectstore::s3_blob_fs_support::normalize_object_store_url;
 use crate::parquet::parquet_support::prepare_object_store_with_configs;
+use datafusion::common::config::MapKeyDedupPolicy;
 use datafusion::common::scalar::ScalarStructBuilder;
 use datafusion::common::{
     tree_node::{Transformed, TransformedResult, TreeNode, TreeNodeRecursion, TreeNodeRewriter},
@@ -110,6 +111,7 @@ use datafusion::common::{
 use datafusion::datasource::listing::PartitionedFile;
 use datafusion::logical_expr::type_coercion::functions::fields_with_udf;
 use datafusion::logical_expr::type_coercion::other::get_coerce_type_for_case_expression;
+use datafusion::logical_expr::ScalarUDFImpl;
 use datafusion::logical_expr::{
     AggregateUDF, ReturnFieldArgs, ScalarUDF, TypeSignature, WindowFrame, WindowFrameBound,
     WindowFrameUnits, WindowFunctionDefinition,
@@ -151,8 +153,8 @@ use datafusion_comet_spark_expr::{
     jvm_udf::JvmScalarUdfExpr, ApproxPercentile, ArrayInsert, Avg, AvgDecimal, Cast, CheckOverflow,
     Correlation, Covariance, CreateNamedStruct, DecimalRescaleCheckOverflow, GetArrayStructFields,
     GetStructField, HllPlusPlus, IfExpr, ListExtract, MaxMinBy, Mode, NormalizeNaNAndZero, Regr,
-    RegrType, SparkCastOptions, Stddev, SumDecimal, ToJson, UnboundColumn, Variance,
-    WideDecimalBinaryExpr, WideDecimalOp,
+    RegrType, SparkCastOptions, SparkMapFromArrays, SparkMapFromEntries, SparkStrToMap, Stddev,
+    SumDecimal, ToJson, UnboundColumn, Variance, WideDecimalBinaryExpr, WideDecimalOp,
 };
 use itertools::Itertools;
 use jni::objects::{Global, JObject};
@@ -708,6 +710,43 @@ impl PhysicalPlanner {
                     spark_expr.expr_id,
                     query_context,
                 )))
+            }
+            ExprStruct::MapFromArrays(expr) => {
+                let keys =
+                    self.create_expr(expr.keys.as_ref().unwrap(), Arc::clone(&input_schema))?;
+                let values =
+                    self.create_expr(expr.values.as_ref().unwrap(), Arc::clone(&input_schema))?;
+                self.create_map_builder_expr(
+                    SparkMapFromArrays::new(map_key_dedup_policy(&expr.map_key_dedup_policy)?),
+                    vec![keys, values],
+                    &input_schema,
+                )
+            }
+            ExprStruct::MapFromEntries(expr) => {
+                let entries =
+                    self.create_expr(expr.entries.as_ref().unwrap(), Arc::clone(&input_schema))?;
+                self.create_map_builder_expr(
+                    SparkMapFromEntries::new(map_key_dedup_policy(&expr.map_key_dedup_policy)?),
+                    vec![entries],
+                    &input_schema,
+                )
+            }
+            ExprStruct::StrToMap(expr) => {
+                let text =
+                    self.create_expr(expr.text.as_ref().unwrap(), Arc::clone(&input_schema))?;
+                let pair_delimiter = self.create_expr(
+                    expr.pair_delimiter.as_ref().unwrap(),
+                    Arc::clone(&input_schema),
+                )?;
+                let key_value_delimiter = self.create_expr(
+                    expr.key_value_delimiter.as_ref().unwrap(),
+                    Arc::clone(&input_schema),
+                )?;
+                self.create_map_builder_expr(
+                    SparkStrToMap::new(map_key_dedup_policy(&expr.map_key_dedup_policy)?),
+                    vec![text, pair_delimiter, key_value_delimiter],
+                    &input_schema,
+                )
             }
             ExprStruct::ScalarFunc(expr) => {
                 let func = self.create_scalar_function_expr(expr, input_schema);
@@ -3670,6 +3709,54 @@ impl PhysicalPlanner {
         }
     }
 
+    /// The session's `ConfigOptions`, so a kernel that reads one sees what
+    /// `prepare_datafusion_session_context` set rather than DataFusion's defaults.
+    fn session_config_options(&self) -> Arc<ConfigOptions> {
+        Arc::clone(self.session_ctx.copied_config().options())
+    }
+
+    /// Builds one of the map constructors. Its `ScalarUDF` carries the
+    /// `spark.sql.mapKeyDedupPolicy` captured when the plan was converted, so the policy stays
+    /// fixed for the plan's lifetime the way Spark's `ArrayBasedMapBuilder` keeps the one it was
+    /// created with.
+    fn create_map_builder_expr(
+        &self,
+        udf: impl ScalarUDFImpl + 'static,
+        args: Vec<Arc<dyn PhysicalExpr>>,
+        input_schema: &Schema,
+    ) -> Result<Arc<dyn PhysicalExpr>, ExecutionError> {
+        let udf = ScalarUDF::new_from_impl(udf);
+        let name = udf.name().to_string();
+        let input_expr_types = args
+            .iter()
+            .map(|arg| arg.data_type(input_schema))
+            .collect::<Result<Vec<_>, _>>()?;
+        let arg_fields: Vec<_> = input_expr_types
+            .into_iter()
+            .enumerate()
+            .map(|(i, data_type)| Arc::new(Field::new(format!("arg{i}"), data_type, true)))
+            .collect();
+        let scalar_arguments = args
+            .iter()
+            .map(|arg| {
+                arg.as_ref()
+                    .downcast_ref::<Literal>()
+                    .map(|lit| lit.value())
+            })
+            .collect::<Vec<_>>();
+        let return_field = udf.return_field_from_args(ReturnFieldArgs {
+            arg_fields: &arg_fields,
+            scalar_arguments: &scalar_arguments,
+        })?;
+        Ok(Arc::new(ScalarFunctionExpr::new(
+            &name,
+            Arc::new(udf),
+            args,
+            return_field,
+            self.session_config_options(),
+        )))
+    }
+
     fn create_scalar_function_expr(
         &self,
         expr: &ScalarFunc,
@@ -3796,7 +3883,7 @@ impl PhysicalPlanner {
             fun_expr,
             args.to_vec(),
             Arc::new(Field::new(fun_name, data_type.clone(), true)),
-            Arc::new(ConfigOptions::default()),
+            self.session_config_options(),
         ));
 
         // DF53 changed some UDFs (e.g. md5) to return StringViewArray at execution
@@ -5076,6 +5163,13 @@ fn needs_fields_coercion(sig: &TypeSignature) -> bool {
         TypeSignature::OneOf(sigs) => sigs.iter().any(needs_fields_coercion),
         _ => false,
     }
+}
+
+/// The `spark.sql.mapKeyDedupPolicy` a map constructor captured when the plan was converted.
+fn map_key_dedup_policy(policy: &str) -> Result<MapKeyDedupPolicy, ExecutionError> {
+    policy
+        .parse::<MapKeyDedupPolicy>()
+        .map_err(|error| GeneralError(error.to_string()))
 }
 
 #[cfg(test)]

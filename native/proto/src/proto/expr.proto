@@ -94,6 +94,9 @@ message Expr {
     Shuffle shuffle = 72;
     RandStr rand_str = 73;
     Uuid uuid = 74;
+    MapFromArrays map_from_arrays = 75;
+    MapFromEntries map_from_entries = 76;
+    StrToMap str_to_map = 77;
   }
 
   reserved 20;
@@ -525,6 +528,33 @@ message ScalarFunc {
   repeated Expr args = 2;
   DataType return_type = 3;
   bool fail_on_error = 4;
+}
+
+// The map constructors carry the `spark.sql.mapKeyDedupPolicy` captured when the plan was
+// converted. Spark's `ArrayBasedMapBuilder` reads the policy when the expression is first
+// evaluated and keeps it, so a Dataset executed again after the session setting changed still
+// builds its maps under the policy it started with; the converted plan is reused across actions
+// the same way, so the policy travels with the expression rather than being read again by each
+// native iterator.
+message MapFromArrays {
+  Expr keys = 1;
+  Expr values = 2;
+  // `EXCEPTION` or `LAST_WIN`.
+  string map_key_dedup_policy = 3;
+}
+
+message MapFromEntries {
+  Expr entries = 1;
+  // `EXCEPTION` or `LAST_WIN`.
+  string map_key_dedup_policy = 2;
+}
+
+message StrToMap {
+  Expr text = 1;
+  Expr pair_delimiter = 2;
+  Expr key_value_delimiter = 3;
+  // `EXCEPTION` or `LAST_WIN`.
+  string map_key_dedup_policy = 4;
 }
 
 message CaseWhen {

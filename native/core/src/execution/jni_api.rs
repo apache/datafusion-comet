@@ -59,8 +59,6 @@ use datafusion_spark::function::datetime::to_utc_timestamp::SparkToUtcTimestamp;
 use datafusion_spark::function::hash::crc32::SparkCrc32;
 use datafusion_spark::function::hash::sha1::SparkSha1;
 use datafusion_spark::function::hash::sha2::SparkSha2;
-use datafusion_spark::function::map::map_from_entries::MapFromEntries;
-use datafusion_spark::function::map::str_to_map::SparkStrToMap;
 use datafusion_spark::function::math::expm1::SparkExpm1;
 use datafusion_spark::function::math::factorial::SparkFactorial;
 use datafusion_spark::function::math::hex::SparkHex;
@@ -799,7 +797,6 @@ fn register_datafusion_spark_function(session_ctx: &SessionContext) {
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkBitwiseNot::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkHex::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkWidthBucket::default()));
-    session_ctx.register_udf(ScalarUDF::new_from_impl(MapFromEntries::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkCrc32::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkLuhnCheck::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkSpace::default()));
@@ -807,7 +804,6 @@ fn register_datafusion_spark_function(session_ctx: &SessionContext) {
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkArrayContains::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkArrayRepeat::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkBin::default()));
-    session_ctx.register_udf(ScalarUDF::new_from_impl(SparkStrToMap::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkUrlDecode::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkUrlEncode::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkTryUrlDecode::default()));
