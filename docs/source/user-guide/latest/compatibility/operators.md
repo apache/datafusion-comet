@@ -74,6 +74,8 @@ incorrect result. When any single window expression in a `WindowExec` falls back
   support as the batch aggregates, so these fall back in both contexts.
 - `sum` or `avg` on `DECIMAL` with a sliding (non ever-expanding) frame, because the sliding path would wrap on
   overflow instead of returning Spark's `NULL`.
+- Integral `sum` in ANSI mode and integral `try_sum` with a sliding frame, because the sliding path would wrap
+  on overflow instead of throwing or returning `NULL`. Legacy integral sums and ever-expanding frames stay native.
 - `RANGE` frame with an explicit offset when the `ORDER BY` column is `DATE` or `DECIMAL`
   ([#4834](https://github.com/apache/datafusion-comet/issues/4834)).
 - `first_value` / `last_value` on a `RANGE` frame with a literal offset
