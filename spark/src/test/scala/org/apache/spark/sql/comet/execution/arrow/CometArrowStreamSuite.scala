@@ -69,7 +69,6 @@ class CometArrowStreamSuite extends AnyFunSuite with Matchers {
 
   test("broadcast marker stays lazy, replays streams, and closes after native cleanup") {
     val task = TaskContext.empty()
-    val previous = TaskContext.empty()
     var reads = 0
     val broadcast = new TestBroadcast(
       72L,
@@ -85,7 +84,7 @@ class CometArrowStreamSuite extends AnyFunSuite with Matchers {
     reads shouldBe 0
 
     val prior = TaskContext.get()
-    CometTaskContextShim.set(previous)
+    CometTaskContextShim.set(task)
     try {
       var first: ArrowArrayStream = null
       var second: ArrowArrayStream = null
@@ -99,7 +98,7 @@ class CometArrowStreamSuite extends AnyFunSuite with Matchers {
       second = input.openStream()
       first.memoryAddress() should not be second.memoryAddress()
       reads shouldBe 2
-      TaskContext.get() should be theSameInstanceAs previous
+      TaskContext.get() should be theSameInstanceAs task
       task.markTaskCompleted(None)
       reads shouldBe 2
       intercept[NullPointerException](first.memoryAddress())
