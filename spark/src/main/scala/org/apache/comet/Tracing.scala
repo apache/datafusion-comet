@@ -24,10 +24,11 @@ object Tracing {
   private val nativeLib = new Native
 
   /**
-   * Emits the Arrow memory counters for the JVM side. `jvm_arrow_imported` is what the FFI import
-   * path holds, which is mostly buffers imported from native over the C Data Interface, so the
-   * difference is a close lower bound on the Arrow memory the JVM allocated itself. See
-   * [[CometArrowImportAllocator]] for the JVM-allocated bytes that also land there.
+   * Emits the Arrow memory counters for the JVM side: what Comet's Arrow allocator tree is
+   * charged for in total, and how much of that the C Data Interface import path is charged for.
+   *
+   * Both are allocator charges rather than allocation origin, so their difference is not a bound
+   * on the Arrow memory the JVM allocated itself. See [[CometArrowImportAllocator]].
    */
   def logArrowMemory(): Unit = {
     nativeLib.logMemoryUsage("jvm_arrow_allocated", CometArrowAllocator.getAllocatedMemory)

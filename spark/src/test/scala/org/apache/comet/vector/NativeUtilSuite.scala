@@ -373,10 +373,10 @@ class NativeUtilSuite extends CometTestBase {
   }
 
   test("imports are charged to the import allocator and roll up into the root") {
-    // Arrow charges an imported buffer to whichever allocator wraps it, so the tracing counters
-    // can only separate JVM-allocated Arrow memory from imported native memory if imports go to
-    // their own allocator. The child must still roll up into the root, because subscribers read
-    // the JVM's own Arrow memory as jvm_arrow_allocated minus jvm_arrow_imported.
+    // Arrow charges a buffer to whichever allocator owns it, so the tracing counters can only
+    // report the import path apart from the rest of Comet's Arrow memory if imports go to their
+    // own allocator. The child must still roll up into the root, because jvm_arrow_imported is
+    // reported as a subset of jvm_arrow_allocated.
     val numRows = 4
     val col = new ConstantColumnVector(numRows, IntegerType)
     col.setInt(42)
@@ -411,14 +411,15 @@ class NativeUtilSuite extends CometTestBase {
     }
   }
 
-  test("the import allocator also holds the JVM-side cost of importing") {
+  test("the import allocator is also charged for the JVM-side cost of importing") {
     // Characterization, not an aspiration: Arrow's importer allocates the owning ArrowArray
     // struct from the import allocator (ArrayImporter calls ArrowArray.allocateNew(allocator)),
     // and loadValidityBuffer allocates a validity bitmap there when an imported vector is
-    // all-valid and carries no validity buffer. So the import allocator holds more than the
-    // foreign buffers, and jvm_arrow_allocated minus jvm_arrow_imported understates the JVM's own
-    // Arrow memory by that much. Compared against every imported buffer, not just the data one,
-    // so the excess measured here is JVM-allocated rather than the foreign validity buffer.
+    // all-valid and carries no validity buffer. So the import allocator is charged for more than
+    // the imported buffers, which is one half of why jvm_arrow_imported is an allocator charge
+    // rather than a measure of where the bytes were allocated. Compared against every imported
+    // buffer, not just the data one, so the excess measured here is JVM-allocated rather than the
+    // foreign validity buffer.
     val numRows = 4096
     val col = new ConstantColumnVector(numRows, IntegerType)
     col.setInt(42)

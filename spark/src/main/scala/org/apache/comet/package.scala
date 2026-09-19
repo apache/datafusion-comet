@@ -36,20 +36,25 @@ package object comet {
   val CometArrowAllocator = new RootAllocator(Long.MaxValue)
 
   /**
-   * The allocator that owns Arrow buffers imported from native code over the C Data Interface.
+   * The allocator that the Arrow C Data Interface import path allocates from.
    *
-   * Arrow charges an imported buffer to whichever allocator wraps it, so imports taken directly
-   * against [[CometArrowAllocator]] are indistinguishable from buffers the JVM allocated itself.
-   * Holding them in their own child keeps the two separable for tracing.
+   * Arrow charges a buffer to whichever allocator owns it, so imports taken directly against
+   * [[CometArrowAllocator]] are indistinguishable from buffers the JVM allocated itself. Giving
+   * the import path its own child keeps the two separable for tracing. The child reserves
+   * nothing, so every byte still escalates to the parent and the root keeps reporting the total.
+   * Like the root, it is never closed: imported buffers are reference counted and routinely
+   * outlive the task that imported them.
    *
-   * What lands here is not exclusively foreign memory: Arrow's importer allocates the owning
-   * `ArrowArray` struct from this allocator, and `BitVectorHelper.loadValidityBuffer` allocates a
-   * validity bitmap here when an imported vector is all-valid or all-null and carries no validity
-   * buffer. Both are small and both are bytes the JVM allocated, so treat this as what the import
-   * path holds rather than as an exact foreign-byte count. The child reserves nothing, so every
-   * byte still escalates to the parent and the root keeps reporting the total. Like the root, it
-   * is never closed: imported buffers are reference counted and routinely outlive the task that
-   * imported them.
+   * What this counts is what the import path is charged for, not where the bytes were allocated.
+   * Ownership and allocation come apart in both directions. Bytes the JVM allocated land here:
+   * Arrow's importer allocates the owning `ArrowArray` struct from this allocator, and
+   * `BitVectorHelper.loadValidityBuffer` allocates a validity bitmap here when an imported vector
+   * is all-valid or all-null and carries no validity buffer. Imported bytes land elsewhere: an
+   * ownership transfer re-parents a charge without moving the payload, so a vector that shares
+   * buffers with an import can leave the root accountable for memory the producer allocated.
+   *
+   * So read this and the root's total as allocator charges. Their difference is not a bound on
+   * the Arrow memory the JVM allocated itself, and neither is a count of unique physical bytes.
    */
   val CometArrowImportAllocator: BufferAllocator =
     CometArrowAllocator.newChildAllocator("comet-ffi-imports", 0, Long.MaxValue)

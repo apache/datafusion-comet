@@ -70,6 +70,17 @@ class InputAllocatorOutputUdf extends CometUDF {
   }
 }
 
+/**
+ * A UDF that hands back the vector it was given.
+ *
+ * The `CometUDF` interface permits this. It matters here because the result's buffers were
+ * imported, so re-parenting them to the root before export would charge the root for memory the
+ * producer allocated.
+ */
+class IdentityUdf extends CometUDF {
+  override def evaluate(inputs: Array[ValueVector], numRows: Int): ValueVector = inputs.head
+}
+
 class CometUdfBridgeSuite extends AnyFunSuite {
 
   /** Exports a single-column batch and invokes the bridge against it. */
@@ -133,5 +144,64 @@ class CometUdfBridgeSuite extends AnyFunSuite {
         s"the UDF's output is still charged to the import allocator ($before -> $during bytes, " +
           s"output is ${numRows * 4} bytes), so it would be reported as imported native memory")
     }
+  }
+
+  test("a UDF that returns one of its inputs leaves the charge on the import allocator") {
+    // The transfer above exists for a UDF that allocates its output from the import allocator. A
+    // UDF that returns an input is the opposite case: those buffers really were imported, so
+    // transferring them would move a charge for the producer's memory onto the root and inflate
+    // the JVM-side reading. Reference identity does not cover a result that merely shares buffers
+    // with an input, which is why the counters are documented as allocator charges rather than as
+    // a measure of where the bytes were allocated.
+    val numRows = 4096
+    val importBefore = CometArrowImportAllocator.getAllocatedMemory
+
+    val col = new ConstantColumnVector(numRows, IntegerType)
+    col.setInt(42)
+    val batch = new ColumnarBatch(Array[ColumnVector](col), numRows)
+
+    val nativeUtil = new NativeUtil
+    try {
+      val (inputArrayAddrs, inputSchemaAddrs, _) = nativeUtil.exportBatchToAddresses(batch)
+      val (outArrays, outSchemas) = nativeUtil.allocateArrowStructs(1)
+
+      CometUdfBridge.evaluate(
+        classOf[IdentityUdf].getName,
+        inputArrayAddrs,
+        inputSchemaAddrs,
+        outArrays(0).memoryAddress(),
+        outSchemas(0).memoryAddress(),
+        numRows,
+        null,
+        null)
+
+      // Read before the export is consumed. The bridge has dropped its own reference to the
+      // inputs, so what remains charged is the export's, and it must still be on the import
+      // allocator.
+      val during = CometArrowImportAllocator.getAllocatedMemory - importBefore
+      assert(
+        during >= numRows.toLong * 4,
+        s"the returned input was re-parented off the import allocator ($during bytes charged, " +
+          s"its data buffer alone is ${numRows * 4}), so the root is now charged for memory the " +
+          "producer allocated")
+
+      // Importing the export back shows the bridge's cleanup left the payload alive and readable.
+      val result = nativeUtil.importVector(outArrays, outSchemas)
+      try {
+        val vector = result.head
+        assert(vector.getValueVector.getValueCount == numRows)
+        assert(
+          (0 until numRows).forall(i => vector.getInt(i) == 42),
+          "the exported payload did not survive the bridge's cleanup")
+      } finally {
+        result.foreach(_.close())
+      }
+    } finally {
+      nativeUtil.close()
+    }
+
+    assert(
+      CometArrowImportAllocator.getAllocatedMemory == importBefore,
+      "the import allocator did not return to its prior charge once the export was released")
   }
 }
