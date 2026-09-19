@@ -83,12 +83,27 @@ than before. See the [Determining How Much Memory to Allocate] section for more 
 ### Configuring Comet Memory
 
 Comet shares an off-heap memory pool with Spark. The size of the pool is
-specified by `spark.memory.offHeap.size`.
+specified by `spark.memory.offHeap.size`. The pool is a shared _budget_ rather than a shared
+allocator: Comet's native operators allocate from the Rust heap rather than from JVM off-heap
+memory, but every reservation they make is charged against this same pool, so Comet and Spark's own
+off-heap consumers draw down one number.
 
-Comet's memory accounting isn't 100% accurate and this can result in Comet using more memory than it reserves,
-leading to out-of-memory exceptions. To work around this issue, it is possible to
-set `spark.comet.exec.memoryPool.fraction` to a value less than `1.0` to restrict the amount of memory that can be
-reserved by Comet.
+Comet's memory pool only tracks memory that an operator explicitly reserves, which in practice means the batches
+an operator deliberately accumulates: the sort buffer, the build side of a hash join, hash aggregation state, and the
+shuffle writer's buffered partitions. Memory that is not reserved is invisible to the pool no matter how much of it
+there is. That includes:
+
+- per-batch working memory in expression kernels and Arrow array builders,
+- decompression buffers and Parquet reader structures,
+- object store request buffers and the async runtime's own machinery,
+- Arrow buffers allocated on the JVM side, which no budget covers at all,
+- allocator overhead: buffer padding, size-class rounding, fragmentation, and pages the allocator retains after a
+  free rather than returning to the operating system.
+
+Reserved memory is therefore a lower bound on what Comet really uses, and how far below it sits depends on the
+workload. This is why Comet can stay within the pool's limit and still push the executor past its container limit.
+To leave room for the part that is not counted, set `spark.comet.exec.memoryPool.fraction` to a value less than
+`1.0`, which restricts the amount of memory Comet is allowed to reserve.
 
 For more details about Spark off-heap memory mode, please refer to [Spark documentation].
 
@@ -216,9 +231,20 @@ suggested) to overlap I/O across files at the cost of extra memory.
 
 ## Optimizing Sorting on Floating-Point Values
 
-Sorting on floating-point data types (or complex types containing floating-point values) is not compatible with
-Spark if the data contains both zero and negative zero. This is likely an edge case that is not of concern for many users
-and sorting on floating-point data can be enabled by setting `spark.comet.expression.SortOrder.allowIncompatible=true`.
+Comet normalizes NaN payloads and signed zeros in scalar `FLOAT` and `DOUBLE` ordering keys, so `ORDER BY`, window
+ordering and range partitioning on them match Spark and stay native even with
+`spark.comet.exec.strictFloatingPoint=true`. Only the comparison key is normalized; returned values keep their original
+NaN representation and zero sign.
+
+Floating-point values nested in arrays, structs, or maps are compared with Arrow's raw total ordering instead, which can
+differ from Spark when the data contains both zero and negative zero, or more than one NaN representation. This is likely
+an edge case that is not of concern for many users. Setting `spark.comet.exec.strictFloatingPoint=true` makes those
+nested cases fall back to Spark, and they can be forced back onto the native path with
+`spark.comet.expression.SortOrder.allowIncompatible=true`.
+
+`sort_array` is separate. It sorts array elements rather than ordering rows, and its elements are compared with Arrow's
+raw total ordering, so `spark.comet.exec.strictFloatingPoint=true` makes it fall back even for a scalar floating-point
+element type. Use `spark.comet.expression.SortArray.allowIncompatible=true` to keep it native.
 
 ## Optimizing Joins
 
