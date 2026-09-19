@@ -31,7 +31,7 @@ import org.apache.spark.internal.Logging
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{Ascending, Attribute, AttributeSeq, AttributeSet, Expression, ExpressionSet, Generator, NamedExpression, SortOrder, XXH64}
-import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, AggregateMode, CollectList, CollectSet, Final, Mode, Partial, PartialMerge, Percentile}
+import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, AggregateMode, Average, CollectList, CollectSet, Final, Mode, Partial, PartialMerge, Percentile}
 import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, BuildSide}
 import org.apache.spark.sql.catalyst.plans._
 import org.apache.spark.sql.catalyst.plans.physical._
@@ -1847,6 +1847,28 @@ case class CometUnionExec(
 
 trait CometBaseAggregate {
 
+  protected def aggregateSupportLevel(op: BaseAggregateExec): SupportLevel = {
+    val unsupportedAverage = op.groupingExpressions.isEmpty &&
+      op.aggregateExpressions.exists(_.aggregateFunction match {
+        case avg: Average =>
+          avg.sumDataType match {
+            case decimal: DecimalType => decimal.precision == DecimalType.MAX_PRECISION
+            case _ => false
+          }
+        case _ => false
+      })
+
+    if (unsupportedAverage) {
+      // Spark's global buffer can retain a wider sum until division; native overflow is sticky.
+      // Both stages must fall back because decimal AVG buffers cannot cross engines.
+      Unsupported(
+        Some(
+          "Ungrouped AVG on DECIMAL with maximum-precision intermediate state is not supported"))
+    } else {
+      Compatible()
+    }
+  }
+
   def doConvert(
       aggregate: BaseAggregateExec,
       builder: Operator.Builder,
@@ -1876,7 +1898,7 @@ trait CometBaseAggregate {
 
     if (missingCometProducer) {
       val incompatibleAggs =
-        QueryPlanSerde.aggsNotSupportingMixedExecution(aggregate.aggregateExpressions)
+        QueryPlanSerde.aggsNotSupportingSparkPartialToNativeFinal(aggregate.aggregateExpressions)
       if (incompatibleAggs.nonEmpty) {
         val names = incompatibleAggs.map(_.prettyName).distinct.sorted.mkString(", ")
         withFallbackReason(
@@ -2199,7 +2221,7 @@ object CometHashAggregateExec
       op.aggregateExpressions.exists(_.mode == Final)) {
       return Unsupported(Some("Final aggregates disabled via test config"))
     }
-    Compatible()
+    aggregateSupportLevel(op)
   }
 
   override def convert(
@@ -2258,7 +2280,7 @@ object CometObjectHashAggregateExec
           "Comet shuffle is not enabled, so converting ObjectHashAggregate would split the " +
             "aggregate across Comet and Spark"))
     }
-    Compatible()
+    aggregateSupportLevel(op)
   }
 
   override def convert(
