@@ -22,6 +22,9 @@ pub use crate::errors::ExecutionError;
 pub use iceberg_scan::*;
 pub use scan::*;
 
+mod broadcast;
+mod broadcast_cache;
+pub(crate) use broadcast::{clear_broadcast_cache, reuse_broadcast_build, BroadcastInputExec};
 mod dynamic_filter;
 pub(crate) use dynamic_filter::{DynamicFilterJoinExec, TopKReaderFilterExec};
 pub(crate) mod iceberg_common;

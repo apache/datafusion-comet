@@ -413,6 +413,10 @@ class CometExecutorPlugin extends ExecutorPlugin with Logging {
     super.init(ctx, extraConf)
   }
 
+  /**
+   * Stops native work before retiring executor-owned broadcast grants. Retirement still runs if
+   * native shutdown throws; the original failure propagates unless retirement itself fails.
+   */
   override def shutdown(): Unit = {
     logInfo("CometExecutorPlugin shutdown")
 
@@ -420,7 +424,11 @@ class CometExecutorPlugin extends ExecutorPlugin with Logging {
     // already replaced it.
     CometExecutorPlugin.current.compareAndSet(context, null)
 
-    NativeBase.releaseNative()
+    try {
+      NativeBase.releaseNative()
+    } finally {
+      CometBroadcastMemoryManager.shutdown()
+    }
 
     super.shutdown()
   }

@@ -45,6 +45,7 @@ use datafusion::physical_plan::{
 };
 use futures::StreamExt;
 
+use super::super::broadcast::reuse_broadcast_build_with_metrics;
 use super::parquet_reader::try_attach_parquet_reader_filter;
 use super::DynamicFilterExec;
 
@@ -145,12 +146,19 @@ impl DynamicFilterJoinExec {
             context.window_functions().clone(),
             context.runtime_env(),
         ));
-        let result = join.execute(partition, context);
-        // HashJoinExec registers its metrics synchronously in execute(). Keep the
-        // live counters, including on error, without retaining the producer plan.
-        for metric in join.metrics().unwrap_or_default().iter() {
-            self.metrics.register(Arc::clone(metric));
+        let join: Arc<dyn ExecutionPlan> = Arc::new(join);
+        // Attach reuse only after creating this execution's producer and filter.
+        // Cached execution publishes counters after its asynchronous cache lookup.
+        let execution =
+            reuse_broadcast_build_with_metrics(Arc::clone(&join), self.metrics.clone())?;
+        let result = execution.execute(partition, context);
+        if Arc::ptr_eq(&execution, &join) {
+            // An ordinary join registers synchronously, including on error.
+            for metric in join.metrics().unwrap_or_default().iter() {
+                self.metrics.register(Arc::clone(metric));
+            }
         }
+        drop(execution);
         drop(join);
         let input = result?;
         // Drop execution state at EOF or error even if the caller retains the
