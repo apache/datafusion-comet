@@ -64,6 +64,10 @@ import org.apache.comet.vector.NativeUtil
  *   Paths to encrypted Parquet files that need key unwrapping.
  * @param shufflePartitionPusher
  *   Optional task-owned callback that receives remote shuffle output.
+ * @param capturePartitionOffsets
+ *   Whether to read the shuffle writer's partition offsets when the plan reaches the end of its
+ *   output, for a plan rooted at a native shuffle writer with a local destination. Remote shuffle
+ *   reports its partition lengths through its pusher instead, so it leaves this false.
  */
 class CometExecIterator(
     val id: Long,
@@ -77,7 +81,8 @@ class CometExecIterator(
     encryptedFilePaths: Seq[String] = Seq.empty,
     shuffleBlockIterators: Map[Int, CometShuffleBlockIterator] = Map.empty,
     taskFilePaths: Seq[String] = Seq.empty,
-    shufflePartitionPusher: Option[ShufflePartitionPusher] = None)
+    shufflePartitionPusher: Option[ShufflePartitionPusher] = None,
+    capturePartitionOffsets: Boolean = false)
     extends Iterator[ColumnarBatch]
     with Logging {
 
@@ -179,6 +184,30 @@ class CometExecIterator(
     }
   }
 
+  /** Set once by [[readPartitionOffsetsBeforeClose]]; `null` until then. */
+  private var partitionOffsets: Array[Long] = _
+
+  /**
+   * Partition offsets from a native shuffle write, or `null` if this iterator was not built to
+   * collect them or has not yet reached the end of its output.
+   */
+  def shufflePartitionOffsets: Array[Long] = partitionOffsets
+
+  /**
+   * Reads the shuffle writer's partition offsets out of the native plan, if this iterator was
+   * built to collect them.
+   *
+   * This has to run at end of stream rather than after iteration finishes. The offsets live in
+   * the native execution context; [[close]] releases that context, and [[hasNext]] calls
+   * [[close]] as soon as the plan runs out of output. So the final [[hasNext]] is the last point
+   * at which they can still be read.
+   */
+  private def readPartitionOffsetsBeforeClose(): Unit = {
+    if (capturePartitionOffsets && partitionOffsets == null) {
+      partitionOffsets = nativeLib.getShufflePartitionOffsets(plan)
+    }
+  }
+
   private var nextBatch: Option[ColumnarBatch] = None
   private var prevBatch: ColumnarBatch = null
   private var currentBatch: ColumnarBatch = null
@@ -248,6 +277,7 @@ class CometExecIterator(
     logTrace(s"Task $taskAttemptId memory pool usage is ${cometTaskMemoryManager.getUsed} bytes")
 
     if (nextBatch.isEmpty) {
+      readPartitionOffsetsBeforeClose()
       close()
       false
     } else {
