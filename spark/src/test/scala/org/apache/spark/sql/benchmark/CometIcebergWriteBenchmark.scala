@@ -417,7 +417,7 @@ object CometIcebergWriteBenchmark extends CometBenchmarkBase {
         throw new IllegalStateException(
           s"${arm.name}: '${workload.title}' expected a sort in the plan to be $expected but " +
             s"found $had, so it would measure the wrong writer. Iceberg reaches the clustered " +
-            s"writer only when the write has a required ordering; without one it uses the fanout " +
+            "writer only when the write has a required ordering; without one it uses the fanout " +
             s"writer. Plans:\n${plans.mkString("\n--\n")}")
       }
     }
@@ -430,9 +430,9 @@ object CometIcebergWriteBenchmark extends CometBenchmarkBase {
     if (!arm.expectNativeWrite && nativeWrites.nonEmpty) {
       throw new IllegalStateException(
         s"${arm.name}: expected the iceberg-java writer but the plan contains " +
-          s"CometIcebergWriteExec, so this case would measure the native writer under a " +
-          s"JVM-writer label. This arm pins the native-write flags off, so they are leaking in " +
-          s"from the session defaults (e.g. `-Dspark.comet.iceberg.write.enabled=true` in " +
+          "CometIcebergWriteExec, so this case would measure the native writer under a " +
+          "JVM-writer label. This arm pins the native-write flags off, so they are leaking in " +
+          "from the session defaults (e.g. `-Dspark.comet.iceberg.write.enabled=true` in " +
           s"BENCH_MAVEN_OPTS). Plans:\n${plans.mkString("\n--\n")}")
     }
     if (arm.expectNativeWrite && nativeWrites.isEmpty) {
