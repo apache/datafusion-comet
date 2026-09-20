@@ -669,6 +669,13 @@ for both at once, and raises the pod’s memory request by the same amount.</p>
 off-heap bytes in container RSS that neither Spark’s <code class="docutils literal notranslate"><span class="pre">TaskMemoryManager</span></code> nor Comet’s native memory
 pool sees. In practice the volume is modest, a batch at a time per stream, but there is no
 ceiling and no backpressure.</p>
+<p>One further child, <code class="docutils literal notranslate"><span class="pre">CometArrowImportAllocator</span></code> (<code class="docutils literal notranslate"><span class="pre">comet-ffi-imports</span></code>), is what the Arrow C Data
+Interface import path allocates from, so that tracing can report those charges apart from the rest
+of Comet’s Arrow memory. Unlike the others it is process-wide and never closed, because imported
+buffers are reference counted and routinely outlive the task that imported them. Its reservation
+is zero, so every byte still escalates to the root and the inventory above is unchanged by it.
+Being charged there is not the same as having been allocated there; see the scaladoc on the
+allocator before reading anything into the split.</p>
 <p><strong>The JVM shuffle allocator is an ordinary Spark consumer.</strong> <code class="docutils literal notranslate"><span class="pre">CometShuffleMemoryAllocator.getInstance</span></code>
 returns <code class="docutils literal notranslate"><span class="pre">CometUnifiedShuffleMemoryAllocator</span></code>, a Spark <code class="docutils literal notranslate"><span class="pre">MemoryConsumer</span></code> drawing from
 <code class="docutils literal notranslate"><span class="pre">spark.memory.offHeap.size</span></code>, so shuffle pages are arbitrated against Spark’s other consumers in the
