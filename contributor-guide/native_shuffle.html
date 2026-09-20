@@ -586,8 +586,11 @@ columns. Complex types are fully supported as data columns in native shuffle.</p
 <ul class="simple">
 <li><p><code class="docutils literal notranslate"><span class="pre">RangePartitioning</span></code> keys must be primitive. <code class="docutils literal notranslate"><span class="pre">supportedRangePartitioningDataType</span></code> rejects every
 nested type, because native cannot sort them, and rejects collated strings, because Comet
-compares raw bytes. Float and double are also rejected when
-<code class="docutils literal notranslate"><span class="pre">spark.comet.exec.strictFloatingPoint</span></code> is enabled.</p></li>
+compares raw bytes. Scalar float and double are supported, including when
+<code class="docutils literal notranslate"><span class="pre">spark.comet.exec.strictFloatingPoint</span></code> is enabled, because the native range partitioner
+normalizes its comparison keys and its sampled boundary rows the same way the native sort
+does. Strict floating point only affects floating-point values nested in arrays, structs, or
+maps, which are rejected as range keys for being nested anyway.</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">HashPartitioning</span></code> keys must be primitive <strong>by default</strong>. Setting
 <code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.native.partitioning.hash.nested.enabled</span></code> to <code class="docutils literal notranslate"><span class="pre">true</span></code> admits structs and
 arrays as keys, checked recursively to their leaves, and maps on Spark 4.0 and later, where
