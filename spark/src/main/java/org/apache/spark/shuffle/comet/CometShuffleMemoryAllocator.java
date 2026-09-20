@@ -32,6 +32,10 @@ public final class CometShuffleMemoryAllocator {
    * Returns the shuffle memory allocator for the current task. Allocators store pages in the
    * `TaskMemoryManager`, or in their own page table, so a new instance is created per task. For
    * on-heap mode (Spark tests), this returns `CometUnboundedShuffleMemoryAllocator`.
+   *
+   * <p>Call this once per task and share the result. `CometUnboundedShuffleMemoryAllocator` numbers
+   * pages within its own table, so a record address produced by one instance cannot be resolved by
+   * another, and two instances in one task would decode each other's addresses to the wrong memory.
    */
   public static CometShuffleMemoryAllocatorTrait getInstance(
       TaskMemoryManager taskMemoryManager, long pageSize) {

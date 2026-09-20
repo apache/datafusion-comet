@@ -25,6 +25,7 @@ import java.util.concurrent.atomic.AtomicLong;
 
 import org.apache.spark.memory.MemoryConsumer;
 import org.apache.spark.memory.MemoryMode;
+import org.apache.spark.memory.SparkOutOfMemoryError;
 import org.apache.spark.memory.TaskMemoryManager;
 import org.apache.spark.unsafe.array.LongArray;
 import org.apache.spark.unsafe.memory.MemoryBlock;
@@ -47,6 +48,12 @@ import org.apache.spark.unsafe.memory.UnsafeMemoryAllocator;
  *
  * <p>The page table below is adapted from `org.apache.spark.unsafe.memory.TaskMemoryManager`, with
  * the dependency on the configured memory mode removed.
+ *
+ * <p>A page number indexes this instance's own table, so an address encoded by one allocator means
+ * nothing to another. Everything that addresses a page therefore has to come from the same
+ * instance, which is why each caller creates one allocator and shares it for the life of the task
+ * rather than creating one per writer. The off-heap allocator has no such constraint, because it
+ * stores its pages in the `TaskMemoryManager` instead.
  */
 public final class CometUnboundedShuffleMemoryAllocator extends CometShuffleMemoryAllocatorTrait {
   private final UnsafeMemoryAllocator allocator = new UnsafeMemoryAllocator();
@@ -115,8 +122,16 @@ public final class CometUnboundedShuffleMemoryAllocator extends CometShuffleMemo
 
     int pageNumber = allocatedPages.nextClearBit(0);
     if (pageNumber >= PAGE_TABLE_SIZE) {
-      throw new IllegalStateException(
-          "Have already allocated a maximum of " + PAGE_TABLE_SIZE + " pages");
+      // The page table is the only limit this allocator has. Report it the way a memory manager
+      // reports a refused acquisition, so that the callers which already handle that by spilling
+      // and retrying (`SpillWriter.acquireNewPageIfNecessary`,
+      // `CometShuffleExternalSorter.growPointerArrayIfNecessary`) can free pages and make
+      // progress, rather than failing the task with an exception nothing catches.
+      throw new SparkOutOfMemoryError(
+          "UNABLE_TO_ACQUIRE_MEMORY",
+          java.util.Map.of(
+              "requestedBytes", String.valueOf(required),
+              "receivedBytes", String.valueOf(0)));
     }
 
     MemoryBlock block = allocator.allocate(required);

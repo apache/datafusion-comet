@@ -24,7 +24,7 @@ import scala.collection.mutable.ArrayBuffer
 import org.scalatest.funsuite.AnyFunSuite
 
 import org.apache.spark.SparkConf
-import org.apache.spark.memory.{TaskMemoryManager, TestMemoryManager}
+import org.apache.spark.memory.{SparkOutOfMemoryError, TaskMemoryManager, TestMemoryManager}
 import org.apache.spark.unsafe.memory.MemoryBlock
 
 class CometUnboundedShuffleMemoryAllocatorSuite extends AnyFunSuite {
@@ -101,7 +101,10 @@ class CometUnboundedShuffleMemoryAllocatorSuite extends AnyFunSuite {
     assert(allocator.getUsed === 0L)
   }
 
-  test("getUsed is unchanged when the page table is exhausted") {
+  test("an exhausted page table is reported as a refused acquisition") {
+    // The page table is the only limit this allocator has. It has to surface as
+    // SparkOutOfMemoryError so that the writers, which respond to that by spilling and retrying,
+    // can free pages instead of failing the task.
     val allocator = newAllocator()
     val pages = ArrayBuffer.empty[MemoryBlock]
     val maxPages = 1 << 13
@@ -111,9 +114,15 @@ class CometUnboundedShuffleMemoryAllocatorSuite extends AnyFunSuite {
       }
       val allocatedBytes = pages.map(_.size()).sum
       assert(allocator.getUsed === allocatedBytes)
-      intercept[IllegalStateException] {
+      intercept[SparkOutOfMemoryError] {
         allocator.allocateArray(1)
       }
+      assert(allocator.getUsed === allocatedBytes)
+
+      // Freeing a page makes room again, which is what lets a spilling writer make progress.
+      allocator.free(pages.remove(pages.length - 1))
+      val page = allocator.allocateArray(1).memoryBlock()
+      pages += page
       assert(allocator.getUsed === allocatedBytes)
     } finally {
       pages.foreach(allocator.free)
