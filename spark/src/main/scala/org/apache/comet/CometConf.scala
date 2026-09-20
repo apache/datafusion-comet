@@ -255,6 +255,8 @@ object CometConf extends ShimCometConf {
     createExecEnabledConfig("takeOrderedAndProject", defaultValue = true)
   val COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED: ConfigEntry[Boolean] =
     createExecEnabledConfig("localTableScan", defaultValue = false)
+  val COMET_EXEC_EMPTY_RELATION_ENABLED: ConfigEntry[Boolean] =
+    createExecEnabledConfig("emptyRelation", defaultValue = true)
   val COMET_EXEC_SAMPLE_ENABLED: ConfigEntry[Boolean] =
     createExecEnabledConfig("sample", defaultValue = true)
 
@@ -380,6 +382,19 @@ object CometConf extends ShimCometConf {
       .category(CATEGORY_EXEC)
       .doc("Experimental feature to force Spark to replace SortMergeJoin with ShuffledHashJoin " +
         s"for improved performance. This feature is not stable yet. $TUNING_GUIDE.")
+      .booleanConf
+      .createWithDefault(false)
+
+  val COMET_EXEC_JOIN_DYNAMIC_FILTER_ENABLED: ConfigEntry[Boolean] =
+    conf(s"$COMET_EXEC_CONFIG_PREFIX.join.dynamicFilter.enabled")
+      .category(CATEGORY_EXEC)
+      .doc(
+        "Experimental opt-in: use a completed native hash join build's key domain to prune " +
+          "eligible native Parquet row groups and filter probe batches before the hash probe. " +
+          "Supports inner joins with one direct signed integer key and one native partition " +
+          "per input, including both Spark build sides. The probe filter remains active " +
+          "when reader pruning is unavailable. Unsupported joins retain their existing " +
+          "execution path. Filters do not cross Spark exchanges or JVM/Arrow boundaries.")
       .booleanConf
       .createWithDefault(false)
 
@@ -624,11 +639,11 @@ object CometConf extends ShimCometConf {
     .withAlternative("spark.comet.shuffle.preferDictionary.ratio")
     .category(CATEGORY_SHUFFLE)
     .doc(
-      "The ratio of total values to distinct values in a string column to decide whether to " +
-        "prefer dictionary encoding when shuffling the column. If the ratio is higher than " +
-        "this config, dictionary encoding will be used on shuffling string column. This config " +
-        "is effective if it is higher than 1.0. Note that this " +
-        "config is only used when `spark.comet.shuffle.mode` is `jvm`.")
+      "The ratio of total values to distinct values in a string or binary column to decide " +
+        "whether to prefer dictionary encoding when shuffling the column. If the ratio is " +
+        "higher than this config, dictionary encoding will be used when shuffling the column. " +
+        "This config is effective if it is higher than 1.0. Note that this config is only " +
+        "used when `spark.comet.shuffle.mode` is `jvm`.")
     .doubleConf
     .createWithDefault(10.0)
 
@@ -920,7 +935,11 @@ object CometConf extends ShimCometConf {
       .category(CATEGORY_EXEC)
       .doc(
         "When enabled, fall back to Spark for floating-point operations that may differ from " +
-          s"Spark, such as when comparing or sorting -0.0 and 0.0. $COMPAT_GUIDE.")
+          "Spark, such as comparing -0.0 and 0.0, sorting floating-point values nested in " +
+          "arrays, structs, or maps, or sorting the elements of a floating-point array with " +
+          "`sort_array`. Scalar `ORDER BY`, window ordering and range partitioning keys are " +
+          "unaffected, because Comet normalizes those comparison keys to match Spark. " +
+          s"$COMPAT_GUIDE.")
       .booleanConf
       .createWithDefault(false)
 
@@ -1005,8 +1024,28 @@ object CometConf extends ShimCometConf {
     .booleanConf
     .createWithEnvVarOrDefault("ENABLE_COMET_STRICT_TESTING", false)
 
+  /**
+   * Deprecated alternatives for `spark.comet.operator.<name>.allowIncompatible`, keyed by
+   * operator name. `CometExecRule` resolves these configs by operator name rather than through
+   * the registered `ConfigEntry`, so `isOperatorAllowIncompat` has to consult the alternatives
+   * itself - otherwise an old key would read `true` from the entry while the planner saw `false`.
+   */
+  private val operatorIncompatAlternatives =
+    scala.collection.mutable.Map.empty[String, String]
+
+  /** Spark 3.x only: native writes replace the whole `DataWritingCommandExec` there. */
   val COMET_OPERATOR_DATA_WRITING_COMMAND_ALLOW_INCOMPAT: ConfigEntry[Boolean] =
     createOperatorIncompatConfig("DataWritingCommandExec")
+
+  /**
+   * Spark 4.0+ only: native writes replace just the `WriteFilesExec` child, so the opt-in moved
+   * with the operator. The old `DataWritingCommandExec` key keeps working for anyone who had
+   * already enabled the experimental writer.
+   */
+  val COMET_OPERATOR_WRITE_FILES_ALLOW_INCOMPAT: ConfigEntry[Boolean] =
+    createOperatorIncompatConfig(
+      "WriteFilesExec",
+      Some(getOperatorAllowIncompatConfigKey("DataWritingCommandExec")))
 
   /** Create a config to enable a specific operator */
   private def createExecEnabledConfig(
@@ -1031,15 +1070,21 @@ object CometConf extends ShimCometConf {
   private def configKeyToEnvVar(configKey: String): String =
     configKey.toUpperCase(Locale.ROOT).replace('.', '_')
 
-  private def createOperatorIncompatConfig(name: String): ConfigEntry[Boolean] = {
+  private def createOperatorIncompatConfig(
+      name: String,
+      alternative: Option[String] = None): ConfigEntry[Boolean] = {
     val configKey = getOperatorAllowIncompatConfigKey(name)
     val envVar = configKeyToEnvVar(configKey)
-    conf(configKey)
+    val builder = conf(configKey)
       .category(CATEGORY_EXEC)
       .doc(s"Whether to allow incompatibility for operator: $name. " +
         s"False by default. Can be overridden with $envVar env variable")
-      .booleanConf
-      .createWithEnvVarOrDefault(envVar, false)
+    alternative.foreach { alt =>
+      operatorIncompatAlternatives.put(name, alt)
+      // ConfigBuilder mutates in place, so the result of withAlternative is `builder` itself.
+      builder.withAlternative(alt)
+    }
+    builder.booleanConf.createWithEnvVarOrDefault(envVar, false)
   }
 
   def isExprEnabled(name: String, conf: SQLConf = SQLConf.get): Boolean = {
@@ -1063,7 +1108,11 @@ object CometConf extends ShimCometConf {
   }
 
   def isOperatorAllowIncompat(name: String, conf: SQLConf = SQLConf.get): Boolean = {
-    getBooleanConf(getOperatorAllowIncompatConfigKey(name), defaultValue = false, conf)
+    val value = CometConfDeprecations.readWithAlternatives(
+      conf,
+      getOperatorAllowIncompatConfigKey(name),
+      operatorIncompatAlternatives.get(name).toSeq)
+    value != null && value.toLowerCase(Locale.ROOT) == "true"
   }
 
   def getOperatorAllowIncompatConfigKey(name: String): String = {
