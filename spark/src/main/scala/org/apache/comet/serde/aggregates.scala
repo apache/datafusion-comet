@@ -29,7 +29,7 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{BinaryType, BooleanType, ByteType, DataType, DateType, DecimalType, DoubleType, FloatType, IntegerType, LongType, NumericType, ShortType, StringType, TimestampNTZType, TimestampType}
 
 import org.apache.comet.CometConf.COMET_EXEC_STRICT_FLOATING_POINT
-import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark41Plus, isSpark42Plus, withFallbackReason}
+import org.apache.comet.CometSparkSessionExtensions.{isSpark41Plus, isSpark42Plus, withFallbackReason}
 import org.apache.comet.expressions.CometEvalMode
 import org.apache.comet.serde.QueryPlanSerde.{evalModeToProto, exprToProto, serializeDataType}
 import org.apache.comet.shims.{CometCollectShim, CometEvalModeUtil, CometTypeShim}
@@ -848,6 +848,51 @@ object CometCorr extends CometAggregateExpressionSerde[Corr] {
 }
 
 /**
+ * The Spark releases that changed the regression aggregates. Both changes shipped in patch
+ * releases, so the minor version alone places them on the wrong side for earlier patches.
+ */
+private[comet] object RegrSparkVersions {
+
+  /**
+   * SPARK-48719 made regr_slope and regr_intercept count VariancePop(x) only over rows where both
+   * y and x are non-null. Present from 3.5.2 and 4.0.0; earlier 3.5 patches and 3.4 count every
+   * row where x is non-null.
+   */
+  def slopeFiltersVarByPairNulls(sparkVersion: String): Boolean =
+    majorMinorPatch(sparkVersion) match {
+      case Some((3, 5, patch)) => patch >= 2
+      case Some((major, minor, _)) => isAfterMinor(major, minor, 3, 5)
+      case None => sparkVersion >= "3.5"
+    }
+
+  /**
+   * SPARK-55969 swapped regr_r2's degenerate cases: a constant dependent variable yields 1.0 (was
+   * null) and a constant independent variable yields null (was 1.0). Present from 3.5.9, 4.0.3,
+   * 4.1.2 and 4.2.0; earlier patches of those lines and 3.4 keep the old cases.
+   */
+  def r2DegenerateCasesSwapped(sparkVersion: String): Boolean =
+    majorMinorPatch(sparkVersion) match {
+      case Some((3, 5, patch)) => patch >= 9
+      case Some((4, 0, patch)) => patch >= 3
+      case Some((4, 1, patch)) => patch >= 2
+      case Some((major, minor, _)) => isAfterMinor(major, minor, 3, 5)
+      case None => sparkVersion >= "3.5"
+    }
+
+  private def isAfterMinor(major: Int, minor: Int, thanMajor: Int, thanMinor: Int): Boolean =
+    major > thanMajor || (major == thanMajor && minor > thanMinor)
+
+  // Spark's VersionUtils is private to its packages, so parse the leading major.minor.patch
+  // here; a missing patch reads as 0 and a suffix such as -SNAPSHOT is ignored.
+  private val versionPattern = """^(\d+)\.(\d+)(?:\.(\d+))?""".r
+
+  private def majorMinorPatch(sparkVersion: String): Option[(Int, Int, Int)] =
+    versionPattern.findFirstMatchIn(sparkVersion).map { m =>
+      (m.group(1).toInt, m.group(2).toInt, Option(m.group(3)).map(_.toInt).getOrElse(0))
+    }
+}
+
+/**
  * Shared serialization for the simple linear regression aggregates. `child1` is the dependent
  * variable (y) and `child2` is the independent variable (x), matching the native accumulator's
  * `regr_*(y, x)` convention.
@@ -870,16 +915,12 @@ trait CometRegrBase {
       builder.setChild2(child2Expr.get)
       builder.setRegrType(regrType)
       builder.setDatatype(dataType.get)
-      // Spark 3.5 fixed regr_slope/regr_intercept so VariancePop(x) only counts
-      // rows where both y and x are non-null. Spark 3.4 counts every row where x
-      // is non-null. The native accumulator only consults this for slope/intercept.
-      builder.setFilterVarByPairNulls(isSpark35Plus)
-      // Spark swapped regr_r2's degenerate-case handling: a constant dependent
-      // variable now yields 1.0 (was null) and a constant independent variable
-      // yields null (was 1.0). The swap is present in the Spark versions Comet
-      // builds against for 3.5 and later (3.5.9, 4.0.3+, 4.1, 4.2) but not in 3.4.
-      // The native accumulator only consults this for R2.
-      builder.setR2ConstantDependentIsPerfectFit(isSpark35Plus)
+      // Both regression fixes shipped in patch releases, so the running Spark's exact version
+      // decides which behaviour the native accumulator mirrors.
+      val sparkVersion = org.apache.spark.SPARK_VERSION
+      builder.setFilterVarByPairNulls(RegrSparkVersions.slopeFiltersVarByPairNulls(sparkVersion))
+      builder.setR2ConstantDependentIsPerfectFit(
+        RegrSparkVersions.r2DegenerateCasesSwapped(sparkVersion))
 
       Some(
         ExprOuterClass.AggExpr
