@@ -150,9 +150,11 @@ so users hunting an unexpected value have a single place to check:
   path. Without codegen Spark buffers the aggregate in an `UnsafeRow` and latches as soon as a
   running sum leaves the precision. Comet falls back at precision 38 when codegen is disabled by
   `spark.sql.codegen.wholeStage`, by `spark.sql.codegen.factoryMode=NO_CODEGEN`, by an
-  imperative sibling aggregate, or by the `spark.sql.codegen.maxFields` limit on the aggregate's
-  own output and inputs, but not after a
-  codegen compile failure at runtime, where an intermediate overflow that later cancels out
+  imperative sibling aggregate, by an expression Spark cannot compile such as a lambda function,
+  or by the `spark.sql.codegen.maxFields` limit on the aggregate's own output and inputs, but not
+  when Spark abandons codegen at runtime, after a compile failure under
+  `spark.sql.codegen.fallback` or when the generated code exceeds
+  `spark.sql.codegen.hugeMethodLimit`, where an intermediate overflow that later cancels out
   returns `NULL` (or raises under ANSI) in Spark but the recovered value in Comet.
 
 ## Object store cache

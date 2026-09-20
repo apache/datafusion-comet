@@ -30,8 +30,9 @@ import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.internal.Logging
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
-import org.apache.spark.sql.catalyst.expressions.{Ascending, Attribute, AttributeSeq, AttributeSet, CodegenObjectFactoryMode, Expression, ExpressionSet, Generator, NamedExpression, SortOrder, XXH64}
+import org.apache.spark.sql.catalyst.expressions.{Ascending, Attribute, AttributeSeq, AttributeSet, CodegenObjectFactoryMode, Expression, ExpressionSet, Generator, LeafExpression, NamedExpression, SortOrder, XXH64}
 import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, AggregateMode, CollectList, CollectSet, Final, ImperativeAggregate, Mode, Partial, PartialMerge, Percentile, Sum}
+import org.apache.spark.sql.catalyst.expressions.codegen.CodegenFallback
 import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, BuildSide}
 import org.apache.spark.sql.catalyst.plans._
 import org.apache.spark.sql.catalyst.plans.physical._
@@ -2229,16 +2230,17 @@ object CometHashAggregateExec
       return Unsupported(Some("Final aggregates disabled via test config"))
     }
     // Without codegen Spark buffers an ungrouped aggregate in an UnsafeRow, which latches a
-    // decimal sum that leaves the precision, while the native ungrouped accumulator keeps the
-    // unbounded intermediate. Spark turns codegen off for an imperative aggregate, by the
-    // whole-stage or factory-mode config, or when the operator's output or an input carries
-    // more fields than its codegen limit.
+    // decimal sum that leaves the precision, while the native accumulator keeps it unbounded.
+    // Spark turns codegen off by config, for an imperative aggregate, for a non-leaf
+    // CodegenFallback expression, or when the output or an input exceeds its field limit.
     val codegenOff = !op.conf.wholeStageEnabled ||
       CodegenObjectFactoryMode.withName(op.conf.codegenFactoryMode) ==
       CodegenObjectFactoryMode.NO_CODEGEN ||
       op.aggregateExpressions.exists(_.aggregateFunction.isInstanceOf[ImperativeAggregate]) ||
       WholeStageCodegenExec.isTooManyFields(op.conf, op.schema) ||
-      op.children.exists(child => WholeStageCodegenExec.isTooManyFields(op.conf, child.schema))
+      op.children.exists(child => WholeStageCodegenExec.isTooManyFields(op.conf, child.schema)) ||
+      op.expressions.exists(_.exists(e =>
+        e.isInstanceOf[CodegenFallback] && !e.isInstanceOf[LeafExpression]))
     if (op.groupingExpressions.isEmpty && codegenOff && hasMaxPrecisionDecimalSum(op)) {
       return Unsupported(
         Some(

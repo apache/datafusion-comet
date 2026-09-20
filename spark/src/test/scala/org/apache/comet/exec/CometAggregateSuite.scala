@@ -35,6 +35,7 @@ import org.apache.spark.sql.comet.CometHashAggregateExec
 import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
 import org.apache.spark.sql.execution.SQLExecution
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AdaptiveSparkPlanHelper}
+import org.apache.spark.sql.execution.aggregate.ObjectHashAggregateExec
 import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
 import org.apache.spark.sql.functions.{avg, col, count_distinct, expr, sum}
 import org.apache.spark.sql.internal.SQLConf
@@ -1654,6 +1655,49 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("decimal sum with a codegen fallback expression falls back at maximum precision") {
+    // A non-leaf CodegenFallback expression such as a lambda function anywhere in a stage's
+    // expressions turns codegen off for that stage, and Comet runs the expression natively, so
+    // only the guard keeps Spark's latched answer: in the final stage the merge of the 0.6, 0.6
+    // and -0.6 partials latches, in the partial stage the running sum does.
+    val reason = "Ungrouped decimal SUM at maximum precision without codegen cannot match " +
+      "Spark's latching UnsafeRow buffer"
+    Seq(true, false).foreach { ansiEnabled =>
+      withSQLConf(
+        SQLConf.ANSI_ENABLED.key -> ansiEnabled.toString,
+        CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
+        CometConf.COMET_SHUFFLE_MODE.key -> "native") {
+        withMaxPrecisionDecimalTable(Seq((1, "0.6")), "dec_lambda_a") {
+          withMaxPrecisionDecimalTable(Seq((1, "0.6")), "dec_lambda_b") {
+            withMaxPrecisionDecimalTable(Seq((1, "-0.6")), "dec_lambda_c") {
+              // Each partial fits on its own; the lambda in the result expressions turns
+              // codegen off for the final, whose merge latches.
+              assertDecimalSumFallsBackLikeSpark(
+                sql(
+                  "SELECT SUM(v), filter(array(MAX(k)), x -> x IS NOT NULL) FROM " +
+                    "(SELECT k, v FROM dec_lambda_a UNION ALL SELECT k, v FROM dec_lambda_b " +
+                    "UNION ALL SELECT k, v FROM dec_lambda_c)"),
+                reason,
+                ansiEnabled,
+                Row(null, Seq(1)))
+            }
+          }
+        }
+        withMaxPrecisionDecimalTable(intermediateOverflowRows, "dec_lambda") {
+          // The lambda in the FILTER clause turns codegen off for the partial, whose running
+          // sum latches.
+          assertDecimalSumFallsBackLikeSpark(
+            sql(
+              "SELECT SUM(v) FILTER (WHERE size(filter(array(k), x -> x IS NOT NULL)) = 1) " +
+                "FROM dec_lambda"),
+            reason,
+            ansiEnabled,
+            Row(null))
+        }
+      }
+    }
+  }
+
   /**
    * Asserts that `df` runs the aggregate in Spark with `reason` recorded and gives Spark's
    * latched result: `expected` in legacy mode, and the same failure as Spark under ANSI.
@@ -1710,6 +1754,67 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         withParquetTable(dir.toString, "dec_object_small") {
           checkSparkAnswerAndOperator(
             "SELECT k, SUM(v), collect_list(k) FROM dec_object_small GROUP BY k")
+        }
+      }
+    }
+  }
+
+  test("decimal sum with ungrouped object hash aggregate recovers like Spark") {
+    // Spark's object aggregation keeps the ungrouped buffer in a SpecificInternalRow, which
+    // holds the intermediate 1.2 unbounded like the native accumulator, so both recover 0.6.
+    Seq(true, false).foreach { ansiEnabled =>
+      withSQLConf(
+        SQLConf.ANSI_ENABLED.key -> ansiEnabled.toString,
+        SQLConf.USE_OBJECT_HASH_AGG.key -> "true",
+        CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
+        CometConf.COMET_SHUFFLE_MODE.key -> "native") {
+        withMaxPrecisionDecimalTable(intermediateOverflowRows, "dec_object_ungrouped") {
+          val df = sql("SELECT SUM(v), collect_list(k) FROM dec_object_ungrouped")
+          assert(
+            df.queryExecution.sparkPlan.exists(_.isInstanceOf[ObjectHashAggregateExec]),
+            s"expected Spark to plan an object hash aggregate: ${df.queryExecution.sparkPlan}")
+          checkSparkAnswerAndOperator(df)
+          val answer = df.collect().toSeq
+          assert(
+            answer == Seq(Row(recoveredSum.bigDecimal.setScale(38), Seq(1, 1, 1))),
+            s"ungrouped object hash aggregate with ansi=$ansiEnabled returned $answer, " +
+              s"expected the recovered sum $recoveredSum")
+        }
+      }
+    }
+  }
+
+  test("decimal sum distinct recovers without group by and latches with group by") {
+    // Spark's distinct rewrite sums the distinct values in its own stage. Ungrouped, that stage
+    // keeps the running sum unbounded in both engines; grouped, both latch once the running sum
+    // 1.1 leaves the precision. A single shuffle partition keeps the distinct values in scan
+    // order so the same running sums are formed.
+    val distinctSum = BigDecimal("0.5")
+    Seq(true, false).foreach { ansiEnabled =>
+      withSQLConf(
+        SQLConf.ANSI_ENABLED.key -> ansiEnabled.toString,
+        SQLConf.SHUFFLE_PARTITIONS.key -> "1",
+        CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
+        CometConf.COMET_SHUFFLE_MODE.key -> "native") {
+        withMaxPrecisionDecimalTable(Seq((1, "0.6"), (1, "0.5"), (1, "-0.6")), "dec_distinct") {
+          val ungrouped = sql("SELECT SUM(DISTINCT v) FROM dec_distinct")
+          checkSparkAnswerAndOperator(ungrouped)
+          val answer = ungrouped.collect().toSeq
+          assert(
+            answer == Seq(Row(distinctSum.bigDecimal.setScale(38))),
+            s"ungrouped distinct sum with ansi=$ansiEnabled returned $answer, " +
+              s"expected $distinctSum")
+          val grouped = sql("SELECT k, SUM(DISTINCT v) FROM dec_distinct GROUP BY k")
+          if (ansiEnabled) {
+            checkSparkError(grouped, "ARITHMETIC_OVERFLOW")
+          } else {
+            checkSparkAnswerAndOperator(grouped)
+            val groupedAnswer = grouped.collect().toSeq
+            assert(
+              groupedAnswer == Seq(Row(1, null)),
+              s"grouped distinct sum with ansi=$ansiEnabled returned $groupedAnswer, " +
+                "expected a null sum")
+          }
         }
       }
     }
