@@ -202,9 +202,36 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-java-maven-
 
+      # Split a Maven Central hiccup from a real lint violation. Resolving the
+      # scalafix plugin descriptor has failed mid-job before, leaving
+      # "No plugin found for prefix 'scalafix'" and a red lint that looks
+      # exactly like a violation (pull request #6035). The scalafix-syntactic
+      # job above solves the same problem by retrying the download and then
+      # linting offline; Maven has no equally safe offline mode here, because
+      # the goal resolves rule artifacts as it runs, so retry instead. Stop the
+      # moment scalafix reports actual errors, so a genuinely broken pull
+      # request is not rebuilt four times. Backoff matches
+      # .github/actions/maven-bootstrap: 10s, 20s, 40s plus 0-4s of jitter.
       - name: Run scalafix check
         run: |
-          ./mvnw -B package -DskipTests scalafix:scalafix -Dscalafix.mode=CHECK -Psemanticdb ${{ matrix.profile.maven_opts }}
+          set -o pipefail
+          for attempt in 1 2 3 4; do
+            if ./mvnw -B package -DskipTests scalafix:scalafix -Dscalafix.mode=CHECK \
+                 -Psemanticdb ${{ matrix.profile.maven_opts }} 2>&1 | tee scalafix-check.log; then
+              exit 0
+            fi
+            if grep -q 'Scalafix invoked with errors' scalafix-check.log; then
+              echo "::error::scalafix reported lint violations; see the log above."
+              exit 1
+            fi
+            if [ "$attempt" -eq 4 ]; then
+              echo "::error::scalafix could not run after $attempt attempts; no violation was reported."
+              exit 1
+            fi
+            delay=$((10 * (1 << (attempt - 1)) + RANDOM % 5))
+            echo "::warning::scalafix attempt $attempt failed without reporting a violation; retrying in ${delay}s."
+            sleep "$delay"
+          done
 
       - name: Setup Node.js
         uses: actions/setup-node@v7
