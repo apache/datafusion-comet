@@ -98,6 +98,8 @@ pub(crate) fn storage_factory_for(
 
 /// The built-in storage schemes `storage_factory_for` admits for `access_mode`, without any
 /// opted-in S3-compliant alias. This is the list the JVM read and write gates load over JNI.
+/// The rejection test below covers a fixed set of unlisted schemes, so a new factory arm must
+/// be added to this list as well or the JVM gate keeps declining it.
 pub(crate) fn builtin_storage_schemes(access_mode: AccessMode) -> &'static [&'static str] {
     match access_mode {
         AccessMode::Read => &["file", "memory", "gs", "oss", "s3", "s3a"],

@@ -29,7 +29,7 @@ import org.apache.spark.sql.comet.{CometIcebergWriteExec, CometNativeExec, Icebe
 
 import org.apache.comet.{CometConf, ConfigEntry}
 import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
-import org.apache.comet.iceberg.IcebergReflection
+import org.apache.comet.iceberg.{IcebergReflection, IcebergStorageSchemes}
 import org.apache.comet.objectstore.NativeConfig
 import org.apache.comet.serde.{CometOperatorSerde, Compatible, OperatorOuterClass, SupportLevel, Unsupported}
 import org.apache.comet.serde.OperatorOuterClass.Operator
@@ -85,8 +85,7 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
   // `oss.*` catalog properties to it and no functional test covers the path, so an OSS write
   // could silently drop endpoint/credential configuration. Fail closed until it is covered.
   // `gs` is additionally gated on the resolved FileIO (`requireGcsFileIOForGcsDataLocation`).
-  private val SupportedStorageSchemes: Set[String] =
-    Set("file", "memory", "s3", "s3a", "gs")
+  private val SupportedStorageSchemes: Set[String] = IcebergStorageSchemes.write
   private val MinUnsupportedFormatVersion = 3
   private val ParquetWritePropertyPrefix = "write.parquet."
   private val ParquetMrPropertyPrefix = "parquet."

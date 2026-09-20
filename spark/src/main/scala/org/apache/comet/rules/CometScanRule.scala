@@ -46,7 +46,7 @@ import org.apache.spark.sql.types._
 import org.apache.comet.{CometConf, DataTypeSupport, NativeBase}
 import org.apache.comet.CometConf._
 import org.apache.comet.CometSparkSessionExtensions.{isCometLoaded, isSpark35Plus, withFallbackReason, withFallbackReasons}
-import org.apache.comet.iceberg.{CometIcebergNativeScanMetadata, IcebergReflection}
+import org.apache.comet.iceberg.{CometIcebergNativeScanMetadata, IcebergReflection, IcebergStorageSchemes}
 import org.apache.comet.objectstore.NativeConfig
 import org.apache.comet.parquet.CometParquetUtils.{encryptionEnabled, isEncryptionConfigSupported, readFieldId}
 import org.apache.comet.serde.operator.{CometIcebergNativeScan, CometNativeScan}
@@ -1192,20 +1192,12 @@ object CometScanRule extends Logging {
     org.apache.spark.sql.catalyst.trees.TreeNodeTag[Unit]("comet.skipCometScan")
 
   /**
-   * Schemes Comet's native Iceberg scan can actually open, mirroring the match arms in
-   * `native/core/src/execution/operators/iceberg_common.rs::storage_factory_for`. Deliberately
-   * NOT delegated to `isNativelyReadableScheme`: object_store recognizes schemes (http/https,
-   * azure, memory) that iceberg-rust's OpenDAL storage factory cannot build, and admitting them
-   * here turns a clean JVM fallback into a native runtime "Unsupported storage scheme" error. Add
-   * here what you add to `storage_factory_for` (currently Aliyun `oss` and GCS `gs`).
-   * S3-compliant aliases like `blob` are opt-in via `fs.comet.s3Compliant.schemes` (see
-   * `isIcebergReadableScheme`), not hardcoded, since the native planner opens them via S3. The
-   * write path keeps its own list (`CometIcebergNativeWrite.SupportedStorageSchemes`), which
-   * differs deliberately: it excludes `oss` (fails closed, see `storage_factory_for`) and
-   * includes `memory`.
+   * Schemes Comet's native Iceberg scan can open, loaded from the native storage factory over JNI
+   * so this gate cannot drift from `storage_factory_for`. Opt-in aliases from
+   * `fs.comet.s3Compliant.schemes` are additive (see `isIcebergReadableScheme`); the write path
+   * loads its own set (`CometIcebergNativeWrite.SupportedStorageSchemes`).
    */
-  private val icebergReadableSchemes: Set[String] =
-    Set("file", "s3", "s3a", "gs", "oss")
+  private val icebergReadableSchemes: Set[String] = IcebergStorageSchemes.read
 
   /**
    * "Supported schemes: ..." suffix shared by the Iceberg scheme-fallback messages. Lists the

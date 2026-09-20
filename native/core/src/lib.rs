@@ -31,6 +31,7 @@ extern crate datafusion_comet_jni_bridge;
 
 use jni::{
     objects::{JClass, JString},
+    sys::{jboolean, jstring, JNI_FALSE},
     EnvUnowned,
 };
 use log::info;
@@ -238,10 +239,10 @@ pub extern "system" fn Java_org_apache_comet_NativeBase_isObjectStoreSchemeSuppo
 pub extern "system" fn Java_org_apache_comet_NativeBase_icebergStorageSchemes(
     env: EnvUnowned,
     _: JClass,
-    for_write: jni::sys::jboolean,
-) -> jni::sys::jstring {
+    for_write: jboolean,
+) -> jstring {
     try_unwrap_or_throw(&env, |env| {
-        let access_mode = if for_write == jni::sys::JNI_TRUE {
+        let access_mode = if for_write != JNI_FALSE {
             AccessMode::Write
         } else {
             AccessMode::Read

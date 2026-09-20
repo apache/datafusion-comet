@@ -331,4 +331,16 @@ public abstract class NativeBase {
    * @return true if object_store can construct both a store and an object key for this URL
    */
   public static native boolean isObjectStoreSchemeSupported(String url);
+
+  /**
+   * The comma-joined URL schemes the native Iceberg storage factory can open, for reads ({@code
+   * forWrite} false) or writes ({@code forWrite} true). This is the authoritative list the JVM
+   * Iceberg scan and write gates load, so the planner never hardcodes (and drifts from) the set the
+   * native factory actually builds. Opt-in S3-compliant alias schemes are not included; the JVM
+   * adds them from {@code fs.comet.s3Compliant.schemes}.
+   *
+   * @param forWrite true for the write path's schemes, false for the scan path's
+   * @return the supported schemes joined by commas, e.g. "file,memory,gs,s3,s3a"
+   */
+  public static native String icebergStorageSchemes(boolean forWrite);
 }
