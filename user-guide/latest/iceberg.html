@@ -798,7 +798,8 @@ matching your Spark and Scala versions (Comet also ships Spark 3.5 / Scala 2.13 
 <span class="w">    </span>--conf<span class="w"> </span>spark.shuffle.manager<span class="o">=</span>org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager<span class="w"> </span><span class="se">\</span>
 <span class="w">    </span>--conf<span class="w"> </span>spark.comet.explain.fallback.enabled<span class="o">=</span><span class="nb">true</span><span class="w"> </span><span class="se">\</span>
 <span class="w">    </span>--conf<span class="w"> </span>spark.memory.offHeap.enabled<span class="o">=</span><span class="nb">true</span><span class="w"> </span><span class="se">\</span>
-<span class="w">    </span>--conf<span class="w"> </span>spark.memory.offHeap.size<span class="o">=</span>2g
+<span class="w">    </span>--conf<span class="w"> </span>spark.memory.offHeap.size<span class="o">=</span>2g<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--conf<span class="w"> </span>spark.executor.memoryOverhead<span class="o">=</span>2g
 </pre></div>
 </div>
 <p>Catalog configuration is standard Iceberg-on-Spark and independent of Comet. The native reader has been tested with Hadoop, Hive, and REST catalogs. The example above uses a Hadoop catalog. For the full catalog configuration reference, see Iceberg’s <a class="reference external" href="https://iceberg.apache.org/docs/latest/spark-configuration/#catalogs">Spark catalog configuration</a>.</p>
@@ -886,7 +887,8 @@ configure Spark to use a REST catalog with Comet’s native Iceberg scan:</p>
 <span class="w">    </span>--conf<span class="w"> </span>spark.shuffle.manager<span class="o">=</span>org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager<span class="w"> </span><span class="se">\</span>
 <span class="w">    </span>--conf<span class="w"> </span>spark.comet.explain.fallback.enabled<span class="o">=</span><span class="nb">true</span><span class="w"> </span><span class="se">\</span>
 <span class="w">    </span>--conf<span class="w"> </span>spark.memory.offHeap.enabled<span class="o">=</span><span class="nb">true</span><span class="w"> </span><span class="se">\</span>
-<span class="w">    </span>--conf<span class="w"> </span>spark.memory.offHeap.size<span class="o">=</span>2g
+<span class="w">    </span>--conf<span class="w"> </span>spark.memory.offHeap.size<span class="o">=</span>2g<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--conf<span class="w"> </span>spark.executor.memoryOverhead<span class="o">=</span>2g
 </pre></div>
 </div>
 <p>Note that REST catalogs require explicit namespace creation before creating tables:</p>

@@ -825,6 +825,9 @@ disabled even when configuration overrides are enabled.</p>
 cases, it may be possible to reduce the amount of memory allocated to Spark so that overall memory allocation is
 the same or lower than the original configuration. In other cases, enabling Comet may require allocating more memory
 than before. See the <a class="reference internal" href="#determining-how-much-memory-to-allocate">Determining How Much Memory to Allocate</a> section for more details.</p>
+<p>Comet needs two things configured: an off-heap pool for it to draw its reservations from, and enough executor memory
+overhead to cover the part of its footprint that no pool tracks. See <a class="reference internal" href="#configuring-comet-memory">Configuring Comet Memory</a> and
+<a class="reference internal" href="#configuring-executor-memory-overhead">Configuring Executor Memory Overhead</a>.</p>
 <section id="configuring-comet-memory">
 <h3>Configuring Comet Memory<a class="headerlink" href="#configuring-comet-memory" title="Link to this heading">#</a></h3>
 <p>Comet shares an off-heap memory pool with Spark. The size of the pool is
@@ -865,6 +868,43 @@ the query has multiple operators that will likely all need to spill. Sometimes i
 when there is sufficient memory in order to leave enough memory for other operators.</p>
 <p>The <code class="docutils literal notranslate"><span class="pre">greedy_unified</span></code> pool type implements a greedy first-come first-serve limit. This pool works well for queries that do not
 need to spill or have a single spillable operator.</p>
+</section>
+<section id="configuring-executor-memory-overhead">
+<h3>Configuring Executor Memory Overhead<a class="headerlink" href="#configuring-executor-memory-overhead" title="Link to this heading">#</a></h3>
+<p>Enabling off-heap memory is not sufficient on its own. Comet also needs room in
+<code class="docutils literal notranslate"><span class="pre">spark.executor.memoryOverhead</span></code>.</p>
+<p><code class="docutils literal notranslate"><span class="pre">spark.memory.offHeap.size</span></code> is a budget, and the cluster manager already sizes the executor
+container to include it, so the memory that Comet’s operators explicitly reserve has room. What does
+not have room is everything Comet allocates without reserving it — the untracked categories listed
+under <a class="reference internal" href="#configuring-comet-memory">Configuring Comet Memory</a>. Those allocations are made by the Rust global allocator and live
+in the native heap, outside the JVM heap and outside Spark’s off-heap allocations, and nothing in
+the container sizing accounts for them. The same applies to Comet’s JVM-side Arrow buffers.</p>
+<p><code class="docutils literal notranslate"><span class="pre">spark.executor.memoryOverhead</span></code> is the only slack the container has for this, and the JVM’s own
+non-heap usage — metaspace, code cache, thread stacks, GC structures — is already drawing on it.</p>
+<p>Work out what the executor already gets before choosing a value. When
+<code class="docutils literal notranslate"><span class="pre">spark.executor.memoryOverhead</span></code> is unset, Spark derives the overhead as
+<code class="docutils literal notranslate"><span class="pre">max(spark.executor.memoryOverheadFactor</span> <span class="pre">*</span> <span class="pre">spark.executor.memory,</span> <span class="pre">384</span> <span class="pre">MiB)</span></code>. The factor defaults to
+<code class="docutils literal notranslate"><span class="pre">0.1</span></code>, except for PySpark and SparkR applications submitted to Kubernetes in cluster mode, where it
+defaults to <code class="docutils literal notranslate"><span class="pre">0.4</span></code>. On Spark 4.0 and later the floor is configurable through
+<code class="docutils literal notranslate"><span class="pre">spark.executor.minMemoryOverhead</span></code>. Setting <code class="docutils literal notranslate"><span class="pre">spark.executor.memoryOverhead</span></code> <strong>replaces</strong> the derived
+value rather than adding to it, so a value below what is derived today shrinks the container instead
+of growing it.</p>
+<p>For a small executor, <code class="docutils literal notranslate"><span class="pre">2g</span></code> is a reasonable starting point. A 4 GiB executor derives only 409 MiB, so
+this is a real increase:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">spark</span><span class="o">.</span><span class="n">executor</span><span class="o">.</span><span class="n">memoryOverhead</span><span class="o">=</span><span class="mi">2</span><span class="n">g</span>
+</pre></div>
+</div>
+<p>A 32 GiB executor, on the other hand, already derives 3276 MiB, and the same setting would take away
+1228 MiB. For executors that large, either pick an absolute value above what is derived today, or
+raise <code class="docutils literal notranslate"><span class="pre">spark.executor.memoryOverheadFactor</span></code> instead so that the overhead keeps scaling with executor
+size:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">spark</span><span class="o">.</span><span class="n">executor</span><span class="o">.</span><span class="n">memoryOverheadFactor</span><span class="o">=</span><span class="mf">0.2</span>
+</pre></div>
+</div>
+<p>Raise the value further if executors are killed by the cluster manager (on Kubernetes,
+<code class="docutils literal notranslate"><span class="pre">ExecutorLostFailure</span></code> with exit code 137) rather than failing with a task-level out-of-memory error.</p>
+<p>Note that on Kubernetes and YARN the overhead is added to the container size, so raising it reduces
+how many executors fit on a node.</p>
 </section>
 <section id="determining-how-much-memory-to-allocate">
 <h3>Determining How Much Memory to Allocate<a class="headerlink" href="#determining-how-much-memory-to-allocate" title="Link to this heading">#</a></h3>
@@ -1220,6 +1260,7 @@ fallback to Spark works, see <a class="reference internal" href="understanding-c
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#adaptive-partial-aggregation">Adaptive Partial Aggregation</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#memory-tuning">Memory Tuning</a><ul class="nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#configuring-comet-memory">Configuring Comet Memory</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#configuring-executor-memory-overhead">Configuring Executor Memory Overhead</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#determining-how-much-memory-to-allocate">Determining How Much Memory to Allocate</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#batch-size">Batch Size</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#limiting-spill-disk-usage">Limiting Spill Disk Usage</a></li>

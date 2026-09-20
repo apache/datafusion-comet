@@ -883,6 +883,7 @@ worker. Both confs can be set independently.</p>
     <span class="o">.</span><span class="n">config</span><span class="p">(</span><span class="s2">"spark.comet.exec.pyarrowUDF.enabled"</span><span class="p">,</span> <span class="s2">"true"</span><span class="p">)</span> \
     <span class="o">.</span><span class="n">config</span><span class="p">(</span><span class="s2">"spark.memory.offHeap.enabled"</span><span class="p">,</span> <span class="s2">"true"</span><span class="p">)</span> \
     <span class="o">.</span><span class="n">config</span><span class="p">(</span><span class="s2">"spark.memory.offHeap.size"</span><span class="p">,</span> <span class="s2">"2g"</span><span class="p">)</span> \
+    <span class="o">.</span><span class="n">config</span><span class="p">(</span><span class="s2">"spark.executor.memoryOverhead"</span><span class="p">,</span> <span class="s2">"2g"</span><span class="p">)</span> \
     <span class="o">.</span><span class="n">getOrCreate</span><span class="p">()</span>
 
 <span class="n">df</span> <span class="o">=</span> <span class="n">spark</span><span class="o">.</span><span class="n">read</span><span class="o">.</span><span class="n">parquet</span><span class="p">(</span><span class="s2">"data.parquet"</span><span class="p">)</span>
