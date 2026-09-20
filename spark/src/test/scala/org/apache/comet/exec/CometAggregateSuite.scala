@@ -1600,8 +1600,8 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   test("decimal sum without codegen falls back at maximum precision") {
     // Without codegen Spark buffers the ungrouped sum in an UnsafeRow and latches once it
     // leaves the precision; an imperative sibling such as approx_count_distinct, the whole-stage
-    // switch, or a field-count limit below the partial's two buffer columns turns codegen off,
-    // and falling back keeps Spark's answer.
+    // switch, the NO_CODEGEN factory mode, or a field-count limit below the partial's two buffer
+    // columns turns codegen off, and falling back keeps Spark's answer.
     val reason = "Ungrouped decimal SUM at maximum precision without codegen cannot match " +
       "Spark's latching UnsafeRow buffer"
     Seq(true, false).foreach { ansiEnabled =>
@@ -1623,6 +1623,13 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
               Row(null))
           }
           withSQLConf(SQLConf.WHOLESTAGE_MAX_NUM_FIELDS.key -> "1") {
+            assertDecimalSumFallsBackLikeSpark(
+              sql("SELECT SUM(v) FROM dec_no_codegen"),
+              reason,
+              ansiEnabled,
+              Row(null))
+          }
+          withSQLConf(SQLConf.CODEGEN_FACTORY_MODE.key -> "NO_CODEGEN") {
             assertDecimalSumFallsBackLikeSpark(
               sql("SELECT SUM(v) FROM dec_no_codegen"),
               reason,

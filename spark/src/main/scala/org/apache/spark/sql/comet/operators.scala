@@ -30,7 +30,7 @@ import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.internal.Logging
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
-import org.apache.spark.sql.catalyst.expressions.{Ascending, Attribute, AttributeSeq, AttributeSet, Expression, ExpressionSet, Generator, NamedExpression, SortOrder, XXH64}
+import org.apache.spark.sql.catalyst.expressions.{Ascending, Attribute, AttributeSeq, AttributeSet, CodegenObjectFactoryMode, Expression, ExpressionSet, Generator, NamedExpression, SortOrder, XXH64}
 import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, AggregateMode, CollectList, CollectSet, Final, ImperativeAggregate, Mode, Partial, PartialMerge, Percentile, Sum}
 import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, BuildSide}
 import org.apache.spark.sql.catalyst.plans._
@@ -2230,9 +2230,12 @@ object CometHashAggregateExec
     }
     // Without codegen Spark buffers an ungrouped aggregate in an UnsafeRow, which latches a
     // decimal sum that leaves the precision, while the native ungrouped accumulator keeps the
-    // unbounded intermediate. Spark turns codegen off for an imperative aggregate, by config,
-    // or when the operator's output or an input carries more fields than its codegen limit.
+    // unbounded intermediate. Spark turns codegen off for an imperative aggregate, by the
+    // whole-stage or factory-mode config, or when the operator's output or an input carries
+    // more fields than its codegen limit.
     val codegenOff = !op.conf.wholeStageEnabled ||
+      CodegenObjectFactoryMode.withName(op.conf.codegenFactoryMode) ==
+      CodegenObjectFactoryMode.NO_CODEGEN ||
       op.aggregateExpressions.exists(_.aggregateFunction.isInstanceOf[ImperativeAggregate]) ||
       WholeStageCodegenExec.isTooManyFields(op.conf, op.schema) ||
       op.children.exists(child => WholeStageCodegenExec.isTooManyFields(op.conf, child.schema))
