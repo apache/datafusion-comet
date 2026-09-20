@@ -36,7 +36,7 @@ import org.apache.comet.annotation.Public
 /**
  * Comet driver plugin. This class is loaded by Spark's plugin framework. It will be instantiated
  * on driver side only. It will update the SparkConf with the extra configuration provided by
- * Comet, e.g., Comet memory configurations.
+ * Comet, e.g., the cache serializer and the session extension.
  *
  * Note that `SparkContext.conf` is spark package only. So this plugin must be in spark package.
  * Although `SparkContext.getConf` is public, it returns a copy of the SparkConf, so it cannot

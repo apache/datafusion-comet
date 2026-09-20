@@ -72,7 +72,6 @@ class Native extends NativeBase {
       offHeapMode: Boolean,
       memoryPoolType: String,
       memoryLimit: Long,
-      memoryLimitPerTask: Long,
       taskAttemptId: Long,
       taskCPUs: Long,
       keyUnwrapper: CometFileKeyUnwrapper,
