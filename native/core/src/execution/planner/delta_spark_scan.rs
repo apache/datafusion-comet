@@ -452,14 +452,12 @@ impl<'a> PartitionStoreResolver<'a> {
 /// This is the free-standing half of the residual cross-container DV check, called from
 /// [`PartitionStoreResolver::resolve`] -- the ONE place in this scan that sees both data-file
 /// AND deletion-vector URLs. `store_url` is the registration URL the store is memoized and
-/// registered under; its authority is `{BeforeHost..AfterPort}`, dropping userinfo entirely
-/// (see `object_store_registration_url` in `parquet_support.rs`), so two URLs agreeing on
-/// `store_url` but disagreeing on `user_info` are exactly the URLs the native side would
-/// otherwise silently collapse onto one store handle.
-/// That is the shape a Delta shallow clone across containers on a single storage account
-/// produces: data stays in `source`, a later DELETE writes its deletion vector into `clone`,
-/// and `abfss://source@account/...` / `abfss://clone@account/...` share a host (so the SAME
-/// `store_url`) while their userinfo (the container) differs.
+/// registered under; its authority keeps userinfo only for ABFS, where it is the container
+/// (see `object_store_authority` in `parquet_support.rs`), so two URLs of another scheme that
+/// agree on `store_url` but disagree on `user_info` are exactly the URLs the native side would
+/// otherwise silently collapse onto one store handle. A Delta shallow clone across containers
+/// on one storage account, data in `source` and a later DELETE writing its deletion vector
+/// into `clone`, resolves each container to its own store and passes this check.
 ///
 /// Deliberately NOT folded into `check_same_object_store_authority` above: that check only ever
 /// sees DATA files and hard-errors on ANY authority mismatch, which would incorrectly reject the
@@ -717,36 +715,52 @@ mod tests {
     }
 
     #[test]
-    fn dv_in_different_container_same_account_errors() {
-        // Same storage account (same host -> same ObjectStoreUrl), different containers
-        // (different userinfo): the shape a Delta shallow clone across containers produces
-        // when data stays in `source` but a later DELETE writes its DV into `clone`. Both
-        // authorities collapse onto one native store identity, so this must decline.
+    fn dv_in_different_container_same_account_gets_its_own_store() {
+        // Same storage account (same host), different containers (different userinfo): the
+        // shape a Delta shallow clone across containers produces when data stays in `source`
+        // but a later DELETE writes its DV into `clone`. The container is part of the ABFS
+        // store identity, so the DV resolves through its own store instead of colliding.
         let mut seen = HashMap::new();
         let data = "abfss://source@account.dfs.core.windows.net/a/part-0.parquet";
         let dv = "abfss://clone@account.dfs.core.windows.net/_delta_log/deletion_vector_x.bin";
         let (data_store_url, data_user_info) = store_url_and_user_info(data);
-        check_store_identity(&data_store_url, &data_user_info, data, &mut seen).unwrap();
         let (dv_store_url, dv_user_info) = store_url_and_user_info(dv);
+        assert_ne!(
+            data_store_url, dv_store_url,
+            "containers must not share a store"
+        );
+        check_store_identity(&data_store_url, &data_user_info, data, &mut seen).unwrap();
+        check_store_identity(&dv_store_url, &dv_user_info, dv, &mut seen).unwrap();
+        assert_eq!(seen.len(), 2);
+    }
+
+    #[test]
+    fn dv_with_different_userinfo_on_a_collapsing_scheme_errors() {
+        // Outside ABFS the store identity drops userinfo, so two URLs that differ only there
+        // would silently share one store handle and must decline, with the userinfo redacted.
+        let mut seen = HashMap::new();
+        let data = "s3://source@bucket/a/part-0.parquet";
+        let dv = "s3://clone@bucket/_delta_log/deletion_vector_x.bin";
+        let (data_store_url, data_user_info) = store_url_and_user_info(data);
+        let (dv_store_url, dv_user_info) = store_url_and_user_info(dv);
+        assert_eq!(
+            data_store_url, dv_store_url,
+            "userinfo must not change the store identity"
+        );
+        check_store_identity(&data_store_url, &data_user_info, data, &mut seen).unwrap();
         let err = check_store_identity(&dv_store_url, &dv_user_info, dv, &mut seen).unwrap_err();
         let msg = err.to_string();
         assert!(
             msg.contains("store-identity"),
             "expected message to reference the store-identity collision: {msg}"
         );
-        // The container names ARE the userinfo here, so the message must redact them rather
-        // than name the raw URLs -- see redacted_url_display.
         assert!(
             !msg.contains("source@") && !msg.contains("clone@"),
-            "expected message to redact the container userinfo: {msg}"
+            "expected message to redact the userinfo: {msg}"
         );
         assert!(
-            msg.contains("***@account.dfs.core.windows.net"),
+            msg.contains("***@bucket"),
             "expected message to show a redacted authority: {msg}"
-        );
-        assert!(
-            msg.contains("a/part-0.parquet") && msg.contains("deletion_vector_x.bin"),
-            "expected message to still name the differing paths: {msg}"
         );
     }
 

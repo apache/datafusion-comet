@@ -43,6 +43,7 @@ import org.apache.spark.sql.types.{DataTypes, StructField, StructType}
 import org.apache.comet.CometConf
 import org.apache.comet.CometConf.COMET_EXEC_STRICT_FLOATING_POINT
 import org.apache.comet.CometSparkSessionExtensions.isSpark41Plus
+import org.apache.comet.serde.RegrSparkVersions
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator, ParquetGenerator, SchemaGenOptions}
 
 /**
@@ -1401,6 +1402,57 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
             2)
         }
       }
+    }
+  }
+
+  test("regression aggregate flags follow the Spark patch release that changed them") {
+    // Both fixes shipped mid-line, so the flag must flip at the exact patch and stay off for
+    // earlier patches of the same minor version. A vendor suffix parses, a missing patch reads
+    // as 0, and an unparsable string falls back to the old minor-version rule.
+    val slopeExpectations = Seq(
+      "3.4.3" -> false,
+      "3.5.0" -> false,
+      "3.5.1" -> false,
+      "3.5.2" -> true,
+      "3.5.9" -> true,
+      "3.5.10" -> true,
+      "4.0.0" -> true,
+      "4.1.3" -> true,
+      "4.2.0-SNAPSHOT" -> true,
+      "4.1.3-amzn-1" -> true,
+      "3.5" -> false,
+      "v3.5.9" -> true)
+    slopeExpectations.foreach { case (version, expected) =>
+      assert(
+        RegrSparkVersions.slopeFiltersVarByPairNulls(version) == expected,
+        s"slope pair-null filtering for Spark $version should be $expected")
+    }
+
+    val r2Expectations = Seq(
+      "3.4.3" -> false,
+      "3.5.3" -> false,
+      "3.5.8" -> false,
+      "3.5.9" -> true,
+      "3.5.10" -> true,
+      "4.0.1" -> false,
+      "4.0.2" -> false,
+      "4.0.3" -> true,
+      "4.0.4" -> true,
+      "4.1.0" -> false,
+      "4.1.1" -> false,
+      "4.1.2" -> true,
+      "4.1.3" -> true,
+      "4.2.0" -> true,
+      "4.2.0-SNAPSHOT" -> true,
+      "3.6.0" -> true,
+      "5.0.0" -> true,
+      "4.1.3-amzn-1" -> true,
+      "3.5" -> false,
+      "v3.5.9" -> true)
+    r2Expectations.foreach { case (version, expected) =>
+      assert(
+        RegrSparkVersions.r2DegenerateCasesSwapped(version) == expected,
+        s"regr_r2 degenerate-case swap for Spark $version should be $expected")
     }
   }
 
