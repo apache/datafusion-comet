@@ -21,43 +21,27 @@ package org.apache.comet.iceberg
 
 import java.util.Locale
 
-import scala.util.control.NonFatal
-
 import org.apache.spark.internal.Logging
 
 import org.apache.comet.NativeBase
 
 /**
  * The storage schemes the native Iceberg storage factory publishes over JNI, so the JVM scan and
- * write gates decline what native cannot open instead of failing at execution. The fallback
- * constants are used only when the library cannot be loaded: assuming a scheme is supported would
- * recreate the execution-time failure, and without the library nothing runs natively anyway.
+ * write gates decline what native cannot open instead of failing at execution. Every caller sits
+ * behind `isCometLoaded`, so the fallback constants are only consulted in a JVM where nothing
+ * runs natively; the pinning test in `CometScanSchemeFallbackSuite` keeps them equal to the
+ * native lists.
  */
 private[comet] object IcebergStorageSchemes extends Logging {
 
-  private[comet] val FallbackRead: Set[String] = Set("file", "memory", "s3", "s3a", "gs", "oss")
+  private[comet] val FallbackRead: Set[String] = Set("file", "s3", "s3a", "gs", "oss")
   private[comet] val FallbackWrite: Set[String] = Set("file", "memory", "s3", "s3a", "gs")
 
   lazy val read: Set[String] = load(forWrite = false, FallbackRead)
   lazy val write: Set[String] = load(forWrite = true, FallbackWrite)
 
-  private def load(forWrite: Boolean, fallback: Set[String]): Set[String] = {
-    val path = if (forWrite) "write" else "read"
-    val joined =
-      try NativeBase.icebergStorageSchemes(forWrite)
-      catch {
-        case e: UnsatisfiedLinkError =>
-          logWarning(
-            s"Comet native library is not loaded; using the fallback Iceberg $path scheme list " +
-              s"${fallback.toSeq.sorted.mkString(", ")}: ${e.getMessage}")
-          return fallback
-        case NonFatal(e) =>
-          logWarning(
-            s"Failed to load the Iceberg $path scheme list from the Comet native library; using " +
-              s"the fallback list ${fallback.toSeq.sorted.mkString(", ")}",
-            e)
-          return fallback
-      }
+  /** Splits the comma-joined native list; a null or blank list yields `fallback`. */
+  private[comet] def parse(joined: String, fallback: Set[String]): Set[String] = {
     val schemes = Option(joined).toSeq
       .flatMap(_.split(","))
       .map(_.trim.toLowerCase(Locale.ROOT))
@@ -65,11 +49,25 @@ private[comet] object IcebergStorageSchemes extends Logging {
       .toSet
     if (schemes.isEmpty) {
       logWarning(
-        s"Comet native library published an empty Iceberg $path scheme list; using the fallback " +
-          s"list ${fallback.toSeq.sorted.mkString(", ")}")
+        "Comet native library published an empty Iceberg scheme list; using the fallback list " +
+          fallback.toSeq.sorted.mkString(", "))
       fallback
     } else {
       schemes
+    }
+  }
+
+  // A native fault while answering the probe propagates: `isLoaded` true means the symbol
+  // resolves, and anything else is a build bug that must fail loudly rather than fall back.
+  private def load(forWrite: Boolean, fallback: Set[String]): Set[String] = {
+    if (NativeBase.isLoaded) {
+      parse(NativeBase.icebergStorageSchemes(forWrite), fallback)
+    } else {
+      val path = if (forWrite) "write" else "read"
+      logWarning(
+        s"Comet native library is not loaded; using the fallback Iceberg $path scheme list " +
+          fallback.toSeq.sorted.mkString(", "))
+      fallback
     }
   }
 }

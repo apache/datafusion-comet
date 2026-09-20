@@ -25,9 +25,9 @@ import org.apache.hadoop.fs.RawLocalFileSystem;
 
 /**
  * A local-disk-backed FileSystem that reports the {@code wasb} scheme, so a test can create and
- * read an Iceberg table under a {@code wasb://} warehouse without Azure. Used to assert that {@code
- * CometScanRule} declines a native Iceberg scan whose storage scheme object_store recognizes but
- * the native Iceberg storage factory cannot build, instead of failing at execution.
+ * read an Iceberg table under a {@code wasb://} warehouse without Azure. Used to assert that the
+ * Iceberg scan and write gates decline a table whose storage scheme the native Iceberg storage
+ * factory has no arm for, instead of claiming it and failing at execution.
  */
 public class FakeWasbSchemeFileSystem extends RawLocalFileSystem {
 

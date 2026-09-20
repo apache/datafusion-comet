@@ -1193,11 +1193,21 @@ object CometScanRule extends Logging {
 
   /**
    * Schemes Comet's native Iceberg scan can open, loaded from the native storage factory over JNI
-   * so this gate cannot drift from `storage_factory_for`. Opt-in aliases from
+   * so this gate cannot drift from `storage_factory_for`. Lazy so that constructing the rule does
+   * not touch the native library before `isCometLoaded` has been consulted. Opt-in aliases from
    * `fs.comet.s3Compliant.schemes` are additive (see `isIcebergReadableScheme`); the write path
    * loads its own set (`CometIcebergNativeWrite.SupportedStorageSchemes`).
    */
-  private val icebergReadableSchemes: Set[String] = IcebergStorageSchemes.read
+  private lazy val icebergReadableSchemes: Set[String] = IcebergStorageSchemes.read
+
+  /**
+   * True when the Iceberg scan gate admits `scheme`. The built-in set matches verbatim because
+   * native opens a location by its raw scheme and OpenDAL strips that prefix case-sensitively, so
+   * `S3://` is not `s3://`; the opt-in alias list is matched case-insensitively on both sides.
+   */
+  private def isAdmittedIcebergScheme(scheme: String, s3CompliantSchemes: Set[String]): Boolean =
+    icebergReadableSchemes.contains(scheme) ||
+      s3CompliantSchemes.contains(scheme.toLowerCase(Locale.ROOT))
 
   /**
    * "Supported schemes: ..." suffix shared by the Iceberg scheme-fallback messages. Lists the
@@ -1218,8 +1228,7 @@ object CometScanRule extends Logging {
       s3CompliantSchemes: Set[String]): Boolean = {
     val scheme = uri.getScheme
     if (scheme == null) return true
-    val lower = scheme.toLowerCase(Locale.ROOT)
-    icebergReadableSchemes.contains(lower) || s3CompliantSchemes.contains(lower)
+    isAdmittedIcebergScheme(scheme, s3CompliantSchemes)
   }
 
   /**
@@ -1281,9 +1290,6 @@ object CometScanRule extends Logging {
     // hasOpenableAuthority); non-empty => decline. One example suffices for the message.
     var hostlessLocation: Option[String] = None
 
-    // Union of the two admitted scheme sets, built once so the per-file loop does one lookup.
-    val openableSchemes = icebergReadableSchemes ++ s3CompliantSchemes
-
     // Classify one data/delete file location; see `icebergReadableSchemes` for why that allowlist
     // is narrower than the Parquet native gate. Runs per data and delete file, so the scheme and
     // the bucket are each derived once and threaded down.
@@ -1294,9 +1300,8 @@ object CometScanRule extends Logging {
       // A schemeless local path routes to iceberg-rust's LocalFs and needs no host.
       val scheme = uri.getScheme
       if (scheme == null) return
-      val lower = scheme.toLowerCase(Locale.ROOT)
-      if (!openableSchemes.contains(lower)) {
-        unsupportedSchemes += lower
+      if (!isAdmittedIcebergScheme(scheme, s3CompliantSchemes)) {
+        unsupportedSchemes += scheme
       } else if (!hasOpenableAuthority(uri, s3CompliantSchemes)) {
         if (hostlessLocation.isEmpty) hostlessLocation = Some(rawPath)
       } else {

@@ -81,11 +81,11 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
 
   private val EncryptionPropertyPrefix = "encryption."
   private val UnsupportedWriteTypeIds: Set[String] = Set("UUID")
-  // `oss` is deliberately absent: iceberg-rust has an OSS backend, but Comet does not forward
-  // `oss.*` catalog properties to it and no functional test covers the path, so an OSS write
-  // could silently drop endpoint/credential configuration. Fail closed until it is covered.
-  // `gs` is additionally gated on the resolved FileIO (`requireGcsFileIOForGcsDataLocation`).
-  private val SupportedStorageSchemes: Set[String] = IcebergStorageSchemes.write
+  // Loaded from the native storage factory: `builtin_storage_schemes` in
+  // `native/core/src/execution/operators/iceberg_common.rs` is the single point of change and
+  // explains why `oss` is read-only and `memory` write-only. Lazy so constructing the serde does
+  // not touch the native library. `gs` is additionally gated on the resolved FileIO below.
+  private lazy val SupportedStorageSchemes: Set[String] = IcebergStorageSchemes.write
   private val MinUnsupportedFormatVersion = 3
   private val ParquetWritePropertyPrefix = "write.parquet."
   private val ParquetMrPropertyPrefix = "parquet."
@@ -306,9 +306,11 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
       .find(k => !IgnoredHadoopParquetConfKeys.contains(k))
       .map(k => s"Hadoop configuration sets $k (reaches iceberg-java's writer but not native)")
 
+  // Verbatim, not lowercased: native opens the data location by its raw scheme and OpenDAL strips
+  // that prefix case-sensitively, so `S3://` must be declined here rather than fail at execution.
   private def storageScheme(location: String): String =
     if (location.contains("://")) {
-      location.substring(0, location.indexOf("://")).toLowerCase(Locale.ROOT)
+      location.substring(0, location.indexOf("://"))
     } else {
       "file"
     }

@@ -27,10 +27,10 @@ import java.util.UUID
 import org.apache.commons.io.FileUtils
 import org.apache.spark.SparkConf
 import org.apache.spark.sql.{CometTestBase, SaveMode}
-import org.apache.spark.sql.comet.{CometIcebergNativeScanExec, CometScanExec}
+import org.apache.spark.sql.comet.{CometIcebergNativeScanExec, CometIcebergWriteExec, CometScanExec}
 import org.apache.spark.sql.execution.{FileSourceScanExec, SparkPlan}
 
-import org.apache.comet.{CometConf, CometIcebergTestBase, NativeBase}
+import org.apache.comet.{CometConf, CometIcebergTestBase, ExtendedExplainInfo, NativeBase}
 import org.apache.comet.hadoop.fs.{FakeHDFSFileSystem, FakeHdfsSchemeFileSystem, FakeWasbSchemeFileSystem}
 import org.apache.comet.iceberg.IcebergStorageSchemes
 
@@ -124,6 +124,30 @@ class CometScanSchemeFallbackSuite extends CometTestBase with CometIcebergTestBa
       "gs://bucket/... must be admitted even after an authorityless gs:// URI was probed first")
   }
 
+  test("iceberg gate: the JNI scheme list parser trims, lowercases and falls back") {
+    val fallback = Set("fallback")
+    assert(IcebergStorageSchemes.parse("file, S3,,s3a,", fallback) == Set("file", "s3", "s3a"))
+    assert(IcebergStorageSchemes.parse("", fallback) == fallback)
+    assert(IcebergStorageSchemes.parse(" , ", fallback) == fallback)
+    assert(IcebergStorageSchemes.parse(null, fallback) == fallback)
+  }
+
+  test("iceberg gate: JNI scheme lists round-trip to the JVM fallback constants") {
+    // Calls the JNI probe directly, bypassing the lazy vals, so this cannot pass on a JVM whose
+    // `read`/`write` quietly came from the fallback rather than from native.
+    assume(NativeBase.isLoaded, "Comet native library not loaded")
+    val read = IcebergStorageSchemes.parse(NativeBase.icebergStorageSchemes(false), Set.empty)
+    val write = IcebergStorageSchemes.parse(NativeBase.icebergStorageSchemes(true), Set.empty)
+    assert(
+      read == IcebergStorageSchemes.FallbackRead,
+      s"JNI read schemes ${read.toSeq.sorted} differ from the JVM fallback " +
+        s"${IcebergStorageSchemes.FallbackRead.toSeq.sorted}")
+    assert(
+      write == IcebergStorageSchemes.FallbackWrite,
+      s"JNI write schemes ${write.toSeq.sorted} differ from the JVM fallback " +
+        s"${IcebergStorageSchemes.FallbackWrite.toSeq.sorted}")
+  }
+
   test("iceberg gate: native scheme lists match the JVM fallback constants") {
     // The gates load their scheme sets from the native storage factory over JNI. The JVM
     // fallback constants only stand in when the library cannot be loaded, so this pins them to
@@ -138,14 +162,20 @@ class CometScanSchemeFallbackSuite extends CometTestBase with CometIcebergTestBa
       IcebergStorageSchemes.write == IcebergStorageSchemes.FallbackWrite,
       s"native write schemes ${IcebergStorageSchemes.write.toSeq.sorted} differ from the JVM " +
         s"fallback ${IcebergStorageSchemes.FallbackWrite.toSeq.sorted}")
-    Seq("memory", "oss").foreach { scheme =>
-      assert(
-        IcebergStorageSchemes.read.contains(scheme),
-        s"$scheme must be in the native read schemes ${IcebergStorageSchemes.read.toSeq.sorted}")
-    }
+    // `oss` is read-only (no `oss.*` property forwarding for writes) and `memory` is write-only
+    // (a fresh in-process store per FileIO, so a read finds nothing).
+    assert(
+      IcebergStorageSchemes.read.contains("oss"),
+      s"oss must be in the native read schemes ${IcebergStorageSchemes.read.toSeq.sorted}")
     assert(
       !IcebergStorageSchemes.write.contains("oss"),
       s"oss must not be in the native write schemes ${IcebergStorageSchemes.write.toSeq.sorted}")
+    assert(
+      IcebergStorageSchemes.write.contains("memory"),
+      s"memory must be in the native write schemes ${IcebergStorageSchemes.write.toSeq.sorted}")
+    assert(
+      !IcebergStorageSchemes.read.contains("memory"),
+      s"memory must not be in the native read schemes ${IcebergStorageSchemes.read.toSeq.sorted}")
     Seq("abfs", "abfss", "wasb", "wasbs", "gcs").foreach { scheme =>
       assert(
         !IcebergStorageSchemes.read.contains(scheme),
@@ -159,11 +189,12 @@ class CometScanSchemeFallbackSuite extends CometTestBase with CometIcebergTestBa
 
   test("iceberg gate: builtin allowlist admitted, unbuildable schemes rejected") {
     // The Iceberg gate is the allowlist the native storage factory publishes over JNI. Narrower
-    // than the Parquet gate: object_store recognizes http/abfs/wasb but iceberg-rust can't build
-    // them, so reject up-front rather than fail during native setup.
+    // than the Parquet gate: object_store recognizes http and the Azure schemes, but the native
+    // Iceberg storage factory has no arm for them, so reject up-front rather than fail at
+    // execution. `memory` is write-only (a fresh in-process store per FileIO holds no table), and
+    // the built-in set matches verbatim because native opens a location by its raw scheme.
     Seq(
       "file:///tmp/key.parquet",
-      "memory:///key.parquet",
       "s3://bucket/key.parquet",
       "s3a://bucket/key.parquet",
       "gs://bucket/key.parquet",
@@ -173,6 +204,9 @@ class CometScanSchemeFallbackSuite extends CometTestBase with CometIcebergTestBa
         s"$u must be iceberg-readable; icebergReadableSchemes has regressed")
     }
     Seq(
+      "memory:///key.parquet",
+      "S3://bucket/key.parquet",
+      "File:///tmp/key.parquet",
       "http://bucket.example.com/key.parquet",
       "https://bucket.example.com/key.parquet",
       "abfs://container@acct/key.parquet",
@@ -181,7 +215,7 @@ class CometScanSchemeFallbackSuite extends CometTestBase with CometIcebergTestBa
       "wasbs://container@acct/key.parquet").foreach { u =>
       assert(
         !CometScanRule.isIcebergReadableScheme(new URI(u), Set.empty),
-        s"$u must not be iceberg-readable; storage_factory_for has no matching arm")
+        s"$u must not be iceberg-readable; storage_factory_for rejects it for reads")
     }
   }
 
@@ -256,11 +290,11 @@ class CometScanSchemeFallbackSuite extends CometTestBase with CometIcebergTestBa
       "without opt-in, blob gets no bucket promotion, so a hostless blob location is unopenable")
   }
 
-  test("iceberg scan declines a wasb table instead of failing at execution") {
-    // End-to-end guard for the scheme gate: object_store recognizes `wasb`, but the native Iceberg
-    // storage factory has no arm for it. The planner must decline the scan with a reason naming
-    // the scheme so Spark reads the table, rather than claim it and fail at execution with
-    // "Unsupported storage scheme: wasb".
+  test("iceberg scan and write decline a wasb table instead of failing at execution") {
+    // Regression guard for both scheme gates: the native Iceberg storage factory has no arm for
+    // `wasb`, so the scan and the write must each be declined with a reason naming the scheme
+    // and run in Spark, rather than be claimed and fail at execution with "Unsupported storage
+    // scheme: wasb".
     assume(icebergAvailable, "Iceberg not available in classpath")
     withTempIcebergDir { dir =>
       val warehouse = s"${FakeWasbSchemeFileSystem.PREFIX}${dir.getAbsolutePath}/warehouse"
@@ -270,11 +304,31 @@ class CometScanSchemeFallbackSuite extends CometTestBase with CometIcebergTestBa
         "spark.sql.catalog.wasb_catalog.warehouse" -> warehouse,
         CometConf.COMET_ENABLED.key -> "true",
         CometConf.COMET_EXEC_ENABLED.key -> "true",
-        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_WRITE_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_WRITE_SPLIT_OPERATOR_ENABLED.key -> "true",
+        // The VALUES source must be native, or the write is declined for its input before the
+        // write serde (and its scheme gate) is ever consulted.
+        CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
         spark.sql("CREATE TABLE wasb_catalog.db.wasb_table (id INT, name STRING) USING iceberg")
-        spark.sql(
-          "INSERT INTO wasb_catalog.db.wasb_table VALUES (1, 'Alice'), (2, 'Bob'), (3, 'Carol')")
         try {
+          val insertPlans = capturePlans(spark) {
+            spark.sql(
+              "INSERT INTO wasb_catalog.db.wasb_table VALUES (1, 'Alice'), (2, 'Bob'), (3, 'Carol')")
+          }
+          assert(insertPlans.nonEmpty, "no INSERT plan was captured")
+          val nativeWrites = insertPlans.flatMap(_.collectWithSubqueries {
+            case w: CometIcebergWriteExec => w
+          })
+          assert(
+            nativeWrites.isEmpty,
+            "`wasb://` has no native Iceberg storage factory arm; the write must fall back to " +
+              s"Spark, but Comet claimed it:\n${insertPlans.mkString("\n--\n")}")
+          val writeReasons = insertPlans.flatMap(new ExtendedExplainInfo().getFallbackReasons)
+          assert(
+            writeReasons.exists(_.contains("unsupported storage scheme: wasb")),
+            s"the write must be declined for its scheme, got reasons: $writeReasons")
+
           val (_, cometPlan) = checkSparkAnswerAndFallbackReason(
             "SELECT * FROM wasb_catalog.db.wasb_table ORDER BY id",
             "wasb")
@@ -283,6 +337,13 @@ class CometScanSchemeFallbackSuite extends CometTestBase with CometIcebergTestBa
             nativeScans.isEmpty,
             "`wasb://` has no native Iceberg storage factory arm; the scan must fall back to " +
               s"Spark, but Comet claimed it:\n$cometPlan")
+          // Nothing but the scheme may have caused the fallback: every reason names `wasb`,
+          // except the one the operator above records about its now-Spark BatchScanExec child.
+          val scanReasons = new ExtendedExplainInfo().getFallbackReasons(cometPlan)
+          val unrelated = scanReasons.filterNot(_.contains("wasb"))
+          assert(
+            unrelated.forall(_.contains("BatchScanExec")),
+            s"fallback reasons other than the scheme were recorded: $unrelated")
         } finally {
           spark.sql("DROP TABLE wasb_catalog.db.wasb_table")
         }
