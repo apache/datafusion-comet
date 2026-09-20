@@ -22,7 +22,6 @@ package org.apache.spark.sql.comet.execution.shuffle
 import java.io.File
 import java.util.{LinkedList => JLinkedList, Properties}
 
-import org.scalatest.concurrent.{Signaler, ThreadSignaler, TimeLimits}
 import org.scalatest.funsuite.AnyFunSuite
 
 import org.apache.spark.{Partitioner, SparkConf, SparkContext, SparkEnv, TaskContextImpl}
@@ -41,9 +40,7 @@ import org.apache.spark.sql.types.{BinaryType, IntegerType, MetadataBuilder, Str
 import org.apache.spark.unsafe.UnsafeAlignedOffset
 import org.apache.spark.util.Utils
 
-class CometDiskBlockWriterSuite extends AnyFunSuite with TimeLimits {
-
-  private implicit val signaler: Signaler = ThreadSignaler
+class CometDiskBlockWriterSuite extends AnyFunSuite {
 
   private val schema = StructType(Seq(StructField("a", BinaryType)))
   private val pageSize: Long = 256 * 1024
