@@ -44,10 +44,10 @@ const STORAGE_PROPERTY_PREFIXES: &[&str] = &["s3.", "gcs.", "adls.", "client."];
 /// class is configured; `access_mode` is forwarded to the JVM SPI so the read and write paths can
 /// be granted different (e.g. read-only vs read-write) credentials.
 ///
-/// The JVM planner mirrors the schemes admitted here by hand, so that it can decline a scan
-/// cleanly instead of failing at execution. Changing the arms below means updating
-/// `CometScanRule.icebergReadableSchemes` (reads) and
-/// `CometIcebergNativeWrite.SupportedStorageSchemes` (writes).
+/// The JVM planner loads `builtin_storage_schemes` over JNI so it can decline a scan or a write
+/// cleanly instead of failing at execution. Opt-in S3-compliant alias schemes come from catalog
+/// properties and are added on the JVM side. The tests below keep that list and the match arms
+/// here in step.
 pub(crate) fn storage_factory_for(
     path: &str,
     catalog_properties: &HashMap<String, String>,
@@ -93,6 +93,15 @@ pub(crate) fn storage_factory_for(
         _ => Err(DataFusionError::Execution(format!(
             "Unsupported storage scheme: {scheme}"
         ))),
+    }
+}
+
+/// The built-in storage schemes `storage_factory_for` admits for `access_mode`, without any
+/// opted-in S3-compliant alias. This is the list the JVM read and write gates load over JNI.
+pub(crate) fn builtin_storage_schemes(access_mode: AccessMode) -> &'static [&'static str] {
+    match access_mode {
+        AccessMode::Read => &["file", "memory", "gs", "oss", "s3", "s3a"],
+        AccessMode::Write => &["file", "memory", "gs", "s3", "s3a"],
     }
 }
 
@@ -274,6 +283,43 @@ mod tests {
             err.contains("Unsupported storage scheme"),
             "unexpected error: {err}"
         );
+    }
+
+    #[test]
+    fn exposed_scheme_list_matches_storage_factory() {
+        for mode in [AccessMode::Read, AccessMode::Write] {
+            for scheme in builtin_storage_schemes(mode) {
+                let url = format!("{scheme}://bucket/path");
+                assert!(
+                    factory_result(&url, mode).is_ok(),
+                    "{scheme} is listed for {mode:?} but the factory rejects it"
+                );
+            }
+        }
+        assert!(builtin_storage_schemes(AccessMode::Read).contains(&"oss"));
+        assert!(!builtin_storage_schemes(AccessMode::Write).contains(&"oss"));
+        assert!(builtin_storage_schemes(AccessMode::Read).contains(&"memory"));
+        assert!(builtin_storage_schemes(AccessMode::Write).contains(&"memory"));
+    }
+
+    #[test]
+    fn unlisted_schemes_are_rejected_for_both_modes() {
+        let unlisted = [
+            "hdfs", "abfs", "abfss", "wasb", "wasbs", "gcs", "http", "https", "azure",
+        ];
+        for mode in [AccessMode::Read, AccessMode::Write] {
+            for scheme in unlisted {
+                let err = factory_result(&format!("{scheme}://bucket/path"), mode).unwrap_err();
+                assert!(
+                    err.contains("Unsupported storage scheme"),
+                    "unexpected error for {scheme} in {mode:?}: {err}"
+                );
+                assert!(
+                    !builtin_storage_schemes(mode).contains(&scheme),
+                    "{scheme} must not be listed for {mode:?}"
+                );
+            }
+        }
     }
 
     #[test]
