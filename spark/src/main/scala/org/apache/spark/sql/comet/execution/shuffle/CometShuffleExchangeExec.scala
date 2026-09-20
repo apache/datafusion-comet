@@ -652,11 +652,6 @@ object CometShuffleExchangeExec
       case RoundRobinPartitioning(_) =>
       // we already checked that the input types are supported
       case RangePartitioning(orderings, _) =>
-        for (o <- orderings) {
-          if (QueryPlanSerde.exprToProto(o, inputs).isEmpty) {
-            reasons += s"unsupported range partitioning sort order: $o"
-          }
-        }
         for (dt <- orderings.map(_.dataType).distinct) {
           if (isStringCollationType(dt)) {
             reasons += s"unsupported range partitioning data type for columnar shuffle: $dt"
