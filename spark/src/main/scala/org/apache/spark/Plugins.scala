@@ -172,7 +172,7 @@ object CometDriverPlugin extends Logging {
         s"${EXECUTOR_MEMORY_OVERHEAD.key} is not set. Comet allocates outside the JVM heap, and " +
           "the part of that which no memory pool tracks is not covered by " +
           "spark.executor.memory or spark.memory.offHeap.size, so Spark's default overhead can " +
-          s"leave the executor short and the cluster manager may kill it. Set " +
+          "leave the executor short and the cluster manager may kill it. Set " +
           s"${EXECUTOR_MEMORY_OVERHEAD.key} before creating the SparkContext; it cannot be set " +
           s"later. ${CometConf.TUNING_GUIDE}.")
     }
