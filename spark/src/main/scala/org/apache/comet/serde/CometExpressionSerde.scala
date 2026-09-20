@@ -125,11 +125,22 @@ trait CometExpressionSerde[T <: Expression] {
 trait CodegenDispatchFallback extends NativeOptInAvailable { self: CometExpressionSerde[_] => }
 
 /**
- * Doc-facing marker for serdes that run a Spark-compatible path by default but have a faster
- * native implementation the user can opt into. `GenerateDocs` uses this to render the
- * compatible-by-default header, and the gating config key is the per-expression
+ * Marker for serdes that have a native implementation the user can opt into. Normally these
+ * serdes run a Spark-compatible path by default. A serde can set `hasConditionalNativeDefault`
+ * when some compatible instances instead run natively by default. `GenerateDocs` uses this
+ * metadata to describe both paths, and the gating config key is the per-expression
  * `allowIncompatible` key unless `nativeOptInConfigKeyOverride` supplies a different one.
+ *
+ * `hasConditionalNativeDefault` is documentation metadata only. It does not participate in
+ * runtime planning or change expression routing or `allowIncompatible` semantics.
  */
 trait NativeOptInAvailable { self: CometExpressionSerde[_] =>
   def nativeOptInConfigKeyOverride: Option[String] = None
+
+  /**
+   * Whether some compatible expression instances run natively by default, while other applicable
+   * instances retain the native opt-in behavior. This is documentation metadata only and does not
+   * affect runtime routing.
+   */
+  def hasConditionalNativeDefault: Boolean = false
 }

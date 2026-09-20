@@ -117,6 +117,21 @@ class Native extends NativeBase {
       schemaAddrs: Array[Long]): Long
 
   /**
+   * Returns the partition offsets published by a finished native shuffle write.
+   *
+   * The writer knows every offset once its plan completes, so they are handed back in memory
+   * rather than through a temporary index file. Call only after the plan has been fully drained,
+   * and only for a plan whose root is a native shuffle writer with a local destination.
+   *
+   * @param plan
+   *   the address to native query plan.
+   * @return
+   *   `numPartitions + 1` offsets, the last being the total data file length, so that partition
+   *   lengths are successive differences.
+   */
+  @native def getShufflePartitionOffsets(plan: Long): Array[Long]
+
+  /**
    * Release and drop the native query plan object and context object.
    *
    * @param plan

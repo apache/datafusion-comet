@@ -191,8 +191,9 @@ jobs:
           rust-version: ${{ env.RUST_VERSION }}
           jdk-version: ${{ matrix.profile.java_version }}
 
-      - name: Cache Maven dependencies
-        uses: actions/cache@v6
+      - name: Restore Maven dependencies
+        id: maven-cache
+        uses: actions/cache/restore@v6
         with:
           path: |
             ~/.m2/repository
@@ -200,9 +201,6 @@ jobs:
           key: ${{ runner.os }}-java-maven-${{ hashFiles('**/pom.xml') }}-lint
           restore-keys: |
             ${{ runner.os }}-java-maven-
-
-      - name: Bootstrap Maven
-        uses: ./.github/actions/maven-bootstrap
 
       - name: Run scalafix check
         run: |
@@ -229,6 +227,19 @@ jobs:
         run: |
           ./dev/ci/check-working-tree-clean.sh
 
+      # Saved only on main: an entry written from a pull request or a
+      # `gh-readonly-queue/*` branch cannot be restored by any later run, and
+      # it evicts main's from the shared budget. See "Large caches are written
+      # on main only" in README.md.
+      - name: Save Maven dependencies
+        if: ${{ github.ref == 'refs/heads/main' && steps.maven-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v6
+        with:
+          path: |
+            ~/.m2/repository
+            /root/.m2/repository
+          key: ${{ runner.os }}-java-maven-${{ hashFiles('**/pom.xml') }}-lint
+
   # Compile-only verification for Spark 4.1. Tests are intentionally skipped: the spark-4.1
   # profile is currently a build target only, and several runtime/test failures are tracked
   # in follow-up PRs. Excluded from lint-java because semanticdb-scalac_2.13.17 is not yet
@@ -249,8 +260,9 @@ jobs:
           rust-version: ${{ env.RUST_VERSION }}
           jdk-version: 17
 
-      - name: Cache Maven dependencies
-        uses: actions/cache@v6
+      - name: Restore Maven dependencies
+        id: maven-cache
+        uses: actions/cache/restore@v6
         with:
           path: |
             ~/.m2/repository
@@ -259,11 +271,21 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-java-maven-
 
-      - name: Bootstrap Maven
-        uses: ./.github/actions/maven-bootstrap
-
       - name: Compile (skip tests)
         run: ./mvnw -B install -DskipTests -Dmaven.test.skip=true -Pspark-4.1
+
+      # Saved only on main: an entry written from a pull request or a
+      # `gh-readonly-queue/*` branch cannot be restored by any later run, and
+      # it evicts main's from the shared budget. See "Large caches are written
+      # on main only" in README.md.
+      - name: Save Maven dependencies
+        if: ${{ github.ref == 'refs/heads/main' && steps.maven-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v6
+        with:
+          path: |
+            ~/.m2/repository
+            /root/.m2/repository
+          key: ${{ runner.os }}-java-maven-${{ hashFiles('**/pom.xml') }}-spark-4.1-build
 
   celeborn-reflection-compatibility:
     needs: lint
@@ -287,8 +309,9 @@ jobs:
           rust-version: ${{ env.RUST_VERSION }}
           jdk-version: 17
 
-      - name: Cache Maven dependencies
-        uses: actions/cache@v6
+      - name: Restore Maven dependencies
+        id: maven-cache
+        uses: actions/cache/restore@v6
         with:
           path: |
             ~/.m2/repository
@@ -296,9 +319,6 @@ jobs:
           key: ${{ runner.os }}-java-maven-${{ hashFiles('**/pom.xml') }}-celeborn-${{ matrix.celeborn_version }}
           restore-keys: |
             ${{ runner.os }}-java-maven-
-
-      - name: Bootstrap Maven
-        uses: ./.github/actions/maven-bootstrap
 
       - name: Verify reflected Celeborn internals
         env:
@@ -311,6 +331,19 @@ jobs:
             -Dtest=none \
             -Dsuites=org.apache.comet.shuffle.CelebornReflectionCompatibilitySuite \
             -DfailIfNoTests=false
+
+      # Saved only on main: an entry written from a pull request or a
+      # `gh-readonly-queue/*` branch cannot be restored by any later run, and
+      # it evicts main's from the shared budget. See "Large caches are written
+      # on main only" in README.md.
+      - name: Save Maven dependencies
+        if: ${{ github.ref == 'refs/heads/main' && steps.maven-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v6
+        with:
+          path: |
+            ~/.m2/repository
+            /root/.m2/repository
+          key: ${{ runner.os }}-java-maven-${{ hashFiles('**/pom.xml') }}-celeborn-${{ matrix.celeborn_version }}
 
   # Build native library once and share with all test jobs. Also the owner of
   # main's `cargo-ci` cache entry, which is why it runs in cache-refresh-only
@@ -360,7 +393,7 @@ jobs:
         uses: actions/cache/save@v6
         # The push run is the cache warmer (see the header); a scheduled run
         # at the same sha would only re-archive an entry that already exists.
-        if: github.event_name == 'push'
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         with:
           path: |
             ~/.cargo/registry
@@ -409,7 +442,7 @@ jobs:
         uses: actions/cache/save@v6
         # The push run is the cache warmer (see the header); a scheduled run
         # at the same sha would only re-archive an entry that already exists.
-        if: github.event_name == 'push'
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         with:
           path: |
             ~/.cargo/registry
@@ -438,6 +471,7 @@ jobs:
           - name: "scans"
             value: |
               org.apache.comet.parquet.CometParquetWriterSuite
+              org.apache.comet.parquet.CometEmptyRelationParquetWriterSuite
               org.apache.comet.parquet.ParquetReadV1Suite
               org.apache.comet.parquet.ParquetReadV2Suite
               org.apache.comet.parquet.ParquetTimestampLtzAsNtzSuite
@@ -486,6 +520,7 @@ jobs:
               org.apache.comet.exec.CometAggregateSuite
               org.apache.comet.exec.CometExec3_4PlusSuite
               org.apache.comet.exec.CometExecSuite
+              org.apache.comet.exec.CometEmptyRelationExecSuite
               org.apache.comet.exec.CometInMemoryCacheSuite
               org.apache.comet.exec.CometInMemoryCacheKryoSuite
               org.apache.comet.exec.CometGenerateExecSuite
@@ -511,6 +546,7 @@ jobs:
               org.apache.comet.rules.CometScanSchemeFallbackSuite
               org.apache.comet.rules.CometExecRuleSuite
               org.apache.spark.sql.comet.CometPlanEqualitySuite
+              org.apache.comet.rules.CometEmptyRelationExecRuleSuite
               org.apache.comet.rules.RevertNativeForTransitionHeavyStagesSuite
               org.apache.spark.sql.CometTPCDSQuerySuite
               org.apache.spark.sql.CometTPCDSQueryTestSuite
@@ -521,6 +557,7 @@ jobs:
               org.apache.spark.sql.comet.CometDppFallbackRepro3949Suite
               org.apache.spark.sql.comet.CometShuffleFallbackStickinessSuite
               org.apache.spark.sql.comet.PlanDataInjectorSuite
+              org.apache.spark.sql.comet.PlanDataInjectorShuffleLifecycleSuite
               org.apache.spark.sql.comet.CometDecimalArithmeticViewSuite
               org.apache.spark.sql.comet.CometDecimalPromotionSuite
               org.apache.spark.sql.comet.CometScanWithPlanDataSuite
@@ -538,6 +575,7 @@ jobs:
           - name: "expressions"
             value: |
               org.apache.comet.CometExpressionSuite
+              org.apache.comet.GenerateDocsSuite
               org.apache.comet.CometSqlFileTestSuite
               org.apache.comet.SqlFileTestParserSuite
               org.apache.comet.CometExpressionCoverageSuite
@@ -555,10 +593,13 @@ jobs:
               org.apache.comet.CometJsonExpressionSuite
               org.apache.comet.CometJsonJvmSuite
               org.apache.comet.SparkErrorConverterSuite
+              org.apache.comet.serde.SerdeRegistrationSuite
               org.apache.comet.expressions.conditional.CometIfSuite
               org.apache.comet.expressions.conditional.CometCoalesceSuite
               org.apache.comet.expressions.conditional.CometCaseWhenSuite
               org.apache.comet.CometRegExpJvmSuite
+              org.apache.comet.CometRegexParitySuite
+              org.apache.comet.expressions.CometRegexSuite
               org.apache.comet.CometCodegenSuite
               org.apache.comet.CometCoverageStatsSuite
               org.apache.comet.CometCodegenSourceSuite
@@ -598,8 +639,8 @@ jobs:
           path: native/target/release/
 
       # Restore cargo registry cache (for any cargo commands that might run)
-      - name: Cache Cargo registry
-        uses: actions/cache@v6
+      - name: Restore Cargo registry
+        uses: actions/cache/restore@v6
         with:
           path: |
             ~/.cargo/registry
@@ -646,8 +687,9 @@ jobs:
           name: native-lib-linux
           path: native/target/release/
 
-      - name: Cache Maven dependencies
-        uses: actions/cache@v6
+      - name: Restore Maven dependencies
+        id: maven-cache
+        uses: actions/cache/restore@v6
         with:
           path: |
             ~/.m2/repository
@@ -663,11 +705,6 @@ jobs:
           path: ./tpch
           key: tpch-${{ hashFiles('.github/workflows/pr_build_linux.yml') }}
 
-      # Without this, a transient repo.maven.apache.org blip fails the whole
-      # job before anything is compiled.
-      - name: Bootstrap Maven
-        uses: ./.github/actions/maven-bootstrap
-
       - name: Build project
         run: |
           ./mvnw -B -Prelease install -DskipTests
@@ -681,6 +718,19 @@ jobs:
         if: ${{ !inputs.cache-refresh-only }}
         run: |
           SPARK_HOME=`pwd` SPARK_TPCH_DATA=`pwd`/tpch/sf1_parquet ./mvnw -B -Prelease -Dsuites=org.apache.spark.sql.CometTPCHQuerySuite test
+
+      # Saved only on main: an entry written from a pull request or a
+      # `gh-readonly-queue/*` branch cannot be restored by any later run, and
+      # it evicts main's from the shared budget. See "Large caches are written
+      # on main only" in README.md.
+      - name: Save Maven dependencies
+        if: ${{ github.ref == 'refs/heads/main' && steps.maven-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v6
+        with:
+          path: |
+            ~/.m2/repository
+            /root/.m2/repository
+          key: ${{ runner.os }}-java-maven-${{ hashFiles('**/pom.xml') }}
 
   # TPC-DS correctness tests - verifies benchmark queries produce correct results.
   # The three join strategies run sequentially in one job so the project is built
@@ -711,8 +761,9 @@ jobs:
           name: native-lib-linux
           path: native/target/release/
 
-      - name: Cache Maven dependencies
-        uses: actions/cache@v6
+      - name: Restore Maven dependencies
+        id: maven-cache
+        uses: actions/cache/restore@v6
         with:
           path: |
             ~/.m2/repository
@@ -727,11 +778,6 @@ jobs:
         with:
           path: ./tpcds-sf-1
           key: tpcds-${{ hashFiles('.github/workflows/pr_build_linux.yml') }}
-
-      # Without this, a transient repo.maven.apache.org blip fails the whole
-      # job before anything is compiled.
-      - name: Bootstrap Maven
-        uses: ./.github/actions/maven-bootstrap
 
       - name: Build project
         run: |
@@ -781,3 +827,16 @@ jobs:
           SPARK_TPCDS_JOIN_CONF: |
             spark.sql.autoBroadcastJoinThreshold=-1
             spark.sql.join.forceApplyShuffledHashJoin=true
+
+      # Saved only on main: an entry written from a pull request or a
+      # `gh-readonly-queue/*` branch cannot be restored by any later run, and
+      # it evicts main's from the shared budget. See "Large caches are written
+      # on main only" in README.md.
+      - name: Save Maven dependencies
+        if: ${{ github.ref == 'refs/heads/main' && steps.maven-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v6
+        with:
+          path: |
+            ~/.m2/repository
+            /root/.m2/repository
+          key: ${{ runner.os }}-java-maven-${{ hashFiles('**/pom.xml') }}
