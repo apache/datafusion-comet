@@ -138,6 +138,18 @@ def render(code, params, workdir):
     return None
 
 
+def escape_annotation(message):
+    """Encode `message` for a GitHub workflow command.
+
+    Annotations are the only part of a failing job that is readable without
+    fetching the log, so the whole mmdc error goes in one rather than just a
+    summary. Newlines and `%` have to be escaped or the command is truncated at
+    the first one. The limit is generous but not unbounded, hence the trim.
+    """
+    trimmed = message.strip()[:3000]
+    return trimmed.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+
+
 def annotate(error):
     """Append the fix for failures whose message does not suggest one."""
     if "Could not find" in error and "cache path" in error:
@@ -193,7 +205,7 @@ def check_renders():
             if error:
                 failed += 1
                 relative = path.relative_to(REPO_ROOT)
-                print(f"::error file={relative},line={line}::mmdc cannot render this diagram")
+                print(f"::error file={relative},line={line}::{escape_annotation(error)}")
                 print(f"mermaid: {relative}:{line} does not render:\n{error}\n")
 
     if failed:
