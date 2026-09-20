@@ -27,6 +27,7 @@ import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression, SortOrder}
 import org.apache.spark.sql.catalyst.plans.QueryPlan
 import org.apache.spark.sql.catalyst.plans.physical.{Partitioning, UnknownPartitioning}
+import org.apache.spark.sql.execution.SQLExecution
 import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
 import org.apache.spark.sql.vectorized.ColumnarBatch
@@ -193,7 +194,10 @@ case class CometIcebergNativeScanExec(
     } else {
       originalPlan.metrics
         .filterNot { case (name, _) =>
-          // Filter out metrics that are now runtime metrics incremented on the native side
+          // Filter out metrics that are now runtime metrics incremented on the native side.
+          // numDeletes is a Java-reader runtime metric (deletes applied at read time); the native
+          // path never runs that reader and iceberg-rust exposes no deletes-applied count, so it
+          // would always read 0. Drop it rather than surface a misleading zero.
           name == "numOutputRows" || name == "numDeletes" || name == "numSplits"
         }
         .map { case (name, metric) =>
@@ -208,7 +212,10 @@ case class CometIcebergNativeScanExec(
   override lazy val metrics: Map[String, SQLMetric] = {
     val baseMetrics = Map(
       "output_rows" -> SQLMetrics.createMetric(sparkContext, "number of output rows"),
-      "bytes_scanned" -> SQLMetrics.createSizeMetric(sparkContext, "number of bytes scanned"))
+      "bytes_scanned" -> SQLMetrics.createSizeMetric(sparkContext, "number of bytes scanned"),
+      // Native read/decode time, aggregated across tasks. Fed by iceberg-rust's BaselineMetrics
+      // (elapsed_compute, in nanoseconds) through the standard JNI metric path.
+      "elapsed_compute" -> SQLMetrics.createNanoTimingMetric(sparkContext, "scan time"))
 
     // Add num_splits as a runtime metric (incremented on the native side during execution)
     val numSplitsMetric = SQLMetrics.createMetric(sparkContext, "number of file splits processed")
@@ -216,8 +223,38 @@ case class CometIcebergNativeScanExec(
     baseMetrics ++ icebergPlanningMetrics + ("num_splits" -> numSplitsMetric)
   }
 
+  /**
+   * Posts the Iceberg planning metrics (data/delete file and manifest counts, file sizes, and
+   * total planning duration) to the SQL UI as driver metrics. Iceberg-Java produces these during
+   * planFiles(); they live on the driver and are never updated by executor tasks, so without an
+   * explicit post the SQL UI never receives their accumulator ids and the scan node shows
+   * nothing. Mirrors [[CometScanExec.sendDriverMetrics]] for the Parquet path. The native runtime
+   * metrics (output_rows, bytes_scanned, num_splits, elapsed_compute) travel the separate JNI
+   * path and are not posted here.
+   *
+   * Called from two places because a native leaf scan does not always run its own
+   * doExecuteColumnar: when this scan is fused under a parent native operator (e.g. a CometFilter
+   * for a pushed predicate), the parent runs the whole subtree as one RDD and this node's
+   * doExecuteColumnar is never invoked. CometNativeExec.findAllPlanData walks the subtree at
+   * execution time and reaches every leaf scan (calling this leaf lifecycle hook alongside
+   * ensureSubqueriesResolved), so it calls this too. Re-posting the same values is harmless.
+   */
+  override def sendDriverMetrics(): Unit = {
+    if (icebergPlanningMetrics.isEmpty) {
+      return
+    }
+    // Force planning so originalPlan.metrics are populated; LazyIcebergMetric.value reads them.
+    val _ = serializedPartitionData
+    val executionId = sparkContext.getLocalProperty(SQLExecution.EXECUTION_ID_KEY)
+    SQLMetrics.postDriverMetricUpdates(
+      sparkContext,
+      executionId,
+      icebergPlanningMetrics.values.toSeq)
+  }
+
   /** Executes using CometExecRDD - planning data is computed lazily on first access. */
   override def doExecuteColumnar(): RDD[ColumnarBatch] = {
+    sendDriverMetrics()
     val nativeMetrics = CometMetricNode.fromCometPlan(this)
     val serializedPlan = CometExec.serializeNativePlan(nativeOp)
     // Key by the same (metadata_location, scan_hash_code) pair PlanDataInjector.injectPlanData
