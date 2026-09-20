@@ -233,11 +233,20 @@ SELECT get_json_object('{"a":[{"b":[1,2]},{"b":[3]}]}', '$.a[*].b[*]')
 query
 SELECT get_json_object('[[[1,2],[]]]', '$[*][*][*]'), get_json_object('[[[1,2]]]', '$[*][*][*]')
 
--- Jackson rejects number tokens over 1000 characters anywhere in the document,
--- including values the path never selects; 1000 digits is still accepted
+-- Jackson rejects numbers whose digit count exceeds 1000 anywhere in the
+-- document, including values the path never selects; the sign, decimal point
+-- and exponent sign do not count, floats are limited by the summed digit
+-- counts of their parts, and a lone leading zero contributes nothing
 query
 SELECT get_json_object(concat('[{"a":1,"b":', repeat('9', 1000), '}]'), '$[*].a'),
-       get_json_object(concat('[{"a":1,"b":', repeat('9', 1001), '}]'), '$[*].a')
+       get_json_object(concat('[{"a":1,"b":', repeat('9', 1001), '}]'), '$[*].a'),
+       get_json_object(concat('[{"a":1,"b":-', repeat('9', 1000), '}]'), '$[*].a'),
+       get_json_object(concat('[{"a":1,"b":-', repeat('9', 1001), '}]'), '$[*].a'),
+       get_json_object(concat('[{"a":1,"b":1.', repeat('1', 999), '}]'), '$[*].a'),
+       get_json_object(concat('[{"a":1,"b":1.', repeat('1', 1000), '}]'), '$[*].a'),
+       get_json_object(concat('[{"a":1,"b":0.', repeat('1', 1000), '}]'), '$[*].a'),
+       get_json_object(concat('[{"a":1,"b":1e', repeat('0', 999), '}]'), '$[*].a'),
+       get_json_object(concat('[{"a":1,"b":1e', repeat('0', 1000), '}]'), '$[*].a')
 
 -- `.*` and `['*']` wildcards never match: Spark's parser emits a bare wildcard
 -- instruction that no evaluator dispatch case consumes

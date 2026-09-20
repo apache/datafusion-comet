@@ -36,6 +36,9 @@ regex = { workspace = true }
 # preserve_order: needed for get_json_object to match Spark's JSON key ordering
 serde_json = { version = "1.0", features = ["preserve_order"] }
 serde = { version = "1.0", features = ["derive"] }
+# get_json_object: pre-parse scan for Jackson's numeric length constraint, using
+# the same memchr2-based string skipping as serde_json's own `ignore_str`
+memchr = "2.8"
 datafusion-comet-common = { workspace = true }
 datafusion-comet-jni-bridge = { workspace = true }
 jni = "0.22.4"

@@ -287,49 +287,108 @@ fn parse_json_path(path: &str) -> Option<ParsedPath> {
     Some(ParsedPath { segments })
 }
 
-/// Jackson (and therefore Spark) rejects number tokens longer than 1000
-/// characters wherever they appear in the document — including values this
-/// evaluation skips — so `get_json_object` returns null. serde_json enforces no
-/// such limit when skipping, so mirror it with a byte scan before parsing.
+/// Jackson (and therefore Spark) rejects numbers whose digit count exceeds
+/// 1000 wherever they appear in the document — including values this evaluation
+/// skips — so `get_json_object` returns null. serde_json enforces no such limit
+/// when skipping (see its `ignore_integer`/`ignore_decimal`), so mirror
+/// Jackson's `StreamReadConstraints` counters with a byte scan before parsing:
+/// the sign and the decimal point do not count, integers are limited by their
+/// digit count, and floats by the sum of their integer-part (a lone leading
+/// zero counts as zero digits), fraction and exponent digit counts.
+/// Find the end of a string body starting at `i` (just past the opening
+/// quote). Short bodies are scanned inline; long bodies use memchr2, the same
+/// approach as serde_json's `ignore_str`. Returns the index just past the
+/// closing quote, or None for an unterminated string (the parser rejects the
+/// document anyway).
+#[inline]
+fn skip_string_body(bytes: &[u8], mut i: usize) -> Option<usize> {
+    const SHORT_STRING: usize = 32;
+    if bytes.len() - i <= SHORT_STRING {
+        while i < bytes.len() {
+            match bytes[i] {
+                b'"' => return Some(i + 1),
+                b'\\' => i += 2,
+                _ => i += 1,
+            }
+        }
+        return None;
+    }
+    loop {
+        match memchr::memchr2(b'"', b'\\', &bytes[i..]) {
+            Some(off) if bytes[i + off] == b'"' => return Some(i + off + 1),
+            Some(off) => i += off + 2, // escaped byte
+            None => return None,
+        }
+    }
+}
+
 fn has_oversized_number(json: &str) -> bool {
-    const MAX_NUMBER_LEN: usize = 1000;
+    const MAX_NUMBER_DIGITS: usize = 1000;
     let bytes = json.as_bytes();
-    let mut in_string = false;
-    let mut escaped = false;
     let mut i = 0;
     while i < bytes.len() {
-        let b = bytes[i];
-        if in_string {
-            if escaped {
-                escaped = false;
-            } else {
-                match b {
-                    b'\\' => escaped = true,
-                    b'"' => in_string = false,
-                    _ => {}
+        match bytes[i] {
+            // Skip string bodies: Jackson applies no numeric constraint to
+            // string content.
+            b'"' => match skip_string_body(bytes, i + 1) {
+                Some(end) => i = end,
+                None => return false,
+            },
+            b'-' | b'0'..=b'9' => {
+                let mut j = i + usize::from(bytes[i] == b'-');
+                let int_start = j;
+                while j < bytes.len() && bytes[j].is_ascii_digit() {
+                    j += 1;
                 }
+                let int_len = j - int_start;
+                let mut fract_len = 0;
+                if j < bytes.len() && bytes[j] == b'.' {
+                    j += 1;
+                    let start = j;
+                    while j < bytes.len() && bytes[j].is_ascii_digit() {
+                        j += 1;
+                    }
+                    fract_len = j - start;
+                }
+                let mut exp_len = 0;
+                if j < bytes.len() && (bytes[j] | 0x20) == b'e' {
+                    j += 1;
+                    if j < bytes.len() && (bytes[j] == b'+' || bytes[j] == b'-') {
+                        j += 1;
+                    }
+                    let start = j;
+                    while j < bytes.len() && bytes[j].is_ascii_digit() {
+                        j += 1;
+                    }
+                    exp_len = j - start;
+                }
+                let is_float = fract_len > 0 || exp_len > 0;
+                let digit_count = if is_float {
+                    // jackson-core counts a lone leading-zero integer part as
+                    // zero digits — except when both a fraction and an
+                    // exponent are present, where it counts as one (verified
+                    // against jackson-core 2.21.2: `0.5e` followed by 999
+                    // exponent digits is rejected with "Number value length
+                    // (1001) exceeds the maximum allowed (1000)").
+                    let int_digits = if int_len == 1
+                        && bytes[int_start] == b'0'
+                        && !(fract_len > 0 && exp_len > 0)
+                    {
+                        0
+                    } else {
+                        int_len
+                    };
+                    int_digits + fract_len + exp_len
+                } else {
+                    int_len
+                };
+                if digit_count > MAX_NUMBER_DIGITS {
+                    return true;
+                }
+                i = j;
             }
-            i += 1;
-            continue;
+            _ => i += 1,
         }
-        if b == b'"' {
-            in_string = true;
-        } else if b.is_ascii_digit() || b == b'-' {
-            // A number token: digits, sign, decimal point and exponent marker
-            // all count towards Jackson's limit.
-            let start = i;
-            i += 1;
-            while i < bytes.len()
-                && matches!(bytes[i], b'0'..=b'9' | b'.' | b'e' | b'E' | b'+' | b'-')
-            {
-                i += 1;
-            }
-            if i - start > MAX_NUMBER_LEN {
-                return true;
-            }
-            continue;
-        }
-        i += 1;
     }
     false
 }
@@ -1041,18 +1100,49 @@ mod tests {
 
     #[test]
     fn test_oversized_number_in_skipped_field() {
-        // Jackson (and therefore Spark) rejects number tokens longer than 1000
-        // characters anywhere in the document, including values the path never
-        // selects. serde_json's IgnoredAny skip does not, so the length is
-        // checked before parsing.
+        // Jackson (and therefore Spark) rejects numbers whose digit count
+        // exceeds 1000 anywhere in the document, including values the path
+        // never selects. serde_json's IgnoredAny skip does not, so the length
+        // is checked before parsing. The counters mirror jackson-core: the
+        // sign and decimal point do not count, and floats are limited by the
+        // sum of integer-part (a lone leading zero counts as zero), fraction
+        // and exponent digit counts.
         let path = parse_json_path("$[*].a").unwrap();
         let ok = format!(r#"[{{"a":1,"b":{}}}]"#, "9".repeat(1000));
         assert_eq!(evaluate_path(&ok, &path), Some("1".to_string()));
         let oversized = format!(r#"[{{"a":1,"b":{}}}]"#, "9".repeat(1001));
         assert_eq!(evaluate_path(&oversized, &path), None);
 
-        // The check also applies to non-wildcard paths and to numbers inside
-        // strings being ignored.
+        // Sign does not count towards the integer length.
+        let neg_ok = format!(r#"[{{"a":1,"b":-{}}}]"#, "9".repeat(1000));
+        assert_eq!(evaluate_path(&neg_ok, &path), Some("1".to_string()));
+        let neg_over = format!(r#"[{{"a":1,"b":-{}}}]"#, "9".repeat(1001));
+        assert_eq!(evaluate_path(&neg_over, &path), None);
+
+        // Floats: digit counts of all parts are summed; the decimal point and
+        // exponent sign do not count, and a lone leading zero contributes
+        // nothing (verified against jackson-core 2.21.2).
+        let fract_ok = format!(r#"[{{"a":1,"b":1.{}}}]"#, "1".repeat(999));
+        assert_eq!(evaluate_path(&fract_ok, &path), Some("1".to_string()));
+        let fract_over = format!(r#"[{{"a":1,"b":1.{}}}]"#, "1".repeat(1000));
+        assert_eq!(evaluate_path(&fract_over, &path), None);
+        let zero_int_ok = format!(r#"[{{"a":1,"b":0.{}}}]"#, "1".repeat(1000));
+        assert_eq!(evaluate_path(&zero_int_ok, &path), Some("1".to_string()));
+        let exp_ok = format!(r#"[{{"a":1,"b":1e{}}}]"#, "0".repeat(999));
+        assert_eq!(evaluate_path(&exp_ok, &path), Some("1".to_string()));
+        let exp_over = format!(r#"[{{"a":1,"b":1e{}}}]"#, "0".repeat(1000));
+        assert_eq!(evaluate_path(&exp_over, &path), None);
+        let neg_exp_ok = format!(r#"[{{"a":1,"b":1e-{}}}]"#, "0".repeat(999));
+        assert_eq!(evaluate_path(&neg_exp_ok, &path), Some("1".to_string()));
+        // jackson-core quirk: with both a fraction and an exponent, a lone
+        // leading zero counts as one digit, so 0.5e<999 zeros> totals 1001.
+        let fract_exp_ok = format!(r#"[{{"a":1,"b":0.5e{}}}]"#, "0".repeat(998));
+        assert_eq!(evaluate_path(&fract_exp_ok, &path), Some("1".to_string()));
+        let fract_exp_over = format!(r#"[{{"a":1,"b":0.5e{}}}]"#, "0".repeat(999));
+        assert_eq!(evaluate_path(&fract_exp_over, &path), None);
+
+        // The check also applies to non-wildcard paths, and digits inside
+        // string literals are ignored.
         let path = parse_json_path("$.a").unwrap();
         assert_eq!(evaluate_path(&oversized, &path), None);
         let in_string = format!(r#"{{"a":1,"b":"{}"}}"#, "9".repeat(1001));

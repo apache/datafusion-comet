@@ -2104,6 +2104,7 @@ dependencies = [
  "datafusion-spark",
  "futures",
  "jni 0.22.4",
+ "memchr",
  "num",
  "rand 0.10.2",
  "regex",

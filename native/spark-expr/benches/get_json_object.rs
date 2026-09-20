@@ -61,6 +61,23 @@ fn criterion_benchmark(c: &mut Criterion) {
         });
     }
 
+    // A document with a large string field the path never selects. The
+    // numeric-length pre-scan must skip string bodies at memchr speed so
+    // unselected payloads do not dominate the extraction cost.
+    let big_string_docs: ColumnarValue = {
+        let payload = "x".repeat(64 * 1024);
+        let docs: Vec<String> = (0..64)
+            .map(|i| format!(r#"{{"a":{i},"unused":"{payload}"}}"#))
+            .collect();
+        ColumnarValue::Array(Arc::new(StringArray::from(docs)))
+    };
+    let path = path("$.a");
+    group.bench_function("large_skipped_string", |b| {
+        b.iter(|| {
+            black_box(spark_get_json_object(&[big_string_docs.clone(), path.clone()]).unwrap());
+        });
+    });
+
     group.finish();
 }
 
