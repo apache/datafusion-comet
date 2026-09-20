@@ -360,7 +360,9 @@ Azure scans discover Root CA Certificates the same way S3 scans do. See [Root CA
 
 ### Supported Authentication
 
-Comet first calls `MicrosoftAzureBuilder::from_env()`, so any `AZURE_*` environment variables (`AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_FEDERATED_TOKEN_FILE`, `AZURE_AUTHORITY_HOST`, `AZURE_STORAGE_*`) are honored out of the box. This is what makes AKS Workload Identity work in a stock pod with no extra configuration. Any Hadoop `fs.azure.*` keys below are then applied on top, overriding the environment.
+The Hadoop `fs.azure.*` configuration is authoritative for authentication, matching Hadoop's own ABFS driver, which reads no environment variables. When the Hadoop keys configure a complete auth mechanism (a shared account key, a SAS token, a client secret, a federated token file, or an MSI endpoint), or `fs.azure.account.oauth.provider.type` names `MsiTokenProvider`, that mechanism alone determines the identity and no `AZURE_*` environment variable is consulted: not credentials such as `AZURE_STORAGE_TOKEN`, `AZURE_STORAGE_ACCOUNT_KEY`, or `AZURE_FEDERATED_TOKEN_FILE`, and not transport settings such as `AZURE_ALLOW_HTTP`, `AZURE_PROXY_URL`, or `AZURE_STORAGE_ENDPOINT`, so the configured identity cannot be outranked, redirected, or intercepted by the environment. A partial Hadoop mechanism, such as `fs.azure.account.oauth2.token.file` without a client id and tenant, is not completed from the environment either; Hadoop requires the client id and tenant as well, and `object_store` then falls through its credential chain to the node's managed identity, so configure the full set.
+
+When the Hadoop keys configure no auth mechanism, or only name the identity via `fs.azure.account.oauth2.client.id`, `fs.azure.account.oauth2.msi.tenant`, or `fs.azure.account.oauth2.msi.authority`, the `AZURE_*` environment variables (`AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_FEDERATED_TOKEN_FILE`, `AZURE_AUTHORITY_HOST`, `AZURE_STORAGE_*`) are honored and the Hadoop keys are applied on top. This is what makes AKS Workload Identity work in a stock pod with no extra configuration. Transport settings from the environment apply only in this case, alongside the environment credentials.
 
 | Authentication method     | Hadoop keys                                                                                                                                                            |
 | ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -386,7 +388,7 @@ Internally, each Hadoop key is translated into a specific `AzureConfigKey` on th
 | `fs.azure.account.oauth2.token.file`       | `FederatedTokenFile`     |
 | `fs.azure.sas.<container>.<account>`       | `SasKey`                 |
 
-Anything beyond these keys is not translated and falls through to whatever `from_env()` or the URL itself provided.
+Hadoop keys beyond these are not translated. `fs.azure.account.oauth.provider.type` is read only to decide whether Hadoop configures an auth mechanism. The storage account and container always come from the URL.
 
 ### Tenant id resolution
 
@@ -408,7 +410,7 @@ Account-scoped keys take precedence over global ones, mirroring Hadoop ABFS's ow
 
 The SAS namespace follows the same shape with the container inlined into the key name: `fs.azure.sas.<container>.<account>.dfs.core.windows.net`, then `fs.azure.sas.<container>.<account>.blob.core.windows.net`, then `fs.azure.sas.<container>.<account>`.
 
-The Hadoop values, when present, override anything already picked up from the `AZURE_*` environment.
+A Hadoop value always wins over an `AZURE_*` environment variable for the same key. When the Hadoop keys configure an auth mechanism, the environment's credential variables are not consulted at all (see [Supported Authentication](#supported-authentication)).
 
 ### Examples
 
@@ -423,7 +425,7 @@ $SPARK_HOME/bin/spark-shell \
 
 **Example 2: Workload Identity (AKS)**
 
-In an AKS pod with Workload Identity enabled, the `AZURE_*` environment variables injected by the webhook are picked up automatically, so no Comet-specific configuration is required. To set the values explicitly instead:
+In an AKS pod with Workload Identity enabled, the `AZURE_*` environment variables injected by the webhook are picked up automatically, so no Comet-specific configuration is required. Setting only the client id and tenant in Hadoop while the webhook supplies `AZURE_FEDERATED_TOKEN_FILE` also works. To set all the values explicitly instead:
 
 ```shell
 $SPARK_HOME/bin/spark-shell \

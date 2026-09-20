@@ -21,8 +21,7 @@
 //! `AzureBlobFileSystem` driver entirely. This module bridges the gap by translating the
 //! Hadoop `fs.azure.*` configuration namespace (the same keys users already put in
 //! `core-site.xml` or `spark.hadoop.*`) into the `object_store` crate's `AzureConfigKey`
-//! options, then layering them on top of any AZURE_* environment variables that AKS's
-//! Workload Identity webhook injects.
+//! options and applying them to a `MicrosoftAzureBuilder`.
 //!
 //! Only `abfs[s]://<container>@<account>.<endpoint-suffix>/<path>` URLs are supported —
 //! the same URL shape Spark and Hadoop emit. `wasb[s]://` is not routed here because
@@ -32,17 +31,31 @@
 //! *container* for those schemes rather than the *account*, which does not match the
 //! account-scoped Hadoop key layout that `NativeConfig` forwards.
 //!
-//! Supported authentication, in the priority order applied to the builder:
+//! The Hadoop configuration is authoritative for authentication, matching the ABFS driver,
+//! which reads no environment variables at all:
 //!
-//! 1. `MicrosoftAzureBuilder::from_env()` — picks up `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`,
-//!    `AZURE_FEDERATED_TOKEN_FILE`, `AZURE_AUTHORITY_HOST`, `AZURE_STORAGE_*`, etc.
-//!    This is what makes Workload Identity work out of the box in AKS pods.
-//! 2. Account-scoped Hadoop keys (`fs.azure.account.X.<account>.dfs.core.windows.net`).
-//! 3. Global Hadoop keys (`fs.azure.account.X`).
+//! 1. When the translated Hadoop keys include an auth mechanism (an account key, a SAS
+//!    token, a client secret, a federated token file or an MSI endpoint), or the Hadoop
+//!    `fs.azure.account.oauth.provider.type` names `MsiTokenProvider`, that mechanism alone
+//!    determines the identity and no `AZURE_*` variable is consulted at all. Credentials
+//!    are skipped, so an ambient `AZURE_STORAGE_TOKEN` or `AZURE_STORAGE_ACCOUNT_KEY` cannot
+//!    outrank the configured identity and an AKS-injected `AZURE_FEDERATED_TOKEN_FILE`
+//!    cannot turn a client-secret or MSI principal into workload identity. Transport
+//!    settings such as `AZURE_ALLOW_HTTP`, `AZURE_PROXY_URL` or `AZURE_STORAGE_ENDPOINT`
+//!    are skipped too, so the environment cannot redirect or intercept it either. A
+//!    partial mechanism, such as a token file without a client id and tenant, is not
+//!    completed from the environment; `object_store` then falls through its credential
+//!    chain to the node's managed identity, so configure the full set in Hadoop.
+//! 2. When the Hadoop keys name no mechanism (nothing, or only a client id / tenant /
+//!    authority host), the `AZURE_*` variables are applied first and the Hadoop keys on
+//!    top. This is what makes AKS Workload Identity work out of the box, including when
+//!    Hadoop names the client id and tenant while the webhook supplies the token file.
+//!    Transport settings from the environment apply only in this case, alongside the
+//!    environment credentials.
 //!
-//! Items 2 and 3 are forwarded via `MicrosoftAzureBuilder::with_config`, which overrides
-//! whatever `from_env()` produced. The account-scoped variant wins over the global one,
-//! mirroring Hadoop ABFS's own `AbfsConfiguration` precedence.
+//! Within the Hadoop keys, the account-scoped variant
+//! (`fs.azure.account.X.<account>.dfs.core.windows.net`) wins over the global one
+//! (`fs.azure.account.X`), mirroring Hadoop ABFS's own `AbfsConfiguration` precedence.
 //!
 //! The translated keys cover the auth schemes that ABFS users actually configure:
 //!
@@ -58,7 +71,8 @@
 //! | `fs.azure.account.oauth2.token.file`                     | `FederatedTokenFile`   |
 //! | `fs.azure.sas.<container>.<account>`                     | `SasKey`               |
 //!
-//! Anything beyond these falls through to whatever `from_env()` or the URL itself provided.
+//! Hadoop keys outside this table are not translated; the URL supplies the account and
+//! container.
 
 use log::debug;
 use std::collections::HashMap;
@@ -79,8 +93,15 @@ const HADOOP_MSI_ENDPOINT: &str = "fs.azure.account.oauth2.msi.endpoint";
 const HADOOP_MSI_AUTHORITY: &str = "fs.azure.account.oauth2.msi.authority";
 const HADOOP_WI_TOKEN_FILE: &str = "fs.azure.account.oauth2.token.file";
 const HADOOP_SAS_PREFIX: &str = "fs.azure.sas.";
+const HADOOP_OAUTH_PROVIDER_TYPE: &str = "fs.azure.account.oauth.provider.type";
+/// Simple class name of Hadoop's `org.apache.hadoop.fs.azurebfs.oauth2.MsiTokenProvider`.
+const HADOOP_MSI_PROVIDER_CLASS: &str = "MsiTokenProvider";
 
 const ENDPOINT_SUFFIXES: &[&str] = &["dfs.core.windows.net", "blob.core.windows.net"];
+
+/// Environment variable object_store's `from_env` reads for the managed identity endpoint.
+const MSI_ENDPOINT_ENV_KEY: &str = "IDENTITY_ENDPOINT";
+const AZURE_ENV_PREFIX: &str = "AZURE_";
 
 /// Build a `MicrosoftAzure` `ObjectStore` for `url` using `configs`.
 ///
@@ -102,12 +123,6 @@ pub fn create_store(
     let account = extract_account(url);
     let container = extract_container(url);
 
-    // Start from the environment so AKS Workload Identity (AZURE_CLIENT_ID,
-    // AZURE_TENANT_ID, AZURE_FEDERATED_TOKEN_FILE, AZURE_AUTHORITY_HOST) and any
-    // explicit AZURE_STORAGE_* variables are honoured without further configuration.
-    // `with_url` then fills in account/container from the URL itself.
-    let mut builder = MicrosoftAzureBuilder::from_env().with_url(url.to_string());
-
     let translated = translate_hadoop_configs(configs, account.as_deref(), container.as_deref());
     debug!(
         "Azure configs for account={:?}, container={:?}: keys={:?}",
@@ -118,12 +133,92 @@ pub fn create_store(
             .map(|(k, _)| k.as_ref())
             .collect::<Vec<_>>()
     );
-    for (key, value) in translated {
-        builder = builder.with_config(key, value);
-    }
 
-    let store = builder.build()?;
+    let provider_type =
+        account_scoped_value(configs, HADOOP_OAUTH_PROVIDER_TYPE, account.as_deref());
+    let store = build_builder(url, &translated, provider_type.as_deref(), env_pairs()).build()?;
     Ok((Box::new(store), path))
+}
+
+/// Process environment as UTF-8 `(key, value)` pairs, skipping entries that are not UTF-8.
+fn env_pairs() -> impl Iterator<Item = (String, String)> {
+    std::env::vars_os()
+        .filter_map(|(k, v)| Some((k.to_str()?.to_string(), v.to_str()?.to_string())))
+}
+
+/// Assemble the builder from the environment, the URL and the translated Hadoop keys.
+///
+/// When the Hadoop keys configure an auth mechanism the environment is not consulted at
+/// all, so nothing ambient can outrank, combine with or redirect the configured identity.
+/// Otherwise the environment is read the way `MicrosoftAzureBuilder::from_env` reads it.
+/// `provider_type` is the resolved `fs.azure.account.oauth.provider.type`, if any.
+fn build_builder(
+    url: &Url,
+    translated: &[(AzureConfigKey, String)],
+    provider_type: Option<&str>,
+    env: impl Iterator<Item = (String, String)>,
+) -> MicrosoftAzureBuilder {
+    let mut builder = MicrosoftAzureBuilder::new();
+    if !hadoop_auth_present(translated, provider_type) {
+        builder = apply_env(builder, env);
+    }
+    builder = builder.with_url(url.to_string());
+    for (key, value) in translated {
+        builder = builder.with_config(*key, value.clone());
+    }
+    builder
+}
+
+/// Whether the Hadoop configuration selects an authentication mechanism, either through a
+/// translated credential key or through an `MsiTokenProvider` provider type, whose
+/// endpoint Hadoop defaults to IMDS without any translated key.
+///
+/// `ClientId`, `AuthorityId` and `AuthorityHost` only name an identity and leave the token
+/// source open, which keeps AKS Workload Identity working when Hadoop names the principal
+/// and the webhook supplies `AZURE_FEDERATED_TOKEN_FILE`. A partial mechanism, such as a
+/// token file alone, is not completed from the environment; Hadoop needs the full set too.
+fn hadoop_auth_present(
+    translated: &[(AzureConfigKey, String)],
+    provider_type: Option<&str>,
+) -> bool {
+    let has_mechanism_key = translated.iter().any(|(key, _)| {
+        matches!(
+            key,
+            AzureConfigKey::AccessKey
+                | AzureConfigKey::SasKey
+                | AzureConfigKey::FederatedTokenFile
+                | AzureConfigKey::ClientSecret
+                | AzureConfigKey::MsiEndpoint
+        )
+    });
+    has_mechanism_key || provider_type.is_some_and(|p| p.ends_with(HADOOP_MSI_PROVIDER_CLASS))
+}
+
+/// Apply the environment to `builder` the way `MicrosoftAzureBuilder::from_env` does:
+/// every `AZURE_*` variable that parses as an `AzureConfigKey`, then the MSI endpoint
+/// variable, which is applied last so it wins over `AZURE_MSI_ENDPOINT` regardless of the
+/// order the environment is iterated in.
+fn apply_env(
+    mut builder: MicrosoftAzureBuilder,
+    env: impl Iterator<Item = (String, String)>,
+) -> MicrosoftAzureBuilder {
+    let mut msi_endpoint: Option<String> = None;
+    for (key, value) in env {
+        if key == MSI_ENDPOINT_ENV_KEY {
+            msi_endpoint = Some(value);
+            continue;
+        }
+        if !key.starts_with(AZURE_ENV_PREFIX) {
+            continue;
+        }
+        if let Ok(config_key) = key.to_ascii_lowercase().parse::<AzureConfigKey>() {
+            builder = builder.with_config(config_key, value);
+        }
+    }
+    if let Some(endpoint) = msi_endpoint {
+        builder = builder.with_msi_endpoint(endpoint);
+    }
+    builder
 }
 
 /// Translate a Hadoop ABFS configuration map into `(AzureConfigKey, value)` pairs.
@@ -252,6 +347,7 @@ fn tenant_from_oauth_endpoint(endpoint: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use object_store::ClientConfigKey;
 
     fn url(s: &str) -> Url {
         Url::parse(s).unwrap()
@@ -398,8 +494,7 @@ mod tests {
         let u = url("abfss://data@myacct.dfs.core.windows.net/path/file.parquet");
         let mut configs = HashMap::new();
         // A typical Workload Identity setup: client id, tenant id, and federated token
-        // file are all present, and `from_env()` will additionally pick them up from the
-        // AZURE_* env vars in production.
+        // file are all present in the Hadoop configuration.
         configs.insert(
             "fs.azure.account.oauth2.client.id".into(),
             "client-123".into(),
@@ -417,6 +512,18 @@ mod tests {
     }
 
     #[test]
+    fn create_store_succeeds_with_hadoop_account_key_only() {
+        let u = url("abfss://data@myacct.dfs.core.windows.net/path/file.parquet");
+        // `build()` base64-decodes the account key, so this one must be valid base64.
+        let configs = hadoop(&[(
+            "fs.azure.account.key",
+            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+        )]);
+        let (_store, path) = create_store(&u, &configs).expect("store builds");
+        assert_eq!(path.as_ref(), "path/file.parquet");
+    }
+
+    #[test]
     fn create_store_rejects_non_azure_scheme() {
         let u = url("s3://bucket/file.parquet");
         let configs = HashMap::new();
@@ -425,5 +532,304 @@ mod tests {
             format!("{err}").contains("Scheme of URL is not Azure"),
             "unexpected error: {err}"
         );
+    }
+
+    fn env_of(pairs: &[(&str, &str)]) -> impl Iterator<Item = (String, String)> {
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect::<Vec<_>>()
+            .into_iter()
+    }
+
+    fn hadoop(pairs: &[(&str, &str)]) -> HashMap<String, String> {
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    }
+
+    fn builder_for(
+        hadoop: &HashMap<String, String>,
+        env: &[(&str, &str)],
+    ) -> MicrosoftAzureBuilder {
+        let u = url("abfss://data@myacct.dfs.core.windows.net/path/file.parquet");
+        let translated = translate_hadoop_configs(hadoop, Some("myacct"), Some("data"));
+        let provider = account_scoped_value(hadoop, HADOOP_OAUTH_PROVIDER_TYPE, Some("myacct"));
+        build_builder(&u, &translated, provider.as_deref(), env_of(env))
+    }
+
+    fn value(builder: &MicrosoftAzureBuilder, key: AzureConfigKey) -> Option<String> {
+        builder.get_config_value(&key)
+    }
+
+    const CLIENT_SECRET_PRINCIPAL: &[(&str, &str)] = &[
+        ("fs.azure.account.oauth2.client.id", "hadoop-client"),
+        ("fs.azure.account.oauth2.client.secret", "hadoop-secret"),
+        ("fs.azure.account.oauth2.msi.tenant", "hadoop-tenant"),
+    ];
+
+    #[test]
+    fn env_bearer_token_is_ignored_when_hadoop_sets_account_key() {
+        let configs = hadoop(&[("fs.azure.account.key", "secret==")]);
+        let builder = builder_for(&configs, &[("AZURE_STORAGE_TOKEN", "ambient")]);
+        assert_eq!(value(&builder, AzureConfigKey::Token), None);
+        assert_eq!(
+            value(&builder, AzureConfigKey::AccessKey).as_deref(),
+            Some("secret==")
+        );
+    }
+
+    #[test]
+    fn env_account_key_is_ignored_when_hadoop_sets_client_secret_principal() {
+        let configs = hadoop(CLIENT_SECRET_PRINCIPAL);
+        let builder = builder_for(&configs, &[("AZURE_STORAGE_ACCOUNT_KEY", "ambient==")]);
+        assert_eq!(value(&builder, AzureConfigKey::AccessKey), None);
+        assert_eq!(
+            value(&builder, AzureConfigKey::ClientSecret).as_deref(),
+            Some("hadoop-secret")
+        );
+        assert_eq!(
+            value(&builder, AzureConfigKey::ClientId).as_deref(),
+            Some("hadoop-client")
+        );
+        assert_eq!(
+            value(&builder, AzureConfigKey::AuthorityId).as_deref(),
+            Some("hadoop-tenant")
+        );
+    }
+
+    #[test]
+    fn env_federated_token_file_is_ignored_when_hadoop_sets_client_secret_principal() {
+        let configs = hadoop(CLIENT_SECRET_PRINCIPAL);
+        let builder = builder_for(
+            &configs,
+            &[(
+                "AZURE_FEDERATED_TOKEN_FILE",
+                "/var/run/secrets/azure/tokens/token",
+            )],
+        );
+        assert_eq!(value(&builder, AzureConfigKey::FederatedTokenFile), None);
+        assert_eq!(
+            value(&builder, AzureConfigKey::ClientSecret).as_deref(),
+            Some("hadoop-secret")
+        );
+    }
+
+    #[test]
+    fn env_workload_identity_is_used_when_hadoop_has_no_auth() {
+        let configs = hadoop(&[]);
+        let builder = builder_for(
+            &configs,
+            &[
+                ("AZURE_CLIENT_ID", "env-client"),
+                ("AZURE_TENANT_ID", "env-tenant"),
+                (
+                    "AZURE_FEDERATED_TOKEN_FILE",
+                    "/var/run/secrets/azure/tokens/token",
+                ),
+            ],
+        );
+        assert_eq!(
+            value(&builder, AzureConfigKey::ClientId).as_deref(),
+            Some("env-client")
+        );
+        assert_eq!(
+            value(&builder, AzureConfigKey::AuthorityId).as_deref(),
+            Some("env-tenant")
+        );
+        assert_eq!(
+            value(&builder, AzureConfigKey::FederatedTokenFile).as_deref(),
+            Some("/var/run/secrets/azure/tokens/token")
+        );
+    }
+
+    #[test]
+    fn hadoop_client_id_and_tenant_still_accept_env_federated_token_file() {
+        let configs = hadoop(&[
+            ("fs.azure.account.oauth2.client.id", "hadoop-client"),
+            ("fs.azure.account.oauth2.msi.tenant", "hadoop-tenant"),
+        ]);
+        let builder = builder_for(
+            &configs,
+            &[
+                ("AZURE_CLIENT_ID", "env-client"),
+                (
+                    "AZURE_FEDERATED_TOKEN_FILE",
+                    "/var/run/secrets/azure/tokens/token",
+                ),
+            ],
+        );
+        assert_eq!(
+            value(&builder, AzureConfigKey::FederatedTokenFile).as_deref(),
+            Some("/var/run/secrets/azure/tokens/token")
+        );
+        assert_eq!(
+            value(&builder, AzureConfigKey::ClientId).as_deref(),
+            Some("hadoop-client")
+        );
+    }
+
+    #[test]
+    fn hadoop_token_file_alone_does_not_borrow_env_client_id_or_tenant() {
+        let configs = hadoop(&[(
+            "fs.azure.account.oauth2.token.file",
+            "/var/run/secrets/azure/tokens/token",
+        )]);
+        let builder = builder_for(
+            &configs,
+            &[
+                ("AZURE_CLIENT_ID", "env-client"),
+                ("AZURE_TENANT_ID", "env-tenant"),
+            ],
+        );
+        assert_eq!(
+            value(&builder, AzureConfigKey::FederatedTokenFile).as_deref(),
+            Some("/var/run/secrets/azure/tokens/token")
+        );
+        assert_eq!(value(&builder, AzureConfigKey::ClientId), None);
+        assert_eq!(value(&builder, AzureConfigKey::AuthorityId), None);
+    }
+
+    #[test]
+    fn hadoop_msi_provider_type_counts_as_a_mechanism() {
+        let configs = hadoop(&[
+            (
+                "fs.azure.account.oauth.provider.type",
+                "org.apache.hadoop.fs.azurebfs.oauth2.MsiTokenProvider",
+            ),
+            ("fs.azure.account.oauth2.client.id", "hadoop-client"),
+            ("fs.azure.account.oauth2.msi.tenant", "hadoop-tenant"),
+        ]);
+        let builder = builder_for(
+            &configs,
+            &[(
+                "AZURE_FEDERATED_TOKEN_FILE",
+                "/var/run/secrets/azure/tokens/token",
+            )],
+        );
+        assert_eq!(value(&builder, AzureConfigKey::FederatedTokenFile), None);
+        assert_eq!(
+            value(&builder, AzureConfigKey::ClientId).as_deref(),
+            Some("hadoop-client")
+        );
+        assert_eq!(
+            value(&builder, AzureConfigKey::AuthorityId).as_deref(),
+            Some("hadoop-tenant")
+        );
+    }
+
+    #[test]
+    fn hadoop_workload_identity_provider_type_still_accepts_env_token_file() {
+        let configs = hadoop(&[
+            (
+                "fs.azure.account.oauth.provider.type",
+                "org.apache.hadoop.fs.azurebfs.oauth2.WorkloadIdentityTokenProvider",
+            ),
+            ("fs.azure.account.oauth2.client.id", "hadoop-client"),
+            ("fs.azure.account.oauth2.msi.tenant", "hadoop-tenant"),
+        ]);
+        let builder = builder_for(
+            &configs,
+            &[(
+                "AZURE_FEDERATED_TOKEN_FILE",
+                "/var/run/secrets/azure/tokens/token",
+            )],
+        );
+        assert_eq!(
+            value(&builder, AzureConfigKey::FederatedTokenFile).as_deref(),
+            Some("/var/run/secrets/azure/tokens/token")
+        );
+    }
+
+    #[test]
+    fn identity_endpoint_env_wins_over_azure_msi_endpoint() {
+        let configs = hadoop(&[]);
+        let pairs = [
+            (MSI_ENDPOINT_ENV_KEY, "http://identity.internal/msi"),
+            ("AZURE_MSI_ENDPOINT", "http://azure.internal/msi"),
+        ];
+        let mut reversed = pairs;
+        reversed.reverse();
+        for env in [pairs, reversed] {
+            let builder = builder_for(&configs, &env);
+            assert_eq!(
+                value(&builder, AzureConfigKey::MsiEndpoint).as_deref(),
+                Some("http://identity.internal/msi"),
+                "env order: {env:?}"
+            );
+        }
+    }
+
+    const TRANSPORT_ENV: &[(&str, &str)] = &[
+        ("AZURE_ALLOW_HTTP", "true"),
+        ("AZURE_PROXY_URL", "http://proxy.internal:3128"),
+        ("AZURE_STORAGE_ENDPOINT", "http://127.0.0.1:10000/myacct"),
+        ("AZURE_STORAGE_USE_EMULATOR", "true"),
+    ];
+
+    #[test]
+    fn env_transport_options_are_ignored_when_hadoop_auth_present() {
+        let configs = hadoop(&[("fs.azure.account.key", "secret==")]);
+        let builder = builder_for(&configs, TRANSPORT_ENV);
+        // `AllowHttp` and `UseEmulator` are boolean-backed and read back "false" when unset.
+        assert_eq!(
+            value(&builder, AzureConfigKey::Client(ClientConfigKey::AllowHttp)).as_deref(),
+            Some("false")
+        );
+        assert_eq!(
+            value(&builder, AzureConfigKey::Client(ClientConfigKey::ProxyUrl)),
+            None
+        );
+        assert_eq!(value(&builder, AzureConfigKey::Endpoint), None);
+        assert_eq!(
+            value(&builder, AzureConfigKey::UseEmulator).as_deref(),
+            Some("false")
+        );
+        assert_eq!(
+            value(&builder, AzureConfigKey::AccessKey).as_deref(),
+            Some("secret==")
+        );
+    }
+
+    #[test]
+    fn env_transport_options_apply_when_hadoop_has_no_auth() {
+        let configs = hadoop(&[]);
+        let builder = builder_for(&configs, TRANSPORT_ENV);
+        assert_eq!(
+            value(&builder, AzureConfigKey::Client(ClientConfigKey::AllowHttp)).as_deref(),
+            Some("true")
+        );
+        assert_eq!(
+            value(&builder, AzureConfigKey::Client(ClientConfigKey::ProxyUrl)).as_deref(),
+            Some("http://proxy.internal:3128")
+        );
+        assert_eq!(
+            value(&builder, AzureConfigKey::Endpoint).as_deref(),
+            Some("http://127.0.0.1:10000/myacct")
+        );
+    }
+
+    #[test]
+    fn env_msi_endpoint_is_applied_when_hadoop_has_no_auth() {
+        let configs = hadoop(&[]);
+        let builder = builder_for(
+            &configs,
+            &[(MSI_ENDPOINT_ENV_KEY, "http://169.254.169.254/msi")],
+        );
+        assert_eq!(
+            value(&builder, AzureConfigKey::MsiEndpoint).as_deref(),
+            Some("http://169.254.169.254/msi")
+        );
+    }
+
+    #[test]
+    fn env_msi_endpoint_is_dropped_when_hadoop_auth_present() {
+        let configs = hadoop(&[("fs.azure.account.key", "secret==")]);
+        let builder = builder_for(
+            &configs,
+            &[(MSI_ENDPOINT_ENV_KEY, "http://169.254.169.254/msi")],
+        );
+        assert_eq!(value(&builder, AzureConfigKey::MsiEndpoint), None);
     }
 }
