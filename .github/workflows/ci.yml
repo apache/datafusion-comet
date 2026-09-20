@@ -135,6 +135,25 @@ jobs:
       - name: Check markdown formatting
         run: prettier --check "**/*.md"
 
+      # The site draws its ```mermaid fences with mmdc at build time, and
+      # sphinxcontrib-mermaid turns any render failure into a warning and a
+      # dropped diagram, so the deploy stays green and the page publishes with
+      # a hole in it (issue #6062). The docs job runs only on push to main, so
+      # rendering the fences here is the only chance to catch that before it
+      # publishes. Kept identical to the same pair of steps in docs.yaml.
+      - name: Install mermaid-cli
+        run: |
+          set -eux
+          npm install --prefix "$RUNNER_TEMP/mermaid" "$(python3 dev/ci/check-mermaid.py --cli-spec)"
+          # puppeteer's postinstall fetches the browser mmdc drives, but it catches its own
+          # download failures and exits 0, so a flaky fetch leaves a green install step and an
+          # mmdc that cannot launch. Fetch it again here, where a failure fails the job.
+          npm --prefix "$RUNNER_TEMP/mermaid" exec -- puppeteer browsers install chrome-headless-shell
+          echo "$RUNNER_TEMP/mermaid/node_modules/.bin" >> "$GITHUB_PATH"
+
+      - name: Check mermaid diagrams render
+        run: python3 dev/ci/check-mermaid.py
+
       - name: Check missing suites
         run: python3 dev/ci/check-suites.py
 
