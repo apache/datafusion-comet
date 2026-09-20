@@ -144,6 +144,14 @@ jobs:
       - name: Install mermaid-cli
         run: |
           set -eux
+          # ubuntu-slim carries none of Chrome's shared libraries, so the browser downloads
+          # fine and then dies with `libatk-1.0.so.0: cannot open shared object file`. These
+          # are what chrome-headless-shell actually links against; libgtk-3 pulls in most of
+          # the rest (atk, cairo, pango, gdk-pixbuf) as dependencies.
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends \
+            libgtk-3-0t64 libnss3 libasound2t64 libgbm1 libatk-bridge2.0-0t64 \
+            libcups2t64 libxkbcommon0 libxdamage1 libxcomposite1 libxrandr2 libxfixes3
           npm install --prefix "$RUNNER_TEMP/mermaid" "$(python3 dev/ci/check-mermaid.py --cli-spec)"
           # puppeteer's postinstall fetches the browser mmdc drives, but it catches its own
           # download failures and exits 0, so a flaky fetch leaves a green install step and an
