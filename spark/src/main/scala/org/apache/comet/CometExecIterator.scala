@@ -82,7 +82,6 @@ class CometExecIterator(
     shuffleBlockIterators: Map[Int, CometShuffleBlockIterator] = Map.empty,
     taskFilePaths: Seq[String] = Seq.empty,
     shufflePartitionPusher: Option[ShufflePartitionPusher] = None,
-    mapKeyDedupPolicy: Option[String] = None,
     capturePartitionOffsets: Boolean = false)
     extends Iterator[ColumnarBatch]
     with Logging {
@@ -100,7 +99,7 @@ class CometExecIterator(
     val localDiskDirs = SparkEnv.get.blockManager.getLocalDiskDirs
 
     // serialize Comet related Spark configs in protobuf format
-    val protobufSparkConfigs = CometExecIterator.serializeCometSQLConfs(mapKeyDedupPolicy)
+    val protobufSparkConfigs = CometExecIterator.serializeCometSQLConfs()
 
     // Create keyUnwrapper if encryption is enabled
     val keyUnwrapper = if (encryptedFilePaths.nonEmpty) {
@@ -366,13 +365,7 @@ object CometExecIterator extends Logging {
   private def cometSqlConfs: Map[String, String] =
     SQLConf.get.getAllConfs.filter(_._1.startsWith(CometConf.COMET_PREFIX))
 
-  /**
-   * @param mapKeyDedupPolicy
-   *   the `spark.sql.mapKeyDedupPolicy` the plan captured when it was first executed, or `None`
-   *   to read the current value. See
-   *   [[org.apache.spark.sql.comet.CometNativeExec.mapKeyDedupPolicy]].
-   */
-  def serializeCometSQLConfs(mapKeyDedupPolicy: Option[String] = None): Array[Byte] = {
+  def serializeCometSQLConfs(): Array[Byte] = {
     val builder = ConfigMap.newBuilder()
     cometSqlConfs.foreach { case (k, v) =>
       if (k.startsWith(s"${CometConf.COMET_PREFIX}.datafusion.")) {
@@ -397,12 +390,12 @@ object CometExecIterator extends Logging {
 
     // The native map constructors (map_from_arrays, map_from_entries, str_to_map) resolve
     // duplicate keys with this policy, which the native side reads as
-    // `datafusion.spark.map_key_dedup_policy`. Spark's `ArrayBasedMapBuilder` reads it once, when
-    // the expression is first evaluated, so the plan captures it then and passes it in here rather
-    // than letting every native iterator read whatever the session holds at the time.
+    // `datafusion.spark.map_key_dedup_policy`. Read here, when the native plan for a task is
+    // built, which is where Spark's `ArrayBasedMapBuilder` reads it for a projection outside
+    // whole-stage codegen. See the note on `map_from_arrays` in the map_funcs expression audit.
     builder.putEntries(
       SQLConf.MAP_KEY_DEDUP_POLICY.key,
-      mapKeyDedupPolicy.getOrElse(SQLConf.get.getConf(SQLConf.MAP_KEY_DEDUP_POLICY).toString))
+      SQLConf.get.getConf(SQLConf.MAP_KEY_DEDUP_POLICY).toString)
 
     builder.build().toByteArray
   }
