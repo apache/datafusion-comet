@@ -119,12 +119,38 @@ Some excess is expected (allocator metadata and fragmentation for `jemalloc_allo
 allocations like Arrow IPC buffers for either counter). Large or growing excess may indicate memory that is
 not being tracked by the pool.
 
+Arrow memory on the JVM side is reported separately, because it is off-heap and so invisible to
+`jvm_heap_used`. Comet imports batches from native over the Arrow C Data Interface, and Arrow
+charges a buffer to whichever allocator owns it, so those imports are taken against a dedicated
+child allocator and reported as `jvm_arrow_imported`, within the `jvm_arrow_allocated` total.
+
+Both are allocator charges. They report what each allocator is accountable for, not where the bytes
+were allocated, and their difference is not a bound on the Arrow memory the JVM allocated itself.
+Ownership and allocation come apart in both directions:
+
+- Bytes the JVM allocated get charged to the import allocator. Arrow's importer allocates the
+  owning `ArrowArray` struct there, and `BitVectorHelper.loadValidityBuffer` allocates a validity
+  bitmap there when an imported vector is all-valid or all-null and carries no validity buffer
+  (512 bytes per 4096 rows).
+- Imported bytes get charged to the root. An ownership transfer re-parents a charge without moving
+  the payload, so a vector that shares buffers with an import, such as a slice of a UDF input, can
+  leave the root accountable for memory the producer allocated.
+
+For the same reason neither counter is a count of unique physical bytes, and `jvm_arrow_imported`
+is not guaranteed to be included in `native_allocated`. Usually the producer is Rust and the bytes
+are counted in both, but a buffer that Comet exported to native and that native passed back by
+reference is imported without the Rust allocator ever having handed it out. Finally, the two
+counters are separate reads of process-wide state, so concurrent tasks can change them between
+samples: they are not an atomic per-query balance, and neither is a measure of RSS.
+
 ## Definition of Labels
 
-| Label                            | Meaning                                                                                                                                                              |
-| -------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| jvm_heap_used                    | JVM heap memory usage of live objects for the executor process                                                                                                       |
-| jemalloc_allocated               | Native memory usage for the executor process (requires `jemalloc` feature)                                                                                           |
-| native_allocated                 | Bytes handed out by the Rust global allocator, process-wide (requires `alloc-accounting` feature). Approximate to within 64 KiB of un-flushed delta per live thread. |
-| thread_NNN_comet_memory_reserved | Memory reserved by Comet's DataFusion memory pool (summed across all contexts on the thread). NNN is the Rust thread ID.                                             |
-| thread_NNN_comet_jvm_shuffle     | Off-heap memory allocated by Comet for columnar shuffle. NNN is the Rust thread ID.                                                                                  |
+| Label                            | Meaning                                                                                                                                                                           |
+| -------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| jvm_heap_used                    | JVM heap memory usage of live objects for the executor process                                                                                                                    |
+| jemalloc_allocated               | Native memory usage for the executor process (requires `jemalloc` feature)                                                                                                        |
+| jvm_arrow_allocated              | Bytes charged to Comet's Arrow allocator tree on the JVM, including buffers imported from native over the Arrow C Data Interface                                                  |
+| jvm_arrow_imported               | Bytes charged to the Arrow C Data Interface import allocator, a subset of `jvm_arrow_allocated`. An allocator charge, not a measure of where the bytes were allocated; see above. |
+| native_allocated                 | Bytes handed out by the Rust global allocator, process-wide (requires `alloc-accounting` feature). Approximate to within 64 KiB of un-flushed delta per live thread.              |
+| thread_NNN_comet_memory_reserved | Memory reserved by Comet's DataFusion memory pool (summed across all contexts on the thread). NNN is the Rust thread ID.                                                          |
+| thread_NNN_comet_jvm_shuffle     | Off-heap memory allocated by Comet for columnar shuffle. NNN is the Rust thread ID.                                                                                               |
