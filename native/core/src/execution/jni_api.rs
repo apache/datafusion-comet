@@ -41,6 +41,7 @@ use datafusion::{
     physical_plan::{display::DisplayableExecutionPlan, SendableRecordBatchStream},
     prelude::{SessionConfig, SessionContext},
 };
+use datafusion_comet_common::decode_string_arrays;
 use datafusion_comet_proto::spark_expression::agg_expr::ExprStruct as AggExprStruct;
 use datafusion_comet_proto::spark_operator::{AggregateMode, Operator, ShuffleScan};
 use datafusion_comet_spark_expr::url_funcs::{CometParseUrl, CometTryParseUrl};
@@ -69,6 +70,7 @@ use datafusion_spark::function::math::trigonometry::SparkSec;
 use datafusion_spark::function::math::width_bucket::SparkWidthBucket;
 use datafusion_spark::function::string::char::CharFunc;
 use datafusion_spark::function::string::concat::SparkConcat;
+use datafusion_spark::function::string::length::SparkLengthFunc;
 use datafusion_spark::function::string::luhn_check::SparkLuhnCheck;
 use datafusion_spark::function::string::space::SparkSpace;
 use datafusion_spark::function::string::substring::SparkSubstring;
@@ -101,7 +103,7 @@ use tokio::sync::mpsc;
 use crate::execution::memory_pools::{create_memory_pool, parse_memory_pool_config};
 use crate::execution::operators::{ScanExec, ShuffleScanExec};
 use crate::execution::shuffle::{
-    decode_remote_shuffle_batch, read_ipc_compressed, CompressionCodec,
+    decode_remote_shuffle_batch, read_ipc_compressed, CompressionCodec, ShuffleWriterExec,
 };
 use crate::execution::spark_plan::SparkPlan;
 
@@ -116,6 +118,7 @@ use crate::execution::spark_config::{
     COMET_TRACING_ENABLED, SPARK_EXECUTOR_CORES,
 };
 use crate::parquet::encryption_support::{CometEncryptionFactory, ENCRYPTION_FACTORY_ID};
+use crate::parquet::parquet_support::CometObjectStoreRegistry;
 use datafusion_comet_proto::spark_operator::operator::OpStruct;
 use log::{info, warn};
 use std::sync::OnceLock;
@@ -732,7 +735,9 @@ fn prepare_datafusion_session_context(
     let disk_manager = DiskManagerBuilder::default()
         .with_mode(DiskManagerMode::Directories(paths))
         .with_max_temp_directory_size(max_temp_directory_size);
-    let mut rt_config = RuntimeEnvBuilder::new().with_disk_manager_builder(disk_manager);
+    let mut rt_config = RuntimeEnvBuilder::new()
+        .with_disk_manager_builder(disk_manager)
+        .with_object_store_registry(Arc::new(CometObjectStoreRegistry::default()));
     rt_config = rt_config.with_memory_pool(memory_pool);
 
     let mut session_config = SessionConfig::new()
@@ -818,6 +823,11 @@ fn register_datafusion_spark_function(session_ctx: &SessionContext) {
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkBitShift::right_unsigned()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkSoundex::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkSubstring::default()));
+    // Serves length, char_length, character_length and len. SparkLengthFunc does not unwrap
+    // dictionary arrays and its uniform signature gets no planner coercion, so it relies on
+    // every input reaching expressions as plain Utf8 or Binary: ScanExec and the shuffle scan
+    // unpack dictionaries and the Parquet adapter casts to the required Spark type.
+    session_ctx.register_udf(ScalarUDF::new_from_impl(SparkLengthFunc::default()));
 }
 
 /// Prepares arrow arrays for output.
@@ -1200,6 +1210,60 @@ fn get_execution_context<'a>(id: i64) -> &'a mut ExecutionContext {
     }
 }
 
+/// Returns the partition offsets published by a finished native shuffle write.
+///
+/// The returned array holds `num_output_partitions + 1` offsets, the last being the total data
+/// file length.
+#[no_mangle]
+pub extern "system" fn Java_org_apache_comet_Native_getShufflePartitionOffsets(
+    e: EnvUnowned,
+    _class: JClass,
+    exec_context: jlong,
+) -> jlongArray {
+    try_unwrap_or_throw(&e, |env| {
+        let context = get_execution_context(exec_context);
+
+        let root_op = context.root_op.as_ref().ok_or_else(|| {
+            CometError::Internal(
+                "Cannot read shuffle partition offsets before the plan has been executed"
+                    .to_string(),
+            )
+        })?;
+
+        // `ExecutionPlan` has `Any` as a supertrait but no `as_any` method of its own, so upcast
+        // the trait object before downcasting to the writer.
+        let writer = (root_op.native_plan.as_ref() as &dyn std::any::Any)
+            .downcast_ref::<ShuffleWriterExec>()
+            .ok_or_else(|| {
+                CometError::Internal(
+                    "Shuffle partition offsets are only available on a native shuffle write plan"
+                        .to_string(),
+                )
+            })?;
+
+        let offsets = writer
+            .partition_offsets()
+            .ok_or_else(|| {
+                CometError::Internal(
+                    "Shuffle partition offsets are not published by a remote shuffle destination"
+                        .to_string(),
+                )
+            })?
+            .get()
+            .ok_or_else(|| {
+                CometError::Internal(
+                    "Shuffle writer has not published its partition offsets; the plan was not \
+                     drained to completion"
+                        .to_string(),
+                )
+            })?;
+
+        let long_array = env.new_long_array(offsets.len())?;
+        long_array.set_region(env, 0, offsets)?;
+        Ok(long_array.into_raw())
+    })
+}
+
 /// Used by Comet shuffle external sorter to write sorted records to disk.
 /// # Safety
 /// This function is inherently unsafe since it deals with raw pointers passed from JNI.
@@ -1575,7 +1639,8 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_columnarToRowConvert(
             let array_data = from_ffi(ffi_array, &ffi_schema)
                 .map_err(|e| CometError::Internal(format!("Failed to import array: {}", e)))?;
 
-            arrays.push(arrow::array::make_array(array_data));
+            let imported = arrow::array::make_array(array_data);
+            arrays.push(decode_string_arrays(&imported)?);
         }
 
         // Convert columnar to row
@@ -1634,7 +1699,11 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_columnarToRowClose(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use arrow::datatypes::{DataType, Field, Schema};
     use datafusion::execution::memory_pool::{MemoryConsumer, UnboundedMemoryPool};
+    use datafusion::execution::FunctionRegistry;
+    use datafusion::logical_expr::ReturnFieldArgs;
+    use datafusion_comet_proto::spark_expression;
     use datafusion_comet_proto::spark_expression::{AggExpr, Count, Expr, Sum};
     use datafusion_comet_proto::spark_operator::{HashAggregate, ShuffleWriter};
 
@@ -1808,5 +1877,83 @@ mod tests {
         drop(reservation);
         drop(pool);
         assert!(weak.upgrade().is_none());
+    }
+
+    #[test]
+    fn length_resolves_to_spark_length_for_string_and_binary() {
+        use datafusion::physical_expr::expressions::{CastExpr, Column};
+        use datafusion::physical_expr::ScalarFunctionExpr;
+        use datafusion_comet_proto::spark_expression::data_type::DataTypeId;
+        use datafusion_comet_proto::spark_expression::expr::ExprStruct;
+        use datafusion_comet_proto::spark_expression::{BoundReference, ScalarFunc};
+
+        let ctx = Arc::new(SessionContext::new());
+        register_datafusion_spark_function(&ctx);
+        let planner = PhysicalPlanner::new(Arc::clone(&ctx), 0);
+        // The planner path: a uniform signature gets no coercion, so the input reaches the
+        // kernel exactly as the scan produced it.
+        for (type_id, input) in [
+            (DataTypeId::String, DataType::Utf8),
+            (DataTypeId::Bytes, DataType::Binary),
+        ] {
+            let schema = Arc::new(Schema::new(vec![Field::new("arg0", input.clone(), true)]));
+            for name in ["length", "char_length", "character_length"] {
+                let expr = Expr {
+                    expr_struct: Some(ExprStruct::ScalarFunc(ScalarFunc {
+                        func: name.to_string(),
+                        args: vec![Expr {
+                            expr_struct: Some(ExprStruct::Bound(BoundReference {
+                                index: 0,
+                                datatype: Some(spark_expression::DataType {
+                                    type_id: type_id as i32,
+                                    type_info: None,
+                                }),
+                            })),
+                            query_context: None,
+                            expr_id: None,
+                        }],
+                        return_type: None,
+                        fail_on_error: false,
+                    })),
+                    query_context: None,
+                    expr_id: None,
+                };
+                let physical = planner
+                    .create_expr(&expr, Arc::clone(&schema))
+                    .unwrap_or_else(|e| panic!("{name}({input}) failed to plan: {e}"));
+                assert_eq!(
+                    physical.data_type(&schema).unwrap(),
+                    DataType::Int32,
+                    "{name}({input})"
+                );
+                let func = physical
+                    .downcast_ref::<ScalarFunctionExpr>()
+                    .unwrap_or_else(|| panic!("{name}({input}) is not a scalar function"));
+                assert_eq!(func.fun().name(), "length", "{name}({input})");
+                assert!(
+                    func.args()[0].downcast_ref::<Column>().is_some()
+                        && func.args()[0].downcast_ref::<CastExpr>().is_none(),
+                    "{name}({input}) should take the column without a cast"
+                );
+            }
+        }
+        // Wider and view encodings never come out of a Comet scan, but the kernel accepts them
+        // with the same Int32 result should a future input path produce them.
+        let udf = ctx.udf("length").unwrap();
+        for input in [
+            DataType::LargeUtf8,
+            DataType::Utf8View,
+            DataType::LargeBinary,
+            DataType::BinaryView,
+        ] {
+            let arg = Arc::new(Field::new("arg0", input.clone(), true));
+            let ret = udf
+                .return_field_from_args(ReturnFieldArgs {
+                    arg_fields: &[arg],
+                    scalar_arguments: &[None],
+                })
+                .unwrap();
+            assert_eq!(ret.data_type(), &DataType::Int32, "length({input})");
+        }
     }
 }

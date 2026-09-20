@@ -22,13 +22,14 @@ package org.apache.comet.serde
 import scala.jdk.CollectionConverters._
 
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, Expression, Literal}
-import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, ApproximatePercentile, Average, BitAndAgg, BitOrAgg, BitXorAgg, BloomFilterAggregate, CentralMomentAgg, CollectList, CollectSet, Corr, Count, Covariance, CovPopulation, CovSample, First, HyperLogLogPlusPlus, Last, Max, MaxBy, MaxMinBy, Min, MinBy, Mode, Percentile, RegrIntercept, RegrR2, RegrReplacement, RegrSlope, RegrSXY, StddevPop, StddevSamp, Sum, VariancePop, VarianceSamp}
+import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, ApproximatePercentile, Average, BitAndAgg, BitOrAgg, BitXorAgg, BloomFilterAggregate, CentralMomentAgg, CollectList, CollectSet, Complete, Corr, Count, Covariance, CovPopulation, CovSample, First, HyperLogLogPlusPlus, Last, Max, MaxBy, MaxMinBy, Min, MinBy, Mode, Partial, Percentile, RegrIntercept, RegrR2, RegrReplacement, RegrSlope, RegrSXY, StddevPop, StddevSamp, Sum, VariancePop, VarianceSamp}
 import org.apache.spark.sql.catalyst.util.ArrayData
+import org.apache.spark.sql.comet.CometExecUtils
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{BinaryType, BooleanType, ByteType, DataType, DateType, DecimalType, DoubleType, FloatType, IntegerType, LongType, NumericType, ShortType, StringType, TimestampNTZType, TimestampType}
 
 import org.apache.comet.CometConf.COMET_EXEC_STRICT_FLOATING_POINT
-import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark41Plus, isSpark42Plus, withFallbackReason}
+import org.apache.comet.CometSparkSessionExtensions.{isSpark41Plus, isSpark42Plus, withFallbackReason}
 import org.apache.comet.expressions.CometEvalMode
 import org.apache.comet.serde.QueryPlanSerde.{evalModeToProto, exprToProto, serializeDataType}
 import org.apache.comet.shims.{CometCollectShim, CometEvalModeUtil, CometTypeShim}
@@ -847,6 +848,51 @@ object CometCorr extends CometAggregateExpressionSerde[Corr] {
 }
 
 /**
+ * The Spark releases that changed the regression aggregates. Both changes shipped in patch
+ * releases, so the minor version alone places them on the wrong side for earlier patches.
+ */
+private[comet] object RegrSparkVersions {
+
+  /**
+   * SPARK-48719 made regr_slope and regr_intercept count VariancePop(x) only over rows where both
+   * y and x are non-null. Present from 3.5.2 and 4.0.0; earlier 3.5 patches and 3.4 count every
+   * row where x is non-null.
+   */
+  def slopeFiltersVarByPairNulls(sparkVersion: String): Boolean =
+    majorMinorPatch(sparkVersion) match {
+      case Some((3, 5, patch)) => patch >= 2
+      case Some((major, minor, _)) => isAfterMinor(major, minor, 3, 5)
+      case None => sparkVersion >= "3.5"
+    }
+
+  /**
+   * SPARK-55969 swapped regr_r2's degenerate cases: a constant dependent variable yields 1.0 (was
+   * null) and a constant independent variable yields null (was 1.0). Present from 3.5.9, 4.0.3,
+   * 4.1.2 and 4.2.0; earlier patches of those lines and 3.4 keep the old cases.
+   */
+  def r2DegenerateCasesSwapped(sparkVersion: String): Boolean =
+    majorMinorPatch(sparkVersion) match {
+      case Some((3, 5, patch)) => patch >= 9
+      case Some((4, 0, patch)) => patch >= 3
+      case Some((4, 1, patch)) => patch >= 2
+      case Some((major, minor, _)) => isAfterMinor(major, minor, 3, 5)
+      case None => sparkVersion >= "3.5"
+    }
+
+  private def isAfterMinor(major: Int, minor: Int, thanMajor: Int, thanMinor: Int): Boolean =
+    major > thanMajor || (major == thanMajor && minor > thanMinor)
+
+  // Spark's VersionUtils is private to its packages, so parse the leading major.minor.patch
+  // here; a missing patch reads as 0 and a suffix such as -SNAPSHOT is ignored.
+  private val versionPattern = """^(\d+)\.(\d+)(?:\.(\d+))?""".r
+
+  private def majorMinorPatch(sparkVersion: String): Option[(Int, Int, Int)] =
+    versionPattern.findFirstMatchIn(sparkVersion).map { m =>
+      (m.group(1).toInt, m.group(2).toInt, Option(m.group(3)).map(_.toInt).getOrElse(0))
+    }
+}
+
+/**
  * Shared serialization for the simple linear regression aggregates. `child1` is the dependent
  * variable (y) and `child2` is the independent variable (x), matching the native accumulator's
  * `regr_*(y, x)` convention.
@@ -869,16 +915,12 @@ trait CometRegrBase {
       builder.setChild2(child2Expr.get)
       builder.setRegrType(regrType)
       builder.setDatatype(dataType.get)
-      // Spark 3.5 fixed regr_slope/regr_intercept so VariancePop(x) only counts
-      // rows where both y and x are non-null. Spark 3.4 counts every row where x
-      // is non-null. The native accumulator only consults this for slope/intercept.
-      builder.setFilterVarByPairNulls(isSpark35Plus)
-      // Spark swapped regr_r2's degenerate-case handling: a constant dependent
-      // variable now yields 1.0 (was null) and a constant independent variable
-      // yields null (was 1.0). The swap is present in the Spark versions Comet
-      // builds against for 3.5 and later (3.5.9, 4.0.3+, 4.1, 4.2) but not in 3.4.
-      // The native accumulator only consults this for R2.
-      builder.setR2ConstantDependentIsPerfectFit(isSpark35Plus)
+      // Both regression fixes shipped in patch releases, so the running Spark's exact version
+      // decides which behaviour the native accumulator mirrors.
+      val sparkVersion = org.apache.spark.SPARK_VERSION
+      builder.setFilterVarByPairNulls(RegrSparkVersions.slopeFiltersVarByPairNulls(sparkVersion))
+      builder.setR2ConstantDependentIsPerfectFit(
+        RegrSparkVersions.r2DegenerateCasesSwapped(sparkVersion))
 
       Some(
         ExprOuterClass.AggExpr
@@ -1038,11 +1080,41 @@ object CometBloomFilterAggregate extends CometAggregateExpressionSerde[BloomFilt
 
 object CometCollectSet extends CometAggregateExpressionSerde[CollectSet] {
 
-  override def getIncompatibleReasons(): Seq[String] = Seq(
-    "Comet deduplicates NaN values (treats `NaN == NaN`) while Spark treats each NaN as a" +
-      s" distinct value. When `${COMET_EXEC_STRICT_FLOATING_POINT.key}=true`, `collect_set`" +
-      " on floating-point types falls back to Spark unless" +
-      " `spark.comet.expression.CollectSet.allowIncompatible=true` is set.")
+  override def getCompatibleNotes(): Seq[String] =
+    if (isSpark42Plus) {
+      Seq(
+        "On Spark 4.2+, `collect_set` inputs are normalized with Spark's recursive" +
+          " floating-point normalizer to match SPARK-57298. For array inputs containing" +
+          " floating-point values the normalizer produces `ArrayTransform`, which Comet" +
+          " executes through the JVM codegen dispatcher instead of fully natively (scalar and" +
+          " struct inputs stay native). When `spark.comet.exec.scalaUDF.codegen.enabled=false`," +
+          " those array cases fall back to Spark.")
+    } else {
+      Nil
+    }
+
+  override def getIncompatibleReasons(): Seq[String] = {
+    if (isSpark42Plus) {
+      Nil
+    } else {
+      Seq(
+        "Before Spark 4.2, Comet deduplicates NaN values (treats `NaN == NaN`) while Spark" +
+          " treats each NaN as a distinct value. Comet treats -0.0 and 0.0 as distinct while" +
+          " Spark treats them as equal." +
+          s" When `${COMET_EXEC_STRICT_FLOATING_POINT.key}=true`, `collect_set` on" +
+          " floating-point types falls back to Spark on those versions unless" +
+          " `spark.comet.expression.CollectSet.allowIncompatible=true` is set.")
+    }
+  }
+
+  override def getUnsupportedReasons(): Seq[String] =
+    if (isSpark42Plus) {
+      Seq(
+        "`collect_set` with `RESPECT NULLS` falls back to Spark, since the native " +
+          "implementation always drops null inputs.")
+    } else {
+      Nil
+    }
 
   override def getSupportLevel(expr: CollectSet): SupportLevel = {
     // The native path always drops null inputs. Spark 4.2 added an `ignoreNulls` field to
@@ -1052,12 +1124,14 @@ object CometCollectSet extends CometAggregateExpressionSerde[CollectSet] {
     // analysis time, and CometCollectShim.ignoreNulls hardcodes true, making this a no-op.
     if (!CometCollectShim.ignoreNulls(expr)) {
       Unsupported(Some("collect_set with RESPECT NULLS (ignoreNulls = false) is not supported"))
+    } else if (isSpark42Plus) {
+      Compatible()
     } else {
       SupportLevel
         .strictFloatingPointReason(
           expr.children.head.dataType,
           "collect_set on floating-point types " +
-            "(Comet deduplicates NaN values while Spark treats each NaN as distinct)")
+            "(Comet deduplicates NaN values and distinguishes -0.0 from 0.0, unlike Spark)")
         .map(reason => Incompatible(Some(reason)))
         .getOrElse(Compatible())
     }
@@ -1069,7 +1143,18 @@ object CometCollectSet extends CometAggregateExpressionSerde[CollectSet] {
       inputs: Seq[Attribute],
       binding: Boolean,
       conf: SQLConf): Option[ExprOuterClass.AggExpr] = {
-    val child = expr.children.head
+    val child = aggExpr.mode match {
+      // Spark 4.2 (SPARK-57298) normalizes NaN and -0.0 inside CollectSet's buffer conversion
+      // (`convertToBufferElement`/`eval` in collect.scala), so the normalization is invisible in
+      // the plan Comet receives and must be reapplied here on the raw input. `normalize` is
+      // idempotent: it short-circuits on `KnownFloatingPointNormalized`, so an already-normalized
+      // child is never wrapped twice. Keep older versions unchanged to avoid adding JVM codegen
+      // dispatch for nested arrays; their floating-point behavior is documented as incompatible.
+      case Partial | Complete if isSpark42Plus =>
+        CometExecUtils.normalizeFloatingNumbers(expr.children.head)
+      case _ =>
+        expr.children.head
+    }
     val childExpr = exprToProto(child, inputs, binding)
     val dataType = serializeDataType(expr.dataType)
 

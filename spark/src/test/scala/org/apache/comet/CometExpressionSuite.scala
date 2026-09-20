@@ -25,8 +25,8 @@ import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.{Column, CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.catalyst.expressions.{Alias, Cast, FromUnixTime, InSet, Literal, StructsToJson, TruncDate, TruncTimestamp}
 import org.apache.spark.sql.catalyst.optimizer.{ConvertToLocalRelation, OptimizeIn, SimplifyExtractValueOps}
-import org.apache.spark.sql.comet.CometProjectExec
-import org.apache.spark.sql.execution.{ProjectExec, SparkPlan}
+import org.apache.spark.sql.comet.{CometProjectExec, CometSortExec, CometTakeOrderedAndProjectExec}
+import org.apache.spark.sql.execution.{LocalTableScanExec, ProjectExec, SparkPlan}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions._
 import org.apache.spark.sql.internal.SQLConf
@@ -60,16 +60,142 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       schema,
       1000,
       DataGenOptions(generateNegativeZero = true))
-    df.createOrReplaceTempView("tbl")
+
+    withTempDir { dir =>
+      // `-0.0` and `+0.0` are peers under Spark's comparison, so `ORDER BY c0, c1` alone leaves
+      // genuine ties whose relative order neither engine promises. Materialize a unique `id` to
+      // Parquet and sort on it last, making the ordering total so the row-by-row comparison below
+      // tests the sort keys rather than an unspecified tie order.
+      val path = new Path(dir.toString, "tbl").toString
+      df.withColumn("id", monotonically_increasing_id()).write.parquet(path)
+      spark.read.parquet(path).createOrReplaceTempView("tbl")
+
+      // Scalar floating-point sort keys are normalized natively, so strict mode admits them even
+      // with allowIncompatible off. Nested floating-point keys are not, and the two tests below
+      // still assert the strict-mode fallback.
+      withSQLConf(
+        CometConf.getExprAllowIncompatConfigKey("SortOrder") -> "false",
+        CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key -> "true") {
+        checkSparkAnswerAndOperator(
+          sql("select * from tbl order by 1, 2, 3"),
+          Seq(classOf[CometSortExec]))
+      }
+    }
+  }
+  // https://github.com/apache/datafusion-comet/issues/5506
+  //
+  // Scalar floating-point sort keys are admitted under strict floating point because their
+  // comparison keys are normalized natively. Signed zeros survive a Parquet round trip, so these
+  // cases are materialized to Parquet, which also keeps constant folding from deleting the sort.
+  // NaN payloads do NOT survive that round trip (every payload is canonicalized on write), so
+  // payload fidelity is covered separately below over a local relation.
+  //
+  // Every query ends with a unique `id` so the ordering is total: -0.0 and +0.0 are peers under
+  // Spark's comparison, and neither engine promises an order within a tie.
+  private val strictFpSortRows = Seq(
+    (0, Some(-0.0f), Some(-0.0d), 1),
+    (1, Some(0.0f), Some(0.0d), 0),
+    (2, Some(0.0f), Some(0.0d), 1),
+    (3, Some(-0.0f), Some(-0.0d), 0),
+    (4, Some(1.0f), Some(1.0d), 0),
+    (5, Some(-1.0f), Some(-1.0d), 1),
+    (6, None, None, 0),
+    (7, None, None, 1),
+    (8, Some(Float.NaN), Some(Double.NaN), 0),
+    (9, Some(Float.PositiveInfinity), Some(Double.PositiveInfinity), 1),
+    (10, Some(Float.NegativeInfinity), Some(Double.NegativeInfinity), 0))
+
+  for {
+    col <- Seq("f", "d")
+    direction <- Seq("ASC", "DESC")
+    nullOrder <- Seq("NULLS FIRST", "NULLS LAST")
+    compound <- Seq(false, true)
+  } {
+    val label = s"$col $direction $nullOrder" + (if (compound) " with compound key" else "")
+    test(s"strict floating point: scalar sort on $label") {
+      withTempDir { dir =>
+        val path = new Path(dir.toString, "strict_fp_sort").toString
+        strictFpSortRows.toDF("id", "f", "d", "s").write.parquet(path)
+        spark.read.parquet(path).createOrReplaceTempView("strict_fp_sort")
+
+        val secondary = if (compound) ", s DESC" else ""
+        val query =
+          s"SELECT id, f, d, s FROM strict_fp_sort ORDER BY $col $direction $nullOrder$secondary, id"
+
+        withSQLConf(
+          CometConf.getExprAllowIncompatConfigKey("SortOrder") -> "false",
+          CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key -> "true") {
+          checkSparkAnswerAndOperator(sql(query), Seq(classOf[CometSortExec]))
+        }
+      }
+    }
+  }
+
+  test("strict floating point: scalar TopK sort key") {
+    // TakeOrderedAndProject reaches the native path through the same CometSortOrder gate as a
+    // plain sort, but lands on a different operator (Sort with a fetch). Widening admission
+    // therefore opens this path too, so assert it rather than inferring it.
+    withTempDir { dir =>
+      val path = new Path(dir.toString, "strict_fp_topk").toString
+      strictFpSortRows.toDF("id", "f", "d", "s").write.parquet(path)
+      spark.read.parquet(path).createOrReplaceTempView("strict_fp_topk")
+
+      withSQLConf(
+        CometConf.getExprAllowIncompatConfigKey("SortOrder") -> "false",
+        CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key -> "true") {
+        for (col <- Seq("f", "d")) {
+          checkSparkAnswerAndOperator(
+            sql(s"SELECT id, f, d FROM strict_fp_topk ORDER BY $col ASC NULLS LAST, id LIMIT 4"),
+            Seq(classOf[CometTakeOrderedAndProjectExec]))
+        }
+      }
+    }
+  }
+
+  test("strict floating point: scalar sort keeps NaN payloads and zero signs unchanged") {
+    // A local relation preserves the raw bits that a Parquet round trip would canonicalize, so
+    // this is where "only the comparison key is normalized" can actually be asserted.
+    val negNan = java.lang.Double.longBitsToDouble(0xfff8000000000002L)
+    val posNan = java.lang.Double.longBitsToDouble(0x7ff8000000000002L)
+    val negNanF = java.lang.Float.intBitsToFloat(0xffc00002)
+    val posNanF = java.lang.Float.intBitsToFloat(0x7fc00002)
+    val rows = Seq(
+      (0, negNanF, negNan),
+      (1, posNanF, posNan),
+      (2, -0.0f, -0.0d),
+      (3, 0.0f, 0.0d),
+      (4, 1.0f, 1.0d))
+    val expected = rows.map { case (id, f, d) =>
+      id -> (java.lang.Float.floatToRawIntBits(f), java.lang.Double.doubleToRawLongBits(d))
+    }.toMap
+
+    rows.toDF("id", "f", "d").createOrReplaceTempView("strict_fp_bits")
 
     withSQLConf(
       CometConf.getExprAllowIncompatConfigKey("SortOrder") -> "false",
       CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key -> "true") {
-      checkSparkAnswerAndFallbackReasons(
-        "select * from tbl order by 1, 2",
-        Set(
-          "unsupported range partitioning sort order",
-          "Sorting on floating-point is not 100% compatible with Spark"))
+      for (col <- Seq("f", "d")) {
+        val query = s"SELECT id, f, d FROM strict_fp_bits ORDER BY $col, id"
+        // LocalTableScanExec has no native counterpart enabled by default; it is the source of
+        // the unmodified bits, not part of what this test asserts.
+        checkSparkAnswerAndOperator(
+          sql(query),
+          Seq(classOf[CometSortExec]),
+          classOf[LocalTableScanExec])
+
+        val actual = sql(query).collect().toSeq
+        actual.foreach { row =>
+          val bits = (
+            java.lang.Float.floatToRawIntBits(row.getFloat(1)),
+            java.lang.Double.doubleToRawLongBits(row.getDouble(2)))
+          assert(
+            bits == expected(row.getInt(0)),
+            s"row ${row.getInt(0)} had its floating-point bits rewritten by the sort")
+        }
+        // The two NaN payloads are peers, so they must be adjacent and ordered by the tiebreaker.
+        val nanIds = actual.map(_.getInt(0)).filter(id => id == 0 || id == 1)
+        assert(nanIds == Seq(0, 1), s"NaN peers were not tied and ordered by id: $nanIds")
+      }
     }
   }
 
@@ -3511,6 +3637,40 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           chain.contains("DivideByZero") || chain.contains("DIVIDE_BY_ZERO"),
           s"expected a divide-by-zero error, but got:\n$chain")
       }
+    }
+  }
+
+  test("regression: cast Decimal(0, 0) to Boolean via Java UDF") {
+    // Reachable via a Java UDF that declares return type `DecimalType(0, 0)` and returns
+    // either `BigInteger.ZERO` or `null`. Spark accepts the schema; Arrow rejects
+    // `precision == 0` inside `Decimal128Array::with_precision_and_scale`, so the native
+    // cast kernel used to error. Enabling the ScalaUDF codegen dispatcher routes the UDF
+    // output straight into the native cast, so this test exercises the actual native path
+    // rather than falling back to Spark. The mixed valid + null batch covers the
+    // precision-zero fast path that reads the raw i128 payload; the all-null batch covers
+    // the earlier all-null shortcut.
+    withSQLConf(
+      CometConf.COMET_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_ENABLED.key -> "true",
+      CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "true") {
+      spark.udf.register(
+        "zero_decimal",
+        new org.apache.spark.sql.api.java.UDF1[java.lang.Long, java.math.BigInteger] {
+          override def call(id: java.lang.Long): java.math.BigInteger =
+            if (id == 0L) java.math.BigInteger.ZERO else null
+        },
+        DecimalType(0, 0))
+      // id = 0 -> BigInteger.ZERO -> Decimal(0,0) 0 -> false
+      // id = 1 -> null -> null
+      val mixed = spark.range(0, 2).selectExpr("CAST(zero_decimal(id) AS BOOLEAN) AS b")
+      checkSparkAnswerAndOperator(mixed)
+      checkAnswer(mixed, Seq(Row(false), Row(null)))
+
+      // All-null batch: exercises the earlier `null_count() == len()` fast path that
+      // bypasses the zero-scalar construction entirely.
+      val allNull = spark.range(1, 3).selectExpr("CAST(zero_decimal(id) AS BOOLEAN) AS b")
+      checkSparkAnswerAndOperator(allNull)
+      checkAnswer(allNull, Seq(Row(null), Row(null)))
     }
   }
 
