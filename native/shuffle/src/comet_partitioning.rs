@@ -26,11 +26,29 @@ pub enum RoundRobinStrategy {
     /// and assign rows individually. Deterministic under retry regardless of upstream
     /// order preservation, but pays the per-row hash cost.
     HashAll { max_hash_columns: usize },
-    /// Assign each incoming RecordBatch as a whole to one output partition, based on
-    /// the input partition id and a per-task batch sequence number. Skips per-row
-    /// hashing entirely. Retry-safe only when the upstream operator emits the same
-    /// batches in the same order under retry.
-    WholeBatch,
+    /// Assign each incoming RecordBatch as a whole to one output partition, chosen by a
+    /// per-task batch counter. Skips per-row hashing entirely. Retry-safe only when the
+    /// upstream operator emits the same batches in the same order under retry.
+    ///
+    /// `start_partition` seeds that counter, so mapper i sends its k-th batch to
+    /// `(i + k) % num_partitions`. It must be the Spark map partition id, for two reasons
+    /// that pull in different directions and are both required:
+    ///
+    ///   * distinct across mappers, or every task starts at partition 0 and a task emitting
+    ///     fewer batches than there are output partitions leaves the tail empty stage-wide;
+    ///   * a pure function of the map partition, so a re-executed task reproduces its
+    ///     placement. Spark's own round robin seeds `XORShiftRandom(partitionId)` for the
+    ///     same pair of reasons.
+    WholeBatch { start_partition: usize },
+}
+
+impl Default for RoundRobinStrategy {
+    /// Hash every column, which is what Comet's round robin did before `WholeBatch` existed.
+    fn default() -> Self {
+        Self::HashAll {
+            max_hash_columns: 0,
+        }
+    }
 }
 
 /// Partitioning scheme for distributing rows across shuffle output partitions.

@@ -57,9 +57,6 @@ zstd = { version = "0.13.3", features = ["experimental"] }
 criterion = { version = "0.7", features = ["async", "async_tokio", "async_std"] }
 datafusion = { workspace = true, features = ["parquet_encryption", "sql"] }
 itertools = "0.15.0"
-# The shuffle_writer bench reads a real on-disk parquet dataset; the optional dependency above
-# is gated behind shuffle-bench, which benches do not activate.
-parquet = { workspace = true }
 tempfile = "3.26.0"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 

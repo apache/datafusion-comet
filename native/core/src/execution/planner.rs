@@ -98,7 +98,7 @@ use datafusion_comet_spark_expr::{
 use iceberg::expr::Bind;
 
 use crate::execution::operators::ExecutionError::GeneralError;
-use crate::execution::shuffle::{CometPartitioning, CompressionCodec};
+use crate::execution::shuffle::{CometPartitioning, CompressionCodec, RoundRobinStrategy};
 use crate::execution::spark_plan::SparkPlan;
 use crate::parquet::objectstore::s3_blob_fs_support::normalize_object_store_url;
 use crate::parquet::parquet_support::prepare_object_store_with_configs;
@@ -3653,11 +3653,17 @@ impl PhysicalPlanner {
             PartitioningStruct::SinglePartition(_) => Ok(CometPartitioning::SinglePartition),
             PartitioningStruct::RoundRobinPartition(rr_partition) => {
                 let strategy = if rr_partition.batch_granular {
-                    crate::execution::shuffle::RoundRobinStrategy::WholeBatch
+                    // The Spark map partition id, not the DataFusion one: the root plan is
+                    // always executed with partition 0 (one Comet execution per Spark task),
+                    // so `ShuffleWriterExec::execute` cannot supply it. See
+                    // `RoundRobinStrategy::WholeBatch` for why it has to be this value.
+                    RoundRobinStrategy::WholeBatch {
+                        start_partition: self.partition.max(0) as usize,
+                    }
                 } else {
                     // Treat negative max_hash_columns as 0 (no limit).
                     let max_hash_columns = rr_partition.max_hash_columns.max(0) as usize;
-                    crate::execution::shuffle::RoundRobinStrategy::HashAll { max_hash_columns }
+                    RoundRobinStrategy::HashAll { max_hash_columns }
                 };
                 Ok(CometPartitioning::RoundRobin(
                     rr_partition.num_partitions as usize,

@@ -1143,12 +1143,7 @@ mod test {
                 Arc::new(row_converter),
                 owned_rows,
             ),
-            CometPartitioning::RoundRobin(
-                num_partitions,
-                RoundRobinStrategy::HashAll {
-                    max_hash_columns: 0,
-                },
-            ),
+            CometPartitioning::RoundRobin(num_partitions, RoundRobinStrategy::default()),
         ] {
             let batches = (0..num_batches).map(|_| batch.clone()).collect::<Vec<_>>();
 
@@ -1216,12 +1211,7 @@ mod test {
                 Arc::new(DataSourceExec::new(Arc::new(
                     MemorySourceConfig::try_new(partitions, batch.schema(), None).unwrap(),
                 ))),
-                CometPartitioning::RoundRobin(
-                    num_partitions,
-                    RoundRobinStrategy::HashAll {
-                        max_hash_columns: 0,
-                    },
-                ),
+                CometPartitioning::RoundRobin(num_partitions, RoundRobinStrategy::default()),
                 CompressionCodec::Zstd(1),
                 data_file.clone(),
                 false,
@@ -1357,7 +1347,10 @@ mod test {
                 Arc::new(DataSourceExec::new(Arc::new(
                     MemorySourceConfig::try_new(partitions, Arc::clone(&schema), None).unwrap(),
                 ))),
-                CometPartitioning::RoundRobin(num_partitions, RoundRobinStrategy::WholeBatch),
+                CometPartitioning::RoundRobin(
+                    num_partitions,
+                    RoundRobinStrategy::WholeBatch { start_partition: 0 },
+                ),
                 CompressionCodec::Zstd(1),
                 data_file.to_str().unwrap().to_string(),
                 false,
@@ -1424,6 +1417,69 @@ mod test {
 
     #[test]
     #[cfg_attr(miri, ignore)]
+    fn test_round_robin_batch_granular_starts_at_map_partition() {
+        // Every mapper seeding 0 would send its first batch to partition 0, so a stage whose
+        // tasks each emit fewer batches than there are output partitions would leave the tail
+        // partitions empty everywhere. `start_partition` carries the Spark map partition id, so
+        // mapper i starts at partition i and the stage covers the full range.
+        let num_partitions = 8;
+        let batch = create_batch(100);
+        let batches: Vec<RecordBatch> = (0..2).map(|_| batch.clone()).collect();
+        let dir = tempfile::tempdir().unwrap();
+
+        let nonempty_partitions = |start_partition: usize| -> Vec<usize> {
+            let data_file = dir.path().join(format!("start{start_partition}.out"));
+            let exec = ShuffleWriterExec::try_new(
+                Arc::new(DataSourceExec::new(Arc::new(
+                    MemorySourceConfig::try_new(
+                        std::slice::from_ref(&batches),
+                        batch.schema(),
+                        None,
+                    )
+                    .unwrap(),
+                ))),
+                CometPartitioning::RoundRobin(
+                    num_partitions,
+                    RoundRobinStrategy::WholeBatch { start_partition },
+                ),
+                CompressionCodec::Zstd(1),
+                data_file.to_str().unwrap().to_string(),
+                false,
+                1024 * 1024,
+                None,
+            )
+            .unwrap();
+
+            let ctx = SessionContext::new_with_config_rt(
+                SessionConfig::new(),
+                Arc::new(RuntimeEnvBuilder::new().build().unwrap()),
+            );
+            let stream = exec.execute(0, ctx.task_ctx()).unwrap();
+            Runtime::new().unwrap().block_on(collect(stream)).unwrap();
+
+            let offsets = exec
+                .partition_offsets()
+                .expect("local destination publishes offsets")
+                .get()
+                .expect("writer published its partition offsets")
+                .to_vec();
+            (0..num_partitions)
+                .filter(|&p| offsets[p + 1] > offsets[p])
+                .collect()
+        };
+
+        assert_eq!(nonempty_partitions(0), vec![0, 1]);
+        assert_eq!(
+            nonempty_partitions(3),
+            vec![3, 4],
+            "mapper 3 must not start where mapper 0 does"
+        );
+        // A map partition id above the output partition count wraps rather than panicking.
+        assert_eq!(nonempty_partitions(num_partitions + 1), vec![1, 2]);
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
     fn test_round_robin_batch_granular_whole_batch_per_partition() {
         // Each input batch must land entirely on a single output partition. Reading back
         // the IPC blocks from any one partition should give whole batches (num_rows each),
@@ -1445,7 +1501,10 @@ mod test {
             Arc::new(DataSourceExec::new(Arc::new(
                 MemorySourceConfig::try_new(partitions, batch.schema(), None).unwrap(),
             ))),
-            CometPartitioning::RoundRobin(num_partitions, RoundRobinStrategy::WholeBatch),
+            CometPartitioning::RoundRobin(
+                num_partitions,
+                RoundRobinStrategy::WholeBatch { start_partition: 0 },
+            ),
             CompressionCodec::Zstd(1),
             data_file.to_str().unwrap().to_string(),
             false,
@@ -1486,6 +1545,8 @@ mod test {
         }
     }
 
+    /// Test that batch coalescing in BufBatchWriter reduces output size by
+    /// writing fewer, larger IPC blocks instead of many small ones.
     #[test]
     #[cfg_attr(miri, ignore)]
     fn test_batch_coalescing_reduces_size() {
@@ -1823,12 +1884,7 @@ mod test {
             Arc::new(DataSourceExec::new(Arc::new(
                 MemorySourceConfig::try_new(partitions, Arc::clone(&schema), None).unwrap(),
             ))),
-            CometPartitioning::RoundRobin(
-                num_partitions,
-                RoundRobinStrategy::HashAll {
-                    max_hash_columns: 0,
-                },
-            ),
+            CometPartitioning::RoundRobin(num_partitions, RoundRobinStrategy::default()),
             CompressionCodec::Zstd(1),
             data_file.to_str().unwrap().to_string(),
             false,
@@ -1912,12 +1968,7 @@ mod test {
             Arc::new(DataSourceExec::new(Arc::new(
                 MemorySourceConfig::try_new(partitions, Arc::clone(&schema), None).unwrap(),
             ))),
-            CometPartitioning::RoundRobin(
-                num_partitions,
-                RoundRobinStrategy::HashAll {
-                    max_hash_columns: 0,
-                },
-            ),
+            CometPartitioning::RoundRobin(num_partitions, RoundRobinStrategy::default()),
             CompressionCodec::Zstd(1),
             data_file.to_str().unwrap().to_string(),
             false,

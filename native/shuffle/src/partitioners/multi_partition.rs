@@ -122,9 +122,8 @@ pub struct MultiPartitionShuffleRepartitioner<T: PartitionWriter> {
     /// allocation once rather than once per slice that references it. Cleared whenever the
     /// buffered batches drain (spill / shuffle_write). See `count_new_buffers`.
     pinned_buffers: HashSet<usize>,
-    /// Batch counter for the batch-granular RoundRobin path. Seeded with the input partition
-    /// id so mappers with adjacent partition ids do not concentrate their first batches on the
-    /// same output partition, then incremented once per input batch slice that reaches
+    /// Batch counter for [`RoundRobinStrategy::WholeBatch`], seeded from that variant's
+    /// `start_partition` and incremented once per input batch slice that reaches
     /// `partitioning_batch`. Unused by other strategies.
     round_robin_batch_seq: usize,
 }
@@ -197,15 +196,18 @@ impl<T: PartitionWriter> MultiPartitionShuffleRepartitioner<T> {
         // initialization code is simply initializing the vectors to the desired size.
         // The initial values are not used.
         //
-        // `partition_ids` and `partition_row_indices` are only touched by the row-level
-        // strategies (`Hash`, `RangePartitioning`, and hash-all-columns RoundRobin). The
-        // whole-batch RoundRobin path never inspects rows, so allocating them there would be
-        // ~64 KB of dead scratch on every task.
-        let needs_row_scratch = !matches!(
-            &partitioning,
-            CometPartitioning::SinglePartition
-                | CometPartitioning::RoundRobin(_, RoundRobinStrategy::WholeBatch),
-        );
+        // Whole-batch RoundRobin is the one strategy that never inspects rows. It needs neither
+        // `partition_ids` nor `partition_row_indices` (~64 KB of dead scratch per task), and it
+        // is the only one that needs a seeded batch counter. Read both off the partitioning here,
+        // before it is moved into the struct below.
+        let whole_batch_start = match &partitioning {
+            CometPartitioning::RoundRobin(
+                _,
+                RoundRobinStrategy::WholeBatch { start_partition },
+            ) => Some(*start_partition),
+            _ => None,
+        };
+        let needs_row_scratch = whole_batch_start.is_none();
         let scratch = ScratchSpace {
             hashes_buf: match &partitioning {
                 // Allocate hashes_buf for hash and hash-all-columns round robin partitioning.
@@ -245,10 +247,9 @@ impl<T: PartitionWriter> MultiPartitionShuffleRepartitioner<T> {
             max_buffer_bytes,
             tracing_enabled,
             pinned_buffers: HashSet::new(),
-            // Seed with the input partition id so batches from mapper i land on
-            // partition (i + k) mod N on the k-th batch, spreading concurrent mappers' first
-            // batches across distinct output partitions.
-            round_robin_batch_seq: partition,
+            // `partition` is the DataFusion partition and is always 0 here, so the seed comes
+            // from the strategy instead. See `RoundRobinStrategy::WholeBatch`.
+            round_robin_batch_seq: whole_batch_start.unwrap_or(0),
         })
     }
 
@@ -378,32 +379,28 @@ impl<T: PartitionWriter> MultiPartitionShuffleRepartitioner<T> {
                 self.scratch = scratch;
             }
             CometPartitioning::RoundRobin(num_output_partitions, strategy) => {
-                // Two strategies share the scratch-take / timer / spill / scratch-restore
-                // scaffold. Only the middle "fill partition_row_indices + partition_starts"
-                // step differs. WholeBatch: assign the whole input batch to one partition and
-                // pay no per-row cost. HashAll: hash every row (over up to max_hash_columns
-                // columns) and route rows individually. WholeBatch is retry-safe only when the
-                // upstream operator emits the same batches in the same order under retry
-                // (Comet's `CometNativeScan` and other order-preserving operators do so).
                 let mut scratch = std::mem::take(&mut self.scratch);
                 let num_rows = input.num_rows();
                 let partition_row_indices: Option<&[u32]> = {
                     let mut timer = self.metrics.repart_time.timer();
 
-                    let indices: Option<&[u32]> = match strategy {
-                        RoundRobinStrategy::WholeBatch => {
+                    let indices = match strategy {
+                        RoundRobinStrategy::WholeBatch { .. } => {
                             let target_idx = self.round_robin_batch_seq % *num_output_partitions;
                             self.round_robin_batch_seq = self.round_robin_batch_seq.wrapping_add(1);
 
-                            // `partition_starts[k]..partition_starts[k+1]` is partition k's
-                            // slice. Slots 0..=target_idx are 0; slots after `target_idx` are
-                            // `num_rows`, so `target_idx` owns the whole [0..num_rows) range.
-                            // `partition_row_indices` is left unmaterialized — the spill path
-                            // treats the target partition's slice as an identity mapping.
+                            // `target_idx` owns the whole `[0..num_rows)` range and every other
+                            // partition an empty one. `partition_row_indices` stays
+                            // unmaterialized, so `None` below tells the spill path to read that
+                            // range as an identity mapping.
+                            //
+                            // Overwrite in place rather than `clear` + `resize`: the vector is
+                            // always `num_output_partitions + 1` long (set in `try_new`, kept by
+                            // `map_partition_ids_to_starts_and_indices`), and `fill` lowers to a
+                            // memset where `resize` goes through `extend_with`.
                             let partition_starts = &mut scratch.partition_starts;
-                            partition_starts.clear();
-                            partition_starts.resize(target_idx + 1, 0);
-                            partition_starts.resize(*num_output_partitions + 1, num_rows as u32);
+                            partition_starts[..=target_idx].fill(0);
+                            partition_starts[target_idx + 1..].fill(num_rows as u32);
                             None
                         }
                         RoundRobinStrategy::HashAll { max_hash_columns } => {
@@ -419,14 +416,12 @@ impl<T: PartitionWriter> MultiPartitionShuffleRepartitioner<T> {
                             } else {
                                 (*max_hash_columns).min(input.num_columns())
                             };
-                            let columns_to_hash: Vec<ArrayRef> = (0..num_columns_to_hash)
-                                .map(|i| Arc::clone(input.column(i)))
-                                .collect();
+                            let columns_to_hash = &input.columns()[..num_columns_to_hash];
 
                             // Use identical seed as Spark hash partitioning.
                             let hashes_buf = &mut scratch.hashes_buf[..num_rows];
                             hashes_buf.fill(42_u32);
-                            create_murmur3_hashes(&columns_to_hash, hashes_buf)?;
+                            create_murmur3_hashes(columns_to_hash, hashes_buf)?;
 
                             let partition_ids = &mut scratch.partition_ids[..num_rows];
                             hashes_buf.iter().enumerate().for_each(|(idx, hash)| {
@@ -841,12 +836,7 @@ mod tests {
         let mut repartitioner = MultiPartitionShuffleRepartitioner::try_new(
             0,
             FailingPartitionWriter::default(),
-            CometPartitioning::RoundRobin(
-                2,
-                RoundRobinStrategy::HashAll {
-                    max_hash_columns: 0,
-                },
-            ),
+            CometPartitioning::RoundRobin(2, RoundRobinStrategy::default()),
             ShufflePartitionerMetrics::new(&metrics_set, 0),
             Arc::clone(&runtime),
             2,
@@ -970,12 +960,7 @@ mod tests {
                 let mut repartitioner = MultiPartitionShuffleRepartitioner::try_new(
                     0,
                     FailingPartitionWriter::default(),
-                    CometPartitioning::RoundRobin(
-                        2,
-                        RoundRobinStrategy::HashAll {
-                            max_hash_columns: 0,
-                        },
-                    ),
+                    CometPartitioning::RoundRobin(2, RoundRobinStrategy::default()),
                     ShufflePartitionerMetrics::new(&metrics_set, 0),
                     Arc::clone(&runtime),
                     64,

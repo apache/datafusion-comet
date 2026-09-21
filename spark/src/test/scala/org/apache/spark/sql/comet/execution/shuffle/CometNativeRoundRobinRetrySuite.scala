@@ -21,9 +21,9 @@ package org.apache.spark.sql.comet.execution.shuffle
 
 import java.util.Properties
 
-import org.apache.spark.{Partition, TaskContext, TaskContextImpl}
+import org.apache.spark.{TaskContext, TaskContextImpl}
 import org.apache.spark.executor.TaskMetrics
-import org.apache.spark.rdd.{DeterministicLevel, RDD}
+import org.apache.spark.rdd.DeterministicLevel
 import org.apache.spark.sql.{CometTestBase, DataFrame}
 import org.apache.spark.sql.catalyst.expressions.Literal
 import org.apache.spark.sql.catalyst.plans.physical.{HashPartitioning, Partitioning, RangePartitioning, RoundRobinPartitioning, SinglePartition}
@@ -39,9 +39,9 @@ import org.apache.comet.{CometConf, CometRuntimeException}
  * row's destination depends on the order and the framing of the batches the upstream operator
  * produced rather than on the row itself. Re-executing a map task can therefore write a different
  * partitioning of the same rows, which duplicates and drops rows on the reduce side once any of
- * the replaced output has been fetched. Two defences are covered here: declaring the shuffle
- * input RDD indeterminate so the DAGScheduler rolls the stage back instead of re-running one
- * task, and refusing to run a retried map task at all.
+ * the replaced output has been fetched. This suite covers the writer refusing to run a retried
+ * map task. The other defence, declaring the shuffle input RDD indeterminate so the DAGScheduler
+ * rolls the stage back, is covered in [[CometNativeShuffleInputRDDSuite]].
  *
  * Lives in the `execution.shuffle` package so it can construct the `private[shuffle]`
  * [[CometNativeShuffleInputRDD]] and the `private[spark]` [[TaskContextImpl]] directly.
@@ -52,26 +52,6 @@ class CometNativeRoundRobinRetrySuite extends CometTestBase {
     CometConf.COMET_SHUFFLE_NATIVE_ROUND_ROBIN_PARTITIONING_BATCH_GRANULAR.key
   private val failOnRetryKey =
     CometConf.COMET_SHUFFLE_NATIVE_ROUND_ROBIN_PARTITIONING_FAIL_ON_RETRY.key
-
-  /** An input RDD that reports exactly `level`, standing in for a real upstream subtree. */
-  private def parentWithLevel(level: DeterministicLevel.Value): RDD[AnyRef] =
-    new RDD[AnyRef](spark.sparkContext, Nil) {
-      override protected def getOutputDeterministicLevel: DeterministicLevel.Value = level
-      override protected def getPartitions: Array[Partition] = Array.empty
-      override def compute(split: Partition, context: TaskContext): Iterator[AnyRef] =
-        Iterator.empty
-    }
-
-  private def shuffleInput(
-      parent: RDD[AnyRef],
-      positionalRoundRobin: Boolean): CometNativeShuffleInputRDD =
-    new CometNativeShuffleInputRDD(
-      spark.sparkContext,
-      Seq(parent),
-      0,
-      Set.empty,
-      CometMetricNode(Map.empty),
-      positionalRoundRobin = positionalRoundRobin)
 
   /** Mirrors `TaskContext.empty()`, which hard-codes both attempt numbers to zero. */
   private def taskContextFor(stageAttempt: Int, taskAttempt: Int): TaskContext =
@@ -115,9 +95,12 @@ class CometNativeRoundRobinRetrySuite extends CometTestBase {
 
   private val refusalPrefix = "Refusing to re-execute a Comet native round-robin"
 
-  test("positional round robin is claimed only for round robin with the config enabled") {
+  test("usesPositionalRoundRobin claims only multi-partition round robin with the config on") {
     val partitionings = Seq(
       RoundRobinPartitioning(4),
+      // One output partition puts every row in the same place, so there is no placement to get
+      // wrong. `isRoundRobin` in `prepareJVMShuffleDependency` excludes it for the same reason.
+      RoundRobinPartitioning(1),
       SinglePartition,
       HashPartitioning(Seq(Literal(1)), 4),
       RangePartitioning(Nil, 4))
@@ -127,35 +110,6 @@ class CometNativeRoundRobinRetrySuite extends CometTestBase {
     }
     withSQLConf(batchGranularKey -> "false") {
       assert(!partitionings.exists(CometShuffleExchangeExec.usesPositionalRoundRobin))
-    }
-  }
-
-  test("positional round robin declares indeterminate output unless its parent is determinate") {
-    // A determinate parent (a plain scan) replays identically, so positional assignment is
-    // reproducible and per-task retry stays cheap. Anything below another exchange is unordered,
-    // which is where Spark's own round robin flips to indeterminate too.
-    Seq(
-      DeterministicLevel.DETERMINATE -> DeterministicLevel.DETERMINATE,
-      DeterministicLevel.UNORDERED -> DeterministicLevel.INDETERMINATE,
-      DeterministicLevel.INDETERMINATE -> DeterministicLevel.INDETERMINATE).foreach {
-      case (parentLevel, expected) =>
-        val input = shuffleInput(parentWithLevel(parentLevel), positionalRoundRobin = true)
-        assert(input.outputDeterministicLevel == expected, s"parent was $parentLevel")
-        assert(
-          input.copyForLocalShuffle().outputDeterministicLevel == expected,
-          s"local fallback lost the declaration for parent $parentLevel")
-    }
-  }
-
-  test("content-hash round robin keeps inheriting its parent's determinism") {
-    // Hash placement is a pure function of the rows, so nothing here should be indeterminate on
-    // its own account. This is the default path and must stay as retryable as it is today.
-    Seq(
-      DeterministicLevel.DETERMINATE,
-      DeterministicLevel.UNORDERED,
-      DeterministicLevel.INDETERMINATE).foreach { level =>
-      val input = shuffleInput(parentWithLevel(level), positionalRoundRobin = false)
-      assert(input.outputDeterministicLevel == level)
     }
   }
 
@@ -177,35 +131,23 @@ class CometNativeRoundRobinRetrySuite extends CometTestBase {
     }
   }
 
-  test("positional round robin lets a first attempt through") {
-    withSQLConf(batchGranularKey -> "true") {
-      val writer = writerFor(RoundRobinPartitioning(4), taskContextFor(0, 0))
-      assert(!writeFailureMessage(writer).startsWith(refusalPrefix))
-    }
-  }
-
-  test("the retry guard is scoped to positional round robin") {
-    // Hash and range partitioning place rows by content, and content-hash round robin does too,
-    // so a retry of any of those is safe and must not be turned into a job failure.
-    withSQLConf(batchGranularKey -> "true") {
-      Seq(SinglePartition, HashPartitioning(Seq(Literal(1)), 4), RangePartitioning(Nil, 4))
-        .foreach { partitioning =>
-          val writer = writerFor(partitioning, taskContextFor(1, 1))
-          assert(
-            !writeFailureMessage(writer).startsWith(refusalPrefix),
-            s"$partitioning should not be treated as positional round robin")
+  test("the retry guard fires only for positional round robin on a retried attempt") {
+    // Everything here must reach the writer. Hash and range partitioning place rows by content,
+    // content-hash round robin does too, a first attempt is not a retry, and failOnRetry=false
+    // hands retry handling back to the DAGScheduler.
+    Seq(
+      ("first attempt", "true", "true", RoundRobinPartitioning(4): Partitioning, 0, 0),
+      ("batchGranular off", "false", "true", RoundRobinPartitioning(4), 1, 1),
+      ("failOnRetry off", "true", "false", RoundRobinPartitioning(4), 1, 1),
+      ("single output partition", "true", "true", RoundRobinPartitioning(1), 1, 1),
+      ("hash partitioning", "true", "true", HashPartitioning(Seq(Literal(1)), 4), 1, 1),
+      ("range partitioning", "true", "true", RangePartitioning(Nil, 4), 1, 1),
+      ("single partition", "true", "true", SinglePartition, 1, 1)).foreach {
+      case (label, granular, failOnRetry, partitioning, stageAttempt, taskAttempt) =>
+        withSQLConf(batchGranularKey -> granular, failOnRetryKey -> failOnRetry) {
+          val writer = writerFor(partitioning, taskContextFor(stageAttempt, taskAttempt))
+          assert(!writeFailureMessage(writer).startsWith(refusalPrefix), label)
         }
-    }
-    withSQLConf(batchGranularKey -> "false") {
-      val writer = writerFor(RoundRobinPartitioning(4), taskContextFor(1, 1))
-      assert(!writeFailureMessage(writer).startsWith(refusalPrefix))
-    }
-  }
-
-  test("failOnRetry=false hands retry handling back to the DAGScheduler") {
-    withSQLConf(batchGranularKey -> "true", failOnRetryKey -> "false") {
-      val writer = writerFor(RoundRobinPartitioning(4), taskContextFor(1, 1))
-      assert(!writeFailureMessage(writer).startsWith(refusalPrefix))
     }
   }
 

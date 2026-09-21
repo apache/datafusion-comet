@@ -109,20 +109,13 @@ class CometNativeShuffleWriter[K, V](
   }
 
   /**
-   * Refuse to re-execute a map task whose round-robin placement is positional.
+   * Refuse to re-execute a map task whose round-robin placement is positional. See the
+   * `WholeBatch` retry-safety section of `docs/source/contributor-guide/native_shuffle.md`.
    *
-   * With `RoundRobinStrategy::WholeBatch` an input batch's output partition comes from a per-task
-   * counter, so which partition a row lands in is a function of the order and the framing of the
-   * batches the upstream operator produced rather than of the row itself. An attempt that frames
-   * or orders its input even slightly differently writes a different partitioning of the same
-   * rows. Once any consumer has fetched the output this attempt replaces, the reduce side gets
-   * some rows twice and some not at all, and nothing downstream can detect it.
-   *
-   * [[CometNativeShuffleInputRDD.getOutputDeterministicLevel]] already asks the DAGScheduler to
-   * roll the whole stage back rather than re-run one task, which is Spark's own answer to this.
-   * That answer is only as good as the parent's determinism level being an accurate description
-   * of what the upstream operator replays, so while the strategy is opt-in and unproven the
-   * default is to not rely on it and fail here instead.
+   * [[CometNativeShuffleInputRDD.getOutputDeterministicLevel]] is the other half of the defence.
+   * This half does not trust the parent's declared determinism level to describe what the
+   * upstream operator actually replays, so while the strategy is opt-in and unproven the default
+   * is to fail rather than rely on rollback.
    *
    * Both counters are needed and neither subsumes the other. `attemptNumber` covers a task re-run
    * inside the current stage attempt: a task-level failure, speculation, or an executor lost
@@ -133,14 +126,14 @@ class CometNativeShuffleWriter[K, V](
    * There is no Spark API for failing an application from inside a task, and the two exceptions
    * Spark declines to retry are matched by class name (`NotSerializableException`,
    * `TaskOutputFileAlreadyExistException`), so this throws an ordinary exception. Because the
-   * condition is sticky - a later attempt only has a higher `attemptNumber` - every remaining
+   * condition is sticky (a later attempt only has a higher `attemptNumber`) every remaining
    * attempt fails here too and the task set aborts after `spark.task.maxFailures`, failing the
    * stage and the job. Each of those attempts fails before doing any work.
    */
   private def failIfRetryingPositionalRoundRobin(): Unit = {
     if (!CometShuffleExchangeExec.usesPositionalRoundRobin(outputPartitioning)) return
     if (!CometConf.COMET_SHUFFLE_NATIVE_ROUND_ROBIN_PARTITIONING_FAIL_ON_RETRY.get()) return
-    // `context` is null only in unit tests that drive the writer directly.
+    // Nullable for the same reason as the `Option(context)` guard on `cancellationWatch` above.
     val taskContext = context
     if (taskContext == null) return
     val taskAttempt = taskContext.attemptNumber()

@@ -72,7 +72,7 @@ struct Args {
     #[arg(long, default_value_t = 200)]
     partitions: usize,
 
-    /// Partitioning scheme: hash, single, round-robin
+    /// Partitioning scheme: hash, single, round-robin, round-robin-whole-batch
     #[arg(long, default_value = "hash")]
     partitioning: String,
 
@@ -585,11 +585,14 @@ fn build_partitioning(
 ) -> CometPartitioning {
     match scheme {
         "single" => CometPartitioning::SinglePartition,
-        "round-robin" => CometPartitioning::RoundRobin(
+        "round-robin" => {
+            CometPartitioning::RoundRobin(num_partitions, RoundRobinStrategy::default())
+        }
+        "round-robin-whole-batch" => CometPartitioning::RoundRobin(
             num_partitions,
-            RoundRobinStrategy::HashAll {
-                max_hash_columns: 0,
-            },
+            // Standalone bench, so there is no Spark map partition id to carry. One mapper
+            // means the start offset makes no difference to the work measured.
+            RoundRobinStrategy::WholeBatch { start_partition: 0 },
         ),
         "hash" => {
             let exprs: Vec<Arc<dyn datafusion::physical_expr::PhysicalExpr>> = hash_col_indices

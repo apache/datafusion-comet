@@ -66,28 +66,16 @@ private[shuffle] class CometNativeShuffleInputRDD(
       positionalRoundRobin)
 
   /**
-   * Batch-granular round robin assigns each Arrow batch to an output partition by position, so
-   * the placement of a row depends on the order and the framing of the batches the upstream
-   * operator produced, not on the row itself. Re-running one map task against a differently
-   * ordered or differently framed input therefore sends rows somewhere else, which duplicates and
-   * drops rows once any of the replaced output has already been fetched.
-   *
-   * Spark states that risk declaratively rather than defending against it per-operator: a
-   * round-robin repartition is wrapped in a `MapPartitionsRDD` with `isOrderSensitive = true`
+   * Spark handles the retry hazard of positional round robin declaratively rather than
+   * per-operator: it wraps the repartition in a `MapPartitionsRDD` with `isOrderSensitive = true`
    * (Comet's own JVM path does this in `prepareJVMShuffleDependency`), and that RDD reports
-   * `INDETERMINATE` whenever its parent is `UNORDERED`. The DAGScheduler then rolls the whole
-   * stage back, or aborts the job when a result stage has already consumed output, instead of
-   * re-running a single task. The native path has no `MapPartitionsRDD` to carry the flag, so
-   * apply the same rule here.
+   * `INDETERMINATE` whenever its parent is `UNORDERED`, which makes the DAGScheduler roll the
+   * whole stage back instead of re-running one task. The native path has no `MapPartitionsRDD` to
+   * carry the flag, so apply the same rule here.
    *
-   * The parent level does the discriminating, exactly as it does for Spark. A plain scan is
-   * `DETERMINATE`: it replays identically, so positional assignment is reproducible and ordinary
-   * per-task retry stays cheap. Anything below another exchange is `UNORDERED`, because reduce
-   * tasks see shuffle blocks in arrival order, and that is when positional assignment stops being
-   * reproducible.
-   *
-   * Content-hash round robin (the default) needs none of this: it places rows by hash, so its
-   * output is a pure function of the rows regardless of how they arrive.
+   * Letting the parent level discriminate is what keeps a plain scan on the cheap per-task retry
+   * path. See the `WholeBatch` retry-safety section of
+   * `docs/source/contributor-guide/native_shuffle.md`.
    */
   override protected def getOutputDeterministicLevel: DeterministicLevel.Value = {
     val inheritedLevel = super.getOutputDeterministicLevel

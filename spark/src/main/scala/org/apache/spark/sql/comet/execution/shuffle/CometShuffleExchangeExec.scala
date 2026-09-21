@@ -302,21 +302,20 @@ object CometShuffleExchangeExec
   /**
    * True when this exchange will run the native round-robin writer in its positional
    * (batch-granular) mode, where an input `RecordBatch` is assigned whole to one output partition
-   * by a per-task counter rather than by hashing its rows.
+   * by a per-task counter rather than by hashing its rows. See the `WholeBatch` retry-safety
+   * section of `docs/source/contributor-guide/native_shuffle.md` for why that is unsafe to
+   * re-execute.
    *
-   * Positional assignment is what makes the strategy cheap and also what makes it unsafe to
-   * re-execute: the placement depends on the order and the framing of the batches the upstream
-   * operator hands over, not on the rows themselves. Two call sites need the same answer, so they
-   * share this predicate rather than each reading the config: [[CometNativeShuffleInputRDD]],
-   * which declares its output indeterminate so the DAGScheduler rolls a stage back rather than
-   * re-running one task into partially consumed output, and [[CometNativeShuffleWriter]], which
-   * refuses to run at all on a retry.
+   * Must stay in step with `PhysicalPlanner::create_partitioning`, which turns the
+   * `batch_granular` proto field into `RoundRobinStrategy::WholeBatch`. Nothing enforces that.
    *
-   * The equivalent decision on the native side is `PhysicalPlanner::create_partitioning` turning
-   * `batch_granular` into `RoundRobinStrategy::WholeBatch`; keep the two in step.
+   * The `numPartitions > 1` guard mirrors `isRoundRobin` in `prepareJVMShuffleDependency`. With a
+   * single output partition every row lands in the same place, so there is no placement to get
+   * wrong, and native routes that case to `SinglePartitionShufflePartitioner` regardless.
    */
   def usesPositionalRoundRobin(outputPartitioning: Partitioning): Boolean =
     outputPartitioning.isInstanceOf[RoundRobinPartitioning] &&
+      outputPartitioning.numPartitions > 1 &&
       CometConf.COMET_SHUFFLE_NATIVE_ROUND_ROBIN_PARTITIONING_BATCH_GRANULAR.get()
 
   override def createExec(

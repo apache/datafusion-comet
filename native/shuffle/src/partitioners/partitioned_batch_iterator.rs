@@ -116,25 +116,21 @@ impl<'a> PartitionedBatchIterator<'a> {
     /// single source batch in natural order, so a clone is equivalent to interleaving them.
     fn whole_source_batch(&self, indices_end: usize) -> Option<RecordBatch> {
         let indices = &self.indices[self.pos..indices_end];
-        let &(first_batch, first_row) = indices.first()?;
-        let &(last_batch, last_row) = indices.last()?;
-        let source_rows = self.record_batches[first_batch as usize].num_rows();
-        if first_batch != last_batch
-            || first_row != 0
-            || last_row as usize + 1 != source_rows
-            || indices.len() != source_rows
-        {
+        let &(first_batch, _) = indices.first()?;
+        let source = self.record_batches[first_batch as usize];
+        // O(1) reject, which is all a chunk that cannot take this path pays.
+        if indices.len() != source.num_rows() {
             return None;
         }
-        // Verify the full contiguous invariant. Invariant holds by construction in
-        // `buffer_partitioned_batch_may_spill`, but the check is O(indices.len())
-        // with two integer compares per step and vectorizes easily. Two orders of
-        // magnitude cheaper than a nested-schema interleave.
+        // Given the length check, `b == first_batch && r == i` for every element implies the
+        // rest: one source batch, starting at row 0, ending at its last row. `WholeBatch`
+        // guarantees it by construction, but `HashAll` can land a chunk here by chance, so the
+        // scan has to run in release builds too. It short-circuits on the first scattered pair.
         indices
             .iter()
             .enumerate()
             .all(|(i, &(b, r))| b == first_batch && r as usize == i)
-            .then(|| self.record_batches[first_batch as usize].clone())
+            .then(|| source.clone())
     }
 }
 
@@ -148,11 +144,8 @@ impl Iterator for PartitionedBatchIterator<'_> {
 
         let indices_end = std::cmp::min(self.pos + self.batch_size, self.indices.len());
 
-        // Whole-source-batch fast path: when this chunk covers every row of one source
-        // batch in natural order, cloning the source batch is equivalent to `interleave`
-        // and skips walking every column (and every nested child on wide/nested schemas).
-        // This is the vectorized path used by RoundRobinStrategy::WholeBatch, but the check
-        // is generic and fires whenever indices happen to line up this way.
+        // Generic, so `HashAll` benefits opportunistically, but this is the path that makes
+        // `RoundRobinStrategy::WholeBatch` cheap.
         if let Some(batch) = self.whole_source_batch(indices_end) {
             self.pos = indices_end;
             return Some(Ok(batch));

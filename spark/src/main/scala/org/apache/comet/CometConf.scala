@@ -478,12 +478,13 @@ object CometConf extends ShimCometConf {
   val COMET_SHUFFLE_NATIVE_ROUND_ROBIN_PARTITIONING_BATCH_GRANULAR: ConfigEntry[Boolean] =
     conf("spark.comet.shuffle.native.partitioning.roundrobin.batchGranular")
       .category(CATEGORY_SHUFFLE)
-      .doc(
-        "When true, Comet's native round-robin shuffle assigns each RecordBatch as a whole " +
-          "to one output partition instead of hashing every column of every row. This is much " +
-          "cheaper on wide/nested schemas. Distribution is quasi-even at batch granularity. " +
-          "Retry-safe only when the upstream operator emits the same batches in the same order " +
-          "under retry (Comet's Parquet scan and other order-preserving operators satisfy this).")
+      .doc("When true, Comet's native round-robin shuffle assigns each RecordBatch as a whole " +
+        "to one output partition instead of hashing every column of every row. This is much " +
+        "cheaper on wide/nested schemas. Distribution is quasi-even at batch granularity. " +
+        "Retry-safe only when the upstream operator emits the same batches in the same order " +
+        "under retry (Comet's Parquet scan and other order-preserving operators satisfy this). " +
+        s"Has no effect unless ${COMET_SHUFFLE_NATIVE_ROUND_ROBIN_PARTITIONING_ENABLED.key} " +
+        "is also true.")
       .booleanConf
       .createWithDefault(false)
 
@@ -492,17 +493,17 @@ object CometConf extends ShimCometConf {
       .category(CATEGORY_SHUFFLE)
       .doc(
         "Only applies when " +
-          "spark.comet.shuffle.native.partitioning.roundrobin.batchGranular is true. " +
+          s"${COMET_SHUFFLE_NATIVE_ROUND_ROBIN_PARTITIONING_BATCH_GRANULAR.key} is true. " +
           "Batch-granular round robin places rows by position rather than by content, so a " +
           "re-executed map task can send rows to different output partitions than the attempt " +
           "it replaces, silently dropping and duplicating rows once any of that output has " +
-          "been fetched. When this is true, a native round-robin map task that runs as a retry " +
-          "(a task attempt after the first, or any attempt of a re-submitted stage, which is " +
-          "what an executor loss produces) fails immediately instead of writing output, which " +
-          "fails the stage and therefore the job. Note that speculative attempts also count as " +
-          "retries. Set to false to keep Spark's normal fault tolerance, in which case safety " +
-          "rests on the whole stage being rolled back, which Comet requests by declaring the " +
-          "shuffle input RDD INDETERMINATE whenever its own input is not DETERMINATE.")
+          "been fetched. When true, such a map task fails immediately instead of writing " +
+          "output, which fails the stage and therefore the job. A retry here means any task " +
+          "attempt after the first (speculative attempts included) or any attempt of a " +
+          "re-submitted stage, which is what an executor loss produces. Set to false to keep " +
+          "Spark's normal fault tolerance, leaving safety to whole-stage rollback, which Comet " +
+          "requests by declaring the shuffle input RDD INDETERMINATE whenever its own input " +
+          "is not DETERMINATE.")
       .booleanConf
       .createWithDefault(true)
 

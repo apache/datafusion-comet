@@ -45,25 +45,53 @@ import org.apache.comet.serde.OperatorOuterClass.Operator
  */
 class CometNativeShuffleInputRDDSuite extends CometTestBase {
 
+  /** An input RDD that reports exactly `level`, standing in for a real upstream subtree. */
+  private def parentWithLevel(level: DeterministicLevel.Value): RDD[AnyRef] =
+    new RDD[AnyRef](spark.sparkContext, Nil) {
+      override protected def getOutputDeterministicLevel: DeterministicLevel.Value = level
+      override protected def getPartitions: Array[Partition] = Array.empty
+      override def compute(split: Partition, context: TaskContext): Iterator[AnyRef] =
+        Iterator.empty
+    }
+
+  private def inputWithParent(
+      level: DeterministicLevel.Value,
+      positionalRoundRobin: Boolean = false): CometNativeShuffleInputRDD =
+    new CometNativeShuffleInputRDD(
+      spark.sparkContext,
+      Seq(parentWithLevel(level)),
+      0,
+      Set.empty,
+      CometMetricNode(Map.empty),
+      positionalRoundRobin = positionalRoundRobin)
+
   test("native shuffle input preserves its parents' determinism") {
+    // Content-hash round robin, like every other partitioning, places rows by hash, so its
+    // output is a pure function of the rows and nothing here is indeterminate on its own account.
     Seq(
       DeterministicLevel.DETERMINATE,
       DeterministicLevel.UNORDERED,
       DeterministicLevel.INDETERMINATE).foreach { level =>
-      val parent = new RDD[AnyRef](spark.sparkContext, Nil) {
-        override protected def getOutputDeterministicLevel: DeterministicLevel.Value = level
-        override protected def getPartitions: Array[Partition] = Array.empty
-        override def compute(split: Partition, context: TaskContext): Iterator[AnyRef] =
-          Iterator.empty
-      }
-      val input = new CometNativeShuffleInputRDD(
-        spark.sparkContext,
-        Seq(parent),
-        0,
-        Set.empty,
-        CometMetricNode(Map.empty))
+      val input = inputWithParent(level)
       assert(input.outputDeterministicLevel == level)
       assert(input.copyForLocalShuffle().outputDeterministicLevel == level)
+    }
+  }
+
+  test("positional round robin declares indeterminate output unless its parent is determinate") {
+    // A determinate parent (a plain scan) replays identically, so positional assignment is
+    // reproducible and per-task retry stays cheap. Anything below another exchange is unordered,
+    // which is where Spark's own round robin flips to indeterminate too.
+    Seq(
+      DeterministicLevel.DETERMINATE -> DeterministicLevel.DETERMINATE,
+      DeterministicLevel.UNORDERED -> DeterministicLevel.INDETERMINATE,
+      DeterministicLevel.INDETERMINATE -> DeterministicLevel.INDETERMINATE).foreach {
+      case (parentLevel, expected) =>
+        val input = inputWithParent(parentLevel, positionalRoundRobin = true)
+        assert(input.outputDeterministicLevel == expected, s"parent was $parentLevel")
+        assert(
+          input.copyForLocalShuffle().outputDeterministicLevel == expected,
+          s"local fallback lost the declaration for parent $parentLevel")
     }
   }
 

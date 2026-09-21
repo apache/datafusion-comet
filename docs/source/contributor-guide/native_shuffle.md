@@ -49,7 +49,6 @@ Native shuffle (`CometExchange`) is selected when all of the following condition
    columnar output. Row-based Spark operators require JVM shuffle.
 
 3. **Supported partitioning type**: Native shuffle supports:
-
    - `HashPartitioning`
    - `RangePartitioning`
    - `SinglePartition`
@@ -152,7 +151,6 @@ The native shuffle implementation is its own workspace crate, `datafusion-comet-
 1. **Plan construction**: `CometNativeShuffleWriter` builds a protobuf operator tree with a
    `ShuffleWriter` operator at the root and `childNativeOp` as its child. `childNativeOp` takes
    one of two shapes:
-
    - The child plan's `nativeOp` directly, when `CometShuffleExchangeExec`'s child is a
      `CometNativeExec` subtree. The upstream operators run inside the same `CometExecIterator`
      as the writer, with no JVM-to-native batch boundary between them.
@@ -165,7 +163,6 @@ The native shuffle implementation is its own workspace crate, `datafusion-comet-
 2. **Native execution**: A single `CometExecIterator` per partition runs the unified plan.
 
 3. **Partitioning**: `ShuffleWriterExec` receives batches and routes to the appropriate partitioner:
-
    - `MultiPartitionShuffleRepartitioner`: For hash/range/round-robin partitioning
    - `SinglePartitionShufflePartitioner`: For single partition (simpler path)
 
@@ -173,7 +170,6 @@ The native shuffle implementation is its own workspace crate, `datafusion-comet-
    exceeds the threshold, partitions spill to temporary files.
 
 5. **Encoding**: `ShuffleBlockWriter` encodes each partition's data as compressed Arrow IPC:
-
    - Writes compression type header
    - Writes field count header
    - Writes compressed IPC stream
@@ -203,7 +199,6 @@ read time. See [Direct Read](#direct-read-shufflescan) below for how the choice 
 1. `CometBlockStoreShuffleReader` fetches shuffle blocks via `ShuffleBlockFetcherIterator`.
 
 2. For each block, `NativeBatchDecoderIterator`:
-
    - Reads the 8-byte compressed length header
    - Reads the 8-byte field count header
    - Reads the compressed IPC data
@@ -333,10 +328,27 @@ are hashed. `0`, the default, hashes all of them.
 Hashing every column of every row dominates the shuffle write on wide nested schemas, because
 `create_murmur3_hashes` recurses into every struct child per row and the resulting row-level
 scatter forces `interleave_record_batch` to walk every column and child again on flush.
-`WholeBatch` assigns each incoming `RecordBatch` whole to `counter % num_partitions`, where the
-counter is seeded with the input partition id so concurrent mappers do not all target partition 0
-first. `partition_row_indices` is left unmaterialized and the flush clones the source batch instead
-of interleaving it, so the per-batch cost is one modulo, two `resize` calls, and some `Arc` bumps.
+`WholeBatch` assigns each incoming `RecordBatch` whole to `counter % num_partitions`.
+`partition_row_indices` is left unmaterialized and the flush clones the source batch instead of
+interleaving it, which removes both the per-row hash and the per-row `interleave_record_batch`
+gather. Those two are what dominate the shuffle write on a wide nested schema.
+
+Two caveats on the cost, because the path is not free per batch. It still writes and rescans
+`partition_starts` across all `num_partitions` slots, and it still appends one `(batch, row)` pair
+per row to the target partition's index list, which is charged against the spill reservation and
+scanned again by `PartitionedBatchIterator` to recognise the whole-batch case. The clone fast path
+also only fires when a flush chunk lines up exactly with one buffered batch, so a partition holding
+several batches shorter than `batch_size` falls back to interleaving.
+
+The counter starts at the Spark map partition id, carried on the strategy as
+`RoundRobinStrategy::WholeBatch { start_partition }` and filled in by
+`PhysicalPlanner::create_partitioning` from the planner's partition. It cannot come from
+`ShuffleWriterExec::execute`, because `jni_api` runs every native root plan with partition 0 (one
+Comet execution per Spark task). The map partition id is the right seed on both counts: it is
+distinct across mappers, so a task emitting fewer batches than there are output partitions does not
+leave the tail empty stage-wide, and it is a pure function of the partition, so a re-executed task
+reproduces its placement. Spark's own round robin seeds `XORShiftRandom(partitionId)` for the same
+two reasons.
 
 Distribution is even at batch granularity rather than row granularity: fewer batches than
 partitions leaves partitions empty, and unequal batch sizes give unequal partitions.
@@ -422,21 +434,23 @@ independently compressed, allowing parallel decompression during reads.
 
 ## Configuration
 
-| Config                                                              | Default | Description                                                   |
-| ------------------------------------------------------------------- | ------- | ------------------------------------------------------------- |
-| `spark.comet.shuffle.enabled`                                       | `true`  | Enable Comet shuffle                                          |
-| `spark.comet.shuffle.mode`                                          | `auto`  | Shuffle mode: `native`, `jvm`, or `auto`                      |
-| `spark.comet.shuffle.directRead.enabled`                            | `true`  | Decode shuffle blocks in native code, bypassing Arrow FFI     |
-| `spark.comet.shuffle.compression.codec`                             | `lz4`   | Compression codec                                             |
-| `spark.comet.shuffle.compression.zstd.level`                        | `1`     | Zstd compression level                                        |
-| `spark.comet.shuffle.native.writeBufferSize`                        | `1MB`   | Write buffer size                                             |
-| `spark.comet.shuffle.native.maxBufferBytes`                         | `0`     | Fixed spill threshold. `0` disables it, leaving pool pressure |
-| `spark.comet.shuffle.native.partitioning.hash.enabled`              | `true`  | Allow `HashPartitioning` on the native path                   |
-| `spark.comet.shuffle.native.partitioning.hash.nested.enabled`       | `false` | Allow struct and array hash keys, and map keys on Spark 4.0+  |
-| `spark.comet.shuffle.native.partitioning.range.enabled`             | `true`  | Allow `RangePartitioning` on the native path                  |
-| `spark.comet.shuffle.native.partitioning.roundrobin.enabled`        | `false` | Allow `RoundRobinPartitioning` on the native path             |
-| `spark.comet.shuffle.native.partitioning.roundrobin.maxHashColumns` | `0`     | Columns to hash for round robin. `0` hashes all of them       |
-| `spark.comet.shuffle.jvm.batchSize`                                 | `8192`  | Target rows per batch                                         |
+| Config                                                                         | Default | Description                                                                |
+| ------------------------------------------------------------------------------ | ------- | -------------------------------------------------------------------------- |
+| `spark.comet.shuffle.enabled`                                                  | `true`  | Enable Comet shuffle                                                       |
+| `spark.comet.shuffle.mode`                                                     | `auto`  | Shuffle mode: `native`, `jvm`, or `auto`                                   |
+| `spark.comet.shuffle.directRead.enabled`                                       | `true`  | Decode shuffle blocks in native code, bypassing Arrow FFI                  |
+| `spark.comet.shuffle.compression.codec`                                        | `lz4`   | Compression codec                                                          |
+| `spark.comet.shuffle.compression.zstd.level`                                   | `1`     | Zstd compression level                                                     |
+| `spark.comet.shuffle.native.writeBufferSize`                                   | `1MB`   | Write buffer size                                                          |
+| `spark.comet.shuffle.native.maxBufferBytes`                                    | `0`     | Fixed spill threshold. `0` disables it, leaving pool pressure              |
+| `spark.comet.shuffle.native.partitioning.hash.enabled`                         | `true`  | Allow `HashPartitioning` on the native path                                |
+| `spark.comet.shuffle.native.partitioning.hash.nested.enabled`                  | `false` | Allow struct and array hash keys, and map keys on Spark 4.0+               |
+| `spark.comet.shuffle.native.partitioning.range.enabled`                        | `true`  | Allow `RangePartitioning` on the native path                               |
+| `spark.comet.shuffle.native.partitioning.roundrobin.enabled`                   | `false` | Allow `RoundRobinPartitioning` on the native path                          |
+| `spark.comet.shuffle.native.partitioning.roundrobin.maxHashColumns`            | `0`     | Columns to hash for round robin. `0` hashes all of them                    |
+| `spark.comet.shuffle.native.partitioning.roundrobin.batchGranular`             | `false` | Assign each batch whole to one partition instead of hashing rows           |
+| `spark.comet.shuffle.native.partitioning.roundrobin.batchGranular.failOnRetry` | `true`  | Fail a retried positional round-robin map task instead of rewriting output |
+| `spark.comet.shuffle.jvm.batchSize`                                            | `8192`  | Target rows per batch                                                      |
 
 ## Comparison with JVM Shuffle
 
