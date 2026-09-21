@@ -175,10 +175,21 @@ class CometFuzzTestSuite extends CometFuzzTestBase {
         case "jvm" =>
           1
         case "native" =>
-          // native shuffle does not support complex types as partitioning keys
+          // Nested hash partitioning keys are off by default, so native shuffle falls back here.
           0
       }
       assert(cometShuffleExchanges.length == expectedNumCometShuffles)
+
+      // With the config enabled these keys do run through native shuffle. This is the widest
+      // nested-type coverage in the repo, so it is worth asserting that they are admitted rather
+      // than only that they fall back.
+      withSQLConf(CometConf.COMET_SHUFFLE_NATIVE_HASH_PARTITIONING_NESTED_ENABLED.key -> "true") {
+        val enabledDf = spark.sql(sql)
+        enabledDf.collect()
+        val enabledPlan =
+          enabledDf.queryExecution.executedPlan.asInstanceOf[AdaptiveSparkPlanExec].executedPlan
+        assert(collectCometShuffleExchanges(enabledPlan).length == 1)
+      }
     }
   }
 
@@ -263,15 +274,14 @@ class CometFuzzTestSuite extends CometFuzzTestBase {
         SQLConf.PARQUET_OUTPUT_TIMESTAMP_TYPE.key -> outputTimestampType.toString,
         SQLConf.SESSION_LOCAL_TIMEZONE.key -> defaultTimezone) {
 
-        // TODO test with MapType
-        // https://github.com/apache/datafusion-comet/issues/2945
         val schema = StructType(
           Seq(
             StructField("c0", DataTypes.DateType),
             StructField("c1", DataTypes.createArrayType(DataTypes.DateType)),
             StructField(
               "c2",
-              DataTypes.createStructType(Array(StructField("c3", DataTypes.DateType))))))
+              DataTypes.createStructType(Array(StructField("c3", DataTypes.DateType)))),
+            StructField("c4", MapType(DateType, DateType))))
 
         ParquetGenerator.makeParquetFile(
           random,
@@ -298,10 +308,26 @@ class CometFuzzTestSuite extends CometFuzzTestBase {
                 val columns =
                   df.schema.fields
                     .filter(f => DataTypeSupport.hasTemporalType(f.dataType))
-                    .map(_.name)
 
                 for (col <- columns) {
-                  checkSparkAnswer(s"SELECT $col FROM t1 ORDER BY $col")
+                  // Maps are not orderable; the answer helper compares unordered results too.
+                  val (_, cometPlan) = col.dataType match {
+                    case _: MapType =>
+                      val query = s"SELECT ${col.name} FROM t1"
+                      if (int96TimestampConversion) {
+                        checkSparkAnswer(query)
+                      } else {
+                        checkSparkAnswerAndOperator(query)
+                      }
+                    case _ =>
+                      checkSparkAnswer(s"SELECT ${col.name} FROM t1 ORDER BY ${col.name}")
+                  }
+                  // INT96 timestamp conversion intentionally disables the Comet extension.
+                  if (!int96TimestampConversion) {
+                    assert(
+                      collectNativeScans(cometPlan).size == 1,
+                      s"Expected a Comet scan for ${col.name} in $tz:\n$cometPlan")
+                  }
                 }
               }
             }

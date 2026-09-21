@@ -26,6 +26,7 @@ use crate::{
 };
 use arrow::array::{ArrayRef, RecordBatch};
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
+use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::common::Result as DataFusionResult;
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
 use datafusion::physical_plan::metrics::{
@@ -219,6 +220,10 @@ impl ShuffleScanExec {
                 .map(|col| unpack_dictionary(col))
                 .collect();
 
+            unsafe {
+                jni_call!(env,
+                    comet_shuffle_block_iterator(iter).inc_records_read(num_rows as i64) -> ())?
+            };
             Ok(InputBatch::new(columns, Some(num_rows)))
         })
     }
@@ -274,6 +279,13 @@ impl ExecutionPlan for ShuffleScanExec {
 
     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
         vec![]
+    }
+
+    fn apply_expressions(
+        &self,
+        _f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> DataFusionResult<TreeNodeRecursion>,
+    ) -> DataFusionResult<TreeNodeRecursion> {
+        Ok(TreeNodeRecursion::Continue)
     }
 
     fn with_new_children(
@@ -396,10 +408,9 @@ impl RecordBatchStream for ShuffleScanStream {
 
 #[cfg(test)]
 mod tests {
-    use crate::execution::shuffle::{CompressionCodec, ShuffleBlockWriter};
+    use crate::execution::shuffle::{CompressionCodec, ShuffleBlockWriter, ShuffleCodecContext};
     use arrow::array::{Int32Array, RecordBatchOptions, StringArray, UInt32Array};
     use arrow::datatypes::{DataType, Field, Schema};
-    use arrow::ipc::writer::CompressionContext;
     use arrow::record_batch::RecordBatch;
     use datafusion::physical_plan::metrics::Time;
     use std::io::Cursor;
@@ -414,7 +425,7 @@ mod tests {
             .write_batch(
                 batch,
                 &mut output,
-                &mut CompressionContext::default(),
+                &mut ShuffleCodecContext::default(),
                 &Time::new(),
             )
             .unwrap();
@@ -533,7 +544,7 @@ mod tests {
             .write_batch(
                 &batch,
                 &mut buf,
-                &mut CompressionContext::default(),
+                &mut ShuffleCodecContext::default(),
                 &ipc_time,
             )
             .unwrap();
@@ -605,7 +616,7 @@ mod tests {
             .write_batch(
                 &dict_batch,
                 &mut buf,
-                &mut CompressionContext::default(),
+                &mut ShuffleCodecContext::default(),
                 &ipc_time,
             )
             .unwrap();

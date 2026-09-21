@@ -62,12 +62,13 @@ runs:
       shell: bash
       run: echo "hash=${{ hashFiles('**/pom.xml') }}" >> "$GITHUB_OUTPUT"
 
-    - name: Cache Maven dependencies
+    - name: Restore Maven dependencies
       # TODO: remove next line after working again
       #  temporarily work around https://github.com/actions/runner-images/issues/13341
       #  by disabling caching for macOS
       if: ${{ runner.os != 'macOS' }}
-      uses: actions/cache@v5
+      id: maven-cache
+      uses: actions/cache/restore@v5
       with:
         path: |
           ~/.m2/repository
@@ -76,45 +77,9 @@ runs:
         restore-keys: |
           ${{ runner.os }}-java-maven-
 
-    # Maven itself is stored outside the dependency repository. Keep its cache
-    # independent of pom.xml changes and preserve the macOS cache workaround.
-    - name: Restore Maven distribution
-      id: maven-distribution
-      if: ${{ runner.os != 'macOS' }}
-      uses: actions/cache/restore@v5
-      with:
-        path: |
-          ~/.m2/wrapper/dists
-          /root/.m2/wrapper/dists
-        key: ${{ runner.os }}-${{ runner.arch }}-maven-wrapper-${{ hashFiles('.mvn/wrapper/maven-wrapper.properties') }}
-
-    # Retry only the wrapper download, never compilation or test execution.
-    # Delays use exponential backoff (10s, 20s, 40s) plus 0-4s of random jitter.
-    - name: Bootstrap Maven
-      shell: bash
-      run: |
-        for attempt in 1 2 3 4; do
-          if ./mvnw -B --version; then
-            break
-          fi
-          if [ "$attempt" -eq 4 ]; then
-            echo "::error::Maven bootstrap failed after $attempt attempts; tests were not started."
-            exit 1
-          fi
-          delay=$((10 * (1 << (attempt - 1)) + RANDOM % 5))
-          echo "::warning::Maven bootstrap attempt $attempt failed; retrying in ${delay}s."
-          sleep "$delay"
-        done
-
-    # Save a successful bootstrap even when the subsequent tests fail.
-    - name: Save Maven distribution
-      if: ${{ runner.os != 'macOS' && steps.maven-distribution.outputs.cache-hit != 'true' }}
-      uses: actions/cache/save@v5
-      with:
-        path: |
-          ~/.m2/wrapper/dists
-          /root/.m2/wrapper/dists
-        key: ${{ steps.maven-distribution.outputs.cache-primary-key }}
+    # Maven itself is already installed (with download retries and its own
+    # cache) by setup-builder / setup-macos-builder via maven-bootstrap, which
+    # every caller of this action runs first.
 
     - name: Run all tests
       shell: bash
@@ -136,7 +101,12 @@ runs:
         MAVEN_OPTS="-Xmx4G -Xms2G -DwildcardSuites=$MAVEN_SUITES -XX:+UnlockDiagnosticVMOptions -XX:+ShowMessageBoxOnError -XX:+HeapDumpOnOutOfMemoryError -XX:ErrorFile=./hs_err_pid%p.log" SPARK_HOME=`pwd` ./mvnw -B -Prelease install ${{ inputs.maven_opts }}
     - name: Upload crash logs
       if: failure()
-      uses: actions/upload-artifact@v6
+      # These three stay on the plain action rather than
+      # ../upload-artifact-retry. The two failure-only uploads run on jobs that
+      # are already red. The test-report upload also runs on green jobs, so it
+      # is continue-on-error: a FinalizeArtifact 403 must not turn a passing test
+      # run into a red check, and nothing downstream consumes the reports.
+      uses: actions/upload-artifact@v7
       with:
         name: crash-logs-${{ inputs.artifact_name }}
         path: "**/hs_err_pid*.log"
@@ -155,17 +125,31 @@ runs:
         find . -name 'unit-tests.log'
     - name: Upload unit-tests.log
       if: failure()
-      uses: actions/upload-artifact@v6
+      uses: actions/upload-artifact@v7
       with:
         name: unit-tests-${{ inputs.artifact_name }}
         path: "**/target/unit-tests.log"
         if-no-files-found: ignore
     - name: Upload test results
       if: ${{ !cancelled() && inputs.upload-test-reports == 'true' }}
-      uses: actions/upload-artifact@v6
+      continue-on-error: true
+      uses: actions/upload-artifact@v7
       with:
          name: java-test-reports-${{ inputs.artifact_name }}
          path: "**/target/surefire-reports/*.txt"
          if-no-files-found: ignore
          retention-days: 7 # 1 week for test reports
          overwrite: true
+
+    # Saved only on main, and only on a green run: an entry written from a pull request or a
+    # `gh-readonly-queue/*` branch cannot be restored by any later run, and it
+    # evicts main's from the shared budget. See "Large caches are written on
+    # main only" in ../../workflows/README.md.
+    - name: Save Maven dependencies
+      if: ${{ runner.os != 'macOS' && github.ref == 'refs/heads/main' && steps.maven-cache.outputs.cache-hit != 'true' }}
+      uses: actions/cache/save@v5
+      with:
+        path: |
+          ~/.m2/repository
+          /root/.m2/repository
+        key: ${{ runner.os }}-java-maven-${{ steps.maven-cache-key.outputs.hash }}

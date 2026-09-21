@@ -18,21 +18,21 @@
 pub(crate) mod rss_partition_writer;
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::rss_partition_writer::RssPartitionWriter;
     use crate::metrics::ShufflePartitionerMetrics;
     use crate::writers::PartitionWriter;
-    use crate::{read_ipc_compressed, CompressionCodec, ShuffleBlockWriter};
+    use crate::{read_ipc_compressed, CompressionCodec, ShuffleBlockWriter, ShuffleCodecContext};
     use arrow::array::{
         Array, ArrayRef, DictionaryArray, Int32Array, ListArray, MapArray, StringArray, StructArray,
     };
     use arrow::buffer::OffsetBuffer;
     use arrow::compute::cast;
     use arrow::datatypes::{DataType, Field, Int32Type, Schema};
-    use arrow::ipc::writer::CompressionContext;
     use arrow::record_batch::RecordBatch;
     use datafusion::common::{DataFusionError, Result};
     use datafusion::physical_plan::metrics::{ExecutionPlanMetricsSet, Time};
+    use datafusion_comet_jni_bridge::errors::CometError;
     use datafusion_comet_jni_bridge::ShufflePartitionPusher;
     use std::collections::HashMap;
     use std::io::{self, Cursor};
@@ -44,12 +44,15 @@ mod tests {
     /// Test-only allocation observation on a synchronous encoder thread. Production execution
     /// does not use thread-local state. Zstd's C allocations are covered separately by its public
     /// streaming-workspace estimate; this observes Rust buffers and their realloc overlap.
-    mod allocations {
+    /// Shared with the reader tests in `ipc.rs`, since a crate has one global allocator.
+    pub(crate) mod allocations {
         use std::alloc::{GlobalAlloc, Layout, System};
         use std::cell::Cell;
 
         #[derive(Clone, Copy, Default)]
         struct Counters {
+            allocations: usize,
+            allocated_bytes: usize,
             live: isize,
             peak: usize,
             admission: Option<(isize, usize)>,
@@ -68,6 +71,10 @@ mod tests {
         fn record(added: usize, removed: usize) {
             let _ = COUNTERS.try_with(|counter| {
                 if let Some(mut value) = counter.get() {
+                    if added > 0 {
+                        value.allocations += 1;
+                        value.allocated_bytes += added;
+                    }
                     value.live = value
                         .live
                         .saturating_add(added as isize)
@@ -118,6 +125,14 @@ mod tests {
             }
         }
 
+        // Allocation/reallocation requests and requested bytes, not retained memory.
+        pub(crate) fn totals() -> (usize, usize) {
+            COUNTERS.with(|counter| {
+                let value = counter.get().unwrap();
+                (value.allocations, value.allocated_bytes)
+            })
+        }
+
         pub(super) fn live() -> isize {
             COUNTERS.with(|counter| counter.get().unwrap().live)
         }
@@ -141,7 +156,7 @@ mod tests {
             });
         }
 
-        pub(super) fn measure<T>(run: impl FnOnce() -> T) -> (T, usize) {
+        pub(crate) fn measure<T>(run: impl FnOnce() -> T) -> (T, usize) {
             struct Reset;
             impl Drop for Reset {
                 fn drop(&mut self) {
@@ -158,6 +173,91 @@ mod tests {
                 "a planning or encoding phase exceeded its live reservation"
             );
             (result, observed.peak)
+        }
+    }
+
+    /// Isolate context reuse with warmed destination buffers. RSS and dictionary streams
+    /// currently create their own StreamWriter context, so they are negative controls.
+    #[test]
+    fn ipc_context_reuse_allocations() {
+        const BLOCKS: usize = 100;
+        for columns in [4, 50] {
+            let batch = RecordBatch::try_from_iter((0..columns).map(|i| {
+                (
+                    format!("c{i}"),
+                    Arc::new(Int32Array::from_iter_values(0..128)) as ArrayRef,
+                )
+            }))
+            .unwrap();
+            let dictionary = RecordBatch::try_from_iter([(
+                "dict",
+                cast(
+                    batch.column(0),
+                    &DataType::Dictionary(Box::new(DataType::Int32), Box::new(DataType::Int32)),
+                )
+                .unwrap(),
+            )])
+            .unwrap();
+            for (path, batch, rss, savings) in [
+                ("local", &batch, false, true),
+                ("rss", &batch, true, false),
+                ("dictionary", &dictionary, false, false),
+            ] {
+                for codec in [
+                    CompressionCodec::None,
+                    CompressionCodec::Lz4Frame,
+                    CompressionCodec::Snappy,
+                    CompressionCodec::Zstd(1),
+                ] {
+                    let writer = if rss {
+                        ShuffleBlockWriter::try_new_rss(batch.schema(), codec.clone())
+                    } else {
+                        ShuffleBlockWriter::try_new(&batch.schema(), codec.clone())
+                    }
+                    .unwrap();
+                    let time = Time::default();
+                    let write = |buffer: &mut Vec<u8>, context: &mut ShuffleCodecContext| {
+                        buffer.clear();
+                        let mut out = Cursor::new(buffer);
+                        if rss {
+                            writer.write_rss_batch(batch, &mut out, context, &time)
+                        } else {
+                            writer.write_batch(batch, &mut out, context, &time)
+                        }
+                        .unwrap();
+                    };
+                    for repeat in 0..3 {
+                        let mut results = Vec::new();
+                        let mut outputs = Vec::new();
+                        for reuse in [false, true] {
+                            let mut context = ShuffleCodecContext::default();
+                            let mut buffer = Vec::new();
+                            write(&mut buffer, &mut context);
+                            let (counts, _) = allocations::measure(|| {
+                                for _ in 0..BLOCKS {
+                                    if !reuse {
+                                        context = ShuffleCodecContext::default();
+                                    }
+                                    write(&mut buffer, &mut context);
+                                }
+                                allocations::totals()
+                            });
+                            results.push(counts);
+                            outputs.push(buffer);
+                        }
+                        assert_eq!(outputs[0], outputs[1]);
+                        let decoded = read_ipc_compressed(&outputs[1][16..]).unwrap();
+                        assert_eq!(&decoded, batch);
+                        if savings {
+                            assert!(results[1].0 < results[0].0, "{path}: {results:?}");
+                            assert!(results[1].1 < results[0].1, "{path}: {results:?}");
+                        } else {
+                            assert_eq!(results[0], results[1], "{path}");
+                        }
+                        eprintln!("ipc_context path={path} columns={columns} codec={codec:?} repeat={repeat} blocks={BLOCKS} fresh={:?} reused={:?}", results[0], results[1]);
+                    }
+                }
+            }
         }
     }
 
@@ -400,15 +500,32 @@ mod tests {
         let block_writer =
             ShuffleBlockWriter::try_new(batch.schema().as_ref(), CompressionCodec::None).unwrap();
         let mut frame = Cursor::new(Vec::new());
-        let mut compression_context = CompressionContext::default();
+        let mut codec_context = ShuffleCodecContext::default();
         block_writer
-            .write_batch(
-                batch,
-                &mut frame,
-                &mut compression_context,
-                &Time::default(),
-            )
+            .write_batch(batch, &mut frame, &mut codec_context, &Time::default())
             .unwrap()
+    }
+
+    fn single_string_row(bytes: usize) -> RecordBatch {
+        RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new(
+                "value",
+                DataType::Utf8,
+                false,
+            )])),
+            vec![Arc::new(StringArray::from(vec!["x".repeat(bytes)]))],
+        )
+        .unwrap()
+    }
+
+    fn size_limit_message(error: &DataFusionError) -> &str {
+        let DataFusionError::External(cause) = error else {
+            panic!("expected a typed shuffle size limit, got {error}");
+        };
+        let Some(CometError::ShuffleSizeLimit(message)) = cause.downcast_ref::<CometError>() else {
+            panic!("expected a typed shuffle size limit, got {error}");
+        };
+        message
     }
 
     #[test]
@@ -633,7 +750,15 @@ mod tests {
             frame_size - 1,
         );
 
-        assert!(write_batches(&mut writer, 0, vec![batch], &metrics()).is_err());
+        let error = write_batches(&mut writer, 0, vec![batch], &metrics()).unwrap_err();
+        let message = size_limit_message(&error);
+        assert!(message.contains(&format!(
+            "effective frame limit from spark.comet.shuffle.rss.maxFrameBytes \
+             and spark.comet.shuffle.rss.maxInFlightBytes is {} bytes",
+            frame_size - 1
+        )));
+        assert!(message.contains("spark.comet.shuffle.rss.maxInFlightBytes"));
+        assert!(message.contains(&format!("frame needs at least {frame_size} bytes")));
         assert!(
             pusher.frames().is_empty(),
             "a single oversized Arrow IPC row must never be fragmented"
@@ -786,7 +911,7 @@ mod tests {
     #[test]
     fn small_batches_encode_concurrently_with_default_frame_and_admission_limits() {
         let frame_limit = 64 * 1024 * 1024;
-        let admission_limit = 256 * 1024 * 1024;
+        let admission_limit = 512 * 1024 * 1024;
         let pusher = Arc::new(ConcurrentAdmissionPusher::new(admission_limit));
 
         thread::scope(|scope| {
@@ -816,6 +941,115 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
+    fn large_single_rows_fit_default_frame_and_admission_limits() {
+        let frame_limit = 64 * 1024 * 1024;
+        // Celeborn reserves its 16-byte request header separately from the native reservation.
+        let reservation_limit = 512 * 1024 * 1024 - 16;
+        for row_size_mib in [38, 50, 63] {
+            let batch = single_string_row(row_size_mib * 1024 * 1024);
+            let pusher = Arc::new(ReservationRecordingPusher {
+                max_reservation: Some(reservation_limit),
+                capacity: Some(reservation_limit),
+                ..ReservationRecordingPusher::default()
+            });
+            let mut writer = writer(
+                &batch,
+                CompressionCodec::None,
+                pusher.clone(),
+                1,
+                frame_limit,
+            );
+            let metrics = metrics();
+
+            finish_partition(&mut writer, 0, vec![batch.clone()], &metrics).unwrap();
+            writer.finish_all(&metrics).unwrap();
+
+            let frames = pusher.frames.lock().unwrap();
+            assert_eq!(frames.len(), 1);
+            assert!(frames[0].1.len() <= frame_limit);
+            assert_eq!(decode_frame(&frames[0].1), batch);
+            assert!(pusher.outstanding.lock().unwrap().is_none());
+            assert!(pusher
+                .reservations
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|bytes| *bytes <= reservation_limit));
+        }
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn reports_admission_limit_when_a_single_row_fits_the_configured_frame_limit() {
+        let batch = single_string_row(38 * 1024 * 1024);
+        let frame_limit = 64 * 1024 * 1024;
+        let reservation_limit = 256 * 1024 * 1024 - 16;
+        let pusher = Arc::new(ReservationRecordingPusher {
+            max_reservation: Some(reservation_limit),
+            capacity: Some(reservation_limit),
+            ..ReservationRecordingPusher::default()
+        });
+        let mut writer = writer(
+            &batch,
+            CompressionCodec::None,
+            pusher.clone(),
+            1,
+            frame_limit,
+        );
+        assert!(encoded_frame_size(&batch) < frame_limit);
+
+        let error = write_batches(&mut writer, 0, vec![batch], &metrics()).unwrap_err();
+
+        let message = size_limit_message(&error);
+        assert!(
+            message.contains("effective frame limit from spark.comet.shuffle.rss.maxFrameBytes")
+        );
+        assert!(message.contains(&format!(": {frame_limit} bytes)")));
+        assert!(message.contains("spark.comet.shuffle.rss.maxInFlightBytes"));
+        assert!(message.contains(&format!("{reservation_limit}-byte reservation")));
+        assert!(message.contains("encoded bytes fit alongside"));
+        assert!(message.contains("required reservation is at least"));
+        assert!(pusher.frames.lock().unwrap().is_empty());
+        assert!(pusher.outstanding.lock().unwrap().is_none());
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn reports_workspace_limit_before_encoding_a_single_row() {
+        let batch = single_string_row(20 * 1024 * 1024);
+        let frame_limit = 64 * 1024 * 1024;
+        let reservation_limit = 64 * 1024 * 1024 - 16;
+        let pusher = Arc::new(ReservationRecordingPusher {
+            max_reservation: Some(reservation_limit),
+            capacity: Some(reservation_limit),
+            ..ReservationRecordingPusher::default()
+        });
+        let mut writer = writer(
+            &batch,
+            CompressionCodec::None,
+            pusher.clone(),
+            1,
+            frame_limit,
+        );
+
+        let error = write_batches(&mut writer, 0, vec![batch], &metrics()).unwrap_err();
+
+        let message = size_limit_message(&error);
+        assert!(message.contains("encoding workspace for a single row requires"));
+        assert!(message.contains("bytes of reservation are needed"));
+        assert!(message.contains(&format!("only {reservation_limit} bytes per frame")));
+        assert!(message.contains("spark.comet.shuffle.rss.maxInFlightBytes"));
+        assert!(
+            message.contains("effective frame limit from spark.comet.shuffle.rss.maxFrameBytes")
+        );
+        assert!(message.contains(&format!("is {frame_limit} bytes")));
+        assert_eq!(pusher.reservations.lock().unwrap().len(), 1);
+        assert!(pusher.frames.lock().unwrap().is_empty());
+        assert!(pusher.outstanding.lock().unwrap().is_none());
+    }
+
+    #[test]
     fn codec_workspace_is_rejected_before_encoding_under_a_tiny_budget() {
         let batch = sample_batch(0, 1);
         for codec in [
@@ -830,7 +1064,12 @@ mod tests {
             });
             let mut writer = writer(&batch, codec, pusher.clone(), 1, 5_456);
             let error = write_batches(&mut writer, 0, vec![batch.clone()], &metrics()).unwrap_err();
-            assert!(error.to_string().contains("encoding workspace"));
+            let message = size_limit_message(&error);
+            assert!(message.contains("encoding workspace"));
+            assert!(message.contains("spark.comet.shuffle.rss.maxInFlightBytes"));
+            assert!(message
+                .contains("effective frame limit from spark.comet.shuffle.rss.maxFrameBytes"));
+            assert!(message.contains("is 5456 bytes"));
             assert!(pusher.reservations.lock().unwrap().is_empty());
             assert!(pusher.frames.lock().unwrap().is_empty());
         }

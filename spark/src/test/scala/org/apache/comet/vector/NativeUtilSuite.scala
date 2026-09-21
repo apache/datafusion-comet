@@ -22,6 +22,7 @@ package org.apache.comet.vector
 import java.io.IOException
 import java.nio.charset.StandardCharsets
 
+import scala.jdk.CollectionConverters._
 import scala.util.Using
 
 import org.apache.arrow.c.{ArrowArray, ArrowSchema, Data}
@@ -32,9 +33,14 @@ import org.apache.arrow.vector.dictionary.Dictionary
 import org.apache.arrow.vector.dictionary.DictionaryProvider.MapDictionaryProvider
 import org.apache.arrow.vector.types.pojo.{ArrowType, DictionaryEncoding, Field, FieldType}
 import org.apache.spark.sql.CometTestBase
+import org.apache.spark.sql.comet.CometExec
+import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.execution.vectorized.ConstantColumnVector
 import org.apache.spark.sql.types.{IntegerType, StringType, StructField, StructType}
 import org.apache.spark.sql.vectorized.{ColumnarBatch, ColumnVector}
+
+import org.apache.comet.{CometArrowAllocator, CometArrowImportAllocator, CometConf}
+import org.apache.comet.serde.{OperatorOuterClass, QueryPlanSerde}
 
 class NativeUtilSuite extends CometTestBase {
 
@@ -363,6 +369,157 @@ class NativeUtilSuite extends CometTestBase {
         imported.close()
       }
       nativeUtil.close()
+    }
+  }
+
+  test("imports are charged to the import allocator and roll up into the root") {
+    // Arrow charges a buffer to whichever allocator owns it, so the tracing counters can only
+    // report the import path apart from the rest of Comet's Arrow memory if imports go to their
+    // own allocator. The child must still roll up into the root, because jvm_arrow_imported is
+    // reported as a subset of jvm_arrow_allocated.
+    val numRows = 4
+    val col = new ConstantColumnVector(numRows, IntegerType)
+    col.setInt(42)
+    val batch = new ColumnarBatch(Array[ColumnVector](col), numRows)
+
+    val nativeUtil = new NativeUtil
+    var imported: ColumnarBatch = null
+    try {
+      val (arrayAddrs, schemaAddrs, _) = nativeUtil.exportBatchToAddresses(batch)
+      val vectors =
+        nativeUtil.importVector(
+          arrayAddrs.map(ArrowArray.wrap),
+          schemaAddrs.map(ArrowSchema.wrap))
+      imported = new ColumnarBatch(vectors.toArray, numRows)
+
+      assert(
+        CometArrowAllocator.getChildAllocators.asScala.exists(_ eq CometArrowImportAllocator),
+        "the FFI import allocator must be a child of the root, so the root keeps reporting the " +
+          "total across both")
+      val importedBytes = CometArrowImportAllocator.getAllocatedMemory
+      assert(
+        importedBytes > 0,
+        "imported buffers were charged somewhere other than the FFI import allocator")
+      assert(
+        CometArrowAllocator.getAllocatedMemory >= importedBytes,
+        "the root's total must include imported bytes, otherwise the subtraction is meaningless")
+    } finally {
+      if (imported != null) {
+        imported.close()
+      }
+      nativeUtil.close()
+    }
+  }
+
+  test("the import allocator is also charged for the JVM-side cost of importing") {
+    // Characterization, not an aspiration: Arrow's importer allocates the owning ArrowArray
+    // struct from the import allocator (ArrayImporter calls ArrowArray.allocateNew(allocator)),
+    // and loadValidityBuffer allocates a validity bitmap there when an imported vector is
+    // all-valid and carries no validity buffer. So the import allocator is charged for more than
+    // the imported buffers, which is one half of why jvm_arrow_imported is an allocator charge
+    // rather than a measure of where the bytes were allocated. Compared against every imported
+    // buffer, not just the data one, so the excess measured here is JVM-allocated rather than the
+    // foreign validity buffer.
+    val numRows = 4096
+    val col = new ConstantColumnVector(numRows, IntegerType)
+    col.setInt(42)
+    val batch = new ColumnarBatch(Array[ColumnVector](col), numRows)
+
+    val nativeUtil = new NativeUtil
+    var imported: ColumnarBatch = null
+    val before = CometArrowImportAllocator.getAllocatedMemory
+    try {
+      val (arrayAddrs, schemaAddrs, _) = nativeUtil.exportBatchToAddresses(batch)
+      val vectors =
+        nativeUtil.importVector(
+          arrayAddrs.map(ArrowArray.wrap),
+          schemaAddrs.map(ArrowSchema.wrap))
+      imported = new ColumnarBatch(vectors.toArray, numRows)
+
+      val charged = CometArrowImportAllocator.getAllocatedMemory - before
+      val foreign = vectors.head.getValueVector.getBuffers(false).map(_.capacity()).sum
+      assert(
+        charged > foreign,
+        s"expected the import allocator to hold more than the $foreign bytes of imported " +
+          "buffers, since the importer allocates its own ArrowArray struct there, but it held " +
+          s"$charged bytes")
+    } finally {
+      if (imported != null) {
+        imported.close()
+      }
+      nativeUtil.close()
+    }
+  }
+
+  test("Variant schema identity round-trips through native Arrow FFI") {
+    val variantType = Utils.variantType.getOrElse {
+      cancel("VariantType requires Spark 4.0+")
+    }
+
+    withTempPath { dir =>
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        sql("SELECT named_struct('value', X'00', 'metadata', X'010000') AS v")
+          .coalesce(1)
+          .write
+          .parquet(dir.getCanonicalPath)
+      }
+      val parquetFile = dir
+        .listFiles()
+        .find(_.getName.endsWith(".parquet"))
+        .getOrElse(fail("No parquet file was written"))
+      val fileSize = parquetFile.length()
+
+      val variantProto = QueryPlanSerde.serializeDataType(variantType).get
+      val variantField = OperatorOuterClass.SparkStructField
+        .newBuilder()
+        .setName("v")
+        .setDataType(variantProto)
+        .setNullable(false)
+        .build()
+      val common = OperatorOuterClass.NativeScanCommon
+        .newBuilder()
+        .addRequiredSchema(variantField)
+        .addDataSchema(variantField)
+        .addProjectionVector(0L)
+        .setSessionTimezone("UTC")
+        .setCaseSensitive(true)
+        .setSource("variant-schema-ffi-roundtrip")
+        .build()
+      val file = OperatorOuterClass.SparkPartitionedFile
+        .newBuilder()
+        .setFilePath(parquetFile.toURI.toString)
+        .setStart(0L)
+        .setLength(fileSize)
+        .setFileSize(fileSize)
+        .build()
+      val partition = OperatorOuterClass.SparkFilePartition
+        .newBuilder()
+        .addPartitionedFile(file)
+        .build()
+      val plan = OperatorOuterClass.Operator
+        .newBuilder()
+        .setNativeScan(
+          OperatorOuterClass.NativeScan
+            .newBuilder()
+            .setCommon(common)
+            .setFilePartition(partition))
+        .build()
+        .toByteArray
+
+      val actual = spark.sparkContext
+        .parallelize(Seq(0), 1)
+        .mapPartitions { _ =>
+          val iterator = CometExec.getCometIterator(Array.empty[Object], 1, plan, 1, 0)
+          try {
+            assert(iterator.hasNext)
+            Iterator.single(iterator.next().column(0).dataType())
+          } finally {
+            iterator.close()
+          }
+        }
+        .collect()
+
+      assert(actual.sameElements(Array(variantType)))
     }
   }
 }

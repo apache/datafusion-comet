@@ -22,46 +22,44 @@ package org.apache.comet.serde.literals
 import java.lang
 
 import org.apache.spark.internal.Logging
-import org.apache.spark.sql.catalyst.expressions.{Attribute, CreateArray, CreateMap, Expression, KnownNullable, Literal}
+import org.apache.spark.sql.catalyst.InternalRow
+import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, CreateArray, CreateMap, Expression, KnownNullable, Literal, MapFromArrays}
 import org.apache.spark.sql.catalyst.util.{ArrayData, MapData, TypeUtils}
 import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, ByteType, CalendarIntervalType, DataType, DateType, DayTimeIntervalType, Decimal, DecimalType, DoubleType, FloatType, IntegerType, LongType, MapType, NullType, ShortType, StringType, StructType, TimestampNTZType, TimestampType}
-import org.apache.spark.unsafe.types.UTF8String
+import org.apache.spark.unsafe.types.{CalendarInterval, UTF8String}
 
 import com.google.protobuf.ByteString
 
 import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
-import org.apache.comet.DataTypeSupport.isComplexType
 import org.apache.comet.serde.{CometExpressionSerde, Compatible, ExprOuterClass, LiteralOuterClass, MapKeySupport, SupportLevel, Unsupported}
-import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, isTimeType, serializeDataType, supportedDataType}
+import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, serializeDataType, supportedDataType}
 import org.apache.comet.serde.Types.ListLiteral
+import org.apache.comet.shims.CometTypeShim
 
-object CometLiteral extends CometExpressionSerde[Literal] with Logging {
+object CometLiteral extends CometExpressionSerde[Literal] with CometTypeShim with Logging {
 
   override def getUnsupportedReasons(): Seq[String] = Seq(
     "Not all data types are supported for literal values")
 
   override def getSupportLevel(expr: Literal): SupportLevel = {
+    val serializable = expr.dataType match {
+      // A null literal carries only its type on the wire, so any type serializeDataType handles.
+      case _ if expr.value == null => supportedDataType(expr.dataType, allowComplex = true)
+      case ArrayType(elementType, _) => listLiteralElementSupported(elementType)
+      case dt => supportedDataType(dt)
+    }
 
-    if (supportedDataType(
-        expr.dataType,
-        allowComplex = expr.value == null ||
-
-          // Nested literal support for native reader
-          // can be tracked https://github.com/apache/datafusion-comet/issues/1937
-          (expr.dataType
-            .isInstanceOf[ArrayType] && (!isComplexType(
-            expr.dataType.asInstanceOf[ArrayType].elementType) || expr.dataType
-            .asInstanceOf[ArrayType]
-            .elementType
-            .isInstanceOf[ArrayType])))) {
+    // A shape `canExpandComplexLiteral` admits is rebuilt as a `CreateArray` / `CreateMap` tree.
+    if ((serializable && !hasUnwritableValue(expr.value, expr.dataType)) ||
+      canExpandComplexLiteral(expr)) {
       Compatible(None)
-    } else if (canExpandComplexLiteral(expr)) {
-      // Rebuilt as a `CreateArray` / `CreateMap` tree in `convert`.
-      Compatible(None)
+    } else if (serializable) {
+      // The type is fine, so this is a value `convert` could only serialize by changing it.
+      Unsupported(Some(s"Unsupported literal value for data type ${expr.dataType}"))
     } else {
       expr.dataType match {
         case _: DayTimeIntervalType => Compatible(None)
-        case _ => Unsupported(Some(s"Unsupported data type ${expr.dataType}"))
+        case dt => Unsupported(Some(s"Unsupported data type $dt"))
       }
     }
   }
@@ -136,8 +134,12 @@ object CometLiteral extends CometExpressionSerde[Literal] with Logging {
 
   }
 
-  private def makeListLiteral(array: Array[Any], arrayType: ArrayType): ListLiteral.Builder = {
+  /** Package-private only so `CometLiteralSuite` can pin it against the gate below. */
+  private[serde] def makeListLiteral(
+      array: Array[Any],
+      arrayType: ArrayType): ListLiteral.Builder = {
     val listLiteralBuilder = ListLiteral.newBuilder()
+    // Keep these arms in sync with [[listLiteralElementSupported]].
     arrayType.elementType match {
       case NullType =>
         array.foreach(_ => listLiteralBuilder.addNullMask(true))
@@ -227,6 +229,22 @@ object CometLiteral extends CometExpressionSerde[Literal] with Logging {
   }
 
   /**
+   * Element types [[makeListLiteral]] has a branch for. Anything else has to be expanded or
+   * declined before `convert` reaches it, or the missing branch raises a `MatchError` mid-plan.
+   * `StringType` is matched as a stable identifier, so a non-default collation (whose `equals`
+   * compares `collationId`) is declined here rather than falling into the missing branch.
+   * `CometLiteralSuite` pins the two together.
+   */
+  private[serde] def listLiteralElementSupported(dataType: DataType): Boolean = dataType match {
+    case NullType | BooleanType | ByteType | ShortType | IntegerType | DateType | LongType |
+        TimestampType | TimestampNTZType | FloatType | DoubleType | StringType | BinaryType =>
+      true
+    case _: DecimalType => true
+    case ArrayType(elementType, _) => listLiteralElementSupported(elementType)
+    case _ => false
+  }
+
+  /**
    * Rebuild a folded complex Literal as an equivalent tree of `CreateArray` / `CreateMap` over
    * primitive-typed Literals, or `None` when [[canExpandComplexLiteral]] rejects the shape.
    * `getSupportLevel` probes cheaply with [[canExpandComplexLiteral]], which shares this method's
@@ -247,9 +265,7 @@ object CometLiteral extends CometExpressionSerde[Literal] with Logging {
    * every native map consumer gates on [[MapKeySupport]]; see [[mapKeyTypesExpandable]] for why.
    *
    * Declined shapes:
-   *   - Null values and empty top-level containers: a synthesized `Create*` with no children
-   *     cannot recover the original element type. Empty `ArrayType` literals still serialize via
-   *     `makeListLiteral`, which keeps the type.
+   *   - Null values, which `convert` serializes as a typed `is_null` literal instead.
    *   - Any map key type native map kernels cannot reproduce Spark equality for (floating-point,
    *     collated string, complex), or whose interpreted ordering is undefined
    *     (`CalendarIntervalType`), at any nesting level. See [[mapKeyTypesExpandable]].
@@ -261,48 +277,124 @@ object CometLiteral extends CometExpressionSerde[Literal] with Logging {
    *     `CometCreateMap` hands the whole rebuilt `CreateMap` to the JVM codegen dispatcher, so
    *     Spark's own code builds the struct.
    *   - Folded maps with duplicate keys, see [[hasDuplicateMapKeys]].
+   *   - Values no Arrow encoding of the rebuilt tree can carry, see [[hasUnwritableValue]].
    */
   private def expandComplexLiteral(expr: Literal): Option[Expression] = {
     if (!canExpandComplexLiteral(expr)) return None
     expr.dataType match {
       case ArrayType(et, containsNull) =>
         val arr = expr.value.asInstanceOf[ArrayData]
-        val elements = (0 until arr.numElements())
-          .map(i => withNullability(literalAt(arr, i, et), containsNull))
-        Some(CreateArray(elements, useStringTypeWhenEmpty = false))
+        if (arr.numElements() == 0) {
+          Some(emptyTypedArray(et, containsNull))
+        } else {
+          val elements = (0 until arr.numElements())
+            .map(i => withNullability(literalAt(arr, i, et), containsNull))
+          Some(CreateArray(elements, useStringTypeWhenEmpty = false))
+        }
       case MapType(kt, vt, valueContainsNull) =>
         val mapData = expr.value.asInstanceOf[MapData]
-        val keys = mapData.keyArray()
-        val values = mapData.valueArray()
-        val children = (0 until keys.numElements()).flatMap(i =>
-          Seq(
-            literalAt(keys, i, kt),
-            withNullability(literalAt(values, i, vt), valueContainsNull)))
-        Some(CreateMap(children, useStringTypeWhenEmpty = false))
+        if (mapData.numElements() == 0) {
+          // `MapFromArrays` recovers the declared key/value types from its two array children;
+          // a childless `CreateMap` would report `MapType(NullType, NullType)`. Arrow map keys
+          // are never null, so the key array is non-nullable.
+          Some(
+            MapFromArrays(
+              emptyTypedArray(kt, containsNull = false),
+              emptyTypedArray(vt, valueContainsNull)))
+        } else {
+          val keys = mapData.keyArray()
+          val values = mapData.valueArray()
+          val children = (0 until keys.numElements()).flatMap(i =>
+            Seq(
+              literalAt(keys, i, kt),
+              withNullability(literalAt(values, i, vt), valueContainsNull)))
+          Some(CreateMap(children, useStringTypeWhenEmpty = false))
+        }
       case _ => None
     }
   }
 
   /**
-   * Cheap admission test that mirrors [[expandComplexLiteral]] without materializing the rebuilt
-   * `Create*` tree, so `getSupportLevel` can probe a large folded literal without allocating the
-   * N `Literal`s `convert` would immediately rebuild. Declines a null value or empty top-level
-   * container (no children to recover the element type), a folded map with duplicate keys (see
-   * [[hasDuplicateMapKeys]]), any unsupported or non-orderable map key type at any nesting level
-   * (see [[mapKeyTypesExpandable]]), and an array of structs ([[needsExpansion]] stops at a
-   * `StructType`). [[expandComplexLiteral]] gates on this, so the two cannot diverge.
+   * An empty `ArrayType(elementType, containsNull)` value. `CometCreateArray` turns a childless
+   * `CreateArray` into an empty `ArrayType(NullType)` list literal (its documented workaround for
+   * DataFusion's zero-argument `make_array`), and the cast stamps the declared element type back
+   * onto it.
+   */
+  private def emptyTypedArray(elementType: DataType, containsNull: Boolean): Expression =
+    Cast(CreateArray(Nil, useStringTypeWhenEmpty = false), ArrayType(elementType, containsNull))
+
+  /**
+   * Admission test for [[expandComplexLiteral]], which gates on this so the two cannot diverge.
+   * Split out so `getSupportLevel` can decide without allocating the N `Literal`s `convert` would
+   * immediately rebuild. See [[expandComplexLiteral]] for the shapes this declines.
    */
   private def canExpandComplexLiteral(expr: Literal): Boolean = {
     if (expr.value == null || !mapKeyTypesExpandable(expr.dataType)) return false
-    expr.dataType match {
-      case ArrayType(et, _) if needsExpansion(et) =>
-        expr.value.asInstanceOf[ArrayData].numElements() > 0
+    val expandableShape = expr.dataType match {
+      case ArrayType(et, _) => needsExpansion(et)
       case MapType(kt, _, _) =>
-        val mapData = expr.value.asInstanceOf[MapData]
-        mapData.numElements() > 0 && !hasDuplicateMapKeys(mapData.keyArray(), kt)
+        !hasDuplicateMapKeys(expr.value.asInstanceOf[MapData].keyArray(), kt)
       case _ => false
     }
+    // Last, because it is the only check here that walks the whole folded value.
+    expandableShape && !hasUnwritableValue(expr.value, expr.dataType)
   }
+
+  /**
+   * True when some scalar inside `value` has no faithful Arrow encoding, in which case the
+   * literal has to stay on Spark. Two of the copies a Literal takes towards the native side are
+   * not total:
+   *   - a `UTF8String` holding malformed UTF-8 (`CAST(X'FF' AS STRING)`). A rebuilt `CreateMap`
+   *     reaches the JVM codegen dispatcher, whose generated writer copies the bytes verbatim into
+   *     a `VarCharVector`; native string kernels then read them through unchecked Arrow FFI and
+   *     abort the JVM on a `hint::unreachable_unchecked`, or silently mis-count characters. The
+   *     direct paths (`convert`'s `StringType` arm and [[makeListLiteral]]'s) instead go through
+   *     `UTF8String.toString`, which substitutes U+FFFD. Neither is fixable on the wire, because
+   *     `string_val` and `string_values` are proto `string` fields.
+   *   - a `CalendarInterval` beyond about 292 years of elapsed time overflows
+   *     `Math.multiplyExact(microseconds, 1000L)` on the way into `IntervalMonthDayNanoVector`,
+   *     whose nanosecond field cannot represent it (#5279). Spark itself accepts the value.
+   *
+   * The same hazards exist for a non-folded `map(...)` / a scanned string column, which never
+   * reach this serde; this only keeps a Literal from newly admitting them.
+   */
+  private def hasUnwritableValue(value: Any, dataType: DataType): Boolean =
+    mayHoldUnwritableValue(dataType) && unwritableValueIn(value, dataType)
+
+  /**
+   * Type-level precondition for [[hasUnwritableValue]]: only a string or a calendar interval
+   * reaches one of its hazardous arms, so a large all-numeric literal is never walked element by
+   * element. Applied once per collection rather than once per element.
+   */
+  private def mayHoldUnwritableValue(dataType: DataType): Boolean =
+    SupportLevel.containsType(dataType, classOf[StringType], classOf[CalendarIntervalType])
+
+  private def unwritableValueIn(value: Any, dataType: DataType): Boolean = dataType match {
+    case _ if value == null => false
+    case _: StringType => !isValidUtf8(value.asInstanceOf[UTF8String])
+    case CalendarIntervalType =>
+      val micros = value.asInstanceOf[CalendarInterval].microseconds
+      micros > MaxArrowIntervalMicros || micros < -MaxArrowIntervalMicros
+    case ArrayType(et, _) => unwritableElementIn(value.asInstanceOf[ArrayData], et)
+    case MapType(kt, vt, _) =>
+      val mapData = value.asInstanceOf[MapData]
+      (mayHoldUnwritableValue(kt) && unwritableElementIn(mapData.keyArray(), kt)) ||
+      (mayHoldUnwritableValue(vt) && unwritableElementIn(mapData.valueArray(), vt))
+    case StructType(fields) =>
+      val row = value.asInstanceOf[InternalRow]
+      fields.indices.exists { i =>
+        val fieldType = fields(i).dataType
+        mayHoldUnwritableValue(fieldType) && unwritableValueIn(row.get(i, fieldType), fieldType)
+      }
+    case _ => false
+  }
+
+  private def unwritableElementIn(arr: ArrayData, elementType: DataType): Boolean =
+    (0 until arr.numElements()).exists(i =>
+      unwritableValueIn(arr.get(i, elementType), elementType))
+
+  /** Largest `CalendarInterval.microseconds` that survives conversion to Arrow nanoseconds. */
+  private final val MaxArrowIntervalMicros: Long = Long.MaxValue / 1000
 
   /**
    * True when every map key type reachable inside `dataType` can be rebuilt and consumed
@@ -365,16 +457,13 @@ object CometLiteral extends CometExpressionSerde[Literal] with Logging {
    * instead of asking the ordering to compare it.
    */
   private def hasDuplicateMapKeys(keys: ArrayData, keyType: DataType): Boolean = {
-    val n = keys.numElements()
-    if (n < 2) {
-      false
-    } else if ((0 until n).exists(keys.isNullAt)) {
-      true
-    } else {
-      val ordering = TypeUtils.getInterpretedOrdering(keyType)
-      val sorted = (0 until n).map(i => keys.get(i, keyType)).sorted(ordering)
-      (1 until sorted.length).exists(i => ordering.compare(sorted(i - 1), sorted(i)) == 0)
-    }
+    if (keys.numElements() < 2) return false
+    // Single pass out of the ArrayData; a null slot comes back as null.
+    val sorted = keys.toObjectArray(keyType)
+    if (sorted.contains(null)) return true
+    val ordering = TypeUtils.getInterpretedOrdering(keyType)
+    java.util.Arrays.sort(sorted, ordering.asInstanceOf[Ordering[Object]])
+    (1 until sorted.length).exists(i => ordering.compare(sorted(i - 1), sorted(i)) == 0)
   }
 
   /**
