@@ -52,7 +52,19 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   test("nested floating point membership uses native In and InSet") {
     withTable("nested_in_plan") {
       sql("CREATE TABLE nested_in_plan (a ARRAY<DOUBLE>) USING parquet")
-      sql("INSERT INTO nested_in_plan VALUES (array(CAST('-0.0' AS DOUBLE)))")
+      sql("""INSERT INTO nested_in_plan VALUES
+        |(array(CAST('-0.0' AS DOUBLE))), (array(CAST('0.0' AS DOUBLE))),
+        |(array(CAST('NaN' AS DOUBLE))), (array(CAST('1.0' AS DOUBLE))),
+        |(array(CAST(NULL AS DOUBLE))), (array()), (NULL)""".stripMargin)
+      withSQLConf(SQLConf.OPTIMIZER_EXCLUDED_RULES.key -> "") {
+        for (size <- Seq(1, 2)) {
+          val candidates = Seq.fill(size)("array(CAST('0.0' AS DOUBLE))").mkString(", ")
+          val df = sql(s"SELECT a IN ($candidates), a NOT IN ($candidates) FROM nested_in_plan")
+          val expressions = df.queryExecution.optimizedPlan.flatMap(_.expressions)
+          assert(!expressions.exists(_.exists(_.isInstanceOf[In])))
+          checkSparkAnswerAndImpl(df, native = Seq("equalto"))
+        }
+      }
       for (threshold <- Seq(100, 0)) {
         withSQLConf("spark.sql.optimizer.inSetConversionThreshold" -> threshold.toString) {
           val df = sql("""SELECT a IN (array(CAST('0.0' AS DOUBLE)),
