@@ -25,12 +25,23 @@ import org.apache.spark.sql.types.MapType
 import org.apache.comet.CometConf
 import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, scalarFunctionExprToProtoWithReturnType, supportedScalarSortElementType}
 
-// Key types without a native implementation can still run Spark's generated code in-pipeline.
-// Spark rejects collated-string map keys by default, but they reach MapSort when
+// Key types without a native implementation can run Spark's generated code in-pipeline when
+// spark.comet.expression.MapSort.codegen.enabled=true. That dispatcher is off by default: a
+// matched microbenchmark of those shapes is slower than falling the enclosing operator back to
+// Spark. Spark rejects collated-string map keys by default, but they reach MapSort when
 // spark.sql.collation.allowInMapKeys=true and the map is built from dispatcher-supported inputs;
-// those expressions take the same Unsupported -> dispatcher route. A scan carrying a collated
-// map schema may still be rejected independently by the scan's schema support checks.
+// with the codegen setting on, those expressions take the same Unsupported -> dispatcher route.
+// A scan carrying a collated map schema may still be rejected independently by the scan's schema
+// support checks.
 object CometMapSort extends CometExpressionSerde[MapSort] with CodegenDispatchFallback {
+
+  override def isCodegenDispatchEnabled: Boolean =
+    CometConf.COMET_EXPRESSION_MAPSORT_CODEGEN_ENABLED.get()
+
+  override def codegenDispatchEnabledByDefault: Boolean = false
+
+  override def codegenDispatchConfigKey: Option[String] =
+    Some(CometConf.COMET_EXPRESSION_MAPSORT_CODEGEN_ENABLED.key)
 
   override def getIncompatibleReasons(): Seq[String] =
     Seq(

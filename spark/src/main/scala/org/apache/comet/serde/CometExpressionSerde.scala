@@ -114,6 +114,10 @@ trait CometExpressionSerde[T <: Expression] {
  * for the case where the dispatcher itself cannot handle the expression (e.g. the global codegen
  * flag is off, or the kernel rejects the bound tree).
  *
+ * A serde may override [[isCodegenDispatchEnabled]] so that this mixin is a no-op until the user
+ * opts in. When that method returns `false`, `Unsupported` and (non-opt-in) `Incompatible` fall
+ * back to Spark the same way a serde without this mixin would.
+ *
  * Contract for `Unsupported` reasons on a `CodegenDispatchFallback` serde: the case must be
  * something `Expression.doGenCode` can compile. If you mark something `Unsupported` because Spark
  * also rejects it, that is fine -- the dispatcher will surface the same error Spark would have.
@@ -122,7 +126,27 @@ trait CometExpressionSerde[T <: Expression] {
  * dispatcher. Every other `Incompatible` expression falls back to Spark, and every other
  * `Unsupported` expression falls back to Spark.
  */
-trait CodegenDispatchFallback extends NativeOptInAvailable { self: CometExpressionSerde[_] => }
+trait CodegenDispatchFallback extends NativeOptInAvailable { self: CometExpressionSerde[_] =>
+
+  /**
+   * Whether `Unsupported` / non-opt-in `Incompatible` cases should run through the JVM codegen
+   * dispatcher. Defaults to true. Override to gate the dispatcher behind a config; when false,
+   * those cases fall back to Spark.
+   */
+  def isCodegenDispatchEnabled: Boolean = true
+
+  /**
+   * Whether [[isCodegenDispatchEnabled]] is true at the config default. Documentation metadata
+   * only; does not affect runtime routing.
+   */
+  def codegenDispatchEnabledByDefault: Boolean = true
+
+  /**
+   * Config key the user sets to enable codegen dispatch when [[codegenDispatchEnabledByDefault]]
+   * is false. Documentation metadata only.
+   */
+  def codegenDispatchConfigKey: Option[String] = None
+}
 
 /**
  * Marker for serdes that have a native implementation the user can opt into. Normally these

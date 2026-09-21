@@ -38,15 +38,15 @@ import org.apache.comet.udf.codegen.CometScalaUDFCodegen
  * Matched benchmark for the two routes Spark 4.x can take for `MapSort` shapes that Comet cannot
  * sort natively:
  *
- *   - with `spark.comet.expression.MapSort.enabled=false`, the enclosing projection or shuffle
- *     falls back to Spark; and
- *   - with MapSort enabled, Spark's `MapSort.doGenCode` executes inside the Comet pipeline.
+ *   - with `spark.comet.expression.MapSort.codegen.enabled=false` (the default), the enclosing
+ *     projection or shuffle falls back to Spark; and
+ *   - with that setting true, Spark's `MapSort.doGenCode` executes inside the Comet pipeline.
  *
- * Every pair reads the same Parquet data and differs only in
- * `spark.comet.expression.MapSort.enabled`; the global codegen dispatcher remains enabled in both
- * arms. Array and struct cases vary map size independently from nested-key width. Strict
- * floating-point cases include NaN and both signed zeros in the same map. Input maps are written
- * in reverse key order and one row in 64 has a NULL map.
+ * Every pair keeps `spark.comet.expression.MapSort.enabled=true` and the global codegen
+ * dispatcher enabled, and differs only in `spark.comet.expression.MapSort.codegen.enabled`. Array
+ * and struct cases vary map size independently from nested-key width. Strict floating-point cases
+ * include NaN and both signed zeros in the same map. Input maps are written in reverse key order
+ * and one row in 64 has a NULL map.
  *
  * Spark 4.0 and 4.1 only insert `MapSort` for grouping and repartition expressions;
  * `try_element_at` itself does not insert one. To measure a projection without also timing an
@@ -642,7 +642,8 @@ object CometMapSortBenchmark extends CometBenchmarkBase {
       CometConf.COMET_ENABLED.key -> "true",
       CometConf.COMET_EXEC_ENABLED.key -> "true",
       CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "true",
-      CometConf.getExprEnabledConfigKey("MapSort") -> dispatch.toString,
+      CometConf.getExprEnabledConfigKey("MapSort") -> "true",
+      CometConf.COMET_EXPRESSION_MAPSORT_CODEGEN_ENABLED.key -> dispatch.toString,
       CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key ->
         (shape.family == StrictDoubleKey).toString,
       "spark.sql.legacy.disableMapKeyNormalization" ->
@@ -784,7 +785,9 @@ object CometMapSortBenchmark extends CometBenchmarkBase {
     emit(s"Mode: $Mode; steady-state case order: $CaseOrder")
     emit("Shuffle mode: native; AQE: disabled; nested hash partitioning: enabled")
     emit(s"Global dispatcher enabled: ${CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key}=true")
-    emit(s"Only matched-arm difference: ${CometConf.getExprEnabledConfigKey("MapSort")}")
+    emit(s"${CometConf.getExprEnabledConfigKey("MapSort")}=true in both arms")
+    emit(
+      s"Only matched-arm difference: ${CometConf.COMET_EXPRESSION_MAPSORT_CODEGEN_ENABLED.key}")
     emit(s"Pinned: ${CometConf.getExprAllowIncompatConfigKey("MapSort")}=false")
     emit("Projection note: Spark 4.0/4.1 do not insert MapSort for try_element_at. This suite")
     emit("  executes the optimizer-inserted grouping MapSort Project alone; no aggregate is run.")

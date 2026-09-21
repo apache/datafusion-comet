@@ -62,7 +62,12 @@ object GenerateDocs {
    *   retain the native opt-in behavior
    * @param codegenDispatchFallback
    *   whether the serde mixes in `CodegenDispatchFallback`, meaning `unsupportedReasons` cases
-   *   route through the JVM codegen dispatcher instead of falling back to Spark
+   *   can route through the JVM codegen dispatcher instead of falling back to Spark
+   * @param codegenDispatchEnabledByDefault
+   *   whether those dispatcher cases run by default. When false, they fall back to Spark until
+   *   the user sets `codegenDispatchConfigKey`
+   * @param codegenDispatchConfigKey
+   *   the config key that enables codegen dispatch when it is not the default
    */
   private[comet] case class ExprNotes(
       name: String,
@@ -72,7 +77,9 @@ object GenerateDocs {
       nativeOptIn: Boolean,
       nativeOptInConfigKey: String,
       conditionalNativeDefault: Boolean,
-      codegenDispatchFallback: Boolean)
+      codegenDispatchFallback: Boolean,
+      codegenDispatchEnabledByDefault: Boolean = true,
+      codegenDispatchConfigKey: Option[String] = None)
 
   private type CategoryNotes = Seq[ExprNotes]
 
@@ -95,7 +102,15 @@ object GenerateDocs {
         case n: NativeOptInAvailable => n.hasConditionalNativeDefault
         case _ => false
       },
-      codegenDispatchFallback = serde.isInstanceOf[CodegenDispatchFallback])
+      codegenDispatchFallback = serde.isInstanceOf[CodegenDispatchFallback],
+      codegenDispatchEnabledByDefault = serde match {
+        case h: CodegenDispatchFallback => h.codegenDispatchEnabledByDefault
+        case _ => true
+      },
+      codegenDispatchConfigKey = serde match {
+        case h: CodegenDispatchFallback => h.codegenDispatchConfigKey
+        case _ => None
+      })
   }
 
   /** Build the documentation notes for a single aggregate expression serde. */
@@ -429,6 +444,13 @@ object GenerateDocs {
             " (run inside the Comet pipeline) by default." +
             s" Set `${n.nativeOptInConfigKey}=true` to explicitly select Comet's native" +
             " implementation, which has the following differences from Spark:\n\n"
+        } else if (n.codegenDispatchFallback && !n.codegenDispatchEnabledByDefault) {
+          val dispatchKey =
+            n.codegenDispatchConfigKey.getOrElse(s"spark.comet.expression.$name.codegen.enabled")
+          s"\nThe following incompatibilities cause `$name` to fall back to Spark by default." +
+            s" Set `$dispatchKey=true` to run Spark's code-generated implementation inside the" +
+            s" Comet pipeline. Set `${n.nativeOptInConfigKey}=true` to enable Comet's native" +
+            " implementation despite these differences.\n\n"
         } else if (n.nativeOptIn) {
           s"\nBy default, `$name` is evaluated in the JVM using Spark's own code-generated" +
             " implementation (run inside the Comet pipeline), which matches Spark exactly." +
@@ -445,13 +467,20 @@ object GenerateDocs {
         }
       }
       if (n.unsupportedReasons.nonEmpty) {
-        val header = if (n.codegenDispatchFallback) {
-          "\nThe following cases have no native implementation and always run in the JVM using" +
-            " Spark's code-generated implementation (inside the Comet pipeline):\n\n"
-        } else {
-          "\nThe following cases are not supported by Comet and always fall back to Spark," +
-            " regardless of any `allowIncompatible` setting:\n\n"
-        }
+        val header =
+          if (n.codegenDispatchFallback && n.codegenDispatchEnabledByDefault) {
+            "\nThe following cases have no native implementation and always run in the JVM using" +
+              " Spark's code-generated implementation (inside the Comet pipeline):\n\n"
+          } else if (n.codegenDispatchFallback) {
+            val dispatchKey = n.codegenDispatchConfigKey.getOrElse(
+              s"spark.comet.expression.$name.codegen.enabled")
+            "\nThe following cases have no native implementation and fall back to Spark by" +
+              s" default. Set `$dispatchKey=true` to run Spark's code-generated implementation" +
+              " inside the Comet pipeline:\n\n"
+          } else {
+            "\nThe following cases are not supported by Comet and always fall back to Spark," +
+              " regardless of any `allowIncompatible` setting:\n\n"
+          }
         output.append(header)
         for (reason <- n.unsupportedReasons) {
           output.append(s"- $reason\n")

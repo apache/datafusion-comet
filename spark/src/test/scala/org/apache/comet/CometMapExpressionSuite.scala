@@ -41,6 +41,9 @@ class CometMapExpressionSuite extends CometTestBase with CometCodegenAssertions 
       s"expected MapSort in optimized plan:\n$plan")
   }
 
+  private def withMapSortCodegen(f: => Unit): Unit =
+    withSQLConf(CometConf.COMET_EXPRESSION_MAPSORT_CODEGEN_ENABLED.key -> "true")(f)
+
   test("read map[int, int] from parquet") {
 
     withTempPath { dir =>
@@ -255,50 +258,70 @@ class CometMapExpressionSuite extends CometTestBase with CometCodegenAssertions 
     }
   }
 
-  test("mapsort routes array keys through codegen dispatcher") {
+  test("mapsort falls back by default for array keys without codegen opt-in") {
     assume(isSpark40Plus, "Spark 4.0 inserts MapSort for group-by on map keys")
-    withTable("t_map_sort_array_key") {
-      sql("CREATE TABLE t_map_sort_array_key (m MAP<ARRAY<INT>, INT>) USING parquet")
-      sql("""INSERT INTO t_map_sort_array_key VALUES
+    withTable("t_map_sort_array_key_default") {
+      sql("CREATE TABLE t_map_sort_array_key_default (m MAP<ARRAY<INT>, INT>) USING parquet")
+      sql("""INSERT INTO t_map_sort_array_key_default VALUES
             |(map(array(2, 1), 20, array(1, 2), 10)),
-            |(map(array(1, 2), 10, array(2, 1), 20)),
-            |(map(array(3), 30)),
-            |(NULL)""".stripMargin)
-      val df = sql("SELECT m, count(*) FROM t_map_sort_array_key GROUP BY m")
+            |(map(array(1, 2), 10, array(2, 1), 20))""".stripMargin)
+      val df = sql("SELECT m, count(*) FROM t_map_sort_array_key_default GROUP BY m")
 
       assertMapSortInPlan(df)
-      val (_, cometPlan) = assertCodegenRan {
-        checkSparkAnswer(df)
+      assertCodegenDidNotRun {
+        checkSparkAnswerAndFallbackReason(df, "has no native implementation")
       }
-      val dispatched = new ExtendedExplainInfo().getCodegenDispatchExpressions(cometPlan)
-      assert(
-        dispatched.contains("mapsort"),
-        s"expected mapsort on codegen dispatch path, got $dispatched in:\n$cometPlan")
+    }
+  }
+
+  test("mapsort routes array keys through codegen dispatcher") {
+    assume(isSpark40Plus, "Spark 4.0 inserts MapSort for group-by on map keys")
+    withMapSortCodegen {
+      withTable("t_map_sort_array_key") {
+        sql("CREATE TABLE t_map_sort_array_key (m MAP<ARRAY<INT>, INT>) USING parquet")
+        sql("""INSERT INTO t_map_sort_array_key VALUES
+              |(map(array(2, 1), 20, array(1, 2), 10)),
+              |(map(array(1, 2), 10, array(2, 1), 20)),
+              |(map(array(3), 30)),
+              |(NULL)""".stripMargin)
+        val df = sql("SELECT m, count(*) FROM t_map_sort_array_key GROUP BY m")
+
+        assertMapSortInPlan(df)
+        val (_, cometPlan) = assertCodegenRan {
+          checkSparkAnswer(df)
+        }
+        val dispatched = new ExtendedExplainInfo().getCodegenDispatchExpressions(cometPlan)
+        assert(
+          dispatched.contains("mapsort"),
+          s"expected mapsort on codegen dispatch path, got $dispatched in:\n$cometPlan")
+      }
     }
   }
 
   test("mapsort routes struct keys through codegen dispatcher") {
     assume(isSpark40Plus, "Spark 4.0 inserts MapSort for group-by on map keys")
-    withTable("t_map_sort_struct_key") {
-      sql("""CREATE TABLE t_map_sort_struct_key (
-            |  m MAP<STRUCT<a: INT, b: STRING>, INT>) USING parquet""".stripMargin)
-      sql("""INSERT INTO t_map_sort_struct_key VALUES
-            |(map(named_struct('a', 2, 'b', 'b'), 20,
-            |     named_struct('a', 1, 'b', 'a'), 10)),
-            |(map(named_struct('a', 1, 'b', 'a'), 10,
-            |     named_struct('a', 2, 'b', 'b'), 20)),
-            |(map(named_struct('a', 3, 'b', 'c'), 30)),
-            |(NULL)""".stripMargin)
-      val df = sql("SELECT m, count(*) FROM t_map_sort_struct_key GROUP BY m")
+    withMapSortCodegen {
+      withTable("t_map_sort_struct_key") {
+        sql("""CREATE TABLE t_map_sort_struct_key (
+              |  m MAP<STRUCT<a: INT, b: STRING>, INT>) USING parquet""".stripMargin)
+        sql("""INSERT INTO t_map_sort_struct_key VALUES
+              |(map(named_struct('a', 2, 'b', 'b'), 20,
+              |     named_struct('a', 1, 'b', 'a'), 10)),
+              |(map(named_struct('a', 1, 'b', 'a'), 10,
+              |     named_struct('a', 2, 'b', 'b'), 20)),
+              |(map(named_struct('a', 3, 'b', 'c'), 30)),
+              |(NULL)""".stripMargin)
+        val df = sql("SELECT m, count(*) FROM t_map_sort_struct_key GROUP BY m")
 
-      assertMapSortInPlan(df)
-      val (_, cometPlan) = assertCodegenRan {
-        checkSparkAnswer(df)
+        assertMapSortInPlan(df)
+        val (_, cometPlan) = assertCodegenRan {
+          checkSparkAnswer(df)
+        }
+        val dispatched = new ExtendedExplainInfo().getCodegenDispatchExpressions(cometPlan)
+        assert(
+          dispatched.contains("mapsort"),
+          s"expected mapsort on codegen dispatch path, got $dispatched in:\n$cometPlan")
       }
-      val dispatched = new ExtendedExplainInfo().getCodegenDispatchExpressions(cometPlan)
-      assert(
-        dispatched.contains("mapsort"),
-        s"expected mapsort on codegen dispatch path, got $dispatched in:\n$cometPlan")
     }
   }
 
@@ -335,6 +358,7 @@ class CometMapExpressionSuite extends CometTestBase with CometCodegenAssertions 
             |(map(array(1, 2), 10, array(2, 1), 20))""".stripMargin)
       withSQLConf(
         CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "true",
+        CometConf.COMET_EXPRESSION_MAPSORT_CODEGEN_ENABLED.key -> "true",
         CometConf.getExprEnabledConfigKey("MapSort") -> "false") {
         val df = sql("SELECT m, count(*) FROM t_map_sort_dispatch_disabled GROUP BY m")
 
@@ -353,7 +377,8 @@ class CometMapExpressionSuite extends CometTestBase with CometCodegenAssertions 
     assume(isSpark40Plus, "collated map keys and MapSort require Spark 4.0+")
     withSQLConf(
       "spark.sql.collation.allowInMapKeys" -> "true",
-      CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "true") {
+      CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "true",
+      CometConf.COMET_EXPRESSION_MAPSORT_CODEGEN_ENABLED.key -> "true") {
       withTable("t_map_sort_collated_key") {
         sql(
           "CREATE TABLE t_map_sort_collated_key " +
@@ -441,6 +466,7 @@ class CometMapExpressionSuite extends CometTestBase with CometCodegenAssertions 
     withSQLConf(
       CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key -> "true",
       CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "true",
+      CometConf.COMET_EXPRESSION_MAPSORT_CODEGEN_ENABLED.key -> "true",
       "spark.sql.legacy.disableMapKeyNormalization" -> "true") {
       withTable("t_map_sort_fp_key") {
         sql("CREATE TABLE t_map_sort_fp_key (id INT, m MAP<DOUBLE, INT>) USING parquet")
