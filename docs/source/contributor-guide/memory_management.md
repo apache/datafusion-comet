@@ -103,6 +103,14 @@ off-heap bytes in container RSS that neither Spark's `TaskMemoryManager` nor Com
 pool sees. In practice the volume is modest, a batch at a time per stream, but there is no
 ceiling and no backpressure.
 
+One further child, `CometArrowImportAllocator` (`comet-ffi-imports`), is what the Arrow C Data
+Interface import path allocates from, so that tracing can report those charges apart from the rest
+of Comet's Arrow memory. Unlike the others it is process-wide and never closed, because imported
+buffers are reference counted and routinely outlive the task that imported them. Its reservation
+is zero, so every byte still escalates to the root and the inventory above is unchanged by it.
+Being charged there is not the same as having been allocated there; see the scaladoc on the
+allocator before reading anything into the split.
+
 **The JVM shuffle allocator is an ordinary Spark consumer.** `CometShuffleMemoryAllocator.getInstance`
 returns `CometUnifiedShuffleMemoryAllocator`, a Spark `MemoryConsumer` drawing from
 `spark.memory.offHeap.size`, so shuffle pages are arbitrated against Spark's other consumers in the
