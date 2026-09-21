@@ -34,7 +34,7 @@ import org.apache.spark.sql.catalyst.expressions.{Attribute, BoundReference, Exp
 import org.apache.spark.sql.catalyst.expressions.codegen.LazilyGeneratedOrdering
 import org.apache.spark.sql.catalyst.plans.logical.Statistics
 import org.apache.spark.sql.catalyst.plans.physical._
-import org.apache.spark.sql.comet.{CometMetricNode, CometNativeExec, CometPlan, CometSinkPlaceHolder, NativeExecContext}
+import org.apache.spark.sql.comet.{CometFilterExec, CometMetricNode, CometNativeExec, CometNativeScanExec, CometPlan, CometProjectExec, CometSinkPlaceHolder, NativeExecContext}
 import org.apache.spark.sql.comet.execution.arrow.CometArrowStream
 import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.adaptive.ShuffleQueryStageExec
@@ -127,7 +127,8 @@ case class CometShuffleExchangeExec(
           ctx.numPartitions,
           ctx.shuffleScanIndices,
           CometMetricNode(metrics, Seq(nativeChildMetricNode)),
-          ctx.perPartitionByKey)
+          ctx.perPartitionByKey,
+          CometShuffleExchangeExec.usesPositionalRoundRobin(outputPartitioning, child))
       case None =>
         // Non-native child (e.g. CometSparkToColumnarExec): no subtree to inline. The dep gets
         // built via the convenience overload below; we just need a real RDD of batches.
@@ -206,7 +207,11 @@ case class CometShuffleExchangeExec(
             outputPartitioning,
             serializer,
             metrics,
-            NativeShuffleSpec(nativeChild.nativeOp, nativeChildMetricNode, ctx))
+            NativeShuffleSpec(
+              nativeChild.nativeOp,
+              nativeChildMetricNode,
+              ctx,
+              CometShuffleExchangeExec.positionalRoundRobinSpec(outputPartitioning, child)))
         case None =>
           CometShuffleExchangeExec.prepareShuffleDependency(
             inputRDD.asInstanceOf[RDD[ColumnarBatch]],
@@ -296,6 +301,80 @@ object CometShuffleExchangeExec
 
   override def getSupportLevel(op: ShuffleExchangeExec): SupportLevel = {
     if (shuffleSupported(op).isDefined) Compatible() else Unsupported()
+  }
+
+  /**
+   * True when this exchange will run the native round-robin writer in its positional mode, where
+   * the row at task-global ordinal `i` goes to `(mapPartitionId + i / groupRows) % numPartitions`
+   * rather than to `pmod(hash(row), numPartitions)`.
+   *
+   * Positional placement is reproducible exactly when the map task replays its rows in the same
+   * order, which is the same condition Spark's own round robin depends on. Spark answers it in
+   * two places and so does Comet: `replaysRowsInOrder` below establishes it for the operators
+   * fused into this native plan, which the RDD graph cannot see because the whole subtree
+   * collapses into one `CometNativeShuffleInputRDD`; and
+   * `CometNativeShuffleInputRDD.getOutputDeterministicLevel` establishes it for everything below
+   * that RDD, where the leaves are. Both have to hold.
+   *
+   * Must stay in step with `PhysicalPlanner::create_partitioning`, which turns the `positional`
+   * proto field into `RoundRobinStrategy::RowGroups`.
+   *
+   * The `numPartitions > 1` guard mirrors `isRoundRobin` in `prepareJVMShuffleDependency`. With a
+   * single output partition every row lands in the same place, so there is no placement to get
+   * wrong, and native routes that case to `SinglePartitionShufflePartitioner` regardless.
+   */
+  def usesPositionalRoundRobin(outputPartitioning: Partitioning, child: SparkPlan): Boolean =
+    positionalRoundRobinSpec(outputPartitioning, child).isDefined
+
+  /**
+   * [[usesPositionalRoundRobin]] together with the group size to use, both read on the driver so
+   * that they cannot disagree. `CometConf.get()` resolves against the thread-local `SQLConf`,
+   * which on an executor is rebuilt from the task's local properties; reading the group size
+   * there returned the default rather than the session value.
+   */
+  def positionalRoundRobinSpec(
+      outputPartitioning: Partitioning,
+      child: SparkPlan): Option[PositionalRoundRobin] = {
+    val eligible = outputPartitioning.isInstanceOf[RoundRobinPartitioning] &&
+      outputPartitioning.numPartitions > 1 &&
+      CometConf.COMET_SHUFFLE_NATIVE_ROUND_ROBIN_PARTITIONING_POSITIONAL_ENABLED.get() &&
+      replaysRowsInOrder(child)
+    if (eligible) {
+      Some(
+        PositionalRoundRobin(
+          CometConf.COMET_SHUFFLE_NATIVE_ROUND_ROBIN_PARTITIONING_POSITIONAL_GROUP_ROWS.get()))
+    } else {
+      None
+    }
+  }
+
+  /**
+   * Whether re-executing this subtree yields the same rows in the same order.
+   *
+   * Deliberately a short allowlist rather than a denylist of known-bad operators, because the
+   * cost of being wrong is silent data loss rather than a failure: a re-executed map task that
+   * orders rows differently writes a different partitioning of them, and once any consumer has
+   * fetched the output that attempt replaces, the reduce side gets some rows twice and others not
+   * at all. Anything not named here keeps content-hash placement, which is safe to re-execute
+   * whatever its input does.
+   *
+   * A native scan replays its partition because the file splits are fixed on the driver when the
+   * RDD is built, and projections and filters are row-wise. Operators that spill are the
+   * interesting exclusion: an aggregate or a sort under memory pressure emits its output in an
+   * order that depends on how many times it spilled, which differs between attempts on different
+   * executors. Note that this says nothing about how rows are framed into batches: positional
+   * placement counts rows across batch boundaries precisely so that framing does not have to be
+   * part of this judgement.
+   *
+   * Other leaf scans (Iceberg, DSv2 batch, in-memory) plausibly qualify too, but each needs its
+   * own argument that a re-executed task reads the same rows in the same order, so they are left
+   * out until someone makes it.
+   */
+  private def replaysRowsInOrder(plan: SparkPlan): Boolean = plan match {
+    case _: CometNativeScanExec => true
+    case p: CometProjectExec => replaysRowsInOrder(p.child)
+    case f: CometFilterExec => replaysRowsInOrder(f.child)
+    case _ => false
   }
 
   override def createExec(

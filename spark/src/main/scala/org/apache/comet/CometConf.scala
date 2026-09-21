@@ -475,6 +475,42 @@ object CometConf extends ShimCometConf {
         "The maximum number of columns to hash for round robin partitioning must be non-negative.")
       .createWithDefault(0)
 
+  val COMET_SHUFFLE_NATIVE_ROUND_ROBIN_PARTITIONING_POSITIONAL_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.shuffle.native.partitioning.roundrobin.positional.enabled")
+      .category(CATEGORY_SHUFFLE)
+      .doc(
+        "When true, Comet's native round-robin shuffle places rows by position rather than by " +
+          "hashing their contents, the way Spark's own round robin does: the row at " +
+          "task-global ordinal i goes to output partition " +
+          "(mapPartitionId + i / groupRows) % numPartitions. This skips a murmur3 pass over " +
+          "every column of every row and replaces the per-row gather on flush with a bulk copy " +
+          "per run, which is what dominates the shuffle write on wide nested schemas. It also " +
+          "spreads duplicate rows evenly, where hashing sends them all to one partition. " +
+          "Positional placement is only reproducible when the map task replays rows in the " +
+          "same order, so it is used only where Comet can establish that from the plan: a " +
+          "native scan under nothing but projections and filters. Any other plan silently " +
+          "keeps content-hash placement. " +
+          s"Has no effect unless ${COMET_SHUFFLE_NATIVE_ROUND_ROBIN_PARTITIONING_ENABLED.key} " +
+          "is also true.")
+      .booleanConf
+      .createWithDefault(false)
+
+  val COMET_SHUFFLE_NATIVE_ROUND_ROBIN_PARTITIONING_POSITIONAL_GROUP_ROWS: ConfigEntry[Int] =
+    conf("spark.comet.shuffle.native.partitioning.roundrobin.positional.groupRows")
+      .category(CATEGORY_SHUFFLE)
+      .doc(
+        "Rows per contiguous group under positional round robin. Imbalance between any two " +
+          "output partitions is bounded by this many rows however the reader frames its " +
+          "batches, so smaller groups balance better while larger groups produce fewer, longer " +
+          "runs to copy. When set to 0 (the default) Comet derives it from the batch size and " +
+          "the partition count. Only applies when " +
+          s"${COMET_SHUFFLE_NATIVE_ROUND_ROBIN_PARTITIONING_POSITIONAL_ENABLED.key} is true.")
+      .intConf
+      .checkValue(
+        v => v >= 0,
+        "The group size for positional round robin partitioning must be non-negative.")
+      .createWithDefault(0)
+
   val COMET_SHUFFLE_CONVERT_FROM_SPARK_PLAN_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.shuffle.convertFromSparkPlan.enabled")
       .withAlternative(s"$COMET_EXEC_CONFIG_PREFIX.shuffle.convertFromSparkPlan.enabled")

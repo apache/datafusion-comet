@@ -43,7 +43,24 @@ import org.apache.comet.serde.OperatorOuterClass
 case class NativeShuffleSpec(
     childNativeOp: OperatorOuterClass.Operator,
     childMetricNode: CometMetricNode,
-    execContext: NativeExecContext)
+    execContext: NativeExecContext,
+    /**
+     * Set when round-robin placement is positional rather than content-hashed. Both the decision
+     * and the group size are resolved once on the driver: the decision because it depends on the
+     * shape of the plan fused into `childNativeOp`, which the executor never sees, and the group
+     * size so that it cannot disagree with the decision. See
+     * `CometShuffleExchangeExec.usesPositionalRoundRobin`.
+     */
+    positionalRoundRobin: Option[PositionalRoundRobin] = None)
+
+/**
+ * Parameters for positional round-robin placement, resolved on the driver.
+ *
+ * @param groupRows
+ *   rows per contiguous group, or 0 to let the native side derive it from the batch size and the
+ *   partition count.
+ */
+case class PositionalRoundRobin(groupRows: Int)
 
 /**
  * A [[ShuffleDependency]] that allows us to identify the shuffle dependency as a Comet shuffle.

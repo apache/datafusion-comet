@@ -32,7 +32,7 @@ pub mod spark_unsafe;
 pub(crate) mod writers;
 
 pub use codec_context::ShuffleCodecContext;
-pub use comet_partitioning::CometPartitioning;
+pub use comet_partitioning::{CometPartitioning, RoundRobinStrategy};
 pub use ipc::{read_ipc_compressed, read_ipc_compressed_validated, reset_schema_cache};
 pub use remote_schema::{decode_remote_shuffle_batch, validate_remote_schema};
 pub use schema_align::SchemaAlignExec;

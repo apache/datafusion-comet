@@ -421,6 +421,12 @@ class CometNativeShuffleWriter[K, V](
         partitioning.setNumPartitions(effectivePartitionCount)
         partitioning.setMaxHashColumns(
           CometConf.COMET_SHUFFLE_NATIVE_ROUND_ROBIN_PARTITIONING_MAX_HASH_COLUMNS.get())
+        // Decided on the driver, from the shape of the plan fused into this writer; the executor
+        // cannot re-derive it. See `CometShuffleExchangeExec.positionalRoundRobinSpec`.
+        spec.positionalRoundRobin.foreach { positional =>
+          partitioning.setPositional(true)
+          partitioning.setPositionalGroupRows(positional.groupRows)
+        }
 
         val partitioningBuilder = PartitioningOuterClass.Partitioning.newBuilder()
         shuffleWriterBuilder.setPartitioning(

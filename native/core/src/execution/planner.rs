@@ -98,7 +98,7 @@ use datafusion_comet_spark_expr::{
 use iceberg::expr::Bind;
 
 use crate::execution::operators::ExecutionError::GeneralError;
-use crate::execution::shuffle::{CometPartitioning, CompressionCodec};
+use crate::execution::shuffle::{CometPartitioning, CompressionCodec, RoundRobinStrategy};
 use crate::execution::spark_plan::SparkPlan;
 use crate::parquet::objectstore::s3_blob_fs_support::normalize_object_store_url;
 use crate::parquet::parquet_support::prepare_object_store_with_configs;
@@ -3652,15 +3652,26 @@ impl PhysicalPlanner {
             }
             PartitioningStruct::SinglePartition(_) => Ok(CometPartitioning::SinglePartition),
             PartitioningStruct::RoundRobinPartition(rr_partition) => {
-                // Treat negative max_hash_columns as 0 (no limit)
-                let max_hash_columns = if rr_partition.max_hash_columns <= 0 {
-                    0
+                let strategy = if rr_partition.positional {
+                    // The Spark map partition id, not the DataFusion one: `jni_api` runs every
+                    // native root plan with partition 0 (one Comet execution per Spark task), so
+                    // `ShuffleWriterExec::execute` cannot supply it. See
+                    // `RoundRobinStrategy::RowGroups` for why it has to be this value.
+                    RoundRobinStrategy::RowGroups {
+                        start_partition: self.partition.max(0) as usize,
+                        // Negative or zero means "derive it from the batch size and partition
+                        // count", which the repartitioner does once it knows both.
+                        group_rows: rr_partition.positional_group_rows.max(0) as usize,
+                    }
                 } else {
-                    rr_partition.max_hash_columns as usize
+                    // Treat negative max_hash_columns as 0 (no limit).
+                    RoundRobinStrategy::HashAll {
+                        max_hash_columns: rr_partition.max_hash_columns.max(0) as usize,
+                    }
                 };
                 Ok(CometPartitioning::RoundRobin(
                     rr_partition.num_partitions as usize,
-                    max_hash_columns,
+                    strategy,
                 ))
             }
         }

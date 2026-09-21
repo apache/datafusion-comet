@@ -20,7 +20,7 @@
 package org.apache.spark.sql.comet.execution.shuffle
 
 import org.apache.spark._
-import org.apache.spark.rdd.RDD
+import org.apache.spark.rdd.{DeterministicLevel, RDD}
 import org.apache.spark.sql.comet.{CometExecRDD, CometMetricNode}
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
@@ -33,6 +33,10 @@ import org.apache.comet.CometShuffleBlockIterator
  * [[CometNativeShuffleInputIterator]]. The iterator reports `hasNext = false`;
  * [[CometNativeShuffleWriter]] downcasts it and reads those slots directly to drive the unified
  * `ShuffleWriter(child = childNativeOp)` plan.
+ *
+ * @param positionalRoundRobin
+ *   whether the writer fed by this RDD places rows by position rather than by content; see
+ *   [[CometShuffleExchangeExec.usesPositionalRoundRobin]] and `getOutputDeterministicLevel`.
  */
 private[shuffle] class CometNativeShuffleInputRDD(
     sc: SparkContext,
@@ -40,7 +44,8 @@ private[shuffle] class CometNativeShuffleInputRDD(
     numPartitionsParam: Int,
     shuffleScanIndices: Set[Int],
     spillMetricNode: CometMetricNode,
-    @transient perPartitionByKey: Map[String, Array[Array[Byte]]] = Map.empty)
+    @transient perPartitionByKey: Map[String, Array[Array[Byte]]] = Map.empty,
+    positionalRoundRobin: Boolean = false)
     extends RDD[Product2[Int, ColumnarBatch]](
       sc,
       inputRDDs.map(rdd => new OneToOneDependency(rdd))) {
@@ -57,7 +62,34 @@ private[shuffle] class CometNativeShuffleInputRDD(
       numPartitionsParam,
       shuffleScanIndices,
       spillMetricNode,
-      perPartitionByKey)
+      perPartitionByKey,
+      positionalRoundRobin)
+
+  /**
+   * Spark handles the retry hazard of positional round robin declaratively rather than
+   * per-operator: it wraps the repartition in a `MapPartitionsRDD` with `isOrderSensitive = true`
+   * (Comet's own JVM path does this in `prepareJVMShuffleDependency`), and that RDD reports
+   * `INDETERMINATE` whenever its parent is `UNORDERED`, which makes the DAGScheduler roll the
+   * whole stage back instead of re-running one task into a partially consumed output. The native
+   * path has no `MapPartitionsRDD` to carry the flag, so apply the same rule here.
+   *
+   * This covers everything below the RDD boundary; it cannot see the operators fused into the
+   * native plan above it, because the whole subtree collapses into this one RDD and `inputRDDs`
+   * are its leaves. `CometShuffleExchangeExec.replaysRowsInOrder` covers those. Both run, and
+   * positional placement needs both to agree.
+   *
+   * Letting the parent level discriminate is what keeps a plain scan on the cheap per-task retry
+   * path: a determinate parent stays determinate, while anything below another exchange is
+   * unordered, because reduce tasks see shuffle blocks in arrival order, and goes indeterminate.
+   */
+  override protected def getOutputDeterministicLevel: DeterministicLevel.Value = {
+    val inheritedLevel = super.getOutputDeterministicLevel
+    if (positionalRoundRobin && inheritedLevel != DeterministicLevel.DETERMINATE) {
+      DeterministicLevel.INDETERMINATE
+    } else {
+      inheritedLevel
+    }
+  }
 
   override protected def getPartitions: Array[Partition] =
     (0 until numPartitionsParam).map { i =>
