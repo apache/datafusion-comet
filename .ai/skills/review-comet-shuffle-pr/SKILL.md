@@ -52,8 +52,15 @@ keys**, and it is not the same rule for the two partitionings:
 
 - **`RangePartitioning` is primitive-only, unconditionally.**
   `supportedRangePartitioningDataType` rejects every nested type, because native cannot sort them,
-  and rejects collated strings, because Comet compares raw bytes. It also rejects float and double
-  when `spark.comet.exec.strictFloatingPoint` is on.
+  and rejects collated strings, because Comet compares raw bytes. That is the whole rule. Scalar
+  float and double are accepted, under `spark.comet.exec.strictFloatingPoint` as well: since
+  [#5981](https://github.com/apache/datafusion-comet/pull/5981) the native range partitioner
+  normalizes its comparison keys and its sampled boundary rows the same way the native sort does,
+  and `CometSortOrder.getSupportLevel` returns `Compatible()` for them regardless of strict mode.
+  What strict mode still governs is floating point _nested_ in an array, struct, or map
+  ([#5507](https://github.com/apache/datafusion-comet/issues/5507)), which is already out as a
+  range key for being nested. `CometNativeShuffleSuite` runs "range partitioning on floating-point
+  uses native shuffle" under both settings of the config.
 - **`HashPartitioning` is primitive-only by default only.** With
   `spark.comet.shuffle.native.partitioning.hash.nested.enabled=true` (default `false`),
   `supportedHashPartitioningDataType` admits structs and arrays recursively, and maps on Spark
@@ -63,9 +70,9 @@ keys**, and it is not the same rule for the two partitionings:
   (`spark/src/main/spark-4.x/`) supports for scalar map keys only.
   `CometNativeShuffleSuite` covers both settings of the config.
 
-A native exchange on a struct or array hash key is therefore not automatically a bug. Check the
-config before calling it one, and do not carry the range-partitioning rule over to hash
-partitioning.
+A native exchange on a struct or array hash key is therefore not automatically a bug, and neither
+is one on a scalar float or double range key in strict mode. Check the config before calling either
+one, and do not carry the range-partitioning rule over to hash partitioning.
 
 - [ ] A PR that widens what native shuffle supports updates the fallback conditions in
       `CometShuffleExchangeExec` **and** both docs' "When X is Used" lists
