@@ -27,6 +27,7 @@ import org.apache.arrow.c.Data;
 import org.apache.arrow.memory.BufferAllocator;
 import org.apache.arrow.vector.FieldVector;
 import org.apache.arrow.vector.ValueVector;
+import org.apache.arrow.vector.util.TransferPair;
 import org.apache.spark.TaskContext;
 import org.apache.spark.comet.CometTaskContextShim;
 import org.apache.spark.util.TaskCompletionListener;
@@ -210,17 +211,26 @@ public class CometUdfBridge {
     assert udf != null : "reflective instantiation returned null for " + udfClassName;
 
     BufferAllocator allocator = org.apache.comet.package$.MODULE$.CometArrowAllocator();
+    // See CometArrowImportAllocator: inputs are imported against that allocator, so that tracing
+    // can report the import path's charges apart from the rest of Comet's Arrow memory.
+    BufferAllocator importAllocator = org.apache.comet.package$.MODULE$.CometArrowImportAllocator();
 
     ValueVector[] inputs = new ValueVector[inputArrayPtrs.length];
     ValueVector result = null;
+    // Whether the UDF handed back one of the vectors it was given. Such a result is closed by the
+    // input loop below, so the result branch there must leave it alone.
+    boolean resultIsInput = false;
+    ValueVector transferred = null;
     try {
       for (int i = 0; i < inputArrayPtrs.length; i++) {
         ArrowArray inArr = ArrowArray.wrap(inputArrayPtrs[i]);
         ArrowSchema inSch = ArrowSchema.wrap(inputSchemaPtrs[i]);
-        inputs[i] = Data.importVector(allocator, inArr, inSch, null);
+        inputs[i] = Data.importVector(importAllocator, inArr, inSch, null);
       }
 
       result = udf.evaluate(inputs, numRows);
+      // Recorded before the checks below, so the invariant holds however this exits.
+      resultIsInput = isOneOf(result, inputs);
       if (!(result instanceof FieldVector)) {
         throw new RuntimeException(
             "CometUDF.evaluate() must return a FieldVector, got: " + result.getClass().getName());
@@ -232,9 +242,27 @@ public class CometUdfBridge {
                 + " rows, expected "
                 + numRows);
       }
+      // The UDF may allocate its result from the allocator it found on its inputs, which is
+      // the import allocator. Data.exportVector does not re-own the buffers, so the result
+      // would stay charged there for as long as the export holds it and be reported as
+      // imported memory. TransferPair moves ownership without copying the payload.
+      //
+      // A result that *is* one of the inputs is left alone: those buffers were imported, so the
+      // import allocator is the right place for them, and transferring would move a foreign
+      // charge onto the root. The check is reference identity, so a result that merely shares
+      // buffers with an input (a slice, say) is still transferred. That is a limit of allocator
+      // accounting rather than something this can close; see CometArrowImportAllocator.
+      FieldVector toExport = (FieldVector) result;
+      if (!resultIsInput && result.getAllocator() != allocator) {
+        TransferPair transferPair = result.getTransferPair(allocator);
+        transferPair.transfer();
+        transferred = transferPair.getTo();
+        toExport = (FieldVector) transferred;
+      }
+
       ArrowArray outArr = ArrowArray.wrap(outArrayPtr);
       ArrowSchema outSch = ArrowSchema.wrap(outSchemaPtr);
-      Data.exportVector(allocator, (FieldVector) result, null, outArr, outSch);
+      Data.exportVector(allocator, toExport, null, outArr, outSch);
     } finally {
       for (ValueVector v : inputs) {
         if (v != null) {
@@ -245,13 +273,30 @@ public class CometUdfBridge {
           }
         }
       }
-      if (result != null) {
+      if (result != null && !resultIsInput) {
         try {
           result.close();
         } catch (RuntimeException ignored) {
           // do not mask the original throwable
         }
       }
+      if (transferred != null) {
+        try {
+          transferred.close();
+        } catch (RuntimeException ignored) {
+          // do not mask the original throwable
+        }
+      }
     }
+  }
+
+  /** Whether the UDF handed back one of the vectors it was given, rather than a new one. */
+  private static boolean isOneOf(ValueVector result, ValueVector[] inputs) {
+    for (ValueVector input : inputs) {
+      if (result == input) {
+        return true;
+      }
+    }
+    return false;
   }
 }

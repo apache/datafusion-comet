@@ -67,11 +67,13 @@
 
 import importlib.util
 import re
+import subprocess
 import sys
 from pathlib import Path
 
 WORKFLOWS = Path(".github/workflows")
 ASF_YAML = Path(".asf.yaml")
+LOCAL_CI = Path("dev/local-ci.sh")
 
 # The ci.yml job that aggregates every other job's result.
 AGGREGATOR_JOB = "required_checks"
@@ -124,14 +126,26 @@ ROUTING_CASES = [
     # to nothing at all and merges having been exercised by no consumer.
     ([".github/actions/upload-artifact-retry/action.yaml"], BUILD_JOBS),
     ([".github/actions/download-artifact-retry/action.yaml"], BUILD_JOBS),
-    # The Maven bootstrap composite is called only from pr_build_linux.yml.
-    (
-        [".github/actions/maven-bootstrap/action.yaml"],
-        {"build_linux", "build_linux_full", "build_linux_all_profiles"},
-    ),
+    # Maven bootstrap runs inside setup-builder and setup-macos-builder, so it
+    # reaches every job that runs ./mvnw, the Delta gate and PyArrow suite
+    # included.
+    ([".github/actions/maven-bootstrap/action.yaml"], MVN_JOBS),
     # Spot checks that the additions above did not widen unrelated routes.
     (["docs/source/user-guide/overview.md"], {"docs"}),
     (["native/core/benches/parquet_read.rs"], {"benchmark"}),
+    # The mermaid guard is run by preflight, which is unconditional, and again
+    # by the docs deploy, which is not, so the deploy has to be routed. The
+    # build jobs come along because `dev/ci/**` already feeds them.
+    (
+        ["dev/ci/check-mermaid.py"],
+        {
+            "docs",
+            "build_linux",
+            "build_linux_full",
+            "build_linux_all_profiles",
+            "build_macos",
+        },
+    ),
     # The Delta gate script is read by nothing else; the contrib crate feeds
     # only the gate. The PyArrow pytest lives under spark/, so the Linux and
     # macOS builds see it too, but no Spark SQL or Iceberg suite does, and
@@ -481,6 +495,61 @@ def load_filters():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def load_ci_module(name, filename):
+    """Import one of the hyphenated dev/ci scripts as a module."""
+    spec = importlib.util.spec_from_file_location(name, f"dev/ci/{filename}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def check_local_ci_config():
+    """dev/local-ci.sh reads ci.yml and dev/ci; make that drift fail here.
+
+    The values live in dev/ci/local-ci-config.py, the single parser, which
+    validates each one against a version shape. Importing it here is what turns
+    a requoted `spark-full`, a reindented `with:` block or a renamed job into a
+    preflight failure rather than a surprise the next time somebody needs the
+    script. `bash -n` covers the shell, since actionlint runs with
+    --shellcheck=off and looks only at workflow files.
+    """
+    if not LOCAL_CI.exists():
+        return True
+    failures = []
+
+    syntax = subprocess.run(
+        ["bash", "-n", str(LOCAL_CI)], capture_output=True, text=True, check=False
+    )
+    if syntax.returncode != 0:
+        failures.append(f"{LOCAL_CI} is not valid bash: {syntax.stderr.strip()}")
+
+    try:
+        config = load_ci_module("local_ci_config", "local-ci-config.py").config()
+        # Each default must name a job ci.yml actually defines, or the script
+        # defaults to a version it then cannot look up.
+        for suite in ("spark", "iceberg"):
+            if not config[suite]:
+                failures.append(f"local-ci-config.py found no {suite}_* jobs in ci.yml")
+            elif config[f"{suite}_default"] not in config[suite]:
+                failures.append(
+                    f"local-ci-config.py defaults {suite} to "
+                    f"{config[f'{suite}_default']}, which ci.yml has no job for"
+                )
+        if config["dedicated_gate_version"] not in config["spark"]:
+            failures.append(
+                "the DEDICATED_JVM_SBT_TESTS gate names Spark "
+                f"{config['dedicated_gate_version']}, which ci.yml has no job for"
+            )
+        if not config["rows"]:
+            failures.append("local-ci-config.py found no Spark SQL matrix rows")
+    except Exception as err:  # noqa: BLE001 - any parse failure is the finding
+        failures.append(f"dev/ci/local-ci-config.py could not read the CI config: {err}")
+
+    for failure in failures:
+        print(f"local-ci: {failure}")
+    return not failures
 
 
 def check_spark_sql_modules():
@@ -1143,6 +1212,7 @@ if __name__ == "__main__":
     ok = check_nightly_scope() and ok
     ok = check_nightly_base_fallback() and ok
     ok = check_cache_save_scope() and ok
+    ok = check_local_ci_config() and ok
     if not ok:
         sys.exit(1)
     print("CI config checks passed")
