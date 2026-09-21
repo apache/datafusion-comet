@@ -16,13 +16,14 @@
 // under the License.
 
 //! Analyzes a Comet chrome trace event log (`comet-event-trace.json`) and
-//! compares the process-wide native allocation counter against the sum of
-//! per-thread Comet memory pool reservations. Reports any points where the
-//! allocated bytes exceed the total pool size.
+//! compares the process-wide native allocation counter against the total memory
+//! reserved by Comet's memory pools. Reports any points where the allocated
+//! bytes exceed the total pool size.
 //!
 //! Usage:
 //!   cargo run --bin analyze_trace -- <path-to-comet-event-trace.json>
 
+use datafusion_comet_common::tracing::POOL_TOTAL_METRIC as POOL_TOTAL_COUNTER;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader};
@@ -37,12 +38,19 @@ use std::{env, fs::File};
 /// analyzed.
 const ALLOCATED_COUNTERS: [&str; 2] = ["native_allocated", "jemalloc_allocated"];
 
+// The process-wide total of Comet's memory pool reservations, imported from the producer so the
+// two cannot drift apart.
+//
+// Preferred over summing the per-thread `thread_NNN_comet_memory_reserved` counters. Those report
+// the full reservation of a task-shared pool once per thread that references it, so adding them
+// across threads multiplies a shared pool by its thread count. A trace without this counter is
+// still analyzed from the per-thread sum, with a warning, so older traces remain readable.
+
 /// A single Chrome trace event (only the fields we care about).
 #[derive(Deserialize)]
 struct TraceEvent {
     name: String,
     ph: String,
-    #[allow(dead_code)]
     tid: u64,
     ts: u64,
     #[serde(default)]
@@ -54,6 +62,50 @@ struct MemorySnapshot {
     ts: u64,
     allocated: u64,
     pool_total: u64,
+}
+
+/// What one pool-total source says about the trace.
+///
+/// Both sources are accumulated in the same pass and one is reported, because whether the trace
+/// carries [`POOL_TOTAL_COUNTER`] is only known once a line containing it has been read.
+#[derive(Default)]
+struct Analysis {
+    /// Highest pool total this source observed.
+    peak_pool_total: u64,
+    /// Largest `allocated - pool_total` over the comparisons this source could make.
+    peak_excess: u64,
+    /// A sample of the points where allocation exceeded the total.
+    violations: Vec<MemorySnapshot>,
+    /// How many comparisons this source made. Zero means it never produced a usable pair, which
+    /// is worth reporting rather than passing off as "allocation never exceeded the total".
+    comparisons: u64,
+}
+
+impl Analysis {
+    fn observe_total(&mut self, pool_total: u64) {
+        self.peak_pool_total = self.peak_pool_total.max(pool_total);
+    }
+
+    fn compare(&mut self, ts: u64, allocated: u64, pool_total: u64) {
+        self.comparisons += 1;
+        self.observe_total(pool_total);
+
+        let Some(excess) = allocated.checked_sub(pool_total).filter(|e| *e > 0) else {
+            return;
+        };
+        self.peak_excess = self.peak_excess.max(excess);
+        // Sample the violations rather than listing every one, but always keep the worst.
+        if self.violations.is_empty()
+            || ts.saturating_sub(self.violations.last().unwrap().ts) > 1_000_000
+            || excess == self.peak_excess
+        {
+            self.violations.push(MemorySnapshot {
+                ts,
+                allocated,
+                pool_total,
+            });
+        }
+    }
 }
 
 fn format_bytes(bytes: u64) -> String {
@@ -75,14 +127,22 @@ fn main() {
     let mut source: Option<usize> = None;
     // Latest allocated value (global, not per-thread)
     let mut latest_allocated: u64 = 0;
-    // Per-thread pool reservations: thread_NNN -> bytes
+    // Per-thread pool reservations: thread_NNN -> bytes. Reported at the end, and summed as the
+    // pool total only for traces that predate the process-wide counter.
     let mut pool_by_thread: HashMap<String, u64> = HashMap::new();
-    // Points where allocated exceeded pool total
-    let mut violations: Vec<MemorySnapshot> = Vec::new();
+    // Whether the trace carries the process-wide total, and its last value.
+    let mut pool_total_counter: Option<u64> = None;
+    // The allocation sample most recently emitted on each thread, waiting for that thread's
+    // matching pool total. `executePlan` emits the allocation counter and the process-wide total
+    // back to back on one thread, so pairing them by thread compares two values sampled at the
+    // same instant. Comparing the latest allocation against whatever total arrived last instead
+    // pairs a fresh allocation with a stale reservation and invents excess that was never held.
+    let mut allocated_awaiting_total: HashMap<u64, u64> = HashMap::new();
+    // Comparisons against the process-wide counter, and against the legacy per-thread sum.
+    let mut paired = Analysis::default();
+    let mut legacy = Analysis::default();
     // Track peak values
     let mut peak_allocated: u64 = 0;
-    let mut peak_pool_total: u64 = 0;
-    let mut peak_excess: u64 = 0;
     let mut counter_events: u64 = 0;
 
     // Each line is one JSON event, possibly with a trailing comma.
@@ -136,14 +196,28 @@ fn main() {
                     source = Some(rank);
                     latest_allocated = 0;
                     peak_allocated = 0;
-                    peak_excess = 0;
-                    violations.clear();
+                    allocated_awaiting_total.clear();
+                    paired = Analysis::default();
+                    legacy = Analysis::default();
                 }
             }
             if let Some(val) = event.args.get(&event.name) {
                 latest_allocated = val.as_u64().unwrap_or(0);
-                if latest_allocated > peak_allocated {
-                    peak_allocated = latest_allocated;
+                peak_allocated = peak_allocated.max(latest_allocated);
+                allocated_awaiting_total.insert(event.tid, latest_allocated);
+            }
+        } else if event.name == POOL_TOTAL_COUNTER {
+            // Must be matched before the per-thread branch below, whose `contains` check would
+            // otherwise also match this name and fold the process-wide total into the map.
+            if let Some(val) = event.args.get(&event.name) {
+                let pool_total = val.as_u64().unwrap_or(0);
+                pool_total_counter = Some(pool_total);
+                paired.observe_total(pool_total);
+                // Only compare against the allocation sampled in this thread's own group. An
+                // observed zero reservation is a real value that allocation can exceed, so a
+                // paired zero is a genuine comparison, not a missing sample.
+                if let Some(allocated) = allocated_awaiting_total.remove(&event.tid) {
+                    paired.compare(event.ts, allocated, pool_total);
                 }
             }
         } else if event.name.contains("comet_memory_reserved") {
@@ -158,30 +232,18 @@ fn main() {
             continue;
         }
 
-        // After each allocated or pool update, check the current state. A comparison needs one
-        // sample of each side: an observed zero reservation is a real value that allocation can
-        // exceed, so only the absence of any pool sample defers the check.
-        let pool_total: u64 = pool_by_thread.values().sum();
-        if pool_total > peak_pool_total {
-            peak_pool_total = pool_total;
-        }
-
-        if source.is_some() && !pool_by_thread.is_empty() && latest_allocated > pool_total {
-            let excess = latest_allocated - pool_total;
-            if excess > peak_excess {
-                peak_excess = excess;
-            }
-            // Record violation (sample - don't record every single one)
-            if violations.is_empty()
-                || event.ts.saturating_sub(violations.last().unwrap().ts) > 1_000_000
-                || excess == peak_excess
-            {
-                violations.push(MemorySnapshot {
-                    ts: event.ts,
-                    allocated: latest_allocated,
-                    pool_total,
-                });
-            }
+        // Legacy association, for traces recorded before the process-wide total existed: compare
+        // the latest allocation against the running per-thread sum after every counter event.
+        // There is nothing to pair on in those traces, so this is the best they support.
+        //
+        // A comparison needs one sample of each side, not a positive one. A reservation that has
+        // been observed at zero is a real value, and allocation standing above it is exactly the
+        // signal worth finding: memory still held after the pool released it. Requiring a positive
+        // total instead would drop those samples silently.
+        let per_thread_sum: u64 = pool_by_thread.values().sum();
+        legacy.observe_total(per_thread_sum);
+        if source.is_some() && !pool_by_thread.is_empty() {
+            legacy.compare(event.ts, latest_allocated, per_thread_sum);
         }
     }
 
@@ -194,39 +256,68 @@ fn main() {
         std::process::exit(1);
     };
 
+    let have_pool_total_counter = pool_total_counter.is_some();
+    let analysis = if have_pool_total_counter {
+        &paired
+    } else {
+        &legacy
+    };
+
     // Print summary
     println!("=== Comet Trace Memory Analysis ===\n");
     println!("Counter events parsed: {counter_events}");
     println!("Allocation counter:    {source}");
-    println!("Threads with memory pools: {}", pool_by_thread.len());
+    if have_pool_total_counter {
+        println!("Pool total source:     {POOL_TOTAL_COUNTER} (process-wide)");
+    } else {
+        println!(
+            "Pool total source:     sum of {} per-thread counters",
+            pool_by_thread.len()
+        );
+        println!(
+            "WARNING: this trace predates {POOL_TOTAL_COUNTER}, so the total below is the sum of\n\
+             the per-thread counters. That is not the same measure: a shared pool reports its full\n\
+             reservation on every thread referencing it, which inflates the total, while a thread\n\
+             that has not reported yet contributes nothing, which deflates it. The excess below can\n\
+             err in either direction."
+        );
+    }
     println!("Peak {source}:   {}", format_bytes(peak_allocated));
     println!(
         "Peak pool total:           {}",
-        format_bytes(peak_pool_total)
+        format_bytes(analysis.peak_pool_total)
     );
     println!(
         "Peak excess ({source} - pool): {}",
-        format_bytes(peak_excess)
+        format_bytes(analysis.peak_excess)
     );
     println!();
 
-    if pool_by_thread.is_empty() {
-        println!(
-            "No pool reservation samples in the trace, so there is nothing to compare against."
-        );
-    } else if violations.is_empty() {
+    if analysis.comparisons == 0 {
+        if have_pool_total_counter {
+            println!(
+                "No allocation sample was emitted next to a {POOL_TOTAL_COUNTER} sample on the\n\
+                 same thread, so there was nothing to compare. The two are emitted together when\n\
+                 a traced plan finishes executing."
+            );
+        } else {
+            println!(
+                "No pool reservation samples in the trace, so there is nothing to compare against."
+            );
+        }
+    } else if analysis.violations.is_empty() {
         println!("OK: {source} never exceeded the total pool reservation.");
     } else {
         println!(
             "WARNING: {source} exceeded pool reservation at {} sampled points:\n",
-            violations.len()
+            analysis.violations.len()
         );
         println!(
             "{:>14}  {:>18}  {:>14}  {:>14}",
             "Time (us)", source, "pool_total", "excess"
         );
         println!("{}", "-".repeat(66));
-        for snap in &violations {
+        for snap in &analysis.violations {
             let excess = snap.allocated - snap.pool_total;
             println!(
                 "{:>14}  {:>18}  {:>14}  {:>14}",
@@ -245,5 +336,8 @@ fn main() {
     for (thread, bytes) in &threads {
         println!("  {thread}: {}", format_bytes(**bytes));
     }
-    println!("\n  Total: {}", format_bytes(pool_by_thread.values().sum()));
+    println!(
+        "\n  Total: {}",
+        format_bytes(pool_total_counter.unwrap_or_else(|| pool_by_thread.values().sum()))
+    );
 }

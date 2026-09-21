@@ -113,6 +113,7 @@ spark = SparkSession.builder \
     .config("spark.comet.exec.pyarrowUDF.enabled", "true") \
     .config("spark.memory.offHeap.enabled", "true") \
     .config("spark.memory.offHeap.size", "2g") \
+    .config("spark.executor.memoryOverhead", "2g") \
     .getOrCreate()
 
 df = spark.read.parquet("data.parquet")
