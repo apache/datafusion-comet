@@ -20,7 +20,6 @@
 package org.apache.comet.rules
 
 import org.apache.spark.api.java.function.MapFunction
-import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.expressions.{Alias, AttributeSet, BoundReference, CreateNamedStruct, Expression, GetStructField, Literal, NamedExpression}
 import org.apache.spark.sql.catalyst.expressions.objects.Invoke
 import org.apache.spark.sql.catalyst.plans.logical.FunctionUtils
@@ -74,7 +73,7 @@ import org.apache.comet.serde.{CometScalaUDF, QueryPlanSerde}
  * of adjacent `MapElementsExec` nodes is fused as a whole, because `ds.map(f).map(g)` leaves both
  * under a single Serialize/Deserialize pair.
  */
-object RewriteTypedDatasetMap extends Logging {
+object RewriteTypedDatasetMap {
 
   /** Name of the single intermediate struct column when there is more than one output column. */
   private val FUSED_COLUMN = "comet_fused_object"
@@ -192,10 +191,11 @@ object RewriteTypedDatasetMap extends Logging {
     fused match {
       // One output column is already one kernel; the struct wrapper would have nothing to dedupe.
       case Seq(only) =>
-        forceDispatch(only.children.head).map(_ => ProjectExec(fused, child))
+        forceDispatch(serialize, only.children.head).map(_ => ProjectExec(fused, child))
 
       case _ =>
         forceDispatch(
+          serialize,
           CreateNamedStruct(fused.flatMap(ne => Seq(Literal(ne.name), ne.children.head)))).map {
           structExpr =>
             val structAlias = Alias(structExpr, FUSED_COLUMN)()
@@ -222,10 +222,12 @@ object RewriteTypedDatasetMap extends Logging {
    * for an unfused one. Delegating to [[CometScalaUDF.canDispatch]] rather than re-deriving the
    * binding is what keeps the prediction identical to what the serde will really do.
    */
-  private def forceDispatch[T <: Expression](expr: T): Option[T] =
+  private def forceDispatch[T <: Expression](
+      serialize: SerializeFromObjectExec,
+      expr: T): Option[T] =
     CometScalaUDF.canDispatch(expr) match {
       case Some(reason) =>
-        logDebug(s"RewriteTypedDatasetMap: not rewriting because $reason")
+        decline(serialize, s"the fused expression is not dispatchable ($reason)")
         None
       case None =>
         expr.setTagValue(QueryPlanSerde.FORCE_DISPATCH, ())

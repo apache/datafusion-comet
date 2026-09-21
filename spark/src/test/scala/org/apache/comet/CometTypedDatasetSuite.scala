@@ -63,7 +63,7 @@ object TypedMapCounter {
  * `SerializeFromObject` / `MapElements` / `DeserializeToObject` sandwich a typed `Dataset.map`
  * produces into a Comet projection. See https://github.com/apache/datafusion-comet/issues/5710.
  */
-class CometTypedDatasetSuite extends CometTestBase {
+class CometTypedDatasetSuite extends CometTestBase with CometCodegenAssertions {
 
   import testImplicits._
 
@@ -120,13 +120,18 @@ class CometTypedDatasetSuite extends CometTestBase {
   test("ds.map produces a fully native plan - multiple output columns") {
     withFusion() {
       withTypedRecs() { ds =>
-        val (_, cometPlan) =
-          checkSparkAnswerAndOperator(ds.map(r => TypedRec(r.a + 1, r.b + "!")).toDF())
-        assertNoObjectOperators(cometPlan)
-        // Inner projection builds the struct, outer one unpacks it.
-        assert(
-          collectWithSubqueries(cometPlan) { case p: CometProjectExec => p }.size >= 2,
-          s"expected stacked projections for the struct fuse:\n$cometPlan")
+        // The struct wrapper exists so the N serializer expressions compile into one kernel
+        // rather than N. `assertOneKernelForSubtree` pins that directly; the closure-call counter
+        // test below pins the consequence that matters to a user.
+        assertOneKernelForSubtree {
+          val (_, cometPlan) =
+            checkSparkAnswerAndOperator(ds.map(r => TypedRec(r.a + 1, r.b + "!")).toDF())
+          assertNoObjectOperators(cometPlan)
+          // Inner projection builds the struct, outer one unpacks it.
+          assert(
+            collectWithSubqueries(cometPlan) { case p: CometProjectExec => p }.size >= 2,
+            s"expected stacked projections for the struct fuse:\n$cometPlan")
+        }
       }
     }
   }
@@ -320,6 +325,30 @@ class CometTypedDatasetSuite extends CometTestBase {
     }
   }
 
+  test("rewritten plan is still correct when Comet does not take the projection") {
+    // The rewrite commits to the fused shape before knowing whether the projection will convert.
+    // Building it from stock Spark expressions (a `TreeNodeTag` rather than a Comet `Expression`
+    // subclass) is what makes that safe: when the projection stays on Spark, whole-stage codegen
+    // compiles the same fused tree it would have built from the sandwich anyway. Turning the scan
+    // off is the cheapest way to strand the projection on Spark.
+    withFusion(CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "false") {
+      withTypedRecs(20) { ds =>
+        Seq(ds.map(r => TypedRec(r.a + 1, r.b + "!")).toDF(), ds.map(_.a + 1).toDF())
+          .foreach { df =>
+            checkSparkAnswer(df)
+            val plan = df.queryExecution.executedPlan
+            // Non-vacuous only if the rewrite really did fire and Comet really did not take the
+            // result. Both halves are asserted so a future change that makes either untrue shows
+            // up here rather than silently turning this into a duplicate of the happy path.
+            assertNoObjectOperators(plan)
+            assert(
+              collectWithSubqueries(plan) { case p: CometProjectExec => p }.isEmpty,
+              s"expected the fused projection to stay on Spark without a native scan:\n$plan")
+          }
+      }
+    }
+  }
+
   test("off by default") {
     withTypedRecs(20) { ds =>
       val df = ds.map(r => TypedRec(r.a + 1, r.b)).toDF()
@@ -337,7 +366,7 @@ class CometTypedDatasetSuite extends CometTestBase {
       withTypedRecs(20) { ds =>
         checkSparkAnswerAndFallbackReason(
           ds.map(r => TypedRec(r.a + 1, r.b)).toDF(),
-          s"Cannot fuse typed Dataset map: " +
+          "Cannot fuse typed Dataset map: " +
             s"${CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key}=false, so there is no dispatcher " +
             "to fuse into")
       }

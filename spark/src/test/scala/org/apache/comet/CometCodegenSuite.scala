@@ -247,6 +247,28 @@ class CometCodegenSuite
     }
   }
 
+  test("maxFields counts each input ordinal once, not each read of it") {
+    // WSCG gates on the operator's *schema* (`plan.schema.map(...).sum`), so a column read more
+    // than once contributes one field, and the kernel likewise emits one typed field and one
+    // getter per ordinal rather than per occurrence. Counting `BoundReference` occurrences instead
+    // made the total scale with how often the tree happens to repeat a column: five reads of one
+    // Int column plus a 1-field output came to 6 and was refused, where the kernel is really 2
+    // fields wide. Same UDF arity as the test above, so the two differ only in how many distinct
+    // columns they read.
+    spark.udf.register(
+      "sumFiveInts",
+      (a: Int, b: Int, c: Int, d: Int, e: Int) => a + b + c + d + e)
+    withTable("t") {
+      sql("CREATE TABLE t (a INT) USING parquet")
+      sql("INSERT INTO t VALUES (1), (10)")
+      withSQLConf("spark.sql.codegen.maxFields" -> "3") {
+        assertCodegenRan {
+          checkSparkAnswerAndOperator(sql("SELECT sumFiveInts(a, a, a, a, a) FROM t"))
+        }
+      }
+    }
+  }
+
   test("explain.codegen.enabled surfaces routed expressions in COMET-INFO") {
     // With the opt-in flag on, `hypot` and `nanvl` (both `CometCodegenDispatch`) roll up
     // into one `[COMET-INFO: JVM codegen dispatcher: hypot, nanvl]` line on the

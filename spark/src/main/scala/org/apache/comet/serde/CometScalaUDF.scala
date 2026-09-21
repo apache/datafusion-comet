@@ -59,13 +59,15 @@ object CometScalaUDF extends CometExpressionSerde[ScalaUDF] {
     emitJvmCodegenDispatch(expr, inputs, binding)
 
   /**
-   * Bind `expr` the way [[emitJvmCodegenDispatch]] will, returning the attributes it reads in
-   * ordinal order alongside the bound tree.
+   * Bind `expr` the way [[emitJvmCodegenDispatch]] will: the tree actually bound (`expr` itself,
+   * or its `replacement` when it is `RuntimeReplaceable`), the attributes it reads in ordinal
+   * order, and the bound tree.
    *
    * Callers that only need to know whether a tree is dispatchable should use [[canDispatch]]
    * rather than repeating this.
    */
-  private def bindForDispatch(expr: Expression): (Seq[AttributeReference], Expression) = {
+  private def bindForDispatch(
+      expr: Expression): (Expression, Seq[AttributeReference], Expression) = {
     // `RuntimeReplaceable` expressions (e.g. Spark 4's `StructsToJson`) have a `doGenCode` that
     // always throws "Cannot generate code for expression". Catalyst's `ReplaceExpressions` rule
     // normally rewrites them to their `replacement` form before codegen runs. Comet's serde
@@ -78,7 +80,7 @@ object CometScalaUDF extends CometExpressionSerde[ScalaUDF] {
     // Bind against only the AttributeReferences the tree actually reads, so ordinals align with
     // the data args we ship.
     val attrs = target.collect { case a: AttributeReference => a }.distinct
-    (attrs, BindReferences.bindReference(target, AttributeSeq(attrs)))
+    (target, attrs, BindReferences.bindReference(target, AttributeSeq(attrs)))
   }
 
   /**
@@ -94,7 +96,7 @@ object CometScalaUDF extends CometExpressionSerde[ScalaUDF] {
       return Some(
         s"${CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key}=false; expression has no native path")
     }
-    CometBatchKernelCodegen.canHandle(bindForDispatch(expr)._2)
+    CometBatchKernelCodegen.canHandle(bindForDispatch(expr)._3)
   }
 
   /**
@@ -121,12 +123,9 @@ object CometScalaUDF extends CometExpressionSerde[ScalaUDF] {
       return None
     }
 
-    // `RuntimeReplaceable` expressions (e.g. Spark 4's `StructsToJson`) have a `doGenCode` that
-    // always throws "Cannot generate code for expression". Catalyst's `ReplaceExpressions` rule
-    // normally rewrites them to their `replacement` form before codegen runs. Comet's serde
-    // sometimes works with the pre-rewrite form (via shim reconstruction) for matching purposes,
-    // so unwrap to the replacement here before binding so the kernel compiles.
-    val (attrs, boundExpr) = bindForDispatch(expr)
+    // `target` is `expr` unwrapped past `RuntimeReplaceable`; see `bindForDispatch`. Everything
+    // below that reasons about the tree that will actually be compiled must use it, not `expr`.
+    val (target, attrs, boundExpr) = bindForDispatch(expr)
 
     // Gate at plan time. Surface the reason via withFallbackReason rather than crashing Janino
     // at execute.
