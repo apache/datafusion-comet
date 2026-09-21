@@ -241,6 +241,13 @@ handed to DataFusion, so anything that would have failed in DataFusion's
 `create_plan` still counts as accelerated. Treat the percentage as an upper
 bound.
 
+One piece of acceleration is left out in the other direction. Comet's split
+Iceberg V2 write (`spark.comet.write.iceberg.splitOperator.enabled`, off by
+default) is emitted by a Spark planner strategy rather than by the conversion
+rules, so plan-only mode declines it outright to keep the write on Spark. An
+Iceberg write Comet would have accelerated is therefore both executed and
+reported as Spark.
+
 Under AQE the report is an estimate for a second reason: it describes the plan
 as it stands before any adaptive re-planning, and the post-columnar rules are
 applied to that whole plan at once rather than to each stage as it is created.

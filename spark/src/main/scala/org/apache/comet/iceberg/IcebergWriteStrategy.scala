@@ -35,6 +35,15 @@ import org.apache.comet.CometConf
 case class IcebergWriteStrategy(session: SparkSession) extends SparkStrategy {
 
   override def apply(plan: LogicalPlan): Seq[SparkPlan] = {
+    // Plan-only mode must leave execution to Spark. Unlike `CometScanRule` and `CometExecRule`,
+    // this is a planner strategy: it runs during physical planning, before either of them, so
+    // their short-circuit does not cover it and a write would still be offloaded to Comet.
+    // Declining here costs the plan-only report the write operators - they are the one piece of
+    // acceleration it cannot describe - which is the documented trade for not executing them.
+    if (CometConf.COMET_EXPLAIN_PLAN_ONLY_ENABLED.get(session.sessionState.conf)) {
+      return Nil
+    }
+
     if (!CometConf.COMET_ICEBERG_WRITE_SPLIT_OPERATOR_ENABLED.get(session.sessionState.conf)) {
       return Nil
     }
