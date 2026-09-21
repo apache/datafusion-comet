@@ -123,30 +123,32 @@ impl ShuffleScanExec {
         *self.batch.try_lock().unwrap() = Some(input);
     }
 
-    /// Pull next input batch from JVM. Called externally before poll_next()
-    /// because JNI calls cannot happen from within poll_next on tokio threads.
-    pub fn get_next_batch(&mut self) -> Result<(), CometError> {
+    /// Pulls the next input batch from the JVM unless one is already buffered; returns whether it
+    /// did. Called externally before poll_next() because JNI calls cannot happen from within
+    /// poll_next on tokio threads.
+    pub fn get_next_batch(&mut self) -> Result<bool, CometError> {
         if self.input_source.is_none() {
             // Unit test mode - no JNI calls needed.
-            return Ok(());
+            return Ok(false);
         }
-        let mut timer = self.baseline_metrics.elapsed_compute().timer();
 
         let mut current_batch = self.batch.try_lock().unwrap();
-        if current_batch.is_none() {
-            let next_batch = Self::get_next(
-                self.exec_context_id,
-                self.input_source.as_ref().unwrap().as_obj(),
-                &self.data_types,
-                &self.decode_time,
-                self.requires_validation,
-            )?;
-            *current_batch = Some(next_batch);
+        if current_batch.is_some() {
+            return Ok(false);
         }
 
+        let mut timer = self.baseline_metrics.elapsed_compute().timer();
+        let next_batch = Self::get_next(
+            self.exec_context_id,
+            self.input_source.as_ref().unwrap().as_obj(),
+            &self.data_types,
+            &self.decode_time,
+            self.requires_validation,
+        )?;
+        *current_batch = Some(next_batch);
         timer.stop();
 
-        Ok(())
+        Ok(true)
     }
 
     /// Invokes JNI calls to get the next compressed shuffle block and decode it.
