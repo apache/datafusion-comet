@@ -487,6 +487,25 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(false)
 
+  val COMET_SHUFFLE_NATIVE_ROUND_ROBIN_PARTITIONING_FAIL_ON_RETRY: ConfigEntry[Boolean] =
+    conf("spark.comet.shuffle.native.partitioning.roundrobin.batchGranular.failOnRetry")
+      .category(CATEGORY_SHUFFLE)
+      .doc(
+        "Only applies when " +
+          "spark.comet.shuffle.native.partitioning.roundrobin.batchGranular is true. " +
+          "Batch-granular round robin places rows by position rather than by content, so a " +
+          "re-executed map task can send rows to different output partitions than the attempt " +
+          "it replaces, silently dropping and duplicating rows once any of that output has " +
+          "been fetched. When this is true, a native round-robin map task that runs as a retry " +
+          "(a task attempt after the first, or any attempt of a re-submitted stage, which is " +
+          "what an executor loss produces) fails immediately instead of writing output, which " +
+          "fails the stage and therefore the job. Note that speculative attempts also count as " +
+          "retries. Set to false to keep Spark's normal fault tolerance, in which case safety " +
+          "rests on the whole stage being rolled back, which Comet requests by declaring the " +
+          "shuffle input RDD INDETERMINATE whenever its own input is not DETERMINATE.")
+      .booleanConf
+      .createWithDefault(true)
+
   val COMET_SHUFFLE_CONVERT_FROM_SPARK_PLAN_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.shuffle.convertFromSparkPlan.enabled")
       .withAlternative(s"$COMET_EXEC_CONFIG_PREFIX.shuffle.convertFromSparkPlan.enabled")

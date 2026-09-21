@@ -305,7 +305,11 @@ batch is written as a single block that may exceed the batch size.
 
 ### Round Robin Partitioning
 
-Comet implements round robin partitioning using hash-based assignment for determinism:
+`CometPartitioning::RoundRobin` carries a `RoundRobinStrategy` that decides how rows reach output
+partitions. The default is `HashAll`; `WholeBatch` is opt-in through
+`spark.comet.shuffle.native.partitioning.roundrobin.batchGranular`.
+
+#### `HashAll`: hash-based assignment (default)
 
 1. Computes a Murmur3 hash of columns (using seed 42)
 2. Assigns partitions directly using the hash: `partition_id = hash % num_partitions`
@@ -320,6 +324,54 @@ Because Spark assigns round robin partitions by sorting rows on their binary `Un
 which Arrow's layout does not reproduce, unsorted output can land in different partitions than
 Spark's. Sorted output is identical. That difference is why
 `spark.comet.shuffle.native.partitioning.roundrobin.enabled` defaults to `false`.
+
+`spark.comet.shuffle.native.partitioning.roundrobin.maxHashColumns` caps how many leading columns
+are hashed. `0`, the default, hashes all of them.
+
+#### `WholeBatch`: positional assignment
+
+Hashing every column of every row dominates the shuffle write on wide nested schemas, because
+`create_murmur3_hashes` recurses into every struct child per row and the resulting row-level
+scatter forces `interleave_record_batch` to walk every column and child again on flush.
+`WholeBatch` assigns each incoming `RecordBatch` whole to `counter % num_partitions`, where the
+counter is seeded with the input partition id so concurrent mappers do not all target partition 0
+first. `partition_row_indices` is left unmaterialized and the flush clones the source batch instead
+of interleaving it, so the per-batch cost is one modulo, two `resize` calls, and some `Arc` bumps.
+
+Distribution is even at batch granularity rather than row granularity: fewer batches than
+partitions leaves partitions empty, and unequal batch sizes give unequal partitions.
+
+#### Retry safety under `WholeBatch`
+
+Positional assignment is not a function of the rows, so it is only reproducible when the upstream
+operator replays the same batches in the same order and with the same framing. Re-executing one map
+task against differently framed input writes a different partitioning of the same rows, and once
+any consumer has fetched the output that attempt replaces, the reduce side silently gets some rows
+twice and others not at all. Spark faces the same problem with its own round robin and answers it
+in two ways, both of which Comet's native path mirrors:
+
+- **Declaring the risk.** Spark wraps a round-robin repartition in a `MapPartitionsRDD` with
+  `isOrderSensitive = true`, which reports `INDETERMINATE` whenever its parent is `UNORDERED`. The
+  `DAGScheduler` then rolls the whole stage back rather than re-running a single task, and aborts
+  the job outright when a result stage has already consumed output. The native path has no
+  `MapPartitionsRDD` to carry the flag, so `CometNativeShuffleInputRDD.getOutputDeterministicLevel`
+  applies the same rule directly. A determinate parent such as a plain scan stays determinate and
+  keeps cheap per-task retry; anything below another exchange is unordered, because reduce tasks
+  see shuffle blocks in arrival order, and goes indeterminate.
+
+- **Refusing the retry.** Rollback is only as sound as the parent's determinism level being an
+  accurate description of what the upstream operator replays. While the strategy is opt-in and
+  unproven, `spark.comet.shuffle.native.partitioning.roundrobin.batchGranular.failOnRetry`
+  (default `true`) makes `CometNativeShuffleWriter` refuse to run at all when `TaskContext` reports
+  a task attempt after the first or a re-submitted stage attempt. Both counters are needed:
+  `TaskSetManager.executorLost` re-enqueues a dead executor's map tasks inside the current task set
+  with a fresh task attempt, while a fetch failure against that executor's output resubmits the
+  stage instead. Spark has no API for failing an application from inside a task, so this throws an
+  ordinary exception; because the condition only gets more true on each attempt, the task set
+  aborts after `spark.task.maxFailures` and takes the job with it. Setting the config to `false`
+  leaves the indeterminate declaration above as the only defence.
+
+Neither applies to `HashAll`, whose output is a pure function of the rows it sees.
 
 ## Memory Management
 

@@ -38,7 +38,7 @@ import org.apache.spark.sql.execution.metric.SQLMetric
 import org.apache.spark.sql.types.StructField
 import org.apache.spark.util.{ThreadUtils, Utils}
 
-import org.apache.comet.{CometConf, CometExecIterator, CometShuffleSizeLimitException}
+import org.apache.comet.{CometConf, CometExecIterator, CometRuntimeException, CometShuffleSizeLimitException}
 import org.apache.comet.serde.{OperatorOuterClass, PartitioningOuterClass, QueryPlanSerde}
 import org.apache.comet.serde.OperatorOuterClass.{CompressionCodec, Operator}
 import org.apache.comet.serde.operator.schema2Proto
@@ -108,7 +108,64 @@ class CometNativeShuffleWriter[K, V](
     }
   }
 
+  /**
+   * Refuse to re-execute a map task whose round-robin placement is positional.
+   *
+   * With `RoundRobinStrategy::WholeBatch` an input batch's output partition comes from a per-task
+   * counter, so which partition a row lands in is a function of the order and the framing of the
+   * batches the upstream operator produced rather than of the row itself. An attempt that frames
+   * or orders its input even slightly differently writes a different partitioning of the same
+   * rows. Once any consumer has fetched the output this attempt replaces, the reduce side gets
+   * some rows twice and some not at all, and nothing downstream can detect it.
+   *
+   * [[CometNativeShuffleInputRDD.getOutputDeterministicLevel]] already asks the DAGScheduler to
+   * roll the whole stage back rather than re-run one task, which is Spark's own answer to this.
+   * That answer is only as good as the parent's determinism level being an accurate description
+   * of what the upstream operator replays, so while the strategy is opt-in and unproven the
+   * default is to not rely on it and fail here instead.
+   *
+   * Both counters are needed and neither subsumes the other. `attemptNumber` covers a task re-run
+   * inside the current stage attempt: a task-level failure, speculation, or an executor lost
+   * while the stage was still running. `stageAttemptNumber` covers a re-submitted stage, which is
+   * what a fetch failure against a dead executor's shuffle output produces, and which also
+   * re-runs map tasks that had already succeeded elsewhere.
+   *
+   * There is no Spark API for failing an application from inside a task, and the two exceptions
+   * Spark declines to retry are matched by class name (`NotSerializableException`,
+   * `TaskOutputFileAlreadyExistException`), so this throws an ordinary exception. Because the
+   * condition is sticky - a later attempt only has a higher `attemptNumber` - every remaining
+   * attempt fails here too and the task set aborts after `spark.task.maxFailures`, failing the
+   * stage and the job. Each of those attempts fails before doing any work.
+   */
+  private def failIfRetryingPositionalRoundRobin(): Unit = {
+    if (!CometShuffleExchangeExec.usesPositionalRoundRobin(outputPartitioning)) return
+    if (!CometConf.COMET_SHUFFLE_NATIVE_ROUND_ROBIN_PARTITIONING_FAIL_ON_RETRY.get()) return
+    // `context` is null only in unit tests that drive the writer directly.
+    val taskContext = context
+    if (taskContext == null) return
+    val taskAttempt = taskContext.attemptNumber()
+    val stageAttempt = taskContext.stageAttemptNumber()
+    if (taskAttempt == 0 && stageAttempt == 0) return
+
+    val batchGranularKey =
+      CometConf.COMET_SHUFFLE_NATIVE_ROUND_ROBIN_PARTITIONING_BATCH_GRANULAR.key
+    val failOnRetryKey =
+      CometConf.COMET_SHUFFLE_NATIVE_ROUND_ROBIN_PARTITIONING_FAIL_ON_RETRY.key
+    throw new CometRuntimeException(
+      s"Refusing to re-execute a Comet native round-robin shuffle map task: shuffle $shuffleId, " +
+        s"map partition ${taskContext.partitionId()}, stage ${taskContext.stageId()} " +
+        s"(attempt $stageAttempt), task attempt $taskAttempt. `$batchGranularKey` is enabled, " +
+        "so each Arrow batch is assigned to an output partition by position rather than by " +
+        "hashing its rows, and this attempt may place rows differently than the attempt it " +
+        "replaces, duplicating and dropping rows on the reduce side without any error. Failing " +
+        s"the job instead. Set `$batchGranularKey` to false to use content-hash round robin, " +
+        s"which is safe to re-execute, or set `$failOnRetryKey` to false to allow retries and " +
+        "rely on Spark rolling the stage back.")
+  }
+
   private def writeInternal(inputs: Iterator[Product2[K, V]]): Unit = {
+    failIfRetryingPositionalRoundRobin()
+
     val localOutput = if (remoteDestination.isEmpty) {
       val resolver =
         SparkEnv.get.shuffleManager.shuffleBlockResolver.asInstanceOf[IndexShuffleBlockResolver]

@@ -127,7 +127,8 @@ case class CometShuffleExchangeExec(
           ctx.numPartitions,
           ctx.shuffleScanIndices,
           CometMetricNode(metrics, Seq(nativeChildMetricNode)),
-          ctx.perPartitionByKey)
+          ctx.perPartitionByKey,
+          CometShuffleExchangeExec.usesPositionalRoundRobin(outputPartitioning))
       case None =>
         // Non-native child (e.g. CometSparkToColumnarExec): no subtree to inline. The dep gets
         // built via the convenience overload below; we just need a real RDD of batches.
@@ -297,6 +298,26 @@ object CometShuffleExchangeExec
   override def getSupportLevel(op: ShuffleExchangeExec): SupportLevel = {
     if (shuffleSupported(op).isDefined) Compatible() else Unsupported()
   }
+
+  /**
+   * True when this exchange will run the native round-robin writer in its positional
+   * (batch-granular) mode, where an input `RecordBatch` is assigned whole to one output partition
+   * by a per-task counter rather than by hashing its rows.
+   *
+   * Positional assignment is what makes the strategy cheap and also what makes it unsafe to
+   * re-execute: the placement depends on the order and the framing of the batches the upstream
+   * operator hands over, not on the rows themselves. Two call sites need the same answer, so they
+   * share this predicate rather than each reading the config: [[CometNativeShuffleInputRDD]],
+   * which declares its output indeterminate so the DAGScheduler rolls a stage back rather than
+   * re-running one task into partially consumed output, and [[CometNativeShuffleWriter]], which
+   * refuses to run at all on a retry.
+   *
+   * The equivalent decision on the native side is `PhysicalPlanner::create_partitioning` turning
+   * `batch_granular` into `RoundRobinStrategy::WholeBatch`; keep the two in step.
+   */
+  def usesPositionalRoundRobin(outputPartitioning: Partitioning): Boolean =
+    outputPartitioning.isInstanceOf[RoundRobinPartitioning] &&
+      CometConf.COMET_SHUFFLE_NATIVE_ROUND_ROBIN_PARTITIONING_BATCH_GRANULAR.get()
 
   override def createExec(
       nativeOp: OperatorOuterClass.Operator,
@@ -777,7 +798,8 @@ object CometShuffleExchangeExec
       Seq(streamRDD),
       rdd.getNumPartitions,
       shuffleScanIndices = Set.empty,
-      spillMetricNode = CometMetricNode(metrics, Seq(childMetricNode)))
+      spillMetricNode = CometMetricNode(metrics, Seq(childMetricNode)),
+      positionalRoundRobin = usesPositionalRoundRobin(outputPartitioning))
 
     val ctx = NativeExecContext(
       inputs = Seq(streamRDD),
