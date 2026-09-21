@@ -40,18 +40,22 @@ case class TypedMapRec(a: Long, b: String)
  * `spark.comet.exec.typedDatasetMap.enabled` is off by default until it has an answer. Three
  * arms:
  *
- *   - `fuse off` -- today's default. The sandwich falls back to Spark, and the fallback cascades
- *     to whatever sits above it.
+ *   - `fuse off` -- today's default, where the sandwich is a Spark fallback island.
  *   - `fuse on` -- the rewrite. The user closure still runs on the JVM, once per row, but inside
  *     a Janino-compiled kernel reading and writing Arrow vectors, so the operators above the map
  *     stay native.
  *   - `Spark (Comet disabled)` -- a reference point, not the comparison of interest.
  *
- * '''The shape of the plan above the map is the whole story,''' so the cases are organised by it
- * rather than by the closure. When the map is at the top of the plan there is nothing above it to
- * rescue: the kernel writes Arrow only for the sink to read rows straight back out, and the
- * rewrite is expected to break even at best. When an aggregate or a shuffle sits above it, those
- * operators are what the fallback was costing, and they are what the rewrite buys back.
+ * '''Know what is actually at stake before reading a row.''' The premise behind the rewrite was
+ * that the island's fallback cascades and costs every operator above it. On current main it
+ * mostly does not: for `map -> group by` the fuse-off plan already keeps the exchange and the
+ * final aggregate native, because Comet re-enters above the island via `CometColumnarShuffle`.
+ * What fusing actually buys is the '''partial''' aggregate and an upgrade from
+ * `CometColumnarShuffle` to `CometNativeShuffle`. So the cases are organised around how much that
+ * partial aggregate is worth -- each grouped shape is run at both [[LoCardKeys]] and
+ * [[HiCardKeys]] distinct keys -- and around what fusing has to pay for it: a struct vector built
+ * and immediately unpacked, and every row materialised into Arrow even when a selective operator
+ * above is about to discard it.
  *
  * Both Comet arms are consumed with `noop()`, which reads rows. That is not neutral between them
  * and is not meant to be: with the fuse off the plan is already row-based at the top, while with
@@ -100,6 +104,10 @@ object CometTypedDatasetMapBenchmark extends CometBenchmarkBase {
    * @param build
    *   Builds the query from the typed Dataset. Kept as a function rather than SQL because there
    *   is no SQL spelling of a typed `map`.
+   * @param hiCard
+   *   Groups on a key with [[HiCardKeys]] distinct values instead of [[LoCardKeys]]. The partial
+   *   aggregate is the one operator fusing actually rescues (see the class comment), so its cost
+   *   is the variable that decides whether the rewrite can pay for itself at all.
    * @param fusesToNative
    *   False for a case the rewrite is expected to decline, where the point of the row is to show
    *   the decline costs nothing rather than to show a speedup.
@@ -109,8 +117,15 @@ object CometTypedDatasetMapBenchmark extends CometBenchmarkBase {
   private case class MapCase(
       name: String,
       build: Dataset[TypedMapRec] => DataFrame,
+      hiCard: Boolean = false,
       fusesToNative: Boolean = true,
       extraConfigs: Seq[(String, String)] = Nil)
+
+  /**
+   * Distinct grouping keys. At [[Rows]] rows the high-cardinality key averages 4 rows a group.
+   */
+  private val LoCardKeys = 100
+  private val HiCardKeys = 1024 * 1024
 
   /**
    * AQE off and one shuffle partition for every case that shuffles, so both arms plan the same
@@ -119,34 +134,60 @@ object CometTypedDatasetMapBenchmark extends CometBenchmarkBase {
   private val deterministicShuffle =
     Seq(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false", SQLConf.SHUFFLE_PARTITIONS.key -> "1")
 
+  private def groupBySum(ds: Dataset[TypedMapRec]): DataFrame =
+    ds.map(r => TypedMapRec(r.a + 1, r.b)).groupBy("b").agg(sum("a"))
+
+  private def filterGroupBySum(ds: Dataset[TypedMapRec]): DataFrame =
+    ds.map(r => TypedMapRec(r.a * 2, r.b)).filter(col("a") % 3 === 0).groupBy("b").agg(sum("a"))
+
+  // Ordered so each low-cardinality case sits next to its high-cardinality twin and the pair is
+  // measured under similar machine conditions, and so the decisive pairs run before the tables
+  // that contention is most likely to spoil. Spark's `Benchmark` warms every case separately, so
+  // ordering does not otherwise affect a reading.
   private def cases: Seq[MapCase] = Seq(
+    // The case the rewrite exists for. On current main the fuse-off plan already keeps the
+    // exchange and the *final* aggregate native -- Comet re-enters above the island -- so the only
+    // operator fusing rescues here is the partial aggregate, plus an upgrade from
+    // `CometColumnarShuffle` to `CometNativeShuffle`. With 100 keys that partial aggregate is
+    // nearly free, which is why this row says so little. Both output columns are consumed so
+    // column pruning cannot give the two arms different work to do.
+    MapCase(
+      s"map -> group by, $LoCardKeys keys",
+      groupBySum,
+      extraConfigs = deterministicShuffle),
+    // The same shape with a partial aggregate that actually costs something: a million-entry hash
+    // table instead of a hundred. This is the fair test of the PR's premise. If fusing cannot win
+    // here it cannot win on aggregate rescue at all, because this is the most the rescued operator
+    // can be worth.
+    MapCase(
+      s"map -> group by, $HiCardKeys keys",
+      groupBySum,
+      hiCard = true,
+      extraConfigs = deterministicShuffle),
+    // A filter between the map and the aggregate. The fused kernel must materialise every row into
+    // Arrow -- including the string column -- before `CometFilter` discards two thirds of them,
+    // where whole-stage codegen drops them inside the same row loop.
+    MapCase(
+      s"map -> filter -> group by, $LoCardKeys keys",
+      filterGroupBySum,
+      extraConfigs = deterministicShuffle),
+    // ...and with an expensive partial aggregate, to see whether rescuing it outweighs paying for
+    // the rows the filter is about to throw away.
+    MapCase(
+      s"map -> filter -> group by, $HiCardKeys keys",
+      filterGroupBySum,
+      hiCard = true,
+      extraConfigs = deterministicShuffle),
     // Nothing above the map. The rewrite has no operator to rescue and pays a columnar-to-row
     // transition at the sink that the unfused plan does not, so this is the case the default-off
     // decision rests on. One output column takes the direct path: a single fused expression, no
     // struct wrapper.
     MapCase("map -> sink, 1 col", _.map(_.a + 1).toDF()),
-    // Two output columns take the `CreateNamedStruct` + `GetStructField` path, which is a second
-    // projection and a struct round-trip through Arrow. Worth separating from the row above: if
-    // the struct path is much worse at the top of the plan, that is a cost of the multi-column
-    // encoding rather than of fusing as such.
+    // Two output columns take the `CreateNamedStruct` + `GetStructField` path, which builds a
+    // struct vector and immediately reads the fields back out. Worth separating from the row
+    // above: if the struct path is much worse at the top of the plan, that is a cost of the
+    // multi-column encoding rather than of fusing as such.
     MapCase("map -> sink, 2 cols", _.map(r => TypedMapRec(r.a + 1, r.b)).toDF()),
-    // The case the rewrite exists for. With the fuse off, the fallback island takes the partial
-    // aggregate, the exchange and the final aggregate down with it. `b` has 100 distinct values,
-    // so the grouping is cheap and the per-row closure still dominates. Both output columns are
-    // consumed so that column pruning cannot give the two arms different work to do.
-    MapCase(
-      "map -> group by",
-      _.map(r => TypedMapRec(r.a + 1, r.b)).groupBy("b").agg(sum("a")),
-      extraConfigs = deterministicShuffle),
-    // A filter between the map and the aggregate, so the rewrite is rescuing three operator kinds
-    // rather than two and the fused projection feeds a native filter directly.
-    MapCase(
-      "map -> filter -> group by",
-      _.map(r => TypedMapRec(r.a * 2, r.b))
-        .filter(col("a") % 3 === 0)
-        .groupBy("b")
-        .agg(sum("a")),
-      extraConfigs = deterministicShuffle),
     // `ds.map(f).map(g)` leaves two adjacent `MapElements` under one Serialize/Deserialize pair,
     // which the rule fuses as a whole. Two closure calls per row against one bridge crossing, so
     // the bridge is amortised further here than anywhere else in the table.
@@ -221,7 +262,9 @@ object CometTypedDatasetMapBenchmark extends CometBenchmarkBase {
     emit(
       "  at least 2 iterations and at least 2s of timed iterations; the table reports best and")
     emit("  average of the timed iterations.")
-    emit(s"Rows: $Rows. Grouping key `b` has 100 distinct values.")
+    emit(
+      s"Rows: $Rows. Grouping key has $LoCardKeys distinct values, or $HiCardKeys in the " +
+        "high-cardinality cases.")
     emit(s"Cases: ${selected.map(_.name).mkString(", ")}")
   }
 
@@ -236,7 +279,7 @@ object CometTypedDatasetMapBenchmark extends CometBenchmarkBase {
       // `SQLHelper.withSQLConf` as returning `Unit`; only Spark 4 has the result-returning form.
       var collected: Array[Row] = Array.empty
       withSQLConf(configs: _*) {
-        collected = c.build(typedDataset).collect()
+        collected = c.build(typedDataset(c.hiCard)).collect()
       }
       collected.map(_.toSeq.map(String.valueOf).mkString("|")).sorted
     }
@@ -277,13 +320,13 @@ object CometTypedDatasetMapBenchmark extends CometBenchmarkBase {
     var fusedNonComet: Option[String] = None
     var unfusedIsFullyComet = false
     withSQLConf(fusedConfigs(c): _*) {
-      val df = c.build(typedDataset)
+      val df = c.build(typedDataset(c.hiCard))
       df.noop()
       fusedNonComet =
         findFirstNonCometOperator(stripAQEPlan(df.queryExecution.executedPlan)).map(_.nodeName)
     }
     withSQLConf(unfusedConfigs(c): _*) {
-      val df = c.build(typedDataset)
+      val df = c.build(typedDataset(c.hiCard))
       df.noop()
       unfusedIsFullyComet =
         findFirstNonCometOperator(stripAQEPlan(df.queryExecution.executedPlan)).isEmpty
@@ -310,26 +353,31 @@ object CometTypedDatasetMapBenchmark extends CometBenchmarkBase {
 
   private def runCase(c: MapCase, configs: Seq[(String, String)]): Unit =
     withSQLConf(configs: _*) {
-      c.build(typedDataset).noop()
+      c.build(typedDataset(c.hiCard)).noop()
     }
 
   /**
    * The corpus read back as a typed `Dataset`. Rebuilt per call rather than cached, because the
    * plan it produces has to be built under the arm's own confs.
    */
-  private def typedDataset: Dataset[TypedMapRec] =
-    spark.sql("select c_a as a, c_b as b from parquetV1Table").as[TypedMapRec]
+  private def typedDataset(hiCard: Boolean): Dataset[TypedMapRec] = {
+    val key = if (hiCard) "c_hi" else "c_lo"
+    spark.sql(s"select c_a as a, $key as b from parquetV1Table").as[TypedMapRec]
+  }
 
   /** Builds `parquetV1Table` with `rows` rows of the corpus and drops it afterwards. */
   private def withCorpus(rows: Int)(f: => Unit): Unit = {
     withTempPath { dir =>
       withTempTable(tbl, "parquetV1Table") {
         spark.range(rows).createOrReplaceTempView(tbl)
-        // `c_a` varies per row so the closure's arithmetic is not loop-invariant; `c_b` has 100
-        // distinct values so the grouped cases spend their time in the map, not the aggregate.
+        // `c_a` varies per row so the closure's arithmetic is not loop-invariant. `c_lo` makes the
+        // partial aggregate nearly free and `c_hi` makes it expensive, which is the variable the
+        // high-cardinality cases exist to move.
         prepareTable(
           dir,
-          spark.sql(s"SELECT id AS c_a, CAST(PMOD(id, 100) AS STRING) AS c_b FROM $tbl"))
+          spark.sql(
+            s"SELECT id AS c_a, CAST(PMOD(id, $LoCardKeys) AS STRING) AS c_lo, " +
+              s"CAST(PMOD(id, $HiCardKeys) AS STRING) AS c_hi FROM $tbl"))
         f
       }
     }
