@@ -463,8 +463,6 @@ struct ExecutionContext {
     pub metrics_update_interval: Option<Duration>,
     // The last update time of metrics
     pub metrics_last_update_time: Instant,
-    /// Counter to avoid checking time on every poll iteration (reduces syscalls)
-    pub poll_count_since_metrics_check: u32,
     /// The time it took to create the native plan and configure the context
     pub plan_creation_time: Duration,
     /// DataFusion SessionContext
@@ -680,7 +678,6 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
                 metrics,
                 metrics_update_interval,
                 metrics_last_update_time: Instant::now(),
-                poll_count_since_metrics_check: 0,
                 plan_creation_time,
                 session_ctx: session,
                 debug_native,
@@ -965,15 +962,38 @@ fn prepare_output(
 /// Java exception. So we pull input batches here and insert them into scan
 /// operators before polling the stream,
 #[inline]
-fn pull_input_batches(exec_context: &mut ExecutionContext) -> Result<(), CometError> {
-    exec_context.scans.iter_mut().try_for_each(|scan| {
-        scan.get_next_batch()?;
-        Ok::<(), CometError>(())
-    })?;
-    exec_context.shuffle_scans.iter_mut().try_for_each(|scan| {
-        scan.get_next_batch()?;
-        Ok::<(), CometError>(())
-    })
+fn pull_input_batches(exec_context: &mut ExecutionContext) -> Result<bool, CometError> {
+    let mut pulled = false;
+    for scan in exec_context.scans.iter_mut() {
+        pulled |= scan.get_next_batch()?;
+    }
+    for scan in exec_context.shuffle_scans.iter_mut() {
+        pulled |= scan.get_next_batch()?;
+    }
+    Ok(pulled)
+}
+
+/// Safety net in case a stream ever returns Pending without registering a waker.
+const PARK_TIMEOUT: Duration = Duration::from_millis(100);
+
+/// Sleeps until a waker registered by an earlier poll fires.
+async fn park_until_woken() {
+    struct Park(bool);
+
+    impl std::future::Future for Park {
+        type Output = ();
+
+        fn poll(mut self: std::pin::Pin<&mut Self>, _: &mut std::task::Context<'_>) -> Poll<()> {
+            if self.0 {
+                Poll::Ready(())
+            } else {
+                self.0 = true;
+                Poll::Pending
+            }
+        }
+    }
+
+    let _ = tokio::time::timeout(PARK_TIMEOUT, Park(false)).await;
 }
 
 /// Accept serialized query plan and the addresses of Arrow Arrays from Spark,
@@ -1113,29 +1133,25 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
                 }
             }
 
-            // ScanExec path: busy-poll to interleave JVM batch pulls with stream polling
+            // ScanExec path: JVM-fed scans return Pending without a waker and are refilled here.
+            // Nothing pulled means the stream waits on native I/O, so park instead of spinning.
             get_runtime().block_on(async {
                 loop {
                     let next_item = exec_context.stream.as_mut().unwrap().next();
                     let poll_output = poll!(next_item);
 
-                    // Only check time/tracing every 100 polls to reduce overhead
-                    exec_context.poll_count_since_metrics_check += 1;
-                    if exec_context.poll_count_since_metrics_check >= 100 {
-                        exec_context.poll_count_since_metrics_check = 0;
-                        if let Some(interval) = exec_context.metrics_update_interval {
-                            let now = Instant::now();
-                            if now - exec_context.metrics_last_update_time >= interval {
-                                update_metrics(env, exec_context)?;
-                                exec_context.metrics_last_update_time = now;
-                            }
+                    if let Some(interval) = exec_context.metrics_update_interval {
+                        let now = Instant::now();
+                        if now - exec_context.metrics_last_update_time >= interval {
+                            update_metrics(env, exec_context)?;
+                            exec_context.metrics_last_update_time = now;
                         }
-                        if exec_context.tracing_enabled {
-                            log_memory_usage(
-                                &exec_context.tracing_memory_metric_name,
-                                total_reserved_for_thread(exec_context.rust_thread_id) as u64,
-                            );
-                        }
+                    }
+                    if exec_context.tracing_enabled {
+                        log_memory_usage(
+                            &exec_context.tracing_memory_metric_name,
+                            total_reserved_for_thread(exec_context.rust_thread_id) as u64,
+                        );
                     }
 
                     match poll_output {
@@ -1156,7 +1172,11 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
                             // JNI call to pull batches from JVM into ScanExec operators.
                             // block_in_place lets tokio move other tasks off this worker
                             // while we wait for JVM data.
-                            tokio::task::block_in_place(|| pull_input_batches(exec_context))?;
+                            let pulled =
+                                tokio::task::block_in_place(|| pull_input_batches(exec_context))?;
+                            if !pulled {
+                                park_until_woken().await;
+                            }
                         }
                     }
                 }
@@ -2142,5 +2162,27 @@ mod tests {
                 .unwrap();
             assert_eq!(ret.data_type(), &DataType::Int32, "length({input})");
         }
+    }
+    #[test]
+    fn park_until_woken_ends_on_a_registered_waker_or_the_timeout() {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let (tx, mut rx) = tokio::sync::oneshot::channel::<()>();
+            assert!(poll!(&mut rx).is_pending());
+            tokio::spawn(async move {
+                let _ = tx.send(());
+            });
+            let start = Instant::now();
+            park_until_woken().await;
+            assert!(start.elapsed() < PARK_TIMEOUT);
+
+            let start = Instant::now();
+            park_until_woken().await;
+            assert!(start.elapsed() >= PARK_TIMEOUT);
+        });
     }
 }

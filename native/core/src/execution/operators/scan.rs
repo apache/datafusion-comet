@@ -112,23 +112,26 @@ impl ScanExec {
         *self.batch.try_lock().unwrap() = Some(input);
     }
 
-    /// Pull next input batch from the upstream `ArrowArrayStreamReader`.
-    pub fn get_next_batch(&mut self) -> Result<(), CometError> {
+    /// Pulls the next input batch from the upstream `ArrowArrayStreamReader` unless one is
+    /// already buffered; returns whether it did.
+    pub fn get_next_batch(&mut self) -> Result<bool, CometError> {
         if self.input_source.is_none() {
             // This is a unit test. Input batches are seeded via `set_input_batch`.
-            return Ok(());
+            return Ok(false);
         }
 
         let mut current_batch = self.batch.try_lock().unwrap();
-        if current_batch.is_none() {
-            let mut timer = self.baseline_metrics.elapsed_compute().timer();
-            let next_batch =
-                ScanExec::pull_next(self.exec_context_id, self.input_source.as_ref().unwrap())?;
-            *current_batch = Some(next_batch);
-            timer.stop();
+        if current_batch.is_some() {
+            return Ok(false);
         }
 
-        Ok(())
+        let mut timer = self.baseline_metrics.elapsed_compute().timer();
+        let next_batch =
+            ScanExec::pull_next(self.exec_context_id, self.input_source.as_ref().unwrap())?;
+        *current_batch = Some(next_batch);
+        timer.stop();
+
+        Ok(true)
     }
 
     /// Pull the next `RecordBatch` from the stream and convert it to an `InputBatch`. Dictionary
