@@ -325,6 +325,10 @@ projects the file schema. The original null checks and residual runtime filter r
 The original join still verifies matches, including any hash collisions admitted by the filter.
 Standalone projections, other filter expressions, and limits prevent reader attachment.
 
+To preserve schema-conversion and timestamp-overflow errors, runtime reader pruning is disabled for
+each file whose projected or statically filtered columns require conversions. Scans with supplied file
+statistics also skip reader attachment. These cases still use runtime filtering on decoded batches.
+
 Filters stay within the task's native plan and do not propagate across Spark exchanges or JVM/Arrow
 boundaries. A shuffled hash join can still filter probe batches after shuffle, but it cannot send
 its filter back to an earlier scan stage. Compare the [runtime-filter and scan metrics](metrics.md#hash-joins)
