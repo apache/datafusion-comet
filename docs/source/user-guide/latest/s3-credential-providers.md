@@ -109,10 +109,11 @@ On EKS with [IAM Roles for Service Accounts (IRSA)](https://docs.aws.amazon.com/
 When Comet detects IRSA (both `AWS_WEB_IDENTITY_TOKEN_FILE` and `AWS_ROLE_ARN` are set) and no explicit credentials are configured, its native readers resolve web-identity credentials themselves instead of using the default chain. This path:
 
 - retries the throttled `AssumeRoleWithWebIdentity` call with exponential backoff and jitter,
-- never falls back to the node instance role -- a throttle that outlasts the retries surfaces as a retryable error instead of a wrong-identity `403`, and
-- caches one assumed-role credential per executor process, shared across all reader threads and scans, and refreshes it ahead of expiry with a per-process jitter so cluster-wide refreshes do not synchronize into another burst.
+- never falls back to the node instance role -- a throttle that outlasts the retries surfaces as a retryable error instead of a wrong-identity `403`,
+- caches one assumed-role credential per executor process, shared across all reader threads and scans, and refreshes it ahead of expiry with a per-process jitter so cluster-wide refreshes do not synchronize into another burst, and
+- honors `AWS_USE_FIPS_ENDPOINT` and `AWS_USE_DUALSTACK_ENDPOINT` (and the selected region) the same way the default chain would, so the STS call still uses the requested endpoint mode.
 
-It stands aside whenever credentials are configured explicitly -- a Comet bridge class, an `fs.s3a.aws.credentials.provider` (Parquet), catalog static keys / `client.assume-role.arn` (Iceberg), or static credentials in the environment (`AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY`, which outrank web-identity in the default chain). So it only changes the otherwise-default behavior and never switches away from an identity you set explicitly.
+It stands aside whenever a higher-precedence credential source is configured -- a Comet bridge class, an `fs.s3a.aws.credentials.provider` (Parquet), catalog static keys / `client.assume-role.arn` (Iceberg), static credentials in the environment (`AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY`), or a configured profile (`AWS_PROFILE`, or a shared credentials file). These all rank ahead of web-identity in the default chain, so the take-over only changes the otherwise-default behavior and never switches away from an identity you set explicitly.
 
 Tuning is rarely needed. The knobs, with their defaults, are read from the Parquet `fs.s3a.` config bag or the Iceberg catalog properties:
 
