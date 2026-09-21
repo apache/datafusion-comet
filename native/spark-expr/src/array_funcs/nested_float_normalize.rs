@@ -258,29 +258,30 @@ mod tests {
                                 1,
                                 array.len(),
                             )),
-                            array.clone(),
+                            Arc::clone(&array),
                             array.nulls().cloned(),
                         )),
                         _ => Arc::new(StructArray::new(
                             vec![Arc::new(Field::new("v", array.data_type().clone(), true))].into(),
-                            vec![array.clone()],
+                            vec![Arc::clone(&array)],
                             array.nulls().cloned(),
                         )),
                     }
                 };
-                let left = nest(left.clone());
-                let right = nest(right.clone());
+                let left = nest(Arc::clone(&left));
+                let right = nest(Arc::clone(&right));
                 let schema = Arc::new(Schema::new(vec![
                     Field::new("a", left.data_type().clone(), true),
                     Field::new("b", right.data_type().clone(), true),
                 ]));
-                let batch = RecordBatch::try_new(schema.clone(), vec![left, right.clone()])?;
+                let batch =
+                    RecordBatch::try_new(Arc::clone(&schema), vec![left, Arc::clone(&right)])?;
                 let a =
                     NormalizeNestedFloats::wrap_if_needed(Arc::new(Column::new("a", 0)), &schema)?;
                 let b =
                     NormalizeNestedFloats::wrap_if_needed(Arc::new(Column::new("b", 1)), &schema)?;
                 for negated in [false, true] {
-                    let expr = in_list(a.clone(), vec![b.clone()], &negated, &schema)?;
+                    let expr = in_list(Arc::clone(&a), vec![Arc::clone(&b)], &negated, &schema)?;
                     let actual = expr.evaluate(&batch)?.into_array(7)?;
                     let expected = BooleanArray::from(vec![
                         Some(!negated),
@@ -297,7 +298,7 @@ mod tests {
                         let literal =
                             Arc::new(Literal::new(ScalarValue::try_from_array(&right, row)?));
                         let candidate = NormalizeNestedFloats::wrap_if_needed(literal, &schema)?;
-                        let expr = in_list(a.clone(), vec![candidate], &negated, &schema)?;
+                        let expr = in_list(Arc::clone(&a), vec![candidate], &negated, &schema)?;
                         let actual = expr.evaluate(&batch)?.into_array(7)?;
                         assert_eq!(actual.as_boolean().value(row), expected.value(row));
                     }
@@ -327,9 +328,9 @@ mod tests {
             input.data_type().clone(),
             true,
         )]));
-        let batch = RecordBatch::try_new(schema.clone(), vec![input.clone()])?;
+        let batch = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::clone(&input)])?;
         let column: Arc<dyn PhysicalExpr> = Arc::new(Column::new("a", 0));
-        let wrapped = NormalizeNestedFloats::wrap_if_needed(column.clone(), &schema)?;
+        let wrapped = NormalizeNestedFloats::wrap_if_needed(Arc::clone(&column), &schema)?;
         assert_eq!(wrapped.data_type(&schema)?, column.data_type(&schema)?);
         assert_eq!(wrapped.nullable(&schema)?, column.nullable(&schema)?);
         assert!(matches!(wrapped.evaluate(&batch)?, ColumnarValue::Array(_)));
@@ -338,17 +339,17 @@ mod tests {
                 Arc::new(Literal::new(ScalarValue::try_from_array(&input, row)?));
             let literal = NormalizeNestedFloats::wrap_if_needed(literal, &schema)?;
             assert!(matches!(
-                literal.evaluate(&RecordBatch::new_empty(schema.clone()))?,
+                literal.evaluate(&RecordBatch::new_empty(Arc::clone(&schema)))?,
                 ColumnarValue::Scalar(_)
             ));
-            let expr = in_list(wrapped.clone(), vec![literal], &false, &schema)?;
+            let expr = in_list(Arc::clone(&wrapped), vec![literal], &false, &schema)?;
             let result = expr.evaluate(&batch)?.into_array(batch.num_rows())?;
             assert!(result.as_boolean().value(row));
         }
         let plain: Arc<dyn PhysicalExpr> = Arc::new(Literal::new(ScalarValue::Int32(Some(1))));
         assert!(Arc::ptr_eq(
             &plain,
-            &NormalizeNestedFloats::wrap_if_needed(plain.clone(), &schema)?
+            &NormalizeNestedFloats::wrap_if_needed(Arc::clone(&plain), &schema)?
         ));
         Ok(())
     }
