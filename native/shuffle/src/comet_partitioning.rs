@@ -86,7 +86,8 @@ impl RoundRobinStrategy {
     ///
     /// One batch spread over `num_partitions` groups is the finest split that still gives every
     /// output partition a run, so `batch_size / num_partitions` balances without fragmenting the
-    /// copy any further than it has to.
+    /// copy any further than it has to. An explicit request is taken as given, including one
+    /// larger than a batch, which sends several consecutive input batches to the same partition.
     pub fn resolve_group_rows(
         group_rows: usize,
         batch_size: usize,
@@ -94,7 +95,7 @@ impl RoundRobinStrategy {
     ) -> usize {
         let batch_size = batch_size.max(1);
         if group_rows != Self::AUTO_GROUP_ROWS {
-            return group_rows.min(batch_size);
+            return group_rows;
         }
         (batch_size / num_partitions.max(1))
             .clamp(Self::MIN_AUTO_GROUP_ROWS.min(batch_size), batch_size)
@@ -324,10 +325,9 @@ mod tests {
         assert_eq!(S::resolve_group_rows(S::AUTO_GROUP_ROWS, 8192, 10_000), 64);
         // A batch smaller than the minimum group still resolves to something usable.
         assert_eq!(S::resolve_group_rows(S::AUTO_GROUP_ROWS, 32, 200), 32);
-        // An explicit request is honoured, but never exceeds the batch size: a group longer than
-        // a batch can never see a second batch's rows anyway, since `insert_batch` slices input
-        // down to `batch_size` before placing it.
+        // An explicit request is taken as given. A group longer than a batch is meaningful: it
+        // sends several consecutive input batches to the same output partition.
         assert_eq!(S::resolve_group_rows(1, 8192, 200), 1);
-        assert_eq!(S::resolve_group_rows(100_000, 8192, 200), 8192);
+        assert_eq!(S::resolve_group_rows(100_000, 8192, 200), 100_000);
     }
 }
