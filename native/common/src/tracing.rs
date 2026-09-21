@@ -110,6 +110,13 @@ pub fn log_memory_usage(name: &str, value: u64) {
     RECORDER.log_memory_usage(name, value);
 }
 
+/// Counter name for the process-wide total of Comet's memory pool reservations.
+///
+/// Shared between the producer in `jni_api` and `analyze_trace`, which recognises this exact name
+/// and falls back to a warned, over-counting estimate when a trace does not carry it. Renaming it
+/// in one place only would silently put every new trace on the fallback path.
+pub const POOL_TOTAL_METRIC: &str = "comet_memory_reserved_total";
+
 pub fn with_trace<T, F>(label: &str, tracing_enabled: bool, f: F) -> T
 where
     F: FnOnce() -> T,

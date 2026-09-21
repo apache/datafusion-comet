@@ -1156,6 +1156,8 @@ under the License.
             <exclude>tpcds-sf-1/**</exclude>
             <exclude>tpch/**</exclude>
             <exclude>docs/*.txt</exclude>
+            <!-- JSON has no comment syntax, so no license header can go in it. -->
+            <exclude>docs/puppeteer-config.json</exclude>
             <exclude>docs/logos/*.png</exclude>
             <exclude>docs/logos/*.svg</exclude>
             <exclude>docs/source/_static/images/**</exclude>
