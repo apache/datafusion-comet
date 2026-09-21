@@ -224,16 +224,31 @@ class CometGenerateExecSuite extends CometTestBase {
     }
   }
 
-  test("explode with map input falls back") {
-    withSQLConf(
-      CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true",
-      CometConf.COMET_EXEC_EXPLODE_ENABLED.key -> "true") {
-      val df = Seq((1, Map("a" -> 1, "b" -> 2)), (2, Map("c" -> 3)))
-        .toDF("id", "map")
-        .selectExpr("id", "explode(map) as (key, value)")
-      checkSparkAnswerAndFallbackReason(
-        df,
-        "Comet only supports explode/explode_outer for arrays, not maps")
+  for (generator <- Seq("explode", "explode_outer", "posexplode", "posexplode_outer")) {
+    test(s"$generator with map input across batch boundaries") {
+      withSQLConf(
+        CometConf.COMET_EXEC_EXPLODE_ENABLED.key -> "true",
+        CometConf.COMET_BATCH_SIZE.key -> "4") {
+        val rows = (0 until 16).map { i =>
+          val m = i % 4 match {
+            case 0 => null.asInstanceOf[Map[Int, java.lang.Integer]]
+            case 1 => Map.empty[Int, java.lang.Integer]
+            case _ =>
+              (0 until 13).map { j =>
+                j -> (if (j % 3 == 0) null else java.lang.Integer.valueOf(i * 100 + j))
+              }.toMap
+          }
+          (i, m)
+        }
+        withParquetDataFrame(rows) { input =>
+          // One map exceeds the output batch size. Carry the map through too, so
+          // outer padding cannot accidentally replace the original empty map.
+          val query = input.toDF("id", "m").selectExpr("id", "m", s"$generator(m)")
+          val (_, plan) = checkSparkAnswerAndOperator(query)
+          assert(collect(plan) { case e: CometExplodeExec => e }.nonEmpty)
+          checkSparkSchema(query)
+        }
+      }
     }
   }
 
@@ -390,16 +405,16 @@ class CometGenerateExecSuite extends CometTestBase {
     }
   }
 
-  test("posexplode with map input falls back") {
+  test("posexplode with map input falls back when disabled") {
     withSQLConf(
       CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true",
-      CometConf.COMET_EXEC_EXPLODE_ENABLED.key -> "true") {
+      CometConf.COMET_EXEC_EXPLODE_ENABLED.key -> "false") {
       val df = Seq((1, Map("a" -> 1, "b" -> 2)), (2, Map("c" -> 3)))
         .toDF("id", "map")
         .selectExpr("id", "posexplode(map) as (pos, key, value)")
       checkSparkAnswerAndFallbackReason(
         df,
-        "Comet only supports explode/explode_outer for arrays, not maps")
+        "Native support for operator GenerateExec is disabled")
     }
   }
 

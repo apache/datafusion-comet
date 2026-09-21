@@ -59,11 +59,8 @@ import org.apache.comet.CometConf
  * processes. Worth knowing when reading these numbers: real queries do get that filter, so a
  * plain `explode` in production usually sees an array column with no nulls and no empty rows.
  *
- * Only array inputs are covered. Comet declines to convert a generator over a map
- * (https://github.com/apache/datafusion-comet/issues/2837), so the Comet arm of such a case would
- * be Spark's `GenerateExec` behind a columnar-to-row transition and its timing would say nothing
- * about `CometExplodeExec`. The nesting group below therefore reaches its event list through an
- * `array<struct<...>>` where a map would be the more natural modeling choice.
+ * Only array inputs are covered. The nesting group below reaches its event list through an
+ * `array<struct<...>>`.
  */
 object CometExplodeBenchmark extends CometBenchmarkBase {
 
@@ -382,9 +379,7 @@ object CometExplodeBenchmark extends CometBenchmarkBase {
    *
    * The shape is the one asked for in review: a customer profile whose event list sits eight
    * struct accessors down, holding a second array of four-field structs inside each element. The
-   * requested outer container was a map keyed by platform, which is where a real schema would put
-   * it; that is an `array<struct<platform, entries>>` here because Comet has no native generator
-   * over maps yet (#2837) and the Comet arm would silently be Spark.
+   * outer container is an `array<struct<platform, entries>>`.
    *
    * The whole event struct is counted rather than one of its fields, so nested schema pruning
    * cannot narrow the exploded element and leave the case measuring a two-column gather. It does
