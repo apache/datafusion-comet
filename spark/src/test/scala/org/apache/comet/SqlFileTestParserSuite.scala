@@ -19,6 +19,8 @@
 
 package org.apache.comet
 
+import java.io.File
+
 import org.scalatest.funsuite.AnyFunSuite
 
 /**
@@ -155,5 +157,38 @@ class SqlFileTestParserSuite extends AnyFunSuite {
       "SELECT hypot(a, b) FROM t")
     assert(queries.map(_.mode) === Seq(ExpectNative(Seq("abs")), ExpectDispatch(Seq("hypot"))))
     assert(queries.map(_.sql) === Seq("SELECT abs(a) FROM t", "SELECT hypot(a, b) FROM t"))
+  }
+
+  // #5702: NormalizeFloatingNumbers does not rewrite array-function inputs, so a
+  // plain SELECT keeps -0.0 literals intact. The fixtures must skip those literal
+  // cases for the same reason as the column-sourced ones, and must not claim that
+  // Spark and Comet agree on the literal path.
+  test("signed-zero array fixtures skip literals and do not claim Spark agreement") {
+    val names =
+      Seq("array_distinct.sql", "array_except.sql", "array_intersect.sql", "array_union.sql")
+    val stalePhrases = Seq(
+      "both Spark and Comet collapse it and agree here",
+      "only rewrites literals, not parquet columns")
+    names.foreach { name =>
+      val url = getClass.getClassLoader.getResource(s"sql-tests/expressions/array/$name")
+      assert(url != null, s"missing fixture $name")
+      val file = new File(url.toURI)
+      val text = {
+        val src = scala.io.Source.fromFile(file, "UTF-8")
+        try src.mkString
+        finally src.close()
+      }
+      stalePhrases.foreach { phrase =>
+        assert(!text.contains(phrase), s"$name still claims: $phrase")
+      }
+      val ignoredLiterals = SqlFileTestParser.parse(file).records.collect {
+        case SqlQuery(sql, Ignore(_), _)
+            if sql.contains("array(") &&
+              (sql.contains("double('-0.0')") || sql.contains("float('-0.0')")) &&
+              !sql.toLowerCase.contains(" from ") =>
+          sql
+      }
+      assert(ignoredLiterals.nonEmpty, s"$name is missing an ignored signed-zero literal query")
+    }
   }
 }
