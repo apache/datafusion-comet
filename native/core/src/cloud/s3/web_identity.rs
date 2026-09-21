@@ -44,6 +44,7 @@
 //! `credential_bridge::CometS3CredentialBridge`.
 
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::{Arc, OnceLock, RwLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -51,6 +52,7 @@ use async_trait::async_trait;
 use aws_config::provider_config::ProviderConfig;
 use aws_config::retry::RetryConfig;
 use aws_config::web_identity_token::WebIdentityTokenCredentialsProvider;
+use aws_config::BehaviorVersion;
 use aws_credential_types::provider::ProvideCredentials;
 use aws_credential_types::Credentials;
 use iceberg_storage_opendal::AwsCredential as IcebergAwsCredential;
@@ -289,12 +291,18 @@ async fn build_provider(cfg: &WebIdentityConfig) -> Arc<dyn ProvideCredentials> 
     Arc::new(provider)
 }
 
-/// The `ProviderConfig` shared by the production build and the tests: default region resolution
-/// plus the raised STS retry budget. Tests attach an in-memory HTTP client to this so the retry
-/// path can be exercised without a socket.
+/// The `ProviderConfig` shared by the production build and the tests: it resolves region, FIPS and
+/// dual-stack the same way the AWS default chain would (environment then profile), then raises the
+/// STS retry budget. Forwarding `use_fips` / `use_dual_stack` matters because a bare
+/// `with_default_region()` leaves them unset -- the STS client would then ignore
+/// `AWS_USE_FIPS_ENDPOINT` / `AWS_USE_DUALSTACK_ENDPOINT` and hit the standard endpoint, which can
+/// break access from restricted networks. Tests attach an in-memory HTTP client to the result.
 async fn base_provider_config(cfg: &WebIdentityConfig) -> ProviderConfig {
-    ProviderConfig::with_default_region()
-        .await
+    let sdk = aws_config::defaults(BehaviorVersion::latest()).load().await;
+    ProviderConfig::without_region()
+        .with_region(sdk.region().cloned())
+        .with_use_fips(sdk.use_fips())
+        .with_use_dual_stack(sdk.use_dual_stack())
         .with_retry_config(RetryConfig::standard().with_max_attempts(cfg.max_attempts))
 }
 
@@ -386,10 +394,12 @@ impl IcebergProvideCredential for WebIdentityCredentialProvider {
 /// the caller keeps its default chain. `resolve` reads a bare setting key (e.g. `KEY_MAX_ATTEMPTS`)
 /// from whichever config bag the caller owns. Both scan paths share this one decision.
 ///
-/// It also stands aside when explicit static credentials are set in the environment
-/// (`AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY`). Both the AWS SDK default chain (Parquet) and
-/// opendal/reqsign (Iceberg) rank environment credentials ahead of web-identity, so taking over
-/// would silently switch identity from the user's explicit keys to the service-account role.
+/// It also stands aside for any credential source the default chain ranks ahead of web-identity:
+/// static credentials in the environment (`AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY`) or a
+/// configured profile (`AWS_PROFILE`, or a shared credentials file). Both the AWS SDK default chain
+/// (Parquet) and opendal/reqsign (Iceberg) resolve Environment -> Profile -> WebIdentity, so taking
+/// over in those cases would silently switch identity from the user's chosen source to the
+/// service-account role.
 pub fn take_over_if_irsa<F>(
     explicit_credentials: bool,
     resolve: F,
@@ -397,7 +407,7 @@ pub fn take_over_if_irsa<F>(
 where
     F: Fn(&str) -> Option<String>,
 {
-    if explicit_credentials || explicit_env_credentials() {
+    if explicit_credentials || explicit_env_credentials() || configured_profile() {
         return None;
     }
     WebIdentityConfig::detect_with(resolve).map(WebIdentityCredentialProvider::new)
@@ -407,6 +417,20 @@ where
 /// in every default chain, so the take-over must not shadow them.
 fn explicit_env_credentials() -> bool {
     non_empty_env("AWS_ACCESS_KEY_ID").is_some() && non_empty_env("AWS_SECRET_ACCESS_KEY").is_some()
+}
+
+/// True if a profile credential source is configured: `AWS_PROFILE` is set, or a shared credentials
+/// file exists at the resolved location (`AWS_SHARED_CREDENTIALS_FILE`, else `~/.aws/credentials`).
+/// The default chain ranks a working profile ahead of web-identity, so the take-over defers to it.
+/// This is conservative: a present-but-empty file makes us fall back to the default chain, which is
+/// exactly the pre-existing behavior, so it is never worse than before.
+fn configured_profile() -> bool {
+    if non_empty_env("AWS_PROFILE").is_some() {
+        return true;
+    }
+    let creds_path = non_empty_env("AWS_SHARED_CREDENTIALS_FILE")
+        .or_else(|| non_empty_env("HOME").map(|home| format!("{home}/.aws/credentials")));
+    creds_path.is_some_and(|path| Path::new(&path).exists())
 }
 
 fn system_time_to_timestamp(t: SystemTime) -> reqsign_core::Result<Timestamp> {
@@ -501,11 +525,13 @@ mod tests {
 
     /// A hand-rolled `HttpClient` that returns one canned STS response per attempt, in order, so the
     /// retry path can be exercised without a socket. A `200` yields the success document, anything
-    /// else a `Throttling` error. Requests beyond the queue also throttle.
+    /// else a `Throttling` error. Requests beyond the queue also throttle. It also records the URI
+    /// of the last request so tests can assert which STS endpoint the client resolved.
     #[derive(Debug, Clone)]
     struct CannedStsClient {
         statuses: Arc<Mutex<VecDeque<u16>>>,
         requests: Arc<AtomicUsize>,
+        last_uri: Arc<Mutex<Option<String>>>,
     }
 
     impl CannedStsClient {
@@ -513,13 +539,15 @@ mod tests {
             Self {
                 statuses: Arc::new(Mutex::new(statuses.iter().copied().collect())),
                 requests: Arc::new(AtomicUsize::new(0)),
+                last_uri: Arc::new(Mutex::new(None)),
             }
         }
     }
 
     impl HttpConnector for CannedStsClient {
-        fn call(&self, _request: HttpRequest) -> HttpConnectorFuture {
+        fn call(&self, request: HttpRequest) -> HttpConnectorFuture {
             self.requests.fetch_add(1, Ordering::SeqCst);
+            *self.last_uri.lock().unwrap() = Some(request.uri().to_string());
             let status = self.statuses.lock().unwrap().pop_front().unwrap_or(400);
             let body = if status == 200 {
                 SUCCESS_XML
@@ -548,7 +576,10 @@ mod tests {
     }
 
     /// RAII IRSA env: writes the token file the AWS SDK reads and sets the identity env vars, then
-    /// tears them down. `role_suffix` is unique per test so nothing collides.
+    /// tears them down. `role_suffix` is unique per test so nothing collides. It also neutralizes
+    /// the higher-precedence credential sources and endpoint knobs (env keys, profile, FIPS,
+    /// dual-stack) so a test starts from a clean IRSA-only baseline regardless of the host
+    /// environment; individual tests re-set the one variable they exercise.
     struct IrsaEnv {
         token_path: std::path::PathBuf,
     }
@@ -568,6 +599,21 @@ mod tests {
                 format!("arn:aws:iam::123456789012:role/{role_suffix}"),
             );
             std::env::set_var("AWS_REGION", "us-east-1");
+            // Clean baseline: no higher-precedence source and no endpoint mode unless a test opts in.
+            for var in [
+                "AWS_ACCESS_KEY_ID",
+                "AWS_SECRET_ACCESS_KEY",
+                "AWS_SESSION_TOKEN",
+                "AWS_PROFILE",
+                "AWS_USE_FIPS_ENDPOINT",
+                "AWS_USE_DUALSTACK_ENDPOINT",
+            ] {
+                std::env::remove_var(var);
+            }
+            // Point profile/config files at nonexistent paths so an ambient ~/.aws is ignored.
+            let missing = std::env::temp_dir().join(format!("comet-webid-noprofile-{nanos}"));
+            std::env::set_var("AWS_SHARED_CREDENTIALS_FILE", &missing);
+            std::env::set_var("AWS_CONFIG_FILE", &missing);
             Self { token_path }
         }
     }
@@ -575,7 +621,18 @@ mod tests {
     impl Drop for IrsaEnv {
         fn drop(&mut self) {
             clear_irsa_env();
-            std::env::remove_var("AWS_REGION");
+            for var in [
+                "AWS_REGION",
+                "AWS_SHARED_CREDENTIALS_FILE",
+                "AWS_CONFIG_FILE",
+                "AWS_PROFILE",
+                "AWS_ACCESS_KEY_ID",
+                "AWS_SECRET_ACCESS_KEY",
+                "AWS_USE_FIPS_ENDPOINT",
+                "AWS_USE_DUALSTACK_ENDPOINT",
+            ] {
+                std::env::remove_var(var);
+            }
             let _ = std::fs::remove_file(&self.token_path);
         }
     }
@@ -762,13 +819,9 @@ mod tests {
         // used the env credentials (Environment -> Profile -> WebIdentity). The take-over must
         // stand aside so it does not silently switch identity to the service-account role.
         let _guard = lock_env();
-        clear_irsa_env();
-        std::env::set_var(ENV_TOKEN_FILE, "/var/run/secrets/token");
-        std::env::set_var(ENV_ROLE_ARN, "arn:aws:iam::1:role/app");
+        let _env = IrsaEnv::set("env-precedence");
 
-        // No env creds -> take over.
-        std::env::remove_var("AWS_ACCESS_KEY_ID");
-        std::env::remove_var("AWS_SECRET_ACCESS_KEY");
+        // Clean IRSA baseline -> take over.
         assert!(
             take_over_if_irsa(false, |_| None).is_some(),
             "IRSA with no explicit credentials should take over"
@@ -781,10 +834,54 @@ mod tests {
             take_over_if_irsa(false, |_| None).is_none(),
             "explicit env credentials must keep precedence over the IRSA take-over"
         );
+    }
 
-        std::env::remove_var("AWS_ACCESS_KEY_ID");
-        std::env::remove_var("AWS_SECRET_ACCESS_KEY");
-        clear_irsa_env();
+    #[test]
+    fn configured_profile_keeps_precedence_over_irsa() {
+        // A working profile is ranked before web-identity in the default chain, so the take-over
+        // must defer to it rather than silently assuming the service-account role.
+        let _guard = lock_env();
+        let _env = IrsaEnv::set("profile-precedence");
+
+        // Baseline neutralizes profile sources -> take over.
+        assert!(
+            take_over_if_irsa(false, |_| None).is_some(),
+            "IRSA with no profile configured should take over"
+        );
+
+        // A selected profile -> stand aside.
+        std::env::set_var("AWS_PROFILE", "second-account");
+        assert!(
+            take_over_if_irsa(false, |_| None).is_none(),
+            "a configured profile must keep precedence over the IRSA take-over"
+        );
+    }
+
+    #[test]
+    fn forwards_fips_endpoint_setting() {
+        // The default chain honors AWS_USE_FIPS_ENDPOINT; the take-over must too, or it would hit
+        // the standard STS endpoint from a FIPS-restricted network.
+        let _guard = lock_env();
+        let _env = IrsaEnv::set("fips");
+        std::env::set_var("AWS_USE_FIPS_ENDPOINT", "true");
+
+        let http = CannedStsClient::new(&[200]);
+        let last_uri = Arc::clone(&http.last_uri);
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let entry = entry_with_http(3, http).await;
+            entry.credentials().await.expect("mock STS returns success");
+        });
+
+        let uri = last_uri
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("a request was made");
+        assert!(
+            uri.contains("sts-fips"),
+            "expected a FIPS STS endpoint, got {uri}"
+        );
     }
 
     #[test]
