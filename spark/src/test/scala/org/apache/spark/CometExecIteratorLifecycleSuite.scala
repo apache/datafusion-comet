@@ -24,6 +24,9 @@ import java.lang.ref.WeakReference
 import java.util.Properties
 import java.util.concurrent.atomic.AtomicBoolean
 
+import org.scalactic.source.Position
+import org.scalatest.Tag
+
 import org.apache.spark.executor.TaskMetrics
 import org.apache.spark.memory.{TaskMemoryManager, TestMemoryManager}
 import org.apache.spark.sql.CometTestBase
@@ -43,16 +46,33 @@ import org.apache.comet.serde.OperatorOuterClass
  */
 class CometExecIteratorLifecycleSuite extends CometTestBase {
 
-  private def withTaskContext[T](taskAttemptId: Long)(f: => T): T = {
+  // Retaining decoded definitions or shared trees must not retain task memory managers or JNI refs,
+  // including when session setup or iterator teardown fails.
+  override protected def test(testName: String, testTags: Tag*)(testFun: => Any)(implicit
+      pos: Position): Unit = {
+    super.test(testName, testTags: _*) {
+      withSQLConf(
+        CometConf.COMET_EXEC_PLAN_CACHE_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_SHARED_PLAN_ENABLED.key -> "true") {
+        testFun
+      }
+    }
+  }
+
+  private def withTaskContext[T](
+      taskAttemptId: Long,
+      stageId: Int = 0,
+      stageAttemptNumber: Int = 0,
+      attemptNumber: Int = 0)(f: => T): T = {
     val memoryManager = new TestMemoryManager(new SparkConf())
     val taskMemoryManager = new TaskMemoryManager(memoryManager, taskAttemptId)
     val taskContext = new TaskContextImpl(
-      stageId = 0,
-      stageAttemptNumber = 0,
+      stageId = stageId,
+      stageAttemptNumber = stageAttemptNumber,
       partitionId = 0,
       numPartitions = 1,
       taskAttemptId = taskAttemptId,
-      attemptNumber = 0,
+      attemptNumber = attemptNumber,
       taskMemoryManager = taskMemoryManager,
       localProperties = new Properties,
       metricsSystem = null,
@@ -66,6 +86,27 @@ class CometExecIteratorLifecycleSuite extends CometTestBase {
       taskMemoryManager.cleanUpAllAllocatedMemory()
       TaskContext.unset()
     }
+  }
+
+  test("shared plan scope isolates stages, stage attempts, blocks and task retries") {
+    def scope(
+        block: Option[String],
+        task: Long,
+        stage: Int,
+        stageAttempt: Int,
+        attempt: Int): String = {
+      withTaskContext(task, stage, stageAttempt, attempt) {
+        CometExecIterator.sharedPlanScope(block, TaskContext.get())
+      }
+    }
+    val first = scope(Some("block-a"), 10L, 3, 0, 0)
+    assert(first.nonEmpty)
+    assert(first == scope(Some("block-a"), 11L, 3, 0, 0))
+    assert(first != scope(Some("block-a"), 12L, 4, 0, 0))
+    assert(first != scope(Some("block-a"), 13L, 3, 1, 0))
+    assert(first != scope(Some("block-b"), 14L, 3, 0, 0))
+    assert(scope(Some("block-a"), 15L, 3, 0, 1).isEmpty)
+    assert(scope(None, 16L, 3, 0, 0).isEmpty)
   }
 
   /** Retries GC until every weak reference clears or the deadline passes; returns survivors. */
@@ -86,6 +127,8 @@ class CometExecIteratorLifecycleSuite extends CometTestBase {
     val badConfigs = ConfigMap
       .newBuilder()
       .putEntries("spark.comet.datafusion.no_such_namespace.option", "1")
+      .putEntries(CometConf.COMET_EXEC_PLAN_CACHE_ENABLED.key, "true")
+      .putEntries(CometConf.COMET_EXEC_SHARED_PLAN_ENABLED.key, "true")
       .build()
       .toByteArray
 
@@ -192,12 +235,15 @@ class CometExecIteratorLifecycleSuite extends CometTestBase {
           schema,
           CometArrowStream.NATIVE_TIMEZONE,
           "lifecycle-test")
-        val limitOp =
-          CometExecUtils.getLimitNativePlan(Seq(PrettyAttribute("test", LongType)), 100).get
+        val scanOp =
+          CometExecUtils
+            .getLimitNativePlan(Seq(PrettyAttribute("test", LongType)), 100)
+            .get
+            .getChildren(0)
         val iter = CometExec.getCometIterator(
           Array(stream.asInstanceOf[Object]),
           1,
-          limitOp,
+          scanOp,
           new ThrowingMetricNode,
           1,
           0,

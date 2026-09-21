@@ -215,6 +215,30 @@ object CometConf extends ShimCometConf {
     .booleanConf
     .createWithDefault(true)
 
+  val COMET_EXEC_SHARED_PLAN_ENABLED: ConfigEntry[Boolean] =
+    conf(s"$COMET_EXEC_CONFIG_PREFIX.sharedPlan.enabled")
+      .category(CATEGORY_EXEC)
+      .internal()
+      .doc(
+        "Share actual DataFusion JVM-input, filter/projection, full sort, COUNT/SUM/AVG/MIN/MAX " +
+          "aggregate and partitioned hash join operators within one executor, stage attempt " +
+          "and native block. Retries and repeated partitions use private plans. " +
+          "The registry has at most 64 weak entries and 8 MiB of encoded keys; trees and " +
+          "partition metrics are released with the last active task. Idle waves may rebuild.")
+      .booleanConf
+      .createWithDefault(false)
+
+  val COMET_EXEC_PLAN_CACHE_ENABLED: ConfigEntry[Boolean] =
+    conf(s"$COMET_EXEC_CONFIG_PREFIX.planCache.enabled")
+      .category(CATEGORY_EXEC)
+      .internal()
+      .doc("Reuse immutable deserialized native plan definitions on an executor. Physical " +
+        "operators and execution state remain private to each task attempt. The cache holds " +
+        "at most 64 entries and 8 MiB of encoded plan keys; decoded heap usage is additional. " +
+        "Plans with different partition payloads are cached separately.")
+      .booleanConf
+      .createWithDefault(false)
+
   val COMET_EXEC_PROJECT_ENABLED: ConfigEntry[Boolean] =
     createExecEnabledConfig("project", defaultValue = true)
   val COMET_EXEC_FILTER_ENABLED: ConfigEntry[Boolean] =

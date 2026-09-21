@@ -63,7 +63,10 @@ class CometExecSuite extends CometTestBase {
   override protected def test(testName: String, testTags: Tag*)(testFun: => Any)(implicit
       pos: Position): Unit = {
     super.test(testName, testTags: _*) {
-      withSQLConf(CometConf.COMET_SHUFFLE_ENABLED.key -> "true") {
+      withSQLConf(
+        CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_PLAN_CACHE_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_SHARED_PLAN_ENABLED.key -> "true") {
         testFun
       }
     }
@@ -86,6 +89,114 @@ class CometExecSuite extends CometTestBase {
         val deserialized: ConfigMap = roundtrip
         assert(
           value == deserialized.getEntriesMap.get(CometConf.COMET_EXPLAIN_NATIVE_ENABLED.key))
+      }
+    }
+  }
+
+  test("native plan cache setting crosses JNI for both enabled and disabled execution") {
+    for (enabled <- Seq("true", "false")) {
+      withSQLConf(CometConf.COMET_EXEC_PLAN_CACHE_ENABLED.key -> enabled) {
+        val configs = ConfigMap.parseFrom(CometExecIterator.serializeCometSQLConfs())
+        assert(configs.getEntriesMap.get(CometConf.COMET_EXEC_PLAN_CACHE_ENABLED.key) == enabled)
+        withParquetTable((0 until 32).map(i => (i, i + 1)), "plan_cache_input") {
+          checkSparkAnswerAndOperator(
+            sql("SELECT _1 + 1 FROM plan_cache_input WHERE _2 > 8"),
+            Seq(classOf[CometProjectExec]))
+        }
+      }
+    }
+  }
+
+  test("shared native pipelines across task waves and AQE") {
+    for (enabled <- Seq("true", "false"); aqe <- Seq("true", "false")) {
+      withSQLConf(
+        CometConf.COMET_EXEC_SHARED_PLAN_ENABLED.key -> enabled,
+        CometConf.COMET_EXEC_PLAN_CACHE_ENABLED.key -> "false",
+        CometConf.COMET_EXPLAIN_NATIVE_ENABLED.key -> "true",
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqe,
+        SQLConf.ARROW_EXECUTION_MAX_RECORDS_PER_BATCH.key -> "17") {
+        val configs = ConfigMap.parseFrom(CometExecIterator.serializeCometSQLConfs())
+        assert(configs.getEntriesMap.get(CometConf.COMET_EXEC_SHARED_PLAN_ENABLED.key) == enabled)
+        for (_ <- 0 until 2) {
+          val df = spark.range(0, 1000, 1, 16).where("id > 100").selectExpr("id + 10 AS value")
+          val (_, nativePlan) = checkSparkAnswerAndOperator(df, Seq(classOf[CometProjectExec]))
+          val projects = stripAQEPlan(nativePlan).collect { case p: CometProjectExec => p }
+          assert(projects.nonEmpty)
+          assert(projects.head.metrics("output_rows").value == 899L)
+        }
+        val empty = spark.range(0, 100, 1, 16).where("id < 0").selectExpr("id + 10 AS value")
+        checkSparkAnswerAndOperator(empty, Seq(classOf[CometProjectExec]))
+        // Stateful expressions in an otherwise eligible JVM-input block use private plans.
+        val stateful = spark
+          .range(0, 100, 1, 16)
+          .selectExpr("spark_partition_id() AS partition", "monotonically_increasing_id() AS id")
+        checkSparkAnswerAndOperator(stateful, Seq(classOf[CometProjectExec]))
+      }
+    }
+  }
+
+  test("shared DataFusion stateful operators across Spark partitions") {
+    for (enabled <- Seq("true", "false"); aqe <- Seq("true", "false")) {
+      withSQLConf(
+        CometConf.COMET_EXEC_SHARED_PLAN_ENABLED.key -> enabled,
+        CometConf.COMET_EXPLAIN_NATIVE_ENABLED.key -> "true",
+        CometConf.COMET_SHUFFLE_MODE.key -> "jvm",
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqe,
+        SQLConf.ARROW_EXECUTION_MAX_RECORDS_PER_BATCH.key -> "17") {
+        val input = spark.range(0, 257, 1, 8).toDF()
+        checkSparkAnswerAndOperator(
+          input.sortWithinPartitions(desc("id")),
+          Seq(classOf[CometSortExec]))
+        checkSparkAnswerAndOperator(input.orderBy(desc("id")).limit(13))
+        checkSparkAnswerAndOperator(
+          input.groupBy("id").agg(sum("id"), count("id"), min("id"), max("id"), avg("id")))
+        checkSparkAnswerAndOperator(input.agg(sum("id"), count("id"), avg("id")))
+        checkSparkAnswerAndOperator(input.agg(min("id"), max("id")))
+        checkSparkAnswerAndOperator(spark.range(0).agg(min("id"), max("id")))
+        checkSparkAnswerAndOperator(spark.range(0).agg(sum("id"), count("id"), avg("id")))
+        val right = broadcast(spark.range(100, 300, 1, 4).withColumnRenamed("id", "key"))
+        checkSparkAnswerAndOperator(input.join(right, input("id") === right("key")))
+        checkSparkAnswerAndOperator(input.join(right, input("id") === right("key"), "left"))
+      }
+    }
+  }
+
+  test("shared DISTINCT and mixed PartialMerge aggregates") {
+    for (enabled <- Seq("true", "false"); aqe <- Seq("true", "false")) {
+      withSQLConf(
+        CometConf.COMET_EXEC_SHARED_PLAN_ENABLED.key -> enabled,
+        CometConf.COMET_EXPLAIN_NATIVE_ENABLED.key -> "true",
+        CometConf.COMET_SHUFFLE_MODE.key -> "jvm",
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqe,
+        SQLConf.ARROW_EXECUTION_MAX_RECORDS_PER_BATCH.key -> "17") {
+        // Repeated values and nulls span task boundaries. The exchange also separates the
+        // input's unreviewed CASE/modulo expressions from the candidate shared aggregates.
+        val input = spark
+          .range(0, 192, 1, 8)
+          .selectExpr(
+            "id % 2 AS g",
+            "CASE WHEN id % 7 = 0 THEN CAST(NULL AS BIGINT) ELSE id % 5 END AS v")
+          .repartition(4)
+        checkSparkAnswerAndOperator(
+          input.selectExpr("count(DISTINCT v)", "sum(DISTINCT v)", "avg(DISTINCT v)"))
+        checkSparkAnswerAndOperator(
+          input.groupBy("g").agg(countDistinct("v"), sum("v"), avg("v"), min("v"), max("v")))
+      }
+    }
+  }
+
+  test("native Parquet blocks use private plans with sharing enabled or disabled") {
+    for (enabled <- Seq("true", "false")) {
+      withSQLConf(
+        CometConf.COMET_EXEC_SHARED_PLAN_ENABLED.key -> enabled,
+        CometConf.COMET_EXPLAIN_NATIVE_ENABLED.key -> "true") {
+        withTempPath { path =>
+          spark.range(0, 256, 1, 8).write.parquet(path.toString)
+          val df = spark.read.parquet(path.toString).selectExpr("id + 10 AS value")
+          checkSparkAnswerAndOperator(
+            df,
+            Seq(classOf[CometNativeScanExec], classOf[CometProjectExec]))
+        }
       }
     }
   }

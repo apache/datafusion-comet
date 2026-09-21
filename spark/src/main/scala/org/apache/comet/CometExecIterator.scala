@@ -82,7 +82,8 @@ class CometExecIterator(
     shuffleBlockIterators: Map[Int, CometShuffleBlockIterator] = Map.empty,
     taskFilePaths: Seq[String] = Seq.empty,
     shufflePartitionPusher: Option[ShufflePartitionPusher] = None,
-    capturePartitionOffsets: Boolean = false)
+    capturePartitionOffsets: Boolean = false,
+    sharedPlanBlockId: Option[String] = None)
     extends Iterator[ColumnarBatch]
     with Logging {
 
@@ -139,7 +140,8 @@ class CometExecIterator(
       // constructed on a Spark task thread (see `taskAttemptId` above); a JNI-attached Tokio
       // worker has neither. See CometUdfBridge.evaluate.
       TaskContext.get(),
-      Thread.currentThread().getContextClassLoader)
+      Thread.currentThread().getContextClassLoader,
+      CometExecIterator.sharedPlanScope(sharedPlanBlockId, TaskContext.get()))
 
     // Bind task-owned callbacks separately to preserve the existing createPlan JNI signature.
     try {
@@ -362,6 +364,16 @@ class CometExecIterator(
 
 object CometExecIterator extends Logging {
 
+  // A missing block identity or a retry/speculative task must use a private native tree.
+  private[apache] def sharedPlanScope(blockId: Option[String], context: TaskContext): String = {
+    blockId
+      .filter(_ => context.attemptNumber() == 0)
+      .map { block =>
+        s"$block:${context.stageId()}:${context.stageAttemptNumber()}"
+      }
+      .getOrElse("")
+  }
+
   private def cometSqlConfs: Map[String, String] =
     SQLConf.get.getAllConfs.filter(_._1.startsWith(CometConf.COMET_PREFIX))
 
@@ -387,6 +399,13 @@ object CometExecIterator extends Logging {
     builder.putEntries(
       CometConf.COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED.key,
       CometConf.COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED.get(SQLConf.get).toString)
+
+    builder.putEntries(
+      CometConf.COMET_EXEC_PLAN_CACHE_ENABLED.key,
+      CometConf.COMET_EXEC_PLAN_CACHE_ENABLED.get(SQLConf.get).toString)
+    builder.putEntries(
+      CometConf.COMET_EXEC_SHARED_PLAN_ENABLED.key,
+      CometConf.COMET_EXEC_SHARED_PLAN_ENABLED.get(SQLConf.get).toString)
 
     builder.build().toByteArray
   }
