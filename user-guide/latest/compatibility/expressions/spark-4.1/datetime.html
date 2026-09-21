@@ -938,13 +938,9 @@ with Spark. For dates beyond this range, functions that involve timezone-aware c
 </section>
 <section id="unixtimestamp">
 <h2>UnixTimestamp<a class="headerlink" href="#unixtimestamp" title="Link to this heading">#</a></h2>
-<p>The following incompatibilities cause <code class="docutils literal notranslate"><span class="pre">UnixTimestamp</span></code> to fall back to Spark by default. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.UnixTimestamp.allowIncompatible=true</span></code> to enable Comet acceleration despite these differences.</p>
+<p>The following cases have no native implementation and always run in the JVM using Spark’s code-generated implementation (inside the Comet pipeline):</p>
 <ul class="simple">
-<li><p>unix_timestamp does not support non-UTF8_BINARY collations (https://github.com/apache/datafusion-comet/issues/4646)</p></li>
-</ul>
-<p>The following cases are not supported by Comet and always fall back to Spark, regardless of any <code class="docutils literal notranslate"><span class="pre">allowIncompatible</span></code> setting:</p>
-<ul class="simple">
-<li><p>Only <code class="docutils literal notranslate"><span class="pre">DateType</span></code>, <code class="docutils literal notranslate"><span class="pre">TimestampType</span></code>, and <code class="docutils literal notranslate"><span class="pre">TimestampNTZType</span></code> inputs are supported.</p></li>
+<li><p>String inputs, including collated strings, have no native implementation.</p></li>
 </ul>
 <!--END:EXPR_COMPAT-->
 </section>

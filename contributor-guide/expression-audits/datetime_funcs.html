@@ -686,6 +686,18 @@ under the License.
 <li><p>Rewrites to <code class="docutils literal notranslate"><span class="pre">Cast(...,</span> <span class="pre">EvalMode.LEGACY)</span></code> (no format, native) or <code class="docutils literal notranslate"><span class="pre">GetTimestamp(...,</span> <span class="pre">failOnError</span> <span class="pre">=</span> <span class="pre">false)</span></code> (with format, via the codegen dispatcher) before Comet sees the plan. In non-ANSI mode the rewritten tree is identical to <code class="docutils literal notranslate"><span class="pre">to_timestamp</span></code>; invalid inputs return NULL to match Spark.</p></li>
 </ul>
 </section>
+<section id="unix-timestamp">
+<h2>unix_timestamp<a class="headerlink" href="#unix-timestamp" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p>Spark 3.4.3 (audited 2026-09-13): baseline. String inputs accept literal or column formats. Date, timestamp, and timestamp without time zone inputs ignore the format argument.</p></li>
+<li><p>Spark 3.5.8 (audited 2026-09-13): parsing failures use structured timestamp parsing errors.</p></li>
+<li><p>Spark 4.0.1 (audited 2026-09-13): <code class="docutils literal notranslate"><span class="pre">inputTypes</span></code> widened to <code class="docutils literal notranslate"><span class="pre">StringTypeWithCollation</span></code> for the input and format arguments.</p></li>
+<li><p>Spark 4.1.1 (audited 2026-09-13): same input types and parsing behavior as Spark 4.0.1.</p></li>
+<li><p>String inputs use Spark’s generated parser through codegen dispatch, including collated strings and formats. Literal and column formats preserve null handling, ANSI errors, parser policy, and session time zone.</p></li>
+<li><p>Date, timestamp, and timestamp without time zone inputs retain native execution and ignore the format, including its collation. String input stays unsupported by the native serializer so <code class="docutils literal notranslate"><span class="pre">allowIncompatible=true</span></code> cannot send it to the native kernel.</p></li>
+<li><p>Native timestamp conversion truncates fractional seconds toward zero, matching Spark’s <code class="docutils literal notranslate"><span class="pre">ToTimestamp</span></code>. This fixes the previous use of floor division for negative fractional timestamps: at UTC, <code class="docutils literal notranslate"><span class="pre">1969-12-31</span> <span class="pre">23:59:58.5</span></code> produces <code class="docutils literal notranslate"><span class="pre">-1</span></code>, not <code class="docutils literal notranslate"><span class="pre">-2</span></code>. Casting a timestamp to <code class="docutils literal notranslate"><span class="pre">BIGINT</span></code> deliberately uses floor division in Spark and Comet, so that cast still produces <code class="docutils literal notranslate"><span class="pre">-2</span></code>.</p></li>
+</ul>
+</section>
 <section id="weekday">
 <h2>weekday<a class="headerlink" href="#weekday" title="Link to this heading">#</a></h2>
 <ul class="simple">
@@ -762,6 +774,7 @@ under the License.
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#try-make-timestamp">try_make_timestamp</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#try-to-date">try_to_date</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#try-to-timestamp">try_to_timestamp</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#unix-timestamp">unix_timestamp</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#weekday">weekday</a></li>
 </ul>
   </nav></div>

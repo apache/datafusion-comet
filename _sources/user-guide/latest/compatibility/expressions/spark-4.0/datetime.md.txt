@@ -161,11 +161,7 @@ The following cases have no native implementation and always run in the JVM usin
 
 ## UnixTimestamp
 
-The following incompatibilities cause `UnixTimestamp` to fall back to Spark by default. Set `spark.comet.expression.UnixTimestamp.allowIncompatible=true` to enable Comet acceleration despite these differences.
+The following cases have no native implementation and always run in the JVM using Spark's code-generated implementation (inside the Comet pipeline):
 
-- unix_timestamp does not support non-UTF8_BINARY collations (https://github.com/apache/datafusion-comet/issues/4646)
-
-The following cases are not supported by Comet and always fall back to Spark, regardless of any `allowIncompatible` setting:
-
-- Only `DateType`, `TimestampType`, and `TimestampNTZType` inputs are supported.
+- String inputs, including collated strings, have no native implementation.
 <!--END:EXPR_COMPAT-->

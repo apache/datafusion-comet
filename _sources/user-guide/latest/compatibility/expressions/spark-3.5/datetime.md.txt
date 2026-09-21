@@ -139,7 +139,7 @@ The following cases have no native implementation and always run in the JVM usin
 
 ## UnixTimestamp
 
-The following cases are not supported by Comet and always fall back to Spark, regardless of any `allowIncompatible` setting:
+The following cases have no native implementation and always run in the JVM using Spark's code-generated implementation (inside the Comet pipeline):
 
-- Only `DateType`, `TimestampType`, and `TimestampNTZType` inputs are supported.
+- String inputs, including collated strings, have no native implementation.
 <!--END:EXPR_COMPAT-->

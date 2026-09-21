@@ -658,7 +658,8 @@ Other formats route through the codegen dispatcher.</p></li>
 <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.FromUnixTime.allowIncompatible=true</span></code> is set; otherwise
 it routes through the codegen dispatcher.</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">unix_timestamp(&lt;timestamp_or_date&gt;)</span></code> does not call the formatter at all; the
-string-input overload falls back.</p></li>
+string-input overload routes through the codegen dispatcher and preserves Spark’s
+selected parser policy.</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">to_unix_timestamp</span></code> routes through the codegen dispatcher.</p></li>
 </ul>
 <p>If a Comet contributor adds native string-format parsing or extends the date_format

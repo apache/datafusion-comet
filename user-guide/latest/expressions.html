@@ -1905,8 +1905,8 @@ expressions. The following function families are <strong>not currently planned</
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">unix_timestamp</span></code></p></td>
 <td><p>✅</p></td>
-<td><p>Native</p></td>
-<td><p></p></td>
+<td><p>Hybrid</p></td>
+<td><p>String parsing uses Spark’s codegen and honors the time parser policy, ANSI mode, and session time zone. Date and timestamp inputs ignore the format and use native execution.</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">weekday</span></code></p></td>
 <td><p>✅</p></td>
