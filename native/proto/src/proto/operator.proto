@@ -187,6 +187,12 @@ message NativeScan {
 
   // Single partition's file list (injected at execution time)
   SparkFilePartition file_partition = 2;
+
+  // Hash half of the key under which this scan's planning data is stored and looked up at
+  // execution time; the other half is common.source. Derived once on the driver
+  // (CometNativeScanExec) so executors rebuild the key instead of hashing the common per task.
+  // JVM-consumed only; the native side ignores it.
+  optional int32 source_key_hash = 3;
 }
 
 message CsvScan {
@@ -851,10 +857,12 @@ message PartitionWriter {
   }
 }
 
-// Local shuffle output consists of a data file and its partition-offset index.
+// Local shuffle output consists of a data file. The partition offsets are returned to the JVM via JNI
 message LocalPartitionWriter {
+  reserved 2;
+  reserved "output_index_file";
+
   string output_data_file = 1;
-  string output_index_file = 2;
 }
 
 // Marker for remote shuffle output. The task-owned callback is bound outside
@@ -863,10 +871,12 @@ message RssPartitionWriter {}
 
 message ShuffleWriter {
   spark.spark_partitioning.Partitioning partitioning = 1;
+  reserved 4;
+  reserved "output_index_file";
+
   // Retained for compatibility with native binaries that predate partition_writer.
-  // Local plans also carry these paths in partition_writer.local.
+  // Local plans also carry this path in partition_writer.local.
   string output_data_file = 3;
-  string output_index_file = 4;
   CompressionCodec codec = 5;
   int32 compression_level = 6;
   bool tracing_enabled = 7;
@@ -887,11 +897,22 @@ message ShuffleWriter {
 }
 
 message ParquetWriter {
+  // Where this task writes. Two shapes, selected by whether `work_dir` is set:
+  //
+  //  - Spark 4.0+ (CometWriteFilesExec): `work_dir` is unset and `output_path` is the
+  //    fully-qualified path of the Parquet file to write, set per task from
+  //    FileCommitProtocol.newTaskTempFile. Naming and staging are owned by Spark's commit
+  //    protocol so that task-attempt isolation, speculative execution, and committers that track
+  //    individual files (S3A magic, streaming manifest) all behave as they do for Spark's own
+  //    writer. The native writer uses this path verbatim.
+  //  - Spark 3.x (CometNativeWriteExec): `work_dir` is set and the native writer derives the file
+  //    name from it, the partition id and the task attempt id. `output_path` is the write's
+  //    output directory and is unused natively. Goes away with Spark 3.x support.
   string output_path = 1;
   CompressionCodec compression = 2;
   repeated string column_names = 4;
-  // Working directory for temporary files (used by FileCommitProtocol)
-  // If not set, files are written directly to output_path
+  // Working directory for temporary files (used by FileCommitProtocol). Spark 3.x only; see
+  // output_path above.
   optional string work_dir = 5;
   // Job ID for tracking this write operation
   optional string job_id = 6;

@@ -251,26 +251,13 @@ object CometSparkSessionExtensions extends Logging {
   }
 
   /**
-   * Whether we should override Spark memory configuration for Comet. This only returns true when
-   * Comet native execution is enabled and/or Comet shuffle is enabled and Comet doesn't use
-   * off-heap mode (unified memory manager).
-   */
-  def shouldOverrideMemoryConf(conf: SparkConf): Boolean = {
-    val cometEnabled = getBooleanConf(conf, CometConf.COMET_ENABLED)
-    val cometShuffleEnabled = getBooleanConf(conf, CometConf.COMET_SHUFFLE_ENABLED)
-    val cometExecEnabled = getBooleanConf(conf, CometConf.COMET_EXEC_ENABLED)
-    val offHeapMode = CometSparkSessionExtensions.isOffHeapEnabled(conf)
-    cometEnabled && (cometShuffleEnabled || cometExecEnabled) && !offHeapMode
-  }
-
-  /**
    * Determines required memory overhead in MB per executor process for Comet when running in
    * on-heap mode.
    */
   def getCometMemoryOverheadInMiB(sparkConf: SparkConf): Long = {
     if (isOffHeapEnabled(sparkConf)) {
-      // when running in off-heap mode we use unified memory management to share
-      // off-heap memory with Spark so do not add overhead
+      // off-heap mode sizes the native memory pool from spark.memory.offHeap.size instead
+      // (see CometExecIterator.getMemoryConfig), so this value does not apply
       return 0
     }
     ConfigHelpers.byteFromString(
@@ -279,9 +266,6 @@ object CometSparkSessionExtensions extends Logging {
         COMET_ONHEAP_MEMORY_OVERHEAD.defaultValueString),
       ByteUnit.MiB)
   }
-
-  private def getBooleanConf(conf: SparkConf, entry: ConfigEntry[Boolean]) =
-    conf.getBoolean(entry.key, entry.defaultValue.get)
 
   /**
    * Calculates required memory overhead in bytes per executor process for Comet when running in

@@ -36,6 +36,7 @@ pub use date_from_unix_date::SparkDateFromUnixDate;
 pub use date_trunc::SparkDateTrunc;
 pub use day_month_name::{spark_day_name, spark_month_name};
 pub use day_of_week::{SparkDayOfWeek, SparkWeekDay};
+pub use extract_date_part::spark_seconds_of_time;
 pub use extract_date_part::SparkHour;
 pub use extract_date_part::SparkMinute;
 pub use extract_date_part::SparkSecond;
