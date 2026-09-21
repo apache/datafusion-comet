@@ -1086,27 +1086,40 @@ class CometExecRuleSuite extends CometTestBase {
     }
   }
 
-  test("operator conversion alone converts nothing without scan conversion") {
+  test("scan conversion must run before operator conversion") {
     withTempPath { path =>
       createTestDataFrame.write.parquet(path.toString)
       withTempView("test_data") {
         spark.read.parquet(path.toString).createOrReplaceTempView("test_data")
-        val sparkPlan =
-          createSparkPlan(spark, "SELECT id, id * 2 as doubled FROM test_data WHERE id % 2 == 0")
-        assert(countOperators(sparkPlan, classOf[FileSourceScanExec]) == 1)
+        val query = "SELECT id, id * 2 as doubled FROM test_data WHERE id % 2 == 0"
 
-        // CometExecRule seeds its native chain only from the nodes CometScanRule produces, so on
-        // its own it converts nothing: the scan is untouched and every operator above it is
-        // refused for want of Arrow input. This is why the two are composed into `CometRule`
-        // rather than registered as independent rules that happen to run in the right order.
+        // One plan per rule application. Fallback reasons are recorded as tags on the Spark
+        // nodes, and CometNativeScan.isSupported declines a scan already carrying one, so
+        // reusing the plan the exec rule just refused would hold the second case down.
+        val forExecRule = stripAQEPlan(createSparkPlan(spark, query))
+        val forCometRule = stripAQEPlan(createSparkPlan(spark, query))
+        assert(countOperators(forExecRule, classOf[FileSourceScanExec]) == 1)
+        assert(countOperators(forCometRule, classOf[FileSourceScanExec]) == 1)
+
         withSQLConf(
           CometConf.COMET_ENABLED.key -> "true",
-          CometConf.COMET_EXEC_ENABLED.key -> "true") {
-          val execOnly = CometExecRule(spark).apply(stripAQEPlan(sparkPlan))
-          assert(countOperators(execOnly, classOf[FileSourceScanExec]) == 1)
+          CometConf.COMET_EXEC_ENABLED.key -> "true",
+          // Off by default, but pinned here: with it on, CometExecRule bridges the unconverted
+          // scan with a CometSparkToColumnarExec and converts the operators above it, which is a
+          // different path from the one under test.
+          CometConf.COMET_CONVERT_FROM_PARQUET_ENABLED.key -> "false") {
+          // CometExecRule builds its native plan up from the nodes CometScanRule produces, so on
+          // its own it leaves the scan on Spark's reader.
           assert(
-            stripAQEPlan(execOnly).collect { case p: CometNativeExec => p }.isEmpty,
-            s"operator conversion alone should convert nothing, got:\n$execOnly")
+            countOperators(
+              CometExecRule(spark).apply(forExecRule),
+              classOf[FileSourceScanExec]) == 1)
+          // CometRule runs both phases, in that order. This fails if the scan phase is ever
+          // reordered or dropped.
+          assert(
+            countOperators(
+              CometRule(spark).apply(forCometRule),
+              classOf[CometNativeScanExec]) == 1)
         }
       }
     }

@@ -26,17 +26,16 @@ import org.apache.spark.sql.execution.SparkPlan
 /**
  * Comet's plan conversion pass: scan conversion followed by operator conversion.
  *
- * The two were previously registered as separate rules, adjacently, in both the columnar and the
- * query-stage-prep paths. Nothing ever ran between them, and neither is useful on its own -
- * [[CometExecRule]] seeds its native chain only from the nodes [[CometScanRule]] produces
- * (`CometScanExec`, `CometBatchScanExec`, `CometContribScanMarker`), so operator conversion
- * against unconverted Spark scans converts nothing. Composing them here makes that ordering an
- * invariant of the code rather than of the registration order, and gives callers that need the
- * whole conversion - rather than half of it - a single entry point.
+ * Native scans come only from the nodes [[CometScanRule]] produces (`CometScanExec`,
+ * `CometBatchScanExec`, `CometContribScanMarker`), so [[CometExecRule]] must run after it.
+ * Running [[CometExecRule]] alone leaves scans on Spark's readers. Composing the two here makes
+ * that ordering part of the code instead of the order the rules are registered in, and gives
+ * callers that need the whole conversion a single entry point.
  *
- * The two rules keep their own classes, files and tests; this only fixes how they are sequenced.
- * `ruleName` in `spark.comet.explain.transformations` output is still each inner rule's own,
- * since this delegates to their `apply`.
+ * `spark.comet.explain.transformations` logs each inner rule under its own `ruleName`, since this
+ * delegates to their `apply`. Spark's own plan change log sees one rule: query-stage preparation
+ * logs this pass as `org.apache.comet.rules.CometRule`, which is the name
+ * `spark.sql.planChangeLog.rules` has to match.
  */
 case class CometRule(session: SparkSession) extends Rule[SparkPlan] {
 
