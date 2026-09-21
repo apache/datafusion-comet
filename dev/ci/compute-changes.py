@@ -157,6 +157,7 @@ FILTERS = {
         "spark/src/main/spark-4.x/org/apache/spark/sql/execution/python/CometArrowPythonRunnerBase.scala",
         "spark/src/test/resources/pyspark/conftest.py",
         "spark/src/test/resources/pyspark/test_pyarrow_udf.py",
+        "spark/src/test/resources/pyspark/test_pyarrow_udf_fuzz.py",
         "spark/src/test/resources/pyspark/test_pyarrow_udf_dictionary_shuffle.py",
         "spark/src/test/spark-3.5/org/apache/spark/sql/comet/CometMapInBatchSuite.scala",
         "spark/src/test/spark-4.x/org/apache/spark/sql/comet/CometMapInBatchSuite.scala",
