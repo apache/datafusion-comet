@@ -143,7 +143,7 @@ CREATE TABLE acd_float(d double) USING parquet
 
 statement
 INSERT INTO acd_float VALUES
-  (0.0), (-0.0), (CAST('NaN' AS DOUBLE)), (CAST('NaN' AS DOUBLE)), (1.0)
+  (0.0), (double('-0.0')), (CAST('NaN' AS DOUBLE)), (CAST('NaN' AS DOUBLE)), (1.0)
 
 -- distinct values are {0.0, NaN, 1.0} = 3
 query

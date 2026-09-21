@@ -31,6 +31,7 @@ import org.apache.spark.internal.{config, Logging}
 import org.apache.spark.shuffle._
 import org.apache.spark.shuffle.api.ShuffleExecutorComponents
 import org.apache.spark.shuffle.sort.{BypassMergeSortShuffleHandle, SerializedShuffleHandle, SortShuffleManager, SortShuffleWriter}
+import org.apache.spark.sql.comet.PlanDataInjector
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.util.collection.OpenHashSet
 
@@ -282,12 +283,14 @@ class CometShuffleManager(conf: SparkConf) extends ShuffleManager with Logging {
         shuffleBlockResolver.removeDataByMap(shuffleId, mapTaskId)
       }
     }
+    PlanDataInjector.releasePreparedShuffle(shuffleId)
     true
   }
 
   /** Shut down this ShuffleManager. */
   override def stop(): Unit = {
-    shuffleBlockResolver.stop()
+    try shuffleBlockResolver.stop()
+    finally PlanDataInjector.releaseAll()
   }
 }
 

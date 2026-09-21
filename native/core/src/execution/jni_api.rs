@@ -24,14 +24,14 @@ use crate::{
         metrics::utils::update_comet_metric, planner::PhysicalPlanner, serde::to_arrow_datatype,
         shuffle::spark_unsafe::row::process_sorted_row_partition, sort::RdxSort,
     },
-    jvm_bridge::JVMClasses,
+    jvm_bridge::{JVMClasses, JavaShufflePartitionPusher, ShufflePartitionPusher},
 };
 use std::collections::HashSet;
 
 use arrow::array::{Array, RecordBatch, UInt32Array};
 use arrow::compute::{take, TakeOptions};
 use arrow::datatypes::DataType as ArrowDataType;
-use datafusion::common::{DataFusionError, Result as DataFusionResult, ScalarValue};
+use datafusion::common::{DataFusionError, Result as DataFusionResult};
 use datafusion::execution::disk_manager::DiskManagerMode;
 use datafusion::execution::memory_pool::MemoryPool;
 use datafusion::execution::runtime_env::RuntimeEnvBuilder;
@@ -41,7 +41,9 @@ use datafusion::{
     physical_plan::{display::DisplayableExecutionPlan, SendableRecordBatchStream},
     prelude::{SessionConfig, SessionContext},
 };
-use datafusion_comet_proto::spark_operator::Operator;
+use datafusion_comet_common::decode_string_arrays;
+use datafusion_comet_proto::spark_expression::agg_expr::ExprStruct as AggExprStruct;
+use datafusion_comet_proto::spark_operator::{AggregateMode, Operator, ShuffleScan};
 use datafusion_comet_spark_expr::url_funcs::{CometParseUrl, CometTryParseUrl};
 use datafusion_spark::function::array::array_contains::SparkArrayContains;
 use datafusion_spark::function::array::repeat::SparkArrayRepeat;
@@ -68,6 +70,7 @@ use datafusion_spark::function::math::trigonometry::SparkSec;
 use datafusion_spark::function::math::width_bucket::SparkWidthBucket;
 use datafusion_spark::function::string::char::CharFunc;
 use datafusion_spark::function::string::concat::SparkConcat;
+use datafusion_spark::function::string::length::SparkLengthFunc;
 use datafusion_spark::function::string::luhn_check::SparkLuhnCheck;
 use datafusion_spark::function::string::space::SparkSpace;
 use datafusion_spark::function::string::substring::SparkSubstring;
@@ -89,6 +92,7 @@ use jni::{
     Env, EnvUnowned,
 };
 use parking_lot::Mutex;
+use prost::Message;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -96,15 +100,15 @@ use std::{sync::Arc, task::Poll};
 use tokio::runtime::{Handle, Runtime};
 use tokio::sync::mpsc;
 
-use crate::execution::memory_pools::{
-    create_memory_pool, handle_task_shared_pool_release, parse_memory_pool_config, MemoryPoolConfig,
-};
+use crate::execution::memory_pools::{create_memory_pool, parse_memory_pool_config};
 use crate::execution::operators::{ScanExec, ShuffleScanExec};
-use crate::execution::shuffle::{read_ipc_compressed, CompressionCodec};
+use crate::execution::shuffle::{
+    decode_remote_shuffle_batch, read_ipc_compressed, CompressionCodec, ShuffleWriterExec,
+};
 use crate::execution::spark_plan::SparkPlan;
 
 use crate::execution::tracing::{
-    get_thread_id, log_memory_usage, trace_begin, trace_end, with_trace,
+    get_thread_id, log_memory_usage, trace_begin, trace_end, with_trace, POOL_TOTAL_METRIC,
 };
 
 use crate::execution::memory_pools::logging_pool::LoggingMemoryPool;
@@ -114,8 +118,9 @@ use crate::execution::spark_config::{
     COMET_TRACING_ENABLED, SPARK_EXECUTOR_CORES,
 };
 use crate::parquet::encryption_support::{CometEncryptionFactory, ENCRYPTION_FACTORY_ID};
+use crate::parquet::parquet_support::CometObjectStoreRegistry;
 use datafusion_comet_proto::spark_operator::operator::OpStruct;
-use log::info;
+use log::{info, warn};
 use std::sync::OnceLock;
 #[cfg(feature = "jemalloc")]
 use tikv_jemalloc_ctl::{epoch, stats};
@@ -128,6 +133,18 @@ fn log_jemalloc_usage() {
     let allocated = stats::allocated::mib().unwrap();
     e.advance().unwrap();
     log_memory_usage("jemalloc_allocated", allocated.read().unwrap() as u64);
+}
+
+/// Reports the bytes currently handed out by the Rust global allocator, process-wide.
+///
+/// Logged alongside the per-thread pool reservations so the two can be compared directly: a large
+/// and growing excess is native memory the pool is not accounting for.
+#[cfg(feature = "alloc-accounting")]
+fn log_native_allocated() {
+    log_memory_usage(
+        "native_allocated",
+        crate::alloc_accounting::current_balance() as u64,
+    );
 }
 
 /// Registry of active memory pools per Rust thread ID.
@@ -148,6 +165,53 @@ fn register_memory_pool(thread_id: u64, context_id: i64, pool: Arc<dyn MemoryPoo
         .insert(context_id, pool);
 }
 
+struct ThreadMemoryPoolRegistration {
+    thread_id: u64,
+    context_id: i64,
+    registered: bool,
+}
+
+impl ThreadMemoryPoolRegistration {
+    fn new(thread_id: u64, context_id: i64, pool: Arc<dyn MemoryPool>) -> Self {
+        register_memory_pool(thread_id, context_id, pool);
+        Self {
+            thread_id,
+            context_id,
+            registered: true,
+        }
+    }
+
+    fn unregister_and_total(mut self) -> usize {
+        self.registered = false;
+        unregister_and_total(self.thread_id, self.context_id)
+    }
+}
+
+impl Drop for ThreadMemoryPoolRegistration {
+    fn drop(&mut self) {
+        if self.registered {
+            unregister_and_total(self.thread_id, self.context_id);
+        }
+    }
+}
+
+/// Sums `reserved()` over `pools`, skipping any pool whose identity is already in `seen`.
+///
+/// Execution contexts routinely share one pool — every context in a task under the task-shared
+/// pool types, every context in the process under the global ones — and each of them registers
+/// it, so a walk of the registry has to deduplicate by pool identity or it reports one
+/// reservation several times.
+fn sum_distinct_pools<'a>(
+    pools: impl IntoIterator<Item = &'a Arc<dyn MemoryPool>>,
+    seen: &mut HashSet<*const ()>,
+) -> usize {
+    pools
+        .into_iter()
+        .filter(|pool| seen.insert(Arc::as_ptr(pool) as *const ()))
+        .map(|pool| pool.reserved())
+        .sum()
+}
+
 /// Unregister a context's pool and return the remaining total reserved for the thread.
 fn unregister_and_total(thread_id: u64, context_id: i64) -> usize {
     let mut map = get_thread_memory_pools().lock();
@@ -157,14 +221,7 @@ fn unregister_and_total(thread_id: u64, context_id: i64) -> usize {
             map.remove(&thread_id);
             return 0;
         }
-        let mut seen = HashSet::new();
-        return pools
-            .values()
-            .filter_map(|p| {
-                let ptr = Arc::as_ptr(p) as *const ();
-                seen.insert(ptr).then(|| p.reserved())
-            })
-            .sum::<usize>();
+        return sum_distinct_pools(pools.values(), &mut HashSet::new());
     }
     0
 }
@@ -172,19 +229,56 @@ fn unregister_and_total(thread_id: u64, context_id: i64) -> usize {
 fn total_reserved_for_thread(thread_id: u64) -> usize {
     let map = get_thread_memory_pools().lock();
     map.get(&thread_id)
-        .map(|pools| {
-            // Deduplicate pools that share the same underlying allocation
-            // (e.g. task-shared pools registered by multiple execution contexts)
-            let mut seen = HashSet::new();
-            pools
-                .values()
-                .filter_map(|p| {
-                    let ptr = Arc::as_ptr(p) as *const ();
-                    seen.insert(ptr).then(|| p.reserved())
-                })
-                .sum::<usize>()
-        })
+        .map(|pools| sum_distinct_pools(pools.values(), &mut HashSet::new()))
         .unwrap_or(0)
+}
+
+/// Reservation totals read from the pool registry in one pass, under one lock.
+struct ReservedTotals {
+    /// Bytes reserved by the pools registered on the requested thread, deduplicated within it.
+    /// Zero when no thread was requested.
+    for_thread: usize,
+    /// Bytes reserved across every live Comet memory pool in the process.
+    ///
+    /// This is the figure to compare against a process-wide allocation counter, so it has to
+    /// account for every live pool rather than only the ones a traced plan created. Allocation is
+    /// process-wide and a plan running with tracing off still holds memory, which is why
+    /// `createPlan` registers its pool unconditionally: with two concurrent plans configured
+    /// differently, counting only the traced one would report the untraced plan's reservation as
+    /// untracked allocation. It covers every pool type, because each plan registers whichever pool
+    /// `create_memory_pool` gave it, and it counts a pool once however many contexts or threads
+    /// hold it.
+    ///
+    /// The per-thread `thread_NNN_comet_memory_reserved` counters must not be summed to obtain it:
+    /// a shared pool reports its full reservation on every thread that references it, so adding
+    /// them across threads multiplies that pool by its thread count.
+    across_threads: usize,
+}
+
+/// Reads both totals under a single lock.
+///
+/// They are emitted as a pair, and a pair that straddles two acquisitions describes two different
+/// instants. Taking the lock once also halves the tracing traffic through a mutex the executor
+/// needs in order to register and release pools.
+///
+/// `thread_id` of `None` skips the per-thread figure; the caller is only after the process total.
+fn total_reserved(thread_id: Option<u64>) -> ReservedTotals {
+    let map = get_thread_memory_pools().lock();
+    let for_thread = thread_id
+        .and_then(|id| map.get(&id))
+        .map(|pools| sum_distinct_pools(pools.values(), &mut HashSet::new()))
+        .unwrap_or(0);
+    // Deduplicated across the whole map, not within each thread: the same pool is registered by
+    // every context that holds it, and a task-shared or global pool spans threads.
+    let mut seen = HashSet::new();
+    let across_threads = map
+        .values()
+        .map(|pools| sum_distinct_pools(pools.values(), &mut seen))
+        .sum();
+    ReservedTotals {
+        for_thread,
+        across_threads,
+    }
 }
 
 fn parse_usize_env_var(name: &str) -> Option<usize> {
@@ -207,8 +301,47 @@ fn build_runtime(default_worker_threads: Option<usize>) -> Runtime {
     }
     builder
         .enable_all()
+        .on_thread_start(attach_thread_as_daemon)
+        .on_thread_stop(detach_thread)
         .build()
         .expect("Failed to create Tokio runtime")
+}
+
+/// Attaches a runtime thread to the JVM as a daemon thread.
+///
+/// jni-rs attaches threads lazily with `AttachCurrentThread`, which makes them non-daemon JVM
+/// threads. `DestroyJavaVM` waits for all non-daemon threads to exit before it runs shutdown
+/// hooks, but runtime threads only exit once the shutdown hook has called `SparkContext.stop()`
+/// and [`release_runtime`]. An application that returns from `main` without calling
+/// `SparkContext.stop()` would therefore never exit. Daemon threads are not waited for, and
+/// jni-rs reuses an existing attachment rather than attaching again.
+fn attach_thread_as_daemon() {
+    let Some(vm) = crate::JAVA_VM.get() else {
+        return;
+    };
+    let vm = vm.get_raw();
+    let mut env: *mut std::ffi::c_void = std::ptr::null_mut();
+    // SAFETY: `vm` is the JavaVM stored by `NativeBase.init` and outlives the runtime. Null
+    // attach args select the default JNI version, thread name and thread group.
+    let rc =
+        unsafe { ((**vm).v1_4.AttachCurrentThreadAsDaemon)(vm, &mut env, std::ptr::null_mut()) };
+    if rc != jni::sys::JNI_OK {
+        warn!("Failed to attach tokio runtime thread to the JVM as a daemon thread: {rc}");
+    }
+}
+
+/// Detaches a thread attached by [`attach_thread_as_daemon`] before it exits. jni-rs only
+/// detaches threads it attached itself.
+fn detach_thread() {
+    let Some(vm) = crate::JAVA_VM.get() else {
+        return;
+    };
+    let vm = vm.get_raw();
+    // SAFETY: see `attach_thread_as_daemon`. Detaching an unattached thread is a JNI error,
+    // not undefined behavior.
+    unsafe {
+        ((**vm).v1_1.DetachCurrentThread)(vm);
+    }
 }
 
 /// Initialize the global Tokio runtime with the given default worker thread count.
@@ -249,7 +382,11 @@ pub fn release_runtime() {
     }
 }
 
-/// Returns a short name for an OpStruct variant.
+/// Returns a short name for an OpStruct variant. Used for tracing event names;
+/// no contrib-specific logic. The `OpStruct::ContribScan` arm is the generic
+/// extension point for out-of-tree contrib scans (Delta, Lance, ...); it stays
+/// unconditional even in non-contrib builds because the proto enum is generated
+/// regardless of cargo feature flags and Rust requires an exhaustive match.
 fn op_name(op: &OpStruct) -> &'static str {
     match op {
         OpStruct::Scan(_) => "Scan",
@@ -265,12 +402,15 @@ fn op_name(op: &OpStruct) -> &'static str {
         OpStruct::Window(_) => "Window",
         OpStruct::NativeScan(_) => "NativeScan",
         OpStruct::IcebergScan(_) => "IcebergScan",
+        OpStruct::IcebergWrite(_) => "IcebergWrite",
         OpStruct::ParquetWriter(_) => "ParquetWriter",
         OpStruct::Explode(_) => "Explode",
         OpStruct::CsvScan(_) => "CsvScan",
         OpStruct::ShuffleScan(_) => "ShuffleScan",
         OpStruct::BroadcastNestedLoopJoin(_) => "BroadcastNestedLoopJoin",
         OpStruct::Sample(_) => "Sample",
+        OpStruct::ContribScan(_) => "ContribScan",
+        OpStruct::WindowGroupLimit(_) => "WindowGroupLimit",
     }
 }
 
@@ -301,8 +441,6 @@ fn collect_op_names<'a>(op: &'a Operator, names: &mut std::collections::BTreeSet
 struct ExecutionContext {
     /// The id of the execution context.
     pub id: i64,
-    /// Task attempt id
-    pub task_attempt_id: i64,
     /// The deserialized Spark plan
     pub spark_plan: Operator,
     /// The number of partitions
@@ -335,8 +473,6 @@ struct ExecutionContext {
     pub debug_native: bool,
     /// Whether to write native plans with metrics to stdout
     pub explain_native: bool,
-    /// Memory pool config
-    pub memory_pool_config: MemoryPoolConfig,
     /// Whether to log memory usage on each call to execute_plan
     pub tracing_enabled: bool,
     /// Rust thread ID, used for aggregating tracing metrics per thread
@@ -357,6 +493,11 @@ struct ExecutionContext {
     /// it has to travel with the plan. `None` when no driving Spark task is present (unit tests,
     /// direct native driver runs). Lifetime is as for `task_context` above.
     pub class_loader: Option<Arc<Global<JObject<'static>>>>,
+    /// Task-owned remote shuffle callback, registered before native planning starts.
+    /// The callback owns a JNI global reference and can safely run on Tokio workers.
+    pub shuffle_partition_pusher: Option<Arc<dyn ShufflePartitionPusher>>,
+    /// Removes this context's tracing memory-pool entry on every exit path.
+    memory_pool_registration: Option<ThreadMemoryPoolRegistration>,
 }
 
 /// Accept serialized query plan and return the address of the native query plan.
@@ -440,6 +581,21 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
             let memory_pool =
                 create_memory_pool(&memory_pool_config, task_memory_manager, task_attempt_id);
 
+            // Register the shared base pool before wrapping it for per-plan debug logging. The
+            // guard removes the entry if any later plan setup step fails.
+            //
+            // Registration is not conditional on this plan's tracing setting. `tracing.enabled` is
+            // a session config, so an executor can run a traced and an untraced plan at once,
+            // while the allocation counter a trace compares against is process-wide. Registering
+            // only traced plans would leave the untraced plan's reservation out of the total and
+            // report it as allocation held outside any pool.
+            let rust_thread_id = get_thread_id();
+            let memory_pool_registration = Some(ThreadMemoryPoolRegistration::new(
+                rust_thread_id,
+                id,
+                Arc::clone(&memory_pool),
+            ));
+
             let memory_pool = if logging_memory_pool {
                 Arc::new(LoggingMemoryPool::new(task_attempt_id as u64, memory_pool))
             } else {
@@ -466,6 +622,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
                 max_temp_directory_size,
                 task_cpus as usize,
                 &spark_config,
+                &spark_plan,
             )?;
 
             let plan_creation_time = start.elapsed();
@@ -488,17 +645,6 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
             }
 
             let session = Arc::new(session);
-
-            // Register this context's memory pool so we can sum all pools
-            // on the same thread when emitting tracing metrics.
-            let rust_thread_id = get_thread_id();
-            if tracing_enabled {
-                register_memory_pool(
-                    rust_thread_id,
-                    id,
-                    Arc::clone(&session.runtime_env().memory_pool),
-                );
-            }
 
             let tracing_event_name = if tracing_enabled {
                 build_tracing_event_name(&spark_plan)
@@ -523,7 +669,6 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
 
             let exec_context = Box::new(ExecutionContext {
                 id,
-                task_attempt_id,
                 spark_plan,
                 partition_count: partition_count as usize,
                 root_op: None,
@@ -540,7 +685,6 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
                 session_ctx: session,
                 debug_native,
                 explain_native,
-                memory_pool_config,
                 tracing_enabled,
                 rust_thread_id,
                 tracing_memory_metric_name: format!(
@@ -549,11 +693,87 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
                 tracing_event_name,
                 task_context,
                 class_loader,
+                shuffle_partition_pusher: None,
+                memory_pool_registration,
             });
 
             Ok(Box::into_raw(exec_context) as i64)
         })
     })
+}
+
+/// Binds one task-owned shuffle callback before native execution is initialized.
+///
+/// Keeping callback registration separate preserves the existing `createPlan` JNI ABI for
+/// all local shuffle and non-shuffle callers.
+#[no_mangle]
+pub extern "system" fn Java_org_apache_comet_Native_setShufflePartitionPusher(
+    e: EnvUnowned,
+    _class: JClass,
+    exec_context: jlong,
+    callback: JObject,
+) {
+    try_unwrap_or_throw(&e, |env| {
+        if exec_context == 0 {
+            return Err(CometError::NullPointer(
+                "Remote shuffle callback requires a valid native execution plan".to_string(),
+            ));
+        }
+
+        let exec_context = get_execution_context(exec_context);
+        if exec_context.root_op.is_some() {
+            return Err(CometError::Internal(
+                "Remote shuffle callback cannot be registered after native execution starts"
+                    .to_string(),
+            ));
+        }
+
+        if exec_context.shuffle_partition_pusher.is_some() {
+            return Err(CometError::Internal(
+                "Remote shuffle callback has already been registered for this task".to_string(),
+            ));
+        }
+
+        let pusher = JavaShufflePartitionPusher::try_new(env, &callback)?;
+        exec_context.shuffle_partition_pusher = Some(Arc::new(pusher));
+        Ok(())
+    })
+}
+
+/// Only admit the validated native-shuffle path. A session belongs to one fused Spark plan,
+/// so an unsafe partial aggregate disables skipping for the whole plan, including its children.
+/// This deliberately gives up some opportunities rather than changing execution contexts per op.
+fn configure_skip_partial_aggregation(config: &mut SessionConfig, plan: &Operator) {
+    fn supported(plan: &Operator) -> bool {
+        let supported_aggregate = match &plan.op_struct {
+            Some(OpStruct::HashAgg(agg)) => match AggregateMode::try_from(agg.mode) {
+                // Final never skips. Still inspect its children below.
+                Ok(AggregateMode::Final) => true,
+                Ok(AggregateMode::Partial) => {
+                    agg.expr_modes
+                        .iter()
+                        .all(|mode| *mode == AggregateMode::Partial as i32)
+                        && agg.agg_exprs.iter().all(|expr| {
+                            matches!(&expr.expr_struct, Some(AggExprStruct::Count(count))
+                                if count.children.len() == 1)
+                        })
+                }
+                // PartialMerge is represented as native Partial, but consumes states, not rows.
+                _ => false,
+            },
+            _ => true,
+        };
+        supported_aggregate && plan.children.iter().all(supported)
+    }
+
+    if !matches!(&plan.op_struct, Some(OpStruct::ShuffleWriter(_))) || !supported(plan) {
+        // Enforce safety after config pass-through: a testing override cannot make unsupported
+        // accumulators convertible. DF 55 removed supports_convert_to_state().
+        config
+            .options_mut()
+            .execution
+            .skip_partial_aggregation_probe_ratio_threshold = 1.1;
+    }
 }
 
 /// Configure DataFusion session context.
@@ -564,12 +784,15 @@ fn prepare_datafusion_session_context(
     max_temp_directory_size: u64,
     task_cpus: usize,
     spark_config: &HashMap<String, String>,
+    spark_plan: &Operator,
 ) -> CometResult<SessionContext> {
     let paths = local_dirs.into_iter().map(PathBuf::from).collect();
     let disk_manager = DiskManagerBuilder::default()
         .with_mode(DiskManagerMode::Directories(paths))
         .with_max_temp_directory_size(max_temp_directory_size);
-    let mut rt_config = RuntimeEnvBuilder::new().with_disk_manager_builder(disk_manager);
+    let mut rt_config = RuntimeEnvBuilder::new()
+        .with_disk_manager_builder(disk_manager)
+        .with_object_store_registry(Arc::new(CometObjectStoreRegistry::default()));
     rt_config = rt_config.with_memory_pool(memory_pool);
 
     let mut session_config = SessionConfig::new()
@@ -577,17 +800,7 @@ fn prepare_datafusion_session_context(
         // This DataFusion context is within the scope of an executing Spark Task. We want to set
         // its internal parallelism to the number of CPUs allocated to Spark Tasks. This can be
         // modified by changing spark.task.cpus in the Spark config.
-        .with_batch_size(batch_size)
-        // DataFusion partial aggregates can emit duplicate rows so we disable the
-        // skip partial aggregation feature because this is not compatible with Spark's
-        // use of partial aggregates.
-        .set(
-            "datafusion.execution.skip_partial_aggregation_probe_ratio_threshold",
-            // this is the threshold of number of groups / number of rows and the
-            // maximum value is 1.0, so we set the threshold a little higher just
-            // to be safe
-            &ScalarValue::Float64(Some(1.1)),
-        );
+        .with_batch_size(batch_size);
 
     // Translate the Comet-namespaced row-level pushdown flag into the equivalent
     // DataFusion session options. `pushdown_filters` enables the parquet reader's
@@ -613,6 +826,8 @@ fn prepare_datafusion_session_context(
             session_config = session_config.set_str(&df_key, value);
         }
     }
+
+    configure_skip_partial_aggregation(&mut session_config, spark_plan);
 
     let runtime = rt_config.build()?;
 
@@ -663,6 +878,11 @@ fn register_datafusion_spark_function(session_ctx: &SessionContext) {
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkBitShift::right_unsigned()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkSoundex::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkSubstring::default()));
+    // Serves length, char_length, character_length and len. SparkLengthFunc does not unwrap
+    // dictionary arrays and its uniform signature gets no planner coercion, so it relies on
+    // every input reaching expressions as plain Utf8 or Binary: ScanExec and the shuffle scan
+    // unpack dictionaries and the Parquet adapter casts to the required Spark type.
+    session_ctx.register_udf(ScalarUDF::new_from_impl(SparkLengthFunc::default()));
 }
 
 /// Prepares arrow arrays for output.
@@ -681,6 +901,7 @@ fn prepare_output(
     let schema_addrs = unsafe { schema_addrs.get_elements(env, ReleaseMode::NoCopyBack)? };
     let schema_addrs = &*schema_addrs;
 
+    let output_schema = output_batch.schema();
     let results = output_batch.columns();
     let num_rows = output_batch.num_rows();
 
@@ -707,6 +928,7 @@ fn prepare_output(
         let mut i = 0;
         while i < results.len() {
             let array_ref = results.get(i).ok_or(CometError::IndexOutOfBounds(i))?;
+            let field = output_schema.field(i);
 
             if array_ref.offset() != 0 {
                 // https://github.com/apache/datafusion-comet/issues/2051
@@ -723,11 +945,11 @@ fn prepare_output(
 
                 new_array
                     .to_data()
-                    .move_to_spark(array_addrs[i], schema_addrs[i])?;
+                    .move_to_spark(field, array_addrs[i], schema_addrs[i])?;
             } else {
                 array_ref
                     .to_data()
-                    .move_to_spark(array_addrs[i], schema_addrs[i])?;
+                    .move_to_spark(field, array_addrs[i], schema_addrs[i])?;
             }
             i += 1;
         }
@@ -796,7 +1018,10 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
                         .with_exec_id(exec_context_id)
                         .with_sql_text_pool(&exec_context.spark_plan)
                         .with_task_context(exec_context.task_context.clone())
-                        .with_class_loader(exec_context.class_loader.clone());
+                        .with_class_loader(exec_context.class_loader.clone())
+                        .with_shuffle_partition_pusher(
+                            exec_context.shuffle_partition_pusher.clone(),
+                        );
                 let (scans, shuffle_scans, root_op) = planner.create_plan(
                     &exec_context.spark_plan,
                     &mut exec_context.input_sources.clone(),
@@ -941,10 +1166,19 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
         if exec_context.tracing_enabled {
             #[cfg(feature = "jemalloc")]
             log_jemalloc_usage();
+            #[cfg(feature = "alloc-accounting")]
+            log_native_allocated();
+            // Both totals come from one read of the registry, so the pair describes a single
+            // instant, and both are emitted next to the allocation counter above so a trace can
+            // compare them. The per-thread counter cannot be summed across threads to obtain the
+            // process-wide one: it reports a shared pool's full reservation once per referencing
+            // thread.
+            let totals = total_reserved(Some(exec_context.rust_thread_id));
             log_memory_usage(
                 &exec_context.tracing_memory_metric_name,
-                total_reserved_for_thread(exec_context.rust_thread_id) as u64,
+                totals.for_thread as u64,
             );
+            log_memory_usage(POOL_TOTAL_METRIC, totals.across_threads as u64);
         }
 
         result
@@ -959,28 +1193,34 @@ pub extern "system" fn Java_org_apache_comet_Native_releasePlan(
     exec_context: jlong,
 ) {
     try_unwrap_or_throw(&e, |env| unsafe {
-        let execution_context = get_execution_context(exec_context);
-
-        // Update metrics
-        update_metrics(env, execution_context)?;
-
-        handle_task_shared_pool_release(
-            execution_context.memory_pool_config.pool_type,
-            execution_context.task_attempt_id,
+        // A null pointer from the JVM would be undefined behaviour in `Box::from_raw`; panic
+        // instead, which `try_unwrap_or_throw` converts into a Java exception (this is the check
+        // `get_execution_context` performs for the other JNI entry points).
+        assert_ne!(
+            exec_context, 0,
+            "Comet execution context shouldn't be null!"
         );
 
-        // Unregister this context's pool and emit the remaining total for the thread
-        if execution_context.tracing_enabled {
-            let remaining =
-                unregister_and_total(execution_context.rust_thread_id, execution_context.id);
-            log_memory_usage(
-                &execution_context.tracing_memory_metric_name,
-                remaining as u64,
-            );
+        // Reclaim ownership of the context up front so that it is always freed, even if updating
+        // metrics below fails. Dropping it releases the memory pool and every JNI global ref the
+        // context holds.
+        let mut execution_context: Box<ExecutionContext> =
+            Box::from_raw(exec_context as *mut ExecutionContext);
+
+        // Unregister this context's pool and, when tracing, emit the remaining total for the
+        // thread. Every context registers, but only a traced one writes counters.
+        if let Some(memory_pool_registration) = execution_context.memory_pool_registration.take() {
+            let remaining = memory_pool_registration.unregister_and_total();
+            if execution_context.tracing_enabled {
+                log_memory_usage(
+                    &execution_context.tracing_memory_metric_name,
+                    remaining as u64,
+                );
+            }
         }
 
-        let _: Box<ExecutionContext> = Box::from_raw(execution_context);
-        Ok(())
+        // Flush metrics last, as it is the only fallible step here.
+        update_metrics(env, &mut execution_context)
     })
 }
 
@@ -1033,6 +1273,60 @@ fn get_execution_context<'a>(id: i64) -> &'a mut ExecutionContext {
             .as_mut()
             .expect("Comet execution context shouldn't be null!")
     }
+}
+
+/// Returns the partition offsets published by a finished native shuffle write.
+///
+/// The returned array holds `num_output_partitions + 1` offsets, the last being the total data
+/// file length.
+#[no_mangle]
+pub extern "system" fn Java_org_apache_comet_Native_getShufflePartitionOffsets(
+    e: EnvUnowned,
+    _class: JClass,
+    exec_context: jlong,
+) -> jlongArray {
+    try_unwrap_or_throw(&e, |env| {
+        let context = get_execution_context(exec_context);
+
+        let root_op = context.root_op.as_ref().ok_or_else(|| {
+            CometError::Internal(
+                "Cannot read shuffle partition offsets before the plan has been executed"
+                    .to_string(),
+            )
+        })?;
+
+        // `ExecutionPlan` has `Any` as a supertrait but no `as_any` method of its own, so upcast
+        // the trait object before downcasting to the writer.
+        let writer = (root_op.native_plan.as_ref() as &dyn std::any::Any)
+            .downcast_ref::<ShuffleWriterExec>()
+            .ok_or_else(|| {
+                CometError::Internal(
+                    "Shuffle partition offsets are only available on a native shuffle write plan"
+                        .to_string(),
+                )
+            })?;
+
+        let offsets = writer
+            .partition_offsets()
+            .ok_or_else(|| {
+                CometError::Internal(
+                    "Shuffle partition offsets are not published by a remote shuffle destination"
+                        .to_string(),
+                )
+            })?
+            .get()
+            .ok_or_else(|| {
+                CometError::Internal(
+                    "Shuffle writer has not published its partition offsets; the plan was not \
+                     drained to completion"
+                        .to_string(),
+                )
+            })?;
+
+        let long_array = env.new_long_array(offsets.len())?;
+        long_array.set_region(env, 0, offsets)?;
+        Ok(long_array.into_raw())
+    })
 }
 
 /// Used by Comet shuffle external sorter to write sorted records to disk.
@@ -1166,13 +1460,108 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_decodeShuffleBlock(
 ) -> jlong {
     try_unwrap_or_throw(&e, |env| {
         with_trace("decodeShuffleBlock", tracing_enabled != JNI_FALSE, || {
-            let raw_pointer = env.get_direct_buffer_address(&byte_buffer)?;
-            let length = length as usize;
-            let slice: &[u8] = unsafe { std::slice::from_raw_parts(raw_pointer, length) };
-            let batch = read_ipc_compressed(slice)?;
-            prepare_output(env, array_addrs, schema_addrs, batch, false)
+            decode_shuffle_block(env, byte_buffer, length, array_addrs, schema_addrs, None)
         })
     })
+}
+
+#[no_mangle]
+/// Parse the expected schema once for a remote shuffle iterator.
+///
+/// The iterator owns the returned decoder and releases it when the input is closed.
+pub extern "system" fn Java_org_apache_comet_Native_createRemoteShuffleDecoder(
+    e: EnvUnowned,
+    _class: JClass,
+    expected_schema: JByteArray,
+) -> jlong {
+    try_unwrap_or_throw(&e, |env| {
+        let bytes = env.convert_byte_array(expected_schema)?;
+        let schema = ShuffleScan::decode(bytes.as_slice()).map_err(|error| {
+            CometError::Internal(format!("Invalid expected remote shuffle schema: {error}"))
+        })?;
+        let decoder = RemoteShuffleDecoder {
+            expected_types: schema.fields.iter().map(to_arrow_datatype).collect(),
+        };
+        Ok(Box::into_raw(Box::new(decoder)) as jlong)
+    })
+}
+
+/// Immutable decoding state owned by one JVM remote shuffle iterator, not shared across tasks.
+struct RemoteShuffleDecoder {
+    expected_types: Vec<ArrowDataType>,
+}
+
+#[no_mangle]
+/// Release a remote shuffle iterator's decoder.
+///
+/// # Safety
+/// A nonzero handle must have been returned by `createRemoteShuffleDecoder`, must not have
+/// been released, and must not be in use by a concurrent decode call.
+pub unsafe extern "system" fn Java_org_apache_comet_Native_releaseRemoteShuffleDecoder(
+    e: EnvUnowned,
+    _class: JClass,
+    decoder_handle: jlong,
+) {
+    try_unwrap_or_throw(&e, |_| {
+        if decoder_handle != 0 {
+            drop(unsafe { Box::from_raw(decoder_handle as *mut RemoteShuffleDecoder) });
+        }
+        Ok(())
+    })
+}
+
+#[no_mangle]
+/// Decode a remote native shuffle block with Arrow array and logical type validation enabled.
+/// # Safety
+/// Buffer and output pointers must be valid. The decoder handle must have been returned by
+/// `createRemoteShuffleDecoder` and must remain alive for the duration of this call.
+pub unsafe extern "system" fn Java_org_apache_comet_Native_decodeShuffleBlockWithValidation(
+    e: EnvUnowned,
+    _class: JClass,
+    byte_buffer: JByteBuffer,
+    length: jint,
+    array_addrs: JLongArray,
+    schema_addrs: JLongArray,
+    tracing_enabled: jboolean,
+    decoder_handle: jlong,
+) -> jlong {
+    try_unwrap_or_throw(&e, |env| {
+        with_trace("decodeShuffleBlock", tracing_enabled != JNI_FALSE, || {
+            let decoder = unsafe { (decoder_handle as *const RemoteShuffleDecoder).as_ref() }
+                .ok_or_else(|| {
+                    CometError::Internal("Remote shuffle decoder is not initialized".to_owned())
+                })?;
+            decode_shuffle_block(
+                env,
+                byte_buffer,
+                length,
+                array_addrs,
+                schema_addrs,
+                Some(&decoder.expected_types),
+            )
+        })
+    })
+}
+
+fn decode_shuffle_block(
+    env: &mut Env,
+    byte_buffer: JByteBuffer,
+    length: jint,
+    array_addrs: JLongArray,
+    schema_addrs: JLongArray,
+    expected_types: Option<&[ArrowDataType]>,
+) -> CometResult<jlong> {
+    let raw_pointer = env.get_direct_buffer_address(&byte_buffer)?;
+    let length = length as usize;
+    let slice: &[u8] = unsafe { std::slice::from_raw_parts(raw_pointer, length) };
+    let batch = if let Some(expected_types) = expected_types {
+        // Reject incompatible logical types, then decode dictionaries before JVM import. The
+        // JVM importer supports fewer dictionary key/value layouts than the shuffle writer.
+        decode_remote_shuffle_batch(slice, expected_types)?
+    } else {
+        read_ipc_compressed(slice)?
+    };
+    prepare_output(env, array_addrs, schema_addrs, batch, false)
 }
 
 #[no_mangle]
@@ -1315,7 +1704,8 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_columnarToRowConvert(
             let array_data = from_ffi(ffi_array, &ffi_schema)
                 .map_err(|e| CometError::Internal(format!("Failed to import array: {}", e)))?;
 
-            arrays.push(arrow::array::make_array(array_data));
+            let imported = arrow::array::make_array(array_data);
+            arrays.push(decode_string_arrays(&imported)?);
         }
 
         // Convert columnar to row
@@ -1369,4 +1759,388 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_columnarToRowClose(
         }
         Ok(())
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use arrow::datatypes::{DataType, Field, Schema};
+    use datafusion::execution::memory_pool::{
+        MemoryConsumer, MemoryReservation, UnboundedMemoryPool,
+    };
+    use datafusion::execution::FunctionRegistry;
+    use datafusion::logical_expr::ReturnFieldArgs;
+    use datafusion_comet_proto::spark_expression;
+    use datafusion_comet_proto::spark_expression::{AggExpr, Count, Expr, Sum};
+    use datafusion_comet_proto::spark_operator::{HashAggregate, ShuffleWriter};
+
+    #[test]
+    fn skip_partial_eligibility_is_fail_closed() {
+        let count = AggExpr {
+            expr_struct: Some(AggExprStruct::Count(Count {
+                children: vec![Expr::default()],
+            })),
+            ..Default::default()
+        };
+        let sum = AggExpr {
+            expr_struct: Some(AggExprStruct::Sum(Sum::default())),
+            ..Default::default()
+        };
+        let partial = HashAggregate {
+            grouping_exprs: vec![Expr::default()],
+            agg_exprs: vec![count.clone()],
+            mode: AggregateMode::Partial as i32,
+            ..Default::default()
+        };
+        let writer = |agg: HashAggregate| Operator {
+            op_struct: Some(OpStruct::ShuffleWriter(ShuffleWriter::default())),
+            children: vec![Operator {
+                op_struct: Some(OpStruct::HashAgg(agg)),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let ratio = |plan: &Operator, requested: f64| {
+            let mut config = SessionConfig::new();
+            config
+                .options_mut()
+                .execution
+                .skip_partial_aggregation_probe_rows_threshold = 37;
+            config
+                .options_mut()
+                .execution
+                .skip_partial_aggregation_probe_ratio_threshold = requested;
+            configure_skip_partial_aggregation(&mut config, plan);
+            assert_eq!(
+                config
+                    .options()
+                    .execution
+                    .skip_partial_aggregation_probe_rows_threshold,
+                37
+            );
+            config
+                .options()
+                .execution
+                .skip_partial_aggregation_probe_ratio_threshold
+        };
+
+        for agg in [
+            partial.clone(),
+            HashAggregate {
+                agg_exprs: vec![],
+                ..partial.clone()
+            },
+            HashAggregate {
+                agg_exprs: vec![count.clone(), count],
+                ..partial.clone()
+            },
+        ] {
+            let plan = writer(agg);
+            assert_eq!(ratio(&plan, 0.8), 0.8);
+            assert_eq!(ratio(&plan, 0.5), 0.5);
+            assert_eq!(ratio(&plan, 1.1), 1.1);
+            // Non-native shuffle / standalone native blocks stay disabled.
+            assert_eq!(ratio(&plan.children[0], 0.8), 1.1);
+        }
+
+        for agg in [
+            HashAggregate {
+                agg_exprs: vec![sum],
+                ..partial.clone()
+            },
+            HashAggregate {
+                agg_exprs: vec![AggExpr::default()],
+                ..partial.clone()
+            },
+            HashAggregate {
+                agg_exprs: vec![AggExpr {
+                    expr_struct: Some(AggExprStruct::Count(Count {
+                        children: vec![Expr::default(), Expr::default()],
+                    })),
+                    ..Default::default()
+                }],
+                ..partial.clone()
+            },
+            HashAggregate {
+                mode: AggregateMode::PartialMerge as i32,
+                ..partial.clone()
+            },
+            HashAggregate {
+                expr_modes: vec![AggregateMode::PartialMerge as i32],
+                ..partial.clone()
+            },
+            HashAggregate {
+                mode: 99,
+                ..partial.clone()
+            },
+        ] {
+            let plan = writer(agg);
+            assert_eq!(ratio(&plan, 0.8), 1.1);
+            // An eligible sibling or a Final parent must not hide the unsafe child.
+            let mut nested = writer(HashAggregate {
+                mode: AggregateMode::Final as i32,
+                ..partial.clone()
+            });
+            nested.children[0].children = plan.children;
+            assert_eq!(ratio(&nested, 0.8), 1.1);
+        }
+    }
+
+    fn entry_count(thread_id: u64) -> usize {
+        get_thread_memory_pools()
+            .lock()
+            .get(&thread_id)
+            .map(HashMap::len)
+            .unwrap_or(0)
+    }
+
+    #[test]
+    fn thread_memory_pool_registration_is_scoped_and_deduplicates_base_pool() {
+        let _guard = serial();
+        const THREAD_ID: u64 = u64::MAX;
+        let pool: Arc<dyn MemoryPool> = Arc::new(UnboundedMemoryPool::default());
+        let reservation = MemoryConsumer::new("test").register(&pool);
+        reservation.grow(4096);
+        let weak = Arc::downgrade(&pool);
+
+        let first_wrapper: Arc<dyn MemoryPool> =
+            Arc::new(LoggingMemoryPool::new(1, Arc::clone(&pool)));
+        let second_wrapper: Arc<dyn MemoryPool> =
+            Arc::new(LoggingMemoryPool::new(1, Arc::clone(&pool)));
+        assert!(!Arc::ptr_eq(&first_wrapper, &second_wrapper));
+
+        let first = ThreadMemoryPoolRegistration::new(THREAD_ID, 1, Arc::clone(&pool));
+        let second = ThreadMemoryPoolRegistration::new(THREAD_ID, 2, Arc::clone(&pool));
+        assert_eq!(entry_count(THREAD_ID), 2);
+        assert_eq!(total_reserved_for_thread(THREAD_ID), pool.reserved());
+
+        let metrics_result: Result<(), ()> = {
+            let _registration = first;
+            Err(())
+        };
+        assert!(metrics_result.is_err());
+        assert_eq!(entry_count(THREAD_ID), 1);
+        drop(second);
+        assert_eq!(entry_count(THREAD_ID), 0);
+
+        for context_id in 0..100 {
+            let create_result: Result<(), ()> = {
+                let _registration =
+                    ThreadMemoryPoolRegistration::new(THREAD_ID, context_id, Arc::clone(&pool));
+                Err(())
+            };
+            assert!(create_result.is_err());
+
+            let metrics_result: Result<(), ()> = {
+                let _registration =
+                    ThreadMemoryPoolRegistration::new(THREAD_ID, context_id, Arc::clone(&pool));
+                Err(())
+            };
+            assert!(metrics_result.is_err());
+            assert_eq!(entry_count(THREAD_ID), 0);
+        }
+
+        drop(first_wrapper);
+        drop(second_wrapper);
+        drop(reservation);
+        drop(pool);
+        assert!(weak.upgrade().is_none());
+    }
+
+    /// `THREAD_MEMORY_POOLS` is process-wide and the crate's tests run in parallel, so any test
+    /// that registers a pool perturbs another's view of the process-wide total. The tests below
+    /// take this lock so their deltas are exact; without it they observe each other's pools.
+    static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn serial() -> std::sync::MutexGuard<'static, ()> {
+        SERIAL
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    fn reserving(bytes: usize) -> (Arc<dyn MemoryPool>, MemoryReservation) {
+        let pool: Arc<dyn MemoryPool> = Arc::new(UnboundedMemoryPool::default());
+        let reservation = MemoryConsumer::new("test").register(&pool);
+        reservation.grow(bytes);
+        (pool, reservation)
+    }
+
+    fn total_reserved_across_threads() -> usize {
+        total_reserved(None).across_threads
+    }
+
+    /// The property that makes this total comparable against a process-wide allocation counter,
+    /// and the one summing the per-thread counters gets wrong: a pool shared by several contexts
+    /// on several threads contributes its reservation once.
+    #[test]
+    fn a_shared_pool_is_counted_once_however_many_contexts_hold_it() {
+        let _guard = serial();
+        let before = total_reserved_across_threads();
+        let (pool, reservation) = reserving(4096);
+
+        let _first = ThreadMemoryPoolRegistration::new(11, 1, Arc::clone(&pool));
+        assert_eq!(
+            total_reserved_across_threads() - before,
+            4096,
+            "a registered pool's reservation must appear in the total"
+        );
+
+        // A second context in the same task, and a third on another thread, both register the
+        // same pool. Summing the per-thread counters would report 4096 three times over.
+        let _second = ThreadMemoryPoolRegistration::new(11, 2, Arc::clone(&pool));
+        let _third = ThreadMemoryPoolRegistration::new(12, 3, Arc::clone(&pool));
+        assert_eq!(
+            total_reserved_across_threads() - before,
+            4096,
+            "a shared pool must be counted once, not once per holder"
+        );
+        assert_eq!(total_reserved_for_thread(11), 4096);
+        assert_eq!(total_reserved_for_thread(12), 4096);
+
+        drop(reservation);
+    }
+
+    /// The total has to cover every pool type, not just the task-shared ones: `greedy`,
+    /// `fair_spill`, the `_global` variants and `unbounded` all bypass the task-shared registry,
+    /// and reporting zero for them would make the analyzer call live reservations untracked.
+    #[test]
+    fn independent_pools_each_contribute_to_the_total() {
+        let _guard = serial();
+        let before = total_reserved_across_threads();
+        let (first_pool, first_reservation) = reserving(4096);
+        let (second_pool, second_reservation) = reserving(8192);
+
+        let _first = ThreadMemoryPoolRegistration::new(13, 1, first_pool);
+        let _second = ThreadMemoryPoolRegistration::new(13, 2, second_pool);
+        assert_eq!(total_reserved_across_threads() - before, 4096 + 8192);
+
+        drop(first_reservation);
+        drop(second_reservation);
+    }
+
+    #[test]
+    fn released_pools_leave_the_total() {
+        let _guard = serial();
+        let before = total_reserved_across_threads();
+        let (pool, reservation) = reserving(8192);
+        {
+            let _registration = ThreadMemoryPoolRegistration::new(14, 1, pool);
+            assert_eq!(total_reserved_across_threads() - before, 8192);
+        }
+        assert_eq!(
+            total_reserved_across_threads(),
+            before,
+            "unregistering the last context must remove the pool from the total"
+        );
+        drop(reservation);
+    }
+
+    /// What the traced thread sees when a plan on another thread holds memory it knows nothing
+    /// about, which is the case a tracing-gated registry got wrong: `tracing.enabled` is a session
+    /// config, so an untraced plan can run alongside a traced one, and its reservation is part of
+    /// the process-wide allocation the trace compares against. The per-thread figure stays local —
+    /// that counter is for attribution — while the process total has to include the other thread.
+    #[test]
+    fn the_process_total_includes_pools_registered_on_other_threads() {
+        let _guard = serial();
+        let before = total_reserved_across_threads();
+        let (traced_pool, traced_reservation) = reserving(20 * 1024 * 1024);
+        let (untraced_pool, untraced_reservation) = reserving(100 * 1024 * 1024);
+
+        let _traced = ThreadMemoryPoolRegistration::new(15, 1, traced_pool);
+        let _untraced = ThreadMemoryPoolRegistration::new(16, 2, untraced_pool);
+
+        let totals = total_reserved(Some(15));
+        assert_eq!(
+            totals.for_thread,
+            20 * 1024 * 1024,
+            "the per-thread counter attributes only this thread's pools"
+        );
+        assert_eq!(
+            totals.across_threads - before,
+            120 * 1024 * 1024,
+            "the process total must cover the pool held by the other thread"
+        );
+
+        drop(traced_reservation);
+        drop(untraced_reservation);
+    }
+
+    #[test]
+    fn length_resolves_to_spark_length_for_string_and_binary() {
+        use datafusion::physical_expr::expressions::{CastExpr, Column};
+        use datafusion::physical_expr::ScalarFunctionExpr;
+        use datafusion_comet_proto::spark_expression::data_type::DataTypeId;
+        use datafusion_comet_proto::spark_expression::expr::ExprStruct;
+        use datafusion_comet_proto::spark_expression::{BoundReference, ScalarFunc};
+
+        let ctx = Arc::new(SessionContext::new());
+        register_datafusion_spark_function(&ctx);
+        let planner = PhysicalPlanner::new(Arc::clone(&ctx), 0);
+        // The planner path: a uniform signature gets no coercion, so the input reaches the
+        // kernel exactly as the scan produced it.
+        for (type_id, input) in [
+            (DataTypeId::String, DataType::Utf8),
+            (DataTypeId::Bytes, DataType::Binary),
+        ] {
+            let schema = Arc::new(Schema::new(vec![Field::new("arg0", input.clone(), true)]));
+            for name in ["length", "char_length", "character_length"] {
+                let expr = Expr {
+                    expr_struct: Some(ExprStruct::ScalarFunc(ScalarFunc {
+                        func: name.to_string(),
+                        args: vec![Expr {
+                            expr_struct: Some(ExprStruct::Bound(BoundReference {
+                                index: 0,
+                                datatype: Some(spark_expression::DataType {
+                                    type_id: type_id as i32,
+                                    type_info: None,
+                                }),
+                            })),
+                            query_context: None,
+                            expr_id: None,
+                        }],
+                        return_type: None,
+                        fail_on_error: false,
+                    })),
+                    query_context: None,
+                    expr_id: None,
+                };
+                let physical = planner
+                    .create_expr(&expr, Arc::clone(&schema))
+                    .unwrap_or_else(|e| panic!("{name}({input}) failed to plan: {e}"));
+                assert_eq!(
+                    physical.data_type(&schema).unwrap(),
+                    DataType::Int32,
+                    "{name}({input})"
+                );
+                let func = physical
+                    .downcast_ref::<ScalarFunctionExpr>()
+                    .unwrap_or_else(|| panic!("{name}({input}) is not a scalar function"));
+                assert_eq!(func.fun().name(), "length", "{name}({input})");
+                assert!(
+                    func.args()[0].downcast_ref::<Column>().is_some()
+                        && func.args()[0].downcast_ref::<CastExpr>().is_none(),
+                    "{name}({input}) should take the column without a cast"
+                );
+            }
+        }
+        // Wider and view encodings never come out of a Comet scan, but the kernel accepts them
+        // with the same Int32 result should a future input path produce them.
+        let udf = ctx.udf("length").unwrap();
+        for input in [
+            DataType::LargeUtf8,
+            DataType::Utf8View,
+            DataType::LargeBinary,
+            DataType::BinaryView,
+        ] {
+            let arg = Arc::new(Field::new("arg0", input.clone(), true));
+            let ret = udf
+                .return_field_from_args(ReturnFieldArgs {
+                    arg_fields: &[arg],
+                    scalar_arguments: &[None],
+                })
+                .unwrap();
+            assert_eq!(ret.data_type(), &DataType::Int32, "length({input})");
+        }
+    }
 }

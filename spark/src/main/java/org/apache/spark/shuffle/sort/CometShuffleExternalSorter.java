@@ -196,6 +196,7 @@ public final class CometShuffleExternalSorter implements CometShuffleChecksumSup
     activeSpillSorter.setSpillInfo(spillInfo);
 
     activeSpillSorter.writeSortedFileNative(false, tracingEnabled);
+    updatePeakMemoryUsed();
     final long spillSize = activeSpillSorter.freeMemory();
     activeSpillSorter.reset();
 
@@ -253,7 +254,10 @@ public final class CometShuffleExternalSorter implements CometShuffleChecksumSup
   private void growPointerArrayIfNecessary() throws IOException {
     assert (activeSpillSorter != null);
     if (!activeSpillSorter.hasSpaceForAnotherRecord()) {
-      long used = activeSpillSorter.getMemoryUsage();
+      // Size the new array from the pointer array alone, as Spark's ShuffleExternalSorter does.
+      // SpillSorter.getMemoryUsage() also counts the data pages, which would make the array grow
+      // in proportion to the pages instead of doubling.
+      long used = activeSpillSorter.getPointerArrayMemoryUsage();
       LongArray array;
       try {
         // could trigger spilling

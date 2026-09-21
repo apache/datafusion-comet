@@ -23,13 +23,14 @@ import java.{util => ju}
 import java.util.Collections
 
 import org.apache.spark.api.plugin.{DriverPlugin, ExecutorPlugin, PluginContext, SparkPlugin}
-import org.apache.spark.comet.shims.ShimCometDriverPlugin
 import org.apache.spark.internal.Logging
-import org.apache.spark.internal.config.{EXECUTOR_MEMORY, EXECUTOR_MEMORY_OVERHEAD, EXECUTOR_MEMORY_OVERHEAD_FACTOR}
+import org.apache.spark.internal.config.EXECUTOR_MEMORY_OVERHEAD
 import org.apache.spark.sql.internal.StaticSQLConf
 
 import org.apache.comet.{COMET_VERSION, CometSparkSessionExtensions, NativeBase}
+import org.apache.comet.{CometConf, ConfigEntry}
 import org.apache.comet.CometConf.{COMET_METRICS_ENABLED, COMET_ONHEAP_ENABLED}
+import org.apache.comet.CometKryoRegistrator
 import org.apache.comet.annotation.Public
 
 /**
@@ -43,8 +44,7 @@ import org.apache.comet.annotation.Public
  *
  * To enable this plugin, set the config "spark.plugins" to `org.apache.spark.CometPlugin`.
  */
-class CometDriverPlugin extends DriverPlugin with Logging with ShimCometDriverPlugin {
-  private val EXECUTOR_MEMORY_DEFAULT = "1g"
+class CometDriverPlugin extends DriverPlugin with Logging {
 
   override def init(sc: SparkContext, pluginContext: PluginContext): ju.Map[String, String] = {
     logInfo("CometDriverPlugin init")
@@ -61,40 +61,20 @@ class CometDriverPlugin extends DriverPlugin with Logging with ShimCometDriverPl
       return Collections.emptyMap[String, String]
     }
 
+    val extraConfs = new ju.HashMap[String, String]()
+
+    CometDriverPlugin.maybeSetCacheSerializer(sc.conf, extraConfs)
+    CometDriverPlugin.warnIfKryoRegistratorMissing(sc.conf)
+
     // register CometSparkSessionExtensions if it isn't already registered
     CometDriverPlugin.registerCometSessionExtension(sc.conf)
 
     // Register Comet metrics
     CometDriverPlugin.registerCometMetrics(sc)
 
-    if (CometSparkSessionExtensions.shouldOverrideMemoryConf(sc.getConf)) {
-      val execMemOverhead = if (sc.getConf.contains(EXECUTOR_MEMORY_OVERHEAD.key)) {
-        sc.getConf.getSizeAsMb(EXECUTOR_MEMORY_OVERHEAD.key)
-      } else {
-        // By default, executorMemory * spark.executor.memoryOverheadFactor, with minimum of 384MB
-        val executorMemory =
-          sc.getConf.getSizeAsMb(EXECUTOR_MEMORY.key, EXECUTOR_MEMORY_DEFAULT)
-        val memoryOverheadFactor = sc.getConf.get(EXECUTOR_MEMORY_OVERHEAD_FACTOR)
-        val memoryOverheadMinMib = getMemoryOverheadMinMib(sc.getConf)
+    CometDriverPlugin.warnIfExecutorMemoryOverheadUnset(sc.getConf)
 
-        Math.max((executorMemory * memoryOverheadFactor).toLong, memoryOverheadMinMib)
-      }
-
-      val cometMemOverhead = CometSparkSessionExtensions.getCometMemoryOverheadInMiB(sc.getConf)
-      sc.conf.set(EXECUTOR_MEMORY_OVERHEAD.key, s"${execMemOverhead + cometMemOverhead}M")
-      val newExecMemOverhead = sc.getConf.getSizeAsMb(EXECUTOR_MEMORY_OVERHEAD.key)
-
-      logInfo(s"""
-         Overriding Spark memory configuration for Comet:
-           - Spark executor memory overhead: ${execMemOverhead}MB
-           - Comet memory overhead: ${cometMemOverhead}MB
-           - Updated Spark executor memory overhead: ${newExecMemOverhead}MB
-         """)
-    } else {
-      logInfo("Comet is running in unified memory mode and sharing off-heap memory with Spark")
-    }
-
-    Collections.emptyMap[String, String]
+    extraConfs
   }
 
   override def receive(message: Any): AnyRef = super.receive(message)
@@ -116,6 +96,90 @@ object CometDriverPlugin extends Logging {
 
   /** Spark config key under which the loaded Comet version is exposed at runtime. */
   val COMET_VERSION_CONFIG = "spark.comet.version"
+
+  // Use Comet's cache serializer only for the native in-memory cache path.
+  // If the application already set spark.sql.cache.serializer, leave that value
+  // unchanged so Comet does not replace a user-selected cache format.
+  private[apache] def maybeSetCacheSerializer(
+      conf: SparkConf,
+      extraConfs: ju.HashMap[String, String]): Unit = {
+    if (conf.getBoolean(CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key, false)) {
+      val serializerKey = StaticSQLConf.SPARK_CACHE_SERIALIZER.key
+      val serializerValue =
+        "org.apache.spark.sql.comet.execution.arrow.ArrowCachedBatchSerializer"
+      val defaultSerializer = StaticSQLConf.SPARK_CACHE_SERIALIZER.defaultValueString
+      val currentSerializer = conf.get(serializerKey, defaultSerializer)
+
+      if (currentSerializer == defaultSerializer) {
+        extraConfs.put(serializerKey, serializerValue)
+        conf.set(serializerKey, serializerValue)
+        logInfo(s"Auto-set $serializerKey=$serializerValue")
+      } else {
+        logInfo(s"Not overriding user-provided $serializerKey=$currentSerializer")
+      }
+    }
+  }
+
+  // Comet hands Spark's serializer classes that Kryo has not been told about, so with
+  // spark.kryo.registrationRequired=true it rejects them with "Class is not registered", which
+  // names neither Comet nor the operation that failed. Two paths reach it: a native broadcast,
+  // which broadcasts an Array[ChunkedByteBuffer], and any cached block Spark serializes -- the
+  // disk half of MEMORY_AND_DISK, the _SER levels, replication, a cross-executor fetch.
+  // CometKryoRegistrator covers both, but spark.kryo.registrator is read when SparkEnv builds the
+  // serializer, before any plugin runs, so it cannot be set from here. Say so while the
+  // application is still starting up rather than leaving the user to attribute the failure later.
+  private[apache] def warnIfKryoRegistratorMissing(conf: SparkConf): Unit = {
+    val usingKryo =
+      conf.get("spark.serializer", "") == "org.apache.spark.serializer.KryoSerializer"
+    val registrationRequired = conf.getBoolean("spark.kryo.registrationRequired", false)
+    val registered = conf
+      .get("spark.kryo.registrator", "")
+      .split(',')
+      .map(_.trim)
+      .contains(CometKryoRegistrator.CLASS_NAME)
+
+    if (usingKryo && registrationRequired && !registered) {
+      logWarning(
+        "spark.kryo.registrationRequired=true but spark.kryo.registrator does not include " +
+          s"${CometKryoRegistrator.CLASS_NAME}. Comet's native broadcast and its in-memory " +
+          "cache format will fail with Kryo's \"Class is not registered\" as soon as their " +
+          "payloads are serialized. Add " +
+          s"spark.kryo.registrator=${CometKryoRegistrator.CLASS_NAME} before creating the " +
+          "SparkContext; it cannot be set later.")
+    }
+  }
+
+  // Comet's native allocations are made by the Rust global allocator and live in the native heap.
+  // The share that operators reserve is charged against a memory pool, but everything else --
+  // expression kernels and Arrow array builders, decompression buffers, Parquet reader structures,
+  // object store buffers, the tokio runtime, allocator overhead -- is covered by no budget at all,
+  // and neither is Comet's JVM-side Arrow allocator. The only slack the executor container has for
+  // that is spark.executor.memoryOverhead, which the JVM's own non-heap usage already draws on.
+  //
+  // Comet used to add spark.comet.memoryOverhead to it here, but a driver plugin cannot: on Spark
+  // 3.4, 3.5 and 4.0, SparkContext builds the default ResourceProfile before it creates the plugin
+  // container, and the cluster managers size executors from that profile rather than re-reading
+  // the conf, so the new value never reached the container. Say so while the application is still
+  // starting up instead, because this has to be set before the SparkContext is created.
+  private[apache] def warnIfExecutorMemoryOverheadUnset(conf: SparkConf): Unit = {
+    val cometEnabled = getBooleanConf(conf, CometConf.COMET_ENABLED)
+    val cometExecEnabled = getBooleanConf(conf, CometConf.COMET_EXEC_ENABLED)
+    val cometShuffleEnabled = getBooleanConf(conf, CometConf.COMET_SHUFFLE_ENABLED)
+    val cometActive = cometEnabled && (cometExecEnabled || cometShuffleEnabled)
+
+    if (cometActive && !conf.contains(EXECUTOR_MEMORY_OVERHEAD.key)) {
+      logWarning(
+        s"${EXECUTOR_MEMORY_OVERHEAD.key} is not set. Comet allocates outside the JVM heap, and " +
+          "the part of that which no memory pool tracks is not covered by " +
+          "spark.executor.memory or spark.memory.offHeap.size, so Spark's default overhead can " +
+          "leave the executor short and the cluster manager may kill it. Set " +
+          s"${EXECUTOR_MEMORY_OVERHEAD.key} before creating the SparkContext; it cannot be set " +
+          s"later. ${CometConf.TUNING_GUIDE}.")
+    }
+  }
+
+  private def getBooleanConf(conf: SparkConf, entry: ConfigEntry[Boolean]): Boolean =
+    conf.getBoolean(entry.key, entry.defaultValue.get)
 
   def registerCometMetrics(sc: SparkContext): Unit = {
     if (sc.getConf.getBoolean(

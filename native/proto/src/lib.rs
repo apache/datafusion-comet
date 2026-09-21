@@ -50,3 +50,87 @@ pub mod spark_metric {
 pub mod spark_config {
     include!(concat!("generated", "/spark.spark_config.rs"));
 }
+
+#[cfg(test)]
+mod tests {
+    use super::spark_operator::{
+        partition_writer, LocalPartitionWriter, PartitionWriter, RssPartitionWriter, ShuffleWriter,
+    };
+    use prost::Message;
+
+    #[derive(Clone, PartialEq, prost::Message)]
+    struct LegacyShuffleWriter {
+        #[prost(string, tag = "3")]
+        output_data_file: String,
+        #[prost(string, tag = "4")]
+        output_index_file: String,
+    }
+
+    fn local_shuffle_writer() -> ShuffleWriter {
+        let output_data_file = "/tmp/shuffle.data".to_string();
+
+        ShuffleWriter {
+            output_data_file: output_data_file.clone(),
+            partition_writer: Some(PartitionWriter {
+                writer: Some(partition_writer::Writer::Local(LocalPartitionWriter {
+                    output_data_file,
+                })),
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn shuffle_partition_writer_round_trips_local_destination() {
+        let encoded = local_shuffle_writer().encode_to_vec();
+        let decoded = ShuffleWriter::decode(encoded.as_slice()).unwrap();
+
+        assert_eq!(decoded.output_data_file, "/tmp/shuffle.data");
+        let Some(partition_writer::Writer::Local(local)) =
+            decoded.partition_writer.and_then(|writer| writer.writer)
+        else {
+            panic!("expected a local shuffle partition writer");
+        };
+        assert_eq!(local.output_data_file, "/tmp/shuffle.data");
+    }
+
+    #[test]
+    fn shuffle_partition_writer_round_trips_rss_destination() {
+        let writer = ShuffleWriter {
+            partition_writer: Some(PartitionWriter {
+                writer: Some(partition_writer::Writer::Rss(RssPartitionWriter {})),
+            }),
+            ..Default::default()
+        };
+        let decoded = ShuffleWriter::decode(writer.encode_to_vec().as_slice()).unwrap();
+
+        assert!(matches!(
+            decoded.partition_writer.and_then(|writer| writer.writer),
+            Some(partition_writer::Writer::Rss(_))
+        ));
+    }
+
+    #[test]
+    fn legacy_shuffle_writer_decodes_new_plan_using_compatibility_paths() {
+        let encoded = local_shuffle_writer().encode_to_vec();
+        let decoded = LegacyShuffleWriter::decode(encoded.as_slice()).unwrap();
+
+        assert_eq!(decoded.output_data_file, "/tmp/shuffle.data");
+        // a new plan carries no index path, so a reader expecting tag 4 sees it unset
+        assert!(decoded.output_index_file.is_empty());
+    }
+
+    /// A plan still carrying the retired index path decodes cleanly: tag 4 is reserved, so it is
+    /// skipped as an unknown field.
+    #[test]
+    fn new_shuffle_writer_decodes_legacy_plan_without_destination() {
+        let legacy = LegacyShuffleWriter {
+            output_data_file: "/tmp/legacy.data".to_string(),
+            output_index_file: "/tmp/legacy.index".to_string(),
+        };
+        let decoded = ShuffleWriter::decode(legacy.encode_to_vec().as_slice()).unwrap();
+
+        assert_eq!(decoded.output_data_file, "/tmp/legacy.data");
+        assert!(decoded.partition_writer.is_none());
+    }
+}

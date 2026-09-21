@@ -27,7 +27,7 @@ import org.scalatest.Tag
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.{CometTestBase, Row}
 import org.apache.spark.sql.catalyst.expressions.{Alias, Cast, Divide, Expression, MakeDecimal, WindowExpression}
-import org.apache.spark.sql.comet.CometWindowExec
+import org.apache.spark.sql.comet.{CometSortExec, CometWindowExec, CometWindowGroupLimitExec}
 import org.apache.spark.sql.execution.SparkPlan
 import org.apache.spark.sql.execution.window.{WindowExec => SparkWindowExec}
 import org.apache.spark.sql.expressions.Window
@@ -36,7 +36,7 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.DecimalType
 
 import org.apache.comet.CometConf
-import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
+import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus}
 
 class CometWindowExecSuite extends CometTestBase {
 
@@ -115,6 +115,192 @@ class CometWindowExecSuite extends CometTestBase {
       digits.append(('0' + digit).toChar)
     }
     digits.toString()
+  }
+
+  for {
+    orderColumn <- Seq("f", "d")
+    // Scalar floating-point order keys are admitted under strict floating point (#5506), so the
+    // native plan and the rank distribution must be identical either way.
+    strictFloatingPoint <- Seq("false", "true")
+  } {
+    test(
+      s"window group limit: $orderColumn NaN and signed zero peers at the cutoff " +
+        s"(strictFloatingPoint=$strictFloatingPoint)") {
+      assume(isSpark35Plus, "WindowGroupLimit was added in Spark 3.5")
+
+      val positiveFloatNaN = java.lang.Float.intBitsToFloat(0x7fc00001)
+      val negativeFloatNaN = java.lang.Float.intBitsToFloat(0xffc00002)
+      val positiveDoubleNaN = java.lang.Double.longBitsToDouble(0x7ff8000000000001L)
+      val negativeDoubleNaN = java.lang.Double.longBitsToDouble(0xfff8000000000002L)
+      val data = Seq(
+        (0, 1, Some(positiveFloatNaN), Some(positiveDoubleNaN), 1),
+        (0, 2, Some(negativeFloatNaN), Some(negativeDoubleNaN), 0),
+        (0, 3, Some(positiveFloatNaN), Some(positiveDoubleNaN), 0),
+        (0, 4, Some(negativeFloatNaN), Some(negativeDoubleNaN), 1),
+        (0, 5, Some(1.0f), Some(1.0d), 0),
+        (0, 6, None, None, 0),
+        (1, 7, Some(0.0f), Some(0.0d), 1),
+        (1, 8, Some(-0.0f), Some(-0.0d), 0),
+        (1, 9, Some(0.0f), Some(0.0d), 0),
+        (1, 10, Some(-0.0f), Some(-0.0d), 1),
+        (1, 11, Some(-1.0f), Some(-1.0d), 0),
+        (1, 12, None, None, 0))
+      val expectedBits = data.map { case (_, id, f, d, _) =>
+        (
+          id,
+          (f.map(java.lang.Float.floatToRawIntBits), d.map(java.lang.Double.doubleToRawLongBits)))
+      }.toMap
+
+      def assertRawBits(rows: Seq[Row]): Unit = {
+        rows.foreach { row =>
+          val floatBits =
+            if (row.isNullAt(2)) None
+            else Some(java.lang.Float.floatToRawIntBits(row.getFloat(2)))
+          val doubleBits =
+            if (row.isNullAt(3)) None
+            else Some(java.lang.Double.doubleToRawLongBits(row.getDouble(3)))
+          assert((floatBits, doubleBits) == expectedBits(row.getInt(1)))
+        }
+      }
+
+      withSQLConf(
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+        SQLConf.SHUFFLE_PARTITIONS.key -> "1",
+        CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key -> strictFloatingPoint,
+        // Defaults to true under CometTestBase; pin it so strict mode exercises the shipped
+        // admission policy rather than the test harness's escape hatch.
+        CometConf.getExprAllowIncompatConfigKey("SortOrder") -> "false",
+        CometConf.COMET_EXEC_WINDOW_GROUP_LIMIT_ENABLED.key -> "true") {
+        withTempView("floating_window_peers") {
+          // LocalTableScan preserves NaN payloads, unlike a Parquet round trip. Check the input
+          // bits so that canonicalization before the native sort cannot hide the regression.
+          data
+            .toDF("p", "id", "f", "d", "secondary")
+            .createOrReplaceTempView("floating_window_peers")
+          assertRawBits(sql("SELECT * FROM floating_window_peers").collect().toSeq)
+
+          for {
+            rankFunction <- Seq("RANK", "DENSE_RANK")
+            (ordering, cutoff) <- Seq("DESC NULLS LAST" -> 1, "ASC NULLS FIRST" -> 3)
+            secondaryKey <- Seq(false, true)
+          } {
+            // With a secondary key, sorting raw NaN/zero representations separates rows that
+            // must be peers. Normalizing only the limit operator's equality keys is insufficient.
+            val orderBy = s"$orderColumn $ordering" + (if (secondaryKey) ", secondary" else "")
+            val query = sql(s"""
+                 |SELECT p, id, f, d, rnk FROM (
+                 |  SELECT *, $rankFunction() OVER (PARTITION BY p ORDER BY $orderBy) AS rnk
+                 |  FROM floating_window_peers
+                 |) WHERE rnk <= $cutoff
+                 |""".stripMargin)
+            checkSparkAnswerAndOperator(
+              query,
+              Seq(classOf[CometSortExec], classOf[CometWindowGroupLimitExec]))
+
+            val actual = query.collect().toSeq
+            val peerIds = if (secondaryKey) Seq(2, 3, 8, 9) else Seq(1, 2, 3, 4, 7, 8, 9, 10)
+            val preceding = if (cutoff == 3) Seq(6 -> 1, 12 -> 1, 5 -> 2, 11 -> 2) else Seq.empty
+            val expected = peerIds.map(_ -> cutoff) ++ preceding
+            assert(actual.map(row => row.getInt(1) -> row.getInt(4)).sorted == expected.sorted)
+            // Canonical comparison keys must not alter the selected rows' floating values.
+            assertRawBits(actual)
+          }
+        }
+      }
+    }
+  }
+
+  for (orderColumn <- Seq("f", "d")) {
+    test(s"window: scalar floating-point order key under strict floating point ($orderColumn)") {
+      // Deliberately not gated on Spark 3.5, unlike the WindowGroupLimit tests above, so the
+      // admission narrowed in #5506 has window coverage on every supported Spark version.
+      // The default RANGE frame spans all peers, so -0.0 and +0.0 landing in one peer group is
+      // directly visible in the running sum, and the result does not depend on tie order.
+      withTempDir { dir =>
+        val path = new Path(dir.toString, "window_strict_fp").toString
+        Seq(
+          (1, -0.0f, -0.0d),
+          (2, 0.0f, 0.0d),
+          (3, 1.0f, 1.0d),
+          (4, -1.0f, -1.0d),
+          (5, Float.NaN, Double.NaN))
+          .toDF("id", "f", "d")
+          .write
+          .parquet(path)
+        spark.read.parquet(path).createOrReplaceTempView("window_strict_fp")
+
+        withSQLConf(
+          CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key -> "true",
+          CometConf.getExprAllowIncompatConfigKey("SortOrder") -> "false",
+          CometConf.COMET_EXEC_WINDOW_GROUP_LIMIT_ENABLED.key -> "false") {
+          checkSparkAnswerAndOperator(
+            sql(s"""SELECT id, SUM(id) OVER (ORDER BY $orderColumn) AS running
+                   |FROM window_strict_fp ORDER BY id""".stripMargin),
+            Seq(classOf[CometWindowExec]))
+        }
+      }
+    }
+  }
+
+  for {
+    partitionColumn <- Seq("f", "d")
+    (function, groupLimit) <- Seq(
+      "RANK()" -> false,
+      "PERCENT_RANK()" -> false,
+      "NTILE(2)" -> false,
+      "RANK()" -> true)
+  } {
+    test(
+      s"window: floating partition keys ($partitionColumn, $function, group limit=$groupLimit)") {
+      assume(!groupLimit || isSpark35Plus, "WindowGroupLimit was added in Spark 3.5")
+
+      val partitionKeys = Seq(
+        (Some(1.0f), Some(1.0d)),
+        (Some(2.0f), Some(2.0d)),
+        (None, None),
+        (Some(0.0f), Some(0.0d)),
+        (Some(-0.0f), Some(-0.0d)),
+        (Some(Float.NaN), Some(Double.NaN)),
+        (
+          Some(java.lang.Float.intBitsToFloat(0xffc00002)),
+          Some(java.lang.Double.longBitsToDouble(0xfff8000000000002L))))
+      val data = partitionKeys.zipWithIndex.flatMap { case ((f, d), index) =>
+        (0 until 4).map(i => (index * 4 + i, f, d, i % 2))
+      }
+
+      withSQLConf(
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+        SQLConf.SHUFFLE_PARTITIONS.key -> "1",
+        CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key -> "false",
+        CometConf.COMET_EXEC_WINDOW_GROUP_LIMIT_ENABLED.key -> groupLimit.toString) {
+        withTempView("floating_window_partitions") {
+          data
+            .toDF("id", "f", "d", "secondary")
+            .createOrReplaceTempView("floating_window_partitions")
+
+          for (partitionBy <- Seq(partitionColumn, s"secondary, $partitionColumn")) {
+            // Spark normalizes floating partition keys before constructing the child sort.
+            // Native sort and window expressions must still agree on these keys, including
+            // for bounded RANK and non-bounded PERCENT_RANK/NTILE without WindowGroupLimit.
+            val windowQuery = s"""
+                 |SELECT id, $function OVER (PARTITION BY $partitionBy ORDER BY id) AS rnk
+                 |FROM floating_window_partitions
+                 |""".stripMargin
+            val query = if (groupLimit) {
+              s"SELECT * FROM ($windowQuery) WHERE rnk <= 1"
+            } else {
+              windowQuery
+            }
+            val operators = Seq(classOf[CometSortExec], classOf[CometWindowExec]) ++
+              (if (groupLimit) Seq(classOf[CometWindowGroupLimitExec]) else Seq.empty)
+            val (_, cometPlan) = checkSparkAnswerAndOperator(sql(query), operators)
+            if (!groupLimit) {
+              assert(collect(cometPlan) { case w: CometWindowGroupLimitExec => w }.isEmpty)
+            }
+          }
+        }
+      }
+    }
   }
 
   test("lead/lag should return the default value if the offset row does not exist") {

@@ -33,3 +33,37 @@ Relevant entry points:
 
 When opening a pull request, use the [PR template](.github/pull_request_template.md) and fill
 in every section.
+
+## Checking a change against CI
+
+A green pull request does not mean a change is safe to queue. The pull request tier runs the Comet
+suites against the default Spark profile only. Spark's own SQL suite and the Iceberg suites first
+report in the merge queue, where a failure evicts the pull request and blocks everyone else's
+merges, or in the nightly run, after the change has already landed.
+
+So when a change touches the serde, the planner, a native operator, a Spark shim, an Iceberg code
+path, or anything under `dev/diffs/`, get a verdict first. Either run the suite locally:
+
+```shell
+dev/local-ci.sh spark sql_core-1     # one matrix row, or `spark` for all of them
+dev/local-ci.sh iceberg shard-2      # one shard, or `iceberg` for every target
+```
+
+or apply the matching `run-*` label so CI runs it instead. Which changes warrant which suite, the
+label names, and the script's caveats are in
+[Continuous Integration](docs/source/contributor-guide/ci.md).
+
+Pick one rather than both. A full local job is hours of compute and tens of GB of disk, so prefer
+the shard that covers the change, and prefer the label when the change is broad. Two things matter
+when running it unattended: preparing sweeps the whole local Maven repository, which is a shared
+cache, and `SKIP_PREPARE=1` skips the Comet install so it must not be used after changing Comet.
+
+## Skills
+
+Repository-specific agent skills live under `.ai/skills/`. Each subdirectory is a single skill
+with a `SKILL.md` (YAML frontmatter + body). Check that directory for an applicable skill before
+starting a task; new skills go in `.ai/skills/<skill-name>/SKILL.md`.
+
+For compatibility with agents that look in vendor-specific locations, `.claude/skills` is a
+symlink to `.ai/skills` and `CLAUDE.md` is a symlink to this file. Add new content here rather
+than to the symlinks.

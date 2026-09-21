@@ -21,7 +21,16 @@ package org.apache.comet
 
 import org.apache.spark.SparkConf
 import org.apache.spark.sql._
+import org.apache.spark.sql.catalyst.expressions.AttributeReference
+import org.apache.spark.sql.catalyst.plans.logical.LocalRelation
+import org.apache.spark.sql.catalyst.plans.physical.{RoundRobinPartitioning, SinglePartition}
+import org.apache.spark.sql.comet.CometScanWrapper
+import org.apache.spark.sql.comet.execution.shuffle.{CometCelebornShuffleManager, CometColumnarShuffle, CometShuffleExchangeExec}
+import org.apache.spark.sql.execution.exchange.ShuffleExchangeExec
 import org.apache.spark.sql.internal.SQLConf
+import org.apache.spark.sql.types.LongType
+
+import org.apache.comet.serde.OperatorOuterClass
 
 class CometSparkSessionExtensionsSuite extends CometTestBase {
 
@@ -72,6 +81,56 @@ class CometSparkSessionExtensionsSuite extends CometTestBase {
     assert(isCometLoaded(conf))
   }
 
+  test("the composite manager is recognized without requiring the optional Celeborn client") {
+    val conf = new SQLConf
+    conf.setConfString(CometConf.COMET_ENABLED.key, "true")
+    conf.setConfString(CometConf.COMET_SHUFFLE_ENABLED.key, "true")
+    conf.setConfString(CometConf.COMET_SHUFFLE_MODE.key, "native")
+    conf.setConfString("spark.shuffle.manager", classOf[CometCelebornShuffleManager].getName)
+    assert(isCometShuffleManagerEnabled(conf))
+    assert(isCometLoaded(conf))
+    // A session-only setting must not replace this suite's actual local shuffle manager.
+    assert(!isCometShuffleEnabled(conf))
+  }
+
+  test("the stock Celeborn manager cannot accept Comet shuffle dependencies") {
+    val conf = new SQLConf
+    conf.setConfString(CometConf.COMET_ENABLED.key, "true")
+    conf.setConfString(CometConf.COMET_SHUFFLE_ENABLED.key, "true")
+    conf.setConfString(
+      "spark.shuffle.manager",
+      "org.apache.spark.shuffle.celeborn.SparkShuffleManager")
+    assert(!isCometShuffleManagerEnabled(conf))
+    assert(!isCometShuffleEnabled(conf))
+    assert(!isCometLoaded(conf))
+  }
+
+  test("local auto mode retains Comet columnar fallback for unsupported native partitioning") {
+    withSQLConf(
+      CometConf.COMET_SHUFFLE_MODE.key -> "auto",
+      CometConf.COMET_SHUFFLE_NATIVE_ROUND_ROBIN_PARTITIONING_ENABLED.key -> "false") {
+      val leaf = spark.sessionState.planner
+        .plan(LocalRelation(Seq(AttributeReference("value", LongType)())))
+        .next()
+      val child = CometScanWrapper(OperatorOuterClass.Operator.getDefaultInstance, leaf)
+      val exchange = ShuffleExchangeExec(RoundRobinPartitioning(2), child)
+      assert(CometShuffleExchangeExec.shuffleSupported(exchange).contains(CometColumnarShuffle))
+    }
+  }
+
+  test("local JVM shuffle remains available when native execution is disabled") {
+    withSQLConf(
+      CometConf.COMET_SHUFFLE_MODE.key -> "jvm",
+      CometConf.COMET_EXEC_ENABLED.key -> "false") {
+      val child = spark.sessionState.planner
+        .plan(LocalRelation(Seq(AttributeReference("value", LongType)())))
+        .next()
+      val exchange = ShuffleExchangeExec(SinglePartition, child)
+      assert(isCometShuffleEnabled(spark.sessionState.conf))
+      assert(CometShuffleExchangeExec.shuffleSupported(exchange).contains(CometColumnarShuffle))
+    }
+  }
+
   test("Arrow properties") {
     NativeBase.setLoaded(false)
     NativeBase.load()
@@ -107,7 +166,6 @@ class CometSparkSessionExtensionsSuite extends CometTestBase {
     val sparkConf = new SparkConf()
     sparkConf.set(CometConf.COMET_ONHEAP_MEMORY_OVERHEAD.key, "10g")
     assert(getCometMemoryOverhead(sparkConf) == getBytesFromMib(1024 * 10))
-    assert(shouldOverrideMemoryConf(sparkConf))
   }
 
   test("Comet memory overhead (off heap)") {
@@ -115,8 +173,8 @@ class CometSparkSessionExtensionsSuite extends CometTestBase {
     sparkConf.set(CometConf.COMET_ONHEAP_MEMORY_OVERHEAD.key, "64g")
     sparkConf.set("spark.memory.offHeap.enabled", "true")
     sparkConf.set("spark.memory.offHeap.size", "10g")
+    // off-heap mode sizes the native pool from spark.memory.offHeap.size instead
     assert(getCometMemoryOverhead(sparkConf) == 0)
-    assert(!shouldOverrideMemoryConf(sparkConf))
   }
 
   test("Comet shuffle memory factor") {

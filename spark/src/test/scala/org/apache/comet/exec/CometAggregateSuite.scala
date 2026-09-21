@@ -19,22 +19,33 @@
 
 package org.apache.comet.exec
 
+import java.util.concurrent.atomic.AtomicLong
+
 import scala.util.Random
 
 import org.apache.hadoop.fs.Path
-import org.apache.spark.SparkConf
+import org.apache.spark.{CometListenerBusUtils, SparkConf}
+import org.apache.spark.scheduler.{SparkListener, SparkListenerTaskEnd}
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.catalyst.expressions.Cast
+import org.apache.spark.sql.catalyst.expressions.aggregate.{Final, Partial, PartialMerge}
 import org.apache.spark.sql.catalyst.optimizer.EliminateSorts
-import org.apache.spark.sql.comet.CometHashAggregateExec
-import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
-import org.apache.spark.sql.functions.{avg, col, count_distinct, sum}
+import org.apache.spark.sql.catalyst.plans.physical.{HashPartitioning, RangePartitioning}
+import org.apache.spark.sql.comet.{CometFilterExec, CometHashAggregateExec, CometNativeExec, CometProjectExec}
+import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
+import org.apache.spark.sql.execution.SQLExecution
+import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AdaptiveSparkPlanHelper, ShuffleQueryStageExec}
+import org.apache.spark.sql.execution.aggregate.BaseAggregateExec
+import org.apache.spark.sql.execution.exchange.{ReusedExchangeExec, ShuffleExchangeExec}
+import org.apache.spark.sql.functions.{avg, col, count_distinct, expr, sum}
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{DataTypes, StructField, StructType}
+import org.apache.spark.sql.types.{ArrayType, DataTypes, StructField, StructType}
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometConf.COMET_EXEC_STRICT_FLOATING_POINT
 import org.apache.comet.CometSparkSessionExtensions.isSpark41Plus
+import org.apache.comet.rules.CometExecRule
+import org.apache.comet.serde.RegrSparkVersions
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator, ParquetGenerator, SchemaGenOptions}
 
 /**
@@ -48,11 +59,108 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   override protected def sparkConf: SparkConf =
     super.sparkConf.set(SQLConf.ANSI_ENABLED.key, "false")
 
+  // TODO: To be addressed after DF 55 migration
+  ignore("grouped aggregate metrics are forwarded without fabricating global metrics") {
+    val aggregateMetricNames =
+      Set("spill_count", "spilled_bytes", "spilled_rows", "peak_mem_used")
+
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.SHUFFLE_PARTITIONS.key -> "2") {
+      withParquetTable((0 until 1024).map(i => (i % 64, i)), "tbl", false) {
+        val grouped = sql("SELECT _1, SUM(_2) FROM tbl GROUP BY _1")
+        assert(grouped.collect().length == 64)
+
+        val groupedAggregates = stripAQEPlan(grouped.queryExecution.executedPlan).collect {
+          case aggregate: CometHashAggregateExec => aggregate
+        }
+        assert(groupedAggregates.exists(_.modes.contains(Partial)))
+        assert(groupedAggregates.exists(_.modes.contains(Final)))
+        groupedAggregates.foreach { aggregate =>
+          assert(aggregateMetricNames.subsetOf(aggregate.metrics.keySet))
+          assert(aggregate.metrics("spill_count").metricType == "sum")
+          assert(aggregate.metrics("spilled_bytes").metricType == "size")
+          assert(aggregate.metrics("spilled_rows").metricType == "sum")
+          assert(aggregate.metrics("peak_mem_used").metricType == "size")
+          assert(
+            aggregate.metrics("peak_mem_used").value > 0L,
+            s"Expected peak aggregate memory for modes ${aggregate.modes}")
+        }
+
+        val global = sql("SELECT SUM(_2) FROM tbl")
+        assert(global.collect().length == 1)
+
+        val globalAggregates = stripAQEPlan(global.queryExecution.executedPlan).collect {
+          case aggregate: CometHashAggregateExec => aggregate
+        }
+        assert(globalAggregates.nonEmpty)
+        globalAggregates.foreach { aggregate =>
+          assert(aggregateMetricNames.intersect(aggregate.metrics.keySet).isEmpty)
+        }
+      }
+    }
+  }
+
+  // TODO: To be addressed after DF 55 migration
+  ignore("range sampling does not report grouped aggregate metrics") {
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.SHUFFLE_PARTITIONS.key -> "2",
+      CometConf.COMET_SHUFFLE_MODE.key -> "native") {
+      withParquetTable((0 until 1024).map(i => (i % 64, i)), "tbl", false) {
+        val ranged =
+          sql("SELECT _1, SUM(_2) AS total FROM tbl GROUP BY _1").repartitionByRange(2, col("_1"))
+        val plan = stripAQEPlan(ranged.queryExecution.executedPlan)
+        val exchange = plan
+          .collectFirst {
+            case exchange: CometShuffleExchangeExec
+                if exchange.outputPartitioning.isInstanceOf[RangePartitioning] =>
+              exchange
+          }
+          .getOrElse(fail("Expected a native range shuffle"))
+        val aggregate = exchange.child
+          .collectFirst {
+            case aggregate: CometHashAggregateExec if aggregate.modes.contains(Final) => aggregate
+          }
+          .getOrElse(fail("Expected a final native aggregate under the range shuffle"))
+
+        val samplingInputBytes = new AtomicLong()
+        val samplingInputRecords = new AtomicLong()
+        val listener = new SparkListener {
+          override def onTaskEnd(taskEnd: SparkListenerTaskEnd): Unit = {
+            samplingInputBytes.addAndGet(taskEnd.taskMetrics.inputMetrics.bytesRead)
+            samplingInputRecords.addAndGet(taskEnd.taskMetrics.inputMetrics.recordsRead)
+          }
+        }
+
+        plan.resetMetrics()
+        CometListenerBusUtils.waitUntilEmpty(spark.sparkContext)
+        spark.sparkContext.addSparkListener(listener)
+        try {
+          SQLExecution.withNewExecutionId(ranged.queryExecution, Some("range sampling")) {
+            exchange.shuffleDependency
+          }
+          CometListenerBusUtils.waitUntilEmpty(spark.sparkContext)
+        } finally {
+          spark.sparkContext.removeSparkListener(listener)
+        }
+        assert(aggregate.metrics("peak_mem_used").value == 0L)
+        assert(samplingInputBytes.get() > 0L)
+        assert(samplingInputRecords.get() > 0L)
+
+        assert(ranged.collect().length == 64)
+        assert(aggregate.metrics("peak_mem_used").value > 0L)
+      }
+    }
+  }
+
   test("collect_list over struct with non-nullable fields") {
-    // Building a struct from non-nullable columns yields non-nullable struct fields. The native
-    // collect_list accumulator emits a list whose element fields are all nullable, so the produced
-    // array must be reconciled with the declared aggregate output type, otherwise the grouped
-    // native aggregate fails with "column types must match schema types".
+    // Building a struct from non-nullable columns yields non-nullable struct fields. Native
+    // collect_list derives its declared output element type from the argument's declared type,
+    // but emits arrays of whatever type the accumulator actually received, so the argument is
+    // normalized to its all-nullable variant first. Without that the two disagree on nested
+    // field nullability and the grouped native aggregate fails with "column types must match
+    // schema types".
     import org.apache.spark.sql.functions.{collect_list, expr}
     import org.apache.spark.sql.execution.LocalTableScanExec
     // One row per (a, b) group keeps each collected list deterministic for the answer comparison.
@@ -80,6 +188,29 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       classOf[LocalTableScanExec])
   }
 
+  test("grouped collect_list/collect_set over nulls, duplicates and several batches") {
+    // Grouped collect_list/collect_set are served by a native GroupsAccumulator rather than one
+    // boxed accumulator per group, so the group's identity travels with each row instead of being
+    // implied by which accumulator was called. This covers the cases where that bookkeeping shows:
+    // a group whose every input is NULL (Spark returns an empty array, not NULL), repeated values
+    // (collect_list keeps every copy, collect_set one), and enough rows that a group is fed by
+    // several batches and, after the exchange, by several partial states.
+    withSQLConf(CometConf.COMET_BATCH_SIZE.key -> "128") {
+      val data = (0 until 2000).map { i =>
+        val group = i % 37
+        (group, if (group == 5) None else Some(i % 11))
+      }
+      withParquetTable(data, "tbl") {
+        checkSparkAnswerAndOperator(sql("""
+          SELECT _1,
+                 sort_array(collect_list(_2)),
+                 sort_array(collect_set(_2)),
+                 size(collect_list(_2))
+          FROM tbl GROUP BY _1"""))
+      }
+    }
+  }
+
   test("collect_list/collect_set combined with distinct aggregate falls back safely") {
     // SPARK-17616: a distinct aggregate combined with collect_list/collect_set produces a
     // multi-stage plan where the buffer-producing Partial may run in Spark (e.g. over a
@@ -87,22 +218,31 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     // dependent PartialMerge/Final stages must also fall back rather than crash. See issue #4724
     // for enabling the fully-native distinct path.
     import org.apache.spark.sql.functions.{collect_list, collect_set, sort_array}
-    // Non-native source (LocalTableScan): the buffer-producing Partial runs in Spark.
+    // Non-native source (LocalTableScan): the buffer-producing Partial runs in Spark, so the
+    // dependent PartialMerge/Final stages fall back via the buffer-source check in doConvert.
+    // tagUnsafePartialAggregates does not fire here because the Partial was never convertible.
+    def bufferSourceFallback(fn: String): String = s"Incompatible aggregate function(s): $fn"
     val df = Seq((1, 3, "a"), (1, 2, "b"), (3, 4, "c"), (3, 4, "c"), (3, 5, "d"))
       .toDF("x", "y", "z")
-    checkSparkAnswer(
-      df.groupBy(col("x")).agg(count_distinct(col("y")), sort_array(collect_list(col("z")))))
-    checkSparkAnswer(
-      df.groupBy(col("x")).agg(count_distinct(col("y")), sort_array(collect_set(col("z")))))
+    checkSparkAnswerAndFallbackReason(
+      df.groupBy(col("x")).agg(count_distinct(col("y")), sort_array(collect_list(col("z")))),
+      bufferSourceFallback("collect_list"))
+    checkSparkAnswerAndFallbackReason(
+      df.groupBy(col("x")).agg(count_distinct(col("y")), sort_array(collect_set(col("z")))),
+      bufferSourceFallback("collect_set"))
 
-    // Native source (Parquet): the whole multi-stage distinct chain must still fall back to
-    // Spark consistently (issue #4724), rather than running a fully-native pipeline that crashes.
+    // Native source (Parquet): the Partial would otherwise convert, so tagUnsafePartialAggregates
+    // must disable it and force the whole multi-stage distinct chain back to Spark (issue #4724),
+    // rather than running a fully-native pipeline that crashes.
+    val multiStageFallback = "multi-stage CollectList/CollectSet aggregate whose intermediate " +
+      "buffer cannot round-trip in Comet"
     withParquetTable(
       Seq((1, 3, "a"), (1, 2, "b"), (3, 4, "c"), (3, 4, "c"), (3, 5, "d")),
       "t17616") {
       for (fn <- Seq("collect_list", "collect_set")) {
-        checkSparkAnswer(
-          sql(s"SELECT _1, count(distinct _2), sort_array($fn(_3)) FROM t17616 GROUP BY _1"))
+        checkSparkAnswerAndFallbackReasons(
+          sql(s"SELECT _1, count(distinct _2), sort_array($fn(_3)) FROM t17616 GROUP BY _1"),
+          Set(multiStageFallback, bufferSourceFallback(fn)))
       }
     }
   }
@@ -190,6 +330,318 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("disabled FIRST/LAST preserves percentile buffers with local Comet shuffle") {
+    for {
+      adaptive <- Seq(false, true)
+      percentile <- Seq("percentile", "percentile_approx")
+      mergeFunction <- Seq("first", "last")
+    } {
+      withSQLConf(
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString,
+        SQLConf.SHUFFLE_PARTITIONS.key -> "4",
+        s"spark.comet.expression.${mergeFunction.capitalize}.enabled" -> "false",
+        CometConf.COMET_SHUFFLE_MODE.key -> "native") {
+        val query = spark
+          .range(0, 18, 1, 4)
+          .selectExpr("id % 3 AS grouping_key", "id % 5 AS value")
+          .groupBy("grouping_key")
+          .agg(
+            expr("count(DISTINCT value)").as("distinct_values"),
+            expr(s"$percentile(value, 0.5)").as("percentile_value"),
+            // The grouping key is constant within each group, so FIRST/LAST are deterministic.
+            expr(s"$mergeFunction(grouping_key)").as("group_value"))
+        val (_, executedPlan) = checkSparkAnswer(query)
+        assert(collect(executedPlan) { case aggregate: CometHashAggregateExec =>
+          aggregate
+        }.isEmpty)
+      }
+    }
+  }
+
+  for (adaptive <- Seq(false, true)) {
+    test(s"decimal AVG falls back across a Spark shuffle (AQE=$adaptive)") {
+      withTempDir { dir =>
+        val path = s"${dir.getAbsolutePath}/data"
+        withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+          spark
+            .range(0L, 8L, 1L, 4)
+            .selectExpr("id", "CAST(200 AS DECIMAL(20, 2)) AS v")
+            .write
+            .parquet(path)
+        }
+
+        withSQLConf(
+          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString,
+          SQLConf.FILES_MAX_PARTITION_BYTES.key -> "1048576",
+          SQLConf.PARQUET_FILTER_PUSHDOWN_ENABLED.key -> "false",
+          CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "false",
+          CometConf.COMET_CONVERT_FROM_PARQUET_ENABLED.key -> "true",
+          CometConf.COMET_SHUFFLE_ENABLED.key -> "false") {
+          withParquetTable(path, "decimal_avg_fallback") {
+            // The filter leaves three input partitions empty. Decimal AVG is not safe to mix
+            // between engines: a native empty partial can poison the Spark final's sum buffer.
+            val df = sql("SELECT AVG(v) FROM decimal_avg_fallback WHERE id = 1")
+            val initialPlan = stripAQEPlan(df.queryExecution.executedPlan)
+            checkAnswer(df, Seq(Row(new java.math.BigDecimal("200.000000"))))
+            for (plan <- Seq(initialPlan, df.queryExecution.executedPlan)) {
+              assert(collect(plan) { case agg: CometHashAggregateExec => agg }.isEmpty)
+              val partials = collect(plan) {
+                case agg: BaseAggregateExec
+                    if agg.aggregateExpressions.forall(_.mode == Partial) =>
+                  agg
+              }
+              assert(partials.size == 1)
+              assert(partials.forall(_.getTagValue(CometExecRule.COMET_UNSAFE_PARTIAL).isDefined))
+              // Falling back the aggregate must not discard the native filter/scan conversion.
+              assert(collect(plan) { case filter: CometFilterExec => filter }.nonEmpty)
+            }
+            if (adaptive) {
+              val stages = collect(df.queryExecution.executedPlan) {
+                case stage: ShuffleQueryStageExec => stage
+              }
+              assert(stages.nonEmpty && stages.forall(_.isMaterialized))
+            }
+
+            // Compatible buffers may still use a native Partial and a Spark Final.
+            val safe = sql("SELECT MIN(v), MAX(v) FROM decimal_avg_fallback WHERE id = 1")
+            checkAnswer(
+              safe,
+              Seq(Row(new java.math.BigDecimal("200.00"), new java.math.BigDecimal("200.00"))))
+            assert(collect(safe.queryExecution.executedPlan) { case agg: CometHashAggregateExec =>
+              agg
+            }.size == 1)
+
+            // The same unsafe buffer is valid when both aggregate stages execute in Comet.
+            withSQLConf(CometConf.COMET_SHUFFLE_ENABLED.key -> "true") {
+              val native = sql("SELECT AVG(v) FROM decimal_avg_fallback WHERE id = 1")
+              checkAnswer(native, Seq(Row(new java.math.BigDecimal("200.000000"))))
+              assert(collect(native.queryExecution.executedPlan) {
+                case agg: CometHashAggregateExec => agg
+              }.size == 2)
+            }
+          }
+        }
+      }
+    }
+  }
+
+  for (adaptive <- Seq(false, true)) {
+    test(s"COUNT and AVG fall back together across a Spark shuffle (AQE=$adaptive)") {
+      withTempDir { dir =>
+        val path = s"${dir.getAbsolutePath}/data"
+        withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+          spark
+            .range(0L, 8L, 1L, 4)
+            .selectExpr("id", "CAST(1 AS BIGINT) AS v")
+            .write
+            .parquet(path)
+        }
+
+        withSQLConf(
+          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString,
+          SQLConf.FILES_MAX_PARTITION_BYTES.key -> "1048576",
+          SQLConf.PARQUET_FILTER_PUSHDOWN_ENABLED.key -> "false",
+          CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "false",
+          CometConf.COMET_CONVERT_FROM_PARQUET_ENABLED.key -> "true",
+          CometConf.COMET_SHUFFLE_ENABLED.key -> "false",
+          CometConf.COMET_ENABLE_FINAL_HASH_AGGREGATE.key -> "true") {
+          withParquetTable(path, "count_avg_fallback") {
+            assert(sql("SELECT * FROM count_avg_fallback").rdd.getNumPartitions == 4)
+            // A safe COUNT buffer must not admit an unsafe AVG buffer in the same Partial.
+            // Three partitions have no surviving rows, so AVG has no update_batch call and
+            // its native state is (null, 0), which poisons Spark Final's sum. Keeping Final
+            // enabled exercises repair after the shuffle falls back during conversion.
+            val df = sql("SELECT COUNT(*), AVG(v) FROM count_avg_fallback WHERE id = 1")
+            val initialPlan = stripAQEPlan(df.queryExecution.executedPlan)
+            checkAnswer(df, Seq(Row(1L, 1.0)))
+            for (plan <- Seq(initialPlan, df.queryExecution.executedPlan)) {
+              assert(collect(plan) { case agg: CometHashAggregateExec => agg }.isEmpty)
+              val partials = collect(plan) {
+                case agg: BaseAggregateExec
+                    if agg.aggregateExpressions.map(_.mode).distinct == Seq(Partial) =>
+                  agg
+              }
+              assert(partials.size == 1)
+              assert(partials.head.getTagValue(CometExecRule.COMET_UNSAFE_PARTIAL).isDefined)
+              assert(collect(plan) { case filter: CometFilterExec => filter }.nonEmpty)
+            }
+            withSQLConf(
+              CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
+              CometConf.COMET_SHUFFLE_MODE.key -> "native") {
+              // The native Final can consume its own empty AVG buffers; only the engine split
+              // is unsafe. Keep the fully native aggregate path enabled.
+              val native =
+                sql("SELECT COUNT(*), AVG(v) FROM count_avg_fallback WHERE id = 1")
+              val initialNativePlan = stripAQEPlan(native.queryExecution.executedPlan)
+              checkAnswer(native, Seq(Row(1L, 1.0)))
+              for (plan <- Seq(initialNativePlan, native.queryExecution.executedPlan)) {
+                assert(collect(plan) { case agg: CometHashAggregateExec => agg }.size == 2)
+              }
+            }
+          }
+        }
+      }
+    }
+
+    test(s"COUNT preserves safe native partials across a Spark shuffle (AQE=$adaptive)") {
+      val data = Seq((0, None), (0, None), (1, Some(3)), (1, None), (1, Some(4)))
+      withParquetTable(data, "count_fallback", false) {
+        withSQLConf(
+          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString,
+          SQLConf.PARQUET_FILTER_PUSHDOWN_ENABLED.key -> "false",
+          CometConf.COMET_SHUFFLE_ENABLED.key -> "false",
+          CometConf.COMET_ENABLE_FINAL_HASH_AGGREGATE.key -> "true") {
+          for (query <- Seq(
+              "SELECT _1, COUNT(_2), COUNT(*) FROM count_fallback GROUP BY _1",
+              "SELECT COUNT(_2), COUNT(*) FROM count_fallback WHERE _1 < 0")) {
+            val df = sql(query)
+            val initialPlan = stripAQEPlan(df.queryExecution.executedPlan)
+            assert(collect(initialPlan) {
+              case agg: CometHashAggregateExec if agg.modes == Seq(Partial) => agg
+            }.size == 1)
+            assert(collect(initialPlan) {
+              case agg: BaseAggregateExec
+                  if agg.aggregateExpressions.map(_.mode).distinct == Seq(Final) =>
+                agg
+            }.size == 1)
+            checkSparkAnswer(df)
+          }
+        }
+      }
+    }
+
+    for (fn <- Seq("collect_list", "collect_set")) {
+      test(s"$fn falls back when enabled native shuffle is ineligible (AQE=$adaptive)") {
+        val data = (0 until 30).map(i => (i % 3, if (i % 7 == 0) None else Some(i % 5)))
+        withParquetTable(data, "collect_fallback", false) {
+          withSQLConf(
+            SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString,
+            SQLConf.PARQUET_FILTER_PUSHDOWN_ENABLED.key -> "false",
+            SQLConf.USE_OBJECT_HASH_AGG.key -> "true",
+            CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
+            CometConf.COMET_SHUFFLE_MODE.key -> "native",
+            CometConf.COMET_SHUFFLE_NATIVE_HASH_PARTITIONING_ENABLED.key -> "false") {
+            // Integer keys isolate this from the wide-decimal shuffle restriction in #5420.
+            // The native Partial emits an Array buffer, but Spark's Final expects Binary.
+            val query = s"SELECT _1, sort_array($fn(_2)), COUNT(*) " +
+              "FROM collect_fallback WHERE _1 >= 0 GROUP BY _1"
+            val df = sql(query)
+            val initialPlan = stripAQEPlan(df.queryExecution.executedPlan)
+            checkSparkAnswer(df)
+            for (plan <- Seq(initialPlan, df.queryExecution.executedPlan)) {
+              assert(collect(plan) { case agg: CometHashAggregateExec => agg }.isEmpty)
+              val partials = collect(plan) {
+                case agg: BaseAggregateExec
+                    if agg.aggregateExpressions.map(_.mode).distinct == Seq(Partial) =>
+                  agg
+              }
+              assert(partials.size == 1)
+              assert(partials.head.getTagValue(CometExecRule.COMET_UNSAFE_PARTIAL).isDefined)
+              assert(collect(plan) { case filter: CometFilterExec => filter }.nonEmpty)
+            }
+            // A fully native producer/consumer pair can still use its native buffer format.
+            withSQLConf(CometConf.COMET_SHUFFLE_NATIVE_HASH_PARTITIONING_ENABLED.key -> "true") {
+              val native = sql(query)
+              checkSparkAnswer(native)
+              assert(getNumCometHashAggregate(native) == 2)
+            }
+          }
+        }
+      }
+    }
+
+    for (fn <- Seq("percentile", "collect_list", "sum")) {
+      test(
+        s"$fn preserves aggregate buffers with an unsupported array hash key (AQE=$adaptive)") {
+        withSQLConf(
+          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString,
+          SQLConf.SHUFFLE_PARTITIONS.key -> "4",
+          CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
+          CometConf.COMET_SHUFFLE_MODE.key -> "native",
+          CometConf.COMET_SHUFFLE_NATIVE_HASH_PARTITIONING_ENABLED.key -> "true") {
+          withTempView("array_key_aggregate") {
+            // The array key itself makes native shuffle ineligible; no feature is disabled.
+            // https://github.com/apache/datafusion-comet/issues/5419#issuecomment-5464233245
+            spark
+              .range(0, 18, 1, 4)
+              .selectExpr("id % 3 AS k", "id % 5 AS v")
+              .createOrReplaceTempView("array_key_aggregate")
+            val aggregate = if (fn == "percentile") "percentile(v, 0.5)" else s"$fn(v)"
+            val query = s"SELECT array(k) AS ak, $aggregate " +
+              "FROM array_key_aggregate GROUP BY array(k)"
+
+            def normalizedRows(df: DataFrame): Seq[Row] = {
+              df.collect()
+                .toSeq
+                .map { row =>
+                  // Keep the reported collect_list SQL unchanged, normalizing its order only
+                  // after execution so another expression cannot cause an earlier fallback.
+                  if (fn == "collect_list") {
+                    Row(row.getSeq[Long](0), row.getSeq[Long](1).sorted)
+                  } else {
+                    row
+                  }
+                }
+                .sortBy(_.getSeq[Long](0).head)
+            }
+
+            // Spark 3's withSQLConf returns Unit, so capture the baseline inside its body.
+            var expected: Seq[Row] = Seq.empty
+            withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+              expected = normalizedRows(sql(query))
+            }
+            val df = sql(query)
+            val initialPlan = stripAQEPlan(df.queryExecution.executedPlan)
+            // Execute this same DataFrame before inspecting its materialized AQE plan.
+            assert(normalizedRows(df) == expected)
+            for (plan <- Seq(initialPlan, df.queryExecution.executedPlan)) {
+              val exchanges = collect(plan) { case exchange: ShuffleExchangeExec => exchange }
+              assert(exchanges.size == 1, s"$plan")
+              assert(exchanges.head.outputPartitioning match {
+                case HashPartitioning(Seq(key), 4) => key.dataType.isInstanceOf[ArrayType]
+                case _ => false
+              })
+              assert(collect(plan) { case exchange: CometShuffleExchangeExec =>
+                exchange
+              }.isEmpty)
+              val partials = collect(plan) {
+                case agg: BaseAggregateExec
+                    if agg.aggregateExpressions.map(_.mode).distinct == Seq(Partial) =>
+                  agg
+              }
+              val finals = collect(plan) {
+                case agg: BaseAggregateExec
+                    if agg.aggregateExpressions.map(_.mode).distinct == Seq(Final) =>
+                  agg
+              }
+              assert(finals.size == 1, s"$plan")
+              val nativeAggregates = collect(plan) { case agg: CometHashAggregateExec => agg }
+              if (fn == "sum") {
+                // SUM's Long buffer is safe for Spark's final, so retain its native partial.
+                assert(nativeAggregates.size == 1, s"$plan")
+                assert(nativeAggregates.head.modes == Seq(Partial))
+                assert(partials.isEmpty, s"$plan")
+              } else {
+                assert(nativeAggregates.isEmpty, s"$plan")
+                assert(partials.size == 1, s"$plan")
+                assert(partials.head.getTagValue(CometExecRule.COMET_UNSAFE_PARTIAL).isDefined)
+                assert(collect(partials.head.child) { case project: CometProjectExec =>
+                  project
+                }.nonEmpty)
+              }
+            }
+            if (adaptive) {
+              val stages = collect(df.queryExecution.executedPlan) {
+                case stage: ShuffleQueryStageExec => stage
+              }
+              assert(stages.nonEmpty && stages.forall(_.isMaterialized))
+            }
+          }
+        }
+      }
+    }
+  }
+
   test("stddev_pop should return NaN for some cases") {
     withSQLConf(CometConf.COMET_SHUFFLE_ENABLED.key -> "true") {
       Seq(true, false).foreach { nullOnDivideByZero =>
@@ -265,15 +717,56 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  test("mixed engine sum/avg: Comet partial + Spark final matches Spark") {
+  test("decimal SUM partial stays in Spark when a later input cancels precision overflow") {
+    // Keep all three values in one ordered input partition. Generated scalar Spark SUM can
+    // retain the temporary 1.2 and return 0.6 after cancellation; native decimal SUM instead
+    // makes that precision overflow sticky, or throws immediately in ANSI mode. A matching
+    // (sum, isEmpty) buffer schema therefore does not establish forward interoperability.
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "true",
+      "spark.sql.files.minPartitionNum" -> "1",
+      CometConf.COMET_ENABLE_FINAL_HASH_AGGREGATE.key -> "false",
+      CometConf.COMET_SHUFFLE_ENABLED.key -> "false") {
+      withTempPath { path =>
+        spark
+          .range(0, 3, 1, 1)
+          .selectExpr("CAST(CASE WHEN id < 2 THEN '0.6' ELSE '-0.6' END AS DECIMAL(38,38)) AS v")
+          .write
+          .parquet(path.getCanonicalPath)
+        withParquetTable(path.getCanonicalPath, "decimal_sum_cancellation") {
+          for (ansi <- Seq(false, true)) {
+            withSQLConf(SQLConf.ANSI_ENABLED.key -> ansi.toString) {
+              val df = sql("SELECT SUM(v) FROM decimal_sum_cancellation")
+              val plan = df.queryExecution.executedPlan
+              assert(collect(plan) { case agg: CometHashAggregateExec => agg }.isEmpty)
+              val partials = collect(plan) {
+                case agg: BaseAggregateExec
+                    if agg.aggregateExpressions.map(_.mode).distinct == Seq(Partial) =>
+                  agg
+              }
+              assert(partials.size == 1)
+              assert(partials.head.getTagValue(CometExecRule.COMET_UNSAFE_PARTIAL).isDefined)
+              assert(collect(plan) { case native: CometNativeExec => native }.nonEmpty)
+              checkSparkAnswer(df)
+              checkAnswer(df, Seq(Row(new java.math.BigDecimal("0.6"))))
+            }
+          }
+        }
+      }
+    }
+  }
+
+  test("mixed engine sum/avg falls back when Spark Final would consume native AVG") {
     val data = (0 until 100).map(i => (i, i.toLong, i.toDouble, i % 7))
     withParquetTable(data, "tbl") {
       withSQLConf(
         CometConf.COMET_ENABLE_FINAL_HASH_AGGREGATE.key -> "false",
         CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
         CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
-        checkSparkAnswer(
-          "SELECT _4, SUM(_1), SUM(_2), SUM(_3), AVG(_1), AVG(_2), AVG(_3) FROM tbl GROUP BY _4")
+        checkSparkAnswerAndNumOfAggregates(
+          "SELECT _4, SUM(_1), SUM(_2), SUM(_3), AVG(_1), AVG(_2), AVG(_3) FROM tbl GROUP BY _4",
+          0)
       }
     }
   }
@@ -289,6 +782,33 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           "SELECT _4, SUM(_1), SUM(_2), SUM(_3), AVG(_1), AVG(_2), AVG(_3) FROM tbl GROUP BY _4")
       }
     }
+  }
+
+  // collect_list has no Spark-compatible intermediate buffer: Spark declares BinaryType while the
+  // native accumulator produces a list. Disabling either half of the aggregate must therefore
+  // cascade so that neither half runs in Comet - a Spark final cannot read a Comet-produced list,
+  // and adjustOutputForNativeState would misinterpret Spark's Binary buffer as a list if a Comet
+  // final ran above a Spark partial. count(*) is included so the aggregate also carries a
+  // buffer-compatible function, which is the shape most likely to be split by mistake.
+  Seq(
+    ("Comet partial + Spark final", CometConf.COMET_ENABLE_FINAL_HASH_AGGREGATE),
+    ("Spark partial + Comet final", CometConf.COMET_ENABLE_PARTIAL_HASH_AGGREGATE)).foreach {
+    case (name, disabledHalf) =>
+      test(s"mixed engine collect_list: $name matches Spark") {
+        val data = (0 until 100).map(i => (if (i % 11 == 0) None else Some(i), i % 7))
+        withParquetTable(data, "tbl") {
+          withSQLConf(
+            disabledHalf.key -> "false",
+            CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
+            CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
+            val df = sql("SELECT _2, sort_array(collect_list(_1)), count(*) FROM tbl GROUP BY _2")
+            checkSparkAnswer(df)
+            // Without the cascade the surviving half would still convert, so pinning this at zero
+            // is what keeps the test from passing on a regression.
+            assert(getNumCometHashAggregate(df) == 0)
+          }
+        }
+      }
   }
 
   test("Aggregation without aggregate expressions should use correct result expressions") {
@@ -516,7 +1036,10 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
             checkSparkAnswerAndNumOfAggregates("SELECT _2, COUNT(_1) FROM tbl GROUP BY _2", n)
             checkSparkAnswerAndNumOfAggregates("SELECT _2, MIN(_1) FROM tbl GROUP BY _2", n)
             checkSparkAnswerAndNumOfAggregates("SELECT _2, MAX(_1) FROM tbl GROUP BY _2", n)
-            checkSparkAnswerAndNumOfAggregates("SELECT _2, AVG(_1) FROM tbl GROUP BY _2", n)
+            val avgStages = if (nativeShuffleEnabled) 2 else 0
+            checkSparkAnswerAndNumOfAggregates(
+              "SELECT _2, AVG(_1) FROM tbl GROUP BY _2",
+              avgStages)
           }
         }
       }
@@ -721,26 +1244,29 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
             val path = new Path(dir.toURI.toString, "test")
             makeParquetFile(path, 1000, 20, dictionaryEnabled)
             withParquetTable(path.toUri.toString, "tbl") {
+              // Spark rewrites _7's small decimal SUM to Long; _8 and _9 remain decimal and
+              // cannot use a native Partial when the Final runs in Spark.
               val expectedNumOfCometAggregates = if (nativeShuffleEnabled) 2 else 1
+              val expectedNumOfDecimalAggregates = if (nativeShuffleEnabled) 2 else 0
 
               checkSparkAnswerAndNumOfAggregates(
                 "SELECT _g2, SUM(_7) FROM tbl GROUP BY _g2",
                 expectedNumOfCometAggregates)
               checkSparkAnswerAndNumOfAggregates(
                 "SELECT _g3, SUM(_8) FROM tbl GROUP BY _g3",
-                expectedNumOfCometAggregates)
+                expectedNumOfDecimalAggregates)
               checkSparkAnswerAndNumOfAggregates(
                 "SELECT _g4, SUM(_9) FROM tbl GROUP BY _g4",
-                expectedNumOfCometAggregates)
+                expectedNumOfDecimalAggregates)
               checkSparkAnswerAndNumOfAggregates(
                 "SELECT SUM(_7) FROM tbl",
                 expectedNumOfCometAggregates)
               checkSparkAnswerAndNumOfAggregates(
                 "SELECT SUM(_8) FROM tbl",
-                expectedNumOfCometAggregates)
+                expectedNumOfDecimalAggregates)
               checkSparkAnswerAndNumOfAggregates(
                 "SELECT SUM(_9) FROM tbl",
-                expectedNumOfCometAggregates)
+                expectedNumOfDecimalAggregates)
             }
           }
         }
@@ -785,34 +1311,6 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
                     " COUNT(DISTINCT _1), AVG(_1)" +
                     " FROM v GROUP BY _2 ORDER BY _2")
               }
-            }
-          }
-        }
-      }
-    }
-  }
-
-  // FIRST/LAST are order-dependent aggregates whose merge result depends on hash table
-  // processing order. In PartialMerge mode, DataFusion's hash table may process rows
-  // in a different order than Spark's, so we fall back to Spark for correctness.
-  // https://github.com/apache/datafusion-comet/issues/4131
-  test("partialMerge - FIRST/LAST with distinct aggregates falls back") {
-    val numValues = 10000
-    Seq(100).foreach { numGroups =>
-      Seq(128).foreach { batchSize =>
-        withSQLConf(
-          SQLConf.COALESCE_PARTITIONS_ENABLED.key -> "true",
-          CometConf.COMET_BATCH_SIZE.key -> batchSize.toString) {
-          withParquetTable(
-            (0 until numValues).map(i => (i, Random.nextInt() % numGroups)),
-            "tbl",
-            false) {
-            withView("v") {
-              sql("CREATE TEMP VIEW v AS SELECT _1, _2 FROM tbl ORDER BY _1")
-              checkSparkAnswerAndFallbackReason(
-                "SELECT _2, FIRST(_1), LAST(_1), COUNT(DISTINCT _1)" +
-                  " FROM v GROUP BY _2 ORDER BY _2",
-                "PartialMerge not supported for aggregates: first, last")
             }
           }
         }
@@ -1165,6 +1663,60 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  Seq(
+    ("COUNT(*)", 2L, false),
+    ("COUNT(DISTINCT _2)", 2L, false),
+    ("COUNT(DISTINCT _2) + SUM(_2)", 7L, false),
+    ("CAST(SIZE(COLLECT_SET(_2)) AS BIGINT)", 2L, false),
+    ("COUNT(*)", 2L, true)).foreach { case (function, expected, adaptive) =>
+    test(
+      "aggregate canonicalization preserves result expressions and equivalent reuse: " +
+        s"$function, AQE=$adaptive") {
+      withSQLConf(
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString,
+        SQLConf.EXCHANGE_REUSE_ENABLED.key -> "true",
+        SQLConf.SHUFFLE_PARTITIONS.key -> "2",
+        CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
+        CometConf.COMET_SHUFFLE_MODE.key -> "native") {
+        withParquetTable(Seq((0, 2), (0, 3)), "tbl") {
+          // Build independent branches with an exchange above Final and the requested output alias.
+          def aggregate(result: String, alias: String = "c"): DataFrame =
+            sql(s"SELECT $result AS $alias, _1 FROM tbl GROUP BY _1")
+              .repartition(2, col(alias), col("_1"))
+
+          // Traverse adaptive/query-stage wrappers and fail if the native Final fell back to Spark.
+          def finalAggregate(df: DataFrame): CometHashAggregateExec =
+            collectFirst(df.queryExecution.executedPlan) {
+              case agg: CometHashAggregateExec if agg.modes.contains(Final) => agg
+            }.getOrElse(fail("Expected a native final aggregate"))
+
+          val plus = aggregate(s"($function) + 1")
+          val minus = aggregate(s"($function) - 1")
+          // The shuffles above the final aggregates must not reuse each other: doing so
+          // would return the first projection twice, even without an existence join.
+          checkSparkAnswerAndOperator(plus.unionAll(minus), classOf[ReusedExchangeExec])
+          checkAnswer(plus.unionAll(minus), Seq(Row(expected + 1L, 0), Row(expected - 1L, 0)))
+          assert(!finalAggregate(plus).sameResult(finalAggregate(minus)))
+
+          // Comparing result expressions must still normalize aggregate-result attributes.
+          // Fresh expression IDs and a different output alias do not change the computation.
+          val same = aggregate(s"($function) + 1", "renamed")
+          assert(finalAggregate(plus).sameResult(finalAggregate(same)))
+          assert(finalAggregate(plus).semanticHash() == finalAggregate(same).semanticHash())
+          val (_, reusedPlan) =
+            checkSparkAnswerAndOperator(plus.unionAll(same), classOf[ReusedExchangeExec])
+          if (adaptive) {
+            assert(reusedPlan.isInstanceOf[AdaptiveSparkPlanExec])
+          }
+          // Adaptive-aware traversal must find reuse above Final, not just a shared Partial stage.
+          assertExchangeReuseOver(reusedPlan, "Expected equivalent aggregate reuse") {
+            case agg: CometHashAggregateExec if agg.modes.contains(Final) => agg
+          }
+        }
+      }
+    }
+  }
+
   test("test final sum") {
     withSQLConf(
       CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
@@ -1183,6 +1735,57 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
             2)
         }
       }
+    }
+  }
+
+  test("regression aggregate flags follow the Spark patch release that changed them") {
+    // Both fixes shipped mid-line, so the flag must flip at the exact patch and stay off for
+    // earlier patches of the same minor version. A vendor suffix parses, a missing patch reads
+    // as 0, and an unparsable string falls back to the old minor-version rule.
+    val slopeExpectations = Seq(
+      "3.4.3" -> false,
+      "3.5.0" -> false,
+      "3.5.1" -> false,
+      "3.5.2" -> true,
+      "3.5.9" -> true,
+      "3.5.10" -> true,
+      "4.0.0" -> true,
+      "4.1.3" -> true,
+      "4.2.0-SNAPSHOT" -> true,
+      "4.1.3-amzn-1" -> true,
+      "3.5" -> false,
+      "v3.5.9" -> true)
+    slopeExpectations.foreach { case (version, expected) =>
+      assert(
+        RegrSparkVersions.slopeFiltersVarByPairNulls(version) == expected,
+        s"slope pair-null filtering for Spark $version should be $expected")
+    }
+
+    val r2Expectations = Seq(
+      "3.4.3" -> false,
+      "3.5.3" -> false,
+      "3.5.8" -> false,
+      "3.5.9" -> true,
+      "3.5.10" -> true,
+      "4.0.1" -> false,
+      "4.0.2" -> false,
+      "4.0.3" -> true,
+      "4.0.4" -> true,
+      "4.1.0" -> false,
+      "4.1.1" -> false,
+      "4.1.2" -> true,
+      "4.1.3" -> true,
+      "4.2.0" -> true,
+      "4.2.0-SNAPSHOT" -> true,
+      "3.6.0" -> true,
+      "5.0.0" -> true,
+      "4.1.3-amzn-1" -> true,
+      "3.5" -> false,
+      "v3.5.9" -> true)
+    r2Expectations.foreach { case (version, expected) =>
+      assert(
+        RegrSparkVersions.r2DegenerateCasesSwapped(version) == expected,
+        s"regr_r2 degenerate-case swap for Spark $version should be $expected")
     }
   }
 
@@ -1281,14 +1884,14 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  test("test partial avg") {
+  test("AVG stays in Spark across a Spark shuffle") {
     Seq(true, false).foreach { dictionaryEnabled =>
       withParquetTable(
         (0 until 5).map(i => (i.toDouble, i.toDouble % 2)),
         "tbl",
         dictionaryEnabled) {
         withSQLConf(CometConf.COMET_SHUFFLE_ENABLED.key -> "false") {
-          checkSparkAnswerAndNumOfAggregates("SELECT _2 , AVG(_1) FROM tbl GROUP BY _2", 1)
+          checkSparkAnswerAndNumOfAggregates("SELECT _2 , AVG(_1) FROM tbl GROUP BY _2", 0)
         }
       }
     }
@@ -1325,7 +1928,9 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
             val path = new Path(dir.toURI.toString, "test")
             makeParquetFile(path, 1000, 20, dictionaryEnabled)
             withParquetTable(path.toUri.toString, "tbl") {
-              val expectedNumOfCometAggregates = if (nativeShuffleEnabled) 2 else 1
+              // Spark rewrites _7 to Long AVG, whose empty native buffer is also unsafe for a
+              // Spark Final until #5420. Keep all AVG partials in Spark across this boundary.
+              val expectedNumOfCometAggregates = if (nativeShuffleEnabled) 2 else 0
 
               checkSparkAnswerAndNumOfAggregates(
                 "SELECT _g2, AVG(_7) FROM tbl GROUP BY _g2",
@@ -1392,6 +1997,108 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
                   "SELECT COUNT(col2), MIN(col2), COUNT(DISTINCT col2), SUM(col2)," +
                     s" SUM(DISTINCT col2), COUNT(DISTINCT col2), col1 FROM $table group by col1")
               }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  test("skip partial aggregation preserves post-shuffle distinct") {
+    val writers = 8
+    val rowsPerWriter = 300L
+    val overlap = 60L
+    val rows = writers * rowsPerWriter
+
+    withTempDir { dir =>
+      val path = new Path(dir.toURI.toString, "input")
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        spark
+          .range(0L, rows, 1L, writers)
+          .selectExpr(s"id - spark_partition_id() * $overlap AS k")
+          .write
+          .parquet(path.toUri.toString)
+      }
+
+      withParquetTable(path.toUri.toString, "skip_partial_distinct") {
+        withSQLConf(
+          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+          SQLConf.SHUFFLE_PARTITIONS.key -> writers.toString,
+          CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
+          CometConf.COMET_SHUFFLE_MODE.key -> "native",
+          CometConf.COMET_RESPECT_DATAFUSION_CONFIGS.key -> "true",
+          "spark.comet.datafusion.execution.skip_partial_aggregation_probe_rows_threshold" -> "100",
+          "spark.comet.datafusion.execution.skip_partial_aggregation_probe_ratio_threshold" -> "0.8") {
+          checkSparkAnswerAndOperator(
+            "SELECT count(*) FROM (SELECT DISTINCT k FROM skip_partial_distinct)")
+          checkSparkAnswerAndOperator("SELECT count(DISTINCT k) FROM skip_partial_distinct")
+        }
+      }
+    }
+  }
+
+  test("skip partial aggregation admits only supported native shuffle plans") {
+    withTempDir { dir =>
+      val path = new Path(dir.toURI.toString, "input").toUri.toString
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        spark
+          .range(0L, 16384L, 1L, 8)
+          .selectExpr(
+            "id AS k",
+            "CASE WHEN id % 5 = 0 THEN NULL ELSE id % 17 END AS v",
+            "CASE WHEN id % 7 = 0 THEN NULL ELSE id % 11 END AS w")
+          .write
+          .parquet(path)
+      }
+      withParquetTable(path, "skip_partial_eligibility") {
+        withSQLConf(
+          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+          SQLConf.SHUFFLE_PARTITIONS.key -> "8",
+          CometConf.COMET_BATCH_SIZE.key -> "128",
+          CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
+          CometConf.COMET_SHUFFLE_MODE.key -> "native",
+          CometConf.COMET_RESPECT_DATAFUSION_CONFIGS.key -> "true",
+          "spark.comet.datafusion.execution.skip_partial_aggregation_probe_rows_threshold" -> "100") {
+          def aggregates(query: String): Seq[CometHashAggregateExec] = {
+            val (_, plan) = checkSparkAnswerAndOperator(query)
+            val result = stripAQEPlan(plan).collect { case aggregate: CometHashAggregateExec =>
+              aggregate
+            }
+            assert(result.nonEmpty)
+            result
+          }
+          def skipped(aggregate: CometHashAggregateExec): Long =
+            aggregate.metrics.get("skipped_aggregation_rows").map(_.value).getOrElse(0L)
+
+          val countQuery = "SELECT sum(n) FROM " +
+            "(SELECT k, count(*) n FROM skip_partial_eligibility GROUP BY k)"
+          // No ratio override: the eligible plan uses DataFusion's adaptive default.
+          assert(aggregates(countQuery).map(skipped).sum > 0L)
+          assert(
+            aggregates("SELECT sum(n) FROM " +
+              "(SELECT k % 2, count(*) n FROM skip_partial_eligibility GROUP BY k % 2)")
+              .map(skipped)
+              .sum == 0L)
+
+          withSQLConf(
+            "spark.comet.datafusion.execution.skip_partial_aggregation_probe_ratio_threshold" -> "1.1") {
+            assert(aggregates(countQuery).map(skipped).sum == 0L)
+          }
+          withSQLConf(
+            "spark.comet.datafusion.execution.skip_partial_aggregation_probe_ratio_threshold" -> "0.8") {
+            for (expression <- Seq("sum(v)", "count(v, w)", "count(*) + sum(v)")) {
+              val result = aggregates(
+                "SELECT sum(n) FROM " +
+                  s"(SELECT k, $expression n FROM skip_partial_eligibility GROUP BY k)")
+              assert(result.map(skipped).sum == 0L, s"Unexpected skipping for $expression")
+            }
+            val mixed =
+              aggregates("SELECT count(DISTINCT k), count(*) FROM skip_partial_eligibility")
+                .filter(_.modes.contains(PartialMerge))
+            assert(mixed.nonEmpty, "Expected a PartialMerge stage in the DISTINCT plan")
+            assert(mixed.map(skipped).sum == 0L)
+            withSQLConf(CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
+              assert(aggregates(countQuery).map(skipped).sum == 0L)
             }
           }
         }

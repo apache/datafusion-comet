@@ -40,6 +40,53 @@ INSERT INTO names VALUES(1, 'James', 'B', 'Taylor'), (2, 'Smith', 'C', 'Davis'),
 query
 SELECT concat_ws(' ', first_name, middle_initial, last_name) FROM names
 
--- literal + literal + literal (falls back to Spark when all args are foldable)
+-- All-scalar inputs retain codegen dispatch.
 query spark_answer_only
 SELECT concat_ws(',', 'hello', 'world'), concat_ws(',', '', ''), concat_ws(',', NULL, 'b', 'c'), concat_ws(NULL, 'a', 'b')
+
+-- Mixed string and array arguments execute natively.
+statement
+CREATE TABLE test_concat_ws_array(arr array<string>, s string) USING parquet
+
+statement
+INSERT INTO test_concat_ws_array VALUES (array('a', 'b'), 'c d'), (array('x', NULL, 'y'), 'z'), (array('only'), ''), (CAST(array() AS array<string>), 'w'), (NULL, 'v'), (array('p', 'q'), NULL)
+
+query
+SELECT concat_ws(',', arr, s) FROM test_concat_ws_array
+
+query
+SELECT concat_ws(',', s, arr) FROM test_concat_ws_array
+
+-- single array argument
+query
+SELECT concat_ws(',', arr) FROM test_concat_ws_array
+
+-- the same array argument twice
+query
+SELECT concat_ws('-', arr, s, arr) FROM test_concat_ws_array
+
+-- array produced by another expression
+query
+SELECT concat_ws(',', split(s, ' ')) FROM test_concat_ws_array
+
+query
+SELECT concat_ws(',', split(s, ' '), arr) FROM test_concat_ws_array
+
+-- a NULL separator is NULL regardless of the argument types and stays on the native path
+query
+SELECT concat_ws(NULL, arr, s) FROM test_concat_ws_array
+
+-- literal array arguments
+query
+SELECT concat_ws(',', array('a', 'b'), 'c'), concat_ws(',', array('x', NULL, 'y')), concat_ws(',', CAST(array() AS array<string>), 'w')
+
+-- Non-foldable separators, including empty strings and NULL.
+query
+SELECT concat_ws(s, arr, 'tail', arr), concat_ws(s) FROM test_concat_ws_array
+
+-- Empty strings count as elements; null strings, arrays, and elements do not.
+query
+SELECT concat_ws(',', array('', NULL, 'é'), s, CAST(NULL AS array<string>), array(NULL, '', '世界')) FROM test_concat_ws_array
+
+query
+SELECT concat_ws(','), concat_ws(NULL), concat_ws(',', array(NULL, NULL)), concat_ws(',', CAST(NULL AS array<string>))

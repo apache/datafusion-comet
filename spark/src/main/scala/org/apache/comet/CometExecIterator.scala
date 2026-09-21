@@ -21,6 +21,7 @@ package org.apache.comet
 
 import java.lang.management.ManagementFactory
 
+import org.apache.arrow.c.ArrowArrayStream
 import org.apache.hadoop.conf.Configuration
 import org.apache.spark._
 import org.apache.spark.broadcast.Broadcast
@@ -36,6 +37,7 @@ import org.apache.comet.Tracing.withTrace
 import org.apache.comet.exceptions.CometQueryExecutionException
 import org.apache.comet.parquet.CometFileKeyUnwrapper
 import org.apache.comet.serde.Config.ConfigMap
+import org.apache.comet.shuffle.ShufflePartitionPusher
 import org.apache.comet.vector.NativeUtil
 
 /**
@@ -60,6 +62,12 @@ import org.apache.comet.vector.NativeUtil
  *   The index of the partition.
  * @param encryptedFilePaths
  *   Paths to encrypted Parquet files that need key unwrapping.
+ * @param shufflePartitionPusher
+ *   Optional task-owned callback that receives remote shuffle output.
+ * @param capturePartitionOffsets
+ *   Whether to read the shuffle writer's partition offsets when the plan reaches the end of its
+ *   output, for a plan rooted at a native shuffle writer with a local destination. Remote shuffle
+ *   reports its partition lengths through its pusher instead, so it leaves this false.
  */
 class CometExecIterator(
     val id: Long,
@@ -72,7 +80,9 @@ class CometExecIterator(
     broadcastedHadoopConfForEncryption: Option[Broadcast[SerializableConfiguration]] = None,
     encryptedFilePaths: Seq[String] = Seq.empty,
     shuffleBlockIterators: Map[Int, CometShuffleBlockIterator] = Map.empty,
-    taskFilePaths: Seq[String] = Seq.empty)
+    taskFilePaths: Seq[String] = Seq.empty,
+    shufflePartitionPusher: Option[ShufflePartitionPusher] = None,
+    capturePartitionOffsets: Boolean = false)
     extends Iterator[ColumnarBatch]
     with Logging {
 
@@ -106,7 +116,7 @@ class CometExecIterator(
 
     val memoryConfig = CometExecIterator.getMemoryConfig(conf)
 
-    nativeLib.createPlan(
+    val createdPlan = nativeLib.createPlan(
       id,
       inputObjects,
       protobufQueryPlan,
@@ -130,6 +140,72 @@ class CometExecIterator(
       // worker has neither. See CometUdfBridge.evaluate.
       TaskContext.get(),
       Thread.currentThread().getContextClassLoader)
+
+    // Bind task-owned callbacks separately to preserve the existing createPlan JNI signature.
+    try {
+      shufflePartitionPusher.foreach { pusher =>
+        nativeLib.setShufflePartitionPusher(createdPlan, pusher)
+      }
+      createdPlan
+    } catch {
+      case failure: Throwable =>
+        // The task-completion listener is not installed until iterator construction succeeds.
+        try {
+          nativeUtil.close()
+        } catch {
+          case closeFailure: Throwable => failure.addSuppressed(closeFailure)
+        }
+
+        // Native only takes ownership of Arrow streams during the first executePlan call.
+        inputObjects.foreach {
+          case stream: ArrowArrayStream =>
+            try {
+              stream.release()
+            } catch {
+              case releaseFailure: Throwable => failure.addSuppressed(releaseFailure)
+            }
+          case _ =>
+        }
+
+        shuffleBlockIterators.values.foreach { iterator =>
+          try {
+            iterator.close()
+          } catch {
+            case closeFailure: Throwable => failure.addSuppressed(closeFailure)
+          }
+        }
+
+        try {
+          nativeLib.releasePlan(createdPlan)
+        } catch {
+          case releaseFailure: Throwable => failure.addSuppressed(releaseFailure)
+        }
+        throw failure
+    }
+  }
+
+  /** Set once by [[readPartitionOffsetsBeforeClose]]; `null` until then. */
+  private var partitionOffsets: Array[Long] = _
+
+  /**
+   * Partition offsets from a native shuffle write, or `null` if this iterator was not built to
+   * collect them or has not yet reached the end of its output.
+   */
+  def shufflePartitionOffsets: Array[Long] = partitionOffsets
+
+  /**
+   * Reads the shuffle writer's partition offsets out of the native plan, if this iterator was
+   * built to collect them.
+   *
+   * This has to run at end of stream rather than after iteration finishes. The offsets live in
+   * the native execution context; [[close]] releases that context, and [[hasNext]] calls
+   * [[close]] as soon as the plan runs out of output. So the final [[hasNext]] is the last point
+   * at which they can still be read.
+   */
+  private def readPartitionOffsetsBeforeClose(): Unit = {
+    if (capturePartitionOffsets && partitionOffsets == null) {
+      partitionOffsets = nativeLib.getShufflePartitionOffsets(plan)
+    }
   }
 
   private var nextBatch: Option[ColumnarBatch] = None
@@ -201,6 +277,7 @@ class CometExecIterator(
     logTrace(s"Task $taskAttemptId memory pool usage is ${cometTaskMemoryManager.getUsed} bytes")
 
     if (nextBatch.isEmpty) {
+      readPartitionOffsetsBeforeClose()
       close()
       false
     } else {
@@ -227,29 +304,60 @@ class CometExecIterator(
 
   def close(): Unit = synchronized {
     if (!closed) {
-      if (currentBatch != null) {
-        currentBatch.close()
-        currentBatch = null
-      }
-      nativeUtil.close()
-      shuffleBlockIterators.values.foreach(_.close())
-      nativeLib.releasePlan(plan)
-
-      if (tracingEnabled) {
-        traceMemoryUsage()
-      }
-
-      val memInUse = cometTaskMemoryManager.getUsed
-      if (memInUse != 0) {
-        logWarning(s"CometExecIterator closed with non-zero memory usage : $memInUse")
-      }
-
       closed = true
+
+      // Attempt every resource's cleanup independently, so that one failure does not skip the
+      // remaining resources: this close() is the only chance to release them, since `closed` is
+      // already set and the task-completion retry is a no-op. The first failure is rethrown with
+      // any later ones attached as suppressed exceptions.
+      var failure: Throwable = null
+      def attempt(cleanup: => Unit): Unit = {
+        try {
+          cleanup
+        } catch {
+          case t: Throwable =>
+            if (failure == null) failure = t else failure.addSuppressed(t)
+        }
+      }
+
+      attempt {
+        if (currentBatch != null) {
+          currentBatch.close()
+          currentBatch = null
+        }
+      }
+      attempt(nativeUtil.close())
+      shuffleBlockIterators.values.foreach(it => attempt(it.close()))
+
+      // Released last and exactly once, even if the teardown above failed: dropping the native
+      // execution context frees this plan's task-shared memory pool reference and several JNI
+      // global refs.
+      attempt(nativeLib.releasePlan(plan))
+
+      // Run the diagnostics even when teardown failed: a failed teardown is exactly when the
+      // non-zero memory usage warning below is most informative.
+      attempt {
+        if (tracingEnabled) {
+          traceMemoryUsage()
+        }
+      }
+
+      attempt {
+        val memInUse = cometTaskMemoryManager.getUsed
+        if (memInUse != 0) {
+          logWarning(s"CometExecIterator closed with non-zero memory usage : $memInUse")
+        }
+      }
+
+      if (failure != null) {
+        throw failure
+      }
     }
   }
 
   private def traceMemoryUsage(): Unit = {
     nativeLib.logMemoryUsage("jvm_heap_used", memoryMXBean.getHeapMemoryUsage.getUsed)
+    Tracing.logArrowMemory()
   }
 }
 

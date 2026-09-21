@@ -54,6 +54,7 @@ omitted from the tables below and may be reconsidered based on demand:
 | `FileSourceScanExec`    | ✅     | Parquet only. Some types and configurations fall back. See [Parquet Scan Compatibility](compatibility/scans.md).                                                                                             |
 | `BatchScanExec`         | ✅     | Parquet, Apache Iceberg Parquet, and CSV (native) scans. See [Parquet Scan Compatibility](compatibility/scans.md) and the [Iceberg Guide](iceberg.md).                                                       |
 | `LocalTableScanExec`    | ⚠️     | Disabled by default; there is no acceleration advantage and this operator is typically only used in test code. Can be opted into via config ([#4393](https://github.com/apache/datafusion-comet/pull/4393)). |
+| `EmptyRelationExec`     | ✅     | Spark 4.0 and later. See [Empty Relations](compatibility/operators.md#empty-relations) for native-input support and writer fallback.                                                                         |
 | `InMemoryTableScanExec` | 🔜     | Cached / in-memory table scans fall back today.                                                                                                                                                              |
 
 ## Projection and filtering
@@ -76,11 +77,11 @@ omitted from the tables below and may be reconsidered based on demand:
 
 ## Aggregation
 
-| Operator                  | Status | Notes                                                             |
-| ------------------------- | ------ | ----------------------------------------------------------------- |
-| `HashAggregateExec`       | ✅     |                                                                   |
-| `ObjectHashAggregateExec` | ✅     | Supports a limited set of aggregates, such as `bloom_filter_agg`. |
-| `SortAggregateExec`       | 🔜     | Falls back today; Comet currently accelerates hash aggregates.    |
+| Operator                  | Status | Notes                                                                                                                                                                                                             |
+| ------------------------- | ------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `HashAggregateExec`       | ✅     |                                                                                                                                                                                                                   |
+| `ObjectHashAggregateExec` | ✅     | Supports a limited set of aggregates, such as `bloom_filter_agg`. Falls back when Comet shuffle is disabled, which would otherwise split the aggregate across Comet and Spark. See the [Tuning Guide](tuning.md). |
+| `SortAggregateExec`       | 🔜     | Falls back today; Comet currently accelerates hash aggregates.                                                                                                                                                    |
 
 ## Joins
 
@@ -103,7 +104,7 @@ omitted from the tables below and may be reconsidered based on demand:
 | Operator               | Status | Notes                                                                                                                                                                                            |
 | ---------------------- | ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `WindowExec`           | ⚠️     | Runs natively and is enabled by default. A broad set of window functions is accelerated; unsupported shapes fall back to Spark. See [window function compatibility](compatibility/operators.md). |
-| `WindowGroupLimitExec` | 🔜     | Window-based limit pushdown falls back today ([#4837](https://github.com/apache/datafusion-comet/issues/4837)).                                                                                  |
+| `WindowGroupLimitExec` | ✅     | Streaming per-partition top-K pushdown for `ROW_NUMBER`, `RANK`, and `DENSE_RANK`.                                                                                                               |
 
 ## Generators and set operations
 
@@ -116,9 +117,10 @@ omitted from the tables below and may be reconsidered based on demand:
 
 ## Writes
 
-| Operator                 | Status | Notes                                                             |
-| ------------------------ | ------ | ----------------------------------------------------------------- |
-| `DataWritingCommandExec` | ⚠️     | Experimental native Parquet writes, disabled by default (opt-in). |
+| Operator                 | Status | Notes                                                                                                                                                                             |
+| ------------------------ | ------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `WriteFilesExec`         | ⚠️     | Spark 4.0+. Experimental native Parquet writes, disabled by default (opt-in). Non-partitioned, non-bucketed writes only, and not when `spark.sql.files.maxRecordsPerFile` is set. |
+| `DataWritingCommandExec` | ⚠️     | Spark 3.4/3.5 only. Experimental native Parquet writes, disabled by default (opt-in). Replaced by `WriteFilesExec` on Spark 4.0+ and removed with Spark 3.x support.              |
 
 ## Python and UDF
 

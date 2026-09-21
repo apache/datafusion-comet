@@ -26,7 +26,7 @@ jobs:
   build-docs:
     name: Build docs
     if: ${{ startsWith(github.repository, 'apache/') }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout docs sources
         uses: actions/checkout@v7
@@ -43,11 +43,38 @@ jobs:
           python-version: "3.10"
 
       - name: Setup Java
-        uses: actions/setup-java@v5
+        uses: actions/setup-java@v6
         with:
           distribution: 'temurin'
           java-version: '17'
           cache: 'maven'
+
+      - name: Setup Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+
+      - name: Install mermaid-cli
+        # Draws the ```mermaid fences into SVG at build time. Without a working mmdc the build
+        # still succeeds but silently drops every diagram, so it is installed unconditionally.
+        # See mermaid_output_format in docs/source/conf.py for why the browser cannot draw them.
+        # Kept identical to the same step in ci.yml's preflight; the version comes from the
+        # script so the pull-request check and this deploy cannot render with different ones.
+        run: |
+          set -eux
+          npm install --prefix "$RUNNER_TEMP/mermaid" "$(python3 dev/ci/check-mermaid.py --cli-spec)"
+          # mmdc draws each diagram by driving headless Chrome. puppeteer's postinstall fetches
+          # that browser, but it catches its own download failures and exits 0, so a flaky fetch
+          # leaves a green install step and an mmdc that cannot launch. Fetch it again here,
+          # where a failure is allowed to fail the job. A cache hit makes this a no-op.
+          npm --prefix "$RUNNER_TEMP/mermaid" exec -- puppeteer browsers install chrome-headless-shell
+          echo "$RUNNER_TEMP/mermaid/node_modules/.bin" >> "$GITHUB_PATH"
+
+      - name: Check mermaid diagrams render
+        # Preflight ran this on the pull request, but it is the cheap half of the guard and this
+        # is the run that publishes. Failing here leaves the previous site in place rather than
+        # replacing a page with a diagram-shaped hole.
+        run: python3 dev/ci/check-mermaid.py
 
       - name: Install dependencies
         run: |
@@ -62,6 +89,12 @@ jobs:
           source venv/bin/activate
           cd docs
           ./build.sh
+
+      - name: Check the diagrams reached the pages
+        # The other half: mmdc can be healthy and the diagram still not reach the HTML, which is
+        # what sphinxcontrib-mermaid does with any render error it meets -- a warning, a dropped
+        # node, and a green build. This runs before the publish step for that reason.
+        run: python3 dev/ci/check-mermaid.py --built docs/build/html
 
       - name: Copy & push the generated HTML
         run: |

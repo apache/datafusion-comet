@@ -51,6 +51,8 @@ use std::hash::Hash;
 use std::ops::Range;
 use std::sync::Arc;
 
+use super::nested_float_normalize::{has_float_leaf, normalize_nested_floats};
+
 #[derive(Debug, PartialEq, Eq, Hash)]
 pub struct SparkArraysOverlap {
     signature: Signature,
@@ -272,10 +274,9 @@ fn range_has_null(nulls: Option<&NullBuffer>, range: Range<usize>) -> bool {
     nulls.is_some_and(|n| n.null_count() > 0 && n.slice(range.start, range.len()).null_count() > 0)
 }
 
-/// Projects a native value onto a hashable key whose equality matches the Arrow compare kernels:
-/// the value itself for integral types, the bit pattern for floats. Arrow orders floats by total
-/// order rather than IEEE semantics (NaN equals NaN, and 0.0 does not equal -0.0), which is
-/// exactly bit equality.
+/// Projects a native value onto a Spark-compatible hashable key. Floating-point keys canonicalize
+/// every NaN representation while preserving the distinct bit patterns of positive and negative
+/// zero.
 trait OverlapKey: Copy {
     type Key: Hash + Eq + Copy;
 
@@ -299,7 +300,11 @@ impl OverlapKey for f32 {
     type Key = u32;
 
     fn overlap_key(self) -> u32 {
-        self.to_bits()
+        if self.is_nan() {
+            f32::NAN.to_bits()
+        } else {
+            self.to_bits()
+        }
     }
 }
 
@@ -307,7 +312,11 @@ impl OverlapKey for f64 {
     type Key = u64;
 
     fn overlap_key(self) -> u64 {
-        self.to_bits()
+        if self.is_nan() {
+            f64::NAN.to_bits()
+        } else {
+            self.to_bits()
+        }
     }
 }
 
@@ -388,11 +397,38 @@ where
     }
 }
 
+fn normalize_list_element_floats<OffsetSize: OffsetSizeTrait>(
+    list: &GenericListArray<OffsetSize>,
+) -> GenericListArray<OffsetSize> {
+    let field = match list.data_type() {
+        DataType::List(f) | DataType::LargeList(f) => Arc::clone(f),
+        _ => unreachable!("GenericListArray always has List or LargeList data type"),
+    };
+    let normalized_values = normalize_nested_floats(list.values());
+    GenericListArray::new(
+        field,
+        list.offsets().clone(),
+        normalized_values,
+        list.nulls().cloned(),
+    )
+}
+
 /// Fallback for nested and otherwise unhandled element types.
+///
+/// note: Spark's flat arrays_overlap (HashSet<Double>) treats -0.0 and 0.0 as different,
+/// only the nested path here treats them as equal. this normalization can't move into the
+/// flat fast path in arrays_overlap_list without breaking that difference.
 fn arrays_overlap_list_generic<OffsetSize: OffsetSizeTrait>(
     left: &GenericListArray<OffsetSize>,
     right: &GenericListArray<OffsetSize>,
 ) -> Result<ArrayRef> {
+    let left_owned =
+        has_float_leaf(left.values().data_type()).then(|| normalize_list_element_floats(left));
+    let left: &GenericListArray<OffsetSize> = left_owned.as_ref().unwrap_or(left);
+    let right_owned =
+        has_float_leaf(right.values().data_type()).then(|| normalize_list_element_floats(right));
+    let right: &GenericListArray<OffsetSize> = right_owned.as_ref().unwrap_or(right);
+
     let len = left.len();
     let mut builder = BooleanArray::builder(len);
 
@@ -510,10 +546,11 @@ fn needs_comparator(dt: &DataType) -> bool {
 mod tests {
     use super::*;
     use arrow::array::{
-        Float64Builder, Int32Array, Int32Builder, ListArray, ListBuilder, StructBuilder,
+        Float64Array, Float64Builder, Int32Array, Int32Builder, ListArray, ListBuilder,
+        StructArray, StructBuilder,
     };
     use arrow::buffer::{NullBuffer, OffsetBuffer};
-    use arrow::datatypes::Field;
+    use arrow::datatypes::{Field, Fields};
 
     fn make_list_array(
         values: &Int32Array,
@@ -551,6 +588,132 @@ mod tests {
         let result = result.as_any().downcast_ref::<BooleanArray>().unwrap();
         assert!(!result.value(0));
         assert!(result.is_valid(0));
+        Ok(())
+    }
+
+    #[test]
+    fn test_flat_float32_nan_payloads_and_signed_zero() -> Result<()> {
+        let positive_nan = f32::from_bits(0x7fc0_0001);
+        let negative_nan = f32::from_bits(0xffc0_0002);
+        let signaling_nan = f32::from_bits(0x7f80_0001);
+
+        let hash_nan_left = (1..=16)
+            .map(|value| Some(value as f32))
+            .chain([Some(positive_nan)])
+            .collect::<Vec<_>>();
+        let hash_nan_right = (17..=32)
+            .map(|value| Some(value as f32))
+            .chain([Some(negative_nan)])
+            .collect::<Vec<_>>();
+        let hash_zero_left = (1..=16)
+            .map(|value| Some(value as f32))
+            .chain([Some(0.0)])
+            .collect::<Vec<_>>();
+        let hash_zero_right = (17..=32)
+            .map(|value| Some(value as f32))
+            .chain([Some(-0.0)])
+            .collect::<Vec<_>>();
+
+        let left = ListArray::from_iter_primitive::<Float32Type, _, _>([
+            Some(vec![Some(positive_nan)]),
+            Some(vec![Some(negative_nan)]),
+            Some(vec![Some(signaling_nan)]),
+            Some(vec![Some(0.0)]),
+            Some(vec![Some(-0.0)]),
+            Some(vec![Some(positive_nan), None]),
+            Some(vec![Some(0.0), None]),
+            Some(hash_nan_left),
+            Some(hash_zero_left),
+        ]);
+        let right = ListArray::from_iter_primitive::<Float32Type, _, _>([
+            Some(vec![Some(f32::NAN)]),
+            Some(vec![Some(positive_nan)]),
+            Some(vec![Some(negative_nan)]),
+            Some(vec![Some(-0.0)]),
+            Some(vec![Some(0.0)]),
+            Some(vec![Some(negative_nan)]),
+            Some(vec![Some(-0.0)]),
+            Some(hash_nan_right),
+            Some(hash_zero_right),
+        ]);
+
+        let result = arrays_overlap_list::<i32>(&left, &right)?;
+        let result = result.as_any().downcast_ref::<BooleanArray>().unwrap();
+        let expected = BooleanArray::from(vec![
+            Some(true),
+            Some(true),
+            Some(true),
+            Some(false),
+            Some(false),
+            Some(true),
+            None,
+            Some(true),
+            Some(false),
+        ]);
+        assert_eq!(result, &expected);
+        Ok(())
+    }
+
+    #[test]
+    fn test_flat_float64_nan_payloads_and_signed_zero() -> Result<()> {
+        let positive_nan = f64::from_bits(0x7ff8_0000_0000_0001);
+        let negative_nan = f64::from_bits(0xfff8_0000_0000_0002);
+        let signaling_nan = f64::from_bits(0x7ff0_0000_0000_0001);
+
+        let hash_nan_left = (1..=16)
+            .map(|value| Some(value as f64))
+            .chain([Some(positive_nan)])
+            .collect::<Vec<_>>();
+        let hash_nan_right = (17..=32)
+            .map(|value| Some(value as f64))
+            .chain([Some(negative_nan)])
+            .collect::<Vec<_>>();
+        let hash_zero_left = (1..=16)
+            .map(|value| Some(value as f64))
+            .chain([Some(0.0)])
+            .collect::<Vec<_>>();
+        let hash_zero_right = (17..=32)
+            .map(|value| Some(value as f64))
+            .chain([Some(-0.0)])
+            .collect::<Vec<_>>();
+
+        let left = ListArray::from_iter_primitive::<Float64Type, _, _>([
+            Some(vec![Some(positive_nan)]),
+            Some(vec![Some(negative_nan)]),
+            Some(vec![Some(signaling_nan)]),
+            Some(vec![Some(0.0)]),
+            Some(vec![Some(-0.0)]),
+            Some(vec![Some(positive_nan), None]),
+            Some(vec![Some(0.0), None]),
+            Some(hash_nan_left),
+            Some(hash_zero_left),
+        ]);
+        let right = ListArray::from_iter_primitive::<Float64Type, _, _>([
+            Some(vec![Some(f64::NAN)]),
+            Some(vec![Some(positive_nan)]),
+            Some(vec![Some(negative_nan)]),
+            Some(vec![Some(-0.0)]),
+            Some(vec![Some(0.0)]),
+            Some(vec![Some(negative_nan)]),
+            Some(vec![Some(-0.0)]),
+            Some(hash_nan_right),
+            Some(hash_zero_right),
+        ]);
+
+        let result = arrays_overlap_list::<i32>(&left, &right)?;
+        let result = result.as_any().downcast_ref::<BooleanArray>().unwrap();
+        let expected = BooleanArray::from(vec![
+            Some(true),
+            Some(true),
+            Some(true),
+            Some(false),
+            Some(false),
+            Some(true),
+            None,
+            Some(true),
+            Some(false),
+        ]);
+        assert_eq!(result, &expected);
         Ok(())
     }
 
@@ -705,9 +868,8 @@ mod tests {
     }
 
     #[test]
-    fn test_nested_float_total_order() -> Result<()> {
-        // Preserve the existing Arrow total-order behavior: NaN matches itself, while signed
-        // zeros are distinct.
+    fn test_nested_float_spark_equality() -> Result<()> {
+        // NaN matches itself, and signed zeros are equal, matching Spark.
         let left = make_nested_float_list(&[&[f64::NAN]]);
         let right = make_nested_float_list(&[&[f64::NAN]]);
         let result = arrays_overlap_list::<i32>(&left, &right)?;
@@ -718,7 +880,18 @@ mod tests {
         let right = make_nested_float_list(&[&[-0.0]]);
         let result = arrays_overlap_list::<i32>(&left, &right)?;
         let result = result.as_any().downcast_ref::<BooleanArray>().unwrap();
-        assert!(!result.value(0));
+        assert!(result.value(0));
+        Ok(())
+    }
+
+    #[test]
+    fn test_nested_float_signed_nan_spark_equality() -> Result<()> {
+        // [[-NaN]] vs [[NaN]] => true
+        let left = make_nested_float_list(&[&[-f64::NAN]]);
+        let right = make_nested_float_list(&[&[f64::NAN]]);
+        let result = arrays_overlap_list::<i32>(&left, &right)?;
+        let result = result.as_any().downcast_ref::<BooleanArray>().unwrap();
+        assert!(result.value(0));
         Ok(())
     }
 
@@ -897,6 +1070,73 @@ mod tests {
         // [{1,2}, {1,NULL}] vs [{1,2}] => true (definite match on {1,2})
         let left = make_struct_list(vec![Some((Some(1), Some(2))), Some((Some(1), None))]);
         let right = make_struct_list(vec![Some((Some(1), Some(2)))]);
+
+        let result = arrays_overlap_list::<i32>(&left, &right)?;
+        let result = result.as_any().downcast_ref::<BooleanArray>().unwrap();
+        assert!(result.is_valid(0));
+        assert!(result.value(0));
+        Ok(())
+    }
+
+    /// Build a single-row ListArray of structs: List<Struct<a: Float64>>
+    fn make_struct_float_list(elements: Vec<Option<f64>>) -> ListArray {
+        let fields = vec![Arc::new(Field::new("a", DataType::Float64, true))];
+        let struct_builder =
+            StructBuilder::new(fields.clone(), vec![Box::new(Float64Builder::new())]);
+        let mut list_builder = ListBuilder::new(struct_builder);
+
+        for elem in &elements {
+            let sb = list_builder.values();
+            sb.field_builder::<Float64Builder>(0)
+                .unwrap()
+                .append_option(*elem);
+            sb.append(true);
+        }
+        list_builder.append(true);
+        list_builder.finish()
+    }
+
+    /// Regression test for an empty struct alongside a float field. Iceberg exposes
+    /// `_partition` as `struct<>` on an unpartitioned table, so
+    /// `arrays_overlap(array(named_struct('x', x, 'p', _partition)), ...)` reaches the
+    /// nested path with a zero column struct child. Rebuilding that child used to panic.
+    #[test]
+    fn test_struct_with_empty_struct_field_overlap() -> Result<()> {
+        fn make_list(values: Vec<f64>) -> ListArray {
+            let len = values.len();
+            let x: ArrayRef = Arc::new(Float64Array::from(values));
+            let partition: ArrayRef = Arc::new(StructArray::new_empty_fields(len, None));
+            let fields: Fields = vec![
+                Arc::new(Field::new("x", DataType::Float64, true)),
+                Arc::new(Field::new("p", partition.data_type().clone(), true)),
+            ]
+            .into();
+            let element: ArrayRef =
+                Arc::new(StructArray::new(fields.clone(), vec![x, partition], None));
+            ListArray::new(
+                Arc::new(Field::new("item", DataType::Struct(fields), true)),
+                OffsetBuffer::new((0..=len as i32).collect::<Vec<_>>().into()),
+                element,
+                None,
+            )
+        }
+
+        // One row per element, mirroring `SELECT ... FROM t` over values 1.0 and 2.0.
+        let left = make_list(vec![1.0, 2.0]);
+        let right = make_list(vec![1.0, 2.0]);
+
+        let result = arrays_overlap_list::<i32>(&left, &right)?;
+        let result = result.as_any().downcast_ref::<BooleanArray>().unwrap();
+        assert!(result.value(0));
+        assert!(result.value(1));
+        Ok(())
+    }
+
+    #[test]
+    fn test_struct_float_field_signed_zero_overlap() -> Result<()> {
+        // [{-0.0}] vs [{0.0}] => true, matching Spark
+        let left = make_struct_float_list(vec![Some(-0.0)]);
+        let right = make_struct_float_list(vec![Some(0.0)]);
 
         let result = arrays_overlap_list::<i32>(&left, &right)?;
         let result = result.as_any().downcast_ref::<BooleanArray>().unwrap();

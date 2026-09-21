@@ -39,8 +39,8 @@ INSERT INTO test_array_repeat VALUES
   (CAST(127 AS TINYINT), CAST(32767 AS SMALLINT), 2147483647, 9223372036854775807, CAST('Infinity' AS FLOAT), CAST('Infinity' AS DOUBLE), CAST(99999999999999999999999999999999999999 AS DECIMAL(38, 0)), true, 'a', X'01', DATE '1970-01-01', TIMESTAMP '1970-01-01 00:00:00', array(1, 2, 3), 3),
   (CAST(-128 AS TINYINT), CAST(-32768 AS SMALLINT), -2147483648, -9223372036854775808, CAST('-Infinity' AS FLOAT), CAST('-Infinity' AS DOUBLE), CAST(-99999999999999999999999999999999999999 AS DECIMAL(38, 0)), false, 'é', X'02FF', DATE '9999-12-31', TIMESTAMP '9999-12-31 23:59:59', array(), 2),
   (CAST(0 AS TINYINT), CAST(0 AS SMALLINT), 0, 0, CAST('NaN' AS FLOAT), CAST('NaN' AS DOUBLE), CAST(0 AS DECIMAL(38, 0)), false, '', X'', DATE '2024-02-29', TIMESTAMP '2024-02-29 12:34:56', array(NULL, 1, NULL), 1),
-  (NULL, NULL, NULL, NULL, CAST(0.0 AS FLOAT), CAST(-0.0 AS DOUBLE), NULL, NULL, '日本', X'00', NULL, NULL, NULL, 0),
-  (CAST(1 AS TINYINT), CAST(1 AS SMALLINT), 1, 1, CAST(-0.0 AS FLOAT), CAST(0.0 AS DOUBLE), CAST(1 AS DECIMAL(38, 0)), true, NULL, NULL, DATE '2000-01-01', TIMESTAMP '2000-01-01 00:00:00', array(7), -1),
+  (NULL, NULL, NULL, NULL, CAST(0.0 AS FLOAT), double('-0.0'), NULL, NULL, '日本', X'00', NULL, NULL, NULL, 0),
+  (CAST(1 AS TINYINT), CAST(1 AS SMALLINT), 1, 1, float('-0.0'), CAST(0.0 AS DOUBLE), CAST(1 AS DECIMAL(38, 0)), true, NULL, NULL, DATE '2000-01-01', TIMESTAMP '2000-01-01 00:00:00', array(7), -1),
   (NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL)
 
 -- per-type column repeated with a column count
@@ -96,6 +96,14 @@ SELECT array_repeat(int_v, -5) FROM test_array_repeat
 
 query
 SELECT array_repeat(int_v, CAST(NULL AS INT)) FROM test_array_repeat
+
+-- signed-zero elements currently sit on rows with cnt <= 0, which yield empty
+-- arrays. Repeat them with a positive literal count so the sign bit is observed.
+query
+SELECT array_repeat(float_v, 2) FROM test_array_repeat
+
+query
+SELECT array_repeat(double_v, 2) FROM test_array_repeat
 
 -- literal element + column count
 query
