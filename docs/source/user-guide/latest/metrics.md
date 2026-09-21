@@ -36,34 +36,34 @@ during execution; the planning metrics are Iceberg's own scan-report counters, c
 Iceberg's Java planner on the driver and surfaced here so they show in the UI as they do for a
 plain Spark + Iceberg `BatchScan`.
 
-| Metric                          | Description                                                                                                                                                                                                                                                            |
-| ------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `number of output rows`         | Rows produced by the scan.                                                                                                                                                                                                                                            |
-| `number of bytes scanned`       | Bytes read from storage, including data and delete files.                                                                                                                                                                                                            |
-| `number of file splits processed` | File scan tasks (splits) read by this scan.                                                                                                                                                                                                                        |
-| `scan time`                     | Time spent in the native scan's record-batch polling, covering the iceberg-rust reader plus Comet's schema adaptation. It excludes time the stream spends waiting between polls, so it is decode/compute time, not end-to-end scan latency. This differs from the `scan time` under `CometScanExec`, which times Parquet file reads. |
+| Metric                            | Description                                                                                                                                                                                                                                                                                                                          |
+| --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `number of output rows`           | Rows produced by the scan.                                                                                                                                                                                                                                                                                                           |
+| `number of bytes scanned`         | Bytes read from storage, including data and delete files.                                                                                                                                                                                                                                                                            |
+| `number of file splits processed` | File scan tasks (splits) read by this scan.                                                                                                                                                                                                                                                                                          |
+| `scan time`                       | Time spent in the native scan's record-batch polling, covering the iceberg-rust reader plus Comet's schema adaptation. It excludes time the stream spends waiting between polls, so it is decode/compute time, not end-to-end scan latency. This differs from the `scan time` under `CometScanExec`, which times Parquet file reads. |
 
 The planning metrics below mirror Iceberg's `ScanReport`. They are driver-side values known after
 scan planning and do not change during execution.
 
-| Metric                    | Description                                              |
-| ------------------------- | ------------------------------------------------------- |
-| `totalPlanningDuration`   | Time Iceberg spent planning the scan.                   |
-| `totalDataManifest`       | Data manifests in the snapshot.                         |
-| `scannedDataManifests`    | Data manifests read during planning.                    |
-| `skippedDataManifests`    | Data manifests skipped by partition/stat filtering.     |
-| `resultDataFiles`         | Data files selected for the scan.                       |
-| `skippedDataFiles`        | Data files skipped by filtering.                        |
-| `totalDataFileSize`       | Total size of the selected data files.                  |
-| `totalDeleteManifests`    | Delete manifests in the snapshot.                       |
-| `scannedDeleteManifests`  | Delete manifests read during planning.                  |
-| `skippedDeleteManifests`  | Delete manifests skipped by filtering.                  |
-| `resultDeleteFiles`       | Delete files applied to the scan.                       |
-| `skippedDeleteFiles`      | Delete files skipped by filtering.                      |
-| `totalDeleteFileSize`     | Total size of the applied delete files.                 |
-| `equalityDeleteFiles`     | Equality delete files applied.                          |
-| `positionalDeleteFiles`   | Positional delete files applied.                        |
-| `indexedDeleteFiles`      | Delete files served from the delete-file index.         |
+| Metric                   | Description                                         |
+| ------------------------ | --------------------------------------------------- |
+| `totalPlanningDuration`  | Time Iceberg spent planning the scan.               |
+| `totalDataManifest`      | Data manifests in the snapshot.                     |
+| `scannedDataManifests`   | Data manifests read during planning.                |
+| `skippedDataManifests`   | Data manifests skipped by partition/stat filtering. |
+| `resultDataFiles`        | Data files selected for the scan.                   |
+| `skippedDataFiles`       | Data files skipped by filtering.                    |
+| `totalDataFileSize`      | Total size of the selected data files.              |
+| `totalDeleteManifests`   | Delete manifests in the snapshot.                   |
+| `scannedDeleteManifests` | Delete manifests read during planning.              |
+| `skippedDeleteManifests` | Delete manifests skipped by filtering.              |
+| `resultDeleteFiles`      | Delete files applied to the scan.                   |
+| `skippedDeleteFiles`     | Delete files skipped by filtering.                  |
+| `totalDeleteFileSize`    | Total size of the applied delete files.             |
+| `equalityDeleteFiles`    | Equality delete files applied.                      |
+| `positionalDeleteFiles`  | Positional delete files applied.                    |
+| `indexedDeleteFiles`     | Delete files served from the delete-file index.     |
 
 Iceberg's `numDeletes` (deletes applied at read time) is not reported: it is a Java-reader runtime
 counter, and Comet reads natively through iceberg-rust, which exposes no deletes-applied count, so
