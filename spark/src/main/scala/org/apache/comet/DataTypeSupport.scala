@@ -53,6 +53,11 @@ trait DataTypeSupport {
           BinaryType | StringType | _: DecimalType | DateType | TimestampType | TimestampNTZType |
           CalendarIntervalType =>
         true
+      case StructType(fields) if fields.map(_.name).distinct.length != fields.length =>
+        // Java Arrow keys struct children by name, so a struct with duplicate field names
+        // cannot cross the JVM Arrow boundary intact
+        fallbackReasons += s"Unsupported ${name}: struct with duplicate field names"
+        false
       case StructType(fields) =>
         fields.nonEmpty && fields.forall(f =>
           isTypeSupported(f.dataType, f.name, fallbackReasons))

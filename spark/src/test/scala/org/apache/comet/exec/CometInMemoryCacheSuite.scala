@@ -21,23 +21,33 @@ package org.apache.comet.exec
 
 import java.{util => ju}
 
+import org.apache.arrow.compression.ZstdCompressionCodec
+import org.apache.arrow.memory.{ArrowBuf, BufferAllocator}
+import org.apache.arrow.vector.{FixedSizeBinaryVector, IntVector, VarBinaryVector, VarCharVector}
+import org.apache.arrow.vector.compression.{CompressionCodec, CompressionUtil}
 import org.apache.arrow.vector.types.pojo.ArrowType
 import org.apache.spark.CometDriverPlugin
 import org.apache.spark.SparkConf
-import org.apache.spark.sql.CometTestBase
-import org.apache.spark.sql.catalyst.expressions.{And, Attribute, Expression, GreaterThanOrEqual, LessThan, Literal}
+import org.apache.spark.sql.{CometTestBase, Row}
+import org.apache.spark.sql.catalyst.expressions.{And, Attribute, AttributeReference, Expression, GreaterThanOrEqual, LessThan, Literal}
 import org.apache.spark.sql.columnar.{CachedBatch, SimpleMetricsCachedBatch}
-import org.apache.spark.sql.comet.CometInMemoryTableScanExec
+import org.apache.spark.sql.comet.{CometBroadcastHashJoinExec, CometInMemoryTableScanExec, CometSortExec, CometSortMergeJoinExec}
 import org.apache.spark.sql.comet.execution.arrow.CometCachedBatchHelper
 import org.apache.spark.sql.comet.util.Utils
+import org.apache.spark.sql.execution.SortExec
+import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AQEShuffleReadExec, QueryStageExec, ShuffleQueryStageExec}
 import org.apache.spark.sql.execution.columnar.{CometInMemoryRelationHelper, InMemoryRelation}
-import org.apache.spark.sql.execution.exchange.{Exchange, ReusedExchangeExec}
+import org.apache.spark.sql.execution.exchange.{Exchange, ReusedExchangeExec, ShuffleExchangeLike}
+import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, SortMergeJoinExec}
+import org.apache.spark.sql.functions.max
 import org.apache.spark.sql.internal.{SQLConf, StaticSQLConf}
+import org.apache.spark.sql.types._
+import org.apache.spark.sql.vectorized.{ColumnarBatch, ColumnVector}
 import org.apache.spark.storage.StorageLevel
 
 import org.apache.comet.{CometArrowAllocator, CometConf}
-import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
-import org.apache.comet.vector.CometVector
+import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus}
+import org.apache.comet.vector.{CometPlainVector, CometVector}
 
 class CometInMemoryCacheSuite extends CometTestBase {
 
@@ -87,6 +97,134 @@ class CometInMemoryCacheSuite extends CometTestBase {
       .map(_.getClass.getName)
       .distinct()
       .collect()
+  }
+
+  // The tests below are ported from Spark 4.1.2's AdaptiveQueryExecSuite; see each source link.
+  private def withAQECache(f: => Unit): Unit = {
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
+      SQLConf.CAN_CHANGE_CACHED_PLAN_OUTPUT_PARTITIONING.key -> "true",
+      SQLConf.SHUFFLE_PARTITIONS.key -> "3",
+      CometConf.COMET_SHUFFLE_MODE.key -> "jvm",
+      CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> "true",
+      "spark.comet.sparkToColumnar.enabled" -> "true") {
+      try {
+        f
+      } finally {
+        spark.catalog.clearCache()
+      }
+    }
+  }
+
+  // https://github.com/apache/spark/blob/v4.1.2/sql/core/src/test/scala/org/apache/spark/sql/execution/adaptive/AdaptiveQueryExecSuite.scala#L3114-L3154
+  test("AQE SPARK-42101: cold and warm Comet cache materialization") {
+    assume(isSpark35Plus, "Table-cache query stages require Spark 3.5+")
+    withAQECache {
+      withSQLConf(SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
+        val left = spark.range(0, 10, 1, 2).selectExpr("cast(id as string) c1")
+        val right = spark.range(0, 10, 1, 2).selectExpr("cast(id as string) c2")
+        val cached = left.join(right, $"c1" === $"c2").cache()
+        val builder = spark.sharedState.cacheManager
+          .lookupCachedData(cached)
+          .get
+          .cachedRepresentation
+          .cacheBuilder
+
+        Seq(true, false).foreach { firstAccess =>
+          val df = cached.groupBy("c1").agg(max($"c2"))
+          val adaptive = df.queryExecution.executedPlan.asInstanceOf[AdaptiveSparkPlanExec]
+          assert(!adaptive.isFinalPlan)
+          assert(builder.isCachedColumnBuffersLoaded != firstAccess)
+          assert(
+            collect(adaptive) { case s: ShuffleExchangeLike => s }.size ==
+              (if (firstAccess) 1 else 0))
+          assert(collect(adaptive) { case s: CometInMemoryTableScanExec => s }.size == 1)
+
+          checkAnswer(df, (0L until 10L).map(i => Row(i.toString, i.toString)))
+          assert(adaptive.isFinalPlan)
+          assert(builder.isCachedColumnBuffersLoaded)
+          assert(collect(adaptive) { case s: ShuffleExchangeLike => s }.isEmpty)
+          assert(collect(adaptive) { case s @ (_: CometSortExec | _: SortExec) => s }.isEmpty)
+          assert(collect(adaptive) { case s: CometInMemoryTableScanExec => s }.size == 1)
+        }
+      }
+    }
+  }
+
+  // https://github.com/apache/spark/blob/v4.1.2/sql/core/src/test/scala/org/apache/spark/sql/execution/adaptive/AdaptiveQueryExecSuite.scala#L3156-L3176
+  test("AQE SPARK-42101: preserve shuffle partitions beside a table cache stage") {
+    assume(isSpark35Plus, "Table-cache query stages require Spark 3.5+")
+    withAQECache {
+      withSQLConf(
+        SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+        SQLConf.COALESCE_PARTITIONS_MIN_PARTITION_NUM.key -> "1") {
+        val cached = Seq(1, 2).toDF("c1").repartition(3, $"c1").cache()
+        val df = cached.join(Seq(1, 2).toDF("c2"), $"c1" === $"c2")
+        checkAnswer(df, Seq(Row(1, 1), Row(2, 2)))
+        val plan = df.queryExecution.executedPlan
+        assert(plan.asInstanceOf[AdaptiveSparkPlanExec].isFinalPlan)
+        // Match by name because this suite must also compile on Spark 3.4.
+        assert(collect(plan) {
+          case s: QueryStageExec if s.getClass.getSimpleName == "TableCacheQueryStageExec" => s
+        }.size == 1)
+        assert(collect(plan) { case s: CometInMemoryTableScanExec => s }.size == 1)
+        assert(collect(plan) { case s: ShuffleQueryStageExec => s }.size == 1)
+        assert(collect(plan) { case s: AQEShuffleReadExec => s }.isEmpty)
+      }
+    }
+  }
+
+  // https://github.com/apache/spark/blob/v4.1.2/sql/core/src/test/scala/org/apache/spark/sql/execution/adaptive/AdaptiveQueryExecSuite.scala#L2780-L2832
+  test("AQE SPARK-37742: use valid Comet cache statistics for join selection") {
+    withAQECache {
+      // Comet reports compressed Arrow bytes, so use a threshold below the compressed
+      // large cache as well as below its logical estimate. The single-row side still fits.
+      withSQLConf(
+        SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "1024",
+        SQLConf.ADAPTIVE_OPTIMIZER_EXCLUDED_RULES.key ->
+          "org.apache.spark.sql.execution.adaptive.AQEPropagateEmptyRelation") {
+        withTempView("cache_large", "cache_other", "cache_small") {
+          val key = "00112233445566778899"
+          Seq.fill(60000)(key).toDF("key").createOrReplaceTempView("cache_large")
+          Seq
+            .fill(60000)("11223344556677889900")
+            .toDF("key")
+            .createOrReplaceTempView("cache_other")
+          Seq(key).toDF("key").createOrReplaceTempView("cache_small")
+          val cached = spark.sql("SELECT key AS newKey FROM cache_large").cache()
+          val relation =
+            spark.sharedState.cacheManager.lookupCachedData(cached).get.cachedRepresentation
+          assert(!relation.cacheBuilder.isCachedColumnBuffersLoaded)
+          val df = spark.sql("""
+            SELECT t3.newKey FROM
+              (SELECT t1.newKey FROM (SELECT key AS newKey FROM cache_large) t1
+               JOIN cache_small t2 ON t1.newKey = t2.key) t3
+            JOIN cache_other t4 ON t3.newKey = t4.key
+            UNION
+            SELECT t1.newKey FROM (SELECT key AS newKey FROM cache_large) t1
+            JOIN cache_other t2 ON t1.newKey = t2.key
+          """)
+          checkAnswer(df, Seq.empty[Row])
+          val plan = df.queryExecution.executedPlan
+          assert(plan.asInstanceOf[AdaptiveSparkPlanExec].isFinalPlan)
+          assert(collect(plan) { case s: CometInMemoryTableScanExec => s }.nonEmpty)
+          assert(collect(plan) {
+            case j @ (_: CometBroadcastHashJoinExec | _: BroadcastHashJoinExec) => j
+          }.size == 1)
+          assert(collect(plan) { case j @ (_: CometSortMergeJoinExec | _: SortMergeJoinExec) =>
+            j
+          }.size == 2)
+          val batches = relation.cacheBuilder.cachedColumnBuffers.collect()
+          assert(batches.forall(
+            _.getClass.getName == "org.apache.spark.sql.comet.execution.arrow.CometCachedBatch"))
+          assert(batches.map(_.numRows.toLong).sum == 60000L)
+          val stats = relation.computeStats()
+          assert(stats.rowCount.contains(BigInt(60000)))
+          assert(stats.sizeInBytes == batches.map(_.sizeInBytes).sum)
+          assert(stats.sizeInBytes > 1024L)
+        }
+      }
+    }
   }
 
   test("CometInMemoryTableScan over CometCachedBatch") {
@@ -349,6 +487,156 @@ class CometInMemoryCacheSuite extends CometTestBase {
       assert(plan.contains("CometHashAggregate"))
 
       spark.catalog.clearCache()
+    }
+  }
+
+  test("Comet in-memory cache statistics preserve typed bounds and null counts") {
+    withSQLConf(
+      CometConf.COMET_ENABLED.key -> "false",
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
+      val types = Seq(
+        "boolean",
+        "tinyint",
+        "smallint",
+        "int",
+        "bigint",
+        "float",
+        "double",
+        "decimal(10,2)",
+        "decimal(38,2)",
+        "string",
+        "date",
+        "timestamp",
+        "timestamp_ntz",
+        "binary")
+      val expressions = types.zipWithIndex.map { case (dt, i) =>
+        val value = dt match {
+          case "date" => "date_add(DATE '2000-01-01', cast(v AS INT))"
+          case "timestamp" | "timestamp_ntz" =>
+            s"cast(date_add(DATE '2000-01-01', cast(v AS INT)) AS $dt)"
+          case "string" | "binary" => s"cast(concat('字', cast(v AS STRING)) AS $dt)"
+          case _ => s"cast(v AS $dt)"
+        }
+        s"$value AS c$i"
+      }
+      // Leading nulls, updates in both directions, duplicate values, all-null and single-value
+      // columns exercise initialization as well as the primitive and reference bounds loops.
+      Seq("(NULL), (2), (-3), (0), (1), (2), (NULL)", "(NULL), (NULL)", "(NULL), (1)").foreach {
+        values =>
+          val df = spark
+            .sql(s"SELECT ${expressions.mkString(", ")} FROM VALUES $values AS t(v)")
+            .coalesce(1)
+          // Compute the reference through Spark before caching, using its internal value types.
+          df.createOrReplaceTempView("typed_stats_input")
+          val expected = spark
+            .sql(
+              s"SELECT ${types.indices.flatMap(i => Seq(s"min(c$i)", s"max(c$i)")).mkString(", ")} " +
+                "FROM typed_stats_input")
+            .queryExecution
+            .toRdd
+            .map(_.copy())
+            .collect()
+            .head
+          val expectedNulls = df.filter("c0 IS NULL").count().toInt
+          val expectedRows = df.count().toInt
+          def checkStats(view: String): Unit = {
+            val relation = spark.sharedState.cacheManager.lookupCachedData(spark.table(view)).get
+            val batches = relation.cachedRepresentation.cacheBuilder.cachedColumnBuffers.collect()
+            assert(batches.length == 1)
+            val stats = batches.head.asInstanceOf[SimpleMetricsCachedBatch].stats
+            df.schema.fields.zipWithIndex.foreach { case (field, i) =>
+              if (field.dataType == BinaryType) {
+                assert(stats.isNullAt(i * 5) && stats.isNullAt(i * 5 + 1))
+              } else {
+                assert(stats.get(i * 5, field.dataType) == expected.get(i * 2, field.dataType))
+                assert(
+                  stats.get(i * 5 + 1, field.dataType) ==
+                    expected.get(i * 2 + 1, field.dataType))
+              }
+              assert(stats.getInt(i * 5 + 2) == expectedNulls)
+              assert(stats.getInt(i * 5 + 3) == expectedRows)
+            }
+          }
+
+          df.cache()
+          try {
+            df.count()
+            checkStats("typed_stats_input")
+          } finally {
+            df.unpersist(blocking = true)
+            spark.catalog.dropTempView("typed_stats_input")
+          }
+
+          withSparkColumnarCache("typed_stats_columnar")(path => df.write.parquet(path)) {
+            val relation = spark.sharedState.cacheManager
+              .lookupCachedData(spark.table("typed_stats_columnar"))
+              .get
+              .cachedRepresentation
+            assert(relation.cacheBuilder.cachedPlan.supportsColumnar)
+            checkStats("typed_stats_columnar")
+          }
+      }
+    }
+  }
+
+  test("Comet in-memory cache statistics preserve numeric extremes and floating-point ordering") {
+    withSQLConf(
+      CometConf.COMET_ENABLED.key -> "false",
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
+      val df = spark
+        .sql("""
+        SELECT
+          CAST(if(id = 0, -128, 127) AS TINYINT) AS b,
+          CAST(if(id = 0, -32768, 32767) AS SMALLINT) AS s,
+          CAST(if(id = 0, -2147483648, 2147483647) AS INT) AS i,
+          if(id = 0, -9223372036854775808L, 9223372036854775807L) AS l,
+          CAST(v AS FLOAT) AS f,
+          CAST(v AS DOUBLE) AS d,
+          CAST(if(id = 0, '0.0', '-0.0') AS FLOAT) AS fz,
+          CAST(if(id = 0, '0.0', '-0.0') AS DOUBLE) AS dz
+        FROM VALUES (0, '0.0'), (1, '-0.0'), (2, '-Infinity'), (3, 'Infinity'), (4, 'NaN')
+        AS t(id, v)
+      """)
+        .coalesce(1)
+
+      def checkStats(view: String): Unit = {
+        val relation = spark.sharedState.cacheManager.lookupCachedData(spark.table(view)).get
+        val batches = relation.cachedRepresentation.cacheBuilder.cachedColumnBuffers.collect()
+        assert(batches.length == 1)
+        val stats = batches.head.asInstanceOf[SimpleMetricsCachedBatch].stats
+        assert(stats.getByte(0) == Byte.MinValue && stats.getByte(1) == Byte.MaxValue)
+        assert(stats.getShort(5) == Short.MinValue && stats.getShort(6) == Short.MaxValue)
+        assert(stats.getInt(10) == Int.MinValue && stats.getInt(11) == Int.MaxValue)
+        assert(stats.getLong(15) == Long.MinValue && stats.getLong(16) == Long.MaxValue)
+        assert(stats.getFloat(20) == Float.NegativeInfinity && stats.getFloat(21).isNaN)
+        assert(stats.getDouble(25) == Double.NegativeInfinity && stats.getDouble(26).isNaN)
+        // Spark aggregates consider signed zeros equal; the cache stores Java's total ordering.
+        assert(
+          java.lang.Float.floatToRawIntBits(stats.getFloat(30)) ==
+            java.lang.Float.floatToRawIntBits(-0.0f))
+        assert(java.lang.Float.floatToRawIntBits(stats.getFloat(31)) == 0)
+        assert(
+          java.lang.Double.doubleToRawLongBits(stats.getDouble(35)) ==
+            java.lang.Double.doubleToRawLongBits(-0.0d))
+        assert(java.lang.Double.doubleToRawLongBits(stats.getDouble(36)) == 0L)
+        (0 until 8).foreach { c =>
+          assert(stats.getInt(c * 5 + 2) == 0)
+          assert(stats.getInt(c * 5 + 3) == 5)
+        }
+      }
+
+      df.createOrReplaceTempView("extreme_stats_input")
+      df.cache()
+      try {
+        df.count()
+        checkStats("extreme_stats_input")
+      } finally {
+        df.unpersist(blocking = true)
+        spark.catalog.dropTempView("extreme_stats_input")
+      }
+      withSparkColumnarCache("extreme_stats_columnar")(path => df.write.parquet(path)) {
+        checkStats("extreme_stats_columnar")
+      }
     }
   }
 
@@ -1019,11 +1307,49 @@ class CometInMemoryCacheSuite extends CometTestBase {
     }
   }
 
+  // Enough rows that every column's buffers are big enough for Arrow to actually compress them.
+  // Arrow stores a buffer verbatim when compressing it would not make it smaller, and a boolean
+  // column of a few hundred rows is a few dozen bytes, which takes that fallback -- leaving the
+  // corruption the projection tests rely on with nothing to corrupt.
+  private val projectionCacheRows = 8000
+
+  private val flatProjectionColumns = Seq(
+    "id",
+    "id % 100 AS k",
+    "cast(id as double) / 3 AS d",
+    "concat('a_', cast(id as string)) AS s1",
+    "concat('b_', cast(id % 17 as string)) AS s2",
+    "cast(id % 2 = 0 as boolean) AS flag")
+
+  // A flat column always owns one field node and two or three buffers; a nested one owns a run
+  // whose length is a property of its whole subtree. That arithmetic is what turns a column index
+  // into a window of the payload, so a run computed short or long by a single buffer misaligns
+  // every column after it -- which a full projection cannot see, because selecting everything
+  // covers the whole sequence however it is partitioned. These are the shapes that exercise it: a
+  // struct, an array, a map (which Arrow stores as a list of two-child structs, so one column
+  // spans four field nodes), a struct wrapping an array, and flat columns on both sides of them.
+  private val nestedProjectionColumns = Seq(
+    "id",
+    "named_struct('a', id, 'b', concat('sa_', cast(id as string))) AS sc",
+    "array(concat('e0_', cast(id as string)), concat('e1_', cast(id as string))) AS ar",
+    "map(concat('k_', cast(id % 97 as string)), id) AS mp",
+    "named_struct('nums', array(id, id + 1, id + 2)) AS deep",
+    "concat('t_', cast(id as string)) AS tail")
+
   /**
-   * Cache a six-column relation and hand the collected batches to `f` along with the relation, so
-   * a test can doctor the payload before decoding it again through the serializer.
+   * Cache a six-column flat relation and hand the collected batches to `f` along with the
+   * relation, so a test can doctor the payload before decoding it again through the serializer.
    */
   private def withProjectionCache(
+      f: (org.apache.spark.sql.execution.columnar.InMemoryRelation, Array[CachedBatch]) => Unit)
+      : Unit = withCachedProjection("projection_cache", flatProjectionColumns)(f)
+
+  /** The same, over a relation of the same width whose middle four columns are nested. */
+  private def withNestedProjectionCache(
+      f: (org.apache.spark.sql.execution.columnar.InMemoryRelation, Array[CachedBatch]) => Unit)
+      : Unit = withCachedProjection("nested_projection_cache", nestedProjectionColumns)(f)
+
+  private def withCachedProjection(view: String, columns: Seq[String])(
       f: (org.apache.spark.sql.execution.columnar.InMemoryRelation, Array[CachedBatch]) => Unit)
       : Unit = {
     withSQLConf(
@@ -1033,28 +1359,18 @@ class CometInMemoryCacheSuite extends CometTestBase {
       SQLConf.CACHE_VECTORIZED_READER_ENABLED.key -> "true") {
 
       spark.catalog.clearCache()
-      // Wide enough that every column's buffers are big enough for Arrow to actually compress
-      // them. Arrow stores a buffer verbatim when compressing it would not make it smaller, and a
-      // boolean column of a few hundred rows is a few dozen bytes, which takes that fallback --
-      // leaving the corruption the projection tests rely on with nothing to corrupt.
       spark
-        .range(0, 8000, 1, 2)
-        .selectExpr(
-          "id",
-          "id % 100 AS k",
-          "cast(id as double) / 3 AS d",
-          "concat('a_', cast(id as string)) AS s1",
-          "concat('b_', cast(id % 17 as string)) AS s2",
-          "cast(id % 2 = 0 as boolean) AS flag")
-        .createOrReplaceTempView("projection_cache")
-      spark.catalog.cacheTable("projection_cache")
-      assert(spark.table("projection_cache").count() == 8000)
+        .range(0, projectionCacheRows, 1, 2)
+        .selectExpr(columns: _*)
+        .createOrReplaceTempView(view)
+      spark.catalog.cacheTable(view)
+      assert(spark.table(view).count() == projectionCacheRows)
       assert(
-        cachedBatchTypes("projection_cache").sameElements(
+        cachedBatchTypes(view).sameElements(
           Array("org.apache.spark.sql.comet.execution.arrow.CometCachedBatch")))
 
       val relation = spark.sharedState.cacheManager
-        .lookupCachedData(spark.table("projection_cache"))
+        .lookupCachedData(spark.table(view))
         .get
         .cachedRepresentation
 
@@ -1066,15 +1382,21 @@ class CometInMemoryCacheSuite extends CometTestBase {
     }
   }
 
-  /** Decode `batches` through the cache serializer, selecting `selected`, and total the rows. */
+  /**
+   * Decode `batches` through the cache serializer, selecting `selected`, and total the rows.
+   *
+   * `cacheAttributes` defaults to the relation's own, and is overridable so a test can hand the
+   * reader a schema the writer did not use.
+   */
   private def decodedRowCount(
       relation: org.apache.spark.sql.execution.columnar.InMemoryRelation,
       batches: Array[CachedBatch],
-      selected: Seq[Attribute]): Long = {
+      selected: Seq[Attribute],
+      cacheAttributes: Option[Seq[Attribute]] = None): Long = {
     relation.cacheBuilder.serializer
       .convertCachedBatchToColumnarBatch(
         spark.sparkContext.parallelize(batches.toSeq, 1),
-        relation.output,
+        cacheAttributes.getOrElse(relation.output),
         selected,
         spark.sessionState.conf)
       // ColumnarBatch is not serializable, so reduce to a count inside the closure.
@@ -1094,10 +1416,8 @@ class CometInMemoryCacheSuite extends CometTestBase {
    */
   private def interceptDecodeFailure(f: => Unit): Throwable = {
     val thrown = intercept[Exception](f)
-    val chain =
-      Iterator.iterate(thrown: Throwable)(_.getCause).takeWhile(_ != null).take(20).toSeq
     assert(
-      !chain.exists { t =>
+      !causeChain(thrown).exists { t =>
         t.getClass.getName.contains("IllegalReferenceCount") ||
         Option(t.getMessage).exists(m => m.contains("RefCnt") || m.contains("refCnt"))
       },
@@ -1166,35 +1486,156 @@ class CometInMemoryCacheSuite extends CometTestBase {
     }
   }
 
-  test("Comet in-memory cache decodes only the projected columns") {
-    // Timings would be a weak assertion here, so this scrambles the compressed bytes of the
-    // columns the read must not touch, leaving every other byte of the payload identical.
-    // Reading still has to succeed, which it only can if those columns' buffers were never copied
-    // out of the payload and handed to the decompressor. The second half checks the corruption is
-    // detectable at all, so the first half cannot pass just because the bad bytes decode silently
-    // to nothing.
+  // Every column of both relations takes a turn as the sole projection. Timings would be a weak
+  // assertion here, so each turn scrambles the compressed bytes of the columns the read must not
+  // touch, leaving every other byte of the payload identical. Reading still has to succeed, which
+  // it only can if those columns' buffers were never copied out of the payload and handed to the
+  // decompressor. Each turn then corrupts the selected column too, so the assertion cannot pass
+  // just because the bad bytes decode silently to nothing.
+  //
+  // The nested relation is what exercises the span arithmetic. A flat column always owns one field
+  // node and two or three buffers, whereas a nested one owns a run as long as its whole subtree,
+  // so a run computed short or long by a buffer shifts every column after it -- and which column
+  // is selected decides whether that misalignment reaches into a corrupted neighbour.
+  Seq(("flat", withProjectionCache _), ("nested", withNestedProjectionCache _)).foreach {
+    case (shape, withCache) =>
+      test(s"Comet in-memory cache decodes only the projected columns of a $shape relation") {
+        withCache { (relation, batches) =>
+          val cacheSchema = Utils.fromAttributes(relation.output)
+          val pristine = CometCachedBatchHelper.snapshotPayloads(batches)
+
+          relation.output.indices.foreach { i =>
+            assert(
+              batches.forall(b => CometCachedBatchHelper.columnIsCompressed(b, cacheSchema, i)),
+              s"column ${relation.output(i).name} is not stored compressed, so corrupting it " +
+                "would prove nothing")
+          }
+
+          relation.output.indices.foreach { selectedIdx =>
+            CometCachedBatchHelper.restorePayloads(batches, pristine)
+            val selected = Seq(relation.output(selectedIdx))
+            val name = relation.output(selectedIdx).name
+
+            relation.output.indices.filter(_ != selectedIdx).foreach { i =>
+              batches.foreach(b => CometCachedBatchHelper.corruptColumn(b, cacheSchema, i))
+            }
+            assert(
+              decodedRowCount(relation, batches, selected) == projectionCacheRows,
+              s"reading $name must not decompress the other ${relation.output.length - 1} columns")
+
+            batches.foreach(b =>
+              CometCachedBatchHelper.corruptColumn(b, cacheSchema, selectedIdx))
+            interceptDecodeFailure {
+              decodedRowCount(relation, batches, selected)
+            }
+          }
+        }
+      }
+  }
+
+  test("Comet in-memory cache rejects a payload that disagrees with the cached schema") {
+    // Nothing in the payload says which schema wrote it, and `batch.buffers(j)` is an unchecked
+    // flatbuffer accessor, so a reader working from a wider schema than the writer used would
+    // otherwise copy windows from wherever the arithmetic landed: wrong values, or an
+    // out-of-range read reported from inside the copy rather than as the layout problem it is.
     withProjectionCache { (relation, batches) =>
-      val cacheSchema = Utils.fromAttributes(relation.output)
-      val selectedIdx = 1
-      val selected = Seq(relation.output(selectedIdx))
-
-      relation.output.indices.foreach { i =>
-        assert(
-          batches.forall(b => CometCachedBatchHelper.columnIsCompressed(b, cacheSchema, i)),
-          s"column $i is not stored compressed, so corrupting it would prove nothing")
+      val extra = AttributeReference("extra", LongType)()
+      val thrown = intercept[Exception] {
+        decodedRowCount(
+          relation,
+          batches,
+          Seq(relation.output.head),
+          cacheAttributes = Some(relation.output :+ extra))
       }
+      assert(
+        causeChain(thrown).exists(t =>
+          Option(t.getMessage).exists(_.contains("does not match the cached schema"))),
+        s"a layout mismatch must be reported as itself: $thrown")
+    }
+  }
 
-      relation.output.indices.filter(_ != selectedIdx).foreach { i =>
-        batches.foreach(b => CometCachedBatchHelper.corruptColumn(b, cacheSchema, i))
-      }
+  test("Comet in-memory cache converts a batch whose vectors do not match the cached layout") {
+    // BinaryType is an Arrow Binary to the reader -- validity, offsets, data -- but a CometVector
+    // may wrap a FixedSizeBinaryVector for the same Spark type, which has no offsets buffer. An
+    // accelerated mapInArrow returning pa.binary(n) and an Iceberg fixed[N] read both produce one.
+    // Since the payload stores no schema, writing that and reading a Binary shifts every buffer
+    // from that column on, so the write path has to notice and convert instead. isArrowBacked
+    // cannot: it accepts both vectors, as the first assertion of each case records.
+    val cacheSchema = StructType(Seq(StructField("b", BinaryType)))
+    val rows = 4
+
+    val fixed = new FixedSizeBinaryVector("b", CometArrowAllocator, 3)
+    try {
+      fixed.allocateNew(rows)
+      (0 until rows).foreach(i => fixed.set(i, Array[Byte](i.toByte, 1, 2)))
+      fixed.setValueCount(rows)
+      val batch = new ColumnarBatch(Array[ColumnVector](new CometPlainVector(fixed)), rows)
+      assert(Utils.isArrowBacked(batch))
+      assert(
+        !CometCachedBatchHelper.writesDirectly(batch, cacheSchema),
+        "a fixed-size binary vector does not have the layout the reader rebuilds for BinaryType")
+    } finally {
+      fixed.close()
+    }
+
+    val varBinary = new VarBinaryVector("b", CometArrowAllocator)
+    try {
+      varBinary.allocateNew(rows)
+      (0 until rows).foreach(i => varBinary.set(i, Array[Byte](i.toByte, 1, 2)))
+      varBinary.setValueCount(rows)
+      val batch = new ColumnarBatch(Array[ColumnVector](new CometPlainVector(varBinary)), rows)
+      assert(Utils.isArrowBacked(batch))
+      assert(
+        CometCachedBatchHelper.writesDirectly(batch, cacheSchema),
+        "the vector Comet's own scans produce for BinaryType must still take the direct path")
+    } finally {
+      varBinary.close()
+    }
+  }
+
+  test("Comet in-memory cache reads correct nested values under a narrow projection") {
+    // The corruption test above proves the projected read leaves the other columns' bytes alone,
+    // but it asserts on row counts, and a row count comes from the record batch header rather than
+    // from any buffer. A window taken from the wrong place within the selected column's own subtree
+    // -- a child's buffers swapped, say -- still decodes to the right number of rows and the wrong
+    // values. Comparing values against the uncached query is what rules that out.
+    withNativeCache {
+      val query =
+        s"SELECT ${nestedProjectionColumns.mkString(", ")} FROM range($projectionCacheRows)"
+      spark.sql(query).createOrReplaceTempView("nested_value_cache")
+      spark.catalog.cacheTable("nested_value_cache")
+      spark.table("nested_value_cache").count()
 
       assert(
-        decodedRowCount(relation, batches, selected) == 8000,
-        "reading one column must not decompress the other five")
+        cachedBatchTypes("nested_value_cache").sameElements(
+          Array("org.apache.spark.sql.comet.execution.arrow.CometCachedBatch")))
 
-      batches.foreach(b => CometCachedBatchHelper.corruptColumn(b, cacheSchema, selectedIdx))
-      interceptDecodeFailure {
-        decodedRowCount(relation, batches, selected)
+      val names = Seq("id", "sc", "ar", "mp", "deep", "tail")
+
+      // Each nested column on its own, then paired with `id`, then two projections that ask for
+      // columns out of cache-schema order, then the whole relation. Spark selects cached columns in
+      // whatever order the query wants them, and a full projection cannot stand in for that: with
+      // every column selected in order, the projected schema and the node/buffer windows are both
+      // the whole sequence, so nothing distinguishes them from windows taken in a different order.
+      val projections =
+        names.filter(_ != "id").map(Seq(_)) ++
+          names.filter(_ != "id").map(n => Seq("id", n)) ++
+          Seq(Seq("tail", "mp", "id"), Seq("deep", "sc")) ++
+          Seq(names)
+
+      projections.foreach { cols =>
+        val list = cols.mkString(", ")
+        // Ordering by the JSON form rather than by the columns themselves, since a projection that
+        // excludes `id` has no orderable key of its own and ORDER BY over a map is not allowed.
+        val ordered = s"SELECT to_json(struct($list)) AS j FROM %s ORDER BY j"
+        val expected = spark.sql(ordered.format(s"($query)")).collect()
+        assert(expected.length == projectionCacheRows)
+
+        val df = spark.sql(ordered.format("nested_value_cache"))
+        assert(
+          df.queryExecution.executedPlan.toString().contains("CometInMemoryTableScan"),
+          s"projection ($list) should read the cache natively")
+        assert(df.collect() === expected, s"projection ($list) read the wrong values")
       }
     }
   }
@@ -1209,15 +1650,19 @@ class CometInMemoryCacheSuite extends CometTestBase {
         batches.foreach(b => CometCachedBatchHelper.corruptColumn(b, cacheSchema, i))
       }
 
-      assert(decodedRowCount(relation, batches, Seq.empty) == 8000)
+      assert(decodedRowCount(relation, batches, Seq.empty) == projectionCacheRows)
     }
   }
 
   test("Comet in-memory cache records per-column sizes in its statistics") {
     // SimpleMetricsCachedBatch reserves a fifth field per column for its size. A column owns a
     // known run of buffers in the payload, so the real stored size is known and must be reported
-    // rather than left at zero.
-    withProjectionCache { (relation, batches) =>
+    // rather than left at zero. Run over the nested relation as well: a nested column's size is
+    // the sum of its whole subtree, so this is also where a size attributed to the wrong column
+    // surfaces.
+    def checkSizes(
+        relation: org.apache.spark.sql.execution.columnar.InMemoryRelation,
+        batches: Array[CachedBatch]): Unit = {
       val cacheSchema = Utils.fromAttributes(relation.output)
       batches.foreach { batch =>
         val sizes = CometCachedBatchHelper.columnSizes(batch, cacheSchema)
@@ -1225,10 +1670,14 @@ class CometInMemoryCacheSuite extends CometTestBase {
         sizes.zipWithIndex.foreach { case (size, i) =>
           assert(
             stats.getLong(i * 5 + 4) == size,
-            s"column $i should report the stored size of its own buffers in the statistics row")
+            s"column ${relation.output(i).name} should report the stored size of its own " +
+              "buffers in the statistics row")
         }
       }
     }
+
+    withProjectionCache(checkSizes)
+    withNestedProjectionCache(checkSizes)
   }
 
   test("Comet in-memory cache scans no columns for a row-count-only query") {
@@ -1389,19 +1838,121 @@ class CometInMemoryCacheSuite extends CometTestBase {
     // else -- the holder is published to the task-completion listener only once its constructor
     // returns -- so a failure that does not release them leaks off-heap for the life of the
     // executor.
+    //
+    // Two corruption points, because they fail at different depths. Taking out a column's first
+    // buffer fails before anything of that column has been decompressed. Taking out only the last
+    // buffer of a string column -- whose offsets and data are separately compressed -- decompresses
+    // one buffer into a fresh allocation and then throws on the next, leaving that allocation
+    // reachable from nothing the failure path can see. The second is the one that catches a leak
+    // in `VectorLoader`; the first is the one that catches a cleanup path releasing the shared
+    // body twice.
     withProjectionCache { (relation, batches) =>
       val cacheSchema = Utils.fromAttributes(relation.output)
-      // Corrupt the second selected column, so the first is copied out successfully first.
-      val selected = Seq(relation.output(0), relation.output(1))
-      batches.foreach(b => CometCachedBatchHelper.corruptColumn(b, cacheSchema, 1))
+      val pristine = CometCachedBatchHelper.snapshotPayloads(batches)
+      val stringIdx = 3
+      assert(relation.output(stringIdx).dataType.typeName == "string")
 
-      val before = CometArrowAllocator.getAllocatedMemory
-      interceptDecodeFailure {
-        decodedRowCount(relation, batches, selected)
+      val cases = Seq(
+        (
+          "a column's first buffer",
+          // Corrupt the second selected column, so the first is copied out successfully first.
+          (b: CachedBatch) => CometCachedBatchHelper.corruptColumn(b, cacheSchema, 1),
+          Seq(relation.output(0), relation.output(1))),
+        (
+          "a string column's trailing buffer",
+          (b: CachedBatch) =>
+            CometCachedBatchHelper.corruptTrailingBuffer(b, cacheSchema, stringIdx),
+          Seq(relation.output(stringIdx))))
+
+      cases.foreach { case (where, corrupt, selected) =>
+        CometCachedBatchHelper.restorePayloads(batches, pristine)
+        batches.foreach(corrupt)
+
+        val before = CometArrowAllocator.getAllocatedMemory
+        interceptDecodeFailure {
+          decodedRowCount(relation, batches, selected)
+        }
+        assert(
+          CometArrowAllocator.getAllocatedMemory == before,
+          s"everything allocated before a failure in $where must be released")
       }
+    }
+  }
+
+  /**
+   * A zstd codec that compresses the first `succeedFor` buffers and then throws.
+   *
+   * Delegating to the real codec until it fails is the point: the buffers already compressed are
+   * genuine off-heap allocations reachable only from inside the writer, which is what a real
+   * failure -- zstd unable to allocate its workspace part way through a batch -- leaves behind.
+   */
+  private class FailAfterCompressionCodec(succeedFor: Int) extends CompressionCodec {
+    private val delegate = new ZstdCompressionCodec(1)
+    var compressed: Int = 0
+
+    override def compress(allocator: BufferAllocator, buffer: ArrowBuf): ArrowBuf = {
+      if (compressed == succeedFor) {
+        throw new RuntimeException(FailAfterCompressionCodec.Message)
+      }
+      compressed += 1
+      delegate.compress(allocator, buffer)
+    }
+
+    override def decompress(allocator: BufferAllocator, buffer: ArrowBuf): ArrowBuf =
+      delegate.decompress(allocator, buffer)
+
+    override def getCodecType: CompressionUtil.CodecType = delegate.getCodecType
+  }
+
+  private object FailAfterCompressionCodec {
+    val Message: String = "injected compression failure"
+  }
+
+  test("Comet in-memory cache releases its buffers when a column fails to compress") {
+    // Writing a batch allocates a buffer per compressed buffer before any payload exists, and
+    // nothing outside the writer can reach them while it is still assembling the record batch they
+    // belong to. This is why the codec is not handed to `VectorUnloader`: it accumulates them in a
+    // list local to `getRecordBatch`, which is off the stack by the time a caller sees the failure,
+    // so a single failed materialization would leak a batch's worth of off-heap for the life of the
+    // executor.
+    val rows = 256
+    val ints = new IntVector("i", CometArrowAllocator)
+    val strings = new VarCharVector("s", CometArrowAllocator)
+    try {
+      ints.allocateNew(rows)
+      (0 until rows).foreach(i => ints.set(i, i))
+      ints.setValueCount(rows)
+
+      strings.allocateNew(rows)
+      (0 until rows).foreach(i => strings.setSafe(i, s"value_$i".getBytes("UTF-8")))
+      strings.setValueCount(rows)
+
+      val batch = new ColumnarBatch(
+        Array[ColumnVector](new CometPlainVector(ints), new CometPlainVector(strings)),
+        rows)
+
+      // An int vector is validity and data, a varchar validity, offsets and data: five buffers in
+      // all. Succeeding for two puts the failure at the string column's first buffer, with the int
+      // column's two already compressed into allocations only the writer can reach. Failing at the
+      // very first buffer would pass with no cleanup at all.
+      val codec = new FailAfterCompressionCodec(succeedFor = 2)
+      val before = CometArrowAllocator.getAllocatedMemory
+      val thrown = intercept[Exception] {
+        CometCachedBatchHelper.serialize(batch, codec, CometArrowAllocator)
+      }
+
+      assert(
+        causeChain(thrown).exists(t =>
+          Option(t.getMessage).contains(FailAfterCompressionCodec.Message)),
+        s"a compression failure must surface as itself: $thrown")
+      assert(codec.compressed == 2, "the failure must come after some buffers were compressed")
       assert(
         CometArrowAllocator.getAllocatedMemory == before,
-        "everything allocated before the failure must be released")
+        "everything allocated before a write failure must be released")
+    } finally {
+      // Never reaches the writer's own clear(), which only runs once the payload is built.
+      ints.close()
+      strings.close()
     }
   }
 
@@ -1442,28 +1993,6 @@ class CometInMemoryCacheSuite extends CometTestBase {
       } finally {
         spark.catalog.clearCache()
       }
-    }
-  }
-
-  test("Comet in-memory cache releases its vectors when a column fails after a partial decode") {
-    // Tighter than the two cases above, and the one that actually catches a leak. A string column
-    // stores its offsets and its data as separate compressed buffers, so corrupting only the
-    // second makes the decoder decompress one buffer of the column into a fresh allocation and
-    // then throw on the next, with the first reachable from nothing the failure path can see.
-    withProjectionCache { (relation, batches) =>
-      val cacheSchema = Utils.fromAttributes(relation.output)
-      val stringIdx = 3
-      assert(relation.output(stringIdx).dataType.typeName == "string")
-      batches.foreach(b =>
-        CometCachedBatchHelper.corruptTrailingBuffer(b, cacheSchema, stringIdx))
-
-      val before = CometArrowAllocator.getAllocatedMemory
-      interceptDecodeFailure {
-        decodedRowCount(relation, batches, Seq(relation.output(stringIdx)))
-      }
-      assert(
-        CometArrowAllocator.getAllocatedMemory == before,
-        "a buffer decoded before the failure must be released")
     }
   }
 

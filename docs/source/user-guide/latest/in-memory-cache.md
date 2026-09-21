@@ -24,17 +24,22 @@ format that Comet operators read directly. Without it, a cached table is stored 
 format and every scan of it has to convert each batch before Comet can continue, which shows up in
 the plan as a `CometSparkColumnarToColumnar` above the cache scan.
 
-This feature is **experimental and enabled by default**. To turn it off, set the config before the
-`SparkContext` is created:
+This feature is **experimental and enabled by default**. To turn it off, set the config at startup,
+alongside the rest of Comet's configuration:
 
-```scala
-spark.conf.set("spark.comet.exec.inMemoryCache.enabled", "false")
+```shell
+$SPARK_HOME/bin/spark-shell \
+    ... \
+    --conf spark.comet.exec.inMemoryCache.enabled=false
 ```
+
+It has to be set before the `SparkContext` starts. Comet's driver plugin chooses
+`spark.sql.cache.serializer` once, while the context is initializing, so a session that started
+with the default goes on using Spark's cache format however the config is set afterwards.
 
 ## What changes when it is enabled
 
-`spark.comet.exec.inMemoryCache.enabled` is read at startup, and its value then decides whether
-Comet installs its cache serializer as `spark.sql.cache.serializer`. When it is installed:
+With Comet's serializer installed as `spark.sql.cache.serializer`:
 
 - Cached data is stored as `CometCachedBatch` rather than Spark's `DefaultCachedBatch`.
 - Cached tables are scanned by `CometInMemoryTableScan`, which feeds Comet operators directly.
@@ -92,21 +97,43 @@ nowhere to record either that a column is dictionary encoded or the dictionary i
 
 ## Performance
 
-Measured with `CometInMemoryCacheBenchmark` on a 5M-row, six-column relation (Apple M3 Ultra,
-JDK 17, Spark 4.1, release build). Regenerate with:
+Measured with `CometInMemoryCacheBenchmark` (Apple M3 Max, JDK 17, Spark 4.1, release build).
+Regenerate with:
 
 ```sh
 SPARK_GENERATE_BENCHMARK_FILES=1 \
   make benchmark-org.apache.spark.sql.benchmark.CometInMemoryCacheBenchmark
 ```
 
+On a 5M-row relation of six flat columns:
+
 | Query shape                    | Spark cache scan + convert | `CometInMemoryTableScan` | Relative |
 | ------------------------------ | -------------------------: | -----------------------: | -------: |
-| Repeated scan (3 of 6 columns) |                     157 ms |                   116 ms |     1.4x |
-| Selective filter               |                      44 ms |                    38 ms |     1.1x |
-| Row count only (0 of 6)        |                      30 ms |                    28 ms |     1.1x |
-| Narrow projection (1 of 6)     |                      49 ms |                    39 ms |     1.3x |
-| Full projection (6 of 6)       |                     299 ms |                   135 ms |     2.2x |
+| Repeated scan (3 of 6 columns) |                     201 ms |                   167 ms |     1.2x |
+| Selective filter               |                      69 ms |                    61 ms |     1.1x |
+| Row count only (0 of 6)        |                      45 ms |                    47 ms |     1.0x |
+| Narrow projection (1 of 6)     |                      70 ms |                    57 ms |     1.2x |
+| Full projection (6 of 6)       |                     556 ms |                   290 ms |     1.9x |
+
+And on a 1M-row relation of six columns whose middle three are structs, one of them nested two
+levels deep:
+
+| Query shape                | Spark cache scan + convert | `CometInMemoryTableScan` | Relative |
+| -------------------------- | -------------------------: | -----------------------: | -------: |
+| Row count only (0 of 6)    |                      39 ms |                    35 ms |     1.1x |
+| Narrow projection (1 of 6) |                     109 ms |                    61 ms |     1.8x |
+| Full projection (6 of 6)   |                     282 ms |                   126 ms |     2.2x |
+
+The two relations are not comparable to each other — different row counts, and a struct column
+carries several values per row. Within the struct relation the gap is wider than the flat one at
+every width, because the conversion the left column pays scales with the values per row rather than
+with the columns.
+
+Array and map columns are deliberately absent from the benchmark, not from the format — the cache
+stores and projects them, and `CometInMemoryCacheSuite` covers them. They cannot be measured _here_
+because the left column would not exist: it needs Spark's cache scan to bridge into Comet operators,
+and `CometSparkToColumnarExec` declines `ArrayType` and `MapType`, so a query projecting one falls
+back to Spark row execution above the scan and the two columns stop measuring the same boundary.
 
 Read what this compares carefully. Comet execution is on in both columns, so the aggregation runs
 on Comet either way and only the cache-scan boundary moves: on the left, Spark's
@@ -141,8 +168,8 @@ registrator.
 
 Reads that feed **Spark** operators rather than Comet ones are still slower than Spark's own cache
 format, by roughly 1.7x to 2.5x depending on how wide the projection is. Those reads pay a row
-conversion that Spark's format avoids with generated code over its own layout. This is why the
-feature is off by default.
+conversion that Spark's format avoids with generated code over its own layout. This is the main
+reason the feature is still described as experimental.
 
 Comet's serializer exists because Spark's own Arrow cache format
 ([SPARK-57268](https://issues.apache.org/jira/browse/SPARK-57268)) is only available from Spark

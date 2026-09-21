@@ -25,13 +25,16 @@ import java.nio.channels.Channels
 import scala.jdk.CollectionConverters._
 
 import org.apache.arrow.flatbuf.{MessageHeader, RecordBatch => FlatBufRecordBatch}
+import org.apache.arrow.memory.BufferAllocator
 import org.apache.arrow.vector.TypeLayout
+import org.apache.arrow.vector.compression.CompressionCodec
 import org.apache.arrow.vector.ipc.ReadChannel
 import org.apache.arrow.vector.ipc.message.{MessageMetadataResult, MessageSerializer}
 import org.apache.arrow.vector.types.pojo.Field
 import org.apache.spark.sql.columnar.CachedBatch
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.types.StructType
+import org.apache.spark.sql.vectorized.ColumnarBatch
 
 /**
  * Test-only access to the internals of `CometCachedBatch`.
@@ -49,6 +52,45 @@ object CometCachedBatchHelper {
   /** The raw cached payload: one encapsulated Arrow IPC record batch message and its body. */
   private def payload(batch: CachedBatch): Array[Byte] =
     batch.asInstanceOf[CometCachedBatch].bytes
+
+  /**
+   * A copy of every batch's payload, so a test can undo what [[corruptColumn]] scrambled.
+   *
+   * Materializing the cache is the expensive part of a corruption test, and a test that gives
+   * each column of a relation a turn needs the payload back as it was between turns. Restoring
+   * beats re-caching by the column count.
+   */
+  def snapshotPayloads(batches: Array[CachedBatch]): Array[Array[Byte]] =
+    batches.map(payload(_).clone())
+
+  /** Put back what [[snapshotPayloads]] captured. Corruption never changes a payload's length. */
+  def restorePayloads(batches: Array[CachedBatch], snapshot: Array[Array[Byte]]): Unit =
+    batches.zip(snapshot).foreach { case (batch, bytes) =>
+      System.arraycopy(bytes, 0, payload(batch), 0, bytes.length)
+    }
+
+  /**
+   * Whether the write path would unload `batch`'s vectors as they stand, or convert them first.
+   *
+   * A thin shim rather than a re-derivation: this is the decision under test, not arithmetic to
+   * check it against.
+   */
+  def writesDirectly(batch: ColumnarBatch, cacheSchema: StructType): Boolean =
+    Utils
+      .isArrowBacked(batch) && CachedBatchIpc.matchesReaderLayout(batch, arrowFields(cacheSchema))
+
+  /**
+   * Serialize one batch the way the cache writer does, with a caller-chosen codec.
+   *
+   * Another thin shim, for tests about the write path itself rather than about what a cached
+   * relation reads back. The codec is the parameter that matters: handing in one that throws is
+   * how a compression failure part way through a batch is reached deterministically.
+   */
+  def serialize(
+      batch: ColumnarBatch,
+      codec: CompressionCodec,
+      allocator: BufferAllocator): Array[Byte] =
+    CachedBatchIpc.serialize(batch, codec, allocator)._1
 
   /**
    * Whether the payload begins with a Schema message rather than going straight to the record

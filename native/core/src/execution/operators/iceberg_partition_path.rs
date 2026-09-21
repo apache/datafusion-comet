@@ -73,31 +73,40 @@ impl CometLocationGenerator {
         })
     }
 
-    /// Mirrors iceberg-java's `PartitionSpec#partitionToPath`: `name=value` pairs joined by `/`,
-    /// with both halves form-urlencoded. `form_urlencoded` leaves exactly the byte set Java's
-    /// `URLEncoder.encode(s, UTF_8)` leaves (`A-Za-z0-9`, `*`, `-`, `.`, `_`), maps space to `+`,
-    /// and percent-encodes the rest with uppercase hex, so the two agree byte for byte.
     fn partition_to_path(&self, key: &PartitionKey) -> String {
-        let fields = self.partition_type.fields();
-        key.spec()
-            .fields()
-            .iter()
-            .enumerate()
-            .map(|(index, field)| {
-                // Indexed rather than zipped so a spec/partition-type/value length disagreement
-                // renders as "null" instead of panicking; the three are built from the same spec,
-                // so they always line up in practice.
-                let value = key.data().fields().get(index).and_then(Option::as_ref);
-                let human = match fields.get(index) {
-                    Some(nested) => human_string(&field.transform, &nested.field_type, value),
-                    None => NULL.to_string(),
-                };
-                form_urlencoded::Serializer::new(String::new())
-                    .append_pair(&field.name, &human)
-                    .finish()
-            })
-            .join("/")
+        partition_to_path(&self.partition_type, key)
     }
+}
+
+/// Mirrors iceberg-java's `PartitionSpec#partitionToPath`: `name=value` pairs joined by `/`, with
+/// both halves form-urlencoded. `form_urlencoded` leaves exactly the byte set Java's
+/// `URLEncoder.encode(s, UTF_8)` leaves (`A-Za-z0-9`, `*`, `-`, `.`, `_`), maps space to `+`, and
+/// percent-encodes the rest with uppercase hex, so the two agree byte for byte.
+///
+/// `partition_type` is `key`'s spec resolved against its schema. It is passed in rather than
+/// resolved here because resolution can fail and every caller already holds one: the location
+/// generator resolves it at task start, and `ClusteredBatchSplitter` needs it to read partition
+/// values.
+pub(crate) fn partition_to_path(partition_type: &StructType, key: &PartitionKey) -> String {
+    let fields = partition_type.fields();
+    key.spec()
+        .fields()
+        .iter()
+        .enumerate()
+        .map(|(index, field)| {
+            // Indexed rather than zipped so a spec/partition-type/value length disagreement
+            // renders as "null" instead of panicking; the three are built from the same spec,
+            // so they always line up in practice.
+            let value = key.data().fields().get(index).and_then(Option::as_ref);
+            let human = match fields.get(index) {
+                Some(nested) => human_string(&field.transform, &nested.field_type, value),
+                None => NULL.to_string(),
+            };
+            form_urlencoded::Serializer::new(String::new())
+                .append_pair(&field.name, &human)
+                .finish()
+        })
+        .join("/")
 }
 
 impl LocationGenerator for CometLocationGenerator {

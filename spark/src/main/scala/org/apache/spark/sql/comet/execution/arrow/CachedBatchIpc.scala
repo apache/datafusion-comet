@@ -40,6 +40,8 @@ import org.apache.spark.SparkException
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
+import org.apache.comet.vector.CometVector
+
 /**
  * The on-disk shape of a `CometCachedBatch` payload, and the two operations over it.
  *
@@ -52,9 +54,9 @@ import org.apache.spark.sql.vectorized.ColumnarBatch
  *
  * Compression is applied by Arrow per buffer rather than by wrapping the whole payload in a Spark
  * `CompressionCodec`. That is what makes projection cheap: the message metadata records every
- * buffer's offset and length within the body, so [[readProjected]] can copy out only the buffers
- * of the columns a scan selected and let `VectorLoader` decompress just those. A whole-payload
- * codec would have to inflate everything before any column could be read.
+ * buffer's offset and length within the body, so [[Projection.load]] can copy out only the
+ * buffers of the columns a scan selected and let `VectorLoader` decompress just those. A
+ * whole-payload codec would have to inflate everything before any column could be read.
  */
 private[comet] object CachedBatchIpc {
 
@@ -95,9 +97,89 @@ private[comet] object CachedBatchIpc {
       .map(t => t -> CommonsCompressionFactory.INSTANCE.createCodec(t))
       .toMap
 
-  /** The decompressor for a body-compression byte, or None when the batch is stored plain. */
+  /**
+   * The decompressor for a body-compression byte, or None when the batch is stored plain.
+   *
+   * A byte this build does not recognize is rejected rather than read as plain bytes.
+   * `CodecType.fromCompressionType` answers `NO_COMPRESSION` for anything outside its enum, so
+   * taking its word for it would turn a corrupt payload into garbage values instead of an error.
+   */
   private def readCodec(compressionType: Byte): Option[CompressionCodec] =
-    readCodecs.get(CompressionUtil.CodecType.fromCompressionType(compressionType))
+    if (compressionType == NoCompressionCodec.COMPRESSION_TYPE) {
+      None
+    } else {
+      val codecType = CompressionUtil.CodecType.fromCompressionType(compressionType)
+      if (codecType == CompressionUtil.CodecType.NO_COMPRESSION) {
+        throw new SparkException(
+          s"Comet cached batch records an unknown Arrow compression codec: $compressionType")
+      }
+      Some(readCodecs(codecType))
+    }
+
+  /**
+   * Whether `batch`'s vectors can be unloaded as they stand, or have to be converted first.
+   *
+   * The payload records no schema, so [[Projection]] rebuilds the fields from the cached
+   * relation's Spark attributes and reads the body against them. The direct write path unloads
+   * whatever vectors the cached plan produced, and one Spark type can arrive as more than one
+   * Arrow type: `BinaryType` is a `VarBinaryVector` from Comet's own scans but a
+   * `FixedSizeBinaryVector` from an accelerated `mapInArrow` or an Iceberg `fixed[N]` read, and
+   * those occupy three buffers and two. Writing one and reading the other shifts every buffer
+   * from that column on, which is wrong values rather than an error, so a batch that does not
+   * already carry the reader's types is converted instead.
+   *
+   * The same holds inside a nested column, which `Utils.isArrowBacked` does not look at: it
+   * answers for the top-level vector only, so a struct of large strings passes it while its child
+   * is stored with 64-bit offsets and read with 32-bit ones.
+   *
+   * Names, nullability and a timestamp's timezone are not compared. None of them changes how the
+   * reader interprets the body, and the writer's legitimately differ -- a Comet scan labels
+   * timestamps with the session's zone where the reader rebuilds them as UTC, which is a label
+   * only: Spark's representation is micros since the epoch either way.
+   */
+  def matchesReaderLayout(batch: ColumnarBatch, readerFields: Seq[Field]): Boolean =
+    batch.numCols() == readerFields.length &&
+      (0 until batch.numCols()).forall { i =>
+        batch.column(i) match {
+          case v: CometVector => sameLayout(writtenField(v), readerFields(i))
+          case _ => false
+        }
+      }
+
+  /**
+   * The field a column reaches the body as.
+   *
+   * A dictionary-encoded vector's own field carries the index type, not the values', because
+   * [[decodeDictionaries]] replaces it with the decoded form before anything is unloaded.
+   * Resolved through the same `lookupDictionary` the write path uses, so a batch missing its
+   * dictionary fails here exactly as it would there.
+   */
+  private def writtenField(column: CometVector): Field = {
+    val vector = column.getValueVector
+    if (vector.getField.getDictionary == null) {
+      vector.getField
+    } else {
+      Utils
+        .lookupDictionary(vector.asInstanceOf[FieldVector], Option(column.getDictionaryProvider))
+        .getVector
+        .getField
+    }
+  }
+
+  private def sameLayout(written: Field, read: Field): Boolean =
+    layoutType(written.getType) == layoutType(read.getType) && {
+      val writtenChildren = written.getChildren
+      val readChildren = read.getChildren
+      writtenChildren.size == readChildren.size &&
+      (0 until writtenChildren.size).forall(i =>
+        sameLayout(writtenChildren.get(i), readChildren.get(i)))
+    }
+
+  private def layoutType(t: ArrowType): ArrowType = t match {
+    case ts: ArrowType.Timestamp if ts.getTimezone != null =>
+      new ArrowType.Timestamp(ts.getUnit, "UTC")
+    case other => other
+  }
 
   /**
    * Serialize `batch` into one encapsulated IPC RecordBatch message.
@@ -119,7 +201,7 @@ private[comet] object CachedBatchIpc {
       batch: ColumnarBatch,
       codec: CompressionCodec,
       allocator: BufferAllocator): (Array[Byte], Array[Long]) = {
-    val (vectors, hydrated) = hydrateDictionaries(batch, allocator)
+    val (vectors, decoded) = decodeDictionaries(batch, allocator)
     try {
       val root = new VectorSchemaRoot(vectors.asJava)
       // A batch of zero columns carries only a row count, which a VectorSchemaRoot cannot infer
@@ -128,20 +210,18 @@ private[comet] object CachedBatchIpc {
         root.setRowCount(batch.numRows())
       }
 
-      // alignBuffers=true matches the 8-byte buffer alignment readProjected reproduces when it
-      // repacks the selected buffers.
-      val unloader = new VectorUnloader(root, true, codec, true)
-      val recordBatch = unloader.getRecordBatch
+      // Unloaded plain and compressed afterwards rather than by handing the codec to the unloader;
+      // see compressed for why.
+      val unloader = new VectorUnloader(root, true, NoCompressionCodec.INSTANCE, true)
+      val plainBatch = unloader.getRecordBatch
+      val recordBatch =
+        try compressed(plainBatch, codec, allocator)
+        finally plainBatch.close()
       try {
         val fields = vectors.map(_.getField)
-        // Serializing consumes the batch, as it does in Utils.serializeBatches. The record batch
-        // holds its own buffers by now -- compressed copies, or retained references when the codec
-        // is none -- so releasing the vectors here does not touch it. getField still answers
-        // afterwards: clearing releases buffers, not the schema.
-        //
-        // Not load bearing for memory: the plan that produced the batch releases its vectors
-        // either way, and dropping this line leaks nothing. It is here because serializeBatches
-        // does the same, so both writers leave a batch they were handed in the same state.
+        // Leaves the batch in the state serializeBatches leaves one. The record batch holds its
+        // own buffers by now, so this does not touch it, and getField still answers afterwards:
+        // clearing releases buffers, not the schema.
         root.clear()
 
         // Sized up front from the body length the record batch already knows, plus room for the
@@ -158,7 +238,7 @@ private[comet] object CachedBatchIpc {
       }
     } finally {
       // Only the vectors this method allocated. The rest belong to the input batch.
-      hydrated.foreach(v =>
+      decoded.foreach(v =>
         try v.close()
         catch { case NonFatal(_) => () })
     }
@@ -166,41 +246,37 @@ private[comet] object CachedBatchIpc {
 
   /**
    * Everything about reading one projection of this format that does not change between batches.
+   * A scan builds one of these per partition.
    *
-   * The index arithmetic here is a pure function of the cached schema and the selected columns,
-   * both fixed for the life of a scan, but it walks every field of the whole relation rather than
-   * just the projected ones. Recomputing it per batch would make the bookkeeping O(total columns)
-   * while the useful work is O(selected columns) -- worst in exactly the wide-relation,
-   * narrow-projection case this format exists for. A scan builds one of these per partition.
+   * The index arithmetic walks every field of the cached relation rather than just the projected
+   * ones, so recomputing it per batch would make the bookkeeping O(total columns) against
+   * O(selected columns) of useful work -- worst in exactly the wide-relation, narrow-projection
+   * case this format exists for.
    *
    * Holding the projected `Schema` here too is what keeps it consistent with the buffers:
-   * [[load]] packs field nodes and buffers by walking `selectedIndices` in order, and the schema
-   * is built from the same walk, so the two cannot drift apart.
+   * [[Projection.load]] packs field nodes and buffers by walking `selectedIndices` in order, and
+   * the schema is built from the same walk, so the two cannot drift apart.
    */
-  final class Projection(arrowFields: Seq[Field], selectedIndices: Array[Int]) {
+  final class Projection(arrowFields: IndexedSeq[Field], selectedIndices: Array[Int]) {
 
     private val schema = new Schema(selectedIndices.map(arrowFields).toSeq.asJava)
 
     // A record batch body is a flat, depth-first sequence of buffers in schema order, so each
-    // top-level column owns a contiguous run of it; field nodes and variadic buffer counts run in
-    // the same order.
-    private val nodeIndices = selectedRange(arrowFields, selectedIndices, fieldNodeCount)
-    private val bufferIndices = selectedRange(arrowFields, selectedIndices, fieldBufferCount)
-    private val variadicIndices = selectedRange(arrowFields, selectedIndices, fieldVariadicCount)
+    // top-level column owns a contiguous run of it; field nodes run in the same order. The totals
+    // are what a payload is checked against in load.
+    private val (nodeIndices, totalNodes) =
+      selectedRange(arrowFields, selectedIndices, fieldNodeCount)
+    private val (bufferIndices, totalBuffers) =
+      selectedRange(arrowFields, selectedIndices, fieldBufferCount)
 
     /**
      * Decode the projected columns of one cached payload into a fresh root the caller owns.
      *
-     * Only the selected buffers are ever materialized off-heap or decompressed. The message
-     * metadata records every buffer's offset and length within the body, so the selected columns'
-     * bytes are copied into a single allocation -- each 8-byte aligned exactly as Arrow's IPC
-     * body lays them out -- and the columns that were not selected are never read, let alone
-     * inflated.
-     *
      * A buffer's recorded (offset, length) covers its on-body bytes including the
-     * uncompressed-length prefix, so a copied window is exactly what the writer emitted. The
-     * windows are then decompressed in one pass; see [[decompressed]] for why that is not left to
-     * `VectorLoader`.
+     * uncompressed-length prefix, so a window copied out of the payload is exactly what the
+     * writer emitted, 8-byte aligned as Arrow's IPC body lays it out. The columns that were not
+     * selected are never read, let alone inflated. The windows are then decompressed in one pass;
+     * see [[decompressed]] for why that is not left to `VectorLoader`.
      */
     def load(data: Array[Byte], allocator: BufferAllocator): VectorSchemaRoot = {
       val readChannel = new ReadChannel(Channels.newChannel(new ByteArrayInputStream(data)))
@@ -211,6 +287,19 @@ private[comet] object CachedBatchIpc {
       }
       val batch =
         metadata.getMessage.header(new FlatBufRecordBatch()).asInstanceOf[FlatBufRecordBatch]
+
+      // The payload carries no schema, so nothing in it says the writer laid the body out the way
+      // these windows read it. batch.buffers(j) is an unchecked flatbuffer accessor, so a
+      // disagreement would otherwise surface as wrong values, or as an out-of-range read from
+      // inside the copy below, rather than as an error naming the cause. See matchesReaderLayout
+      // for how the write path avoids producing one.
+      if (batch.nodesLength() != totalNodes || batch.buffersLength() != totalBuffers) {
+        throw new SparkException(
+          "Comet cached batch does not match the cached schema: the payload holds " +
+            s"${batch.nodesLength()} field nodes and ${batch.buffersLength()} buffers, but the " +
+            s"schema describes $totalNodes and $totalBuffers")
+      }
+
       // serialize writes exactly [encapsulated message][body] and nothing after it, so the body is
       // the tail of `data`.
       val bodyStart = data.length - metadata.getMessageBodyLength.toInt
@@ -223,10 +312,6 @@ private[comet] object CachedBatchIpc {
       nodeIndices.foreach { j =>
         val node = batch.nodes(j)
         nodes.add(new ArrowFieldNode(node.length(), node.nullCount()))
-      }
-      val variadicCounts = new java.util.ArrayList[java.lang.Long](variadicIndices.length)
-      if (batch.variadicBufferCountsLength() > 0) {
-        variadicIndices.foreach(j => variadicCounts.add(batch.variadicBufferCounts(j)))
       }
 
       val offsets = new Array[Long](bufferIndices.length)
@@ -260,13 +345,7 @@ private[comet] object CachedBatchIpc {
             position += DataSizeRoundingUtil.roundUpTo8Multiple(length)
             i += 1
           }
-          new ArrowRecordBatch(
-            batch.length().toInt,
-            nodes,
-            buffers,
-            compression,
-            variadicCounts,
-            false)
+          new ArrowRecordBatch(batch.length().toInt, nodes, buffers, compression, false)
         } catch {
           case NonFatal(e) =>
             body.close()
@@ -299,17 +378,76 @@ private[comet] object CachedBatchIpc {
 
   /**
    * The indices, within a record batch's flat depth-first sequence, that the selected columns
-   * own.
+   * own, paired with the length of the whole sequence.
    *
    * `count` gives how many entries of the sequence a field occupies including its descendants, so
-   * a running total over every field turns a column index into its run within the sequence.
+   * a running total over every field turns a column index into its run within the sequence. The
+   * final total is what [[Projection.load]] checks a payload against.
    */
   private def selectedRange(
-      arrowFields: Seq[Field],
+      arrowFields: IndexedSeq[Field],
       selectedIndices: Array[Int],
-      count: Field => Int): Array[Int] = {
+      count: Field => Int): (Array[Int], Int) = {
     val starts = arrowFields.scanLeft(0)(_ + count(_)).toArray
-    selectedIndices.flatMap(i => starts(i) until starts(i + 1))
+    (selectedIndices.flatMap(i => starts(i) until starts(i + 1)), starts.last)
+  }
+
+  /**
+   * The same record batch with every buffer compressed, as a new batch the caller owns.
+   *
+   * `VectorUnloader` would do this itself if handed the codec, but it leaks on the failure path:
+   * `appendNodes` retains each input buffer and accumulates the compressed ones into a list local
+   * to `getRecordBatch`, so a buffer that fails to compress -- zstd unable to allocate its
+   * workspace, say -- strands that retain and leaves every buffer compressed before it reachable
+   * from nothing. Closing the input batch afterwards undoes neither, so one failed cache
+   * materialization leaks a batch's worth of off-heap for the life of the executor. Compressing
+   * here keeps every allocation reachable from this method's own error path, as [[decompressed]]
+   * does on the read side.
+   *
+   * The retain before each `compress` is where the reference on the buffer that comes back is
+   * from. A codec that allocates consumes it and hands back a buffer of its own;
+   * `NoCompressionCodec` hands back the input itself, and the retain is then the reference
+   * `result` ends up owning. Releasing it again is what a throw owes.
+   */
+  private def compressed(
+      batch: ArrowRecordBatch,
+      codec: CompressionCodec,
+      allocator: BufferAllocator): ArrowRecordBatch = {
+    val buffers = new java.util.ArrayList[ArrowBuf](batch.getBuffers.size)
+    try {
+      batch.getBuffers.asScala.foreach { buffer =>
+        buffer.getReferenceManager.retain()
+        val packed =
+          try codec.compress(allocator, buffer)
+          catch {
+            case NonFatal(e) =>
+              buffer.getReferenceManager.release()
+              throw e
+          }
+        buffers.add(packed)
+      }
+
+      val result = new ArrowRecordBatch(
+        batch.getLength,
+        batch.getNodes,
+        buffers,
+        CompressionUtil.createBodyCompression(codec),
+        batch.getVariadicBufferCounts,
+        // alignBuffers=true matches the 8-byte buffer alignment Projection.load reproduces when it
+        // repacks the selected buffers. This is the layout that gets written, so the unloader's is
+        // not the one that matters.
+        true)
+      // The constructor retained each buffer, so drop the references held here.
+      buffers.asScala.foreach(_.close())
+      result
+    } catch {
+      case NonFatal(e) =>
+        buffers.asScala.foreach { buffer =>
+          try buffer.close()
+          catch { case NonFatal(closeError) => e.addSuppressed(closeError) }
+        }
+        throw e
+    }
   }
 
   /**
@@ -332,10 +470,8 @@ private[comet] object CachedBatchIpc {
   private def decompressed(
       batch: ArrowRecordBatch,
       allocator: BufferAllocator): ArrowRecordBatch = {
-    // getCodec is the raw IPC byte; the factory keys off the enum. Both sides of the comparison
-    // in readCodec have to be CodecType: NoCompressionCodec.COMPRESSION_TYPE is the byte -1, and
-    // Scala compares a CodecType against it by universal equality, which is quietly always
-    // unequal.
+    // getBodyCompression().getCodec() is the raw IPC byte, which readCodec turns into a codec or
+    // rejects.
     val codec = readCodec(batch.getBodyCompression.getCodec)
 
     val buffers = new java.util.ArrayList[ArrowBuf]()
@@ -387,11 +523,19 @@ private[comet] object CachedBatchIpc {
   private def columnSizes(fields: Seq[Field], recordBatch: ArrowRecordBatch): Array[Long] = {
     val buffers = recordBatch.getBuffersLayout
     val starts = fields.scanLeft(0)(_ + fieldBufferCount(_)).toArray
-    fields.indices.map { i =>
-      (starts(i) until starts(i) + fieldBufferCount(fields(i)))
-        .map(j => buffers.get(j).getSize)
-        .sum
-    }.toArray
+    val sizes = new Array[Long](fields.length)
+    var i = 0
+    while (i < sizes.length) {
+      var size = 0L
+      var j = starts(i)
+      while (j < starts(i + 1)) {
+        size += buffers.get(j).getSize
+        j += 1
+      }
+      sizes(i) = size
+      i += 1
+    }
+    sizes
   }
 
   /**
@@ -401,10 +545,10 @@ private[comet] object CachedBatchIpc {
    * exactly those. Columns that needed no decoding are returned as they are and stay owned by
    * `batch`.
    */
-  private def hydrateDictionaries(
+  private def decodeDictionaries(
       batch: ColumnarBatch,
       allocator: BufferAllocator): (Seq[FieldVector], Seq[ValueVector]) = {
-    val hydrated = mutable.ArrayBuffer.empty[ValueVector]
+    val decoded = mutable.ArrayBuffer.empty[ValueVector]
     try {
       val vectors =
         Utils.getBatchFieldVectorsWithProviders(batch).map { case (vector, providerOpt) =>
@@ -412,15 +556,15 @@ private[comet] object CachedBatchIpc {
             vector
           } else {
             val dictionary = Utils.lookupDictionary(vector, providerOpt)
-            val decoded = DictionaryEncoder.decode(vector, dictionary, allocator)
-            hydrated += decoded
-            decoded.asInstanceOf[FieldVector]
+            val plain = DictionaryEncoder.decode(vector, dictionary, allocator)
+            decoded += plain
+            plain.asInstanceOf[FieldVector]
           }
         }
-      (vectors, hydrated.toSeq)
+      (vectors, decoded.toSeq)
     } catch {
       case NonFatal(e) =>
-        hydrated.foreach(v =>
+        decoded.foreach(v =>
           try v.close()
           catch { case NonFatal(closeError) => e.addSuppressed(closeError) })
         throw e
@@ -439,18 +583,4 @@ private[comet] object CachedBatchIpc {
   /** Number of field nodes a field occupies: itself plus every descendant. */
   private def fieldNodeCount(field: Field): Int =
     1 + field.getChildren.asScala.map(fieldNodeCount).sum
-
-  /**
-   * Number of variadic buffer counts a field contributes, one per view-type buffer, recursively.
-   *
-   * Only Utf8View and BinaryView carry one. Comet's cache never writes view vectors today, but
-   * the span arithmetic above has to stay correct if that changes.
-   */
-  private def fieldVariadicCount(field: Field): Int = {
-    val own = field.getType match {
-      case _: ArrowType.Utf8View | _: ArrowType.BinaryView => 1
-      case _ => 0
-    }
-    own + field.getChildren.asScala.map(fieldVariadicCount).sum
-  }
 }
