@@ -93,8 +93,8 @@ INSERT INTO test_posexplode_map VALUES
   (1, map('a', 1, 'b', 2)),
   (2, map('c', 3))
 
--- posexplode over a map falls back to Spark (Comet only supports array inputs, not maps)
-query expect_fallback(Comet only supports explode/explode_outer for arrays, not maps)
+-- Map entries expand to position, key and value columns.
+query
 SELECT id, posexplode(m) FROM test_posexplode_map
 
 -- ===== posexplode_outer across non-int element types =====
