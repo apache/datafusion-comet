@@ -1160,12 +1160,12 @@ class CometExecRuleSuite extends CometTestBase {
 
   private val PLAN_ONLY_PREFIX = "[Comet plan-only]"
 
-  /** Runs `f` and returns the `[Comet plan-only]` reports that `CometExecRule` logged. */
+  /** Runs `f` and returns the `[Comet plan-only]` reports that `CometRule` logged. */
   private def capturePlanOnlyReports(f: => Unit): Seq[String] = {
     val appender = new LogAppender("Comet plan-only reports")
     withLogAppender(
       appender,
-      loggerNames = Seq(classOf[CometExecRule].getName),
+      loggerNames = Seq(classOf[CometRule].getName),
       level = Some(Level.WARN)) {
       f
     }
@@ -1544,6 +1544,32 @@ class CometExecRuleSuite extends CometTestBase {
         assert(
           reports.size == 1,
           s"expected one report, got ${reports.size}:\n${reports.mkString("\n\n")}")
+      }
+    }
+  }
+
+  test("operator conversion alone converts nothing without scan conversion") {
+    withTempPath { path =>
+      createTestDataFrame.write.parquet(path.toString)
+      withTempView("test_data") {
+        spark.read.parquet(path.toString).createOrReplaceTempView("test_data")
+        val sparkPlan =
+          createSparkPlan(spark, "SELECT id, id * 2 as doubled FROM test_data WHERE id % 2 == 0")
+        assert(countOperators(sparkPlan, classOf[FileSourceScanExec]) == 1)
+
+        // CometExecRule seeds its native chain only from the nodes CometScanRule produces, so on
+        // its own it converts nothing: the scan is untouched and every operator above it is
+        // refused for want of Arrow input. This is why the two are composed into `CometRule`
+        // rather than registered as independent rules that happen to run in the right order.
+        withSQLConf(
+          CometConf.COMET_ENABLED.key -> "true",
+          CometConf.COMET_EXEC_ENABLED.key -> "true") {
+          val execOnly = CometExecRule(spark).apply(stripAQEPlan(sparkPlan))
+          assert(countOperators(execOnly, classOf[FileSourceScanExec]) == 1)
+          assert(
+            stripAQEPlan(execOnly).collect { case p: CometNativeExec => p }.isEmpty,
+            s"operator conversion alone should convert nothing, got:\n$execOnly")
+        }
       }
     }
   }
