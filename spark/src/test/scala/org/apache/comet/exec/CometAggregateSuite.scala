@@ -2343,6 +2343,46 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("statistical aggregates with large nearby values") {
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.SHUFFLE_PARTITIONS.key -> "1",
+      "spark.sql.files.minPartitionNum" -> "1",
+      CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
+      CometConf.COMET_SHUFFLE_MODE.key -> "native") {
+      for (values <- Seq(Seq(1e16, 1e16 + 2), Seq(1e16 + 2, 1e16), Seq(-1e16, -1e16 - 2))) {
+        // One ordered file keeps both values in the same partial accumulator. Splitting
+        // them across files would only exercise merging two single-row states.
+        withTempPath { path =>
+          (Seq(Some(values.head), None, Some(values.last)))
+            .map(v => (0, v))
+            .toDF("g", "v")
+            .coalesce(1)
+            .write
+            .parquet(path.getCanonicalPath)
+          withParquetTable(path.getCanonicalPath, "large_moments") {
+            for (groupBy <- Seq("", " GROUP BY g")) {
+              val query = "SELECT var_pop(v), var_samp(v), stddev_pop(v), stddev_samp(v) " +
+                "FROM large_moments" + groupBy
+              val (_, cometPlan) = checkSparkAnswerAndOperator(query)
+              val aggregates = cometPlan.collect { case a: CometHashAggregateExec => a }
+              assert(aggregates.exists(_.modes.contains(Partial)))
+              assert(aggregates.exists(_.modes.contains(Final)))
+              checkAnswer(sql(query), Seq(Row(1.0, 2.0, 1.0, math.sqrt(2.0))))
+
+              // CORR and REGR_R2 use PearsonCorrelation's update, while REGR_SXX/SYY
+              // and the variance used by slope/intercept follow CentralMomentAgg.
+              checkSparkAnswerWithTolAndNumOfAggregates(
+                "SELECT corr(v, v), regr_r2(v, v), regr_sxx(v, v), regr_syy(v, v), " +
+                  "regr_slope(v, v), regr_intercept(v, v) FROM large_moments" + groupBy,
+                2)
+            }
+          }
+        }
+      }
+    }
+  }
+
   test("var_pop and var_samp") {
     withSQLConf(CometConf.COMET_SHUFFLE_ENABLED.key -> "true") {
       Seq("native", "jvm").foreach { cometShuffleMode =>
