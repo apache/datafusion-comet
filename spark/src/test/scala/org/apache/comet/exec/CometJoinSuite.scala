@@ -31,7 +31,7 @@ import org.apache.spark.sql.catalyst.analysis.UnresolvedRelation
 import org.apache.spark.sql.catalyst.expressions.{And, AttributeReference, IsNotNull}
 import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight}
 import org.apache.spark.sql.comet.{CometBroadcastExchangeExec, CometBroadcastHashJoinExec, CometBroadcastNestedLoopJoinExec, CometFilterExec, CometHashJoinExec, CometNativeScanExec, CometSortMergeJoinExec, CometUnionExec}
-import org.apache.spark.sql.execution.SparkPlan
+import org.apache.spark.sql.execution.{LocalTableScanExec, SparkPlan}
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AQEShuffleReadExec}
 import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
 import org.apache.spark.sql.internal.SQLConf
@@ -176,6 +176,48 @@ class CometJoinSuite extends CometTestBase {
         checkSparkAnswerAndOperator(
           sql("SELECT * FROM t1 JOIN t2 ON t1.time = t2.time"),
           Seq(classOf[CometSortMergeJoinExec]))
+      }
+    }
+  }
+
+  test("SortMergeJoin with floating-point key runs natively under strict floating point") {
+    // CometSortOrder is the admission gate for the sort orders this join synthesizes, so
+    // narrowing it for scalar floats (#5506) admits FP-keyed sort-merge joins under strict mode
+    // too. Comet does not normalize the join keys itself: it compares `join_on`, and correctness
+    // rests on Catalyst's NormalizeFloatingNumbers having already wrapped both sides. This test
+    // pins that, so a future change to that rule fails here rather than silently.
+    //
+    // The fixtures are local relations rather than Parquet tables because a Parquet round trip
+    // canonicalizes every NaN payload, which would collapse the two NaN cases into one.
+    val left = Seq(
+      (1, -0.0d),
+      (2, 0.0d),
+      (3, 1.0d),
+      (4, java.lang.Double.longBitsToDouble(0x7ff8000000000002L)),
+      (5, java.lang.Double.longBitsToDouble(0xfff8000000000002L)))
+    val right = Seq(
+      (10, 0.0d),
+      (20, -0.0d),
+      (30, 1.0d),
+      (40, java.lang.Double.longBitsToDouble(0xfff8000000000002L)),
+      (50, Double.NaN))
+
+    withSQLConf(
+      CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key -> "true",
+      CometConf.getExprAllowIncompatConfigKey("SortOrder") -> "false",
+      SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+      SQLConf.PREFER_SORTMERGEJOIN.key -> "true") {
+      withTempView("fp_left", "fp_right") {
+        left.toDF("lid", "k").createOrReplaceTempView("fp_left")
+        right.toDF("rid", "k").createOrReplaceTempView("fp_right")
+
+        // LocalTableScanExec has no native counterpart enabled by default and is only the source
+        // of the unmodified key bits here.
+        checkSparkAnswerAndOperator(
+          sql("SELECT l.lid, r.rid FROM fp_left l JOIN fp_right r ON l.k = r.k"),
+          Seq(classOf[CometSortMergeJoinExec]),
+          classOf[LocalTableScanExec])
       }
     }
   }
