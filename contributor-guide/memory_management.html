@@ -681,6 +681,36 @@ returns <code class="docutils literal notranslate"><span class="pre">CometUnifie
 <code class="docutils literal notranslate"><span class="pre">spark.memory.offHeap.size</span></code>, so shuffle pages are arbitrated against Spark’s other consumers in the
 same task like any other allocation.</p>
 <p>Which allocator each call site uses, and who ends up charged for the bytes:</p>
+<object data="../_images/mermaid-24951e49e88a2a575316ecedeb5309d49a140d7a.svg" type="image/svg+xml">
+            <p class="warning">flowchart LR
+  subgraph SITES[&quot;JVM Arrow allocation sites&quot;]
+    NU[&quot;NativeUtil&lt;br&gt;FFI structs, imports, exports&quot;]
+    UDF[&quot;CometUdfBridge&lt;br&gt;JVM UDF inputs and result&quot;]
+    CGO[&quot;CometBatchKernelCodegenOutput&lt;br&gt;codegen UDF output&quot;]
+    SR[&quot;StreamReader&lt;br&gt;shuffle and IPC reads&quot;]
+    NAS[&quot;CometNativeArrowSource&lt;br&gt;stream and readerBatchIter&quot;]
+    CACHE[&quot;ArrowCachedBatchSerializer&quot;]
+    PY[&quot;CometArrowPythonRunnerBase&quot;]
+    BC[&quot;Utils broadcast-coalesce&quot;]
+  end
+
+  ROOT[&quot;CometArrowAllocator&lt;br&gt;RootAllocator, no limit&lt;br&gt;no allocation listener&quot;]
+  SHUF[&quot;Comet JVM shuffle pages&lt;br&gt;CometUnifiedShuffleMemoryAllocator&quot;]
+  NPOOL[&quot;Comet native memory pool&lt;br&gt;declared reservations only&quot;]
+  TMM[&quot;Spark off-heap execution pool&lt;br&gt;TaskMemoryManager&quot;]
+  NOBODY[&quot;accounted by nobody&quot;]
+
+  NU --&gt; ROOT
+  UDF --&gt; ROOT
+  CGO --&gt; ROOT
+  SR --&gt; ROOT
+  NAS --&gt; ROOT
+  CACHE --&gt; ROOT
+  PY --&gt; ROOT
+  BC --&gt; ROOT
+  ROOT --&gt; NOBODY
+  SHUF --&gt; TMM
+  NPOOL --&gt;|&quot;CometTaskMemoryManager over JNI&quot;| TMM</p></object>
 <section id="constraints-on-a-comet-memory-consumer">
 <h3>Constraints on a Comet memory consumer<a class="headerlink" href="#constraints-on-a-comet-memory-consumer" title="Link to this heading">#</a></h3>
 <p><code class="docutils literal notranslate"><span class="pre">CometTaskMemoryManager</span></code> is the one place where Comet code acts as a Spark <code class="docutils literal notranslate"><span class="pre">MemoryConsumer</span></code>, and the
@@ -925,6 +955,23 @@ hard ceiling on the sum of everything in the container. That cgroup counts, amon
 <li><p>page cache charged to the cgroup by the container’s file I/O, including spill files.</p></li>
 </ul>
 <p>Everything the cgroup counts, and who accounts for each part:</p>
+<object data="../_images/mermaid-d0bb31b07009ce49e46219a49cdd8e6531dd24ce.svg" type="image/svg+xml">
+            <p class="warning">flowchart TB
+  subgraph CG[&quot;pod cgroup memory.max, kernel OOM kill above this&quot;]
+    subgraph SEEN[&quot;visible to Spark's accounting&quot;]
+      HEAP[&quot;JVM heap&lt;br&gt;execution and storage&lt;br&gt;spark.executor.memory&quot;]
+      TUNG[&quot;Spark Tungsten off-heap&lt;br&gt;TaskMemoryManager&quot;]
+      SHUFP[&quot;Comet JVM shuffle pages&lt;br&gt;CometUnifiedShuffleMemoryAllocator&quot;]
+      NATRES[&quot;Comet native heap, reserved&lt;br&gt;operators that call try_grow&lt;br&gt;declared to Spark over JNI, never measured&quot;]
+    end
+    subgraph NONE[&quot;accounted by nobody&quot;]
+      NATUND[&quot;Comet native heap, undeclared&lt;br&gt;kernels, array builders, decompression&lt;br&gt;Parquet metadata, object_store, tokio&quot;]
+      ARROWR[&quot;Comet JVM Arrow&lt;br&gt;CometArrowAllocator, unbounded&quot;]
+      NONHEAP[&quot;JVM non-heap&lt;br&gt;metaspace, code cache, thread stacks&lt;br&gt;GC structures, Netty direct buffers&quot;]
+      PAGEC[&quot;page cache charged to the cgroup&lt;br&gt;file I/O, including spill files&quot;]
+      FRAG[&quot;allocator overhead&lt;br&gt;fragmentation, padding&lt;br&gt;jemalloc retained and dirty pages&quot;]
+    end
+  end</p></object>
 <p>Spark’s accounting covers the first group, though not in the same sense throughout it. The JVM
 heap, Tungsten pages and Comet’s shuffle pages are allocated by JVM code that reports what it
 allocated. A native reservation is a number an operator declared before allocating: <code class="docutils literal notranslate"><span class="pre">try_grow</span></code>

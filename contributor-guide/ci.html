@@ -559,6 +559,22 @@ mechanics behind the configuration are documented in
 preflight checks first (license headers, Markdown formatting, workflow linting, the CI config
 checks), computes which heavy jobs the changed files are relevant to, and fans out to those jobs.
 Which jobs run also depends on the event:</p>
+<object data="../_images/mermaid-013012468fa27c9e9fdb0a14196d357c619c68a8.svg" type="image/svg+xml">
+            <p class="warning">flowchart LR
+  PR([pull request]) --&gt; PRTIER
+  PR -. with label .-&gt; QUEUE
+  PR -. with label .-&gt; NIGHTLY
+  PR -. with label .-&gt; S34
+  MQ([merge queue]) --&gt; PRTIER
+  MQ --&gt; QUEUE
+  CRON([schedule&lt;br&gt;06:00 UTC]) --&gt; NIGHTLY
+  PUSH([push to main]) --&gt; CACHE
+
+  PRTIER[&quot;PR tier&lt;br&gt;Linux build, lint, Rust tests&lt;br&gt;TPC-H / TPC-DS&lt;br&gt;Comet suites, Spark 4.1&quot;]
+  QUEUE[&quot;Queue tier, on top of the PR tier&lt;br&gt;Spark SQL, Spark 4.1&lt;br&gt;Iceberg 1.11&lt;br&gt;macOS build and Comet suites&lt;br&gt;Benchmark check, Delta gate&lt;br&gt;PyArrow UDF, Spark 4.0 / 4.1 / 4.2&quot;]
+  NIGHTLY[&quot;Nightly tier&lt;br&gt;Comet suites, Spark 3.4 / 3.5 / 4.0 / 4.2&lt;br&gt;Spark SQL, Spark 3.5 / 4.0&lt;br&gt;Iceberg 1.8 / 1.9 / 1.10&quot;]
+  S34[&quot;Neither tier&lt;br&gt;Spark SQL, Spark 3.4&quot;]
+  CACHE[&quot;Cache-refresh-only mode&lt;br&gt;the four cache-writing jobs, plus Lint&quot;]</p></object>
 <p>Suite by suite:</p>
 <div class="pst-scrollable-table-container"><table class="table">
 <thead>
