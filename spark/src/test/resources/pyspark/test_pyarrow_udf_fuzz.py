@@ -23,6 +23,7 @@ same cases through Parquet and a real Python worker in both execution modes.
 """
 
 import datetime as dt
+import inspect
 import os
 import random
 from decimal import Decimal
@@ -206,9 +207,12 @@ def test_generated_data_arrow_ipc_roundtrip(seed):
     context = f"seed={seed}, schema={schema.json()}"
     assert _generate_case(seed) == (schema, rows), context
 
-    # Generated timestamps are naive. Validate their physical microsecond values
-    # here; the Spark test will separately control the session timezone.
-    arrow_schema = to_arrow_schema(schema, timestamp_utc=False)
+    # Use UTC for TimestampType; TimestampNTZType remains timezone-naive.
+    # PySpark 4.2 replaced timestamp_utc with timezone.
+    if "timezone" in inspect.signature(to_arrow_schema).parameters:
+        arrow_schema = to_arrow_schema(schema, timezone="UTC")
+    else:
+        arrow_schema = to_arrow_schema(schema, timestamp_utc=True)
     table = pa.Table.from_pylist(rows, schema=arrow_schema)
     table.validate(full=True)
     output = pa.BufferOutputStream()
@@ -220,7 +224,9 @@ def test_generated_data_arrow_ipc_roundtrip(seed):
     assert restored.schema == arrow_schema, context
     # Strict conversion also rejects any duplicate Arrow map keys; comparing
     # ordered rows (with unique IDs) preserves multiplicity instead of using sets.
-    assert restored.to_pylist(maps_as_pydicts="strict") == rows, context
+    assert restored.to_pylist(maps_as_pydicts="strict") == table.to_pylist(
+        maps_as_pydicts="strict"
+    ), context
 
 
 def _normalize(value):
