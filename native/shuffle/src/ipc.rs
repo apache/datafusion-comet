@@ -46,11 +46,14 @@ const CONTINUATION_MARKER: [u8; 4] = [0xff; 4];
 /// from several shuffles, and a single entry would thrash.
 const SCHEMA_CACHE_CAPACITY: usize = 4;
 
+/// Maximum estimated serialized-plus-parsed size per cached schema, excluding allocator overhead.
+const SCHEMA_CACHE_ENTRY_RETAIN_LIMIT: usize = 1 << 20;
+
 /// Metadata scratch larger than this is released after the block rather than kept for the thread.
-/// Real metadata is a few KiB even for wide schemas; only a corrupt length gets anywhere near.
 const SCRATCH_RETAIN_LIMIT: usize = 1 << 20;
 
-/// Per-thread decoder state.
+/// Per-thread memoization of immutable schema metadata, not operator state. Moving execution to
+/// another thread only loses cache hits. Dictionaries and batch data remain local to each call.
 ///
 /// Every block is a complete IPC stream that opens with a schema message. `ShuffleBlockWriter`
 /// encodes that message once and writes it verbatim into every block, so consecutive blocks carry
@@ -108,9 +111,9 @@ fn cached_schema(
     let hit = schemas
         .iter()
         .position(|(message, _)| message.as_ref() == schema_message)?;
-    // most recently used first, so an alternating pair stays resident
+    // Promote the hit without changing the relative recency of the other entries.
     if hit != 0 {
-        schemas.swap(0, hit);
+        schemas[..=hit].rotate_right(1);
     }
     Some(Arc::clone(&schemas[0].1))
 }
@@ -120,6 +123,29 @@ fn cache_schema(
     schema_message: &[u8],
     schema: SchemaRef,
 ) {
+    // Admission only affects reuse. Large valid schemas still decode, without evicting useful
+    // entries or retaining their serialized and parsed copies for the lifetime of the thread.
+    if schema_message.len() > SCHEMA_CACHE_ENTRY_RETAIN_LIMIT {
+        return;
+    }
+    let mut retained_size = schema_message
+        .len()
+        .saturating_add(std::mem::size_of_val(schema.as_ref()))
+        .saturating_add(schema.fields().size())
+        .saturating_add(
+            schema
+                .metadata()
+                .capacity()
+                .saturating_mul(std::mem::size_of::<(String, String)>()),
+        );
+    for (key, value) in schema.metadata() {
+        retained_size = retained_size
+            .saturating_add(key.capacity())
+            .saturating_add(value.capacity());
+    }
+    if retained_size > SCHEMA_CACHE_ENTRY_RETAIN_LIMIT {
+        return;
+    }
     if schemas.len() == SCHEMA_CACHE_CAPACITY {
         schemas.pop();
     }
@@ -492,13 +518,14 @@ mod tests {
     use super::{
         read_ipc_compressed, read_ipc_compressed_validated, reset_schema_cache, schema_cache_stats,
         scratch_capacity, RequireLz4EndMark, SchemaCacheStats, SCHEMA_CACHE_CAPACITY,
-        SCRATCH_RETAIN_LIMIT,
+        SCHEMA_CACHE_ENTRY_RETAIN_LIMIT, SCRATCH_RETAIN_LIMIT,
     };
     use crate::writers::rss::tests::allocations;
     use arrow::array::{Array, DictionaryArray, Int32Array, RecordBatch, StringArray};
     use arrow::datatypes::{DataType, Field, Int32Type, Schema};
     use arrow::ipc::reader::StreamReader;
     use arrow::ipc::writer::StreamWriter;
+    use std::collections::HashMap;
     use std::io::{Cursor, Read, Write};
     use std::sync::Arc;
 
@@ -693,6 +720,85 @@ mod tests {
         assert_eq!(schema_cache_stats(), stats(4, 6), "evicted");
         decode(&blocks[SCHEMA_CACHE_CAPACITY]);
         assert_eq!(schema_cache_stats(), stats(5, 6), "most recent stays");
+    }
+
+    #[test]
+    fn promoting_a_schema_preserves_eviction_order() {
+        let blocks: Vec<_> = (1..=5)
+            .map(|columns| block_for(&n_column_batch(columns), b"NONE"))
+            .collect();
+        reset_schema_cache();
+        // A B C D A E D: promoting A must keep D newer than B and C, so E evicts B.
+        for index in [0, 1, 2, 3, 0, 4, 3] {
+            assert_eq!(
+                read_ipc_compressed(&blocks[index]).unwrap(),
+                n_column_batch(index + 1)
+            );
+        }
+        assert_eq!(schema_cache_stats(), stats(2, 5));
+        read_ipc_compressed(&blocks[1]).unwrap();
+        assert_eq!(schema_cache_stats(), stats(2, 6));
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)] // Miri cannot call Zstd's C FFI.
+    fn oversized_schemas_decode_without_retention_or_eviction() {
+        let normal_blocks: Vec<_> = (1..=SCHEMA_CACHE_CAPACITY)
+            .map(|columns| block_for(&n_column_batch(columns), b"NONE"))
+            .collect();
+        let schemas = [
+            Schema::new(vec![Field::new(
+                "x".repeat(SCHEMA_CACHE_ENTRY_RETAIN_LIMIT + 1),
+                DataType::Int32,
+                false,
+            )]),
+            // Each wire message fits the limit, but its parsed copy pushes retention over it.
+            Schema::new(vec![Field::new(
+                "x".repeat(SCHEMA_CACHE_ENTRY_RETAIN_LIMIT / 2),
+                DataType::Int32,
+                false,
+            )]),
+            Schema::new(vec![Field::new("c", DataType::Int32, false)]).with_metadata(
+                HashMap::from([(
+                    "key".into(),
+                    "x".repeat(SCHEMA_CACHE_ENTRY_RETAIN_LIMIT / 2),
+                )]),
+            ),
+        ];
+        for (index, schema) in schemas.into_iter().enumerate() {
+            let batch = RecordBatch::try_new(
+                Arc::new(schema),
+                vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
+            )
+            .unwrap();
+            let ipc = ipc_bytes(&batch);
+            if index > 0 {
+                assert!(ipc.len() < SCHEMA_CACHE_ENTRY_RETAIN_LIMIT);
+            }
+            for codec in CODECS {
+                reset_schema_cache();
+                for block in &normal_blocks {
+                    read_ipc_compressed(block).unwrap();
+                }
+                let block = encode(codec, &ipc);
+                for decode in [read_ipc_compressed, read_ipc_compressed_validated] {
+                    let decoded = decode(&block).unwrap();
+                    assert_eq!(decoded, batch);
+                    let schema_ref = Arc::downgrade(&decoded.schema());
+                    drop(decoded);
+                    assert!(schema_ref.upgrade().is_none());
+                }
+                assert_eq!(schema_cache_stats(), stats(0, SCHEMA_CACHE_CAPACITY + 2));
+                for block in &normal_blocks {
+                    read_ipc_compressed(block).unwrap();
+                }
+                assert_eq!(
+                    schema_cache_stats(),
+                    stats(SCHEMA_CACHE_CAPACITY, SCHEMA_CACHE_CAPACITY + 2)
+                );
+                assert!(scratch_capacity() <= SCRATCH_RETAIN_LIMIT);
+            }
+        }
     }
 
     /// An `Int32` and a `Utf8` column, `num_rows` long.
