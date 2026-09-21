@@ -1341,27 +1341,53 @@ class CometInMemoryCacheSuite extends CometTestBase {
     "named_struct('nums', array(id, id + 1, id + 2)) AS deep",
     "concat('t_', cast(id as string)) AS tail")
 
+  // A payload chunk size small enough that every buffer window in a projection-test payload
+  // crosses at least one chunk boundary, and odd so that no boundary lines up with Arrow's 8-byte
+  // buffer alignment. The default of 1 MiB puts a test-sized payload in a single chunk, which
+  // leaves the cross-chunk copy in the read path unexercised.
+  private val tinyChunkSize = 61
+
+  // The payload chunk sizes the projection tests run under: the default, and one that splits
+  // every payload into many chunks.
+  private val chunkSizes = Seq(("single-chunk", None), ("multi-chunk", Some(tinyChunkSize)))
+
   /**
    * Cache a six-column flat relation and hand the collected batches to `f` along with the
    * relation, so a test can doctor the payload before decoding it again through the serializer.
    */
   private def withProjectionCache(
       f: (org.apache.spark.sql.execution.columnar.InMemoryRelation, Array[CachedBatch]) => Unit)
-      : Unit = withCachedProjection("projection_cache", flatProjectionColumns)(f)
+      : Unit = withProjectionCache(None)(f)
+
+  private def withProjectionCache(chunkSize: Option[Int])(
+      f: (org.apache.spark.sql.execution.columnar.InMemoryRelation, Array[CachedBatch]) => Unit)
+      : Unit = withCachedProjection("projection_cache", flatProjectionColumns, chunkSize)(f)
 
   /** The same, over a relation of the same width whose middle four columns are nested. */
   private def withNestedProjectionCache(
       f: (org.apache.spark.sql.execution.columnar.InMemoryRelation, Array[CachedBatch]) => Unit)
-      : Unit = withCachedProjection("nested_projection_cache", nestedProjectionColumns)(f)
+      : Unit = withNestedProjectionCache(None)(f)
 
-  private def withCachedProjection(view: String, columns: Seq[String])(
+  private def withNestedProjectionCache(chunkSize: Option[Int])(
+      f: (org.apache.spark.sql.execution.columnar.InMemoryRelation, Array[CachedBatch]) => Unit)
+      : Unit =
+    withCachedProjection("nested_projection_cache", nestedProjectionColumns, chunkSize)(f)
+
+  private type ProjectionFixture = Option[Int] => (
+      (
+          org.apache.spark.sql.execution.columnar.InMemoryRelation,
+          Array[CachedBatch]) => Unit) => Unit
+
+  private def withCachedProjection(view: String, columns: Seq[String], chunkSize: Option[Int])(
       f: (org.apache.spark.sql.execution.columnar.InMemoryRelation, Array[CachedBatch]) => Unit)
       : Unit = {
     withSQLConf(
-      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
-      CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> "true",
-      "spark.comet.sparkToColumnar.enabled" -> "true",
-      SQLConf.CACHE_VECTORIZED_READER_ENABLED.key -> "true") {
+      Seq(
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+        CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> "true",
+        "spark.comet.sparkToColumnar.enabled" -> "true",
+        SQLConf.CACHE_VECTORIZED_READER_ENABLED.key -> "true") ++
+        chunkSize.map(CometConf.COMET_EXEC_IN_MEMORY_CACHE_CHUNK_SIZE.key -> _.toString): _*) {
 
       spark.catalog.clearCache()
       spark
@@ -1502,40 +1528,50 @@ class CometInMemoryCacheSuite extends CometTestBase {
   // node and two or three buffers, whereas a nested one owns a run as long as its whole subtree,
   // so a run computed short or long by a buffer shifts every column after it -- and which column
   // is selected decides whether that misalignment reaches into a corrupted neighbour.
-  Seq(("flat", withProjectionCache _), ("nested", withNestedProjectionCache _)).foreach {
-    case (shape, withCache) =>
-      test(s"Comet in-memory cache decodes only the projected columns of a $shape relation") {
-        withCache { (relation, batches) =>
-          val cacheSchema = Utils.fromAttributes(relation.output)
-          val pristine = CometCachedBatchHelper.snapshotPayloads(batches)
+  for {
+    (shape, withCache) <- Seq[(String, ProjectionFixture)](
+      ("flat", chunkSize => f => withProjectionCache(chunkSize)(f)),
+      ("nested", chunkSize => f => withNestedProjectionCache(chunkSize)(f)))
+    (chunking, chunkSize) <- chunkSizes
+  } {
+    test(
+      s"Comet in-memory cache decodes only the projected columns of a $shape relation " +
+        s"($chunking payload)") {
+      withCache(chunkSize) { (relation, batches) =>
+        if (chunkSize.isDefined) {
+          assert(
+            batches.forall(b => CometCachedBatchHelper.chunkCount(b) > 1),
+            "every payload should span several chunks, or this runs nothing across a boundary")
+        }
+        val cacheSchema = Utils.fromAttributes(relation.output)
+        val pristine = CometCachedBatchHelper.snapshotPayloads(batches)
 
-          relation.output.indices.foreach { i =>
-            assert(
-              batches.forall(b => CometCachedBatchHelper.columnIsCompressed(b, cacheSchema, i)),
-              s"column ${relation.output(i).name} is not stored compressed, so corrupting it " +
-                "would prove nothing")
+        relation.output.indices.foreach { i =>
+          assert(
+            batches.forall(b => CometCachedBatchHelper.columnIsCompressed(b, cacheSchema, i)),
+            s"column ${relation.output(i).name} is not stored compressed, so corrupting it " +
+              "would prove nothing")
+        }
+
+        relation.output.indices.foreach { selectedIdx =>
+          CometCachedBatchHelper.restorePayloads(batches, pristine)
+          val selected = Seq(relation.output(selectedIdx))
+          val name = relation.output(selectedIdx).name
+
+          relation.output.indices.filter(_ != selectedIdx).foreach { i =>
+            batches.foreach(b => CometCachedBatchHelper.corruptColumn(b, cacheSchema, i))
           }
+          assert(
+            decodedRowCount(relation, batches, selected) == projectionCacheRows,
+            s"reading $name must not decompress the other ${relation.output.length - 1} columns")
 
-          relation.output.indices.foreach { selectedIdx =>
-            CometCachedBatchHelper.restorePayloads(batches, pristine)
-            val selected = Seq(relation.output(selectedIdx))
-            val name = relation.output(selectedIdx).name
-
-            relation.output.indices.filter(_ != selectedIdx).foreach { i =>
-              batches.foreach(b => CometCachedBatchHelper.corruptColumn(b, cacheSchema, i))
-            }
-            assert(
-              decodedRowCount(relation, batches, selected) == projectionCacheRows,
-              s"reading $name must not decompress the other ${relation.output.length - 1} columns")
-
-            batches.foreach(b =>
-              CometCachedBatchHelper.corruptColumn(b, cacheSchema, selectedIdx))
-            interceptDecodeFailure {
-              decodedRowCount(relation, batches, selected)
-            }
+          batches.foreach(b => CometCachedBatchHelper.corruptColumn(b, cacheSchema, selectedIdx))
+          interceptDecodeFailure {
+            decodedRowCount(relation, batches, selected)
           }
         }
       }
+    }
   }
 
   test("Comet in-memory cache rejects a payload that disagrees with the cached schema") {
@@ -1645,6 +1681,41 @@ class CometInMemoryCacheSuite extends CometTestBase {
     }
   }
 
+  test("Comet in-memory cache reads correct values from a payload split across many chunks") {
+    // A payload is stored in heap chunks so that one cached batch is not capped at the 2 GiB a
+    // single JVM array holds. That limit is not reachable in a unit test, but everything it relies
+    // on is: with chunks this small, every buffer window the read path copies out starts in one
+    // chunk and ends in another, as does the metadata message ahead of the body. Values are
+    // compared against the uncached query rather than a row count, since a window stitched
+    // together from the wrong chunk offsets still decodes to the right number of rows.
+    withNestedProjectionCache(Some(tinyChunkSize)) { (relation, batches) =>
+      batches.foreach { batch =>
+        assert(
+          CometCachedBatchHelper.chunkCount(batch) > 1,
+          "a payload larger than the chunk size must be stored in more than one chunk")
+        assert(
+          CometCachedBatchHelper.payloadSize(batch) == batch.sizeInBytes,
+          "sizeInBytes must report the whole payload across its chunks")
+      }
+
+      val source = s"SELECT ${nestedProjectionColumns.mkString(", ")} " +
+        s"FROM range(0, $projectionCacheRows, 1, 2)"
+      Seq(relation.output.map(_.name), Seq("tail", "mp", "id"), Seq("deep", "sc")).foreach {
+        cols =>
+          val list = cols.mkString(", ")
+          val ordered = s"SELECT to_json(struct($list)) AS j FROM %s ORDER BY j"
+          val expected = spark.sql(ordered.format(s"($source)")).collect()
+          assert(expected.length == projectionCacheRows)
+
+          val df = spark.sql(ordered.format("nested_projection_cache"))
+          assert(
+            df.queryExecution.executedPlan.toString().contains("CometInMemoryTableScan"),
+            s"projection ($list) should read the cache natively")
+          assert(df.collect() === expected, s"projection ($list) read the wrong values")
+      }
+    }
+  }
+
   test("Comet in-memory cache decodes no columns for a row-count-only read") {
     // SELECT count(*) selects no columns. Every column's bytes are corrupted, so the read can
     // only succeed by touching none of them and answering from the row count the cached batch
@@ -1681,8 +1752,8 @@ class CometInMemoryCacheSuite extends CometTestBase {
       }
     }
 
-    withProjectionCache(checkSizes)
-    withNestedProjectionCache(checkSizes)
+    withProjectionCache(checkSizes _)
+    withNestedProjectionCache(checkSizes _)
   }
 
   test("Comet in-memory cache scans no columns for a row-count-only query") {
@@ -1850,36 +1921,39 @@ class CometInMemoryCacheSuite extends CometTestBase {
     // one buffer into a fresh allocation and then throws on the next, leaving that allocation
     // reachable from nothing the failure path can see. The second is the one that catches a leak
     // in `VectorLoader`; the first is the one that catches a cleanup path releasing the shared
-    // body twice.
-    withProjectionCache { (relation, batches) =>
-      val cacheSchema = Utils.fromAttributes(relation.output)
-      val pristine = CometCachedBatchHelper.snapshotPayloads(batches)
-      val stringIdx = 3
-      assert(relation.output(stringIdx).dataType.typeName == "string")
+    // body twice. Both run over a multi-chunk payload too, where the copy into the body walks
+    // several chunks before the failure.
+    chunkSizes.foreach { case (_, chunkSize) =>
+      withProjectionCache(chunkSize) { (relation, batches) =>
+        val cacheSchema = Utils.fromAttributes(relation.output)
+        val pristine = CometCachedBatchHelper.snapshotPayloads(batches)
+        val stringIdx = 3
+        assert(relation.output(stringIdx).dataType.typeName == "string")
 
-      val cases = Seq(
-        (
-          "a column's first buffer",
-          // Corrupt the second selected column, so the first is copied out successfully first.
-          (b: CachedBatch) => CometCachedBatchHelper.corruptColumn(b, cacheSchema, 1),
-          Seq(relation.output(0), relation.output(1))),
-        (
-          "a string column's trailing buffer",
-          (b: CachedBatch) =>
-            CometCachedBatchHelper.corruptTrailingBuffer(b, cacheSchema, stringIdx),
-          Seq(relation.output(stringIdx))))
+        val cases = Seq(
+          (
+            "a column's first buffer",
+            // Corrupt the second selected column, so the first is copied out successfully first.
+            (b: CachedBatch) => CometCachedBatchHelper.corruptColumn(b, cacheSchema, 1),
+            Seq(relation.output(0), relation.output(1))),
+          (
+            "a string column's trailing buffer",
+            (b: CachedBatch) =>
+              CometCachedBatchHelper.corruptTrailingBuffer(b, cacheSchema, stringIdx),
+            Seq(relation.output(stringIdx))))
 
-      cases.foreach { case (where, corrupt, selected) =>
-        CometCachedBatchHelper.restorePayloads(batches, pristine)
-        batches.foreach(corrupt)
+        cases.foreach { case (where, corrupt, selected) =>
+          CometCachedBatchHelper.restorePayloads(batches, pristine)
+          batches.foreach(corrupt)
 
-        val before = CometArrowAllocator.getAllocatedMemory
-        interceptDecodeFailure {
-          decodedRowCount(relation, batches, selected)
+          val before = CometArrowAllocator.getAllocatedMemory
+          interceptDecodeFailure {
+            decodedRowCount(relation, batches, selected)
+          }
+          assert(
+            CometArrowAllocator.getAllocatedMemory == before,
+            s"everything allocated before a failure in $where must be released")
         }
-        assert(
-          CometArrowAllocator.getAllocatedMemory == before,
-          s"everything allocated before a failure in $where must be released")
       }
     }
   }

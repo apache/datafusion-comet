@@ -35,6 +35,7 @@ import org.apache.spark.sql.columnar.CachedBatch
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.types.StructType
 import org.apache.spark.sql.vectorized.ColumnarBatch
+import org.apache.spark.util.io.ChunkedByteBuffer
 
 /**
  * Test-only access to the internals of `CometCachedBatch`.
@@ -50,8 +51,39 @@ import org.apache.spark.sql.vectorized.ColumnarBatch
 object CometCachedBatchHelper {
 
   /** The raw cached payload: one encapsulated Arrow IPC record batch message and its body. */
-  private def payload(batch: CachedBatch): Array[Byte] =
+  private def payload(batch: CachedBatch): ChunkedByteBuffer =
     batch.asInstanceOf[CometCachedBatch].bytes
+
+  /**
+   * The payload flattened into one array, for reading. Test payloads are far below the 2 GiB a
+   * single array can hold, which is the limit the chunked format exists to avoid in production.
+   */
+  private def payloadBytes(batch: CachedBatch): Array[Byte] = payload(batch).toArray
+
+  /** How many heap chunks the payload is stored in. */
+  def chunkCount(batch: CachedBatch): Int = payload(batch).getChunks().length
+
+  /** The payload's total size in bytes, summed over its chunks. */
+  def payloadSize(batch: CachedBatch): Long =
+    payload(batch).getChunks().map(_.remaining.toLong).sum
+
+  /**
+   * Overwrite `bytes.length` bytes of the payload in place starting at `start`, walking the
+   * chunks so a range that crosses a chunk boundary is written into both.
+   */
+  private def writeThrough(batch: CachedBatch, start: Long, bytes: Array[Byte]): Unit = {
+    var chunkStart = 0L
+    payload(batch).getChunks().foreach { chunk =>
+      val size = chunk.remaining
+      var i = math.max(start, chunkStart)
+      val end = math.min(start + bytes.length, chunkStart + size)
+      while (i < end) {
+        chunk.put(chunk.position() + (i - chunkStart).toInt, bytes((i - start).toInt))
+        i += 1
+      }
+      chunkStart += size
+    }
+  }
 
   /**
    * A copy of every batch's payload, so a test can undo what [[corruptColumn]] scrambled.
@@ -61,13 +93,11 @@ object CometCachedBatchHelper {
    * beats re-caching by the column count.
    */
   def snapshotPayloads(batches: Array[CachedBatch]): Array[Array[Byte]] =
-    batches.map(payload(_).clone())
+    batches.map(payloadBytes)
 
   /** Put back what [[snapshotPayloads]] captured. Corruption never changes a payload's length. */
   def restorePayloads(batches: Array[CachedBatch], snapshot: Array[Array[Byte]]): Unit =
-    batches.zip(snapshot).foreach { case (batch, bytes) =>
-      System.arraycopy(bytes, 0, payload(batch), 0, bytes.length)
-    }
+    batches.zip(snapshot).foreach { case (batch, bytes) => writeThrough(batch, 0, bytes) }
 
   /**
    * Whether the write path would unload `batch`'s vectors as they stand, or convert them first.
@@ -89,8 +119,9 @@ object CometCachedBatchHelper {
   def serialize(
       batch: ColumnarBatch,
       codec: CompressionCodec,
-      allocator: BufferAllocator): Array[Byte] =
-    CachedBatchIpc.serialize(batch, codec, allocator)._1
+      allocator: BufferAllocator,
+      chunkSize: Int = 1024 * 1024): ChunkedByteBuffer =
+    CachedBatchIpc.serialize(batch, codec, allocator, chunkSize)._1
 
   /**
    * Whether the payload begins with a Schema message rather than going straight to the record
@@ -101,7 +132,7 @@ object CometCachedBatchHelper {
    * here rather than only as a footprint number.
    */
   def hasSchemaMessage(batch: CachedBatch): Boolean =
-    readMessage(payload(batch)).getMessage.headerType() == MessageHeader.Schema
+    readMessage(payloadBytes(batch)).getMessage.headerType() == MessageHeader.Schema
 
   /** Stored size of each top-level column: the sum of its buffers' on-body lengths. */
   def columnSizes(batch: CachedBatch, cacheSchema: StructType): Seq[Long] =
@@ -134,7 +165,7 @@ object CometCachedBatchHelper {
       ranges.nonEmpty,
       s"column $index of the cached batch has no compressed buffer to corrupt; " +
         "the test needs data that Arrow actually compresses")
-    ranges.foreach { case (start, length) => scramble(payload(batch), start, length) }
+    ranges.foreach { case (start, length) => scramble(batch, start, length) }
   }
 
   /**
@@ -152,7 +183,7 @@ object CometCachedBatchHelper {
       s"column $index has ${ranges.length} compressed buffers; this needs at least two so a " +
         "decode can succeed on one and then fail on the next")
     val (start, length) = ranges.last
-    scramble(payload(batch), start, length)
+    scramble(batch, start, length)
   }
 
   /**
@@ -167,7 +198,7 @@ object CometCachedBatchHelper {
       batch: CachedBatch,
       cacheSchema: StructType,
       index: Int): Seq[(Long, Long)] = {
-    val data = payload(batch)
+    val data = payloadBytes(batch)
     val bodyStart = data.length - readMessage(data).getMessageBodyLength
     columnBufferRanges(batch, cacheSchema)(index).collect {
       case (offset, length) if length > 8 && uncompressedLength(data, bodyStart + offset) > 0 =>
@@ -184,14 +215,11 @@ object CometCachedBatchHelper {
    * arrow-compression, and 1.5.5 (Spark 3.4, 3.5) decodes a frame whose last bytes have been
    * zeroed that 1.5.7 (Spark 4.x) reports as corrupt.
    */
-  private def scramble(data: Array[Byte], start: Long, length: Long): Unit = {
-    var i = (start + 8).toInt
-    val end = (start + length).toInt
-    while (i < end) {
-      // A fixed pattern rather than random bytes, so a failure reproduces exactly.
-      data(i) = (0xa5 ^ i).toByte
-      i += 1
-    }
+  private def scramble(batch: CachedBatch, start: Long, length: Long): Unit = {
+    val from = start + 8
+    // A fixed pattern rather than random bytes, so a failure reproduces exactly.
+    val pattern = Array.tabulate((length - 8).toInt)(k => (0xa5 ^ (from + k).toInt).toByte)
+    writeThrough(batch, from, pattern)
   }
 
   /**
@@ -201,7 +229,7 @@ object CometCachedBatchHelper {
   private def columnBufferRanges(
       batch: CachedBatch,
       cacheSchema: StructType): Seq[Seq[(Long, Long)]] = {
-    val data = payload(batch)
+    val data = payloadBytes(batch)
     val recordBatch =
       readMessage(data).getMessage
         .header(new FlatBufRecordBatch())
