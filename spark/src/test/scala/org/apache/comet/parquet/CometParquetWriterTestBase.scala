@@ -19,6 +19,7 @@
 
 package org.apache.comet.parquet
 
+import org.apache.spark.CometListenerBusUtils
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.comet.{CometNativeWriteExec, CometWriteFilesExec}
 import org.apache.spark.sql.execution.{QueryExecution, SparkPlan}
@@ -76,25 +77,16 @@ abstract class CometParquetWriterTestBase extends CometTestBase {
           exception: Exception): Unit = {}
     }
 
+    // Do not capture delayed callbacks from earlier setup writes.
+    CometListenerBusUtils.waitUntilEmpty(spark.sparkContext)
     spark.listenerManager.register(listener)
 
     try {
       writeOp
+      // The write can finish before its query-execution callback is delivered.
+      CometListenerBusUtils.waitUntilEmpty(spark.sparkContext)
 
-      // Wait for listener to be called with timeout
-      val maxWaitTimeMs = 15000
-      val checkIntervalMs = 100
-      val maxIterations = maxWaitTimeMs / checkIntervalMs
-      var iterations = 0
-
-      while (capturedPlan.isEmpty && iterations < maxIterations) {
-        Thread.sleep(checkIntervalMs)
-        iterations += 1
-      }
-
-      assert(
-        capturedPlan.isDefined,
-        s"Listener was not called within ${maxWaitTimeMs}ms - no execution plan captured")
+      assert(capturedPlan.isDefined, "No execution plan captured for the write")
 
       stripAQEPlan(capturedPlan.get.executedPlan)
     } finally {
