@@ -23,7 +23,7 @@ import scala.util.Random
 
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.{Column, CometTestBase, DataFrame, Row}
-import org.apache.spark.sql.catalyst.expressions.{Alias, Cast, FromUnixTime, InSet, Literal, StructsToJson, TruncDate, TruncTimestamp}
+import org.apache.spark.sql.catalyst.expressions.{Alias, Cast, FromUnixTime, In, InSet, Literal, StructsToJson, TruncDate, TruncTimestamp}
 import org.apache.spark.sql.catalyst.optimizer.{ConvertToLocalRelation, OptimizeIn, SimplifyExtractValueOps}
 import org.apache.spark.sql.comet.{CometProjectExec, CometSortExec, CometTakeOrderedAndProjectExec}
 import org.apache.spark.sql.execution.{LocalTableScanExec, ProjectExec, SparkPlan}
@@ -47,6 +47,26 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     val cometDf = Seq((1, "apple"), (2, "banana"), (3, "cherry")).toDF("id", "fruit")
     val sparkAnswer = Seq(Row(1, "apple"), Row(2, "BANANA"), Row(3, "cherry"))
     checkCometAnswer(cometDf, sparkAnswer)
+  }
+
+  test("nested floating point membership uses native In and InSet") {
+    withTable("nested_in_plan") {
+      sql("CREATE TABLE nested_in_plan (a ARRAY<DOUBLE>) USING parquet")
+      sql("INSERT INTO nested_in_plan VALUES (array(CAST('-0.0' AS DOUBLE)))")
+      for (threshold <- Seq(100, 0)) {
+        withSQLConf("spark.sql.optimizer.inSetConversionThreshold" -> threshold.toString) {
+          val df = sql("""SELECT a IN (array(CAST('0.0' AS DOUBLE)),
+            |array(CAST('2.0' AS DOUBLE))) FROM nested_in_plan""".stripMargin)
+          val expressions = df.queryExecution.optimizedPlan.flatMap(_.expressions)
+          if (threshold == 0) {
+            assert(expressions.exists(_.exists(_.isInstanceOf[InSet])))
+          } else {
+            assert(expressions.exists(_.exists(_.isInstanceOf[In])))
+          }
+          checkSparkAnswerAndImpl(df, native = Seq(if (threshold == 0) "inset" else "in"))
+        }
+      }
+    }
   }
 
   test("sort floating point with negative zero") {

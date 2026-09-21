@@ -35,5 +35,6 @@ pub use arrays_zip::SparkArraysZipFunc;
 pub use flatten::SparkFlatten;
 pub use get_array_struct_fields::GetArrayStructFields;
 pub use list_extract::ListExtract;
+pub use nested_float_normalize::NormalizeNestedFloats;
 pub use sequence::spark_sequence;
 pub use size::{spark_size, SparkSizeFunc};
