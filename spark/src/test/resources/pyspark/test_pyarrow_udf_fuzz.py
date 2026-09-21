@@ -39,6 +39,7 @@ SEEDS = (4384, 4234, 5368)
 NULL_FRACTIONS = (0.0, 0.01, 0.5, 0.99, 1.0)
 MAX_DEPTH = 3
 COLLECTION_LENGTHS = (0, 1, 2, 7)
+LARGE_ARRAY_LENGTH = 128
 VARIABLE_LENGTHS = (0, 1, 7, 31, 1024)
 
 
@@ -155,9 +156,16 @@ def _random_value(rng, data_type, null_fraction):
             microseconds=rng.randrange(1000000),
         )
     if isinstance(data_type, T.ArrayType):
+        lengths = COLLECTION_LENGTHS
+        # Keep outer containers small so large lengths do not multiply
+        # at every nesting level.
+        if not isinstance(
+            data_type.elementType, (T.ArrayType, T.StructType, T.MapType)
+        ):
+            lengths = (*lengths, LARGE_ARRAY_LENGTH)
         return [
             _random_value(rng, data_type.elementType, null_fraction)
-            for _ in range(rng.choice(COLLECTION_LENGTHS))
+            for _ in range(rng.choice(lengths))
         ]
     if isinstance(data_type, T.StructType):
         return {
