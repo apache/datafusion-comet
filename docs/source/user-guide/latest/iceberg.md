@@ -45,7 +45,8 @@ $SPARK_HOME/bin/spark-shell \
     --conf spark.shuffle.manager=org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager \
     --conf spark.comet.explain.fallback.enabled=true \
     --conf spark.memory.offHeap.enabled=true \
-    --conf spark.memory.offHeap.size=2g
+    --conf spark.memory.offHeap.size=2g \
+    --conf spark.executor.memoryOverhead=2g
 ```
 
 Catalog configuration is standard Iceberg-on-Spark and independent of Comet. The native reader has been tested with Hadoop, Hive, and REST catalogs. The example above uses a Hadoop catalog. For the full catalog configuration reference, see Iceberg's [Spark catalog configuration](https://iceberg.apache.org/docs/latest/spark-configuration/#catalogs).
@@ -138,7 +139,8 @@ $SPARK_HOME/bin/spark-shell \
     --conf spark.shuffle.manager=org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager \
     --conf spark.comet.explain.fallback.enabled=true \
     --conf spark.memory.offHeap.enabled=true \
-    --conf spark.memory.offHeap.size=2g
+    --conf spark.memory.offHeap.size=2g \
+    --conf spark.executor.memoryOverhead=2g
 ```
 
 Note that REST catalogs require explicit namespace creation before creating tables:
