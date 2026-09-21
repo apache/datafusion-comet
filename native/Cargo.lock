@@ -2068,6 +2068,7 @@ name = "datafusion-comet-shuffle"
 version = "1.1.0"
 dependencies = [
  "arrow",
+ "arrow-data",
  "arrow-select",
  "async-trait",
  "bytes",

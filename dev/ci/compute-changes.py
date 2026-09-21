@@ -172,6 +172,10 @@ FILTERS = {
         ".asf.yaml",
         ".github/workflows/docs.yaml",
         "docs/**",
+        # The docs deploy renders and then verifies the site's mermaid diagrams with this
+        # script, so a change to it has to be exercised by a real build, not just by the
+        # preflight run that renders the fences.
+        "dev/ci/check-mermaid.py",
         # Generated docs (configs.md, per-version expression compatibility pages) are
         # built from these Scala sources by GenerateDocs, so changes to them must
         # republish the site even when no docs/ file is touched.

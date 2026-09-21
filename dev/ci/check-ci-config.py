@@ -133,6 +133,19 @@ ROUTING_CASES = [
     # Spot checks that the additions above did not widen unrelated routes.
     (["docs/source/user-guide/overview.md"], {"docs"}),
     (["native/core/benches/parquet_read.rs"], {"benchmark"}),
+    # The mermaid guard is run by preflight, which is unconditional, and again
+    # by the docs deploy, which is not, so the deploy has to be routed. The
+    # build jobs come along because `dev/ci/**` already feeds them.
+    (
+        ["dev/ci/check-mermaid.py"],
+        {
+            "docs",
+            "build_linux",
+            "build_linux_full",
+            "build_linux_all_profiles",
+            "build_macos",
+        },
+    ),
     # The Delta gate script is read by nothing else; the contrib crate feeds
     # only the gate. The PyArrow pytest lives under spark/, so the Linux and
     # macOS builds see it too, but no Spark SQL or Iceberg suite does, and
