@@ -20,7 +20,7 @@ use crate::partitioners::partitioned_batch_iterator::PartitionedBatchesProducer;
 use crate::partitioners::ShufflePartitioner;
 use crate::writers::PartitionWriter;
 use crate::{comet_partitioning, CometPartitioning, RoundRobinStrategy};
-use arrow::array::{Array, ArrayData, ArrayRef, RecordBatch};
+use arrow::array::{Array, ArrayData, RecordBatch};
 use datafusion::common::utils::proxy::VecAllocExt;
 use datafusion::common::{DataFusionError, HashSet};
 use datafusion::execution::memory_pool::{MemoryConsumer, MemoryReservation};
@@ -668,7 +668,7 @@ impl<T: PartitionWriter> Debug for MultiPartitionShuffleRepartitioner<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow::array::Int64Array;
+    use arrow::array::{ArrayRef, Int64Array};
     use datafusion::physical_plan::metrics::ExecutionPlanMetricsSet;
 
     #[derive(Default)]
