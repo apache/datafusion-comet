@@ -75,10 +75,14 @@ shuffle, including applications that rely only on remote reliable storage or dec
 ## Development & Testing Settings
 
 These settings exist for Comet's own test suites and for debugging. They are **not covered by the
-[versioning policy](../../about/versioning_policy.md#testing-configurations-are-exempt)**: their
-names, defaults, accepted values, and meanings may change in any release, including a patch
+[versioning policy](../../about/versioning_policy.md#testing-and-internal-configurations-are-exempt)**:
+their names, defaults, accepted values, and meanings may change in any release, including a patch
 release, and any of them may be removed without a deprecation cycle. Do not set them in
 production.
+
+The same applies to any `spark.comet.*` key that does not appear on this page at all. Comet marks a
+handful of keys internal and deliberately does not publish them; they are maintainer escape hatches,
+not settings, and carry no guarantee of any kind.
 
 <!--BEGIN:CONFIG_TABLE[testing]-->
 <!--END:CONFIG_TABLE-->

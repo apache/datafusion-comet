@@ -66,28 +66,41 @@ The symbol name is what appears in code; the key is what appears in user configu
 The two do not have to match segment-for-segment — brevity in the symbol is fine as long
 as the key remains descriptive.
 
-## Categories
+## Categories and Visibility
 
 Every `ConfigEntry` must call `.category(...)`. The category is used to route the key into
 the right table in the user guide's `configs.md`. Available categories are declared as
 `CATEGORY_*` constants at the top of `CometConf.scala`. If a new config does not fit an
 existing category, discuss adding a new one before landing the config.
 
-The choice is not purely cosmetic. Every category except `testing` puts the key inside Comet's
-[versioning policy](../about/versioning_policy.md), which commits the project to its name, type,
-accepted values, default, and semantics across minor releases. `testing` is
-[exempt](../about/versioning_policy.md#testing-configurations-are-exempt): those keys may be
-renamed, retyped, redefaulted, or removed in any release, including a patch release, with no alias,
-no deprecation cycle, and no upgrade guide entry.
+A second, independent choice is whether to call `.internal()`, which keeps the key out of
+`configs.md` altogether.
 
-So pick `testing` only for a key that exists to let Comet's own suites or a contributor debugging a
-problem reach a state the rest of the code is not built to support — disabling native scans,
-running in on-heap mode, making a declined operator throw. If a deployment would have a legitimate
-reason to set the key, it belongs in one of the other categories, and the guarantees come with it.
-Do not use `testing` as a way to add a production knob without committing to it.
+Neither choice is cosmetic. Together they decide whether Comet's
+[versioning policy](../about/versioning_policy.md) covers the key, and the policy's rule is that a
+key is covered only if `configs.md` publishes it as a production setting:
 
-`internal()` is a separate axis: it hides the key from `configs.md` entirely, and is set
-independently of the category.
+| Category  | `internal()` | Appears in `configs.md`          | Covered by the versioning policy |
+| --------- | ------------ | -------------------------------- | -------------------------------- |
+| any other | no           | yes, in its category's table     | **yes**                          |
+| `testing` | no           | yes, under Development & Testing | no                               |
+| any       | yes          | no                               | no                               |
+
+Being covered commits the project to the key's name, type, accepted values, default, and semantics
+across minor releases. Being
+[exempt](../about/versioning_policy.md#testing-and-internal-configurations-are-exempt) means the key
+may be renamed, retyped, redefaulted, or removed in any release, including a patch release, with no
+alias, no deprecation cycle, and no upgrade guide entry.
+
+So reach for `testing` or `internal()` only when the key exists to let Comet's own suites, or
+someone debugging Comet itself, reach a state the rest of the code is not built to support —
+disabling native scans, running in on-heap mode, making a declined operator throw. Use `internal()`
+in particular when Comet should not publish the key at all, so that nobody can adopt it in the first
+place.
+
+If a deployment would have a legitimate reason to set the key, it belongs in a non-`testing`
+category and must not be `internal()`, and the guarantees come with it. Do not use either mechanism
+as a way to ship a production knob without committing to it.
 
 ## Renaming an Existing Config
 
@@ -95,8 +108,8 @@ Configs under `spark.comet.*` are stable across minor releases: users may have s
 production `spark-defaults.conf` files, Spark job submissions, or notebooks. Renaming a key
 must not silently break those deployments.
 
-Keys in the `testing` category are
-[exempt from the versioning policy](../about/versioning_policy.md#testing-configurations-are-exempt)
+Keys in the `testing` category, and keys marked `internal()`, are
+[exempt from the versioning policy](../about/versioning_policy.md#testing-and-internal-configurations-are-exempt)
 and may be renamed outright: skip the `withAlternative` call in step 1, and step 5 with it. The
 rest of the checklist still applies, because a stale key string left behind in code or docs is a
 bug either way.
@@ -181,9 +194,9 @@ Two cases do **not** need a legacy config:
 - **Changes to which expressions and operators run natively.** Falling back to Spark, or ceasing
   to, changes performance rather than results.
 
-Nor does a change to a key in the `testing` category, which is
-[exempt from the versioning policy](../about/versioning_policy.md#testing-configurations-are-exempt):
-its default and its meaning may change in any release, with no legacy config and no upgrade guide
+Nor does a change to a key in the `testing` category or a key marked `internal()`, both
+[exempt from the versioning policy](../about/versioning_policy.md#testing-and-internal-configurations-are-exempt):
+the default and the meaning may change in any release, with no legacy config and no upgrade guide
 entry. Update the suites that set it in the same PR.
 
 Removing a legacy config is a major-release change, handled the same way as removing a deprecated

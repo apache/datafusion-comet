@@ -47,9 +47,10 @@ interface that vendors implement. It is small on purpose, and everything outside
 
 The following are covered by this versioning policy:
 
-- **Configuration keys under `spark.comet.*`**, other than those in the `testing` category: their
-  names, types, accepted values, default values, and semantics. See
-  [Testing Configurations Are Exempt](#testing-configurations-are-exempt).
+- **Configuration keys under `spark.comet.*`** that the configuration reference publishes as
+  production settings: their names, types, accepted values, default values, and semantics. Keys in
+  the `testing` category, and keys marked internal, are excluded; see
+  [Testing and Internal Configurations Are Exempt](#testing-and-internal-configurations-are-exempt).
 - **A small, enumerated public Java and Scala API**: the class names users write into Spark config
   properties, and the S3 credential provider SPI that vendors implement. The full list is in
   [Public Scala and Java API](#public-scala-and-java-api).
@@ -60,9 +61,9 @@ The following are covered by this versioning policy:
 The following are internal implementation details. They are not covered by this policy and may
 change in any release:
 
-- Configuration keys in the `testing` category. They exist to let Comet's own suites and
-  contributors reach internal behavior, and they expose that behavior directly. See
-  [Testing Configurations Are Exempt](#testing-configurations-are-exempt).
+- Configuration keys in the `testing` category, and keys marked internal. They exist to let Comet's
+  own suites and maintainers reach internal behavior, and they expose that behavior directly. See
+  [Testing and Internal Configurations Are Exempt](#testing-and-internal-configurations-are-exempt).
 - The protobuf format used to serialize query plans between the JVM and the native library. The
   JVM jar and the native library ship together and are versioned together; see
   [Native Library Coupling](#native-library-coupling).
@@ -75,34 +76,45 @@ change in any release:
   fall back to Spark. An expression that ran natively in one release may fall back in the next,
   and vice versa. The results stay the same; only the speed changes.
 
-### Testing Configurations Are Exempt
+### Testing and Internal Configurations Are Exempt
 
-Every configuration key declares a category, and one of them, `testing`, is exempt from this
-policy. Its keys are listed under **Development & Testing Settings** in the
-[configuration reference](../user-guide/latest/configs.md), separately from the production
-settings.
+Two kinds of configuration key sit outside this policy, and one rule identifies both: **a key is
+covered only if the [configuration reference](../user-guide/latest/configs.md) lists it outside the
+Development & Testing Settings table.** Everything the reference publishes as a production setting
+is guaranteed; nothing else is.
 
-They exist so that Comet's own suites, and contributors chasing a bug, can reach a state the rest
-of the code is not built to support: disabling native scans to isolate a planner problem, running
-Comet in on-heap mode, making a declined operator throw instead of quietly reporting itself, or
-running a partial aggregate without its final counterpart. Setting one is a debugging step, not a
-deployment choice.
+Two mechanisms put a key on the wrong side of that line, and they are set independently of each
+other:
 
-A `testing` key's name, type, accepted values, default value, and semantics may change in any
-release, including a patch release, and the key may be removed outright. None of the machinery the
-rest of this policy requires applies to it: no `spark.comet.legacy.*` escape hatch for a behavior
-change, no deprecated alias for a rename, no deprecation cycle before removal, and no upgrade guide
-entry.
+- **The `testing` category.** Every key declares a category, and `testing` routes it into the
+  Development & Testing Settings table rather than in with the production settings. These keys
+  exist so that Comet's own suites, and contributors chasing a bug, can reach a state the rest of
+  the code is not built to support: disabling native scans to isolate a planner problem, running
+  Comet in on-heap mode, making a declined operator throw instead of quietly reporting itself, or
+  running a partial aggregate without its final counterpart. Setting one is a debugging step, not a
+  deployment choice.
+- **`internal()`.** A key marked internal is left out of the configuration reference entirely, so
+  Comet never publishes its name, its default, or what it does. A user has no supported way to
+  learn that it exists, which is the point: these are escape hatches a maintainer reaches for while
+  working on Comet itself.
+
+For a key caught by either mechanism, the name, type, accepted values, default value, and semantics
+may change in any release, including a patch release, and the key may be removed outright. None of
+the machinery the rest of this policy requires applies: no `spark.comet.legacy.*` escape hatch for a
+behavior change, no deprecated alias for a rename, no deprecation cycle before removal, and no
+upgrade guide entry.
 
 The exemption exists because these keys point at Comet's internals by construction. Guaranteeing
 them across releases would pin the implementation details they expose, which is the thing the rest
 of this section deliberately leaves free to change.
 
-The corollary binds contributors: **a `testing` key must not be the only way to reach a behavior
-that production users need.** If a knob turns out to be one that deployments legitimately set, it
-belongs in another category, with the guarantees that follow from that. Choosing a category is
-therefore a policy decision, not a routing detail; see
-[Categories](../contributor-guide/config_conventions.md#categories) in the contributor guide.
+The corollary binds contributors: **neither mechanism may be the only way to reach a behavior that
+production users need.** If a knob turns out to be one that deployments legitimately set, it belongs
+in the reference as a production setting, with the guarantees that follow from that. Choosing a
+category, and deciding whether to mark a key internal, are therefore policy decisions rather than
+routing details; see
+[Categories and Visibility](../contributor-guide/config_conventions.md#categories-and-visibility)
+in the contributor guide.
 
 ## What Each Version Component Means
 
@@ -134,9 +146,9 @@ A minor release may:
 A patch release contains bug fixes only. It adds no configuration keys and makes no behavior
 changes, with two exceptions: correctness fixes, which are covered in
 [Correctness Fixes Are Not Breaking Changes](#correctness-fixes-are-not-breaking-changes), and
-configuration keys in the `testing` category, which are outside the policy altogether and may be
-added, changed, or removed in any release. See
-[Testing Configurations Are Exempt](#testing-configurations-are-exempt).
+configuration keys in the `testing` category or marked internal, which are outside the policy
+altogether and may be added, changed, or removed in any release. See
+[Testing and Internal Configurations Are Exempt](#testing-and-internal-configurations-are-exempt).
 
 ## Behavior Changes and Legacy Configurations
 
@@ -161,8 +173,9 @@ Behavior changes that require this treatment include changing the default value 
 configuration key, changing what an existing key's values mean, and changing the semantics of an
 `Incompatible` expression or operator whose divergence from Spark users may have come to depend on.
 
-Changing a `testing` key is not a behavior change for this purpose, and needs no escape hatch. See
-[Testing Configurations Are Exempt](#testing-configurations-are-exempt).
+Changing a `testing` or internal key is not a behavior change for this purpose, and needs no escape
+hatch. See
+[Testing and Internal Configurations Are Exempt](#testing-and-internal-configurations-are-exempt).
 
 ### Lifetime of a Legacy Configuration
 
@@ -186,8 +199,9 @@ The alias may only be dropped in a major release.
 Removing a configuration key outright requires a deprecation cycle: the key must remain available,
 with a deprecation warning, for at least one minor release before it is removed in a major release.
 
-Neither rule applies to a `testing` key, which may be renamed without an alias and removed in any
-release. See [Testing Configurations Are Exempt](#testing-configurations-are-exempt).
+Neither rule applies to a `testing` or internal key, which may be renamed without an alias and
+removed in any release. See
+[Testing and Internal Configurations Are Exempt](#testing-and-internal-configurations-are-exempt).
 
 ## Correctness Fixes Are Not Breaking Changes
 
