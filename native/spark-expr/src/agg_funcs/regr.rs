@@ -306,8 +306,10 @@ impl RegrR2Accumulator {
     fn try_new(constant_dependent_is_perfect_fit: bool) -> Result<Self> {
         Ok(Self {
             covar: CovarianceAccumulator::try_new(StatsType::Population, false)?,
-            var_y: VarianceAccumulator::try_new(StatsType::Population, false)?,
-            var_x: VarianceAccumulator::try_new(StatsType::Population, false)?,
+            var_y: VarianceAccumulator::try_new(StatsType::Population, false)?
+                .with_pearson_update(),
+            var_x: VarianceAccumulator::try_new(StatsType::Population, false)?
+                .with_pearson_update(),
             constant_dependent_is_perfect_fit,
         })
     }

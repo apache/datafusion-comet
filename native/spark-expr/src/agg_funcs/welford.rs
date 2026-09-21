@@ -23,12 +23,30 @@
 use arrow::buffer::NullBuffer;
 use datafusion::physical_expr::expressions::StatsType;
 
+#[derive(Debug, Clone, Copy)]
+pub(super) enum VarianceUpdate {
+    CentralMoment,
+    Pearson,
+}
+
 #[inline]
-pub(crate) fn variance_update(count: f64, mean: f64, m2: f64, value: f64) -> (f64, f64, f64) {
+pub(super) fn variance_update(
+    count: f64,
+    mean: f64,
+    m2: f64,
+    value: f64,
+    update: VarianceUpdate,
+) -> (f64, f64, f64) {
     let new_count = count + 1.0;
     let delta1 = value - mean;
-    let new_mean = delta1 / new_count + mean;
-    let delta2 = value - new_mean;
+    let delta_n = delta1 / new_count;
+    let new_mean = mean + delta_n;
+    // Match Spark's CentralMomentAgg without subtracting the rounded new mean.
+    // PearsonCorrelation (also used by regr_r2) deliberately uses that subtraction.
+    let delta2 = match update {
+        VarianceUpdate::CentralMoment => delta1 - delta_n,
+        VarianceUpdate::Pearson => value - new_mean,
+    };
     let new_m2 = m2 + delta1 * delta2;
     (new_count, new_mean, new_m2)
 }
