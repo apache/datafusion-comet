@@ -21,6 +21,7 @@ package org.apache.spark
 
 import java.io.File
 
+import org.apache.logging.log4j.Level
 import org.apache.spark.sql.{CometTestBase, SaveMode}
 import org.apache.spark.sql.internal.StaticSQLConf
 
@@ -129,17 +130,19 @@ class CometPluginsSuite extends CometTestBase {
     }
   }
 
-  test("Default Comet memory overhead") {
+  test("executor memory overhead is left alone") {
+    // Comet does not adjust spark.executor.memoryOverhead. A driver plugin runs too late to
+    // influence the executor container on Spark 3.4, 3.5 and 4.0, so the value the application
+    // set is the value that is used.
     val execMemOverhead1 = spark.conf.get("spark.executor.memoryOverhead")
     val execMemOverhead2 = spark.sessionState.conf.getConfString("spark.executor.memoryOverhead")
     val execMemOverhead3 = spark.sparkContext.getConf.get("spark.executor.memoryOverhead")
     val execMemOverhead4 = spark.sparkContext.conf.get("spark.executor.memoryOverhead")
 
-    // 2GB + 384MB (default Comet memory overhead)
-    assert(execMemOverhead1 == "3072M")
-    assert(execMemOverhead2 == "3072M")
-    assert(execMemOverhead3 == "3072M")
-    assert(execMemOverhead4 == "3072M")
+    assert(execMemOverhead1 == "2G")
+    assert(execMemOverhead2 == "2G")
+    assert(execMemOverhead3 == "2G")
+    assert(execMemOverhead4 == "2G")
   }
 }
 
@@ -156,50 +159,50 @@ class CometPluginsDefaultSuite extends CometTestBase {
     conf
   }
 
-  test("Default executor memory overhead + Comet memory overhead") {
-    val execMemOverhead1 = spark.conf.get("spark.executor.memoryOverhead")
-    val execMemOverhead2 = spark.sessionState.conf.getConfString("spark.executor.memoryOverhead")
-    val execMemOverhead3 = spark.sparkContext.getConf.get("spark.executor.memoryOverhead")
-    val execMemOverhead4 = spark.sparkContext.conf.get("spark.executor.memoryOverhead")
-
-    // Spark executor memory overhead = executor memory (1G) * memoryOverheadFactor (0.5) = 512MB
-    // 512MB + 384MB (default Comet memory overhead)
-    assert(execMemOverhead1 == "1536M")
-    assert(execMemOverhead2 == "1536M")
-    assert(execMemOverhead3 == "1536M")
-    assert(execMemOverhead4 == "1536M")
+  test("unset executor memory overhead is left unset") {
+    assert(!spark.sparkContext.conf.contains("spark.executor.memoryOverhead"))
   }
 }
 
-class CometPluginsNonOverrideSuite extends CometTestBase {
-  override protected def sparkConf: SparkConf = {
+class CometPluginsMemoryOverheadWarningSuite extends CometTestBase {
+
+  private val warning = "spark.executor.memoryOverhead is not set"
+
+  private def warningsFor(conf: SparkConf): Seq[String] = {
+    // Logging derives the logger name by stripping the object's trailing '$'
+    val logger = CometDriverPlugin.getClass.getName.stripSuffix("$")
+    val appender = new LogAppender("executor memory overhead warning")
+    withLogAppender(appender, Seq(logger), Some(Level.WARN)) {
+      CometDriverPlugin.warnIfExecutorMemoryOverheadUnset(conf)
+    }
+    appender.loggingEvents.map(_.getMessage.getFormattedMessage).toSeq
+  }
+
+  test("warns when executor memory overhead is unset and Comet is active") {
     val conf = new SparkConf()
-    conf.set("spark.driver.memory", "1G")
-    conf.set("spark.executor.memory", "1G")
-    conf.set("spark.executor.memoryOverhead", "2G")
-    conf.set("spark.executor.memoryOverheadFactor", "0.5")
-    conf.set("spark.plugins", "org.apache.spark.CometPlugin")
     conf.set("spark.comet.enabled", "true")
-    conf.set("spark.comet.shuffle.enabled", "false")
-    conf.set("spark.comet.exec.enabled", "false")
-    conf.set("spark.comet.exec.onHeap.enabled", "true")
-    conf
+    conf.set("spark.comet.exec.enabled", "true")
+    assert(warningsFor(conf).exists(_.contains(warning)))
   }
 
-  test("executor memory overhead is not overridden") {
-    val execMemOverhead1 = spark.conf.get("spark.executor.memoryOverhead")
-    val execMemOverhead2 = spark.sessionState.conf.getConfString("spark.executor.memoryOverhead")
-    val execMemOverhead3 = spark.sparkContext.getConf.get("spark.executor.memoryOverhead")
-    val execMemOverhead4 = spark.sparkContext.conf.get("spark.executor.memoryOverhead")
+  test("does not warn when executor memory overhead is set") {
+    val conf = new SparkConf()
+    conf.set("spark.comet.enabled", "true")
+    conf.set("spark.comet.exec.enabled", "true")
+    conf.set("spark.executor.memoryOverhead", "2g")
+    assert(!warningsFor(conf).exists(_.contains(warning)))
+  }
 
-    assert(execMemOverhead1 == "2G")
-    assert(execMemOverhead2 == "2G")
-    assert(execMemOverhead3 == "2G")
-    assert(execMemOverhead4 == "2G")
+  test("does not warn when Comet is not executing anything") {
+    val conf = new SparkConf()
+    conf.set("spark.comet.enabled", "true")
+    conf.set("spark.comet.exec.enabled", "false")
+    conf.set("spark.comet.shuffle.enabled", "false")
+    assert(!warningsFor(conf).exists(_.contains(warning)))
   }
 }
 
-class CometPluginsUnifiedModeOverrideSuite extends CometTestBase {
+class CometPluginsUnifiedModeSuite extends CometTestBase {
   override protected def sparkConf: SparkConf = {
     val conf = new SparkConf()
     conf.set("spark.driver.memory", "1G")
@@ -211,21 +214,15 @@ class CometPluginsUnifiedModeOverrideSuite extends CometTestBase {
     conf.set("spark.memory.offHeap.size", "2G")
     conf.set("spark.comet.shuffle.enabled", "true")
     conf.set("spark.comet.exec.enabled", "true")
-    conf.set("spark.comet.memory.overhead.factor", "0.5")
     conf
   }
 
-  /*
-   * Since using unified memory executor memory should not be overridden
-   */
-  test("executor memory overhead is not overridden") {
+  test("executor memory overhead is left alone in off-heap mode") {
     val execMemOverhead1 = spark.conf.get("spark.executor.memoryOverhead")
     val execMemOverhead2 = spark.sessionState.conf.getConfString("spark.executor.memoryOverhead")
     val execMemOverhead3 = spark.sparkContext.getConf.get("spark.executor.memoryOverhead")
     val execMemOverhead4 = spark.sparkContext.conf.get("spark.executor.memoryOverhead")
 
-    // in unified memory mode, comet memory overhead is
-    // spark.memory.offHeap.size (2G) * spark.comet.memory.overhead.factor (0.5) = 1G  and the overhead is not overridden
     assert(execMemOverhead1 == "1G")
     assert(execMemOverhead2 == "1G")
     assert(execMemOverhead3 == "1G")

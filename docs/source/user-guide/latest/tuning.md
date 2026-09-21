@@ -78,7 +78,13 @@ cases, it may be possible to reduce the amount of memory allocated to Spark so t
 the same or lower than the original configuration. In other cases, enabling Comet may require allocating more memory
 than before. See the [Determining How Much Memory to Allocate] section for more details.
 
+Comet needs two things configured: an off-heap pool for it to draw its reservations from, and enough executor memory
+overhead to cover the part of its footprint that no pool tracks. See [Configuring Comet Memory] and
+[Configuring Executor Memory Overhead].
+
 [Determining How Much Memory to Allocate]: #determining-how-much-memory-to-allocate
+[Configuring Comet Memory]: #configuring-comet-memory
+[Configuring Executor Memory Overhead]: #configuring-executor-memory-overhead
 
 ### Configuring Comet Memory
 
@@ -131,6 +137,52 @@ need to spill or have a single spillable operator.
 
 [shuffle]: #shuffle
 [Advanced Memory Tuning]: #advanced-memory-tuning
+
+### Configuring Executor Memory Overhead
+
+Enabling off-heap memory is not sufficient on its own. Comet also needs room in
+`spark.executor.memoryOverhead`.
+
+`spark.memory.offHeap.size` is a budget, and the cluster manager already sizes the executor
+container to include it, so the memory that Comet's operators explicitly reserve has room. What does
+not have room is everything Comet allocates without reserving it — the untracked categories listed
+under [Configuring Comet Memory]. Those allocations are made by the Rust global allocator and live
+in the native heap, outside the JVM heap and outside Spark's off-heap allocations, and nothing in
+the container sizing accounts for them. The same applies to Comet's JVM-side Arrow buffers.
+
+`spark.executor.memoryOverhead` is the only slack the container has for this, and the JVM's own
+non-heap usage — metaspace, code cache, thread stacks, GC structures — is already drawing on it.
+
+Work out what the executor already gets before choosing a value. When
+`spark.executor.memoryOverhead` is unset, Spark derives the overhead as
+`max(spark.executor.memoryOverheadFactor * spark.executor.memory, 384 MiB)`. The factor defaults to
+`0.1`, except for PySpark and SparkR applications submitted to Kubernetes in cluster mode, where it
+defaults to `0.4`. On Spark 4.0 and later the floor is configurable through
+`spark.executor.minMemoryOverhead`. Setting `spark.executor.memoryOverhead` **replaces** the derived
+value rather than adding to it, so a value below what is derived today shrinks the container instead
+of growing it.
+
+For a small executor, `2g` is a reasonable starting point. A 4 GiB executor derives only 409 MiB, so
+this is a real increase:
+
+```
+spark.executor.memoryOverhead=2g
+```
+
+A 32 GiB executor, on the other hand, already derives 3276 MiB, and the same setting would take away
+1228 MiB. For executors that large, either pick an absolute value above what is derived today, or
+raise `spark.executor.memoryOverheadFactor` instead so that the overhead keeps scaling with executor
+size:
+
+```
+spark.executor.memoryOverheadFactor=0.2
+```
+
+Raise the value further if executors are killed by the cluster manager (on Kubernetes,
+`ExecutorLostFailure` with exit code 137) rather than failing with a task-level out-of-memory error.
+
+Note that on Kubernetes and YARN the overhead is added to the container size, so raising it reduces
+how many executors fit on a node.
 
 ### Determining How Much Memory to Allocate
 

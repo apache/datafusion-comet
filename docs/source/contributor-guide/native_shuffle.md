@@ -61,8 +61,11 @@ Native shuffle (`CometExchange`) is selected when all of the following condition
    columns. Complex types are fully supported as data columns in native shuffle.
    - `RangePartitioning` keys must be primitive. `supportedRangePartitioningDataType` rejects every
      nested type, because native cannot sort them, and rejects collated strings, because Comet
-     compares raw bytes. Float and double are also rejected when
-     `spark.comet.exec.strictFloatingPoint` is enabled.
+     compares raw bytes. Scalar float and double are supported, including when
+     `spark.comet.exec.strictFloatingPoint` is enabled, because the native range partitioner
+     normalizes its comparison keys and its sampled boundary rows the same way the native sort
+     does. Strict floating point only affects floating-point values nested in arrays, structs, or
+     maps, which are rejected as range keys for being nested anyway.
    - `HashPartitioning` keys must be primitive **by default**. Setting
      `spark.comet.shuffle.native.partitioning.hash.nested.enabled` to `true` admits structs and
      arrays as keys, checked recursively to their leaves, and maps on Spark 4.0 and later, where
