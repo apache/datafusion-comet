@@ -15,6 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
+mod resolution;
+
 use super::*;
 use arrow::array::{BooleanArray, Int32Array, RecordBatch};
 use arrow::datatypes::{DataType, Field, Schema};

@@ -326,8 +326,12 @@ The original join still verifies matches, including any hash collisions admitted
 Standalone projections, other filter expressions, and limits prevent reader attachment.
 
 To preserve schema-conversion and timestamp-overflow errors, runtime reader pruning is disabled for
-each file whose projected or statically filtered columns require conversions. Scans with supplied file
-statistics also skip reader attachment. These cases still use runtime filtering on decoded batches.
+each file whose projected or statically filtered columns require schema adaptations beyond direct
+column mappings or literal values. This conservative check also disables reader pruning for allowed
+`INT32` to `BIGINT` promotion and for projecting a subset of a struct's fields, even when those
+adaptations cannot fail. Nested column pruning still reads only the requested struct fields. Scans
+with supplied file statistics also skip reader attachment. These cases still use runtime filtering
+on decoded batches.
 
 Filters stay within the task's native plan and do not propagate across Spark exchanges or JVM/Arrow
 boundaries. A shuffled hash join can still filter probe batches after shuffle, but it cannot send
