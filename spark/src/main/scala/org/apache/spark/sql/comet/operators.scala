@@ -437,7 +437,8 @@ private[comet] object PlanDataInjector extends Logging {
         // Post the Iceberg planning metrics to the SQL UI here rather than only from the scan's
         // doExecuteColumnar: when the scan is fused under a parent native operator, its own
         // doExecuteColumnar never runs, so this walk is the only execution-time hook that reaches
-        // it. Safe to also call for a root scan (re-posting the same values is a no-op).
+        // it. sendDriverMetrics guards on the execution id, so the standalone-scan path (which
+        // posts from doExecuteColumnar) and this fused path never double-post.
         iceberg.sendDriverMetrics()
         if (iceberg.commonData.nonEmpty && iceberg.perPartitionData.nonEmpty) {
           // A self-join/self-merge can put two scans of the same table (same metadata_location)
