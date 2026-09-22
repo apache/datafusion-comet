@@ -443,6 +443,13 @@ where
     type Item = DFResult<RecordBatch>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        // Time the whole poll (driving the inner reader plus schema adaptation) as elapsed_compute.
+        // record_poll only records output rows; without this explicit timer elapsed_compute stays
+        // 0, so the Spark "scan time" metric never moves. Clone the Time metric (Arc-backed) so the
+        // guard does not hold a borrow of self across the inner poll below.
+        let elapsed_compute = self.baseline_metrics.elapsed_compute().clone();
+        let _timer = elapsed_compute.timer();
+
         let poll_result = self.inner.poll_next_unpin(cx);
 
         let result = match poll_result {
