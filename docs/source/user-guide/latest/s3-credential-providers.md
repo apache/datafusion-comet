@@ -115,21 +115,23 @@ When Comet detects IRSA (both `AWS_WEB_IDENTITY_TOKEN_FILE` and `AWS_ROLE_ARN` a
 
 It stands aside whenever a higher-precedence credential source is configured -- a Comet bridge class, an `fs.s3a.aws.credentials.provider` (Parquet), catalog static keys / `client.assume-role.arn` (Iceberg), static credentials in the environment (`AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY`), or a configured profile (`AWS_PROFILE`, or a shared credentials / config file such as `~/.aws/credentials` or `~/.aws/config`). These all rank ahead of web-identity in the default chain, so the take-over only changes the otherwise-default behavior and never switches away from an identity -- or a profile-configured STS endpoint -- you set explicitly. On an EKS/IRSA pod none of these are normally present, so the take-over still applies there.
 
-Tuning is rarely needed. The knobs, with their defaults, are read from the Parquet `fs.s3a.` config bag or the Iceberg catalog properties:
+Tuning is rarely needed. The knobs, with their defaults, are the bare keys below. Each path uses its own prefix, matching the existing `comet.credential.provider.class` SPI key: prefix with `fs.s3a.` for Parquet and `s3.` for an Iceberg catalog.
 
-| Setting (bare key)                                      | Default | Meaning                                                        |
-| ------------------------------------------------------- | ------- | -------------------------------------------------------------- |
-| `comet.s3.credentials.webIdentity.enabled`              | `true`  | Set `false` to opt out and use the default chain.              |
-| `comet.s3.credentials.webIdentity.maxAttempts`          | `5`     | STS attempts before the assume-role call is treated as failed. |
-| `comet.s3.credentials.webIdentity.minTtlSeconds`        | `300`   | Refresh this many seconds before expiry.                       |
-| `comet.s3.credentials.webIdentity.refreshJitterSeconds` | `60`    | Upper bound on the extra per-process refresh jitter.           |
+| Setting (bare key)                                  | Default | Meaning                                                        |
+| --------------------------------------------------- | ------- | -------------------------------------------------------------- |
+| `comet.credential.webIdentity.enabled`              | `true`  | Set `false` to opt out and use the default chain.              |
+| `comet.credential.webIdentity.maxAttempts`          | `5`     | STS attempts before the assume-role call is treated as failed. |
+| `comet.credential.webIdentity.minTtlSeconds`        | `300`   | Refresh this many seconds before expiry.                       |
+| `comet.credential.webIdentity.refreshJitterSeconds` | `60`    | Upper bound on the extra per-process refresh jitter.           |
 
 For example, to disable it for Parquet globally or raise the retry count for one Iceberg catalog:
 
 ```
-spark.hadoop.fs.s3a.comet.s3.credentials.webIdentity.enabled=false
-spark.sql.catalog.<catalog>.comet.s3.credentials.webIdentity.maxAttempts=8
+spark.hadoop.fs.s3a.comet.credential.webIdentity.enabled=false
+spark.sql.catalog.<catalog>.s3.comet.credential.webIdentity.maxAttempts=8
 ```
+
+On an Iceberg catalog the `s3.` prefix is required — that is how a catalog property reaches the native reader (the same route the credential-provider SPI key uses); a key without it is dropped and has no effect.
 
 ## Iceberg: explicit S3 region required
 

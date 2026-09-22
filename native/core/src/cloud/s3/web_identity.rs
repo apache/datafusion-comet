@@ -73,12 +73,16 @@ use crate::cloud::s3::credential_bridge::DEFAULT_EXPIRY_WHEN_UNKNOWN;
 const ENV_TOKEN_FILE: &str = "AWS_WEB_IDENTITY_TOKEN_FILE";
 const ENV_ROLE_ARN: &str = "AWS_ROLE_ARN";
 
-/// Config keys read from the Iceberg catalog property bag. A non-`s3.`/`client.` prefix keeps them
-/// from being forwarded into opendal's S3 config (see `iceberg_common::STORAGE_PROPERTY_PREFIXES`).
-const KEY_ENABLED: &str = "comet.s3.credentials.webIdentity.enabled";
-const KEY_MAX_ATTEMPTS: &str = "comet.s3.credentials.webIdentity.maxAttempts";
-const KEY_MIN_TTL_SECS: &str = "comet.s3.credentials.webIdentity.minTtlSeconds";
-const KEY_JITTER_SECS: &str = "comet.s3.credentials.webIdentity.refreshJitterSeconds";
+/// Config keys in their bare form. Each scan path resolves them under its own prefix, matching the
+/// existing `comet.credential.provider.class` SPI key: the Parquet path looks them up under
+/// `fs.s3a.` (via `get_config_trimmed`), and the Iceberg path under `s3.` in the catalog property
+/// bag (e.g. `s3.comet.credential.webIdentity.enabled`). The `s3.` prefix is required on the
+/// Iceberg side: that is how a catalog property reaches iceberg-rust's FileIO property bag (the same
+/// path `s3.comet.credential.provider.class` already uses); a bare, unprefixed key would be dropped.
+const KEY_ENABLED: &str = "comet.credential.webIdentity.enabled";
+const KEY_MAX_ATTEMPTS: &str = "comet.credential.webIdentity.maxAttempts";
+const KEY_MIN_TTL_SECS: &str = "comet.credential.webIdentity.minTtlSeconds";
+const KEY_JITTER_SECS: &str = "comet.credential.webIdentity.refreshJitterSeconds";
 
 const DEFAULT_ENABLED: bool = true;
 const DEFAULT_MAX_ATTEMPTS: u32 = 5;
@@ -163,19 +167,20 @@ struct EntryKey {
     max_jitter: Duration,
 }
 
-/// The shared, cached credential for one identity. `provider` is the AWS SDK web-identity provider
-/// built once; `cached` holds the last credential; `refresh_jitter` is drawn once per process so
-/// each executor refreshes at a slightly different time. `last_failure_at` coalesces a burst of
-/// readers that hit a persistent throttle into a single STS call.
+/// The shared, cached credential for one identity. `provider` resolves credentials via STS;
+/// `cached` holds the last credential; `refresh_jitter` is drawn once per entry so each executor
+/// refreshes at a slightly different time. `last_failure` coalesces a burst of readers that hit a
+/// persistent failure into a single STS call, and remembers the real error so every waiter sees it.
 #[derive(Debug)]
 struct SharedEntry {
     provider: Arc<dyn ProvideCredentials>,
     cached: RwLock<Option<Credentials>>,
     /// Single-flights refreshes so a burst of readers triggers exactly one STS call.
     refresh_lock: tokio::sync::Mutex<()>,
-    /// When the last refresh failed. Waiters within `FAILURE_COOLDOWN` of this get the failure
-    /// without re-calling STS, so a failed burst costs one call rather than one per reader.
-    last_failure_at: RwLock<Option<Instant>>,
+    /// When the last refresh failed and the error it produced. Waiters within `FAILURE_COOLDOWN` of
+    /// this replay that error without re-calling STS, so a failed burst costs one call rather than
+    /// one per reader and every reader sees the real cause (throttle vs bad token vs trust policy).
+    last_failure: RwLock<Option<(Instant, String)>>,
     min_ttl: Duration,
     refresh_jitter: Duration,
 }
@@ -186,27 +191,30 @@ impl SharedEntry {
     fn fresh(&self) -> Option<Credentials> {
         let guard = self.cached.read().unwrap();
         let cred = guard.as_ref()?;
-        match cred.expiry() {
-            Some(expiry) => {
-                if expiry <= SystemTime::now() + self.min_ttl + self.refresh_jitter {
-                    None
-                } else {
-                    Some(cred.clone())
-                }
-            }
-            // No expiry reported: keep it. Web-identity credentials normally carry one.
-            None => Some(cred.clone()),
+        if self.expires_within_margin(cred) {
+            None
+        } else {
+            Some(cred.clone())
         }
     }
 
-    /// `Some(error)` if a refresh failed within the last `FAILURE_COOLDOWN`, so callers can bail out
-    /// instead of piling another assume-role call onto a throttled STS.
+    /// True if `cred` expires within the refresh margin (`min_ttl + refresh_jitter`). A credential
+    /// with no reported expiry never does.
+    fn expires_within_margin(&self, cred: &Credentials) -> bool {
+        match cred.expiry() {
+            Some(expiry) => expiry <= SystemTime::now() + self.min_ttl + self.refresh_jitter,
+            None => false,
+        }
+    }
+
+    /// `Some(error)` if a refresh failed within the last `FAILURE_COOLDOWN`, replaying the recorded
+    /// error so callers bail out with the real cause instead of piling another assume-role call onto
+    /// a throttled STS.
     fn in_failure_cooldown(&self) -> Option<String> {
-        let at = (*self.last_failure_at.read().unwrap())?;
-        (at.elapsed() < FAILURE_COOLDOWN).then(|| {
-            "web-identity credential refresh failed recently; backing off before retrying STS"
-                .to_string()
-        })
+        let guard = self.last_failure.read().unwrap();
+        let (at, err) = guard.as_ref()?;
+        (at.elapsed() < FAILURE_COOLDOWN)
+            .then(|| format!("{err} (backing off before retrying STS)"))
     }
 
     /// Fetches a fresh credential, refreshing from STS at most once at a time. On a refresh error
@@ -229,14 +237,31 @@ impl SharedEntry {
         }
         match self.provider.provide_credentials().await {
             Ok(cred) => {
+                self.warn_if_immediately_stale(&cred);
                 *self.cached.write().unwrap() = Some(cred.clone());
-                *self.last_failure_at.write().unwrap() = None;
+                *self.last_failure.write().unwrap() = None;
                 Ok(cred)
             }
             Err(e) => {
-                *self.last_failure_at.write().unwrap() = Some(Instant::now());
-                Err(format!("web-identity assume-role failed: {e}"))
+                let err = format!("web-identity assume-role failed: {e}");
+                *self.last_failure.write().unwrap() = Some((Instant::now(), err.clone()));
+                Err(err)
             }
+        }
+    }
+
+    /// Warns once if a freshly fetched credential already falls inside the refresh margin -- a sign
+    /// `minTtlSeconds` is misconfigured larger than the STS session lifetime, which would make every
+    /// request refresh (the very burst this provider avoids).
+    fn warn_if_immediately_stale(&self, cred: &Credentials) {
+        static WARNED: OnceLock<()> = OnceLock::new();
+        if self.expires_within_margin(cred) && WARNED.set(()).is_ok() {
+            log::warn!(
+                "A freshly fetched web-identity credential already falls within the {}s refresh \
+                 margin; comet.credential.webIdentity.minTtlSeconds may be larger than the STS \
+                 session lifetime, which forces a refresh on every request",
+                self.min_ttl.as_secs()
+            );
         }
     }
 }
@@ -262,8 +287,9 @@ async fn shared_entry(cfg: &WebIdentityConfig) -> Arc<SharedEntry> {
     }
 
     let provider = build_provider(cfg).await;
-    // Draw the refresh jitter once. subsec_nanos at build time differs across processes, so this
-    // seeds a per-executor offset even before rand is consulted.
+    // Draw the refresh jitter once per entry (each distinct identity+settings key), so two
+    // executors -- or two catalogs with different tuning -- refresh at slightly different times and
+    // the cluster does not re-burst on a synchronized refresh.
     let jitter = if cfg.max_jitter.is_zero() {
         Duration::ZERO
     } else {
@@ -273,7 +299,7 @@ async fn shared_entry(cfg: &WebIdentityConfig) -> Arc<SharedEntry> {
         provider,
         cached: RwLock::new(None),
         refresh_lock: tokio::sync::Mutex::new(()),
-        last_failure_at: RwLock::new(None),
+        last_failure: RwLock::new(None),
         min_ttl: cfg.min_ttl,
         refresh_jitter: jitter,
     });
@@ -316,9 +342,13 @@ fn web_identity_provider_from(
     }
 }
 
-/// STS `AssumeRoleWithWebIdentity` session name. STS requires one; it is informational only, so a
-/// stable prefix plus a timestamp keeps sessions distinguishable in CloudTrail.
+/// STS `AssumeRoleWithWebIdentity` session name. Honors `AWS_ROLE_SESSION_NAME` first, matching the
+/// default chain, so a trust policy conditioned on `sts:RoleSessionName` keeps working after the
+/// take-over engages; otherwise falls back to a stable prefix plus a timestamp.
 fn session_name() -> String {
+    if let Some(name) = non_empty_env("AWS_ROLE_SESSION_NAME") {
+        return name;
+    }
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_nanos())
@@ -480,8 +510,9 @@ impl IcebergProvideCredential for WebIdentityCredentialProvider {
 /// configured profile (`AWS_PROFILE`, or a shared credentials / config file). Both the AWS SDK
 /// default chain (Parquet) and opendal/reqsign (Iceberg) resolve Environment -> Profile ->
 /// WebIdentity, so taking over in those cases would silently switch identity from the user's chosen
-/// source to the service-account role -- and would also drop profile-configured settings such as a
-/// custom STS endpoint that a hand-built `ProviderConfig` cannot reconstruct here.
+/// source to the service-account role. The decision is logged: `debug!` when the provider engages,
+/// `info!` (with the reason) when IRSA is detected but we stand aside, so an operator can tell which
+/// branch a run took.
 pub fn take_over_if_irsa<F>(
     explicit_credentials: bool,
     resolve: F,
@@ -489,10 +520,44 @@ pub fn take_over_if_irsa<F>(
 where
     F: Fn(&str) -> Option<String>,
 {
-    if explicit_credentials || explicit_env_credentials() || configured_profile() {
+    if !irsa_present() {
+        // Not an IRSA environment; the default chain handles everything as before. No log: this is
+        // the common non-EKS case and would be pure noise.
         return None;
     }
-    WebIdentityConfig::detect_with(resolve).map(WebIdentityCredentialProvider::new)
+    let stand_aside_reason = if explicit_credentials {
+        Some("an explicit credential provider is configured")
+    } else if explicit_env_credentials() {
+        Some("static AWS credentials are set in the environment")
+    } else if configured_profile() {
+        Some("an AWS profile or config file is present")
+    } else {
+        None
+    };
+    if let Some(reason) = stand_aside_reason {
+        log::info!("IRSA detected but the Comet web-identity provider is standing aside: {reason}");
+        return None;
+    }
+    match WebIdentityConfig::detect_with(resolve) {
+        Some(cfg) => {
+            log::debug!(
+                "Comet web-identity credential provider engaged for role {}",
+                cfg.role_arn
+            );
+            Some(WebIdentityCredentialProvider::new(cfg))
+        }
+        None => {
+            log::info!(
+                "IRSA detected but the Comet web-identity provider is standing aside: {KEY_ENABLED} is false"
+            );
+            None
+        }
+    }
+}
+
+/// True when both IRSA env vars are set, i.e. this is an EKS pod using a web-identity token.
+fn irsa_present() -> bool {
+    non_empty_env(ENV_TOKEN_FILE).is_some() && non_empty_env(ENV_ROLE_ARN).is_some()
 }
 
 /// True if explicit static credentials are present in the environment. These outrank web-identity
@@ -754,7 +819,7 @@ mod tests {
             provider: Arc::new(provider),
             cached: RwLock::new(None),
             refresh_lock: tokio::sync::Mutex::new(()),
-            last_failure_at: RwLock::new(None),
+            last_failure: RwLock::new(None),
             min_ttl: cfg.min_ttl,
             refresh_jitter: Duration::ZERO,
         }
@@ -847,7 +912,7 @@ mod tests {
             provider: Arc::new(provider),
             cached: RwLock::new(None),
             refresh_lock: tokio::sync::Mutex::new(()),
-            last_failure_at: RwLock::new(None),
+            last_failure: RwLock::new(None),
             min_ttl,
             refresh_jitter: Duration::ZERO,
         })
@@ -992,6 +1057,27 @@ mod tests {
     }
 
     #[test]
+    fn iceberg_key_lookup_uses_s3_prefix() {
+        // On the Iceberg path, config keys reach native under the `s3.` prefix (the same route as
+        // `s3.comet.credential.provider.class`). The bare keys are resolved under that prefix, so a
+        // catalog property must be spelled `s3.comet.credential.webIdentity.*` to take effect --
+        // this is the only opt-out on the Iceberg path, so it has to land.
+        let _guard = lock_env();
+        let _env = IrsaEnv::set("iceberg-keys");
+        let mut catalog = HashMap::new();
+        catalog.insert(
+            "s3.comet.credential.webIdentity.enabled".to_string(),
+            "false".to_string(),
+        );
+        // Mirrors the closure in iceberg_common::build_s3_credential_loader.
+        let resolve = |key: &str| catalog.get(&format!("s3.{key}")).cloned();
+        assert!(
+            take_over_if_irsa(false, resolve).is_none(),
+            "enabled=false via the s3.-prefixed catalog key must disable the take-over"
+        );
+    }
+
+    #[test]
     fn forwards_fips_endpoint_setting() {
         // The default chain honors AWS_USE_FIPS_ENDPOINT; the take-over must too, or it would hit
         // the standard STS endpoint from a FIPS-restricted network.
@@ -1083,9 +1169,11 @@ mod tests {
         rt.block_on(async {
             let futures = (0..8).map(|_| entry.credentials()).collect::<Vec<_>>();
             for result in futures::future::join_all(futures).await {
+                let err = result.expect_err("a throttled refresh must surface as an error");
+                // Every waiter sees the real cause, not just a generic backoff note (comment #3).
                 assert!(
-                    result.is_err(),
-                    "a throttled refresh must surface as an error"
+                    err.contains("web-identity assume-role failed"),
+                    "coalesced waiters must see the real error, got: {err}"
                 );
             }
         });
@@ -1094,6 +1182,23 @@ mod tests {
             1,
             "a failed burst must coalesce into one STS call, not one per reader"
         );
+    }
+
+    #[test]
+    fn session_name_honors_env() {
+        let _guard = lock_env();
+        std::env::remove_var("AWS_ROLE_SESSION_NAME");
+        assert!(
+            session_name().starts_with("comet-web-identity-"),
+            "falls back to the generated name when unset"
+        );
+        std::env::set_var("AWS_ROLE_SESSION_NAME", "trust-policy-session");
+        assert_eq!(
+            session_name(),
+            "trust-policy-session",
+            "AWS_ROLE_SESSION_NAME must be honored so trust policies keep matching"
+        );
+        std::env::remove_var("AWS_ROLE_SESSION_NAME");
     }
 
     #[test]
