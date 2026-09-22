@@ -34,7 +34,7 @@ import org.apache.parquet.hadoop.util.HadoopInputFile
 import org.apache.parquet.schema.{MessageType, Type}
 import org.apache.spark.internal.io.FileCommitProtocol
 import org.apache.spark.sql.{AnalysisException, DataFrame, Row, SaveMode}
-import org.apache.spark.sql.catalyst.InternalRow
+import org.apache.spark.sql.catalyst.{InternalRow, TableIdentifier}
 import org.apache.spark.sql.comet.{CometBatchScanExec, CometNativeScanExec, CometScanExec, CometWriteFilesExec}
 import org.apache.spark.sql.execution.{FileSourceScanExec, SparkPlan}
 import org.apache.spark.sql.execution.datasources.{BasicWriteTaskStats, SQLHadoopMapReduceCommitProtocol, WriteTaskStats, WriteTaskStatsTracker}
@@ -1183,10 +1183,16 @@ class CometParquetWriterSuite extends CometParquetWriterTestBase {
       }
       withNativeWriter {
         // Assert the write itself went native: a fallback to Spark's writer would make the
-        // read-back pass for the wrong reason.
-        assertHasCometNativeWriteExec(
-          captureWritePlan(
-            sql("INSERT INTO comet_write_target SELECT id, name FROM comet_write_source")))
+        // read-back pass for the wrong reason. Match comet_write_target's location so a late
+        // source INSERT VALUES event is not the plan under test.
+        val targetLocation = spark.sessionState.catalog
+          .getTableMetadata(TableIdentifier("comet_write_target"))
+          .storage
+          .locationUri
+          .getOrElse(fail("comet_write_target has no storage location"))
+        assertHasCometNativeWriteExec(captureWritePlan(new Path(targetLocation)) {
+          sql("INSERT INTO comet_write_target SELECT id, name FROM comet_write_source")
+        })
       }
       checkAnswer(spark.table("comet_write_target"), Row(1L, "a") :: Row(2L, "b") :: Nil)
     }
@@ -1308,9 +1314,15 @@ class CometParquetWriterSuite extends CometParquetWriterTestBase {
         }
 
         withNativeWriter {
-          assertHasCometNativeWriteExec(
-            captureWritePlan(
-              sql("INSERT INTO comet_rename_target SELECT id + 1, s FROM comet_rename_source")))
+          // Match the target location so a late source INSERT VALUES event is not captured.
+          val targetLocation = spark.sessionState.catalog
+            .getTableMetadata(TableIdentifier("comet_rename_target"))
+            .storage
+            .locationUri
+            .getOrElse(fail("comet_rename_target has no storage location"))
+          assertHasCometNativeWriteExec(captureWritePlan(new Path(targetLocation)) {
+            sql("INSERT INTO comet_rename_target SELECT id + 1, s FROM comet_rename_source")
+          })
         }
 
         // Read the names out of the file itself: the catalog would report the target's schema
