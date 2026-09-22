@@ -44,8 +44,9 @@ The executor thread parks in `blocking_recv()` until the next batch is ready. Th
 busy-polling on I/O-bound workloads.
 
 **JVM data source path (ScanExec present):** The executor thread calls `block_on()` and polls the
-DataFusion stream directly, interleaving `pull_input_batches()` calls on `Poll::Pending` to feed
-data from the JVM into ScanExec operators.
+DataFusion stream directly. On `Poll::Pending` it calls `pull_input_batches()` to feed data from
+the JVM into ScanExec operators, which wakes the stream, then parks until a waker fires, so a
+stream that is waiting on native I/O sleeps instead of busy-polling.
 
 In both cases, DataFusion operators execute on **tokio worker threads**, not on the Spark executor
 task thread. All Spark tasks on an executor share one tokio runtime.

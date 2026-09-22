@@ -78,7 +78,7 @@ use datafusion_spark::function::url::try_url_decode::TryUrlDecode as SparkTryUrl
 use datafusion_spark::function::url::url_decode::UrlDecode as SparkUrlDecode;
 use datafusion_spark::function::url::url_encode::UrlEncode as SparkUrlEncode;
 use futures::poll;
-use futures::stream::StreamExt;
+use futures::stream::{Stream, StreamExt};
 use futures::FutureExt;
 use jni::objects::JByteBuffer;
 use jni::sys::{jlongArray, JNI_FALSE};
@@ -96,7 +96,7 @@ use prost::Message;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
-use std::{sync::Arc, task::Poll};
+use std::{future::poll_fn, sync::Arc, task::Poll};
 use tokio::runtime::{Handle, Runtime};
 use tokio::sync::mpsc;
 
@@ -962,38 +962,51 @@ fn prepare_output(
 /// Java exception. So we pull input batches here and insert them into scan
 /// operators before polling the stream,
 #[inline]
-fn pull_input_batches(exec_context: &mut ExecutionContext) -> Result<bool, CometError> {
-    let mut pulled = false;
+fn pull_input_batches(exec_context: &mut ExecutionContext) -> Result<(), CometError> {
     for scan in exec_context.scans.iter_mut() {
-        pulled |= scan.get_next_batch()?;
+        scan.get_next_batch()?;
     }
     for scan in exec_context.shuffle_scans.iter_mut() {
-        pulled |= scan.get_next_batch()?;
+        scan.get_next_batch()?;
     }
-    Ok(pulled)
+    Ok(())
 }
 
-/// Safety net in case a stream ever returns Pending without registering a waker.
-const PARK_TIMEOUT: Duration = Duration::from_millis(100);
-
-/// Sleeps until a waker registered by an earlier poll fires.
+/// Yields once, so the `block_on` thread sleeps until a waker registered by an earlier poll
+/// fires: a JVM-fed scan refilled by `pull_input_batches`, or native I/O that completed.
 async fn park_until_woken() {
-    struct Park(bool);
+    let mut polled = false;
+    poll_fn(|_| {
+        if std::mem::replace(&mut polled, true) {
+            Poll::Ready(())
+        } else {
+            Poll::Pending
+        }
+    })
+    .await
+}
 
-    impl std::future::Future for Park {
-        type Output = ();
-
-        fn poll(mut self: std::pin::Pin<&mut Self>, _: &mut std::task::Context<'_>) -> Poll<()> {
-            if self.0 {
-                Poll::Ready(())
-            } else {
-                self.0 = true;
-                Poll::Pending
+/// Drives `stream` to its next item. JVM-fed scans return `Pending` until `on_pending` refills
+/// them, so every pending poll runs it and then parks instead of polling again at once.
+async fn next_batch<S>(
+    stream: &mut S,
+    mut on_pending: impl FnMut() -> Result<(), CometError>,
+) -> Result<Option<RecordBatch>, CometError>
+where
+    S: Stream<Item = DataFusionResult<RecordBatch>> + Unpin,
+{
+    loop {
+        match poll!(stream.next()) {
+            Poll::Ready(item) => return Ok(item.transpose()?),
+            Poll::Pending => {
+                // JNI call to pull batches from JVM into ScanExec operators.
+                // block_in_place lets tokio move other tasks off this worker
+                // while we wait for JVM data.
+                tokio::task::block_in_place(&mut on_pending)?;
+                park_until_woken().await;
             }
         }
     }
-
-    let _ = tokio::time::timeout(PARK_TIMEOUT, Park(false)).await;
 }
 
 /// Accept serialized query plan and the addresses of Arrow Arrays from Spark,
@@ -1133,54 +1146,30 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
                 }
             }
 
-            // ScanExec path: JVM-fed scans return Pending without a waker and are refilled here.
-            // Nothing pulled means the stream waits on native I/O, so park instead of spinning.
-            get_runtime().block_on(async {
-                loop {
-                    let next_item = exec_context.stream.as_mut().unwrap().next();
-                    let poll_output = poll!(next_item);
-
-                    if let Some(interval) = exec_context.metrics_update_interval {
-                        let now = Instant::now();
-                        if now - exec_context.metrics_last_update_time >= interval {
-                            update_metrics(env, exec_context)?;
-                            exec_context.metrics_last_update_time = now;
-                        }
-                    }
-                    if exec_context.tracing_enabled {
-                        log_memory_usage(
-                            &exec_context.tracing_memory_metric_name,
-                            total_reserved_for_thread(exec_context.rust_thread_id) as u64,
-                        );
-                    }
-
-                    match poll_output {
-                        Poll::Ready(Some(output)) => {
-                            return prepare_output(
-                                env,
-                                array_addrs,
-                                schema_addrs,
-                                output?,
-                                exec_context.debug_native,
-                            );
-                        }
-                        Poll::Ready(None) => {
-                            log_plan_metrics(exec_context, stage_id, partition);
-                            return Ok(-1);
-                        }
-                        Poll::Pending => {
-                            // JNI call to pull batches from JVM into ScanExec operators.
-                            // block_in_place lets tokio move other tasks off this worker
-                            // while we wait for JVM data.
-                            let pulled =
-                                tokio::task::block_in_place(|| pull_input_batches(exec_context))?;
-                            if !pulled {
-                                park_until_woken().await;
-                            }
-                        }
-                    }
+            // ScanExec path: JVM-fed scans return `Pending` until `pull_input_batches` refills
+            // them and wakes the stream, so a poll that is still pending after the pull waits on
+            // native I/O and the loop parks for it.
+            let mut stream = exec_context.stream.take().unwrap();
+            let next = get_runtime().block_on(next_batch(&mut stream, || {
+                pull_input_batches(exec_context)?;
+                update_metrics_on_interval(env, exec_context)
+            }));
+            exec_context.stream = Some(stream);
+            let next = next?;
+            update_metrics_on_interval(env, exec_context)?;
+            match next {
+                Some(batch) => prepare_output(
+                    env,
+                    array_addrs,
+                    schema_addrs,
+                    batch,
+                    exec_context.debug_native,
+                ),
+                None => {
+                    log_plan_metrics(exec_context, stage_id, partition);
+                    Ok(-1)
                 }
-            })
+            }
         });
 
         if exec_context.tracing_enabled {
@@ -1242,6 +1231,30 @@ pub extern "system" fn Java_org_apache_comet_Native_releasePlan(
         // Flush metrics last, as it is the only fallible step here.
         update_metrics(env, &mut execution_context)
     })
+}
+
+/// Runs `update_metrics` once the configured interval has passed and, with tracing on, samples
+/// this thread's pool reservation at the same cadence.
+fn update_metrics_on_interval(
+    env: &mut Env,
+    exec_context: &mut ExecutionContext,
+) -> CometResult<()> {
+    let Some(interval) = exec_context.metrics_update_interval else {
+        return Ok(());
+    };
+    let now = Instant::now();
+    if now - exec_context.metrics_last_update_time < interval {
+        return Ok(());
+    }
+    update_metrics(env, exec_context)?;
+    exec_context.metrics_last_update_time = now;
+    if exec_context.tracing_enabled {
+        log_memory_usage(
+            &exec_context.tracing_memory_metric_name,
+            total_reserved_for_thread(exec_context.rust_thread_id) as u64,
+        );
+    }
+    Ok(())
 }
 
 fn update_metrics(env: &mut Env, exec_context: &mut ExecutionContext) -> CometResult<()> {
@@ -1784,15 +1797,21 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_columnarToRowClose(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::execution::operators::InputBatch;
+    use crate::execution::planner::TEST_EXEC_CONTEXT_ID;
+    use arrow::array::{ArrayRef, Int32Array};
     use arrow::datatypes::{DataType, Field, Schema};
     use datafusion::execution::memory_pool::{
         MemoryConsumer, MemoryReservation, UnboundedMemoryPool,
     };
     use datafusion::execution::FunctionRegistry;
+    use datafusion::execution::TaskContext;
     use datafusion::logical_expr::ReturnFieldArgs;
+    use datafusion::physical_plan::ExecutionPlan;
     use datafusion_comet_proto::spark_expression;
     use datafusion_comet_proto::spark_expression::{AggExpr, Count, Expr, Sum};
     use datafusion_comet_proto::spark_operator::{HashAggregate, ShuffleWriter};
+    use std::cell::Cell;
 
     #[test]
     fn skip_partial_eligibility_is_fail_closed() {
@@ -2163,26 +2182,64 @@ mod tests {
             assert_eq!(ret.data_type(), &DataType::Int32, "length({input})");
         }
     }
-    #[test]
-    fn park_until_woken_ends_on_a_registered_waker_or_the_timeout() {
-        let runtime = tokio::runtime::Builder::new_multi_thread()
+    fn single_worker_runtime() -> Runtime {
+        tokio::runtime::Builder::new_multi_thread()
             .worker_threads(1)
             .enable_all()
             .build()
-            .unwrap();
-        runtime.block_on(async {
-            let (tx, mut rx) = tokio::sync::oneshot::channel::<()>();
-            assert!(poll!(&mut rx).is_pending());
-            tokio::spawn(async move {
-                let _ = tx.send(());
-            });
-            let start = Instant::now();
-            park_until_woken().await;
-            assert!(start.elapsed() < PARK_TIMEOUT);
+            .unwrap()
+    }
 
-            let start = Instant::now();
-            park_until_woken().await;
-            assert!(start.elapsed() >= PARK_TIMEOUT);
+    #[test]
+    fn next_batch_parks_while_the_stream_waits_on_native_io() {
+        let batch = RecordBatch::new_empty(Arc::new(Schema::empty()));
+        let mut stream = futures::stream::once(async move {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            Ok::<_, DataFusionError>(batch)
+        })
+        .boxed();
+        let mut pulls = 0;
+        let next = single_worker_runtime()
+            .block_on(next_batch(&mut stream, || {
+                pulls += 1;
+                Ok(())
+            }))
+            .unwrap();
+        assert!(next.is_some());
+        assert!(
+            pulls < 5,
+            "the loop pulled {pulls} times during one 50 ms wait"
+        );
+    }
+
+    #[test]
+    fn next_batch_resumes_on_a_refill_and_stops_pulling_after_eof() {
+        let mut scan =
+            ScanExec::new(TEST_EXEC_CONTEXT_ID, None, "", vec![DataType::Int32]).unwrap();
+        let mut stream = scan.execute(0, Arc::new(TaskContext::default())).unwrap();
+        let column: ArrayRef = Arc::new(Int32Array::from(vec![1, 2, 3]));
+        let mut inputs = vec![InputBatch::new(vec![column], Some(3)), InputBatch::EOF].into_iter();
+        let pulls = Cell::new(0);
+        let mut pull = || {
+            pulls.set(pulls.get() + 1);
+            if let Some(input) = inputs.next() {
+                scan.set_input_batch(input);
+            }
+            Ok::<(), CometError>(())
+        };
+        // Only the refill's wake ends each park, so a lost wake would hang here.
+        single_worker_runtime().block_on(async {
+            tokio::time::timeout(Duration::from_secs(10), async {
+                let first = next_batch(&mut stream, &mut pull).await.unwrap();
+                assert_eq!(first.unwrap().num_rows(), 3);
+                assert_eq!(pulls.get(), 1);
+                assert!(next_batch(&mut stream, &mut pull).await.unwrap().is_none());
+                assert_eq!(pulls.get(), 2);
+                assert!(next_batch(&mut stream, &mut pull).await.unwrap().is_none());
+                assert_eq!(pulls.get(), 2);
+            })
+            .await
+            .unwrap();
         });
     }
 }
