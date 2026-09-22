@@ -257,7 +257,10 @@ URLs.
 This is opt-in and disabled by default. Enable it by listing the schemes to treat as S3-compliant
 aliases in `spark.hadoop.fs.comet.s3Compliant.schemes` (Hadoop key
 `fs.comet.s3Compliant.schemes`), a comma-separated, case-insensitive list. This mirrors the
-existing `fs.comet.libhdfs.schemes` config.
+existing `fs.comet.libhdfs.schemes` config. The list entries are case-insensitive, but an Iceberg
+table location must write the alias in lowercase (`blob://`, not `BLOB://`): the native Iceberg
+reader opens each recorded location as written, and its S3 backend accepts only a lowercase
+scheme prefix, so Comet declines such a location up front and leaves that scan to Spark.
 
 ```shell
 --conf spark.hadoop.fs.comet.s3Compliant.schemes=blob

@@ -27,47 +27,51 @@ import org.apache.comet.NativeBase
 
 /**
  * The storage schemes the native Iceberg storage factory publishes over JNI, so the JVM scan and
- * write gates decline what native cannot open instead of failing at execution. Every caller sits
- * behind `isCometLoaded`, so the fallback constants are only consulted in a JVM where nothing
- * runs natively; the pinning test in `CometScanSchemeFallbackSuite` keeps them equal to the
- * native lists.
+ * write gates decline what native cannot open instead of failing at execution. Native is the only
+ * source of these lists. Every caller sits behind `isCometLoaded`, so a JVM where the library is
+ * not loaded never plans a native scan or write, and both sets are simply empty there.
  */
 private[comet] object IcebergStorageSchemes extends Logging {
 
-  private[comet] val FallbackRead: Set[String] = Set("file", "s3", "s3a", "gs", "oss")
-  private[comet] val FallbackWrite: Set[String] = Set("file", "memory", "s3", "s3a", "gs")
+  lazy val read: Set[String] = load(forWrite = false)
+  lazy val write: Set[String] = load(forWrite = true)
 
-  lazy val read: Set[String] = load(forWrite = false, FallbackRead)
-  lazy val write: Set[String] = load(forWrite = true, FallbackWrite)
-
-  /** Splits the comma-joined native list; a null or blank list yields `fallback`. */
-  private[comet] def parse(joined: String, fallback: Set[String]): Set[String] = {
+  /**
+   * Splits the comma-joined native list, trimming and lowercasing each entry. A null or blank
+   * list throws: `builtin_storage_schemes` is a fixed non-empty constant natively, so a loaded
+   * library that publishes nothing can only be a build or marshalling bug, and a warning here
+   * would silently disable every native Iceberg scan and write.
+   */
+  private[comet] def parse(joined: String, forWrite: Boolean): Set[String] = {
     val schemes = Option(joined).toSeq
       .flatMap(_.split(","))
       .map(_.trim.toLowerCase(Locale.ROOT))
       .filter(_.nonEmpty)
       .toSet
     if (schemes.isEmpty) {
-      logWarning(
-        "Comet native library published an empty Iceberg scheme list; using the fallback list " +
-          fallback.toSeq.sorted.mkString(", "))
-      fallback
-    } else {
-      schemes
+      val path = if (forWrite) "write" else "read"
+      throw new IllegalStateException(
+        s"Comet native library published no Iceberg $path scheme list")
     }
+    schemes
   }
 
-  // A native fault while answering the probe propagates: `isLoaded` true means the symbol
-  // resolves, and anything else is a build bug that must fail loudly rather than fall back.
-  private def load(forWrite: Boolean, fallback: Set[String]): Set[String] = {
-    if (NativeBase.isLoaded) {
-      parse(NativeBase.icebergStorageSchemes(forWrite), fallback)
+  /**
+   * Loads one list over JNI, or answers the empty set with a warning when the library is not
+   * loaded; that branch never runs a plan, because every caller sits behind `isCometLoaded`.
+   * `isLoaded` is a parameter so the unloaded answer can be tested without unloading the library.
+   * Once loaded, anything but a non-empty list is a build bug that must fail loudly: a native
+   * fault while answering the probe propagates, and a blank answer throws in `parse`.
+   */
+  private[comet] def load(
+      forWrite: Boolean,
+      isLoaded: Boolean = NativeBase.isLoaded): Set[String] = {
+    if (isLoaded) {
+      parse(NativeBase.icebergStorageSchemes(forWrite), forWrite)
     } else {
       val path = if (forWrite) "write" else "read"
-      logWarning(
-        s"Comet native library is not loaded; using the fallback Iceberg $path scheme list " +
-          fallback.toSeq.sorted.mkString(", "))
-      fallback
+      logWarning(s"Comet native library is not loaded; the Iceberg $path scheme list is empty")
+      Set.empty
     }
   }
 }

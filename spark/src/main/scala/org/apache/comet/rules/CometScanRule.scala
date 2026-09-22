@@ -1201,13 +1201,16 @@ object CometScanRule extends Logging {
   private lazy val icebergReadableSchemes: Set[String] = IcebergStorageSchemes.read
 
   /**
-   * True when the Iceberg scan gate admits `scheme`. The built-in set matches verbatim because
-   * native opens a location by its raw scheme and OpenDAL strips that prefix case-sensitively, so
-   * `S3://` is not `s3://`; the opt-in alias list is matched case-insensitively on both sides.
+   * True when the Iceberg scan gate admits `scheme`, written exactly as recorded. Native opens a
+   * location by its raw scheme, and OpenDAL's S3 backend checks it against a `scheme://bucket/`
+   * prefix whose scheme comes from `Url::parse` and so is lowercase: `S3://` is not `s3://`, and
+   * `BLOB://` is not an opted-in `blob`. The alias set is lowercase
+   * (`NativeConfig.parseSchemeSet`), so an alias is admitted only when the location writes it in
+   * lowercase. The Parquet gate stays case-insensitive because it rewrites alias URLs to `s3://`
+   * before anything opens them.
    */
   private def isAdmittedIcebergScheme(scheme: String, s3CompliantSchemes: Set[String]): Boolean =
-    icebergReadableSchemes.contains(scheme) ||
-      s3CompliantSchemes.contains(scheme.toLowerCase(Locale.ROOT))
+    icebergReadableSchemes.contains(scheme) || s3CompliantSchemes.contains(scheme)
 
   /**
    * "Supported schemes: ..." suffix shared by the Iceberg scheme-fallback messages. Lists the

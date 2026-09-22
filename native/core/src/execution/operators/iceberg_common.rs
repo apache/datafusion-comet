@@ -39,9 +39,10 @@ const ICEBERG_PROVIDER_CLASS_PROPERTY: &str = "s3.comet.credential.provider.clas
 const STORAGE_PROPERTY_PREFIXES: &[&str] = &["s3.", "gcs.", "adls.", "client."];
 
 /// Pick an OpenDAL storage backend for a URI whose scheme `builtin_storage_schemes` lists for
-/// `access_mode`, or that is an opted-in S3-compliant alias; anything else is rejected before the
-/// match, so the list alone decides what each mode admits. For S3, the Comet credential bridge is
-/// wired in when a provider class is configured and `access_mode` is forwarded to the JVM SPI.
+/// `access_mode`, or that is an opted-in S3-compliant alias written in lowercase; anything else is
+/// rejected before the match, so the list alone decides what each mode admits. For S3, the Comet
+/// credential bridge is wired in when a provider class is configured and `access_mode` is
+/// forwarded to the JVM SPI.
 pub(crate) fn storage_factory_for(
     path: &str,
     catalog_properties: &HashMap<String, String>,
@@ -49,7 +50,8 @@ pub(crate) fn storage_factory_for(
     access_mode: AccessMode,
 ) -> Result<Arc<dyn StorageFactory>, DataFusionError> {
     // Verbatim match: OpenDAL strips the scheme prefix from every path case-sensitively at open
-    // time, so admitting `S3://` here would only defer the failure. The JVM gates match verbatim.
+    // time, so admitting `S3://` here would only defer the failure. Aliases are held to the same
+    // rule (`is_iceberg_alias_scheme`). The JVM gates match verbatim.
     let scheme = scheme_of(path);
     if !builtin_storage_schemes(access_mode).contains(&scheme)
         && !is_s3_family_scheme(scheme, catalog_properties)
@@ -71,7 +73,7 @@ pub(crate) fn storage_factory_for(
         s if is_s3_family_scheme(s, catalog_properties) => {
             let customized_credential_load =
                 build_s3_credential_loader(path, catalog_properties, catalog_name, access_mode)?;
-            if is_s3_compliant_alias_scheme(s, catalog_properties) {
+            if is_iceberg_alias_scheme(s, catalog_properties) {
                 Ok(Arc::new(BlobHostPromotingS3StorageFactory::new(
                     customized_credential_load,
                 )))
@@ -235,7 +237,19 @@ fn scheme_of(path: &str) -> &str {
 /// iceberg-rust's storage factory has no `s3n` backend and the Scala Iceberg scheme gate
 /// (`isIcebergReadableScheme`) rejects `s3n` before a path ever reaches this operator.
 fn is_s3_family_scheme(scheme: &str, catalog_properties: &HashMap<String, String>) -> bool {
-    matches!(scheme, "s3" | "s3a") || is_s3_compliant_alias_scheme(scheme, catalog_properties)
+    matches!(scheme, "s3" | "s3a") || is_iceberg_alias_scheme(scheme, catalog_properties)
+}
+
+/// True if `scheme` is an opted-in S3-compliant alias written exactly as the lowercase form of its
+/// list entry. The shared `is_s3_compliant_alias_scheme` is case-insensitive, which is safe for
+/// the Parquet path because it rewrites an alias URL to `s3://` before anything opens it. The
+/// Iceberg path opens the recorded location as written, and OpenDAL's S3 backend checks it against
+/// a `scheme://bucket/` prefix whose scheme comes from `Url::parse` and so is lowercase, so
+/// `BLOB://bucket/key` would pass a case-insensitive gate here and fail at open time. The JVM
+/// Iceberg gate matches the same way.
+fn is_iceberg_alias_scheme(scheme: &str, catalog_properties: &HashMap<String, String>) -> bool {
+    !scheme.bytes().any(|b| b.is_ascii_uppercase())
+        && is_s3_compliant_alias_scheme(scheme, catalog_properties)
 }
 
 #[cfg(test)]
@@ -320,6 +334,42 @@ mod tests {
                     err.contains("Unsupported storage scheme"),
                     "unexpected error for {path} in {mode:?}: {err}"
                 );
+            }
+        }
+    }
+
+    #[test]
+    fn alias_scheme_is_matched_verbatim() {
+        // An alias location is opened as written, and OpenDAL's S3 backend checks it against a
+        // lowercase `scheme://bucket/` prefix, so a mixed-case alias that passed a
+        // case-insensitive gate here would only fail at open time. The list entry may be written
+        // in any case; the location's scheme must match its lowercase form exactly.
+        for listed in ["blob", " BLOB ", "minio,Blob"] {
+            let props = HashMap::from([(
+                "fs.comet.s3Compliant.schemes".to_string(),
+                listed.to_string(),
+            )]);
+            for mode in [AccessMode::Read, AccessMode::Write] {
+                assert!(
+                    storage_factory_for("blob://bucket/key", &props, "test_cat", mode).is_ok(),
+                    "blob://bucket/key must be admitted for {mode:?} with list {listed:?}"
+                );
+                for path in [
+                    "BLOB://bucket/key",
+                    "Blob://bucket/key",
+                    "BLOB:///bucket/key",
+                ] {
+                    let err = storage_factory_for(path, &props, "test_cat", mode)
+                        .map(|_| ())
+                        .expect_err(&format!(
+                            "{path} must be rejected for {mode:?} with list {listed:?}"
+                        ))
+                        .to_string();
+                    assert!(
+                        err.contains("Unsupported storage scheme"),
+                        "unexpected error for {path} in {mode:?}: {err}"
+                    );
+                }
             }
         }
     }

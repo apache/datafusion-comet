@@ -124,66 +124,56 @@ class CometScanSchemeFallbackSuite extends CometTestBase with CometIcebergTestBa
       "gs://bucket/... must be admitted even after an authorityless gs:// URI was probed first")
   }
 
-  test("iceberg gate: the JNI scheme list parser trims, lowercases and falls back") {
-    val fallback = Set("fallback")
-    assert(IcebergStorageSchemes.parse("file, S3,,s3a,", fallback) == Set("file", "s3", "s3a"))
-    assert(IcebergStorageSchemes.parse("", fallback) == fallback)
-    assert(IcebergStorageSchemes.parse(" , ", fallback) == fallback)
-    assert(IcebergStorageSchemes.parse(null, fallback) == fallback)
+  test("iceberg gate: the JNI scheme list parser trims, lowercases and rejects a blank list") {
+    assert(
+      IcebergStorageSchemes.parse("file, S3,,s3a,", forWrite = false) == Set("file", "s3", "s3a"))
+    // A loaded library publishes a fixed non-empty list, so a blank answer is a build bug and
+    // must fail loudly rather than quietly disable every native Iceberg scan and write.
+    Seq(("", false), (" , ", true), (null, false)).foreach { case (joined, forWrite) =>
+      val path = if (forWrite) "write" else "read"
+      val e = intercept[IllegalStateException](IcebergStorageSchemes.parse(joined, forWrite))
+      assert(
+        e.getMessage == s"Comet native library published no Iceberg $path scheme list",
+        s"unexpected message for ${Option(joined)}: ${e.getMessage}")
+    }
   }
 
-  test("iceberg gate: JNI scheme lists round-trip to the JVM fallback constants") {
-    // Calls the JNI probe directly, bypassing the lazy vals, so this cannot pass on a JVM whose
-    // `read`/`write` quietly came from the fallback rather than from native.
-    assume(NativeBase.isLoaded, "Comet native library not loaded")
-    val read = IcebergStorageSchemes.parse(NativeBase.icebergStorageSchemes(false), Set.empty)
-    val write = IcebergStorageSchemes.parse(NativeBase.icebergStorageSchemes(true), Set.empty)
-    assert(
-      read == IcebergStorageSchemes.FallbackRead,
-      s"JNI read schemes ${read.toSeq.sorted} differ from the JVM fallback " +
-        s"${IcebergStorageSchemes.FallbackRead.toSeq.sorted}")
-    assert(
-      write == IcebergStorageSchemes.FallbackWrite,
-      s"JNI write schemes ${write.toSeq.sorted} differ from the JVM fallback " +
-        s"${IcebergStorageSchemes.FallbackWrite.toSeq.sorted}")
+  test("iceberg gate: an unloaded native library yields no schemes") {
+    // Every caller sits behind `isCometLoaded`, so this answer never reaches a plan; it only
+    // guarantees that nothing hand-maintained stands in for the native list.
+    assert(IcebergStorageSchemes.load(forWrite = false, isLoaded = false) == Set.empty)
+    assert(IcebergStorageSchemes.load(forWrite = true, isLoaded = false) == Set.empty)
   }
 
-  test("iceberg gate: native scheme lists match the JVM fallback constants") {
-    // The gates load their scheme sets from the native storage factory over JNI. The JVM
-    // fallback constants only stand in when the library cannot be loaded, so this pins them to
-    // what native publishes: extending `builtin_storage_schemes` without updating the fallback
-    // fails here rather than drifting silently.
+  test("iceberg gate: the scheme sets come from native and carry its mode-specific entries") {
+    // The lazy sets must be what the JNI probe answers, not an empty set from a load that ran
+    // before the library was ready. `oss` is read-only (no `oss.*` property forwarding for
+    // writes) and `memory` is write-only (a fresh in-process store per FileIO, so a read finds
+    // nothing); the Azure schemes and `gcs` have no storage factory arm at all.
     assume(NativeBase.isLoaded, "Comet native library not loaded")
+    val read = IcebergStorageSchemes.read
+    val write = IcebergStorageSchemes.write
+    assert(read == IcebergStorageSchemes.parse(NativeBase.icebergStorageSchemes(false), false))
+    assert(write == IcebergStorageSchemes.parse(NativeBase.icebergStorageSchemes(true), true))
+    assert(read.nonEmpty, "native published no read schemes")
+    assert(write.nonEmpty, "native published no write schemes")
+    assert(read.contains("oss"), s"oss must be in the native read schemes ${read.toSeq.sorted}")
     assert(
-      IcebergStorageSchemes.read == IcebergStorageSchemes.FallbackRead,
-      s"native read schemes ${IcebergStorageSchemes.read.toSeq.sorted} differ from the JVM " +
-        s"fallback ${IcebergStorageSchemes.FallbackRead.toSeq.sorted}")
+      !write.contains("oss"),
+      s"oss must not be in the native write schemes ${write.toSeq.sorted}")
     assert(
-      IcebergStorageSchemes.write == IcebergStorageSchemes.FallbackWrite,
-      s"native write schemes ${IcebergStorageSchemes.write.toSeq.sorted} differ from the JVM " +
-        s"fallback ${IcebergStorageSchemes.FallbackWrite.toSeq.sorted}")
-    // `oss` is read-only (no `oss.*` property forwarding for writes) and `memory` is write-only
-    // (a fresh in-process store per FileIO, so a read finds nothing).
+      write.contains("memory"),
+      s"memory must be in the native write schemes ${write.toSeq.sorted}")
     assert(
-      IcebergStorageSchemes.read.contains("oss"),
-      s"oss must be in the native read schemes ${IcebergStorageSchemes.read.toSeq.sorted}")
-    assert(
-      !IcebergStorageSchemes.write.contains("oss"),
-      s"oss must not be in the native write schemes ${IcebergStorageSchemes.write.toSeq.sorted}")
-    assert(
-      IcebergStorageSchemes.write.contains("memory"),
-      s"memory must be in the native write schemes ${IcebergStorageSchemes.write.toSeq.sorted}")
-    assert(
-      !IcebergStorageSchemes.read.contains("memory"),
-      s"memory must not be in the native read schemes ${IcebergStorageSchemes.read.toSeq.sorted}")
+      !read.contains("memory"),
+      s"memory must not be in the native read schemes ${read.toSeq.sorted}")
     Seq("abfs", "abfss", "wasb", "wasbs", "gcs").foreach { scheme =>
       assert(
-        !IcebergStorageSchemes.read.contains(scheme),
-        s"$scheme must not be in the native read schemes ${IcebergStorageSchemes.read.toSeq.sorted}")
+        !read.contains(scheme),
+        s"$scheme must not be in the native read schemes ${read.toSeq.sorted}")
       assert(
-        !IcebergStorageSchemes.write.contains(scheme),
-        s"$scheme must not be in the native write schemes " +
-          s"${IcebergStorageSchemes.write.toSeq.sorted}")
+        !write.contains(scheme),
+        s"$scheme must not be in the native write schemes ${write.toSeq.sorted}")
     }
   }
 
@@ -217,6 +207,27 @@ class CometScanSchemeFallbackSuite extends CometTestBase with CometIcebergTestBa
         !CometScanRule.isIcebergReadableScheme(new URI(u), Set.empty),
         s"$u must not be iceberg-readable; storage_factory_for rejects it for reads")
     }
+  }
+
+  test("iceberg gate: an opt-in alias is matched verbatim, like the built-in schemes") {
+    // Native opens an alias location as written and OpenDAL's S3 backend checks it against a
+    // lowercase `scheme://bucket/` prefix, so a `BLOB://` location admitted here would only fail
+    // at execution. The alias set is lowercase, so a scheme written any other way is declined.
+    val schemes = Set("blob")
+    assert(
+      CometScanRule.isIcebergReadableScheme(new URI("blob://bucket/key.parquet"), schemes),
+      "blob://bucket/... must be admitted once blob is opted in")
+    Seq("BLOB://bucket/key.parquet", "Blob://bucket/key.parquet", "BLOB:///bucket/key.parquet")
+      .foreach { u =>
+        assert(
+          !CometScanRule.isIcebergReadableScheme(new URI(u), schemes),
+          s"$u must be declined: native opens the location as written and the S3 backend " +
+            "rejects a scheme prefix that is not lowercase")
+      }
+    // The fallback reason names the lowercase alias, which is the form the scan would admit.
+    assert(
+      CometScanRule.icebergSupportedSchemesMessage(schemes).contains("blob"),
+      "the supported-schemes message must list the opted-in alias in its admitted form")
   }
 
   test("parquet gate: mixed-bucket alias scan is declined (single object store per partition)") {
