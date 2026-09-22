@@ -64,18 +64,21 @@
 //!    credentials provider classes, or no class with a secret or token file), `SAS` needs
 //!    a SAS token, `Custom` and any other value are errors. The auth type also decides
 //!    which keys are read, as it does for Hadoop's `initializeClient`: only the selected
-//!    mechanism's keys are translated and validated, so an inactive global OAuth secret
+//!    mechanism's keys are translated and validated, so an unused global OAuth secret
 //!    under an account-scoped `SharedKey`, or an account key under `OAuth`, is ignored
-//!    rather than rejected or handed to the builder. A provider class is validated
-//!    whenever it is set, provided OAuth is the mechanism read (with or without an explicit
-//!    auth type): MSI stands alone, Workload
-//!    Identity needs the client id and tenant, client credentials need the secret, and
-//!    any other class is an error. Keys that select a mechanism
-//!    with no native counterpart (a SAS token provider class, an account key provider
-//!    class, a refresh token, or a user name or password) are errors too. In every one of
-//!    these cases the environment is not consulted either, so the scan can neither borrow
-//!    an ambient identity nor fall back to managed identity in place of the one Hadoop
-//!    was told to use.
+//!    rather than rejected or handed to the builder. With no auth type at all, Hadoop's
+//!    `getAuthType` defaults to `SharedKey`, so an account key entry (blank or not)
+//!    selects that mechanism the same way and only the key is read; a blank key is still
+//!    an error. With neither an auth type nor a key, every mechanism's keys are read, as
+//!    described in points 1 and 2. A provider class is validated whenever it is set,
+//!    provided OAuth is the mechanism read (with or without an explicit auth type): MSI
+//!    stands alone, Workload Identity needs the client id and tenant, client credentials
+//!    need the secret, and any other class is an error. Keys that select a mechanism with
+//!    no native counterpart (a SAS token provider class, an account key provider class, a
+//!    refresh token, or a user name or password) are errors too. In every one of these
+//!    cases the environment is not consulted either, so the scan can neither borrow an
+//!    ambient identity nor fall back to managed identity in place of the one Hadoop was
+//!    told to use.
 //!
 //! Within the Hadoop keys, the account-scoped variant
 //! (`fs.azure.account.X.<account>.dfs.core.windows.net`) wins over the global one
@@ -193,7 +196,7 @@ enum AuthMechanism {
 /// The mechanism an explicit `fs.azure.account.auth.type` selects for the account, the way
 /// Hadoop's `AbfsConfiguration.getAuthType` resolves it: the account-scoped key over the
 /// global one. `None` when no auth type is set, or when it names something the scan cannot
-/// build (`auth_type_problem` reports that), in which case every Hadoop key is read.
+/// build (`auth_type_problem` reports that).
 fn explicit_mechanism(
     configs: &HashMap<String, String>,
     account: Option<&str>,
@@ -211,17 +214,31 @@ fn explicit_mechanism(
     }
 }
 
-/// Whether Hadoop reads the keys of `mechanism` for this account: every mechanism when no
-/// auth type is set, otherwise only the selected one. Hadoop's
+/// The mechanism Hadoop selects for the account: the explicit auth type when one is set,
+/// otherwise `SharedKey` when an account key entry is present, since that is the default
+/// `AbfsConfiguration.getAuthType` falls back to. `None` when no auth type is set and no
+/// key is present, in which case every Hadoop key is read. A blank key still counts as
+/// present, so it is reported as blank rather than skipped in favour of another mechanism.
+fn selected_mechanism(
+    configs: &HashMap<String, String>,
+    account: Option<&str>,
+) -> Option<AuthMechanism> {
+    explicit_mechanism(configs, account).or_else(|| {
+        account_scoped_entry(configs, HADOOP_KEY, account).map(|_| AuthMechanism::SharedKey)
+    })
+}
+
+/// Whether Hadoop reads the keys of `mechanism` for this account: every mechanism when
+/// none is selected, otherwise only the selected one. Hadoop's
 /// `AzureBlobFileSystemStore.initializeClient` reads only the selected mechanism's keys,
-/// so an inactive one (a global OAuth secret under an account-scoped `SharedKey`) is
-/// neither translated nor validated.
+/// so an unused one (a global OAuth secret under an account-scoped `SharedKey`, or beside
+/// an account key with no auth type) is neither translated nor validated.
 fn mechanism_is_read(
     configs: &HashMap<String, String>,
     account: Option<&str>,
     mechanism: AuthMechanism,
 ) -> bool {
-    explicit_mechanism(configs, account).is_none_or(|selected| selected == mechanism)
+    selected_mechanism(configs, account).is_none_or(|selected| selected == mechanism)
 }
 
 /// The OAuth provider class entry, but only while Hadoop is reading OAuth keys.
@@ -2329,23 +2346,171 @@ mod tests {
     }
 
     #[test]
-    fn unset_auth_type_still_validates_every_mechanism() {
-        // Like `create_store_rejects_client_secret_without_client_id_and_tenant`, with a
-        // valid account key alongside, to show its presence does not let an incomplete
-        // client secret through when no `auth.type` selects a mechanism.
+    fn default_shared_key_ignores_unused_global_oauth_secret() {
+        // No auth type, an account-scoped key and a global client secret left over from
+        // another account. Hadoop defaults to SharedKey and reads only the key, so the
+        // secret is neither handed to the builder nor checked for a client id and tenant.
+        let configs = hadoop(&[
+            (
+                "fs.azure.account.key.myacct.dfs.core.windows.net",
+                "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+            ),
+            ("fs.azure.account.oauth2.client.secret", "hadoop-secret"),
+            (
+                "fs.azure.account.oauth.provider.type",
+                "org.apache.hadoop.fs.azurebfs.oauth2.ClientCredsTokenProvider",
+            ),
+        ]);
+        let u = url("abfss://data@myacct.dfs.core.windows.net/path/file.parquet");
+        create_store_with_env(&u, &configs, env_of(&[])).expect("store builds");
+
+        let builder = builder_for(&configs, &[]);
+        assert_eq!(
+            value(&builder, AzureConfigKey::AccessKey).as_deref(),
+            Some("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
+        );
+        assert_eq!(value(&builder, AzureConfigKey::ClientSecret), None);
+        assert_eq!(value(&builder, AzureConfigKey::ClientId), None);
+        assert_eq!(value(&builder, AzureConfigKey::AuthorityId), None);
+    }
+
+    #[test]
+    fn default_shared_key_ignores_unused_sas_token_and_sas_provider_class() {
         let configs = hadoop(&[
             (
                 "fs.azure.account.key",
                 "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
             ),
-            ("fs.azure.account.oauth2.client.secret", "hadoop-secret"),
+            ("fs.azure.sas.fixed.token", "sv=2020&sig=abc"),
+            (
+                "fs.azure.sas.token.provider.type",
+                "com.example.SasProvider",
+            ),
         ]);
+        let u = url("abfss://data@myacct.dfs.core.windows.net/path/file.parquet");
+        create_store_with_env(&u, &configs, env_of(&[])).expect("store builds");
+
+        let builder = builder_for(&configs, &[]);
+        assert_eq!(value(&builder, AzureConfigKey::SasKey), None);
+        assert_eq!(
+            value(&builder, AzureConfigKey::AccessKey).as_deref(),
+            Some("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
+        );
+    }
+
+    #[test]
+    fn default_shared_key_reads_nothing_from_the_environment() {
+        let configs = hadoop(&[("fs.azure.account.key", "secret==")]);
+        let builder = builder_for(
+            &configs,
+            &[
+                ("AZURE_STORAGE_TOKEN", "ambient"),
+                ("AZURE_CLIENT_ID", "ambient-client"),
+                (
+                    "AZURE_FEDERATED_TOKEN_FILE",
+                    "/var/run/secrets/azure/tokens/token",
+                ),
+                (
+                    "IDENTITY_ENDPOINT",
+                    "http://169.254.169.254/metadata/identity",
+                ),
+            ],
+        );
+        assert_eq!(
+            value(&builder, AzureConfigKey::AccessKey).as_deref(),
+            Some("secret==")
+        );
+        assert_eq!(value(&builder, AzureConfigKey::Token), None);
+        assert_eq!(value(&builder, AzureConfigKey::ClientId), None);
+        assert_eq!(value(&builder, AzureConfigKey::FederatedTokenFile), None);
+        assert_eq!(value(&builder, AzureConfigKey::MsiEndpoint), None);
+    }
+
+    #[test]
+    fn default_shared_key_still_rejects_blank_account_key() {
+        // A key entry selects SharedKey whatever its value, so a blank key is an error on
+        // that mechanism rather than a fall-through to the complete OAuth principal.
+        let mut pairs = vec![("fs.azure.account.key", "")];
+        pairs.extend_from_slice(CLIENT_SECRET_PRINCIPAL);
+        let configs = hadoop(&pairs);
         let err = err_of(&configs);
         assert!(
-            err.contains("fs.azure.account.oauth2.client.id"),
+            err.contains("`fs.azure.account.key` is blank"),
             "unexpected error: {err}"
         );
         assert_hides(&err, &["hadoop-secret"]);
+    }
+
+    #[test]
+    fn default_shared_key_ignores_blank_unused_secret() {
+        // With a key and no auth type, an OAuth key is never read, so a blank one is no
+        // error, just as under an explicit `SharedKey`.
+        let configs = hadoop(&[
+            (
+                "fs.azure.account.key",
+                "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+            ),
+            ("fs.azure.account.oauth2.client.secret", ""),
+        ]);
+        let u = url("abfss://data@myacct.dfs.core.windows.net/path/file.parquet");
+        create_store_with_env(&u, &configs, env_of(&[])).expect("store builds");
+
+        let builder = builder_for(&configs, &[]);
+        assert_eq!(
+            value(&builder, AzureConfigKey::AccessKey).as_deref(),
+            Some("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
+        );
+        assert_eq!(value(&builder, AzureConfigKey::ClientSecret), None);
+    }
+
+    #[test]
+    fn default_shared_key_ignores_blank_unused_sas_token() {
+        let configs = hadoop(&[
+            (
+                "fs.azure.account.key",
+                "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+            ),
+            ("fs.azure.sas.fixed.token", ""),
+        ]);
+        let u = url("abfss://data@myacct.dfs.core.windows.net/path/file.parquet");
+        create_store_with_env(&u, &configs, env_of(&[])).expect("store builds");
+
+        let builder = builder_for(&configs, &[]);
+        assert_eq!(value(&builder, AzureConfigKey::SasKey), None);
+        assert_eq!(
+            value(&builder, AzureConfigKey::AccessKey).as_deref(),
+            Some("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
+        );
+    }
+
+    #[test]
+    fn default_shared_key_still_rejects_key_provider_class() {
+        let configs = hadoop(&[
+            (
+                "fs.azure.account.key",
+                "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+            ),
+            ("fs.azure.account.keyprovider", "com.example.KeyProvider"),
+        ]);
+        let err = err_of(&configs);
+        assert!(
+            err.contains("fs.azure.account.keyprovider"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn no_key_and_no_auth_type_still_reads_every_mechanism() {
+        let configs = hadoop(CLIENT_SECRET_PRINCIPAL);
+        let u = url("abfss://data@myacct.dfs.core.windows.net/path/file.parquet");
+        create_store_with_env(&u, &configs, env_of(&[])).expect("store builds");
+
+        let builder = builder_for(&configs, &[]);
+        assert_eq!(
+            value(&builder, AzureConfigKey::ClientSecret).as_deref(),
+            Some("hadoop-secret")
+        );
+        assert_eq!(value(&builder, AzureConfigKey::AccessKey), None);
     }
 
     #[test]
