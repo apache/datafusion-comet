@@ -15,7 +15,7 @@
 # specific language governing permissions and limitations
 # under the License.
 
-# Guards six CI invariants that are silent when broken:
+# Guards seven CI invariants that are silent when broken:
 #
 #   1. Change-filter routing. dev/ci/compute-changes.py decides which heavy
 #      jobs run. A file that a job depends on but that no filter lists makes
@@ -56,15 +56,24 @@
 #      added to that workflow without the guard starts running on every push
 #      again and nothing fails, so nothing tells you.
 #
+#   7. Cache save scope. actions/cache entries are scoped to the ref that
+#      wrote them, so one written from a pull request or from the queue's
+#      throwaway branch can never be restored again -- but it still counts
+#      against the repository's shared budget and evicts main's entries,
+#      which is how every native build in the queue came to miss its cargo
+#      cache and pay a cold ~26 minute compile.
+#
 # Run from the repository root: python3 dev/ci/check-ci-config.py
 
 import importlib.util
 import re
+import subprocess
 import sys
 from pathlib import Path
 
 WORKFLOWS = Path(".github/workflows")
 ASF_YAML = Path(".asf.yaml")
+LOCAL_CI = Path("dev/local-ci.sh")
 
 # The ci.yml job that aggregates every other job's result.
 AGGREGATOR_JOB = "required_checks"
@@ -118,14 +127,26 @@ ROUTING_CASES = [
     # to nothing at all and merges having been exercised by no consumer.
     ([".github/actions/upload-artifact-retry/action.yaml"], BUILD_JOBS),
     ([".github/actions/download-artifact-retry/action.yaml"], BUILD_JOBS),
-    # The Maven bootstrap composite is called only from pr_build_linux.yml.
-    (
-        [".github/actions/maven-bootstrap/action.yaml"],
-        {"build_linux", "build_linux_full", "build_linux_all_profiles"},
-    ),
+    # Maven bootstrap runs inside setup-builder and setup-macos-builder, so it
+    # reaches every job that runs ./mvnw, the Delta gate and PyArrow suite
+    # included.
+    ([".github/actions/maven-bootstrap/action.yaml"], MVN_JOBS),
     # Spot checks that the additions above did not widen unrelated routes.
     (["docs/source/user-guide/overview.md"], {"docs"}),
     (["native/core/benches/parquet_read.rs"], {"benchmark"}),
+    # The mermaid guard is run by preflight, which is unconditional, and again
+    # by the docs deploy, which is not, so the deploy has to be routed. The
+    # build jobs come along because `dev/ci/**` already feeds them.
+    (
+        ["dev/ci/check-mermaid.py"],
+        {
+            "docs",
+            "build_linux",
+            "build_linux_full",
+            "build_linux_all_profiles",
+            "build_macos",
+        },
+    ),
     # The Delta gate script is read by nothing else; the contrib crate feeds
     # only the gate. The PyArrow pytest lives under spark/, so the Linux and
     # macOS builds see it too, but no Spark SQL or Iceberg suite does, and
@@ -461,12 +482,96 @@ CACHE_REFRESH_INPUT = re.compile(r"^\s+cache-refresh-only:\s*\$\{\{")
 # next line, so match the key alone.
 PROFILES_INPUT = re.compile(r"^\s+profiles:\s*(>-|\$\{\{)")
 
+# Cache paths big enough that writing one from a throwaway ref costs main its
+# own entries. The repository's actions/cache budget is shared and evicted
+# least-recently-used, and a Maven repository or a cargo tree runs to gigabytes
+# apiece.
+# Matched as substrings of the step's `path:`, so they have to survive the
+# prefix being an expression: publish_snapshot.yml writes
+# `${{ env.CARGO_HOME }}/registry`, which no `~/.cargo/...` literal would
+# catch.
+LARGE_CACHE_PATHS = (
+    ".m2/repository",
+    ".cargo/registry",
+    ".cargo/git",
+    "CARGO_HOME",
+    "native/target",
+)
+# `actions/cache@vN` saves in an implicit post step that no `if:` can reach, so
+# a large cache has to be split into `restore` plus a guarded `save`.
+CACHE_RW_USES = re.compile(r"^\s*(?:-\s*)?uses:\s*actions/cache@v\d+\s*$")
+CACHE_SAVE_USES = re.compile(r"^\s*(?:-\s*)?uses:\s*actions/cache/save@v\d+\s*$")
+CACHE_MAIN_GUARD = re.compile(r"github\.ref\s*==\s*'refs/heads/main'")
+# publish_snapshot.yml runs from main on a schedule, so its entries already
+# land in the only scope that helps. (The TPC-H/TPC-DS dataset caches need no
+# entry here: `./tpch` and `./tpcds-sf-1` are not dependency trees and are not
+# in LARGE_CACHE_PATHS, so this check never looks at them.)
+CACHE_SAVE_SCOPE_EXEMPT = {
+    ("publish_snapshot.yml", "snapshot-cargo-"),
+    ("publish_snapshot.yml", "snapshot-maven-"),
+}
+
 
 def load_filters():
     spec = importlib.util.spec_from_file_location("compute_changes", "dev/ci/compute-changes.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def load_ci_module(name, filename):
+    """Import one of the hyphenated dev/ci scripts as a module."""
+    spec = importlib.util.spec_from_file_location(name, f"dev/ci/{filename}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def check_local_ci_config():
+    """dev/local-ci.sh reads ci.yml and dev/ci; make that drift fail here.
+
+    The values live in dev/ci/local-ci-config.py, the single parser, which
+    validates each one against a version shape. Importing it here is what turns
+    a requoted `spark-full`, a reindented `with:` block or a renamed job into a
+    preflight failure rather than a surprise the next time somebody needs the
+    script. `bash -n` covers the shell, since actionlint runs with
+    --shellcheck=off and looks only at workflow files.
+    """
+    if not LOCAL_CI.exists():
+        return True
+    failures = []
+
+    syntax = subprocess.run(
+        ["bash", "-n", str(LOCAL_CI)], capture_output=True, text=True, check=False
+    )
+    if syntax.returncode != 0:
+        failures.append(f"{LOCAL_CI} is not valid bash: {syntax.stderr.strip()}")
+
+    try:
+        config = load_ci_module("local_ci_config", "local-ci-config.py").config()
+        # Each default must name a job ci.yml actually defines, or the script
+        # defaults to a version it then cannot look up.
+        for suite in ("spark", "iceberg"):
+            if not config[suite]:
+                failures.append(f"local-ci-config.py found no {suite}_* jobs in ci.yml")
+            elif config[f"{suite}_default"] not in config[suite]:
+                failures.append(
+                    f"local-ci-config.py defaults {suite} to "
+                    f"{config[f'{suite}_default']}, which ci.yml has no job for"
+                )
+        if config["dedicated_gate_version"] not in config["spark"]:
+            failures.append(
+                "the DEDICATED_JVM_SBT_TESTS gate names Spark "
+                f"{config['dedicated_gate_version']}, which ci.yml has no job for"
+            )
+        if not config["rows"]:
+            failures.append("local-ci-config.py found no Spark SQL matrix rows")
+    except Exception as err:  # noqa: BLE001 - any parse failure is the finding
+        failures.append(f"dev/ci/local-ci-config.py could not read the CI config: {err}")
+
+    for failure in failures:
+        print(f"local-ci: {failure}")
+    return not failures
 
 
 def check_spark_sql_modules():
@@ -1027,6 +1132,96 @@ def check_nightly_base_fallback():
     return not failures
 
 
+def _cache_steps(lines):
+    """Yield (line_no, uses_line, step_lines) for every actions/cache* step.
+
+    A step runs from the `- ` that opens it to the next line indented no
+    further, which is enough structure to read its `if:`, `key:` and `path:`
+    without a YAML parser (no other check here takes that dependency either).
+    """
+    for index, line in enumerate(lines):
+        if not (CACHE_RW_USES.match(line) or CACHE_SAVE_USES.match(line)):
+            continue
+        start = index
+        while start > 0 and not lines[start].lstrip().startswith("- "):
+            start -= 1
+        indent = len(lines[start]) - len(lines[start].lstrip())
+        end = index + 1
+        while end < len(lines):
+            stripped = lines[end].strip()
+            if stripped and not stripped.startswith("#"):
+                if len(lines[end]) - len(lines[end].lstrip()) <= indent:
+                    break
+            end += 1
+        yield start + 1, line, lines[start:end]
+
+
+def check_cache_save_scope():
+    """A multi-gigabyte cache is written only on push to main.
+
+    Caches are scoped to the ref that wrote them: a pull request reads its own
+    ref and main, and a `gh-readonly-queue/*` branch takes its entries to the
+    grave when the queue deletes it. An entry written from a queue or
+    pull-request ref can therefore never be restored by a later run, while
+    still counting against the repository's shared budget and pushing main's
+    entries out of it under least-recently-used eviction.
+
+    That is not hypothetical. On 2026-09-15 the repository held 12.27 GiB
+    across 14 entries, of which 9.22 GiB sat on one `gh-readonly-queue/*`
+    branch and 3.01 GiB on `refs/pull/*/merge`. Nothing at all was on main, so
+    every `cargo build --profile ci` in the merge queue missed its cache and
+    paid a cold ~26 minute compile where a hit costs 2m21s -- eight times over
+    in a single run, because each Spark and Iceberg caller builds its own copy.
+
+    The cargo caches already carry `if: github.ref == 'refs/heads/main'` on
+    their save. This holds every other large cache to the same rule, and
+    rejects the bare `actions/cache@vN` form for them outright, since its save
+    runs in an implicit post step that no `if:` can reach.
+    """
+    failures = []
+    sources = sorted(WORKFLOWS.glob("*.yml")) + sorted(WORKFLOWS.glob("*.yaml"))
+    sources += sorted(Path(".github/actions").glob("*/action.yaml"))
+    sources += sorted(Path(".github/actions").glob("*/action.yml"))
+
+    for source in sources:
+        lines = source.read_text(encoding="utf-8").splitlines()
+        for line_no, uses, step in _cache_steps(lines):
+            body = "\n".join(step)
+            if not any(path in body for path in LARGE_CACHE_PATHS):
+                continue
+            key = ""
+            for entry in step:
+                if entry.strip().startswith("key:"):
+                    key = entry.split("key:", 1)[1].strip()
+                    break
+            if any(
+                source.name == name and key.startswith(prefix)
+                for name, prefix in CACHE_SAVE_SCOPE_EXEMPT
+            ):
+                continue
+            where = f"{source}:{line_no}"
+            if CACHE_RW_USES.match(uses):
+                failures.append(
+                    f"{where}: `{key}` caches a large path with "
+                    f"`actions/cache@vN`, whose save runs in an implicit post "
+                    f"step that no `if:` can reach. Split it into "
+                    f"`actions/cache/restore` plus an `actions/cache/save` "
+                    f"carrying `if: github.ref == 'refs/heads/main'`, or exempt "
+                    f"the key in CACHE_SAVE_SCOPE_EXEMPT with the reason"
+                )
+            elif not CACHE_MAIN_GUARD.search(body):
+                failures.append(
+                    f"{where}: `{key}` saves a large path without "
+                    f"`if: github.ref == 'refs/heads/main'`, so a pull request "
+                    f"or merge-queue run writes an entry no later run can "
+                    f"restore, evicting main's from the shared budget"
+                )
+
+    for failure in failures:
+        print(f"cache save scope: {failure}")
+    return not failures
+
+
 if __name__ == "__main__":
     ok = check_change_filters()
     ok = check_event_policy() and ok
@@ -1038,6 +1233,8 @@ if __name__ == "__main__":
     ok = check_cache_refresh_scope() and ok
     ok = check_nightly_scope() and ok
     ok = check_nightly_base_fallback() and ok
+    ok = check_cache_save_scope() and ok
+    ok = check_local_ci_config() and ok
     if not ok:
         sys.exit(1)
     print("CI config checks passed")

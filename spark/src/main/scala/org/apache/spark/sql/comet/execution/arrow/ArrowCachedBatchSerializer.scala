@@ -39,7 +39,7 @@ import org.apache.spark.storage.StorageLevel
 import org.apache.spark.unsafe.types.UTF8String
 import org.apache.spark.util.io.ChunkedByteBuffer
 
-import org.apache.comet.CometArrowAllocator
+import org.apache.comet.{CometArrowAllocator, DataTypeSupport}
 
 /**
  * Cached batch format used when Comet writes Spark in-memory cache data.
@@ -663,6 +663,11 @@ object ArrowCachedBatchSerializer {
    * This mirrors the vectors `Utils.getFieldVector` accepts. A type missing from that list throws
    * during cache materialization, so it has to be delegated to Spark's default cache format
    * instead. Interval types are the notable omission.
+   *
+   * A struct with duplicate child names is rejected for a different reason: Java Arrow keys a
+   * struct vector's children by name, so the batch cannot be imported back across the C data
+   * interface (#5605) and the native scan over the cache could never read it. Storing it in
+   * Comet's format would only be work thrown away.
    */
   def supportsType(dt: DataType): Boolean = dt match {
     case BooleanType | ByteType | ShortType | IntegerType | LongType | FloatType | DoubleType |
@@ -672,6 +677,7 @@ object ArrowCachedBatchSerializer {
     case _: StringType => true
     case ArrayType(elementType, _) => supportsType(elementType)
     case MapType(keyType, valueType, _) => supportsType(keyType) && supportsType(valueType)
+    case StructType(fields) if DataTypeSupport.hasDuplicateFieldNames(fields) => false
     case StructType(fields) => fields.forall(f => supportsType(f.dataType))
     case _ => false
   }
