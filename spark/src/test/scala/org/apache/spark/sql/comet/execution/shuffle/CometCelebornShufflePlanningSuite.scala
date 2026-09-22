@@ -476,13 +476,14 @@ class CometCelebornShufflePlanningSuite extends CometTestBase {
       percentile <- Seq("percentile", "percentile_approx")
       mergeFunction <- Seq("first", "last")
     } {
-      test(s"unsupported $mergeFunction merge preserves $percentile buffers with AQE=$adaptive") {
+      test(s"disabled $mergeFunction preserves $percentile buffers with AQE=$adaptive") {
         manager.withPlanningSupport(CelebornNativeShufflePlanningSupport()) {
           withSQLConf(
             SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString,
             SQLConf.SHUFFLE_PARTITIONS.key -> "4",
+            s"spark.comet.expression.${mergeFunction.capitalize}.enabled" -> "false",
             CometConf.COMET_SHUFFLE_MODE.key -> "native") {
-            // FIRST/LAST cannot merge natively. Tag the incompatible percentile producer
+            // Disable FIRST/LAST to exercise fallback. Tag the incompatible percentile producer
             // before the first DISTINCT exchange is materialized, not just at the later
             // exchange that falls back. Its grouping key makes FIRST/LAST deterministic.
             val query = spark
@@ -547,7 +548,7 @@ class CometCelebornShufflePlanningSuite extends CometTestBase {
 
     for {
       fallback <- Seq("partition threshold", "unsupported array hash key")
-      function <- Seq("collect_list", "collect_set", "avg")
+      function <- Seq("collect_list", "collect_set", "avg", "count")
     } {
       test(s"native $fallback preserves $function aggregate buffers with AQE=$adaptive") {
         val complexKey = fallback == "unsupported array hash key"
@@ -562,8 +563,11 @@ class CometCelebornShufflePlanningSuite extends CometTestBase {
             SQLConf.SHUFFLE_PARTITIONS.key -> "4",
             CometConf.COMET_SHUFFLE_MODE.key -> "native") {
             val grouping = if (complexKey) "array(id % 3)" else "id % 3"
-            val aggregate =
-              if (function == "avg") "avg(value)" else s"sort_array($function(value))"
+            val aggregate = if (function.startsWith("collect_")) {
+              s"sort_array($function(value))"
+            } else {
+              s"$function(value)"
+            }
             val query = spark
               .range(0, 18, 1, 4)
               .selectExpr(s"$grouping AS grouping_key", "id AS value")
@@ -578,13 +582,15 @@ class CometCelebornShufflePlanningSuite extends CometTestBase {
             val nativeAggregates = collect(executedPlan) {
               case aggregate: CometHashAggregateExec => aggregate
             }
-            if (function == "avg") {
-              // AVG's intermediate state is Spark-compatible; native partials remain safe.
-              assert(nativeAggregates.nonEmpty, s"$executedPlan")
+            if (function == "count") {
+              // COUNT's non-null Long buffer is safe for Spark Final to consume.
+              assert(nativeAggregates.size == 1, s"$executedPlan")
+              assert(nativeAggregates.head.modes == Seq(Partial), s"$executedPlan")
             } else {
               // A Spark final cannot deserialize Comet's ArrayType collect_list/collect_set
-              // state as its BinaryType buffer. Both halves must agree when the exchange falls
-              // back, not just when an aggregate operator itself is unsupported.
+              // state as BinaryType, or safely merge AVG's never-updated (null, 0) buffer.
+              // Both halves must agree when the exchange falls back, not just when an
+              // aggregate operator itself is unsupported.
               assert(nativeAggregates.isEmpty, s"$executedPlan")
             }
           }

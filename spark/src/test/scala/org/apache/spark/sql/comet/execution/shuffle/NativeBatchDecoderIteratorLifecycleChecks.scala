@@ -45,6 +45,42 @@ private[shuffle] object NativeBatchDecoderIteratorLifecycleChecks {
     }
   }
 
+  private class TrackingNative extends Native {
+    val handle = 42L
+    var createCalls = 0
+    var releaseCalls = 0
+
+    override def createRemoteShuffleDecoder(expectedSchema: Array[Byte]): Long = {
+      createCalls += 1
+      handle
+    }
+
+    override def releaseRemoteShuffleDecoder(decoderHandle: Long): Unit = {
+      assert(decoderHandle == handle)
+      releaseCalls += 1
+    }
+  }
+
+  private final class TrackingRemoteInput(
+      bytes: Array[Byte],
+      closeFailure: Option[Throwable] = None)
+      extends ByteArrayInputStream(bytes)
+      with CometShuffleReadFailureHandler {
+    var closeCalls = 0
+    var reports = 0
+
+    override def close(): Unit = {
+      closeCalls += 1
+      super.close()
+      closeFailure.foreach(throw _)
+    }
+
+    override def onShuffleReadFailure(failure: Throwable): Unit = {
+      reports += 1
+      throw failure
+    }
+  }
+
   private val frame = ByteBuffer
     .allocate(20)
     .order(ByteOrder.LITTLE_ENDIAN)
@@ -152,14 +188,17 @@ private[shuffle] object NativeBatchDecoderIteratorLifecycleChecks {
         throw new AssertionError("Expected native decoding to fail")
       }
     }
-    val nativeLib = new Native {
+    val nativeLib = new TrackingNative {
       override def decodeShuffleBlockWithValidation(
           block: ByteBuffer,
           length: Int,
           arrays: Array[Long],
           schemas: Array[Long],
           tracing: Boolean,
-          expectedSchema: Array[Byte]): Long = throw decodeFailure
+          decoderHandle: Long): Long = {
+        assert(decoderHandle == handle)
+        throw decodeFailure
+      }
     }
     val decoder = NativeBatchDecoderIterator(
       input,
@@ -186,6 +225,9 @@ private[shuffle] object NativeBatchDecoderIteratorLifecycleChecks {
         }
       assert(closeError eq closeFailure)
       assert(reports == 1)
+      decoder.close()
+      assert(nativeLib.createCalls == 1)
+      assert(nativeLib.releaseCalls == 1)
     } finally {
       util.close()
     }
@@ -197,28 +239,37 @@ private[shuffle] object NativeBatchDecoderIteratorLifecycleChecks {
       .addFields(QueryPlanSerde.serializeDataType(IntegerType).get)
       .build()
       .toByteArray
-    Seq(None, Some(Array.empty[Byte]), Some(intSchema)).foreach { expectedSchema =>
-      val remote = expectedSchema.isDefined
+    Seq(
+      false -> None,
+      false -> Some(intSchema),
+      true -> Some(Array.empty[Byte]),
+      true -> Some(intSchema)).foreach { case (remote, expectedSchema) =>
       var localCalls = 0
       var validatedCalls = 0
       val input =
         if (remote) {
-          new ByteArrayInputStream(frame) with CometShuffleReadFailureHandler {
+          new ByteArrayInputStream(frame ++ frame) with CometShuffleReadFailureHandler {
             override def onShuffleReadFailure(failure: Throwable): Unit = throw failure
           }
         } else {
-          new ByteArrayInputStream(frame)
+          new ByteArrayInputStream(frame ++ frame)
         }
-      val batch = new TrackingBatch()
+      val batches = Seq.fill(2)(new TrackingBatch())
+      val pending = batches.iterator
       val util = new NativeUtil {
         override def getNextBatch(
             numOutputCols: Int,
             decode: (Array[Long], Array[Long]) => Long): Option[ColumnarBatch] = {
           assert(decode(Array.empty[Long], Array.empty[Long]) == 1L)
-          Some(batch)
+          Some(pending.next())
         }
       }
-      val nativeLib = new Native {
+      val nativeLib = new TrackingNative {
+        override def createRemoteShuffleDecoder(schema: Array[Byte]): Long = {
+          assert(expectedSchema.exists(_.sameElements(schema)))
+          super.createRemoteShuffleDecoder(schema)
+        }
+
         override def decodeShuffleBlock(
             block: ByteBuffer,
             length: Int,
@@ -235,8 +286,10 @@ private[shuffle] object NativeBatchDecoderIteratorLifecycleChecks {
             arrays: Array[Long],
             schemas: Array[Long],
             tracing: Boolean,
-            schema: Array[Byte]): Long = {
-          assert(expectedSchema.exists(_.sameElements(schema)))
+            decoderHandle: Long): Long = {
+          assert(decoderHandle == handle)
+          assert(createCalls == 1)
+          assert(releaseCalls == 0)
           validatedCalls += 1
           1L
         }
@@ -249,14 +302,22 @@ private[shuffle] object NativeBatchDecoderIteratorLifecycleChecks {
         tracingEnabled = false,
         expectedSchema = expectedSchema)
       try {
-        assert(decoder.hasNext)
-        assert(localCalls == (if (remote) 0 else 1))
-        assert(validatedCalls == (if (remote) 1 else 0))
+        assert(nativeLib.createCalls == 0)
+        batches.foreach { batch =>
+          assert(decoder.hasNext)
+          assert(decoder.hasNext)
+          assert(decoder.next() eq batch)
+        }
+        assert(!decoder.hasNext)
+        assert(localCalls == (if (remote) 0 else 2))
+        assert(validatedCalls == (if (remote) 2 else 0))
       } finally {
         decoder.close()
         util.close()
       }
-      assert(batch.closeCalls == 1)
+      assert(batches.forall(_.closeCalls == 1))
+      assert(nativeLib.createCalls == (if (remote) 1 else 0))
+      assert(nativeLib.releaseCalls == (if (remote) 1 else 0))
     }
   }
 
@@ -295,6 +356,114 @@ private[shuffle] object NativeBatchDecoderIteratorLifecycleChecks {
     }
   }
 
+  def doesNotAllocateUnusedRemoteDecoder(): Unit = {
+    Seq(false, true).foreach { closeBeforeReading =>
+      val input = new TrackingRemoteInput(if (closeBeforeReading) frame else Array.empty[Byte])
+      val nativeLib = new TrackingNative
+      val decoder = NativeBatchDecoderIterator(
+        input,
+        new SQLMetric("nsTiming", 0L),
+        nativeLib,
+        null,
+        tracingEnabled = false,
+        expectedSchema = Some(Array.empty[Byte]))
+      if (!closeBeforeReading) assert(!decoder.hasNext)
+      decoder.close()
+      decoder.close()
+      assert(!decoder.hasNext)
+      assert(nativeLib.createCalls == 0)
+      assert(nativeLib.releaseCalls == 0)
+      assert(input.closeCalls == 1)
+      assert(input.reports == 0)
+    }
+  }
+
+  def preservesRemoteDecoderCleanupFailures(): Unit = {
+    for (delivered <- Seq(false, true); failBatch <- Seq(false, true)) {
+      val batchFailure = new IOException("batch release failed")
+      val nativeFailure = new IOException("native decoder release failed")
+      val streamFailure = new IOException("stream release failed")
+      val batch = new TrackingBatch(if (failBatch) Some(batchFailure) else None)
+      val input = new TrackingRemoteInput(frame, Some(streamFailure))
+      val nativeLib = new TrackingNative {
+        override def releaseRemoteShuffleDecoder(decoderHandle: Long): Unit = {
+          super.releaseRemoteShuffleDecoder(decoderHandle)
+          throw nativeFailure
+        }
+      }
+      val util = new NativeUtil {
+        override def getNextBatch(
+            numOutputCols: Int,
+            decode: (Array[Long], Array[Long]) => Long): Option[ColumnarBatch] = Some(batch)
+      }
+      val decoder = NativeBatchDecoderIterator(
+        input,
+        new SQLMetric("nsTiming", 0L),
+        nativeLib,
+        util,
+        tracingEnabled = false,
+        expectedSchema = Some(Array.empty[Byte]))
+      try {
+        assert(decoder.hasNext)
+        if (delivered) assert(decoder.next() eq batch)
+        val caught =
+          try {
+            decoder.close()
+            throw new AssertionError("Expected a resource release failure")
+          } catch {
+            case failure: IOException => failure
+          }
+        assert(caught eq (if (failBatch) batchFailure else nativeFailure))
+        val suppressed =
+          if (failBatch) Seq(nativeFailure, streamFailure) else Seq(streamFailure)
+        assert(caught.getSuppressed.toSeq == suppressed)
+      } finally {
+        decoder.close()
+        util.close()
+      }
+      assert(batch.closeCalls == 1)
+      assert(nativeLib.createCalls == 1)
+      assert(nativeLib.releaseCalls == 1)
+      assert(input.closeCalls == 1)
+      assert(input.reports == 0)
+      assert(!decoder.hasNext)
+    }
+  }
+
+  def doesNotReportRemoteDecoderCreationFailures(): Unit = {
+    val expected = new IllegalArgumentException("invalid expected Spark schema")
+    val input = new TrackingRemoteInput(frame)
+    val nativeLib = new TrackingNative {
+      override def createRemoteShuffleDecoder(schema: Array[Byte]): Long = {
+        super.createRemoteShuffleDecoder(schema)
+        throw expected
+      }
+    }
+    val decoder = NativeBatchDecoderIterator(
+      input,
+      new SQLMetric("nsTiming", 0L),
+      nativeLib,
+      null,
+      tracingEnabled = false,
+      expectedSchema = Some(Array.empty[Byte]))
+    try {
+      val caught =
+        try {
+          decoder.hasNext
+          throw new AssertionError("Expected the native decoder creation failure")
+        } catch {
+          case failure: IllegalArgumentException => failure
+        }
+      assert(caught eq expected)
+    } finally {
+      decoder.close()
+    }
+    assert(nativeLib.createCalls == 1)
+    assert(nativeLib.releaseCalls == 0)
+    assert(input.closeCalls == 1)
+    assert(input.reports == 0)
+  }
+
   def doesNotReportAllocationOrImportFailures(): Unit = {
     Seq(
       new OutOfMemoryException("Arrow allocator exhausted"),
@@ -308,10 +477,11 @@ private[shuffle] object NativeBatchDecoderIteratorLifecycleChecks {
             numOutputCols: Int,
             decode: (Array[Long], Array[Long]) => Long): Option[ColumnarBatch] = throw expected
       }
+      val nativeLib = new TrackingNative
       val decoder = NativeBatchDecoderIterator(
         input,
         new SQLMetric("nsTiming", 0L),
-        null,
+        nativeLib,
         util,
         tracingEnabled = false,
         expectedSchema = Some(Array.empty[Byte]))
@@ -329,6 +499,8 @@ private[shuffle] object NativeBatchDecoderIteratorLifecycleChecks {
         decoder.close()
         util.close()
       }
+      assert(nativeLib.createCalls == 1)
+      assert(nativeLib.releaseCalls == 1)
     }
   }
 

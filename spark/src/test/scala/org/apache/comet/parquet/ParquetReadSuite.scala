@@ -285,6 +285,21 @@ abstract class ParquetReadSuite extends CometTestBase {
             |message root {
             |  optional int64 ts(TIMESTAMP_MILLIS);
             |  optional int64 ts_ntz(TIMESTAMP(MILLIS,false));
+            |  optional group s {
+            |    optional int64 ts(TIMESTAMP_MILLIS);
+            |    optional int64 ts_ntz(TIMESTAMP(MILLIS,false));
+            |  }
+            |  optional group a (LIST) {
+            |    repeated group list {
+            |      optional int64 element(TIMESTAMP_MILLIS);
+            |    }
+            |  }
+            |  optional group m (MAP) {
+            |    repeated group key_value {
+            |      required int64 key(TIMESTAMP_MILLIS);
+            |      optional int64 value(TIMESTAMP(MILLIS,false));
+            |    }
+            |  }
             |}
             |""".stripMargin)
           val writer = createParquetWriter(schema, path, dictionaryEnabled)
@@ -295,6 +310,13 @@ abstract class ParquetReadSuite extends CometTestBase {
             val record = new SimpleGroup(schema)
             record.add(0, millis)
             record.add(1, millis)
+            val nested = record.addGroup(2)
+            nested.add(0, millis)
+            nested.add(1, millis)
+            record.addGroup(3).addGroup(0).add(0, millis)
+            val entry = record.addGroup(4).addGroup(0)
+            entry.add(0, millis)
+            entry.add(1, millis)
             writer.write(record)
           }
           writer.close()
@@ -318,7 +340,7 @@ abstract class ParquetReadSuite extends CometTestBase {
           Seq(false, true).foreach { ansiEnabled =>
             withSQLConf(SQLConf.ANSI_ENABLED.key -> ansiEnabled.toString) {
               readParquetFile(path.toString) { df =>
-                Seq("ts", "ts_ntz").foreach { column =>
+                Seq("ts", "ts_ntz", "s", "s.ts", "s.ts_ntz", "a", "m").foreach { column =>
                   val selected = df.select(column)
                   assert(collect(selected.queryExecution.executedPlan) {
                     case _: CometNativeScanExec => true
@@ -1572,6 +1594,95 @@ abstract class ParquetReadSuite extends CometTestBase {
             assertThrows[SparkException](df.collect())
           }
         }
+      }
+    }
+  }
+
+  test("native scan rejects nested Parquet conversions Spark rejects") {
+    // Regression guard for #5671. Spark's vectorized reader runs
+    // `ParquetVectorUpdaterFactory.getUpdater` on every leaf column, nested or not, so the
+    // conversions the top-level rejection tests above cover must also be rejected inside
+    // structs, arrays and maps instead of being silently cast (NULLs, parsed strings) or
+    // crashing the native reader.
+    withSQLConf(SQLConf.USE_V1_SOURCE_LIST.key -> "parquet") {
+      val cases = Seq(
+        // (written expression, read schema)
+        ("named_struct('x', cast(5000000000 as bigint))", "s struct<x:int>"),
+        ("named_struct('x', 1)", "s struct<x:string>"),
+        ("named_struct('d', cast('123456.78' as decimal(10,2)))", "s struct<d:decimal(5,2)>"),
+        ("named_struct('x', '12')", "s struct<x:int>"),
+        ("named_struct('x', 1)", "s struct<x:array<int>>"),
+        ("named_struct('x', array(1))", "s struct<x:int>"),
+        ("array(cast(5000000000 as bigint))", "s array<int>"),
+        ("map('k', cast(5000000000 as bigint))", "s map<string,int>"),
+        ("array(named_struct('x', cast(5000000000 as bigint)))", "s array<struct<x:int>>"))
+      cases.foreach { case (writeExpr, readSchema) =>
+        withTempPath { dir =>
+          val path = dir.getCanonicalPath
+          spark.sql(s"select $writeExpr as s").write.parquet(path)
+          withClue(s"$writeExpr read as $readSchema: ") {
+            withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+              intercept[SparkException] {
+                spark.read.schema(readSchema).parquet(path).collect()
+              }
+            }
+            val df = spark.read.schema(readSchema).parquet(path)
+            val plan = df.queryExecution.executedPlan
+            assert(
+              collect(plan) { case scan: CometNativeScanExec => scan }.nonEmpty,
+              s"Expected a native Comet scan before collecting:\n$plan")
+            val cometErr = intercept[SparkException](df.collect())
+            val chain = causeChain(cometErr)
+            assert(
+              chain.exists(
+                _.isInstanceOf[org.apache.spark.sql.execution.datasources.SchemaColumnConvertNotSupportedException]),
+              "expected SchemaColumnConvertNotSupportedException; chain was:\n" +
+                chain.map(t => s"  ${t.getClass.getName}: ${t.getMessage}").mkString("\n"))
+            if (readSchema == "s array<struct<x:int>>") {
+              assert(chain.exists(t =>
+                Option(t.getMessage).exists(_.contains("[s, list, element, x]"))))
+            }
+          }
+        }
+      }
+    }
+  }
+
+  test("nested schema evolution follows Spark's per-version widening rules") {
+    // Companion to "schema evolution": `INT32 -> bigint` inside a struct is gated by the same
+    // per-Spark-version constant as the top level (see ShimCometConf), and accepted nested
+    // conversions keep working now that nested leaves are validated (#5671).
+    withSQLConf(SQLConf.USE_V1_SOURCE_LIST.key -> "parquet") {
+      withTempPath { dir =>
+        val path = dir.getCanonicalPath
+        spark
+          .sql("select named_struct('x', 1) as s union all select named_struct('x', 2)")
+          .write
+          .parquet(path)
+        val df = spark.read.schema("s struct<x:bigint, y:string>").parquet(path)
+        if (CometConf.COMET_SCHEMA_EVOLUTION_ENABLED) {
+          checkSparkAnswerAndOperator(df)
+        } else {
+          assertThrows[SparkException](df.collect())
+        }
+      }
+    }
+  }
+
+  test("nested TIMESTAMP_MILLIS columns read as timestamp") {
+    // Accepted nested conversion (TIMESTAMP_MILLIS -> TIMESTAMP_MICROS inside an array and a
+    // struct) must keep working now that nested leaves are validated (#5671).
+    withSQLConf(
+      SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
+      SQLConf.PARQUET_OUTPUT_TIMESTAMP_TYPE.key -> "TIMESTAMP_MILLIS") {
+      withTempPath { dir =>
+        val path = dir.getCanonicalPath
+        spark
+          .sql("select array(timestamp'2020-01-01 00:00:00.123') as a, " +
+            "named_struct('t', timestamp'2020-01-02 00:00:00.456') as s")
+          .write
+          .parquet(path)
+        checkSparkAnswerAndOperator(spark.read.parquet(path))
       }
     }
   }

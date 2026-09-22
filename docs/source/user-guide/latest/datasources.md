@@ -47,6 +47,14 @@ converted into Arrow format, allowing the Comet pipeline to take over after that
 Comet does not provide a Rust-based JSON scan, but when `spark.comet.convert.json.enabled` is enabled, data is immediately
 converted into Arrow format, allowing the Comet pipeline to take over after that.
 
+### Spark-to-Comet conversion types
+
+Spark-to-Comet conversion supports `ARRAY<STRING>` with binary string semantics, including
+nullable arrays and nullable elements, both as top-level fields and inside supported structs.
+This applies to Spark row and columnar inputs when conversion is enabled for the source.
+Other array element types, nested arrays, arrays of structs, maps, and non-binary string
+collations remain unsupported at this conversion boundary. Source defaults are unchanged.
+
 ## Data Catalogs
 
 ### Apache Iceberg
@@ -60,6 +68,20 @@ Comet supports most standard storage systems, such as local file system and obje
 ### HDFS
 
 The Apache DataFusion Comet Rust-based reader seamlessly scans files from remote HDFS for [supported formats](#supported-spark-data-sources)
+
+```{warning}
+HDFS support is experimental and is not covered by continuous integration. Comet reads HDFS through
+`libhdfs`, which registers a thread-local destructor that detaches the calling thread from the JVM
+regardless of which component attached it
+([HDFS-16021](https://issues.apache.org/jira/browse/HDFS-16021), still open upstream). Comet
+attaches its own worker threads, so a worker that has read from HDFS can crash the JVM with a
+`SIGSEGV` when it later exits
+([#5023](https://github.com/apache/datafusion-comet/issues/5023)). The crash surfaces well after
+the HDFS read itself, typically while an unrelated query is running.
+```
+
+Native Iceberg scans do not support HDFS-backed tables; those scans fall back to Spark. See the
+[Comet and Iceberg Guide](iceberg.md).
 
 ### Building Comet with HDFS support
 
@@ -164,6 +186,14 @@ JAVA_HOME="/opt/homebrew/opt/openjdk@17" make release PROFILES="-Pspark-4.1" RUS
 ```
 
 Or use `spark-shell` with HDFS support as described [above](#building-comet-with-hdfs-support)
+
+Comet also has a test suite that exercises a native scan through `libhdfs` against a fake Hadoop
+filesystem, so it needs no cluster. Because of the crash described above it is excluded from CI and
+run by hand:
+
+```shell
+./mvnw test -Dtest=none -Dsuites="org.apache.comet.parquet.ParquetReadFromFakeHadoopFsSuite"
+```
 
 ## S3
 

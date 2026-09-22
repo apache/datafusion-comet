@@ -27,7 +27,7 @@ import org.apache.spark.sql.catalyst.expressions.url.ParseUrlEvaluator
 
 import org.apache.comet.CometExplainInfo
 import org.apache.comet.expressions.CometEvalMode
-import org.apache.comet.serde.{CometAggregateExpressionSerde, CometExpressionSerde, CometListAgg, CometMapSort, CometRandStr, CometToPrettyString, CometWidthBucket}
+import org.apache.comet.serde.{CometAggregateExpressionSerde, CometExpressionSerde, CometListAgg, CometMapSort, CometRandStr, CometToPrettyString}
 import org.apache.comet.serde.ExprOuterClass.Expr
 import org.apache.comet.serde.QueryPlanSerde.exprToProtoInternal
 
@@ -44,7 +44,7 @@ trait Spark4xCometExprShim extends CometExprShim4x {
       : Map[Class[_ <: Expression], CometExpressionSerde[_]] =
     Map(classOf[RandStr] -> CometRandStr)
   def sparkVersionSpecificMathExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] =
-    Map(classOf[WidthBucket] -> CometWidthBucket)
+    Map.empty
   def sparkVersionSpecificMiscExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] =
     Map(classOf[ToPrettyString] -> CometToPrettyString)
   def sparkVersionSpecificMapExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] =
