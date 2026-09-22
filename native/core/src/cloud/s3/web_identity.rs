@@ -26,12 +26,14 @@
 //! 403. See docs/source/contributor-guide/s3-credential-provider-design.md.
 //!
 //! This provider fixes all three parts of that failure:
-//!   1. Retry on throttle. It uses the AWS SDK `WebIdentityTokenCredentialsProvider`, whose STS
-//!      client retries throttling with exponential backoff + jitter. `max_attempts` is
-//!      configurable (default higher than the SDK's default of 3).
-//!   2. No silent downgrade. The provider is web-identity ONLY -- there is no IMDS/instance-role
-//!      fallback -- so a transient throttle surfaces as a retryable error instead of a
-//!      wrong-identity credential.
+//!   1. Retry on throttle. It builds an STS client from the AWS SDK's fully-resolved `SdkConfig`
+//!      (`aws_config::defaults(...).load()`) with a raised `RetryConfig`, and calls
+//!      `AssumeRoleWithWebIdentity` on it. Because the client comes from the resolved config, it
+//!      honors region, FIPS, dual-stack and any profile/custom STS endpoint the SDK would --
+//!      there is no hand-assembled config to drift. `max_attempts` is configurable.
+//!   2. No silent downgrade. It only ever calls `AssumeRoleWithWebIdentity` -- there is no
+//!      credential chain and no IMDS/instance-role fallback -- so a throttle that outlasts the
+//!      retries surfaces as an error instead of a wrong-identity credential.
 //!   3. Shared, jittered cache. One assumed-role credential is cached per process, keyed by
 //!      identity (role_arn, token_file, region) and the resolved retry/refresh settings, and shared
 //!      across all reader threads and scans that resolve to the same key. Refresh fires ahead of
@@ -49,10 +51,10 @@ use std::sync::{Arc, OnceLock, RwLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
-use aws_config::provider_config::ProviderConfig;
 use aws_config::retry::RetryConfig;
-use aws_config::web_identity_token::WebIdentityTokenCredentialsProvider;
 use aws_config::BehaviorVersion;
+use aws_credential_types::provider::error::CredentialsError;
+use aws_credential_types::provider::future as creds_future;
 use aws_credential_types::provider::ProvideCredentials;
 use aws_credential_types::Credentials;
 use iceberg_storage_opendal::AwsCredential as IcebergAwsCredential;
@@ -96,8 +98,8 @@ const FAILURE_COOLDOWN: Duration = Duration::from_secs(1);
 pub struct WebIdentityConfig {
     role_arn: String,
     token_file: String,
-    /// From `AWS_REGION` / `AWS_DEFAULT_REGION`; only part of the cache key. The actual region
-    /// resolution is done by the AWS SDK's `with_default_region`.
+    /// From `AWS_REGION` / `AWS_DEFAULT_REGION`; only part of the cache key. The STS client's
+    /// actual region (and endpoint) comes from the resolved `SdkConfig`.
     region: Option<String>,
     max_attempts: u32,
     min_ttl: Duration,
@@ -280,30 +282,109 @@ async fn shared_entry(cfg: &WebIdentityConfig) -> Arc<SharedEntry> {
     Arc::clone(map.entry(key).or_insert(entry))
 }
 
-/// Builds a web-identity-only AWS SDK credential provider with STS retry raised to
-/// `cfg.max_attempts`. No IMDS/instance-role fallback is wired in, so a throttle that outlasts the
-/// retries errors instead of downgrading.
+/// Builds the web-identity credential provider from the AWS SDK's fully-resolved config.
+///
+/// The key move: we load a real `SdkConfig` (`aws_config::defaults(...).load()`), which resolves
+/// region, FIPS, dual-stack, the profile, and any custom/profile STS endpoint with the SDK's normal
+/// environment-then-profile precedence, and build the STS client from it. Because the client is
+/// built from the resolved config rather than a hand-assembled one, there is no per-setting copying
+/// to keep in sync -- every endpoint/region knob the SDK understands is honored. We only ever call
+/// `AssumeRoleWithWebIdentity`, so there is no IMDS/instance-role fallback to downgrade to, and the
+/// raised `RetryConfig` gives the throttle its retries.
 async fn build_provider(cfg: &WebIdentityConfig) -> Arc<dyn ProvideCredentials> {
-    let provider_config = base_provider_config(cfg).await;
-    let provider = WebIdentityTokenCredentialsProvider::builder()
-        .configure(&provider_config)
-        .build();
-    Arc::new(provider)
+    let sdk = aws_config::defaults(BehaviorVersion::latest())
+        .retry_config(RetryConfig::standard().with_max_attempts(cfg.max_attempts))
+        .load()
+        .await;
+    Arc::new(web_identity_provider_from(
+        cfg,
+        aws_sdk_sts::Client::new(&sdk),
+    ))
 }
 
-/// The `ProviderConfig` shared by the production build and the tests: it resolves region, FIPS and
-/// dual-stack the same way the AWS default chain would (environment then profile), then raises the
-/// STS retry budget. Forwarding `use_fips` / `use_dual_stack` matters because a bare
-/// `with_default_region()` leaves them unset -- the STS client would then ignore
-/// `AWS_USE_FIPS_ENDPOINT` / `AWS_USE_DUALSTACK_ENDPOINT` and hit the standard endpoint, which can
-/// break access from restricted networks. Tests attach an in-memory HTTP client to the result.
-async fn base_provider_config(cfg: &WebIdentityConfig) -> ProviderConfig {
-    let sdk = aws_config::defaults(BehaviorVersion::latest()).load().await;
-    ProviderConfig::without_region()
-        .with_region(sdk.region().cloned())
-        .with_use_fips(sdk.use_fips())
-        .with_use_dual_stack(sdk.use_dual_stack())
-        .with_retry_config(RetryConfig::standard().with_max_attempts(cfg.max_attempts))
+/// Assembles the provider from an STS client. Split out so tests can supply a client built with an
+/// in-memory HTTP stub while sharing the identity wiring with production.
+fn web_identity_provider_from(
+    cfg: &WebIdentityConfig,
+    sts: aws_sdk_sts::Client,
+) -> WebIdentityStsProvider {
+    WebIdentityStsProvider {
+        sts,
+        role_arn: cfg.role_arn.clone(),
+        token_file: cfg.token_file.clone(),
+        session_name: session_name(),
+    }
+}
+
+/// STS `AssumeRoleWithWebIdentity` session name. STS requires one; it is informational only, so a
+/// stable prefix plus a timestamp keeps sessions distinguishable in CloudTrail.
+fn session_name() -> String {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    format!("comet-web-identity-{nanos}")
+}
+
+/// A web-identity-only credential provider: it reads the projected token and calls STS
+/// `AssumeRoleWithWebIdentity` on `sts`, and does nothing else. No credential chain, so a throttle
+/// that outlasts the STS client's retries returns an error rather than a lower-privilege identity.
+#[derive(Debug)]
+struct WebIdentityStsProvider {
+    sts: aws_sdk_sts::Client,
+    role_arn: String,
+    token_file: String,
+    session_name: String,
+}
+
+impl WebIdentityStsProvider {
+    async fn resolve(&self) -> Result<Credentials, CredentialsError> {
+        let token = std::fs::read_to_string(&self.token_file).map_err(|e| {
+            CredentialsError::provider_error(format!(
+                "reading web identity token file {}: {e}",
+                self.token_file
+            ))
+        })?;
+        let response = self
+            .sts
+            .assume_role_with_web_identity()
+            .role_arn(&self.role_arn)
+            .role_session_name(&self.session_name)
+            .web_identity_token(token.trim())
+            .send()
+            .await
+            .map_err(CredentialsError::provider_error)?;
+        let creds = response.credentials().ok_or_else(|| {
+            CredentialsError::provider_error(
+                "STS AssumeRoleWithWebIdentity response had no credentials",
+            )
+        })?;
+        let expiration = creds.expiration();
+        let expiry = SystemTime::UNIX_EPOCH
+            .checked_add(Duration::new(
+                expiration.secs().max(0) as u64,
+                expiration.subsec_nanos(),
+            ))
+            .ok_or_else(|| {
+                CredentialsError::provider_error("STS credential expiry is out of range")
+            })?;
+        Ok(Credentials::new(
+            creds.access_key_id(),
+            creds.secret_access_key(),
+            Some(creds.session_token().to_string()),
+            Some(expiry),
+            "CometWebIdentity",
+        ))
+    }
+}
+
+impl ProvideCredentials for WebIdentityStsProvider {
+    fn provide_credentials<'a>(&'a self) -> creds_future::ProvideCredentials<'a>
+    where
+        Self: 'a,
+    {
+        creds_future::ProvideCredentials::new(self.resolve())
+    }
 }
 
 /// The credential provider handed to `object_store` (Parquet) and, via
@@ -396,10 +477,11 @@ impl IcebergProvideCredential for WebIdentityCredentialProvider {
 ///
 /// It also stands aside for any credential source the default chain ranks ahead of web-identity:
 /// static credentials in the environment (`AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY`) or a
-/// configured profile (`AWS_PROFILE`, or a shared credentials file). Both the AWS SDK default chain
-/// (Parquet) and opendal/reqsign (Iceberg) resolve Environment -> Profile -> WebIdentity, so taking
-/// over in those cases would silently switch identity from the user's chosen source to the
-/// service-account role.
+/// configured profile (`AWS_PROFILE`, or a shared credentials / config file). Both the AWS SDK
+/// default chain (Parquet) and opendal/reqsign (Iceberg) resolve Environment -> Profile ->
+/// WebIdentity, so taking over in those cases would silently switch identity from the user's chosen
+/// source to the service-account role -- and would also drop profile-configured settings such as a
+/// custom STS endpoint that a hand-built `ProviderConfig` cannot reconstruct here.
 pub fn take_over_if_irsa<F>(
     explicit_credentials: bool,
     resolve: F,
@@ -419,18 +501,29 @@ fn explicit_env_credentials() -> bool {
     non_empty_env("AWS_ACCESS_KEY_ID").is_some() && non_empty_env("AWS_SECRET_ACCESS_KEY").is_some()
 }
 
-/// True if a profile credential source is configured: `AWS_PROFILE` is set, or a shared credentials
-/// file exists at the resolved location (`AWS_SHARED_CREDENTIALS_FILE`, else `~/.aws/credentials`).
-/// The default chain ranks a working profile ahead of web-identity, so the take-over defers to it.
-/// This is conservative: a present-but-empty file makes us fall back to the default chain, which is
-/// exactly the pre-existing behavior, so it is never worse than before.
+/// True if a profile is configured that the default chain would consult ahead of web-identity:
+/// `AWS_PROFILE` is set, or a shared credentials file (`AWS_SHARED_CREDENTIALS_FILE`, else
+/// `~/.aws/credentials`) or a config file (`AWS_CONFIG_FILE`, else `~/.aws/config`) exists. We defer
+/// to the default chain in all of these because it resolves profile credentials AND
+/// profile-configured settings (region, endpoint URLs, FIPS/dual-stack) that a hand-built
+/// `ProviderConfig` cannot reconstruct here. Conservative by design: standing aside just falls back
+/// to the pre-existing default-chain behavior, so it is never worse than before. On an EKS/IRSA pod
+/// none of these are normally present, so the take-over still applies there.
 fn configured_profile() -> bool {
     if non_empty_env("AWS_PROFILE").is_some() {
         return true;
     }
-    let creds_path = non_empty_env("AWS_SHARED_CREDENTIALS_FILE")
-        .or_else(|| non_empty_env("HOME").map(|home| format!("{home}/.aws/credentials")));
-    creds_path.is_some_and(|path| Path::new(&path).exists())
+    let home = non_empty_env("HOME");
+    let candidate = |env_key: &str, default_suffix: &str| {
+        non_empty_env(env_key).or_else(|| home.as_ref().map(|h| format!("{h}{default_suffix}")))
+    };
+    [
+        candidate("AWS_SHARED_CREDENTIALS_FILE", "/.aws/credentials"),
+        candidate("AWS_CONFIG_FILE", "/.aws/config"),
+    ]
+    .into_iter()
+    .flatten()
+    .any(|path| Path::new(&path).exists())
 }
 
 fn system_time_to_timestamp(t: SystemTime) -> reqsign_core::Result<Timestamp> {
@@ -638,20 +731,25 @@ mod tests {
     }
 
     /// Builds a `SharedEntry` whose STS calls are served by `http`, matching how production builds
-    /// the provider (`base_provider_config`) but with the canned client attached.
+    /// the provider (STS client from a loaded `SdkConfig`) but with the canned client attached. The
+    /// identity comes from the `IrsaEnv` the test set, so the token file actually exists.
     async fn entry_with_http(max_attempts: u32, http: CannedStsClient) -> SharedEntry {
         let cfg = WebIdentityConfig {
-            role_arn: "arn:aws:iam::123456789012:role/test".to_string(),
-            token_file: "unused-in-key".to_string(),
+            role_arn: non_empty_env(ENV_ROLE_ARN).expect("IrsaEnv sets the role arn"),
+            token_file: non_empty_env(ENV_TOKEN_FILE).expect("IrsaEnv sets the token file"),
             region: Some("us-east-1".to_string()),
             max_attempts,
             min_ttl: Duration::from_secs(300),
             max_jitter: Duration::ZERO,
         };
-        let provider_config = base_provider_config(&cfg).await.with_http_client(http);
-        let provider = WebIdentityTokenCredentialsProvider::builder()
-            .configure(&provider_config)
-            .build();
+        let sdk = aws_config::defaults(aws_config::BehaviorVersion::latest())
+            .retry_config(
+                aws_config::retry::RetryConfig::standard().with_max_attempts(max_attempts),
+            )
+            .http_client(http)
+            .load()
+            .await;
+        let provider = web_identity_provider_from(&cfg, aws_sdk_sts::Client::new(&sdk));
         SharedEntry {
             provider: Arc::new(provider),
             cached: RwLock::new(None),
@@ -854,6 +952,42 @@ mod tests {
         assert!(
             take_over_if_irsa(false, |_| None).is_none(),
             "a configured profile must keep precedence over the IRSA take-over"
+        );
+    }
+
+    #[test]
+    fn config_file_profile_keeps_precedence_over_irsa() {
+        // A default profile (or a profile-configured STS endpoint) can live in ~/.aws/config with
+        // no AWS_PROFILE and no credentials file. The default chain honors it, and a hand-built
+        // ProviderConfig cannot reconstruct a profile endpoint, so the take-over defers when a
+        // config file is present.
+        let _guard = lock_env();
+        let _env = IrsaEnv::set("config-profile");
+
+        // Baseline points AWS_CONFIG_FILE at a nonexistent path -> take over.
+        assert!(
+            take_over_if_irsa(false, |_| None).is_some(),
+            "IRSA with no config file should take over"
+        );
+
+        // A config file with a profile-configured STS endpoint (the reviewer's trigger) -> stand
+        // aside so the default chain can honor that endpoint.
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let config_path = std::env::temp_dir().join(format!("comet-webid-config-{nanos}"));
+        std::fs::write(
+            &config_path,
+            "[default]\nservices = private\n\n[services private]\nsts =\n  endpoint_url = https://sts.example.internal\n",
+        )
+        .unwrap();
+        std::env::set_var("AWS_CONFIG_FILE", &config_path);
+        let taken_over = take_over_if_irsa(false, |_| None).is_some();
+        let _ = std::fs::remove_file(&config_path);
+        assert!(
+            !taken_over,
+            "a config-file profile/endpoint must keep precedence over the IRSA take-over"
         );
     }
 
