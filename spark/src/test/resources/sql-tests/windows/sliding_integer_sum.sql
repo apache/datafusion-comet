@@ -17,11 +17,9 @@
 
 -- Config: spark.sql.adaptive.enabled=false
 -- Config: spark.sql.ansi.enabled=false
--- Config: spark.comet.operator.WindowExec.allowIncompatible=false
 
--- Spark needs constant folding for PRECEDING bounds. Aggregate inputs remain columns.
-statement
-SET spark.sql.optimizer.excludedRules=
+-- ROWS ... N PRECEDING is covered through the DataFrame API in CometWindowExecSuite
+-- so this fixture can keep the harness's ConstantFolding exclusion.
 
 statement
 CREATE TABLE sliding_integer_sum(g INT, id INT, v BIGINT) USING parquet
@@ -34,11 +32,6 @@ INSERT INTO sliding_integer_sum VALUES
 
 -- TRY mode must fall back even when ANSI is disabled. Cover positive/negative
 -- overflow, recovery after it leaves the frame, all-NULL and empty frames.
-query expect_fallback(ANSI/TRY SUM on integral types with a sliding window frame is not supported)
-SELECT g, id, try_sum(v) OVER (
-  PARTITION BY g ORDER BY id ROWS BETWEEN 1 PRECEDING AND CURRENT ROW)
-FROM sliding_integer_sum
-
 query expect_fallback(ANSI/TRY SUM on integral types with a sliding window frame is not supported)
 SELECT g, id, try_sum(v) OVER (
   PARTITION BY g ORDER BY id RANGE BETWEEN 1 PRECEDING AND CURRENT ROW)
@@ -57,7 +50,6 @@ FROM sliding_integer_sum
 -- Legacy sliding sums still run natively, including wrapping overflow.
 query
 SELECT g, id,
-  sum(v) OVER (PARTITION BY g ORDER BY id ROWS BETWEEN 1 PRECEDING AND CURRENT ROW),
   sum(v) OVER (PARTITION BY g ORDER BY id RANGE BETWEEN 1 PRECEDING AND CURRENT ROW)
 FROM sliding_integer_sum
 
@@ -70,47 +62,9 @@ FROM sliding_integer_sum
 statement
 SET spark.sql.ansi.enabled=true
 
-query expect_fallback(ANSI/TRY SUM on integral types with a sliding window frame is not supported)
-SELECT g, id, try_sum(v) OVER (
-  PARTITION BY g ORDER BY id ROWS BETWEEN 1 PRECEDING AND CURRENT ROW)
-FROM sliding_integer_sum
-
--- Admission is independent of the data; even a non-overflowing ANSI sum falls back.
-query expect_fallback(ANSI/TRY SUM on integral types with a sliding window frame is not supported)
-SELECT g, id, sum(v) OVER (
-  PARTITION BY g ORDER BY id ROWS BETWEEN 1 PRECEDING AND CURRENT ROW)
-FROM sliding_integer_sum WHERE id > 1
-
-query expect_error(ARITHMETIC_OVERFLOW)
-SELECT sum(v) OVER (ORDER BY id ROWS BETWEEN 1 PRECEDING AND CURRENT ROW)
-FROM sliding_integer_sum WHERE g = 1
-
 query expect_error(ARITHMETIC_OVERFLOW)
 SELECT sum(v) OVER (ORDER BY id RANGE BETWEEN 1 PRECEDING AND CURRENT ROW)
 FROM sliding_integer_sum WHERE g = 2
-
--- Narrow integral inputs also produce BIGINT sums and require the same guard.
-query expect_fallback(ANSI/TRY SUM on integral types with a sliding window frame is not supported)
-SELECT sum(CAST(id AS TINYINT)) OVER (
-  PARTITION BY g ORDER BY id ROWS BETWEEN 1 PRECEDING AND CURRENT ROW)
-FROM sliding_integer_sum
-
-query expect_fallback(ANSI/TRY SUM on integral types with a sliding window frame is not supported)
-SELECT sum(CAST(id AS SMALLINT)) OVER (
-  PARTITION BY g ORDER BY id ROWS BETWEEN 1 PRECEDING AND CURRENT ROW)
-FROM sliding_integer_sum
-
-query expect_fallback(ANSI/TRY SUM on integral types with a sliding window frame is not supported)
-SELECT sum(id) OVER (
-  PARTITION BY g ORDER BY id ROWS BETWEEN 1 PRECEDING AND CURRENT ROW)
-FROM sliding_integer_sum
-
--- Floating-point sums do not use checked integer arithmetic and remain native.
-query
-SELECT g, id,
-  sum(CAST(v AS DOUBLE)) OVER (PARTITION BY g ORDER BY id ROWS BETWEEN 1 PRECEDING AND CURRENT ROW),
-  try_sum(CAST(v AS DOUBLE)) OVER (PARTITION BY g ORDER BY id ROWS BETWEEN 1 PRECEDING AND CURRENT ROW)
-FROM sliding_integer_sum WHERE id > 1
 
 -- Native expanding sums remain enabled in ANSI and TRY mode.
 query
