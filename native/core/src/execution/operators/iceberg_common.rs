@@ -179,10 +179,13 @@ fn build_s3_credential_loader(
         // configured explicitly in the catalog (static keys or an assume-role arn) -- explicit
         // config always wins, same as a named provider class does.
         let explicit = has_explicit_s3_credentials(catalog_properties);
-        return Ok(
-            take_over_if_irsa(explicit, |key| catalog_properties.get(key).cloned())
-                .map(CustomAwsCredentialLoader::new),
-        );
+        // Config keys arrive on the Iceberg side under the `s3.` prefix (that is how a catalog
+        // property reaches the FileIO property bag, the same as `s3.comet.credential.provider.class`),
+        // so resolve the bare keys under that prefix.
+        return Ok(take_over_if_irsa(explicit, |key| {
+            catalog_properties.get(&format!("s3.{key}")).cloned()
+        })
+        .map(CustomAwsCredentialLoader::new));
     };
     // Fall back to the bucket when the table has no catalog identity (e.g. HadoopTables loaded by
     // raw path).
