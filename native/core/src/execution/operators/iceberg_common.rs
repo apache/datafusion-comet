@@ -17,7 +17,7 @@
 
 //! Helpers shared between the Iceberg scan and Iceberg write operators.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, LazyLock};
 
 use datafusion::common::DataFusionError;
@@ -97,7 +97,7 @@ pub(crate) fn storage_factory_for(
     }
 }
 
-#[derive(Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct FileIoCacheKey {
     access_mode: u8,
     catalog_name: String,
@@ -133,12 +133,74 @@ impl FileIoCacheKey {
 
 const FILE_IO_CACHE_CAPACITY: usize = 64;
 
+/// Least recently used entries are evicted first.
+struct FileIoCache {
+    entries: HashMap<FileIoCacheKey, FileIO>,
+    order: VecDeque<FileIoCacheKey>,
+    capacity: usize,
+}
+
+impl FileIoCache {
+    fn new(capacity: usize) -> Self {
+        Self {
+            entries: HashMap::new(),
+            order: VecDeque::new(),
+            capacity,
+        }
+    }
+
+    fn get(&mut self, key: &FileIoCacheKey) -> Option<FileIO> {
+        let file_io = self.entries.get(key)?.clone();
+        if let Some(pos) = self.order.iter().position(|k| k == key) {
+            let recent = self.order.remove(pos)?;
+            self.order.push_back(recent);
+        }
+        Some(file_io)
+    }
+
+    /// Returns the replaced or evicted `FileIO` so the caller can drop it outside the lock.
+    fn insert(&mut self, key: FileIoCacheKey, file_io: FileIO) -> Option<FileIO> {
+        if let Some(previous) = self.entries.insert(key.clone(), file_io) {
+            return Some(previous);
+        }
+        self.order.push_back(key);
+        if self.entries.len() > self.capacity {
+            let oldest = self.order.pop_front()?;
+            return self.entries.remove(&oldest);
+        }
+        None
+    }
+}
+
 /// Shared per executor so tasks reuse one storage client instead of each building its own.
-static FILE_IO_CACHE: LazyLock<Mutex<HashMap<FileIoCacheKey, FileIO>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
+static FILE_IO_CACHE: LazyLock<Mutex<FileIoCache>> =
+    LazyLock::new(|| Mutex::new(FileIoCache::new(FILE_IO_CACHE_CAPACITY)));
 
 pub fn clear_file_io_cache() {
-    FILE_IO_CACHE.lock().clear();
+    let dropped: Vec<FileIO> = {
+        let mut cache = FILE_IO_CACHE.lock();
+        cache.order.clear();
+        cache.entries.drain().map(|(_, file_io)| file_io).collect()
+    };
+    drop(dropped);
+}
+
+fn cached_file_io(
+    cache: &Mutex<FileIoCache>,
+    key: Option<FileIoCacheKey>,
+    build: impl FnOnce() -> Result<FileIO, DataFusionError>,
+) -> Result<FileIO, DataFusionError> {
+    let Some(key) = key else {
+        return build();
+    };
+    if let Some(file_io) = cache.lock().get(&key) {
+        return Ok(file_io);
+    }
+    let file_io = build()?;
+    // Dropped after the lock is released: the last clone of a FileIO releases JNI global refs.
+    let evicted = cache.lock().insert(key, file_io.clone());
+    drop(evicted);
+    Ok(file_io)
 }
 
 pub(crate) fn load_file_io(
@@ -147,31 +209,23 @@ pub(crate) fn load_file_io(
     catalog_name: &str,
     access_mode: AccessMode,
 ) -> Result<FileIO, DataFusionError> {
-    let key = FileIoCacheKey::new(
-        catalog_properties,
-        reference_path,
-        catalog_name,
-        access_mode,
-    );
-    if let Some(key) = &key {
-        if let Some(file_io) = FILE_IO_CACHE.lock().get(key) {
-            return Ok(file_io.clone());
-        }
-    }
-    let file_io = build_file_io(
-        catalog_properties,
-        reference_path,
-        catalog_name,
-        access_mode,
-    )?;
-    if let Some(key) = key {
-        let mut cache = FILE_IO_CACHE.lock();
-        if cache.len() >= FILE_IO_CACHE_CAPACITY {
-            cache.clear();
-        }
-        cache.insert(key, file_io.clone());
-    }
-    Ok(file_io)
+    cached_file_io(
+        &FILE_IO_CACHE,
+        FileIoCacheKey::new(
+            catalog_properties,
+            reference_path,
+            catalog_name,
+            access_mode,
+        ),
+        || {
+            build_file_io(
+                catalog_properties,
+                reference_path,
+                catalog_name,
+                access_mode,
+            )
+        },
+    )
 }
 
 /// Build a `FileIO` whose storage scheme is inferred from `reference_path` and whose properties
@@ -317,44 +371,106 @@ fn is_s3_family_scheme(scheme: &str, catalog_properties: &HashMap<String, String
 mod tests {
     use super::*;
 
-    #[test]
-    fn load_file_io_is_cached_per_storage_client_configuration() {
-        let props = HashMap::from([("s3.region".to_string(), "eu-west-1".to_string())]);
-        let catalog = "file_io_cache_test";
-        let table = "s3://bucket/warehouse/db/t";
-        let key = |mode| FileIoCacheKey::new(&props, table, catalog, mode).unwrap();
-        {
-            let mut cache = FILE_IO_CACHE.lock();
-            cache.remove(&key(AccessMode::Read));
-            cache.remove(&key(AccessMode::Write));
-        }
+    fn local_file_io() -> FileIO {
+        build_file_io(
+            &HashMap::new(),
+            "file:///tmp/warehouse",
+            "",
+            AccessMode::Read,
+        )
+        .unwrap()
+    }
 
-        load_file_io(&props, table, catalog, AccessMode::Read).unwrap();
-        assert!(FILE_IO_CACHE.lock().contains_key(&key(AccessMode::Read)));
-        assert!(!FILE_IO_CACHE.lock().contains_key(&key(AccessMode::Write)));
+    #[test]
+    fn cache_key_separates_client_configurations() {
+        let props = HashMap::from([("s3.region".to_string(), "eu-west-1".to_string())]);
+        let table = "s3://bucket/warehouse/db/t";
+        let key = |mode| FileIoCacheKey::new(&props, table, "cat", mode);
+        assert_ne!(key(AccessMode::Read), key(AccessMode::Write));
         assert_ne!(
+            key(AccessMode::Read),
             FileIoCacheKey::new(
                 &props,
                 "s3://bucket/warehouse/db/other",
-                catalog,
+                "cat",
                 AccessMode::Read
-            ),
-            Some(key(AccessMode::Read))
+            )
         );
-
-        load_file_io(&props, table, catalog, AccessMode::Write).unwrap();
-        assert!(FILE_IO_CACHE.lock().contains_key(&key(AccessMode::Write)));
-
+        assert_ne!(
+            key(AccessMode::Read),
+            FileIoCacheKey::new(&props, table, "other_cat", AccessMode::Read)
+        );
         let mut moved = props.clone();
         moved.insert("s3.endpoint".to_string(), "http://minio:9000".to_string());
         assert_ne!(
-            FileIoCacheKey::new(&moved, table, catalog, AccessMode::Read),
-            Some(key(AccessMode::Read))
+            key(AccessMode::Read),
+            FileIoCacheKey::new(&moved, table, "cat", AccessMode::Read)
         );
-
         assert!(
             FileIoCacheKey::new(&HashMap::new(), "memory:///", "", AccessMode::Write).is_none()
         );
+    }
+
+    #[test]
+    fn cached_file_io_builds_once_per_key_and_always_without_a_key() {
+        let cache = Mutex::new(FileIoCache::new(4));
+        let key = FileIoCacheKey::new(
+            &HashMap::new(),
+            "file:///tmp/warehouse",
+            "",
+            AccessMode::Read,
+        );
+        let mut builds = 0;
+        for _ in 0..2 {
+            cached_file_io(&cache, key.clone(), || {
+                builds += 1;
+                Ok(local_file_io())
+            })
+            .unwrap();
+        }
+        assert_eq!(builds, 1);
+        for _ in 0..2 {
+            cached_file_io(&cache, None, || {
+                builds += 1;
+                Ok(local_file_io())
+            })
+            .unwrap();
+        }
+        assert_eq!(builds, 3);
+        assert_eq!(cache.lock().entries.len(), 1);
+    }
+
+    #[test]
+    fn load_file_io_does_not_cache_memory() {
+        load_file_io(&HashMap::new(), "memory:///", "", AccessMode::Write).unwrap();
+        assert!(FILE_IO_CACHE
+            .lock()
+            .entries
+            .keys()
+            .all(|k| scheme_of(&k.reference_path) != "memory"));
+    }
+
+    #[test]
+    fn cache_evicts_the_least_recently_used_entry() {
+        let mut cache = FileIoCache::new(2);
+        let key = |name: &str| {
+            FileIoCacheKey::new(
+                &HashMap::new(),
+                &format!("file:///{name}"),
+                "",
+                AccessMode::Read,
+            )
+            .unwrap()
+        };
+        assert!(cache.insert(key("a"), local_file_io()).is_none());
+        assert!(cache.insert(key("b"), local_file_io()).is_none());
+        assert!(cache.get(&key("a")).is_some());
+        assert!(cache.insert(key("c"), local_file_io()).is_some());
+        assert!(cache.get(&key("b")).is_none());
+        assert!(cache.get(&key("a")).is_some());
+        assert!(cache.get(&key("c")).is_some());
+        assert!(cache.insert(key("c"), local_file_io()).is_some());
+        assert_eq!(cache.entries.len(), 2);
     }
 
     fn factory_result(path: &str, mode: AccessMode) -> Result<(), String> {
