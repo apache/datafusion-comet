@@ -1377,24 +1377,10 @@ index da6f6aca2ad..c02b7c99490 100644
        verifyCallCount(
          df.selectExpr("testUdf(a + 1) + testUdf(1 + a)", "testUdf(a + 1)"), Row(4, 2), 1)
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/SQLQueryTestSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/SQLQueryTestSuite.scala
-index 395cb67f441..1e46737c2e2 100644
+index 395cb67f441..755213ea10a 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/SQLQueryTestSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/SQLQueryTestSuite.scala
-@@ -188,7 +188,12 @@ class SQLQueryTestSuite extends SharedSparkSession with SQLHelper
-     if (TestUtils.testCommandAvailable("/bin/bash")) Nil else Set("transform.sql")
-   /** List of test cases to ignore, in lower cases. */
-   protected def ignoreList: Set[String] = Set(
--    "ignored.sql" // Do NOT remove this one. It is here to test the ignore functionality.
-+    "ignored.sql", // Do NOT remove this one. It is here to test the ignore functionality.
-+    // Comet: ORDER BY column has ties; row order is non-deterministic when
-+    // running with high parallelism. Tracked for restoration once Comet
-+    // produces stable ordering for these queries.
-+    "replacing-missing-expression-with-alias.sql",
-+    "in-set-operations.sql"
-   ) ++ otherIgnoreList
-   /** List of test cases that require TPCDS table schemas to be loaded. */
-   private def requireTPCDSCases: Seq[String] = Seq("pipe-operators.sql")
-@@ -829,9 +834,24 @@ class SQLQueryTestSuite extends SharedSparkSession with SQLHelper
+@@ -829,9 +829,24 @@ class SQLQueryTestSuite extends SharedSparkSession with SQLHelper
          s"Schema did not match for query #$i\n${expected.sql}: $output") {
          output.schema
        }
