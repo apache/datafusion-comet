@@ -124,7 +124,8 @@ and fallback paths:
   `spark.comet.expression.FromUnixTime.allowIncompatible=true` is set; otherwise
   it routes through the codegen dispatcher.
 - `unix_timestamp(<timestamp_or_date>)` does not call the formatter at all; the
-  string-input overload falls back.
+  string-input overload routes through the codegen dispatcher and preserves Spark's
+  selected parser policy.
 - `to_unix_timestamp` routes through the codegen dispatcher.
 
 If a Comet contributor adds native string-format parsing or extends the date_format

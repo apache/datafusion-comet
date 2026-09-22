@@ -100,7 +100,13 @@ implementation depends on the source of the data:
 - `ColumnarBatchArrowReader`: an Arrow-backed `ColumnarBatch` (transfers `VectorSchemaRoot` ownership)
 
 The exported `ArrowArrayStream`s are boxed into the `Array[Object]` that `CometExecIterator` / `CometExecRDD` pass
-to native `createPlan` (one slot per scan input; shuffle inputs pass a `CometShuffleBlockIterator` instead).
+to native `createPlan`, one slot per scan input.
+
+Not every slot is an Arrow stream. When a native operator consumes Comet shuffle output and
+`spark.comet.shuffle.directRead.enabled` is set, that slot carries a `CometShuffleBlockIterator` instead, and the
+compressed shuffle blocks are decoded inside the native plan by `ShuffleScanExec` rather than crossing this FFI
+boundary at all. `CometExecRDD.resolveInputObjects` classifies the slots, driven by which scan slots the serialized
+plan marked as `ShuffleScan`. See [Direct Read](native_shuffle.md#direct-read-shufflescan) for that path.
 
 On the native side, `planner.rs` reads each stream's `memoryAddress` and takes ownership through
 `AlignedArrowStreamReader::from_raw`, importing the schema once. `ScanExec::get_next_batch` then pulls each batch
