@@ -18,7 +18,7 @@
 use crate::parquet::cast_column::CometCastColumnExpr;
 use crate::parquet::name_fold::{fold_name, fold_names, fold_schema_names};
 use crate::parquet::parquet_support::{
-    match_struct_fields, spark_parquet_convert, SparkParquetOptions,
+    any_nested_field_has_id, match_struct_fields, spark_parquet_convert, SparkParquetOptions,
 };
 use arrow::array::new_empty_array;
 use arrow::compute::can_cast_types;
@@ -76,6 +76,10 @@ fn parse_field_id(field: &Field) -> Option<i32> {
         .and_then(|v| v.parse::<i32>().ok())
 }
 
+/// True when a root field of `schema` carries a Parquet field id. This stays root-only on
+/// purpose: it gates the root name remap, and Spark's `clipParquetGroupFields` decides id
+/// matching one struct level at a time. Whether a file holds ids at all is a different question,
+/// answered at every depth by `any_nested_field_has_id` in `parquet_support`.
 fn schema_has_field_ids(schema: &SchemaRef) -> bool {
     schema.fields().iter().any(|f| parse_field_id(f).is_some())
 }
@@ -201,17 +205,10 @@ fn remap_physical_schema(
     physical_schema: &SchemaRef,
     case_sensitive: bool,
     use_field_id: bool,
-    ignore_missing_field_id: bool,
 ) -> DataFusionResult<(SchemaRef, HashMap<String, String>)> {
+    // Root ids alone decide whether to match by id here. The check that the file holds ids at
+    // all runs earlier, in `create`, and looks at every nesting level.
     let should_match_by_id = use_field_id && schema_has_field_ids(logical_schema);
-
-    if should_match_by_id && !ignore_missing_field_id && !schema_has_field_ids(physical_schema) {
-        // Mirrors `ParquetReadSupport.inferSchema`'s eager check (Spark throws a runtime
-        // error rather than silently returning null columns).
-        return Err(DataFusionError::External(Box::new(
-            SparkError::ParquetMissingFieldIds,
-        )));
-    }
 
     // Build id -> all matching physical field names. We need the full list so we can mirror
     // Spark's `_LEGACY_ERROR_TEMP_2094` "Found duplicate field(s)" error when an ID-bearing
@@ -852,6 +849,21 @@ impl PhysicalExprAdapterFactory for SparkPhysicalExprAdapterFactory {
         // to the original physical names. This is necessary because downstream code
         // (reassign_expr_columns) looks up columns by name in the actual stream schema,
         // which uses the original physical file column names.
+        //
+        // Before any of that, mirror the eager check in Spark's `ParquetReadSupport`: a read
+        // schema that carries field ids at any depth may not read a file that carries none at
+        // any depth, unless `ignoreMissing` is set. Spark applies this check whether or not
+        // `fieldId.read.enabled` is on, so it runs before the id matching gate below and does
+        // not depend on the remap.
+        if !self.parquet_options.ignore_missing_field_id
+            && any_nested_field_has_id(logical_file_schema.fields())
+            && !any_nested_field_has_id(physical_file_schema.fields())
+        {
+            return Err(DataFusionError::External(Box::new(
+                SparkError::ParquetMissingFieldIds,
+            )));
+        }
+
         let case_sensitive = self.parquet_options.case_sensitive;
         let should_match_by_id =
             self.parquet_options.use_field_id && schema_has_field_ids(&logical_file_schema);
@@ -863,7 +875,6 @@ impl PhysicalExprAdapterFactory for SparkPhysicalExprAdapterFactory {
                     &physical_file_schema,
                     case_sensitive,
                     self.parquet_options.use_field_id,
-                    self.parquet_options.ignore_missing_field_id,
                 )?;
                 // Build the folded-name -> original-physical-field-indices map once for per-column
                 // duplicate detection, paired with the original schema so the rare error path can
@@ -2859,6 +2870,176 @@ mod test {
         Ok(())
     }
 
+    /// Run `scan_parquet` and return the message of the error it raises, either while planning
+    /// the scan or on the first poll of the stream.
+    async fn scan_error_message(
+        batch: &RecordBatch,
+        required_schema: SchemaRef,
+        options: SparkParquetOptions,
+    ) -> String {
+        match scan_parquet(batch, required_schema, options) {
+            Err(err) => err.to_string(),
+            Ok(mut stream) => stream
+                .next()
+                .await
+                .unwrap()
+                .expect_err("expected the scan to be rejected")
+                .to_string(),
+        }
+    }
+
+    /// Batch `s: struct<a: int (id 11)>` with no id on the root field, so a file written from it
+    /// carries ids only below the root.
+    fn nested_id_batch() -> Result<RecordBatch, DataFusionError> {
+        struct_batch(
+            Field::new("a", DataType::Int32, true).with_metadata(id_meta("11")),
+            Arc::new(Int32Array::from(vec![1, 2])),
+        )
+    }
+
+    /// Spark checks for missing file ids before it decides whether to match by id, so the
+    /// rejection fires even when `fieldId.read.enabled` is off. A case-sensitive session keeps
+    /// the name remap out of the picture.
+    #[tokio::test]
+    async fn missing_file_field_ids_rejected_when_id_matching_disabled() {
+        let file_schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, true)]));
+        let batch = RecordBatch::try_new(
+            file_schema,
+            vec![Arc::new(Int32Array::from(vec![1, 2])) as ArrayRef],
+        )
+        .unwrap();
+        let required_schema = Arc::new(Schema::new(vec![
+            Field::new("a", DataType::Int32, true).with_metadata(id_meta("1"))
+        ]));
+        let mut options = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
+        options.use_field_id = false;
+        options.case_sensitive = true;
+        let msg = scan_error_message(&batch, required_schema, options).await;
+        assert!(
+            msg.contains("Parquet file schema doesn't contain any field Ids"),
+            "unexpected error: {msg}"
+        );
+    }
+
+    /// A read schema whose only ids sit on struct children still expects ids, as Spark's
+    /// `ParquetUtils.hasFieldIds` walks nested fields. A file with no ids anywhere is rejected.
+    #[tokio::test]
+    async fn nested_logical_field_ids_rejected_when_file_has_none() -> Result<(), DataFusionError> {
+        let batch = struct_batch(
+            Field::new("a", DataType::Int32, true),
+            Arc::new(Int32Array::from(vec![1, 2])),
+        )?;
+        let required_schema = struct_schema(vec![
+            Field::new("a", DataType::Int32, true).with_metadata(id_meta("11"))
+        ]);
+        let mut options = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
+        options.use_field_id = true;
+        let msg = scan_error_message(&batch, required_schema, options).await;
+        assert!(
+            msg.contains("Parquet file schema doesn't contain any field Ids"),
+            "unexpected error: {msg}"
+        );
+        Ok(())
+    }
+
+    /// Ids that only appear below the root of the file still count as ids, as in Spark's
+    /// `containsFieldIds`. The read passes the missing-id check, resolves the nested field by
+    /// id, and null-fills a root field whose id the file does not hold.
+    #[tokio::test]
+    async fn nested_file_field_ids_satisfy_the_missing_id_check() -> Result<(), DataFusionError> {
+        let batch = nested_id_batch()?;
+        let required_schema = Arc::new(Schema::new(vec![
+            Field::new(
+                "s",
+                DataType::Struct(Fields::from(vec![
+                    Field::new("a", DataType::Int32, true).with_metadata(id_meta("11"))
+                ])),
+                true,
+            ),
+            Field::new("missing", DataType::Int32, true).with_metadata(id_meta("7")),
+        ]));
+        let mut options = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
+        options.use_field_id = true;
+        let mut stream = scan_parquet(&batch, required_schema, options)?;
+        let result = stream.next().await.unwrap()?;
+        assert_eq!(result.num_rows(), 2);
+        let s = result.column(0).as_struct();
+        assert_eq!(s.column(0).as_primitive::<Int32Type>().values(), &[1, 2]);
+        assert_eq!(result.column(1).null_count(), 2);
+        Ok(())
+    }
+
+    /// With `ignoreMissing` set, a file without ids reads under an id-bearing schema and the
+    /// unmatched field is null-filled instead of raising.
+    #[tokio::test]
+    async fn missing_file_field_ids_allowed_when_ignore_missing_is_set(
+    ) -> Result<(), DataFusionError> {
+        let file_schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, true)]));
+        let batch = RecordBatch::try_new(
+            file_schema,
+            vec![Arc::new(Int32Array::from(vec![1, 2])) as ArrayRef],
+        )?;
+        let required_schema = Arc::new(Schema::new(vec![
+            Field::new("a", DataType::Int32, true).with_metadata(id_meta("1"))
+        ]));
+        let mut options = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
+        options.use_field_id = true;
+        options.ignore_missing_field_id = true;
+        let mut stream = scan_parquet(&batch, required_schema, options)?;
+        let result = stream.next().await.unwrap()?;
+        assert_eq!(result.num_rows(), 2);
+        assert_eq!(result.column(0).null_count(), 2);
+        Ok(())
+    }
+
+    /// With id matching off, ids on both sides play no part: the file is not rejected and the
+    /// read schema field still resolves by name. A name the file lacks reads as null even though
+    /// the file holds a field with the same id.
+    #[tokio::test]
+    async fn file_ids_ignored_when_id_matching_disabled() -> Result<(), DataFusionError> {
+        let file_schema = Arc::new(Schema::new(vec![
+            Field::new("a", DataType::Int32, true).with_metadata(id_meta("1"))
+        ]));
+        let batch = RecordBatch::try_new(
+            file_schema,
+            vec![Arc::new(Int32Array::from(vec![1, 2])) as ArrayRef],
+        )?;
+        let required_schema = Arc::new(Schema::new(vec![
+            Field::new("b", DataType::Int32, true).with_metadata(id_meta("1"))
+        ]));
+        let mut options = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
+        options.use_field_id = false;
+        options.ignore_missing_field_id = false;
+        let mut stream = scan_parquet(&batch, required_schema, options)?;
+        let result = stream.next().await.unwrap()?;
+        assert_eq!(result.num_rows(), 2);
+        assert_eq!(result.column(0).null_count(), 2);
+        Ok(())
+    }
+
+    /// A read schema without ids never triggers the missing-id check, whatever the flags say.
+    /// The file name differs only in case so the adapter is still created.
+    #[tokio::test]
+    async fn no_logical_field_ids_never_rejects() -> Result<(), DataFusionError> {
+        let file_schema = Arc::new(Schema::new(vec![Field::new("A", DataType::Int32, true)]));
+        let batch = RecordBatch::try_new(
+            file_schema,
+            vec![Arc::new(Int32Array::from(vec![1, 2])) as ArrayRef],
+        )?;
+        let required_schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, true)]));
+        let mut options = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
+        options.use_field_id = true;
+        options.ignore_missing_field_id = false;
+        options.case_sensitive = false;
+        let mut stream = scan_parquet(&batch, required_schema, options)?;
+        let result = stream.next().await.unwrap()?;
+        assert_eq!(
+            result.column(0).as_primitive::<Int32Type>().values(),
+            &[1, 2]
+        );
+        Ok(())
+    }
+
     /// Disallowed widening (`INT32 -> bigint` with `allow_type_promotion` off) inside a
     /// struct defers to `RejectOnNonEmpty`, like the top level: a non-empty file fails ...
     #[tokio::test]
@@ -3106,7 +3287,7 @@ mod test {
         let logical = Arc::new(Schema::new(vec![Field::new("Name", DataType::Int32, true)]));
         let physical = Arc::new(Schema::new(vec![Field::new("NAME", DataType::Int32, true)]));
         let (remapped, name_map) =
-            super::remap_physical_schema(&logical, &physical, false, false, false).unwrap();
+            super::remap_physical_schema(&logical, &physical, false, false).unwrap();
         assert_eq!(remapped.field(0).name(), "Name");
         assert_eq!(name_map.get("Name").map(String::as_str), Some("NAME"));
     }
@@ -3123,7 +3304,7 @@ mod test {
         ]));
         let physical = Arc::new(Schema::new(vec![Field::new("FOO", DataType::Int32, true)]));
         let (remapped, _name_map) =
-            super::remap_physical_schema(&logical, &physical, false, true, true).unwrap();
+            super::remap_physical_schema(&logical, &physical, false, true).unwrap();
         assert!(
             remapped
                 .field(0)
@@ -3151,7 +3332,7 @@ mod test {
             Field::new("a", DataType::Int32, true).with_metadata(id_meta("9"))
         ]));
         let (remapped, _name_map) =
-            super::remap_physical_schema(&logical, &physical, true, true, false).unwrap();
+            super::remap_physical_schema(&logical, &physical, true, true).unwrap();
         assert_eq!(remapped.field(0).name(), "a");
     }
 

@@ -2152,6 +2152,99 @@ abstract class ParquetReadSuite extends CometTestBase {
       }
     }
   }
+
+  // Spark's `ParquetReadSupport` checks for missing file ids before it looks at
+  // `fieldId.read.enabled`, so the error is raised with id matching off as well. With
+  // `ignoreMissing` set, both engines fall back to matching by name and read real values.
+  test("read schema with field ids raises on a file without ids when id matching is off") {
+    withSQLConf(SQLConf.PARQUET_FIELD_ID_READ_ENABLED.key -> "false") {
+      withTempPath { dir =>
+        val readSchema = new StructType().add("a", IntegerType, true, withId(1))
+        val writeSchema = new StructType().add("a", IntegerType, true)
+        val writeData = Seq(Row(100), Row(200))
+        spark
+          .createDataFrame(spark.sparkContext.parallelize(writeData), writeSchema)
+          .write
+          .mode("overwrite")
+          .parquet(dir.getCanonicalPath)
+
+        def readCause(): Throwable = intercept[SparkException] {
+          spark.read.schema(readSchema).parquet(dir.getCanonicalPath).collect()
+        }.getCause
+        def assertMissingIds(cause: Throwable): Unit = {
+          assert(
+            cause.isInstanceOf[RuntimeException] &&
+              cause.getMessage.contains("Parquet file schema doesn't contain any field Ids"),
+            cause)
+        }
+
+        withClue("Spark with Comet disabled") {
+          withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+            assertMissingIds(readCause())
+          }
+        }
+        withClue("Comet") {
+          assertMissingIds(readCause())
+        }
+
+        withSQLConf(SQLConf.IGNORE_MISSING_PARQUET_FIELD_ID.key -> "true") {
+          checkSparkAnswerAndOperator(spark.read.schema(readSchema).parquet(dir.getCanonicalPath))
+        }
+      }
+    }
+  }
+
+  // Spark's `containsFieldIds` walks the whole file schema, so ids that sit only on struct
+  // children count. The root field whose id the file lacks is null filled rather than rejected.
+  test("a file whose field ids are only on nested fields reads without a missing-id error") {
+    withSQLConf(SQLConf.PARQUET_FIELD_ID_READ_ENABLED.key -> "true") {
+      withTempPath { dir =>
+        val nested = StructType(Seq(StructField("a", IntegerType, nullable = true, withId(11))))
+        val writeSchema = new StructType().add("s", nested, true)
+        val readSchema = new StructType()
+          .add("s", nested, true)
+          .add("missing", IntegerType, true, withId(7))
+        val writeData = Seq(Row(Row(1)), Row(Row(2)))
+        spark
+          .createDataFrame(spark.sparkContext.parallelize(writeData), writeSchema)
+          .write
+          .mode("overwrite")
+          .parquet(dir.getCanonicalPath)
+
+        checkSparkAnswerAndOperator(spark.read.schema(readSchema).parquet(dir.getCanonicalPath))
+      }
+    }
+  }
+
+  // Second half of Spark `ParquetFieldIdIOSuite.test("global read/write flag should work
+  // correctly")`: the file carries ids but the read flag is off, so columns resolve by name
+  // only. None of the read names exist in the file, so every value is null and nothing raises.
+  test("field ids in the file are ignored when id matching is off") {
+    withSQLConf(
+      SQLConf.PARQUET_FIELD_ID_WRITE_ENABLED.key -> "true",
+      SQLConf.PARQUET_FIELD_ID_READ_ENABLED.key -> "false") {
+      withTempPath { dir =>
+        val readSchema = new StructType()
+          .add("some", IntegerType, true, withId(1))
+          .add("other", StringType, true, withId(2))
+          .add("name", StringType, true, withId(3))
+        val writeSchema = new StructType()
+          .add("a", IntegerType, true, withId(1))
+          .add("rand1", StringType, true, withId(2))
+          .add("rand2", StringType, true, withId(3))
+        val writeData = Seq(Row(100, "text", "txt"), Row(200, "more", "mr"))
+        spark
+          .createDataFrame(spark.sparkContext.parallelize(writeData), writeSchema)
+          .write
+          .mode("overwrite")
+          .parquet(dir.getCanonicalPath)
+
+        val df = spark.read.schema(readSchema).parquet(dir.getCanonicalPath)
+        checkSparkAnswerAndOperator(df)
+        checkAnswer(df, Row(null, null, null) :: Row(null, null, null) :: Nil)
+      }
+    }
+  }
 }
 
 class ParquetReadV1Suite extends ParquetReadSuite with AdaptiveSparkPlanHelper {

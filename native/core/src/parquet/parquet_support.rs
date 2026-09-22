@@ -22,7 +22,7 @@ use arrow::array::{
 };
 use arrow::buffer::NullBuffer;
 use arrow::compute::can_cast_types;
-use arrow::datatypes::{FieldRef, Fields};
+use arrow::datatypes::{Field, FieldRef, Fields};
 use arrow::{
     array::{
         cast::AsArray, new_null_array, types::TimestampMicrosecondType,
@@ -412,6 +412,39 @@ fn field_id(field: &arrow::datatypes::Field) -> Option<i32> {
         .metadata()
         .get(PARQUET_FIELD_ID_META_KEY)
         .and_then(|v| v.parse::<i32>().ok())
+}
+
+/// True when a field in `fields`, at any nesting depth, carries a Parquet field id. Spark's
+/// `containsFieldIds` walks the whole file schema the same way, and `ParquetUtils.hasFieldIds`
+/// walks the read schema. The root-only `schema_has_field_ids` in the schema adapter stays as the
+/// gate for id matching, which only ever renames root fields.
+pub(crate) fn any_nested_field_has_id(fields: &Fields) -> bool {
+    fields.iter().any(|f| field_holds_id(f))
+}
+
+/// Whether `field` or anything nested under it carries a Parquet field id. Dictionary and
+/// run-end-encoded wrappers are not walked, because the Parquet read path never nests a struct,
+/// list or map inside them.
+fn field_holds_id(field: &Field) -> bool {
+    field_id(field).is_some()
+        || match field.data_type() {
+            DataType::Struct(fields) => any_nested_field_has_id(fields),
+            DataType::Map(entries, _) => field_holds_id(entries),
+            other => list_element_field(other).is_some_and(|f| field_holds_id(f)),
+        }
+}
+
+/// The element field of a list in any Arrow representation, or `None` for a type that is not a
+/// list.
+fn list_element_field(data_type: &DataType) -> Option<&FieldRef> {
+    match data_type {
+        DataType::List(f)
+        | DataType::LargeList(f)
+        | DataType::FixedSizeList(f, _)
+        | DataType::ListView(f)
+        | DataType::LargeListView(f) => Some(f),
+        _ => None,
+    }
 }
 
 /// Resolve each requested (`to`) struct field to the index of the file (`from`) field it reads
@@ -2074,5 +2107,59 @@ mod tests {
             err.to_string().contains("Hdfs support is not enabled"),
             "unexpected error: {err}"
         );
+    }
+
+    /// The recursive id check sees an id on a root field, on a struct child, on the element of
+    /// every list representation, and on a map key or value. It sees none on a schema without
+    /// ids and none on an empty schema.
+    #[test]
+    fn any_nested_field_has_id_finds_ids_at_every_depth() {
+        use super::any_nested_field_has_id;
+        use arrow::datatypes::{DataType, Field, Fields};
+        use parquet::arrow::PARQUET_FIELD_ID_META_KEY;
+
+        let plain = |name: &str| Field::new(name, DataType::Int32, true);
+        let tagged = |name: &str| {
+            plain(name).with_metadata(HashMap::from([(
+                PARQUET_FIELD_ID_META_KEY.to_string(),
+                "7".to_string(),
+            )]))
+        };
+        let root = |field: Field| Fields::from(vec![field]);
+        let has_id = |field: Field| any_nested_field_has_id(&root(field));
+
+        assert!(!any_nested_field_has_id(&Fields::empty()));
+        assert!(!has_id(plain("x")));
+        assert!(has_id(tagged("x")));
+
+        let strukt = |child: Field| Field::new("s", DataType::Struct(root(child)), true);
+        assert!(has_id(strukt(tagged("c"))));
+        assert!(!has_id(strukt(plain("c"))));
+
+        let element = Arc::new(tagged("item"));
+        for list_type in [
+            DataType::List(Arc::clone(&element)),
+            DataType::LargeList(Arc::clone(&element)),
+            DataType::FixedSizeList(Arc::clone(&element), 2),
+            DataType::ListView(Arc::clone(&element)),
+            DataType::LargeListView(Arc::clone(&element)),
+        ] {
+            let list = Field::new("l", list_type.clone(), true);
+            assert!(has_id(list), "{list_type}");
+        }
+        let plain_list = Field::new("l", DataType::List(Arc::new(plain("item"))), true);
+        assert!(!has_id(plain_list));
+
+        let map = |key: Field, value: Field| {
+            let entries = Field::new(
+                "entries",
+                DataType::Struct(Fields::from(vec![key, value])),
+                false,
+            );
+            Field::new("m", DataType::Map(Arc::new(entries), false), true)
+        };
+        assert!(has_id(map(tagged("key"), plain("value"))));
+        assert!(has_id(map(plain("key"), tagged("value"))));
+        assert!(!has_id(map(plain("key"), plain("value"))));
     }
 }
