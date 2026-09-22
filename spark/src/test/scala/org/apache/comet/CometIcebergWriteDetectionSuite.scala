@@ -82,13 +82,8 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
   test("plan-only mode leaves the write with Spark") {
     withDetectionCatalog { dir =>
       createTable(dir, "plan_only", partitionSpec = "")
-      // `IcebergWriteStrategy` is a planner strategy, so it runs before `CometScanRule` and
-      // `CometExecRule` and is not covered by their plan-only short-circuit. Without its own
-      // guard the write is still offloaded, and neither exec it emits is a `CometPlan`, so the
-      // plan-only suite's "no Comet operators" assertion cannot see it.
-      //
-      // `withSQLConf` is declared to return `Unit` on Spark 3.4 and 3.5, so the plan is carried
-      // out of the block through a var rather than as the block's value.
+      // IcebergWriteStrategy runs before CometRule, so it needs its own plan-only guard.
+      // withSQLConf returns Unit on Spark 3.4/3.5, hence the var.
       var plan: SparkPlan = null
       withSQLConf(CometConf.COMET_EXPLAIN_PLAN_ONLY_ENABLED.key -> "true") {
         plan = captureWritePlan("plan_only", allowWriteFailure = false) {

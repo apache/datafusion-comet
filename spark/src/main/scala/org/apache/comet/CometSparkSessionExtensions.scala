@@ -34,7 +34,7 @@ import org.apache.spark.sql.internal.SQLConf
 
 import org.apache.comet.CometConf._
 import org.apache.comet.iceberg.IcebergWriteStrategy
-import org.apache.comet.rules.{CometPlanAdaptiveDynamicPruningFilters, CometReuseSubquery, CometRule, CometSpark34AqeDppFallbackRule, EliminateRedundantTransitions, RevertNativeForTransitionHeavyStages}
+import org.apache.comet.rules.{CometPlanAdaptiveDynamicPruningFilters, CometReuseSubquery, CometRule, CometSpark34AqeDppFallbackRule}
 import org.apache.comet.shims.ShimCometSparkSessionExtensions
 
 /**
@@ -108,10 +108,7 @@ class CometSparkSessionExtensions
     override def preColumnarTransitions: Rule[SparkPlan] = CometRule(session)
 
     override def postColumnarTransitions: Rule[SparkPlan] = {
-      // Keep in sync with `CometExecRule.reportPlanOnlyCoverage`, which replays these rules over
-      // the plan it previews so that plan-only reports describe the plan that would have run.
-      val rules =
-        Seq(RevertNativeForTransitionHeavyStages(session), EliminateRedundantTransitions(session))
+      val rules = CometRule.postColumnarRules(session)
       plan => rules.foldLeft(plan) { case (p, rule) => rule(p) }
     }
   }

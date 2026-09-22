@@ -36,8 +36,12 @@ import org.apache.comet.serde.QueryPlanSerde
  * Reverts a query stage to Spark row-based execution when it has too many columnar-to-row (C2R)
  * transitions. Each C2R indicates Comet could not keep execution columnar and had to fall back.
  * With columnar shuffle enabled, each C2R implies a corresponding R2C round-trip.
+ *
+ * @param wholePlan
+ *   visit every stage even under AQE, where Spark normally hands this rule one stage at a time.
+ *   Set by the plan-only preview, which holds the whole plan.
  */
-case class RevertNativeForTransitionHeavyStages(session: SparkSession)
+case class RevertNativeForTransitionHeavyStages(session: SparkSession, wholePlan: Boolean = false)
     extends Rule[SparkPlan]
     with Logging {
 
@@ -47,7 +51,7 @@ case class RevertNativeForTransitionHeavyStages(session: SparkSession)
   override def apply(plan: SparkPlan): SparkPlan = {
     if (!enabled) return plan
 
-    if (session.sessionState.conf.adaptiveExecutionEnabled) {
+    if (session.sessionState.conf.adaptiveExecutionEnabled && !wholePlan) {
       applyForAQE(plan)
     } else {
       applyForNonAQE(plan)
@@ -76,19 +80,6 @@ case class RevertNativeForTransitionHeavyStages(session: SparkSession)
     }
     revertStageIfNeeded(withRevertedStages, outputColumnar = false)
       .getOrElse(withRevertedStages)
-  }
-
-  /**
-   * Applies the revert decision to every stage of `plan`, regardless of whether AQE is enabled.
-   *
-   * `apply` picks the AQE branch when AQE is on because Spark hands it a single query stage at a
-   * time there, so only the topmost stage of `plan` is considered. Callers holding a whole plan
-   * that has not been split into stages - the plan-only preview in
-   * `CometExecRule.reportPlanOnlyCoverage` - need every shuffle boundary visited to see the
-   * reversions that the real per-stage applications would make.
-   */
-  private[rules] def applyToAllStages(plan: SparkPlan): SparkPlan = {
-    if (!enabled) plan else applyForNonAQE(plan)
   }
 
   /**
