@@ -163,6 +163,7 @@ execution metrics. Counters accumulate per scan operator; they do not instrument
 | `scan_io_object_store_response_bytes_read` | Response bytes actually consumed at that API, including bytes fetched between coalesced ranges. Not HTTP wire bytes.                                                                                                         |
 | `scan_io_metadata_cache_hits`              | Successful, cache-eligible metadata opens requiring no storage reads.                                                                                                                                                        |
 | `scan_io_metadata_cache_misses`            | Successful, cache-eligible metadata opens requiring storage reads. Failed opens and encrypted opens, which bypass this shared cache, increment neither cache counter.                                                        |
+| `scan_io_unreserved_bytes`                 | Bytes the scan held without a memory reservation because the pool refused it: fetched data pages, plus the per-reader decode-buffer estimate. The scan cannot spill, so it keeps reading instead of failing.                 |
 
 Reader-level and object-store bytes are two views of the same reads; do not add them together.
 Likewise, footer bytes are a subset of metadata bytes, not a third reader-level category. A warm
