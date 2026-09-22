@@ -54,6 +54,9 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
     }
   }
 
+  private def causeMessages(error: Throwable): String =
+    causeChain(error).flatMap(e => Option(e.getMessage)).mkString("\n")
+
   test("duplicate Parquet field names - Spark logical schema legality") {
     withTempPath { path =>
       withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
@@ -111,13 +114,65 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
             assert(
               find(df.queryExecution.executedPlan)(_.isInstanceOf[CometNativeScanExec]).isDefined)
             val error = intercept[Exception](df.collect())
-            val messages = Iterator
-              .iterate[Throwable](error)(_.getCause)
-              .takeWhile(_ != null)
-              .map(_.getMessage)
-              .mkString("\n")
+            val messages = causeMessages(error)
             assert(messages.contains("duplicate Parquet field name 'dup'"), messages)
+            assert(!messages.toLowerCase.contains("case-insensitive"), messages)
           }
+        }
+      }
+    }
+  }
+
+  test("duplicate Parquet field names - multiple files and schema merge") {
+    withTempPath { cleanPath =>
+      withTempPath { duplicatePath =>
+        withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+          spark
+            .range(3)
+            .coalesce(1)
+            .selectExpr("named_struct('dup', id, 'other', id + 900) as s")
+            .write
+            .parquet(cleanPath.toString)
+          spark
+            .range(3)
+            .coalesce(1)
+            .selectExpr("named_struct('dup', id, 'dup', id + 100, 'other', id + 900) as s")
+            .write
+            .parquet(duplicatePath.toString)
+        }
+        val paths = Seq(cleanPath.toString, duplicatePath.toString)
+        Seq("true", "false").foreach { mergeSchema =>
+          Seq(true, false).foreach { caseSensitive =>
+            withSQLConf(SQLConf.CASE_SENSITIVE.key -> caseSensitive.toString) {
+              // mergeSchema only affects inference, and Spark already rejects inference for a
+              // duplicate-bearing file, so an explicit schema reads the unique sibling natively.
+              val unique = spark.read
+                .option("mergeSchema", mergeSchema)
+                .schema("s struct<other: bigint>")
+                .parquet(paths: _*)
+              assert(find(unique.queryExecution.executedPlan)(
+                _.isInstanceOf[CometNativeScanExec]).isDefined)
+              checkSparkAnswerAndOperator(unique)
+              checkAnswer(unique, Seq(900L, 901L, 902L, 900L, 901L, 902L).map(n => Row(Row(n))))
+              checkAnswer(
+                unique.where("s.other >= 901"),
+                Seq(901L, 902L, 901L, 902L).map(n => Row(Row(n))))
+              val duplicate = spark.read
+                .option("mergeSchema", mergeSchema)
+                .schema("s struct<dup: bigint>")
+                .parquet(paths: _*)
+              assert(find(duplicate.queryExecution.executedPlan)(
+                _.isInstanceOf[CometNativeScanExec]).isDefined)
+              val error = intercept[Exception](duplicate.collect())
+              assert(causeMessages(error).toLowerCase.contains("duplicate"), causeMessages(error))
+            }
+          }
+        }
+        withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+          val inferred = intercept[org.apache.spark.sql.AnalysisException] {
+            spark.read.option("mergeSchema", "true").parquet(paths: _*).collect()
+          }
+          assert(inferred.getMessage.contains("COLUMN_ALREADY_EXISTS"), inferred.getMessage)
         }
       }
     }
@@ -174,16 +229,12 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
           find(selected.queryExecution.executedPlan)(
             _.isInstanceOf[CometNativeScanExec]).isDefined)
         val error = intercept[Exception](selected.collect())
-        val messages = Iterator
-          .iterate[Throwable](error)(_.getCause)
-          .takeWhile(_ != null)
-          .map(_.getMessage)
-          .mkString("\n")
+        val messages = causeMessages(error)
         assert(messages.contains("duplicate Parquet field name 'a'"), messages)
         val valid = spark.read.schema("b bigint").parquet(path.toString)
         assert(
           find(valid.queryExecution.executedPlan)(_.isInstanceOf[CometNativeScanExec]).isDefined)
-        checkAnswer(valid, Seq(Row(3L)))
+        (1 to 2).foreach { _ => checkAnswer(valid, Seq(Row(3L))) }
         withSQLConf(SQLConf.PARQUET_FIELD_ID_READ_ENABLED.key -> "true") {
           val schema = new StructType().add(
             "renamed_b",
@@ -202,11 +253,7 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
               new MetadataBuilder().putLong("parquet.field.id", id).build())
             val duplicate = spark.read.schema(duplicateSchema).parquet(path.toString)
             val error = intercept[Exception](duplicate.collect())
-            val messages = Iterator
-              .iterate[Throwable](error)(_.getCause)
-              .takeWhile(_ != null)
-              .map(_.getMessage)
-              .mkString("\n")
+            val messages = causeMessages(error)
             assert(messages.contains("duplicate Parquet field name 'a'"), messages)
           }
         }
@@ -474,11 +521,7 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
           assert(
             find(df.queryExecution.executedPlan)(_.isInstanceOf[CometNativeScanExec]).isDefined)
           val error = intercept[Exception](df.collect())
-          val messages = Iterator
-            .iterate[Throwable](error)(_.getCause)
-            .takeWhile(_ != null)
-            .map(_.getMessage)
-            .mkString("\n")
+          val messages = causeMessages(error)
           assert(messages.contains("duplicate Parquet field name 'dup'"), messages)
         }
       }

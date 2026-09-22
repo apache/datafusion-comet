@@ -630,10 +630,9 @@ mod tests {
             Field::new("a", DataType::Int64, false),
             Field::new("b", DataType::Int64, false),
         ]));
-        let factory = super::SparkPhysicalExprAdapterFactory::new(
-            super::SparkParquetOptions::new(super::EvalMode::Legacy, "UTC", false),
-            None,
-        );
+        let mut options = super::SparkParquetOptions::new(super::EvalMode::Legacy, "UTC", false);
+        options.case_sensitive = true;
+        let factory = super::SparkPhysicalExprAdapterFactory::new(options, None);
         for name in ["a", "b"] {
             let target = Arc::new(ArrowSchema::new(vec![Field::new(
                 name,

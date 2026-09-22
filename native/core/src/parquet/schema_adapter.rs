@@ -1154,6 +1154,8 @@ impl SparkPhysicalExprAdapter {
             return Ok(expr);
         };
 
+        check_decoded_field_names(physical_field.data_type())?;
+
         Ok(Arc::new(
             CometCastColumnExpr::try_new(
                 expr,
@@ -1290,6 +1292,7 @@ impl SparkPhysicalExprAdapter {
                 .target_field()
                 .has_valid_extension_type::<VariantType>()
             {
+                check_decoded_field_names(physical_type)?;
                 let comet_cast: Arc<dyn PhysicalExpr> = Arc::new(
                     CometCastColumnExpr::try_new(
                         child,
