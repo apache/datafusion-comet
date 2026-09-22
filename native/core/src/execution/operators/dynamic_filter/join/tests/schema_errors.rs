@@ -17,6 +17,8 @@
 
 use super::*;
 
+mod partition_columns;
+
 fn write_file(payload_type: &DataType, keys: std::ops::Range<i32>) -> tempfile::NamedTempFile {
     let schema = Arc::new(Schema::new(vec![
         Field::new("key", DataType::Int32, false),

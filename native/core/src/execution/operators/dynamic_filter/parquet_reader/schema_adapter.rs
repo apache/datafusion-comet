@@ -30,13 +30,13 @@ use datafusion::physical_expr_adapter::{PhysicalExprAdapter, PhysicalExprAdapter
 #[derive(Debug)]
 pub(super) struct RuntimeFilterSchemaAdapterFactory {
     inner: Arc<dyn PhysicalExprAdapterFactory>,
-    read_columns: Vec<usize>,
+    read_columns: Vec<Column>,
 }
 
 impl RuntimeFilterSchemaAdapterFactory {
     pub(super) fn new(
         inner: Arc<dyn PhysicalExprAdapterFactory>,
-        read_columns: Vec<usize>,
+        read_columns: Vec<Column>,
     ) -> Self {
         Self {
             inner,
@@ -51,15 +51,12 @@ impl PhysicalExprAdapterFactory for RuntimeFilterSchemaAdapterFactory {
         logical_schema: SchemaRef,
         physical_schema: SchemaRef,
     ) -> Result<Arc<dyn PhysicalExprAdapter>> {
-        let inner = self
-            .inner
-            .create(Arc::clone(&logical_schema), physical_schema)?;
+        let inner = self.inner.create(logical_schema, physical_schema)?;
         // DataFusion adapts predicates before projections and row-group pruning.
         // Direct remapping and missing/default literals are safe. Other adaptations
         // can reject nonempty batches or overflow, so let normal decoding run first.
-        let allow_runtime_filter = self.read_columns.iter().all(|&index| {
-            let column = Arc::new(Column::new(logical_schema.field(index).name(), index));
-            matches!(inner.rewrite(column), Ok(expr) if expr.is::<Column>() || expr.is::<Literal>())
+        let allow_runtime_filter = self.read_columns.iter().all(|column| {
+            matches!(inner.rewrite(Arc::new(column.clone())), Ok(expr) if expr.is::<Column>() || expr.is::<Literal>())
         });
         Ok(Arc::new(RuntimeFilterSchemaAdapter {
             inner,
@@ -93,3 +90,6 @@ impl PhysicalExprAdapter for RuntimeFilterSchemaAdapter {
         self.inner.rewrite(expr)
     }
 }
+
+#[cfg(test)]
+mod tests;
