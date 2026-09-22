@@ -31,6 +31,9 @@ import org.apache.comet.CometConf
 /** Top-level so `NewInstance` needs no outer pointer, which is the ordinary user shape. */
 case class TypedMapRec(a: Long, b: String)
 
+/** Four output columns, to see whether struct-wrapper cost scales with field count. */
+case class TypedMapWide(a: Long, b: String, c: Long, d: String)
+
 /**
  * Benchmark of `RewriteTypedDatasetMap`, which fuses the `SerializeFromObject` / `MapElements` /
  * `DeserializeToObject` sandwich a typed `Dataset.map` produces into a Comet projection routed
@@ -97,6 +100,8 @@ object CometTypedDatasetMapBenchmark extends CometBenchmarkBase {
   // to start while this object is still initialising.
   private implicit val recEncoder: Encoder[TypedMapRec] = Encoders.product[TypedMapRec]
   private implicit val longEncoder: Encoder[Long] = Encoders.scalaLong
+  private implicit val stringEncoder: Encoder[String] = Encoders.STRING
+  private implicit val wideEncoder: Encoder[TypedMapWide] = Encoders.product[TypedMapWide]
 
   /**
    * @param name
@@ -188,6 +193,25 @@ object CometTypedDatasetMapBenchmark extends CometBenchmarkBase {
     // above: if the struct path is much worse at the top of the plan, that is a cost of the
     // multi-column encoding rather than of fusing as such.
     MapCase("map -> sink, 2 cols", _.map(r => TypedMapRec(r.a + 1, r.b)).toDF()),
+    // Two diagnostics for the cost of the multi-column encoding, at the top of the plan so
+    // nothing else varies. `1 col (string)` isolates what a varchar output costs on its own --
+    // `UTF8String.fromString` plus a variable-width Arrow write -- because the 2-col case pays
+    // that too and it must not be mistaken for struct overhead. `4 cols` says whether the
+    // per-column cost is linear or whether the struct wrapper degrades with field count; it is
+    // the row that shows the fuse buying nothing once the record is wide.
+    //
+    // These are what refuted the multi-output-kernel idea. The hypothesis was that
+    // `CreateNamedStruct.doGenCode`'s per-row `Object[N]` + boxed `GenericInternalRow` was the
+    // overhead, and that writing each field straight into its child vector would remove it.
+    // Implemented and measured, it was 15-20% *slower* on the 2-col and filtered cases: the row
+    // never escapes the loop body, so escape analysis was already scalar-replacing it, and
+    // inlining every field's code into the row body only made the method bigger. The native
+    // unpack was never a cost either -- `GetStructField` on a non-nullable struct is an
+    // `Arc::clone` of the child array.
+    MapCase("map -> sink, 1 col (string)", _.map(_.b).toDF()),
+    MapCase(
+      "map -> sink, 4 cols",
+      _.map(r => TypedMapWide(r.a + 1, r.b, r.a * 2, r.b + "!")).toDF()),
     // `ds.map(f).map(g)` leaves two adjacent `MapElements` under one Serialize/Deserialize pair,
     // which the rule fuses as a whole. Two closure calls per row against one bridge crossing, so
     // the bridge is amortised further here than anywhere else in the table.
