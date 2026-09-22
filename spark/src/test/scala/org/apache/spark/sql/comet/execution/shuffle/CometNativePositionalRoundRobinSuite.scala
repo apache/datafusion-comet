@@ -108,11 +108,8 @@ class CometNativePositionalRoundRobinSuite extends CometTestBase with AdaptiveSp
 
   test("positional placement is off unless its own config is on") {
     withParquetTable(100) { t =>
-      withSQLConf(
-        CometConf.COMET_SHUFFLE_MODE.key -> "native",
-        CometConf.COMET_SHUFFLE_NATIVE_ROUND_ROBIN_PARTITIONING_ENABLED.key -> "true",
-        CometConf.COMET_SHUFFLE_NATIVE_ROUND_ROBIN_PARTITIONING_POSITIONAL_ENABLED.key -> "false",
-        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
+      withPositionalRoundRobin(
+        CometConf.COMET_SHUFFLE_NATIVE_ROUND_ROBIN_PARTITIONING_POSITIONAL_ENABLED.key -> "false") {
         assert(!isPositional(spark.table(t).repartition(numPartitions)))
       }
     }
@@ -186,11 +183,8 @@ class CometNativePositionalRoundRobinSuite extends CometTestBase with AdaptiveSp
         assert(duplicatedSizes == partitionSizes(distinct.repartition(numPartitions)))
       }
 
-      withSQLConf(
-        CometConf.COMET_SHUFFLE_MODE.key -> "native",
-        CometConf.COMET_SHUFFLE_NATIVE_ROUND_ROBIN_PARTITIONING_ENABLED.key -> "true",
-        CometConf.COMET_SHUFFLE_NATIVE_ROUND_ROBIN_PARTITIONING_POSITIONAL_ENABLED.key -> "false",
-        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
+      withPositionalRoundRobin(
+        CometConf.COMET_SHUFFLE_NATIVE_ROUND_ROBIN_PARTITIONING_POSITIONAL_ENABLED.key -> "false") {
         val sizes = partitionSizes(duplicated.repartition(numPartitions))
         assert(
           sizes.count(_ > 0) == 1,

@@ -115,6 +115,13 @@ case class CometShuffleExchangeExec(
     case _ => None
   }
 
+  /**
+   * Positional round-robin decision, computed once so that the RDD's determinism level and the
+   * writer's placement cannot disagree.
+   */
+  @transient private lazy val positionalRoundRobin: Option[PositionalRoundRobin] =
+    CometShuffleExchangeExec.positionalRoundRobinSpec(outputPartitioning, child)
+
   @transient private lazy val nativeChildMetricNode: CometMetricNode =
     CometMetricNode.fromCometPlan(child)
 
@@ -128,7 +135,7 @@ case class CometShuffleExchangeExec(
           ctx.shuffleScanIndices,
           CometMetricNode(metrics, Seq(nativeChildMetricNode)),
           ctx.perPartitionByKey,
-          CometShuffleExchangeExec.usesPositionalRoundRobin(outputPartitioning, child))
+          positionalRoundRobin.isDefined)
       case None =>
         // Non-native child (e.g. CometSparkToColumnarExec): no subtree to inline. The dep gets
         // built via the convenience overload below; we just need a real RDD of batches.
@@ -211,7 +218,7 @@ case class CometShuffleExchangeExec(
               nativeChild.nativeOp,
               nativeChildMetricNode,
               ctx,
-              CometShuffleExchangeExec.positionalRoundRobinSpec(outputPartitioning, child)))
+              positionalRoundRobin))
         case None =>
           CometShuffleExchangeExec.prepareShuffleDependency(
             inputRDD.asInstanceOf[RDD[ColumnarBatch]],

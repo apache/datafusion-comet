@@ -254,22 +254,11 @@ impl<'a> RunIterator<'a> {
         batch_size: usize,
         copy_time: &'a Time,
     ) -> Self {
-        if runs.is_empty() {
-            return Self {
-                record_batches: &[],
-                batch_size,
-                runs: &[],
-                chunk_scratch: vec![],
-                pos: 0,
-                consumed: 0,
-                copy_time,
-            };
-        }
         Self {
             record_batches,
             batch_size,
             runs,
-            chunk_scratch: vec![],
+            chunk_scratch: Vec::with_capacity(runs.len().min(batch_size)),
             pos: 0,
             consumed: 0,
             copy_time,
@@ -288,9 +277,7 @@ impl Iterator for RunIterator<'_> {
 
         // Zero-copy path: the next run is an entire buffered batch and already fills a chunk on
         // its own, so hand the batch straight through. This is the case a group as large as the
-        // batch size is chosen to hit. Returning the batch rather than a slice of it also keeps
-        // `Utf8View`/`BinaryView` columns off the sliced-array path in the IPC writer, which
-        // truncates the views buffer but serializes every shared data buffer in full.
+        // batch size is chosen to hit.
         if self.consumed == 0 {
             let run = self.runs[self.pos];
             let source = self.record_batches[run.batch as usize];
