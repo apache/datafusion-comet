@@ -77,14 +77,20 @@ A second, independent choice is whether to call `.internal()`, which keeps the k
 `configs.md` altogether.
 
 Neither choice is cosmetic. Together they decide whether Comet's
-[versioning policy](../about/versioning_policy.md) covers the key, and the policy's rule is that a
-key is covered only if `configs.md` publishes it as a production setting:
+[versioning policy](../about/versioning_policy.md) covers the key. The policy's rule keys on these
+two marks and nothing else: a key is exempt only if it is in the `testing` category or is marked
+`internal()`, and every other `spark.comet.*` key is covered.
 
 | Category  | `internal()` | Appears in `configs.md`          | Covered by the versioning policy |
 | --------- | ------------ | -------------------------------- | -------------------------------- |
 | any other | no           | yes, in its category's table     | **yes**                          |
 | `testing` | no           | yes, under Development & Testing | no                               |
 | any       | yes          | no                               | no                               |
+
+Note that a key read by string rather than through a registered `ConfigEntry` — as the
+per-expression `spark.comet.expression.<Name>.allowIncompatible` opt-ins are — has no way to carry
+either mark, so it is covered. Reaching for a dynamic key is therefore not a way to avoid the
+guarantee; if the key is a debugging aid, give it a real `ConfigEntry` in the `testing` category.
 
 Being covered commits the project to the key's name, type, accepted values, default, and semantics
 across minor releases. Being

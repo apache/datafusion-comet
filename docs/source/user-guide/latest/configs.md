@@ -80,9 +80,12 @@ their names, defaults, accepted values, and meanings may change in any release, 
 release, and any of them may be removed without a deprecation cycle. Do not set them in
 production.
 
-The same applies to any `spark.comet.*` key that does not appear on this page at all. Comet marks a
-handful of keys internal and deliberately does not publish them; they are maintainer escape hatches,
-not settings, and carry no guarantee of any kind.
+Comet also marks a handful of keys internal and deliberately leaves them off this page entirely.
+They are maintainer escape hatches, not settings, and carry no guarantee of any kind. Absence from
+this page does not by itself mean that, though: the per-expression
+`spark.comet.expression.<Name>.allowIncompatible` opt-ins are documented in the
+[compatibility guide](compatibility/index.md) rather than here, and the versioning policy covers
+them like any other production setting.
 
 <!--BEGIN:CONFIG_TABLE[testing]-->
 <!--END:CONFIG_TABLE-->

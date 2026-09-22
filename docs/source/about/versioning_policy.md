@@ -47,10 +47,15 @@ interface that vendors implement. It is small on purpose, and everything outside
 
 The following are covered by this versioning policy:
 
-- **Configuration keys under `spark.comet.*`** that the configuration reference publishes as
-  production settings: their names, types, accepted values, default values, and semantics. Keys in
-  the `testing` category, and keys marked internal, are excluded; see
+- **Configuration keys under `spark.comet.*`**: their names, types, accepted values, default
+  values, and semantics. Two classes of key are excluded — those in the `testing` category, and
+  those marked internal; see
   [Testing and Internal Configurations Are Exempt](#testing-and-internal-configurations-are-exempt).
+  Every other key is covered wherever Comet documents it, including keys the
+  [configuration reference](../user-guide/latest/configs.md) does not list in its own right: the
+  per-expression `spark.comet.expression.<Name>.allowIncompatible` opt-ins, which the
+  [compatibility guide](../user-guide/latest/compatibility/index.md) documents, and the deprecated
+  alias a rename leaves behind.
 - **A small, enumerated public Java and Scala API**: the class names users write into Spark config
   properties, and the S3 credential provider SPI that vendors implement. The full list is in
   [Public Scala and Java API](#public-scala-and-java-api).
@@ -78,13 +83,19 @@ change in any release:
 
 ### Testing and Internal Configurations Are Exempt
 
-Two kinds of configuration key sit outside this policy, and one rule identifies both: **a key is
-covered only if the [configuration reference](../user-guide/latest/configs.md) lists it outside the
-Development & Testing Settings table.** Everything the reference publishes as a production setting
-is guaranteed; nothing else is.
+Two kinds of configuration key sit outside this policy, and what puts a key outside is an explicit
+mark on its declaration in `CometConf.scala`: **a key is exempt only if it is in the `testing`
+category or is marked `internal()`.** Every other `spark.comet.*` key is covered.
 
-Two mechanisms put a key on the wrong side of that line, and they are set independently of each
-other:
+Absence from the [configuration reference](../user-guide/latest/configs.md) is not the test,
+because that page is not an exhaustive list of covered keys. The per-expression
+`spark.comet.expression.<Name>.allowIncompatible` opt-ins are read as plain strings with no
+`ConfigEntry` behind them, so no generated table ever lists them; the
+[compatibility guide](../user-guide/latest/compatibility/index.md) is where they are documented
+instead. A deprecated alias left behind by a rename has no row of its own either. Both are fully
+covered.
+
+The two mechanisms that do exempt a key are set independently of each other:
 
 - **The `testing` category.** Every key declares a category, and `testing` routes it into the
   Development & Testing Settings table rather than in with the production settings. These keys
@@ -110,9 +121,9 @@ of this section deliberately leaves free to change.
 
 The corollary binds contributors: **neither mechanism may be the only way to reach a behavior that
 production users need.** If a knob turns out to be one that deployments legitimately set, it belongs
-in the reference as a production setting, with the guarantees that follow from that. Choosing a
-category, and deciding whether to mark a key internal, are therefore policy decisions rather than
-routing details; see
+in a non-`testing` category and must not be marked internal, and the guarantees come with it.
+Choosing a category, and deciding whether to mark a key internal, are therefore policy decisions
+rather than routing details; see
 [Categories and Visibility](../contributor-guide/config_conventions.md#categories-and-visibility)
 in the contributor guide.
 
