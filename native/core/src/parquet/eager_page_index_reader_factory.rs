@@ -55,6 +55,7 @@ use datafusion::datasource::physical_plan::parquet::{
     ParquetFileMetrics, ParquetFileReaderFactory,
 };
 use datafusion::execution::cache::cache_manager::FileMetadataCache;
+use datafusion::execution::memory_pool::{MemoryConsumer, MemoryPool, MemoryReservation};
 use datafusion::physical_plan::metrics::{
     Count, ExecutionPlanMetricsSet, MetricBuilder, MetricCategory, MetricType,
 };
@@ -101,6 +102,7 @@ struct ScanIoMetrics {
     object_store_response_bytes_read: Count,
     metadata_cache_hits: Count,
     metadata_cache_misses: Count,
+    unreserved_data_bytes: Count,
 }
 
 impl ScanIoMetrics {
@@ -121,6 +123,7 @@ impl ScanIoMetrics {
             ),
             metadata_cache_hits: count_counter(metrics, "scan_io_metadata_cache_hits"),
             metadata_cache_misses: count_counter(metrics, "scan_io_metadata_cache_misses"),
+            unreserved_data_bytes: byte_counter(metrics, "scan_io_unreserved_data_bytes"),
         }
     }
 
@@ -159,6 +162,7 @@ pub struct EagerPageIndexReaderFactory {
     store: Arc<dyn ObjectStore>,
     metadata_cache: Arc<FileMetadataCache>,
     scan_io_metrics: Arc<ScanIoMetrics>,
+    memory_pool: Option<Arc<dyn MemoryPool>>,
     // Arrow schema hints and ENUM inference can change Spark's Variant interpretation.
     // Enable the footer workaround only for scans that project Variant.
     // https://github.com/apache/datafusion-comet/issues/5477
@@ -190,12 +194,20 @@ impl EagerPageIndexReaderFactory {
             store,
             metadata_cache,
             scan_io_metrics,
+            memory_pool: None,
             spark_variant_schema: false,
         }
     }
 
     pub fn with_spark_variant_schema(mut self, enabled: bool) -> Self {
         self.spark_variant_schema = enabled;
+        self
+    }
+
+    /// Charges fetched data pages to `pool` for as long as the decoder holds them. See
+    /// [`ReservedBytes`].
+    pub fn with_memory_pool(mut self, pool: Arc<dyn MemoryPool>) -> Self {
+        self.memory_pool = Some(pool);
         self
     }
 }
@@ -225,6 +237,9 @@ impl ParquetFileReaderFactory for EagerPageIndexReaderFactory {
             metadata_cache: Arc::clone(&self.metadata_cache),
             metadata_size_hint,
             spark_variant_schema: self.spark_variant_schema,
+            reservation: self.memory_pool.as_ref().map(|pool| {
+                MemoryConsumer::new(format!("ParquetScan[{partition_index}]")).register(pool)
+            }),
         }))
     }
 }
@@ -240,6 +255,53 @@ struct EagerPageIndexReader {
     metadata_cache: Arc<FileMetadataCache>,
     metadata_size_hint: Option<usize>,
     spark_variant_schema: bool,
+    /// Empty handle whose registration every fetched buffer's reservation shares.
+    reservation: Option<MemoryReservation>,
+}
+
+/// A fetched data-page buffer that holds its share of the scan's memory reservation.
+///
+/// The reader cannot see when the decoder is finished with the pages it fetched: arrow-rs keeps
+/// the column chunks of the row group being decoded (and the pages sliced from them) alive, and
+/// drops them once it moves on. Making the reservation the `Bytes` owner ties the release to that
+/// last drop, so the pool sees the scan's input working set, roughly one row group's projected
+/// column chunks per partition, without any change to the decoder.
+struct ReservedBytes {
+    bytes: Bytes,
+    _reservation: MemoryReservation,
+}
+
+impl AsRef<[u8]> for ReservedBytes {
+    fn as_ref(&self) -> &[u8] {
+        self.bytes.as_ref()
+    }
+}
+
+/// Charges `buffers` to a new reservation sharing `reservation`'s registration, one pool call
+/// for the whole fetch. A scan cannot spill, so a refused grow does not fail the read: the
+/// buffers are returned unaccounted and counted in `unreserved_data_bytes`. The attempt still
+/// lets Spark ask the task's other consumers to spill before it refuses.
+fn reserve_buffers(
+    reservation: &MemoryReservation,
+    buffers: Vec<Bytes>,
+    scan_io_metrics: &ScanIoMetrics,
+) -> Vec<Bytes> {
+    let total = buffers.iter().map(Bytes::len).sum();
+    let fetch = reservation.new_empty();
+    if fetch.try_grow(total).is_err() {
+        scan_io_metrics.unreserved_data_bytes.add(total);
+        return buffers;
+    }
+    buffers
+        .into_iter()
+        .map(|bytes| {
+            let reservation = fetch.split(bytes.len());
+            Bytes::from_owner(ReservedBytes {
+                bytes,
+                _reservation: reservation,
+            })
+        })
+        .collect()
 }
 
 // Arrow infers ENUM as Binary, losing the distinction from raw binary that Spark needs.
@@ -402,7 +464,8 @@ impl AsyncFileReader for EagerPageIndexReader {
     /// retain delegation; native cloud wrappers observe coalescing. Requested bytes update
     /// `bytes_scanned` before I/O; successful
     /// logical ranges update `data_bytes`, excluding gaps fetched by cloud-store coalescing.
-    /// The future borrows this reader and propagates store errors as external Parquet errors.
+    /// With a memory pool, the returned buffers are charged to it until dropped; see
+    /// [`ReservedBytes`]. The future borrows this reader and propagates store errors as external Parquet errors.
     fn get_byte_ranges(
         &mut self,
         ranges: Vec<Range<u64>>,
@@ -422,7 +485,10 @@ impl AsyncFileReader for EagerPageIndexReader {
             scan_io_metrics
                 .data_bytes
                 .add(bytes.iter().map(Bytes::len).sum());
-            Ok(bytes)
+            Ok(match &self.reservation {
+                Some(reservation) => reserve_buffers(reservation, bytes, &scan_io_metrics),
+                None => bytes,
+            })
         }
         .boxed()
     }
@@ -990,6 +1056,75 @@ mod tests {
                 .as_usize(),
             if remote { 6 } else { 0 }
         );
+    }
+
+    async fn read_ranges_with_pool(pool: Arc<dyn MemoryPool>) -> (Vec<Bytes>, usize) {
+        let store = Arc::new(InMemory::new());
+        let location = Path::from("reserved.parquet");
+        store
+            .put(&location, Bytes::from_static(b"0123456789").into())
+            .await
+            .unwrap();
+        let runtime = datafusion::execution::runtime_env::RuntimeEnv::default();
+        let metrics = ExecutionPlanMetricsSet::new();
+        let factory = EagerPageIndexReaderFactory::new(
+            store,
+            runtime.cache_manager.get_file_metadata_cache(),
+            ScanIoSource::Local,
+            &metrics,
+        )
+        .with_memory_pool(pool);
+        let mut reader = factory
+            .create_reader(
+                0,
+                PartitionedFile::new(location.to_string(), 10),
+                None,
+                &metrics,
+            )
+            .unwrap();
+        let result = reader.get_byte_ranges(vec![0..2, 4..7]).await.unwrap();
+        drop(reader);
+        let unreserved = metrics
+            .clone_inner()
+            .sum_by_name("scan_io_unreserved_data_bytes")
+            .unwrap()
+            .as_usize();
+        (result, unreserved)
+    }
+
+    #[tokio::test]
+    async fn fetched_data_pages_hold_a_reservation_until_dropped() {
+        let pool: Arc<dyn MemoryPool> = Arc::new(
+            datafusion::execution::memory_pool::GreedyMemoryPool::new(1024),
+        );
+        let (mut result, unreserved) = read_ranges_with_pool(Arc::clone(&pool)).await;
+        assert_eq!(
+            result,
+            vec![Bytes::from_static(b"01"), Bytes::from_static(b"456")]
+        );
+        assert_eq!(unreserved, 0);
+        // The reservation outlives the reader and follows each buffer, including slices of it.
+        assert_eq!(pool.reserved(), 5);
+        let slice = result[1].slice(1..2);
+        result.remove(1);
+        assert_eq!(pool.reserved(), 5);
+        drop(slice);
+        assert_eq!(pool.reserved(), 2);
+        drop(result);
+        assert_eq!(pool.reserved(), 0);
+    }
+
+    #[tokio::test]
+    async fn refused_reservation_returns_data_unaccounted() {
+        let pool: Arc<dyn MemoryPool> =
+            Arc::new(datafusion::execution::memory_pool::GreedyMemoryPool::new(4));
+        let (result, unreserved) = read_ranges_with_pool(Arc::clone(&pool)).await;
+        assert_eq!(
+            result,
+            vec![Bytes::from_static(b"01"), Bytes::from_static(b"456")]
+        );
+        assert_eq!(unreserved, 5);
+        assert_eq!(pool.reserved(), 0);
     }
 
     #[test]

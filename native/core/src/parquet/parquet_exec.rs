@@ -194,7 +194,8 @@ pub(crate) fn init_datasource_exec(
             scan_io_source,
             parquet_source.metrics(),
         )
-        .with_spark_variant_schema(projects_variant),
+        .with_spark_variant_schema(projects_variant)
+        .with_memory_pool(Arc::clone(&runtime_env.memory_pool)),
     );
     parquet_source = parquet_source.with_parquet_file_reader_factory(reader_factory);
 
