@@ -23,6 +23,7 @@ use std::{
     },
 };
 
+use super::overcommit::{granted, Overcommit};
 use crate::{errors::CometResult, jvm_bridge::JVMClasses};
 use datafusion::{
     common::{resources_datafusion_err, DataFusionError},
@@ -37,6 +38,7 @@ use log::warn;
 pub struct CometUnifiedMemoryPool {
     task_memory_manager_handle: Arc<Global<JObject<'static>>>,
     used: AtomicUsize,
+    overcommit: Overcommit,
     task_attempt_id: i64,
 }
 
@@ -44,6 +46,7 @@ impl Debug for CometUnifiedMemoryPool {
     fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
         f.debug_struct("CometUnifiedMemoryPool")
             .field("used", &self.used.load(Relaxed))
+            .field("overcommit", &self.overcommit.get())
             .finish()
     }
 }
@@ -57,6 +60,7 @@ impl CometUnifiedMemoryPool {
             task_memory_manager_handle,
             task_attempt_id,
             used: AtomicUsize::new(0),
+            overcommit: Overcommit::default(),
         }
     }
 
@@ -108,16 +112,35 @@ impl MemoryPool for CometUnifiedMemoryPool {
         "CometUnifiedMemoryPool"
     }
 
-    fn grow(&self, reservation: &MemoryReservation, additional: usize) {
-        self.try_grow(reservation, additional).unwrap();
+    /// Records memory that already exists, so it must not fail. Whatever Spark does not grant is
+    /// carried as [`Overcommit`] and repaid by later shrinks.
+    fn grow(&self, _: &MemoryReservation, additional: usize) {
+        if additional == 0 {
+            return;
+        }
+        let acquired = match self.acquire_from_spark(additional) {
+            Ok(acquired) => granted(additional, acquired),
+            Err(e) => {
+                warn!(
+                    "Task {} failed to acquire {additional} bytes from Spark: {e:?}",
+                    self.task_attempt_id
+                );
+                0
+            }
+        };
+        self.overcommit.add(additional - acquired);
+        self.used.fetch_add(additional, Relaxed);
     }
 
     fn shrink(&self, _: &MemoryReservation, size: usize) {
-        if let Err(e) = self.release_to_spark(size) {
-            panic!(
-                "Task {} failed to return {size} bytes to Spark: {e:?}",
-                self.task_attempt_id
-            );
+        let to_release = self.overcommit.repay(size);
+        if to_release > 0 {
+            if let Err(e) = self.release_to_spark(to_release) {
+                panic!(
+                    "Task {} failed to return {to_release} bytes to Spark: {e:?}",
+                    self.task_attempt_id
+                );
+            }
         }
         if let Err(prev) = self
             .used

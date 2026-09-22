@@ -22,6 +22,7 @@ use std::{
 
 use jni::objects::{Global, JObject};
 
+use super::overcommit::{granted, Overcommit};
 use crate::{errors::CometResult, jvm_bridge::JVMClasses};
 use datafusion::common::resources_err;
 use datafusion::execution::memory_pool::MemoryConsumer;
@@ -37,6 +38,7 @@ pub struct CometFairMemoryPool {
     task_memory_manager_handle: Arc<Global<JObject<'static>>>,
     pool_size: usize,
     state: Mutex<CometFairPoolState>,
+    overcommit: Overcommit,
 }
 
 struct CometFairPoolState {
@@ -51,6 +53,7 @@ impl Debug for CometFairMemoryPool {
             .field("pool_size", &self.pool_size)
             .field("used", &state.used)
             .field("num", &state.num)
+            .field("overcommit", &self.overcommit.get())
             .finish()
     }
 }
@@ -64,6 +67,7 @@ impl CometFairMemoryPool {
             task_memory_manager_handle,
             pool_size,
             state: Mutex::new(CometFairPoolState { used: 0, num: 0 }),
+            overcommit: Overcommit::default(),
         }
     }
 
@@ -118,8 +122,23 @@ impl MemoryPool for CometFairMemoryPool {
             .expect("unexpected amount of unregister happened");
     }
 
+    /// Records memory that already exists, so it must not fail and ignores the fair limit.
+    /// Whatever Spark does not grant is carried as [`Overcommit`] and repaid by later shrinks;
+    /// `used` includes it, so the next `try_grow` sees the true total and is refused.
     fn grow(&self, _reservation: &MemoryReservation, additional: usize) {
-        self.try_grow(_reservation, additional).unwrap();
+        if additional == 0 {
+            return;
+        }
+        let mut state = self.state.lock();
+        let acquired = self
+            .acquire(additional)
+            .map(|acquired| granted(additional, acquired))
+            .unwrap_or(0);
+        self.overcommit.add(additional - acquired);
+        state.used = state
+            .used
+            .checked_add(additional)
+            .expect("overflow in checked_add");
     }
 
     fn shrink(&self, _reservation: &MemoryReservation, subtractive: usize) {
@@ -134,8 +153,11 @@ impl MemoryPool for CometFairMemoryPool {
                     state.used
                 )
             }
-            self.release(subtractive)
-                .unwrap_or_else(|_| panic!("Failed to release {subtractive} bytes"));
+            let to_release = self.overcommit.repay(subtractive);
+            if to_release > 0 {
+                self.release(to_release)
+                    .unwrap_or_else(|_| panic!("Failed to release {to_release} bytes"));
+            }
             state.used = state.used.checked_sub(subtractive).unwrap();
         }
     }
