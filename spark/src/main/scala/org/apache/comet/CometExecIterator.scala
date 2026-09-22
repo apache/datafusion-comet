@@ -401,9 +401,6 @@ object CometExecIterator extends Logging {
       CometConf.COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED.get(SQLConf.get).toString)
 
     builder.putEntries(
-      CometConf.COMET_EXEC_PLAN_CACHE_ENABLED.key,
-      CometConf.COMET_EXEC_PLAN_CACHE_ENABLED.get(SQLConf.get).toString)
-    builder.putEntries(
       CometConf.COMET_EXEC_SHARED_PLAN_ENABLED.key,
       CometConf.COMET_EXEC_SHARED_PLAN_ENABLED.get(SQLConf.get).toString)
 

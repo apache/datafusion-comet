@@ -228,17 +228,6 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(false)
 
-  val COMET_EXEC_PLAN_CACHE_ENABLED: ConfigEntry[Boolean] =
-    conf(s"$COMET_EXEC_CONFIG_PREFIX.planCache.enabled")
-      .category(CATEGORY_EXEC)
-      .internal()
-      .doc("Reuse immutable deserialized native plan definitions on an executor. Physical " +
-        "operators and execution state remain private to each task attempt. The cache holds " +
-        "at most 64 entries and 8 MiB of encoded plan keys; decoded heap usage is additional. " +
-        "Plans with different partition payloads are cached separately.")
-      .booleanConf
-      .createWithDefault(false)
-
   val COMET_EXEC_PROJECT_ENABLED: ConfigEntry[Boolean] =
     createExecEnabledConfig("project", defaultValue = true)
   val COMET_EXEC_FILTER_ENABLED: ConfigEntry[Boolean] =

@@ -19,7 +19,6 @@ use std::collections::HashMap;
 
 pub(crate) const COMET_TRACING_ENABLED: &str = "spark.comet.tracing.enabled";
 pub(crate) const COMET_EXEC_SHARED_PLAN_ENABLED: &str = "spark.comet.exec.sharedPlan.enabled";
-pub(crate) const COMET_EXEC_PLAN_CACHE_ENABLED: &str = "spark.comet.exec.planCache.enabled";
 pub(crate) const COMET_DEBUG_ENABLED: &str = "spark.comet.debug.enabled";
 pub(crate) const COMET_EXPLAIN_NATIVE_ENABLED: &str = "spark.comet.explain.native.enabled";
 pub(crate) const COMET_MAX_TEMP_DIRECTORY_SIZE: &str = "spark.comet.maxTempDirectorySize";

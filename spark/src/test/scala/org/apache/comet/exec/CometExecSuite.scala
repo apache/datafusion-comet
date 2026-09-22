@@ -63,10 +63,7 @@ class CometExecSuite extends CometTestBase {
   override protected def test(testName: String, testTags: Tag*)(testFun: => Any)(implicit
       pos: Position): Unit = {
     super.test(testName, testTags: _*) {
-      withSQLConf(
-        CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
-        CometConf.COMET_EXEC_PLAN_CACHE_ENABLED.key -> "true",
-        CometConf.COMET_EXEC_SHARED_PLAN_ENABLED.key -> "true") {
+      withSQLConf(CometConf.COMET_SHUFFLE_ENABLED.key -> "true") {
         testFun
       }
     }
@@ -93,25 +90,10 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
-  test("native plan cache setting crosses JNI for both enabled and disabled execution") {
-    for (enabled <- Seq("true", "false")) {
-      withSQLConf(CometConf.COMET_EXEC_PLAN_CACHE_ENABLED.key -> enabled) {
-        val configs = ConfigMap.parseFrom(CometExecIterator.serializeCometSQLConfs())
-        assert(configs.getEntriesMap.get(CometConf.COMET_EXEC_PLAN_CACHE_ENABLED.key) == enabled)
-        withParquetTable((0 until 32).map(i => (i, i + 1)), "plan_cache_input") {
-          checkSparkAnswerAndOperator(
-            sql("SELECT _1 + 1 FROM plan_cache_input WHERE _2 > 8"),
-            Seq(classOf[CometProjectExec]))
-        }
-      }
-    }
-  }
-
   test("shared native pipelines across task waves and AQE") {
     for (enabled <- Seq("true", "false"); aqe <- Seq("true", "false")) {
       withSQLConf(
         CometConf.COMET_EXEC_SHARED_PLAN_ENABLED.key -> enabled,
-        CometConf.COMET_EXEC_PLAN_CACHE_ENABLED.key -> "false",
         CometConf.COMET_EXPLAIN_NATIVE_ENABLED.key -> "true",
         SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqe,
         SQLConf.ARROW_EXECUTION_MAX_RECORDS_PER_BATCH.key -> "17") {
@@ -123,6 +105,9 @@ class CometExecSuite extends CometTestBase {
           val projects = stripAQEPlan(nativePlan).collect { case p: CometProjectExec => p }
           assert(projects.nonEmpty)
           assert(projects.head.metrics("output_rows").value == 899L)
+          assert(
+            projects.head.metrics("shared_plan_tasks").value ==
+              (if (enabled == "true") 16L else 0L))
         }
         val empty = spark.range(0, 100, 1, 16).where("id < 0").selectExpr("id + 10 AS value")
         checkSparkAnswerAndOperator(empty, Seq(classOf[CometProjectExec]))
@@ -130,12 +115,91 @@ class CometExecSuite extends CometTestBase {
         val stateful = spark
           .range(0, 100, 1, 16)
           .selectExpr("spark_partition_id() AS partition", "monotonically_increasing_id() AS id")
-        checkSparkAnswerAndOperator(stateful, Seq(classOf[CometProjectExec]))
+        val (_, statefulPlan) =
+          checkSparkAnswerAndOperator(stateful, Seq(classOf[CometProjectExec]))
+        assert(
+          stripAQEPlan(statefulPlan)
+            .collect { case p: CometProjectExec =>
+              p.metrics("shared_plan_tasks").value
+            }
+            .forall(_ == 0L))
       }
     }
   }
 
-  test("shared DataFusion stateful operators across Spark partitions") {
+  test("shared binds identify eligible stateful operators") {
+    for (enabled <- Seq("false", "true"); aqe <- Seq("false", "true")) {
+      withSQLConf(
+        CometConf.COMET_EXEC_SHARED_PLAN_ENABLED.key -> enabled,
+        // Deliberately arrange JVM inputs for these positive admission tests. Default
+        // ShuffleScan fallback is checked separately below.
+        CometConf.COMET_SHUFFLE_DIRECT_READ_ENABLED.key -> "false",
+        CometConf.COMET_SHUFFLE_MODE.key -> "jvm",
+        CometConf.COMET_EXEC_JOIN_DYNAMIC_FILTER_ENABLED.key -> "false",
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqe,
+        SQLConf.COALESCE_PARTITIONS_ENABLED.key -> "false",
+        SQLConf.SHUFFLE_PARTITIONS.key -> "4") {
+        val input = spark.range(0, 64, 1, 4).toDF()
+        val (_, sorted) = checkSparkAnswerAndOperator(
+          input.sortWithinPartitions(desc("id")),
+          Seq(classOf[CometSortExec]))
+        val sorts = collect(sorted) { case p: CometSortExec => p }
+        assert(sorts.nonEmpty)
+        assert(
+          sorts.forall(p => (p.metrics("shared_plan_tasks").value > 0) == (enabled == "true")))
+
+        val (_, aggregated) =
+          checkSparkAnswerAndOperator(input.repartition(4).groupBy("id").count())
+        val finals = collect(aggregated) {
+          case p: CometHashAggregateExec
+              if p.modes.contains(org.apache.spark.sql.catalyst.expressions.aggregate.Final) =>
+            p
+        }
+        assert(finals.nonEmpty)
+        assert(
+          finals.forall(p => (p.metrics("shared_plan_tasks").value > 0) == (enabled == "true")))
+
+        val left = input.repartition(4)
+        val right = broadcast(spark.range(0, 32, 1, 2).withColumnRenamed("id", "key"))
+        val (_, joined) =
+          checkSparkAnswerAndOperator(left.join(right, left("id") === right("key")))
+        val joins = collect(joined) { case p: CometBroadcastHashJoinExec => p }
+        assert(joins.nonEmpty)
+        assert(
+          joins.forall(p => (p.metrics("shared_plan_tasks").value > 0) == (enabled == "true")))
+      }
+    }
+  }
+
+  test("ShuffleScan blocks use private plans with sharing enabled or disabled") {
+    for (enabled <- Seq("false", "true")) {
+      withSQLConf(
+        CometConf.COMET_EXEC_SHARED_PLAN_ENABLED.key -> enabled,
+        CometConf.COMET_SHUFFLE_DIRECT_READ_ENABLED.key -> "true",
+        CometConf.COMET_SHUFFLE_MODE.key -> "native",
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true") {
+        withParquetTable((0 until 64).map(i => (i, i.toLong)), "shared_shuffle_input") {
+          val (_, plan) = checkSparkAnswerAndOperator(
+            sql("SELECT * FROM shared_shuffle_input")
+              .repartition(1, $"_1")
+              .sortWithinPartitions($"_1".desc))
+          val sorts = collect(plan) { case p: CometSortExec => p }
+          assert(sorts.nonEmpty)
+          assert(
+            sorts.exists(_.serializedPlanOpt.plan.exists { bytes =>
+              org.apache.comet.serde.OperatorOuterClass.Operator
+                .parseFrom(bytes)
+                .toString
+                .contains("shuffle_scan")
+            }),
+            s"Expected a serialized ShuffleScan input:\n$plan")
+          assert(sorts.forall(_.metrics("shared_plan_tasks").value == 0L))
+        }
+      }
+    }
+  }
+
+  test("stateful operator results with sharing enabled or disabled") {
     for (enabled <- Seq("true", "false"); aqe <- Seq("true", "false")) {
       withSQLConf(
         CometConf.COMET_EXEC_SHARED_PLAN_ENABLED.key -> enabled,
@@ -161,7 +225,7 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
-  test("shared DISTINCT and mixed PartialMerge aggregates") {
+  test("DISTINCT and mixed PartialMerge results with sharing enabled or disabled") {
     for (enabled <- Seq("true", "false"); aqe <- Seq("true", "false")) {
       withSQLConf(
         CometConf.COMET_EXEC_SHARED_PLAN_ENABLED.key -> enabled,
@@ -193,9 +257,12 @@ class CometExecSuite extends CometTestBase {
         withTempPath { path =>
           spark.range(0, 256, 1, 8).write.parquet(path.toString)
           val df = spark.read.parquet(path.toString).selectExpr("id + 10 AS value")
-          checkSparkAnswerAndOperator(
+          val (_, plan) = checkSparkAnswerAndOperator(
             df,
             Seq(classOf[CometNativeScanExec], classOf[CometProjectExec]))
+          val projects = stripAQEPlan(plan).collect { case p: CometProjectExec => p }
+          assert(projects.nonEmpty)
+          assert(projects.forall(_.metrics("shared_plan_tasks").value == 0L))
         }
       }
     }

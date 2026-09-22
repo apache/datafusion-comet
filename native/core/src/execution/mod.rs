@@ -22,7 +22,6 @@ pub mod jni_api;
 pub(crate) mod merge_as_partial;
 pub(crate) mod metrics;
 pub mod operators;
-mod plan_cache;
 pub(crate) mod planner;
 pub mod serde;
 mod shared_pipeline;

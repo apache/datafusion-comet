@@ -42,7 +42,6 @@ use datafusion_comet_proto::spark_operator::{operator::OpStruct, Operator};
 use futures::{Stream, StreamExt};
 use jni::objects::{Global, JObject};
 use parking_lot::Mutex;
-use prost::Message;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Formatter;
 use std::pin::Pin;
@@ -124,32 +123,18 @@ pub(super) fn cache_key(
     key
 }
 
-pub(super) fn cache_bytes<'a>(plan: &Operator, original: &'a [u8]) -> std::borrow::Cow<'a, [u8]> {
-    fn has_files(plan: &Operator) -> bool {
-        matches!(plan.op_struct, Some(OpStruct::NativeScan(_)))
-            || plan.children.iter().any(has_files)
-    }
-    if has_files(plan) {
-        std::borrow::Cow::Owned(template_bytes(plan))
-    } else {
-        std::borrow::Cow::Borrowed(original)
-    }
-}
-
-/// Legacy file-list normalization. Native scans are currently rejected by admission,
-/// so this does not expand the set of trees eligible for sharing.
-pub(super) fn template_bytes(plan: &Operator) -> Vec<u8> {
-    fn normalize(plan: &mut Operator) {
-        if let Some(OpStruct::NativeScan(scan)) = plan.op_struct.as_mut() {
-            scan.file_partition = None;
-        }
-        for child in &mut plan.children {
-            normalize(child);
+/// Only shared construction is recoverable: it has not imported task-owned input streams.
+/// Binding or execution errors must propagate rather than retrying consumed resources.
+pub(super) fn try_build<T>(
+    build: impl FnOnce() -> std::result::Result<T, ExecutionError>,
+) -> Option<T> {
+    match build() {
+        Ok(plan) => Some(plan),
+        Err(error) => {
+            log::warn!("Cannot construct shared native plan; using a private plan: {error}");
+            None
         }
     }
-    let mut template = plan.clone();
-    normalize(&mut template);
-    template.encode_to_vec()
 }
 
 // Preserve the planner's input_plan push order: children are planned left-to-right, including
@@ -733,6 +718,63 @@ mod tests {
             .unwrap()
             .values()
             .to_vec()
+    }
+
+    #[tokio::test]
+    async fn failed_shared_conversion_uses_private_plan() {
+        use datafusion::physical_plan::limit::GlobalLimitExec;
+
+        let session = Arc::new(SessionContext::new());
+        let definition = pipeline();
+        let planner = PhysicalPlanner::new(Arc::clone(&session), 0);
+        let inputs = Arc::new(Mutex::new(Vec::new()));
+        let builder =
+            PhysicalPlanner::new(Arc::clone(&session), 0).with_input_plans(Arc::clone(&inputs));
+        let (_, _, original) = builder.create_plan(&definition, &mut vec![], 1).unwrap();
+        // Simulate a planner adding a wrapper not handled by shared conversion. Admission of
+        // the protobuf still succeeds and the ordinary planner can execute it correctly.
+        assert!(supports(&definition));
+        let wrapped: Arc<dyn ExecutionPlan> = Arc::new(GlobalLimitExec::new(
+            Arc::clone(&original.native_plan),
+            0,
+            None,
+        ));
+        let registry = ScopedPlans::default();
+        let shared = try_build(|| {
+            registry.get_or_build(b"failed", || {
+                let error = convert_tree(&wrapped, &Arc::new(()), &inputs.lock(), &mut vec![], 2)
+                    .unwrap_err();
+                assert!(error
+                    .to_string()
+                    .contains("Unexpected operator in shared tree"));
+                Err(error.into())
+            })
+        });
+        assert!(shared.is_none());
+        assert!(registry.entries.lock().is_empty());
+        let (mut scans, _, private) = planner.create_plan(&definition, &mut vec![], 1).unwrap();
+        feed(&mut scans[0], vec![Some(-1), Some(1), Some(2)]);
+        let stream = private.native_plan.execute(0, session.task_ctx()).unwrap();
+        let batches = drain_inputs(scans, stream).await;
+        assert_eq!(batches.iter().map(RecordBatch::num_rows).sum::<usize>(), 2);
+        let values: Vec<_> = batches
+            .iter()
+            .flat_map(|batch| {
+                batch
+                    .column(0)
+                    .as_any()
+                    .downcast_ref::<Int64Array>()
+                    .unwrap()
+                    .values()
+                    .to_vec()
+            })
+            .collect();
+        assert_eq!(values, vec![11, 12]);
+        // The error was not cached; another construction of this key can succeed.
+        assert!(try_build(|| registry.get_or_build(b"failed", || {
+            SharedPipeline::build(&definition, &session)
+        }))
+        .is_some());
     }
 
     #[test]

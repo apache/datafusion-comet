@@ -43,9 +43,22 @@ pub(crate) fn update_comet_metric(
         Some(attempt) => to_native_metric_node_with(spark_plan, &|plan| attempt.metrics_for(plan)),
         None => to_native_metric_node(spark_plan),
     };
-    let jbytes = env.byte_array_from_slice(&native_metric?.encode_to_vec())?;
+    let mut native_metric = native_metric?;
+    if attempt.is_some() {
+        mark_shared_plan_tasks(&mut native_metric);
+    }
+    let jbytes = env.byte_array_from_slice(&native_metric.encode_to_vec())?;
 
     unsafe { jni_call!(env, comet_metric_node(metric_node).set_all_from_bytes(&jbytes) -> ()) }
+}
+
+// SQLMetric.set replaces this task's previous report; periodic updates must not count as binds.
+// This counts tasks bound to a shared tree, not registry hits or simultaneous users of the tree.
+fn mark_shared_plan_tasks(node: &mut NativeMetricNode) {
+    node.metrics.insert("shared_plan_tasks".to_string(), 1);
+    for child in &mut node.children {
+        mark_shared_plan_tasks(child);
+    }
 }
 
 pub(crate) fn to_native_metric_node(

@@ -329,7 +329,6 @@ pub fn get_runtime() -> Handle {
 /// Must not be called from within the runtime's own worker threads, otherwise the shutdown
 /// would deadlock/panic.
 pub fn release_runtime() {
-    super::plan_cache::clear_plan_cache();
     super::shared_pipeline::clear();
     let runtime = TOKIO_RUNTIME.lock().take();
     if let Some(runtime) = runtime {
@@ -512,10 +511,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
 
             // Deserialize query plan
             let bytes = env.convert_byte_array(serialized_query)?;
-            let spark_plan = super::plan_cache::decode_plan(
-                bytes.as_slice(),
-                spark_config.get_bool(super::spark_config::COMET_EXEC_PLAN_CACHE_ENABLED),
-            )?;
+            let spark_plan = Arc::new(serde::deserialize_op(bytes.as_slice())?);
 
             let shared_plan_scope = shared_plan_scope.try_to_string(env)?;
             let shared_plan_key = (!shared_plan_scope.is_empty()
@@ -525,7 +521,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
                 super::shared_pipeline::scoped_key(
                     shared_plan_scope.as_bytes(),
                     &super::shared_pipeline::cache_key(
-                        &super::shared_pipeline::cache_bytes(&spark_plan, &bytes),
+                        &bytes,
                         &spark_config,
                         batch_size,
                         partition_count,
@@ -994,35 +990,37 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
                         .with_shuffle_partition_pusher(
                             exec_context.shuffle_partition_pusher.clone(),
                         );
-                let (scans, shuffle_scans, root_op) =
-                    if let Some(key) = &exec_context.shared_plan_key {
-                        let shared = super::shared_pipeline::get_or_build(
+                let shared = exec_context.shared_plan_key.as_ref().and_then(|key| {
+                    super::shared_pipeline::try_build(|| {
+                        super::shared_pipeline::get_or_build(
                             key,
                             &exec_context.spark_plan,
                             &exec_context.session_ctx,
                             exec_context.partition_count,
-                        )?;
-                        if let Some((scans, attempt)) = shared.try_bind_plan(
+                        )
+                    })
+                });
+                let binding = shared
+                    .as_ref()
+                    .map(|shared| {
+                        shared.try_bind_plan(
                             &planner,
                             &mut exec_context.input_sources.clone(),
                             &exec_context.spark_plan,
-                        )? {
-                            exec_context.shared_attempt = Some(attempt);
-                            (scans, vec![], Arc::clone(&shared.root))
-                        } else {
-                            planner.create_plan(
-                                &exec_context.spark_plan,
-                                &mut exec_context.input_sources.clone(),
-                                exec_context.partition_count,
-                            )?
-                        }
-                    } else {
-                        planner.create_plan(
-                            &exec_context.spark_plan,
-                            &mut exec_context.input_sources.clone(),
-                            exec_context.partition_count,
-                        )?
-                    };
+                        )
+                    })
+                    .transpose()?
+                    .flatten();
+                let (scans, shuffle_scans, root_op) = if let Some((scans, attempt)) = binding {
+                    exec_context.shared_attempt = Some(attempt);
+                    (scans, vec![], Arc::clone(&shared.as_ref().unwrap().root))
+                } else {
+                    planner.create_plan(
+                        &exec_context.spark_plan,
+                        &mut exec_context.input_sources.clone(),
+                        exec_context.partition_count,
+                    )?
+                };
                 let physical_plan_time = start.elapsed();
 
                 exec_context.plan_creation_time += physical_plan_time;
