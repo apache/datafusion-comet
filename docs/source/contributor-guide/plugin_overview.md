@@ -47,11 +47,15 @@ The plugin also registers `CometSparkSessionExtensions` with Spark's extension A
 
 ## CometSparkSessionExtensions
 
-On initialization, this class registers two physical plan optimization rules with Spark: `CometScanRule`
-and `CometExecRule`. These rules run whenever a query stage is being planned during Adaptive Query Execution, and
-run once for the entire plan when Adaptive Query Execution is disabled.
+On initialization, this class registers one physical plan optimization rule with Spark: `CometRule`. It runs whenever
+a query stage is being planned during Adaptive Query Execution, and runs once for the entire plan when Adaptive Query
+Execution is disabled.
 
-### CometScanRule
+`CometRule` is two phases, applied in order: scan conversion (`CometScanRule`), then operator conversion
+(`CometExecRule`). The order matters, because operator conversion builds its native plan up from the nodes that scan
+conversion produces. Each phase is described below.
+
+### Phase 1: CometScanRule
 
 `CometScanRule` replaces any Parquet scans with Comet operators. There are different paths for Spark v1 and v2 data sources.
 
@@ -68,7 +72,7 @@ convert the output from Spark's scan to Arrow arrays. Note that both `spark.come
 Refer to the [Supported Spark Data Types](https://datafusion.apache.org/comet/user-guide/datatypes.html) section
 in the contributor guide to see a list of currently supported data types.
 
-### CometExecRule
+### Phase 2: CometExecRule
 
 This rule traverses bottom-up from the original Spark plan and attempts to replace each operator with a Comet equivalent.
 For example, a `ProjectExec` will be replaced by `CometProjectExec`.
