@@ -856,11 +856,32 @@ be infrastructure. The next red nightly opens a new issue.</p></li>
 <p>Dispatching <code class="docutils literal notranslate"><span class="pre">ci.yml</span></code> from the Actions page with <strong>Run workflow</strong> runs every tier, including the
 nightly suites, if you need a result before the next scheduled run.</p>
 </section>
+<section id="miri-safety-checks">
+<h2>Miri safety checks<a class="headerlink" href="#miri-safety-checks" title="Link to this heading">#</a></h2>
+<p><code class="docutils literal notranslate"><span class="pre">miri.yml</span></code> runs nightly and supports manual dispatch. It runs the shuffle crate’s
+<code class="docutils literal notranslate"><span class="pre">spark_unsafe::</span></code> tests and the expression crate’s <code class="docutils literal notranslate"><span class="pre">hash_funcs::</span></code> tests in separate jobs,
+so a failure in one does not cancel the other. These cover Comet’s unsafe row decoding
+and hash kernels. The job also fails if its filter selects no passing tests. A failed
+scheduled run opens or updates the same <code class="docutils literal notranslate"><span class="pre">ci-nightly-failure</span></code> issue used by nightly CI.</p>
+<p>Run either suite locally after installing nightly Rust with the Miri component:</p>
+<div class="highlight-sh notranslate"><div class="highlight"><pre><span></span><span class="nb">cd</span><span class="w"> </span>native
+cargo<span class="w"> </span>+nightly<span class="w"> </span>miri<span class="w"> </span>setup
+<span class="nv">MIRIFLAGS</span><span class="o">=</span><span class="s2">"-Zmiri-disable-isolation"</span><span class="w"> </span>cargo<span class="w"> </span>+nightly<span class="w"> </span>miri<span class="w"> </span><span class="nb">test</span><span class="w"> </span>--locked<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-p<span class="w"> </span>datafusion-comet-shuffle<span class="w"> </span>--lib<span class="w"> </span><span class="s1">'spark_unsafe::'</span>
+<span class="nv">MIRIFLAGS</span><span class="o">=</span><span class="s2">"-Zmiri-disable-isolation"</span><span class="w"> </span>cargo<span class="w"> </span>+nightly<span class="w"> </span>miri<span class="w"> </span><span class="nb">test</span><span class="w"> </span>--locked<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-p<span class="w"> </span>datafusion-comet-spark-expr<span class="w"> </span>--lib<span class="w"> </span><span class="s1">'hash_funcs::'</span>
+</pre></div>
+</div>
+<p>Miri cannot execute the JVM, cloud clients, or compression libraries through FFI.
+Running the whole workspace reaches those dependencies or dependency errors in
+platform synchronization before completing the safety checks. Regular Rust CI still runs the
+full tests. When adding unsafe code, add suitable tests to the Miri matrix as well;
+these focused suites do not cover every unsafe operation in Comet.</p>
+</section>
 <section id="checking-that-the-scheduled-runs-are-healthy">
 <h2>Checking that the scheduled runs are healthy<a class="headerlink" href="#checking-that-the-scheduled-runs-are-healthy" title="Link to this heading">#</a></h2>
-<p>A scheduled run has no pull request to turn red, so when one breaks, nothing puts it in front of
-anyone. Comet has three daily schedules plus a weekly one, and two of the daily ones report nothing
-when they fail:</p>
+<p>A scheduled run has no pull request to turn red, so check both whether it ran and whether it
+reported a failure. Comet has three daily schedules plus a weekly one:</p>
 <div class="pst-scrollable-table-container"><table class="table">
 <thead>
 <tr class="row-odd"><th class="head"><p>Workflow</p></th>
@@ -875,7 +896,7 @@ when they fail:</p>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">miri.yml</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">0</span> <span class="pre">4</span> <span class="pre">*</span> <span class="pre">*</span> <span class="pre">*</span></code></p></td>
-<td><p>no</p></td>
+<td><p>yes</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">ci.yml</span></code> nightly tier</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">0</span> <span class="pre">6</span> <span class="pre">*</span> <span class="pre">*</span> <span class="pre">*</span></code></p></td>
@@ -902,9 +923,9 @@ stopped firing. GitHub drops scheduled runs under load and disables them entirel
 with no activity for 60 days, and it does not announce either. Confirm the workflow is still
 enabled with <code class="docutils literal notranslate"><span class="pre">gh</span> <span class="pre">api</span> <span class="pre">repos/apache/datafusion-comet/actions/workflows</span> <span class="pre">--jq</span> <span class="pre">'.workflows[]</span> <span class="pre">|</span> <span class="pre">&quot;\(.state)\t\(.path)&quot;'</span></code>,
 and re-enable it from the Actions page if it is <code class="docutils literal notranslate"><span class="pre">disabled_inactivity</span></code>.</p></li>
-<li><p><strong>A run of failures.</strong> One red night is a flake or a real regression, and for <code class="docutils literal notranslate"><span class="pre">ci.yml</span></code> there is an
-issue open about it. Several consecutive red nights on <code class="docutils literal notranslate"><span class="pre">miri.yml</span></code> or <code class="docutils literal notranslate"><span class="pre">publish_snapshot.yml</span></code> means
-nobody has looked; treat the streak, not the newest run, as the thing to explain.</p></li>
+<li><p><strong>A run of failures.</strong> One red night is a flake or a real regression. <code class="docutils literal notranslate"><span class="pre">ci.yml</span></code> and <code class="docutils literal notranslate"><span class="pre">miri.yml</span></code>
+open or update a failure issue; <code class="docutils literal notranslate"><span class="pre">publish_snapshot.yml</span></code> does not. Investigate repeated failures
+even when a report already exists; treat the streak, not the newest run, as the thing to explain.</p></li>
 </ul>
 <p>For the <code class="docutils literal notranslate"><span class="pre">ci.yml</span></code> nightly, green on its own does not mean the suites ran. Path filters and the diff
 base are both allowed to select nothing — a documentation-only day legitimately runs no suite at
@@ -1046,6 +1067,7 @@ list first.</p>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#merging-through-the-queue">Merging through the queue</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#when-a-queue-run-fails">When a queue run fails</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#nightly-runs">Nightly runs</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#miri-safety-checks">Miri safety checks</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#checking-that-the-scheduled-runs-are-healthy">Checking that the scheduled runs are healthy</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#reproducing-a-suite-failure-locally">Reproducing a suite failure locally</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#changing-ci-itself">Changing CI itself</a></li>
