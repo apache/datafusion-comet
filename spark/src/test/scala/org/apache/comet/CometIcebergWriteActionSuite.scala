@@ -22,6 +22,7 @@ package org.apache.comet
 import java.io.File
 import java.sql.Timestamp
 import java.util.concurrent.{CountDownLatch, TimeUnit}
+import java.util.concurrent.atomic.{AtomicInteger, AtomicReference}
 
 import scala.collection.mutable
 import scala.concurrent.{Await, Future}
@@ -36,6 +37,7 @@ import org.apache.spark.sql.DataFrame
 import org.apache.spark.sql.Row
 import org.apache.spark.sql.comet.{CometIcebergWriteExec, IcebergCommitExec, IcebergWriteExec}
 import org.apache.spark.sql.connector.catalog.InMemoryTableCatalog
+import org.apache.spark.sql.connector.write.WriterCommitMessage
 import org.apache.spark.sql.execution.{ColumnarToRowTransition, SparkPlan}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.internal.SQLConf
@@ -699,6 +701,102 @@ class CometIcebergWriteActionSuite
       assertNativeWriteEngages("native_cow_delete", Seq(1, 3, 4)) {
         spark.sql("DELETE FROM cat.db.native_cow_delete WHERE id = 2")
       }
+    }
+  }
+
+  test("native acceleration: a driver commit failure aborts all completed task files") {
+    assumeNativeAcceleration()
+    withIcebergCatalog { warehouseDir =>
+      val table = "native_commit_failure"
+      createTable(
+        warehouseDir,
+        table,
+        partitionSpec = "",
+        properties = Some(
+          "'write.delete.mode'='copy-on-write','write.delete.isolation-level'='serializable'"))
+      // Seed via the JVM path so only the DELETE and the nested conflicting append run with native
+      // writes enabled.
+      withSQLConf(CometConf.COMET_ICEBERG_WRITE_SPLIT_OPERATOR_ENABLED.key -> "false") {
+        coalesceInsert(table, Seq((1, "us-east", 10.0), (2, "us-west", 20.0), (3, "eu", 30.0)))
+      }
+      val before = countSnapshots(table)
+      val root = dataDir(table).toPath.toAbsolutePath
+
+      def relativePath(location: String): String = {
+        val uri = new java.net.URI(location)
+        val file = if (uri.getScheme == null) new File(location) else new File(uri)
+        root.relativize(file.toPath.toAbsolutePath).toString
+      }
+
+      def metadataFiles: Set[String] = spark
+        .sql(s"SELECT file_path FROM $catalog.$ns.$table.files")
+        .collect()
+        .map(row => relativePath(row.getString(0)))
+        .toSet
+
+      val committedBefore = metadataFiles
+      assert(committedBefore.nonEmpty, "seed write did not create a data file")
+      assert(parquetFiles(root.toFile) == committedBefore)
+
+      val hookCalls = new AtomicInteger()
+      val completedMessages =
+        new AtomicReference[Vector[WriterCommitMessage]](Vector.empty)
+      val (failedPlans, error) = withNativeEnabled {
+        IcebergCommitExec.withPreCommitHook { messages =>
+          hookCalls.incrementAndGet()
+          completedMessages.set(messages.toVector)
+          // This is a real concurrent commit against the DELETE's planned snapshot. Consuming
+          // the one-shot hook before this callback lets the append commit without recursion.
+          spark.sql(s"INSERT INTO $catalog.$ns.$table VALUES (2, 'us-west', 99.0)")
+        } {
+          captureFailedPlans(spark) {
+            withSQLConf(
+              "spark.sql.optimizer.runtime.rowLevelOperationGroupFilter.enabled" -> "false") {
+              spark.sql(s"DELETE FROM $catalog.$ns.$table WHERE id = 2")
+            }
+          }
+        }
+      }
+
+      assert(
+        error.toSeq
+          .flatMap(exceptionChain)
+          .exists(t => Option(t.getMessage).exists(_.toLowerCase.contains("conflict"))),
+        s"expected Iceberg commit-time conflict, got $error")
+      val nativeWrites =
+        failedPlans.flatMap(p => collectWithSubqueries(p) { case w: CometIcebergWriteExec => w })
+      val commits =
+        failedPlans.flatMap(p => collectWithSubqueries(p) { case c: IcebergCommitExec => c })
+      assert(
+        nativeWrites.nonEmpty && commits.nonEmpty,
+        "failed DELETE did not use the native writer and Iceberg committer:\n" +
+          failedPlans.mkString("\n--\n"))
+
+      assert(hookCalls.get() == 1, s"pre-commit hook ran ${hookCalls.get()} times")
+      val messages = completedMessages.get()
+      assert(messages.nonEmpty, "pre-commit hook received no task commit messages")
+      assert(
+        messages.forall(_ != null),
+        s"pre-commit hook received incomplete messages: $messages")
+      val failedPaths = messages
+        .flatMap(IcebergReflection.taskCommitFileLocations)
+        .map(relativePath)
+        .toSet
+      assert(failedPaths.nonEmpty, "completed DELETE tasks reported no data files")
+
+      assert(
+        countSnapshots(table) == before + 1,
+        "only the conflicting append may commit; the DELETE must not")
+      assertRows(table, expectedIds = Seq(1, 2, 2, 3))
+      val physical = parquetFiles(root.toFile)
+      val referenced = metadataFiles
+      assert(physical == referenced, s"orphan files: ${physical -- referenced}")
+      assert(
+        (failedPaths intersect physical).isEmpty,
+        s"failed DELETE files survived: $failedPaths")
+      assert(
+        (failedPaths intersect referenced).isEmpty,
+        s"failed DELETE files were committed: $failedPaths")
     }
   }
 

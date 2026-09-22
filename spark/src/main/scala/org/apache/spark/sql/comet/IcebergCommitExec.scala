@@ -19,6 +19,8 @@
 
 package org.apache.spark.sql.comet
 
+import java.util.concurrent.atomic.AtomicReference
+
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.Attribute
@@ -106,6 +108,7 @@ case class IcebergCommitExec(
 
     try {
       messages.foreach(batchWrite.onDataWriterCommit)
+      IcebergCommitExec.runPreCommitHook(messages)
       IcebergWriteSummaryShim.commit(batchWrite, messages, child)
       logInfo(s"Iceberg commit succeeded with ${messages.length} task message(s)")
     } catch {
@@ -166,4 +169,22 @@ case class IcebergCommitExec(
 
 object IcebergCommitExec {
   type RefreshCache = () => Unit
+
+  // Driver-local test hook for the boundary after every task commit message has been accepted and
+  // before the table commit starts. It is consumed before invocation so the callback may perform
+  // a nested Iceberg write without recursively invoking itself.
+  private val preCommitHook =
+    new AtomicReference[Array[WriterCommitMessage] => Unit]()
+
+  private[apache] def withPreCommitHook[T](hook: Array[WriterCommitMessage] => Unit)(
+      body: => T): T = {
+    val previous = preCommitHook.getAndSet(hook)
+    try body
+    finally preCommitHook.set(previous)
+  }
+
+  private def runPreCommitHook(messages: Array[WriterCommitMessage]): Unit = {
+    val hook = preCommitHook.getAndSet(null)
+    if (hook != null) hook(messages)
+  }
 }
