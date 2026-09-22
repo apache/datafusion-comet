@@ -193,8 +193,11 @@ jobs:
 
   iceberg-spark-extensions:
     needs: build-native
-    name: iceberg-spark-extensions/iceberg-${{ inputs.iceberg-full }}/spark-${{ inputs.spark-full }}/scala-${{ inputs.scala }}/java-${{ inputs.java }}
+    name: iceberg-spark-extensions/iceberg-${{ inputs.iceberg-full }}/spark-${{ inputs.spark-full }}/scala-${{ inputs.scala }}/java-${{ inputs.java }}/shard-${{ matrix.shard }}
     runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.build-native.outputs.shard-matrix) }}
     container:
       image: amd64/rust
     env:
@@ -224,7 +227,40 @@ jobs:
           rm -rf /root/.m2/repository/org/apache/parquet # somehow parquet cache requires cleanups
           ENABLE_COMET=true ENABLE_COMET_ONHEAP=true ./gradlew -DsparkVersions=${{ inputs.spark-short }} -DscalaVersion=${{ inputs.scala }} -DflinkVersions= -DkafkaVersions= \
             :iceberg-spark:iceberg-spark-extensions-${{ inputs.spark-short }}_${{ inputs.scala }}:test \
+            --init-script ../dev/ci/iceberg-test-shards.gradle \
+            -PcometShardTask=:iceberg-spark:iceberg-spark-extensions-${{ inputs.spark-short }}_${{ inputs.scala }}:test \
+            -PcometShardIndex=${{ matrix.shard }} -PcometShardCount=${{ needs.build-native.outputs.shard-count }} \
             -Pquick=true -x javadoc
+      - name: Upload Iceberg shard inventory and test reports
+        if: ${{ !cancelled() }}
+        # iceberg-spark-extensions-shard-coverage downloads the inventory, so a
+        # flaky upload here fails that job too. Retry rather than fail on 403.
+        uses: ./.github/actions/upload-artifact-retry
+        with:
+          name: iceberg-spark-extensions-${{ inputs.iceberg-full }}-spark-${{ inputs.spark-full }}-scala-${{ inputs.scala }}-jdk${{ inputs.java }}-shard-${{ matrix.shard }}-attempt-${{ github.run_attempt }}
+          path: |
+            apache-iceberg/**/build/comet-shards/*.json
+            apache-iceberg/**/build/test-results/test/*.xml
+          retention-days: 7
+
+  iceberg-spark-extensions-shard-coverage:
+    needs: iceberg-spark-extensions
+    if: ${{ !cancelled() }}
+    name: iceberg-spark-extensions-shard-coverage/iceberg-${{ inputs.iceberg-full }}/spark-${{ inputs.spark-full }}/scala-${{ inputs.scala }}/java-${{ inputs.java }}
+    runs-on: ubuntu-slim
+    steps:
+      - uses: actions/checkout@v7
+      - name: Download Iceberg extensions shard inventories
+        uses: ./.github/actions/download-artifact-retry
+        with:
+          # Download all attempts: a failed-job rerun retains earlier successful
+          # shards. The checker selects the latest inventory for each index.
+          pattern: iceberg-spark-extensions-${{ inputs.iceberg-full }}-spark-${{ inputs.spark-full }}-scala-${{ inputs.scala }}-jdk${{ inputs.java }}-shard-*-attempt-*
+          path: iceberg-shard-reports
+      - name: Verify complete, disjoint Iceberg extensions candidate coverage
+        run: |
+          python3 dev/ci/check-iceberg-shards.py --manifests iceberg-shard-reports \
+            --task :iceberg-spark:iceberg-spark-extensions-${{ inputs.spark-short }}_${{ inputs.scala }}:test
 
   iceberg-spark-runtime:
     needs: build-native

@@ -1200,6 +1200,39 @@ def check_cache_save_scope():
     return not failures
 
 
+def check_iceberg_extensions_shards():
+    """The Iceberg extensions task must be sharded like the core task.
+
+    Its job is the longest unsharded one in the Iceberg workflow. It has to use
+    the shared matrix and the same Gradle init script, and a coverage job must
+    verify the extensions task's candidate inventories, not the core task's.
+    """
+    path = WORKFLOWS / "iceberg_spark_test_reusable.yml"
+    text = path.read_text(encoding="utf-8")
+    failures = []
+
+    job = re.search(r"^  iceberg-spark-extensions:\n(.*?)(?=^  \S)", text, re.M | re.S)
+    block = job.group(1) if job else ""
+    if "fromJSON(needs.build-native.outputs.shard-matrix)" not in block:
+        failures.append("iceberg-spark-extensions does not use the shared shard matrix")
+    if "cometShardTask=:iceberg-spark:iceberg-spark-extensions-" not in block:
+        failures.append("iceberg-spark-extensions does not pass -PcometShardTask for its own task")
+    if "cometShardIndex=" not in block or "cometShardCount=" not in block:
+        failures.append("iceberg-spark-extensions does not pass the shard index/count")
+
+    coverage = re.search(
+        r"^  iceberg-spark-extensions-shard-coverage:\n(.*?)(?=^  \S)", text, re.M | re.S)
+    cblock = coverage.group(1) if coverage else ""
+    if (not coverage or "check-iceberg-shards.py --manifests" not in cblock
+            or "--task :iceberg-spark:iceberg-spark-extensions-" not in cblock):
+        failures.append(
+            "no iceberg-spark-extensions-shard-coverage job verifying the extensions task")
+
+    for failure in failures:
+        print(f"iceberg extensions shards: {failure}")
+    return not failures
+
+
 if __name__ == "__main__":
     ok = check_change_filters()
     ok = check_event_policy() and ok
@@ -1213,6 +1246,7 @@ if __name__ == "__main__":
     ok = check_nightly_base_fallback() and ok
     ok = check_cache_save_scope() and ok
     ok = check_local_ci_config() and ok
+    ok = check_iceberg_extensions_shards() and ok
     if not ok:
         sys.exit(1)
     print("CI config checks passed")
