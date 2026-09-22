@@ -43,6 +43,8 @@ Native sorting of floating-point values nested in arrays or structs still uses A
 ordering. Nested keys can therefore produce different ordering or rank results from Spark; see
 [#5507](https://github.com/apache/datafusion-comet/issues/5507).
 
-The existing `spark.comet.exec.strictFloatingPoint=true` fallback policy is unchanged, including
-its conservative fallback for scalar floating-point sort keys. Narrowing that scalar-sort
-admission policy is tracked in [#5506](https://github.com/apache/datafusion-comet/issues/5506).
+Because those scalar comparison keys match Spark, `spark.comet.exec.strictFloatingPoint=true` no
+longer forces a fallback for them: scalar `FLOAT` and `DOUBLE` sort keys, window and rank order
+keys, and range partitioning keys all stay native under strict mode. Floating-point values nested
+in arrays, structs, or maps still fall back under strict mode, because their ordering is the raw
+total ordering described above.

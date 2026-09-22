@@ -21,12 +21,15 @@ package org.apache.comet
 
 import scala.util.Random
 
+import org.scalatest.exceptions.TestFailedException
+
 import org.apache.arrow.vector._
 import org.apache.spark.{SparkConf, SparkEnv, TaskContext}
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.api.java.UDF1
 import org.apache.spark.sql.catalyst.expressions.{Add, Alias, AttributeReference, BoundReference, Cast, CreateArray, CreateMap, CreateNamedStruct, Expression, Hypot, Literal, MapConcat}
 import org.apache.spark.sql.catalyst.expressions.objects.Invoke
+import org.apache.spark.sql.comet.CometProjectExec
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
@@ -68,6 +71,59 @@ class CometCodegenSuite
     }
   }
 
+  test("json_array_length routing follows native opt-in and dispatcher settings") {
+    withSubjects("[1,2,3]", "[]", "not an array", null) {
+      for {
+        allowIncompatible <- Seq(false, true)
+        codegenEnabled <- Seq(false, true)
+      } {
+        withSQLConf(
+          "spark.comet.expression.LengthOfJsonArray.allowIncompatible" ->
+            allowIncompatible.toString,
+          CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> codegenEnabled.toString,
+          SQLConf.OPTIMIZER_EXCLUDED_RULES.key ->
+            "org.apache.spark.sql.catalyst.optimizer.ConstantFolding") {
+          val queries = Seq(
+            "SELECT json_array_length(s) FROM t",
+            "SELECT json_array_length('[1,2,3]') FROM t") ++
+            (if (allowIncompatible) Seq.empty
+             else
+               Seq(
+                 """SELECT json_array_length("[{'key':'value'}]") FROM t""",
+                 "SELECT json_array_length('[1,2,3] trailing') FROM t"))
+
+          queries.foreach { query =>
+            withClue(s"allowIncompatible=$allowIncompatible, codegen=$codegenEnabled: $query") {
+              val df = sql(query)
+              if (!allowIncompatible && !codegenEnabled) {
+                checkSparkAnswerAndFallbackReasons(
+                  df,
+                  Set("json_array_length: spark.comet.exec.scalaUDF.codegen.enabled=false"))
+              } else {
+                val (_, cometPlan) = checkSparkAnswerAndOperator(df)
+                // Spark 4 rewrites this expression to StaticInvoke. Inspect the executable
+                // expression because the rewrite does not preserve its implementation tags.
+                val expr = stripAQEPlan(cometPlan)
+                  .collectFirst { case project: CometProjectExec =>
+                    project.nativeOp.getProjection.getProjectList(0)
+                  }
+                  .getOrElse(fail("Expected a Comet projection"))
+                if (allowIncompatible) {
+                  assert(expr.hasScalarFunc)
+                  assert(expr.getScalarFunc.getFunc === "json_array_length")
+                } else {
+                  assert(expr.hasJvmScalarUdf)
+                  assert(
+                    expr.getJvmScalarUdf.getClassName === classOf[CometScalaUDFCodegen].getName)
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
   private def withTwoStringCols(rows: (String, String)*)(f: => Unit): Unit = {
     withTable("t") {
       sql("CREATE TABLE t (c1 STRING, c2 STRING) USING parquet")
@@ -81,6 +137,29 @@ class CometCodegenSuite
       }
       f
     }
+  }
+
+  /**
+   * Whether `replace` was routed through the JVM codegen dispatcher. Inspects the expression
+   * collection rather than formatted explain text: `rollUpInfoMessages` concatenates sibling
+   * names alphabetically (`cast, divide, ..., replace`), so a substring `"JVM codegen dispatcher:
+   * replace"` misses the case where `replace` is not first.
+   */
+  private def replaceIsDispatched(
+      plan: org.apache.spark.sql.execution.SparkPlan): (Seq[String], String) = {
+    val info = new ExtendedExplainInfo()
+    (info.getCodegenDispatchExpressions(plan), info.generateExtendedInfo(plan))
+  }
+
+  private def assertReplaceDispatch(
+      df: org.apache.spark.sql.DataFrame,
+      expectDispatcher: Boolean,
+      clue: String): Unit = {
+    checkSparkAnswerAndOperator(df)
+    val (dispatched, explain) = replaceIsDispatched(df.queryExecution.executedPlan)
+    assert(
+      dispatched.contains("replace") == expectDispatcher,
+      s"$clue, got dispatched expressions: $dispatched\n$explain")
   }
 
   test("codegen kernel round-trips CalendarIntervalType") {
@@ -191,7 +270,7 @@ class CometCodegenSuite
           s"expected a [COMET-INFO: segment, got:\n$explain")
         // Names appear alphabetically via `.distinct.sorted` in rollUpInfoMessages.
         assert(
-          explain.contains("JVM codegen dispatcher: hypot, nanvl"),
+          dispatchedNames(explain).containsSlice(Seq("hypot", "nanvl")),
           s"expected combined codegen-dispatch info, got:\n$explain")
       }
 
@@ -211,6 +290,71 @@ class CometCodegenSuite
       }
     }
   }
+
+  test("checkSparkAnswerAndImpl pins the mechanism and fails when the claim is wrong") {
+    // The assertion helper is only worth having if it fails. `abs` lowers to a native DataFusion
+    // expression and `hypot` is a `CometCodegenDispatch`, so this query exercises both buckets at
+    // once and each wrong claim below must be rejected.
+    withTable("t") {
+      sql("CREATE TABLE t (a DOUBLE, b DOUBLE) USING parquet")
+      sql("INSERT INTO t VALUES (3.0, 4.0)")
+      val query = "SELECT abs(a), hypot(a, b) FROM t"
+
+      checkSparkAnswerAndImpl(sql(query), native = Seq("abs"), dispatched = Seq("hypot"))
+
+      // Claiming the wrong mechanism fails, in both directions.
+      intercept[TestFailedException] {
+        checkSparkAnswerAndImpl(sql(query), native = Seq("hypot"))
+      }
+      intercept[TestFailedException] {
+        checkSparkAnswerAndImpl(sql(query), dispatched = Seq("abs"))
+      }
+      // So does naming an expression the query does not contain, which is what a typo in a
+      // fixture looks like.
+      intercept[TestFailedException] {
+        checkSparkAnswerAndImpl(sql(query), native = Seq("no_such_expression"))
+      }
+      intercept[TestFailedException] {
+        checkSparkAnswerAndImpl(sql(query), dispatched = Seq("no_such_expression"))
+      }
+    }
+  }
+
+  test("an expression nested inside a dispatched subtree is classified as dispatched") {
+    // The whole of `hypot(abs(b), c)` is bound and closure-serialized into one JVM kernel, so the
+    // inner `abs` ran in the JVM even though the `abs(a)` next to it ran natively. Naming only
+    // the dispatched root would let `native = Seq("abs")` pass here while an `abs` was running in
+    // the kernel, which is the one claim this helper exists to make trustworthy.
+    withTable("t") {
+      sql("CREATE TABLE t (a DOUBLE, b DOUBLE, c DOUBLE) USING parquet")
+      sql("INSERT INTO t VALUES (3.0, 4.0, 5.0)")
+      val query = "SELECT abs(a), hypot(abs(b), c) FROM t"
+
+      // `abs` is genuinely on both sides of the fence, so neither claim about it alone holds.
+      intercept[TestFailedException] {
+        checkSparkAnswerAndImpl(sql(query), native = Seq("abs"))
+      }
+      intercept[TestFailedException] {
+        checkSparkAnswerAndImpl(sql(query), dispatched = Seq("abs"))
+      }
+      // `hypot` is unambiguous, and the same query still classifies it correctly.
+      checkSparkAnswerAndImpl(sql(query), dispatched = Seq("hypot"))
+    }
+  }
+
+  /**
+   * The expression names listed in the `[COMET-INFO: JVM codegen dispatcher: ...]` segment.
+   *
+   * Matching the whole segment rather than a `contains` on `"JVM codegen dispatcher: <name>"`,
+   * because the segment lists every dispatched expression in the operator sorted by name -
+   * including expressions nested inside a dispatched subtree - so a substring match pinned to one
+   * name breaks as soon as a query dispatches a second one.
+   */
+  private def dispatchedNames(explain: String): Seq[String] =
+    "JVM codegen dispatcher: ([^\\]]*)".r
+      .findFirstMatchIn(explain)
+      .map(_.group(1).split(",").map(_.trim).filter(_.nonEmpty).toSeq)
+      .getOrElse(Seq.empty)
 
   private def withSequenceTable(f: => Unit): Unit = {
     withTable("t") {
@@ -255,7 +399,7 @@ class CometCodegenSuite
       val explain =
         new ExtendedExplainInfo().generateExtendedInfo(df.queryExecution.executedPlan)
       assert(
-        explain.contains("JVM codegen dispatcher: sequence"),
+        dispatchedNames(explain).contains("sequence"),
         s"expected zero-arg-UDF sequence to route through the dispatcher, got:\n$explain")
     }
   }
@@ -271,7 +415,7 @@ class CometCodegenSuite
       val explain =
         new ExtendedExplainInfo().generateExtendedInfo(df.queryExecution.executedPlan)
       assert(
-        explain.contains("JVM codegen dispatcher: sequence"),
+        dispatchedNames(explain).contains("sequence"),
         s"expected composed-arg sequence to route through the dispatcher, got:\n$explain")
     }
   }
@@ -285,7 +429,7 @@ class CometCodegenSuite
       val explain =
         new ExtendedExplainInfo().generateExtendedInfo(df.queryExecution.executedPlan)
       assert(
-        explain.contains("JVM codegen dispatcher: sequence"),
+        dispatchedNames(explain).contains("sequence"),
         s"expected date sequence to route through the dispatcher, got:\n$explain")
     }
   }
@@ -355,13 +499,21 @@ class CometCodegenSuite
 
     // Promotion rebuilds Hypot as well as the Alias above it. Unlike the original Add, the
     // dispatched copy is not reachable from the original tree, so only the coverage lift can
-    // bring its name back to the projection owner.
+    // bring its names back to the projection owner.
+    //
+    // Every expression in the rebuilt subtree is named, not just the dispatched root: the whole
+    // subtree was bound into the one kernel, so all of it ran in the JVM. `checkoverflow` is the
+    // wrapper promotion added around the decimal `Add`, which is what makes the lifted set
+    // evidence that the promoted copy, rather than the original tree, was the one recorded.
     val proto = QueryPlanSerde.exprToProto(projection, Seq(decimal)).get
     assert(proto.hasJvmScalarUdf)
     assert(proto.getJvmScalarUdf.getClassName === classOf[CometScalaUDFCodegen].getName)
     assert(dispatched.getTagValue(CometExplainInfo.DISPATCHED_SELF).isEmpty)
     assert(dispatched.getTagValue(CometExplainInfo.CODEGEN_DISPATCH_EXPRS).isEmpty)
-    assert(projection.getTagValue(CometExplainInfo.CODEGEN_DISPATCH_EXPRS).contains(Set("hypot")))
+    assert(
+      projection
+        .getTagValue(CometExplainInfo.CODEGEN_DISPATCH_EXPRS)
+        .contains(Set("hypot", "cast", "checkoverflow", "add")))
   }
 
   test("tags copied onto the shared TrueLiteral do not leak into unrelated plans") {
@@ -436,6 +588,101 @@ class CometCodegenSuite
         info
           .generateExtendedInfo(plan)
           .contains("Accelerated expressions: 0 native, 0 codegen dispatch."))
+    }
+  }
+
+  test("replace compatibility boundary cases stay on JVM codegen dispatcher") {
+    withSQLConf(
+      CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "true",
+      CometConf.COMET_EXPLAIN_CODEGEN_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_PROJECT_ENABLED.key -> "true",
+      CometConf.COMET_EXTENDED_EXPLAIN_FORMAT.key ->
+        CometConf.COMET_EXTENDED_EXPLAIN_FORMAT_VERBOSE) {
+
+      // Malformed search: CometLiteral would normalize 0xFF to U+FFFD, incorrectly matching
+      // a well-formed U+FFFD in the source.
+      withTable("t") {
+        sql("CREATE TABLE t (s STRING) USING parquet")
+        sql("INSERT INTO t VALUES ('\uFFFD'), ('ok')")
+        assertReplaceDispatch(
+          sql("SELECT replace(s, CAST(X'FF' AS STRING), 'x') FROM t"),
+          expectDispatcher = true,
+          "expected dispatcher path for malformed search literal")
+      }
+
+      // Malformed replacement has the same serialization hazard.
+      withTable("t") {
+        sql("CREATE TABLE t (s STRING) USING parquet")
+        sql("INSERT INTO t VALUES ('a'), ('b')")
+        assertReplaceDispatch(
+          sql("SELECT replace(s, 'a', CAST(X'FF' AS STRING)) FROM t"),
+          expectDispatcher = true,
+          "expected dispatcher path for malformed replacement literal")
+      }
+
+      // Spark skips replacement evaluation when src is NULL; native evaluates every child.
+      withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
+        withTable("t") {
+          sql("CREATE TABLE t (s STRING, n INT) USING parquet")
+          sql("INSERT INTO t VALUES (NULL, 0), ('a', 1)")
+          assertReplaceDispatch(
+            sql("SELECT replace(s, 'a', CAST(1 / n AS STRING)) FROM t"),
+            expectDispatcher = true,
+            "expected dispatcher path for throwing replacement expression")
+        }
+      }
+
+      // A 256 KiB scalar replacement overflows Arrow Utf8 offsets when broadcast to 8192 rows.
+      withTable("t") {
+        sql("CREATE TABLE t (s STRING) USING parquet")
+        sql("INSERT INTO t VALUES ('hello')")
+        assertReplaceDispatch(
+          sql("SELECT replace(s, 'notfound', repeat('x', 262144)) FROM t"),
+          expectDispatcher = true,
+          "expected dispatcher path for oversized replacement literal")
+      }
+
+      // Source is not on the whitelist: Spark short-circuits inside substring when s is NULL.
+      withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
+        withTable("t") {
+          sql("CREATE TABLE t (s STRING, n INT) USING parquet")
+          sql("INSERT INTO t VALUES (NULL, 0), ('a', 1)")
+          assertReplaceDispatch(
+            sql("SELECT replace(substring(s, 1, CAST(1 / n AS INT)), 'a', 'x') FROM t"),
+            expectDispatcher = true,
+            "expected dispatcher path for throwing expression nested in source")
+        }
+      }
+
+      // Malformed source literal: same CometLiteral byte-normalization as search/replacement.
+      withTable("t") {
+        sql("CREATE TABLE t (r STRING) USING parquet")
+        sql("INSERT INTO t VALUES ('x')")
+        assertReplaceDispatch(
+          sql("SELECT replace(CAST(X'FF' AS STRING), 'a', r) FROM t"),
+          expectDispatcher = true,
+          "expected dispatcher path for malformed source literal")
+      }
+
+      // Malformed literal nested under concat is still in the source tree.
+      withTable("t") {
+        sql("CREATE TABLE t (r STRING) USING parquet")
+        sql("INSERT INTO t VALUES ('x')")
+        assertReplaceDispatch(
+          sql("SELECT replace(concat(CAST(X'FF' AS STRING), r), 'a', 'x') FROM t"),
+          expectDispatcher = true,
+          "expected dispatcher path for malformed literal nested in source")
+      }
+
+      // Oversized source literal has the same broadcast / offset-overflow hazard.
+      withTable("t") {
+        sql("CREATE TABLE t (r STRING) USING parquet")
+        sql("INSERT INTO t VALUES ('x')")
+        assertReplaceDispatch(
+          sql("SELECT replace(repeat('x', 262144), 'notfound', r) FROM t"),
+          expectDispatcher = true,
+          "expected dispatcher path for oversized source literal")
+      }
     }
   }
 

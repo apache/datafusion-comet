@@ -19,7 +19,7 @@ mod buf_batch_writer;
 mod checksum;
 mod local;
 mod partition_writer;
-mod rss;
+pub(crate) mod rss;
 mod shuffle_block_writer;
 
 pub(crate) use buf_batch_writer::BufBatchWriter;

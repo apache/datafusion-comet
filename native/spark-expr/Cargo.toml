@@ -64,6 +64,10 @@ name = "hash"
 harness = false
 
 [[bench]]
+name = "hash_alloc"
+harness = false
+
+[[bench]]
 name = "cast_from_string"
 harness = false
 
@@ -164,6 +168,10 @@ name = "bloom_filter_agg"
 harness = false
 
 [[bench]]
+name = "collect"
+harness = false
+
+[[bench]]
 name = "padding"
 harness = false
 
@@ -213,6 +221,10 @@ harness = false
 
 [[bench]]
 name = "map_sort"
+harness = false
+
+[[bench]]
+name = "map_extract"
 harness = false
 
 [[bench]]
@@ -389,4 +401,32 @@ harness = false
 
 [[bench]]
 name = "iceberg_transforms"
+harness = false
+
+[[bench]]
+name = "spark_pow"
+harness = false
+
+[[bench]]
+name = "cast_decimal_to_boolean"
+harness = false
+
+[[bench]]
+name = "dayofweek_weekday"
+harness = false
+
+[[bench]]
+name = "aggregate_stats"
+harness = false
+
+[[bench]]
+name = "nondeterministic"
+harness = false
+
+[[bench]]
+name = "json_array_length"
+harness = false
+
+[[bench]]
+name = "utf8_decode"
 harness = false
