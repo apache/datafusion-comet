@@ -32,8 +32,12 @@ Here is an overview of the changes that the diffs make to Iceberg:
 - Configure test base classes (`TestBase`, `ExtensionsTestBase`, `ScanTestBase`, etc.) to load the Comet Spark
   plugin and shuffle manager
 - Enable the Iceberg write split-operator plan (`spark.comet.write.iceberg.splitOperator.enabled`) alongside the
-  native scan in every Comet-configured session, so that Iceberg's own write, commit, and row-level-operation
-  tests exercise the split plan (`IcebergCommit -> IcebergWrite`). See [#5259]
+  native scan in every Comet-configured session. The flag is off by default for users, so Iceberg's own suites
+  are the only place the split plan (`IcebergCommit -> IcebergWrite`) is exercised against Iceberg's write,
+  commit, and row-level-operation tests. See [#5259]
+- Enable Comet's native (iceberg-rust) Parquet writer (`spark.comet.iceberg.write.enabled`) in the same sessions.
+  The native writer is experimental and off by default for users, so this is where it runs against Iceberg's
+  write, commit, and row-level-operation tests.
 - Enable `spark.comet.exec.localTableScan.enabled` in the same sessions. `CometIcebergNativeWrite` sets
   `requiresNativeChildren`, so without this flag a write fed by an inline `VALUES` list keeps Spark's row-based
   `LocalTableScanExec`, the conversion is declined, and the write silently runs on the JVM writer. Many Iceberg
