@@ -590,8 +590,8 @@ jobs:
               org.apache.spark.CometTaskMemoryManagerSuite
               org.apache.spark.CometExecIteratorLifecycleSuite
               org.apache.spark.CometPluginsDefaultSuite
-              org.apache.spark.CometPluginsNonOverrideSuite
-              org.apache.spark.CometPluginsUnifiedModeOverrideSuite
+              org.apache.spark.CometPluginsMemoryOverheadWarningSuite
+              org.apache.spark.CometPluginsUnifiedModeSuite
               org.apache.comet.rules.CometScanRuleSuite
               org.apache.comet.rules.CometScanContribSuite
               org.apache.comet.rules.CometScanSchemeFallbackSuite
@@ -615,6 +615,7 @@ jobs:
               org.apache.spark.sql.comet.util.UtilsSuite
               org.apache.comet.vector.NativeUtilSuite
               org.apache.comet.vector.CometVectorUtilsSuite
+              org.apache.comet.udf.CometUdfBridgeSuite
               org.apache.comet.objectstore.NativeConfigSuite
               org.apache.comet.serde.operator.CometIcebergNativeScanSuite
               org.apache.comet.serde.operator.CometNativeScanSuite
@@ -644,6 +645,7 @@ jobs:
               org.apache.comet.CometJsonExpressionSuite
               org.apache.comet.CometJsonJvmSuite
               org.apache.comet.SparkErrorConverterSuite
+              org.apache.comet.serde.SerdeRegistrationSuite
               org.apache.comet.expressions.conditional.CometIfSuite
               org.apache.comet.expressions.conditional.CometCoalesceSuite
               org.apache.comet.expressions.conditional.CometCaseWhenSuite

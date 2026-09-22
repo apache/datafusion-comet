@@ -346,7 +346,11 @@ case class CometScanRule(session: SparkSession)
           "input_file_block_start, or input_file_block_length")
       return None
     }
-    if (ShimFileFormat.findRowIndexColumnIndexInSchema(scanExec.requiredSchema) >= 0) {
+    // Check the name directly instead of calling findRowIndexColumnIndexInSchema, which validates
+    // the temporary column's type and can throw a raw RuntimeException. Falling back lets Spark's
+    // Parquet reader wrap that validation failure as FAILED_READ_FILE.
+    if (scanExec.requiredSchema.fieldNames.contains(
+        ShimFileFormat.ROW_INDEX_TEMPORARY_COLUMN_NAME)) {
       withFallbackReason(scanExec, "Native Parquet scan does not support row index generation")
       return None
     }
