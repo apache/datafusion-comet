@@ -143,9 +143,18 @@ abstract class CometParquetWriterTestBase extends CometTestBase {
     }
   }
 
-  /** Hadoop `Path` equality, then equality after re-parsing each path's string form. */
-  private def sameOutputPath(actual: Path, expected: Path): Boolean =
-    actual == expected || new Path(actual.toString) == new Path(expected.toString)
+  /**
+   * Spark qualifies file-format write paths when building [[InsertIntoHadoopFsRelationCommand]],
+   * while the helper may receive an unqualified temporary path. Re-parsing `Path.toString` does
+   * not drop a `file:` scheme, so both sides are qualified through Hadoop `FileSystem` before
+   * comparison.
+   */
+  private def sameOutputPath(actual: Path, expected: Path): Boolean = {
+    val conf = spark.sessionState.newHadoopConf()
+    val actualFs = actual.getFileSystem(conf)
+    val expectedFs = expected.getFileSystem(conf)
+    actualFs.makeQualified(actual) == expectedFs.makeQualified(expected)
+  }
 
   /**
    * The operator that carries a native write, which differs by Spark version: on 4.0+ Comet
