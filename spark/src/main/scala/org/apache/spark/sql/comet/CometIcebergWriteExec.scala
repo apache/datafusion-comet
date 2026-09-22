@@ -19,6 +19,8 @@
 
 package org.apache.spark.sql.comet
 
+import java.util.concurrent.atomic.AtomicReference
+
 import org.apache.spark.TaskContext
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
@@ -305,7 +307,9 @@ case class CometIcebergWriteExec(
         require(
           batch.numCols() == 2,
           s"iceberg_write expected 2 output columns per task, got ${batch.numCols()}")
-        cleanup.own(CometIcebergWriteExec.decodeLocations(batch.column(1).getBinary(0)))
+        val locations = CometIcebergWriteExec.decodeLocations(batch.column(1).getBinary(0))
+        cleanup.own(locations)
+        CometIcebergWriteExec.afterNativeHandoff(locations)
         batch.column(0).getBinary(0)
       } finally {
         batch.close()
@@ -316,6 +320,22 @@ case class CometIcebergWriteExec(
 }
 
 object CometIcebergWriteExec {
+
+  // Local-executor test hook for the boundary between owning the native payload's paths and
+  // decoding its manifest. The callback is absent outside a scoped test invocation.
+  private val handoffFailpoint = new AtomicReference[Seq[String] => Unit]()
+
+  private[apache] def withPostNativeHandoffFailpoint[T](callback: Seq[String] => Unit)(
+      body: => T): T = {
+    val previous = handoffFailpoint.getAndSet(callback)
+    try body
+    finally handoffFailpoint.set(previous)
+  }
+
+  private[comet] def afterNativeHandoff(locations: Seq[String]): Unit = {
+    val callback = handoffFailpoint.get()
+    if (callback != null) callback(locations)
+  }
 
   /**
    * Decode the `written_file_locations` column written by `encode_locations` in
