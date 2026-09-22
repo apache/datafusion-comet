@@ -777,7 +777,7 @@ object CometShuffleExchangeExec
       Seq(streamRDD),
       rdd.getNumPartitions,
       shuffleScanIndices = Set.empty,
-      spillMetricNode = CometMetricNode(metrics, Seq(childMetricNode)))
+      taskMetricNode = CometMetricNode(metrics, Seq(childMetricNode)))
 
     val ctx = NativeExecContext(
       inputs = Seq(streamRDD),
@@ -787,8 +787,7 @@ object CometShuffleExchangeExec
       encryptedFilePaths = Seq.empty,
       commonByKey = Map.empty,
       perPartitionByKey = Map.empty,
-      shuffleScanIndices = Set.empty,
-      hasScanInput = false)
+      shuffleScanIndices = Set.empty)
 
     // The Scan placeholder has no per-operator metrics, so the metric tree for the unified plan
     // is `shuffleWriterMetrics` at the root with one empty leaf for the Scan child.

@@ -34,7 +34,7 @@ import org.apache.spark.scheduler.{SparkListener, SparkListenerTaskEnd}
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.catalyst.expressions.DynamicPruningExpression
 import org.apache.spark.sql.comet._
-import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
+import org.apache.spark.sql.comet.execution.shuffle.{CometNativeShuffle, CometShuffleExchangeExec}
 import org.apache.spark.sql.execution.{InSubqueryExec, ReusedSubqueryExec, SparkPlan, SubqueryExec}
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AdaptiveSparkPlanHelper, BroadcastQueryStageExec}
 import org.apache.spark.sql.execution.exchange.{ReusedExchangeExec, ShuffleExchangeExec}
@@ -2247,6 +2247,13 @@ class CometIcebergNativeSuite
           uiValues.contains(nameToAccId("scan time")),
           "scan time should have a value in the SQL UI store")
 
+        // Planning metrics stay out of the executor metric tree, so a size metric renders as the
+        // driver's single value instead of statistics over per-task zeros.
+        val totalDataFileSize = uiValues(nameToAccId("totalDataFileSize"))
+        assert(
+          !totalDataFileSize.contains("0.0 B"),
+          s"totalDataFileSize should not carry task zeros, got $totalDataFileSize")
+
         spark.sql("DROP TABLE test_cat.db.driver_metrics_test")
       }
     }
@@ -3825,6 +3832,12 @@ class CometIcebergNativeSuite
           s"Expected CometIcebergNativeScanExec but found none. Plan:\n$cometPlan")
         val numPartitions = icebergScans.head.numPartitions
         assert(numPartitions == 1, s"Expected DPP to prune to 1 partition but got $numPartitions")
+        // Planning ran on the copy carrying the resolved DPP filters; the metrics are read from
+        // that copy rather than from originalPlan, whose accumulators stay at zero.
+        val resultDataFiles = icebergScans.head.metrics("resultDataFiles").value
+        assert(
+          resultDataFiles > 0,
+          s"Expected the planning metrics of the DPP scan, got resultDataFiles=$resultDataFiles")
 
         // Verify AQE DPP used CometSubqueryBroadcastExec with broadcast reuse
         if (isSpark35Plus) {
@@ -4154,6 +4167,96 @@ class CometIcebergNativeSuite
         } finally {
           spark.sparkContext.removeSparkListener(listener)
           spark.sql("DROP TABLE test_cat.db.task_metrics_test")
+        }
+      }
+    }
+  }
+
+  test("task-level input metrics cover Iceberg scans fused below other native operators") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        spark.sql("""
+          CREATE TABLE test_cat.db.fused_metrics_test (
+            id INT,
+            value DOUBLE
+          ) USING iceberg
+        """)
+
+        spark
+          .range(10000)
+          .selectExpr("CAST(id AS INT)", "CAST(id * 1.5 AS DOUBLE) as value")
+          .repartition(5)
+          .write
+          .format("iceberg")
+          .mode("append")
+          .saveAsTable("test_cat.db.fused_metrics_test")
+
+        val bytesReadValues = mutable.ArrayBuffer.empty[Long]
+        val recordsReadValues = mutable.ArrayBuffer.empty[Long]
+
+        val listener = new SparkListener {
+          override def onTaskEnd(taskEnd: SparkListenerTaskEnd): Unit = {
+            val im = taskEnd.taskMetrics.inputMetrics
+            bytesReadValues.synchronized {
+              bytesReadValues += im.bytesRead
+              recordsReadValues += im.recordsRead
+            }
+          }
+        }
+        spark.sparkContext.addSparkListener(listener)
+
+        def collectInputMetrics(df: DataFrame): (Long, Long) = {
+          CometListenerBusUtils.waitUntilEmpty(spark.sparkContext)
+          bytesReadValues.clear()
+          recordsReadValues.clear()
+          df.collect()
+          CometListenerBusUtils.waitUntilEmpty(spark.sparkContext)
+          (bytesReadValues.sum, recordsReadValues.sum)
+        }
+
+        try {
+          // Iceberg returns every pushed filter as a post-scan filter, so the WHERE keeps a
+          // CometFilterExec above the scan and the scan runs inside the filter's native block.
+          val filtered = spark.sql("SELECT * FROM test_cat.db.fused_metrics_test WHERE id >= 0")
+          val (filteredBytes, filteredRecords) = collectInputMetrics(filtered)
+          val filteredPlan = filtered.queryExecution.executedPlan
+          assert(
+            find(filteredPlan)(_.isInstanceOf[CometFilterExec]).isDefined &&
+              collectIcebergNativeScans(filteredPlan).nonEmpty,
+            s"Expected a CometFilterExec above a CometIcebergNativeScanExec:\n$filteredPlan")
+          assert(
+            filteredRecords == 10000,
+            s"recordsRead below a native filter should be 10000, got $filteredRecords")
+          assert(filteredBytes > 0, "bytesRead below a native filter should be > 0")
+
+          // The scan runs inside the native shuffle writer's plan on the map side.
+          val scanned = spark.sql("SELECT * FROM test_cat.db.fused_metrics_test")
+          val shuffled = scanned.repartition(4, scanned("id"))
+          val (shuffledBytes, shuffledRecords) = collectInputMetrics(shuffled)
+          val shuffledPlan = shuffled.queryExecution.executedPlan
+          assert(
+            find(shuffledPlan) {
+              case exchange: CometShuffleExchangeExec =>
+                exchange.shuffleType == CometNativeShuffle
+              case _ => false
+            }.isDefined && collectIcebergNativeScans(shuffledPlan).nonEmpty,
+            s"Expected a native shuffle above a CometIcebergNativeScanExec:\n$shuffledPlan")
+          assert(
+            shuffledRecords == 10000,
+            s"recordsRead below a native shuffle should be 10000, got $shuffledRecords")
+          assert(shuffledBytes > 0, "bytesRead below a native shuffle should be > 0")
+        } finally {
+          spark.sparkContext.removeSparkListener(listener)
+          spark.sql("DROP TABLE test_cat.db.fused_metrics_test")
         }
       }
     }

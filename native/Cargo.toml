@@ -64,8 +64,11 @@ object_store = { version = "0.13.2", features = ["gcp", "azure", "aws", "http"] 
 url = "2.2"
 aws-config = "1.8.18"
 aws-credential-types = "1.2.13"
-iceberg = { git = "https://github.com/apache/iceberg-rust", rev = "665c64e48e8d33797ecb1a421f327edd9b024879" }
-iceberg-storage-opendal = { git = "https://github.com/apache/iceberg-rust", rev = "665c64e48e8d33797ecb1a421f327edd9b024879", features = ["opendal-memory", "opendal-fs", "opendal-s3", "opendal-gcs", "opendal-oss", "opendal-azdls"] }
+# apache/iceberg-rust#3111 (HDFS via opendal services-hdfs-native), pinned to the PR head on the
+# author's fork. This also advances iceberg-rust 29 commits past the previous pin (665c64e).
+# Retarget at apache/iceberg-rust once #3111 merges.
+iceberg = { git = "https://github.com/mixermt/iceberg-rust", rev = "9d7d2d89e8391245863ebbcbad753b99a0b3b4cc" }
+iceberg-storage-opendal = { git = "https://github.com/mixermt/iceberg-rust", rev = "9d7d2d89e8391245863ebbcbad753b99a0b3b4cc", features = ["opendal-memory", "opendal-fs", "opendal-s3", "opendal-gcs", "opendal-oss", "opendal-azdls", "opendal-hdfs-native"] }
 reqsign-core = "3"
 
 [profile.release]
@@ -84,3 +87,4 @@ codegen-units = 16   # Parallel codegen (faster compile, slightly larger binary)
 debug-assertions = true
 panic = "unwind"     # Allow panics to be caught and logged across FFI boundary
 # overflow-checks inherited as false from release
+

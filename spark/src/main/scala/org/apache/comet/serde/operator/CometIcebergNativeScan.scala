@@ -596,6 +596,54 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
   }
 
   /**
+   * Resolves the `hdfs.name-node` property iceberg-rust's `hdfs-native` backend needs, from the
+   * session Hadoop configuration.
+   *
+   * opendal's `HdfsNativeBuilder` never dials the path authority: it builds one client against a
+   * synthetic authority and synthesizes the HA config from the comma-separated `name_node` value
+   * (`init_hdfs_config` in `opendal-service-hdfs-native`). iceberg-rust falls back to the path
+   * authority only when this property is absent, which is correct just for a real `host:port`. An
+   * HA location reads `hdfs://<nameservice>/...`, and a nameservice is not a routable host, so
+   * without this mapping every HA table fails to connect at execution time -- after the planner
+   * has already committed to the native scan.
+   *
+   * A non-HA authority yields nothing: the path authority is already correct, and a property
+   * would only pin the scan to one endpoint. Call sites order this before the catalog properties,
+   * so an explicit `spark.sql.catalog.<cat>.hdfs.name-node` still wins.
+   *
+   * @param uri
+   *   the metadata (scan) or data (write) location whose authority names the nameservice
+   */
+  def hadoopToIcebergHdfsProperties(
+      uri: java.net.URI,
+      hadoopConf: org.apache.hadoop.conf.Configuration): Map[String, String] = {
+    if (!NativeConfig.lowerScheme(uri).contains("hdfs")) return Map.empty
+    // The RAW authority, not `getHost`, which answers null for a nameservice carrying an
+    // underscore.
+    val nameservice = Option(uri.getRawAuthority).filter(_.nonEmpty).getOrElse(return Map.empty)
+
+    // Absent for a plain `host:port` authority, which needs no mapping.
+    val nnIds = Option(hadoopConf.getTrimmedStrings(s"dfs.ha.namenodes.$nameservice"))
+      .map(_.toSeq)
+      .getOrElse(Seq.empty)
+      .filter(_.nonEmpty)
+
+    val endpoints = nnIds.flatMap { nnId =>
+      Option(hadoopConf.getTrimmed(s"dfs.namenode.rpc-address.$nameservice.$nnId"))
+        .filter(_.nonEmpty)
+        .map(addr => if (addr.startsWith("hdfs://")) addr else s"hdfs://$addr")
+    }
+
+    // All-or-nothing: a partially resolved list would silently drop a NameNode, turning a
+    // failover into an outage.
+    if (endpoints.nonEmpty && endpoints.size == nnIds.size) {
+      Map("hdfs.name-node" -> endpoints.mkString(","))
+    } else {
+      Map.empty
+    }
+  }
+
+  /**
    * Transforms Hadoop S3A configuration keys to Iceberg FileIO property keys.
    *
    * Iceberg-rust's FileIO expects Iceberg-format keys (e.g., s3.access-key-id), not Hadoop keys

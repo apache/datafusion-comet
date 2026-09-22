@@ -127,6 +127,50 @@ class CometTaskMetricsSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("overlapping scan trees registered on one task report input metrics once") {
+    val nestedBytes = new SQLMetric("nestedBytes", -1L)
+    val nestedRows = new SQLMetric("nestedRows")
+    val nestedPruned = new SQLMetric("nestedPruned")
+    val filterRows = new SQLMetric("filterRows")
+    val siblingBytes = new SQLMetric("siblingBytes", -1L)
+    val siblingRows = new SQLMetric("siblingRows")
+    val nestedScan = CometMetricNode(
+      Map(
+        "bytes_scanned" -> nestedBytes,
+        "output_rows" -> nestedRows,
+        "pushdown_rows_pruned" -> nestedPruned))
+    // Operators above the scan carry output_rows too; only scan leaves feed recordsRead.
+    val nestedTree = CometMetricNode(Map("output_rows" -> filterRows), Seq(nestedScan))
+    val outerTree = CometMetricNode(Map.empty, Seq(nestedTree))
+    val siblingTree =
+      CometMetricNode(Map("bytes_scanned" -> siblingBytes, "output_rows" -> siblingRows))
+
+    Seq(None, Some(new IllegalStateException("failed native stage"))).foreach { failure =>
+      val ctx = TaskContext.empty()
+      // Input already reported by another source in the same task, such as a JVM scan.
+      ctx.taskMetrics.inputMetrics.incBytesRead(100L)
+      ctx.taskMetrics.inputMetrics.incRecordsRead(1L)
+      outerTree.reportScanInputMetrics(ctx)
+      nestedTree.reportScanInputMetrics(ctx)
+      nestedTree.reportScanInputMetrics(ctx)
+      siblingTree.reportScanInputMetrics(ctx)
+      // Registered last so it runs first, like native iterators publishing final metric values
+      // as they close at task completion.
+      ctx.addTaskCompletionListener[Unit] { _ =>
+        nestedBytes.set(5L)
+        nestedRows.set(7L)
+        nestedPruned.set(11L)
+        filterRows.set(1000L)
+        siblingBytes.set(13L)
+        siblingRows.set(17L)
+      }
+      ctx.markTaskCompleted(failure)
+
+      assert(ctx.taskMetrics.inputMetrics.bytesRead == 100L + 5L + 13L)
+      assert(ctx.taskMetrics.inputMetrics.recordsRead == 1L + 7L + 11L + 17L)
+    }
+  }
+
   test("native sort in a non-shuffle stage reports task-level disk spill metrics") {
     val expectedRecords = 20000L
     val compressibleValue = "non-shuffle-sort-spill-metrics-" * 8
