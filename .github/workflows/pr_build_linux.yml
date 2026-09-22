@@ -699,12 +699,12 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-java-maven-
 
-      - name: Cache TPC-H data
+      - name: Restore TPC-H data
         id: cache-tpch
-        uses: actions/cache@v6
+        uses: actions/cache/restore@v6
         with:
           path: ./tpch
-          key: tpch-${{ hashFiles('.github/workflows/pr_build_linux.yml') }}
+          key: tpch-sf1-${{ hashFiles('spark/src/test/scala/org/apache/spark/sql/GenTPCHData.scala') }}
 
       - name: Build project
         run: |
@@ -719,6 +719,17 @@ jobs:
         if: ${{ !inputs.cache-refresh-only }}
         run: |
           SPARK_HOME=`pwd` SPARK_TPCH_DATA=`pwd`/tpch/sf1_parquet ./mvnw -B -Prelease -Dsuites=org.apache.spark.sql.CometTPCHQuerySuite test
+
+      # The dataset changes only when the generator does, so main caches it like
+      # any other large entry. Saved only on main: an entry written from a pull
+      # request or a `gh-readonly-queue/*` branch can never be restored by a
+      # later run and evicts main's from the shared budget.
+      - name: Save TPC-H data
+        if: ${{ github.ref == 'refs/heads/main' && steps.cache-tpch.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v6
+        with:
+          path: ./tpch
+          key: tpch-sf1-${{ hashFiles('spark/src/test/scala/org/apache/spark/sql/GenTPCHData.scala') }}
 
       # Saved only on main: an entry written from a pull request or a
       # `gh-readonly-queue/*` branch cannot be restored by any later run, and
@@ -773,12 +784,12 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-java-maven-
 
-      - name: Cache TPC-DS data
+      - name: Restore TPC-DS data
         id: cache-tpcds
-        uses: actions/cache@v6
+        uses: actions/cache/restore@v6
         with:
           path: ./tpcds-sf-1
-          key: tpcds-${{ hashFiles('.github/workflows/pr_build_linux.yml') }}
+          key: tpcds-sf1-1b7fb7529eda
 
       - name: Build project
         run: |
@@ -789,6 +800,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           repository: databricks/tpcds-kit
+          ref: 1b7fb7529edae091684201fab142d956d6afd881
           path: ./tpcds-kit
 
       - name: Build tpcds-kit
@@ -828,6 +840,17 @@ jobs:
           SPARK_TPCDS_JOIN_CONF: |
             spark.sql.autoBroadcastJoinThreshold=-1
             spark.sql.join.forceApplyShuffledHashJoin=true
+
+      # The dataset changes only when the generator does, so main caches it like
+      # any other large entry. Saved only on main: an entry written from a pull
+      # request or a `gh-readonly-queue/*` branch can never be restored by a
+      # later run and evicts main's from the shared budget.
+      - name: Save TPC-DS data
+        if: ${{ github.ref == 'refs/heads/main' && steps.cache-tpcds.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v6
+        with:
+          path: ./tpcds-sf-1
+          key: tpcds-sf1-1b7fb7529eda
 
       # Saved only on main: an entry written from a pull request or a
       # `gh-readonly-queue/*` branch cannot be restored by any later run, and
