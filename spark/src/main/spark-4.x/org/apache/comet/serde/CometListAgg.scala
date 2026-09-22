@@ -31,8 +31,8 @@ import org.apache.comet.serde.QueryPlanSerde.{exprToProto, hasNonDefaultStringCo
  * Spark 4.0+ `LISTAGG` / `STRING_AGG`.
  *
  * Comet only supports the simple form: a `StringType` child with a literal delimiter and no
- * `WITHIN GROUP (ORDER BY ...)` clause. DISTINCT is handled by Spark's multi-stage plan rewrite
- * (grouping by the child before the aggregate), so the native side never sees it.
+ * `WITHIN GROUP (ORDER BY ...)` clause. DISTINCT falls back to Spark because Comet rejects
+ * multi-column distinct aggregates in `aggExprToProto`, so the native side never sees it.
  */
 object CometListAgg extends CometAggregateExpressionSerde[ListAgg] {
 
@@ -50,11 +50,6 @@ object CometListAgg extends CometAggregateExpressionSerde[ListAgg] {
   override def getSupportLevel(expr: ListAgg): SupportLevel = {
     // Spark's analyzer already enforces `delimiter.foldable`, so this only ever rejects
     // non-string / non-null delimiter types.
-    //
-    // The collation guards below are defense-in-depth: today a collated-string column falls
-    // back earlier at the Comet scan (which rejects a `StringType(<collation>)` schema), so
-    // this branch is not reachable via a query. It keeps `listagg` correct if Comet later
-    // gains collated-scan support.
     expr.child.dataType match {
       case _: StringType if hasNonDefaultStringCollation(expr.child.dataType) =>
         Unsupported(Some(collationReason))

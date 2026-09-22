@@ -166,11 +166,20 @@ SELECT grp, listagg(v) FROM la_bin GROUP BY grp ORDER BY grp
 query expect_fallback(Unsupported child data type: BinaryType)
 SELECT grp, listagg(v, X'42') FROM la_bin GROUP BY grp ORDER BY grp
 
--- Note on collations: a non-default string collation is not testable at the
--- `listagg` level here. Comet's Parquet scan rejects a collated-string schema
--- (`Unsupported schema ... StringType(UTF8_LCASE)`) before the aggregate is
--- considered, so the whole plan falls back to Spark and `CometListAgg`'s
--- collation guard is never reached. The guard is kept as defense-in-depth.
+-- ============================================================
+-- Non-default string collations are not supported natively.
+-- The delimiter must share the child's collation or the analyzer
+-- rejects the call, so it is collated explicitly.
+-- ============================================================
+
+statement
+CREATE TABLE la_coll(v string COLLATE UTF8_LCASE, grp string) USING parquet
+
+statement
+INSERT INTO la_coll VALUES ('a', 'g1'), ('B', 'g1')
+
+query expect_fallback(Non-default string collations are not supported)
+SELECT grp, listagg(v, collate(',', 'UTF8_LCASE')) FROM la_coll GROUP BY grp ORDER BY grp
 
 -- ============================================================
 -- Multi-partition merge: force a round-robin repartition so each

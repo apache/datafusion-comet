@@ -18,9 +18,9 @@
 //! Spark-compatible `listagg` / `string_agg` aggregate function.
 //!
 //! Implements the simple form of Spark 4.0's `LISTAGG(expr, delimiter)` (no
-//! `WITHIN GROUP (ORDER BY ...)`, no DISTINCT — DISTINCT is rewritten into a
-//! multi-stage plan by Spark before it reaches Comet). Differences from
-//! DataFusion's `string_agg`:
+//! `WITHIN GROUP (ORDER BY ...)`, no DISTINCT; DISTINCT falls back to Spark
+//! because Comet rejects multi-column distinct aggregates in `aggExprToProto`).
+//! Differences from DataFusion's `string_agg`:
 //!
 //! * Returns `Utf8` to match Spark's `StringType` result type; DataFusion's
 //!   `string_agg` returns `LargeUtf8`. Returning `Utf8` (not `LargeUtf8`) at
@@ -98,8 +98,8 @@ impl AggregateUDFImpl for SparkListAgg {
         // `HashAggregate` output schema comes from those buffer attributes, so
         // the shuffle Exchange between the partial and final aggregate carries
         // `Binary`. The native state must match, even though partial and final
-        // run in the same engine (`CometListAgg.supportsMixedPartialFinal` is
-        // false): the Exchange schema is Spark's, not DataFusion's.
+        // always run in Comet (`CometListAgg` supports neither mixed-execution
+        // direction): the Exchange schema is Spark's, not DataFusion's.
         Ok(vec![Field::new(
             format_state_name(args.name, "listagg"),
             DataType::Binary,

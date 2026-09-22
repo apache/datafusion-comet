@@ -359,8 +359,9 @@ message HllPlusPlus {
 // Spark 4.0+ LISTAGG / STRING_AGG aggregate.
 //
 // Comet only serializes the simple form: a StringType child with a literal
-// (or NULL) delimiter and no WITHIN GROUP ORDER BY. DISTINCT is handled by
-// Spark's multi-stage plan rewrite before the aggregate reaches Comet.
+// (or NULL) delimiter and no WITHIN GROUP ORDER BY. DISTINCT falls back to
+// Spark because Comet rejects multi-column distinct aggregates in
+// aggExprToProto, so the native side never sees it.
 message ListAgg {
   Expr child = 1;
   // Literal delimiter expression. NULL delimiter is normalized to empty string
