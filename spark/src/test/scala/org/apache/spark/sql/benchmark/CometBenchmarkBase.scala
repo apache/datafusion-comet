@@ -252,7 +252,7 @@ trait CometBenchmarkBase
    * the two, and writing through it keeps the warning ordered against the results table that
    * `Benchmark.run` writes to the same stream.
    */
-  private def warn(benchmark: Benchmark, message: String): Unit = {
+  protected def warn(benchmark: Benchmark, message: String): Unit = {
     val border = "=" * 80
     benchmark.out.println(s"\n$border\n$message\n$border")
   }
@@ -308,19 +308,36 @@ trait CometBenchmarkBase
     saveAsEncryptedParquetV1Table(testDf, dir.getCanonicalPath + "/parquetV1")
   }
 
+  /**
+   * The catalog name the Iceberg benchmarks register, unless one of them asks for another.
+   * `final` so that it is a compile-time constant and a subclass field can initialise from it.
+   */
+  protected final val defaultIcebergCatalog = "benchmark_cat"
+
+  /**
+   * Registers `catalog` as a Hadoop catalog rooted at `warehouseDir`.
+   *
+   * Every Iceberg benchmark needs these three settings and the same three lines were being
+   * repeated in each of them, which is how one of them came to register `bench_cat` while the
+   * rest register `benchmark_cat`.
+   */
+  protected def configureIcebergHadoopCatalog(
+      warehouseDir: File,
+      catalog: String = defaultIcebergCatalog): Unit = {
+    spark.conf.set(s"spark.sql.catalog.$catalog", "org.apache.iceberg.spark.SparkCatalog")
+    spark.conf.set(s"spark.sql.catalog.$catalog.type", "hadoop")
+    spark.conf.set(s"spark.sql.catalog.$catalog.warehouse", warehouseDir.getAbsolutePath)
+  }
+
   protected def prepareIcebergTable(
       dir: File,
       df: DataFrame,
       tableName: String = "icebergTable",
       partition: Option[String] = None): Unit = {
     val warehouseDir = new File(dir, "iceberg-warehouse")
+    configureIcebergHadoopCatalog(warehouseDir)
 
-    // Configure Hadoop catalog (same pattern as CometIcebergNativeSuite)
-    spark.conf.set("spark.sql.catalog.benchmark_cat", "org.apache.iceberg.spark.SparkCatalog")
-    spark.conf.set("spark.sql.catalog.benchmark_cat.type", "hadoop")
-    spark.conf.set("spark.sql.catalog.benchmark_cat.warehouse", warehouseDir.getAbsolutePath)
-
-    val fullTableName = s"benchmark_cat.db.$tableName"
+    val fullTableName = s"$defaultIcebergCatalog.db.$tableName"
 
     // Drop table if exists
     spark.sql(s"DROP TABLE IF EXISTS $fullTableName")
