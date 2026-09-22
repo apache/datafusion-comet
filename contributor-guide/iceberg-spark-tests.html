@@ -563,6 +563,15 @@ plugin and shuffle manager</p></li>
 native scan in every Comet-configured session. The flag is off by default for users, so Iceberg’s own suites
 are the only place the split plan (<code class="docutils literal notranslate"><span class="pre">IcebergCommit</span> <span class="pre">-&gt;</span> <span class="pre">IcebergWrite</span></code>) is exercised against Iceberg’s write,
 commit, and row-level-operation tests. See <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/5259">#5259</a></p></li>
+<li><p>Enable Comet’s native (iceberg-rust) Parquet writer (<code class="docutils literal notranslate"><span class="pre">spark.comet.iceberg.write.enabled</span></code>) in the same sessions.
+The native writer is experimental and off by default for users, so this is where it runs against Iceberg’s
+write, commit, and row-level-operation tests.</p></li>
+<li><p>Enable <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.localTableScan.enabled</span></code> in the same sessions. <code class="docutils literal notranslate"><span class="pre">CometIcebergNativeWrite</span></code> sets
+<code class="docutils literal notranslate"><span class="pre">requiresNativeChildren</span></code>, so without this flag a write fed by an inline <code class="docutils literal notranslate"><span class="pre">VALUES</span></code> list keeps Spark’s row-based
+<code class="docutils literal notranslate"><span class="pre">LocalTableScanExec</span></code>, the conversion is declined, and the write silently runs on the JVM writer. Many Iceberg
+suites seed their data that way, so leaving it off hides the native writer from most of the write surface.</p></li>
+<li><p>Enable fallback logging (<code class="docutils literal notranslate"><span class="pre">spark.comet.explainFallback.enabled</span></code>) so that every operator Comet declines is
+reported in the test output together with the reason it was declined.</p></li>
 </ul>
 <p><code class="docutils literal notranslate"><span class="pre">dev/local-ci.sh</span></code> runs all of the steps below the way CI runs them:</p>
 <div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>dev/local-ci.sh<span class="w"> </span>iceberg<span class="w">              </span><span class="c1"># every target the workflow runs</span>
