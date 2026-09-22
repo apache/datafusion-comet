@@ -619,6 +619,62 @@ mod tests {
         FileIOBuilder::new(Arc::new(OpenDalStorageFactory::Fs)).build()
     }
 
+    #[test]
+    fn issue_5783_projection_rejects_selected_duplicate_root() {
+        use arrow::array::Int64Array;
+        use arrow::datatypes::{DataType, Field, Schema as ArrowSchema};
+        use datafusion_physical_expr_adapter::PhysicalExprAdapterFactory;
+
+        let physical = Arc::new(ArrowSchema::new(vec![
+            Field::new("a", DataType::Int64, false),
+            Field::new("a", DataType::Int64, false),
+            Field::new("b", DataType::Int64, false),
+        ]));
+        let factory = super::SparkPhysicalExprAdapterFactory::new(
+            super::SparkParquetOptions::new(super::EvalMode::Legacy, "UTC", false),
+            None,
+        );
+        for name in ["a", "b"] {
+            let target = Arc::new(ArrowSchema::new(vec![Field::new(
+                name,
+                DataType::Int64,
+                false,
+            )]));
+            let adapter = factory
+                .create(Arc::clone(&target), Arc::clone(&physical))
+                .unwrap();
+            let result = super::build_projection_expressions(&target, &adapter);
+            if name == "a" {
+                let error = result
+                    .expect_err("selected root must be ambiguous")
+                    .to_string();
+                assert!(error.contains("duplicate"), "{error}");
+            } else {
+                let batch = super::RecordBatch::try_new(
+                    Arc::clone(&physical),
+                    vec![
+                        Arc::new(Int64Array::from(vec![1])),
+                        Arc::new(Int64Array::from(vec![2])),
+                        Arc::new(Int64Array::from(vec![3])),
+                    ],
+                )
+                .unwrap();
+                let output =
+                    super::adapt_batch_with_expressions(batch, &target, &result.unwrap()).unwrap();
+                assert_eq!(output.num_rows(), 1);
+                assert_eq!(
+                    output
+                        .column(0)
+                        .as_any()
+                        .downcast_ref::<Int64Array>()
+                        .unwrap()
+                        .value(0),
+                    3
+                );
+            }
+        }
+    }
+
     fn task_with_deletes(deletes: Vec<FileScanTaskDeleteFile>) -> FileScanTask {
         FileScanTask::builder()
             .with_file_size_in_bytes(0)

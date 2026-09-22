@@ -62,13 +62,16 @@ The following limitation may produce incorrect results without falling back to S
 
 The following limitations raise an error at scan time rather than falling back to Spark:
 
-- Byte-identical sibling field names in selected top-level columns, including inside structs,
-  arrays, and maps. Comet rejects these before decoding to prevent row multiplication and decoder
-  synchronization errors. Unselected columns and safely pruned nested fields are skipped.
-  Reads requiring a full-subtree cast still validate that subtree. Files with embedded Arrow
-  schema hints and Variant scans conservatively validate selected subtrees in full; field-ID
-  reads validate the entire file schema. The check applies in both case-sensitivity modes;
-  names in separate groups do not collide. Disable Comet for the query to use Spark's duplicate-name
+- Selecting a field by name when multiple physical siblings match, including inside structs,
+  arrays, and maps. Comet reports a duplicate-field error instead of resolving byte-identical
+  names, in either case-sensitivity mode. Root checks cover referenced columns, including
+  predicates. Unselected roots do not prevent reading a unique field by name or field ID.
+  Exact-name projections of unique children in structs and arrays of structs remain supported;
+  casts that cannot use this pruning reject duplicate siblings anywhere in the decoded
+  physical subtree, including map and case-differing nested projections. Field-ID resolution
+  retains precedence, but selecting a byte-identically duplicated physical root name still
+  raises a duplicate-field error, even when the requested field is renamed.
+  Names in separate groups do not collide. Disable Comet for the query to use Spark's duplicate-name
   resolution with an explicit read schema. Spark-compatible resolution is tracked in
   [#5884](https://github.com/apache/datafusion-comet/issues/5884).
 - Invalid UTF-8 bytes in `STRING` columns. Spark permits arbitrary byte sequences in a `STRING`

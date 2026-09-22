@@ -420,8 +420,8 @@ fn field_id(field: &arrow::datatypes::Field) -> Option<i32> {
 /// ID-bearing requested fields match ONLY by ID (a missing ID is a missing column, never a name
 /// fallback); other fields match by name, folded with the same `toLowerCase(Locale.ROOT)` fold
 /// the top-level schema adapter uses when `case_sensitive` is false. A requested field whose
-/// folded name matches more than one file field in case-insensitive mode raises Spark's
-/// `foundDuplicateFieldInCaseInsensitiveModeError`.
+/// folded name matches more than one file field is rejected. Case-insensitive matching retains
+/// Spark's `foundDuplicateFieldInCaseInsensitiveModeError`.
 ///
 /// Shared by the runtime convert (`parquet_convert_struct_to_struct`) and the plan-time
 /// conversion check in `schema_adapter`, so both resolve nested fields identically.
@@ -473,14 +473,14 @@ pub(crate) fn match_struct_fields(
                 // falling back to name match.
                 (true, Some(id)) => Ok(from_id_to_index.get(&id).copied()),
                 _ => match folded_to_indices.get(to_folded[to_pos].as_str()) {
-                    // Mirror Spark's `foundDuplicateFieldInCaseInsensitiveModeError`: a
-                    // requested field matching more than one file field is ambiguous. Gated on
-                    // case-insensitive mode to match the top-level check (which only runs when
-                    // `!case_sensitive`): when case-sensitive the fold is identity, so a
-                    // collision means byte-identical sibling names, and raising an error whose
-                    // message says "in case-insensitive mode" would be wrong. Fall through to
-                    // the first match in that case.
-                    Some(indices) if indices.len() > 1 && !parquet_options.case_sensitive => {
+                    // Reject selected ambiguity before a decoder can multiply rows.
+                    Some(indices) if indices.len() > 1 => {
+                        if parquet_options.case_sensitive {
+                            return Err(DataFusionError::Execution(format!(
+                                "Found duplicate Parquet field name '{}'",
+                                to_field.name()
+                            )));
+                        }
                         let matched: Vec<&str> = indices
                             .iter()
                             .map(|&i| from_fields[i].name().as_str())

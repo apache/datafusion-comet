@@ -177,8 +177,7 @@ pub(crate) fn init_datasource_exec(
     // `store_sales`), the page index is re-fetched, uncached, on every open (comet#3978).
     // `EagerPageIndexReaderFactory` forces the page index to load on the first fetch and be
     // cached with the footer, at the cost of losing the skip's benefit when it would have
-    // applied. Filed upstream as apache/datafusion#23978; when replacing this factory, preserve
-    // its duplicate-field validation (#5783).
+    // applied. Filed upstream as apache/datafusion#23978.
     //
     // Preserve bytes_scanned's existing requested data/Bloom-filter range accounting. Footer
     // and page-index reads through get_metadata bypass it, and coalescing may fetch extra bytes.
@@ -195,8 +194,7 @@ pub(crate) fn init_datasource_exec(
             scan_io_source,
             parquet_source.metrics(),
         )
-        .with_spark_variant_schema(projects_variant)
-        .with_required_schema(&required_schema, &spark_parquet_options),
+        .with_spark_variant_schema(projects_variant),
     );
     parquet_source = parquet_source.with_parquet_file_reader_factory(reader_factory);
 
@@ -468,6 +466,135 @@ mod tests {
             .sum_by_name(name)
             .unwrap_or_else(|| panic!("missing metric {name}"))
             .as_usize()
+    }
+
+    #[tokio::test]
+    #[ignore = "bounded baseline/candidate file-open timing"]
+    async fn issue_5783_file_open_cost() {
+        use std::time::Instant;
+
+        let deadline = Instant::now() + Duration::from_secs(15 * 60);
+        for width in [100, 250, 500, 1000] {
+            for path in ["flat", "id", "nested"] {
+                for duplicate in [false, true] {
+                    let fields: Vec<Field> = (0..width)
+                        .map(|i| Field::new(format!("c{i}"), DataType::Int32, false))
+                        .collect();
+                    let mut logical = Arc::new(Schema::new(fields.clone()));
+                    let mut physical = fields;
+                    if duplicate {
+                        physical.push(physical[0].clone());
+                    }
+                    if path == "id" {
+                        for (i, field) in physical.iter_mut().enumerate() {
+                            *field = field.clone().with_metadata(
+                                [("PARQUET:field_id".to_string(), i.to_string())].into(),
+                            );
+                        }
+                        logical = Arc::new(Schema::new(physical[..width].to_vec()));
+                    }
+                    let physical = Arc::new(Schema::new(physical));
+                    let mut batch = RecordBatch::try_new(
+                        Arc::clone(&physical),
+                        (0..physical.fields().len())
+                            .map(|_| Arc::new(Int32Array::from(vec![1])) as arrow::array::ArrayRef)
+                            .collect(),
+                    )
+                    .unwrap();
+                    if path == "nested" {
+                        let values = arrow::array::StructArray::new(
+                            physical.fields().clone(),
+                            batch.columns().to_vec(),
+                            None,
+                        );
+                        let nested = Arc::new(Schema::new(vec![Field::new(
+                            "s",
+                            DataType::Struct(physical.fields().clone()),
+                            false,
+                        )]));
+                        batch = RecordBatch::try_new(nested, vec![Arc::new(values)]).unwrap();
+                        let mut requested = logical
+                            .fields()
+                            .iter()
+                            .map(|f| f.as_ref().clone())
+                            .collect::<Vec<_>>();
+                        requested.push(Field::new("missing", DataType::Int32, true));
+                        logical = Arc::new(Schema::new(vec![Field::new(
+                            "s",
+                            DataType::Struct(requested.into()),
+                            false,
+                        )]));
+                    }
+                    let file = tempfile::NamedTempFile::new().unwrap();
+                    let mut writer =
+                        ArrowWriter::try_new(file.reopen().unwrap(), batch.schema(), None).unwrap();
+                    writer.write(&batch).unwrap();
+                    writer.close().unwrap();
+                    let partition =
+                        PartitionedFile::from_path(file.path().to_str().unwrap().to_string())
+                            .unwrap();
+                    for warm in [false, true] {
+                        for repetition in 0..3 {
+                            let shared = Arc::new(SessionContext::new());
+                            let mut elapsed = Duration::ZERO;
+                            for iteration in 0..120 {
+                                assert!(Instant::now() < deadline, "measurement budget exceeded");
+                                let context = if warm {
+                                    Arc::clone(&shared)
+                                } else {
+                                    Arc::new(SessionContext::new())
+                                };
+                                let scan = if path == "id" {
+                                    init_datasource_exec(
+                                        Arc::clone(&logical),
+                                        Some(Arc::clone(&logical)),
+                                        None,
+                                        ObjectStoreUrl::local_filesystem(),
+                                        ObjectStoreBackend::Local,
+                                        vec![vec![partition.clone()]],
+                                        None,
+                                        None,
+                                        None,
+                                        "UTC",
+                                        true,
+                                        false,
+                                        false,
+                                        false,
+                                        &context,
+                                        false,
+                                        true,
+                                        false,
+                                    )
+                                    .unwrap()
+                                } else {
+                                    init_test_scan(
+                                        Arc::clone(&logical),
+                                        Arc::clone(&logical),
+                                        partition.clone(),
+                                        None,
+                                        None,
+                                        &context,
+                                    )
+                                };
+                                let start = Instant::now();
+                                let mut stream = scan.execute(0, context.task_ctx()).unwrap();
+                                let first = stream.next().await.unwrap();
+                                let duration = start.elapsed();
+                                if duplicate {
+                                    assert!(first.unwrap_err().to_string().contains("duplicate"));
+                                } else {
+                                    assert_eq!(first.unwrap().num_rows(), 1);
+                                }
+                                if iteration >= 20 {
+                                    elapsed += duration;
+                                }
+                            }
+                            println!("issue_5783_open path={path} width={width} duplicate={duplicate} warm={warm} rep={repetition} mean_us={:.3}", elapsed.as_secs_f64() * 1e4);
+                        }
+                    }
+                }
+            }
+        }
     }
 
     fn reader_metric(metrics: &ExecutionPlanMetricsSet, name: &str) -> usize {
