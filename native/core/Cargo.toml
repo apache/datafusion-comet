@@ -68,6 +68,7 @@ object_store = { workspace = true }
 url = { workspace = true }
 aws-config = { workspace = true }
 aws-credential-types = { workspace = true }
+aws-sdk-sts = { workspace = true }
 parking_lot = "0.12.5"
 # Optional Delta Lake contrib (enabled by the `contrib-delta` feature). Source lives
 # under `contrib/delta/native/` so non-Delta committers can ignore it.
