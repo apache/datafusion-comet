@@ -398,33 +398,79 @@ hard ceiling on the sum of everything in the container. That cgroup counts, amon
 - Comet's JVM-side Arrow buffers (`CometArrowAllocator`),
 - page cache charged to the cgroup by the container's file I/O, including spill files.
 
-Everything the cgroup counts, and who accounts for each part:
+Everything the cgroup counts, grouped on the left by where the bytes physically live and on the
+right by who budgets them. Those are two independent axes, which is the point of the diagram: a
+native reservation is charged against `spark.memory.offHeap.size` while occupying native heap, so
+the region a byte sits in tells you nothing about which budget it spends.
 
 ```mermaid
-flowchart TB
-  subgraph CG["pod cgroup memory.max, kernel OOM kill above this"]
-    subgraph SEEN["visible to Spark's accounting"]
-      HEAP["JVM heap<br>execution and storage<br>spark.executor.memory"]
-      TUNG["Spark Tungsten off-heap<br>TaskMemoryManager"]
-      SHUFP["Comet JVM shuffle pages<br>CometUnifiedShuffleMemoryAllocator"]
-      NATRES["Comet native heap, reserved<br>operators that call try_grow<br>declared to Spark over JNI, never measured"]
+flowchart LR
+  subgraph POD["Executor container: cgroup memory.max = executor.memory + memoryOverhead + offHeap.size"]
+    direction TB
+
+    subgraph NAT["Native heap: allocated by Rust, no JVM allocator involved"]
+      direction TB
+      NRES["Declared operator reservations<br>sort, grouped aggregate, joins, shuffle writer<br>ceiling = spark.comet.exec.memoryPool.fraction of spark.memory.offHeap.size"]
+      NUND["Everything else Rust allocates<br>expression kernels, array builders, decompression,<br>Parquet and object_store metadata, tokio,<br>C libraries outside Rust's global allocator"]
     end
-    subgraph NONE["accounted by nobody"]
-      NATUND["Comet native heap, undeclared<br>kernels, array builders, decompression<br>Parquet metadata, object_store, tokio"]
-      ARROWR["Comet JVM Arrow<br>CometArrowAllocator, unbounded"]
-      NONHEAP["JVM non-heap<br>metaspace, code cache, thread stacks<br>GC structures, Netty direct buffers"]
-      PAGEC["page cache charged to the cgroup<br>file I/O, including spill files"]
-      FRAG["allocator overhead<br>fragmentation, padding<br>jemalloc retained and dirty pages"]
+
+    subgraph OFF["JVM off-heap: allocated by Unsafe and by Java Arrow"]
+      direction TB
+      TUNG["Spark Tungsten pages"]
+      JSH["Comet JVM shuffle pages<br>CometUnifiedShuffleMemoryAllocator"]
+      ARW["Comet JVM Arrow buffers<br>CometArrowAllocator: a RootAllocator with no limit"]
+    end
+
+    subgraph HEAP["JVM heap"]
+      direction TB
+      SOBJ["Spark objects"]
+      COBJ["Comet objects: plans, vectors, iterators"]
+    end
+
+    subgraph REST["Rest of the process"]
+      direction TB
+      NONHEAP["JVM non-heap<br>metaspace, code cache, thread stacks, Netty"]
+      MISC["Page cache from spill files<br>fragmentation, padding, jemalloc retained pages"]
     end
   end
+
+  OFFPOOL["Spark off-heap execution pool<br>TaskMemoryManager, spark.memory.offHeap.size<br>inside the container limit, not headroom on top of it"]
+  ONPOOL["JVM heap accounting<br>unified memory manager, spark.executor.memory"]
+  NOONE["Accounted by nobody<br>no budget, no backpressure;<br>spark.executor.memoryOverhead is the only slack"]
+
+  NRES -->|"charged over JNI by CometTaskMemoryManager"| OFFPOOL
+  TUNG --> OFFPOOL
+  JSH --> OFFPOOL
+  SOBJ --> ONPOOL
+  COBJ --> ONPOOL
+  NUND --> NOONE
+  ARW --> NOONE
+  NONHEAP --> NOONE
+  MISC --> NOONE
+
+  classDef acct fill:#c7ecd0,stroke:#2f6b46,color:#000
+  classDef heapacct fill:#cfe4fb,stroke:#2f5680,color:#000
+  classDef unacct fill:#fbe9a8,stroke:#8a6d1f,color:#000
+  class NRES,TUNG,JSH,OFFPOOL acct
+  class SOBJ,COBJ,ONPOOL heapacct
+  class NUND,ARW,NONHEAP,MISC,NOONE unacct
+  style POD fill:#ffffff,stroke:#333,stroke-width:2px
+  style NAT fill:#f6f6f6,stroke:#999
+  style OFF fill:#f6f6f6,stroke:#999
+  style HEAP fill:#f6f6f6,stroke:#999
+  style REST fill:#f6f6f6,stroke:#999
 ```
 
-Spark's accounting covers the first group, though not in the same sense throughout it. The JVM
-heap, Tungsten pages and Comet's shuffle pages are allocated by JVM code that reports what it
+Everything that reaches a Spark pool is accounted, though not in the same sense throughout. The
+JVM heap, Tungsten pages and Comet's shuffle pages are allocated by JVM code that reports what it
 allocated. A native reservation is a number an operator declared before allocating: `try_grow`
 succeeds only once `CometTaskMemoryManager` has charged Spark's off-heap execution pool over JNI, so
 the budget really is spent, but nothing measured the bytes and the reservation is only a lower bound
-on them. The second group is outside every accounting layer.
+on them. Everything that reaches "accounted by nobody" is outside every accounting layer.
+
+One arrow the diagram cannot draw is the one that does not exist: Spark's off-heap pool has no edge
+back into the native heap. `NativeMemoryConsumer.spill()` returns `0`, so Spark can charge Comet and
+can select it as a spill victim, but it can never make it give the bytes back.
 
 When the total crosses `memory.max`, the kernel OOM killer kills the process. The failure mode is
 significantly worse than a task-level OOM: every task running on that executor dies, every cached
