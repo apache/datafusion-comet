@@ -102,7 +102,7 @@ struct ScanIoMetrics {
     object_store_response_bytes_read: Count,
     metadata_cache_hits: Count,
     metadata_cache_misses: Count,
-    unreserved_data_bytes: Count,
+    unreserved_bytes: Count,
 }
 
 impl ScanIoMetrics {
@@ -123,7 +123,7 @@ impl ScanIoMetrics {
             ),
             metadata_cache_hits: count_counter(metrics, "scan_io_metadata_cache_hits"),
             metadata_cache_misses: count_counter(metrics, "scan_io_metadata_cache_misses"),
-            unreserved_data_bytes: byte_counter(metrics, "scan_io_unreserved_data_bytes"),
+            unreserved_bytes: byte_counter(metrics, "scan_io_unreserved_bytes"),
         }
     }
 
@@ -163,6 +163,7 @@ pub struct EagerPageIndexReaderFactory {
     metadata_cache: Arc<FileMetadataCache>,
     scan_io_metrics: Arc<ScanIoMetrics>,
     memory_pool: Option<Arc<dyn MemoryPool>>,
+    decode_buffer_estimate: usize,
     // Arrow schema hints and ENUM inference can change Spark's Variant interpretation.
     // Enable the footer workaround only for scans that project Variant.
     // https://github.com/apache/datafusion-comet/issues/5477
@@ -195,6 +196,7 @@ impl EagerPageIndexReaderFactory {
             metadata_cache,
             scan_io_metrics,
             memory_pool: None,
+            decode_buffer_estimate: 0,
             spark_variant_schema: false,
         }
     }
@@ -204,10 +206,16 @@ impl EagerPageIndexReaderFactory {
         self
     }
 
-    /// Charges fetched data pages to `pool` for as long as the decoder holds them. See
-    /// [`ReservedBytes`].
-    pub fn with_memory_pool(mut self, pool: Arc<dyn MemoryPool>) -> Self {
+    /// Charges each reader's memory to `pool`: fetched data pages for as long as the decoder
+    /// holds them (see [`ReservedBytes`]), plus a fixed `decode_buffer_estimate` for as long as
+    /// the reader is open (see [`decode_buffer_estimate`]).
+    pub fn with_memory_pool(
+        mut self,
+        pool: Arc<dyn MemoryPool>,
+        decode_buffer_estimate: usize,
+    ) -> Self {
         self.memory_pool = Some(pool);
+        self.decode_buffer_estimate = decode_buffer_estimate;
         self
     }
 }
@@ -229,6 +237,21 @@ impl ParquetFileReaderFactory for EagerPageIndexReaderFactory {
             metrics,
         );
 
+        let reservation = self.memory_pool.as_ref().map(|pool| {
+            MemoryConsumer::new(format!("ParquetScan[{partition_index}]")).register(pool)
+        });
+        // DataFusion opens one file per partition at a time and drops its reader when the file
+        // is done, so holding the estimate on the reader charges it once per running scan.
+        let decode_reservation = reservation.as_ref().map(|reservation| {
+            let decode = reservation.new_empty();
+            if decode.try_grow(self.decode_buffer_estimate).is_err() {
+                self.scan_io_metrics
+                    .unreserved_bytes
+                    .add(self.decode_buffer_estimate);
+            }
+            decode
+        });
+
         Ok(Box::new(EagerPageIndexReader {
             file_metrics,
             scan_io_metrics: Arc::clone(&self.scan_io_metrics),
@@ -237,9 +260,8 @@ impl ParquetFileReaderFactory for EagerPageIndexReaderFactory {
             metadata_cache: Arc::clone(&self.metadata_cache),
             metadata_size_hint,
             spark_variant_schema: self.spark_variant_schema,
-            reservation: self.memory_pool.as_ref().map(|pool| {
-                MemoryConsumer::new(format!("ParquetScan[{partition_index}]")).register(pool)
-            }),
+            reservation,
+            _decode_reservation: decode_reservation,
         }))
     }
 }
@@ -257,6 +279,44 @@ struct EagerPageIndexReader {
     spark_variant_schema: bool,
     /// Empty handle whose registration every fetched buffer's reservation shares.
     reservation: Option<MemoryReservation>,
+    /// Holds the decode-buffer estimate while this file is being read.
+    _decode_reservation: Option<MemoryReservation>,
+}
+
+/// Data page size limit that both parquet-mr and parquet-rs default to.
+const DEFAULT_PAGE_SIZE: usize = 1024 * 1024;
+
+/// Estimates what a scan holds while decoding beyond the compressed column chunks, which
+/// [`ReservedBytes`] charges exactly. arrow-rs allocates the rest internally with no hook to
+/// observe it: per projected leaf column, a decompressed data page bounded by the writer's page
+/// size, plus the output batch being assembled. Dictionary pages are left out: they are often
+/// absent or small, and counting them at the same bound doubled the estimate against TPC-H
+/// measurements. Files written with larger pages or large dictionaries are underestimated.
+pub(crate) fn decode_buffer_estimate(projected: &Schema, batch_size: usize) -> usize {
+    fn leaves(data_type: &DataType) -> usize {
+        match data_type {
+            DataType::Struct(fields) => fields.iter().map(|f| leaves(f.data_type())).sum(),
+            DataType::List(child)
+            | DataType::LargeList(child)
+            | DataType::FixedSizeList(child, _)
+            | DataType::ListView(child)
+            | DataType::LargeListView(child)
+            | DataType::Map(child, _) => leaves(child.data_type()),
+            _ => 1,
+        }
+    }
+    // Variable-width and nested values have no fixed width; assume a short string.
+    let row_width: usize = projected
+        .fields()
+        .iter()
+        .map(|f| f.data_type().primitive_width().unwrap_or(32))
+        .sum();
+    let columns: usize = projected
+        .fields()
+        .iter()
+        .map(|f| leaves(f.data_type()))
+        .sum();
+    columns * DEFAULT_PAGE_SIZE + batch_size * row_width
 }
 
 /// A fetched data-page buffer that holds its share of the scan's memory reservation.
@@ -279,7 +339,7 @@ impl AsRef<[u8]> for ReservedBytes {
 
 /// Charges `buffers` to a new reservation sharing `reservation`'s registration, one pool call
 /// for the whole fetch. A scan cannot spill, so a refused grow does not fail the read: the
-/// buffers are returned unaccounted and counted in `unreserved_data_bytes`. The attempt still
+/// buffers are returned unaccounted and counted in `unreserved_bytes`. The attempt still
 /// lets Spark ask the task's other consumers to spill before it refuses.
 fn reserve_buffers(
     reservation: &MemoryReservation,
@@ -289,7 +349,7 @@ fn reserve_buffers(
     let total = buffers.iter().map(Bytes::len).sum();
     let fetch = reservation.new_empty();
     if fetch.try_grow(total).is_err() {
-        scan_io_metrics.unreserved_data_bytes.add(total);
+        scan_io_metrics.unreserved_bytes.add(total);
         return buffers;
     }
     buffers
@@ -1073,7 +1133,7 @@ mod tests {
             ScanIoSource::Local,
             &metrics,
         )
-        .with_memory_pool(pool);
+        .with_memory_pool(pool, 0);
         let mut reader = factory
             .create_reader(
                 0,
@@ -1086,7 +1146,7 @@ mod tests {
         drop(reader);
         let unreserved = metrics
             .clone_inner()
-            .sum_by_name("scan_io_unreserved_data_bytes")
+            .sum_by_name("scan_io_unreserved_bytes")
             .unwrap()
             .as_usize();
         (result, unreserved)
@@ -1111,6 +1171,50 @@ mod tests {
         drop(slice);
         assert_eq!(pool.reserved(), 2);
         drop(result);
+        assert_eq!(pool.reserved(), 0);
+    }
+
+    #[test]
+    fn decode_estimate_counts_leaf_columns_and_one_batch() {
+        use arrow::datatypes::{Field, Fields};
+        let schema = Schema::new(vec![
+            Field::new("a", DataType::Int64, true),
+            Field::new("s", DataType::Utf8, true),
+            Field::new(
+                "st",
+                DataType::Struct(Fields::from(vec![
+                    Field::new("x", DataType::Int32, true),
+                    Field::new("y", DataType::Int32, true),
+                ])),
+                true,
+            ),
+        ]);
+        // Four leaves; row width 8 + 32 + 32 (struct has no primitive width).
+        assert_eq!(
+            decode_buffer_estimate(&schema, 100),
+            4 * DEFAULT_PAGE_SIZE + 100 * 72
+        );
+    }
+
+    #[tokio::test]
+    async fn decode_estimate_is_held_while_the_reader_is_open() {
+        let pool: Arc<dyn MemoryPool> = Arc::new(
+            datafusion::execution::memory_pool::GreedyMemoryPool::new(1024),
+        );
+        let runtime = datafusion::execution::runtime_env::RuntimeEnv::default();
+        let metrics = ExecutionPlanMetricsSet::new();
+        let factory = EagerPageIndexReaderFactory::new(
+            Arc::new(InMemory::new()),
+            runtime.cache_manager.get_file_metadata_cache(),
+            ScanIoSource::Local,
+            &metrics,
+        )
+        .with_memory_pool(Arc::clone(&pool), 100);
+        let reader = factory
+            .create_reader(0, PartitionedFile::new("f.parquet", 10), None, &metrics)
+            .unwrap();
+        assert_eq!(pool.reserved(), 100);
+        drop(reader);
         assert_eq!(pool.reserved(), 0);
     }
 

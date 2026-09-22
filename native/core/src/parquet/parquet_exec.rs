@@ -16,7 +16,9 @@
 // under the License.
 
 use crate::execution::operators::ExecutionError;
-use crate::parquet::eager_page_index_reader_factory::{EagerPageIndexReaderFactory, ScanIoSource};
+use crate::parquet::eager_page_index_reader_factory::{
+    decode_buffer_estimate, EagerPageIndexReaderFactory, ScanIoSource,
+};
 use crate::parquet::encryption_support::{CometEncryptionConfig, ENCRYPTION_FACTORY_ID};
 use crate::parquet::name_fold::fold_schema_names;
 use crate::parquet::parquet_support::{
@@ -195,7 +197,13 @@ pub(crate) fn init_datasource_exec(
             parquet_source.metrics(),
         )
         .with_spark_variant_schema(projects_variant)
-        .with_memory_pool(Arc::clone(&runtime_env.memory_pool)),
+        .with_memory_pool(
+            Arc::clone(&runtime_env.memory_pool),
+            decode_buffer_estimate(
+                &required_schema,
+                session_config.options().execution.batch_size.into(),
+            ),
+        ),
     );
     parquet_source = parquet_source.with_parquet_file_reader_factory(reader_factory);
 
