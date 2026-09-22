@@ -19,7 +19,7 @@ use arrow::array::builder::{Date32Builder, Decimal128Builder, Int32Builder};
 use arrow::array::{builder::StringBuilder, Array, Int32Array, RecordBatch};
 use arrow::datatypes::{DataType, Field, Schema};
 use arrow::row::{RowConverter, SortField};
-use criterion::{criterion_group, criterion_main, Criterion};
+use criterion::{criterion_group, criterion_main, BatchSize, Bencher, Criterion};
 use datafusion::datasource::memory::MemorySourceConfig;
 use datafusion::datasource::source::DataSourceExec;
 use datafusion::physical_expr::expressions::{col, Column};
@@ -73,19 +73,14 @@ fn criterion_benchmark(c: &mut Criterion) {
         group.bench_function(
             format!("shuffle_writer: end to end (compression = {compression_codec:?})"),
             |b| {
-                let ctx = SessionContext::new();
-                let exec = create_shuffle_writer_exec(
-                    compression_codec.clone(),
-                    CometPartitioning::Hash(vec![Arc::new(Column::new("a", 0))], 16),
-                    8192,
-                    10,
-                );
-                b.iter(|| {
-                    let task_ctx = ctx.task_ctx();
-                    let stream = exec.execute(0, task_ctx).unwrap();
-                    let rt = Runtime::new().unwrap();
-                    rt.block_on(collect(stream)).unwrap();
-                });
+                bench_end_to_end(b, || {
+                    create_shuffle_writer_exec(
+                        compression_codec.clone(),
+                        CometPartitioning::Hash(vec![Arc::new(Column::new("a", 0))], 16),
+                        8192,
+                        10,
+                    )
+                })
             },
         );
     }
@@ -126,19 +121,14 @@ fn criterion_benchmark(c: &mut Criterion) {
         group.bench_function(
             format!("shuffle_writer: end to end (partitioning={partitioning:?})"),
             |b| {
-                let ctx = SessionContext::new();
-                let exec = create_shuffle_writer_exec(
-                    compression_codec.clone(),
-                    partitioning.clone(),
-                    8192,
-                    10,
-                );
-                b.iter(|| {
-                    let task_ctx = ctx.task_ctx();
-                    let stream = exec.execute(0, task_ctx).unwrap();
-                    let rt = Runtime::new().unwrap();
-                    rt.block_on(collect(stream)).unwrap();
-                });
+                bench_end_to_end(b, || {
+                    create_shuffle_writer_exec(
+                        compression_codec.clone(),
+                        partitioning.clone(),
+                        8192,
+                        10,
+                    )
+                })
             },
         );
     }
@@ -157,19 +147,14 @@ fn criterion_benchmark(c: &mut Criterion) {
         group.bench_function(
             format!("shuffle_writer: end to end (partitioning=SinglePartition, rows_per_batch={rows_per_batch})"),
             |b| {
-                let ctx = SessionContext::new();
-                let exec = create_shuffle_writer_exec(
-                    CompressionCodec::None,
-                    CometPartitioning::SinglePartition,
-                    rows_per_batch,
-                    num_batches,
-                );
-                b.iter(|| {
-                    let task_ctx = ctx.task_ctx();
-                    let stream = exec.execute(0, task_ctx).unwrap();
-                    let rt = Runtime::new().unwrap();
-                    rt.block_on(collect(stream)).unwrap();
-                });
+                bench_end_to_end(b, || {
+                    create_shuffle_writer_exec(
+                        CompressionCodec::None,
+                        CometPartitioning::SinglePartition,
+                        rows_per_batch,
+                        num_batches,
+                    )
+                })
             },
         );
     }
@@ -185,23 +170,37 @@ fn criterion_benchmark(c: &mut Criterion) {
         high_partition_group.bench_function(
             format!("shuffle_writer: end to end (partitions={num_partitions}, compression=None)"),
             |b| {
-                let ctx = SessionContext::new();
-                let exec = create_shuffle_writer_exec(
-                    CompressionCodec::None,
-                    CometPartitioning::Hash(vec![Arc::new(Column::new("a", 0))], num_partitions),
-                    8192,
-                    10,
-                );
-                b.iter(|| {
-                    let task_ctx = ctx.task_ctx();
-                    let stream = exec.execute(0, task_ctx).unwrap();
-                    let rt = Runtime::new().unwrap();
-                    rt.block_on(collect(stream)).unwrap();
-                });
+                bench_end_to_end(b, || {
+                    create_shuffle_writer_exec(
+                        CompressionCodec::None,
+                        CometPartitioning::Hash(
+                            vec![Arc::new(Column::new("a", 0))],
+                            num_partitions,
+                        ),
+                        8192,
+                        10,
+                    )
+                })
             },
         );
     }
     high_partition_group.finish();
+}
+
+/// Times one execution of a freshly built writer per iteration. A `ShuffleWriterExec`
+/// publishes its partition offsets once, so it cannot be re-executed; building it is
+/// setup and stays outside the measurement.
+fn bench_end_to_end(b: &mut Bencher, make_exec: impl Fn() -> ShuffleWriterExec) {
+    let ctx = SessionContext::new();
+    b.iter_batched(
+        make_exec,
+        |exec| {
+            let stream = exec.execute(0, ctx.task_ctx()).unwrap();
+            let rt = Runtime::new().unwrap();
+            rt.block_on(collect(stream)).unwrap();
+        },
+        BatchSize::LargeInput,
+    );
 }
 
 fn create_shuffle_writer_exec(
