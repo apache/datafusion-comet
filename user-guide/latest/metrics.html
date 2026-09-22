@@ -795,6 +795,98 @@ under the License.
 </table>
 </div>
 </section>
+<section id="cometicebergnativescan">
+<h3>CometIcebergNativeScan<a class="headerlink" href="#cometicebergnativescan" title="Link to this heading">#</a></h3>
+<p>The native Iceberg scan reports two groups of metrics. The runtime metrics are produced natively
+during execution; the planning metrics are Iceberg’s own scan-report counters, computed by
+Iceberg’s Java planner on the driver and surfaced here so they show in the UI as they do for a
+plain Spark + Iceberg <code class="docutils literal notranslate"><span class="pre">BatchScan</span></code>.</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Metric</p></th>
+<th class="head"><p>Description</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">number</span> <span class="pre">of</span> <span class="pre">output</span> <span class="pre">rows</span></code></p></td>
+<td><p>Rows produced by the scan.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">number</span> <span class="pre">of</span> <span class="pre">bytes</span> <span class="pre">scanned</span></code></p></td>
+<td><p>Bytes read from storage, including data and delete files.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">number</span> <span class="pre">of</span> <span class="pre">file</span> <span class="pre">splits</span> <span class="pre">processed</span></code></p></td>
+<td><p>File scan tasks (splits) read by this scan.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">scan</span> <span class="pre">time</span></code></p></td>
+<td><p>Time spent in the native scan’s record-batch polling, covering the iceberg-rust reader plus Comet’s schema adaptation. It excludes time the stream spends waiting between polls, so it is decode/compute time, not end-to-end scan latency. This differs from the <code class="docutils literal notranslate"><span class="pre">scan</span> <span class="pre">time</span></code> under <code class="docutils literal notranslate"><span class="pre">CometScanExec</span></code>, which times Parquet file reads.</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>The planning metrics below mirror Iceberg’s <code class="docutils literal notranslate"><span class="pre">ScanReport</span></code>. They are driver-side values known after
+scan planning and do not change during execution.</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Metric</p></th>
+<th class="head"><p>Description</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">totalPlanningDuration</span></code></p></td>
+<td><p>Time Iceberg spent planning the scan.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">totalDataManifest</span></code></p></td>
+<td><p>Data manifests in the snapshot.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">scannedDataManifests</span></code></p></td>
+<td><p>Data manifests read during planning.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">skippedDataManifests</span></code></p></td>
+<td><p>Data manifests skipped by partition/stat filtering.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">resultDataFiles</span></code></p></td>
+<td><p>Data files selected for the scan.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">skippedDataFiles</span></code></p></td>
+<td><p>Data files skipped by filtering.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">totalDataFileSize</span></code></p></td>
+<td><p>Total size of the selected data files.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">totalDeleteManifests</span></code></p></td>
+<td><p>Delete manifests in the snapshot.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">scannedDeleteManifests</span></code></p></td>
+<td><p>Delete manifests read during planning.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">skippedDeleteManifests</span></code></p></td>
+<td><p>Delete manifests skipped by filtering.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">resultDeleteFiles</span></code></p></td>
+<td><p>Delete files applied to the scan.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">skippedDeleteFiles</span></code></p></td>
+<td><p>Delete files skipped by filtering.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">totalDeleteFileSize</span></code></p></td>
+<td><p>Total size of the applied delete files.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">equalityDeleteFiles</span></code></p></td>
+<td><p>Equality delete files applied.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">positionalDeleteFiles</span></code></p></td>
+<td><p>Positional delete files applied.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">indexedDeleteFiles</span></code></p></td>
+<td><p>Delete files served from the delete-file index.</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>Iceberg’s <code class="docutils literal notranslate"><span class="pre">numDeletes</span></code> (deletes applied at read time) is not reported: it is a Java-reader runtime
+counter, and Comet reads natively through iceberg-rust, which exposes no deletes-applied count, so
+the value would always be 0.</p>
+</section>
 <section id="hash-joins">
 <h3>Hash Joins<a class="headerlink" href="#hash-joins" title="Link to this heading">#</a></h3>
 <p>With <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.join.dynamicFilter.enabled=true</span></code>, native broadcast and shuffled hash joins
@@ -1084,6 +1176,7 @@ filesystem or network traffic accounting.</p>
     <ul class="visible nav section-nav flex-column">
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#spark-sql-metrics">Spark SQL Metrics</a><ul class="nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#cometscanexec">CometScanExec</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#cometicebergnativescan">CometIcebergNativeScan</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#hash-joins">Hash Joins</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#exchange">Exchange</a></li>
 </ul>
