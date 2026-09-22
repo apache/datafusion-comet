@@ -267,8 +267,11 @@ Add a `spark_X_Y` job to `ci.yml` passing `spark-short`, `spark-full`, and
 `POLICY` in `dev/ci/compute-changes.py`, never an event check in `ci.yml`. A
 brand-new version starts out on demand only, `["label:run-spark-X.Y-tests"]`,
 meaning the label on a pull request or a `workflow_dispatch`, gating no merge.
-It then graduates as the version settles: to `"nightly"` alongside the other
-non-default versions, and to `"queue"` if it ever becomes the default profile.
+Move it to `"nightly"` as soon as the suite passes, and do not leave it on
+demand as a way of being cautious: the version's `dev/diffs` file is updated
+only when someone runs the suite, so an on-demand version's diff silently
+falls behind the others every time a Comet change needs a diff update. A job
+graduates to `"queue"` only if its version becomes the default profile.
 
 Four more registrations are needed. The first three are silent when missed;
 the fourth fails preflight, which is what tells you about the other three.
@@ -276,6 +279,13 @@ the fourth fails preflight, which is what tells you about the other three.
 - In `dev/ci/compute-changes.py`, add a matching `spark_X_Y` entry to
   `FILTERS` **and** to `POLICY`. A `FILTERS` key with no `POLICY` entry makes
   the `changes` job raise `KeyError` on every event that is not a dispatch.
+  Build the `FILTERS` list by copying the nearest version's whole list and
+  changing only the `dev/diffs` path and the `!spark/src/main/spark-*`
+  exclusions. Dropping an entry that looks incidental, such as one of the
+  shared `.github/actions/**` paths, produces a job that skips exactly when
+  the shared input it needed changed, and while the new version lives on a
+  branch every upstream addition to those lists merges cleanly without
+  reaching it.
 - In `ci.yml`, expose `spark_X_Y` as an output of the `changes` job, otherwise
   the `if:` gate reads an empty string on every event.
 - In `ci.yml`, add the job to `required_checks.needs`, otherwise it can fail
