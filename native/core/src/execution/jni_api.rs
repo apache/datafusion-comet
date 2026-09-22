@@ -1877,6 +1877,7 @@ mod tests {
     use datafusion_comet_proto::spark_expression::{AggExpr, Count, Expr, Sum};
     use datafusion_comet_proto::spark_operator::{HashAggregate, ShuffleWriter};
     use std::cell::Cell;
+    use std::future::Future;
 
     #[test]
     fn skip_partial_eligibility_is_fail_closed() {
@@ -2361,6 +2362,13 @@ mod tests {
             .unwrap()
     }
 
+    /// Fails instead of hanging the suite when a wake is lost.
+    async fn within_ten_seconds<F: Future>(future: F) -> F::Output {
+        tokio::time::timeout(Duration::from_secs(10), future)
+            .await
+            .expect("timed out: a wake was lost")
+    }
+
     #[test]
     fn next_batch_parks_while_the_stream_waits_on_native_io() {
         let batch = RecordBatch::new_empty(Arc::new(Schema::empty()));
@@ -2371,10 +2379,10 @@ mod tests {
         .boxed();
         let mut pulls = 0;
         let next = single_worker_runtime()
-            .block_on(next_batch(&mut stream, || {
+            .block_on(within_ten_seconds(next_batch(&mut stream, || {
                 pulls += 1;
                 Ok(())
-            }))
+            })))
             .unwrap();
         assert!(next.is_some());
         assert!(
@@ -2398,19 +2406,15 @@ mod tests {
             }
             Ok::<(), CometError>(())
         };
-        // Only the refill's wake ends each park, so a lost wake would hang here.
-        single_worker_runtime().block_on(async {
-            tokio::time::timeout(Duration::from_secs(10), async {
-                let first = next_batch(&mut stream, &mut pull).await.unwrap();
-                assert_eq!(first.unwrap().num_rows(), 3);
-                assert_eq!(pulls.get(), 1);
-                assert!(next_batch(&mut stream, &mut pull).await.unwrap().is_none());
-                assert_eq!(pulls.get(), 2);
-                assert!(next_batch(&mut stream, &mut pull).await.unwrap().is_none());
-                assert_eq!(pulls.get(), 2);
-            })
-            .await
-            .unwrap();
-        });
+        // Only the refill's wake ends each park.
+        single_worker_runtime().block_on(within_ten_seconds(async {
+            let first = next_batch(&mut stream, &mut pull).await.unwrap();
+            assert_eq!(first.unwrap().num_rows(), 3);
+            assert_eq!(pulls.get(), 1);
+            assert!(next_batch(&mut stream, &mut pull).await.unwrap().is_none());
+            assert_eq!(pulls.get(), 2);
+            assert!(next_batch(&mut stream, &mut pull).await.unwrap().is_none());
+            assert_eq!(pulls.get(), 2);
+        }));
     }
 }

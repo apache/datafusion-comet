@@ -43,13 +43,15 @@ onto a tokio worker thread and batches are delivered to the executor thread via 
 The executor thread parks in `blocking_recv()` until the next batch is ready. This avoids
 busy-polling on I/O-bound workloads.
 
-**JVM data source path (ScanExec present):** The executor thread calls `block_on()` and polls the
-DataFusion stream directly. On `Poll::Pending` it calls `pull_input_batches()` to feed data from
-the JVM into ScanExec operators, which wakes the stream, then parks until a waker fires, so a
-stream that is waiting on native I/O sleeps instead of busy-polling.
+**JVM data source path (ScanExec or ShuffleScanExec present):** The executor thread calls
+`block_on()` and polls the DataFusion stream directly. On `Poll::Pending` it calls
+`pull_input_batches()` to feed data from the JVM into the ScanExec and ShuffleScanExec operators,
+whose streams register the poll's waker and are woken by the refill, then parks until a waker
+fires, so a stream that is waiting on native I/O sleeps instead of busy-polling.
 
-In both cases, DataFusion operators execute on **tokio worker threads**, not on the Spark executor
-task thread. All Spark tasks on an executor share one tokio runtime.
+On the async I/O path, DataFusion operators execute on **tokio worker threads**. On the JVM data
+source path, `block_on()` polls them on the Spark executor task thread, and any tasks they spawn
+run on the shared runtime. All Spark tasks on an executor share one tokio runtime.
 
 ### Rules for native code
 
