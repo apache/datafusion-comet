@@ -257,15 +257,12 @@ private[serde] object DatetimeCollation extends CometTypeShim {
     expr.children.exists(c => hasNonDefaultStringCollation(c.dataType))
 }
 
-object CometUnixTimestamp extends CometExpressionSerde[UnixTimestamp] {
-
-  private val collationReason = DatetimeCollation.reason("unix_timestamp")
+object CometUnixTimestamp
+    extends CometExpressionSerde[UnixTimestamp]
+    with CodegenDispatchFallback {
 
   override def getUnsupportedReasons(): Seq[String] = Seq(
-    "Only `DateType`, `TimestampType`, and `TimestampNTZType` inputs are supported.")
-
-  override def getIncompatibleReasons(): Seq[String] =
-    DatetimeCollation.incompatibleReasons("unix_timestamp")
+    "String inputs, including collated strings, have no native implementation.")
 
   private def isSupportedInputType(expr: UnixTimestamp): Boolean = {
     expr.children.head.dataType match {
@@ -276,16 +273,10 @@ object CometUnixTimestamp extends CometExpressionSerde[UnixTimestamp] {
   }
 
   override def getSupportLevel(expr: UnixTimestamp): SupportLevel = {
-    // The input type is screened ahead of the collation check on purpose. A non-date/timestamp
-    // input has no native path at all, so it must report `Unsupported` rather than
-    // `Incompatible`: the latter is waved straight through to `convert` when
-    // `spark.comet.expression.UnixTimestamp.allowIncompatible=true`, and the native kernel then
-    // raises an execution error on the string child instead of falling back to Spark.
+    // Strings have no native path, even when incompatible expressions are allowed.
     if (!isSupportedInputType(expr)) {
       val inputType = expr.children.head.dataType
       Unsupported(Some(s"unix_timestamp does not support input type: $inputType"))
-    } else if (DatetimeCollation.hasNonDefaultCollation(expr)) {
-      Incompatible(Some(collationReason))
     } else {
       Compatible()
     }
