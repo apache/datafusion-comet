@@ -336,7 +336,7 @@ Hashing every column of every row dominates the shuffle write on wide nested sch
 `create_murmur3_hashes` recurses into every struct child per row and the resulting row-level
 scatter forces `interleave_record_batch` to walk every column and child again on flush.
 `RowGroups` places rows the way Spark's own round robin does: the row at task-global ordinal `i`
-goes to `(mapPartitionId + i / groupRows) % numPartitions`. That removes the per-row hash, and it
+goes to `(startPartition + i / groupRows) % numPartitions`. That removes the per-row hash, and it
 replaces the per-row gather with a bulk copy per contiguous run, because adjacent rows now stay
 together. It also spreads duplicate rows evenly, which `HashAll` cannot.
 
@@ -347,19 +347,30 @@ downstream operator frames rows into batches, so an operator that spills can ref
 different memory pressure while still honouring `DETERMINATE`. Keying on a row ordinal means the
 strategy depends only on the property Spark actually publishes.
 
-`start_partition` is the Spark map partition id, filled in by `PhysicalPlanner::create_partitioning`
-from the planner's partition because `ShuffleWriterExec::execute` cannot supply it (`jni_api` runs
-every native root plan with partition 0, one Comet execution per Spark task). It has to be distinct
-across mappers, or every task starts at partition 0 and a task emitting fewer groups than there are
-output partitions leaves the tail empty stage-wide; and it has to be a pure function of the map
-partition, or a re-executed task does not reproduce its own placement. Spark seeds
-`XORShiftRandom(partitionId)` for the same two reasons.
+`start_partition` is the output partition a map task's first group goes to. It is computed per task
+on the JVM, in `CometNativeShuffleWriter.buildUnifiedPlan` where the Spark map partition id is in
+scope, and passed down in the proto. It has to be _decorrelated_ across mappers, not merely
+distinct: a task walks `ceil(rows / groupRows)` consecutive partitions from its start, so if
+consecutive tasks start on consecutive partitions their runs all overlap and the partitions past
+`numMapTasks + groupsPerTask` get nothing — ten map tasks of 5,000 rows into 200 partitions at a
+group of 64 would leave 112 reducers empty. It also has to be a pure function of the map partition,
+or a re-executed task does not reproduce its own placement. Spark satisfies both by scrambling the
+map partition id through `XORShiftRandom`
+([SPARK-21782](https://issues.apache.org/jira/browse/SPARK-21782)), and
+`CometShuffleExchangeExec.positionalStartPartition` does the same. Spark increments its counter
+before the first row uses it, so the start is `nextInt(numPartitions) + 1`, which makes
+`groupRows = 1` place rows exactly where Spark's round robin would for the same row order.
 
-`groupRows` trades balance against copying. Imbalance between any two output partitions is bounded
-by `groupRows` rows however the reader frames its batches, so small groups balance better; large
-groups produce fewer, longer runs to copy, and a group as large as the batch size lets a whole
-input batch pass through to one partition untouched. `0`, the default, derives it as
-`clamp(batch_size / num_partitions, 64, batch_size)`.
+`groupRows` trades balance against copying. Within one map task, imbalance between any two output
+partitions is bounded by `groupRows` rows however the reader frames its batches, so small groups
+balance better; large groups produce fewer, longer runs to copy, and a group as large as the batch
+size lets a whole input batch pass through to one partition untouched. That bound does not compose
+across map tasks — a reducer sees the sum over all of them, which is only even when each task emits
+many more groups than there are output partitions. `0`, the default, derives it as
+`clamp(batch_size / num_partitions, 64, batch_size)`, which keeps a task wrapping around the output
+partitions roughly once per batch. The 64-row floor caps how finely a batch is cut: with far more
+partitions than rows in a batch, `batch_size / num_partitions` rounds down towards one row and the
+flush degenerates into the per-row gather positional placement exists to avoid.
 
 Internally, `MultiPartitionShuffleRepartitioner` records `(batch, start, len)` runs rather than
 one `(batch, row)` pair per row, so the index list charged against the spill reservation is

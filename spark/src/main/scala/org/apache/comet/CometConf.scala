@@ -482,7 +482,8 @@ object CometConf extends ShimCometConf {
         "When true, Comet's native round-robin shuffle places rows by position rather than by " +
           "hashing their contents, the way Spark's own round robin does: the row at " +
           "task-global ordinal i goes to output partition " +
-          "(mapPartitionId + i / groupRows) % numPartitions. This skips a murmur3 pass over " +
+          "(start + i / groupRows) % numPartitions, where start is the map partition id " +
+          "scrambled the way Spark scrambles it. This skips a murmur3 pass over " +
           "every column of every row and replaces the per-row gather on flush with a bulk copy " +
           "per run, which is what dominates the shuffle write on wide nested schemas. It also " +
           "spreads duplicate rows evenly, where hashing sends them all to one partition. " +
@@ -499,11 +500,15 @@ object CometConf extends ShimCometConf {
     conf("spark.comet.shuffle.native.partitioning.roundrobin.positional.groupRows")
       .category(CATEGORY_SHUFFLE)
       .doc(
-        "Rows per contiguous group under positional round robin. Imbalance between any two " +
-          "output partitions is bounded by this many rows however the reader frames its " +
-          "batches, so smaller groups balance better while larger groups produce fewer, longer " +
-          "runs to copy. When set to 0 (the default) Comet derives it from the batch size and " +
-          "the partition count. Only applies when " +
+        "Rows per contiguous group under positional round robin. Within one map task, imbalance " +
+          "between any two output partitions is bounded by this many rows however the reader " +
+          "frames its batches, so smaller groups balance better while larger groups produce " +
+          "fewer, longer runs to copy. That bound does not compose across map tasks: a reducer " +
+          "sees the sum over all of them, and the stage is only evenly balanced when each task " +
+          "emits many more groups than there are output partitions, so a group size approaching " +
+          "a task's whole input will leave some reducers empty. When set to 0 (the default) " +
+          "Comet derives it from the batch size and the partition count, which keeps a task " +
+          "wrapping around the output partitions roughly once per batch. Only applies when " +
           s"${COMET_SHUFFLE_NATIVE_ROUND_ROBIN_PARTITIONING_POSITIONAL_ENABLED.key} is true.")
       .intConf
       .checkValue(

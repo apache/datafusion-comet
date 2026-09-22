@@ -47,17 +47,23 @@ pub enum RoundRobinStrategy {
     /// than a batch ordinal is what lets this strategy rely on the level Spark already publishes
     /// instead of an assumption nothing checks.
     ///
-    /// `start_partition` must be the Spark map partition id. It has to be distinct across mappers,
-    /// or every task starts at partition 0 and a task emitting fewer groups than there are output
-    /// partitions leaves the tail empty stage-wide; and it has to be a pure function of the map
-    /// partition, or a re-executed task does not reproduce its own placement. Spark seeds
-    /// `XORShiftRandom(partitionId)` for the same two reasons.
+    /// `start_partition` is the output partition this map task's first group goes to. It has to be
+    /// *decorrelated* across mappers, not merely distinct: a task walks `ceil(rows / group_rows)`
+    /// consecutive partitions from its start, so if consecutive tasks start on consecutive
+    /// partitions their runs all overlap and the partitions past `num_map_tasks + groups_per_task`
+    /// get nothing. It also has to be a pure function of the map partition, or a re-executed task
+    /// does not reproduce its own placement. Spark satisfies both by scrambling the map partition
+    /// id through `XORShiftRandom` (SPARK-21782), and the JVM computes this field the same way; see
+    /// `CometShuffleExchangeExec.positionalStartPartition`.
     ///
-    /// `group_rows` trades balance against copying. Imbalance between any two output partitions is
-    /// bounded by `group_rows` rows regardless of how the reader frames batches, so small groups
-    /// balance better; large groups produce fewer, longer runs to copy on flush, and a group as
-    /// large as the batch size lets a whole input batch pass through to one partition untouched.
-    /// [`Self::AUTO_GROUP_ROWS`] picks a value from the batch size and partition count.
+    /// `group_rows` trades balance against copying. Within one map task, imbalance between any two
+    /// output partitions is bounded by `group_rows` rows regardless of how the reader frames
+    /// batches, so small groups balance better; large groups produce fewer, longer runs to copy on
+    /// flush, and a group as large as the batch size lets a whole input batch pass through to one
+    /// partition untouched. That bound does not compose across map tasks: a reducer sees the sum
+    /// over all of them, which is only even when each task emits many more groups than there are
+    /// output partitions. [`Self::AUTO_GROUP_ROWS`] picks a value from the batch size and partition
+    /// count that keeps it so.
     RowGroups {
         start_partition: usize,
         group_rows: usize,
@@ -77,9 +83,14 @@ impl RoundRobinStrategy {
     /// `group_rows` sentinel asking for a value derived from the batch size and partition count.
     pub const AUTO_GROUP_ROWS: usize = 0;
 
-    /// Smallest automatically chosen group. A multiple of 8 so that a run starts on a byte
-    /// boundary of a validity bitmap, which keeps the per-run copy a memcpy rather than a
-    /// bit-shift for every column.
+    /// Smallest automatically chosen group, which is a cap on how finely a batch is cut: with
+    /// `num_partitions` far larger than the batch size, `batch_size / num_partitions` rounds down
+    /// towards one row and the flush degenerates into the per-row gather that positional placement
+    /// exists to avoid.
+    ///
+    /// Not an alignment guarantee. A run only starts on a byte boundary of a validity bitmap when
+    /// the batch itself starts on a group boundary, and `row_seq` counts rows across batches, so
+    /// after a filter a batch starts at an arbitrary ordinal and every run in it is offset.
     const MIN_AUTO_GROUP_ROWS: usize = 64;
 
     /// Resolves [`Self::AUTO_GROUP_ROWS`] against the runtime batch size and partition count.
