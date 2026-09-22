@@ -23,11 +23,11 @@
 -- native guard.
 
 statement
-CREATE TABLE test_arrays_zip_nondet(_1 int) USING parquet
+CREATE TABLE test_arrays_zip_nondet(_1 int, arr array<int>) USING parquet
 
 statement
-INSERT INTO test_arrays_zip_nondet VALUES
-  (0), (1), (2), (3), (4), (5), (6), (7), (8), (9), (10), (11), (12), (13), (14), (15)
+INSERT INTO test_arrays_zip_nondet
+SELECT id, IF(id % 4 = 3, NULL, array(id, id + 1)) FROM range(0, 16)
 
 -- Spark returns [{1, 2}] on every row whose first array is non-NULL and NULL on the rest.
 query expect_dispatch(arrays_zip)
@@ -39,13 +39,20 @@ query expect_dispatch(arrays_zip)
 SELECT _1, arrays_zip(array(2), IF(monotonically_increasing_id() % 2 = 0, array(1), CAST(NULL AS ARRAY<INT>))) AS z
 FROM test_arrays_zip_nondet
 
--- A deterministic nullable child stays on the native guarded path.
 -- A non-nullable stateful child is declined too, rather than relying on the guard matching
 -- every row.
 query expect_dispatch(arrays_zip)
 SELECT _1, arrays_zip(array(monotonically_increasing_id()), array(2)) AS z
 FROM test_arrays_zip_nondet
 
+-- The dispatched kernel reads both arrays from a column, so it copies ListVectors into the
+-- array<struct<>> result rather than building the arrays inline. The column is NULL on every
+-- fourth row, so the kernel also sees a NULL array that comes from the input, not from the IF.
+query expect_dispatch(arrays_zip)
+SELECT _1, arrays_zip(IF(monotonically_increasing_id() % 2 = 0, arr, CAST(NULL AS ARRAY<INT>)), arr) AS z
+FROM test_arrays_zip_nondet
+
+-- A deterministic nullable child stays on the native guarded path.
 query expect_native(arrays_zip)
 SELECT _1, arrays_zip(IF(_1 % 2 = 0, array(1), CAST(NULL AS ARRAY<INT>)), array(2)) AS z
 FROM test_arrays_zip_nondet

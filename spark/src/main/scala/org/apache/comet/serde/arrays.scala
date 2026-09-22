@@ -61,8 +61,8 @@ object CometArrayRemove
 private[serde] object NullGuardSupport {
 
   val nondeterministicReason: String =
-    "a nondeterministic operand: the native NULL guard serializes the operand twice, " +
-      "and the two copies of a stateful operand drift apart"
+    "Comet has no native path for a nondeterministic operand such as `rand()` or " +
+      "`monotonically_increasing_id()`, because the native `NULL` guard would evaluate it twice."
 
   /** `Unsupported` when any of `children` is nondeterministic, otherwise `None`. */
   def nondeterministicChild(children: Seq[Expression]): Option[SupportLevel] =
@@ -79,11 +79,35 @@ object CometArrayAppend
   override def getUnsupportedReasons(): Seq[String] =
     Seq(NullGuardSupport.nondeterministicReason)
 
+  private val ansiItemNote: String =
+    "With `spark.sql.ansi.enabled=true` and a nullable array, the native `NULL` guard skips " +
+      "the item on a row whose array is `NULL`, so an item that raises there (for example a " +
+      "division by zero) raises in Spark but not on the native path. Such an expression runs " +
+      "through the JVM codegen dispatcher by default; enabling the native path can swallow " +
+      "that error ([#6086](https://github.com/apache/datafusion-comet/issues/6086))."
+
+  override def getIncompatibleReasons(): Seq[String] = Seq(ansiItemNote)
+
+  // Only the ANSI nullable-array case is routed through the dispatcher; every other compatible
+  // instance runs natively by default.
+  override def hasConditionalNativeDefault: Boolean = true
+
   // The item sits inside the guard's THEN branch, and DataFusion's CaseExpr evaluates that
   // branch only on the rows the guard selects, while Spark's codegen evaluates the item on
-  // every row. A stateful item therefore drifts the same way a stateful array does.
+  // every row. A stateful item therefore drifts the same way a stateful array does, and is
+  // declined. The same shape lets an item that raises under ANSI mode go unevaluated on a row
+  // whose array is NULL, so Spark raises where the native path returns NULL. That case is
+  // reported as incompatible, which routes it through the JVM codegen dispatcher by default
+  // and reserves the native guard for allowIncompatible=true. A non-nullable array evaluates
+  // the item on every row on both paths, so it stays native.
   override def getSupportLevel(expr: ArrayAppend): SupportLevel =
-    NullGuardSupport.nondeterministicChild(expr.children).getOrElse(Compatible())
+    NullGuardSupport.nondeterministicChild(expr.children).getOrElse {
+      if (SQLConf.get.ansiEnabled && expr.left.nullable) {
+        Incompatible(Some(ansiItemNote))
+      } else {
+        Compatible()
+      }
+    }
 
   override def convert(
       expr: ArrayAppend,
@@ -886,8 +910,9 @@ object CometArrayPosition extends CometExpressionSerde[ArrayPosition] with Array
 object CometArraysZip extends CometExpressionSerde[ArraysZip] with CodegenDispatchFallback {
 
   override def getUnsupportedReasons(): Seq[String] = Seq(
-    "Not all input data types are supported; unsupported types run through the JVM codegen " +
-      "dispatcher",
+    "An array whose element type is a map, a calendar, day-time or year-month interval, a " +
+      "variant, a `TIME` value or a user-defined type has no native `arrays_zip` kernel, and " +
+      "neither does a struct or inner array that holds one of those.",
     NullGuardSupport.nondeterministicReason)
 
   private def isTypeSupported(dt: DataType): Boolean = {
