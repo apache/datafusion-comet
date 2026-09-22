@@ -401,20 +401,23 @@ hard ceiling on the sum of everything in the container. That cgroup counts, amon
 Everything the cgroup counts, grouped on the left by where the bytes physically live and on the
 right by who budgets them. Those are two independent axes, which is the point of the diagram: a
 native reservation is charged against `spark.memory.offHeap.size` while occupying native heap, so
-the region a byte sits in tells you nothing about which budget it spends.
+the region a byte sits in tells you nothing about which budget it spends. On the left, the native
+heap is what Rust's global allocator hands out, the off-heap region is what `Unsafe` and Java Arrow
+allocate, and the container is the cgroup whose `memory.max` is the sum given above.
 
 ```mermaid
+%%{init: {'flowchart': {'wrappingWidth': 420}}}%%
 flowchart LR
-  subgraph POD["Executor container: cgroup memory.max = executor.memory + memoryOverhead + offHeap.size"]
+  subgraph POD["Executor container"]
     direction TB
 
-    subgraph NAT["Native heap: allocated by Rust, no JVM allocator involved"]
+    subgraph NAT["Native heap"]
       direction TB
       NRES["Declared operator reservations<br>sort, grouped aggregate, joins, shuffle writer<br>ceiling = spark.comet.exec.memoryPool.fraction of spark.memory.offHeap.size"]
       NUND["Everything else Rust allocates<br>expression kernels, array builders, decompression,<br>Parquet and object_store metadata, tokio,<br>C libraries outside Rust's global allocator"]
     end
 
-    subgraph OFF["JVM off-heap: allocated by Unsafe and by Java Arrow"]
+    subgraph OFF["JVM off-heap"]
       direction TB
       TUNG["Spark Tungsten pages"]
       JSH["Comet JVM shuffle pages<br>CometUnifiedShuffleMemoryAllocator"]
