@@ -321,6 +321,7 @@ FILTERS = {
         ".github/actions/setup-spark-builder/**",
         ".github/actions/upload-artifact-retry/**",
         ".github/actions/download-artifact-retry/**",
+        ".github/actions/maven-bootstrap/**",
         ".mvn/**",
         "mvnw",
     ],
@@ -516,8 +517,8 @@ POLICY = {
     # anyone who wants to check a change against 3.4 still can.
     "spark_3_4": ["label:run-spark-3.4-tests"],
     # Spark 4.1 is the default build profile and the one Spark SQL suite the
-    # queue runs; 3.5 and 4.0 run nightly, or on a pull request with their
-    # label.
+    # queue runs; 3.5, 4.0 and 4.2 run nightly, or on a pull request with
+    # their label.
     "spark_3_5": ["nightly", "label:run-spark-3.5-tests"],
     "spark_4_0": ["nightly", "label:run-spark-4.0-tests"],
     # No Spark SQL suite runs on a plain pull request. Spark 4.1 was the last
@@ -535,11 +536,14 @@ POLICY = {
         "label:run-spark-4.1-tests",
         "label:run-spark-4.1-hive-tests",
     ],
-    # Spark 4.2 support is new and experimental, so like the deprecated 3.4
-    # suite it sits outside all three tiers: it runs from `run-spark-4.2-tests`
-    # on a pull request, or a workflow_dispatch, and gates no merge. Folding it
-    # into the nightly is the follow-up once the version has settled.
-    "spark_4_2": ["label:run-spark-4.2-tests"],
+    # Spark 4.2 support is experimental, but the suite passes, so it sits in
+    # the nightly tier with the other non-default versions rather than being
+    # reachable only on demand. Nightly is the right tier for it twice over:
+    # a 4.2 regression blocks nobody's merge, and running it every night is
+    # what keeps the 4.2 diff in `dev/diffs` from silently rotting as the
+    # other diffs are updated -- the failure mode an on-demand suite hides
+    # until someone thinks to ask for it.
+    "spark_4_2": ["nightly", "label:run-spark-4.2-tests"],
     # Same shape for Iceberg: 1.11 is the only Spark 4.1 coverage, so it is
     # the one Iceberg version the queue runs; the three older versions run
     # nightly. One label opts a pull request into all four.
