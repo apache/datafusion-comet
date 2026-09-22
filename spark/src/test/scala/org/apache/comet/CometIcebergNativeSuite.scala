@@ -937,7 +937,11 @@ class CometIcebergNativeSuite
         "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
         CometConf.COMET_ENABLED.key -> "true",
         CometConf.COMET_EXEC_ENABLED.key -> "true",
-        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true",
+        // The byte bounds below assume parquet-mr's layout, which drops dictionary encoding for
+        // these high-cardinality columns. The native writer keeps a ~2 MB dictionary page per
+        // column that every range read has to fetch, so the fixture is written on the JVM.
+        CometConf.COMET_ICEBERG_NATIVE_WRITE_ENABLED.key -> "false") {
 
         // A 512 MB row group holds every row and 2000-row pages give the id column many pages.
         // Uncompressed storage keeps the sorted id column large, so reading all of its pages

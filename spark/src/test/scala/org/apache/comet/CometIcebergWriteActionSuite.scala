@@ -51,9 +51,12 @@ class CometIcebergWriteActionSuite
     with AdaptiveSparkPlanHelper
     with CometIcebergTestBase {
 
+  // Most tests here pin the JVM two-op plan (`IcebergWriteExec` + `IcebergCommitExec`), so the
+  // native writer is off unless a test opts in through `withNativeEnabled`.
   override protected def sparkConf: SparkConf = {
     super.sparkConf
       .set(CometConf.COMET_ICEBERG_WRITE_SPLIT_OPERATOR_ENABLED.key, "true")
+      .set(CometConf.COMET_ICEBERG_NATIVE_WRITE_ENABLED.key, "false")
       .set(
         "spark.sql.extensions",
         "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions")
@@ -2452,15 +2455,20 @@ class CometIcebergWriteActionSuite
    * fires.
    */
   private def withNativeEnabled[T](action: => T): T = {
-    val session = spark
-    session.sessionState.conf
-      .setConfString(CometConf.COMET_ICEBERG_NATIVE_WRITE_ENABLED.key, "true")
-    session.sessionState.conf
-      .setConfString(CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key, "true")
+    val conf = spark.sessionState.conf
+    val keys = Seq(
+      CometConf.COMET_ICEBERG_NATIVE_WRITE_ENABLED.key,
+      CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key)
+    // Restore the previous values rather than unsetting: unsetting would fall through to the
+    // config defaults, not to the suite's `sparkConf`, and leave later tests on the native writer.
+    val previous = keys.map(k => k -> conf.getConfString(k, null))
+    keys.foreach(conf.setConfString(_, "true"))
     try action
     finally {
-      session.sessionState.conf.unsetConf(CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key)
-      session.sessionState.conf.unsetConf(CometConf.COMET_ICEBERG_NATIVE_WRITE_ENABLED.key)
+      previous.foreach {
+        case (k, null) => conf.unsetConf(k)
+        case (k, v) => conf.setConfString(k, v)
+      }
     }
   }
 
