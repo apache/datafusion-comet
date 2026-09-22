@@ -637,11 +637,6 @@ object CometShuffleExchangeExec
     val partitioning = s.outputPartitioning
     partitioning match {
       case HashPartitioning(expressions, _) =>
-        for (expr <- expressions) {
-          if (QueryPlanSerde.exprToProto(expr, inputs).isEmpty) {
-            reasons += s"unsupported hash partitioning expression: $expr"
-          }
-        }
         for (dt <- expressions.map(_.dataType).distinct) {
           if (isStringCollationType(dt)) {
             reasons += s"unsupported hash partitioning data type for columnar shuffle: $dt"
