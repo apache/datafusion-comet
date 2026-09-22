@@ -30,7 +30,8 @@ use datafusion::{
     prelude::SessionContext,
 };
 use datafusion_comet_shuffle::{
-    CometPartitioning, CompressionCodec, ShuffleBlockWriter, ShuffleCodecContext, ShuffleWriterExec,
+    bench_support::BenchRepartitioner, CometPartitioning, CompressionCodec, RoundRobinStrategy,
+    ShuffleBlockWriter, ShuffleCodecContext, ShuffleWriterExec,
 };
 use itertools::Itertools;
 use std::io::Cursor;
@@ -269,6 +270,98 @@ fn create_batch(num_rows: usize, allow_nulls: bool) -> RecordBatch {
     .unwrap()
 }
 
+/// Round robin placement in isolation, and then the gather it implies on flush.
+///
+/// The end-to-end benches above spend most of their time in IPC encoding and the file write,
+/// which on a loaded disk swamps the difference between two placement strategies entirely.
+/// These stop short of both. `place` times only the strategy and the per-partition index
+/// buffering; `place+gather` adds the flush through a writer that discards its batches, which is
+/// where a run-indexed partitioner diverges from a row-indexed one — the row-level scatter makes
+/// `interleave_record_batch` walk every column and child again, and a run can instead be sliced,
+/// or handed through untouched when it covers a whole buffered batch.
+///
+/// 8192 rows per batch into 50 output partitions, so [`RoundRobinStrategy::AUTO_GROUP_ROWS`]
+/// resolves to 163. `RowGroups(8192)` is the opposite extreme, one whole input batch per group,
+/// where every run covers a buffered batch end to end and the gather copies nothing at all.
+fn partitioning_benchmark(c: &mut Criterion) {
+    const BATCH_SIZE: usize = 8192;
+    const NUM_BATCHES: usize = 8;
+    const NUM_PARTITIONS: usize = 50;
+
+    let strategies = [
+        (
+            "HashAll",
+            RoundRobinStrategy::HashAll {
+                max_hash_columns: 0,
+            },
+        ),
+        // Hashing only the leading column: not a candidate strategy, but it separates the cost
+        // of recursing through every struct child from the cost of hashing at all.
+        (
+            "HashAll{1}",
+            RoundRobinStrategy::HashAll {
+                max_hash_columns: 1,
+            },
+        ),
+        (
+            "RowGroups(auto)",
+            RoundRobinStrategy::RowGroups {
+                start_partition: 0,
+                group_rows: RoundRobinStrategy::AUTO_GROUP_ROWS,
+            },
+        ),
+        (
+            "RowGroups(8192)",
+            RoundRobinStrategy::RowGroups {
+                start_partition: 0,
+                group_rows: BATCH_SIZE,
+            },
+        ),
+    ];
+
+    // `plain` is the flat schema the end-to-end benches use. `nested` is the shape that motivates
+    // positional placement: 40 struct columns over a three-field leaf, so 120 leaf arrays for a
+    // hash to recurse into and for a gather to walk.
+    let fixtures = [
+        ("plain", create_batches(BATCH_SIZE, NUM_BATCHES)),
+        (
+            "nested",
+            nested_batches(BATCH_SIZE, NUM_BATCHES, 40, 2, Fill::PerRow),
+        ),
+    ];
+
+    let mut group = c.benchmark_group("shuffle_partitioning");
+    for (schema, batches) in &fixtures {
+        for (label, strategy) in &strategies {
+            let partitioning = CometPartitioning::RoundRobin(NUM_PARTITIONS, strategy.clone());
+            group.bench_function(format!("place ({schema}, {label})"), |b| {
+                b.iter_batched(
+                    || BenchRepartitioner::try_new(partitioning.clone(), BATCH_SIZE).unwrap(),
+                    |mut repartitioner| {
+                        repartitioner.place(batches).unwrap();
+                        // Returned so that freeing the buffered batches and the partition index
+                        // lands outside the measurement.
+                        repartitioner
+                    },
+                    BatchSize::LargeInput,
+                );
+            });
+            group.bench_function(format!("place+gather ({schema}, {label})"), |b| {
+                b.iter_batched(
+                    || BenchRepartitioner::try_new(partitioning.clone(), BATCH_SIZE).unwrap(),
+                    |mut repartitioner| {
+                        repartitioner.place(batches).unwrap();
+                        repartitioner.gather().unwrap();
+                        repartitioner
+                    },
+                    BatchSize::LargeInput,
+                );
+            });
+        }
+    }
+    group.finish();
+}
+
 /// Benchmarks the per-block IPC encoding cost (schema + record batch) in isolation, using the
 /// `None` codec so that compression does not obscure the schema-encoding cost. Covers a wide flat
 /// schema and a deeply nested schema, where the schema flatbuffer is largest.
@@ -371,13 +464,38 @@ fn flat_schema_batch(num_rows: usize) -> RecordBatch {
 
 /// A schema of several deeply nested struct columns.
 fn nested_schema_batch(num_rows: usize) -> RecordBatch {
-    let num_cols = 4;
-    let depth = 6;
+    nested_batch(num_rows, 4, 6, Fill::Constant)
+}
 
+/// How a nested fixture fills its leaves.
+#[derive(Clone, Copy)]
+enum Fill {
+    /// One value repeated down every leaf. Cheap to build, and enough for the encoding benches
+    /// that only care about how much there is to encode. Useless for partitioning: identical
+    /// rows hash alike, so a hash strategy would put the whole input on one output partition
+    /// and never perform the scatter that a gather has to undo.
+    Constant,
+    /// A distinct value per row, so hash placement spreads rows across the output partitions the
+    /// way real data does.
+    PerRow,
+}
+
+fn nested_batches(
+    num_rows: usize,
+    count: usize,
+    num_cols: usize,
+    depth: usize,
+    fill: Fill,
+) -> Vec<RecordBatch> {
+    let batch = nested_batch(num_rows, num_cols, depth, fill);
+    vec![batch; count]
+}
+
+fn nested_batch(num_rows: usize, num_cols: usize, depth: usize, fill: Fill) -> RecordBatch {
     let mut fields: Vec<Field> = Vec::with_capacity(num_cols);
     let mut columns: Vec<Arc<dyn Array>> = Vec::with_capacity(num_cols);
     for col in 0..num_cols {
-        let array = nested_struct_array(num_rows, depth);
+        let array = nested_struct_array(num_rows, depth, fill);
         fields.push(Field::new(
             format!("col{col}"),
             array.data_type().clone(),
@@ -390,22 +508,35 @@ fn nested_schema_batch(num_rows: usize) -> RecordBatch {
 }
 
 /// Builds a struct array with a multi-field leaf, wrapped in `depth` single-field structs.
-fn nested_struct_array(num_rows: usize, depth: usize) -> Arc<dyn Array> {
+fn nested_struct_array(num_rows: usize, depth: usize, fill: Fill) -> Arc<dyn Array> {
     use arrow::array::{Float64Array, Int64Array, StringArray, StructArray};
+
+    let (ints, strings, floats): (Vec<i64>, Vec<String>, Vec<f64>) = match fill {
+        Fill::Constant => (
+            vec![1_i64; num_rows],
+            vec!["x".to_string(); num_rows],
+            vec![1.0_f64; num_rows],
+        ),
+        Fill::PerRow => (
+            (0..num_rows as i64).collect(),
+            (0..num_rows).map(|row| format!("value {row}")).collect(),
+            (0..num_rows).map(|row| row as f64 * 1.5).collect(),
+        ),
+    };
 
     // Leaf: struct<a: int64, b: utf8, c: float64>
     let mut array: Arc<dyn Array> = Arc::new(StructArray::from(vec![
         (
             Arc::new(Field::new("a", DataType::Int64, false)),
-            Arc::new(Int64Array::from(vec![1_i64; num_rows])) as Arc<dyn Array>,
+            Arc::new(Int64Array::from(ints)) as Arc<dyn Array>,
         ),
         (
             Arc::new(Field::new("b", DataType::Utf8, false)),
-            Arc::new(StringArray::from(vec!["x"; num_rows])) as Arc<dyn Array>,
+            Arc::new(StringArray::from(strings)) as Arc<dyn Array>,
         ),
         (
             Arc::new(Field::new("c", DataType::Float64, false)),
-            Arc::new(Float64Array::from(vec![1.0_f64; num_rows])) as Arc<dyn Array>,
+            Arc::new(Float64Array::from(floats)) as Arc<dyn Array>,
         ),
     ]));
 
@@ -427,6 +558,6 @@ fn config() -> Criterion {
 criterion_group! {
     name = benches;
     config = config();
-    targets = criterion_benchmark, schema_encoding_benchmark, ipc_context_reuse_benchmark
+    targets = criterion_benchmark, partitioning_benchmark, schema_encoding_benchmark, ipc_context_reuse_benchmark
 }
 criterion_main!(benches);

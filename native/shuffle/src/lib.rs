@@ -15,6 +15,9 @@
 // specific language governing permissions and limitations
 // under the License.
 
+/// Internals reached by `benches/` only. See the module docs.
+#[doc(hidden)]
+pub mod bench_support;
 mod codec_context;
 pub(crate) mod comet_partitioning;
 pub mod ipc;
