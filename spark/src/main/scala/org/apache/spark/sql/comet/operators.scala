@@ -45,6 +45,7 @@ import org.apache.spark.sql.execution.aggregate.{BaseAggregateExec, HashAggregat
 import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
 import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, BroadcastNestedLoopJoinExec, HashJoin, ShuffledHashJoinExec, SortMergeJoinExec}
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
+import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, ByteType, DataType, DateType, DecimalType, DoubleType, FloatType, IntegerType, LongType, MapType, ShortType, StringType, StructField, StructType, TimestampNTZType, TimestampType}
 import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.spark.unsafe.Platform
@@ -2235,8 +2236,9 @@ object CometHashAggregateExec
     // Spark turns codegen off by config, for an imperative aggregate, for a non-leaf
     // CodegenFallback expression, or when the output or an input exceeds its field limit.
     val codegenOff = !op.conf.wholeStageEnabled ||
-      CodegenObjectFactoryMode.withName(op.conf.codegenFactoryMode) ==
-      CodegenObjectFactoryMode.NO_CODEGEN ||
+      op.conf
+        .getConfString(SQLConf.CODEGEN_FACTORY_MODE.key)
+        .equalsIgnoreCase(CodegenObjectFactoryMode.NO_CODEGEN.toString) ||
       op.aggregateExpressions.exists(_.aggregateFunction.isInstanceOf[ImperativeAggregate]) ||
       WholeStageCodegenExec.isTooManyFields(op.conf, op.schema) ||
       op.children.exists(child => WholeStageCodegenExec.isTooManyFields(op.conf, child.schema)) ||
