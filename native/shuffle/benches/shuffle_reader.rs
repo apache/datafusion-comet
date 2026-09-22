@@ -132,6 +132,12 @@ fn criterion_benchmark(c: &mut Criterion) {
             }
         }
 
+        // Wide schemas exceed 1 MiB when both serialized and parsed metadata are counted.
+        // Compare warm and cold decoding here to catch accidental cache-admission cutoffs.
+        let batch = batch_of(8000, 64, Strings::Plain);
+        let block = encode_block(&batch, codec.clone());
+        bench_block(&mut group, &format!("{codec_name}/8000col_64row"), &block);
+
         // the dictionary batch before every record batch, at a narrow and a wide block
         for num_rows in [64usize, 8192] {
             let batch = batch_of(5, num_rows, Strings::Dictionary);
