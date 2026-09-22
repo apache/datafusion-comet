@@ -450,15 +450,10 @@ flowchart LR
 
   classDef acct fill:#c7ecd0,stroke:#2f6b46,color:#000
   classDef heapacct fill:#cfe4fb,stroke:#2f5680,color:#000
-  classDef unacct fill:#fbe9a8,stroke:#8a6d1f,color:#000
+  classDef unacct fill:#f6c69a,stroke:#8a4b1f,color:#000
   class NRES,TUNG,JSH,OFFPOOL acct
   class SOBJ,COBJ,ONPOOL heapacct
   class NUND,ARW,NONHEAP,MISC,NOONE unacct
-  style POD fill:#ffffff,stroke:#333,stroke-width:2px
-  style NAT fill:#f6f6f6,stroke:#999
-  style OFF fill:#f6f6f6,stroke:#999
-  style HEAP fill:#f6f6f6,stroke:#999
-  style REST fill:#f6f6f6,stroke:#999
 ```
 
 Everything that reaches a Spark pool is accounted, though not in the same sense throughout. The
