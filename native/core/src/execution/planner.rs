@@ -3653,12 +3653,11 @@ impl PhysicalPlanner {
             PartitioningStruct::SinglePartition(_) => Ok(CometPartitioning::SinglePartition),
             PartitioningStruct::RoundRobinPartition(rr_partition) => {
                 let strategy = if rr_partition.positional {
-                    // The Spark map partition id, not the DataFusion one: `jni_api` runs every
-                    // native root plan with partition 0 (one Comet execution per Spark task), so
-                    // `ShuffleWriterExec::execute` cannot supply it. See
-                    // `RoundRobinStrategy::RowGroups` for why it has to be this value.
                     RoundRobinStrategy::RowGroups {
-                        start_partition: self.partition.max(0) as usize,
+                        // Computed per task on the JVM, where the Spark map partition id is in
+                        // scope, and scrambled the way Spark scrambles it. See
+                        // `CometShuffleExchangeExec.positionalStartPartition`.
+                        start_partition: rr_partition.positional_start_partition.max(0) as usize,
                         // Negative or zero means "derive it from the batch size and partition
                         // count", which the repartitioner does once it knows both.
                         group_rows: rr_partition.positional_group_rows.max(0) as usize,

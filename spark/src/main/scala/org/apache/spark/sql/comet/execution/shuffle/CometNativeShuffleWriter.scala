@@ -426,6 +426,12 @@ class CometNativeShuffleWriter[K, V](
         spec.positionalRoundRobin.foreach { positional =>
           partitioning.setPositional(true)
           partitioning.setPositionalGroupRows(positional.groupRows)
+          // Per task, unlike the two above: which partition this mapper's first group goes to.
+          // See `CometShuffleExchangeExec.positionalStartPartition` for why it is scrambled.
+          partitioning.setPositionalStartPartition(
+            CometShuffleExchangeExec.positionalStartPartition(
+              Option(context).map(_.partitionId()).getOrElse(0),
+              effectivePartitionCount))
         }
 
         val partitioningBuilder = PartitioningOuterClass.Partitioning.newBuilder()

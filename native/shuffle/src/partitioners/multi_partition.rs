@@ -1294,10 +1294,10 @@ mod tests {
         }
     }
 
-    /// `start_partition` offsets which partition a task starts on, so mappers do not all pile
+    /// `start_partition` offsets which partition a task begins on, so mappers do not all pile
     /// their first group onto partition 0.
     #[tokio::test]
-    async fn positional_placement_starts_at_the_map_partition() {
+    async fn positional_placement_begins_at_the_start_partition() {
         for start in 0..4usize {
             let written = positional_placement(&[64], 4, 64, start, 256).await;
             assert_eq!(
@@ -1306,6 +1306,42 @@ mod tests {
                 "one group should land on partition {start} alone"
             );
         }
+    }
+
+    /// A task's groups walk *consecutive* partitions from its start, which is what makes the
+    /// stage-wide spread a function of how the starts are chosen rather than of the data. The JVM
+    /// picks the starts (`CometShuffleExchangeExec.positionalStartPartition`), but the reason it
+    /// has to scramble them lives here: with adjacent starts every task's run overlaps its
+    /// neighbours' and the tail of the partition space gets nothing.
+    #[tokio::test]
+    async fn positional_placement_walks_consecutive_partitions_from_its_start() {
+        let num_partitions = 32;
+        let group_rows = 16;
+        let rows = 5 * group_rows;
+
+        let stage = |starts: Vec<usize>| async move {
+            let mut covered = std::collections::BTreeSet::new();
+            for start in starts {
+                let written =
+                    positional_placement(&[rows], num_partitions, group_rows, start, 256).await;
+                assert_eq!(
+                    written.keys().copied().collect::<Vec<_>>(),
+                    (0..5)
+                        .map(|g| (start + g) % num_partitions)
+                        .collect::<std::collections::BTreeSet<_>>()
+                        .into_iter()
+                        .collect::<Vec<_>>(),
+                    "a task of five groups from {start} should touch five consecutive partitions"
+                );
+                covered.extend(written.keys().copied());
+            }
+            covered.len()
+        };
+
+        // Four tasks of five groups each could reach twenty of the thirty-two partitions.
+        assert_eq!(stage(vec![0, 8, 16, 24]).await, 20);
+        // Adjacent starts overlap instead, and twenty-four reducers get nothing.
+        assert_eq!(stage(vec![0, 1, 2, 3]).await, 8);
     }
 
     /// Imbalance stays within one group regardless of how the input was framed, which is what

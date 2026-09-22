@@ -312,7 +312,7 @@ object CometShuffleExchangeExec
 
   /**
    * True when this exchange will run the native round-robin writer in its positional mode, where
-   * the row at task-global ordinal `i` goes to `(mapPartitionId + i / groupRows) % numPartitions`
+   * the row at task-global ordinal `i` goes to `(startPartition + i / groupRows) % numPartitions`
    * rather than to `pmod(hash(row), numPartitions)`.
    *
    * Positional placement is reproducible exactly when the map task replays its rows in the same
@@ -354,6 +354,26 @@ object CometShuffleExchangeExec
       None
     }
   }
+
+  /**
+   * Output partition that the first group of map task `mapPartitionId` goes to.
+   *
+   * The starts have to be decorrelated, not merely distinct. Each task walks `ceil(rows /
+   * groupRows)` consecutive partitions from its start, so if consecutive tasks start on
+   * consecutive partitions their runs all overlap and the partitions past `numMapTasks +
+   * groupsPerTask` get nothing: ten map tasks of 5,000 rows into 200 partitions at a group of 64
+   * would leave 112 reducers empty. That is the correlation
+   * [[https://issues.apache.org/jira/browse/SPARK-21782 SPARK-21782]] fixed, and scrambling the
+   * map partition id through `XORShiftRandom` is how Spark fixes it, both in
+   * `ShuffleExchangeExec.getPartitionKeyExtractor` and in the JVM path below.
+   *
+   * Still a pure function of the map partition id, so a re-executed task reproduces its own
+   * placement. The `+ 1` matches Spark, which increments the counter before its first use, so at
+   * `groupRows == 1` this places rows exactly where Spark's round robin would for the same row
+   * order.
+   */
+  def positionalStartPartition(mapPartitionId: Int, numPartitions: Int): Int =
+    new XORShiftRandom(mapPartitionId).nextInt(math.max(numPartitions, 1)) + 1
 
   /**
    * Whether re-executing this subtree yields the same rows in the same order.
