@@ -49,24 +49,27 @@ const STORAGE_PROPERTY_PREFIXES: &[&str] = &["s3.", "gcs.", "adls.", "client."];
 /// cleanly instead of failing at execution. Changing the arms below means updating
 /// `CometScanRule.icebergReadableSchemes` (reads) and
 /// `CometIcebergNativeWrite.SupportedStorageSchemes` (writes).
+/// The bool is false when a read fell back to opendal's default chain because the configured S3
+/// access provider failed to initialise; such a `FileIO` must not be cached, so the next task
+/// retries.
 pub(crate) fn storage_factory_for(
     path: &str,
     catalog_properties: &HashMap<String, String>,
     catalog_name: &str,
     access_mode: AccessMode,
-) -> Result<Arc<dyn StorageFactory>, DataFusionError> {
+) -> Result<(Arc<dyn StorageFactory>, bool), DataFusionError> {
     let scheme = scheme_of(path);
     match scheme {
-        "file" => Ok(Arc::new(OpenDalStorageFactory::Fs)),
-        "memory" => Ok(Arc::new(OpenDalStorageFactory::Memory)),
-        "gs" => Ok(Arc::new(OpenDalStorageFactory::Gcs)),
+        "file" => Ok((Arc::new(OpenDalStorageFactory::Fs), true)),
+        "memory" => Ok((Arc::new(OpenDalStorageFactory::Memory), true)),
+        "gs" => Ok((Arc::new(OpenDalStorageFactory::Gcs), true)),
         // Reads keep the OSS backend they have always had (CometScanRule admits `oss` scan
         // locations through HadoopFileIO). Writes fail closed: Comet does not forward `oss.*`
         // properties into the FileIO and no test covers the write path, so OSS-specific
         // endpoint/credential configuration could silently be dropped. The JVM write gate
         // already declines `oss` locations; this is the native-side backstop.
         "oss" => match access_mode {
-            AccessMode::Read => Ok(Arc::new(OpenDalStorageFactory::Oss)),
+            AccessMode::Read => Ok((Arc::new(OpenDalStorageFactory::Oss), true)),
             AccessMode::Write => Err(DataFusionError::Execution(
                 "OSS is not supported for native Iceberg writes (oss.* properties are not \
                  forwarded to the native FileIO)"
@@ -79,17 +82,19 @@ pub(crate) fn storage_factory_for(
         // promotes a HOSTLESS `blob:///bucket/key` into the host at the open boundary -- see
         // s3_blob_fs_support for why that never touches the recorded delete-matching string.
         s if is_s3_family_scheme(s, catalog_properties) => {
-            let customized_credential_load =
+            let (customized_credential_load, cacheable) =
                 build_s3_credential_loader(path, catalog_properties, catalog_name, access_mode)?;
-            if is_s3_compliant_alias_scheme(s, catalog_properties) {
-                Ok(Arc::new(BlobHostPromotingS3StorageFactory::new(
-                    customized_credential_load,
-                )))
-            } else {
-                Ok(Arc::new(OpenDalStorageFactory::S3 {
-                    customized_credential_load,
-                }))
-            }
+            let factory: Arc<dyn StorageFactory> =
+                if is_s3_compliant_alias_scheme(s, catalog_properties) {
+                    Arc::new(BlobHostPromotingS3StorageFactory::new(
+                        customized_credential_load,
+                    ))
+                } else {
+                    Arc::new(OpenDalStorageFactory::S3 {
+                        customized_credential_load,
+                    })
+                };
+            Ok((factory, cacheable))
         }
         _ => Err(DataFusionError::Execution(format!(
             "Unsupported storage scheme: {scheme}"
@@ -172,7 +177,8 @@ impl FileIoCache {
     }
 }
 
-/// Shared per executor so tasks reuse one storage client instead of each building its own.
+/// Shared per executor so tasks reuse one FileIO: its factory, parsed config and access bridge,
+/// plus the storage client where the backend caches operators.
 static FILE_IO_CACHE: LazyLock<Mutex<FileIoCache>> =
     LazyLock::new(|| Mutex::new(FileIoCache::new(FILE_IO_CACHE_CAPACITY)));
 
@@ -188,18 +194,20 @@ pub fn clear_file_io_cache() {
 fn cached_file_io(
     cache: &Mutex<FileIoCache>,
     key: Option<FileIoCacheKey>,
-    build: impl FnOnce() -> Result<FileIO, DataFusionError>,
+    build: impl FnOnce() -> Result<(FileIO, bool), DataFusionError>,
 ) -> Result<FileIO, DataFusionError> {
     let Some(key) = key else {
-        return build();
+        return Ok(build()?.0);
     };
     if let Some(file_io) = cache.lock().get(&key) {
         return Ok(file_io);
     }
-    let file_io = build()?;
-    // Dropped after the lock is released: the last clone of a FileIO releases JNI global refs.
-    let evicted = cache.lock().insert(key, file_io.clone());
-    drop(evicted);
+    let (file_io, cacheable) = build()?;
+    if cacheable {
+        // Dropped after the lock is released: the last clone of a FileIO releases JNI global refs.
+        let evicted = cache.lock().insert(key, file_io.clone());
+        drop(evicted);
+    }
     Ok(file_io)
 }
 
@@ -238,8 +246,8 @@ fn build_file_io(
     reference_path: &str,
     catalog_name: &str,
     access_mode: AccessMode,
-) -> Result<FileIO, DataFusionError> {
-    let factory = storage_factory_for(
+) -> Result<(FileIO, bool), DataFusionError> {
+    let (factory, cacheable) = storage_factory_for(
         reference_path,
         catalog_properties,
         catalog_name,
@@ -276,7 +284,7 @@ fn build_file_io(
         file_io_builder = file_io_builder.with_prop("s3.region", "us-east-1");
     }
 
-    Ok(file_io_builder.build())
+    Ok((file_io_builder.build(), cacheable))
 }
 
 /// Wires the configured Comet credential provider into opendal's S3 service. `Ok(None)` means no
@@ -290,19 +298,19 @@ fn build_s3_credential_loader(
     catalog_properties: &HashMap<String, String>,
     catalog_name: &str,
     access_mode: AccessMode,
-) -> Result<Option<CustomAwsCredentialLoader>, DataFusionError> {
+) -> Result<(Option<CustomAwsCredentialLoader>, bool), DataFusionError> {
     let Ok(url) = url::Url::parse(reference_path) else {
-        return Ok(None);
+        return Ok((None, true));
     };
     let Some(bucket) = url.host_str() else {
-        return Ok(None);
+        return Ok((None, true));
     };
     let Some(provider_class) = catalog_properties
         .get(ICEBERG_PROVIDER_CLASS_PROPERTY)
         .map(|s| s.trim())
         .filter(|s| !s.is_empty())
     else {
-        return Ok(None);
+        return Ok((None, true));
     };
     // Fall back to the bucket when the table has no catalog identity (e.g. HadoopTables loaded by
     // raw path).
@@ -320,7 +328,7 @@ fn build_s3_credential_loader(
         catalog_properties,
     );
     match bridge {
-        Ok(b) => Ok(Some(CustomAwsCredentialLoader::new(b))),
+        Ok(b) => Ok((Some(CustomAwsCredentialLoader::new(b)), true)),
         Err(e) => match access_mode {
             AccessMode::Write => Err(DataFusionError::Execution(format!(
                 "Configured S3 credential provider {provider_class} failed to initialize: {e}; \
@@ -331,7 +339,7 @@ fn build_s3_credential_loader(
                     "Failed to initialize CometS3CredentialBridge for {provider_class}: {e}; \
                      falling back to default opendal credential chain"
                 );
-                Ok(None)
+                Ok((None, false))
             }
         },
     }
@@ -379,6 +387,7 @@ mod tests {
             AccessMode::Read,
         )
         .unwrap()
+        .0
     }
 
     #[test]
@@ -424,7 +433,7 @@ mod tests {
         for _ in 0..2 {
             cached_file_io(&cache, key.clone(), || {
                 builds += 1;
-                Ok(local_file_io())
+                Ok((local_file_io(), true))
             })
             .unwrap();
         }
@@ -432,12 +441,33 @@ mod tests {
         for _ in 0..2 {
             cached_file_io(&cache, None, || {
                 builds += 1;
-                Ok(local_file_io())
+                Ok((local_file_io(), true))
             })
             .unwrap();
         }
         assert_eq!(builds, 3);
         assert_eq!(cache.lock().entries.len(), 1);
+    }
+
+    #[test]
+    fn cached_file_io_does_not_cache_a_degraded_build() {
+        let cache = Mutex::new(FileIoCache::new(4));
+        let key = FileIoCacheKey::new(
+            &HashMap::new(),
+            "file:///tmp/warehouse",
+            "",
+            AccessMode::Read,
+        );
+        let mut builds = 0;
+        for _ in 0..2 {
+            cached_file_io(&cache, key.clone(), || {
+                builds += 1;
+                Ok((local_file_io(), false))
+            })
+            .unwrap();
+        }
+        assert_eq!(builds, 2);
+        assert!(cache.lock().entries.is_empty());
     }
 
     #[test]
