@@ -572,11 +572,14 @@ configuration.</p>
 </section>
 <section id="cometsparksessionextensions">
 <h2>CometSparkSessionExtensions<a class="headerlink" href="#cometsparksessionextensions" title="Link to this heading">#</a></h2>
-<p>On initialization, this class registers two physical plan optimization rules with Spark: <code class="docutils literal notranslate"><span class="pre">CometScanRule</span></code>
-and <code class="docutils literal notranslate"><span class="pre">CometExecRule</span></code>. These rules run whenever a query stage is being planned during Adaptive Query Execution, and
-run once for the entire plan when Adaptive Query Execution is disabled.</p>
-<section id="cometscanrule">
-<h3>CometScanRule<a class="headerlink" href="#cometscanrule" title="Link to this heading">#</a></h3>
+<p>On initialization, this class registers one physical plan optimization rule with Spark: <code class="docutils literal notranslate"><span class="pre">CometRule</span></code>. It runs whenever
+a query stage is being planned during Adaptive Query Execution, and runs once for the entire plan when Adaptive Query
+Execution is disabled.</p>
+<p><code class="docutils literal notranslate"><span class="pre">CometRule</span></code> is two phases, applied in order: scan conversion (<code class="docutils literal notranslate"><span class="pre">CometScanRule</span></code>), then operator conversion
+(<code class="docutils literal notranslate"><span class="pre">CometExecRule</span></code>). The order matters, because operator conversion builds its native plan up from the nodes that scan
+conversion produces. Each phase is described below.</p>
+<section id="phase-1-cometscanrule">
+<h3>Phase 1: CometScanRule<a class="headerlink" href="#phase-1-cometscanrule" title="Link to this heading">#</a></h3>
 <p><code class="docutils literal notranslate"><span class="pre">CometScanRule</span></code> replaces any Parquet scans with Comet operators. There are different paths for Spark v1 and v2 data sources.</p>
 <p>When reading from Parquet v1 data sources, Comet replaces <code class="docutils literal notranslate"><span class="pre">FileSourceScanExec</span></code> with a <code class="docutils literal notranslate"><span class="pre">CometScanExec</span></code>, and for v2
 data sources, <code class="docutils literal notranslate"><span class="pre">BatchScanExec</span></code> is replaced with <code class="docutils literal notranslate"><span class="pre">CometBatchScanExec</span></code>. In both cases, Comet replaces Spark’s Parquet
@@ -589,8 +592,8 @@ convert the output from Spark’s scan to Arrow arrays. Note that both <code cla
 <p>Refer to the <a class="reference external" href="https://datafusion.apache.org/comet/user-guide/datatypes.html">Supported Spark Data Types</a> section
 in the contributor guide to see a list of currently supported data types.</p>
 </section>
-<section id="cometexecrule">
-<h3>CometExecRule<a class="headerlink" href="#cometexecrule" title="Link to this heading">#</a></h3>
+<section id="phase-2-cometexecrule">
+<h3>Phase 2: CometExecRule<a class="headerlink" href="#phase-2-cometexecrule" title="Link to this heading">#</a></h3>
 <p>This rule traverses bottom-up from the original Spark plan and attempts to replace each operator with a Comet equivalent.
 For example, a <code class="docutils literal notranslate"><span class="pre">ProjectExec</span></code> will be replaced by <code class="docutils literal notranslate"><span class="pre">CometProjectExec</span></code>.</p>
 <p>When replacing a node, various checks are performed to determine if Comet can support the operator and its expressions.
@@ -700,8 +703,8 @@ writing the batches to the shuffle file.</p>
 <li class="toc-h1 nav-item toc-entry"><a class="reference internal nav-link" href="#plugin-components">Plugin Components</a><ul class="visible nav section-nav flex-column">
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#comet-sql-plugin">Comet SQL Plugin</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#cometsparksessionextensions">CometSparkSessionExtensions</a><ul class="nav section-nav flex-column">
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#cometscanrule">CometScanRule</a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#cometexecrule">CometExecRule</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#phase-1-cometscanrule">Phase 1: CometScanRule</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#phase-2-cometexecrule">Phase 2: CometExecRule</a></li>
 </ul>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#query-execution">Query Execution</a></li>
