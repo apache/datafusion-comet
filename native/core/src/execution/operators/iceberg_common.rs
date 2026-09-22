@@ -18,11 +18,12 @@
 //! Helpers shared between the Iceberg scan and Iceberg write operators.
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
 use datafusion::common::DataFusionError;
 use iceberg::io::{FileIO, FileIOBuilder, StorageFactory};
 use iceberg_storage_opendal::{CustomAwsCredentialLoader, OpenDalStorageFactory};
+use parking_lot::Mutex;
 
 use crate::cloud::s3::credential_bridge::{AccessMode, CometS3CredentialBridge};
 use crate::parquet::objectstore::s3_blob_fs_support::{
@@ -96,12 +97,89 @@ pub(crate) fn storage_factory_for(
     }
 }
 
+#[derive(Debug, PartialEq, Eq, Hash)]
+struct FileIoCacheKey {
+    access_mode: u8,
+    catalog_name: String,
+    /// The full path: the S3 access bridge is scoped to the exact path it was built for.
+    reference_path: String,
+    properties: Vec<(String, String)>,
+}
+
+impl FileIoCacheKey {
+    /// `None` for `memory:///`, whose namespace must stay private to its task.
+    fn new(
+        catalog_properties: &HashMap<String, String>,
+        reference_path: &str,
+        catalog_name: &str,
+        access_mode: AccessMode,
+    ) -> Option<Self> {
+        if scheme_of(reference_path) == "memory" {
+            return None;
+        }
+        let mut properties: Vec<(String, String)> = catalog_properties
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        properties.sort();
+        Some(Self {
+            access_mode: access_mode as u8,
+            catalog_name: catalog_name.to_string(),
+            reference_path: reference_path.to_string(),
+            properties,
+        })
+    }
+}
+
+const FILE_IO_CACHE_CAPACITY: usize = 64;
+
+/// Shared per executor so tasks reuse one storage client instead of each building its own.
+static FILE_IO_CACHE: LazyLock<Mutex<HashMap<FileIoCacheKey, FileIO>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+pub fn clear_file_io_cache() {
+    FILE_IO_CACHE.lock().clear();
+}
+
+pub(crate) fn load_file_io(
+    catalog_properties: &HashMap<String, String>,
+    reference_path: &str,
+    catalog_name: &str,
+    access_mode: AccessMode,
+) -> Result<FileIO, DataFusionError> {
+    let key = FileIoCacheKey::new(
+        catalog_properties,
+        reference_path,
+        catalog_name,
+        access_mode,
+    );
+    if let Some(key) = &key {
+        if let Some(file_io) = FILE_IO_CACHE.lock().get(key) {
+            return Ok(file_io.clone());
+        }
+    }
+    let file_io = build_file_io(
+        catalog_properties,
+        reference_path,
+        catalog_name,
+        access_mode,
+    )?;
+    if let Some(key) = key {
+        let mut cache = FILE_IO_CACHE.lock();
+        if cache.len() >= FILE_IO_CACHE_CAPACITY {
+            cache.clear();
+        }
+        cache.insert(key, file_io.clone());
+    }
+    Ok(file_io)
+}
+
 /// Build a `FileIO` whose storage scheme is inferred from `reference_path` and whose properties
 /// come from the catalog. The reference path is the metadata location for reads or the data
 /// location for writes — anything that carries the right URI scheme. `catalog_name` is the
 /// credential dispatch key and `access_mode` is the access intent forwarded to the S3 credential
 /// bridge, so the write path can request write-capable credentials.
-pub(crate) fn load_file_io(
+fn build_file_io(
     catalog_properties: &HashMap<String, String>,
     reference_path: &str,
     catalog_name: &str,
@@ -238,6 +316,46 @@ fn is_s3_family_scheme(scheme: &str, catalog_properties: &HashMap<String, String
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn load_file_io_is_cached_per_storage_client_configuration() {
+        let props = HashMap::from([("s3.region".to_string(), "eu-west-1".to_string())]);
+        let catalog = "file_io_cache_test";
+        let table = "s3://bucket/warehouse/db/t";
+        let key = |mode| FileIoCacheKey::new(&props, table, catalog, mode).unwrap();
+        {
+            let mut cache = FILE_IO_CACHE.lock();
+            cache.remove(&key(AccessMode::Read));
+            cache.remove(&key(AccessMode::Write));
+        }
+
+        load_file_io(&props, table, catalog, AccessMode::Read).unwrap();
+        assert!(FILE_IO_CACHE.lock().contains_key(&key(AccessMode::Read)));
+        assert!(!FILE_IO_CACHE.lock().contains_key(&key(AccessMode::Write)));
+        assert_ne!(
+            FileIoCacheKey::new(
+                &props,
+                "s3://bucket/warehouse/db/other",
+                catalog,
+                AccessMode::Read
+            ),
+            Some(key(AccessMode::Read))
+        );
+
+        load_file_io(&props, table, catalog, AccessMode::Write).unwrap();
+        assert!(FILE_IO_CACHE.lock().contains_key(&key(AccessMode::Write)));
+
+        let mut moved = props.clone();
+        moved.insert("s3.endpoint".to_string(), "http://minio:9000".to_string());
+        assert_ne!(
+            FileIoCacheKey::new(&moved, table, catalog, AccessMode::Read),
+            Some(key(AccessMode::Read))
+        );
+
+        assert!(
+            FileIoCacheKey::new(&HashMap::new(), "memory:///", "", AccessMode::Write).is_none()
+        );
+    }
 
     fn factory_result(path: &str, mode: AccessMode) -> Result<(), String> {
         storage_factory_for(path, &HashMap::new(), "test_cat", mode)
