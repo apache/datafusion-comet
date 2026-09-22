@@ -133,7 +133,11 @@ case class RevertNativeForTransitionHeavyStages(session: SparkSession)
     def visit(plan: SparkPlan): Boolean = plan match {
       case _ if isStageBoundary(plan) => false
       case aggregate: CometHashAggregateExec
-          if !QueryPlanSerde.allAggsSupportMixedExecution(aggregate.aggregateExpressions) =>
+          if !QueryPlanSerde
+            .allAggsSupportNativePartialToSparkFinal(aggregate.aggregateExpressions) ||
+            QueryPlanSerde
+              .aggsNotSupportingSparkPartialToNativeFinal(aggregate.aggregateExpressions)
+              .nonEmpty =>
         val producesBuffer =
           aggregate.modes.exists(mode => mode == Partial || mode == PartialMerge)
         val consumesAcrossBoundary =
