@@ -18,6 +18,7 @@
 mod config;
 mod fair_pool;
 pub mod logging_pool;
+mod spark_memory;
 mod task_shared;
 mod unified_pool;
 
@@ -65,6 +66,7 @@ pub(crate) fn create_memory_pool(
                         CometFairMemoryPool::new(
                             Arc::clone(&comet_task_memory_manager),
                             memory_pool_config.pool_size,
+                            task_attempt_id,
                         ),
                         NonZeroUsize::new(NUM_TRACKED_CONSUMERS).unwrap(),
                     ));
