@@ -42,30 +42,64 @@ const SETTLE_THRESHOLD: isize = 64 * 1024;
 /// another flushes the matching positive one.
 static BALANCE: AtomicIsize = AtomicIsize::new(0);
 
-thread_local! {
-    /// Set while this thread is inside [`track`], so an allocation made *by* `track` settles
-    /// directly instead of recursing. The only such allocation today is the one some platforms
-    /// make when registering `LOCAL_DRIFT`'s destructor on first touch.
-    ///
-    /// Const-initialized and destructor-free, so reading it never allocates and never fails,
-    /// which is what makes it safe to consult before touching `LOCAL_DRIFT`.
-    static IN_TRACK: Cell<bool> = const { Cell::new(false) };
+/// The phases of a thread's [`ThreadState`].
+///
+/// A thread starts `UNREGISTERED`. Its first tracked allocation moves it through `REGISTERING`,
+/// while [`SETTLE_ON_EXIT`]'s destructor is registered, to `REGISTERED`, where deltas accumulate in
+/// the thread's drift. [`SettleOnExit::drop`] moves it to `EXITED` when the thread ends. In every
+/// phase but `REGISTERED`, deltas go straight to the shared balance: while registering, because
+/// registration can itself allocate on some platforms; after exiting, because nothing would
+/// settle the drift.
+const UNREGISTERED: u8 = 0;
+const REGISTERING: u8 = 1;
+const REGISTERED: u8 = 2;
+const EXITED: u8 = 3;
 
+/// A thread's accounting state, kept in one thread-local so that tracking an allocation costs one
+/// thread-local access.
+///
+/// `libcomet` is a shared library that the JVM loads with `dlopen`, so its thread-locals use the
+/// general-dynamic TLS model: every access calls `__tls_get_addr` in the dynamic loader. That
+/// call is most of the wrapper's cost on allocation-heavy queries, so the fast path makes exactly
+/// one. The state is const-initialized and has no destructor, which also spares the fast path the
+/// lazy-initialization check a thread-local with a destructor needs, and leaves it readable while
+/// the thread's other thread-local destructors run.
+struct ThreadState {
     /// This thread's un-flushed delta.
-    static LOCAL_DRIFT: ThreadDrift = const { ThreadDrift(Cell::new(0)) };
+    drift: Cell<isize>,
+    /// One of the phases above.
+    phase: Cell<u8>,
 }
 
-/// Owns a thread's un-flushed delta and settles the remainder when the thread exits. Without the
-/// destructor, up to [`SETTLE_THRESHOLD`] bytes of accounting would be discarded every time a
-/// thread died, and tokio's blocking pool churns threads on its idle timeout.
-struct ThreadDrift(Cell<isize>);
-
-impl Drop for ThreadDrift {
-    fn drop(&mut self) {
-        let drift = self.0.replace(0);
-        if drift != 0 {
-            BALANCE.fetch_add(drift, Ordering::Relaxed);
+thread_local! {
+    static STATE: ThreadState = const {
+        ThreadState {
+            drift: Cell::new(0),
+            phase: Cell::new(UNREGISTERED),
         }
+    };
+
+    /// Settles the thread's remaining drift when the thread exits; see [`SettleOnExit`]. Touched
+    /// once per thread, to register its destructor.
+    static SETTLE_ON_EXIT: SettleOnExit = const { SettleOnExit };
+}
+
+/// Settles a thread's remaining drift when the thread exits. Without it, up to
+/// [`SETTLE_THRESHOLD`] bytes of accounting would be discarded every time a thread died, and
+/// tokio's blocking pool churns threads on its idle timeout.
+///
+/// It lives apart from [`ThreadState`] so that the state needs no destructor.
+struct SettleOnExit;
+
+impl Drop for SettleOnExit {
+    fn drop(&mut self) {
+        STATE.with(|state| {
+            state.phase.set(EXITED);
+            let drift = state.drift.replace(0);
+            if drift != 0 {
+                BALANCE.fetch_add(drift, Ordering::Relaxed);
+            }
+        });
     }
 }
 
@@ -100,23 +134,35 @@ fn track(delta: isize) {
         return;
     }
 
-    // A re-entrant call is one made by `track` itself; the outer frame owns the flag and will
-    // clear it, so this frame must only settle and return.
-    if IN_TRACK.with(|in_track| in_track.replace(true)) {
-        BALANCE.fetch_add(delta, Ordering::Relaxed);
-        return;
-    }
+    STATE.with(|state| match state.phase.get() {
+        REGISTERED => settle(&state.drift, delta),
+        UNREGISTERED => register_and_track(state, delta),
+        _ => {
+            BALANCE.fetch_add(delta, Ordering::Relaxed);
+        }
+    })
+}
 
-    // `try_with` rather than `with`: during thread teardown `LOCAL_DRIFT`'s destructor has already
-    // run, and any allocation after that point must not panic inside the allocator.
-    if LOCAL_DRIFT
-        .try_with(|thread_drift| settle(&thread_drift.0, delta))
-        .is_err()
-    {
+/// Registers the thread's [`SettleOnExit`] destructor on its first tracked allocation, then
+/// tracks `delta`.
+///
+/// Registering a thread-local destructor allocates through the global allocator on some
+/// platforms, where the standard library keeps the thread's destructors in a list. That
+/// allocation re-enters [`track`] in the `REGISTERING` phase, which settles it straight into the
+/// shared balance instead of recursing. If registration fails because the
+/// thread is already tearing down, the thread is treated as exited.
+#[cold]
+fn register_and_track(state: &ThreadState, delta: isize) {
+    state.phase.set(REGISTERING);
+    let registered = SETTLE_ON_EXIT.try_with(|_| ()).is_ok();
+    state
+        .phase
+        .set(if registered { REGISTERED } else { EXITED });
+    if registered {
+        settle(&state.drift, delta);
+    } else {
         BALANCE.fetch_add(delta, Ordering::Relaxed);
     }
-
-    IN_TRACK.with(|in_track| in_track.set(false));
 }
 
 /// Wraps a global allocator, accounting the `Layout` bytes it hands out.
@@ -361,12 +407,13 @@ mod tests {
 
     /// Threads must settle their remaining drift on exit.
     ///
-    /// The worker writes a drift straight into its `LOCAL_DRIFT` cell and exits, so the only path
-    /// by which that value can reach the shared balance is `ThreadDrift::drop`. That holds only
-    /// while the wrapper is not installed: with it, thread teardown's own allocations call `track`
-    /// and flush the oversized drift before the destructor runs, and the test would pass without
-    /// one. So the test is confined to the default build, which is the one CI runs. The injected
-    /// amount is far larger than any real allocation, and is taken back out afterwards.
+    /// The worker registers its exit hook with a first tracked delta, writes a drift straight into
+    /// its state and exits, so the only path by which that value can reach the shared balance is
+    /// `SettleOnExit::drop`. That holds only while the wrapper is not installed: with it, thread
+    /// teardown's own allocations call `track` and flush the oversized drift before the destructor
+    /// runs, and the test would pass without one. So the test is confined to the default build,
+    /// which is the one CI runs. The injected amount is far larger than any real allocation, and
+    /// is taken back out afterwards.
     #[test]
     #[cfg(not(feature = "alloc-accounting"))]
     fn thread_exit_settles_remaining_drift() {
@@ -377,12 +424,13 @@ mod tests {
 
         let before = BALANCE.load(Ordering::Relaxed);
         thread::spawn(|| {
-            LOCAL_DRIFT.with(|drift| drift.0.set(drift.0.get() + INJECTED));
+            track(1);
+            STATE.with(|state| state.drift.set(state.drift.get() + INJECTED));
         })
         .join()
         .unwrap();
         let moved = BALANCE.load(Ordering::Relaxed) - before;
-        BALANCE.fetch_sub(INJECTED, Ordering::Relaxed);
+        BALANCE.fetch_sub(INJECTED + 1, Ordering::Relaxed);
 
         assert!(
             moved >= INJECTED / 2,
@@ -390,5 +438,53 @@ mod tests {
              balance moved {moved} bytes, expected at least {}",
             INJECTED / 2
         );
+    }
+
+    /// A thread's first tracked delta registers its exit hook, after which deltas accumulate in
+    /// the thread's drift. With the wrapper installed, the thread's own allocations have already
+    /// done this by the time the closure runs, so only the end state is checked.
+    #[test]
+    fn a_tracked_delta_registers_the_exit_hook() {
+        std::thread::spawn(|| {
+            track(1);
+            assert_eq!(STATE.with(|state| state.phase.get()), REGISTERED);
+            track(-1);
+        })
+        .join()
+        .unwrap();
+    }
+
+    /// Outside the `REGISTERED` phase, a delta must go straight to the shared balance: while
+    /// registering, because the drift is not yet settled on exit, and after exiting, because it
+    /// never will be.
+    #[test]
+    fn deltas_bypass_the_drift_outside_the_registered_phase() {
+        const INJECTED: isize = 1 << 40;
+        let _guard = serial();
+
+        std::thread::spawn(|| {
+            track(1);
+            for phase in [REGISTERING, EXITED] {
+                let (drift_before, balance_before) = STATE.with(|state| {
+                    state.phase.set(phase);
+                    (state.drift.get(), BALANCE.load(Ordering::Relaxed))
+                });
+                track(INJECTED);
+                let (drift_after, balance_after) = STATE.with(|state| {
+                    state.phase.set(REGISTERED);
+                    (state.drift.get(), BALANCE.load(Ordering::Relaxed))
+                });
+                BALANCE.fetch_sub(INJECTED, Ordering::Relaxed);
+
+                assert_eq!(drift_after, drift_before, "phase {phase} moved the drift");
+                assert!(
+                    balance_after - balance_before >= INJECTED / 2,
+                    "phase {phase} did not settle into the shared balance"
+                );
+            }
+            track(-1);
+        })
+        .join()
+        .unwrap();
     }
 }
