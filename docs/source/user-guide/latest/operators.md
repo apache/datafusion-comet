@@ -126,7 +126,9 @@ omitted from the tables below and may be reconsidered based on demand:
 
 | Operator                                                                                | Status | Notes                                                                                                                        |
 | --------------------------------------------------------------------------------------- | ------ | ---------------------------------------------------------------------------------------------------------------------------- |
-| `ArrowEvalPythonExec`, `MapInArrowExec`, `MapInPandasExec`, `FlatMapGroupsInPandasExec` | 🔜     | Experimental accelerated PyArrow UDF support is in progress ([#4234](https://github.com/apache/datafusion-comet/pull/4234)). |
+| `ArrowEvalPythonExec` for scalar `@arrow_udf` (Spark 4.1+) | ⚠️ | Experimental native PyO3 path, requires a native feature and an opt-in config. |
+| `MapInArrowExec`, `MapInPandasExec` | ⚠️ | Experimental columnar Python runner, opt-in. |
+| Other `ArrowEvalPythonExec` types, `FlatMapGroupsInPandasExec` | 🔜 | Spark fallback. |
 
 ## See also
 

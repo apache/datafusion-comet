@@ -411,6 +411,7 @@ fn op_name(op: &OpStruct) -> &'static str {
         OpStruct::Sample(_) => "Sample",
         OpStruct::ContribScan(_) => "ContribScan",
         OpStruct::WindowGroupLimit(_) => "WindowGroupLimit",
+        OpStruct::ArrowPythonUdf(_) => "ArrowPythonUdf",
     }
 }
 

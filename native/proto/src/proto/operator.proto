@@ -68,6 +68,7 @@ message Operator {
     Sample sample = 118;
     WindowGroupLimit window_group_limit = 119;
     IcebergWrite iceberg_write = 120;
+    ArrowPythonUdf arrow_python_udf = 121;
     // Extension point for optional, out-of-tree contrib scans (Delta, Lance, ...). The concrete
     // scan message (e.g. `DeltaScan`) is packed into this envelope on the JVM side and dispatched
     // by `type_url` on the native side. Using a single permanent field -- rather than a new oneof
@@ -793,6 +794,24 @@ message IcebergWrite {
 
 message Projection {
   repeated spark.spark_expression.Expr project_list = 1;
+}
+
+// Spark 4.1 scalar @arrow_udf evaluation. The input columns pass through, and
+// one result column is appended for each function in order.
+message ArrowPythonUdf {
+  repeated ArrowPythonFunction functions = 1;
+}
+
+message ArrowPythonFunction {
+  // Spark's pickled (function, returnType) command. Broadcast-backed commands
+  // are rejected by the JVM planner until broadcast support is implemented.
+  bytes command = 1;
+  repeated spark.spark_expression.Expr args = 2;
+  spark.spark_expression.DataType return_type = 3;
+  string return_name = 4;
+  // Empty string for a positional argument, otherwise Python keyword name.
+  repeated string arg_names = 5;
+  string python_version = 6;
 }
 
 message Filter {

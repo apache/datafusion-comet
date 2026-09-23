@@ -82,6 +82,32 @@ spark.comet.exec.pyarrowUDF.enabled=true
 
 The default is `false` while the feature stabilizes.
 
+### Native scalar Arrow UDFs (Spark 4.1+)
+
+Spark 4.1's scalar `@arrow_udf` can run inside Comet's Rust execution pipeline when the native
+library is built with the `python-udf` Cargo feature and this separate option is enabled:
+
+```
+spark.comet.exec.nativeArrowPythonUDF.enabled=true
+```
+
+Comet passes each argument as a `pyarrow.Array` through the Arrow C Data Interface, invokes the
+pickled Python function with PyO3, and appends the result array to the input batch. It checks the
+result length and safely casts it to the declared return type, matching Spark's scalar Arrow UDF
+serializer. A native worker is created per partition, so function state does not cross tasks.
+
+The executor's embedded Python must be able to import PyArrow, cloudpickle, and the user's Python
+modules. It must use the same Python major/minor version as the PySpark worker; building with the
+`python-udf` feature links a Python runtime into the native library. The feature and config are
+disabled by default. Without either, `ArrowEvalPythonExec` stays on Spark's normal path.
+
+The initial native path accepts scalar `@arrow_udf` calls with regular or named arguments and
+multiple independent UDFs in one `ArrowEvalPythonExec`. Chained Python UDFs, broadcast variables,
+Python includes, per-function environment overrides, and
+`spark.sql.execution.arrow.useLargeVarTypes=true` stay on Spark's path. Iterator Arrow UDFs,
+ordinary `udf(..., useArrow=True)`, scalar pandas UDFs, and `mapInArrow` are separate execution
+types; `mapInArrow` retains the columnar runner described above.
+
 ### Relationship to Spark's PySpark Arrow conversion conf
 
 `spark.comet.exec.pyarrowUDF.enabled` is **not** the same as PySpark's
@@ -97,6 +123,8 @@ worker. Both confs can be set independently.
 | -------------------------------- | --------------------------- | --------- |
 | `df.mapInArrow(func, schema)`    | `PythonMapInArrowExec`      | Yes       |
 | `df.mapInPandas(func, schema)`   | `MapInPandasExec`           | Yes       |
+| scalar `@arrow_udf` (Spark 4.1+) | `ArrowEvalPythonExec`       | Experimental native path |
+| `udf(..., useArrow=True)`        | `ArrowEvalPythonExec`       | Not yet   |
 | `@pandas_udf` (scalar)           | `ArrowEvalPythonExec`       | Not yet   |
 | `df.applyInPandas(func, schema)` | `FlatMapGroupsInPandasExec` | Not yet   |
 
@@ -181,8 +209,9 @@ on the unoptimized path.
 
 ## Limitations
 
-- The optimization currently applies only to `mapInArrow` and `mapInPandas`. Scalar pandas UDFs
-  (`@pandas_udf`) and grouped operations (`applyInPandas`) are not yet supported.
+- The columnar Python runner applies to `mapInArrow` and `mapInPandas`. The separate native path
+  applies to scalar `@arrow_udf` on Spark 4.1+. Scalar pandas UDFs (`@pandas_udf`) and grouped
+  operations (`applyInPandas`) are not yet supported.
 - The optimization requires Arrow data on the input side. If a shuffle sits between the upstream
   Comet operator and the Python UDF, use Comet's columnar shuffle for the optimization to apply.
   Both the `jvm` and `native` shuffle modes can feed `CometMapInBatch`. Set

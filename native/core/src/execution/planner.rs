@@ -37,6 +37,8 @@ use crate::execution::operators::AlignedArrowStreamReader;
 use crate::execution::operators::DynamicFilterJoinExec;
 use crate::execution::operators::IcebergScanExec;
 use crate::execution::operators::IcebergWriteExec;
+#[cfg(feature = "python-udf")]
+use crate::execution::operators::{ArrowPythonUdfExec, ArrowPythonUdfSpec};
 use crate::execution::operators::{PartitionedRankLimitExec, WindowFnKind};
 use crate::execution::{
     expressions::list_empty_to_null::ListEmptyToNullExpr,
@@ -1299,6 +1301,54 @@ impl PhysicalPlanner {
         // Fall back to the original monolithic match for other operators
         let children = &spark_plan.children;
         match spark_plan.op_struct.as_ref().unwrap() {
+            #[cfg(feature = "python-udf")]
+            OpStruct::ArrowPythonUdf(udf) => {
+                if children.len() != 1 {
+                    return Err(ExecutionError::GeneralError(
+                        "ArrowPythonUdf requires one child".to_string(),
+                    ));
+                }
+                let (scans, shuffle_scans, child) =
+                    self.create_plan(&children[0], inputs, partition_count)?;
+                let specs = udf
+                    .functions
+                    .iter()
+                    .map(|function| {
+                        let args = function
+                            .args
+                            .iter()
+                            .map(|arg| self.create_expr(arg, child.schema()))
+                            .collect::<Result<Vec<_>, _>>()?;
+                        let return_type = to_arrow_datatype(function.return_type.as_ref().ok_or_else(|| {
+                            ExecutionError::GeneralError(
+                                "ArrowPythonUdf missing return type".to_string(),
+                            )
+                        })?);
+                        Ok(ArrowPythonUdfSpec {
+                            command: function.command.clone(),
+                            args,
+                            arg_names: function.arg_names.clone(),
+                            return_type,
+                            return_name: function.return_name.clone(),
+                            python_version: function.python_version.clone(),
+                        })
+                    })
+                    .collect::<Result<Vec<_>, ExecutionError>>()?;
+                let native_plan = Arc::new(ArrowPythonUdfExec::try_new(
+                    Arc::clone(&child.native_plan),
+                    specs,
+                )?);
+                Ok((
+                    scans,
+                    shuffle_scans,
+                    Arc::new(SparkPlan::new(spark_plan.plan_id, native_plan, vec![child])),
+                ))
+            }
+            #[cfg(not(feature = "python-udf"))]
+            OpStruct::ArrowPythonUdf(_) => Err(ExecutionError::GeneralError(
+                "Native Arrow Python UDF support was not compiled in; rebuild with --features python-udf"
+                    .to_string(),
+            )),
             OpStruct::Filter(filter) => {
                 assert_eq!(children.len(), 1);
                 let (scans, shuffle_scans, child) =
