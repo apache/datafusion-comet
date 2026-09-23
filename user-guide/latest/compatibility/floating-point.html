@@ -784,6 +784,15 @@ So Comet adds additional normalization expression of NaN and zero for comparison
 to Spark in some cases, especially when the data contains both positive and negative zero. This is likely an edge
 case that is not of concern for many users. If it is a concern, setting <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.strictFloatingPoint=true</span></code>
 will make relevant operations fall back to Spark.</p>
+<section id="nested-equality-and-membership">
+<h2>Nested equality and membership<a class="headerlink" href="#nested-equality-and-membership" title="Link to this heading">#</a></h2>
+<p>For arrays and structs containing <code class="docutils literal notranslate"><span class="pre">FLOAT</span></code> or <code class="docutils literal notranslate"><span class="pre">DOUBLE</span></code>, native <code class="docutils literal notranslate"><span class="pre">=</span></code>, <code class="docutils literal notranslate"><span class="pre">&lt;&gt;</span></code>, <code class="docutils literal notranslate"><span class="pre">IN</span></code>, and <code class="docutils literal notranslate"><span class="pre">NOT</span> <span class="pre">IN</span></code>
+compare signed zeros as equal and all NaN representations as equal, matching Spark. This also
+covers single-candidate membership that Spark rewrites into equality.</p>
+<p>Equality and dynamic membership compare nested elements directly and stop at the first mismatch.
+Constant membership sets use normalized comparison values for static lookup. These operations
+preserve SQL null semantics and do not change the values returned by projections.</p>
+</section>
 <section id="ordering-nan-and-signed-zero-0-0-vs-0-0">
 <h2>Ordering: NaN and signed zero (<code class="docutils literal notranslate"><span class="pre">-0.0</span></code> vs <code class="docutils literal notranslate"><span class="pre">+0.0</span></code>)<a class="headerlink" href="#ordering-nan-and-signed-zero-0-0-vs-0-0" title="Link to this heading">#</a></h2>
 <p>Spark’s <code class="docutils literal notranslate"><span class="pre">ORDER</span> <span class="pre">BY</span></code>, <code class="docutils literal notranslate"><span class="pre">RANK</span></code>, <code class="docutils literal notranslate"><span class="pre">DENSE_RANK</span></code>, and window frame comparisons route through
@@ -851,6 +860,7 @@ total ordering described above.</p>
   </div>
   <nav class="bd-toc-nav page-toc" aria-labelledby="pst-page-navigation-heading-2">
     <ul class="visible nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#nested-equality-and-membership">Nested equality and membership</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#ordering-nan-and-signed-zero-0-0-vs-0-0">Ordering: NaN and signed zero (<code class="docutils literal notranslate"><span class="pre">-0.0</span></code> vs <code class="docutils literal notranslate"><span class="pre">+0.0</span></code>)</a></li>
 </ul>
   </nav></div>
