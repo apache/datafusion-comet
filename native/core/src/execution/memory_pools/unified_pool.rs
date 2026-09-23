@@ -23,8 +23,7 @@ use std::{
     },
 };
 
-use super::overcommit::{granted, Overcommit};
-use crate::{errors::CometResult, jvm_bridge::JVMClasses};
+use super::spark_memory::SparkMemory;
 use datafusion::{
     common::{resources_datafusion_err, DataFusionError},
     execution::memory_pool::{MemoryPool, MemoryReservation},
@@ -36,9 +35,8 @@ use log::warn;
 /// Spark's off-heap executor memory pool via JNI by calling
 /// [`crate::jvm_bridge::CometTaskMemoryManager`].
 pub struct CometUnifiedMemoryPool {
-    task_memory_manager_handle: Arc<Global<JObject<'static>>>,
+    spark: SparkMemory,
     used: AtomicUsize,
-    overcommit: Overcommit,
     task_attempt_id: i64,
 }
 
@@ -46,7 +44,7 @@ impl Debug for CometUnifiedMemoryPool {
     fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
         f.debug_struct("CometUnifiedMemoryPool")
             .field("used", &self.used.load(Relaxed))
-            .field("overcommit", &self.overcommit.get())
+            .field("overcommit", &self.spark.overcommit())
             .finish()
     }
 }
@@ -57,28 +55,10 @@ impl CometUnifiedMemoryPool {
         task_attempt_id: i64,
     ) -> CometUnifiedMemoryPool {
         Self {
-            task_memory_manager_handle,
+            spark: SparkMemory::new(task_memory_manager_handle, task_attempt_id),
             task_attempt_id,
             used: AtomicUsize::new(0),
-            overcommit: Overcommit::default(),
         }
-    }
-
-    /// Request memory from Spark's off-heap memory pool via JNI
-    fn acquire_from_spark(&self, additional: usize) -> CometResult<i64> {
-        let handle = self.task_memory_manager_handle.as_obj();
-        JVMClasses::with_env(|env| unsafe {
-            jni_call!(env,
-              comet_task_memory_manager(handle).acquire_memory(additional as i64) -> i64)
-        })
-    }
-
-    /// Release memory to Spark's off-heap memory pool via JNI
-    fn release_to_spark(&self, size: usize) -> CometResult<()> {
-        let handle = self.task_memory_manager_handle.as_obj();
-        JVMClasses::with_env(|env| unsafe {
-            jni_call!(env, comet_task_memory_manager(handle).release_memory(size as i64) -> ())
-        })
     }
 }
 
@@ -112,35 +92,21 @@ impl MemoryPool for CometUnifiedMemoryPool {
         "CometUnifiedMemoryPool"
     }
 
-    /// Records memory that already exists, so it must not fail. Whatever Spark does not grant is
-    /// carried as [`Overcommit`] and repaid by later shrinks.
+    /// Records memory that already exists, so it must not fail; see [`SparkMemory`].
     fn grow(&self, _: &MemoryReservation, additional: usize) {
         if additional == 0 {
             return;
         }
-        let acquired = match self.acquire_from_spark(additional) {
-            Ok(acquired) => granted(additional, acquired),
-            Err(e) => {
-                warn!(
-                    "Task {} failed to acquire {additional} bytes from Spark: {e:?}",
-                    self.task_attempt_id
-                );
-                0
-            }
-        };
-        self.overcommit.add(additional - acquired);
+        self.spark.acquire(additional);
         self.used.fetch_add(additional, Relaxed);
     }
 
     fn shrink(&self, _: &MemoryReservation, size: usize) {
-        let to_release = self.overcommit.repay(size);
-        if to_release > 0 {
-            if let Err(e) = self.release_to_spark(to_release) {
-                panic!(
-                    "Task {} failed to return {to_release} bytes to Spark: {e:?}",
-                    self.task_attempt_id
-                );
-            }
+        if let Err(e) = self.spark.release(size) {
+            panic!(
+                "Task {} failed to return {size} bytes to Spark: {e:?}",
+                self.task_attempt_id
+            );
         }
         if let Err(prev) = self
             .used
@@ -155,13 +121,8 @@ impl MemoryPool for CometUnifiedMemoryPool {
 
     fn try_grow(&self, _: &MemoryReservation, additional: usize) -> Result<(), DataFusionError> {
         if additional > 0 {
-            let acquired = self.acquire_from_spark(additional)?;
-            // If the number of bytes we acquired is less than the requested, return an error,
-            // and hopefully will trigger spilling from the caller side.
-            if acquired < additional as i64 {
-                // Release the acquired bytes before throwing error
-                self.release_to_spark(acquired as usize)?;
-
+            // A partial grant is handed back and refused, which triggers spilling in the caller.
+            if let Err(acquired) = self.spark.try_acquire(additional)? {
                 return Err(resources_datafusion_err!(
                     "Task {} failed to acquire {} bytes, only got {}. Reserved: {}",
                     self.task_attempt_id,
@@ -172,7 +133,7 @@ impl MemoryPool for CometUnifiedMemoryPool {
             }
             if let Err(prev) = self
                 .used
-                .fetch_update(Relaxed, Relaxed, |old| old.checked_add(acquired as usize))
+                .fetch_update(Relaxed, Relaxed, |old| old.checked_add(additional))
             {
                 return Err(resources_datafusion_err!(
                     "Task {} failed to acquire {} bytes due to overflow. Reserved: {}",

@@ -22,8 +22,7 @@ use std::{
 
 use jni::objects::{Global, JObject};
 
-use super::overcommit::{granted, Overcommit};
-use crate::{errors::CometResult, jvm_bridge::JVMClasses};
+use super::spark_memory::SparkMemory;
 use datafusion::common::resources_err;
 use datafusion::execution::memory_pool::MemoryConsumer;
 use datafusion::{
@@ -35,10 +34,9 @@ use parking_lot::Mutex;
 /// A DataFusion fair `MemoryPool` implementation for Comet. Internally this is
 /// implemented via delegating calls to [`crate::jvm_bridge::CometTaskMemoryManager`].
 pub struct CometFairMemoryPool {
-    task_memory_manager_handle: Arc<Global<JObject<'static>>>,
+    spark: SparkMemory,
     pool_size: usize,
     state: Mutex<CometFairPoolState>,
-    overcommit: Overcommit,
 }
 
 struct CometFairPoolState {
@@ -53,7 +51,7 @@ impl Debug for CometFairMemoryPool {
             .field("pool_size", &self.pool_size)
             .field("used", &state.used)
             .field("num", &state.num)
-            .field("overcommit", &self.overcommit.get())
+            .field("overcommit", &self.spark.overcommit())
             .finish()
     }
 }
@@ -62,28 +60,13 @@ impl CometFairMemoryPool {
     pub fn new(
         task_memory_manager_handle: Arc<Global<JObject<'static>>>,
         pool_size: usize,
+        task_attempt_id: i64,
     ) -> CometFairMemoryPool {
         Self {
-            task_memory_manager_handle,
+            spark: SparkMemory::new(task_memory_manager_handle, task_attempt_id),
             pool_size,
             state: Mutex::new(CometFairPoolState { used: 0, num: 0 }),
-            overcommit: Overcommit::default(),
         }
-    }
-
-    fn acquire(&self, additional: usize) -> CometResult<i64> {
-        let handle = self.task_memory_manager_handle.as_obj();
-        JVMClasses::with_env(|env| unsafe {
-            jni_call!(env,
-              comet_task_memory_manager(handle).acquire_memory(additional as i64) -> i64)
-        })
-    }
-
-    fn release(&self, size: usize) -> CometResult<()> {
-        let handle = self.task_memory_manager_handle.as_obj();
-        JVMClasses::with_env(|env| unsafe {
-            jni_call!(env, comet_task_memory_manager(handle).release_memory(size as i64) -> ())
-        })
     }
 }
 
@@ -123,18 +106,13 @@ impl MemoryPool for CometFairMemoryPool {
     }
 
     /// Records memory that already exists, so it must not fail and ignores the fair limit.
-    /// Whatever Spark does not grant is carried as [`Overcommit`] and repaid by later shrinks;
-    /// `used` includes it, so the next `try_grow` sees the true total and is refused.
+    /// See [`SparkMemory`].
     fn grow(&self, _reservation: &MemoryReservation, additional: usize) {
         if additional == 0 {
             return;
         }
         let mut state = self.state.lock();
-        let acquired = self
-            .acquire(additional)
-            .map(|acquired| granted(additional, acquired))
-            .unwrap_or(0);
-        self.overcommit.add(additional - acquired);
+        self.spark.acquire(additional);
         state.used = state
             .used
             .checked_add(additional)
@@ -153,11 +131,9 @@ impl MemoryPool for CometFairMemoryPool {
                     state.used
                 )
             }
-            let to_release = self.overcommit.repay(subtractive);
-            if to_release > 0 {
-                self.release(to_release)
-                    .unwrap_or_else(|_| panic!("Failed to release {to_release} bytes"));
-            }
+            self.spark
+                .release(subtractive)
+                .unwrap_or_else(|_| panic!("Failed to release {subtractive} bytes"));
             state.used = state.used.checked_sub(subtractive).unwrap();
         }
     }
@@ -184,13 +160,8 @@ impl MemoryPool for CometFairMemoryPool {
                 );
             }
 
-            let acquired = self.acquire(additional)?;
-            // If the number of bytes we acquired is less than the requested, return an error,
-            // and hopefully will trigger spilling from the caller side.
-            if acquired < additional as i64 {
-                // Release the acquired bytes before throwing error
-                self.release(acquired as usize)?;
-
+            // A partial grant is handed back and refused, which triggers spilling in the caller.
+            if let Err(acquired) = self.spark.try_acquire(additional)? {
                 return resources_err!(
                     "Failed to acquire {} bytes, only got {} bytes. Reserved: {} bytes",
                     additional,
