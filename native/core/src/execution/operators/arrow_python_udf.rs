@@ -21,7 +21,7 @@ use std::sync::Arc;
 use arrow::array::{ArrayRef, RecordBatch};
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use datafusion::common::tree_node::TreeNodeRecursion;
-use datafusion::common::{exec_err, Result};
+use datafusion::common::{exec_err, DataFusionError, Result};
 use datafusion::execution::TaskContext;
 use datafusion::physical_expr::{EquivalenceProperties, PhysicalExpr};
 use datafusion::physical_plan::execution_plan::EmissionType;
@@ -45,8 +45,8 @@ pub struct ArrowPythonUdfSpec {
 }
 
 /// Evaluates scalar PyArrow UDFs inside the native pipeline. Workers are
-/// instantiated in `execute`, once per partition, so Python function state
-/// never leaks between Spark tasks.
+/// instantiated in `execute`, once per partition. Python module state remains
+/// shared by every task in the executor's embedded interpreter.
 #[derive(Debug)]
 pub struct ArrowPythonUdfExec {
     child: Arc<dyn ExecutionPlan>,
@@ -181,10 +181,24 @@ impl ExecutionPlan for ArrowPythonUdfExec {
                 )
             })
             .collect::<std::result::Result<_, _>>()?;
-        let specs = self.specs.clone();
+        let specs = Arc::new(self.specs.clone());
+        let workers = Arc::new(workers);
         let schema = Arc::clone(&self.schema);
-        let stream = input
-            .map(move |batch| Self::evaluate_batch(&specs, &workers, Arc::clone(&schema), batch?));
+        let stream = input.then(move |batch| {
+            let specs = Arc::clone(&specs);
+            let workers = Arc::clone(&workers);
+            let schema = Arc::clone(&schema);
+            async move {
+                let batch = batch?;
+                tokio::task::spawn_blocking(move || {
+                    Self::evaluate_batch(&specs, &workers, schema, batch)
+                })
+                .await
+                .map_err(|error| {
+                    DataFusionError::Execution(format!("Arrow UDF task failed: {error}"))
+                })?
+            }
+        });
         Ok(Box::pin(RecordBatchStreamAdapter::new(
             Arc::clone(&self.schema),
             stream,

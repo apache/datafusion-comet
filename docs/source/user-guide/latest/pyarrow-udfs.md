@@ -94,12 +94,21 @@ spark.comet.exec.nativeArrowPythonUDF.enabled=true
 Comet passes each argument as a `pyarrow.Array` through the Arrow C Data Interface, invokes the
 pickled Python function with PyO3, and appends the result array to the input batch. It checks the
 result length and safely casts it to the declared return type, matching Spark's scalar Arrow UDF
-serializer. A native worker is created per partition, so function state does not cross tasks.
+serializer. A native worker is created per partition.
 
-The executor's embedded Python must be able to import PyArrow, cloudpickle, and the user's Python
-modules. It must use the same Python major/minor version as the PySpark worker; building with the
-`python-udf` feature links a Python runtime into the native library. The feature and config are
-disabled by default. Without either, `ArrowEvalPythonExec` stays on Spark's normal path.
+Each partition unpickles its own callable. Imported modules and their global state are shared by
+concurrent tasks in the executor's embedded Python interpreter.
+
+The executor's embedded Python must be able to import `pyspark`, `pyarrow`, and the user's Python
+modules. Spark serializes the callable and a PySpark return type with `pyspark.cloudpickle`, so
+`pyspark` is required even when the callable itself only uses PyArrow. Build the `python-udf`
+feature against the same Python major/minor version used by PySpark workers. Install those packages
+into that Python environment and ensure the executor process can find them through the embedded
+interpreter's `sys.path` (for example, by setting `PYTHONPATH` before launching the executor).
+`PYSPARK_PYTHON` selects the external worker executable; it does not select or configure the
+embedded interpreter. The worker-only `pyspark.zip` path is not automatically added to it. The
+feature and config are disabled by default. Without either, `ArrowEvalPythonExec` stays on Spark's
+normal path.
 
 The initial native path accepts scalar `@arrow_udf` calls with regular or named arguments and
 multiple independent UDFs in one `ArrowEvalPythonExec`. Chained Python UDFs, broadcast variables,
@@ -107,6 +116,19 @@ Python includes, per-function environment overrides, and
 `spark.sql.execution.arrow.useLargeVarTypes=true` stay on Spark's path. Iterator Arrow UDFs,
 ordinary `udf(..., useArrow=True)`, scalar pandas UDFs, and `mapInArrow` are separate execution
 types; `mapInArrow` retains the columnar runner described above.
+
+`TimestampType` inputs or results, complex inputs or results (array, map, struct), and an enabled
+`spark.sql.pyspark.udf.profiler` also stay on Spark's path. Spark labels Arrow timestamps with the
+session time zone, while Comet's internal Arrow timestamps use UTC; nested Arrow field names can
+also differ. The native path only runs when its schema matches Spark's supported scalar types.
+
+The embedded interpreter is shared by tasks. Pure Python code contends on its global interpreter
+lock, so multiple partitions may be slower than Spark's separate Python workers; PyArrow kernels
+that release the lock can still run concurrently. Python execution runs on blocking threads to
+avoid stalling Comet's async I/O workers. `pyspark.TaskContext.get()` returns `None` inside a native
+UDF. A native extension crash or `os._exit` terminates the executor process. PyArrow allocations
+made in Python are outside Comet's memory pool and are not limited by
+`spark.executor.pyspark.memory`.
 
 ### Relationship to Spark's PySpark Arrow conversion conf
 
@@ -119,14 +141,14 @@ worker. Both confs can be set independently.
 
 ## Supported APIs
 
-| PySpark API                      | Spark Plan Node             | Supported |
-| -------------------------------- | --------------------------- | --------- |
-| `df.mapInArrow(func, schema)`    | `PythonMapInArrowExec`      | Yes       |
-| `df.mapInPandas(func, schema)`   | `MapInPandasExec`           | Yes       |
+| PySpark API                      | Spark Plan Node             | Supported                |
+| -------------------------------- | --------------------------- | ------------------------ |
+| `df.mapInArrow(func, schema)`    | `PythonMapInArrowExec`      | Yes                      |
+| `df.mapInPandas(func, schema)`   | `MapInPandasExec`           | Yes                      |
 | scalar `@arrow_udf` (Spark 4.1+) | `ArrowEvalPythonExec`       | Experimental native path |
-| `udf(..., useArrow=True)`        | `ArrowEvalPythonExec`       | Not yet   |
-| `@pandas_udf` (scalar)           | `ArrowEvalPythonExec`       | Not yet   |
-| `df.applyInPandas(func, schema)` | `FlatMapGroupsInPandasExec` | Not yet   |
+| `udf(..., useArrow=True)`        | `ArrowEvalPythonExec`       | Not yet                  |
+| `@pandas_udf` (scalar)           | `ArrowEvalPythonExec`       | Not yet                  |
+| `df.applyInPandas(func, schema)` | `FlatMapGroupsInPandasExec` | Not yet                  |
 
 ## Example
 

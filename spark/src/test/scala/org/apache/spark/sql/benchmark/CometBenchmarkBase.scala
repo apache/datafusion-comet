@@ -50,7 +50,7 @@ trait CometBenchmarkBase
     val conf = new SparkConf()
       .setAppName("CometReadBenchmark")
       // Since `spark.master` always exists, overrides this value
-      .set("spark.master", "local[1]")
+      .set("spark.master", sys.env.getOrElse("COMET_BENCHMARK_MASTER", "local[1]"))
       .setIfMissing("spark.driver.memory", "3g")
       .setIfMissing("spark.executor.memory", "3g")
       // Use Comet's shuffle manager so operators that require Comet shuffle can

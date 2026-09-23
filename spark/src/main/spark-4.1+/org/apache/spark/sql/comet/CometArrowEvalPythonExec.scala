@@ -25,6 +25,7 @@ import org.apache.spark.api.python.PythonEvalType
 import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeSet, Expression, NamedArgumentExpression, NamedExpression, PythonUDF}
 import org.apache.spark.sql.execution.{PartitioningPreservingUnaryExecNode, SparkPlan}
 import org.apache.spark.sql.execution.python.ArrowEvalPythonExec
+import org.apache.spark.sql.types.{ArrayType, DataType, MapType, StructType, TimestampType}
 
 import com.google.protobuf.ByteString
 
@@ -35,6 +36,11 @@ import org.apache.comet.serde.OperatorOuterClass.Operator
 
 /** Native execution for Spark 4.1+ scalar `@arrow_udf` functions. */
 object CometArrowEvalPythonExec extends CometOperatorSerde[ArrowEvalPythonExec] {
+
+  private def hasDifferentArrowSchema(dataType: DataType): Boolean = dataType match {
+    case _: TimestampType | _: ArrayType | _: MapType | _: StructType => true
+    case _ => false
+  }
 
   override def enabledConfig: Option[ConfigEntry[Boolean]] =
     Some(CometConf.COMET_NATIVE_ARROW_PYTHON_UDF_ENABLED)
@@ -51,6 +57,14 @@ object CometArrowEvalPythonExec extends CometOperatorSerde[ArrowEvalPythonExec] 
     }
     if (op.conf.arrowUseLargeVarTypes) {
       return Unsupported(Some("Arrow UDF large variable types are not supported in-process"))
+    }
+    if (op.conf.pythonUDFProfiler.nonEmpty) {
+      return Unsupported(Some("Arrow UDF profiling is not supported in-process"))
+    }
+    if (op.udfs.exists(_.children.exists(expr => hasDifferentArrowSchema(expr.dataType))) ||
+      op.resultAttrs.exists(attr => hasDifferentArrowSchema(attr.dataType))) {
+      return Unsupported(
+        Some("Arrow UDF timestamp and complex types require Spark's Arrow schema"))
     }
     op.udfs.collectFirst {
       case udf if udf.func.broadcastVars != null && !udf.func.broadcastVars.isEmpty =>

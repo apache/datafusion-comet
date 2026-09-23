@@ -17,14 +17,13 @@
  * under the License.
  */
 
-package org.apache.spark.sql.comet
+package org.apache.spark.sql.benchmark
 
 import java.util.{Base64, Collections}
 
 import scala.sys.process._
 
 import org.apache.spark.api.python.{PythonEvalType, SimplePythonFunction}
-import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.execution.python.UserDefinedPythonFunction
 import org.apache.spark.sql.functions.sum
 import org.apache.spark.sql.internal.SQLConf
@@ -33,25 +32,32 @@ import org.apache.spark.sql.types.LongType
 import org.apache.comet.{CometConf, NativeBase}
 
 /**
- * Opt-in end-to-end benchmark of the Spark and native scalar Arrow UDF paths. Run with
- * COMET_ARROW_UDF_BENCHMARK=1, PYSPARK_PYTHON pointing to the Python used to build the native
- * library, and PYTHONPATH containing the matching Spark version's PySpark package. The benchmark
- * deliberately aggregates the UDF output so Spark cannot prune the UDF from the query.
+ * End-to-end benchmark of Spark and native scalar Arrow UDF execution. Run with `make
+ * benchmark-org.apache.spark.sql.benchmark.CometArrowPythonUdfBenchmark PROFILES=-Pspark-4.1
+ * COMET_FEATURES=python-udf`, with PYO3_PYTHON set for the native build. Arguments are rows,
+ * warmups, iterations, partitions, and mode (`arrow` or `python`). The Python mode performs a
+ * per-element Python loop to expose GIL contention. Set `COMET_BENCHMARK_MASTER=local[16]` and
+ * request at least 17 partitions for a concurrency comparison. Set PYSPARK_PYTHON and PYTHONPATH
+ * for the embedded Python environment.
  */
-class CometArrowPythonUdfBenchmarkSuite extends CometTestBase {
-  test("compare Spark and native scalar Arrow UDF execution") {
-    assume(sys.env.get("COMET_ARROW_UDF_BENCHMARK").contains("1"))
-    assume(NativeBase.supportsPythonUdf(), "native library was built without python-udf")
+object CometArrowPythonUdfBenchmark extends CometBenchmarkBase {
+  override def runCometBenchmark(args: Array[String]): Unit = {
+    require(NativeBase.supportsPythonUdf(), "native library was built without python-udf")
 
-    val rows = sys.env.getOrElse("COMET_ARROW_UDF_BENCHMARK_ROWS", "1000000").toLong
-    val warmups = sys.env.getOrElse("COMET_ARROW_UDF_BENCHMARK_WARMUPS", "2").toInt
-    val iterations = sys.env.getOrElse("COMET_ARROW_UDF_BENCHMARK_ITERATIONS", "5").toInt
-    val isolateUdf = sys.env.get("COMET_ARROW_UDF_BENCHMARK_ISOLATE_UDF").contains("1")
+    val rows = args.headOption.map(_.toLong).getOrElse(1000000L)
+    val warmups = args.lift(1).map(_.toInt).getOrElse(2)
+    val iterations = args.lift(2).map(_.toInt).getOrElse(5)
+    val partitions = args.lift(3).map(_.toInt).getOrElse(2)
+    val mode = args.lift(4).getOrElse("arrow")
+    require(Set("arrow", "python").contains(mode), s"Unknown benchmark mode: $mode")
     val python = sys.env.getOrElse("PYSPARK_PYTHON", "python3")
+    val callable =
+      if (mode == "arrow") "pc.negate" else "lambda a: pa.array([-x.as_py() for x in a])"
     val code =
-      "import base64, pickle, pyarrow.compute as pc; " +
+      "import base64, pyspark.cloudpickle as cloudpickle, pyarrow as pa, " +
+        "pyarrow.compute as pc; " +
         "from pyspark.sql.types import LongType; " +
-        "print(base64.b64encode(pickle.dumps((pc.negate, LongType()))).decode())"
+        s"print(base64.b64encode(cloudpickle.dumps(($callable, LongType()))).decode())"
     val command = Base64.getDecoder.decode(Seq(python, "-c", code).!!.trim)
     val pythonVersion =
       Seq(python, "-c", "import sys; print('%d.%d' % sys.version_info[:2])").!!.trim
@@ -75,22 +81,19 @@ class CometArrowPythonUdfBenchmarkSuite extends CometTestBase {
     val expected = -rows * (rows - 1L) / 2L
 
     val configs = Seq(
+      CometConf.COMET_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_ENABLED.key -> "true",
+      CometConf.COMET_ONHEAP_ENABLED.key -> "true",
+      CometConf.COMET_SPARK_TO_ARROW_ENABLED.key -> "true",
       SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
-      SQLConf.ARROW_EXECUTION_MAX_RECORDS_PER_BATCH.key -> "10000") ++
-      (if (isolateUdf) {
-         Seq(
-           CometConf.COMET_EXEC_AGGREGATE_ENABLED.key -> "false",
-           CometConf.COMET_SHUFFLE_ENABLED.key -> "false")
-       } else {
-         Seq.empty
-       })
+      SQLConf.ARROW_EXECUTION_MAX_RECORDS_PER_BATCH.key -> "10000")
     withSQLConf(configs: _*) {
       println(
         s"ARROW_UDF_BENCHMARK spark=${spark.version} rows=$rows warmups=$warmups " +
-          s"iterations=$iterations isolate_udf=$isolateUdf")
+          s"iterations=$iterations partitions=$partitions mode=$mode")
       for (iteration <- 0 until warmups + iterations; native <- Seq(false, true)) {
         withSQLConf(CometConf.COMET_NATIVE_ARROW_PYTHON_UDF_ENABLED.key -> native.toString) {
-          val source = spark.range(0L, rows, 1L, 2)
+          val source = spark.range(0L, rows, 1L, partitions)
           val df = source.select(udf(source.col("id")).as("value")).agg(sum("value"))
           val plan = df.queryExecution.executedPlan.toString()
           if (native) {
