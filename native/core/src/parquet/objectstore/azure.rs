@@ -48,6 +48,9 @@
 //!    it too, and `object_store` would otherwise fall through its credential chain to the
 //!    node's managed identity. A blank SAS token or credential value is an error for the
 //!    same reason: `object_store` would send unsigned requests or fall through the chain.
+//!    The one exception is a blank client id or tenant under `MsiTokenProvider`, which
+//!    Hadoop accepts for a system-assigned identity, so it is absent and the builder
+//!    proceeds to the managed identity endpoint with no client id.
 //! 2. When the Hadoop keys name nothing at all, the `AZURE_*` variables are applied first
 //!    and the Hadoop keys on top. This is what makes AKS Workload Identity work out of the
 //!    box. Transport settings from the environment apply only in this case, alongside the
@@ -128,6 +131,9 @@ const HADOOP_OAUTH_PROVIDER_TYPE: &str = "fs.azure.account.oauth.provider.type";
 const HADOOP_MSI_PROVIDER_CLASS: &str = "MsiTokenProvider";
 const HADOOP_WI_PROVIDER_CLASS: &str = "WorkloadIdentityTokenProvider";
 const HADOOP_CLIENT_CREDS_PROVIDER_CLASS: &str = "ClientCredsTokenProvider";
+/// Keys Hadoop reads for `MsiTokenProvider` in a way that accepts an empty string, which
+/// is how a system-assigned identity is configured. A blank value is absent, not an error.
+const HADOOP_MSI_OPTIONAL_KEYS: &[&str] = &[HADOOP_OAUTH_CLIENT_ID, HADOOP_MSI_TENANT];
 const HADOOP_AUTH_TYPE: &str = "fs.azure.account.auth.type";
 /// Hadoop credential keys, the `AzureConfigKey` each translates to and the mechanism each
 /// belongs to.
@@ -408,6 +414,9 @@ fn hadoop_problem(
 ///
 /// Blank values are errors rather than absent, so a templated configuration that
 /// substitutes an empty string fails loudly instead of silently using another credential.
+/// The exception is the client id and tenant under `MsiTokenProvider`: Hadoop accepts
+/// empty strings there, and a system-assigned identity sets them that way, so they are
+/// absent and the builder proceeds to the managed identity endpoint with no client id.
 fn blank_value_problem(
     configs: &HashMap<String, String>,
     account: Option<&str>,
@@ -426,9 +435,12 @@ fn blank_value_problem(
             return Some(format!("`{key}` is blank{fallback}"));
         }
     }
+    let msi_provider = active_provider_class(configs, account)
+        .is_some_and(|(_, class)| is_provider_class(&class, HADOOP_MSI_PROVIDER_CLASS));
     HADOOP_CREDENTIAL_MAPPINGS
         .iter()
         .filter(|(_, _, mechanism)| mechanism_is_read(configs, account, *mechanism))
+        .filter(|(base, _, _)| !(msi_provider && HADOOP_MSI_OPTIONAL_KEYS.contains(base)))
         .find_map(|(base, _, _)| {
             account_scoped_entry(configs, base, account)
                 .filter(|(_, value)| value.trim().is_empty())
@@ -861,12 +873,13 @@ fn sas_token(
 /// Extract the storage account name from an `abfs[s]://` URL.
 ///
 /// ABFS hostnames are `<account>.<endpoint-suffix>` (e.g. `myacct.dfs.core.windows.net`),
-/// so the account is the first label of the host. It is lowercased because DNS reaches
-/// the same account whatever the case, while the `url` crate keeps the case as written
-/// for the `abfs[s]` schemes and the account-scoped Hadoop keys are spelled in lowercase.
+/// so the account is the first label of the host. It is kept as written, the way Hadoop's
+/// `AzureBlobFileSystemStore.authorityParts` takes it from the raw URL authority and
+/// `AbfsConfiguration.accountConf` appends it to each key, so the native scan finds the
+/// same account-scoped key Hadoop finds and no other.
 fn extract_account(url: &Url) -> Option<String> {
     let host = url.host_str()?;
-    host.split('.').next().map(str::to_ascii_lowercase)
+    host.split('.').next().map(str::to_string)
 }
 
 /// Extract the container name from an `abfs[s]://` URL.
@@ -1905,14 +1918,16 @@ mod tests {
     }
 
     #[test]
-    fn mixed_case_host_resolves_account_scoped_key_and_borrows_no_env() {
+    fn mixed_case_host_matches_the_account_key_as_written() {
+        // Hadoop reads the account from the raw URL authority and appends it to the key
+        // as written, so a key spelled `MyAcct` is the one it finds for this host.
         let u = url("abfss://data@MyAcct.dfs.core.windows.net/path/file.parquet");
         let configs = hadoop(&[(
-            "fs.azure.account.key.myacct.dfs.core.windows.net",
+            "fs.azure.account.key.MyAcct.dfs.core.windows.net",
             "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
         )]);
         let account = extract_account(&u);
-        assert_eq!(account.as_deref(), Some("myacct"));
+        assert_eq!(account.as_deref(), Some("MyAcct"));
         let translated = translate_hadoop_configs(&configs, account.as_deref(), Some("data"));
         let builder = build_builder(
             &u,
@@ -1928,6 +1943,24 @@ mod tests {
         );
         assert_eq!(value(&builder, AzureConfigKey::Token), None);
         create_store_with_env(&u, &configs, env_of(&[])).expect("store builds");
+    }
+
+    #[test]
+    fn lowercase_account_key_does_not_match_a_mixed_case_host() {
+        // Hadoop would not find this key either, so the native scan must not either.
+        let u = url("abfss://data@MyAcct.dfs.core.windows.net/path/file.parquet");
+        let configs = hadoop(&[(
+            "fs.azure.account.key.myacct.dfs.core.windows.net",
+            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+        )]);
+        let account = extract_account(&u);
+        assert_eq!(account.as_deref(), Some("MyAcct"));
+        assert_eq!(
+            account_scoped_entry(&configs, HADOOP_KEY, account.as_deref()),
+            None
+        );
+        let translated = translate_hadoop_configs(&configs, account.as_deref(), Some("data"));
+        assert!(translated.is_empty(), "{translated:?}");
     }
 
     #[test]
@@ -2003,6 +2036,68 @@ mod tests {
             err.contains("fs.azure.account.oauth2.client.id")
                 && err.contains("blank")
                 && !err.contains("also needs"),
+            "unexpected error: {err}"
+        );
+        assert_hides(&err, &["hadoop-secret"]);
+    }
+
+    #[test]
+    fn blank_client_id_and_tenant_are_absent_under_msi_provider() {
+        // Hadoop reads both keys for `MsiTokenProvider` in a way that accepts an empty
+        // string, and a system-assigned identity sets them to empty strings. The builder
+        // must proceed to the managed identity endpoint with no client id.
+        let msi = "org.apache.hadoop.fs.azurebfs.oauth2.MsiTokenProvider";
+        for configs in [
+            hadoop(&[
+                ("fs.azure.account.auth.type", "OAuth"),
+                ("fs.azure.account.oauth.provider.type", msi),
+                ("fs.azure.account.oauth2.client.id", ""),
+                ("fs.azure.account.oauth2.msi.tenant", ""),
+            ]),
+            hadoop(&[
+                ("fs.azure.account.oauth.provider.type", msi),
+                ("fs.azure.account.oauth2.client.id", ""),
+                ("fs.azure.account.oauth2.msi.tenant", ""),
+            ]),
+        ] {
+            let u = url("abfss://data@myacct.dfs.core.windows.net/path/file.parquet");
+            create_store_with_env(&u, &configs, env_of(&[])).expect("store builds");
+            let builder = builder_for(
+                &configs,
+                &[
+                    ("AZURE_CLIENT_ID", "ambient-client"),
+                    ("AZURE_TENANT_ID", "ambient-tenant"),
+                    ("AZURE_STORAGE_TOKEN", "ambient"),
+                    (
+                        "AZURE_FEDERATED_TOKEN_FILE",
+                        "/var/run/secrets/azure/tokens/token",
+                    ),
+                ],
+            );
+            assert_eq!(value(&builder, AzureConfigKey::ClientId), None);
+            assert_eq!(value(&builder, AzureConfigKey::AuthorityId), None);
+            assert_eq!(value(&builder, AzureConfigKey::Token), None);
+            assert_eq!(value(&builder, AzureConfigKey::FederatedTokenFile), None);
+        }
+    }
+
+    #[test]
+    fn blank_client_id_is_still_rejected_under_client_creds_provider() {
+        // The exception is for the MSI provider only. Every other mechanism still
+        // reports a blank credential by its key.
+        let configs = hadoop(&[
+            ("fs.azure.account.auth.type", "OAuth"),
+            (
+                "fs.azure.account.oauth.provider.type",
+                "org.apache.hadoop.fs.azurebfs.oauth2.ClientCredsTokenProvider",
+            ),
+            ("fs.azure.account.oauth2.client.id", ""),
+            ("fs.azure.account.oauth2.client.secret", "hadoop-secret"),
+            ("fs.azure.account.oauth2.msi.tenant", "hadoop-tenant"),
+        ]);
+        let err = err_of(&configs);
+        assert!(
+            err.contains("fs.azure.account.oauth2.client.id") && err.contains("blank"),
             "unexpected error: {err}"
         );
         assert_hides(&err, &["hadoop-secret"]);
