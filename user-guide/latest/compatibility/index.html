@@ -901,8 +901,8 @@ Spark when the boundary arithmetic overflows for <code class="docutils literal n
 when a partial is written out or the sum is evaluated, which matches Spark’s whole-stage codegen
 path. Without codegen Spark buffers the aggregate in an <code class="docutils literal notranslate"><span class="pre">UnsafeRow</span></code> and latches as soon as a
 running sum leaves the precision. Comet falls back at precision 38 when codegen is disabled by
-<code class="docutils literal notranslate"><span class="pre">spark.sql.codegen.wholeStage</span></code>, by <code class="docutils literal notranslate"><span class="pre">spark.sql.codegen.factoryMode=NO_CODEGEN</span></code>, by an
-imperative sibling aggregate, by an expression Spark cannot compile such as a lambda function,
+<code class="docutils literal notranslate"><span class="pre">spark.sql.codegen.wholeStage</span></code>, by <code class="docutils literal notranslate"><span class="pre">spark.sql.codegen.factoryMode=NO_CODEGEN</span></code> on Spark 3.5+,
+by an imperative sibling aggregate, by an expression Spark cannot compile such as a lambda function,
 or by the <code class="docutils literal notranslate"><span class="pre">spark.sql.codegen.maxFields</span></code> limit on the aggregate’s own output and inputs, but not
 when Spark abandons codegen at runtime, after a compile failure under
 <code class="docutils literal notranslate"><span class="pre">spark.sql.codegen.fallback</span></code> or when the generated code exceeds
