@@ -629,7 +629,12 @@ case class CometExecRule(session: SparkSession)
               logInfo(
                 "Converting SubqueryBroadcastExec to " +
                   "CometSubqueryBroadcastExec for DPP exchange reuse")
-              val cometBroadcast = CometBroadcastExchangeExec(b, b.output, b.mode, cometChild)
+              val cometBroadcast = CometBroadcastExchangeExec(
+                b,
+                b.output,
+                b.mode,
+                cometChild,
+                CometConf.COMET_BROADCAST_DIRECT_READ_ENABLED.get())
               val cometSub = CometSubqueryBroadcastExec(
                 sub.name,
                 getSubqueryBroadcastExecIndices(sub),

@@ -168,6 +168,25 @@ under the License.
       <groupId>org.apache.arrow</groupId>
       <artifactId>arrow-c-data</artifactId>
     </dependency>
+    <!-- Direct native broadcast IPC uses the same codec-prefixed formats as native shuffle. -->
+    <dependency>
+      <groupId>org.lz4</groupId>
+      <artifactId>lz4-java</artifactId>
+      <version>1.8.0</version>
+      <scope>provided</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.xerial.snappy</groupId>
+      <artifactId>snappy-java</artifactId>
+      <version>1.1.10.8</version>
+      <scope>provided</scope>
+    </dependency>
+    <dependency>
+      <groupId>com.github.luben</groupId>
+      <artifactId>zstd-jni</artifactId>
+      <version>1.5.7-6</version>
+      <scope>provided</scope>
+    </dependency>
     <dependency>
       <groupId>org.apache.hadoop</groupId>
       <artifactId>hadoop-client-minicluster</artifactId>

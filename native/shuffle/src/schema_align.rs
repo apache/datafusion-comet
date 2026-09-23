@@ -27,7 +27,7 @@
 //! the wrong partition. A read-side cast cannot undo a wrong partition assignment, so the type must
 //! be corrected before partitioning — which forces the alignment onto the writer input.
 //!
-//! The read path (`ShuffleScanExec`) casts too, so a drift that only affects the batch's Arrow type
+//! The read path (`BlockScanExec`) casts too, so a drift that only affects the batch's Arrow type
 //! and not its partition assignment is absorbed there as well. See
 //! <https://github.com/apache/datafusion-comet/issues/5137>.
 //!

@@ -52,8 +52,7 @@ import org.apache.comet.vector.NativeUtil
  * @param inputObjects
  *   Already-built native input slots, in scan-input order. Each slot is either an
  *   org.apache.arrow.c.ArrowArrayStream (consumed natively via from_raw against its
- *   memoryAddress) or a CometShuffleBlockIterator (consumed via the JNI block-iteration
- *   protocol).
+ *   memoryAddress) or a CometBlockIterator (consumed via the JNI block-iteration protocol).
  * @param protobufQueryPlan
  *   The serialized bytes of Spark execution plan.
  * @param numParts
@@ -79,7 +78,7 @@ class CometExecIterator(
     partitionIndex: Int,
     broadcastedHadoopConfForEncryption: Option[Broadcast[SerializableConfiguration]] = None,
     encryptedFilePaths: Seq[String] = Seq.empty,
-    shuffleBlockIterators: Map[Int, CometShuffleBlockIterator] = Map.empty,
+    shuffleBlockIterators: Map[Int, CometBlockIterator] = Map.empty,
     taskFilePaths: Seq[String] = Seq.empty,
     shufflePartitionPusher: Option[ShufflePartitionPusher] = None,
     capturePartitionOffsets: Boolean = false)
@@ -93,6 +92,37 @@ class CometExecIterator(
   private val taskAttemptId = TaskContext.get().taskAttemptId()
   private val taskCPUs = TaskContext.get().cpus()
   private val cometTaskMemoryManager = new CometTaskMemoryManager(id, taskAttemptId)
+
+  private def closeUnownedInputs(failure: Throwable): Unit = {
+    // Native only takes ownership of Arrow streams during the first executePlan call.
+    inputObjects.foreach {
+      case stream: ArrowArrayStream =>
+        try {
+          stream.release()
+        } catch {
+          case releaseFailure: Throwable => failure.addSuppressed(releaseFailure)
+        }
+      case _ =>
+    }
+
+    shuffleBlockIterators.values.foreach { iterator =>
+      try {
+        iterator.close()
+      } catch {
+        case closeFailure: Throwable => failure.addSuppressed(closeFailure)
+      }
+    }
+  }
+
+  private def closeBeforeIteratorInitialization(failure: Throwable): Unit = {
+    // The task-completion listener is not installed until iterator construction succeeds.
+    try {
+      nativeUtil.close()
+    } catch {
+      case closeFailure: Throwable => failure.addSuppressed(closeFailure)
+    }
+    closeUnownedInputs(failure)
+  }
 
   private val plan = {
     val conf = SparkEnv.get.conf
@@ -116,30 +146,37 @@ class CometExecIterator(
 
     val memoryConfig = CometExecIterator.getMemoryConfig(conf)
 
-    val createdPlan = nativeLib.createPlan(
-      id,
-      inputObjects,
-      protobufQueryPlan,
-      protobufSparkConfigs,
-      numParts,
-      nativeMetrics,
-      metricsUpdateInterval = COMET_METRICS_UPDATE_INTERVAL.get(),
-      cometTaskMemoryManager,
-      localDiskDirs,
-      batchSize = COMET_BATCH_SIZE.get(),
-      memoryConfig.offHeapMode,
-      memoryConfig.memoryPoolType,
-      memoryConfig.memoryLimit,
-      memoryConfig.memoryLimitPerTask,
-      taskAttemptId,
-      taskCPUs,
-      keyUnwrapper,
-      // Propagated to Tokio workers running JVM UDFs so they see this Spark task's
-      // TaskContext and context ClassLoader. Read here because this class is only ever
-      // constructed on a Spark task thread (see `taskAttemptId` above); a JNI-attached Tokio
-      // worker has neither. See CometUdfBridge.evaluate.
-      TaskContext.get(),
-      Thread.currentThread().getContextClassLoader)
+    val createdPlan =
+      try {
+        nativeLib.createPlan(
+          id,
+          inputObjects,
+          protobufQueryPlan,
+          protobufSparkConfigs,
+          numParts,
+          nativeMetrics,
+          metricsUpdateInterval = COMET_METRICS_UPDATE_INTERVAL.get(),
+          cometTaskMemoryManager,
+          localDiskDirs,
+          batchSize = COMET_BATCH_SIZE.get(),
+          memoryConfig.offHeapMode,
+          memoryConfig.memoryPoolType,
+          memoryConfig.memoryLimit,
+          memoryConfig.memoryLimitPerTask,
+          taskAttemptId,
+          taskCPUs,
+          keyUnwrapper,
+          // Propagated to Tokio workers running JVM UDFs so they see this Spark task's
+          // TaskContext and context ClassLoader. Read here because this class is only ever
+          // constructed on a Spark task thread (see `taskAttemptId` above); a JNI-attached Tokio
+          // worker has neither. See CometUdfBridge.evaluate.
+          TaskContext.get(),
+          Thread.currentThread().getContextClassLoader)
+      } catch {
+        case failure: Throwable =>
+          closeBeforeIteratorInitialization(failure)
+          throw failure
+      }
 
     // Bind task-owned callbacks separately to preserve the existing createPlan JNI signature.
     try {
@@ -149,31 +186,7 @@ class CometExecIterator(
       createdPlan
     } catch {
       case failure: Throwable =>
-        // The task-completion listener is not installed until iterator construction succeeds.
-        try {
-          nativeUtil.close()
-        } catch {
-          case closeFailure: Throwable => failure.addSuppressed(closeFailure)
-        }
-
-        // Native only takes ownership of Arrow streams during the first executePlan call.
-        inputObjects.foreach {
-          case stream: ArrowArrayStream =>
-            try {
-              stream.release()
-            } catch {
-              case releaseFailure: Throwable => failure.addSuppressed(releaseFailure)
-            }
-          case _ =>
-        }
-
-        shuffleBlockIterators.values.foreach { iterator =>
-          try {
-            iterator.close()
-          } catch {
-            case closeFailure: Throwable => failure.addSuppressed(closeFailure)
-          }
-        }
+        closeBeforeIteratorInitialization(failure)
 
         try {
           nativeLib.releasePlan(createdPlan)

@@ -68,6 +68,7 @@ message Operator {
     Sample sample = 118;
     WindowGroupLimit window_group_limit = 119;
     IcebergWrite iceberg_write = 120;
+    BroadcastScan broadcast_scan = 121;
     // Extension point for optional, out-of-tree contrib scans (Delta, Lance, ...). The concrete
     // scan message (e.g. `DeltaScan`) is packed into this envelope on the JVM side and dispatched
     // by `type_url` on the native side. Using a single permanent field -- rather than a new oneof
@@ -136,6 +137,12 @@ message Scan {
 message ShuffleScan {
   repeated spark.spark_expression.DataType fields = 1;
   // Informational label for debug output (e.g., "CometShuffleExchangeExec [id=5]")
+  string source = 2;
+}
+
+message BroadcastScan {
+  repeated spark.spark_expression.DataType fields = 1;
+  // Informational label for debug output (e.g., "CometBroadcastExchangeExec [id=5]")
   string source = 2;
 }
 

@@ -232,7 +232,7 @@ pub struct JVMClasses<'a> {
     /// The org.apache.arrow.c.ArrowArrayStream class. Used to get the C struct memory address
     /// when importing a JVM-exported batch stream into native code.
     pub arrow_array_stream: ArrowArrayStream<'a>,
-    /// The CometShuffleBlockIterator class. Used for iterating over shuffle blocks.
+    /// The CometBlockIterator interface. Used for iterating over shuffle and broadcast blocks.
     pub comet_shuffle_block_iterator: CometShuffleBlockIterator<'a>,
     /// The CometTaskMemoryManager used for interacting with JVM side to
     /// acquire & release native memory.
