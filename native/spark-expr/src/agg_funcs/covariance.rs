@@ -514,6 +514,34 @@ mod groups_tests {
     }
 
     #[test]
+    fn large_offset_covariance_merge() {
+        let mut scalar = CovarianceAccumulator::try_new(StatsType::Population, true).unwrap();
+        let mut grouped = pop();
+        for (value, count) in [(0.0, 0), (1e17 - 32.0, 3), (1e17 - 16.0, 2), (0.0, 0)] {
+            let mut xs = vec![Some(value); count];
+            xs.push(None);
+            let ys = xs.iter().map(|v| v.map(|v| -v)).collect::<Vec<_>>();
+            let values: Vec<ArrayRef> = vec![
+                Arc::new(Float64Array::from(xs)),
+                Arc::new(Float64Array::from(ys)),
+            ];
+            let mut partial = pop();
+            partial
+                .update_batch(&values, &vec![0; count + 1], None, 2)
+                .unwrap();
+            let state = partial.state(EmitTo::All).unwrap();
+            scalar.merge_batch(&state).unwrap();
+            grouped.merge_batch(&state, &[0, 1], 2).unwrap();
+        }
+        let expected = -61.44000000000001;
+        assert_eq!(
+            scalar.evaluate().unwrap(),
+            ScalarValue::Float64(Some(expected))
+        );
+        assert_eq!(evaluate(&mut grouped), vec![Some(expected), None]);
+    }
+
+    #[test]
     fn null_in_either_column_skipped() {
         let mut acc = pop();
         let v1: ArrayRef = Arc::new(Float64Array::from(vec![

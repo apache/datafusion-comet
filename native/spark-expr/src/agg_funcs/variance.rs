@@ -469,6 +469,64 @@ mod groups_tests {
     }
 
     #[test]
+    fn large_offset_variance_merge() {
+        for (partitions, population, sample) in [
+            (
+                [(1e17 - 32.0, 3), (1e17 - 16.0, 2)],
+                61.44000000000001,
+                76.80000000000001,
+            ),
+            ([(1e17 - 96.0, 3), (1e17 - 32.0, 3)], 1024.0, 1228.8),
+        ] {
+            for sign in [1.0, -1.0] {
+                for reverse in [false, true] {
+                    let mut partitions = partitions;
+                    if reverse {
+                        partitions.reverse();
+                    }
+                    for (stats, expected) in [
+                        (StatsType::Population, population),
+                        (StatsType::Sample, sample),
+                    ] {
+                        let mut scalar = VarianceAccumulator::try_new(stats, true).unwrap();
+                        let mut grouped = VarianceGroupsAccumulator::new(stats, true);
+                        // Include empty partials before and after the nonempty states.
+                        for (value, count) in
+                            [(0.0, 0)].into_iter().chain(partitions).chain([(0.0, 0)])
+                        {
+                            let mut values = vec![Some(sign * value); count];
+                            values.push(None);
+                            let values: ArrayRef = Arc::new(Float64Array::from(values));
+                            let mut partial = VarianceAccumulator::try_new(stats, true).unwrap();
+                            partial.update_batch(&[Arc::clone(&values)]).unwrap();
+                            let state = partial
+                                .state()
+                                .unwrap()
+                                .iter()
+                                .map(|v| v.to_array_of_size(1).unwrap())
+                                .collect::<Vec<_>>();
+                            scalar.merge_batch(&state).unwrap();
+
+                            let mut partial = VarianceGroupsAccumulator::new(stats, true);
+                            partial
+                                .update_batch(&[values], &vec![0; count + 1], None, 2)
+                                .unwrap();
+                            grouped
+                                .merge_batch(&partial.state(EmitTo::All).unwrap(), &[0, 1], 2)
+                                .unwrap();
+                        }
+                        assert_eq!(
+                            scalar.evaluate().unwrap(),
+                            ScalarValue::Float64(Some(expected))
+                        );
+                        assert_eq!(evaluate(&mut grouped), vec![Some(expected), None]);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn pop_variance_single_group() {
         let mut acc = pop_acc();
         let values: ArrayRef = Arc::new(Float64Array::from(vec![1.0, 2.0, 3.0, 4.0, 5.0]));
