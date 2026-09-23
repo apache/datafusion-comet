@@ -237,6 +237,11 @@ fn create_batches(size: usize, count: usize) -> Vec<RecordBatch> {
 }
 
 fn create_batch(num_rows: usize, allow_nulls: bool) -> RecordBatch {
+    create_batch_from(0, num_rows, allow_nulls)
+}
+
+/// [`create_batch`] with every value offset by `first_row`, so that successive batches differ.
+fn create_batch_from(first_row: usize, num_rows: usize, allow_nulls: bool) -> RecordBatch {
     let schema = Arc::new(Schema::new(vec![
         Field::new("c0", DataType::Int32, true),
         Field::new("c1", DataType::Utf8, true),
@@ -249,7 +254,7 @@ fn create_batch(num_rows: usize, allow_nulls: bool) -> RecordBatch {
     let mut d = Decimal128Builder::new()
         .with_precision_and_scale(11, 2)
         .unwrap();
-    for i in 0..num_rows {
+    for i in first_row..first_row + num_rows {
         a.append_value(i as i32);
         c.append_value(i as i32);
         d.append_value((i * 1000000) as i128);
@@ -323,9 +328,16 @@ fn partitioning_benchmark(c: &mut Criterion) {
 
     // `plain` is the flat schema the end-to-end benches use. `nested` is the shape that motivates
     // positional placement: 40 struct columns over a three-field leaf, so 120 leaf arrays for a
-    // hash to recurse into and for a gather to walk.
+    // hash to recurse into and for a gather to walk. Every batch is built separately, rather than
+    // cloned, so that none of them share buffers: a clone would be charged nothing by the
+    // reservation, and the gather would keep rereading one cache-resident batch.
     let fixtures = [
-        ("plain", create_batches(BATCH_SIZE, NUM_BATCHES)),
+        (
+            "plain",
+            (0..NUM_BATCHES)
+                .map(|b| create_batch_from(b * BATCH_SIZE, BATCH_SIZE, true))
+                .collect::<Vec<_>>(),
+        ),
         (
             "nested",
             nested_batches(BATCH_SIZE, NUM_BATCHES, 40, 2, Fill::PerRow),
@@ -482,6 +494,7 @@ enum Fill {
     PerRow,
 }
 
+/// `count` separately built batches, each filled from where the previous one left off.
 fn nested_batches(
     num_rows: usize,
     count: usize,
@@ -489,15 +502,26 @@ fn nested_batches(
     depth: usize,
     fill: Fill,
 ) -> Vec<RecordBatch> {
-    let batch = nested_batch(num_rows, num_cols, depth, fill);
-    vec![batch; count]
+    (0..count)
+        .map(|b| nested_batch_from(b * num_rows, num_rows, num_cols, depth, fill))
+        .collect()
 }
 
 fn nested_batch(num_rows: usize, num_cols: usize, depth: usize, fill: Fill) -> RecordBatch {
+    nested_batch_from(0, num_rows, num_cols, depth, fill)
+}
+
+fn nested_batch_from(
+    first_row: usize,
+    num_rows: usize,
+    num_cols: usize,
+    depth: usize,
+    fill: Fill,
+) -> RecordBatch {
     let mut fields: Vec<Field> = Vec::with_capacity(num_cols);
     let mut columns: Vec<Arc<dyn Array>> = Vec::with_capacity(num_cols);
     for col in 0..num_cols {
-        let array = nested_struct_array(num_rows, depth, fill);
+        let array = nested_struct_array(first_row, num_rows, depth, fill);
         fields.push(Field::new(
             format!("col{col}"),
             array.data_type().clone(),
@@ -509,8 +533,14 @@ fn nested_batch(num_rows: usize, num_cols: usize, depth: usize, fill: Fill) -> R
     RecordBatch::try_new(schema, columns).unwrap()
 }
 
-/// Builds a struct array with a multi-field leaf, wrapped in `depth` single-field structs.
-fn nested_struct_array(num_rows: usize, depth: usize, fill: Fill) -> Arc<dyn Array> {
+/// Builds a struct array with a multi-field leaf, wrapped in `depth` single-field structs. Under
+/// [`Fill::PerRow`] the leaf values run from `first_row`.
+fn nested_struct_array(
+    first_row: usize,
+    num_rows: usize,
+    depth: usize,
+    fill: Fill,
+) -> Arc<dyn Array> {
     use arrow::array::{Float64Array, Int64Array, StringArray, StructArray};
 
     let (ints, strings, floats): (Vec<i64>, Vec<String>, Vec<f64>) = match fill {
@@ -519,11 +549,14 @@ fn nested_struct_array(num_rows: usize, depth: usize, fill: Fill) -> Arc<dyn Arr
             vec!["x".to_string(); num_rows],
             vec![1.0_f64; num_rows],
         ),
-        Fill::PerRow => (
-            (0..num_rows as i64).collect(),
-            (0..num_rows).map(|row| format!("value {row}")).collect(),
-            (0..num_rows).map(|row| row as f64 * 1.5).collect(),
-        ),
+        Fill::PerRow => {
+            let rows = first_row..first_row + num_rows;
+            (
+                rows.clone().map(|row| row as i64).collect(),
+                rows.clone().map(|row| format!("value {row}")).collect(),
+                rows.map(|row| row as f64 * 1.5).collect(),
+            )
+        }
     };
 
     // Leaf: struct<a: int64, b: utf8, c: float64>
