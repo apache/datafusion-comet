@@ -26,8 +26,8 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.comet.{CometConf, CometSparkSessionExtensions}
 
 /**
- * Benchmark to measure performance of Comet's ExistenceJoin support across the three join
- * physical operators (BHJ, SHJ, SMJ). To run this benchmark:
+ * Benchmark to measure performance of Comet's ExistenceJoin support across the native hash-join
+ * paths (BroadcastHashJoin, ShuffledHashJoin). To run this benchmark:
  * {{{
  *   SPARK_GENERATE_BENCHMARK_FILES=1 make benchmark-org.apache.spark.sql.benchmark.CometExistenceJoinBenchmark
  * }}}
@@ -82,40 +82,29 @@ object CometExistenceJoinBenchmark extends CometBenchmarkBase {
           "SELECT count(*) FROM probe p " +
             "WHERE p.region = 'US' OR EXISTS (SELECT 1 FROM build b WHERE b.k = p.k)"
 
-        runBenchmark("ExistenceJoin - BroadcastHashJoin") {
-          runExpressionBenchmark(
-            "exists OR predicate (BHJ)",
-            probeRows,
-            query,
-            Map(
-              CometConf.COMET_EXEC_EXISTENCE_JOIN_ENABLED.key -> "true",
-              SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "10MB",
-              SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "10MB"))
+        // The existence-join feature flag is Comet-only, but the join-strategy settings are
+        // applied via withSQLConf so they affect BOTH the Spark baseline and the Comet arm --
+        // otherwise Spark broadcasts the small build and the two arms measure different
+        // strategies. Existence SMJ falls back to Spark, so only the native BHJ/SHJ paths are
+        // benchmarked here.
+        val existenceEnabled = Map(CometConf.COMET_EXEC_EXISTENCE_JOIN_ENABLED.key -> "true")
+
+        withSQLConf(
+          SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "10MB",
+          SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "10MB") {
+          runBenchmark("ExistenceJoin - BroadcastHashJoin") {
+            runExpressionBenchmark("exists OR predicate (BHJ)", probeRows, query, existenceEnabled)
+          }
         }
 
-        runBenchmark("ExistenceJoin - ShuffledHashJoin") {
-          runExpressionBenchmark(
-            "exists OR predicate (SHJ)",
-            probeRows,
-            query,
-            Map(
-              CometConf.COMET_EXEC_EXISTENCE_JOIN_ENABLED.key -> "true",
-              SQLConf.PREFER_SORTMERGEJOIN.key -> "false",
-              "spark.sql.join.forceApplyShuffledHashJoin" -> "true",
-              SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
-              SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1"))
-        }
-
-        runBenchmark("ExistenceJoin - SortMergeJoin") {
-          runExpressionBenchmark(
-            "exists OR predicate (SMJ)",
-            probeRows,
-            query,
-            Map(
-              CometConf.COMET_EXEC_EXISTENCE_JOIN_ENABLED.key -> "true",
-              SQLConf.PREFER_SORTMERGEJOIN.key -> "true",
-              SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
-              SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1"))
+        withSQLConf(
+          SQLConf.PREFER_SORTMERGEJOIN.key -> "false",
+          "spark.sql.join.forceApplyShuffledHashJoin" -> "true",
+          SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+          SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
+          runBenchmark("ExistenceJoin - ShuffledHashJoin") {
+            runExpressionBenchmark("exists OR predicate (SHJ)", probeRows, query, existenceEnabled)
+          }
         }
       }
     }

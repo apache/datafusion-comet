@@ -2428,7 +2428,12 @@ trait CometHashJoin {
         case FullOuter => JoinType.FullOuter
         case LeftSemi => JoinType.LeftSemi
         case LeftAnti => JoinType.LeftAnti
-        case ExistenceJoin(_) if CometConf.COMET_EXEC_EXISTENCE_JOIN_ENABLED.get(join.conf) =>
+        // Pass exec to native for equi-join keys only: Spark short-circuits on first match
+        // while DataFusion does not. Once DF supports short-circuit evaluation, this fallback
+        // can be removed / revisited.
+        case ExistenceJoin(_)
+            if CometConf.COMET_EXEC_EXISTENCE_JOIN_ENABLED.get(join.conf) &&
+              join.condition.isEmpty =>
           JoinType.Existence
         case _ =>
           // Spark doesn't support other join types
@@ -2955,8 +2960,8 @@ object CometSortMergeJoinExec extends CometOperatorSerde[SortMergeJoinExec] {
         case FullOuter => JoinType.FullOuter
         case LeftSemi => JoinType.LeftSemi
         case LeftAnti => JoinType.LeftAnti
-        case ExistenceJoin(_) if CometConf.COMET_EXEC_EXISTENCE_JOIN_ENABLED.get(join.conf) =>
-          JoinType.Existence
+        // Existence SMJ falls back to Spark: DF 55.1.0's BitwiseSortMergeJoin buffers output
+        // before emitting, risking OOM on large equal-key groups.
         case _ =>
           // Spark doesn't support other join types
           withFallbackReason(join, s"Unsupported join type ${join.joinType}")
