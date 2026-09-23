@@ -222,10 +222,11 @@ before any margin, so `spark.executor.memoryOverhead=4g` would be a reasonable s
 
 The executor also logs a warning when its native memory looks larger than its container allows:
 when the difference, plus everything in use in Spark's off-heap memory pool (which includes Comet's
-reservations), exceeds `spark.memory.offHeap.size` plus the memory overhead. Counting the pool's
-free space lets untracked memory use what a `spark.comet.exec.memoryPool.fraction` below `1.0` sets
-aside for it. The overhead also has to hold the JVM's own non-heap memory, so by the time the
-warning appears the executor has likely outgrown its container. It warns the first time this
+reservations), exceeds `spark.memory.offHeap.size` plus the memory overhead. This counts the part of
+the off-heap pool that nothing has acquired at that moment, which untracked memory can occupy until
+Spark hands it out, so a quiet log is not a sign that the overhead is large enough: size it from the
+largest difference as described above. The overhead also has to hold the JVM's own non-heap memory,
+so by the time the warning appears the executor has likely outgrown its container. It warns the first time this
 happens, and again each time it happens after dropping back below. The overhead it uses is
 `spark.executor.memoryOverhead` if set, otherwise `spark.executor.memoryOverheadFactor` of
 `spark.executor.memory` with a minimum of `spark.executor.minMemoryOverhead`, as Spark sizes the

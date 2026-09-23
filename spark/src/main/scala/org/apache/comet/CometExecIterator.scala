@@ -549,11 +549,11 @@ object CometExecIterator extends Logging {
    * The footprint is the native memory Comet's pools do not track, `allocated - reserved`, plus
    * `sparkOffHeapUsed`, everything in use in Spark's off-heap pool, which includes Comet's
    * reservations as well as Spark's own off-heap execution and storage memory. Comparing the sum
-   * rather than the untracked part against the overhead alone lets untracked memory use the part
-   * of `spark.memory.offHeap.size` that nothing has acquired, which is what a
-   * `spark.comet.exec.memoryPool.fraction` below 1 sets aside for it. The limit also has to hold
-   * the JVM's own non-heap memory, so by the time the footprint exceeds it the executor has
-   * likely outgrown its container.
+   * rather than the untracked part against the overhead alone counts the part of
+   * `spark.memory.offHeap.size` that nothing has acquired at that moment, which untracked memory
+   * can occupy until Spark hands it out. The limit also has to hold the JVM's own non-heap
+   * memory, so by the time the footprint exceeds it the executor has likely outgrown its
+   * container.
    */
   def nativeMemoryLimitWarning(
       usage: Array[Long],
@@ -569,8 +569,7 @@ object CometExecIterator extends Logging {
           "executor's container has outside the JVM heap (spark.memory.offHeap.size plus the " +
           "memory overhead), which also has to hold the JVM's own non-heap memory. The cluster " +
           "manager may kill this executor for exceeding its container limit. Raise " +
-          "spark.executor.memoryOverhead, or lower spark.comet.exec.memoryPool.fraction to " +
-          s"leave more of the off-heap memory for it. ${CometConf.TUNING_GUIDE}.")
+          s"spark.executor.memoryOverhead. ${CometConf.TUNING_GUIDE}.")
     } else {
       None
     }
