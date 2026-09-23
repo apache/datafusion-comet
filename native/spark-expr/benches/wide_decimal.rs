@@ -60,7 +60,7 @@ fn build_old_expr(
 ) -> Arc<dyn PhysicalExpr> {
     let left_col: Arc<dyn PhysicalExpr> = Arc::new(Column::new("left", 0));
     let right_col: Arc<dyn PhysicalExpr> = Arc::new(Column::new("right", 1));
-    let cast_opts = SparkCastOptions::new_without_timezone(EvalMode::Legacy, false);
+    let cast_opts = SparkCastOptions::new_without_timezone(EvalMode::Legacy);
     let left_cast = Arc::new(Cast::new(
         left_col,
         DataType::Decimal256(p1, s1),

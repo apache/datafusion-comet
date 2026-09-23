@@ -52,7 +52,7 @@ fn cast(to: DataType, mode: EvalMode) -> Cast {
     Cast::new(
         Arc::new(Column::new("a", 0)),
         to,
-        SparkCastOptions::new_without_timezone(mode, false),
+        SparkCastOptions::new_without_timezone(mode),
         None,
         None,
     )

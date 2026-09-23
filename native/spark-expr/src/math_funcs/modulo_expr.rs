@@ -163,14 +163,14 @@ pub fn create_modulo_expr(
             let left_256 = Arc::new(Cast::new(
                 left,
                 DataType::Decimal256(p1, s1),
-                SparkCastOptions::new_without_timezone(EvalMode::Legacy, false),
+                SparkCastOptions::new_without_timezone(EvalMode::Legacy),
                 None,
                 None,
             ));
             let right_256 = Arc::new(Cast::new(
                 right_non_ansi_safe,
                 DataType::Decimal256(p2, s2),
-                SparkCastOptions::new_without_timezone(EvalMode::Legacy, false),
+                SparkCastOptions::new_without_timezone(EvalMode::Legacy),
                 None,
                 None,
             ));
@@ -192,7 +192,7 @@ pub fn create_modulo_expr(
             Ok(Arc::new(Cast::new(
                 modulo_scalar_func,
                 data_type,
-                SparkCastOptions::new_without_timezone(EvalMode::Legacy, false),
+                SparkCastOptions::new_without_timezone(EvalMode::Legacy),
                 None,
                 None,
             )))

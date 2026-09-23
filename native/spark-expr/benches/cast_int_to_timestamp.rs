@@ -27,7 +27,7 @@ const BATCH_SIZE: usize = 8192;
 
 fn criterion_benchmark(c: &mut Criterion) {
     // Test with UTC timezone
-    let spark_cast_options = SparkCastOptions::new(EvalMode::Legacy, "UTC", false);
+    let spark_cast_options = SparkCastOptions::new(EvalMode::Legacy, "UTC");
     let timestamp_type = DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into()));
 
     let mut group = c.benchmark_group("cast_int_to_timestamp");

@@ -121,7 +121,7 @@ mod tests {
         let target_tz: Option<Arc<str>> = Some("UTC".into());
         let result = cast_date_to_timestamp(
             &dates,
-            &SparkCastOptions::new(EvalMode::Legacy, "UTC", false),
+            &SparkCastOptions::new(EvalMode::Legacy, "UTC"),
             &target_tz,
         )
         .unwrap();
@@ -134,7 +134,7 @@ mod tests {
         // validate LA timezone (follows Daylight savings)
         let result = cast_date_to_timestamp(
             &dates,
-            &SparkCastOptions::new(EvalMode::Legacy, "America/Los_Angeles", false),
+            &SparkCastOptions::new(EvalMode::Legacy, "America/Los_Angeles"),
             &target_tz,
         )
         .unwrap();
@@ -148,7 +148,7 @@ mod tests {
         // Phoenix timezone (does not follow Daylight savings)
         let result = cast_date_to_timestamp(
             &dates,
-            &SparkCastOptions::new(EvalMode::Legacy, "America/Phoenix", false),
+            &SparkCastOptions::new(EvalMode::Legacy, "America/Phoenix"),
             &target_tz,
         )
         .unwrap();
@@ -189,7 +189,7 @@ mod tests {
         ] {
             let result = cast_date_to_timestamp(
                 &dates,
-                &SparkCastOptions::new(EvalMode::Legacy, tz, false),
+                &SparkCastOptions::new(EvalMode::Legacy, tz),
                 &ntz_target,
             )
             .unwrap();
@@ -215,7 +215,7 @@ mod tests {
             assert!(
                 cast_date_to_timestamp(
                     &dates,
-                    &SparkCastOptions::new(EvalMode::Legacy, "UTC", false),
+                    &SparkCastOptions::new(EvalMode::Legacy, "UTC"),
                     &ntz_target,
                 )
                 .is_err(),
@@ -240,7 +240,7 @@ mod tests {
             Some(-106_751_992),
         ];
         for mode in [EvalMode::Legacy, EvalMode::Ansi, EvalMode::Try] {
-            let options = SparkCastOptions::new(mode, "America/Los_Angeles", false);
+            let options = SparkCastOptions::new(mode, "America/Los_Angeles");
             let result = spark_cast(
                 ColumnarValue::Array(Arc::new(Date32Array::from(days.clone()))),
                 &target,

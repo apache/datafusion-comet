@@ -155,10 +155,6 @@ object CometCast
         castBuilder.setChild(childExpr)
         castBuilder.setDatatype(dataType)
         castBuilder.setEvalMode(evalModeToProto(evalMode))
-        castBuilder.setAllowIncompat(
-          SQLConf.get
-            .getConfString(CometConf.getExprAllowIncompatConfigKey(classOf[Cast]), "false")
-            .toBoolean)
         castBuilder.setTimezone(timeZoneId.getOrElse("UTC"))
         castBuilder.setIsSpark4Plus(isSpark40Plus)
         Some(

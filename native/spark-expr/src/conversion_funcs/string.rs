@@ -2265,7 +2265,7 @@ mod tests {
         for (position, input, expect_value) in cases {
             for eval_mode in [EvalMode::Legacy, EvalMode::Try, EvalMode::Ansi] {
                 let array: ArrayRef = Arc::new(StringArray::from(vec![Some(input.as_str())]));
-                let options = SparkCastOptions::new(eval_mode, "UTC", false);
+                let options = SparkCastOptions::new(eval_mode, "UTC");
                 let result = cast_array(array, to_type, &options);
                 let context = format!("cast {input:?} ({position}) to {to_type} in {eval_mode:?}");
                 if expect_value {
@@ -2332,7 +2332,7 @@ mod tests {
             for to_type in &to_types {
                 let input = format!("{pad}2020-01-01 12:34:56{pad}");
                 let array: ArrayRef = Arc::new(StringArray::from(vec![Some(input.as_str())]));
-                let options = SparkCastOptions::new(EvalMode::Legacy, "UTC", false);
+                let options = SparkCastOptions::new(EvalMode::Legacy, "UTC");
                 let result = cast_array(array, to_type, &options).unwrap();
                 assert!(
                     !result.is_null(0),
@@ -2527,7 +2527,7 @@ mod tests {
 
         let timezone = "UTC".to_string();
         // test casting string dictionary array to timestamp array
-        let cast_options = SparkCastOptions::new(EvalMode::Legacy, &timezone, false);
+        let cast_options = SparkCastOptions::new(EvalMode::Legacy, &timezone);
         let result = cast_array(
             dict_array,
             &DataType::Timestamp(TimeUnit::Microsecond, Some(timezone.clone().into())),

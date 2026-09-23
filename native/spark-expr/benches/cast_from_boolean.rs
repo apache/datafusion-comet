@@ -26,7 +26,7 @@ use std::sync::Arc;
 fn criterion_benchmark(c: &mut Criterion) {
     let expr = Arc::new(Column::new("a", 0));
     let boolean_batch = create_boolean_batch();
-    let spark_cast_options = SparkCastOptions::new(EvalMode::Legacy, "UTC", false);
+    let spark_cast_options = SparkCastOptions::new(EvalMode::Legacy, "UTC");
     let cast_to_i8 = Cast::new(
         expr.clone(),
         DataType::Int8,

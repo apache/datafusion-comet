@@ -402,7 +402,8 @@ message Cast {
   DataType datatype = 2;
   string timezone = 3;
   EvalMode eval_mode = 4;
-  bool allow_incompat = 5;
+  reserved 5;
+  reserved "allow_incompat";
   // True when running against Spark 4.0+. Controls version-specific cast behaviour
   // such as the handling of leading whitespace before T-prefixed time-only strings.
   bool is_spark4_plus = 6;
