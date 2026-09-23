@@ -73,6 +73,27 @@ class CometIcebergWriteActionSuite
     }
   }
 
+  test("spark.comet.enabled=false keeps Spark's own write plan with the split flag on") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    withIcebergCatalog { warehouseDir =>
+      createTable(warehouseDir, "comet_disabled", partitionSpec = "")
+      val snapshot = withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        captureWrite("comet_disabled") {
+          spark.sql(
+            "INSERT INTO cat.db.comet_disabled VALUES " +
+              "(1, 'us-east', 10.5), (2, 'us-west', 20.3), (3, 'eu', 30.7)")
+        }
+      }
+      assert(snapshot.snapshotDelta == 1L, s"expected 1 commit, got ${snapshot.snapshotDelta}")
+      val (commits, writes) = collectIcebergWriteOps(snapshot.plans)
+      assert(
+        commits.isEmpty && writes.isEmpty,
+        "expected Spark's own write plan with Comet disabled. Plans:\n" +
+          snapshot.plans.mkString("\n--\n"))
+      assertRows("comet_disabled", expectedIds = Seq(1, 2, 3))
+    }
+  }
+
   test("AppendData partitioned INSERT INTO routes through two-op") {
     assume(icebergAvailable, "Iceberg not available in classpath")
     withIcebergCatalog { warehouseDir =>
