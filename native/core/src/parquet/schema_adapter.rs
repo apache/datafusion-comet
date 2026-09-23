@@ -18,7 +18,7 @@
 use crate::parquet::cast_column::CometCastColumnExpr;
 use crate::parquet::name_fold::{fold_name, fold_names, fold_schema_names};
 use crate::parquet::parquet_support::{
-    match_struct_fields, spark_parquet_convert, SparkParquetOptions,
+    duplicate_parquet_field_error, match_struct_fields, spark_parquet_convert, SparkParquetOptions,
 };
 use arrow::array::new_empty_array;
 use arrow::compute::can_cast_types;
@@ -97,8 +97,8 @@ fn schema_has_field_ids(schema: &SchemaRef) -> bool {
 /// (`build_projection_read_plan`'s cast-clipping, apache/datafusion#24090) can see the cast
 /// and read only the requested Parquet leaves, instead of falling back to a full-column read
 /// because it can't recognize `CometCastColumnExpr`.
-/// This is also a decoder-safety obligation: returning true bypasses full-subtree
-/// duplicate validation, so every omitted sibling must actually be clipped from the read.
+/// This is also a decoder-safety obligation: returning true bypasses full-subtree duplicate
+/// validation, so every omitted sibling must actually be clipped from the read.
 ///
 /// This is deliberately an allow list, not a deny list: it only recurses through the two
 /// container shapes `nested_struct::cast_column` actually implements (Struct, List /
@@ -820,10 +820,7 @@ fn check_decoded_field_names(data_type: &DataType) -> DataFusionResult<()> {
             let mut names = HashSet::with_capacity(fields.len());
             for field in fields {
                 if !names.insert(field.name()) {
-                    return Err(DataFusionError::Execution(format!(
-                        "Found duplicate Parquet field name '{}'",
-                        field.name()
-                    )));
+                    return Err(duplicate_parquet_field_error(field.name()));
                 }
                 check_decoded_field_names(field.data_type())?;
             }
@@ -840,6 +837,15 @@ fn check_decoded_field_names(data_type: &DataType) -> DataFusionResult<()> {
         _ => {}
     }
     Ok(())
+}
+
+/// Check an expression before it can decode its entire physical subtree.
+fn checked_decoded_expr(
+    physical_type: &DataType,
+    expr: Arc<dyn PhysicalExpr>,
+) -> DataFusionResult<Arc<dyn PhysicalExpr>> {
+    check_decoded_field_names(physical_type)?;
+    Ok(expr)
 }
 
 /// Whether `col_name` (with folded form `col_folded`) is case-insensitively ambiguous in the
@@ -908,21 +914,36 @@ impl PhysicalExprAdapterFactory for SparkPhysicalExprAdapterFactory {
             (Arc::clone(&physical_file_schema), None)
         };
 
-        let mut duplicates: HashMap<String, Vec<usize>> = HashMap::new();
-        for (i, name) in fold_schema_names(&physical_file_schema, case_sensitive)?
-            .into_iter()
-            .enumerate()
-        {
-            duplicates.entry(name).or_default().push(i);
-        }
-        duplicates.retain(|_, indices| indices.len() > 1);
-        let original_physical_dup_check =
-            (!duplicates.is_empty()).then(|| (Arc::clone(&physical_file_schema), duplicates));
-
         // Fold both schemas once here so the per-column rewrite paths reuse them instead of
         // re-folding on every `rewrite` call. Case-sensitive mode folds to identity.
         let logical_folded = fold_schema_names(&logical_file_schema, case_sensitive)?;
         let physical_folded = fold_schema_names(&adapted_physical_schema, case_sensitive)?;
+        let original_folded = if Arc::ptr_eq(&adapted_physical_schema, &physical_file_schema) {
+            None
+        } else {
+            Some(fold_schema_names(&physical_file_schema, case_sensitive)?)
+        };
+        let original_folded = original_folded.as_ref().unwrap_or(&physical_folded);
+
+        // Only allocate per-column index vectors when a folded name actually collides.
+        let mut seen = HashSet::new();
+        let mut collisions = HashSet::new();
+        for name in original_folded {
+            if !seen.insert(name.as_str()) {
+                collisions.insert(name.as_str());
+            }
+        }
+        let original_physical_dup_check = if collisions.is_empty() {
+            None
+        } else {
+            let mut duplicates: HashMap<String, Vec<usize>> = HashMap::new();
+            for (i, name) in original_folded.iter().enumerate() {
+                if collisions.contains(name.as_str()) {
+                    duplicates.entry(name.clone()).or_default().push(i);
+                }
+            }
+            Some((Arc::clone(&physical_file_schema), duplicates))
+        };
 
         // Folded names of logical fields that resolve by Parquet field id. Spark's `matchIdField`
         // selects these by id before comparing names, so the duplicate check must
@@ -1026,6 +1047,9 @@ struct SparkPhysicalExprAdapter {
     /// these by id before comparing names, so the duplicate check above must not fire for them.
     /// `None` when not matching by id.
     id_resolved_logical_folded: Option<HashSet<String>>,
+    /// Folded logical name -> byte-identical duplicate physical name. Populated only when
+    /// matching by field ID, then checked before the ID-resolved name skip so decoded duplicate
+    /// roots still fail.
     id_duplicate_roots: HashMap<String, String>,
     /// `logical_file_schema` field names pre-folded once (see `fold_names`), parallel to
     /// `logical_file_schema.fields()`. Lets the per-column rewrite fallbacks match by folded name
@@ -1054,9 +1078,7 @@ impl PhysicalExprAdapter for SparkPhysicalExprAdapter {
             let col_folded = fold_names(&col_refs, self.parquet_options.case_sensitive)?;
             for (name, folded) in col_names.iter().zip(&col_folded) {
                 if let Some(physical_name) = self.id_duplicate_roots.get(folded) {
-                    return Err(DataFusionError::Execution(format!(
-                        "Found duplicate Parquet field name '{physical_name}'"
-                    )));
+                    return Err(duplicate_parquet_field_error(physical_name));
                 }
                 // Fields resolved by Parquet field id are selected by id before names are
                 // compared, so an id-resolved column must not trip the name-ambiguity check
@@ -1069,9 +1091,7 @@ impl PhysicalExprAdapter for SparkPhysicalExprAdapter {
                     continue;
                 }
                 if self.parquet_options.case_sensitive && folded_to_indices.contains_key(folded) {
-                    return Err(DataFusionError::Execution(format!(
-                        "Found duplicate Parquet field name '{name}'"
-                    )));
+                    return Err(duplicate_parquet_field_error(name));
                 }
                 if let Some(err) =
                     check_column_duplicate(name, folded, folded_to_indices, orig_physical)
@@ -1154,9 +1174,7 @@ impl SparkPhysicalExprAdapter {
             return Ok(expr);
         };
 
-        check_decoded_field_names(physical_field.data_type())?;
-
-        Ok(Arc::new(
+        let cast: Arc<dyn PhysicalExpr> = Arc::new(
             CometCastColumnExpr::try_new(
                 expr,
                 Arc::clone(physical_field),
@@ -1164,7 +1182,8 @@ impl SparkPhysicalExprAdapter {
                 None,
             )?
             .with_parquet_options(self.parquet_options.clone()),
-        ))
+        );
+        checked_decoded_expr(physical_field.data_type(), cast)
     }
 
     /// Wrap ALL Column expressions that have type mismatches with CometCastColumnExpr.
@@ -1233,18 +1252,20 @@ impl SparkPhysicalExprAdapter {
                                 physical_type: leaf_physical_type,
                                 target_type: leaf_target_type,
                             } => {
-                                check_decoded_field_names(physical_field.data_type())?;
-                                return Ok(Transformed::yes(reject_on_non_empty_expr(
+                                let rejected = reject_on_non_empty_expr(
                                     remapped,
                                     logical_field,
                                     &column,
                                     &leaf_physical_type,
                                     &leaf_target_type,
-                                )));
+                                );
+                                return Ok(Transformed::yes(checked_decoded_expr(
+                                    physical_field.data_type(),
+                                    rejected,
+                                )?));
                             }
                         }
 
-                        check_decoded_field_names(physical_field.data_type())?;
                         let cast_expr: Arc<dyn PhysicalExpr> = Arc::new(
                             CometCastColumnExpr::try_new(
                                 remapped,
@@ -1254,7 +1275,10 @@ impl SparkPhysicalExprAdapter {
                             )?
                             .with_parquet_options(self.parquet_options.clone()),
                         );
-                        return Ok(Transformed::yes(cast_expr));
+                        return Ok(Transformed::yes(checked_decoded_expr(
+                            physical_field.data_type(),
+                            cast_expr,
+                        )?));
                     } else if column.index() != phys_idx {
                         return Ok(Transformed::yes(remapped));
                     }
@@ -1292,16 +1316,16 @@ impl SparkPhysicalExprAdapter {
                 .target_field()
                 .has_valid_extension_type::<VariantType>()
             {
-                check_decoded_field_names(physical_type)?;
                 let comet_cast: Arc<dyn PhysicalExpr> = Arc::new(
                     CometCastColumnExpr::try_new(
                         child,
-                        input_field,
+                        Arc::clone(&input_field),
                         Arc::clone(cast.target_field()),
                         None,
                     )?
                     .with_parquet_options(self.parquet_options.clone()),
                 );
+                let comet_cast = checked_decoded_expr(physical_type, comet_cast)?;
                 return Ok(Transformed::yes(comet_cast));
             }
 
@@ -1337,14 +1361,17 @@ impl SparkPhysicalExprAdapter {
                     physical_type: leaf_physical_type,
                     target_type: leaf_target_type,
                 } => {
-                    check_decoded_field_names(physical_type)?;
-                    return Ok(Transformed::yes(reject_on_non_empty_expr(
+                    let rejected = reject_on_non_empty_expr(
                         child,
                         cast.target_field(),
                         &column,
                         &leaf_physical_type,
                         &leaf_target_type,
-                    )));
+                    );
+                    return Ok(Transformed::yes(checked_decoded_expr(
+                        physical_type,
+                        rejected,
+                    )?));
                 }
             }
 
@@ -1381,8 +1408,6 @@ impl SparkPhysicalExprAdapter {
                 return Ok(Transformed::no(expr));
             }
 
-            check_decoded_field_names(physical_type)?;
-
             // Complex casts (including changes in list representation), timestamp tz relabel
             // (e.g. Timestamp(us, None) -> Timestamp(us, Some("UTC")) for INT96 reads), and
             // Timestamp -> Int64
@@ -1411,12 +1436,13 @@ impl SparkPhysicalExprAdapter {
                 let comet_cast: Arc<dyn PhysicalExpr> = Arc::new(
                     CometCastColumnExpr::try_new(
                         child,
-                        input_field,
+                        Arc::clone(&input_field),
                         Arc::clone(cast.target_field()),
                         None,
                     )?
                     .with_parquet_options(self.parquet_options.clone()),
                 );
+                let comet_cast = checked_decoded_expr(physical_type, comet_cast)?;
                 return Ok(Transformed::yes(comet_cast));
             }
 
@@ -1437,7 +1463,10 @@ impl SparkPhysicalExprAdapter {
                 None,
             ));
 
-            return Ok(Transformed::yes(spark_cast as Arc<dyn PhysicalExpr>));
+            return Ok(Transformed::yes(checked_decoded_expr(
+                physical_type,
+                spark_cast as Arc<dyn PhysicalExpr>,
+            )?));
         }
 
         Ok(Transformed::no(expr))
@@ -3566,6 +3595,57 @@ mod test {
             .return_field(&physical)
             .unwrap()
             .has_valid_extension_type::<VariantType>());
+    }
+
+    #[test]
+    fn variant_with_duplicate_physical_children_is_rejected() {
+        let physical_type = DataType::Struct(Fields::from(vec![
+            Field::new("value", DataType::Binary, false),
+            Field::new("value", DataType::Binary, false),
+            Field::new("metadata", DataType::Binary, false),
+        ]));
+        let canonical_type = DataType::Struct(Fields::from(vec![
+            Field::new("value", DataType::Binary, false),
+            Field::new("metadata", DataType::Binary, false),
+        ]));
+        for logical_type in [physical_type.clone(), canonical_type] {
+            let identical = logical_type == physical_type;
+            let logical = Arc::new(Schema::new(vec![
+                Field::new("v", logical_type, true).with_extension_type(VariantType)
+            ]));
+            let physical = Arc::new(Schema::new(vec![Field::new(
+                "v",
+                physical_type.clone(),
+                true,
+            )
+            .with_extension_type(VariantType)]));
+            let default = super::DefaultPhysicalExprAdapterFactory
+                .create(Arc::clone(&logical), Arc::clone(&physical))
+                .unwrap()
+                .rewrite(Arc::new(Column::new("v", 0)))
+                .unwrap();
+            if identical {
+                assert!(default.downcast_ref::<Column>().is_some());
+            } else {
+                assert!(default
+                    .downcast_ref::<datafusion::physical_expr::expressions::CastExpr>()
+                    .is_some());
+            }
+            let adapter = SparkPhysicalExprAdapterFactory::new(
+                SparkParquetOptions::new(EvalMode::Legacy, "UTC", false),
+                None,
+            )
+            .create(logical, physical)
+            .unwrap();
+            let error = adapter
+                .rewrite(Arc::new(Column::new("v", 0)))
+                .expect_err("variant decoding must reject duplicate physical children")
+                .to_string();
+            assert!(
+                error.contains("duplicate Parquet field name 'value'"),
+                "{error}"
+            );
+        }
     }
 
     #[test]

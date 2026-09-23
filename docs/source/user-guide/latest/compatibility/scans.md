@@ -70,11 +70,12 @@ The following limitations raise an error at scan time rather than falling back t
   byte-identical duplicate siblings anywhere in the decoded physical subtree, including maps.
   Field-ID resolution retains precedence, but selecting a byte-identically duplicated physical
   root name still raises a duplicate-field error, even when the requested field is renamed.
-  Names in separate groups do not collide. In case-sensitive mode Spark instead silently picks
-  one sibling, so disable Comet for the query with an explicit read schema to use that
-  resolution; a schema inferred from a file containing duplicate names is rejected by Spark
-  before Comet runs. Spark-compatible resolution is tracked in
-  [#5884](https://github.com/apache/datafusion-comet/issues/5884).
+  Names in separate groups do not collide. Spark may read a duplicate-bearing file with an
+  explicit schema in case-sensitive mode, but its choice of sibling depends on the field shape
+  and can produce unexpected values. Spark rejects schema inference from a single file with
+  duplicate names; inference across files can depend on merge order.
+  Resolution is tracked in [#5884](https://github.com/apache/datafusion-comet/issues/5884),
+  with mixed-type behavior in [#5964](https://github.com/apache/datafusion-comet/issues/5964).
 - Invalid UTF-8 bytes in `STRING` columns. Spark permits arbitrary byte sequences in a `STRING`
   column (for example from `CAST(X'C1' AS STRING)`), but Comet's native execution path is built on
   Arrow, whose string type is strictly UTF-8. Reading a Parquet file whose `STRING` column contains

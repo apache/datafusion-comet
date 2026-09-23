@@ -61,6 +61,10 @@ use super::objectstore::s3_blob_fs_support::{
     normalize_object_store_url, NormalizedObjectStoreUrl,
 };
 
+pub(crate) fn duplicate_parquet_field_error(name: &str) -> DataFusionError {
+    DataFusionError::Execution(format!("Found duplicate Parquet field name '{name}'"))
+}
+
 // This file originates from cast.rs. While developing native scan support and implementing
 // SparkSchemaAdapter we observed that Spark's type conversion logic on Parquet reads does not
 // always align to the CAST expression's logic, so it was duplicated here to adapt its behavior.
@@ -476,10 +480,7 @@ pub(crate) fn match_struct_fields(
                     // Reject selected ambiguity before a decoder can multiply rows.
                     Some(indices) if indices.len() > 1 => {
                         if parquet_options.case_sensitive {
-                            return Err(DataFusionError::Execution(format!(
-                                "Found duplicate Parquet field name '{}'",
-                                to_field.name()
-                            )));
+                            return Err(duplicate_parquet_field_error(to_field.name()));
                         }
                         let matched: Vec<&str> = indices
                             .iter()

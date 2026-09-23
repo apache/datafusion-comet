@@ -144,8 +144,7 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
         Seq("true", "false").foreach { mergeSchema =>
           Seq(true, false).foreach { caseSensitive =>
             withSQLConf(SQLConf.CASE_SENSITIVE.key -> caseSensitive.toString) {
-              // mergeSchema only affects inference, and Spark already rejects inference for a
-              // duplicate-bearing file, so an explicit schema reads the unique sibling natively.
+              // mergeSchema only affects inference; an explicit schema reads the unique sibling.
               val unique = spark.read
                 .option("mergeSchema", mergeSchema)
                 .schema("s struct<other: bigint>")
@@ -170,7 +169,7 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
         }
         withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
           val inferred = intercept[org.apache.spark.sql.AnalysisException] {
-            spark.read.option("mergeSchema", "true").parquet(paths: _*).collect()
+            spark.read.parquet(duplicatePath.toString).schema
           }
           assert(inferred.getMessage.contains("COLUMN_ALREADY_EXISTS"), inferred.getMessage)
         }
