@@ -59,12 +59,14 @@ SELECT element_at(map('a', 1, 'b', 2), 'a'), element_at(map('a', 1, 'b', 2), 'mi
 -- form of each.
 
 -- Spark stores `-0.0` map keys as `+0.0` and compares with `nanSafeCompareDoubles`, so a `-0.0`
--- lookup finds the `+0.0` key. Native lookup compares the raw Arrow values.
+-- lookup finds the `+0.0` key. Native lookup compares the raw Arrow values. The lookup must be
+-- written `-0.0D`: an unsuffixed `-0.0` is a decimal literal, and a decimal has no signed zero, so
+-- `CAST(-0.0 AS DOUBLE)` would look up `+0.0` and find the key on either path.
 query expect_dispatch(element_at)
-SELECT element_at(map(CAST(0 AS DOUBLE), 7), CAST(-0.0 AS DOUBLE))
+SELECT element_at(map(CAST(0 AS DOUBLE), 7), -0.0D)
 
 query expect_dispatch(element_at)
-SELECT element_at(map(CAST(0 AS FLOAT), 7), CAST(-0.0 AS FLOAT))
+SELECT element_at(map(CAST(0 AS FLOAT), 7), CAST(-0.0D AS FLOAT))
 
 -- Spark's `nanSafeCompareDoubles` treats NaN as equal to itself, so a NaN lookup finds a NaN key.
 query expect_dispatch(element_at)
@@ -73,7 +75,7 @@ SELECT element_at(map(CAST('NaN' AS DOUBLE), 7), CAST('NaN' AS DOUBLE))
 -- The floating-point decline walks every nesting level of the key type, so an array-of-double key
 -- is dispatched for the same reason.
 query expect_dispatch(element_at)
-SELECT element_at(map(array(CAST(0 AS DOUBLE)), 7), array(CAST(-0.0 AS DOUBLE)))
+SELECT element_at(map(array(CAST(0 AS DOUBLE)), 7), array(-0.0D))
 
 -- A complex key type: `map_extract` casts the lookup key to the map's exact Arrow key type, so a
 -- NULL inside the lookup key would abort the cast instead of missing the lookup.
