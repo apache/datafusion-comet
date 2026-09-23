@@ -104,6 +104,11 @@ pub struct SparkParquetOptions {
     /// requested schema does carry ids raises a runtime error rather than silently
     /// producing nulls (mirrors `spark.sql.parquet.fieldId.read.ignoreMissing`).
     pub ignore_missing_field_id: bool,
+    /// Whether the schema Spark asked the scan for carries a Parquet field id at any depth.
+    /// Spark's `ParquetReadSupport` runs its missing-id check against that pruned schema, so
+    /// the planner computes this once from `required_schema`. The reader factory tests it when
+    /// it reads a file's footer, against the Parquet schema found there.
+    pub requested_schema_has_field_ids: bool,
     /// Whether type promotion (schema evolution) is allowed, e.g. INT32 -> INT64,
     /// FLOAT -> DOUBLE. Mirrors spark.comet.schemaEvolution.enabled.
     pub allow_type_promotion: bool,
@@ -132,6 +137,7 @@ impl SparkParquetOptions {
             return_null_struct_if_all_fields_missing: true,
             use_field_id: false,
             ignore_missing_field_id: false,
+            requested_schema_has_field_ids: false,
             allow_type_promotion: false,
             allow_timestamp_ltz_to_ntz: false,
             checked_timestamp_overflow: true,
@@ -149,6 +155,7 @@ impl SparkParquetOptions {
             return_null_struct_if_all_fields_missing: true,
             use_field_id: false,
             ignore_missing_field_id: false,
+            requested_schema_has_field_ids: false,
             allow_type_promotion: false,
             allow_timestamp_ltz_to_ntz: false,
             checked_timestamp_overflow: true,
@@ -416,15 +423,27 @@ fn field_id(field: &arrow::datatypes::Field) -> Option<i32> {
 
 /// True when a field in `fields`, at any nesting depth, carries a Parquet field id. Spark's
 /// `containsFieldIds` walks the whole file schema the same way, and `ParquetUtils.hasFieldIds`
-/// walks the read schema. The root-only `schema_has_field_ids` in the schema adapter stays as the
-/// gate for id matching, which only ever renames root fields.
+/// walks the read schema. The planner runs this over the requested schema once, at plan time.
+/// The file side is not an Arrow walk at all: the reader factory checks the Parquet schema in
+/// the footer, because the Arrow schema the adapter sees can lose ids (the INT96 coercion
+/// rebuilds container fields without their metadata) and never shows an id that sits on a
+/// `list` or `key_value` group. The root-only `schema_has_field_ids` in the schema adapter
+/// stays as the gate for id matching, which only ever renames root fields.
 pub(crate) fn any_nested_field_has_id(fields: &Fields) -> bool {
     fields.iter().any(|f| field_holds_id(f))
 }
 
-/// Whether `field` or anything nested under it carries a Parquet field id. Dictionary and
-/// run-end-encoded wrappers are not walked, because the Parquet read path never nests a struct,
-/// list or map inside them.
+/// Whether `field` or anything nested under it carries a Parquet field id.
+///
+/// This walks the requested schema, where only struct fields can hold the metadata: Spark's
+/// `hasFieldIds` recurses through `ArrayType` and `MapType` into their element and key or value
+/// types, only a `StructField` carries metadata, and the serde never populates the element or
+/// key and value fields. The walk still descends through list and map fields to reach the
+/// structs nested inside them. The file side is checked by the reader factory over the raw
+/// Parquet schema, where any node can carry an id, as Spark's `containsFieldIds` does.
+///
+/// Dictionary and run-end-encoded wrappers are not walked, because the Parquet read path never
+/// nests a struct, list or map inside them.
 fn field_holds_id(field: &Field) -> bool {
     field_id(field).is_some()
         || match field.data_type() {

@@ -18,7 +18,7 @@
 use crate::parquet::cast_column::CometCastColumnExpr;
 use crate::parquet::name_fold::{fold_name, fold_names, fold_schema_names};
 use crate::parquet::parquet_support::{
-    any_nested_field_has_id, match_struct_fields, spark_parquet_convert, SparkParquetOptions,
+    match_struct_fields, spark_parquet_convert, SparkParquetOptions,
 };
 use arrow::array::new_empty_array;
 use arrow::compute::can_cast_types;
@@ -79,7 +79,7 @@ fn parse_field_id(field: &Field) -> Option<i32> {
 /// True when a root field of `schema` carries a Parquet field id. This stays root-only on
 /// purpose: it gates the root name remap, and Spark's `clipParquetGroupFields` decides id
 /// matching one struct level at a time. Whether a file holds ids at all is a different question,
-/// answered at every depth by `any_nested_field_has_id` in `parquet_support`.
+/// answered by the reader factory over the raw Parquet schema before the adapter is built.
 fn schema_has_field_ids(schema: &SchemaRef) -> bool {
     schema.fields().iter().any(|f| parse_field_id(f).is_some())
 }
@@ -207,7 +207,7 @@ fn remap_physical_schema(
     use_field_id: bool,
 ) -> DataFusionResult<(SchemaRef, HashMap<String, String>)> {
     // Root ids alone decide whether to match by id here. The check that the file holds ids at
-    // all runs earlier, in `create`, and looks at every nesting level.
+    // all runs earlier, in the reader factory, over the raw Parquet schema.
     let should_match_by_id = use_field_id && schema_has_field_ids(logical_schema);
 
     // Build id -> all matching physical field names. We need the full list so we can mirror
@@ -850,20 +850,11 @@ impl PhysicalExprAdapterFactory for SparkPhysicalExprAdapterFactory {
         // (reassign_expr_columns) looks up columns by name in the actual stream schema,
         // which uses the original physical file column names.
         //
-        // Before any of that, mirror the eager check in Spark's `ParquetReadSupport`: a read
-        // schema that carries field ids at any depth may not read a file that carries none at
-        // any depth, unless `ignoreMissing` is set. Spark applies this check whether or not
-        // `fieldId.read.enabled` is on, so it runs before the id matching gate below and does
-        // not depend on the remap.
-        if !self.parquet_options.ignore_missing_field_id
-            && any_nested_field_has_id(logical_file_schema.fields())
-            && !any_nested_field_has_id(physical_file_schema.fields())
-        {
-            return Err(DataFusionError::External(Box::new(
-                SparkError::ParquetMissingFieldIds,
-            )));
-        }
-
+        // The check that a file carries field ids at all, which Spark's `ParquetReadSupport`
+        // runs before anything else, lives in `EagerPageIndexReader::get_metadata`, where the
+        // raw Parquet schema is at hand. By the time the schemas reach this point the INT96
+        // coercion may have dropped the ids from container fields, so `physical_file_schema`
+        // cannot answer that question.
         let case_sensitive = self.parquet_options.case_sensitive;
         let should_match_by_id =
             self.parquet_options.use_field_id && schema_has_field_ids(&logical_file_schema);
@@ -1544,7 +1535,8 @@ impl PhysicalExpr for RejectOnNonEmpty {
 #[cfg(test)]
 mod test {
     use crate::parquet::cast_column::CometCastColumnExpr;
-    use crate::parquet::parquet_support::SparkParquetOptions;
+    use crate::parquet::parquet_exec::init_datasource_exec;
+    use crate::parquet::parquet_support::{ObjectStoreBackend, SparkParquetOptions};
     use crate::parquet::schema_adapter::{
         check_conversion, is_pure_structural_narrowing, ConversionCheck,
         SparkPhysicalExprAdapterFactory,
@@ -1572,12 +1564,18 @@ mod test {
     use datafusion::physical_expr::expressions::Column;
     use datafusion::physical_expr::PhysicalExpr;
     use datafusion::physical_plan::{ExecutionPlan, SendableRecordBatchStream};
+    use datafusion::prelude::SessionContext;
     use datafusion_comet_spark_expr::test_common::file_util::get_temp_filename;
     use datafusion_comet_spark_expr::EvalMode;
     use datafusion_physical_expr_adapter::PhysicalExprAdapterFactory;
     use futures::StreamExt;
+    use parquet::arrow::arrow_writer::ArrowWriterOptions;
     use parquet::arrow::ArrowWriter;
     use parquet::arrow::PARQUET_FIELD_ID_META_KEY;
+    use parquet::basic::{LogicalType, Repetition, Type as PhysicalType};
+    use parquet::data_type::{Int32Type as ParquetInt32Type, Int96, Int96Type};
+    use parquet::file::writer::SerializedFileWriter;
+    use parquet::schema::types::Type as ParquetType;
     use parquet::variant::VariantType;
     use std::collections::HashMap;
     use std::fs::File;
@@ -2870,14 +2868,105 @@ mod test {
         Ok(())
     }
 
-    /// Run `scan_parquet` and return the message of the error it raises, either while planning
-    /// the scan or on the first poll of the stream.
-    async fn scan_error_message(
+    /// The message every rejected read carries, from `SparkError::ParquetMissingFieldIds`.
+    const MISSING_IDS: &str = "Parquet file schema doesn't contain any field Ids";
+
+    /// A fresh temporary file path as a `String`.
+    fn temp_filename() -> String {
+        let filename = get_temp_filename();
+        filename.as_path().as_os_str().to_str().unwrap().to_string()
+    }
+
+    /// Write `batch` to a temporary file and return its path. With `skip_arrow_metadata` the
+    /// file carries no Arrow schema hint, so the reader derives every field, ids included, from
+    /// the Parquet schema alone.
+    fn write_parquet(
         batch: &RecordBatch,
+        skip_arrow_metadata: bool,
+    ) -> Result<String, DataFusionError> {
+        let filename = temp_filename();
+        let file = File::create(&filename)?;
+        let options = ArrowWriterOptions::new().with_skip_arrow_metadata(skip_arrow_metadata);
+        let mut writer = ArrowWriter::try_new_with_options(file, batch.schema(), options)?;
+        writer.write(batch)?;
+        writer.close()?;
+        Ok(filename)
+    }
+
+    /// A one-column batch `name: int32` holding 1 and 2, with `metadata` on the field.
+    fn int_batch(name: &str, metadata: HashMap<String, String>) -> RecordBatch {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new(name, DataType::Int32, true).with_metadata(metadata)
+        ]));
+        RecordBatch::try_new(
+            schema,
+            vec![Arc::new(Int32Array::from(vec![1, 2])) as ArrayRef],
+        )
+        .unwrap()
+    }
+
+    /// What the planner hands `init_datasource_exec` that the field id tests vary.
+    struct PlannerScan {
         required_schema: SchemaRef,
-        options: SparkParquetOptions,
+        data_schema: SchemaRef,
+        projection: Vec<usize>,
+        use_field_id: bool,
+        ignore_missing_field_id: bool,
+        case_sensitive: bool,
+    }
+
+    impl PlannerScan {
+        /// A scan that reads all of `required_schema`, as an unpruned query does.
+        fn of(required_schema: SchemaRef) -> Self {
+            Self {
+                data_schema: Arc::clone(&required_schema),
+                projection: (0..required_schema.fields().len()).collect(),
+                required_schema,
+                use_field_id: false,
+                ignore_missing_field_id: false,
+                case_sensitive: false,
+            }
+        }
+    }
+
+    /// Scan `filename` the way the planner does, through `init_datasource_exec`, so the reader
+    /// factory and the schema adapter see exactly what a Spark query hands them: `data_schema`
+    /// is the full read schema, `required_schema` the pruned one and `projection` picks the
+    /// required columns out of `data_schema`.
+    fn scan_file_via_planner(
+        filename: String,
+        scan: PlannerScan,
+    ) -> Result<SendableRecordBatchStream, DataFusionError> {
+        let session_ctx = Arc::new(SessionContext::new());
+        let exec = init_datasource_exec(
+            scan.required_schema,
+            Some(scan.data_schema),
+            None,
+            ObjectStoreUrl::local_filesystem(),
+            ObjectStoreBackend::Local,
+            vec![vec![PartitionedFile::from_path(filename)?]],
+            Some(scan.projection),
+            None,
+            None,
+            "UTC",
+            scan.case_sensitive,
+            true,
+            false,
+            false,
+            &session_ctx,
+            false,
+            scan.use_field_id,
+            scan.ignore_missing_field_id,
+        )
+        .expect("planning the scan");
+        exec.execute(0, session_ctx.task_ctx())
+    }
+
+    /// The message of the error a scan raises, either while planning or on its first poll.
+    async fn first_poll_error(
+        stream: Result<SendableRecordBatchStream, DataFusionError>,
     ) -> String {
-        match scan_parquet(batch, required_schema, options) {
+        match stream {
             Err(err) => err.to_string(),
             Ok(mut stream) => stream
                 .next()
@@ -2901,24 +2990,20 @@ mod test {
     /// rejection fires even when `fieldId.read.enabled` is off. A case-sensitive session keeps
     /// the name remap out of the picture.
     #[tokio::test]
-    async fn missing_file_field_ids_rejected_when_id_matching_disabled() {
-        let file_schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, true)]));
-        let batch = RecordBatch::try_new(
-            file_schema,
-            vec![Arc::new(Int32Array::from(vec![1, 2])) as ArrayRef],
-        )
-        .unwrap();
+    async fn missing_file_field_ids_rejected_when_id_matching_disabled(
+    ) -> Result<(), DataFusionError> {
+        let batch = int_batch("a", HashMap::new());
         let required_schema = Arc::new(Schema::new(vec![
             Field::new("a", DataType::Int32, true).with_metadata(id_meta("1"))
         ]));
-        let mut options = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
-        options.use_field_id = false;
-        options.case_sensitive = true;
-        let msg = scan_error_message(&batch, required_schema, options).await;
-        assert!(
-            msg.contains("Parquet file schema doesn't contain any field Ids"),
-            "unexpected error: {msg}"
-        );
+        let scan = PlannerScan {
+            case_sensitive: true,
+            ..PlannerScan::of(required_schema)
+        };
+        let msg =
+            first_poll_error(scan_file_via_planner(write_parquet(&batch, false)?, scan)).await;
+        assert!(msg.contains(MISSING_IDS), "unexpected error: {msg}");
+        Ok(())
     }
 
     /// A read schema whose only ids sit on struct children still expects ids, as Spark's
@@ -2932,19 +3017,20 @@ mod test {
         let required_schema = struct_schema(vec![
             Field::new("a", DataType::Int32, true).with_metadata(id_meta("11"))
         ]);
-        let mut options = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
-        options.use_field_id = true;
-        let msg = scan_error_message(&batch, required_schema, options).await;
-        assert!(
-            msg.contains("Parquet file schema doesn't contain any field Ids"),
-            "unexpected error: {msg}"
-        );
+        let scan = PlannerScan {
+            use_field_id: true,
+            ..PlannerScan::of(required_schema)
+        };
+        let msg =
+            first_poll_error(scan_file_via_planner(write_parquet(&batch, false)?, scan)).await;
+        assert!(msg.contains(MISSING_IDS), "unexpected error: {msg}");
         Ok(())
     }
 
     /// Ids that only appear below the root of the file still count as ids, as in Spark's
     /// `containsFieldIds`. The read passes the missing-id check, resolves the nested field by
-    /// id, and null-fills a root field whose id the file does not hold.
+    /// id, and null-fills a root field whose id the file does not hold. The second round writes
+    /// the file without an Arrow schema hint, so the ids come from the Parquet schema alone.
     #[tokio::test]
     async fn nested_file_field_ids_satisfy_the_missing_id_check() -> Result<(), DataFusionError> {
         let batch = nested_id_batch()?;
@@ -2958,14 +3044,23 @@ mod test {
             ),
             Field::new("missing", DataType::Int32, true).with_metadata(id_meta("7")),
         ]));
-        let mut options = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
-        options.use_field_id = true;
-        let mut stream = scan_parquet(&batch, required_schema, options)?;
-        let result = stream.next().await.unwrap()?;
-        assert_eq!(result.num_rows(), 2);
-        let s = result.column(0).as_struct();
-        assert_eq!(s.column(0).as_primitive::<Int32Type>().values(), &[1, 2]);
-        assert_eq!(result.column(1).null_count(), 2);
+        for skip_arrow_metadata in [false, true] {
+            let scan = PlannerScan {
+                use_field_id: true,
+                ..PlannerScan::of(Arc::clone(&required_schema))
+            };
+            let mut stream =
+                scan_file_via_planner(write_parquet(&batch, skip_arrow_metadata)?, scan)?;
+            let result = stream.next().await.unwrap()?;
+            assert_eq!(
+                result.num_rows(),
+                2,
+                "skip_arrow_metadata={skip_arrow_metadata}"
+            );
+            let s = result.column(0).as_struct();
+            assert_eq!(s.column(0).as_primitive::<Int32Type>().values(), &[1, 2]);
+            assert_eq!(result.column(1).null_count(), 2);
+        }
         Ok(())
     }
 
@@ -2974,18 +3069,16 @@ mod test {
     #[tokio::test]
     async fn missing_file_field_ids_allowed_when_ignore_missing_is_set(
     ) -> Result<(), DataFusionError> {
-        let file_schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, true)]));
-        let batch = RecordBatch::try_new(
-            file_schema,
-            vec![Arc::new(Int32Array::from(vec![1, 2])) as ArrayRef],
-        )?;
+        let batch = int_batch("a", HashMap::new());
         let required_schema = Arc::new(Schema::new(vec![
             Field::new("a", DataType::Int32, true).with_metadata(id_meta("1"))
         ]));
-        let mut options = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
-        options.use_field_id = true;
-        options.ignore_missing_field_id = true;
-        let mut stream = scan_parquet(&batch, required_schema, options)?;
+        let scan = PlannerScan {
+            use_field_id: true,
+            ignore_missing_field_id: true,
+            ..PlannerScan::of(required_schema)
+        };
+        let mut stream = scan_file_via_planner(write_parquet(&batch, false)?, scan)?;
         let result = stream.next().await.unwrap()?;
         assert_eq!(result.num_rows(), 2);
         assert_eq!(result.column(0).null_count(), 2);
@@ -2997,20 +3090,12 @@ mod test {
     /// the file holds a field with the same id.
     #[tokio::test]
     async fn file_ids_ignored_when_id_matching_disabled() -> Result<(), DataFusionError> {
-        let file_schema = Arc::new(Schema::new(vec![
-            Field::new("a", DataType::Int32, true).with_metadata(id_meta("1"))
-        ]));
-        let batch = RecordBatch::try_new(
-            file_schema,
-            vec![Arc::new(Int32Array::from(vec![1, 2])) as ArrayRef],
-        )?;
+        let batch = int_batch("a", id_meta("1"));
         let required_schema = Arc::new(Schema::new(vec![
             Field::new("b", DataType::Int32, true).with_metadata(id_meta("1"))
         ]));
-        let mut options = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
-        options.use_field_id = false;
-        options.ignore_missing_field_id = false;
-        let mut stream = scan_parquet(&batch, required_schema, options)?;
+        let scan = PlannerScan::of(required_schema);
+        let mut stream = scan_file_via_planner(write_parquet(&batch, false)?, scan)?;
         let result = stream.next().await.unwrap()?;
         assert_eq!(result.num_rows(), 2);
         assert_eq!(result.column(0).null_count(), 2);
@@ -3021,22 +3106,354 @@ mod test {
     /// The file name differs only in case so the adapter is still created.
     #[tokio::test]
     async fn no_logical_field_ids_never_rejects() -> Result<(), DataFusionError> {
-        let file_schema = Arc::new(Schema::new(vec![Field::new("A", DataType::Int32, true)]));
-        let batch = RecordBatch::try_new(
-            file_schema,
-            vec![Arc::new(Int32Array::from(vec![1, 2])) as ArrayRef],
-        )?;
+        let batch = int_batch("A", HashMap::new());
         let required_schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, true)]));
-        let mut options = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
-        options.use_field_id = true;
-        options.ignore_missing_field_id = false;
-        options.case_sensitive = false;
-        let mut stream = scan_parquet(&batch, required_schema, options)?;
+        let scan = PlannerScan {
+            use_field_id: true,
+            ..PlannerScan::of(required_schema)
+        };
+        let mut stream = scan_file_via_planner(write_parquet(&batch, false)?, scan)?;
         let result = stream.next().await.unwrap()?;
         assert_eq!(
             result.column(0).as_primitive::<Int32Type>().values(),
             &[1, 2]
         );
+        Ok(())
+    }
+
+    /// Spark checks for missing file ids against the pruned read schema, so an id on a column
+    /// the query never projects does not reject a file without ids, whatever the read flag
+    /// says. The same read with both columns projected still raises.
+    #[tokio::test]
+    async fn field_ids_on_an_unprojected_column_do_not_reject_a_file_without_ids(
+    ) -> Result<(), DataFusionError> {
+        let file_schema = Arc::new(Schema::new(vec![
+            Field::new("a", DataType::Int32, true),
+            Field::new("b", DataType::Int32, true),
+        ]));
+        let batch = RecordBatch::try_new(
+            file_schema,
+            vec![
+                Arc::new(Int32Array::from(vec![1, 3])) as ArrayRef,
+                Arc::new(Int32Array::from(vec![2, 4])) as ArrayRef,
+            ],
+        )?;
+        let filename = write_parquet(&batch, false)?;
+        let a = Field::new("a", DataType::Int32, true).with_metadata(id_meta("1"));
+        let b = Field::new("b", DataType::Int32, true);
+        let read_schema = Arc::new(Schema::new(vec![a, b.clone()]));
+        let pruned_schema = Arc::new(Schema::new(vec![b]));
+
+        for use_field_id in [false, true] {
+            let scan = PlannerScan {
+                required_schema: Arc::clone(&pruned_schema),
+                projection: vec![1],
+                use_field_id,
+                ..PlannerScan::of(Arc::clone(&read_schema))
+            };
+            let mut stream = scan_file_via_planner(filename.clone(), scan)?;
+            let result = stream.next().await.unwrap()?;
+            assert_eq!(result.num_columns(), 1, "use_field_id={use_field_id}");
+            assert_eq!(
+                result.column(0).as_primitive::<Int32Type>().values(),
+                &[2, 4],
+                "use_field_id={use_field_id}"
+            );
+
+            let scan = PlannerScan {
+                use_field_id,
+                ..PlannerScan::of(Arc::clone(&read_schema))
+            };
+            let msg = first_poll_error(scan_file_via_planner(filename.clone(), scan)).await;
+            assert!(
+                msg.contains(MISSING_IDS),
+                "use_field_id={use_field_id}: unexpected error: {msg}"
+            );
+        }
+        Ok(())
+    }
+
+    /// 2000-01-01T00:00:00Z as an INT96 value: no nanoseconds into Julian day 2451545.
+    fn int96_epoch_2000() -> Int96 {
+        let mut value = Int96::new();
+        value.set_data(0, 0, 2_451_545);
+        value
+    }
+
+    /// 2000-01-01T00:00:00Z in microseconds since the Unix epoch.
+    const EPOCH_2000_MICROS: i64 = 946_684_800_000_000;
+
+    /// Write `message schema { required group s { required int32 a; required int96 ts; } }` with
+    /// rows (1, 2000-01-01) and (2, 2000-01-01) through the low level writer, since the Arrow
+    /// writer cannot produce INT96. `id` goes on the group `s` and nowhere else.
+    fn write_struct_with_int96(id: Option<i32>) -> Result<String, DataFusionError> {
+        let a = Arc::new(
+            ParquetType::primitive_type_builder("a", PhysicalType::INT32)
+                .with_repetition(Repetition::REQUIRED)
+                .build()?,
+        );
+        let ts = Arc::new(
+            ParquetType::primitive_type_builder("ts", PhysicalType::INT96)
+                .with_repetition(Repetition::REQUIRED)
+                .build()?,
+        );
+        let s = Arc::new(
+            ParquetType::group_type_builder("s")
+                .with_repetition(Repetition::REQUIRED)
+                .with_id(id)
+                .with_fields(vec![a, ts])
+                .build()?,
+        );
+        let schema = Arc::new(
+            ParquetType::group_type_builder("schema")
+                .with_fields(vec![s])
+                .build()?,
+        );
+        let filename = temp_filename();
+        let file = File::create(&filename)?;
+        let mut writer = SerializedFileWriter::new(file, schema, Default::default())?;
+        let mut row_group = writer.next_row_group()?;
+        let mut column = row_group.next_column()?.unwrap();
+        column
+            .typed::<ParquetInt32Type>()
+            .write_batch(&[1, 2], None, None)?;
+        column.close()?;
+        let mut column = row_group.next_column()?.unwrap();
+        column.typed::<Int96Type>().write_batch(
+            &[int96_epoch_2000(), int96_epoch_2000()],
+            None,
+            None,
+        )?;
+        column.close()?;
+        row_group.close()?;
+        writer.close()?;
+        Ok(filename)
+    }
+
+    /// Read schema `s (id 1): struct<a: int, ts: timestamp>`, the shape Spark requests for a
+    /// struct holding a timestamp column.
+    fn struct_with_timestamp_schema() -> SchemaRef {
+        Arc::new(Schema::new(vec![Field::new(
+            "s",
+            DataType::Struct(Fields::from(vec![
+                Field::new("a", DataType::Int32, true),
+                Field::new(
+                    "ts",
+                    DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),
+                    true,
+                ),
+            ])),
+            true,
+        )
+        .with_metadata(id_meta("1"))]))
+    }
+
+    /// A struct holding an INT96 timestamp reaches the schema adapter without its id, because
+    /// the INT96 coercion rebuilds every container field and copies no metadata. The missing-id
+    /// check reads the Parquet schema itself, where the id is, so the file is not rejected and
+    /// the struct resolves by name. Resolving it by id is a matter for the remap, which still
+    /// works from the coerced Arrow schema, so id matching stays off here.
+    #[tokio::test]
+    async fn struct_id_hidden_by_int96_coercion_satisfies_the_missing_id_check(
+    ) -> Result<(), DataFusionError> {
+        let filename = write_struct_with_int96(Some(1))?;
+        let scan = PlannerScan::of(struct_with_timestamp_schema());
+        let mut stream = scan_file_via_planner(filename, scan)?;
+        let result = stream.next().await.unwrap()?;
+        let s = result.column(0).as_struct();
+        assert_eq!(s.column(0).as_primitive::<Int32Type>().values(), &[1, 2]);
+        assert_eq!(
+            s.column(1)
+                .as_primitive::<TimestampMicrosecondType>()
+                .values(),
+            &[EPOCH_2000_MICROS, EPOCH_2000_MICROS]
+        );
+        Ok(())
+    }
+
+    /// The same struct written without any id is still rejected under the id-bearing read
+    /// schema, so the check reads the Parquet schema rather than passing every INT96 file.
+    #[tokio::test]
+    async fn struct_with_int96_and_no_ids_is_rejected() -> Result<(), DataFusionError> {
+        let filename = write_struct_with_int96(None)?;
+        for use_field_id in [false, true] {
+            let scan = PlannerScan {
+                use_field_id,
+                ..PlannerScan::of(struct_with_timestamp_schema())
+            };
+            let msg = first_poll_error(scan_file_via_planner(filename.clone(), scan)).await;
+            assert!(
+                msg.contains(MISSING_IDS),
+                "use_field_id={use_field_id}: unexpected error: {msg}"
+            );
+        }
+        Ok(())
+    }
+
+    /// Write `message schema { optional group l (LIST) { repeated group list { required int32
+    /// element; } } }` with rows [1] and [2]. The only id, 5, sits on the repeated `list`
+    /// group, which the Arrow schema never shows.
+    fn write_list_with_id_on_list_group() -> Result<String, DataFusionError> {
+        let element = Arc::new(
+            ParquetType::primitive_type_builder("element", PhysicalType::INT32)
+                .with_repetition(Repetition::REQUIRED)
+                .build()?,
+        );
+        let list = Arc::new(
+            ParquetType::group_type_builder("list")
+                .with_repetition(Repetition::REPEATED)
+                .with_id(Some(5))
+                .with_fields(vec![element])
+                .build()?,
+        );
+        let l = Arc::new(
+            ParquetType::group_type_builder("l")
+                .with_repetition(Repetition::OPTIONAL)
+                .with_logical_type(Some(LogicalType::List))
+                .with_fields(vec![list])
+                .build()?,
+        );
+        let schema = Arc::new(
+            ParquetType::group_type_builder("schema")
+                .with_fields(vec![l])
+                .build()?,
+        );
+        let filename = temp_filename();
+        let file = File::create(&filename)?;
+        let mut writer = SerializedFileWriter::new(file, schema, Default::default())?;
+        let mut row_group = writer.next_row_group()?;
+        let mut column = row_group.next_column()?.unwrap();
+        column
+            .typed::<ParquetInt32Type>()
+            .write_batch(&[1, 2], Some(&[2, 2]), Some(&[0, 0]))?;
+        column.close()?;
+        row_group.close()?;
+        writer.close()?;
+        Ok(filename)
+    }
+
+    /// Spark's `containsFieldIds` walks the raw Parquet schema, where an id may sit on the
+    /// repeated `list` group that the Arrow schema folds away. Such a file is not rejected. With
+    /// id matching off the list resolves by name. With it on, the root field asks for id 5, no
+    /// root field of the file carries it, and the column is null filled, as Spark does.
+    #[tokio::test]
+    async fn id_only_on_the_list_group_satisfies_the_missing_id_check(
+    ) -> Result<(), DataFusionError> {
+        let filename = write_list_with_id_on_list_group()?;
+        let read_schema = Arc::new(Schema::new(vec![Field::new(
+            "l",
+            DataType::List(Arc::new(Field::new("element", DataType::Int32, true))),
+            true,
+        )
+        .with_metadata(id_meta("5"))]));
+
+        let scan = PlannerScan::of(Arc::clone(&read_schema));
+        let mut stream = scan_file_via_planner(filename.clone(), scan)?;
+        let result = stream.next().await.unwrap()?;
+        let l = result.column(0).as_list::<i32>();
+        assert_eq!(l.len(), 2);
+        assert_eq!(l.values().as_primitive::<Int32Type>().values(), &[1, 2]);
+
+        let scan = PlannerScan {
+            use_field_id: true,
+            ..PlannerScan::of(read_schema)
+        };
+        let mut stream = scan_file_via_planner(filename, scan)?;
+        let result = stream.next().await.unwrap()?;
+        assert_eq!(result.column(0).null_count(), 2);
+        Ok(())
+    }
+
+    /// Write `message schema { optional group m (MAP) { repeated group key_value { required
+    /// int32 key; optional int32 value; } } }` with rows {1: 10} and {2: 20}. The only id, 5,
+    /// sits on the repeated `key_value` group, which the Arrow schema never shows.
+    fn write_map_with_id_on_key_value_group() -> Result<String, DataFusionError> {
+        let key = Arc::new(
+            ParquetType::primitive_type_builder("key", PhysicalType::INT32)
+                .with_repetition(Repetition::REQUIRED)
+                .build()?,
+        );
+        let value = Arc::new(
+            ParquetType::primitive_type_builder("value", PhysicalType::INT32)
+                .with_repetition(Repetition::OPTIONAL)
+                .build()?,
+        );
+        let key_value = Arc::new(
+            ParquetType::group_type_builder("key_value")
+                .with_repetition(Repetition::REPEATED)
+                .with_id(Some(5))
+                .with_fields(vec![key, value])
+                .build()?,
+        );
+        let m = Arc::new(
+            ParquetType::group_type_builder("m")
+                .with_repetition(Repetition::OPTIONAL)
+                .with_logical_type(Some(LogicalType::Map))
+                .with_fields(vec![key_value])
+                .build()?,
+        );
+        let schema = Arc::new(
+            ParquetType::group_type_builder("schema")
+                .with_fields(vec![m])
+                .build()?,
+        );
+        let filename = temp_filename();
+        let file = File::create(&filename)?;
+        let mut writer = SerializedFileWriter::new(file, schema, Default::default())?;
+        let mut row_group = writer.next_row_group()?;
+        let mut column = row_group.next_column()?.unwrap();
+        column
+            .typed::<ParquetInt32Type>()
+            .write_batch(&[1, 2], Some(&[2, 2]), Some(&[0, 0]))?;
+        column.close()?;
+        let mut column = row_group.next_column()?.unwrap();
+        column
+            .typed::<ParquetInt32Type>()
+            .write_batch(&[10, 20], Some(&[3, 3]), Some(&[0, 0]))?;
+        column.close()?;
+        row_group.close()?;
+        writer.close()?;
+        Ok(filename)
+    }
+
+    /// The map counterpart of the list case: an id on the repeated `key_value` group, which the
+    /// Arrow schema folds away, still counts for Spark's `containsFieldIds`. With id matching
+    /// off the map resolves by name. With it on, the root field asks for id 5, no root field of
+    /// the file carries it, and the column is null filled, as Spark does.
+    #[tokio::test]
+    async fn id_only_on_the_key_value_group_satisfies_the_missing_id_check(
+    ) -> Result<(), DataFusionError> {
+        let filename = write_map_with_id_on_key_value_group()?;
+        let entries = Field::new(
+            "key_value",
+            DataType::Struct(Fields::from(vec![
+                Field::new("key", DataType::Int32, false),
+                Field::new("value", DataType::Int32, true),
+            ])),
+            false,
+        );
+        let read_schema = Arc::new(Schema::new(vec![Field::new(
+            "m",
+            DataType::Map(Arc::new(entries), false),
+            true,
+        )
+        .with_metadata(id_meta("5"))]));
+
+        let scan = PlannerScan::of(Arc::clone(&read_schema));
+        let mut stream = scan_file_via_planner(filename.clone(), scan)?;
+        let result = stream.next().await.unwrap()?;
+        let m = result.column(0).as_map();
+        assert_eq!(m.len(), 2);
+        assert_eq!(m.keys().as_primitive::<Int32Type>().values(), &[1, 2]);
+        assert_eq!(m.values().as_primitive::<Int32Type>().values(), &[10, 20]);
+
+        let scan = PlannerScan {
+            use_field_id: true,
+            ..PlannerScan::of(read_schema)
+        };
+        let mut stream = scan_file_via_planner(filename, scan)?;
+        let result = stream.next().await.unwrap()?;
+        assert_eq!(result.column(0).null_count(), 2);
         Ok(())
     }
 

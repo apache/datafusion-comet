@@ -45,6 +45,13 @@
 //!
 //! Filed upstream as apache/datafusion#23978. Revert this once the opener merges its deferred
 //! page-index load back into `FileMetadataCache` instead of bypassing it.
+//!
+//! The reader also carries Spark's missing field id check, because the footer is first at hand
+//! here. Spark's `ParquetReadSupport` refuses to open a file whose raw schema carries no field
+//! id when the requested schema carries one, unless `ignoreMissing` is set, and it walks the
+//! raw `MessageType` to decide. The Arrow schema the schema adapter sees later cannot stand in
+//! for that walk: the INT96 coercion rebuilds container fields without their metadata, and an
+//! id on a `list` or `key_value` group, or on the message root, never reaches an Arrow field.
 
 use arrow::datatypes::{DataType, FieldRef, Schema};
 use async_trait::async_trait;
@@ -58,6 +65,7 @@ use datafusion::execution::cache::cache_manager::FileMetadataCache;
 use datafusion::physical_plan::metrics::{
     Count, ExecutionPlanMetricsSet, MetricBuilder, MetricCategory, MetricType,
 };
+use datafusion_comet_common::SparkError;
 use datafusion_datasource::PartitionedFile;
 use futures::future::BoxFuture;
 use futures::{FutureExt, StreamExt, TryStreamExt};
@@ -77,7 +85,7 @@ use parquet::file::metadata::{FileMetaData, KeyValue, ParquetMetaDataBuilder};
 use parquet::file::metadata::{
     FooterTail, PageIndexPolicy, ParquetMetaData, ParquetMetaDataReader,
 };
-use parquet::schema::types::{ColumnDescPtr, SchemaDescriptor};
+use parquet::schema::types::{ColumnDescPtr, SchemaDescriptor, Type as ParquetType};
 use std::fmt::{Debug, Display, Formatter};
 use std::ops::Range;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -163,6 +171,11 @@ pub struct EagerPageIndexReaderFactory {
     // Enable the footer workaround only for scans that project Variant.
     // https://github.com/apache/datafusion-comet/issues/5477
     spark_variant_schema: bool,
+    // Whether the schema Spark asked the scan for carries a field id at any depth, computed
+    // once by the planner. Together with `ignore_missing_field_id` it decides whether a file
+    // whose Parquet schema carries no id is refused, as Spark's `ParquetReadSupport` does.
+    requested_schema_has_field_ids: bool,
+    ignore_missing_field_id: bool,
 }
 
 impl EagerPageIndexReaderFactory {
@@ -191,6 +204,8 @@ impl EagerPageIndexReaderFactory {
             metadata_cache,
             scan_io_metrics,
             spark_variant_schema: false,
+            requested_schema_has_field_ids: false,
+            ignore_missing_field_id: false,
         }
     }
 
@@ -198,6 +213,31 @@ impl EagerPageIndexReaderFactory {
         self.spark_variant_schema = enabled;
         self
     }
+
+    /// Arm Spark's missing field id check. A file whose Parquet schema carries no field id
+    /// is refused on open when `requested_schema_has_field_ids` is set and
+    /// `ignore_missing_field_id` is not. Both default to off, so a factory that never calls
+    /// this reads every file.
+    pub fn with_missing_field_id_check(
+        mut self,
+        requested_schema_has_field_ids: bool,
+        ignore_missing_field_id: bool,
+    ) -> Self {
+        self.requested_schema_has_field_ids = requested_schema_has_field_ids;
+        self.ignore_missing_field_id = ignore_missing_field_id;
+        self
+    }
+}
+
+/// True when `node` or any node under it carries a field id, the way Spark's
+/// `containsFieldIds` answers it over the raw Parquet schema, message root included.
+fn parquet_schema_has_field_ids(node: &ParquetType) -> bool {
+    node.get_basic_info().has_id()
+        || (node.is_group()
+            && node
+                .get_fields()
+                .iter()
+                .any(|field| parquet_schema_has_field_ids(field)))
 }
 
 impl ParquetFileReaderFactory for EagerPageIndexReaderFactory {
@@ -225,6 +265,8 @@ impl ParquetFileReaderFactory for EagerPageIndexReaderFactory {
             metadata_cache: Arc::clone(&self.metadata_cache),
             metadata_size_hint,
             spark_variant_schema: self.spark_variant_schema,
+            requested_schema_has_field_ids: self.requested_schema_has_field_ids,
+            ignore_missing_field_id: self.ignore_missing_field_id,
         }))
     }
 }
@@ -240,6 +282,8 @@ struct EagerPageIndexReader {
     metadata_cache: Arc<FileMetadataCache>,
     metadata_size_hint: Option<usize>,
     spark_variant_schema: bool,
+    requested_schema_has_field_ids: bool,
+    ignore_missing_field_id: bool,
 }
 
 // Arrow infers ENUM as Binary, losing the distinction from raw binary that Spark needs.
@@ -439,6 +483,8 @@ impl AsyncFileReader for EagerPageIndexReader {
         let metadata_size_hint = self.metadata_size_hint;
         let scan_io_metrics = Arc::clone(&self.scan_io_metrics);
         let spark_variant_schema = self.spark_variant_schema;
+        let require_file_field_ids =
+            self.requested_schema_has_field_ids && !self.ignore_missing_field_id;
         async move {
             let file_decryption_properties = options
                 .and_then(|o| o.file_decryption_properties())
@@ -498,6 +544,20 @@ impl AsyncFileReader for EagerPageIndexReader {
             }
 
             let metadata = metadata?;
+            // Spark's `ParquetReadSupport` refuses to open a file that carries no field ids when
+            // the requested schema carries some, unless `ignoreMissing` is set, and it walks the
+            // raw `MessageType` to decide. The same walk runs here over the footer's schema. The
+            // error keeps its Spark type through `ParquetError::External`, which the JNI layer
+            // unwraps, so the JVM sees the same exception Spark raises.
+            if require_file_field_ids
+                && !parquet_schema_has_field_ids(
+                    metadata.file_metadata().schema_descr().root_schema(),
+                )
+            {
+                return Err(ParquetError::External(Box::new(
+                    SparkError::ParquetMissingFieldIds,
+                )));
+            }
             if spark_variant_schema {
                 with_spark_arrow_schema(metadata)
             } else {
@@ -990,6 +1050,69 @@ mod tests {
                 .as_usize(),
             if remote { 6 } else { 0 }
         );
+    }
+
+    /// The raw schema walk answers like Spark's `containsFieldIds`: an id on the message root,
+    /// on a leaf, or on a repeated `list` group counts, and a schema without any does not.
+    #[test]
+    fn parquet_schema_has_field_ids_sees_ids_on_any_node() {
+        use parquet::basic::Type as PhysicalType;
+        use parquet::schema::types::TypePtr;
+
+        let leaf = |name: &str, id: Option<i32>| -> TypePtr {
+            Arc::new(
+                ParquetType::primitive_type_builder(name, PhysicalType::INT32)
+                    .with_id(id)
+                    .build()
+                    .unwrap(),
+            )
+        };
+        let group = |name: &str, id: Option<i32>, fields: Vec<TypePtr>| -> TypePtr {
+            Arc::new(
+                ParquetType::group_type_builder(name)
+                    .with_id(id)
+                    .with_fields(fields)
+                    .build()
+                    .unwrap(),
+            )
+        };
+
+        assert!(!parquet_schema_has_field_ids(&group(
+            "schema",
+            None,
+            vec![]
+        )));
+        assert!(!parquet_schema_has_field_ids(&group(
+            "schema",
+            None,
+            vec![leaf("a", None)]
+        )));
+        assert!(parquet_schema_has_field_ids(&group(
+            "schema",
+            Some(1),
+            vec![leaf("a", None)]
+        )));
+        assert!(parquet_schema_has_field_ids(&group(
+            "schema",
+            None,
+            vec![leaf("a", Some(1))]
+        )));
+        let list_group_only = group(
+            "schema",
+            None,
+            vec![group(
+                "l",
+                None,
+                vec![group("list", Some(5), vec![leaf("element", None)])],
+            )],
+        );
+        assert!(parquet_schema_has_field_ids(&list_group_only));
+        let nested_without_ids = group(
+            "schema",
+            None,
+            vec![group("s", None, vec![leaf("a", None)])],
+        );
+        assert!(!parquet_schema_has_field_ids(&nested_without_ids));
     }
 
     #[test]

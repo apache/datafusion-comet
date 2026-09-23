@@ -21,6 +21,7 @@ package org.apache.comet.parquet
 
 import java.io.File
 import java.math.{BigDecimal, BigInteger}
+import java.sql.Timestamp
 import java.time.{ZoneId, ZoneOffset}
 import java.util.{Base64, Collections}
 
@@ -2171,20 +2172,13 @@ abstract class ParquetReadSuite extends CometTestBase {
         def readCause(): Throwable = intercept[SparkException] {
           spark.read.schema(readSchema).parquet(dir.getCanonicalPath).collect()
         }.getCause
-        def assertMissingIds(cause: Throwable): Unit = {
-          assert(
-            cause.isInstanceOf[RuntimeException] &&
-              cause.getMessage.contains("Parquet file schema doesn't contain any field Ids"),
-            cause)
-        }
-
         withClue("Spark with Comet disabled") {
           withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
-            assertMissingIds(readCause())
+            assertMissingIdsException(readCause())
           }
         }
         withClue("Comet") {
-          assertMissingIds(readCause())
+          assertMissingIdsException(readCause())
         }
 
         withSQLConf(SQLConf.IGNORE_MISSING_PARQUET_FIELD_ID.key -> "true") {
@@ -2244,6 +2238,209 @@ abstract class ParquetReadSuite extends CometTestBase {
         checkAnswer(df, Row(null, null, null) :: Row(null, null, null) :: Nil)
       }
     }
+  }
+
+  // Spark checks for missing file ids against the pruned read schema, so an id on a column
+  // the query never projects does not reject a file without ids, whatever the read flag says.
+  // The same read with both columns projected still raises.
+  test("field ids on an unprojected column do not reject a file without ids") {
+    Seq("false", "true").foreach { readEnabled =>
+      withSQLConf(SQLConf.PARQUET_FIELD_ID_READ_ENABLED.key -> readEnabled) {
+        withTempPath { dir =>
+          val writeSchema = new StructType().add("a", IntegerType).add("b", IntegerType)
+          val readSchema = new StructType()
+            .add("a", IntegerType, true, withId(1))
+            .add("b", IntegerType, true)
+          val writeData = Seq(Row(1, 2), Row(3, 4))
+          spark
+            .createDataFrame(spark.sparkContext.parallelize(writeData), writeSchema)
+            .write
+            .mode("overwrite")
+            .parquet(dir.getCanonicalPath)
+
+          withClue(s"read flag $readEnabled") {
+            val pruned = spark.read.schema(readSchema).parquet(dir.getCanonicalPath).select("b")
+            checkSparkAnswerAndOperator(pruned)
+            checkAnswer(pruned, Row(2) :: Row(4) :: Nil)
+
+            val cause = intercept[SparkException] {
+              spark.read.schema(readSchema).parquet(dir.getCanonicalPath).collect()
+            }.getCause
+            assert(
+              cause.isInstanceOf[RuntimeException] &&
+                cause.getMessage.contains("Parquet file schema doesn't contain any field Ids"),
+              cause)
+          }
+        }
+      }
+    }
+  }
+
+  // Spark writes timestamps as INT96 by default. The reader coerces INT96 to microseconds and
+  // rebuilds every container field without its metadata on the way, so the id on `s` is gone
+  // from the Arrow schema the adapter sees. The missing-id check reads the Parquet schema, where
+  // the id still is, so the file reads and `s` resolves by name. Resolving `s` by id is a
+  // matter for the remap, which still works from the coerced schema, so id matching stays off.
+  test("field ids on a struct holding a timestamp survive the missing-id check") {
+    withSQLConf(SQLConf.PARQUET_FIELD_ID_READ_ENABLED.key -> "false") {
+      withTempPath { dir =>
+        val nested = new StructType().add("a", IntegerType).add("ts", TimestampType)
+        val schema = new StructType().add("s", nested, true, withId(1))
+        val ts = Timestamp.valueOf("2020-01-01 00:00:00")
+        val writeData = Seq(Row(Row(1, ts)), Row(Row(2, ts)))
+        spark
+          .createDataFrame(spark.sparkContext.parallelize(writeData), schema)
+          .write
+          .mode("overwrite")
+          .parquet(dir.getCanonicalPath)
+
+        val df = spark.read.schema(schema).parquet(dir.getCanonicalPath)
+        checkSparkAnswerAndOperator(df)
+        checkAnswer(df, Row(Row(1, ts)) :: Row(Row(2, ts)) :: Nil)
+      }
+    }
+  }
+
+  // Spark checks each file on its own. A directory holding one file with ids and one without
+  // raises on the second, and with `ignoreMissing` the file without ids reads as nulls because
+  // no root field of it carries the requested id.
+  test("a file without ids next to a file with ids is checked on its own") {
+    withSQLConf(SQLConf.PARQUET_FIELD_ID_READ_ENABLED.key -> "true") {
+      withTempPath { dir =>
+        val idSchema = new StructType().add("x", IntegerType, true, withId(1))
+        val plainSchema = new StructType().add("a", IntegerType, true)
+        val readSchema = new StructType().add("a", IntegerType, true, withId(1))
+        spark
+          .createDataFrame(spark.sparkContext.parallelize(Seq(Row(100), Row(200))), idSchema)
+          .write
+          .mode("overwrite")
+          .parquet(dir.getCanonicalPath)
+        spark
+          .createDataFrame(spark.sparkContext.parallelize(Seq(Row(1), Row(2))), plainSchema)
+          .write
+          .mode("append")
+          .parquet(dir.getCanonicalPath)
+
+        val cause = intercept[SparkException] {
+          spark.read.schema(readSchema).parquet(dir.getCanonicalPath).collect()
+        }.getCause
+        assertMissingIdsException(cause)
+
+        withSQLConf(SQLConf.IGNORE_MISSING_PARQUET_FIELD_ID.key -> "true") {
+          val df = spark.read.schema(readSchema).parquet(dir.getCanonicalPath)
+          checkSparkAnswerAndOperator(df)
+          checkAnswer(df, Row(100) :: Row(200) :: Row(null) :: Row(null) :: Nil)
+        }
+      }
+    }
+  }
+
+  // Nested schema pruning hands the reader only the struct children a query touches, so an id
+  // on `s.a` rejects a file without ids when `s.a` is read and plays no part when only `s.b` is.
+  test("field ids on a pruned struct child are checked only when that child is read") {
+    Seq("false", "true").foreach { readEnabled =>
+      withSQLConf(
+        SQLConf.PARQUET_FIELD_ID_READ_ENABLED.key -> readEnabled,
+        SQLConf.NESTED_SCHEMA_PRUNING_ENABLED.key -> "true") {
+        withTempPath { dir =>
+          val writeSchema = new StructType()
+            .add("s", new StructType().add("a", IntegerType).add("b", IntegerType), true)
+          val readSchema = new StructType().add(
+            "s",
+            StructType(
+              Seq(
+                StructField("a", IntegerType, nullable = true, withId(11)),
+                StructField("b", IntegerType, nullable = true))),
+            true)
+          spark
+            .createDataFrame(
+              spark.sparkContext.parallelize(Seq(Row(Row(1, 2)), Row(Row(3, 4)))),
+              writeSchema)
+            .write
+            .mode("overwrite")
+            .parquet(dir.getCanonicalPath)
+
+          withClue(s"read flag $readEnabled") {
+            val cause = intercept[SparkException] {
+              spark.read.schema(readSchema).parquet(dir.getCanonicalPath).select("s.a").collect()
+            }.getCause
+            assertMissingIdsException(cause)
+
+            val onlyB = spark.read.schema(readSchema).parquet(dir.getCanonicalPath).select("s.b")
+            checkSparkAnswerAndOperator(onlyB)
+            checkAnswer(onlyB, Row(2) :: Row(4) :: Nil)
+          }
+        }
+      }
+    }
+  }
+
+  // Id zero is an id like any other, so a read schema carrying it expects ids in the file.
+  test("field id zero on a root field expects ids in the file") {
+    Seq("false", "true").foreach { readEnabled =>
+      withSQLConf(SQLConf.PARQUET_FIELD_ID_READ_ENABLED.key -> readEnabled) {
+        withTempPath { dir =>
+          val readSchema = new StructType().add("a", IntegerType, true, withId(0))
+          val writeSchema = new StructType().add("a", IntegerType, true)
+          spark
+            .createDataFrame(spark.sparkContext.parallelize(Seq(Row(1), Row(2))), writeSchema)
+            .write
+            .mode("overwrite")
+            .parquet(dir.getCanonicalPath)
+
+          withClue(s"read flag $readEnabled") {
+            def readCause(): Throwable = intercept[SparkException] {
+              spark.read.schema(readSchema).parquet(dir.getCanonicalPath).collect()
+            }.getCause
+            withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+              assertMissingIdsException(readCause())
+            }
+            assertMissingIdsException(readCause())
+          }
+        }
+      }
+    }
+  }
+
+  // A count reads no columns, so the pruned read schema carries no ids and a file without ids
+  // is counted rather than rejected.
+  test("count over an id-bearing schema reads a file without ids") {
+    Seq("false", "true").foreach { readEnabled =>
+      withSQLConf(SQLConf.PARQUET_FIELD_ID_READ_ENABLED.key -> readEnabled) {
+        withTempPath { dir =>
+          val readSchema = new StructType().add("a", IntegerType, true, withId(1))
+          val writeSchema = new StructType().add("a", IntegerType, true)
+          spark
+            .createDataFrame(spark.sparkContext.parallelize(Seq(Row(1), Row(2))), writeSchema)
+            .write
+            .mode("overwrite")
+            .parquet(dir.getCanonicalPath)
+
+          withClue(s"read flag $readEnabled") {
+            val counted =
+              spark.read.schema(readSchema).parquet(dir.getCanonicalPath).selectExpr("count(*)")
+            checkSparkAnswerAndOperator(counted)
+            checkAnswer(counted, Row(2L) :: Nil)
+          }
+        }
+      }
+    }
+  }
+
+  // Spark raises a plain `RuntimeException` for a read schema with ids over a file without any.
+  // Spark 4 wraps a reader failure in a `FAILED_READ_FILE` `SparkException`, and the Comet
+  // shim does the same, so the exception sits one level deeper there.
+  private def assertMissingIdsException(cause: Throwable): Unit = {
+    val missingIds = if (isSpark40Plus) {
+      assert(cause.isInstanceOf[SparkException], cause)
+      cause.getCause
+    } else {
+      cause
+    }
+    assert(missingIds.getClass == classOf[RuntimeException], missingIds)
+    assert(
+      missingIds.getMessage.contains("Parquet file schema doesn't contain any field Ids"),
+      missingIds)
   }
 }
 

@@ -20,7 +20,7 @@ use crate::parquet::eager_page_index_reader_factory::{EagerPageIndexReaderFactor
 use crate::parquet::encryption_support::{CometEncryptionConfig, ENCRYPTION_FACTORY_ID};
 use crate::parquet::name_fold::fold_schema_names;
 use crate::parquet::parquet_support::{
-    object_store_authority, ObjectStoreBackend, SparkParquetOptions,
+    any_nested_field_has_id, object_store_authority, ObjectStoreBackend, SparkParquetOptions,
 };
 use crate::parquet::schema_adapter::SparkPhysicalExprAdapterFactory;
 use arrow::datatypes::{Field, FieldRef, SchemaRef};
@@ -102,6 +102,11 @@ pub(crate) fn init_datasource_exec(
     );
     spark_parquet_options.use_field_id = use_field_id;
     spark_parquet_options.ignore_missing_field_id = ignore_missing_field_id;
+    // Spark runs its missing-id check against the pruned read schema it hands the reader, not
+    // the full data schema that DataFusion later passes the schema adapter, so the answer is
+    // taken from `required_schema` here, once per scan, and handed to the reader factory below.
+    spark_parquet_options.requested_schema_has_field_ids =
+        any_nested_field_has_id(required_schema.fields());
     // Spark can discard filtered-out values before timestamp conversion using statistics,
     // dictionary, and row-level filters. Comet cannot mirror every pruning path, so applying
     // checked conversion in a filtered scan can fail on values Spark never reads. Preserve the
@@ -194,7 +199,11 @@ pub(crate) fn init_datasource_exec(
             scan_io_source,
             parquet_source.metrics(),
         )
-        .with_spark_variant_schema(projects_variant),
+        .with_spark_variant_schema(projects_variant)
+        .with_missing_field_id_check(
+            spark_parquet_options.requested_schema_has_field_ids,
+            spark_parquet_options.ignore_missing_field_id,
+        ),
     );
     parquet_source = parquet_source.with_parquet_file_reader_factory(reader_factory);
 

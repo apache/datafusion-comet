@@ -230,13 +230,7 @@ impl IcebergScanExec {
         let scan_metrics = scan_result.metrics().clone();
         let stream = scan_result.stream();
 
-        let mut spark_options = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
-        // Iceberg resolves columns by id itself and its reader supplies the ids, so the
-        // missing-id check that guards plain Parquet reads does not apply here. The same holds
-        // for a migrated table read through a name mapping: the reader still resolves the
-        // columns itself and hands back a schema of its own, so the Spark check has nothing to
-        // say there either.
-        spark_options.ignore_missing_field_id = true;
+        let spark_options = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
         let adapter_factory = SparkPhysicalExprAdapterFactory::new(spark_options, None);
 
         let adapted_stream =
