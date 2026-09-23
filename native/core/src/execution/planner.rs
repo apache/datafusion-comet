@@ -74,8 +74,7 @@ use datafusion::{
     logical_expr::Operator as DataFusionOperator,
     physical_expr::{
         expressions::{
-            in_list, BinaryExpr, CaseExpr, CastExpr, Column, IsNullExpr,
-            Literal as DataFusionLiteral,
+            BinaryExpr, CaseExpr, CastExpr, Column, IsNullExpr, Literal as DataFusionLiteral,
         },
         PhysicalExpr, PhysicalSortExpr, ScalarFunctionExpr,
     },
@@ -91,9 +90,9 @@ use datafusion::{
     prelude::SessionContext,
 };
 use datafusion_comet_spark_expr::{
-    create_comet_hof_func, create_comet_physical_fun, create_comet_physical_fun_with_eval_mode,
-    BinaryOutputStyle, BloomFilterAgg, BloomFilterMightContain, CometCollectList, CometCollectSet,
-    CsvWriteOptions, EvalMode, SparkArraysZipFunc, SparkBloomFilterVersion, SparkPercentile,
+    create_comet_physical_fun, create_comet_physical_fun_with_eval_mode, BinaryOutputStyle,
+    BloomFilterAgg, BloomFilterMightContain, CometCollectList, CometCollectSet, CsvWriteOptions,
+    EvalMode, SparkArraysZipFunc, SparkBloomFilterVersion, SparkListAgg, SparkPercentile,
     SumInteger, ToCsv,
 };
 use iceberg::expr::Bind;
@@ -151,11 +150,11 @@ use datafusion_comet_proto::{
     spark_partitioning::{partitioning::PartitioningStruct, Partitioning as SparkPartitioning},
 };
 use datafusion_comet_spark_expr::{
-    jvm_udf::JvmScalarUdfExpr, ApproxPercentile, ArrayInsert, Avg, AvgDecimal, Cast, CheckOverflow,
-    Correlation, Covariance, CreateNamedStruct, DecimalRescaleCheckOverflow, GetArrayStructFields,
-    GetStructField, HllPlusPlus, IfExpr, ListExtract, MaxMinBy, Mode, NormalizeNaNAndZero, Regr,
-    RegrType, SparkCastOptions, Stddev, SumDecimal, ToJson, UnboundColumn, Variance,
-    WideDecimalBinaryExpr, WideDecimalOp,
+    jvm_udf::JvmScalarUdfExpr, spark_in_list, ApproxPercentile, ArrayInsert, Avg, AvgDecimal, Cast,
+    CheckOverflow, Correlation, Covariance, CreateNamedStruct, DecimalRescaleCheckOverflow,
+    GetArrayStructFields, GetStructField, HllPlusPlus, IfExpr, ListExtract, MaxMinBy, Mode,
+    NormalizeNaNAndZero, Regr, RegrType, SparkCastOptions, Stddev, SumDecimal, ToJson,
+    UnboundColumn, Variance, WideDecimalBinaryExpr, WideDecimalOp,
 };
 use itertools::Itertools;
 use jni::objects::{Global, JObject};
@@ -781,7 +780,8 @@ impl PhysicalPlanner {
                     .map(|x| self.create_expr(x, Arc::clone(&input_schema)))
                     .collect::<Result<Vec<_>, _>>()?;
 
-                in_list(value, list, &expr.negated, input_schema.as_ref()).map_err(|e| e.into())
+                spark_in_list(value, list, expr.negated, input_schema.as_ref())
+                    .map_err(|e| e.into())
             }
             ExprStruct::If(expr) => {
                 let if_expr =
@@ -2010,11 +2010,7 @@ impl PhysicalPlanner {
                 let parquet_writer = Arc::new(ParquetWriterExec::try_new(
                     Arc::clone(&child.native_plan),
                     writer.output_path.clone(),
-                    writer
-                        .work_dir
-                        .as_ref()
-                        .expect("work_dir is provided")
-                        .clone(),
+                    writer.work_dir.clone(),
                     writer.job_id.clone(),
                     writer.task_attempt_id,
                     codec,
@@ -3203,6 +3199,13 @@ impl PhysicalPlanner {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&schema))?;
                 let func = AggregateUDF::new_from_impl(HllPlusPlus::new(expr.precision));
                 Self::create_aggr_func_expr("approx_count_distinct", schema, vec![child], func)
+            }
+            AggExprStruct::ListAgg(expr) => {
+                let child = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&schema))?;
+                let delimiter =
+                    self.create_expr(expr.delimiter.as_ref().unwrap(), Arc::clone(&schema))?;
+                let func = AggregateUDF::new_from_impl(SparkListAgg::new());
+                Self::create_aggr_func_expr("listagg", schema, vec![child, delimiter], func)
             }
             AggExprStruct::MaxBy(expr) => {
                 let value = self.create_expr(expr.value.as_ref().unwrap(), Arc::clone(&schema))?;
