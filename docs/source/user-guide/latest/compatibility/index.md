@@ -126,7 +126,8 @@ divergence:
 
 ## Known result-value divergences
 
-The following native paths silently return values that differ from Spark for edge-case inputs.
+The following native paths can return different values or raise errors that Spark does not raise
+for edge-case inputs.
 Most also have entries in the per-category expression pages linked above; they are collected here
 so users hunting an unexpected value have a single place to check:
 
@@ -145,6 +146,9 @@ so users hunting an unexpected value have a single place to check:
 - Native `RANGE` window frames with an explicit `PRECEDING` / `FOLLOWING` offset diverge from
   Spark when the boundary arithmetic overflows for `DATE` or `DECIMAL` `ORDER BY` columns
   ([#5022](https://github.com/apache/datafusion-comet/issues/5022)).
+- Grouped ANSI decimal `AVG` can evaluate an overflowing group in a batch even when Spark would
+  stop before that group at `LIMIT`. It remains natively enabled with this error-timing difference;
+  disabling `spark.comet.exec.aggregate.enabled` restores Spark's aggregate evaluation.
 - Ungrouped decimal `SUM` keeps an unbounded intermediate and checks the result precision only
   when a partial is written out or the sum is evaluated, which matches Spark's whole-stage codegen
   path. Without codegen Spark buffers the aggregate in an `UnsafeRow` and latches as soon as a

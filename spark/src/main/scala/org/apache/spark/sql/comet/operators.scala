@@ -31,7 +31,7 @@ import org.apache.spark.internal.Logging
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{Ascending, Attribute, AttributeSeq, AttributeSet, CodegenObjectFactoryMode, Expression, ExpressionSet, Generator, LeafExpression, NamedExpression, SortOrder, XXH64}
-import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, AggregateMode, CollectList, CollectSet, Final, ImperativeAggregate, Mode, Partial, PartialMerge, Percentile, Sum}
+import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, AggregateMode, Average, CollectList, CollectSet, Final, ImperativeAggregate, Mode, Partial, PartialMerge, Percentile, Sum}
 import org.apache.spark.sql.catalyst.expressions.codegen.CodegenFallback
 import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, BuildSide}
 import org.apache.spark.sql.catalyst.plans._
@@ -1879,6 +1879,28 @@ trait CometBaseAggregate {
       case _ => false
     })
 
+  protected def aggregateSupportLevel(op: BaseAggregateExec): SupportLevel = {
+    val unsupportedAverage = op.groupingExpressions.isEmpty &&
+      op.aggregateExpressions.exists(_.aggregateFunction match {
+        case avg: Average =>
+          avg.sumDataType match {
+            case decimal: DecimalType => decimal.precision == DecimalType.MAX_PRECISION
+            case _ => false
+          }
+        case _ => false
+      })
+
+    if (unsupportedAverage) {
+      // Spark's global buffer can retain a wider sum until division; native overflow is sticky.
+      // Both stages must fall back because decimal AVG buffers cannot cross engines.
+      Unsupported(
+        Some(
+          "Ungrouped AVG on DECIMAL with maximum-precision intermediate state is not supported"))
+    } else {
+      Compatible()
+    }
+  }
+
   def doConvert(
       aggregate: BaseAggregateExec,
       builder: Operator.Builder,
@@ -2251,7 +2273,7 @@ object CometHashAggregateExec
           "Ungrouped decimal SUM at maximum precision without codegen cannot match Spark's " +
             "latching UnsafeRow buffer"))
     }
-    Compatible()
+    aggregateSupportLevel(op)
   }
 
   override def convert(
@@ -2319,7 +2341,7 @@ object CometObjectHashAggregateExec
           "Grouped decimal SUM at maximum precision cannot match Spark's unbounded object " +
             "aggregation buffer"))
     }
-    Compatible()
+    aggregateSupportLevel(op)
   }
 
   override def convert(
