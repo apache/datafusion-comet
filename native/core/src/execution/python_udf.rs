@@ -28,6 +28,70 @@ use pyo3::ffi::Py_uintptr_t;
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyTuple};
 
+#[cfg(target_os = "linux")]
+fn make_python_symbols_global() -> Result<()> {
+    use std::ffi::CStr;
+    use std::sync::OnceLock;
+
+    static RESULT: OnceLock<std::result::Result<(), String>> = OnceLock::new();
+    RESULT
+        .get_or_init(|| {
+            // The JVM loads libcomet with RTLD_LOCAL. Its libpython dependency is
+            // local too, but CPython extension modules resolve Python C API
+            // symbols from the global namespace when they are imported.
+            let mut info = std::mem::MaybeUninit::<libc::Dl_info>::uninit();
+            // SAFETY: Py_Initialize is a linked function address and info is
+            // writable storage for dladdr's result.
+            if unsafe {
+                libc::dladdr(
+                    pyo3::ffi::Py_Initialize as *const () as *const libc::c_void,
+                    info.as_mut_ptr(),
+                )
+            } == 0
+            {
+                return Err("cannot locate the linked Python library".to_string());
+            }
+            // SAFETY: dladdr initialized info on success and dli_fname is a
+            // null-terminated path valid for the duration of this call.
+            let info = unsafe { info.assume_init() };
+            if info.dli_fname.is_null() {
+                return Err("linked Python library has no path".to_string());
+            }
+            let path = unsafe { CStr::from_ptr(info.dli_fname) };
+            // RTLD_NOLOAD promotes the already-loaded libpython rather than
+            // loading a second copy with separate interpreter state. Keep the
+            // handle for the executor lifetime so its symbols remain global.
+            // SAFETY: path points to a valid C string returned by dladdr.
+            if unsafe {
+                libc::dlopen(
+                    path.as_ptr(),
+                    libc::RTLD_NOW | libc::RTLD_GLOBAL | libc::RTLD_NOLOAD,
+                )
+            }
+            .is_null()
+            {
+                // SAFETY: dlerror returns a null-terminated message, if any.
+                let error = unsafe { libc::dlerror() };
+                let detail = if error.is_null() {
+                    "unknown dynamic loader error".to_string()
+                } else {
+                    unsafe { CStr::from_ptr(error) }
+                        .to_string_lossy()
+                        .into_owned()
+                };
+                return Err(format!("cannot expose Python C API symbols: {detail}"));
+            }
+            Ok(())
+        })
+        .clone()
+        .map_err(ArrowError::ComputeError)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn make_python_symbols_global() -> Result<()> {
+    Ok(())
+}
+
 /// A scalar Arrow UDF loaded from Spark's pickled `(function, returnType)` command.
 /// Spark serializes the return type for its worker; Comet uses the separately
 /// serialized Arrow type from the physical plan instead.
@@ -46,6 +110,7 @@ impl ArrowPythonUdf {
         safe_cast: bool,
         python_version: &str,
     ) -> Result<Self> {
+        make_python_symbols_global()?;
         Python::attach(|py| {
             if !python_version.is_empty() {
                 let info = py

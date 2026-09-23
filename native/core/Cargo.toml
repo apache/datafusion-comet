@@ -37,6 +37,7 @@ publish = false
 [dependencies]
 arrow = { workspace = true }
 pyo3 = { version = "0.28.3", optional = true, features = ["auto-initialize"] }
+libc = { version = "0.2", optional = true }
 base64 = "0.23.0"
 bytes = { workspace = true }
 parquet = { workspace = true, default-features = false, features = ["experimental", "arrow", "arrow_canonical_extension_types", "snap", "lz4", "zstd", "flate2-zlib-rs"] }
@@ -107,7 +108,7 @@ datafusion-functions-nested = { version = "55.1.0" }
 [features]
 backtrace = ["datafusion/backtrace"]
 default = ["hdfs-opendal"]
-python-udf = ["dep:pyo3"]
+python-udf = ["dep:pyo3", "dep:libc"]
 contrib-lance = ["dep:comet-contrib-lance"]
 hdfs-opendal = ["opendal", "object_store_opendal", "hdfs-sys"]
 jemalloc = ["tikv-jemallocator", "tikv-jemalloc-ctl"]

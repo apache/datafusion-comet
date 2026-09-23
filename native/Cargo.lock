@@ -1995,6 +1995,7 @@ dependencies = [
  "itertools 0.15.0",
  "jni 0.22.4",
  "lazy_static",
+ "libc",
  "log",
  "log4rs",
  "mimalloc",

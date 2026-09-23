@@ -143,34 +143,44 @@ class CometArrowPythonUdfSuite extends CometTestBase {
       val source = spark.range(2)
       cases.foreach { case (dataType, pythonType, value) =>
         val code =
-          "import base64, pyspark.cloudpickle as cloudpickle; " +
+          "import base64, pyspark.cloudpickle as cloudpickle, pyarrow as pa; " +
             "from pyspark.sql.types import *; " +
-            s"print(base64.b64encode(cloudpickle.dumps((lambda a: a, $pythonType))).decode())"
-        val command = Base64.getDecoder.decode(Seq(python, "-c", code).!!.trim)
-        val function = SimplePythonFunction(
-          command,
-          Collections.emptyMap[String, String](),
-          Collections.emptyList[String](),
-          python,
-          pythonVersion,
-          Collections.emptyList(),
-          null)
-        val udf = UserDefinedPythonFunction(
-          "identity_arrow",
-          function,
-          dataType,
-          PythonEvalType.SQL_SCALAR_ARROW_UDF,
-          udfDeterministic = true)
+            s"print(base64.b64encode(cloudpickle.dumps((lambda a: a, $pythonType))).decode()); " +
+            "print(base64.b64encode(cloudpickle.dumps((" +
+            "lambda a: pa.array([str(a.type)] * len(a)), StringType()))).decode())"
+        val commands =
+          Seq(python, "-c", code).!!.trim.linesIterator.map(Base64.getDecoder.decode).toSeq
+        def arrowUdf(name: String, command: Array[Byte], returnType: DataType) = {
+          val function = SimplePythonFunction(
+            command,
+            Collections.emptyMap[String, String](),
+            Collections.emptyList[String](),
+            python,
+            pythonVersion,
+            Collections.emptyList(),
+            null)
+          UserDefinedPythonFunction(
+            name,
+            function,
+            returnType,
+            PythonEvalType.SQL_SCALAR_ARROW_UDF,
+            udfDeterministic = true)
+        }
+        val identity = arrowUdf("identity_arrow", commands.head, dataType)
+        val describeType = arrowUdf("arrow_input_type", commands(1), StringType)
         val input = source.select(
           when(source.col("id") === 1L, lit(null).cast(dataType))
             .otherwise(lit(value).cast(dataType))
             .as("value"))
         val expected =
           withSQLConf(CometConf.COMET_NATIVE_ARROW_PYTHON_UDF_ENABLED.key -> "false") {
-            input.select(udf(input.col("value"))).collect().toSeq
+            input
+              .select(identity(input.col("value")), describeType(input.col("value")))
+              .collect()
+              .toSeq
           }
         withSQLConf(CometConf.COMET_NATIVE_ARROW_PYTHON_UDF_ENABLED.key -> "true") {
-          val df = input.select(udf(input.col("value")))
+          val df = input.select(identity(input.col("value")), describeType(input.col("value")))
           assert(
             df.queryExecution.executedPlan.collect { case _: CometArrowEvalPythonExec =>
               true
