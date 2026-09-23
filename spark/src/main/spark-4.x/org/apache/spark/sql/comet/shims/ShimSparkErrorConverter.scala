@@ -24,6 +24,7 @@ import java.io.FileNotFoundException
 import scala.util.matching.Regex
 
 import org.apache.spark.{QueryContext, SparkException, SparkIllegalArgumentException}
+import org.apache.spark.sql.AnalysisException
 import org.apache.spark.sql.errors.QueryExecutionErrors
 import org.apache.spark.sql.execution.datasources.SchemaColumnConvertNotSupportedException
 import org.apache.spark.sql.types._
@@ -359,6 +360,24 @@ trait ShimSparkErrorConverter {
             "`spark.sql.parquet.fieldId.read.ignoreMissing = true`")
         val missingPath = params.get("filePath").map(_.toString).getOrElse("")
         Some(QueryExecutionErrors.cannotReadFilesError(missingCause, missingPath))
+
+      case "ParquetVariantAnnotationMismatch" =>
+        // Mirror Spark's `ParquetToSparkSchemaConverter.checkConversionRequirement`, which throws
+        // an AnalysisException while converting the schema. Spark's file scan surfaces that as a
+        // FAILED_READ_FILE SparkException with the AnalysisException as its cause, which is the
+        // shape `ParquetVariantShreddingSuite` asserts. The rejection happens while adapting the
+        // schema, so the native side has no file path, and the message reads "reading file " with
+        // nothing after it. `SparkErrorConverter`'s fallback to the per-task file list does not
+        // help: it is populated only for RDDs built by `CometNativeScanExec`, and this error
+        // surfaces through the projection above the scan. `ParquetSchemaConvert` below has the
+        // same empty path for the same reason.
+        val variantCause = new AnalysisException(
+          errorClass = "_LEGACY_ERROR_TEMP_3071",
+          messageParameters = Map(
+            "msg" -> ("Invalid Spark read type: expected " + params("column") +
+              " to be variant type but found " + params("sparkType"))))
+        val variantPath = params.get("filePath").map(_.toString).getOrElse("")
+        Some(QueryExecutionErrors.cannotReadFilesError(variantCause, variantPath))
 
       case "ParquetSchemaConvert" =>
         // Mirror Spark 4.0's FileDataSourceV2: wrap the

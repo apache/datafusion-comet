@@ -179,6 +179,11 @@ message NativeScanCommon {
   // True when Spark supplied a Parquet data filter, including when Comet could
   // not serialize any of those filters into data_filters.
   bool has_data_filters = 19;
+  // True when spark.sql.parquet.ignoreVariantAnnotation is set (Spark 4.1+). When
+  // false, reading a Parquet field carrying the VARIANT logical type annotation as
+  // anything other than Spark's VariantType is rejected, matching the check
+  // Spark's ParquetToSparkSchemaConverter performs during schema conversion.
+  bool ignore_variant_annotation = 20;
 }
 
 message NativeScan {
