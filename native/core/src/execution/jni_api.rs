@@ -139,7 +139,6 @@ fn log_jemalloc_usage() {
 ///
 /// Logged alongside the per-thread pool reservations so the two can be compared directly: a large
 /// and growing excess is native memory the pool is not accounting for.
-#[cfg(feature = "alloc-accounting")]
 fn log_native_allocated() {
     log_memory_usage(
         "native_allocated",
@@ -148,7 +147,14 @@ fn log_native_allocated() {
 }
 
 /// Registry of active memory pools per Rust thread ID.
-/// Used to sum memory reservations across all contexts on the same thread for tracing.
+/// Used to sum memory reservations across all contexts for the memory usage log and tracing.
+///
+/// Never read a pool's reservation while holding this registry's lock; copy the pools out with
+/// [`snapshot_registry`] and read them after it is released. `CometFairMemoryPool` holds its own
+/// lock across the JNI call that acquires memory from Spark, and Spark can park that call until
+/// another task frees memory. A finishing task frees its reservations only after `releasePlan` has
+/// taken this lock to unregister, so a reservation read under this lock can wait on a pool that is
+/// itself waiting on the lock.
 type ThreadPoolMap = HashMap<u64, HashMap<i64, Arc<dyn MemoryPool>>>;
 
 static THREAD_MEMORY_POOLS: OnceLock<Mutex<ThreadPoolMap>> = OnceLock::new();
@@ -165,10 +171,26 @@ fn register_memory_pool(thread_id: u64, context_id: i64, pool: Arc<dyn MemoryPoo
         .insert(context_id, pool);
 }
 
+/// Removes a context's pool from the registry, without reading any reservation.
+fn unregister_memory_pool(thread_id: u64, context_id: i64) {
+    let removed = {
+        let mut map = get_thread_memory_pools().lock();
+        let Some(pools) = map.get_mut(&thread_id) else {
+            return;
+        };
+        let removed = pools.remove(&context_id);
+        if pools.is_empty() {
+            map.remove(&thread_id);
+        }
+        removed
+    };
+    // Dropped after the lock is released, in case it was the last reference to the pool.
+    drop(removed);
+}
+
 struct ThreadMemoryPoolRegistration {
     thread_id: u64,
     context_id: i64,
-    registered: bool,
 }
 
 impl ThreadMemoryPoolRegistration {
@@ -177,63 +199,68 @@ impl ThreadMemoryPoolRegistration {
         Self {
             thread_id,
             context_id,
-            registered: true,
         }
-    }
-
-    fn unregister_and_total(mut self) -> usize {
-        self.registered = false;
-        unregister_and_total(self.thread_id, self.context_id)
     }
 }
 
 impl Drop for ThreadMemoryPoolRegistration {
     fn drop(&mut self) {
-        if self.registered {
-            unregister_and_total(self.thread_id, self.context_id);
-        }
+        unregister_memory_pool(self.thread_id, self.context_id);
     }
 }
 
-/// Sums `reserved()` over `pools`, skipping any pool whose identity is already in `seen`.
+/// Pools copied out of the registry in one acquisition of its lock, so that their reservations can
+/// be read after it is released; see [`ThreadPoolMap`].
 ///
-/// Execution contexts routinely share one pool — every context in a task under the task-shared
-/// pool types, every context in the process under the global ones — and each of them registers
-/// it, so a walk of the registry has to deduplicate by pool identity or it reports one
-/// reservation several times.
-fn sum_distinct_pools<'a>(
-    pools: impl IntoIterator<Item = &'a Arc<dyn MemoryPool>>,
-    seen: &mut HashSet<*const ()>,
-) -> usize {
-    pools
-        .into_iter()
-        .filter(|pool| seen.insert(Arc::as_ptr(pool) as *const ()))
-        .map(|pool| pool.reserved())
-        .sum()
+/// Execution contexts routinely share one pool (every context in a task under the task-shared pool
+/// types, every context in the process under the global ones) and each of them registers it, so
+/// both lists are deduplicated by pool identity or a sum over them would report one reservation
+/// several times.
+struct RegistrySnapshot {
+    /// Distinct pools registered on the requested thread. Empty when no thread was requested.
+    thread_pools: Vec<Arc<dyn MemoryPool>>,
+    /// Distinct pools across every thread. Deduplicated across the whole registry, not within each
+    /// thread: a task-shared or global pool spans threads.
+    all_pools: Vec<Arc<dyn MemoryPool>>,
+    /// Registered contexts, which is one per native plan created and not yet released.
+    plans: usize,
 }
 
-/// Unregister a context's pool and return the remaining total reserved for the thread.
-fn unregister_and_total(thread_id: u64, context_id: i64) -> usize {
-    let mut map = get_thread_memory_pools().lock();
-    if let Some(pools) = map.get_mut(&thread_id) {
-        pools.remove(&context_id);
-        if pools.is_empty() {
-            map.remove(&thread_id);
-            return 0;
-        }
-        return sum_distinct_pools(pools.values(), &mut HashSet::new());
+fn snapshot_registry(thread_id: Option<u64>) -> RegistrySnapshot {
+    fn distinct<'a>(
+        pools: impl IntoIterator<Item = &'a Arc<dyn MemoryPool>>,
+        seen: &mut HashSet<*const ()>,
+    ) -> Vec<Arc<dyn MemoryPool>> {
+        pools
+            .into_iter()
+            .filter(|pool| seen.insert(Arc::as_ptr(pool) as *const ()))
+            .cloned()
+            .collect()
     }
-    0
+
+    let map = get_thread_memory_pools().lock();
+    let thread_pools = thread_id
+        .and_then(|id| map.get(&id))
+        .map(|pools| distinct(pools.values(), &mut HashSet::new()))
+        .unwrap_or_default();
+    let all_pools = distinct(map.values().flat_map(HashMap::values), &mut HashSet::new());
+    let plans = map.values().map(HashMap::len).sum();
+    RegistrySnapshot {
+        thread_pools,
+        all_pools,
+        plans,
+    }
+}
+
+fn sum_reserved(pools: &[Arc<dyn MemoryPool>]) -> usize {
+    pools.iter().map(|pool| pool.reserved()).sum()
 }
 
 fn total_reserved_for_thread(thread_id: u64) -> usize {
-    let map = get_thread_memory_pools().lock();
-    map.get(&thread_id)
-        .map(|pools| sum_distinct_pools(pools.values(), &mut HashSet::new()))
-        .unwrap_or(0)
+    sum_reserved(&snapshot_registry(Some(thread_id)).thread_pools)
 }
 
-/// Reservation totals read from the pool registry in one pass, under one lock.
+/// Reservation totals read from one snapshot of the pool registry.
 struct ReservedTotals {
     /// Bytes reserved by the pools registered on the requested thread, deduplicated within it.
     /// Zero when no thread was requested.
@@ -255,38 +282,26 @@ struct ReservedTotals {
     across_threads: usize,
 }
 
-/// Reads both totals under a single lock.
+/// Reads both totals from one snapshot of the registry.
 ///
-/// They are emitted as a pair, and a pair that straddles two acquisitions describes two different
-/// instants. Taking the lock once also halves the tracing traffic through a mutex the executor
-/// needs in order to register and release pools.
+/// They are emitted as a pair, and a pair taken from two snapshots can describe two different
+/// sets of pools. Taking the lock once also halves the tracing traffic through a mutex the
+/// executor needs in order to register and release pools.
 ///
 /// `thread_id` of `None` skips the per-thread figure; the caller is only after the process total.
 fn total_reserved(thread_id: Option<u64>) -> ReservedTotals {
-    let map = get_thread_memory_pools().lock();
-    let for_thread = thread_id
-        .and_then(|id| map.get(&id))
-        .map(|pools| sum_distinct_pools(pools.values(), &mut HashSet::new()))
-        .unwrap_or(0);
-    // Deduplicated across the whole map, not within each thread: the same pool is registered by
-    // every context that holds it, and a task-shared or global pool spans threads.
-    let mut seen = HashSet::new();
-    let across_threads = map
-        .values()
-        .map(|pools| sum_distinct_pools(pools.values(), &mut seen))
-        .sum();
+    let snapshot = snapshot_registry(thread_id);
     ReservedTotals {
-        for_thread,
-        across_threads,
+        for_thread: sum_reserved(&snapshot.thread_pools),
+        across_threads: sum_reserved(&snapshot.all_pools),
     }
 }
 
 /// Executor-wide memory figures for one line of the periodic memory usage log.
 #[derive(Debug, PartialEq)]
 struct MemoryUsage {
-    /// Bytes handed out by the Rust global allocator, process-wide. `None` in a build without the
-    /// `alloc-accounting` feature.
-    native_allocated: Option<usize>,
+    /// Bytes handed out by the Rust global allocator, process-wide.
+    native_allocated: usize,
     /// Bytes reserved across every live Comet memory pool, counting each pool once however many
     /// plans share it.
     pools_reserved: usize,
@@ -301,33 +316,13 @@ struct MemoryUsage {
 ///
 /// This runs on a timer thread, concurrently with every plan in the executor, so it reads only the
 /// allocation counter and the pool registry, never an execution context.
-///
-/// The pools are cloned out of the registry and their reservations read after its lock is
-/// released. `CometFairMemoryPool` holds its own lock across the JNI call that acquires memory
-/// from Spark, and Spark can park that call until another task frees memory. A finishing task
-/// frees its reservations only after `releasePlan` has taken the registry lock to unregister, so
-/// reading a reservation under the registry lock could wait on a pool that is itself waiting on
-/// the registry.
 fn memory_usage() -> MemoryUsage {
-    let (plans, distinct_pools) = {
-        let map = get_thread_memory_pools().lock();
-        let mut seen = HashSet::new();
-        let mut plans = 0;
-        let mut distinct_pools = vec![];
-        for pool in map.values().flat_map(HashMap::values) {
-            plans += 1;
-            if seen.insert(Arc::as_ptr(pool) as *const ()) {
-                distinct_pools.push(Arc::clone(pool));
-            }
-        }
-        (plans, distinct_pools)
-    };
+    let snapshot = snapshot_registry(None);
     MemoryUsage {
-        native_allocated: cfg!(feature = "alloc-accounting")
-            .then(crate::alloc_accounting::current_balance),
-        pools_reserved: distinct_pools.iter().map(|pool| pool.reserved()).sum(),
-        pools: distinct_pools.len(),
-        plans,
+        native_allocated: crate::alloc_accounting::current_balance(),
+        pools_reserved: sum_reserved(&snapshot.all_pools),
+        pools: snapshot.all_pools.len(),
+        plans: snapshot.plans,
     }
 }
 
@@ -1216,7 +1211,6 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
         if exec_context.tracing_enabled {
             #[cfg(feature = "jemalloc")]
             log_jemalloc_usage();
-            #[cfg(feature = "alloc-accounting")]
             log_native_allocated();
             // Both totals come from one read of the registry, so the pair describes a single
             // instant, and both are emitted next to the allocation counter above so a trace can
@@ -1258,15 +1252,14 @@ pub extern "system" fn Java_org_apache_comet_Native_releasePlan(
             Box::from_raw(exec_context as *mut ExecutionContext);
 
         // Unregister this context's pool and, when tracing, emit the remaining total for the
-        // thread. Every context registers, but only a traced one writes counters.
-        if let Some(memory_pool_registration) = execution_context.memory_pool_registration.take() {
-            let remaining = memory_pool_registration.unregister_and_total();
-            if execution_context.tracing_enabled {
-                log_memory_usage(
-                    &execution_context.tracing_memory_metric_name,
-                    remaining as u64,
-                );
-            }
+        // thread. Every context registers, but only a traced one writes counters, so the
+        // reservations are read only then.
+        drop(execution_context.memory_pool_registration.take());
+        if execution_context.tracing_enabled {
+            log_memory_usage(
+                &execution_context.tracing_memory_metric_name,
+                total_reserved_for_thread(execution_context.rust_thread_id) as u64,
+            );
         }
 
         // Flush metrics last, as it is the only fallible step here.
@@ -1672,9 +1665,8 @@ pub extern "system" fn Java_org_apache_comet_Native_getRustThreadId(
 
 #[no_mangle]
 /// Returns the executor's memory usage for the periodic memory usage log, as
-/// `[native_allocated, pools_reserved, pools, plans]`; see [`MemoryUsage`]. `native_allocated` is
-/// -1 in a build without the `alloc-accounting` feature. Safe to call from any thread; see
-/// [`memory_usage`].
+/// `[native_allocated, pools_reserved, pools, plans]`; see [`MemoryUsage`]. Safe to call from any
+/// thread; see [`memory_usage`].
 pub extern "system" fn Java_org_apache_comet_Native_getMemoryUsage(
     e: EnvUnowned,
     _class: JClass,
@@ -1682,7 +1674,7 @@ pub extern "system" fn Java_org_apache_comet_Native_getMemoryUsage(
     try_unwrap_or_throw(&e, |env| {
         let usage = memory_usage();
         let values = [
-            usage.native_allocated.map_or(-1, |bytes| bytes as jlong),
+            usage.native_allocated as jlong,
             usage.pools_reserved as jlong,
             usage.pools as jlong,
             usage.plans as jlong,
@@ -2172,18 +2164,11 @@ mod tests {
         drop(own_reservation);
     }
 
-    #[test]
-    fn memory_usage_reports_native_allocation_only_with_the_feature() {
-        assert_eq!(
-            memory_usage().native_allocated.is_some(),
-            cfg!(feature = "alloc-accounting")
-        );
-    }
-
-    /// Stands in for a `CometFairMemoryPool` whose lock is held across a Spark acquire: it notes
-    /// whether the registry lock was held while its reservation was read.
+    /// Stands in for a `CometFairMemoryPool` whose lock is held across a Spark acquire: it counts
+    /// its reservation reads, and notes whether the registry lock was held during any of them.
     #[derive(Debug, Default)]
     struct RegistryProbePool {
+        reads: std::sync::atomic::AtomicUsize,
         read_under_registry_lock: std::sync::atomic::AtomicBool,
     }
 
@@ -2207,6 +2192,8 @@ mod tests {
         }
 
         fn reserved(&self) -> usize {
+            self.reads
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             if get_thread_memory_pools().try_lock().is_none() {
                 self.read_under_registry_lock
                     .store(true, std::sync::atomic::Ordering::Relaxed);
@@ -2215,21 +2202,37 @@ mod tests {
         }
     }
 
-    /// The memory usage log runs by default, from a thread that is not running any plan, so it
-    /// must not read a reservation while holding the registry lock; see `memory_usage`.
+    /// No path may read a reservation while holding the registry lock; see `ThreadPoolMap`. The
+    /// memory usage log reads from a thread running no plan, tracing reads from a plan's thread,
+    /// and `releasePlan` unregisters on every plan, so all of them are covered. Unregistering must
+    /// not read a reservation at all, since it runs whether or not anything is traced.
     #[test]
-    fn memory_usage_reads_reservations_outside_the_registry_lock() {
+    fn reservations_are_read_outside_the_registry_lock() {
+        use std::sync::atomic::Ordering::Relaxed;
+
         let _guard = serial();
         let before = memory_usage().pools_reserved;
         let probe = Arc::new(RegistryProbePool::default());
-        let _registration =
+        let registration =
             ThreadMemoryPoolRegistration::new(20, -7001, Arc::clone(&probe) as Arc<dyn MemoryPool>);
+        let second =
+            ThreadMemoryPoolRegistration::new(20, -7002, Arc::clone(&probe) as Arc<dyn MemoryPool>);
 
         assert_eq!(memory_usage().pools_reserved - before, 4096);
+        assert_eq!(total_reserved(Some(20)).for_thread, 4096);
+        assert_eq!(total_reserved_for_thread(20), 4096);
+        let reads = probe.reads.load(Relaxed);
+        assert!(reads >= 3, "each reader should have read the probe");
+
+        drop(registration);
+        drop(second);
+        assert_eq!(
+            probe.reads.load(Relaxed),
+            reads,
+            "unregistering read a reservation"
+        );
         assert!(
-            !probe
-                .read_under_registry_lock
-                .load(std::sync::atomic::Ordering::Relaxed),
+            !probe.read_under_registry_lock.load(Relaxed),
             "a pool's reservation was read while the registry lock was held"
         );
     }

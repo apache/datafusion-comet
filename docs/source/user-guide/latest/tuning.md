@@ -220,6 +220,17 @@ For example, a 16 GiB executor derives an overhead of 1638 MiB. If the largest d
 log is the 1522.3 MiB in the line above, the overhead needs to be at least 1638 + 1523 = 3161 MiB
 before any margin, so `spark.executor.memoryOverhead=4g` would be a reasonable setting.
 
+The executor also logs a warning when its native memory looks larger than its container allows:
+when the difference, plus everything in use in Spark's off-heap memory pool (which includes Comet's
+reservations), exceeds `spark.memory.offHeap.size` plus the memory overhead. Counting the pool's
+free space lets untracked memory use what a `spark.comet.exec.memoryPool.fraction` below `1.0` sets
+aside for it. The overhead also has to hold the JVM's own non-heap memory, so by the time the
+warning appears the executor has likely outgrown its container. It warns the first time this
+happens, and again each time it happens after dropping back below. The overhead it uses is
+`spark.executor.memoryOverhead` if set, otherwise `spark.executor.memoryOverheadFactor` of
+`spark.executor.memory` with a minimum of `spark.executor.minMemoryOverhead`, as Spark sizes the
+default container. There is no warning in local mode.
+
 Look more closely before raising the overhead if the difference keeps growing through a run rather
 than levelling off: native memory that is not being released will exhaust any overhead eventually.
 The executor logs one more line after its last native plan finishes, and an `allocated` figure there

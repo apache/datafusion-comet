@@ -272,8 +272,7 @@ class Native extends NativeBase {
    *
    * @return
    *   `[nativeAllocated, poolsReserved, pools, plans]`. `nativeAllocated` is the bytes the native
-   *   allocator has handed out, and is -1 if the native library was built without the
-   *   `alloc-accounting` feature. `poolsReserved` is the bytes reserved across every Comet memory
+   *   allocator has handed out. `poolsReserved` is the bytes reserved across every Comet memory
    *   pool, counting a pool shared by several plans once. `pools` is the number of live pools,
    *   which with the default task-shared pool types is one per task running native plans, and
    *   `plans` is the number of native plans created and not yet released.

@@ -456,9 +456,8 @@ has bounds _declared reservations_, and the sections above describe several stru
 declared reservations are a lower bound on physical usage. The known gaps, roughly in order of how
 much they matter:
 
-- **Real native usage is observed but not acted on.** The `alloc-accounting` feature, on by
-  default, counts the bytes Rust's allocator has handed out, and each executor logs that count next
-  to the pools' reservations. Nothing reads it at runtime, though: no operator, metric, or policy
+- **Real native usage is observed but not acted on.** Comet counts the bytes Rust's allocator has
+  handed out, and each executor logs that count next to the pools' reservations. Nothing reads it at runtime, though: no operator, metric, or policy
   responds to it, so an executor that outgrows its container is still stopped only by the kill.
 - **`spark.comet.exec.memoryPool.fraction` is a manual proxy for the gap.** It asks operators to
   guess a per-workload margin rather than measuring anything.
