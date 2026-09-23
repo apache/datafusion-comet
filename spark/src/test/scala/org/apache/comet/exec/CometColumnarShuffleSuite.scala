@@ -851,12 +851,29 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
     }
   }
 
+  test("collation introduced above the scan still falls back to Spark's shuffle") {
+    assume(isSpark40Plus, "string collation requires Spark 4.0+")
+    withParquetTable((0 until 20).map(i => (i, (i % 4).toString)), "coll_above_tbl") {
+      // The stored column is a plain string, so CometScanRule keeps the scan native and the
+      // collation is applied in a Project above it. The columnar shuffle gate is what declines
+      // the exchange: Comet hashes raw bytes, which would misroute rows that UTF8_LCASE
+      // considers equal.
+      val df = sql("SELECT _1, _2 COLLATE UTF8_LCASE AS c FROM coll_above_tbl")
+        .repartition(4, col("c"))
+      checkShuffleAnswer(df, 0)
+    }
+  }
+
   /**
    * checkShuffleAnswer only compares the query answer, which is order-insensitive and so would
    * pass even if Comet routed rows to different partitions than Spark. Compare
-   * spark_partition_id() per row instead.
+   * spark_partition_id() per row instead, and pin the Comet run to one CometShuffleExchangeExec:
+   * without that, a future fallback would leave both sides on plain Spark and the comparison
+   * would pass while testing nothing.
    */
   private def checkPartitionAssignmentMatchesSpark(df: => DataFrame, clue: String): Unit = {
+    checkCometExchange(df, 1, false)
+
     def pids: Array[(Int, Int)] =
       df.select(col("_1"), spark_partition_id().as("pid"))
         .collect()
