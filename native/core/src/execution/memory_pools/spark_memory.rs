@@ -26,7 +26,7 @@ use log::warn;
 use crate::{errors::CometResult, jvm_bridge::JVMClasses};
 
 /// Spark's side of a Comet pool: the calls that acquire and release off-heap execution memory.
-pub(super) trait SparkMemoryManager {
+pub(super) trait SparkMemoryManager: Send + Sync {
     /// Asks Spark for `size` bytes and returns how many it granted.
     fn acquire(&self, size: usize) -> CometResult<i64>;
     fn release(&self, size: usize) -> CometResult<()>;
@@ -183,7 +183,7 @@ fn granted(requested: usize, acquired: i64) -> usize {
 pub(super) mod fake {
     use super::*;
     use crate::errors::CometError;
-    use std::sync::Mutex;
+    use parking_lot::Mutex;
 
     /// Grants up to `limit` bytes in total and records every release. Panics if it is handed
     /// back more than it granted, which is the guarantee the pools must keep.
@@ -193,6 +193,7 @@ pub(super) mod fake {
         held: Mutex<usize>,
         released: Mutex<Vec<usize>>,
         fail: bool,
+        during_acquire: Mutex<Option<Box<dyn FnOnce() + Send>>>,
     }
 
     impl FakeSpark {
@@ -211,16 +212,25 @@ pub(super) mod fake {
         }
 
         pub(in crate::execution::memory_pools) fn set_limit(&self, limit: usize) {
-            *self.limit.lock().unwrap() = limit;
+            *self.limit.lock() = limit;
+        }
+
+        /// Runs `f` inside the next acquire, before Spark answers. That is where a call from
+        /// another thread lands while this one waits on JNI.
+        pub(in crate::execution::memory_pools) fn during_next_acquire(
+            &self,
+            f: impl FnOnce() + Send + 'static,
+        ) {
+            *self.during_acquire.lock() = Some(Box::new(f));
         }
 
         /// Bytes granted and not yet handed back.
         pub(in crate::execution::memory_pools) fn held(&self) -> usize {
-            *self.held.lock().unwrap()
+            *self.held.lock()
         }
 
         pub(in crate::execution::memory_pools) fn released(&self) -> Vec<usize> {
-            self.released.lock().unwrap().clone()
+            self.released.lock().clone()
         }
 
         pub(in crate::execution::memory_pools) fn memory(self: &Arc<Self>) -> SparkMemory {
@@ -230,24 +240,29 @@ pub(super) mod fake {
 
     impl SparkMemoryManager for Arc<FakeSpark> {
         fn acquire(&self, size: usize) -> CometResult<i64> {
+            // Run before taking any other lock, so `f` can call back into this fake.
+            let during = self.during_acquire.lock().take();
+            if let Some(f) = during {
+                f();
+            }
             if self.fail {
                 return Err(CometError::Internal("jni".to_string()));
             }
-            let limit = *self.limit.lock().unwrap();
-            let mut held = self.held.lock().unwrap();
+            let limit = *self.limit.lock();
+            let mut held = self.held.lock();
             let granted = size.min(limit.saturating_sub(*held));
             *held += granted;
             Ok(granted as i64)
         }
 
         fn release(&self, size: usize) -> CometResult<()> {
-            let mut held = self.held.lock().unwrap();
+            let mut held = self.held.lock();
             assert!(
                 size <= *held,
                 "Spark was handed back {size} bytes but only granted {held}"
             );
             *held -= size;
-            self.released.lock().unwrap().push(size);
+            self.released.lock().push(size);
             Ok(())
         }
     }
@@ -309,6 +324,26 @@ mod tests {
         assert_eq!(spark.overcommit(), 0);
         assert_eq!(fake.held(), 110);
         spark.release(110).unwrap();
+        assert_eq!(fake.held(), 0);
+    }
+
+    #[test]
+    fn try_acquire_hands_back_debt_repaid_by_a_concurrent_release() {
+        let fake = FakeSpark::with(40);
+        let spark = Arc::new(fake.memory());
+        spark.acquire(100);
+        fake.set_limit(200);
+        // try_acquire reads 60 bytes owed and asks Spark for them with the request. Before
+        // Spark answers, another consumer shrinks by 30, which repays half of that debt.
+        let other = Arc::clone(&spark);
+        fake.during_next_acquire(move || other.release(30).unwrap());
+        assert_eq!(spark.try_acquire(10).unwrap(), Ok(()));
+        assert_eq!(spark.overcommit(), 0);
+        // Spark granted 70 bytes where 40 were still needed, and gets the other 30 back.
+        assert_eq!(fake.released(), vec![30]);
+        // 70 bytes of the first acquire and all 10 of the second are still recorded.
+        assert_eq!(fake.held(), 80);
+        spark.release(80).unwrap();
         assert_eq!(fake.held(), 0);
     }
 

@@ -189,4 +189,48 @@ mod tests {
         assert_eq!(pool.reserved(), 0);
         assert_eq!(fake.held(), 0);
     }
+
+    #[test]
+    fn concurrent_consumers_hand_spark_back_exactly_what_it_granted() {
+        use rand::{rngs::StdRng, RngExt, SeedableRng};
+        use std::thread;
+
+        let fake = FakeSpark::with(1_000);
+        let pool = Arc::new(CometUnifiedMemoryPool::with_spark(fake.memory()));
+        let threads: Vec<_> = (0..8)
+            .map(|seed| {
+                let pool = Arc::clone(&pool) as Arc<dyn MemoryPool>;
+                let fake = Arc::clone(&fake);
+                thread::spawn(move || {
+                    let mut rng = StdRng::seed_from_u64(seed);
+                    let reservation = MemoryConsumer::new(format!("c{seed}")).register(&pool);
+                    for _ in 0..10_000 {
+                        match rng.random_range(0..4) {
+                            0 => reservation.grow(rng.random_range(1..200)),
+                            1 => {
+                                let _ = reservation.try_grow(rng.random_range(1..200));
+                            }
+                            2 => {
+                                let size = reservation.size();
+                                if size > 0 {
+                                    reservation.shrink(rng.random_range(1..=size));
+                                }
+                            }
+                            // Spark's other consumers take and return memory.
+                            _ => fake.set_limit(rng.random_range(0..2_000)),
+                        }
+                    }
+                })
+            })
+            .collect();
+        for thread in threads {
+            thread.join().unwrap();
+        }
+
+        // FakeSpark panics on an over-return, so a bad interleaving fails the join above, and
+        // anything left once every reservation has been dropped is a leak.
+        assert_eq!(pool.reserved(), 0);
+        assert_eq!(pool.spark.overcommit(), 0);
+        assert_eq!(fake.held(), 0);
+    }
 }
