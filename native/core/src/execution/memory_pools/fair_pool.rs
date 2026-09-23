@@ -62,8 +62,15 @@ impl CometFairMemoryPool {
         pool_size: usize,
         task_attempt_id: i64,
     ) -> CometFairMemoryPool {
+        Self::with_spark(
+            SparkMemory::new(task_memory_manager_handle, task_attempt_id),
+            pool_size,
+        )
+    }
+
+    fn with_spark(spark: SparkMemory, pool_size: usize) -> CometFairMemoryPool {
         Self {
-            spark: SparkMemory::new(task_memory_manager_handle, task_attempt_id),
+            spark,
             pool_size,
             state: Mutex::new(CometFairPoolState { used: 0, num: 0 }),
         }
@@ -75,8 +82,11 @@ impl Display for CometFairMemoryPool {
         let state = self.state.lock();
         write!(
             f,
-            "CometFairMemoryPool(pool_size={}, used={}, num={})",
-            self.pool_size, state.used, state.num
+            "CometFairMemoryPool(pool_size={}, used={}, num={}, overcommit={})",
+            self.pool_size,
+            state.used,
+            state.num,
+            self.spark.overcommit()
         )
     }
 }
@@ -113,10 +123,7 @@ impl MemoryPool for CometFairMemoryPool {
         }
         let mut state = self.state.lock();
         self.spark.acquire(additional);
-        state.used = state
-            .used
-            .checked_add(additional)
-            .expect("overflow in checked_add");
+        state.used = state.used.saturating_add(additional);
     }
 
     fn shrink(&self, _reservation: &MemoryReservation, subtractive: usize) {
@@ -156,16 +163,18 @@ impl MemoryPool for CometFairMemoryPool {
             let used = state.used;
             if limit < used + additional {
                 return resources_err!(
-                    "Failed to acquire {additional} bytes where {used} bytes already reserved and the fair limit is {limit} bytes, {num} registered"
+                    "Failed to acquire {additional} bytes where {used} bytes already reserved ({} bytes overcommitted) and the fair limit is {limit} bytes, {num} registered",
+                    self.spark.overcommit()
                 );
             }
 
             // A partial grant is handed back and refused, which triggers spilling in the caller.
-            if let Err(acquired) = self.spark.try_acquire(additional)? {
+            if let Err(refusal) = self.spark.try_acquire(additional)? {
                 return resources_err!(
-                    "Failed to acquire {} bytes, only got {} bytes. Reserved: {} bytes",
+                    "Failed to acquire {} bytes plus {} bytes overcommitted, only got {} bytes. Reserved: {} bytes",
                     additional,
-                    acquired,
+                    refusal.overcommit,
+                    refusal.granted,
                     state.used
                 );
             }
@@ -179,5 +188,30 @@ impl MemoryPool for CometFairMemoryPool {
 
     fn reserved(&self) -> usize {
         self.state.lock().used
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::spark_memory::fake::FakeSpark;
+    use super::*;
+
+    #[test]
+    fn grow_past_the_fair_limit_is_recorded_and_refuses_the_next_try_grow() {
+        let fake = FakeSpark::with(100);
+        let pool: Arc<dyn MemoryPool> =
+            Arc::new(CometFairMemoryPool::with_spark(fake.memory(), 100));
+        let reservation = MemoryConsumer::new("smj").register(&pool);
+
+        // Past both the fair limit and what Spark will grant.
+        reservation.grow(150);
+        assert_eq!(pool.reserved(), 150);
+        assert_eq!(fake.held(), 100);
+        assert!(reservation.try_grow(1).is_err());
+
+        drop(reservation);
+        assert_eq!(pool.reserved(), 0);
+        // Spark gets back exactly the 100 bytes it granted.
+        assert_eq!(fake.released(), vec![100]);
     }
 }
