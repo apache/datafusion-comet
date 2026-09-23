@@ -1086,4 +1086,43 @@ class CometExecRuleSuite extends CometTestBase {
     }
   }
 
+  test("scan conversion must run before operator conversion") {
+    withTempPath { path =>
+      createTestDataFrame.write.parquet(path.toString)
+      withTempView("test_data") {
+        spark.read.parquet(path.toString).createOrReplaceTempView("test_data")
+        val query = "SELECT id, id * 2 as doubled FROM test_data WHERE id % 2 == 0"
+
+        // One plan per rule application. Fallback reasons are recorded as tags on the Spark
+        // nodes, and CometNativeScan.isSupported declines a scan already carrying one, so
+        // reusing the plan the exec rule just refused would hold the second case down.
+        val forExecRule = stripAQEPlan(createSparkPlan(spark, query))
+        val forCometRule = stripAQEPlan(createSparkPlan(spark, query))
+        assert(countOperators(forExecRule, classOf[FileSourceScanExec]) == 1)
+        assert(countOperators(forCometRule, classOf[FileSourceScanExec]) == 1)
+
+        withSQLConf(
+          CometConf.COMET_ENABLED.key -> "true",
+          CometConf.COMET_EXEC_ENABLED.key -> "true",
+          // Off by default, but pinned here: with it on, CometExecRule bridges the unconverted
+          // scan with a CometSparkToColumnarExec and converts the operators above it, which is a
+          // different path from the one under test.
+          CometConf.COMET_CONVERT_FROM_PARQUET_ENABLED.key -> "false") {
+          // CometExecRule builds its native plan up from the nodes CometScanRule produces, so on
+          // its own it leaves the scan on Spark's reader.
+          assert(
+            countOperators(
+              CometExecRule(spark).apply(forExecRule),
+              classOf[FileSourceScanExec]) == 1)
+          // CometRule runs both phases, in that order. This fails if the scan phase is ever
+          // reordered or dropped.
+          assert(
+            countOperators(
+              CometRule(spark).apply(forCometRule),
+              classOf[CometNativeScanExec]) == 1)
+        }
+      }
+    }
+  }
+
 }
