@@ -20,6 +20,11 @@
 package org.apache.comet
 
 import java.lang.management.ManagementFactory
+import java.util.Locale
+import java.util.concurrent.{Executors, ThreadFactory, TimeUnit}
+import java.util.concurrent.atomic.AtomicBoolean
+
+import scala.util.control.NonFatal
 
 import org.apache.arrow.c.ArrowArrayStream
 import org.apache.hadoop.conf.Configuration
@@ -219,6 +224,8 @@ class CometExecIterator(
     this.close()
   }
 
+  CometExecIterator.startMemoryUsageLog()
+
   private def getNextBatch: Option[ColumnarBatch] = {
     assert(partitionIndex >= 0 && partitionIndex < numParts)
 
@@ -362,6 +369,85 @@ class CometExecIterator(
 }
 
 object CometExecIterator extends Logging {
+
+  private val memoryUsageLogStarted = new AtomicBoolean(false)
+
+  /** Native plans running at the previous memory usage log. Only the log's own thread uses it. */
+  private var plansAtLastMemoryUsageLog = 0L
+
+  /**
+   * Starts the executor's native memory usage log when the first native plan is created, unless
+   * `spark.comet.memory.logInterval` is 0.
+   *
+   * Both figures the log reports, the bytes the native allocator has handed out and the bytes
+   * reserved in Comet's memory pools, are executor-wide, so one daemon thread logs one line per
+   * interval for the whole executor, however many tasks are running. It runs on a timer rather
+   * than between batches, because a plan can spend its whole run inside one `executePlan` call: a
+   * plan rooted at a native shuffle writer consumes all of its input before it returns, and a
+   * plan fed directly by native scans parks the task thread until its next batch is ready.
+   */
+  private def startMemoryUsageLog(): Unit = {
+    if (!memoryUsageLogStarted.get()) {
+      // Read from the executor's configuration rather than the session's, since the one log
+      // serves every session on the executor.
+      val conf = SparkEnv.get.conf
+      val intervalMs = COMET_MEMORY_LOG_INTERVAL.valueConverter(
+        conf.get(COMET_MEMORY_LOG_INTERVAL.key, COMET_MEMORY_LOG_INTERVAL.defaultValueString))
+      if (memoryUsageLogStarted.compareAndSet(false, true) && intervalMs > 0) {
+        val nativeLib = new Native()
+        Executors
+          .newSingleThreadScheduledExecutor(new ThreadFactory {
+            override def newThread(runnable: Runnable): Thread = {
+              val thread = new Thread(runnable, "comet-memory-usage-log")
+              thread.setDaemon(true)
+              thread
+            }
+          })
+          .scheduleWithFixedDelay(
+            new Runnable {
+              override def run(): Unit = logMemoryUsage(nativeLib)
+            },
+            intervalMs,
+            intervalMs,
+            TimeUnit.MILLISECONDS)
+      }
+    }
+  }
+
+  private def logMemoryUsage(nativeLib: Native): Unit = {
+    try {
+      val usage = nativeLib.getMemoryUsage()
+      memoryUsageMessage(usage, plansAtLastMemoryUsageLog).foreach(logInfo(_))
+      plansAtLastMemoryUsageLog = usage(3)
+    } catch {
+      case NonFatal(e) =>
+        logWarning("Stopping the native memory usage log after a failure", e)
+        // Rethrown so that the scheduler stops running the log, rather than having it fail and
+        // warn again every interval.
+        throw e
+    }
+  }
+
+  /**
+   * The memory usage log line for `usage`, as returned by [[Native.getMemoryUsage]], or None to
+   * stay quiet. The log reports while native plans are running, and once more after the last of
+   * them finishes, so that allocation that outlives them is visible, then waits for plans to run
+   * again.
+   */
+  def memoryUsageMessage(usage: Array[Long], plansAtLastLog: Long): Option[String] = {
+    val (allocated, reserved, pools, plans) = (usage(0), usage(1), usage(2), usage(3))
+    if (plans == 0 && plansAtLastLog == 0) {
+      None
+    } else {
+      Some(
+        s"Comet native memory usage: allocated ${toMiB(allocated)}, reserved " +
+          s"${toMiB(reserved)} ($plans native plans, $pools memory pools)")
+    }
+  }
+
+  /** Formats a byte count from [[Native.getMemoryUsage]], in which -1 means unknown. */
+  private def toMiB(bytes: Long): String =
+    if (bytes < 0) "unknown" else "%.1f MiB".formatLocal(Locale.ROOT, bytes / 1024.0 / 1024.0)
 
   private def cometSqlConfs: Map[String, String] =
     SQLConf.get.getAllConfs.filter(_._1.startsWith(CometConf.COMET_PREFIX))

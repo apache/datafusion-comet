@@ -365,8 +365,9 @@ mod tests {
     /// by which that value can reach the shared balance is `ThreadDrift::drop`. That holds only
     /// while the wrapper is not installed: with it, thread teardown's own allocations call `track`
     /// and flush the oversized drift before the destructor runs, and the test would pass without
-    /// one. So the test is confined to the default build, which is the one CI runs. The injected
-    /// amount is far larger than any real allocation, and is taken back out afterwards.
+    /// one. So the test is confined to builds without the feature, which CI runs separately now
+    /// that the feature is on by default. The injected amount is far larger than any real
+    /// allocation, and is taken back out afterwards.
     #[test]
     #[cfg(not(feature = "alloc-accounting"))]
     fn thread_exit_settles_remaining_drift() {

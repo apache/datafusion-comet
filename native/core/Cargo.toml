@@ -105,7 +105,7 @@ datafusion-functions-nested = { version = "55.1.0" }
 
 [features]
 backtrace = ["datafusion/backtrace"]
-default = ["hdfs-opendal"]
+default = ["hdfs-opendal", "alloc-accounting"]
 contrib-lance = ["dep:comet-contrib-lance"]
 hdfs-opendal = ["opendal", "object_store_opendal", "hdfs-sys"]
 jemalloc = ["tikv-jemallocator", "tikv-jemalloc-ctl"]
@@ -115,9 +115,10 @@ jemalloc = ["tikv-jemallocator", "tikv-jemalloc-ctl"]
 contrib-delta = ["dep:comet-contrib-delta"]
 
 # Observability for real native memory usage. Wraps the global allocator to track the bytes it
-# hands out, and reports the total as the `native_allocated` tracing metric so it can be compared
-# against the memory pool's reservations. Never rejects an allocation. Off by default; a build
-# without it has no wrapper and no per-allocation work.
+# hands out, and reports the total in the periodic memory usage log and as the `native_allocated`
+# tracing metric, so it can be compared against the memory pool's reservations. Never rejects an
+# allocation. On by default; `--no-default-features --features hdfs-opendal` builds without it,
+# which leaves no wrapper and no per-allocation work.
 alloc-accounting = []
 
 # exclude optional packages from cargo machete verifications

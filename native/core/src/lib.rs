@@ -172,6 +172,7 @@ const LOG_PATTERN: &str = "{d(%y/%m/%d %H:%M:%S)} {l} {f}: {m}{n}";
 /// # Arguments
 /// * `feature_name` - The name of the feature to check. Supported features:
 ///   - "jemalloc" - tikv-jemallocator memory allocator
+///   - "alloc-accounting" - accounting of the bytes handed out by the global allocator
 ///   - "hdfs-opendal" - HDFS support via OpenDAL
 /// # Returns
 /// * `1` (true) if the feature is enabled
@@ -187,6 +188,7 @@ pub extern "system" fn Java_org_apache_comet_NativeBase_isFeatureEnabled(
 
         let enabled = match feature.as_str() {
             "jemalloc" => cfg!(feature = "jemalloc"),
+            "alloc-accounting" => cfg!(feature = "alloc-accounting"),
             "hdfs-opendal" => cfg!(feature = "hdfs-opendal"),
             _ => false, // Unknown features return false
         };

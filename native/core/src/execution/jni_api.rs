@@ -281,6 +281,56 @@ fn total_reserved(thread_id: Option<u64>) -> ReservedTotals {
     }
 }
 
+/// Executor-wide memory figures for one line of the periodic memory usage log.
+#[derive(Debug, PartialEq)]
+struct MemoryUsage {
+    /// Bytes handed out by the Rust global allocator, process-wide. `None` in a build without the
+    /// `alloc-accounting` feature.
+    native_allocated: Option<usize>,
+    /// Bytes reserved across every live Comet memory pool, counting each pool once however many
+    /// plans share it.
+    pools_reserved: usize,
+    /// Live memory pools. With the task-shared pool types, which include both defaults, that is one
+    /// per task running native plans.
+    pools: usize,
+    /// Native plans that have been created and not yet released.
+    plans: usize,
+}
+
+/// Reads the executor's memory usage for the periodic memory usage log.
+///
+/// This runs on a timer thread, concurrently with every plan in the executor, so it reads only the
+/// allocation counter and the pool registry, never an execution context.
+///
+/// The pools are cloned out of the registry and their reservations read after its lock is
+/// released. `CometFairMemoryPool` holds its own lock across the JNI call that acquires memory
+/// from Spark, and Spark can park that call until another task frees memory. A finishing task
+/// frees its reservations only after `releasePlan` has taken the registry lock to unregister, so
+/// reading a reservation under the registry lock could wait on a pool that is itself waiting on
+/// the registry.
+fn memory_usage() -> MemoryUsage {
+    let (plans, distinct_pools) = {
+        let map = get_thread_memory_pools().lock();
+        let mut seen = HashSet::new();
+        let mut plans = 0;
+        let mut distinct_pools = vec![];
+        for pool in map.values().flat_map(HashMap::values) {
+            plans += 1;
+            if seen.insert(Arc::as_ptr(pool) as *const ()) {
+                distinct_pools.push(Arc::clone(pool));
+            }
+        }
+        (plans, distinct_pools)
+    };
+    MemoryUsage {
+        native_allocated: cfg!(feature = "alloc-accounting")
+            .then(crate::alloc_accounting::current_balance),
+        pools_reserved: distinct_pools.iter().map(|pool| pool.reserved()).sum(),
+        pools: distinct_pools.len(),
+        plans,
+    }
+}
+
 fn parse_usize_env_var(name: &str) -> Option<usize> {
     std::env::var_os(name).and_then(|n| n.to_str().and_then(|s| s.parse::<usize>().ok()))
 }
@@ -1620,6 +1670,29 @@ pub extern "system" fn Java_org_apache_comet_Native_getRustThreadId(
     get_thread_id() as jlong
 }
 
+#[no_mangle]
+/// Returns the executor's memory usage for the periodic memory usage log, as
+/// `[native_allocated, pools_reserved, pools, plans]`; see [`MemoryUsage`]. `native_allocated` is
+/// -1 in a build without the `alloc-accounting` feature. Safe to call from any thread; see
+/// [`memory_usage`].
+pub extern "system" fn Java_org_apache_comet_Native_getMemoryUsage(
+    e: EnvUnowned,
+    _class: JClass,
+) -> jlongArray {
+    try_unwrap_or_throw(&e, |env| {
+        let usage = memory_usage();
+        let values = [
+            usage.native_allocated.map_or(-1, |bytes| bytes as jlong),
+            usage.pools_reserved as jlong,
+            usage.pools as jlong,
+            usage.plans as jlong,
+        ];
+        let long_array = env.new_long_array(values.len())?;
+        long_array.set_region(env, 0, &values)?;
+        Ok(long_array.into_raw())
+    })
+}
+
 // ============================================================================
 // Native Columnar to Row Conversion
 // ============================================================================
@@ -2064,6 +2137,101 @@ mod tests {
 
         drop(traced_reservation);
         drop(untraced_reservation);
+    }
+
+    /// The periodic memory usage log counts every plan, and every pool once. Two plans of one task
+    /// share a pool across threads, as a task-shared pool does, and a third plan has a pool of its
+    /// own.
+    #[test]
+    fn memory_usage_counts_every_plan_and_every_pool_once() {
+        let _guard = serial();
+        let before = memory_usage();
+        let (shared_pool, shared_reservation) = reserving(4096);
+        let (own_pool, own_reservation) = reserving(8192);
+
+        let _first = ThreadMemoryPoolRegistration::new(18, -6001, Arc::clone(&shared_pool));
+        let _second = ThreadMemoryPoolRegistration::new(19, -6002, Arc::clone(&shared_pool));
+        let third = ThreadMemoryPoolRegistration::new(18, -6003, own_pool);
+
+        let during = memory_usage();
+        assert_eq!(during.plans - before.plans, 3);
+        assert_eq!(
+            during.pools - before.pools,
+            2,
+            "a pool shared by two plans must be counted once"
+        );
+        assert_eq!(during.pools_reserved - before.pools_reserved, 4096 + 8192);
+
+        drop(third);
+        let after = memory_usage();
+        assert_eq!(after.plans - before.plans, 2);
+        assert_eq!(after.pools - before.pools, 1);
+        assert_eq!(after.pools_reserved - before.pools_reserved, 4096);
+
+        drop(shared_reservation);
+        drop(own_reservation);
+    }
+
+    #[test]
+    fn memory_usage_reports_native_allocation_only_with_the_feature() {
+        assert_eq!(
+            memory_usage().native_allocated.is_some(),
+            cfg!(feature = "alloc-accounting")
+        );
+    }
+
+    /// Stands in for a `CometFairMemoryPool` whose lock is held across a Spark acquire: it notes
+    /// whether the registry lock was held while its reservation was read.
+    #[derive(Debug, Default)]
+    struct RegistryProbePool {
+        read_under_registry_lock: std::sync::atomic::AtomicBool,
+    }
+
+    impl std::fmt::Display for RegistryProbePool {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "RegistryProbePool")
+        }
+    }
+
+    impl MemoryPool for RegistryProbePool {
+        fn name(&self) -> &str {
+            "RegistryProbePool"
+        }
+
+        fn grow(&self, _: &MemoryReservation, _: usize) {}
+
+        fn shrink(&self, _: &MemoryReservation, _: usize) {}
+
+        fn try_grow(&self, _: &MemoryReservation, _: usize) -> DataFusionResult<()> {
+            Ok(())
+        }
+
+        fn reserved(&self) -> usize {
+            if get_thread_memory_pools().try_lock().is_none() {
+                self.read_under_registry_lock
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+            4096
+        }
+    }
+
+    /// The memory usage log runs by default, from a thread that is not running any plan, so it
+    /// must not read a reservation while holding the registry lock; see `memory_usage`.
+    #[test]
+    fn memory_usage_reads_reservations_outside_the_registry_lock() {
+        let _guard = serial();
+        let before = memory_usage().pools_reserved;
+        let probe = Arc::new(RegistryProbePool::default());
+        let _registration =
+            ThreadMemoryPoolRegistration::new(20, -7001, Arc::clone(&probe) as Arc<dyn MemoryPool>);
+
+        assert_eq!(memory_usage().pools_reserved - before, 4096);
+        assert!(
+            !probe
+                .read_under_registry_lock
+                .load(std::sync::atomic::Ordering::Relaxed),
+            "a pool's reservation was read while the registry lock was held"
+        );
     }
 
     #[test]

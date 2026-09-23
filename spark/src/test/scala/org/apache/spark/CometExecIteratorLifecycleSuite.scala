@@ -220,4 +220,58 @@ class CometExecIteratorLifecycleSuite extends CometTestBase {
       }
     }
   }
+
+  test("getMemoryUsage counts live plans and reports native allocation") {
+    val nativeLib = new Native()
+    // Other suites' plans can still be live, so the plan count is compared as a delta.
+    val plansBefore = nativeLib.getMemoryUsage()(3)
+    withTaskContext(4500000L) {
+      val limitOp =
+        CometExecUtils.getLimitNativePlan(Seq(PrettyAttribute("test", LongType)), 100).get
+      val iter = new CometExecIterator(
+        id = 4500001L,
+        inputObjects = Array.empty[Object],
+        numOutputCols = 1,
+        protobufQueryPlan = limitOp.toByteArray,
+        nativeMetrics = CometMetricNode(Map.empty),
+        numParts = 1,
+        partitionIndex = 0)
+      try {
+        val usage = nativeLib.getMemoryUsage()
+        assert(usage(3) == plansBefore + 1, "a created plan must be counted until it is released")
+        assert(usage(2) >= 1, "a live plan must have a memory pool")
+        assert(usage(1) >= 0)
+        // The native library is built with allocation accounting by default, so an unknown (-1)
+        // or zero allocation means the feature or its wiring was lost.
+        assert(usage(0) > 0, s"native allocation was reported as ${usage(0)}")
+      } finally {
+        iter.close()
+      }
+    }
+    assert(nativeLib.getMemoryUsage()(3) == plansBefore, "a released plan must not be counted")
+  }
+
+  test("the memory usage log reports while plans run and once after the last one finishes") {
+    val mib = 1024L * 1024
+    val busy = Array(300 * mib, 100 * mib, 2L, 3L)
+    assert(
+      CometExecIterator
+        .memoryUsageMessage(busy, plansAtLastLog = 0)
+        .contains("Comet native memory usage: allocated 300.0 MiB, reserved 100.0 MiB " +
+          "(3 native plans, 2 memory pools)"))
+
+    // The line after the last plan finishes shows the allocation the plans left behind.
+    val idle = Array(20 * mib, 0L, 0L, 0L)
+    assert(
+      CometExecIterator
+        .memoryUsageMessage(idle, plansAtLastLog = 3)
+        .exists(_.contains("allocated 20.0 MiB, reserved 0.0 MiB (0 native plans")))
+    assert(CometExecIterator.memoryUsageMessage(idle, plansAtLastLog = 0).isEmpty)
+
+    // A native library built without alloc-accounting reports the allocation as -1.
+    assert(
+      CometExecIterator
+        .memoryUsageMessage(Array(-1L, 0L, 1L, 1L), plansAtLastLog = 0)
+        .exists(_.contains("allocated unknown")))
+  }
 }

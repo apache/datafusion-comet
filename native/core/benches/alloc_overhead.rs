@@ -17,11 +17,12 @@
 
 //! Measures the cost the `alloc-accounting` global-allocator wrapper adds per allocation.
 //!
-//! Run the same benchmark with and without the feature and compare:
+//! Run the same benchmark with and without the feature and compare. The feature is on by default,
+//! so the baseline is the build that turns it off:
 //!
 //! ```shell
-//! cargo bench --bench alloc_overhead -- --save-baseline off
-//! cargo bench --bench alloc_overhead --features alloc-accounting -- --baseline off
+//! cargo bench --bench alloc_overhead --no-default-features --features hdfs-opendal -- --save-baseline off
+//! cargo bench --bench alloc_overhead -- --baseline off
 //! ```
 //!
 //! `churn` allocates and frees untouched blocks, so the allocator call is most of the work and the
