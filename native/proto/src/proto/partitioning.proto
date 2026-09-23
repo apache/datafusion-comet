@@ -60,16 +60,13 @@ message RoundRobinPartition {
   // When true, place rows by position rather than by hashing their contents: the row at
   // task-global ordinal i goes to
   // (positional_start_partition + i / positional_group_rows) % num_partitions.
-  // Only set when the planner has established that the map task replays rows in the same order,
-  // which is the condition Spark's own round robin relies on.
+  // Only set where the driver has established that the map task replays its rows in the same
+  // order; see "Round Robin Partitioning" in the contributor guide's native_shuffle.md.
   bool positional = 3;
   // Rows per contiguous group under positional placement. 0 means derive it from the batch size
   // and the partition count.
   int32 positional_group_rows = 4;
-  // Output partition this map task's first group goes to. Filled in per task by
-  // `CometNativeShuffleWriter.buildUnifiedPlan` as
-  // `XORShiftRandom(mapPartitionId).nextInt(num_partitions) + 1`, the same scrambled start Spark
-  // uses (SPARK-21782). A pure function of the map partition id, so a retried task reproduces its
-  // own placement.
+  // Output partition this map task's first group goes to, set per task from
+  // `CometShuffleExchangeExec.positionalStartPartition`.
   int32 positional_start_partition = 5;
 }

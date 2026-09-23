@@ -31,7 +31,7 @@ use datafusion::physical_expr::{EquivalenceProperties, Partitioning, PhysicalExp
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
 use datafusion::physical_plan::{apply_expression_roots, EmptyRecordBatchStream};
 use datafusion::{
-    arrow::datatypes::{DataType, SchemaRef},
+    arrow::datatypes::{DataType, Schema, SchemaRef},
     error::Result,
     execution::context::TaskContext,
     physical_plan::{
@@ -419,6 +419,31 @@ fn contains_view_type(data_type: &DataType) -> bool {
     }
 }
 
+/// The partitioning to actually use on `schema`. The planner decides whether positional placement
+/// is safe to retry; this decides whether it is worth doing on this schema, and falls back to
+/// hashing, with the same column cap a hash round robin would have used, where it is not. See
+/// [`contains_view_type`].
+fn partitioning_for_schema(partitioning: CometPartitioning, schema: &Schema) -> CometPartitioning {
+    match partitioning {
+        CometPartitioning::RoundRobin(
+            n,
+            RoundRobinStrategy::RowGroups {
+                max_hash_columns, ..
+            },
+        ) if schema
+            .fields()
+            .iter()
+            .any(|f| contains_view_type(f.data_type())) =>
+        {
+            log::debug!(
+                "schema contains a view type, falling back from positional to hash round robin"
+            );
+            CometPartitioning::RoundRobin(n, RoundRobinStrategy::HashAll { max_hash_columns })
+        }
+        other => other,
+    }
+}
+
 /// Constructs the existing schema-appropriate partitioner for either writer backend.
 #[allow(clippy::too_many_arguments)]
 fn create_repartitioner<T: PartitionWriter + 'static>(
@@ -432,23 +457,7 @@ fn create_repartitioner<T: PartitionWriter + 'static>(
     max_buffer_bytes: Option<usize>,
 ) -> Result<Box<dyn ShufflePartitioner>> {
     let partition_count = partitioning.partition_count();
-
-    // The planner decides whether positional placement is safe to retry; this decides whether it
-    // is worth doing on this schema. See `contains_view_type`.
-    let partitioning = match &partitioning {
-        CometPartitioning::RoundRobin(n, RoundRobinStrategy::RowGroups { .. })
-            if schema
-                .fields()
-                .iter()
-                .any(|f| contains_view_type(f.data_type())) =>
-        {
-            log::debug!(
-                "schema contains a view type, falling back from positional to hash round robin"
-            );
-            CometPartitioning::RoundRobin(*n, RoundRobinStrategy::default())
-        }
-        _ => partitioning,
-    };
+    let partitioning = partitioning_for_schema(partitioning, &schema);
 
     if schema.fields().is_empty() {
         log::debug!(
@@ -1829,5 +1838,50 @@ mod test {
             ]
             .into()
         )));
+    }
+
+    /// Falling back from positional placement on a view-typed schema keeps the column cap that
+    /// `maxHashColumns` asked for, rather than silently hashing every column.
+    #[test]
+    fn view_type_fallback_keeps_the_hash_column_cap() {
+        let positional = || {
+            CometPartitioning::RoundRobin(
+                8,
+                RoundRobinStrategy::RowGroups {
+                    start_partition: 3,
+                    group_rows: 64,
+                    max_hash_columns: 4,
+                },
+            )
+        };
+        let view_schema = Schema::new(vec![
+            Field::new("a", DataType::Int64, false),
+            Field::new("s", DataType::Utf8View, true),
+        ]);
+        assert!(matches!(
+            partitioning_for_schema(positional(), &view_schema),
+            CometPartitioning::RoundRobin(
+                8,
+                RoundRobinStrategy::HashAll {
+                    max_hash_columns: 4
+                }
+            )
+        ));
+
+        let plain_schema = Schema::new(vec![
+            Field::new("a", DataType::Int64, false),
+            Field::new("s", DataType::Utf8, true),
+        ]);
+        assert!(matches!(
+            partitioning_for_schema(positional(), &plain_schema),
+            CometPartitioning::RoundRobin(
+                8,
+                RoundRobinStrategy::RowGroups {
+                    start_partition: 3,
+                    group_rows: 64,
+                    max_hash_columns: 4
+                }
+            )
+        ));
     }
 }

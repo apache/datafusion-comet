@@ -47,7 +47,10 @@ pub(crate) enum PartitionIndices {
 }
 
 impl PartitionIndices {
-    pub(crate) fn empty_like(&self, num_partitions: usize) -> Self {
+    /// An empty index of the same shape and partition count, for after the buffered batches it
+    /// pointed into have drained.
+    pub(crate) fn empty_like(&self) -> Self {
+        let num_partitions = self.num_partitions();
         match self {
             Self::Rows(_) => Self::Rows(vec![vec![]; num_partitions]),
             Self::Runs(_) => Self::Runs(vec![vec![]; num_partitions]),
@@ -110,11 +113,14 @@ impl PartitionedBatchesProducer {
         self.buffered_batches.iter().collect()
     }
 
+    /// `interleave_time` is the shuffle writer's `interleave_time` metric, which times the gather
+    /// out of the partition index for either shape: `interleave_record_batch` over rows, or the
+    /// slicing and concatenation of runs.
     pub(super) fn produce<'a>(
         &'a self,
         refs: &'a [&'a RecordBatch],
         partition_id: usize,
-        copy_time: &'a Time,
+        interleave_time: &'a Time,
     ) -> PartitionedBatchIterator<'a> {
         // Partition indices index into `buffered_batches`; a refs slice built from a
         // different producer would silently interleave wrong rows.
@@ -128,13 +134,13 @@ impl PartitionedBatchesProducer {
                 &indices[partition_id],
                 refs,
                 self.batch_size,
-                copy_time,
+                interleave_time,
             )),
             PartitionIndices::Runs(runs) => PartitionedBatchIterator::Runs(RunIterator::new(
                 &runs[partition_id],
                 refs,
                 self.batch_size,
-                copy_time,
+                interleave_time,
             )),
         }
     }
@@ -170,7 +176,7 @@ pub(crate) struct RowIterator<'a> {
     /// (capacity at most `batch_size`) rather than re-materializing its whole index list.
     chunk_scratch: Vec<(usize, usize)>,
     pos: usize,
-    copy_time: &'a Time,
+    interleave_time: &'a Time,
 }
 
 impl<'a> RowIterator<'a> {
@@ -178,7 +184,7 @@ impl<'a> RowIterator<'a> {
         indices: &'a [(u32, u32)],
         record_batches: &'a [&'a RecordBatch],
         batch_size: usize,
-        copy_time: &'a Time,
+        interleave_time: &'a Time,
     ) -> Self {
         if indices.is_empty() {
             // Avoid unnecessary allocations when the partition is empty
@@ -188,7 +194,7 @@ impl<'a> RowIterator<'a> {
                 indices: &[],
                 chunk_scratch: vec![],
                 pos: 0,
-                copy_time,
+                interleave_time,
             };
         }
         Self {
@@ -197,7 +203,7 @@ impl<'a> RowIterator<'a> {
             indices,
             chunk_scratch: Vec::with_capacity(batch_size.min(indices.len())),
             pos: 0,
-            copy_time,
+            interleave_time,
         }
     }
 }
@@ -217,7 +223,7 @@ impl Iterator for RowIterator<'_> {
                 .iter()
                 .map(|(i_batch, i_row)| (*i_batch as usize, *i_row as usize)),
         );
-        let mut timer = self.copy_time.timer();
+        let mut timer = self.interleave_time.timer();
         let result = interleave_record_batch(self.record_batches, &self.chunk_scratch);
         timer.stop();
         match result {
@@ -244,7 +250,7 @@ pub(crate) struct RunIterator<'a> {
     pos: usize,
     /// Rows already taken from `runs[pos]`, non-zero only when a run straddled a chunk boundary.
     consumed: u32,
-    copy_time: &'a Time,
+    interleave_time: &'a Time,
 }
 
 impl<'a> RunIterator<'a> {
@@ -252,7 +258,7 @@ impl<'a> RunIterator<'a> {
         runs: &'a [BufferedRun],
         record_batches: &'a [&'a RecordBatch],
         batch_size: usize,
-        copy_time: &'a Time,
+        interleave_time: &'a Time,
     ) -> Self {
         Self {
             record_batches,
@@ -261,7 +267,7 @@ impl<'a> RunIterator<'a> {
             chunk_scratch: Vec::with_capacity(runs.len().min(batch_size)),
             pos: 0,
             consumed: 0,
-            copy_time,
+            interleave_time,
         }
     }
 }
@@ -273,17 +279,19 @@ impl Iterator for RunIterator<'_> {
         if self.pos >= self.runs.len() {
             return None;
         }
-        let mut timer = self.copy_time.timer();
+        let mut timer = self.interleave_time.timer();
 
-        // Zero-copy path: the next run is an entire buffered batch and already fills a chunk on
-        // its own, so hand the batch straight through. This is the case a group as large as the
-        // batch size is chosen to hit.
+        // Zero-copy path: the next run is an entire buffered batch of exactly `batch_size` rows,
+        // so it is already the chunk the copying path below would build, and can be handed
+        // straight through. This is the case a group as large as the batch size is chosen to
+        // hit. A buffered batch is never longer than `batch_size`, since `insert_batch` slices
+        // its input to that, so both paths emit the same chunk sizes.
         if self.consumed == 0 {
             let run = self.runs[self.pos];
             let source = self.record_batches[run.batch as usize];
             if run.start == 0
                 && run.len as usize == source.num_rows()
-                && run.len as usize >= self.batch_size
+                && run.len as usize == self.batch_size
             {
                 self.pos += 1;
                 timer.stop();
@@ -292,8 +300,8 @@ impl Iterator for RunIterator<'_> {
         }
 
         // Otherwise accumulate whole runs until the chunk is full, splitting the run that
-        // straddles the boundary. Chunks stay `batch_size` rows so that output block sizes do not
-        // depend on how long the runs happen to be.
+        // straddles the boundary, so that every chunk but a partition's last is `batch_size` rows
+        // however long the runs happen to be.
         self.chunk_scratch.clear();
         let mut rows = 0usize;
         while self.pos < self.runs.len() && rows < self.batch_size {
@@ -476,8 +484,8 @@ mod tests {
         assert_eq!(values, vec![vec![1, 2, 3, 200], vec![201, 103, 104]]);
     }
 
-    /// A run covering a whole buffered batch, long enough to be a chunk on its own, is handed
-    /// through without copying. Identity rather than equality, because the point is that the
+    /// A run covering a whole buffered batch of `batch_size` rows is already a full chunk, so it
+    /// is handed through without copying. Identity rather than equality, because the point is that the
     /// output shares the input's buffers.
     #[test]
     fn whole_batch_run_is_returned_without_copying() {

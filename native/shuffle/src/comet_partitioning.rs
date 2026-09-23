@@ -17,56 +17,34 @@
 
 use arrow::row::{OwnedRow, RowConverter};
 use datafusion::physical_expr::{LexOrdering, PhysicalExpr};
+use std::ops::Range;
 use std::sync::Arc;
 
 /// How [`CometPartitioning::RoundRobin`] decides which output partition a row belongs to.
+///
+/// What each strategy trades, and why positional placement is only used where it is, is written
+/// up once in the contributor guide's `native_shuffle.md`, under "Round Robin Partitioning".
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RoundRobinStrategy {
     /// Hash each row over its leading `max_hash_columns` columns (`0` meaning all of them) and
-    /// place it at `pmod(hash, num_partitions)`.
-    ///
-    /// Placement is a pure function of a row's contents, so a re-executed map task reproduces it
-    /// no matter what its input does. The price is a murmur3 pass per row that recurses into
-    /// every struct child, plus a per-row gather on flush because adjacent rows scatter across
-    /// every partition. It is also not really round robin: identical rows always hash to the same
-    /// partition, so low-cardinality input skews where Spark's round robin spreads evenly.
+    /// place it at `pmod(hash, num_partitions)`. A pure function of the row, so it reproduces
+    /// whatever order a re-executed map task sees its input in.
     HashAll { max_hash_columns: usize },
 
-    /// Place rows positionally, in contiguous groups of `group_rows` rows, counting rows across
-    /// input batch boundaries: the row at task-global ordinal `i` goes to output partition
-    /// `(start_partition + i / group_rows) % num_partitions`.
-    ///
-    /// This is Spark's own round robin at a coarser granularity — Spark seeds a counter with
-    /// `XORShiftRandom(partitionId)` and bumps it per row, which is the `group_rows == 1` case —
-    /// and it inherits Spark's determinism condition exactly: placement is reproducible when the
-    /// upstream operator replays rows in the same *order*. It deliberately does not depend on how
-    /// those rows are framed into batches, because no Spark contract covers framing;
-    /// `DeterministicLevel::DETERMINATE` promises the same rows in the same order and says
-    /// nothing about how a downstream operator chunks them, so an operator that spills can reframe
-    /// under different memory pressure while still honouring it. Keying on a row ordinal rather
-    /// than a batch ordinal is what lets this strategy rely on the level Spark already publishes
-    /// instead of an assumption nothing checks.
-    ///
-    /// `start_partition` is the output partition this map task's first group goes to. It has to be
-    /// *decorrelated* across mappers, not merely distinct: a task walks `ceil(rows / group_rows)`
-    /// consecutive partitions from its start, so if consecutive tasks start on consecutive
-    /// partitions their runs all overlap and the partitions past `num_map_tasks + groups_per_task`
-    /// get nothing. It also has to be a pure function of the map partition, or a re-executed task
-    /// does not reproduce its own placement. Spark satisfies both by scrambling the map partition
-    /// id through `XORShiftRandom` (SPARK-21782), and the JVM computes this field the same way; see
-    /// `CometShuffleExchangeExec.positionalStartPartition`.
-    ///
-    /// `group_rows` trades balance against copying. Within one map task, imbalance between any two
-    /// output partitions is bounded by `group_rows` rows regardless of how the reader frames
-    /// batches, so small groups balance better; large groups produce fewer, longer runs to copy on
-    /// flush, and a group as large as the batch size lets a whole input batch pass through to one
-    /// partition untouched. That bound does not compose across map tasks: a reducer sees the sum
-    /// over all of them, which is only even when each task emits many more groups than there are
-    /// output partitions. [`Self::AUTO_GROUP_ROWS`] picks a value from the batch size and partition
-    /// count that keeps it so.
+    /// Place the row at task-global ordinal `i` at
+    /// `(start_partition + i / group_rows) % num_partitions`. The ordinal counts rows across
+    /// input batch boundaries, so placement does not depend on how the input was framed, but it
+    /// does depend on row order: only reproducible when the map task replays its rows in the same
+    /// order, which the planner establishes before choosing this.
     RowGroups {
+        /// Output partition the task's first group goes to, chosen per map task by
+        /// `CometShuffleExchangeExec.positionalStartPartition`.
         start_partition: usize,
+        /// Rows per group, or [`Self::AUTO_GROUP_ROWS`].
         group_rows: usize,
+        /// What [`Self::HashAll`] hashes if `create_repartitioner` rules positional placement out
+        /// for the schema, so that the fallback honours the configured column cap.
+        max_hash_columns: usize,
     },
 }
 
@@ -95,10 +73,10 @@ impl RoundRobinStrategy {
 
     /// Resolves [`Self::AUTO_GROUP_ROWS`] against the runtime batch size and partition count.
     ///
-    /// One batch spread over `num_partitions` groups is the finest split that still gives every
-    /// output partition a run, so `batch_size / num_partitions` balances without fragmenting the
-    /// copy any further than it has to. An explicit request is taken as given, including one
-    /// larger than a batch, which sends several consecutive input batches to the same partition.
+    /// At `batch_size / num_partitions` a task wraps around the output partitions once per
+    /// batch, which is what keeps a whole stage balanced once each task has several batches. An
+    /// explicit request is taken as given, including one larger than a batch, which sends several
+    /// consecutive input batches to the same partition.
     pub fn resolve_group_rows(
         group_rows: usize,
         batch_size: usize,
@@ -113,16 +91,9 @@ impl RoundRobinStrategy {
     }
 }
 
-/// A contiguous span of rows within one input batch, bound for one output partition.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct PositionalRun {
-    pub partition: usize,
-    pub start: u32,
-    pub len: u32,
-}
-
 /// Splits the rows `[row_seq, row_seq + num_rows)` of a task's input into the runs that
-/// [`RoundRobinStrategy::RowGroups`] placement produces, appending them to `out` in row order.
+/// [`RoundRobinStrategy::RowGroups`] placement produces, in row order, each as an output
+/// partition and the batch-relative rows bound for it.
 ///
 /// `row_seq` is the count of rows the task has already placed, which is what makes the split
 /// independent of where batch boundaries happen to fall: a group straddling two input batches
@@ -134,26 +105,24 @@ pub(crate) fn positional_runs(
     start_partition: usize,
     group_rows: usize,
     num_partitions: usize,
-    out: &mut Vec<PositionalRun>,
-) {
-    out.clear();
+) -> impl Iterator<Item = (usize, Range<u32>)> {
     let group_rows = group_rows.max(1) as u64;
     let num_partitions = num_partitions.max(1) as u64;
     let num_rows = num_rows as u64;
     let mut offset = 0u64;
-    while offset < num_rows {
+    std::iter::from_fn(move || {
+        if offset >= num_rows {
+            return None;
+        }
         let global = row_seq + offset;
         // Rows left in the group `global` falls into, so the first run of a batch picks up a
         // group that a previous batch left part-way through.
-        let remaining_in_group = group_rows - (global % group_rows);
-        let len = remaining_in_group.min(num_rows - offset);
-        out.push(PositionalRun {
-            partition: ((start_partition as u64 + global / group_rows) % num_partitions) as usize,
-            start: offset as u32,
-            len: len as u32,
-        });
+        let len = (group_rows - global % group_rows).min(num_rows - offset);
+        let partition = (start_partition as u64 + global / group_rows) % num_partitions;
+        let rows = offset as u32..(offset + len) as u32;
         offset += len;
-    }
+        Some((partition as usize, rows))
+    })
 }
 
 /// Partitioning scheme for distributing rows across shuffle output partitions.
@@ -206,124 +175,22 @@ mod tests {
         assert_eq!(result, expected);
     }
 
-    /// Collects the partition of every row in `[row_seq, row_seq + num_rows)` by expanding the
-    /// runs, which is the property the runs are a compressed encoding of.
-    fn placement(
-        row_seq: u64,
-        num_rows: usize,
-        group_rows: usize,
-        num_partitions: usize,
-    ) -> Vec<usize> {
-        let mut runs = vec![];
-        positional_runs(row_seq, num_rows, 0, group_rows, num_partitions, &mut runs);
-        runs.iter()
-            .flat_map(|run| std::iter::repeat_n(run.partition, run.len as usize))
-            .collect()
-    }
-
-    #[test]
-    fn positional_runs_cover_every_row_once_in_order() {
-        let mut runs = vec![];
-        positional_runs(0, 10, 0, 4, 3, &mut runs);
-        assert_eq!(
-            runs,
-            vec![
-                PositionalRun {
-                    partition: 0,
-                    start: 0,
-                    len: 4
-                },
-                PositionalRun {
-                    partition: 1,
-                    start: 4,
-                    len: 4
-                },
-                PositionalRun {
-                    partition: 2,
-                    start: 8,
-                    len: 2
-                },
-            ]
-        );
-    }
-
-    /// The point of counting rows rather than batches: however the reader frames the same rows,
-    /// each row lands on the same partition.
-    #[test]
-    fn positional_placement_is_independent_of_batch_framing() {
-        let group_rows = 7;
-        let num_partitions = 5;
-        let total = 100;
-
-        let whole = placement(0, total, group_rows, num_partitions);
-
-        for framing in [
-            vec![100],
-            vec![1; 100],
-            vec![8; 12].into_iter().chain([4]).collect::<Vec<_>>(),
-            vec![64, 36],
-            vec![7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 2],
-        ] {
-            assert_eq!(framing.iter().sum::<usize>(), total, "bad framing fixture");
-            let mut row_seq = 0u64;
-            let mut refrained = vec![];
-            for rows in framing.iter() {
-                refrained.extend(placement(row_seq, *rows, group_rows, num_partitions));
-                row_seq += *rows as u64;
-            }
-            assert_eq!(
-                refrained, whole,
-                "framing {framing:?} placed rows differently"
-            );
-        }
-    }
-
     /// A group that a previous batch left part-way through is finished by the next batch, rather
     /// than restarting at a group boundary.
     #[test]
     fn positional_runs_resume_a_partial_group() {
-        let mut runs = vec![];
-        positional_runs(2, 6, 0, 4, 3, &mut runs);
+        // Rows 2..4 of the task finish group 0; rows 4..8 are group 1.
         assert_eq!(
-            runs,
-            vec![
-                // rows 2..4 finish group 0
-                PositionalRun {
-                    partition: 0,
-                    start: 0,
-                    len: 2
-                },
-                PositionalRun {
-                    partition: 1,
-                    start: 2,
-                    len: 4
-                },
-            ]
-        );
-    }
-
-    #[test]
-    fn positional_runs_wrap_and_offset_by_start_partition() {
-        let mut runs = vec![];
-        positional_runs(0, 6, 2, 2, 3, &mut runs);
-        assert_eq!(
-            runs.iter().map(|r| r.partition).collect::<Vec<_>>(),
-            vec![2, 0, 1],
-            "start_partition offsets the sequence and it wraps at num_partitions"
+            positional_runs(2, 6, 0, 4, 3).collect::<Vec<_>>(),
+            vec![(0, 0..2), (1, 2..6)]
         );
     }
 
     #[test]
     fn positional_runs_group_larger_than_batch_yields_one_run() {
-        let mut runs = vec![];
-        positional_runs(0, 100, 3, 8192, 200, &mut runs);
         assert_eq!(
-            runs,
-            vec![PositionalRun {
-                partition: 3,
-                start: 0,
-                len: 100
-            }]
+            positional_runs(0, 100, 3, 8192, 200).collect::<Vec<_>>(),
+            vec![(3, 0..100)]
         );
     }
 

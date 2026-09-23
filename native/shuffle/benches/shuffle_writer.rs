@@ -308,6 +308,7 @@ fn partitioning_benchmark(c: &mut Criterion) {
             RoundRobinStrategy::RowGroups {
                 start_partition: 0,
                 group_rows: RoundRobinStrategy::AUTO_GROUP_ROWS,
+                max_hash_columns: 0,
             },
         ),
         (
@@ -315,6 +316,7 @@ fn partitioning_benchmark(c: &mut Criterion) {
             RoundRobinStrategy::RowGroups {
                 start_partition: 0,
                 group_rows: BATCH_SIZE,
+                max_hash_columns: 0,
             },
         ),
     ];

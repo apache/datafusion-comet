@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use crate::comet_partitioning::{positional_runs, PositionalRun};
+use crate::comet_partitioning::positional_runs;
 use crate::metrics::ShufflePartitionerMetrics;
 use crate::partitioners::partitioned_batch_iterator::{
     BufferedRun, PartitionIndices, PartitionedBatchesProducer,
@@ -51,9 +51,6 @@ struct ScratchSpace {
     /// partition_starts[K + 1] are the start and end indices of partition K in partition_row_indices.
     /// The length of this array is 1 + the number of partitions.
     partition_starts: Vec<u32>,
-    /// The runs the current batch splits into under positional round robin. Only ever non-empty
-    /// for [`RoundRobinStrategy::RowGroups`], which uses none of the row-level buffers above.
-    positional_runs: Vec<PositionalRun>,
 }
 
 impl ScratchSpace {
@@ -206,6 +203,7 @@ impl<T: PartitionWriter> MultiPartitionShuffleRepartitioner<T> {
                 RoundRobinStrategy::RowGroups {
                     start_partition,
                     group_rows,
+                    max_hash_columns,
                 },
             ) => CometPartitioning::RoundRobin(
                 n,
@@ -216,6 +214,7 @@ impl<T: PartitionWriter> MultiPartitionShuffleRepartitioner<T> {
                         batch_size,
                         num_output_partitions,
                     ),
+                    max_hash_columns,
                 },
             ),
             other => other,
@@ -253,7 +252,6 @@ impl<T: PartitionWriter> MultiPartitionShuffleRepartitioner<T> {
             } else {
                 vec![]
             },
-            positional_runs: vec![],
         };
 
         let reservation = MemoryConsumer::new(format!("ShuffleRepartitioner[{partition}]"))
@@ -410,26 +408,18 @@ impl<T: PartitionWriter> MultiPartitionShuffleRepartitioner<T> {
                 RoundRobinStrategy::RowGroups {
                     start_partition,
                     group_rows,
+                    ..
                 },
             ) => {
-                let num_rows = input.num_rows();
-                {
-                    let mut timer = self.metrics.repart_time.timer();
-                    positional_runs(
-                        self.row_seq,
-                        num_rows,
-                        *start_partition,
-                        *group_rows,
-                        *num_output_partitions,
-                        &mut self.scratch.positional_runs,
-                    );
-                    timer.stop();
-                }
-                // Count rows, not batches: a group left part-way through by this batch is
-                // finished by the next one, so placement does not depend on where the reader
-                // put the batch boundary. See `RoundRobinStrategy::RowGroups`.
-                self.row_seq += num_rows as u64;
-                self.buffer_positional_batch_may_spill(input).await?;
+                let (num_partitions, start_partition, group_rows) =
+                    (*num_output_partitions, *start_partition, *group_rows);
+                self.buffer_positional_batch_may_spill(
+                    input,
+                    start_partition,
+                    group_rows,
+                    num_partitions,
+                )
+                .await?;
             }
             CometPartitioning::RoundRobin(
                 num_output_partitions,
@@ -548,12 +538,16 @@ impl<T: PartitionWriter> MultiPartitionShuffleRepartitioner<T> {
         self.reserve_and_may_spill(mem_growth)
     }
 
-    /// Buffers `input` against the runs positional round robin split it into, which
-    /// `partitioning_batch` left in `scratch.positional_runs`.
+    /// Buffers `input` as the runs positional round robin splits it into, then advances the row
+    /// ordinal past it. See `RoundRobinStrategy::RowGroups`.
     async fn buffer_positional_batch_may_spill(
         &mut self,
         input: RecordBatch,
+        start_partition: usize,
+        group_rows: usize,
+        num_partitions: usize,
     ) -> datafusion::common::Result<()> {
+        let num_rows = input.num_rows();
         let (buffered_partition_idx, mut mem_growth) = self.buffer_input(input);
 
         let PartitionIndices::Runs(partition_runs) = &mut self.partition_indices else {
@@ -561,17 +555,29 @@ impl<T: PartitionWriter> MultiPartitionShuffleRepartitioner<T> {
                 "positional placement against a row-indexed repartitioner".to_string(),
             ));
         };
-        for run in &self.scratch.positional_runs {
-            let indices = &mut partition_runs[run.partition];
-            let before_size = indices.allocated_size();
-            indices.push(BufferedRun {
-                batch: buffered_partition_idx,
-                start: run.start,
-                len: run.len,
-            });
-            let after_size = indices.allocated_size();
-            mem_growth += after_size.saturating_sub(before_size);
+        {
+            let mut timer = self.metrics.repart_time.timer();
+            for (partition, rows) in positional_runs(
+                self.row_seq,
+                num_rows,
+                start_partition,
+                group_rows,
+                num_partitions,
+            ) {
+                let runs = &mut partition_runs[partition];
+                let before_size = runs.allocated_size();
+                runs.push(BufferedRun {
+                    batch: buffered_partition_idx,
+                    start: rows.start,
+                    len: rows.end - rows.start,
+                });
+                mem_growth += runs.allocated_size().saturating_sub(before_size);
+            }
+            timer.stop();
         }
+        // Count rows, not batches: a group this batch leaves part-way through is finished by the
+        // next one, so placement does not depend on where the reader put the batch boundary.
+        self.row_seq += num_rows as u64;
 
         self.reserve_and_may_spill(mem_growth)
     }
@@ -626,9 +632,8 @@ impl<T: PartitionWriter> MultiPartitionShuffleRepartitioner<T> {
     /// ShuffleRepartitioner to a new PartitionedBatches struct. The returned PartitionedBatches struct
     /// can be used to produce shuffled batches.
     fn partitioned_batches(&mut self) -> PartitionedBatchesProducer {
-        let num_output_partitions = self.partition_indices.num_partitions();
         let buffered_batches = std::mem::take(&mut self.buffered_batches);
-        let empty = self.partition_indices.empty_like(num_output_partitions);
+        let empty = self.partition_indices.empty_like();
         let indices = std::mem::replace(&mut self.partition_indices, empty);
         PartitionedBatchesProducer::new(buffered_batches, indices, self.batch_size)
     }
@@ -806,37 +811,51 @@ mod tests {
     }
 
     async fn check_spill_metrics_count_input_buffers(batch: RecordBatch, input_bytes: usize) {
-        let runtime = Arc::new(RuntimeEnv::default());
-        let metrics_set = ExecutionPlanMetricsSet::new();
-        let mut repartitioner = MultiPartitionShuffleRepartitioner::try_new(
-            0,
-            FailingPartitionWriter::default(),
+        // Row-indexed and run-indexed placement charge the reservation through the same
+        // accounting, so hold both to it.
+        for partitioning in [
             CometPartitioning::RoundRobin(
                 2,
                 RoundRobinStrategy::HashAll {
                     max_hash_columns: 1,
                 },
             ),
-            ShufflePartitionerMetrics::new(&metrics_set, 0),
-            Arc::clone(&runtime),
-            64,
-            false,
-            None,
-        )
-        .unwrap();
-        repartitioner.insert_batch(batch).await.unwrap();
-        let index_bytes = repartitioner.partition_indices.allocated_size();
-        let reserved_bytes = repartitioner.reservation.size();
-        assert_eq!(repartitioner.spill_count(), 0);
-        assert_eq!(reserved_bytes, input_bytes + index_bytes);
+            CometPartitioning::RoundRobin(
+                2,
+                RoundRobinStrategy::RowGroups {
+                    start_partition: 0,
+                    group_rows: 16,
+                    max_hash_columns: 0,
+                },
+            ),
+        ] {
+            let runtime = Arc::new(RuntimeEnv::default());
+            let metrics_set = ExecutionPlanMetricsSet::new();
+            let mut repartitioner = MultiPartitionShuffleRepartitioner::try_new(
+                0,
+                FailingPartitionWriter::default(),
+                partitioning,
+                ShufflePartitionerMetrics::new(&metrics_set, 0),
+                Arc::clone(&runtime),
+                64,
+                false,
+                None,
+            )
+            .unwrap();
+            repartitioner.insert_batch(batch.clone()).await.unwrap();
+            let index_bytes = repartitioner.partition_indices.allocated_size();
+            let reserved_bytes = repartitioner.reservation.size();
+            assert_eq!(repartitioner.spill_count(), 0);
+            assert_eq!(reserved_bytes, input_bytes + index_bytes);
 
-        repartitioner.spill(0).unwrap();
+            repartitioner.spill(0).unwrap();
 
-        assert_eq!(
-            repartitioner.metrics.memory_spilled_bytes.value(),
-            reserved_bytes
-        );
-        assert_eq!(runtime.memory_pool.reserved(), 0);
+            assert_eq!(
+                repartitioner.metrics.memory_spilled_bytes.value(),
+                reserved_bytes
+            );
+            assert_eq!(runtime.memory_pool.reserved(), 0);
+        }
     }
 
     #[tokio::test]
@@ -1107,37 +1126,52 @@ mod tests {
 
         // Shared child allocations contribute once per spill, independently of whether the
         // caller or insert_batch slices the input. They are not counted per output batch.
-        let mut spill_bytes = Vec::new();
-        for input_batch_rows in [num_rows, batch_size] {
-            let runtime = Arc::new(RuntimeEnv::default());
-            let metrics_set = ExecutionPlanMetricsSet::new();
-            let mut repartitioner = MultiPartitionShuffleRepartitioner::try_new(
-                0,
-                FailingPartitionWriter::default(),
-                CometPartitioning::Hash(vec![Arc::new(Column::new("a", 0))], 2),
-                ShufflePartitionerMetrics::new(&metrics_set, 0),
-                Arc::clone(&runtime),
-                batch_size,
-                false,
-                Some(1),
-            )
-            .unwrap();
-            for start in (0..num_rows).step_by(input_batch_rows) {
-                repartitioner
-                    .insert_batch(batch.slice(start, input_batch_rows))
-                    .await
-                    .unwrap();
+        for partitioning in [
+            CometPartitioning::Hash(vec![Arc::new(Column::new("a", 0))], 2),
+            // One-row groups alternate between the two partitions, so every spill hands each
+            // partition two runs to slice out of the batch and concatenate, across every type in
+            // the schema.
+            CometPartitioning::RoundRobin(
+                2,
+                RoundRobinStrategy::RowGroups {
+                    start_partition: 0,
+                    group_rows: 1,
+                    max_hash_columns: 0,
+                },
+            ),
+        ] {
+            let mut spill_bytes = Vec::new();
+            for input_batch_rows in [num_rows, batch_size] {
+                let runtime = Arc::new(RuntimeEnv::default());
+                let metrics_set = ExecutionPlanMetricsSet::new();
+                let mut repartitioner = MultiPartitionShuffleRepartitioner::try_new(
+                    0,
+                    FailingPartitionWriter::default(),
+                    partitioning.clone(),
+                    ShufflePartitionerMetrics::new(&metrics_set, 0),
+                    Arc::clone(&runtime),
+                    batch_size,
+                    false,
+                    Some(1),
+                )
+                .unwrap();
+                for start in (0..num_rows).step_by(input_batch_rows) {
+                    repartitioner
+                        .insert_batch(batch.slice(start, input_batch_rows))
+                        .await
+                        .unwrap();
+                }
+                assert_eq!(repartitioner.spill_count(), num_rows / batch_size);
+                assert_eq!(repartitioner.reservation.size(), 0);
+                assert_eq!(runtime.memory_pool.reserved(), 0);
+                assert!(repartitioner.pinned_buffers.is_empty());
+                assert!(repartitioner.buffered_batches.is_empty());
+                assert_eq!(repartitioner.partition_indices.entry_count(), 0);
+                spill_bytes.push(repartitioner.metrics.memory_spilled_bytes.value());
             }
-            assert_eq!(repartitioner.spill_count(), num_rows / batch_size);
-            assert_eq!(repartitioner.reservation.size(), 0);
-            assert_eq!(runtime.memory_pool.reserved(), 0);
-            assert!(repartitioner.pinned_buffers.is_empty());
-            assert!(repartitioner.buffered_batches.is_empty());
-            assert_eq!(repartitioner.partition_indices.entry_count(), 0);
-            spill_bytes.push(repartitioner.metrics.memory_spilled_bytes.value());
+            assert!(spill_bytes[0] > 0);
+            assert_eq!(spill_bytes[0], spill_bytes[1]);
         }
-        assert!(spill_bytes[0] > 0);
-        assert_eq!(spill_bytes[0], spill_bytes[1]);
     }
 
     /// Collects every batch handed to it, per partition, so a whole write can be compared.
@@ -1208,6 +1242,7 @@ mod tests {
                 RoundRobinStrategy::RowGroups {
                     start_partition,
                     group_rows,
+                    max_hash_columns: 0,
                 },
             ),
             ShufflePartitionerMetrics::new(&ExecutionPlanMetricsSet::new(), 0),
@@ -1294,54 +1329,116 @@ mod tests {
         }
     }
 
-    /// `start_partition` offsets which partition a task begins on, so mappers do not all pile
-    /// their first group onto partition 0.
-    #[tokio::test]
-    async fn positional_placement_begins_at_the_start_partition() {
-        for start in 0..4usize {
-            let written = positional_placement(&[64], 4, 64, start, 256).await;
-            assert_eq!(
-                written.keys().copied().collect::<Vec<_>>(),
-                vec![start],
-                "one group should land on partition {start} alone"
-            );
-        }
-    }
-
-    /// A task's groups walk *consecutive* partitions from its start, which is what makes the
-    /// stage-wide spread a function of how the starts are chosen rather than of the data. The JVM
-    /// picks the starts (`CometShuffleExchangeExec.positionalStartPartition`), but the reason it
-    /// has to scramble them lives here: with adjacent starts every task's run overlaps its
-    /// neighbours' and the tail of the partition space gets nothing.
+    /// A task's groups walk *consecutive* partitions from its start, wrapping at the partition
+    /// count, which is what makes the stage-wide spread a function of how the starts are chosen
+    /// rather than of the data. The JVM chooses them
+    /// (`CometShuffleExchangeExec.positionalStartPartition`); this pins why it has to scramble
+    /// them, since adjacent starts overlap and leave the tail of the partition space empty.
     #[tokio::test]
     async fn positional_placement_walks_consecutive_partitions_from_its_start() {
         let num_partitions = 32;
         let group_rows = 16;
-        let rows = 5 * group_rows;
+        let groups = 5;
 
         let stage = |starts: Vec<usize>| async move {
             let mut covered = std::collections::BTreeSet::new();
             for start in starts {
-                let written =
-                    positional_placement(&[rows], num_partitions, group_rows, start, 256).await;
-                assert_eq!(
-                    written.keys().copied().collect::<Vec<_>>(),
-                    (0..5)
-                        .map(|g| (start + g) % num_partitions)
-                        .collect::<std::collections::BTreeSet<_>>()
-                        .into_iter()
-                        .collect::<Vec<_>>(),
-                    "a task of five groups from {start} should touch five consecutive partitions"
-                );
-                covered.extend(written.keys().copied());
+                let written = positional_placement(
+                    &[groups * group_rows],
+                    num_partitions,
+                    group_rows,
+                    start,
+                    256,
+                )
+                .await;
+                assert_eq!(written.len(), groups, "a task starting at {start}");
+                for group in 0..groups {
+                    let rows = (group * group_rows) as i64..((group + 1) * group_rows) as i64;
+                    assert_eq!(
+                        written[&((start + group) % num_partitions)],
+                        rows.collect::<Vec<_>>(),
+                        "group {group} of a task starting at {start}"
+                    );
+                }
+                covered.extend(written.into_keys());
             }
             covered.len()
         };
 
-        // Four tasks of five groups each could reach twenty of the thirty-two partitions.
-        assert_eq!(stage(vec![0, 8, 16, 24]).await, 20);
+        // Spread-out starts reach twenty of the thirty-two partitions, the last task wrapping
+        // from 31 round to 0.
+        assert_eq!(stage(vec![4, 12, 20, 28]).await, 20);
         // Adjacent starts overlap instead, and twenty-four reducers get nothing.
         assert_eq!(stage(vec![0, 1, 2, 3]).await, 8);
+    }
+
+    /// Spilling is where the run index is most likely to go wrong: the buffered batches drain,
+    /// the batches buffered after them are numbered from zero again, and the row ordinal has to
+    /// carry on regardless. Whether the spill is forced by the buffer limit or by the pool
+    /// refusing to grow, every row has to land exactly where it would have without spilling,
+    /// each partition still in input order.
+    #[tokio::test]
+    async fn positional_placement_survives_spilling() {
+        use datafusion::execution::runtime_env::RuntimeEnvBuilder;
+
+        // Ragged, so that groups and slices straddle batch and spill boundaries.
+        let framing = [300, 17, 683, 64, 1, 191];
+        let (num_partitions, group_rows, start_partition, batch_size) = (8, 48, 3, 256);
+        let baseline = positional_placement(
+            &framing,
+            num_partitions,
+            group_rows,
+            start_partition,
+            batch_size,
+        )
+        .await;
+
+        for (trigger, memory_limit, max_buffer_bytes) in [
+            ("buffer limit", None, Some(1)),
+            ("pool refusal", Some(4096), None),
+        ] {
+            let mut builder = RuntimeEnvBuilder::new();
+            if let Some(limit) = memory_limit {
+                builder = builder.with_memory_limit(limit, 1.0);
+            }
+            let mut repartitioner = MultiPartitionShuffleRepartitioner::try_new(
+                0,
+                CollectingPartitionWriter::default(),
+                CometPartitioning::RoundRobin(
+                    num_partitions,
+                    RoundRobinStrategy::RowGroups {
+                        start_partition,
+                        group_rows,
+                        max_hash_columns: 0,
+                    },
+                ),
+                ShufflePartitionerMetrics::new(&ExecutionPlanMetricsSet::new(), 0),
+                Arc::new(builder.build().unwrap()),
+                batch_size,
+                false,
+                max_buffer_bytes,
+            )
+            .unwrap();
+            let mut next = 0i64;
+            for rows in framing {
+                repartitioner
+                    .insert_batch(int64_batch(next..next + rows as i64))
+                    .await
+                    .unwrap();
+                next += rows as i64;
+            }
+            assert!(
+                repartitioner.spill_count() > 1,
+                "{trigger}: expected several spills, got {}",
+                repartitioner.spill_count()
+            );
+            repartitioner.shuffle_write().unwrap();
+            assert_eq!(
+                repartitioner.partition_writer().written,
+                baseline,
+                "{trigger}: spilling changed where rows landed"
+            );
+        }
     }
 
     /// Imbalance stays within one group regardless of how the input was framed, which is what
