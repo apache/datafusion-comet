@@ -56,11 +56,12 @@ object DeltaScanConf {
       .doc(
         "Upper bound on a single file's deletion-vector cardinality (deleted row count) the " +
           "native Delta scan will claim. Applying a deletion vector expands it into per-row " +
-          "selectors that are retained in memory for the file's scan; this bound is a " +
-          "deliberately pessimistic planning-time proxy for that retained memory (deletion " +
-          "vector cardinality, not the exact selector count), so a large but contiguous " +
-          "deletion is declined the same as a large alternating one. Scans whose deletion " +
-          "vectors exceed this bound for any file fall back to Spark's reader.")
+          "selectors that are held in memory. This bound caps one file's selectors, not what a " +
+          "task holds: the selectors for every file in a partition stay held until the task " +
+          "finishes. The bound is a deliberately pessimistic planning-time proxy for that " +
+          "memory (deletion vector cardinality, not the exact selector count), so a large but " +
+          "contiguous deletion is declined the same as a large alternating one. Scans whose " +
+          "deletion vectors exceed this bound for any file fall back to Spark's reader.")
       .longConf
       .createWithDefault(1000000)
 

@@ -23,8 +23,8 @@ import java.io.File
 
 import scala.collection.mutable
 import scala.collection.mutable.ListBuffer
-import scala.concurrent.duration.DurationInt
 
+import org.apache.spark.CometListenerBusUtils
 import org.apache.spark.scheduler.{SparkListener, SparkListenerTaskEnd}
 import org.apache.spark.sql.{DataFrame, Row}
 import org.apache.spark.sql.catalyst.expressions.{AttributeReference, DynamicPruningExpression, NamedExpression, StructsToJson}
@@ -776,6 +776,58 @@ class CometDeltaNativeScanSuite extends CometDeltaTestBase {
     }
   }
 
+  test("deletion vectors: one file split into many byte ranges reads natively") {
+    withTempPath { dir =>
+      val path = dir.getAbsolutePath
+      // One file made of many small row groups, so a small maxPartitionBytes below turns it
+      // into many splits that each cover a few row groups.
+      val hadoopConf = spark.sparkContext.hadoopConfiguration
+      val oldBlockSize = hadoopConf.get("parquet.block.size")
+      val oldPageSize = hadoopConf.get("parquet.page.size")
+      hadoopConf.setInt("parquet.block.size", 16 * 1024)
+      hadoopConf.setInt("parquet.page.size", 4 * 1024)
+      try {
+        spark
+          .range(0, 20000)
+          .selectExpr("id", "id * 2 as v")
+          .coalesce(1)
+          .write
+          .format("delta")
+          .save(path)
+      } finally {
+        if (oldBlockSize == null) hadoopConf.unset("parquet.block.size")
+        else hadoopConf.set("parquet.block.size", oldBlockSize)
+        if (oldPageSize == null) hadoopConf.unset("parquet.page.size")
+        else hadoopConf.set("parquet.page.size", oldPageSize)
+      }
+      spark.sql(
+        s"ALTER TABLE delta.`$path` SET TBLPROPERTIES ('delta.enableDeletionVectors' = 'true')")
+      // Scattered deletes across every row group plus a deleted tail, so every split sees the
+      // deletion vector and the last splits are mostly deleted.
+      spark.sql(s"DELETE FROM delta.`$path` WHERE id % 5 = 0")
+      spark.sql(s"DELETE FROM delta.`$path` WHERE id >= 19000")
+
+      // A claimed scan is split like any other file, and the deletion vector is applied in
+      // file coordinates, so each split must skip exactly its own deleted rows.
+      withSQLConf(SQLConf.FILES_MAX_PARTITION_BYTES.key -> "4096") {
+        def query = spark.read.format("delta").load(path)
+        checkDeltaNativeScanAnswer(query)
+
+        val df = query
+        assert(df.collect().length == 15200)
+        val scans = deltaNativeScans(df)
+        assert(scans.size == 1)
+        val numFiles = scans.head.metrics.get("numFiles").map(_.value).getOrElse(0L)
+        assert(numFiles == 1, s"expected a single data file, got $numFiles")
+        val numPartitions = scans.head.outputPartitioning.numPartitions
+        assert(
+          numPartitions > 1,
+          s"expected the single file to be split into more than one native partition, " +
+            s"got $numPartitions")
+      }
+    }
+  }
+
   test("deletion vectors: aggregation over DV table") {
     withTempPath { dir =>
       val path = dir.getAbsolutePath
@@ -995,6 +1047,9 @@ class CometDeltaNativeScanSuite extends CometDeltaTestBase {
     spark.listenerManager.register(listener)
     try {
       body
+      // The listener bus delivers asynchronously, so the plans are not all in hand until it has
+      // drained.
+      CometListenerBusUtils.waitUntilEmpty(spark.sparkContext)
     } finally {
       spark.listenerManager.unregister(listener)
     }
@@ -2770,16 +2825,14 @@ class CometDeltaNativeScanSuite extends CometDeltaTestBase {
 
   /**
    * Runs `action` under a [[SparkListener]] that captures every `onTaskEnd` input-metrics
-   * reading, then waits (via `eventually`, since this suite lives outside the `org.apache.spark`
-   * package and cannot reach the package-private `SparkContext.listenerBus.waitUntilEmpty`) for
-   * the aggregated recordsRead to reach at least `minRecords` -- the listener bus delivers
-   * `onTaskEnd` asynchronously, so `action` returning is not enough to guarantee every event has
-   * already been processed. `minRecords` is a floor rather than an exact target because Delta's
-   * own transaction-log state reconstruction runs a small auxiliary job reading the commit JSON,
-   * which legitimately contributes a few extra input records alongside the actual data scan.
-   * Returns the aggregated (recordsRead, bytesRead) once stable.
+   * reading, then drains the listener bus before summing: the bus delivers `onTaskEnd`
+   * asynchronously, so `action` returning is not enough to guarantee every event has already been
+   * processed. Callers compare the sums against a floor rather than an exact target because
+   * Delta's own transaction-log state reconstruction runs a small auxiliary job reading the
+   * commit JSON, which legitimately contributes a few extra input records alongside the actual
+   * data scan. Returns the aggregated (recordsRead, bytesRead).
    */
-  private def collectTaskInputMetrics(minRecords: Long)(action: => Unit): (Long, Long) = {
+  private def collectTaskInputMetrics(action: => Unit): (Long, Long) = {
     val inputRecords = mutable.ArrayBuffer.empty[Long]
     val inputBytes = mutable.ArrayBuffer.empty[Long]
     val listener = new SparkListener {
@@ -2792,12 +2845,7 @@ class CometDeltaNativeScanSuite extends CometDeltaTestBase {
     spark.sparkContext.addSparkListener(listener)
     try {
       action
-      eventually(timeout(30.seconds), interval(200.milliseconds)) {
-        val recordsRead = inputRecords.synchronized(inputRecords.sum)
-        assert(
-          recordsRead >= minRecords,
-          s"expected task input recordsRead to reach at least $minRecords, currently $recordsRead")
-      }
+      CometListenerBusUtils.waitUntilEmpty(spark.sparkContext)
       (inputRecords.synchronized(inputRecords.sum), inputBytes.synchronized(inputBytes.sum))
     } finally {
       spark.sparkContext.removeSparkListener(listener)
@@ -2816,7 +2864,7 @@ class CometDeltaNativeScanSuite extends CometDeltaTestBase {
 
       val df = spark.read.format("delta").load(path)
       var collected = 0L
-      val (recordsRead, bytesRead) = collectTaskInputMetrics(10000L) {
+      val (recordsRead, bytesRead) = collectTaskInputMetrics {
         collected = df.collect().length.toLong
       }
 
@@ -2842,7 +2890,7 @@ class CometDeltaNativeScanSuite extends CometDeltaTestBase {
         .save(path)
 
       val df = spark.read.format("delta").load(path).groupBy("g").sum("v")
-      val (recordsRead, bytesRead) = collectTaskInputMetrics(10000L) {
+      val (recordsRead, bytesRead) = collectTaskInputMetrics {
         df.collect()
       }
 

@@ -21,6 +21,7 @@ package org.apache.comet.contrib.delta
 
 import scala.collection.mutable.ListBuffer
 
+import org.apache.spark.CometListenerBusUtils
 import org.apache.spark.sql.delta.DeltaLog
 import org.apache.spark.sql.execution.{FileSourceScanExec, QueryExecution, SparkPlan}
 import org.apache.spark.sql.util.QueryExecutionListener
@@ -55,6 +56,9 @@ class CometDeltaDmlReproSuite extends CometDeltaTestBase {
     spark.listenerManager.register(listener)
     try {
       body
+      // The listener bus delivers asynchronously, so the plans are not all in hand until it has
+      // drained.
+      CometListenerBusUtils.waitUntilEmpty(spark.sparkContext)
     } finally {
       spark.listenerManager.unregister(listener)
     }

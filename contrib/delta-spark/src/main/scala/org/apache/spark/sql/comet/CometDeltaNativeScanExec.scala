@@ -270,7 +270,15 @@ case class CometDeltaNativeScanExec(
 
 object CometDeltaNativeScanExec {
 
-  /** File-planning helper: reuses CometScanExec's listing/splitting/DPP machinery. */
+  /**
+   * File-planning helper: reuses CometScanExec's listing/splitting/DPP machinery. Files with a
+   * deletion vector are split like any other file: a claimed scan requires Delta's reader
+   * optimizations to be enabled, which is exactly what DeltaParquetFileFormat.isSplitable
+   * returns, and Spark's row-index split gate does not apply to a claimed scan. Each split then
+   * fetches and decodes the whole deletion vector, reads the footer, builds the access plan for
+   * the whole file and reserves memory for the whole file, while the reader keeps only the row
+   * groups that start inside the split.
+   */
   def planningHelper(
       scanExec: FileSourceScanExec,
       partitionFilters: Seq[Expression]): CometScanExec =
