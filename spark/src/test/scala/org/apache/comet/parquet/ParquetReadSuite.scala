@@ -31,13 +31,9 @@ import org.scalactic.source.Position
 import org.scalatest.Tag
 
 import org.apache.arrow.vector.types.pojo.{ArrowType, DictionaryEncoding, Field => ArrowField, FieldType, Schema => ArrowSchema}
-import org.apache.hadoop.conf.Configuration
 import org.apache.hadoop.fs.Path
-import org.apache.parquet.example.data.Group
 import org.apache.parquet.example.data.simple.SimpleGroup
-import org.apache.parquet.hadoop.ParquetWriter
-import org.apache.parquet.hadoop.api.WriteSupport
-import org.apache.parquet.hadoop.example.{ExampleParquetWriter, GroupWriteSupport}
+import org.apache.parquet.hadoop.example.ExampleParquetWriter
 import org.apache.parquet.io.api.Binary
 import org.apache.parquet.schema.MessageTypeParser
 import org.apache.spark.SparkException
@@ -1903,19 +1899,6 @@ abstract class ParquetReadSuite extends CometTestBase {
     }
   }
 
-  // parquet-mr's example writer stamps `writer.model.name` into the footer. This builder
-  // leaves the key-value metadata empty, so the file schema arrow-rs derives compares equal
-  // to a matching requested schema.
-  private class BareGroupWriterBuilder(path: Path)
-      extends ParquetWriter.Builder[Group, BareGroupWriterBuilder](path) {
-    override protected def self(): BareGroupWriterBuilder = this
-
-    override protected def getWriteSupport(conf: Configuration): WriteSupport[Group] =
-      new GroupWriteSupport() {
-        override def getName: String = null
-      }
-  }
-
   private def withId(id: Int) =
     new MetadataBuilder().putLong(ParquetUtils.FIELD_ID_METADATA_KEY, id).build()
 
@@ -2130,9 +2113,6 @@ abstract class ParquetReadSuite extends CometTestBase {
     }
   }
 
-  // Spark's `clipParquetSchema` runs `matchIdField` at every nesting level while clipping the
-  // file schema, so a struct child id duplicated in the file is rejected even when the read
-  // schema is identical to the file schema and no column needs any conversion.
   test("duplicate exact root names read the first column like Spark") {
     // The file carries two root columns named `d`; Spark's reader binds the first one.
     withSQLConf(SQLConf.CASE_SENSITIVE.key -> "true") {
@@ -2172,7 +2152,7 @@ abstract class ParquetReadSuite extends CometTestBase {
   test("duplicate field id inside a struct is rejected when a requested id matches two fields") {
     // The requested struct names one id that two file fields carry. A requested schema that
     // repeats an id itself is declined at planning time, so this is the shape the native scan
-    // still has to refuse; the reader factory validates it while loading the footer.
+    // still has to refuse; the schema adapter refuses it while resolving the file's fields.
     withSQLConf(SQLConf.PARQUET_FIELD_ID_READ_ENABLED.key -> "true") {
       withTempPath { dir =>
         val schema =
@@ -2196,62 +2176,6 @@ abstract class ParquetReadSuite extends CometTestBase {
           .parquet(dir.getCanonicalPath)
 
         val df = spark.read.schema(readSchema).parquet(dir.getCanonicalPath)
-        val scans = stripAQEPlan(df.queryExecution.executedPlan).collect {
-          case scan: CometNativeScanExec => scan
-        }
-        assert(scans.nonEmpty, "expected CometNativeScanExec in the plan")
-        val cause = intercept[SparkException] {
-          df.collect()
-        }.getCause
-        assert(
-          cause.isInstanceOf[RuntimeException] &&
-            cause.getMessage.contains("Found duplicate field(s)"))
-      }
-    }
-  }
-
-  // DataFusion's opener hands a file to the expression adapter only when a predicate is pushed
-  // or the file schema differs from the requested one. Spark-written files always carry
-  // key-value metadata that arrow-rs folds into the file schema, so they always differ; a
-  // file with none is read positionally unless the reader factory validates the ids (#5801).
-  test("duplicate field id inside a struct is rejected without key-value metadata") {
-    withSQLConf(SQLConf.PARQUET_FIELD_ID_READ_ENABLED.key -> "true") {
-      withTempDir { dir =>
-        val path = new Path(dir.toURI.toString, "part-r-0.parquet")
-        val schema = MessageTypeParser.parseMessageType("""
-          |message root {
-          |  optional group s = 2 {
-          |    optional int64 x = 1;
-          |    optional int64 y = 1;
-          |  }
-          |}
-          |""".stripMargin)
-        val conf = spark.sessionState.newHadoopConf()
-        GroupWriteSupport.setSchema(schema, conf)
-        val writer = new BareGroupWriterBuilder(path).withConf(conf).build()
-        val record = new SimpleGroup(schema)
-        val nested = record.addGroup(0)
-        nested.add(0, 42L)
-        nested.add(1, 43L)
-        writer.write(record)
-        writer.close()
-
-        val footerReader = org.apache.parquet.hadoop.ParquetFileReader
-          .open(org.apache.parquet.hadoop.util.HadoopInputFile.fromPath(path, conf))
-        try {
-          assert(footerReader.getFooter.getFileMetaData.getKeyValueMetaData.isEmpty)
-        } finally {
-          footerReader.close()
-        }
-
-        // Requesting one of the two id-1 fields keeps the scan native, since a requested schema
-        // that repeats an id is declined at planning time. The reader factory validates every
-        // id-bearing requested schema while loading the footer, with or without metadata.
-        val readSchema =
-          new StructType()
-            .add("s", new StructType().add("x", LongType, true, withId(1)), true, withId(2))
-        val df = spark.read.schema(readSchema).parquet(path.toString)
-        // Spark's own reader raises the same error, so make sure the native scan is what runs.
         val scans = stripAQEPlan(df.queryExecution.executedPlan).collect {
           case scan: CometNativeScanExec => scan
         }

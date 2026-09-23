@@ -78,7 +78,7 @@ fn parse_field_id(field: &Field) -> Option<i32> {
 }
 
 /// Root fields only, deliberately: this gates the missing-ids rejection at the top of
-/// `remap_physical_schema`. Nested ids are found by `any_nested_field_has_id`.
+/// `remap_physical_schema`.
 fn schema_has_field_ids(schema: &SchemaRef) -> bool {
     schema.fields().iter().any(|f| parse_field_id(f).is_some())
 }
@@ -3632,7 +3632,7 @@ mod test {
 
     /// File: one column `κ` (U+03BA) with field ID 2 holding 7. Required: `Κ` (U+039A,
     /// field ID 1) and ID-less `κ`; case-sensitive, field-ID reading on. Spark routes `Κ`
-    /// through `matchIdField` (no ID 1 in the file -> null-filled behind a faked REQUESTED
+    /// through `matchIdField` (no ID 1 in the file -> null-filled behind a faked requested
     /// name) and resolves `κ` by exact name through `matchCaseSensitiveField`, reading the
     /// real column: the result is (NULL, 7), never (NULL, NULL).
     #[tokio::test]
