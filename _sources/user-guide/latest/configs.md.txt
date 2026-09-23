@@ -515,6 +515,7 @@ shuffle, including applications that rely only on remote reliable storage or dec
 | `spark.comet.expression.First.enabled` | Enable Comet acceleration for `First` | true |
 | `spark.comet.expression.HyperLogLogPlusPlus.enabled` | Enable Comet acceleration for `HyperLogLogPlusPlus` | true |
 | `spark.comet.expression.Last.enabled` | Enable Comet acceleration for `Last` | true |
+| `spark.comet.expression.ListAgg.enabled` | Enable Comet acceleration for `ListAgg` | true |
 | `spark.comet.expression.Max.enabled` | Enable Comet acceleration for `Max` | true |
 | `spark.comet.expression.MaxBy.enabled` | Enable Comet acceleration for `MaxBy` | true |
 | `spark.comet.expression.Min.enabled` | Enable Comet acceleration for `Min` | true |

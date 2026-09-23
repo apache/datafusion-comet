@@ -996,9 +996,9 @@ expressions. The following function families are <strong>not currently planned</
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">listagg</span></code></p></td>
-<td><p>🔜</p></td>
-<td><p>—</p></td>
-<td><p>String aggregation</p></td>
+<td><p>✅</p></td>
+<td><p>Native</p></td>
+<td><p>Spark 4.0+. <code class="docutils literal notranslate"><span class="pre">StringType</span></code> input with a literal delimiter; <code class="docutils literal notranslate"><span class="pre">WITHIN</span> <span class="pre">GROUP</span> <span class="pre">(ORDER</span> <span class="pre">BY</span> <span class="pre">...)</span></code> and <code class="docutils literal notranslate"><span class="pre">BinaryType</span></code> inputs fall back to Spark. Without <code class="docutils literal notranslate"><span class="pre">WITHIN</span> <span class="pre">GROUP</span></code>, concatenation order is the (non-deterministic) group arrival order, matching Spark.</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">max</span></code></p></td>
 <td><p>✅</p></td>
@@ -1126,9 +1126,9 @@ expressions. The following function families are <strong>not currently planned</
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">string_agg</span></code></p></td>
-<td><p>🔜</p></td>
-<td><p>—</p></td>
-<td><p>String aggregation (alias of <code class="docutils literal notranslate"><span class="pre">listagg</span></code>)</p></td>
+<td><p>✅</p></td>
+<td><p>Native</p></td>
+<td><p>Alias of <code class="docutils literal notranslate"><span class="pre">listagg</span></code>; same restrictions apply.</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">sum</span></code></p></td>
 <td><p>✅</p></td>

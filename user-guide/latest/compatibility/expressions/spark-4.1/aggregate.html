@@ -829,6 +829,16 @@ under the License.
 <li><p>This function is not deterministic. Results may not match Spark.</p></li>
 </ul>
 </section>
+<section id="listagg">
+<h2>ListAgg<a class="headerlink" href="#listagg" title="Link to this heading">#</a></h2>
+<p>The following cases are not supported by Comet and always fall back to Spark, regardless of any <code class="docutils literal notranslate"><span class="pre">allowIncompatible</span></code> setting:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">BinaryType</span></code> inputs are not supported.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">WITHIN</span> <span class="pre">GROUP</span> <span class="pre">(ORDER</span> <span class="pre">BY</span> <span class="pre">...)</span></code> is not supported.</p></li>
+<li><p>Non-literal delimiters are not supported.</p></li>
+<li><p>Non-default string collations are not supported.</p></li>
+</ul>
+</section>
 <section id="maxby">
 <h2>MaxBy<a class="headerlink" href="#maxby" title="Link to this heading">#</a></h2>
 <p>The following differences from Spark are always present and do not require any additional configuration:</p>
@@ -925,6 +935,7 @@ under the License.
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#first">First</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#hyperloglogplusplus">HyperLogLogPlusPlus</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#last">Last</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#listagg">ListAgg</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#maxby">MaxBy</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#minby">MinBy</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#mode">Mode</a></li>

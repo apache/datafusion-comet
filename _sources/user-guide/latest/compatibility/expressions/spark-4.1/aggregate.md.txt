@@ -61,6 +61,15 @@ The following differences from Spark are always present and do not require any a
 
 - This function is not deterministic. Results may not match Spark.
 
+## ListAgg
+
+The following cases are not supported by Comet and always fall back to Spark, regardless of any `allowIncompatible` setting:
+
+- `BinaryType` inputs are not supported.
+- `WITHIN GROUP (ORDER BY ...)` is not supported.
+- Non-literal delimiters are not supported.
+- Non-default string collations are not supported.
+
 ## MaxBy
 
 The following differences from Spark are always present and do not require any additional configuration:
