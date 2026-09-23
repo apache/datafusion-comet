@@ -27,9 +27,9 @@ import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.expressions.AttributeReference
 import org.apache.spark.sql.comet.CometInMemoryTableScanExec
 import org.apache.spark.sql.comet.execution.arrow.ArrowCachedBatchSerializer
-import org.apache.spark.sql.execution.columnar.{InMemoryRelation, InMemoryTableScanExec}
+import org.apache.spark.sql.execution.columnar.{CometInMemoryRelationHelper, DefaultCachedBatchSerializer, InMemoryRelation, InMemoryTableScanExec}
 import org.apache.spark.sql.execution.vectorized.OnHeapColumnVector
-import org.apache.spark.sql.internal.SQLConf
+import org.apache.spark.sql.internal.{SQLConf, StaticSQLConf}
 import org.apache.spark.sql.types.{DataType, LongType, StringType}
 import org.apache.spark.sql.vectorized.{ColumnarBatch, ColumnVector}
 
@@ -232,6 +232,7 @@ object CometInMemoryCacheBenchmark extends CometBenchmarkBase {
         scanned = 6)
 
       runCodecBenchmark(flatRelation)
+      runSparkOperatorBenchmark(flatRelation)
     }
   }
 
@@ -335,6 +336,108 @@ object CometInMemoryCacheBenchmark extends CometBenchmarkBase {
     }
   }
 
+  /**
+   * Reads that feed Spark operators rather than Comet ones, against Spark's own cache format.
+   *
+   * Comet is off in every case, so this measures Spark consuming the cached data: the shape where
+   * Comet's format has something to lose, and the reason the feature is off by default. Both
+   * formats are cached from the same relation, one copy at a time as in runCodecBenchmark, and
+   * each case checks which serializer cached the relation it reads.
+   */
+  private def runSparkOperatorBenchmark(relation: CachedRelation): Unit = {
+    val view = s"${relation.table}_spark_operators"
+    val formats = Seq(
+      "Spark's cache format" -> classOf[DefaultCachedBatchSerializer].getName,
+      "Comet's cache format" -> classOf[ArrowCachedBatchSerializer].getName)
+
+    spark.catalog.clearCache()
+    withTempTable(view) {
+      spark
+        .sql(s"SELECT ${relation.columns.mkString(", ")} FROM ${relation.source}")
+        .createOrReplaceTempView(view)
+
+      var cachedBy: String = null
+      def cacheBy(serializer: String): Unit = if (cachedBy != serializer) {
+        spark.catalog.uncacheTable(view)
+        cachedBy = null
+        withCacheSerializer(serializer) {
+          withSQLConf(sparkOperatorConf: _*) {
+            spark.catalog.cacheTable(view)
+            spark.table(view).count()
+          }
+        }
+        cachedBy = serializer
+      }
+
+      Seq(
+        ("row count only (0 of 6 columns)", s"SELECT count(*) FROM $view", 0),
+        ("narrow projection (1 of 6 columns)", s"SELECT count(k) FROM $view", 1),
+        ("3 of 6 columns", s"SELECT sum(id), sum(k), sum(v) FROM $view", 3),
+        (
+          "full projection (6 of 6 columns)",
+          s"SELECT count(id), count(k), count(v), count(s1), count(s2), count(s3) FROM $view",
+          6)).foreach { case (label, query, scanned) =>
+        val benchmark = new Benchmark(
+          s"in-memory cache read by Spark operators, $label",
+          relation.rows,
+          output = output)
+        formats.foreach { case (name, serializer) =>
+          var verified = false
+          // Re-caching in this case's format is setup, so it is outside the timer, and it only
+          // happens on the case's first call, which is a warmup iteration.
+          benchmark.addTimerCase(name) { timer =>
+            cacheBy(serializer)
+            withSQLConf(sparkOperatorConf: _*) {
+              if (!verified) {
+                verifySparkOperatorRead(query, scanned, serializer)
+                verified = true
+              }
+              timer.startTiming()
+              spark.sql(query).noop()
+              timer.stopTiming()
+            }
+          }
+        }
+        benchmark.run()
+      }
+
+      spark.catalog.uncacheTable(view)
+    }
+  }
+
+  // spark.sql.cache.serializer is static, and InMemoryRelation memoizes the serializer it names
+  // for the life of the JVM. It looks the name up in the active session's conf when a relation is
+  // cached, though, so setting it there directly and clearing the memoized instance around one
+  // materialization is enough to cache a relation in either format from the same session.
+  private def withCacheSerializer(serializer: String)(f: => Unit): Unit = {
+    val conf = SQLConf.get
+    val key = StaticSQLConf.SPARK_CACHE_SERIALIZER.key
+    val previous = conf.getConfString(key)
+    conf.setConfString(key, serializer)
+    CometInMemoryRelationHelper.clearSerializer()
+    try f
+    finally {
+      conf.setConfString(key, previous)
+      CometInMemoryRelationHelper.clearSerializer()
+    }
+  }
+
+  // Pins what a Spark-operator case claims: no Comet operator anywhere, and one cache scan that
+  // reads the columns its label counts from a relation the named serializer cached. The last is
+  // what catches both formats silently reading one copy.
+  private def verifySparkOperatorRead(query: String, scanned: Int, serializer: String): Unit = {
+    val executed = spark.sql(query).queryExecution.executedPlan
+    val plan = executed.toString()
+    assert(executed.find(_.nodeName.startsWith("Comet")).isEmpty, s"Expected no Comet:\n$plan")
+    val scans = executed.collect { case s: InMemoryTableScanExec => s }
+    assert(scans.length == 1, s"Expected exactly one cache scan:\n$plan")
+    assert(
+      scans.head.attributes.length == scanned,
+      s"Expected the scan to read $scanned columns:\n$plan")
+    val actual = scans.head.relation.cacheBuilder.serializer.getClass.getName
+    assert(actual == serializer, s"Expected a relation cached by $serializer, not $actual")
+  }
+
   /** What the cached relation behind `view` occupies, summed over its batches as written. */
   private def cachedBytes(view: String): Long = {
     val relation = spark
@@ -424,9 +527,9 @@ object CometInMemoryCacheBenchmark extends CometBenchmarkBase {
     // So the numbers measure "keep the cached scan native" against "fall back to a Spark cache
     // scan and convert" -- which is the overhead this feature exists to remove.
     //
-    // Neither case is a baseline for Spark's own cache format. spark.sql.cache.serializer is a
-    // static conf, so a single session cannot also materialize a DefaultCachedBatch to compare
-    // against; both cases read the same Comet-written CometCachedBatch.
+    // Neither case is a baseline for Spark's own cache format: both read the same Comet-written
+    // CometCachedBatch. Spark's format is only measured by runSparkOperatorBenchmark, with Comet
+    // off, since that is the only comparison it answers.
     withSQLConf(cacheConf(nativeCacheEnabled = true): _*) {
       spark
         .sql(s"SELECT ${relation.columns.mkString(", ")} FROM ${relation.source}")
@@ -489,4 +592,11 @@ object CometInMemoryCacheBenchmark extends CometBenchmarkBase {
 
   private def codecConf(codec: String): Seq[(String, String)] =
     Seq(CometConf.COMET_EXEC_IN_MEMORY_CACHE_COMPRESSION_CODEC.key -> codec)
+
+  // Comet off, so every operator above the cache scan is Spark's; the batch size matches
+  // cacheConf so both formats cache the relation in the same number of batches.
+  private val sparkOperatorConf: Seq[(String, String)] = Seq(
+    CometConf.COMET_ENABLED.key -> "false",
+    CometConf.COMET_EXEC_ENABLED.key -> "false",
+    "spark.sql.inMemoryColumnarStorage.batchSize" -> "10000")
 }

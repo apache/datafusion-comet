@@ -47,9 +47,11 @@ With Comet's serializer installed as `spark.sql.cache.serializer`:
   expects, so Spark can prune whole cached batches on a predicate before any of them is decoded.
 
 Relations whose schema Comet's Arrow writer cannot store — interval types, most notably — are
-delegated in full to Spark's default cache format, per relation. Nothing about the format depends
-on a runtime config, because `spark.sql.cache.serializer` is a static setting and a relation whose
-format could change mid-session could not be read back reliably. Turning
+delegated in full to Spark's default cache format, per relation. Which format a relation uses does
+not depend on a runtime config, because `spark.sql.cache.serializer` is a static setting and a
+relation whose format could change mid-session could not be read back reliably. The compression
+codec is a runtime config, but each batch records the codec it was written with, so data cached
+under one setting stays readable after the setting changes. Turning
 `spark.comet.exec.inMemoryCache.enabled` off at runtime only sends cached scans back to Spark's
 execution path; the cached data stays readable either way.
 
@@ -78,8 +80,8 @@ longer. A narrow projection pays far less, because it only inflates the columns 
 
 | Codec  | Materialize | Footprint | Read 1 of 6 | Read 6 of 6 |
 | ------ | ----------: | --------: | ----------: | ----------: |
-| `zstd` |     1503 ms |    55 MiB |       47 ms |      296 ms |
-| `none` |     1091 ms |   315 MiB |       36 ms |       63 ms |
+| `zstd` |     1507 ms |    55 MiB |       45 ms |      295 ms |
+| `none` |     1081 ms |   315 MiB |       35 ms |       64 ms |
 
 `none` is the better setting for a relation that fits in memory uncompressed and is read at close
 to full width. The default is the other way round because a cache that does not fit costs more than
@@ -115,20 +117,20 @@ On a 5M-row relation of six flat columns:
 
 | Query shape                    | Spark cache scan + convert | `CometInMemoryTableScan` | Relative |
 | ------------------------------ | -------------------------: | -----------------------: | -------: |
-| Repeated scan (3 of 6 columns) |                     180 ms |                   147 ms |     1.2x |
-| Selective filter               |                      58 ms |                    50 ms |     1.2x |
-| Row count only (0 of 6)        |                      37 ms |                    34 ms |     1.1x |
-| Narrow projection (1 of 6)     |                      52 ms |                    48 ms |     1.1x |
-| Full projection (6 of 6)       |                     547 ms |                   291 ms |     1.9x |
+| Repeated scan (3 of 6 columns) |                     209 ms |                   172 ms |     1.2x |
+| Selective filter               |                      72 ms |                    61 ms |     1.2x |
+| Row count only (0 of 6)        |                      46 ms |                    38 ms |     1.2x |
+| Narrow projection (1 of 6)     |                      70 ms |                    58 ms |     1.2x |
+| Full projection (6 of 6)       |                     566 ms |                   324 ms |     1.7x |
 
 And on a 1M-row relation of six columns whose middle three are structs, one of them nested two
 levels deep:
 
 | Query shape                | Spark cache scan + convert | `CometInMemoryTableScan` | Relative |
 | -------------------------- | -------------------------: | -----------------------: | -------: |
-| Row count only (0 of 6)    |                      30 ms |                    29 ms |     1.0x |
-| Narrow projection (1 of 6) |                      98 ms |                    53 ms |     1.8x |
-| Full projection (6 of 6)   |                     250 ms |                   125 ms |     2.0x |
+| Row count only (0 of 6)    |                      38 ms |                    32 ms |     1.2x |
+| Narrow projection (1 of 6) |                     109 ms |                    58 ms |     1.9x |
+| Full projection (6 of 6)   |                     275 ms |                   130 ms |     2.1x |
 
 Both columns read the cache at the default codec, `zstd`. The codec table above shows what `none`
 changes, and it is the full projection that moves most: nothing has to be inflated, so it runs
@@ -147,10 +149,9 @@ Read what this compares carefully. Comet execution is on in both columns, so the
 on Comet either way and only the cache-scan boundary moves: on the left, Spark's
 `InMemoryTableScanExec` feeds those same Comet operators through a `CometSparkColumnarToColumnar`
 bridge; on the right, `CometInMemoryTableScan` feeds them directly. Both columns read the same
-Comet-written `CometCachedBatch` — `spark.sql.cache.serializer` is static, so one session cannot
-also materialize Spark's format to compare against. These numbers are therefore "keep the cached
-scan native" against "fall back to a Spark cache scan and convert", not Comet against Spark
-execution, and not a comparison with Spark's own cache format.
+Comet-written `CometCachedBatch`. These numbers are therefore "keep the cached scan native" against
+"fall back to a Spark cache scan and convert", not Comet against Spark execution, and not a
+comparison with Spark's own cache format. That comparison is under [Limitations](#limitations).
 
 ## Kryo
 
@@ -174,10 +175,19 @@ registrator.
 
 ## Limitations
 
-Reads that feed **Spark** operators rather than Comet ones are still slower than Spark's own cache
-format, by roughly 1.7x to 2.5x depending on how wide the projection is. Those reads pay a row
-conversion that Spark's format avoids with generated code over its own layout. This is why the
-feature is off by default.
+Reads that feed **Spark** operators rather than Comet ones are slower than Spark's own cache
+format, and the narrower the read, the wider the gap. Measured by the same benchmark over the same
+5M-row relation, with Comet off so that Spark operators consume the cached data:
+
+| Read shape              | Spark's cache format | Comet's cache format | Slowdown |
+| ----------------------- | -------------------: | -------------------: | -------: |
+| Row count only (0 of 6) |                35 ms |               183 ms |     5.2x |
+| 1 of 6 columns          |                54 ms |               257 ms |     4.8x |
+| 3 of 6 columns          |                98 ms |               331 ms |     3.4x |
+| 6 of 6 columns          |               410 ms |               623 ms |     1.5x |
+
+This is why the feature is off by default. The cause is not yet established;
+[#5485](https://github.com/apache/datafusion-comet/issues/5485) tracks it.
 
 Comet's serializer exists because Spark's own Arrow cache format
 ([SPARK-57268](https://issues.apache.org/jira/browse/SPARK-57268)) is only available from Spark

@@ -20,11 +20,14 @@
 package org.apache.comet.exec
 
 import java.{util => ju}
+import java.nio.charset.StandardCharsets
+
+import scala.jdk.CollectionConverters._
 
 import org.apache.arrow.compression.ZstdCompressionCodec
 import org.apache.arrow.memory.{ArrowBuf, BufferAllocator}
-import org.apache.arrow.vector.{FixedSizeBinaryVector, IntVector, VarBinaryVector, VarCharVector}
-import org.apache.arrow.vector.compression.{CompressionCodec, CompressionUtil}
+import org.apache.arrow.vector.{BitVector, FixedSizeBinaryVector, IntVector, VarBinaryVector, VarCharVector}
+import org.apache.arrow.vector.compression.{CompressionCodec, CompressionUtil, NoCompressionCodec}
 import org.apache.arrow.vector.types.pojo.ArrowType
 import org.apache.spark.CometDriverPlugin
 import org.apache.spark.SparkConf
@@ -1062,6 +1065,37 @@ class CometInMemoryCacheSuite extends CometTestBase {
     }
   }
 
+  test("Comet in-memory cache does not prune a collated column on a prefix match") {
+    assume(isSpark40Plus, "collated string types require Spark 4.0+")
+    // Spark prunes StartsWith by cutting each batch's bounds to the prefix's length in characters,
+    // which assumes a matching value begins with as many characters as the prefix has. A
+    // collation can break that. Under UTF8_LCASE, U+0130 (a capital I with a dot above) is one
+    // character that lowercases to two, 'i' and U+0307, so values beginning with it match that
+    // two-character prefix while no bound cut to two characters compares equal to it, and every
+    // batch holding a match is pruned.
+    val query = "SELECT id, concat('\u0130', cast(id as string)) COLLATE UTF8_LCASE AS s " +
+      "FROM range(5)"
+    val predicate = "startswith(s, 'i\u0307')"
+    withNativeCache {
+      // Collected before the relation is cached, so the cache cannot stand in for it.
+      val expected = spark.sql(s"SELECT id FROM ($query) WHERE $predicate ORDER BY id").collect()
+      assert(expected.length == 5)
+
+      spark.sql(query).createOrReplaceTempView("collated_prefix_cache")
+      spark.catalog.cacheTable("collated_prefix_cache")
+      spark.table("collated_prefix_cache").count()
+      assert(
+        cachedBatchTypes("collated_prefix_cache").sameElements(
+          Array("org.apache.spark.sql.comet.execution.arrow.CometCachedBatch")))
+
+      assert(
+        spark
+          .sql(s"SELECT id FROM collated_prefix_cache WHERE $predicate ORDER BY id")
+          .collect() === expected,
+        "a prefix match under a collation must survive pruning")
+    }
+  }
+
   test("Comet in-memory cache prunes only on columns that have bounds") {
     withNativeCache {
       // Binary has no bounds recorded, so its lower and upper stay null. Spark would still build
@@ -1478,6 +1512,12 @@ class CometInMemoryCacheSuite extends CometTestBase {
             "concat('s_', cast(id as string)) AS s",
             "cast(id % 2 = 0 as boolean) AS flag")
           .createOrReplaceTempView(view)
+        // Collected before the view is cached. checkSparkAnswer alone cannot catch a writer that
+        // stores the wrong values: with and without Comet, both sides read the one cached payload.
+        val full = s"SELECT * FROM $view ORDER BY id"
+        val projected = s"SELECT s FROM $view WHERE id >= 3990 ORDER BY s"
+        val expectedFull = spark.sql(full).collect()
+        val expectedProjected = spark.sql(projected).collect()
         spark.catalog.cacheTable(view)
 
         assert(
@@ -1487,6 +1527,8 @@ class CometInMemoryCacheSuite extends CometTestBase {
 
         // A full read, a projected read (the buffer-selection path), and a row count that decodes
         // nothing -- the three shapes the read path distinguishes.
+        assert(spark.sql(full).collect() === expectedFull, s"codec $codec read the wrong values")
+        assert(spark.sql(projected).collect() === expectedProjected)
         checkSparkAnswer(spark.sql(s"SELECT * FROM $view"))
         checkSparkAnswer(spark.sql(s"SELECT s FROM $view WHERE id >= 3990"))
         assert(spark.sql(s"SELECT count(*) FROM $view").collect()(0).getLong(0) == 4000)
@@ -1532,6 +1574,93 @@ class CometInMemoryCacheSuite extends CometTestBase {
         s"an unrecognized codec must be reported as itself: $thrown")
     } finally {
       ints.close()
+    }
+  }
+
+  test("Comet in-memory cache reads a projection of only null-typed columns") {
+    // A NullVector owns a field node but no buffers, so a scan that selects nothing else asks the
+    // read path to copy out no buffers at all, and under a codec to decompress none. Paired with
+    // another column, it is a NullVector inside an ordinary payload instead.
+    val query = "SELECT id, NULL AS n FROM range(0, 1000, 1, 2)"
+    // Collected before anything is cached, so the cache cannot stand in for the reference.
+    val expectedNulls = spark.sql(s"SELECT n FROM ($query)").collect()
+    val expectedPairs = spark.sql(s"SELECT id, n FROM ($query) ORDER BY id").collect()
+    assert(expectedNulls.length == 1000)
+
+    Seq("none", "zstd").foreach { codec =>
+      withSQLConf(
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+        SQLConf.CACHE_VECTORIZED_READER_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_IN_MEMORY_CACHE_COMPRESSION_CODEC.key -> codec,
+        "spark.comet.sparkToColumnar.enabled" -> "true") {
+
+        spark.catalog.clearCache()
+        val view = s"null_cache_$codec"
+        spark.sql(query).createOrReplaceTempView(view)
+        spark.catalog.cacheTable(view)
+        spark.table(view).count()
+        assert(
+          cachedBatchTypes(view).sameElements(
+            Array("org.apache.spark.sql.comet.execution.arrow.CometCachedBatch")),
+          s"codec $codec should still store CometCachedBatch")
+
+        assert(spark.sql(s"SELECT n FROM $view").collect() === expectedNulls)
+        assert(spark.sql(s"SELECT id, n FROM $view ORDER BY id").collect() === expectedPairs)
+
+        spark.catalog.clearCache()
+      }
+    }
+  }
+
+  test("Comet in-memory cache round-trips a batch with no rows") {
+    // Every buffer of a batch with no rows is empty. zstd writes each of those as a bare
+    // uncompressed-length prefix of zero, and without a codec each is a zero-length window, so
+    // this is the batch where every window the read path copies out is empty or nearly so.
+    val cacheSchema = StructType(Seq(StructField("i", IntegerType), StructField("s", StringType)))
+    Seq[CompressionCodec](NoCompressionCodec.INSTANCE, new ZstdCompressionCodec(1)).foreach {
+      codec =>
+        val ints = new IntVector("i", CometArrowAllocator)
+        val strings = new VarCharVector("s", CometArrowAllocator)
+        val cached =
+          try {
+            ints.allocateNew()
+            ints.setValueCount(0)
+            strings.allocateNew()
+            strings.setValueCount(0)
+            val batch = new ColumnarBatch(
+              Array[ColumnVector](new CometPlainVector(ints), new CometPlainVector(strings)),
+              0)
+            CometCachedBatchHelper.cachedBatch(
+              CometCachedBatchHelper.serialize(batch, codec, CometArrowAllocator),
+              0)
+          } finally {
+            ints.close()
+            strings.close()
+          }
+
+        val allocator =
+          CometArrowAllocator.newChildAllocator(
+            s"zero-rows-${codec.getCodecType}",
+            0,
+            Long.MaxValue)
+        try {
+          Seq(Array(0, 1), Array(1), Array(0)).foreach { selected =>
+            val root = CometCachedBatchHelper.load(cached, cacheSchema, selected, allocator)
+            try {
+              assert(root.getRowCount == 0)
+              assert(
+                root.getSchema.getFields.asScala.map(_.getName) ==
+                  selected.map(cacheSchema(_).name).toSeq,
+                s"${codec.getCodecType} read the wrong columns for ${selected.mkString(",")}")
+            } finally {
+              root.close()
+            }
+          }
+          assert(allocator.getAllocatedMemory == 0)
+        } finally {
+          allocator.close()
+        }
     }
   }
 
@@ -1671,6 +1800,11 @@ class CometInMemoryCacheSuite extends CometTestBase {
     }
   }
 
+  // Ordering by the JSON form rather than by the columns themselves, since a projection that
+  // excludes `id` has no orderable key of its own and ORDER BY over a map is not allowed.
+  private def orderedByJson(cols: Seq[String], from: String): String =
+    s"SELECT to_json(struct(${cols.mkString(", ")})) AS j FROM $from ORDER BY j"
+
   test("Comet in-memory cache reads correct nested values under a narrow projection") {
     // The corruption test above proves the projected read leaves the other columns' bytes alone,
     // but it asserts on row counts, and a row count comes from the record batch header rather than
@@ -1680,14 +1814,6 @@ class CometInMemoryCacheSuite extends CometTestBase {
     withNativeCache {
       val query =
         s"SELECT ${nestedProjectionColumns.mkString(", ")} FROM range($projectionCacheRows)"
-      spark.sql(query).createOrReplaceTempView("nested_value_cache")
-      spark.catalog.cacheTable("nested_value_cache")
-      spark.table("nested_value_cache").count()
-
-      assert(
-        cachedBatchTypes("nested_value_cache").sameElements(
-          Array("org.apache.spark.sql.comet.execution.arrow.CometCachedBatch")))
-
       val names = Seq("id", "sc", "ar", "mp", "deep", "tail")
 
       // Each nested column on its own, then paired with `id`, then two projections that ask for
@@ -1701,19 +1827,27 @@ class CometInMemoryCacheSuite extends CometTestBase {
           Seq(Seq("tail", "mp", "id"), Seq("deep", "sc")) ++
           Seq(names)
 
-      projections.foreach { cols =>
-        val list = cols.mkString(", ")
-        // Ordering by the JSON form rather than by the columns themselves, since a projection that
-        // excludes `id` has no orderable key of its own and ORDER BY over a map is not allowed.
-        val ordered = s"SELECT to_json(struct($list)) AS j FROM %s ORDER BY j"
-        val expected = spark.sql(ordered.format(s"($query)")).collect()
-        assert(expected.length == projectionCacheRows)
+      // Collected before the relation is cached. Once it is, Spark answers this same query from the
+      // cache too, so a reference taken afterwards would compare the cache with itself.
+      val expected =
+        projections.map(cols => spark.sql(orderedByJson(cols, s"($query)")).collect())
+      expected.foreach(rows => assert(rows.length == projectionCacheRows))
 
-        val df = spark.sql(ordered.format("nested_value_cache"))
+      spark.sql(query).createOrReplaceTempView("nested_value_cache")
+      spark.catalog.cacheTable("nested_value_cache")
+      spark.table("nested_value_cache").count()
+
+      assert(
+        cachedBatchTypes("nested_value_cache").sameElements(
+          Array("org.apache.spark.sql.comet.execution.arrow.CometCachedBatch")))
+
+      projections.zip(expected).foreach { case (cols, rows) =>
+        val list = cols.mkString(", ")
+        val df = spark.sql(orderedByJson(cols, "nested_value_cache"))
         assert(
           df.queryExecution.executedPlan.toString().contains("CometInMemoryTableScan"),
           s"projection ($list) should read the cache natively")
-        assert(df.collect() === expected, s"projection ($list) read the wrong values")
+        assert(df.collect() === rows, s"projection ($list) read the wrong values")
       }
     }
   }
@@ -1725,7 +1859,16 @@ class CometInMemoryCacheSuite extends CometTestBase {
     // chunk and ends in another, as does the metadata message ahead of the body. Values are
     // compared against the uncached query rather than a row count, since a window stitched
     // together from the wrong chunk offsets still decodes to the right number of rows.
+    val source = s"SELECT ${nestedProjectionColumns.mkString(", ")} " +
+      s"FROM range(0, $projectionCacheRows, 1, 2)"
+    val projections =
+      Seq(Seq("id", "sc", "ar", "mp", "deep", "tail"), Seq("tail", "mp", "id"), Seq("deep", "sc"))
+    // Collected before the fixture caches the relation, for the reason given in the test above.
+    val expected = projections.map(cols => spark.sql(orderedByJson(cols, s"($source)")).collect())
+    expected.foreach(rows => assert(rows.length == projectionCacheRows))
+
     withNestedProjectionCache(Some(tinyChunkSize)) { (relation, batches) =>
+      assert(relation.output.map(_.name) == projections.head)
       batches.foreach { batch =>
         assert(
           CometCachedBatchHelper.chunkCount(batch) > 1,
@@ -1735,20 +1878,13 @@ class CometInMemoryCacheSuite extends CometTestBase {
           "sizeInBytes must report the whole payload across its chunks")
       }
 
-      val source = s"SELECT ${nestedProjectionColumns.mkString(", ")} " +
-        s"FROM range(0, $projectionCacheRows, 1, 2)"
-      Seq(relation.output.map(_.name), Seq("tail", "mp", "id"), Seq("deep", "sc")).foreach {
-        cols =>
-          val list = cols.mkString(", ")
-          val ordered = s"SELECT to_json(struct($list)) AS j FROM %s ORDER BY j"
-          val expected = spark.sql(ordered.format(s"($source)")).collect()
-          assert(expected.length == projectionCacheRows)
-
-          val df = spark.sql(ordered.format("nested_projection_cache"))
-          assert(
-            df.queryExecution.executedPlan.toString().contains("CometInMemoryTableScan"),
-            s"projection ($list) should read the cache natively")
-          assert(df.collect() === expected, s"projection ($list) read the wrong values")
+      projections.zip(expected).foreach { case (cols, rows) =>
+        val list = cols.mkString(", ")
+        val df = spark.sql(orderedByJson(cols, "nested_projection_cache"))
+        assert(
+          df.queryExecution.executedPlan.toString().contains("CometInMemoryTableScan"),
+          s"projection ($list) should read the cache natively")
+        assert(df.collect() === rows, s"projection ($list) read the wrong values")
       }
     }
   }
@@ -2069,6 +2205,77 @@ class CometInMemoryCacheSuite extends CometTestBase {
       // Never reaches the writer's own clear(), which only runs once the payload is built.
       ints.close()
       strings.close()
+    }
+  }
+
+  test("Comet in-memory cache keeps no compressed bytes alive behind a buffer stored raw") {
+    // Arrow stores a buffer verbatim when compressing it would not make it smaller -- a bitmap of
+    // random bits, say -- and decompressing hands it back as a slice of whatever holds it. Copied
+    // into the same allocation as the compressed buffers of the batch, the smallest such buffer
+    // would keep every one of those compressed bytes alive for as long as the decoded vectors.
+    val rows = 4096
+    val random = new scala.util.Random(42)
+    // 0 for null, otherwise false or true: random enough that neither bitmap compresses.
+    val flags = Array.fill(rows)(random.nextInt(3))
+    // 256 hex digits of random longs per value, which compress to about half.
+    val strings = Array.fill(rows)((0 until 16).map(_ => f"${random.nextLong()}%016x").mkString)
+
+    val bits = new BitVector("b", CometArrowAllocator)
+    val chars = new VarCharVector("s", CometArrowAllocator)
+    val cached =
+      try {
+        bits.allocateNew(rows)
+        chars.allocateNew(rows.toLong * 256, rows)
+        (0 until rows).foreach { i =>
+          if (flags(i) == 0) bits.setNull(i) else bits.set(i, flags(i) - 1)
+          chars.setSafe(i, strings(i).getBytes(StandardCharsets.UTF_8))
+        }
+        bits.setValueCount(rows)
+        chars.setValueCount(rows)
+        val batch = new ColumnarBatch(
+          Array[ColumnVector](new CometPlainVector(bits), new CometPlainVector(chars)),
+          rows)
+        CometCachedBatchHelper.cachedBatch(
+          CometCachedBatchHelper.serialize(
+            batch,
+            new ZstdCompressionCodec(1),
+            CometArrowAllocator),
+          rows)
+      } finally {
+        bits.close()
+        chars.close()
+      }
+
+    val cacheSchema = StructType(Seq(StructField("b", BooleanType), StructField("s", StringType)))
+    assert(
+      CometCachedBatchHelper.columnHasRawBuffer(cached, cacheSchema, 0),
+      "the test needs a column Arrow stores raw")
+    assert(CometCachedBatchHelper.columnIsCompressed(cached, cacheSchema, 1))
+    val compressedBytes = CometCachedBatchHelper.columnSizes(cached, cacheSchema)(1)
+    assert(compressedBytes > 256 * 1024, s"the compressed column is only $compressedBytes bytes")
+
+    val allocator = CometArrowAllocator.newChildAllocator("raw-buffer-test", 0, Long.MaxValue)
+    try {
+      val root = CometCachedBatchHelper.load(cached, cacheSchema, Array(0, 1), allocator)
+      try {
+        val b = root.getVector(0).asInstanceOf[BitVector]
+        val s = root.getVector(1).asInstanceOf[VarCharVector]
+        (0 until rows).foreach { i =>
+          if (flags(i) == 0) assert(b.isNull(i)) else assert(b.get(i) == flags(i) - 1)
+          assert(new String(s.get(i), StandardCharsets.UTF_8) == strings(i))
+        }
+        b.getBuffers(false).foreach { buffer =>
+          val backing = buffer.getReferenceManager.getSize
+          assert(
+            backing < 64 * 1024,
+            s"a ${buffer.capacity()}-byte bitmap is keeping a $backing-byte allocation alive")
+        }
+      } finally {
+        root.close()
+      }
+      assert(allocator.getAllocatedMemory == 0)
+    } finally {
+      allocator.close()
     }
   }
 

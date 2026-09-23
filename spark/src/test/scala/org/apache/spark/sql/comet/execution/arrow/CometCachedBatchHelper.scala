@@ -125,6 +125,22 @@ object CometCachedBatchHelper {
       chunkSize: Int = 1024 * 1024): ChunkedByteBuffer =
     CachedBatchIpc.serialize(batch, codec, allocator, chunkSize)._1
 
+  /** A payload [[serialize]] wrote, as the cached batch the writer would have stored it in. */
+  def cachedBatch(payload: ChunkedByteBuffer, numRows: Int): CachedBatch =
+    CometCachedBatch(numRows, payload.size, InternalRow.empty, payload)
+
+  /**
+   * Decode the `selected` columns of a cached batch the way a scan does, into a root the caller
+   * owns. Another thin shim, for tests about what the read path leaves allocated.
+   */
+  def load(
+      batch: CachedBatch,
+      cacheSchema: StructType,
+      selected: Array[Int],
+      allocator: BufferAllocator): VectorSchemaRoot =
+    new CachedBatchIpc.Projection(arrowFields(cacheSchema).toIndexedSeq, selected)
+      .load(payload(batch), allocator)
+
   /**
    * A cached batch whose payload records `codec` as the byte that compressed its body.
    *
@@ -157,7 +173,7 @@ object CometCachedBatchHelper {
           out.close()
         }
         val payload = out.toChunkedByteBuffer
-        CometCachedBatch(batch.numRows(), payload.size, InternalRow.empty, payload)
+        cachedBatch(payload, batch.numRows())
       } finally {
         tagged.close()
       }
@@ -191,6 +207,18 @@ object CometCachedBatchHelper {
    */
   def columnIsCompressed(batch: CachedBatch, cacheSchema: StructType, index: Int): Boolean =
     compressedRanges(batch, cacheSchema, index).nonEmpty
+
+  /**
+   * Whether any of a column's buffers took that fallback: stored verbatim behind a `-1` length
+   * prefix because compressing it would not have made it smaller.
+   */
+  def columnHasRawBuffer(batch: CachedBatch, cacheSchema: StructType, index: Int): Boolean = {
+    val data = payloadBytes(batch)
+    val bodyStart = data.length - readMessage(data).getMessageBodyLength
+    columnBufferRanges(batch, cacheSchema)(index).exists { case (offset, length) =>
+      length > 8 && uncompressedLength(data, bodyStart + offset) == -1L
+    }
+  }
 
   /**
    * Scramble one column's compressed bytes in place, leaving every other column byte-identical.
