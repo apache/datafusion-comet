@@ -625,6 +625,14 @@ under the License.
                     <exclude>log4j2.properties</exclude>
                     <exclude>arrow-git.properties</exclude>
                     <exclude>**/SparkFilterApi.*</exclude>
+                    <!-- The jar plugin leaves this module's jar alone when no class has changed,
+                         and shade has already replaced that jar with its own output, so a build
+                         without `clean` shades an already shaded jar. That jar holds the service
+                         file the transformer below relocated last time, arrow-compression's
+                         original relocates to the same name, and the transformer keys the two
+                         separately and writes the name twice, failing the build. Excluding the
+                         already relocated copy on the way in leaves exactly one. -->
+                    <exclude>META-INF/services/${comet.shade.packageName}.arrow.*</exclude>
                   </excludes>
                 </filter>
                 <filter>

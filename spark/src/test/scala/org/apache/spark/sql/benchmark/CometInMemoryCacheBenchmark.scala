@@ -27,7 +27,7 @@ import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.expressions.AttributeReference
 import org.apache.spark.sql.comet.CometInMemoryTableScanExec
 import org.apache.spark.sql.comet.execution.arrow.ArrowCachedBatchSerializer
-import org.apache.spark.sql.execution.columnar.InMemoryTableScanExec
+import org.apache.spark.sql.execution.columnar.{InMemoryRelation, InMemoryTableScanExec}
 import org.apache.spark.sql.execution.vectorized.OnHeapColumnVector
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{DataType, LongType, StringType}
@@ -69,6 +69,12 @@ object CometInMemoryCacheBenchmark extends CometBenchmarkBase {
     nestedSourceTable,
     Seq("id", "sc", "deep", "wide", "tail", "d"),
     nestedNumRows)
+
+  // Every value spark.comet.exec.inMemoryCache.compression.codec accepts, default first. Arrow's
+  // other IPC codec, LZ4_FRAME, is not one of them: it is commons-compress's pure-Java LZ4 rather
+  // than the JNI-accelerated lz4-java behind spark.io.compression.codec, and the write path
+  // rejects it.
+  private val codecs = Seq("zstd", "none")
 
   @volatile private var statsResult: (Array[Any], Array[Any], Array[Int]) = _
 
@@ -224,7 +230,120 @@ object CometInMemoryCacheBenchmark extends CometBenchmarkBase {
         "SELECT count(id), count(sc.a), count(deep.n.v), count(wide.p), count(tail), count(d) " +
           s"FROM $nestedCacheTable",
         scanned = 6)
+
+      runCodecBenchmark(flatRelation)
     }
+  }
+
+  /**
+   * Every write codec the config accepts, over the same relation.
+   *
+   * The codec decides both how long materializing a relation takes and how much of a read is
+   * decompression, and it is chosen once per relation, so it is a separate axis from the
+   * projection widths above rather than another case alongside them.
+   *
+   * Only one copy is cached at a time. Two views over the same query would not give two cached
+   * relations: the cache manager keys on the plan rather than the name, so the second would find
+   * the first's copy and every codec would end up measuring whichever wrote last.
+   *
+   * Every case reads the cache natively. What moves between them is the codec, not the scan.
+   */
+  private def runCodecBenchmark(relation: CachedRelation): Unit = {
+    val view = s"${relation.table}_codec"
+
+    spark.catalog.clearCache()
+    withTempTable(view) {
+      spark
+        .sql(s"SELECT ${relation.columns.mkString(", ")} FROM ${relation.source}")
+        .createOrReplaceTempView(view)
+
+      var cached: String = null
+      def cacheUnder(codec: String): Unit = if (cached != codec) {
+        spark.catalog.uncacheTable(view)
+        cached = null
+        withSQLConf(cacheConf(nativeCacheEnabled = true) ++ codecConf(codec): _*) {
+          spark.catalog.cacheTable(view)
+          spark.table(view).count()
+        }
+        cached = codec
+      }
+
+      // Measured before the cases below, while each codec's copy is the one freshly materialized:
+      // the accumulator behind it belongs to whichever copy is cached now.
+      val footprints = codecs.map { codec =>
+        cacheUnder(codec)
+        codec -> cachedBytes(view)
+      }
+
+      val materialize =
+        new Benchmark("in-memory cache materialize by codec", relation.rows, output = output)
+      codecs.foreach { codec =>
+        // Timed around the caching alone: dropping the previous copy is setup, and a plain
+        // addCase would charge it to whichever codec happens to be running.
+        materialize.addTimerCase(codec) { timer =>
+          spark.catalog.uncacheTable(view)
+          cached = null
+          withSQLConf(cacheConf(nativeCacheEnabled = true) ++ codecConf(codec): _*) {
+            timer.startTiming()
+            spark.catalog.cacheTable(view)
+            spark.table(view).count()
+            timer.stopTiming()
+          }
+          cached = codec
+        }
+      }
+      materialize.run()
+
+      // Footprint is not a time, so it has no column in a Benchmark table, but it is the other
+      // half of why one codec is the default.
+      footprints.foreach { case (codec, bytes) =>
+        materialize.out.println(
+          f"Cached footprint ($codec): ${bytes / (1024.0 * 1024.0)}%.1f MiB")
+      }
+
+      // The two projection widths a codec can tell apart: a read decompresses only the buffers it
+      // selected, so a narrow projection pays a proportionally smaller share of the codec's cost.
+      // A row count decodes nothing at all and so cannot distinguish them.
+      Seq(
+        ("narrow projection (1 of 6 columns)", s"SELECT count(k) FROM $view", 1),
+        (
+          "full projection (6 of 6 columns)",
+          s"SELECT count(id), count(k), count(v), count(s1), count(s2), count(s3) FROM $view",
+          6)).foreach { case (label, query, scanned) =>
+        // The plan does not depend on the codec, so whichever copy is cached now will do.
+        withSQLConf(cacheConf(nativeCacheEnabled = true): _*) {
+          verifyPlan(query, nativeCacheEnabled = true, scanned)
+        }
+        val benchmark =
+          new Benchmark(s"in-memory cache $label by codec", relation.rows, output = output)
+        codecs.foreach { codec =>
+          // Re-caching under this case's codec is setup, so it is outside the timer, and it only
+          // happens on the case's first call, which is a warmup iteration.
+          benchmark.addTimerCase(codec) { timer =>
+            cacheUnder(codec)
+            withSQLConf(cacheConf(nativeCacheEnabled = true): _*) {
+              timer.startTiming()
+              spark.sql(query).noop()
+              timer.stopTiming()
+            }
+          }
+        }
+        benchmark.run()
+      }
+
+      spark.catalog.uncacheTable(view)
+    }
+  }
+
+  /** What the cached relation behind `view` occupies, summed over its batches as written. */
+  private def cachedBytes(view: String): Long = {
+    val relation = spark
+      .table(view)
+      .queryExecution
+      .optimizedPlan
+      .collectFirst { case r: InMemoryRelation => r }
+      .getOrElse(sys.error(s"$view is not cached"))
+    relation.cacheBuilder.sizeInBytesStats.value
   }
 
   private def runStatsBenchmark(): Unit = {
@@ -367,4 +486,7 @@ object CometInMemoryCacheBenchmark extends CometBenchmarkBase {
       "spark.comet.exec.onHeap.enabled" -> "true",
       "spark.sql.inMemoryColumnarStorage.batchSize" -> "10000")
   }
+
+  private def codecConf(codec: String): Seq[(String, String)] =
+    Seq(CometConf.COMET_EXEC_IN_MEMORY_CACHE_COMPRESSION_CODEC.key -> codec)
 }

@@ -32,7 +32,7 @@ import org.apache.spark.sql.{CometTestBase, Row}
 import org.apache.spark.sql.catalyst.expressions.{And, Attribute, AttributeReference, Expression, GreaterThanOrEqual, LessThan, Literal}
 import org.apache.spark.sql.columnar.{CachedBatch, SimpleMetricsCachedBatch}
 import org.apache.spark.sql.comet.{CometBroadcastHashJoinExec, CometInMemoryTableScanExec, CometSortExec, CometSortMergeJoinExec}
-import org.apache.spark.sql.comet.execution.arrow.CometCachedBatchHelper
+import org.apache.spark.sql.comet.execution.arrow.{ArrowCachedBatchSerializer, CometCachedBatchHelper}
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.execution.SortExec
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AQEShuffleReadExec, QueryStageExec, ShuffleQueryStageExec}
@@ -1056,7 +1056,7 @@ class CometInMemoryCacheSuite extends CometTestBase {
         spark.sql("SELECT id FROM collated_case_cache WHERE s = 'x1'").collect().length == 1,
         "a case-insensitive match must survive pruning")
 
-      // Null-count based pruning stays available for columns without bounds.
+      // IsNotNull is pushed down through the null count.
       assert(
         spark.sql("SELECT id FROM collated_cache WHERE s IS NOT NULL").collect().length == 100)
     }
@@ -1495,6 +1495,43 @@ class CometInMemoryCacheSuite extends CometTestBase {
 
         spark.catalog.clearCache()
       }
+    }
+  }
+
+  test("Comet in-memory cache rejects a payload that records an unknown compression codec") {
+    // `CodecType.fromCompressionType` answers NO_COMPRESSION for any byte outside its enum, so a
+    // reader that took its word for it would read a compressed body as plain bytes and hand back
+    // garbage values instead of failing. No other test reaches this branch: the writer can only
+    // record a byte one of Arrow's three CodecTypes owns, so the payload has to be assembled with
+    // a byte none of them does.
+    val unknownCodec = 99.toByte
+    val rows = 64
+    val ints = new IntVector("i", CometArrowAllocator)
+    try {
+      ints.allocateNew(rows)
+      (0 until rows).foreach(i => ints.set(i, i))
+      ints.setValueCount(rows)
+      val batch = new ColumnarBatch(Array[ColumnVector](new CometPlainVector(ints)), rows)
+      val cached = CometCachedBatchHelper.cachedBatchWithBodyCompression(batch, unknownCodec)
+
+      val attrs = Seq(AttributeReference("i", IntegerType)())
+      val thrown = interceptDecodeFailure {
+        new ArrowCachedBatchSerializer()
+          .convertCachedBatchToColumnarBatch(
+            spark.sparkContext.parallelize(Seq(cached), 1),
+            attrs,
+            attrs,
+            spark.sessionState.conf)
+          .mapPartitions(it => Iterator.single(it.map(_.numRows().toLong).sum))
+          .collect()
+      }
+      assert(
+        causeChain(thrown).exists(t =>
+          Option(t.getMessage)
+            .exists(_.contains(s"unknown Arrow compression codec: $unknownCodec"))),
+        s"an unrecognized codec must be reported as itself: $thrown")
+    } finally {
+      ints.close()
     }
   }
 

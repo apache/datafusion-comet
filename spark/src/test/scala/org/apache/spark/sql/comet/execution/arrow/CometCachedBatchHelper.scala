@@ -20,22 +20,24 @@
 package org.apache.spark.sql.comet.execution.arrow
 
 import java.io.ByteArrayInputStream
+import java.nio.ByteBuffer
 import java.nio.channels.Channels
 
 import scala.jdk.CollectionConverters._
 
-import org.apache.arrow.flatbuf.{MessageHeader, RecordBatch => FlatBufRecordBatch}
+import org.apache.arrow.flatbuf.{BodyCompressionMethod, MessageHeader, RecordBatch => FlatBufRecordBatch}
 import org.apache.arrow.memory.BufferAllocator
-import org.apache.arrow.vector.TypeLayout
-import org.apache.arrow.vector.compression.CompressionCodec
-import org.apache.arrow.vector.ipc.ReadChannel
-import org.apache.arrow.vector.ipc.message.{MessageMetadataResult, MessageSerializer}
+import org.apache.arrow.vector.{TypeLayout, VectorSchemaRoot, VectorUnloader}
+import org.apache.arrow.vector.compression.{CompressionCodec, NoCompressionCodec}
+import org.apache.arrow.vector.ipc.{ReadChannel, WriteChannel}
+import org.apache.arrow.vector.ipc.message.{ArrowBodyCompression, ArrowRecordBatch, MessageMetadataResult, MessageSerializer}
 import org.apache.arrow.vector.types.pojo.Field
+import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.columnar.CachedBatch
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.types.StructType
 import org.apache.spark.sql.vectorized.ColumnarBatch
-import org.apache.spark.util.io.ChunkedByteBuffer
+import org.apache.spark.util.io.{ChunkedByteBuffer, ChunkedByteBufferOutputStream}
 
 /**
  * Test-only access to the internals of `CometCachedBatch`.
@@ -122,6 +124,47 @@ object CometCachedBatchHelper {
       allocator: BufferAllocator,
       chunkSize: Int = 1024 * 1024): ChunkedByteBuffer =
     CachedBatchIpc.serialize(batch, codec, allocator, chunkSize)._1
+
+  /**
+   * A cached batch whose payload records `codec` as the byte that compressed its body.
+   *
+   * The writer cannot produce one: it takes that byte from the codec it was handed, and
+   * `CompressionUtil.CodecType` has three values. So the record batch is assembled here instead,
+   * with the buffers written plain -- what they hold does not matter, since the read path has to
+   * reject an unrecognized byte before it decompresses anything. Everything else about the
+   * payload is what the writer writes, so a read gets that far.
+   *
+   * As with [[serialize]], `batch`'s vectors are left cleared.
+   */
+  def cachedBatchWithBodyCompression(batch: ColumnarBatch, codec: Byte): CachedBatch = {
+    val (vectors, _) = Utils.getBatchFieldVectors(batch)
+    val root = new VectorSchemaRoot(vectors.asJava)
+    val plain = new VectorUnloader(root, true, NoCompressionCodec.INSTANCE, true).getRecordBatch
+    try {
+      // Retains each buffer, so `plain` and this both own one and both are closed below.
+      val tagged = new ArrowRecordBatch(
+        plain.getLength,
+        plain.getNodes,
+        plain.getBuffers,
+        new ArrowBodyCompression(codec, BodyCompressionMethod.BUFFER),
+        true)
+      try {
+        root.clear()
+        val out = new ChunkedByteBufferOutputStream(1024 * 1024, ByteBuffer.allocate)
+        try {
+          MessageSerializer.serialize(new WriteChannel(Channels.newChannel(out)), tagged)
+        } finally {
+          out.close()
+        }
+        val payload = out.toChunkedByteBuffer
+        CometCachedBatch(batch.numRows(), payload.size, InternalRow.empty, payload)
+      } finally {
+        tagged.close()
+      }
+    } finally {
+      plain.close()
+    }
+  }
 
   /**
    * Whether the payload begins with a Schema message rather than going straight to the record

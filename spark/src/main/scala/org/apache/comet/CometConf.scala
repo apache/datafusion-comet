@@ -287,14 +287,16 @@ object CometConf extends ShimCometConf {
         "The Arrow IPC compression codec used when Comet's cache serializer writes cached " +
           "data. Unlike spark.io.compression.codec, this compresses each Arrow buffer " +
           "separately rather than the batch as a whole, which is what lets a projected scan " +
-          "decompress only the columns it selected. Set to none to store cached batches " +
-          "uncompressed, which is both slower to write and larger than zstd because the extra " +
-          "bytes cost more to move and store than compressing them costs. Only affects newly " +
-          "cached data; the codec a batch was written with is recorded in the batch itself and " +
-          "is what the read path uses. Arrow's lz4 is deliberately not offered: it is a " +
-          "pure-Java implementation, unrelated to the JNI-accelerated lz4 behind " +
-          "spark.io.compression.codec, and is orders of magnitude slower to write than zstd " +
-          "while also producing larger output.")
+          "decompress only the columns it selected. zstd is the default for footprint rather " +
+          "than speed: it stores cached data in a fraction of the memory, but makes " +
+          "materializing slower, and a read slower in proportion to how many columns it " +
+          "selects. Set to none when a relation fits in memory uncompressed and is read at " +
+          "close to full width. " +
+          "Only affects newly cached data; the codec a batch was written with is recorded in " +
+          "the batch itself and is what the read path uses. Arrow's lz4 is deliberately not " +
+          "offered: it is a pure-Java implementation, unrelated to the JNI-accelerated lz4 " +
+          "behind spark.io.compression.codec, and is orders of magnitude slower to write than " +
+          "zstd while also producing larger output.")
       .stringConf
       .checkValues(Set("none", "zstd"))
       .createWithDefault("zstd")
