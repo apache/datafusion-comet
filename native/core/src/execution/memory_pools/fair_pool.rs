@@ -72,12 +72,12 @@ const _: () = assert!(ANCHOR_BYTES == 1);
 /// implemented via delegating calls to [`crate::jvm_bridge::CometTaskMemoryManager`].
 ///
 /// Spark drops a task's `memoryForTask` entry when its balance hits zero, and an acquire parked
-/// inside Spark indexes that entry on wake. The pool takes one byte at setup and keeps it until
-/// it drops, so once held no release, this pool's or a sibling consumer's, can zero the balance
-/// under a waiter. Spark declines the byte for a task already at its share; the pool then runs
-/// without it and each grow retries it first, so a grow's own request carries the exposure
-/// only until the first retry lands. Releases go to the JVM whole: Spark grants a parked
-/// request only when they cover it.
+/// inside Spark indexes that entry on wake. The pool takes one byte on its first grow and keeps
+/// it until it drops, so once held no release, this pool's or a sibling consumer's, can zero the
+/// balance under a waiter. Spark declines the byte for a task already at its share; the pool
+/// then runs without it and each grow retries it first, so a grow's own request carries the
+/// exposure only until the first retry lands. Releases go to the JVM whole: Spark grants a
+/// parked request only when they cover it.
 pub struct CometFairMemoryPool {
     bridge: Box<dyn TaskMemoryBridge>,
     pool_size: usize,
@@ -183,8 +183,14 @@ impl CometFairMemoryPool {
         self.bridge.release(size)
     }
 
-    /// Debits a release from the JVM-side balance before it is handed back.
-    fn debit(state: &mut CometFairPoolState, bytes: usize) {
+    /// Settles a release the JVM has accepted: the bytes come off the pool's total and off the
+    /// JVM-side balance only now, so a grow is never admitted on bytes Spark still holds.
+    fn settle_release(&self, bytes: usize) {
+        let mut state = self.state.lock();
+        state.used = state
+            .used
+            .checked_sub(bytes)
+            .expect("released more bytes than the pool tracks");
         state.jvm_held = state
             .jvm_held
             .checked_sub(bytes)
@@ -192,7 +198,7 @@ impl CometFairMemoryPool {
     }
 
     /// Settles a finished bridge acquire: rolls back the bytes the JVM did not back and records
-    /// the bytes the pool keeps.
+    /// the bytes the JVM granted, which stay charged until they are handed back.
     fn finish_acquire(&self, kept: usize, unbacked: usize) {
         let mut state = self.state.lock();
         state.used = state
@@ -202,7 +208,7 @@ impl CometFairMemoryPool {
         state.jvm_held = state
             .jvm_held
             .checked_add(kept)
-            .expect("overflow in checked_add");
+            .expect("granted more bytes than the JVM side can hold");
     }
 }
 
@@ -213,6 +219,12 @@ impl Drop for CometFairMemoryPool {
     /// whole balance when the task ends anyway.
     fn drop(&mut self) {
         let state = self.state.get_mut();
+        if state.used != 0 {
+            warn!(
+                "Dropped CometFairMemoryPool with {} bytes still reserved",
+                state.used
+            );
+        }
         if !state.anchor_held {
             return;
         }
@@ -273,25 +285,25 @@ impl MemoryPool for CometFairMemoryPool {
     fn shrink(&self, _reservation: &MemoryReservation, subtractive: usize) {
         if subtractive > 0 {
             {
-                let mut state = self.state.lock();
-                // We don't use reservation.size() here because DataFusion 53+ decrements
-                // the reservation's atomic size before calling pool.shrink(), so it would
-                // reflect the post-shrink value rather than the pre-shrink value.
+                let state = self.state.lock();
+                // `used` is the pool's total across every consumer, so the bounds check runs
+                // against that total rather than against this reservation's size.
                 if state.used < subtractive {
                     panic!(
                         "Failed to release {subtractive} bytes where only {} bytes tracked by pool",
                         state.used
                     )
                 }
-                state.used -= subtractive;
-                Self::debit(&mut state, subtractive);
             }
             // The JVM release runs without the lock so a blocked acquire on another thread can
-            // never stall this release. A failed release here panics (the caller already gave the
-            // bytes up, there is no one left to handle an error), while the short-grant path in
-            // try_grow returns Err because its caller can still spill.
+            // never stall this release. The bytes stay charged until Spark has them back, so a
+            // grow racing this shrink is not admitted on them and sent to Spark ahead of the
+            // release. A failed release here panics (the caller already gave the bytes up, there
+            // is no one left to handle an error), while the short-grant path in try_grow returns
+            // Err because its caller can still spill.
             self.release(subtractive)
                 .unwrap_or_else(|_| panic!("Failed to release {subtractive} bytes"));
+            self.settle_release(subtractive);
         }
     }
 
@@ -311,18 +323,17 @@ impl MemoryPool for CometFairMemoryPool {
                     .pool_size
                     .checked_div(num)
                     .expect("overflow in checked_div");
-                // We use state.used instead of reservation.size() because DataFusion 53+
-                // calls pool.try_grow() before incrementing the reservation's atomic size,
-                // so reservation.size() would not include prior grows.
+                // The pool tracks one total across every consumer and checks the fair limit
+                // against that total, not against this reservation's own size.
                 let used = state.used;
-                if limit < used + additional {
-                    return resources_err!(
-                        "Failed to acquire {additional} bytes where {used} bytes already reserved and the fair limit is {limit} bytes, {num} registered"
-                    );
+                match used.checked_add(additional) {
+                    Some(total) if total <= limit => state.used = total,
+                    _ => {
+                        return resources_err!(
+                            "Failed to acquire {additional} bytes where {used} bytes already reserved and the fair limit is {limit} bytes, {num} registered"
+                        );
+                    }
                 }
-                state.used = used
-                    .checked_add(additional)
-                    .expect("overflow in checked_add");
             }
 
             // The anchor comes after the local limit check, so a grow the pool rejects itself
@@ -366,13 +377,19 @@ impl MemoryPool for CometFairMemoryPool {
             // A grant that falls short of the request is handed back whole and reported so the
             // caller can spill.
             if granted < additional {
-                // Return the headroom before handing the grant back to the JVM, so other
-                // threads can use it even if the release itself fails.
-                self.finish_acquire(0, additional);
+                // The bytes Spark did not back come off the books at once. The granted bytes
+                // stay charged until Spark has them back, like a shrink, so no grow is
+                // admitted on them meanwhile. A failed return leaves Spark holding them until
+                // the task ends, and they stay charged here to match; the caller still gets
+                // the short grant error below so a spillable operator spills. A panic in that
+                // release leaves the same state as an error.
+                self.finish_acquire(granted, additional - granted);
                 if granted > 0 {
-                    // The bytes are already off the books, so a failed return only leaves Spark
-                    // holding them until the task ends.
-                    self.release(granted)?;
+                    if let Err(e) = self.release(granted) {
+                        warn!("Failed to return a short grant of {granted} bytes: {e:?}");
+                    } else {
+                        self.settle_release(granted);
+                    }
                 }
 
                 return resources_err!(
@@ -495,6 +512,8 @@ mod tests {
         short_every: usize,
         /// When set, acquire fails outright.
         fail_acquire: AtomicBool,
+        /// When set, release fails outright, like a JVM exception on the way back.
+        fail_release: AtomicBool,
         /// When set, acquire panics, like a failure inside the bridge's JNI frame.
         panic_acquire: AtomicBool,
         /// Pauses an acquire before it takes the pool monitor, like `TaskMemoryManager`
@@ -520,6 +539,7 @@ mod tests {
                 acquires: AtomicUsize::new(0),
                 short_every: 0,
                 fail_acquire: AtomicBool::new(false),
+                fail_release: AtomicBool::new(false),
                 panic_acquire: AtomicBool::new(false),
                 acquire_gate: Gate::new(),
                 release_gate: Gate::new(),
@@ -654,6 +674,9 @@ mod tests {
         }
 
         fn release(&self, size: usize) -> CometResult<()> {
+            if self.fail_release.load(SeqCst) {
+                return Err(CometError::Internal("injected release failure".to_string()));
+            }
             self.release_gate.pass();
             let mut pool = self.pool.lock();
             // Spark only warns and clamps here; the pool must never hand back more than the
@@ -1248,8 +1271,8 @@ mod tests {
         assert_eq!(stub.outstanding(), 1, "only the anchor may remain");
     }
 
-    /// The anchor is taken once when the pool is set up, before any consumer grows, and
-    /// handed back once when the pool drops.
+    /// The anchor is taken once, on the first grow, and handed back once when the pool
+    /// drops.
     #[test]
     fn pool_takes_its_anchor_on_the_first_grow_and_returns_it_at_drop() {
         let stub = Arc::new(StubTaskMemory::new(GIB));
@@ -1319,7 +1342,8 @@ mod tests {
     }
 
     /// One consumer's acquire is parked inside Spark. A second consumer's acquire that Spark can
-    /// grant at once must not queue behind it inside the pool.
+    /// grant at once must not queue behind it inside the pool; in the JVM it waits only on the
+    /// task memory manager monitor, which the parked acquire does not hold.
     #[test]
     fn second_acquire_does_not_queue_behind_a_parked_one() {
         let stub = Arc::new(StubTaskMemory::new(100));
@@ -1419,46 +1443,298 @@ mod tests {
         assert_eq!(stub.releases.load(SeqCst), 0, "nothing to hand back");
     }
 
-    /// Two plans of one task create their pools at once: neither creation touches Spark, the
-    /// registry keeps the first, and only the surviving pool's first grow takes an anchor.
+    /// A pool handed out by the task registry is created without any JVM call and takes its
+    /// anchor byte on its first grow, like a pool built directly.
     #[test]
-    fn concurrent_creates_through_the_registry_take_no_byte() {
+    fn a_pool_acquired_through_the_registry_takes_its_anchor_on_the_first_grow() {
         use crate::execution::memory_pools::acquire_task_shared_pool;
 
         let stub = Arc::new(StubTaskMemory::new(GIB));
-        let barrier = Arc::new(Barrier::new(2));
-        let threads: Vec<_> = (0..2)
-            .map(|_| {
-                let stub = Arc::clone(&stub);
-                let barrier = Arc::clone(&barrier);
-                thread::spawn(move || {
-                    acquire_task_shared_pool(-2001, || {
-                        let pool = pool_with(&stub, 1_000);
-                        // Both pools exist before either reaches the registry.
-                        barrier.wait();
-                        Ok(pool)
-                    })
-                    .unwrap()
-                })
-            })
-            .collect();
-        let pools: Vec<_> = threads.into_iter().map(|t| t.join().unwrap()).collect();
-
-        assert!(Arc::ptr_eq(&pools[0], &pools[1]));
+        let pool = acquire_task_shared_pool(-2001, || pool_with(&stub, 1_000));
         assert_eq!(stub.acquires.load(SeqCst), 0, "creation never calls Spark");
         assert_eq!(
-            stub.releases.load(SeqCst),
+            stub.outstanding(),
             0,
-            "the loser held nothing to return"
+            "nothing is held before the first grow"
         );
 
-        let res = MemoryConsumer::new("consumer").register(&pools[0]);
+        let res = MemoryConsumer::new("consumer").register(&pool);
         res.try_grow(10).unwrap();
         assert_eq!(stub.outstanding(), 11, "one anchor plus the grant");
         res.free();
         drop(res);
-        drop(pools);
+        drop(pool);
         assert_eq!(stub.outstanding(), 0);
         assert_eq!(stub.releases.load(SeqCst), 2, "the free and the one anchor");
+    }
+
+    /// A shrink hands its bytes back to Spark before the pool stops counting them. While that
+    /// release is still on its way, a grow that only fits if the shrunk bytes were free is
+    /// refused at the fair limit without a JVM call, instead of reaching Spark ahead of the
+    /// release and coming back with a short grant.
+    #[test]
+    fn grow_racing_a_shrink_is_not_admitted_on_bytes_the_jvm_still_holds() {
+        let stub = Arc::new(StubTaskMemory::new(100));
+        // Two consumers: a 100 byte fair limit against a task whose Spark share is 100 bytes.
+        let pool = pool_with(&stub, 200);
+        let holder = MemoryConsumer::new("holder").register(&pool);
+        let grower = MemoryConsumer::new("grower").register(&pool);
+        holder.try_grow(99).unwrap();
+        assert_eq!(stub.outstanding(), 100, "the task sits at its Spark share");
+
+        stub.release_gate.arm();
+        let holder_thread = thread::spawn(move || {
+            holder.shrink(50);
+            holder
+        });
+        stub.release_gate.wait_entered("holder release");
+
+        let acquires_before = stub.acquires.load(SeqCst);
+        let result = grower.try_grow(50);
+        let acquires_during = stub.acquires.load(SeqCst);
+        let reserved_during = pool.reserved();
+
+        // Let the release land before asserting so no thread stays parked on failure.
+        stub.release_gate.disarm();
+        stub.release_gate.open();
+        let holder = holder_thread.join().unwrap();
+
+        let err = result.expect_err("the shrunk bytes are not free until Spark has them");
+        assert!(err.to_string().contains("fair limit"), "{err}");
+        assert_eq!(
+            acquires_during, acquires_before,
+            "grow reached Spark on bytes the JVM still held"
+        );
+        assert_eq!(
+            reserved_during, 99,
+            "bytes stay charged until the release lands"
+        );
+
+        grower
+            .try_grow(50)
+            .expect("the same grow fits once the release has landed");
+        assert_eq!(pool.reserved(), 99);
+        assert_eq!(
+            stub.outstanding(),
+            100,
+            "anchor, 49 held and the 50 granted"
+        );
+        holder.free();
+        grower.free();
+        drop(holder);
+        drop(grower);
+        drop(pool);
+        assert_eq!(stub.outstanding(), 0);
+    }
+
+    /// A short grant is rolled back by handing the granted bytes to Spark. Until that
+    /// release lands, the pool keeps charging them, so a grow on another thread cannot be
+    /// admitted on bytes Spark still holds for this task.
+    #[test]
+    fn short_grant_rollback_keeps_the_bytes_charged_until_the_jvm_has_them_back() {
+        // The first acquire is the anchor; the second, the 100 byte request, is granted 50.
+        let stub = Arc::new(StubTaskMemory::new(GIB).short_every(2));
+        // Two consumers: a 100 byte fair limit.
+        let pool = pool_with(&stub, 200);
+        let first = MemoryConsumer::new("first").register(&pool);
+        let second = MemoryConsumer::new("second").register(&pool);
+
+        stub.release_gate.arm();
+        let first_thread = thread::spawn(move || {
+            let result = first.try_grow(100);
+            first.free();
+            result
+        });
+        stub.release_gate.wait_entered("short grant rollback");
+
+        let reserved_during = pool.reserved();
+        let acquires_before = stub.acquires.load(SeqCst);
+        let result = second.try_grow(60);
+        let acquires_during = stub.acquires.load(SeqCst);
+
+        stub.release_gate.disarm();
+        stub.release_gate.open();
+        let first_result = first_thread.join().unwrap();
+
+        let err = first_result.expect_err("100 bytes were requested and 50 granted");
+        assert!(err.to_string().contains("only got"), "{err}");
+        assert_eq!(
+            reserved_during, 50,
+            "the granted bytes stay charged during the rollback"
+        );
+        let err = result.expect_err("60 bytes do not fit beside 50 still charged");
+        assert!(err.to_string().contains("fair limit"), "{err}");
+        assert_eq!(
+            acquires_during, acquires_before,
+            "grow reached Spark on bytes the JVM still held"
+        );
+
+        assert_eq!(
+            pool.reserved(),
+            0,
+            "the rollback settles once Spark has the bytes"
+        );
+        assert_eq!(stub.outstanding(), 1, "only the anchor remains");
+        second
+            .try_grow(60)
+            .expect("the same grow fits once the rollback has landed");
+        assert_eq!(pool.reserved(), 60);
+        second.free();
+        drop(second);
+        drop(pool);
+        assert_eq!(stub.outstanding(), 0);
+    }
+
+    /// A grow is charged to the pool when it passes the fair limit, before Spark answers it.
+    /// While it is in flight, another grow that would push the total past the limit is
+    /// refused, which is what keeps two grows from jointly exceeding the limit. The charge
+    /// is rolled back if Spark does not back it.
+    #[test]
+    fn a_grow_in_flight_counts_against_the_fair_limit_until_it_settles() {
+        let stub = Arc::new(StubTaskMemory::new(GIB));
+        // Two consumers: a 100 byte fair limit.
+        let pool = pool_with(&stub, 200);
+        let grower = MemoryConsumer::new("grower").register(&pool);
+        let other = MemoryConsumer::new("other").register(&pool);
+        // Hold the anchor first so the gate below catches the real request.
+        other.try_grow(1).unwrap();
+        other.free();
+
+        stub.acquire_gate.arm();
+        let grower_thread = thread::spawn(move || {
+            grower.try_grow(60).unwrap();
+            grower
+        });
+        stub.acquire_gate.wait_entered("grower acquire");
+
+        let reserved_during = pool.reserved();
+        let acquires_before = stub.acquires.load(SeqCst);
+        let result = other.try_grow(50);
+        let acquires_during = stub.acquires.load(SeqCst);
+
+        stub.acquire_gate.disarm();
+        stub.acquire_gate.open();
+        let grower = grower_thread.join().unwrap();
+
+        assert_eq!(reserved_during, 60, "the grow in flight is already charged");
+        let err = result.expect_err("60 in flight plus 50 exceeds the 100 byte limit");
+        assert!(err.to_string().contains("fair limit"), "{err}");
+        assert_eq!(
+            acquires_during, acquires_before,
+            "the refused grow must not reach Spark"
+        );
+
+        assert_eq!(pool.reserved(), 60);
+        other
+            .try_grow(40)
+            .expect("40 bytes fit beside the settled 60");
+        assert_eq!(pool.reserved(), 100);
+        drop(grower);
+        drop(other);
+        drop(pool);
+        assert_eq!(stub.outstanding(), 0);
+    }
+
+    /// The rollback of a short grant hands the granted bytes back, and that release can fail.
+    /// Spark then holds the bytes until the task ends, so the pool keeps them charged, and the
+    /// caller still gets the short grant error so a spillable operator spills.
+    #[test]
+    fn failed_short_grant_rollback_keeps_the_bytes_charged_and_reports_a_short_grant() {
+        // The first acquire is the anchor; the second, the 100 byte request, is granted 50.
+        let stub = Arc::new(StubTaskMemory::new(GIB).short_every(2));
+        // Two consumers: a 100 byte fair limit.
+        let pool = pool_with(&stub, 200);
+        let first = MemoryConsumer::new("first").register(&pool);
+        let second = MemoryConsumer::new("second").register(&pool);
+        stub.fail_release.store(true, SeqCst);
+
+        let err = first.try_grow(100).unwrap_err();
+        assert!(err.to_string().contains("only got"), "{err}");
+        assert_eq!(
+            pool.reserved(),
+            50,
+            "the bytes Spark still holds stay charged"
+        );
+        assert_eq!(stub.outstanding(), 51, "anchor plus the stranded grant");
+
+        let acquires_before = stub.acquires.load(SeqCst);
+        let err = second.try_grow(51).unwrap_err();
+        assert!(err.to_string().contains("fair limit"), "{err}");
+        assert_eq!(stub.acquires.load(SeqCst), acquires_before);
+
+        stub.fail_release.store(false, SeqCst);
+        drop(first);
+        drop(second);
+        drop(pool);
+        assert_eq!(
+            stub.outstanding(),
+            50,
+            "the anchor is returned; the stranded grant stays with Spark"
+        );
+    }
+
+    /// A request that overflows the running total is refused like any other over-limit grow,
+    /// without reaching Spark.
+    #[test]
+    fn grow_that_overflows_the_total_is_refused_without_calling_spark() {
+        let stub = Arc::new(StubTaskMemory::new(GIB));
+        let pool = pool_with(&stub, 1_000);
+        let res = MemoryConsumer::new("consumer").register(&pool);
+        res.try_grow(1).unwrap();
+
+        let acquires_before = stub.acquires.load(SeqCst);
+        let err = res.try_grow(usize::MAX).unwrap_err();
+        assert!(err.to_string().contains("fair limit"), "{err}");
+        assert_eq!(stub.acquires.load(SeqCst), acquires_before);
+        assert_eq!(pool.reserved(), 1);
+        res.free();
+    }
+
+    /// The window that settling after the JVM call leaves open. A grow that fits under the fair
+    /// limit without the shrunk bytes still reaches Spark ahead of the shrink's release, and at
+    /// the task's Spark share it comes back with a zero grant. This pins the behaviour rather
+    /// than changing it.
+    #[test]
+    fn grow_racing_a_shrink_gets_a_short_grant_at_the_spark_share() {
+        let stub = Arc::new(StubTaskMemory::new(100));
+        // Two consumers: a 100 byte fair limit against a task whose Spark share is 100 bytes.
+        let pool = pool_with(&stub, 200);
+        let holder = MemoryConsumer::new("holder").register(&pool);
+        let grower = MemoryConsumer::new("grower").register(&pool);
+        holder.try_grow(99).unwrap();
+
+        stub.release_gate.arm();
+        let holder_thread = thread::spawn(move || {
+            holder.shrink(50);
+            holder
+        });
+        stub.release_gate.wait_entered("holder release");
+
+        let acquires_before = stub.acquires.load(SeqCst);
+        let result = grower.try_grow(1);
+        let acquires_during = stub.acquires.load(SeqCst);
+        let reserved_during = pool.reserved();
+
+        stub.release_gate.disarm();
+        stub.release_gate.open();
+        let holder = holder_thread.join().unwrap();
+
+        let err = result.expect_err("the task is at its Spark share until the release lands");
+        assert!(err.to_string().contains("only got 0"), "{err}");
+        assert_eq!(
+            acquires_during,
+            acquires_before + 1,
+            "the grow reached Spark"
+        );
+        assert_eq!(reserved_during, 99);
+
+        grower
+            .try_grow(1)
+            .expect("the grow fits once the release has landed");
+        assert_eq!(stub.outstanding(), 51, "anchor, 49 held and the 1 granted");
+        drop(holder);
+        drop(grower);
+        drop(pool);
+        assert_eq!(stub.outstanding(), 0);
     }
 }

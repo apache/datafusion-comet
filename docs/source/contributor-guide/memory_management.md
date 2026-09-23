@@ -266,6 +266,44 @@ for tuning:
 This is why `fair_unified` spills earlier than `greedy_unified`. It is not a per-consumer quota, and
 reading it as one overstates the memory a multi-operator task can use.
 
+**The fair pool holds an anchor byte for its whole life.** Spark drops a task's `memoryForTask`
+entry when the task's balance reaches zero, and an acquire parked inside
+`ExecutionMemoryPool.acquireMemory` reads that entry when it wakes. So the first grow that passes
+the fair limit takes one extra byte from Spark before its own request, and the pool keeps that byte
+until it drops. While it is held, no release, the pool's own or a sibling consumer's such as the
+shuffle allocator, can zero the balance under a parked acquire, and the task stays in Spark's
+active set, so `NativeMemoryConsumer.getUsed` reports at least 1. Creating the pool makes no JVM
+call: a plan that never allocates natively never touches Spark's memory manager and never counts as
+an active task there. Spark declines the byte with a zero grant when the task is already at its
+share. The pool then runs without it and each grow retries it, as a request of its own, before the
+real one, until it is held. Until a retry lands, the grow's own request is what can park, and a
+sibling's release can still zero the balance under it; Spark then fails that acquire, and the grow
+rolls its charge back and reports an error. That is the one window the anchor does not cover.
+
+**The pool mutex is never held across a JNI call.** The fair limit is checked and the bytes are
+charged under the lock; the lock is dropped before `acquireMemory` or `releaseMemory` runs, and the
+bookkeeping is settled after the call returns. The reason is the parked acquire above: it waits
+inside Spark for another thread of the same task to release memory. If the release had to take a
+lock that the parked acquire was holding, it could never land and the task would hang.
+
+Settling after the call leaves two windows, both on the conservative side:
+
+- A grow is charged to the pool's total when it passes the fair limit, before Spark answers it. A
+  second grow in that window is checked against a total that includes the first, so it can be
+  refused where waiting for the first to settle would have let it through. This charge is what
+  keeps two concurrent grows from jointly exceeding the limit.
+- A shrink, and the rollback of a short grant, hand the bytes to Spark first and take them off the
+  pool's total only once Spark has them. A grow in that window is checked against a total that
+  still includes those bytes, so a grow that only fits once they are free is refused at the fair
+  limit instead of being sent to Spark ahead of the release. A grow that fits without them still
+  goes to Spark and can come back with a short grant if the release has not landed and the task is
+  at its Spark share. If the rollback release itself fails, those bytes stay charged for the pool's
+  life, because Spark holds them until the task ends.
+
+Neither window admits a grow the fair limit would have refused. A refusal is the ordinary
+`ResourcesExhausted` error, which a spillable operator answers by spilling; a caller that uses
+`grow` rather than `try_grow` cannot spill and panics on it, as it does on any fair limit refusal.
+
 ### Task-shared pools and their lifetime
 
 A single Spark task can run more than one native plan concurrently: a shuffle runs the pre-shuffle
