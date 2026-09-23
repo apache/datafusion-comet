@@ -117,10 +117,17 @@ case class CometShuffleExchangeExec(
 
   /**
    * Positional round-robin decision, computed once so that the RDD's determinism level and the
-   * writer's placement cannot disagree.
+   * writer's placement cannot disagree. Only the native writer places positionally.
    */
   @transient private lazy val positionalRoundRobin: Option[PositionalRoundRobin] =
-    CometShuffleExchangeExec.positionalRoundRobinSpec(outputPartitioning, child)
+    if (shuffleType == CometNativeShuffle) {
+      CometShuffleExchangeExec.positionalRoundRobinSpec(outputPartitioning, child)
+    } else {
+      None
+    }
+
+  /** Whether this exchange's writer places rows positionally rather than by content. */
+  private[shuffle] def usesPositionalRoundRobin: Boolean = positionalRoundRobin.isDefined
 
   @transient private lazy val nativeChildMetricNode: CometMetricNode =
     CometMetricNode.fromCometPlan(child)
@@ -311,33 +318,17 @@ object CometShuffleExchangeExec
   }
 
   /**
-   * True when this exchange will run the native round-robin writer in its positional mode, where
-   * the row at task-global ordinal `i` goes to `(startPartition + i / groupRows) % numPartitions`
-   * rather than to `pmod(hash(row), numPartitions)`.
+   * Whether a round-robin exchange over `child` places rows positionally
+   * (`RoundRobinStrategy::RowGroups` in `PhysicalPlanner::create_partitioning`), and with what
+   * group size. Read once on the driver, so that the RDD's determinism level, the writer's
+   * placement and the group size cannot disagree: on an executor `CometConf.get()` resolves
+   * against a `SQLConf` rebuilt from the task's local properties, which returned the default
+   * group size rather than the session's.
    *
-   * Positional placement is reproducible exactly when the map task replays its rows in the same
-   * order, which is the same condition Spark's own round robin depends on. Spark answers it in
-   * two places and so does Comet: `replaysRowsInOrder` below establishes it for the operators
-   * fused into this native plan, which the RDD graph cannot see because the whole subtree
-   * collapses into one `CometNativeShuffleInputRDD`; and
-   * `CometNativeShuffleInputRDD.getOutputDeterministicLevel` establishes it for everything below
-   * that RDD, where the leaves are. Both have to hold.
-   *
-   * Must stay in step with `PhysicalPlanner::create_partitioning`, which turns the `positional`
-   * proto field into `RoundRobinStrategy::RowGroups`.
-   *
-   * The `numPartitions > 1` guard mirrors `isRoundRobin` in `prepareJVMShuffleDependency`. With a
-   * single output partition every row lands in the same place, so there is no placement to get
-   * wrong, and native routes that case to `SinglePartitionShufflePartitioner` regardless.
-   */
-  def usesPositionalRoundRobin(outputPartitioning: Partitioning, child: SparkPlan): Boolean =
-    positionalRoundRobinSpec(outputPartitioning, child).isDefined
-
-  /**
-   * [[usesPositionalRoundRobin]] together with the group size to use, both read on the driver so
-   * that they cannot disagree. `CometConf.get()` resolves against the thread-local `SQLConf`,
-   * which on an executor is rebuilt from the task's local properties; reading the group size
-   * there returned the default rather than the session value.
+   * Only where [[replaysRowsInOrder]] holds, and not under Celeborn, whose push path has not been
+   * shown to handle sliced batches or an indeterminate stage's rollback. The `numPartitions > 1`
+   * guard mirrors `isRoundRobin` in `prepareJVMShuffleDependency`: with one output partition
+   * there is no placement to get wrong.
    */
   def positionalRoundRobinSpec(
       outputPartitioning: Partitioning,
@@ -345,6 +336,7 @@ object CometShuffleExchangeExec
     val eligible = outputPartitioning.isInstanceOf[RoundRobinPartitioning] &&
       outputPartitioning.numPartitions > 1 &&
       CometConf.COMET_SHUFFLE_NATIVE_ROUND_ROBIN_PARTITIONING_POSITIONAL_ENABLED.get() &&
+      !isCometCelebornShuffleManagerEnabled(conf) &&
       replaysRowsInOrder(child)
     if (eligible) {
       Some(
@@ -356,21 +348,11 @@ object CometShuffleExchangeExec
   }
 
   /**
-   * Output partition that the first group of map task `mapPartitionId` goes to.
-   *
-   * The starts have to be decorrelated, not merely distinct. Each task walks `ceil(rows /
-   * groupRows)` consecutive partitions from its start, so if consecutive tasks start on
-   * consecutive partitions their runs all overlap and the partitions past `numMapTasks +
-   * groupsPerTask` get nothing: ten map tasks of 5,000 rows into 200 partitions at a group of 64
-   * would leave 112 reducers empty. That is the correlation
-   * [[https://issues.apache.org/jira/browse/SPARK-21782 SPARK-21782]] fixed, and scrambling the
-   * map partition id through `XORShiftRandom` is how Spark fixes it, both in
-   * `ShuffleExchangeExec.getPartitionKeyExtractor` and in the JVM path below.
-   *
-   * Still a pure function of the map partition id, so a re-executed task reproduces its own
-   * placement. The `+ 1` matches Spark, which increments the counter before its first use, so at
-   * `groupRows == 1` this places rows exactly where Spark's round robin would for the same row
-   * order.
+   * Output partition that map task `mapPartitionId` places its first group in. This is Spark's
+   * own round-robin start, scrambled through `XORShiftRandom` because adjacent starts leave the
+   * tail of the partition space empty (SPARK-21782), and a pure function of the map partition so
+   * that a re-executed task reproduces its placement. The `+ 1` is Spark's pre-increment. See
+   * `native_shuffle.md` for why the starts must be decorrelated rather than merely distinct.
    */
   def positionalStartPartition(mapPartitionId: Int, numPartitions: Int): Int =
     new XORShiftRandom(mapPartitionId).nextInt(math.max(numPartitions, 1)) + 1
@@ -378,24 +360,21 @@ object CometShuffleExchangeExec
   /**
    * Whether re-executing this subtree yields the same rows in the same order.
    *
-   * Deliberately a short allowlist rather than a denylist of known-bad operators, because the
-   * cost of being wrong is silent data loss rather than a failure: a re-executed map task that
-   * orders rows differently writes a different partitioning of them, and once any consumer has
-   * fetched the output that attempt replaces, the reduce side gets some rows twice and others not
-   * at all. Anything not named here keeps content-hash placement, which is safe to re-execute
-   * whatever its input does.
+   * Positional placement is a function of row order, so this is the only thing standing between
+   * it and SPARK-23207, and it asks more than Spark's own round robin does: by default Spark
+   * sorts each map partition before assigning positions
+   * (`spark.sql.execution.sortBeforeRepartition`), so a retry only has to produce the same rows.
+   * `CometNativeShuffleInputRDD` mirrors Spark's `isOrderSensitive` rule for the RDD graph, but
+   * under this allowlist the only leaf is a native scan, which contributes no RDD input, so that
+   * check cannot fire. Widening this is what would make it live.
    *
-   * A native scan replays its partition because the file splits are fixed on the driver when the
-   * RDD is built, and projections and filters are row-wise. Operators that spill are the
-   * interesting exclusion: an aggregate or a sort under memory pressure emits its output in an
-   * order that depends on how many times it spilled, which differs between attempts on different
-   * executors. Note that this says nothing about how rows are framed into batches: positional
-   * placement counts rows across batch boundaries precisely so that framing does not have to be
-   * part of this judgement.
-   *
-   * Other leaf scans (Iceberg, DSv2 batch, in-memory) plausibly qualify too, but each needs its
-   * own argument that a re-executed task reads the same rows in the same order, so they are left
-   * out until someone makes it.
+   * Deliberately a short allowlist rather than a denylist, because being wrong costs silent data
+   * loss rather than a failure: a re-executed task that orders its rows differently writes a
+   * different partitioning of them, and once any reducer has fetched from the attempt it
+   * replaces, some rows arrive twice and others not at all. A native scan replays its partition
+   * because its file splits are fixed on the driver, and projections and filters are row-wise.
+   * Anything that spills is out, since it emits rows in an order that depends on how often it
+   * spilled. Other leaf scans plausibly qualify, but each needs that argument made for it.
    */
   private def replaysRowsInOrder(plan: SparkPlan): Boolean = plan match {
     case _: CometNativeScanExec => true

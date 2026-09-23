@@ -427,11 +427,15 @@ class CometNativeShuffleWriter[K, V](
           partitioning.setPositional(true)
           partitioning.setPositionalGroupRows(positional.groupRows)
           // Per task, unlike the two above: which partition this mapper's first group goes to.
-          // See `CometShuffleExchangeExec.positionalStartPartition` for why it is scrambled.
+          // A real task always has a context. Guessing a partition id without one would start
+          // every task in the same place, the correlation the scrambled start exists to prevent.
+          val mapPartitionId = Option(context)
+            .map(_.partitionId())
+            .getOrElse(throw new IllegalStateException(
+              "Positional round robin needs the map task's TaskContext"))
           partitioning.setPositionalStartPartition(
-            CometShuffleExchangeExec.positionalStartPartition(
-              Option(context).map(_.partitionId()).getOrElse(0),
-              effectivePartitionCount))
+            CometShuffleExchangeExec
+              .positionalStartPartition(mapPartitionId, effectivePartitionCount))
         }
 
         val partitioningBuilder = PartitioningOuterClass.Partitioning.newBuilder()

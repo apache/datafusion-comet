@@ -36,7 +36,7 @@ import org.apache.comet.CometShuffleBlockIterator
  *
  * @param positionalRoundRobin
  *   whether the writer fed by this RDD places rows by position rather than by content; see
- *   [[CometShuffleExchangeExec.usesPositionalRoundRobin]] and `getOutputDeterministicLevel`.
+ *   [[CometShuffleExchangeExec.positionalRoundRobinSpec]] and `getOutputDeterministicLevel`.
  */
 private[shuffle] class CometNativeShuffleInputRDD(
     sc: SparkContext,
@@ -66,21 +66,21 @@ private[shuffle] class CometNativeShuffleInputRDD(
       positionalRoundRobin)
 
   /**
-   * Spark handles the retry hazard of positional round robin declaratively rather than
-   * per-operator: it wraps the repartition in a `MapPartitionsRDD` with `isOrderSensitive = true`
-   * (Comet's own JVM path does this in `prepareJVMShuffleDependency`), and that RDD reports
-   * `INDETERMINATE` whenever its parent is `UNORDERED`, which makes the DAGScheduler roll the
-   * whole stage back instead of re-running one task into a partially consumed output. The native
-   * path has no `MapPartitionsRDD` to carry the flag, so apply the same rule here.
+   * Spark's `isOrderSensitive` rule, applied to the RDD graph below the native plan. Spark only
+   * needs it for its own round robin with `spark.sql.execution.sortBeforeRepartition` off: it
+   * then wraps the repartition in a `MapPartitionsRDD` with `isOrderSensitive = true`, which
+   * reports `INDETERMINATE` over an `UNORDERED` parent, so the DAGScheduler rolls the whole stage
+   * back instead of re-running one task into a partially consumed output. In the default
+   * configuration Spark sorts each map partition first and the flag is `false`, on its path and
+   * on Comet's JVM path alike. Positional placement never sorts, so it takes the rule
+   * unconditionally, and with no `MapPartitionsRDD` on the native path to carry the flag it is
+   * applied here.
    *
-   * This covers everything below the RDD boundary; it cannot see the operators fused into the
-   * native plan above it, because the whole subtree collapses into this one RDD and `inputRDDs`
-   * are its leaves. `CometShuffleExchangeExec.replaysRowsInOrder` covers those. Both run, and
-   * positional placement needs both to agree.
-   *
-   * Letting the parent level discriminate is what keeps a plain scan on the cheap per-task retry
-   * path: a determinate parent stays determinate, while anything below another exchange is
-   * unordered, because reduce tasks see shuffle blocks in arrival order, and goes indeterminate.
+   * Defence in depth rather than a live gate. `CometShuffleExchangeExec.replaysRowsInOrder`
+   * admits only a native scan leaf, which contributes no input RDD, so under that allowlist the
+   * inherited level is always `DETERMINATE`. This starts to matter once the allowlist admits an
+   * input that crosses the RDD boundary: anything below another exchange is `UNORDERED`, because
+   * reduce tasks see shuffle blocks in arrival order, and goes indeterminate.
    */
   override protected def getOutputDeterministicLevel: DeterministicLevel.Value = {
     val inheritedLevel = super.getOutputDeterministicLevel

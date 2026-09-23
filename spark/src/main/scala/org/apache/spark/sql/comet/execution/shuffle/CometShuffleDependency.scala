@@ -49,7 +49,7 @@ case class NativeShuffleSpec(
      * and the group size are resolved once on the driver: the decision because it depends on the
      * shape of the plan fused into `childNativeOp`, which the executor never sees, and the group
      * size so that it cannot disagree with the decision. See
-     * `CometShuffleExchangeExec.usesPositionalRoundRobin`.
+     * `CometShuffleExchangeExec.positionalRoundRobinSpec`.
      */
     positionalRoundRobin: Option[PositionalRoundRobin] = None)
 

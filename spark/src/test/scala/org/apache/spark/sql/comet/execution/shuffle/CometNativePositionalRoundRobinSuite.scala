@@ -62,9 +62,7 @@ class CometNativePositionalRoundRobinSuite extends CometTestBase with AdaptiveSp
     assert(
       exchanges.size == 1,
       s"expected one native round-robin exchange in\n${df.queryExecution.executedPlan}")
-    CometShuffleExchangeExec.usesPositionalRoundRobin(
-      exchanges.head.outputPartitioning,
-      exchanges.head.child)
+    exchanges.head.usesPositionalRoundRobin
   }
 
   private def withParquetTable(rows: Int)(f: String => Unit): Unit = {
@@ -123,10 +121,7 @@ class CometNativePositionalRoundRobinSuite extends CometTestBase with AdaptiveSp
           case e: CometShuffleExchangeExec => e
         }
         assert(exchanges.nonEmpty)
-        exchanges.foreach { e =>
-          assert(
-            !CometShuffleExchangeExec.usesPositionalRoundRobin(e.outputPartitioning, e.child))
-        }
+        exchanges.foreach(e => assert(!e.usesPositionalRoundRobin))
       }
     }
   }
@@ -193,71 +188,34 @@ class CometNativePositionalRoundRobinSuite extends CometTestBase with AdaptiveSp
     }
   }
 
-  /**
-   * Rows each reducer receives when `mapTasks` map tasks of `rowsPerTask` rows each place
-   * positionally into `partitions` output partitions, starting where `start` says. Counted a
-   * group at a time, which is exact because a group's rows all land together.
-   */
-  private def stageSpread(
-      mapTasks: Int,
-      rowsPerTask: Int,
-      partitions: Int,
-      groupRows: Int,
-      start: Int => Int): Array[Int] = {
-    val counts = Array.fill(partitions)(0)
-    val groups = (rowsPerTask + groupRows - 1) / groupRows
-    for (mapPartitionId <- 0 until mapTasks; group <- 0 until groups) {
-      val rows = math.min(groupRows, rowsPerTask - group * groupRows)
-      counts(((start(mapPartitionId).toLong + group) % partitions).toInt) += rows
-    }
-    counts
-  }
-
   test("map tasks start on decorrelated partitions, so the stage leaves no reducer empty") {
     // Each task walks ceil(rowsPerTask / groupRows) consecutive partitions from its start, so
-    // distinct starts are not enough: consecutive starts make every task's run overlap its
-    // neighbours' and the partitions past mapTasks + groupsPerTask never get a row. This is the
-    // correlation SPARK-21782 fixed, and `positionalStartPartition` fixes it the same way.
-    val (mapTasks, rowsPerTask, partitions, groupRows) = (10, 5000, 200, 64)
+    // starts that are merely distinct are not enough: consecutive starts would make every task's
+    // run overlap its neighbours', and at ten tasks of 5000 rows in groups of 64 the 112
+    // partitions past the last task's run would get nothing. `positionalStartPartition`
+    // scrambles the start the way Spark does (SPARK-21782), which leaves none empty.
+    val (mapTasks, rowsPerTask, reducers) = (10, 5000, 200)
+    withTempPath { dir =>
+      val path = dir.getAbsolutePath
+      spark.range(0, mapTasks.toLong * rowsPerTask, 1, mapTasks).write.parquet(path)
+      // An open cost as large as a split keeps each file in a map task of its own, and the files
+      // are far smaller than a split, so none of them is divided.
+      val splitBytes = (128L * 1024 * 1024).toString
+      withPositionalRoundRobin(
+        CometConf.COMET_SHUFFLE_NATIVE_ROUND_ROBIN_PARTITIONING_POSITIONAL_GROUP_ROWS.key -> "64",
+        SQLConf.FILES_MAX_PARTITION_BYTES.key -> splitBytes,
+        SQLConf.FILES_OPEN_COST_IN_BYTES.key -> splitBytes) {
+        val input = spark.read.parquet(path)
+        assert(input.rdd.getNumPartitions == mapTasks)
+        val df = input.repartition(reducers)
+        assert(isPositional(df))
 
-    val adjacent = stageSpread(mapTasks, rowsPerTask, partitions, groupRows, identity)
-    assert(
-      adjacent.count(_ == 0) == 112,
-      "the hazard this scrambling exists to avoid should still be reachable with adjacent starts")
-
-    val scrambled = stageSpread(
-      mapTasks,
-      rowsPerTask,
-      partitions,
-      groupRows,
-      CometShuffleExchangeExec.positionalStartPartition(_, partitions))
-    assert(scrambled.sum == mapTasks * rowsPerTask)
-    assert(
-      scrambled.count(_ == 0) == 0,
-      s"every reducer should get rows, got ${scrambled.count(_ == 0)} empty of $partitions")
-  }
-
-  test("stage-wide balance needs many more groups per task than there are partitions") {
-    // Why the group size defaults to batchSize / numPartitions rather than to the batch size,
-    // even though a batch-sized group is far cheaper to flush: the per-task bound does not
-    // compose. A reducer sees the sum over every map task, and that sum only evens out once each
-    // task has wrapped the partition space several times.
-    val (mapTasks, rowsPerTask, partitions) = (50, 1000000, 200)
-    def spread(groupRows: Int): Double = {
-      val counts = stageSpread(
-        mapTasks,
-        rowsPerTask,
-        partitions,
-        groupRows,
-        CometShuffleExchangeExec.positionalStartPartition(_, partitions))
-      assert(counts.sum == mapTasks.toLong * rowsPerTask)
-      counts.max.toDouble / counts.min
+        val sizes = partitionSizes(df)
+        assert(sizes.sum == mapTasks * rowsPerTask)
+        assert(
+          sizes.count(_ == 0) == 0,
+          s"every reducer should get rows, got ${sizes.count(_ == 0)} empty of $reducers")
+      }
     }
-
-    // 64 rows per group is 15625 groups per task, so each task wraps 78 times and the sums
-    // converge. 8192 is 123 groups, fewer than there are partitions, so a task cannot even cover
-    // the space once and where the gaps fall is down to the starts.
-    assert(spread(64) < 1.01, s"expected an even stage at a small group, got ${spread(64)}")
-    assert(spread(8192) > 1.2, s"expected a batch-sized group to skew, got ${spread(8192)}")
   }
 }

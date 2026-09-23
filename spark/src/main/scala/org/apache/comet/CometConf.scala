@@ -480,17 +480,15 @@ object CometConf extends ShimCometConf {
       .category(CATEGORY_SHUFFLE)
       .doc(
         "When true, Comet's native round-robin shuffle places rows by position rather than by " +
-          "hashing their contents, the way Spark's own round robin does: the row at " +
-          "task-global ordinal i goes to output partition " +
-          "(start + i / groupRows) % numPartitions, where start is the map partition id " +
-          "scrambled the way Spark scrambles it. This skips a murmur3 pass over " +
-          "every column of every row and replaces the per-row gather on flush with a bulk copy " +
-          "per run, which is what dominates the shuffle write on wide nested schemas. It also " +
-          "spreads duplicate rows evenly, where hashing sends them all to one partition. " +
-          "Positional placement is only reproducible when the map task replays rows in the " +
-          "same order, so it is used only where Comet can establish that from the plan: a " +
-          "native scan under nothing but projections and filters. Any other plan silently " +
-          "keeps content-hash placement. " +
+          "hashing their contents, sending each map task's rows to the output partitions in " +
+          "turn, in contiguous groups. This skips a murmur3 pass over every column of every " +
+          "row and replaces the per-row gather on flush with a bulk copy per group, which is " +
+          "what dominates the shuffle write on wide nested schemas, and it spreads duplicate " +
+          "rows evenly where hashing sends them all to one partition. Placement then depends " +
+          "on the order a map task reads its rows in, so it is only used where Comet can " +
+          "establish from the plan that a retried task reads them in the same order: a native " +
+          "scan under nothing but projections and filters, and not with the Celeborn shuffle " +
+          "manager. Any other plan keeps content-hash placement. " +
           s"Has no effect unless ${COMET_SHUFFLE_NATIVE_ROUND_ROBIN_PARTITIONING_ENABLED.key} " +
           "is also true.")
       .booleanConf
@@ -499,17 +497,15 @@ object CometConf extends ShimCometConf {
   val COMET_SHUFFLE_NATIVE_ROUND_ROBIN_PARTITIONING_POSITIONAL_GROUP_ROWS: ConfigEntry[Int] =
     conf("spark.comet.shuffle.native.partitioning.roundrobin.positional.groupRows")
       .category(CATEGORY_SHUFFLE)
-      .doc(
-        "Rows per contiguous group under positional round robin. Within one map task, imbalance " +
-          "between any two output partitions is bounded by this many rows however the reader " +
-          "frames its batches, so smaller groups balance better while larger groups produce " +
-          "fewer, longer runs to copy. That bound does not compose across map tasks: a reducer " +
-          "sees the sum over all of them, and the stage is only evenly balanced when each task " +
-          "emits many more groups than there are output partitions, so a group size approaching " +
-          "a task's whole input will leave some reducers empty. When set to 0 (the default) " +
-          "Comet derives it from the batch size and the partition count, which keeps a task " +
-          "wrapping around the output partitions roughly once per batch. Only applies when " +
-          s"${COMET_SHUFFLE_NATIVE_ROUND_ROBIN_PARTITIONING_POSITIONAL_ENABLED.key} is true.")
+      .doc("Rows per contiguous group under positional round robin. Smaller groups balance " +
+        "better and larger ones are cheaper to copy. Within one map task, output partitions " +
+        "differ by at most this many rows, but a reducer receives groups from every map task, " +
+        "so the stage is only evenly balanced when each task emits many more groups than " +
+        "there are output partitions; a group approaching a task's whole input skews the " +
+        "stage and can leave reducers empty. When set to 0 (the default) Comet derives it " +
+        "from the batch size and the partition count, which keeps each task wrapping around " +
+        "the output partitions once per batch. Only applies when " +
+        s"${COMET_SHUFFLE_NATIVE_ROUND_ROBIN_PARTITIONING_POSITIONAL_ENABLED.key} is true.")
       .intConf
       .checkValue(
         v => v >= 0,
