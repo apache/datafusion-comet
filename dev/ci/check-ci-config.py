@@ -34,9 +34,12 @@
 #      rename on either side of the ci.yml/.asf.yaml pair turns the required
 #      context into one that never reports, which blocks *every* merge to main
 #      until INFRA removes it by hand. The job's name must also route `labeled`
-#      runs, which skip the PR tier by design, to a name nothing requires:
-#      GitHub keeps the most recent check run per name per commit, so a label
-#      run publishing the required name would overwrite the real verdict.
+#      runs, which skip the PR tier by design, to a name nothing requires, so
+#      a label run cannot stand in for the real verdict. And `labeled` runs
+#      must come from a separate workflow (ci_label.yml) rather than ci.yml's
+#      own trigger: with two ci.yml runs at one commit, GitHub evaluates the
+#      required checks against only one of them, and when that is the label
+#      run the required context never reports (issue #6159).
 #
 #   4. Artifact-name uniqueness. Artifact names are scoped to the *run*, not
 #      to the calling workflow, and ci.yml calls the Spark SQL and Iceberg
@@ -943,6 +946,77 @@ def check_required_checks():
     return not failures
 
 
+def ci_triggers():
+    """Return {event: its `types:` list, or None} from ci.yml's top-level `on:`."""
+    lines = (WORKFLOWS / "ci.yml").read_text(encoding="utf-8").splitlines()
+    event_key = re.compile(r"^  ([a-z_]+):\s*$")
+    types_key = re.compile(r"^    types:\s*\[(.*)\]\s*$")
+    triggers = {}
+    in_on = False
+    current = None
+    for line in lines:
+        if line.startswith("on:"):
+            in_on = True
+            continue
+        if not in_on:
+            continue
+        if line and not line.startswith((" ", "#")):
+            break
+        match = event_key.match(line)
+        if match:
+            current = match.group(1)
+            triggers[current] = None
+            continue
+        match = types_key.match(line)
+        if match and current:
+            triggers[current] = [t.strip() for t in match.group(1).split(",")]
+    return triggers
+
+
+def check_label_runs_separate():
+    """`labeled` runs come from ci_label.yml, never from ci.yml's own trigger.
+
+    When one workflow runs twice at the same commit, GitHub evaluates the pull
+    request's required checks against only one of the two runs. A pull request
+    opened with a label already applied fires `opened` and `labeled` together;
+    if ci.yml took both, the label run could be the one GitHub picked, and it
+    publishes `Required Checks (label run)`, so `Required Checks` showed as
+    "Expected" forever and the merge queue never took the pull request (issue
+    #6159). A separate calling workflow gets its own check suite.
+    """
+    failures = []
+    triggers = ci_triggers()
+    pull_request_types = triggers.get("pull_request") or []
+    if "labeled" in pull_request_types:
+        failures.append(
+            "ci.yml triggers on `pull_request: labeled`. Two ci.yml runs at one "
+            "commit let the label run hide `Required Checks` from the merge box; "
+            "leave `labeled` to ci_label.yml"
+        )
+    if "workflow_call" not in triggers:
+        failures.append(
+            "ci.yml has no `workflow_call` trigger, so ci_label.yml cannot call it "
+            "and applying a `run-*` label no longer runs anything"
+        )
+
+    label_workflow = WORKFLOWS / "ci_label.yml"
+    if not label_workflow.exists():
+        failures.append(f"{label_workflow} is missing; nothing runs on `labeled`")
+    else:
+        body = label_workflow.read_text(encoding="utf-8")
+        if not re.search(r"^\s+uses:\s*\./\.github/workflows/ci\.yml\s*$", body, re.M):
+            failures.append(f"{label_workflow} does not call ./.github/workflows/ci.yml")
+        if not re.search(r"^\s+types:\s*\[\s*labeled\s*\]\s*$", body, re.M):
+            failures.append(
+                f"{label_workflow} must trigger on `pull_request: types: [labeled]` "
+                f"and nothing else; any other type would run ci.yml twice per push"
+            )
+
+    for failure in failures:
+        print(f"label runs: {failure}")
+    return not failures
+
+
 def check_cache_refresh_scope():
     """Every job in pr_build_linux.yml is either a cache writer or guarded.
 
@@ -1208,6 +1282,7 @@ if __name__ == "__main__":
     ok = check_artifact_names() and ok
     ok = check_local_actions_have_checkout() and ok
     ok = check_required_checks() and ok
+    ok = check_label_runs_separate() and ok
     ok = check_cache_refresh_scope() and ok
     ok = check_nightly_scope() and ok
     ok = check_nightly_base_fallback() and ok
