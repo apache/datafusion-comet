@@ -43,7 +43,7 @@ import org.apache.spark.sql.types.{ArrayType, DataTypes, StructField, StructType
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometConf.COMET_EXEC_STRICT_FLOATING_POINT
-import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus, isSpark41Plus}
+import org.apache.comet.CometSparkSessionExtensions.{isSpark40Plus, isSpark41Plus}
 import org.apache.comet.rules.CometExecRule
 import org.apache.comet.serde.RegrSparkVersions
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator, ParquetGenerator, SchemaGenOptions}
@@ -1963,17 +1963,11 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
               Row(null))
           }
           withSQLConf(SQLConf.CODEGEN_FACTORY_MODE.key -> "NO_CODEGEN") {
-            // Spark 3.4's fully interpreted projection keeps the intermediate decimal
-            // unbounded and recovers 0.6. Spark 3.5+ stores it in the UnsafeRow buffer and
-            // latches the overflow like the other no-whole-stage-codegen paths above.
-            val expected =
-              if (isSpark35Plus) Row(null) else Row(recoveredSum.bigDecimal.setScale(38))
             assertDecimalSumFallsBackLikeSpark(
               sql("SELECT SUM(v) FROM dec_no_codegen"),
               reason,
               ansiEnabled,
-              expected,
-              ansiFailureExpected = isSpark35Plus)
+              Row(null))
           }
         }
       }
@@ -2037,16 +2031,15 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   /**
-   * Asserts that `df` runs the aggregate in Spark with `reason` recorded and gives `expected`, or
-   * raises the same failure in both engines under ANSI when `ansiFailureExpected` is true.
+   * Asserts that `df` runs the aggregate in Spark with `reason` recorded and gives Spark's
+   * latched result: `expected` in legacy mode, and the same failure as Spark under ANSI.
    */
   private def assertDecimalSumFallsBackLikeSpark(
       df: DataFrame,
       reason: String,
       ansiEnabled: Boolean,
-      expected: Row,
-      ansiFailureExpected: Boolean = true): Unit = {
-    if (ansiEnabled && ansiFailureExpected) {
+      expected: Row): Unit = {
+    if (ansiEnabled) {
       val (sparkError, cometError) = checkSparkAnswerMaybeThrows(df)
       assert(
         sparkError.isDefined && cometError.isDefined,
