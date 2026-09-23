@@ -6723,7 +6723,7 @@ mod tests {
                 .with_table_parquet_options(TableParquetOptions::new()),
         ) as Arc<dyn FileSource>;
 
-        let spark_parquet_options = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
+        let spark_parquet_options = SparkParquetOptions::new(EvalMode::Legacy, "UTC");
 
         let expr_adapter_factory: Arc<dyn PhysicalExprAdapterFactory> = Arc::new(
             SparkPhysicalExprAdapterFactory::new(spark_parquet_options, None),

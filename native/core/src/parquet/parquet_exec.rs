@@ -324,8 +324,7 @@ fn get_options(
     // distinguish INT96-derived TimestampLTZ from a true TimestampNTZ source
     // and apply the pre-Spark-4 SPARK-36182 rejection (#4219).
     table_parquet_options.global.coerce_int96_tz = Some("UTC".to_string());
-    let mut spark_parquet_options =
-        SparkParquetOptions::new(EvalMode::Legacy, session_timezone, false);
+    let mut spark_parquet_options = SparkParquetOptions::new(EvalMode::Legacy, session_timezone);
     spark_parquet_options.allow_cast_unsigned_ints = true;
     spark_parquet_options.case_sensitive = case_sensitive;
     spark_parquet_options.return_null_struct_if_all_fields_missing =

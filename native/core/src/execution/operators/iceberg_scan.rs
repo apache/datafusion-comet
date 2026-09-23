@@ -230,7 +230,7 @@ impl IcebergScanExec {
         let scan_metrics = scan_result.metrics().clone();
         let stream = scan_result.stream();
 
-        let spark_options = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
+        let spark_options = SparkParquetOptions::new(EvalMode::Legacy, "UTC");
         let adapter_factory = SparkPhysicalExprAdapterFactory::new(spark_options, None);
 
         let adapted_stream =

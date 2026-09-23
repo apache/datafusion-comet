@@ -385,7 +385,7 @@ mod tests {
                 let expr: Arc<dyn PhysicalExpr> = Arc::new(Column::new("ts", 0));
                 let cast_expr = CometCastColumnExpr::try_new(expr, input_field, target_field, None)
                     .unwrap()
-                    .with_parquet_options(SparkParquetOptions::new(eval_mode, "UTC", false));
+                    .with_parquet_options(SparkParquetOptions::new(eval_mode, "UTC"));
 
                 let input = TimestampMillisecondArray::from(vec![Some(1_234), Some(-1_234), None])
                     .with_timezone_opt(source_tz.clone());

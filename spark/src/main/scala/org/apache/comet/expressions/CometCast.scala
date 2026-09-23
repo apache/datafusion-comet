@@ -23,7 +23,6 @@ import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, Expression, L
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{ArrayType, DataType, DataTypes, DecimalType, MapType, NullType, StructType, TimestampNTZType, TimestampType}
 
-import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.{isSpark40Plus, withFallbackReason}
 import org.apache.comet.DataTypeSupport.isComplexType
 import org.apache.comet.serde.{CodegenDispatchFallback, CometExpressionSerde, Compatible, ExprOuterClass, Incompatible, SupportLevel, Unsupported}
