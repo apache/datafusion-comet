@@ -609,7 +609,7 @@ class CometIcebergWriteActionSuite
       }
       assert(
         collectIcebergWriteOps(plans)._1.nonEmpty,
-        s"expected the failing append to run through IcebergCommitExec:\n" +
+        "expected the failing append to run through IcebergCommitExec:\n" +
           plans.mkString("\n--\n"))
       assert(
         exceptionChain(splitError.get).exists(t =>
