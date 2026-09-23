@@ -67,3 +67,25 @@ query
 SELECT a IN (array(CAST('0.0' AS FLOAT)), array(CAST('NaN' AS FLOAT))),
   n IN (array(array(CAST('0.0' AS DOUBLE))), array(array(CAST('NaN' AS DOUBLE))))
 FROM nested_membership
+
+-- Direct comparisons also cover the equality path used by OptimizeIn.
+query expect_native(equalto)
+SELECT a = b, a <> b FROM nested_membership
+
+-- Unknown candidates must not hide a later match, and NOT IN preserves unknown.
+query expect_native(in)
+SELECT a IN (CAST(NULL AS ARRAY<FLOAT>), b),
+  a NOT IN (CAST(NULL AS ARRAY<FLOAT>), b),
+  a IN (array(CAST('0.0' AS FLOAT)), b),
+  a NOT IN (array(CAST('0.0' AS FLOAT)), b)
+FROM nested_membership
+
+query
+SELECT s = named_struct('v', CAST('0.0' AS DOUBLE)),
+  s <> named_struct('v', CAST('0.0' AS DOUBLE))
+FROM comet_nested_in_zero
+
+query expect_native(equalto)
+SELECT n = array(array(CAST('0.0' AS DOUBLE))),
+  n <> array(array(CAST('0.0' AS DOUBLE)))
+FROM nested_membership

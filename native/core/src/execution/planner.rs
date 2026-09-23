@@ -74,8 +74,7 @@ use datafusion::{
     logical_expr::Operator as DataFusionOperator,
     physical_expr::{
         expressions::{
-            in_list, BinaryExpr, CaseExpr, CastExpr, Column, IsNullExpr,
-            Literal as DataFusionLiteral,
+            BinaryExpr, CaseExpr, CastExpr, Column, IsNullExpr, Literal as DataFusionLiteral,
         },
         PhysicalExpr, PhysicalSortExpr, ScalarFunctionExpr,
     },
@@ -148,10 +147,10 @@ use datafusion_comet_proto::{
     spark_partitioning::{partitioning::PartitioningStruct, Partitioning as SparkPartitioning},
 };
 use datafusion_comet_spark_expr::{
-    jvm_udf::JvmScalarUdfExpr, ApproxPercentile, ArrayInsert, Avg, AvgDecimal, Cast, CheckOverflow,
-    Correlation, Covariance, CreateNamedStruct, DecimalRescaleCheckOverflow, GetArrayStructFields,
-    GetStructField, HllPlusPlus, IfExpr, ListExtract, MaxMinBy, Mode, NormalizeNaNAndZero,
-    NormalizeNestedFloats, Regr, RegrType, SparkCastOptions, Stddev, SumDecimal, ToJson,
+    jvm_udf::JvmScalarUdfExpr, spark_in_list, ApproxPercentile, ArrayInsert, Avg, AvgDecimal, Cast,
+    CheckOverflow, Correlation, Covariance, CreateNamedStruct, DecimalRescaleCheckOverflow,
+    GetArrayStructFields, GetStructField, HllPlusPlus, IfExpr, ListExtract, MaxMinBy, Mode,
+    NormalizeNaNAndZero, Regr, RegrType, SparkCastOptions, Stddev, SumDecimal, ToJson,
     UnboundColumn, Variance, WideDecimalBinaryExpr, WideDecimalOp,
 };
 use itertools::Itertools;
@@ -762,15 +761,8 @@ impl PhysicalPlanner {
                     .map(|x| self.create_expr(x, Arc::clone(&input_schema)))
                     .collect::<Result<Vec<_>, _>>()?;
 
-                // Normalize both sides before DataFusion hashes or compares nested values.
-                let value = NormalizeNestedFloats::wrap_if_needed(value, input_schema.as_ref())?;
-                let list = list
-                    .into_iter()
-                    .map(|child| {
-                        NormalizeNestedFloats::wrap_if_needed(child, input_schema.as_ref())
-                    })
-                    .collect::<datafusion::common::Result<Vec<_>>>()?;
-                in_list(value, list, &expr.negated, input_schema.as_ref()).map_err(|e| e.into())
+                spark_in_list(value, list, expr.negated, input_schema.as_ref())
+                    .map_err(|e| e.into())
             }
             ExprStruct::If(expr) => {
                 let if_expr =
