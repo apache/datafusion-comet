@@ -409,65 +409,72 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
   /**
    * Mapping of Spark aggregate expression class to Comet expression handler.
    */
-  val aggrSerdeMap: Map[Class[_], CometAggregateExpressionSerde[_]] = Map(
-    classOf[ApproximatePercentile] -> CometApproxPercentile,
-    classOf[HyperLogLogPlusPlus] -> CometApproxCountDistinct,
-    classOf[Average] -> CometAverage,
-    classOf[BitAndAgg] -> CometBitAndAgg,
-    classOf[BitOrAgg] -> CometBitOrAgg,
-    classOf[BitXorAgg] -> CometBitXOrAgg,
-    classOf[BloomFilterAggregate] -> CometBloomFilterAggregate,
-    classOf[CollectList] -> CometCollectList,
-    classOf[CollectSet] -> CometCollectSet,
-    classOf[Corr] -> CometCorr,
-    classOf[Count] -> CometCount,
-    classOf[CovPopulation] -> CometCovPopulation,
-    classOf[CovSample] -> CometCovSample,
-    classOf[First] -> CometFirst,
-    classOf[Last] -> CometLast,
-    classOf[Max] -> CometMax,
-    classOf[MaxBy] -> CometMaxBy,
-    classOf[Min] -> CometMin,
-    classOf[MinBy] -> CometMinBy,
-    classOf[Mode] -> CometMode,
-    classOf[Percentile] -> CometPercentile,
-    classOf[RegrIntercept] -> CometRegrIntercept,
-    classOf[RegrR2] -> CometRegrR2,
-    classOf[RegrReplacement] -> CometRegrReplacement,
-    classOf[RegrSlope] -> CometRegrSlope,
-    classOf[RegrSXY] -> CometRegrSXY,
-    classOf[StddevPop] -> CometStddevPop,
-    classOf[StddevSamp] -> CometStddevSamp,
-    classOf[Sum] -> CometSum,
-    classOf[VariancePop] -> CometVariancePop,
-    classOf[VarianceSamp] -> CometVarianceSamp)
-
-  /**
-   * Returns true if all aggregate expressions in the list have intermediate buffer formats that
-   * are compatible between Spark and Comet, making it safe to run Partial in one engine and Final
-   * in the other.
-   */
-  def allAggsSupportMixedExecution(aggExprs: Seq[AggregateExpression]): Boolean = {
-    aggExprs.forall(aggExpr => supportsMixedExecution(aggExpr.aggregateFunction))
+  val aggrSerdeMap: Map[Class[_], CometAggregateExpressionSerde[_]] = {
+    val base: Map[Class[_], CometAggregateExpressionSerde[_]] = Map(
+      classOf[ApproximatePercentile] -> CometApproxPercentile,
+      classOf[HyperLogLogPlusPlus] -> CometApproxCountDistinct,
+      classOf[Average] -> CometAverage,
+      classOf[BitAndAgg] -> CometBitAndAgg,
+      classOf[BitOrAgg] -> CometBitOrAgg,
+      classOf[BitXorAgg] -> CometBitXOrAgg,
+      classOf[BloomFilterAggregate] -> CometBloomFilterAggregate,
+      classOf[CollectList] -> CometCollectList,
+      classOf[CollectSet] -> CometCollectSet,
+      classOf[Corr] -> CometCorr,
+      classOf[Count] -> CometCount,
+      classOf[CovPopulation] -> CometCovPopulation,
+      classOf[CovSample] -> CometCovSample,
+      classOf[First] -> CometFirst,
+      classOf[Last] -> CometLast,
+      classOf[Max] -> CometMax,
+      classOf[MaxBy] -> CometMaxBy,
+      classOf[Min] -> CometMin,
+      classOf[MinBy] -> CometMinBy,
+      classOf[Mode] -> CometMode,
+      classOf[Percentile] -> CometPercentile,
+      classOf[RegrIntercept] -> CometRegrIntercept,
+      classOf[RegrR2] -> CometRegrR2,
+      classOf[RegrReplacement] -> CometRegrReplacement,
+      classOf[RegrSlope] -> CometRegrSlope,
+      classOf[RegrSXY] -> CometRegrSXY,
+      classOf[StddevPop] -> CometStddevPop,
+      classOf[StddevSamp] -> CometStddevSamp,
+      classOf[Sum] -> CometSum,
+      classOf[VariancePop] -> CometVariancePop,
+      classOf[VarianceSamp] -> CometVarianceSamp)
+    base ++ sparkVersionSpecificAggregates
   }
 
   /**
-   * Returns the aggregate functions in the list whose intermediate buffer formats are not known
-   * to be compatible between Spark and Comet. These are the functions that prevent a Spark Final
-   * aggregate (without a Comet Partial) from running, since the buffer produced by one engine
-   * cannot be safely consumed by the other.
+   * Returns true if Spark can consume all the intermediate buffers produced by Comet. Used when a
+   * Spark Final would otherwise consume a native Partial, including after shuffle fallback.
    */
-  def aggsNotSupportingMixedExecution(
+  def allAggsSupportNativePartialToSparkFinal(aggExprs: Seq[AggregateExpression]): Boolean = {
+    aggExprs.forall { aggExpr =>
+      val fn = aggExpr.aggregateFunction
+      aggrSerdeMap.get(fn.getClass).exists { handler =>
+        handler
+          .asInstanceOf[CometAggregateExpressionSerde[AggregateFunction]]
+          .supportsNativePartialToSparkFinal(fn)
+      }
+    }
+  }
+
+  /**
+   * Returns functions whose Spark intermediate buffers cannot safely be consumed by a Comet Final
+   * or PartialMerge. This is independent of native Partial to Spark Final compatibility.
+   */
+  def aggsNotSupportingSparkPartialToNativeFinal(
       aggExprs: Seq[AggregateExpression]): Seq[AggregateFunction] = {
-    aggExprs.map(_.aggregateFunction).filterNot(supportsMixedExecution)
+    aggExprs.map(_.aggregateFunction).filterNot(supportsSparkPartialToNativeFinal)
   }
 
-  private def supportsMixedExecution(fn: AggregateFunction): Boolean = {
+  private def supportsSparkPartialToNativeFinal(fn: AggregateFunction): Boolean = {
     aggrSerdeMap.get(fn.getClass) match {
       case Some(handler) =>
         handler
           .asInstanceOf[CometAggregateExpressionSerde[AggregateFunction]]
-          .supportsMixedPartialFinal(fn)
+          .supportsSparkPartialToNativeFinal(fn)
       case None => false
     }
   }
