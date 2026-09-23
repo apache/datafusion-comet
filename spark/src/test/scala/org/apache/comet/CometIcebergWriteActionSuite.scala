@@ -29,14 +29,18 @@ import scala.concurrent.ExecutionContext.Implicits.global
 import scala.concurrent.duration.DurationInt
 import scala.jdk.CollectionConverters._
 
-import org.apache.spark.{SparkConf, Success}
+import org.apache.spark.{SparkConf, SparkException, Success}
+import org.apache.spark.rdd.RDD
 import org.apache.spark.scheduler.{SparkListener, SparkListenerTaskEnd}
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.DataFrame
 import org.apache.spark.sql.Row
+import org.apache.spark.sql.catalyst.InternalRow
+import org.apache.spark.sql.catalyst.expressions.Attribute
 import org.apache.spark.sql.comet.{CometIcebergWriteExec, IcebergCommitExec, IcebergWriteExec}
 import org.apache.spark.sql.connector.catalog.InMemoryTableCatalog
-import org.apache.spark.sql.execution.{ColumnarToRowTransition, SparkPlan}
+import org.apache.spark.sql.connector.write.{BatchWrite, DataWriterFactory, PhysicalWriteInfo, Write, WriterCommitMessage}
+import org.apache.spark.sql.execution.{ColumnarToRowTransition, LeafExecNode, SparkPlan}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{DoubleType, IntegerType, StringType, StructField, StructType}
@@ -515,6 +519,140 @@ class CometIcebergWriteActionSuite
         .map(_.getInt(0))
         .toSeq
       assert(ids == Seq(1, 2, 2, 3), s"expected (1,2,2,3), got $ids")
+    }
+  }
+
+  test("a commit-time failure surfaces as the same exception as Spark's own write") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    withIcebergCatalog { warehouseDir =>
+      // A serializable overwrite validated from a snapshot older than a matching append fails
+      // Iceberg's commit-time validation deterministically, without any concurrency.
+      def failCommit(table: String): Throwable = {
+        createTable(warehouseDir, table, partitionSpec = "")
+        coalesceInsert(table, Seq((1, "us-east", 10.0)))
+        val validateFrom = spark
+          .sql(s"SELECT snapshot_id FROM $catalog.$ns.$table.snapshots")
+          .collect()
+          .map(_.getLong(0))
+          .head
+        coalesceInsert(table, Seq((2, "us-west", 20.0)))
+        val session = spark
+        import session.implicits._
+        val overwrite = Seq((2, "us-west", 99.0)).toDF("id", "region", "amount")
+        val before = countSnapshots(table)
+        val e = intercept[Exception] {
+          overwrite
+            .coalesce(1)
+            .writeTo(s"$catalog.$ns.$table")
+            .option("isolation-level", "serializable")
+            .option("validate-from-snapshot-id", validateFrom.toString)
+            .overwrite($"id" === 2)
+        }
+        assert(countSnapshots(table) == before, "failed commit must not create a snapshot")
+        assertRows(table, expectedIds = Seq(1, 2))
+        e
+      }
+
+      val sparkError = withoutSplitOperator(failCommit("commit_fail_spark"))
+      val (plans, splitError) = captureFailedPlans(spark) {
+        throw failCommit("commit_fail_split")
+      }
+      assert(
+        collectIcebergWriteOps(plans)._1.nonEmpty,
+        "expected the failing overwrite to run through IcebergCommitExec")
+      assert(
+        exceptionChain(sparkError).exists(t =>
+          Option(t.getMessage).exists(_.toLowerCase.contains("conflict"))),
+        s"expected Iceberg commit-time validation to fail the overwrite, got $sparkError")
+      assertSameFailureShape(sparkError, splitError.get)
+    }
+  }
+
+  test("a failed write job surfaces as the same exception as Spark's own write") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    withIcebergCatalog { warehouseDir =>
+      spark.udf.register(
+        "fail_on_seven",
+        (id: Int) => {
+          if (id == 7) throw new RuntimeException("injected task failure")
+          id
+        })
+      val session = spark
+      import session.implicits._
+      // A Parquet source, not a local relation: the optimizer would otherwise evaluate the UDF
+      // while folding the local relation and fail the query before any job runs.
+      val srcDir = new File(warehouseDir, "job_fail_src")
+      (1 to 10)
+        .map(i => (i, s"r$i", i.toDouble))
+        .toDF("id", "region", "amount")
+        .write
+        .parquet(srcDir.getAbsolutePath)
+      spark.read.parquet(srcDir.getAbsolutePath).createOrReplaceTempView("job_fail_src")
+
+      def failJob(table: String): Throwable = {
+        createTable(warehouseDir, table, partitionSpec = "")
+        coalesceInsert(table, Seq((1, "us-east", 10.0)))
+        val e = intercept[Exception] {
+          spark
+            .table("job_fail_src")
+            .selectExpr("fail_on_seven(id) AS id", "region", "amount")
+            .writeTo(s"$catalog.$ns.$table")
+            .append()
+        }
+        assertRows(table, expectedIds = Seq(1))
+        e
+      }
+
+      val sparkError = withoutSplitOperator(failJob("job_fail_spark"))
+      val (plans, splitError) = captureFailedPlans(spark) {
+        throw failJob("job_fail_split")
+      }
+      assert(
+        collectIcebergWriteOps(plans)._1.nonEmpty,
+        s"expected the failing append to run through IcebergCommitExec:\n" +
+          plans.mkString("\n--\n"))
+      assert(
+        exceptionChain(splitError.get).exists(t =>
+          Option(t.getMessage).exists(_.contains("injected task failure"))),
+        s"expected the injected task failure to surface, got ${splitError.get}")
+      assertSameFailureShape(sparkError, splitError.get)
+    }
+  }
+
+  Seq("commit", "job").foreach { failingStep =>
+    test(s"a failed abort after a $failingStep failure is wrapped the way Spark wraps it") {
+      val stepFailure = new RuntimeException(s"injected $failingStep failure")
+      val abortFailure = new RuntimeException("injected abort failure")
+      val batchWrite = new BatchWrite {
+        override def createBatchWriterFactory(info: PhysicalWriteInfo): DataWriterFactory =
+          throw new UnsupportedOperationException
+        override def commit(messages: Array[WriterCommitMessage]): Unit = throw stepFailure
+        override def abort(messages: Array[WriterCommitMessage]): Unit = throw abortFailure
+      }
+      val exec =
+        IcebergCommitExec(
+          batchWrite,
+          new Write {},
+          () => (),
+          FailingLeafExec(failingStep == "job"))
+
+      // Spark's V2TableWriteExec.writeWithV2 (3.4 through 4.2) attaches the abort failure to the
+      // original failure and throws QueryExecutionErrors.writingJobFailedError around it.
+      val e = intercept[SparkException](exec.executeCollect())
+      assert(e.getMessage.contains("Writing job failed"), s"unexpected message: ${e.getMessage}")
+      val cause = e.getCause
+      if (failingStep == "commit") {
+        assert(cause eq stepFailure, s"expected the commit failure as the cause, got $cause")
+      } else {
+        assert(
+          cause.isInstanceOf[SparkException] &&
+            exceptionChain(cause).exists(t =>
+              Option(t.getMessage).exists(_.contains("injected job failure"))),
+          s"expected the job failure as the cause, got $cause")
+      }
+      assert(
+        cause.getSuppressed.contains(abortFailure),
+        s"expected the abort failure suppressed on the cause, got ${cause.getSuppressed.toSeq}")
     }
   }
 
@@ -2550,6 +2688,31 @@ class CometIcebergWriteActionSuite
     assertRows(tableName, expectedIds)
   }
 
+  /**
+   * Runs `f` on Spark's own V2 write path. Spark 3.x's `withSQLConf` returns `Unit`, hence the
+   * local var.
+   */
+  private def withoutSplitOperator[T](f: => T): T = {
+    var result: Option[T] = None
+    withSQLConf(CometConf.COMET_ICEBERG_WRITE_SPLIT_OPERATOR_ENABLED.key -> "false") {
+      result = Some(f)
+    }
+    result.get
+  }
+
+  /**
+   * Asserts the split plan threw the same exception type, with the same type of cause, as Spark's
+   * own V2 write path did for the same failure.
+   */
+  private def assertSameFailureShape(sparkError: Throwable, splitError: Throwable): Unit = {
+    def shape(t: Throwable): (Class[_], Option[Class[_]]) =
+      (t.getClass, Option(t.getCause).map(_.getClass))
+    assert(
+      shape(splitError) == shape(sparkError),
+      s"split plan threw ${shape(splitError)} but Spark's write threw ${shape(sparkError)}\n" +
+        s"split: $splitError\nspark: $sparkError")
+  }
+
   private def exceptionChain(t: Throwable): Seq[Throwable] = {
     val chain = mutable.Buffer.empty[Throwable]
     var current = t
@@ -2592,6 +2755,23 @@ private object JobAbortGate {
       throw new IllegalStateException("JobAbortGate: the other tasks never finished")
     }
   }
+}
+
+/**
+ * A leaf whose single task fails when `failTask` is set, and which otherwise produces no
+ * partitions, so an [[IcebergCommitExec]] above it goes straight to its commit.
+ */
+private case class FailingLeafExec(failTask: Boolean) extends LeafExecNode {
+  override def output: Seq[Attribute] = Nil
+
+  override protected def doExecute(): RDD[InternalRow] =
+    if (failTask) {
+      sparkContext
+        .parallelize(Seq(0), 1)
+        .map[InternalRow](_ => throw new RuntimeException("injected job failure"))
+    } else {
+      sparkContext.emptyRDD[InternalRow]
+    }
 }
 
 private object ConflictGate {
