@@ -2383,6 +2383,48 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("statistical aggregates merge large nearby values across partitions") {
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.SHUFFLE_PARTITIONS.key -> "1",
+      SQLConf.FILES_MAX_PARTITION_BYTES.key -> "1048576",
+      SQLConf.FILES_OPEN_COST_IN_BYTES.key -> "1048576",
+      CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
+      CometConf.COMET_SHUFFLE_MODE.key -> "native") {
+      withTempPath { path =>
+        // Two constant-valued files produce separate partials with zero M2. The
+        // old merge returns 576 instead of 1024, regardless of which partial arrives first.
+        for (value <- Seq(1e17 - 96, 1e17 - 32)) {
+          (Seq.fill(3)((0, Option(value))) ++ Seq((0, None), (1, None)))
+            .toDF("g", "v")
+            .coalesce(1)
+            .write
+            .mode("append")
+            .parquet(path.getCanonicalPath)
+        }
+        withParquetTable(path.getCanonicalPath, "merged_moments") {
+          assert(spark.table("merged_moments").rdd.getNumPartitions == 2)
+          for (groupBy <- Seq("", " GROUP BY g")) {
+            val query = "SELECT var_pop(v), var_samp(v), stddev_pop(v), stddev_samp(v) " +
+              "FROM merged_moments" + groupBy
+            val (_, cometPlan) = checkSparkAnswerAndOperator(query)
+            val aggregates = cometPlan.collect { case a: CometHashAggregateExec => a }
+            assert(aggregates.exists(_.modes.contains(Partial)))
+            assert(aggregates.exists(_.modes.contains(Final)))
+            val expected = Seq(Row(1024.0, 1228.8, 32.0, math.sqrt(1228.8))) ++
+              (if (groupBy.isEmpty) Seq.empty else Seq(Row(null, null, null, null)))
+            checkAnswer(sql(query), expected)
+            checkSparkAnswerWithTolAndNumOfAggregates(
+              "SELECT covar_pop(v, -v), covar_samp(v, -v), corr(v, -v), regr_r2(v, -v), " +
+                "regr_sxx(v, -v), regr_syy(v, -v), regr_sxy(v, -v), " +
+                "regr_slope(v, -v), regr_intercept(v, -v) FROM merged_moments" + groupBy,
+              2)
+          }
+        }
+      }
+    }
+  }
+
   test("var_pop and var_samp") {
     withSQLConf(CometConf.COMET_SHUFFLE_ENABLED.key -> "true") {
       Seq("native", "jvm").foreach { cometShuffleMode =>

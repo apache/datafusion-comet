@@ -71,9 +71,16 @@ pub(crate) fn variance_merge(
     m2_b: f64,
 ) -> (f64, f64, f64) {
     let new_count = count_a + count_b;
-    let new_mean = mean_a * count_a / new_count + mean_b * count_b / new_count;
-    let delta = mean_a - mean_b;
-    let new_m2 = m2_a + m2_b + delta * delta * count_a * count_b / new_count;
+    // CentralMomentAgg and PearsonCorrelation use the same merge expressions.
+    // Preserve Spark's operation order to avoid rounding large means differently.
+    let delta = mean_b - mean_a;
+    let delta_n = if new_count == 0.0 {
+        0.0
+    } else {
+        delta / new_count
+    };
+    let new_mean = mean_a + delta_n * count_b;
+    let new_m2 = m2_a + m2_b + delta * delta_n * count_a * count_b;
     (new_count, new_mean, new_m2)
 }
 
@@ -167,10 +174,21 @@ pub(crate) fn covariance_merge(
     c_b: f64,
 ) -> (f64, f64, f64, f64) {
     let new_count = count_a + count_b;
-    let new_mean1 = mean1_a * count_a / new_count + mean1_b * count_b / new_count;
-    let new_mean2 = mean2_a * count_a / new_count + mean2_b * count_b / new_count;
-    let delta1 = mean1_a - mean1_b;
-    let delta2 = mean2_a - mean2_b;
-    let new_c = c_a + c_b + delta1 * delta2 * count_a * count_b / new_count;
+    // Keep covariance aligned with variance and Spark's Covariance/PearsonCorrelation.
+    let delta1 = mean1_b - mean1_a;
+    let delta2 = mean2_b - mean2_a;
+    let delta1_n = if new_count == 0.0 {
+        0.0
+    } else {
+        delta1 / new_count
+    };
+    let delta2_n = if new_count == 0.0 {
+        0.0
+    } else {
+        delta2 / new_count
+    };
+    let new_mean1 = mean1_a + delta1_n * count_b;
+    let new_mean2 = mean2_a + delta2_n * count_b;
+    let new_c = c_a + c_b + delta1 * delta2_n * count_a * count_b;
     (new_count, new_mean1, new_mean2, new_c)
 }
