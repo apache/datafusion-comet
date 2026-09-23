@@ -532,9 +532,8 @@ class CometIcebergWriteActionSuite
         coalesceInsert(table, Seq((1, "us-east", 10.0)))
         val validateFrom = spark
           .sql(s"SELECT snapshot_id FROM $catalog.$ns.$table.snapshots")
-          .collect()
-          .map(_.getLong(0))
-          .head
+          .first()
+          .getLong(0)
         coalesceInsert(table, Seq((2, "us-west", 20.0)))
         val session = spark
         import session.implicits._
@@ -553,18 +552,7 @@ class CometIcebergWriteActionSuite
         e
       }
 
-      val sparkError = withoutSplitOperator(failCommit("commit_fail_spark"))
-      val (plans, splitError) = captureFailedPlans(spark) {
-        throw failCommit("commit_fail_split")
-      }
-      assert(
-        collectIcebergWriteOps(plans)._1.nonEmpty,
-        "expected the failing overwrite to run through IcebergCommitExec")
-      assert(
-        exceptionChain(sparkError).exists(t =>
-          Option(t.getMessage).exists(_.toLowerCase.contains("conflict"))),
-        s"expected Iceberg commit-time validation to fail the overwrite, got $sparkError")
-      assertSameFailureShape(sparkError, splitError.get)
+      assertFailsLikeSpark("commit_fail", expectedMessage = "conflict")(failCommit)
     }
   }
 
@@ -603,57 +591,25 @@ class CometIcebergWriteActionSuite
         e
       }
 
-      val sparkError = withoutSplitOperator(failJob("job_fail_spark"))
-      val (plans, splitError) = captureFailedPlans(spark) {
-        throw failJob("job_fail_split")
-      }
-      assert(
-        collectIcebergWriteOps(plans)._1.nonEmpty,
-        "expected the failing append to run through IcebergCommitExec:\n" +
-          plans.mkString("\n--\n"))
-      assert(
-        exceptionChain(splitError.get).exists(t =>
-          Option(t.getMessage).exists(_.contains("injected task failure"))),
-        s"expected the injected task failure to surface, got ${splitError.get}")
-      assertSameFailureShape(sparkError, splitError.get)
+      assertFailsLikeSpark("job_fail", expectedMessage = "injected task failure")(failJob)
     }
   }
 
-  Seq("commit", "job").foreach { failingStep =>
-    test(s"a failed abort after a $failingStep failure is wrapped the way Spark wraps it") {
-      val stepFailure = new RuntimeException(s"injected $failingStep failure")
-      val abortFailure = new RuntimeException("injected abort failure")
-      val batchWrite = new BatchWrite {
-        override def createBatchWriterFactory(info: PhysicalWriteInfo): DataWriterFactory =
-          throw new UnsupportedOperationException
-        override def commit(messages: Array[WriterCommitMessage]): Unit = throw stepFailure
-        override def abort(messages: Array[WriterCommitMessage]): Unit = throw abortFailure
-      }
-      val exec =
-        IcebergCommitExec(
-          batchWrite,
-          new Write {},
-          () => (),
-          FailingLeafExec(failingStep == "job"))
+  test("a failed abort after a commit failure is wrapped the way Spark wraps it") {
+    val commitFailure = new RuntimeException("injected commit failure")
+    val cause = failWithFailingAbort(FailingLeafExec(failTask = false), commitFailure)
+    assert(cause eq commitFailure, s"expected the commit failure as the cause, got $cause")
+  }
 
-      // Spark's V2TableWriteExec.writeWithV2 (3.4 through 4.2) attaches the abort failure to the
-      // original failure and throws QueryExecutionErrors.writingJobFailedError around it.
-      val e = intercept[SparkException](exec.executeCollect())
-      assert(e.getMessage.contains("Writing job failed"), s"unexpected message: ${e.getMessage}")
-      val cause = e.getCause
-      if (failingStep == "commit") {
-        assert(cause eq stepFailure, s"expected the commit failure as the cause, got $cause")
-      } else {
-        assert(
-          cause.isInstanceOf[SparkException] &&
-            exceptionChain(cause).exists(t =>
-              Option(t.getMessage).exists(_.contains("injected job failure"))),
-          s"expected the job failure as the cause, got $cause")
-      }
-      assert(
-        cause.getSuppressed.contains(abortFailure),
-        s"expected the abort failure suppressed on the cause, got ${cause.getSuppressed.toSeq}")
-    }
+  test("a failed abort after a job failure is wrapped the way Spark wraps it") {
+    val cause = failWithFailingAbort(
+      FailingLeafExec(failTask = true),
+      new RuntimeException("commit must not run after a failed job"))
+    assert(
+      cause.isInstanceOf[SparkException] &&
+        exceptionChain(cause).exists(t =>
+          Option(t.getMessage).exists(_.contains("injected job failure"))),
+      s"expected the job failure as the cause, got $cause")
   }
 
   test("non-Iceberg V2 write plans through Spark unchanged with the config on") {
@@ -2689,28 +2645,60 @@ class CometIcebergWriteActionSuite
   }
 
   /**
-   * Runs `f` on Spark's own V2 write path. Spark 3.x's `withSQLConf` returns `Unit`, hence the
-   * local var.
+   * Runs `fail` against a fresh table on Spark's own V2 write path and then on the split plan,
+   * and asserts both failures mention `expectedMessage` (lower case) and that the split plan
+   * threw the same exception type, with the same type of cause, as Spark did.
    */
-  private def withoutSplitOperator[T](f: => T): T = {
-    var result: Option[T] = None
+  private def assertFailsLikeSpark(tablePrefix: String, expectedMessage: String)(
+      fail: String => Throwable): Unit = {
+    // Spark 3.x's `withSQLConf` returns `Unit`, hence the var.
+    var sparkError: Throwable = null
     withSQLConf(CometConf.COMET_ICEBERG_WRITE_SPLIT_OPERATOR_ENABLED.key -> "false") {
-      result = Some(f)
+      sparkError = fail(s"${tablePrefix}_spark")
     }
-    result.get
-  }
-
-  /**
-   * Asserts the split plan threw the same exception type, with the same type of cause, as Spark's
-   * own V2 write path did for the same failure.
-   */
-  private def assertSameFailureShape(sparkError: Throwable, splitError: Throwable): Unit = {
+    val (plans, splitError) = captureFailedPlans(spark) {
+      throw fail(s"${tablePrefix}_split")
+    }
+    assert(
+      collectIcebergWriteOps(plans)._1.nonEmpty,
+      "expected the failing write to run through IcebergCommitExec:\n" +
+        plans.mkString("\n--\n"))
+    Seq(sparkError, splitError.get).foreach { e =>
+      assert(
+        exceptionChain(e).exists(t =>
+          Option(t.getMessage).exists(_.toLowerCase.contains(expectedMessage))),
+        s"expected a failure mentioning '$expectedMessage', got $e")
+    }
     def shape(t: Throwable): (Class[_], Option[Class[_]]) =
       (t.getClass, Option(t.getCause).map(_.getClass))
     assert(
-      shape(splitError) == shape(sparkError),
-      s"split plan threw ${shape(splitError)} but Spark's write threw ${shape(sparkError)}\n" +
-        s"split: $splitError\nspark: $sparkError")
+      shape(splitError.get) == shape(sparkError),
+      s"split plan threw ${shape(splitError.get)} but Spark's write threw ${shape(sparkError)}\n" +
+        s"split: ${splitError.get}\nspark: $sparkError")
+  }
+
+  /**
+   * Runs an [[IcebergCommitExec]] over `child` whose commit throws `commitFailure` and whose
+   * abort fails. Asserts the failure is wrapped the way Spark's `V2TableWriteExec.writeWithV2`
+   * (3.4 through 4.2) wraps it, in `QueryExecutionErrors.writingJobFailedError` with the abort
+   * failure suppressed on the original failure, and returns that original failure.
+   */
+  private def failWithFailingAbort(child: SparkPlan, commitFailure: Throwable): Throwable = {
+    val abortFailure = new RuntimeException("injected abort failure")
+    val batchWrite = new BatchWrite {
+      override def createBatchWriterFactory(info: PhysicalWriteInfo): DataWriterFactory =
+        throw new UnsupportedOperationException
+      override def commit(messages: Array[WriterCommitMessage]): Unit = throw commitFailure
+      override def abort(messages: Array[WriterCommitMessage]): Unit = throw abortFailure
+    }
+    val exec = IcebergCommitExec(batchWrite, new Write {}, () => (), child)
+    val e = intercept[SparkException](exec.executeCollect())
+    assert(e.getMessage.contains("Writing job failed"), s"unexpected message: ${e.getMessage}")
+    val cause = e.getCause
+    assert(
+      cause.getSuppressed.contains(abortFailure),
+      s"expected the abort failure suppressed on the cause, got ${cause.getSuppressed.toSeq}")
+    cause
   }
 
   private def exceptionChain(t: Throwable): Seq[Throwable] = {

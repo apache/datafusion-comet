@@ -91,13 +91,13 @@ case class IcebergCommitExec(
         // the data files of tasks that completed before the job failed would stay behind even
         // though nothing can reference them (no commit was attempted). Delete them here; the
         // failed task's own files are cleaned up by the task itself.
-        val abortFailed = abortSuppressingFailure(completed, cause)
+        val failure = abortAfter(completed, cause)
         try deleteCompletedTaskFiles(completed)
         catch {
           case cleanupFailure: Throwable =>
             cause.addSuppressed(cleanupFailure)
         }
-        throw failure(cause, abortFailed)
+        throw failure
     }
     longMetric("numCommittedMessages").add(messages.length)
 
@@ -108,8 +108,7 @@ case class IcebergCommitExec(
     } catch {
       case cause: Throwable =>
         logError(s"Iceberg commit failed; aborting ${messages.length} task message(s)", cause)
-        val abortFailed = abortSuppressingFailure(messages, cause)
-        throw failure(cause, abortFailed)
+        throw abortAfter(messages, cause)
     }
 
     refreshCache()
@@ -117,30 +116,21 @@ case class IcebergCommitExec(
   }
 
   /**
-   * Aborts the write, attaching an abort failure to `cause` as a suppressed exception. Returns
-   * whether the abort failed.
+   * Aborts the write after `cause` and returns what the failed write throws, matching Spark's
+   * `V2TableWriteExec.writeWithV2` on every supported Spark version: `cause` itself when the
+   * abort succeeds, or, when the abort also fails, a `SparkException` ("Writing job failed.")
+   * wrapping `cause` with the abort failure attached to it as suppressed.
    */
-  private def abortSuppressingFailure(
-      messages: Array[WriterCommitMessage],
-      cause: Throwable): Boolean = {
+  private def abortAfter(messages: Array[WriterCommitMessage], cause: Throwable): Throwable =
     try {
       batchWrite.abort(messages)
-      false
+      cause
     } catch {
       case abortFailure: Throwable =>
-        logError("Iceberg write abort failed", abortFailure)
+        logError("Iceberg write abort failed")
         cause.addSuppressed(abortFailure)
-        true
+        QueryExecutionErrors.writingJobFailedError(cause)
     }
-  }
-
-  /**
-   * What a failed write throws, matching Spark's `V2TableWriteExec.writeWithV2` on every
-   * supported Spark version: the original failure itself when the abort succeeded, or a
-   * `SparkException` ("Writing job failed.") wrapping it when the abort also failed.
-   */
-  private def failure(cause: Throwable, abortFailed: Boolean): Throwable =
-    if (abortFailed) QueryExecutionErrors.writingJobFailedError(cause) else cause
 
   private def deleteCompletedTaskFiles(completed: Array[WriterCommitMessage]): Unit = {
     val locations = completed.toSeq.flatMap(m => IcebergReflection.taskCommitFileLocations(m))
