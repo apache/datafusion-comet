@@ -99,7 +99,7 @@ Here is a guide to some of the native metrics.
 | ---------------------- | --------------------------------------------------------------------- |
 | `elapsed_compute`      | Total time excluding any child operators.                             |
 | `repart_time`          | Time to repartition batches.                                          |
-| `interleave_time`      | Time to interleave partitioned batches before writing them.           |
+| `interleave_time`      | Time to gather partitioned rows into output batches before writing.   |
 | `ipc_time`             | Time to encode batches in IPC format and compress using ZSTD.         |
 | `mempool_time`         | Time interacting with memory pool.                                    |
 | `write_time`           | Time spent writing bytes to disk.                                     |

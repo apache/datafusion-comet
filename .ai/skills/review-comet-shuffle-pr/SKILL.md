@@ -95,24 +95,16 @@ Partitioning is where shuffle silently produces wrong answers rather than failin
       than Spark's `UnsafeRow`-sorted assignment would put them, which is why
       `spark.comet.shuffle.native.partitioning.roundrobin.enabled` defaults to `false`. Sorted
       output is identical either way.
-- [ ] **Positional round robin is allowed, but only where retry reproducibility is established.**
-      `RoundRobinStrategy::RowGroups` places the row at task-global ordinal `i` at
-      `(startPartition + i / groupRows) % numPartitions`, which is Spark's own round robin at a
-      coarser granularity. It is not a bug, but it is only correct behind two gates, and a PR that
-      widens either one needs an argument. `CometShuffleExchangeExec.replaysRowsInOrder` is an
-      allowlist over the native subtree fused into the writer, which the RDD graph cannot see: a
-      native scan under nothing but projections and filters, with anything that spills staying out
-      because it reorders between attempts. `CometNativeShuffleInputRDD.getOutputDeterministicLevel`
-      applies Spark's `isOrderSensitive` rule to everything below that RDD.
-- [ ] **Positional placement keys on a row ordinal, and the start is scrambled.** The counter is
-      over rows and carries across batch boundaries. A PR that keys on a batch ordinal instead is
-      relying on framing, which no Spark contract covers: `DETERMINATE` promises the same rows in
-      the same order and says nothing about how an operator chunks them. `startPartition` must be
-      decorrelated across mappers, not merely distinct — each task walks consecutive partitions
-      from its start, so adjacent starts overlap and leave the tail of the partition space empty
-      (SPARK-21782). And `groupRows` bounds imbalance within one map task only; a reducer sees the
-      sum over all of them, which only evens out when each task emits many more groups than there
-      are partitions.
+- [ ] **Positional round robin is allowed, but its allowlist is the whole safety argument.**
+      `RoundRobinStrategy::RowGroups` is not a bug by construction. It is a function of row order
+      and never sorts, so it needs a retry to replay the same rows in the same order, which is
+      more than Spark's own round robin needs under its default `sortBeforeRepartition=true`.
+      `CometShuffleExchangeExec.replaysRowsInOrder` is what establishes that, and a PR that widens
+      it needs an argument that each operator it admits replays its rows in order; the RDD-level
+      determinism check is defence in depth and cannot fire under today's allowlist. Also check
+      that placement still counts rows rather than batches, and that the start still comes from
+      `positionalStartPartition`. The reasoning behind all three is in `native_shuffle.md` under
+      "Round Robin Partitioning".
 - [ ] **Range partitioning bounds come from the driver.** Spark's `RangePartitioner` samples and
       computes boundaries, they are serialized into the native plan, and native does a binary
       search over comparable-row-format keys. A change to the comparison or the row encoding must

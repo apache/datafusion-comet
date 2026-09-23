@@ -308,24 +308,34 @@ batch is written as a single block that may exceed the batch size.
 `CometPartitioning::RoundRobin` carries a `RoundRobinStrategy` that decides how rows reach output
 partitions. The default is `HashAll`; `RowGroups` is opt-in through
 `spark.comet.shuffle.native.partitioning.roundrobin.positional.enabled`, and is used only where the
-planner can establish that the map task replays its rows in the same order.
+planner can establish that a retried map task replays its rows in the same order.
+
+Both are judged against what Spark does. Spark's round robin keeps a per-task counter that starts
+at `XORShiftRandom(partitionId).nextInt(numPartitions)` and is incremented before each row, so the
+`k`th row a task sees goes to `(start + 1 + k) % numPartitions`. That is a function of row order,
+which a retry does not have to reproduce
+([SPARK-23207](https://issues.apache.org/jira/browse/SPARK-23207)), so by default
+(`spark.sql.execution.sortBeforeRepartition=true`) Spark first sorts each map partition on the
+binary `UnsafeRow` form. Placement then depends only on which rows the partition holds, and a
+retry only has to produce the same rows, in any order. With the sort turned off, Spark instead
+marks the repartition `isOrderSensitive`, which reports the stage `INDETERMINATE` over an
+`UNORDERED` parent, and the `DAGScheduler` rolls the whole stage back rather than re-running one
+task into a partially consumed output.
+
+Neither Comet strategy sorts, and neither places rows where Spark's default would: Arrow's layout
+does not reproduce the `UnsafeRow` sort order, so unsorted output can land in different partitions
+than Spark's. Sorted output is identical. That difference is why
+`spark.comet.shuffle.native.partitioning.roundrobin.enabled` defaults to `false`.
 
 #### `HashAll`: hash-based assignment (default)
 
 1. Computes a Murmur3 hash of columns (using seed 42)
 2. Assigns partitions directly using the hash: `partition_id = hash % num_partitions`
 
-This approach guarantees determinism across retries, which is critical for fault tolerance.
-However, unlike true round robin which cycles through partitions row-by-row, hash-based
-assignment only provides even distribution when the data has sufficient variation in the
-hashed columns. Data with low cardinality or identical values may result in skewed partition
-sizes: because placement is a pure function of a row's contents, a column of one repeated value
-lands entirely on one reducer.
-
-Because Spark assigns round robin partitions by sorting rows on their binary `UnsafeRow` form,
-which Arrow's layout does not reproduce, unsorted output can land in different partitions than
-Spark's. Sorted output is identical. That difference is why
-`spark.comet.shuffle.native.partitioning.roundrobin.enabled` defaults to `false`.
+Placement is a pure function of each row, so like Spark's default it only needs a retry to produce
+the same rows. However, unlike true round robin, hash-based assignment only provides even
+distribution when the data has sufficient variation in the hashed columns: a column of one repeated
+value lands entirely on one reducer.
 
 `spark.comet.shuffle.native.partitioning.roundrobin.maxHashColumns` caps how many leading columns
 are hashed. `0`, the default, hashes all of them.
@@ -335,80 +345,83 @@ are hashed. `0`, the default, hashes all of them.
 Hashing every column of every row dominates the shuffle write on wide nested schemas, because
 `create_murmur3_hashes` recurses into every struct child per row and the resulting row-level
 scatter forces `interleave_record_batch` to walk every column and child again on flush.
-`RowGroups` places rows the way Spark's own round robin does: the row at task-global ordinal `i`
-goes to `(startPartition + i / groupRows) % numPartitions`. That removes the per-row hash, and it
-replaces the per-row gather with a bulk copy per contiguous run, because adjacent rows now stay
-together. It also spreads duplicate rows evenly, which `HashAll` cannot.
+`RowGroups` places rows positionally instead: the row at task-global ordinal `i` goes to
+`(startPartition + i / groupRows) % numPartitions`. That removes the per-row hash, and it replaces
+the per-row gather with a bulk copy per contiguous run, because adjacent rows now stay together.
+It also spreads duplicate rows evenly, which `HashAll` cannot. With `groupRows = 1` it is exactly
+Spark's round robin with `sortBeforeRepartition=false`.
 
 The counter is over **rows**, not batches, and it carries across batch boundaries: a group that one
-input batch leaves part-way through is finished by the next. That is deliberate. Spark's
-determinism contract, `DeterministicLevel`, describes row _order_ and says nothing about how a
-downstream operator frames rows into batches, so an operator that spills can reframe under
-different memory pressure while still honouring `DETERMINATE`. Keying on a row ordinal means the
-strategy depends only on the property Spark actually publishes.
+input batch leaves part-way through is finished by the next. That is deliberate.
+`DeterministicLevel` describes which rows a task produces and in what order, and says nothing about
+how an operator frames them into batches, so an operator that spills can reframe under different
+memory pressure while still honouring `DETERMINATE`. Keying on a row ordinal means placement
+depends on order alone.
 
-`start_partition` is the output partition a map task's first group goes to. It is computed per task
-on the JVM, in `CometNativeShuffleWriter.buildUnifiedPlan` where the Spark map partition id is in
-scope, and passed down in the proto. It has to be _decorrelated_ across mappers, not merely
-distinct: a task walks `ceil(rows / groupRows)` consecutive partitions from its start, so if
-consecutive tasks start on consecutive partitions their runs all overlap and the partitions past
-`numMapTasks + groupsPerTask` get nothing — ten map tasks of 5,000 rows into 200 partitions at a
-group of 64 would leave 112 reducers empty. It also has to be a pure function of the map partition,
-or a re-executed task does not reproduce its own placement. Spark satisfies both by scrambling the
-map partition id through `XORShiftRandom`
-([SPARK-21782](https://issues.apache.org/jira/browse/SPARK-21782)), and
-`CometShuffleExchangeExec.positionalStartPartition` does the same. Spark increments its counter
-before the first row uses it, so the start is `nextInt(numPartitions) + 1`, which makes
-`groupRows = 1` place rows exactly where Spark's round robin would for the same row order.
+`startPartition` is the output partition a map task's first group goes to, computed per task by
+`CometShuffleExchangeExec.positionalStartPartition` in `CometNativeShuffleWriter.buildUnifiedPlan`,
+where the map partition id is in scope, and passed down in the proto. It has to be _decorrelated_
+across mappers, not merely distinct: a task walks `ceil(rows / groupRows)` consecutive partitions
+from its start, so if consecutive tasks started on consecutive partitions their runs would all
+overlap and the partitions past `numMapTasks + groupsPerTask` would get nothing — ten map tasks of
+5,000 rows into 200 partitions at a group of 64 would leave 112 reducers empty. It also has to be a
+pure function of the map partition, or a re-executed task does not reproduce its own placement.
+Spark's own start satisfies both, which is why it is scrambled
+([SPARK-21782](https://issues.apache.org/jira/browse/SPARK-21782)), so Comet uses it unchanged,
+including the `+ 1` for Spark's pre-increment.
 
-`groupRows` trades balance against copying. Within one map task, imbalance between any two output
-partitions is bounded by `groupRows` rows however the reader frames its batches, so small groups
-balance better; large groups produce fewer, longer runs to copy, and a group as large as the batch
-size lets a whole input batch pass through to one partition untouched. That bound does not compose
-across map tasks — a reducer sees the sum over all of them, which is only even when each task emits
-many more groups than there are output partitions. `0`, the default, derives it as
-`clamp(batch_size / num_partitions, 64, batch_size)`, which keeps a task wrapping around the output
-partitions roughly once per batch. The 64-row floor caps how finely a batch is cut: with far more
-partitions than rows in a batch, `batch_size / num_partitions` rounds down towards one row and the
-flush degenerates into the per-row gather positional placement exists to avoid.
+`groupRows` trades balance against copying. Within one map task, output partitions differ by at
+most `groupRows` rows however the reader frames its batches, so small groups balance better; large
+groups produce fewer, longer runs to copy, and a group as large as the batch size lets a whole
+input batch pass through to one partition untouched. That bound does not compose across map
+tasks: a reducer sees the sum over all of them, which is only even when each task emits many more
+groups than there are output partitions. Over 50 map tasks of a million rows into 200 partitions,
+a batch-sized group of 8192 leaves the largest reducer 1.57 times the smallest, where a group of
+64 is within 0.3%. `0`, the default, derives the group as
+`clamp(batch_size / num_partitions, 64, batch_size)`, which keeps each task wrapping around the
+output partitions once per batch. The 64-row floor caps how finely a batch is cut, so that a
+partition count far larger than the batch size cannot turn the flush back into a per-row gather.
 
 Internally, `MultiPartitionShuffleRepartitioner` records `(batch, start, len)` runs rather than
 one `(batch, row)` pair per row, so the index list charged against the spill reservation is
 smaller, and `RunIterator` builds each output chunk by slicing and concatenating runs. A run that
-covers an entire buffered batch and already fills a chunk is passed through without copying.
-
-#### Retry safety under `RowGroups`
-
-Positional assignment is not a function of the rows, so it is reproducible only when the map task
-replays the same rows in the same order. Re-executing one map task against differently ordered
-input writes a different partitioning of the same rows, and once any consumer has fetched the
-output that attempt replaces, the reduce side silently gets some rows twice and others not at all
-([SPARK-23207](https://issues.apache.org/jira/browse/SPARK-23207)). Spark faces the same problem
-with its own round robin. Comet establishes the condition in two places, both of which must hold:
-
-- **In the plan.** `CometShuffleExchangeExec.replaysRowsInOrder` walks the native subtree fused
-  into the writer, which the RDD graph cannot see because the whole subtree collapses into one
-  `CometNativeShuffleInputRDD`. It is a short allowlist, not a denylist: a native scan under
-  nothing but projections and filters. Operators that spill are the interesting exclusion, since
-  an aggregate or sort under memory pressure emits output in an order that depends on how many
-  times it spilled, which differs between attempts. Anything else keeps `HashAll`, which is safe
-  to re-execute whatever its input does.
-
-- **In the RDD graph.** Spark wraps a round-robin repartition in a `MapPartitionsRDD` with
-  `isOrderSensitive = true`, which reports `INDETERMINATE` whenever its parent is `UNORDERED`; the
-  `DAGScheduler` then rolls the whole stage back rather than re-running a single task. The native
-  path has no `MapPartitionsRDD` to carry the flag, so
-  `CometNativeShuffleInputRDD.getOutputDeterministicLevel` applies the same rule directly. A
-  determinate parent such as a plain scan stays determinate and keeps cheap per-task retry;
-  anything below another exchange is unordered, because reduce tasks see shuffle blocks in arrival
-  order, and goes indeterminate.
-
-Neither applies to `HashAll`, whose output is a pure function of the rows it sees.
+covers an entire `batch_size` buffered batch is passed through without copying.
 
 One schema-level restriction is applied in `create_repartitioner`: positional placement is the only
 strategy that hands a sliced array to the IPC writer, and while the writer truncates a slice's
 buffers for every other type, for `Utf8View` and `BinaryView` it serializes every shared data
-buffer in full. A schema containing a view type anywhere therefore falls back to `HashAll`.
+buffer in full. A schema containing a view type anywhere therefore falls back to `HashAll`, with
+the same `maxHashColumns`.
+
+#### Retry safety under `RowGroups`
+
+Positional placement asks more of a retry than Spark's default does. Spark sorts first, so it
+needs the same rows; `RowGroups` does not sort, so it needs the same rows in the same order.
+Re-executing one map task against differently ordered input writes a different partitioning of the
+same rows, and once any consumer has fetched the output that attempt replaces, the reduce side
+silently gets some rows twice and others not at all. Comet establishes the condition in two places:
+
+- **In the plan, which is the gate that matters.** `CometShuffleExchangeExec.replaysRowsInOrder`
+  walks the native subtree fused into the writer, which the RDD graph cannot see because the whole
+  subtree collapses into one `CometNativeShuffleInputRDD`. It is a short allowlist, not a
+  denylist: a native scan under nothing but projections and filters. A native scan replays its
+  partition because its file splits are fixed on the driver. Operators that spill are the
+  interesting exclusion, since an aggregate or sort under memory pressure emits output in an order
+  that depends on how many times it spilled, which differs between attempts. Anything else keeps
+  `HashAll`. Because nothing sorts behind it, this allowlist is the only thing standing between
+  `RowGroups` and SPARK-23207, and a change that widens it needs its own argument that the new
+  operator replays its rows in order.
+
+- **In the RDD graph, as defence in depth.**
+  `CometNativeShuffleInputRDD.getOutputDeterministicLevel` applies Spark's `isOrderSensitive` rule
+  to everything below that RDD: a determinate parent stays determinate, and anything below another
+  exchange is unordered, because reduce tasks see shuffle blocks in arrival order, and goes
+  indeterminate. Under today's allowlist it cannot fire, since the only leaf is a native scan,
+  which contributes no input RDD. It starts to matter once the allowlist admits an input that
+  crosses the RDD boundary.
+
+`RowGroups` is also not used with the Celeborn shuffle manager, whose push path has not been shown
+to handle sliced batches or an indeterminate stage's rollback.
 
 ## Memory Management
 
