@@ -26,9 +26,9 @@ import scala.sys.process._
 import org.apache.spark.api.python.{PythonEvalType, SimplePythonFunction}
 import org.apache.spark.sql.{CometTestBase, Row}
 import org.apache.spark.sql.execution.python.UserDefinedPythonFunction
-import org.apache.spark.sql.functions.{array, map, struct}
+import org.apache.spark.sql.functions.{array, lit, map, struct, when}
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{ArrayType, LongType, MapType, StructField, StructType, TimestampType}
+import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, ByteType, CalendarIntervalType, DataType, DateType, DecimalType, DoubleType, FloatType, IntegerType, LongType, MapType, ShortType, StringType, StructField, StructType, TimestampNTZType, TimestampType, TimeType, VariantType, YearMonthIntervalType}
 
 import org.apache.comet.{CometConf, NativeBase}
 
@@ -119,6 +119,69 @@ class CometArrowPythonUdfSuite extends CometTestBase {
     }
   }
 
+  test("native Arrow UDF preserves every accepted scalar type and nulls") {
+    assume(NativeBase.supportsPythonUdf(), "native library was built without python-udf")
+
+    val python = sys.env.getOrElse("PYSPARK_PYTHON", "python3")
+    val pythonVersion =
+      Seq(python, "-c", "import sys; print('%d.%d' % sys.version_info[:2])").!!.trim
+    val cases: Seq[(DataType, String, String)] = Seq(
+      (BooleanType, "BooleanType()", "true"),
+      (ByteType, "ByteType()", "7"),
+      (ShortType, "ShortType()", "123"),
+      (IntegerType, "IntegerType()", "1234"),
+      (LongType, "LongType()", "12345"),
+      (FloatType, "FloatType()", "1.25"),
+      (DoubleType, "DoubleType()", "1.25"),
+      (StringType, "StringType()", "hello"),
+      (BinaryType, "BinaryType()", "hello"),
+      (DecimalType(12, 2), "DecimalType(12, 2)", "12.34"),
+      (DateType, "DateType()", "2024-01-02"),
+      (TimestampNTZType, "TimestampNTZType()", "2024-01-02 03:04:05.123456"))
+
+    withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
+      val source = spark.range(2)
+      cases.foreach { case (dataType, pythonType, value) =>
+        val code =
+          "import base64, pyspark.cloudpickle as cloudpickle; " +
+            "from pyspark.sql.types import *; " +
+            s"print(base64.b64encode(cloudpickle.dumps((lambda a: a, $pythonType))).decode())"
+        val command = Base64.getDecoder.decode(Seq(python, "-c", code).!!.trim)
+        val function = SimplePythonFunction(
+          command,
+          Collections.emptyMap[String, String](),
+          Collections.emptyList[String](),
+          python,
+          pythonVersion,
+          Collections.emptyList(),
+          null)
+        val udf = UserDefinedPythonFunction(
+          "identity_arrow",
+          function,
+          dataType,
+          PythonEvalType.SQL_SCALAR_ARROW_UDF,
+          udfDeterministic = true)
+        val input = source.select(
+          when(source.col("id") === 1L, lit(null).cast(dataType))
+            .otherwise(lit(value).cast(dataType))
+            .as("value"))
+        val expected =
+          withSQLConf(CometConf.COMET_NATIVE_ARROW_PYTHON_UDF_ENABLED.key -> "false") {
+            input.select(udf(input.col("value"))).collect().toSeq
+          }
+        withSQLConf(CometConf.COMET_NATIVE_ARROW_PYTHON_UDF_ENABLED.key -> "true") {
+          val df = input.select(udf(input.col("value")))
+          assert(
+            df.queryExecution.executedPlan.collect { case _: CometArrowEvalPythonExec =>
+              true
+            }.nonEmpty,
+            s"Native Arrow UDF was not selected for $dataType")
+          checkAnswer(df, expected)
+        }
+      }
+    }
+  }
+
   test("native Arrow UDF falls back for schemas and options with different Spark semantics") {
     assume(NativeBase.supportsPythonUdf(), "native library was built without python-udf")
 
@@ -152,7 +215,11 @@ class CometArrowPythonUdfSuite extends CometTestBase {
         source.select(arrowUdf(MapType(LongType, LongType))(source.col("id"))),
         source.select(
           arrowUdf(StructType(Seq(StructField("value", LongType))))(source.col("id"))),
-        source.select(arrowUdf(TimestampType)(source.col("id"))))
+        source.select(arrowUdf(TimestampType)(source.col("id"))),
+        source.select(arrowUdf(TimeType(6))(source.col("id"))),
+        source.select(arrowUdf(VariantType)(source.col("id"))),
+        source.select(arrowUdf(YearMonthIntervalType())(source.col("id"))),
+        source.select(arrowUdf(CalendarIntervalType)(source.col("id"))))
       plans.foreach { df =>
         val plan = df.queryExecution.executedPlan
         assert(plan.collect { case _: CometArrowEvalPythonExec => true }.isEmpty)

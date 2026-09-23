@@ -117,17 +117,19 @@ Python includes, per-function environment overrides, and
 ordinary `udf(..., useArrow=True)`, scalar pandas UDFs, and `mapInArrow` are separate execution
 types; `mapInArrow` retains the columnar runner described above.
 
-`TimestampType` inputs or results, complex inputs or results (array, map, struct), and an enabled
-`spark.sql.pyspark.udf.profiler` also stay on Spark's path. Spark labels Arrow timestamps with the
-session time zone, while Comet's internal Arrow timestamps use UTC; nested Arrow field names can
-also differ. The native path only runs when its schema matches Spark's supported scalar types.
+The native path accepts boolean, byte, short, integer, long, float, double, plain string, binary,
+decimal, date, and timestamp without time zone. Other input or result types and an
+enabled `spark.sql.pyspark.udf.profiler` stay on Spark's path. Spark labels `TimestampType` with the
+session time zone, while Comet uses UTC; nested Arrow field names can also differ. This allow-list
+keeps types with unverified Arrow schemas on Spark's path. `TimeType` also stays on Spark's path:
+Spark 4.2's Arrow UDF row converter rejects it even though PySpark can describe its Arrow type.
 
 The embedded interpreter is shared by tasks. Pure Python code contends on its global interpreter
 lock, so multiple partitions may be slower than Spark's separate Python workers; PyArrow kernels
-that release the lock can still run concurrently. Python execution runs on blocking threads to
-avoid stalling Comet's async I/O workers. `pyspark.TaskContext.get()` returns `None` inside a native
-UDF. A native extension crash or `os._exit` terminates the executor process. PyArrow allocations
-made in Python are outside Comet's memory pool and are not limited by
+that release the lock can still run concurrently. Python execution stays synchronous on JVM input
+paths and hands off other async tasks when it runs on a Tokio worker. `pyspark.TaskContext.get()`
+returns `None` inside a native UDF. A native extension crash or `os._exit` terminates the executor
+process. PyArrow allocations made in Python are outside Comet's memory pool and are not limited by
 `spark.executor.pyspark.memory`.
 
 ### Relationship to Spark's PySpark Arrow conversion conf

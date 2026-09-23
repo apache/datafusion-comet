@@ -21,7 +21,7 @@ use std::sync::Arc;
 use arrow::array::{ArrayRef, RecordBatch};
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use datafusion::common::tree_node::TreeNodeRecursion;
-use datafusion::common::{exec_err, DataFusionError, Result};
+use datafusion::common::{exec_err, Result};
 use datafusion::execution::TaskContext;
 use datafusion::physical_expr::{EquivalenceProperties, PhysicalExpr};
 use datafusion::physical_plan::execution_plan::EmissionType;
@@ -181,23 +181,14 @@ impl ExecutionPlan for ArrowPythonUdfExec {
                 )
             })
             .collect::<std::result::Result<_, _>>()?;
-        let specs = Arc::new(self.specs.clone());
-        let workers = Arc::new(workers);
+        let specs = self.specs.clone();
         let schema = Arc::clone(&self.schema);
-        let stream = input.then(move |batch| {
-            let specs = Arc::clone(&specs);
-            let workers = Arc::clone(&workers);
-            let schema = Arc::clone(&schema);
-            async move {
-                let batch = batch?;
-                tokio::task::spawn_blocking(move || {
-                    Self::evaluate_batch(&specs, &workers, schema, batch)
-                })
-                .await
-                .map_err(|error| {
-                    DataFusionError::Execution(format!("Arrow UDF task failed: {error}"))
-                })?
-            }
+        let stream = input.map(move |batch| {
+            // Keep the JVM scan path synchronous so its Pending loop does not spin while
+            // Python runs. On a tokio worker, this hands its other tasks to another worker.
+            tokio::task::block_in_place(|| {
+                Self::evaluate_batch(&specs, &workers, Arc::clone(&schema), batch?)
+            })
         });
         Ok(Box::pin(RecordBatchStreamAdapter::new(
             Arc::clone(&self.schema),

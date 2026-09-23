@@ -25,7 +25,7 @@ import org.apache.spark.api.python.PythonEvalType
 import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeSet, Expression, NamedArgumentExpression, NamedExpression, PythonUDF}
 import org.apache.spark.sql.execution.{PartitioningPreservingUnaryExecNode, SparkPlan}
 import org.apache.spark.sql.execution.python.ArrowEvalPythonExec
-import org.apache.spark.sql.types.{ArrayType, DataType, MapType, StructType, TimestampType}
+import org.apache.spark.sql.types.{BinaryType, BooleanType, ByteType, DataType, DateType, DecimalType, DoubleType, FloatType, IntegerType, LongType, ShortType, StringType, TimestampNTZType}
 
 import com.google.protobuf.ByteString
 
@@ -37,8 +37,14 @@ import org.apache.comet.serde.OperatorOuterClass.Operator
 /** Native execution for Spark 4.1+ scalar `@arrow_udf` functions. */
 object CometArrowEvalPythonExec extends CometOperatorSerde[ArrowEvalPythonExec] {
 
-  private def hasDifferentArrowSchema(dataType: DataType): Boolean = dataType match {
-    case _: TimestampType | _: ArrayType | _: MapType | _: StructType => true
+  private def hasCompatibleArrowSchema(dataType: DataType): Boolean = dataType match {
+    case _: BooleanType | _: ByteType | _: ShortType | _: IntegerType | _: LongType |
+        _: FloatType | _: DoubleType | _: BinaryType | _: DateType | _: DecimalType |
+        _: TimestampNTZType =>
+      true
+    // Spark's Arrow conversion accepts plain strings. Collated and constrained strings
+    // may carry semantics that are not represented by Comet's Utf8 Arrow type.
+    case s: StringType if s == StringType => true
     case _ => false
   }
 
@@ -61,10 +67,9 @@ object CometArrowEvalPythonExec extends CometOperatorSerde[ArrowEvalPythonExec] 
     if (op.conf.pythonUDFProfiler.nonEmpty) {
       return Unsupported(Some("Arrow UDF profiling is not supported in-process"))
     }
-    if (op.udfs.exists(_.children.exists(expr => hasDifferentArrowSchema(expr.dataType))) ||
-      op.resultAttrs.exists(attr => hasDifferentArrowSchema(attr.dataType))) {
-      return Unsupported(
-        Some("Arrow UDF timestamp and complex types require Spark's Arrow schema"))
+    if (op.udfs.exists(_.children.exists(expr => !hasCompatibleArrowSchema(expr.dataType))) ||
+      op.resultAttrs.exists(attr => !hasCompatibleArrowSchema(attr.dataType))) {
+      return Unsupported(Some("Arrow UDF type is outside the verified native Arrow schema set"))
     }
     op.udfs.collectFirst {
       case udf if udf.func.broadcastVars != null && !udf.func.broadcastVars.isEmpty =>

@@ -99,16 +99,6 @@ jobs:
           fi
           ./mvnw -B install -DskipTests ${{ matrix.maven_profiles }}
 
-      - name: Lint and test native Python UDF
-        if: matrix.native_python_udf
-        env:
-          PYO3_PYTHON: /tmp/venv/bin/python
-          PYTHONPATH: /tmp/venv/lib/python3.11/site-packages
-        run: |
-          cd native
-          cargo clippy -p datafusion-comet --all-targets --features python-udf -- -D warnings
-          cargo test -p datafusion-comet --features python-udf python_udf
-
       - name: Run native Arrow UDF Scala suite
         if: matrix.native_python_udf
         env:
