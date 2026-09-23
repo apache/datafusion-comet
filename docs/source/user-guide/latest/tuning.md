@@ -108,9 +108,13 @@ there is. That includes:
 
 Reserved memory is therefore a lower bound on what Comet really uses, and how far below it sits depends on the
 workload. This is why Comet can stay within the pool's limit and still push the executor past its container limit.
-Each executor logs how far apart the two are while Comet runs; see [Sizing the Overhead from the Memory Usage Log].
-To leave room for the part that is not counted, set `spark.comet.exec.memoryPool.fraction` to a value less than
-`1.0`, which restricts the amount of memory Comet is allowed to reserve.
+The part that is not counted has to fit in `spark.executor.memoryOverhead`, and each executor logs how large it is
+while Comet runs; see [Sizing the Overhead from the Memory Usage Log].
+
+`spark.comet.exec.memoryPool.fraction` is deprecated and does not leave room for it. Spark hands out all of
+`spark.memory.offHeap.size` to the tasks that ask for it, whatever the fraction. The `fair_unified` pool applies the
+fraction to each task separately, where Spark's own limit of an even share of the pool per running task is tighter
+whenever more than one task is running, and the `greedy_unified` pool ignores it.
 
 For more details about Spark off-heap memory mode, please refer to [Spark documentation].
 

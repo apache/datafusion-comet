@@ -202,6 +202,30 @@ class CometPluginsMemoryOverheadWarningSuite extends CometTestBase {
   }
 }
 
+class CometPluginsMemoryPoolFractionWarningSuite extends CometTestBase {
+
+  private val warning = "spark.comet.exec.memoryPool.fraction=0.8 is deprecated"
+
+  private def warningsFor(conf: SparkConf): Seq[String] = {
+    // Logging derives the logger name by stripping the object's trailing '$'
+    val logger = CometDriverPlugin.getClass.getName.stripSuffix("$")
+    val appender = new LogAppender("memory pool fraction warning")
+    withLogAppender(appender, Seq(logger), Some(Level.WARN)) {
+      CometDriverPlugin.warnIfMemoryPoolFractionSet(conf)
+    }
+    appender.loggingEvents.map(_.getMessage.getFormattedMessage).toSeq
+  }
+
+  test("warns when the memory pool fraction is set") {
+    val conf = new SparkConf().set("spark.comet.exec.memoryPool.fraction", "0.8")
+    assert(warningsFor(conf).exists(_.contains(warning)))
+  }
+
+  test("does not warn when the memory pool fraction is unset") {
+    assert(!warningsFor(new SparkConf()).exists(_.contains("memoryPool.fraction")))
+  }
+}
+
 class CometPluginsUnifiedModeSuite extends CometTestBase {
   override protected def sparkConf: SparkConf = {
     val conf = new SparkConf()
