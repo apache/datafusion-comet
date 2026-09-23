@@ -827,10 +827,12 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
     }
   }
 
-  // A Scala UDF with the codegen dispatcher disabled has no serde at all, so exprToProto returns
-  // None for it. The columnar path evaluates partition keys on the JVM through UnsafeProjection,
-  // so that verdict must not gate the exchange (#5971). Unlike the strictFloatingPoint cases these
-  // reproduce at default config, which is the shape that bites in practice.
+  // A Scala UDF has no serde once the codegen dispatcher is off, so exprToProto returns None for
+  // it. The columnar path evaluates partition keys on the JVM through UnsafeProjection, so that
+  // verdict must not gate the exchange (#5971). Turning the dispatcher off is only a cheap and
+  // stable way to obtain an unserializable partition key; any expression without a serde reaches
+  // the same gate, and unlike the strictFloatingPoint cases above nothing here depends on strict
+  // mode.
   test("range partitioning on an unserializable expression uses columnar shuffle") {
     withSQLConf(CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "false") {
       withParquetTable((0 until 20).map(i => (i, i.toString)), "range_udf_tbl") {
@@ -855,9 +857,9 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
     assume(isSpark40Plus, "string collation requires Spark 4.0+")
     withParquetTable((0 until 20).map(i => (i, (i % 4).toString)), "coll_above_tbl") {
       // The stored column is a plain string, so CometScanRule keeps the scan native and the
-      // collation is applied in a Project above it. The columnar shuffle gate is what declines
-      // the exchange: Comet hashes raw bytes, which would misroute rows that UTF8_LCASE
-      // considers equal.
+      // collation is applied in a Project above it. The shuffle itself would be fine -- the
+      // partition id comes from Spark's collation-aware Murmur3Hash on the JVM -- but declining
+      // the exchange is what keeps the stage, and so CometSort, off the collated key (#1947).
       val df = sql("SELECT _1, _2 COLLATE UTF8_LCASE AS c FROM coll_above_tbl")
         .repartition(4, col("c"))
       checkShuffleAnswer(df, 0)
