@@ -90,9 +90,6 @@ impl Display for CometUnifiedMemoryPool {
     }
 }
 
-unsafe impl Send for CometUnifiedMemoryPool {}
-unsafe impl Sync for CometUnifiedMemoryPool {}
-
 impl MemoryPool for CometUnifiedMemoryPool {
     fn name(&self) -> &str {
         "CometUnifiedMemoryPool"

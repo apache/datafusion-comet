@@ -91,9 +91,6 @@ impl Display for CometFairMemoryPool {
     }
 }
 
-unsafe impl Send for CometFairMemoryPool {}
-unsafe impl Sync for CometFairMemoryPool {}
-
 impl MemoryPool for CometFairMemoryPool {
     fn name(&self) -> &str {
         "CometFairMemoryPool"
