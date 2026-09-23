@@ -600,7 +600,17 @@ cargo clippy --color=never --all-targets --workspace -- -D warnings
 
 Make sure to resolve any Clippy warnings before submitting your pull request, as the CI/CD pipeline will fail if warnings are present.
 
-### 4. Run Tests
+### 4. Compile With Strict Scala Warnings (Recommended)
+
+The `Strict Scala warnings` job runs on every pull request and in the merge queue. It compiles the main and test sources with scalac warnings promoted to errors, so anything it reports fails the build — an `Int` widened into a `Long` metric, or a discarded builder result, for example. Reproduce it locally with:
+
+```sh
+./mvnw test-compile -Pspark-3.5 -Pstrict-warnings -DskipTests
+```
+
+Use the Spark 3.5 profile: it is the one the job runs, and the default build profile will not reproduce it. The default is Spark 4.1 on Scala 2.13, where `-Pstrict-warnings` still fails on warnings unrelated to your change (tracked in [#5893](https://github.com/apache/datafusion-comet/issues/5893)), and where the compiler reports a different set — an adapted argument list, for instance, is flagged under Scala 2.12 but not under 2.13.
+
+### 5. Run Tests
 
 Run the relevant tests for your changes:
 
@@ -615,7 +625,7 @@ make test-rust
 make test-jvm
 ```
 
-### 5. Register New Test Suites in CI
+### 6. Register New Test Suites in CI
 
 Comet's CI does not automatically discover test suites. Instead, test suites are explicitly listed
 in the GitHub Actions workflow files so they can be grouped by category and run as separate parallel

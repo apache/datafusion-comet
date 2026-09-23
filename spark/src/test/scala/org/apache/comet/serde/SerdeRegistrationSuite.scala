@@ -30,10 +30,10 @@ class SerdeRegistrationSuite extends AnyFunSuite {
   test("version shims register only classes the shared serde maps do not") {
     import QueryPlanSerde._
     val overlaps = Seq(
-      "math" -> (baseMathExpressions, sparkVersionSpecificMathExpressions),
-      "map" -> (baseMapExpressions, sparkVersionSpecificMapExpressions),
-      "string" -> (baseStringExpressions, sparkVersionSpecificStringExpressions),
-      "misc" -> (baseMiscExpressions, sparkVersionSpecificMiscExpressions))
+      "math" -> ((baseMathExpressions, sparkVersionSpecificMathExpressions)),
+      "map" -> ((baseMapExpressions, sparkVersionSpecificMapExpressions)),
+      "string" -> ((baseStringExpressions, sparkVersionSpecificStringExpressions)),
+      "misc" -> ((baseMiscExpressions, sparkVersionSpecificMiscExpressions)))
       .flatMap { case (group, (base, shim)) =>
         base.keySet.intersect(shim.keySet).map(cls => s"$group: ${cls.getSimpleName}")
       }

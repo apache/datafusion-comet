@@ -328,7 +328,7 @@ object CometIcebergWriteBenchmark extends CometBenchmarkBase {
     // better-jitted measurement.
     val benchmark = new Benchmark(
       workload.title,
-      values,
+      values.toLong,
       // The iceberg-java baseline is the least repeatable of the three arms - it carries a fifth of
       // its own runtime as spread between iterations, against a few percent for the two Comet arms
       // - and it is also the divisor of every `Relative` figure. Five iterations rather than the
