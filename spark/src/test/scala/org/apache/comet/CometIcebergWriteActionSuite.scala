@@ -20,6 +20,7 @@
 package org.apache.comet
 
 import java.io.File
+import java.nio.file.Files
 import java.sql.Timestamp
 import java.util.concurrent.{CountDownLatch, TimeUnit}
 
@@ -29,7 +30,10 @@ import scala.concurrent.ExecutionContext.Implicits.global
 import scala.concurrent.duration.DurationInt
 import scala.jdk.CollectionConverters._
 
-import org.apache.spark.{SparkConf, Success}
+import org.json4s.{DefaultFormats, Formats}
+import org.json4s.jackson.JsonMethods.parse
+
+import org.apache.spark.{CometListenerBusUtils, SparkConf, Success}
 import org.apache.spark.scheduler.{SparkListener, SparkListenerTaskEnd}
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.DataFrame
@@ -42,7 +46,7 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{DoubleType, IntegerType, StringType, StructField, StructType}
 
 import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark41Plus}
-import org.apache.comet.iceberg.IcebergReflection
+import org.apache.comet.iceberg.{IcebergReflection, IcebergWriteReportListener}
 
 private case class WriteSnapshot(snapshotDelta: Long, plans: Seq[SparkPlan])
 
@@ -2510,6 +2514,54 @@ class CometIcebergWriteActionSuite
       // The manifest order is what an unordered read comes back in, so it is stable too.
       val ids = spark.sql(s"SELECT id FROM $catalog.$ns.fanout_order").collect().toSeq
       assert(ids.map(_.getInt(0)) == (0 until 8), s"unordered read: ${ids.mkString(", ")}")
+    }
+  }
+
+  test("write report records which writer ran each Iceberg write") {
+    assumeNativeAcceleration()
+    withIcebergCatalog { warehouseDir =>
+      createTable(warehouseDir, "report_parquet", partitionSpec = "PARTITIONED BY (region)")
+      createTable(
+        warehouseDir,
+        "report_orc",
+        partitionSpec = "",
+        properties = Some("'write.format.default'='orc'"))
+
+      withTempIcebergDir { reportDir =>
+        val listener = new IcebergWriteReportListener(
+          new SparkConf()
+            .set(CometConf.COMET_ICEBERG_WRITE_REPORT_DIR.key, reportDir.getAbsolutePath))
+        spark.listenerManager.register(listener)
+        try {
+          withNativeEnabled {
+            // Collecting the result runs a second query over the command's result; the write
+            // must still be reported once.
+            spark
+              .sql(s"INSERT INTO $catalog.$ns.report_parquet VALUES (1, 'us-east', 1.5)")
+              .collect()
+            spark.sql(s"INSERT INTO $catalog.$ns.report_orc VALUES (2, 'eu', 2.5)")
+          }
+          withSQLConf(CometConf.COMET_ICEBERG_WRITE_SPLIT_OPERATOR_ENABLED.key -> "false") {
+            spark.sql(s"INSERT INTO $catalog.$ns.report_parquet VALUES (3, 'eu', 3.5)")
+          }
+          CometListenerBusUtils.waitUntilEmpty(spark.sparkContext)
+        } finally {
+          spark.listenerManager.unregister(listener)
+        }
+
+        implicit val formats: Formats = DefaultFormats
+        val writes = reportDir
+          .listFiles()
+          .toSeq
+          .flatMap(f => Files.readAllLines(f.toPath).asScala)
+          .map(parse(_))
+        assert(
+          writes.map(w => (w \ "writer").extract[String]) == Seq("native", "jvm", "spark"),
+          writes.mkString("\n"))
+        assert((writes(1) \ "reasons").extract[Seq[String]].exists(_.contains("only parquet")))
+        assert((writes(2) \ "node").extract[String] == "AppendData")
+        assert(writes.forall(w => !(w \ "failed").extract[Boolean]))
+      }
     }
   }
 

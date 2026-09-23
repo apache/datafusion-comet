@@ -25,7 +25,7 @@ import org.apache.logging.log4j.Level
 import org.apache.spark.sql.{CometTestBase, SaveMode}
 import org.apache.spark.sql.internal.StaticSQLConf
 
-import org.apache.comet.COMET_VERSION
+import org.apache.comet.{COMET_VERSION, CometConf}
 
 class CometPluginsSuite extends CometTestBase {
   override protected def sparkConf: SparkConf = {
@@ -84,6 +84,22 @@ class CometPluginsSuite extends CometTestBase {
         "foo,bar,org.apache.comet.CometSparkSessionExtensions" == conf.get(
           StaticSQLConf.SPARK_SESSION_EXTENSIONS.key))
     }
+  }
+
+  test("Iceberg write report listener is registered only when a report directory is set") {
+    val listenerKey = "spark.sql.queryExecutionListeners"
+    val listenerClass = "org.apache.comet.iceberg.IcebergWriteReportListener"
+
+    val unset = new SparkConf()
+    CometDriverPlugin.registerIcebergWriteReport(unset)
+    assert(!unset.contains(listenerKey))
+
+    val set = new SparkConf()
+      .set(CometConf.COMET_ICEBERG_WRITE_REPORT_DIR.key, "/tmp/report")
+      .set(listenerKey, "foo")
+    CometDriverPlugin.registerIcebergWriteReport(set)
+    CometDriverPlugin.registerIcebergWriteReport(set)
+    assert(set.get(listenerKey) == s"foo,$listenerClass")
   }
 
   test("Comet version is exposed as a Spark config") {
