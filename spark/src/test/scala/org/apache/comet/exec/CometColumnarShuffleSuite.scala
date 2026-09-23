@@ -142,9 +142,9 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
   }
 
   test("columnar shuffle on array/struct map key/value") {
-    // Spark 4.0 normalizes maps used as shuffle keys with mapsort(...). Comet's map_sort
-    // relies on Arrow's sort_to_indices, which only supports scalar key types, so a map
-    // with array or struct keys cannot be sorted natively and the shuffle falls back.
+    // Spark 4.0+ normalizes maps used as shuffle keys with mapsort(...). Native map_sort only
+    // supports scalar keys, so array and struct keys fall the shuffle back to Spark by default.
+    // Complex values with a scalar key stay on native map_sort and remain a Comet shuffle.
     val complexKeyShuffles = if (isSpark40Plus) 0 else 1
     Seq("false", "true").foreach { execEnabled =>
       Seq(10, 201).foreach { numPartitions =>
@@ -189,6 +189,29 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
             }
           }
         }
+      }
+    }
+  }
+
+  test("columnar shuffle on array/struct map key uses MapSort codegen dispatcher") {
+    assume(isSpark40Plus, "map shuffle keys are only normalized with mapsort on Spark 4.0+")
+    withSQLConf(CometConf.COMET_EXPRESSION_MAPSORT_CODEGEN_ENABLED.key -> "true") {
+      withParquetTable((0 until 50).map(i => (Map(Seq(i, i + 1) -> i), i + 1)), "tbl") {
+        val df = sql("SELECT * FROM tbl")
+          .filter($"_2" > 10)
+          .repartition(10, $"_1", $"_2")
+          .sortWithinPartitions($"_2")
+
+        checkShuffleAnswer(df, 1)
+      }
+
+      withParquetTable((0 until 50).map(i => (Map((i, i.toString) -> i), i + 1)), "tbl") {
+        val df = sql("SELECT * FROM tbl")
+          .filter($"_2" > 10)
+          .repartition(10, $"_1", $"_2")
+          .sortWithinPartitions($"_2")
+
+        checkShuffleAnswer(df, 1)
       }
     }
   }

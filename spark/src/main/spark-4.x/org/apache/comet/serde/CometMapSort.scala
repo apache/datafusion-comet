@@ -25,7 +25,23 @@ import org.apache.spark.sql.types.MapType
 import org.apache.comet.CometConf
 import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, scalarFunctionExprToProtoWithReturnType, supportedScalarSortElementType}
 
-object CometMapSort extends CometExpressionSerde[MapSort] {
+// Key types without a native implementation can run Spark's generated code in-pipeline when
+// spark.comet.expression.MapSort.codegen.enabled=true. That dispatcher is off by default: a
+// matched microbenchmark of those shapes is slower than falling the enclosing operator back to
+// Spark. Spark rejects collated-string map keys by default, but they reach MapSort when
+// spark.sql.collation.allowInMapKeys=true and the map is built from dispatcher-supported inputs;
+// with the codegen setting on, those expressions take the same Unsupported -> dispatcher route.
+// A scan carrying a collated map schema may still be rejected independently by the scan's schema
+// support checks.
+object CometMapSort extends CometExpressionSerde[MapSort] with CodegenDispatchFallback {
+
+  override def isCodegenDispatchEnabled: Boolean =
+    CometConf.COMET_EXPRESSION_MAPSORT_CODEGEN_ENABLED.get()
+
+  override def codegenDispatchEnabledByDefault: Boolean = false
+
+  override def codegenDispatchConfigKey: Option[String] =
+    Some(CometConf.COMET_EXPRESSION_MAPSORT_CODEGEN_ENABLED.key)
 
   override def getIncompatibleReasons(): Seq[String] =
     Seq(
@@ -33,12 +49,14 @@ object CometMapSort extends CometExpressionSerde[MapSort] {
         s"`${CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key}=true`.")
 
   override def getUnsupportedReasons(): Seq[String] =
-    Seq("MapSort is unsupported for non-scalar key types (struct, array, map, etc.).")
+    Seq(
+      "MapSort with an orderable key type outside native scalar coverage, including array, " +
+        "struct, interval, and non-default-collated string keys, has no native implementation.")
 
   override def getSupportLevel(expr: MapSort): SupportLevel = {
     val keyType = expr.dataType.asInstanceOf[MapType].keyType
     if (!supportedScalarSortElementType(keyType)) {
-      Unsupported(Some(s"MapSort on map with key type $keyType is not supported"))
+      Unsupported(Some(s"MapSort with key type $keyType has no native implementation"))
     } else {
       SupportLevel
         .strictFloatingPointReason(keyType, "MapSort on floating-point key")

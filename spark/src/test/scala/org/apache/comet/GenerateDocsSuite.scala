@@ -109,4 +109,32 @@ class GenerateDocsSuite extends AnyFunSuite {
       markdown.contains(
         "The following cases are not supported by Comet and always fall back to Spark,"))
   }
+
+  test("codegen-dispatch fallback that is off by default describes Spark fallback") {
+    val dispatchKey = "spark.comet.expression.MapSort.codegen.enabled"
+    val markdown = GenerateDocs.renderExpressionCompatNotes(
+      Seq(GenerateDocs.ExprNotes(
+        "MapSort",
+        Seq.empty,
+        Seq("Floating-point incompatibility."),
+        Seq("No native implementation for nested keys."),
+        nativeOptIn = true,
+        nativeOptInConfigKey = "spark.comet.expression.MapSort.allowIncompatible",
+        conditionalNativeDefault = false,
+        codegenDispatchFallback = true,
+        codegenDispatchEnabledByDefault = false,
+        codegenDispatchConfigKey = Some(dispatchKey))))
+
+    assert(
+      markdown.contains(
+        "The following incompatibilities cause `MapSort` to fall back to Spark by default."))
+    assert(
+      markdown.contains(s"Set `$dispatchKey=true` to run Spark's code-generated implementation"))
+    assert(
+      !markdown.contains(
+        "The following cases have no native implementation and always run in the JVM"))
+    assert(
+      markdown.contains(
+        "The following cases have no native implementation and fall back to Spark by default."))
+  }
 }
