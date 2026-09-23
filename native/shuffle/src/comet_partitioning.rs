@@ -40,7 +40,8 @@ pub enum RoundRobinStrategy {
         /// Output partition the task's first group goes to, chosen per map task by
         /// `CometShuffleExchangeExec.positionalStartPartition`.
         start_partition: usize,
-        /// Rows per group, or [`Self::AUTO_GROUP_ROWS`].
+        /// Rows per group. Resolved on the driver and frozen with the shuffle dependency, so that a
+        /// re-executed task uses the same group size whatever batch size its executor runs with.
         group_rows: usize,
         /// What [`Self::HashAll`] hashes if `create_repartitioner` rules positional placement out
         /// for the schema, so that the fallback honours the configured column cap.
@@ -54,40 +55,6 @@ impl Default for RoundRobinStrategy {
         Self::HashAll {
             max_hash_columns: 0,
         }
-    }
-}
-
-impl RoundRobinStrategy {
-    /// `group_rows` sentinel asking for a value derived from the batch size and partition count.
-    pub const AUTO_GROUP_ROWS: usize = 0;
-
-    /// Smallest automatically chosen group, which is a cap on how finely a batch is cut: with
-    /// `num_partitions` far larger than the batch size, `batch_size / num_partitions` rounds down
-    /// towards one row and the flush degenerates into the per-row gather that positional placement
-    /// exists to avoid.
-    ///
-    /// Not an alignment guarantee. A run only starts on a byte boundary of a validity bitmap when
-    /// the batch itself starts on a group boundary, and `row_seq` counts rows across batches, so
-    /// after a filter a batch starts at an arbitrary ordinal and every run in it is offset.
-    const MIN_AUTO_GROUP_ROWS: usize = 64;
-
-    /// Resolves [`Self::AUTO_GROUP_ROWS`] against the runtime batch size and partition count.
-    ///
-    /// At `batch_size / num_partitions` a task wraps around the output partitions once per
-    /// batch, which is what keeps a whole stage balanced once each task has several batches. An
-    /// explicit request is taken as given, including one larger than a batch, which sends several
-    /// consecutive input batches to the same partition.
-    pub fn resolve_group_rows(
-        group_rows: usize,
-        batch_size: usize,
-        num_partitions: usize,
-    ) -> usize {
-        let batch_size = batch_size.max(1);
-        if group_rows != Self::AUTO_GROUP_ROWS {
-            return group_rows;
-        }
-        (batch_size / num_partitions.max(1))
-            .clamp(Self::MIN_AUTO_GROUP_ROWS.min(batch_size), batch_size)
     }
 }
 
@@ -192,20 +159,5 @@ mod tests {
             positional_runs(0, 100, 3, 8192, 200).collect::<Vec<_>>(),
             vec![(3, 0..100)]
         );
-    }
-
-    #[test]
-    fn resolve_group_rows_auto_splits_a_batch_across_partitions() {
-        use RoundRobinStrategy as S;
-        // One batch spread over the output partitions, floored at the 64-row minimum.
-        assert_eq!(S::resolve_group_rows(S::AUTO_GROUP_ROWS, 8192, 16), 512);
-        assert_eq!(S::resolve_group_rows(S::AUTO_GROUP_ROWS, 8192, 200), 64);
-        assert_eq!(S::resolve_group_rows(S::AUTO_GROUP_ROWS, 8192, 10_000), 64);
-        // A batch smaller than the minimum group still resolves to something usable.
-        assert_eq!(S::resolve_group_rows(S::AUTO_GROUP_ROWS, 32, 200), 32);
-        // An explicit request is taken as given. A group longer than a batch is meaningful: it
-        // sends several consecutive input batches to the same output partition.
-        assert_eq!(S::resolve_group_rows(1, 8192, 200), 1);
-        assert_eq!(S::resolve_group_rows(100_000, 8192, 200), 100_000);
     }
 }

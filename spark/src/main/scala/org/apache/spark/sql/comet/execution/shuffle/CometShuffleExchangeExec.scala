@@ -119,7 +119,7 @@ case class CometShuffleExchangeExec(
    * Positional round-robin decision, computed once so that the RDD's determinism level and the
    * writer's placement cannot disagree. Only the native writer places positionally.
    */
-  @transient private lazy val positionalRoundRobin: Option[PositionalRoundRobin] =
+  @transient private[shuffle] lazy val positionalRoundRobin: Option[PositionalRoundRobin] =
     if (shuffleType == CometNativeShuffle) {
       CometShuffleExchangeExec.positionalRoundRobinSpec(outputPartitioning, child)
     } else {
@@ -320,10 +320,12 @@ object CometShuffleExchangeExec
   /**
    * Whether a round-robin exchange over `child` places rows positionally
    * (`RoundRobinStrategy::RowGroups` in `PhysicalPlanner::create_partitioning`), and with what
-   * group size. Read once on the driver, so that the RDD's determinism level, the writer's
-   * placement and the group size cannot disagree: on an executor `CometConf.get()` resolves
-   * against a `SQLConf` rebuilt from the task's local properties, which returned the default
-   * group size rather than the session's.
+   * group size. Read once on the driver and frozen with the shuffle dependency, so that the RDD's
+   * determinism level, the writer's placement and the group size cannot disagree, and so that a
+   * map task re-executed after the session's batch size changed still uses the group size, and so
+   * the placement, of the attempt it replaces. On an executor `CometConf.get()` resolves against
+   * a `SQLConf` rebuilt from the task's local properties, which returned the default group size
+   * rather than the session's.
    *
    * Only where [[replaysRowsInOrder]] holds, and not under Celeborn, whose push path has not been
    * shown to handle sliced batches or an indeterminate stage's rollback. The `numPartitions > 1`
@@ -341,9 +343,39 @@ object CometShuffleExchangeExec
     if (eligible) {
       Some(
         PositionalRoundRobin(
-          CometConf.COMET_SHUFFLE_NATIVE_ROUND_ROBIN_PARTITIONING_POSITIONAL_GROUP_ROWS.get()))
+          resolvePositionalGroupRows(
+            CometConf.COMET_SHUFFLE_NATIVE_ROUND_ROBIN_PARTITIONING_POSITIONAL_GROUP_ROWS.get(),
+            CometConf.COMET_BATCH_SIZE.get(),
+            outputPartitioning.numPartitions)))
     } else {
       None
+    }
+  }
+
+  /**
+   * Smallest derived group, which caps how finely a batch is cut: with far more output partitions
+   * than `batchSize / 64`, `batchSize / numPartitions` would round down towards one row and turn
+   * the flush back into the per-row gather positional placement exists to avoid. Not an alignment
+   * guarantee: after a filter a batch starts at an arbitrary row ordinal, so its runs start off a
+   * byte boundary whatever the group size.
+   */
+  private val MinDerivedGroupRows = 64
+
+  /**
+   * The group size positional placement uses. An explicit `configured` value is taken as given;
+   * `0` derives `batchSize / numPartitions`, floored at [[MinDerivedGroupRows]] and capped at a
+   * batch, so that each task wraps around the output partitions about once per batch.
+   */
+  private[shuffle] def resolvePositionalGroupRows(
+      configured: Int,
+      batchSize: Int,
+      numPartitions: Int): Int = {
+    if (configured > 0) {
+      configured
+    } else {
+      val batch = math.max(batchSize, 1)
+      val derived = batch / math.max(numPartitions, 1)
+      math.min(math.max(derived, math.min(MinDerivedGroupRows, batch)), batch)
     }
   }
 
@@ -372,14 +404,18 @@ object CometShuffleExchangeExec
    * loss rather than a failure: a re-executed task that orders its rows differently writes a
    * different partitioning of them, and once any reducer has fetched from the attempt it
    * replaces, some rows arrive twice and others not at all. A native scan replays its partition
-   * because its file splits are fixed on the driver, and projections and filters are row-wise.
-   * Anything that spills is out, since it emits rows in an order that depends on how often it
-   * spilled. Other leaf scans plausibly qualify, but each needs that argument made for it.
+   * because its file splits are fixed on the driver, and deterministic projections and filters
+   * are row-wise. A nondeterministic expression is out even though it is evaluated per row, since
+   * nothing bounds what it does between attempts: a nondeterministic UDF can drop, keep or
+   * reorder rows differently on a retry. Anything that spills is out, since it emits rows in an
+   * order that depends on how often it spilled. Other leaf scans plausibly qualify, but each
+   * needs that argument made for it.
    */
   private def replaysRowsInOrder(plan: SparkPlan): Boolean = plan match {
     case _: CometNativeScanExec => true
-    case p: CometProjectExec => replaysRowsInOrder(p.child)
-    case f: CometFilterExec => replaysRowsInOrder(f.child)
+    case p: CometProjectExec =>
+      p.projectList.forall(_.deterministic) && replaysRowsInOrder(p.child)
+    case f: CometFilterExec => f.condition.deterministic && replaysRowsInOrder(f.child)
     case _ => false
   }
 

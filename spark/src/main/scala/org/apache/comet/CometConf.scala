@@ -487,8 +487,8 @@ object CometConf extends ShimCometConf {
           "rows evenly where hashing sends them all to one partition. Placement then depends " +
           "on the order a map task reads its rows in, so it is only used where Comet can " +
           "establish from the plan that a retried task reads them in the same order: a native " +
-          "scan under nothing but projections and filters, and not with the Celeborn shuffle " +
-          "manager. Any other plan keeps content-hash placement. " +
+          "scan under nothing but deterministic projections and filters, and not with the " +
+          "Celeborn shuffle manager. Any other plan keeps content-hash placement. " +
           s"Has no effect unless ${COMET_SHUFFLE_NATIVE_ROUND_ROBIN_PARTITIONING_ENABLED.key} " +
           "is also true.")
       .booleanConf
@@ -503,8 +503,11 @@ object CometConf extends ShimCometConf {
         "so the stage is only evenly balanced when each task emits many more groups than " +
         "there are output partitions; a group approaching a task's whole input skews the " +
         "stage and can leave reducers empty. When set to 0 (the default) Comet derives it " +
-        "from the batch size and the partition count, which keeps each task wrapping around " +
-        "the output partitions once per batch. Only applies when " +
+        "from the batch size and the partition count when the query is planned, which keeps " +
+        "each task wrapping around the output partitions about once per batch. The derived " +
+        "group is at least 64 rows, so with more than a sixty-fourth of the batch size in " +
+        "output partitions a task needs several batches to wrap once, and map tasks of only a " +
+        "few batches can still leave reducers empty. Only applies when " +
         s"${COMET_SHUFFLE_NATIVE_ROUND_ROBIN_PARTITIONING_POSITIONAL_ENABLED.key} is true.")
       .intConf
       .checkValue(

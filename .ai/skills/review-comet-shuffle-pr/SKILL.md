@@ -100,10 +100,11 @@ Partitioning is where shuffle silently produces wrong answers rather than failin
       and never sorts, so it needs a retry to replay the same rows in the same order, which is
       more than Spark's own round robin needs under its default `sortBeforeRepartition=true`.
       `CometShuffleExchangeExec.replaysRowsInOrder` is what establishes that, and a PR that widens
-      it needs an argument that each operator it admits replays its rows in order; the RDD-level
-      determinism check is defence in depth and cannot fire under today's allowlist. Also check
-      that placement still counts rows rather than batches, and that the start still comes from
-      `positionalStartPartition`. The reasoning behind all three is in `native_shuffle.md` under
+      it needs an argument that each operator it admits replays its rows in order, including
+      that the admitted expressions are deterministic; the RDD-level determinism check is defence
+      in depth and cannot fire under today's allowlist. Also check that placement still counts
+      rows rather than batches, that the start still comes from `positionalStartPartition`, and
+      that the group size is still resolved on the driver rather than from executor state. The reasoning behind all three is in `native_shuffle.md` under
       "Round Robin Partitioning".
 - [ ] **Range partitioning bounds come from the driver.** Spark's `RangePartitioner` samples and
       computes boundaries, they are serialized into the native plan, and native does a binary

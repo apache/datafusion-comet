@@ -49,7 +49,6 @@ Native shuffle (`CometExchange`) is selected when all of the following condition
    columnar output. Row-based Spark operators require JVM shuffle.
 
 3. **Supported partitioning type**: Native shuffle supports:
-
    - `HashPartitioning`
    - `RangePartitioning`
    - `SinglePartition`
@@ -152,7 +151,6 @@ The native shuffle implementation is its own workspace crate, `datafusion-comet-
 1. **Plan construction**: `CometNativeShuffleWriter` builds a protobuf operator tree with a
    `ShuffleWriter` operator at the root and `childNativeOp` as its child. `childNativeOp` takes
    one of two shapes:
-
    - The child plan's `nativeOp` directly, when `CometShuffleExchangeExec`'s child is a
      `CometNativeExec` subtree. The upstream operators run inside the same `CometExecIterator`
      as the writer, with no JVM-to-native batch boundary between them.
@@ -165,7 +163,6 @@ The native shuffle implementation is its own workspace crate, `datafusion-comet-
 2. **Native execution**: A single `CometExecIterator` per partition runs the unified plan.
 
 3. **Partitioning**: `ShuffleWriterExec` receives batches and routes to the appropriate partitioner:
-
    - `MultiPartitionShuffleRepartitioner`: For hash/range/round-robin partitioning
    - `SinglePartitionShufflePartitioner`: For single partition (simpler path)
 
@@ -173,7 +170,6 @@ The native shuffle implementation is its own workspace crate, `datafusion-comet-
    exceeds the threshold, partitions spill to temporary files.
 
 5. **Encoding**: `ShuffleBlockWriter` encodes each partition's data as compressed Arrow IPC:
-
    - Writes compression type header
    - Writes field count header
    - Writes compressed IPC stream
@@ -203,7 +199,6 @@ read time. See [Direct Read](#direct-read-shufflescan) below for how the choice 
 1. `CometBlockStoreShuffleReader` fetches shuffle blocks via `ShuffleBlockFetcherIterator`.
 
 2. For each block, `NativeBatchDecoderIterator`:
-
    - Reads the 8-byte compressed length header
    - Reads the 8-byte field count header
    - Reads the compressed IPC data
@@ -381,6 +376,15 @@ a batch-sized group of 8192 leaves the largest reducer 1.57 times the smallest, 
 `clamp(batch_size / num_partitions, 64, batch_size)`, which keeps each task wrapping around the
 output partitions once per batch. The 64-row floor caps how finely a batch is cut, so that a
 partition count far larger than the batch size cannot turn the flush back into a per-row gather.
+The floor also bounds that promise: past `batch_size / 64` output partitions a task covers only
+`batch_size / 64` of them per batch, so small map tasks can still leave reducers empty. Ten map
+tasks of one 8192-row batch each into 1,000 partitions emit 1,280 groups between them, and leave
+311 reducers empty.
+
+The group size is resolved on the driver, in `CometShuffleExchangeExec.resolvePositionalGroupRows`,
+and frozen with the shuffle dependency. Deriving it on the executor from the task's batch size
+would let a map task re-executed after `spark.comet.batchSize` changed use a different group
+size, and so a different placement, from the attempt it replaces.
 
 Internally, `MultiPartitionShuffleRepartitioner` records `(batch, start, len)` runs rather than
 one `(batch, row)` pair per row, so the index list charged against the spill reservation is
@@ -404,8 +408,12 @@ silently gets some rows twice and others not at all. Comet establishes the condi
 - **In the plan, which is the gate that matters.** `CometShuffleExchangeExec.replaysRowsInOrder`
   walks the native subtree fused into the writer, which the RDD graph cannot see because the whole
   subtree collapses into one `CometNativeShuffleInputRDD`. It is a short allowlist, not a
-  denylist: a native scan under nothing but projections and filters. A native scan replays its
-  partition because its file splits are fixed on the driver. Operators that spill are the
+  denylist: a native scan under nothing but projections and filters whose expressions are all
+  deterministic. A native scan replays its partition because its file splits are fixed on the
+  driver. A nondeterministic expression, such as a UDF marked `asNondeterministic`, is out even
+  though it is evaluated row by row, because nothing bounds what it does between attempts: one
+  that reorders or re-filters rows on a retry moves them to different reducers while the RDD still
+  reports `DETERMINATE`. Operators that spill are the
   interesting exclusion, since an aggregate or sort under memory pressure emits output in an order
   that depends on how many times it spilled, which differs between attempts. Anything else keeps
   `HashAll`. Because nothing sorts behind it, this allowlist is the only thing standing between

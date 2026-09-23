@@ -19,10 +19,12 @@
 
 package org.apache.spark.sql.comet.execution.shuffle
 
+import org.apache.spark.{MapOutputTrackerMaster, SparkEnv}
 import org.apache.spark.sql.{CometTestBase, DataFrame}
 import org.apache.spark.sql.catalyst.plans.physical.RoundRobinPartitioning
+import org.apache.spark.sql.execution.SQLExecution
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
-import org.apache.spark.sql.functions.{col, lit}
+import org.apache.spark.sql.functions.{col, lit, rand, udf}
 import org.apache.spark.sql.internal.SQLConf
 
 import org.apache.comet.CometConf
@@ -51,8 +53,8 @@ class CometNativePositionalRoundRobinSuite extends CometTestBase with AdaptiveSp
         // into the executed plan.
         SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") ++ extra: _*)(f)
 
-  /** Whether the round-robin exchange in `df`'s executed plan chose positional placement. */
-  private def isPositional(df: DataFrame): Boolean = {
+  /** The one native round-robin exchange in `df`'s executed plan. */
+  private def roundRobinExchange(df: DataFrame): CometShuffleExchangeExec = {
     val exchanges = collect(df.queryExecution.executedPlan) {
       case e: CometShuffleExchangeExec
           if e.shuffleType == CometNativeShuffle &&
@@ -62,8 +64,12 @@ class CometNativePositionalRoundRobinSuite extends CometTestBase with AdaptiveSp
     assert(
       exchanges.size == 1,
       s"expected one native round-robin exchange in\n${df.queryExecution.executedPlan}")
-    exchanges.head.usesPositionalRoundRobin
+    exchanges.head
   }
+
+  /** Whether the round-robin exchange in `df`'s executed plan chose positional placement. */
+  private def isPositional(df: DataFrame): Boolean =
+    roundRobinExchange(df).usesPositionalRoundRobin
 
   private def withParquetTable(rows: Int)(f: String => Unit): Unit = {
     withTempPath { dir =>
@@ -104,6 +110,22 @@ class CometNativePositionalRoundRobinSuite extends CometTestBase with AdaptiveSp
     }
   }
 
+  test("a nondeterministic projection or filter keeps content-hash placement") {
+    // Evaluated row by row, but nothing bounds what a nondeterministic expression does between
+    // attempts: one that reorders or re-filters rows on a retry sends them to different reducers.
+    val sameId = udf((id: Long) => id)
+    withPositionalRoundRobin() {
+      withParquetTable(1000) { t =>
+        val df = spark.table(t)
+        assert(!isPositional(
+          df.select(sameId.asNondeterministic()(col("id")).as("id")).repartition(numPartitions)))
+        assert(!isPositional(df.filter(rand(42) < 0.5).repartition(numPartitions)))
+        // The same UDF marked deterministic is admitted, so it is the flag that excludes it.
+        assert(isPositional(df.select(sameId(col("id")).as("id")).repartition(numPartitions)))
+      }
+    }
+  }
+
   test("positional placement is off unless its own config is on") {
     withParquetTable(100) { t =>
       withPositionalRoundRobin(
@@ -130,6 +152,54 @@ class CometNativePositionalRoundRobinSuite extends CometTestBase with AdaptiveSp
     withPositionalRoundRobin() {
       withParquetTable(5000) { t =>
         checkSparkAnswer(spark.table(t).repartition(numPartitions).selectExpr("id", "s", "g"))
+      }
+    }
+  }
+
+  test("the derived group size follows the batch size and partition count") {
+    import CometShuffleExchangeExec.resolvePositionalGroupRows
+    // One batch spread over the output partitions, floored at 64 rows and capped at a batch.
+    assert(resolvePositionalGroupRows(0, 8192, 16) == 512)
+    assert(resolvePositionalGroupRows(0, 8192, 200) == 64)
+    assert(resolvePositionalGroupRows(0, 8192, 10000) == 64)
+    assert(resolvePositionalGroupRows(0, 32, 200) == 32)
+    // An explicit size is taken as given, including one larger than a batch.
+    assert(resolvePositionalGroupRows(1, 8192, 200) == 1)
+    assert(resolvePositionalGroupRows(100000, 8192, 200) == 100000)
+  }
+
+  test("a re-executed map stage keeps its group size when the batch size changes") {
+    // The derived group size depends on the batch size, which can change between a stage's first
+    // run and a retry. Resolving it on the executor would give the retry a different placement
+    // from the attempt it replaces, so it is frozen with the shuffle dependency instead.
+    assert(
+      CometShuffleExchangeExec.resolvePositionalGroupRows(0, 4096, numPartitions) !=
+        CometShuffleExchangeExec.resolvePositionalGroupRows(0, 8192, numPartitions))
+    withPositionalRoundRobin(CometConf.COMET_BATCH_SIZE.key -> "8192") {
+      withParquetTable(5000) { t =>
+        val df = spark.table(t).select("id").repartition(numPartitions)
+        val exchange = roundRobinExchange(df)
+        assert(exchange.positionalRoundRobin.map(_.groupRows).contains(8192 / numPartitions))
+
+        // `queryExecution.toRdd` rather than `df.rdd`, which plans a fresh query and so a
+        // different exchange from the one whose map output is dropped below. Propagating the SQL
+        // conf is what lets the tasks see the changed batch size, as they would under an action.
+        def placement(): Seq[Seq[Long]] =
+          SQLExecution.withSQLConfPropagated(spark) {
+            df.queryExecution.toRdd
+              .mapPartitions(rows => Iterator(rows.map(_.getLong(0)).toVector))
+              .collect()
+              .toSeq
+          }
+        val first = placement()
+
+        withSQLConf(CometConf.COMET_BATCH_SIZE.key -> "4096") {
+          // Drop the map output so the next job re-runs the map stage under the new batch size.
+          SparkEnv.get.mapOutputTracker
+            .asInstanceOf[MapOutputTrackerMaster]
+            .unregisterAllMapAndMergeOutput(exchange.shuffleId)
+          assert(placement() == first)
+        }
       }
     }
   }

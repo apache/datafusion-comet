@@ -285,8 +285,8 @@ fn create_batch_from(first_row: usize, num_rows: usize, allow_nulls: bool) -> Re
 /// `interleave_record_batch` walk every column and child again, and a run can instead be sliced,
 /// or handed through untouched when it covers a whole buffered batch.
 ///
-/// 8192 rows per batch into 50 output partitions, so [`RoundRobinStrategy::AUTO_GROUP_ROWS`]
-/// resolves to 163. `RowGroups(8192)` is the opposite extreme, one whole input batch per group,
+/// 8192 rows per batch into 50 output partitions, so `RowGroups(auto)` uses the 163-row group the
+/// driver derives by default (`CometShuffleExchangeExec.resolvePositionalGroupRows`). `RowGroups(8192)` is the opposite extreme, one whole input batch per group,
 /// where every run covers a buffered batch end to end and the gather copies nothing at all.
 fn partitioning_benchmark(c: &mut Criterion) {
     const BATCH_SIZE: usize = 8192;
@@ -312,7 +312,7 @@ fn partitioning_benchmark(c: &mut Criterion) {
             "RowGroups(auto)",
             RoundRobinStrategy::RowGroups {
                 start_partition: 0,
-                group_rows: RoundRobinStrategy::AUTO_GROUP_ROWS,
+                group_rows: BATCH_SIZE / NUM_PARTITIONS,
                 max_hash_columns: 0,
             },
         ),

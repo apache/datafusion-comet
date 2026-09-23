@@ -196,29 +196,7 @@ impl<T: PartitionWriter> MultiPartitionShuffleRepartitioner<T> {
 
         // Positional round robin is the one strategy that never looks at a row's contents. It
         // needs none of the row-level scratch (~64 KB a task), and it records contiguous runs
-        // rather than individual rows. Its group size is resolved once, here.
-        let partitioning = match partitioning {
-            CometPartitioning::RoundRobin(
-                n,
-                RoundRobinStrategy::RowGroups {
-                    start_partition,
-                    group_rows,
-                    max_hash_columns,
-                },
-            ) => CometPartitioning::RoundRobin(
-                n,
-                RoundRobinStrategy::RowGroups {
-                    start_partition,
-                    group_rows: RoundRobinStrategy::resolve_group_rows(
-                        group_rows,
-                        batch_size,
-                        num_output_partitions,
-                    ),
-                    max_hash_columns,
-                },
-            ),
-            other => other,
-        };
+        // rather than individual rows.
         let places_rows_individually = !matches!(
             partitioning,
             CometPartitioning::RoundRobin(_, RoundRobinStrategy::RowGroups { .. })

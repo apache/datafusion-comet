@@ -3663,13 +3663,21 @@ impl PhysicalPlanner {
                 // Treat negative max_hash_columns as 0 (no limit).
                 let max_hash_columns = rr_partition.max_hash_columns.max(0) as usize;
                 let strategy = if rr_partition.positional {
+                    // Resolved on the driver and frozen with the shuffle dependency. Deriving it
+                    // here from the executor's batch size would let a retried task use a
+                    // different group size, and so a different placement, than the attempt it
+                    // replaces.
+                    if rr_partition.positional_group_rows <= 0 {
+                        return Err(GeneralError(format!(
+                            "Positional round robin needs a positive group size, got {}",
+                            rr_partition.positional_group_rows
+                        )));
+                    }
                     RoundRobinStrategy::RowGroups {
                         // Computed per task on the JVM, where the Spark map partition id is in
                         // scope. See `CometShuffleExchangeExec.positionalStartPartition`.
                         start_partition: rr_partition.positional_start_partition.max(0) as usize,
-                        // Negative or zero means "derive it from the batch size and partition
-                        // count", which the repartitioner does once it knows both.
-                        group_rows: rr_partition.positional_group_rows.max(0) as usize,
+                        group_rows: rr_partition.positional_group_rows as usize,
                         // Kept for the case where the schema rules positional placement out.
                         max_hash_columns,
                     }
