@@ -90,10 +90,10 @@ use datafusion::{
     prelude::SessionContext,
 };
 use datafusion_comet_spark_expr::{
-    create_comet_physical_fun, create_comet_physical_fun_with_eval_mode, BinaryOutputStyle,
-    BloomFilterAgg, BloomFilterMightContain, CometCollectList, CometCollectSet, CsvWriteOptions,
-    EvalMode, SparkArraysZipFunc, SparkBloomFilterVersion, SparkListAgg, SparkPercentile,
-    SumInteger, ToCsv,
+    create_comet_hof_func, create_comet_physical_fun, create_comet_physical_fun_with_eval_mode,
+    BinaryOutputStyle, BloomFilterAgg, BloomFilterMightContain, CometCollectList, CometCollectSet,
+    CsvWriteOptions, EvalMode, SparkArraysZipFunc, SparkBloomFilterVersion, SparkListAgg,
+    SparkPercentile, SumInteger, ToCsv,
 };
 use iceberg::expr::Bind;
 
