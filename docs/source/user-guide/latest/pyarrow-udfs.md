@@ -91,6 +91,23 @@ the native library is built with the `python-udf` Cargo feature and this separat
 spark.comet.exec.nativeArrowPythonUDF.enabled=true
 ```
 
+Build the native library with a Python interpreter that matches the major and minor version used
+by the executors' PySpark workers. That interpreter needs its development headers (for example,
+`python3-dev` on Debian and Ubuntu) and a shared `libpython` (`libpython3.x.so` on Linux). A Python
+built with pyenv may need `PYTHON_CONFIGURE_OPTS="--enable-shared"` when it is installed. For example:
+
+```sh
+PYO3_PYTHON=/path/to/python make release COMET_FEATURES=python-udf
+```
+
+Install the matching shared `libpython` on every executor and make it discoverable by the dynamic
+linker. On Linux, the JVM loads `libcomet` with local symbols, so Comet promotes the already-loaded
+shared `libpython` to the global namespace before importing Python extensions such as PyArrow. A
+statically linked Python cannot provide those symbols this way, and importing PyArrow can fail with
+an undefined-symbol error. A library built with `python-udf` depends on `libpython` as soon as
+`libcomet` is loaded: if an executor cannot find it, **Comet itself fails to load**, even when a
+query does not use an Arrow UDF.
+
 Comet passes each argument as a `pyarrow.Array` through the Arrow C Data Interface, invokes the
 pickled Python function with PyO3, and appends the result array to the input batch. It checks the
 result length and safely casts it to the declared return type, matching Spark's scalar Arrow UDF
