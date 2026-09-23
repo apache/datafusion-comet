@@ -33,7 +33,7 @@ import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
 import org.apache.comet.serde.{CometOperatorSerde, Compatible, OperatorOuterClass, QueryPlanSerde, SupportLevel, Unsupported}
 import org.apache.comet.serde.OperatorOuterClass.Operator
 
-/** Native execution for Spark 4.1 scalar `@arrow_udf` functions. */
+/** Native execution for Spark 4.1+ scalar `@arrow_udf` functions. */
 object CometArrowEvalPythonExec extends CometOperatorSerde[ArrowEvalPythonExec] {
 
   override def enabledConfig: Option[ConfigEntry[Boolean]] =
@@ -44,7 +44,7 @@ object CometArrowEvalPythonExec extends CometOperatorSerde[ArrowEvalPythonExec] 
       return Unsupported(Some("Native library lacks the python-udf feature"))
     }
     if (op.evalType != PythonEvalType.SQL_SCALAR_ARROW_UDF) {
-      return Unsupported(Some("Only Spark 4.1 scalar @arrow_udf is supported"))
+      return Unsupported(Some("Only scalar @arrow_udf is supported"))
     }
     if (op.udfs.isEmpty || op.udfs.length != op.resultAttrs.length) {
       return Unsupported(Some("Arrow UDF functions and result attributes do not match"))

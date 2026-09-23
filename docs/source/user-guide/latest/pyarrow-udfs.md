@@ -84,8 +84,8 @@ The default is `false` while the feature stabilizes.
 
 ### Native scalar Arrow UDFs (Spark 4.1+)
 
-Spark 4.1's scalar `@arrow_udf` can run inside Comet's Rust execution pipeline when the native
-library is built with the `python-udf` Cargo feature and this separate option is enabled:
+Scalar `@arrow_udf` in Spark 4.1 and later can run inside Comet's Rust execution pipeline when
+the native library is built with the `python-udf` Cargo feature and this separate option is enabled:
 
 ```
 spark.comet.exec.nativeArrowPythonUDF.enabled=true

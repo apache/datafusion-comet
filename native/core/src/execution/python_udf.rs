@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! In-process bridge for Spark 4.1 scalar Arrow UDFs. Each instance owns one
+//! In-process bridge for Spark 4.1+ scalar Arrow UDFs. Each instance owns one
 //! unpickled Python callable and must be created for one Spark task/partition.
 //! The public API deliberately deals in Arrow arrays; the physical operator is
 //! responsible for evaluating Catalyst arguments and preserving input columns.
