@@ -20,6 +20,7 @@
 package org.apache.comet
 
 import java.io.File
+import java.nio.file.{FileAlreadyExistsException, Files, Path}
 import java.sql.Timestamp
 import java.util.concurrent.{CountDownLatch, TimeUnit}
 
@@ -28,6 +29,7 @@ import scala.concurrent.{Await, Future}
 import scala.concurrent.ExecutionContext.Implicits.global
 import scala.concurrent.duration.DurationInt
 import scala.jdk.CollectionConverters._
+import scala.util.control.NonFatal
 
 import org.apache.spark.{SparkConf, Success, TaskContext}
 import org.apache.spark.scheduler.{SparkListener, SparkListenerTaskEnd}
@@ -46,6 +48,24 @@ import org.apache.comet.iceberg.IcebergReflection
 
 private case class WriteSnapshot(snapshotDelta: Long, plans: Seq[SparkPlan])
 
+private object IcebergTestFiles {
+
+  /** Relative paths of every regular parquet file under `root`. */
+  def parquetFiles(root: Path): Set[String] = {
+    if (!Files.exists(root)) return Set.empty
+    val stream = Files.walk(root)
+    try {
+      stream
+        .iterator()
+        .asScala
+        .filter(path =>
+          Files.isRegularFile(path) && path.getFileName.toString.endsWith(".parquet"))
+        .map(path => root.relativize(path).toString)
+        .toSet
+    } finally stream.close()
+  }
+}
+
 class CometIcebergWriteActionSuite
     extends CometTestBase
     with AdaptiveSparkPlanHelper
@@ -54,6 +74,8 @@ class CometIcebergWriteActionSuite
   override protected def sparkConf: SparkConf = {
     super.sparkConf
       .set(CometConf.COMET_ICEBERG_WRITE_SPLIT_OPERATOR_ENABLED.key, "true")
+      // local[N,M] sets task max failures to M; the retry test needs one retry, and
+      // spark.task.maxFailures does not override this part of a local master URL.
       .setMaster("local[5,2]")
       .set(
         "spark.sql.extensions",
@@ -1740,8 +1762,12 @@ class CometIcebergWriteActionSuite
         }
       }
       assert(snapshot.snapshotDelta == 1L, s"expected one snapshot, got $snapshot")
-      assert(NativeWriteRetryProbe.blockerCreated, "the storage failure was not armed")
+      assert(
+        NativeWriteRetryProbe.blockerCreated,
+        "the storage failure was not armed: " +
+          NativeWriteRetryProbe.failureReason.getOrElse("unknown reason"))
       assert(NativeWriteRetryProbe.retrySeen, "Spark did not run a retry attempt")
+      assert(NativeWriteRetryProbe.blockersRemoved, "the retry did not remove every blocker")
       val failedPaths = NativeWriteRetryProbe.failedPaths
       assert(failedPaths.nonEmpty, "the failing attempt had not finalized a data file")
       assert(
@@ -2398,19 +2424,8 @@ class CometIcebergWriteActionSuite
   }
 
   /** Relative paths of every parquet file under `dir`, or empty when it does not exist yet. */
-  private def parquetFiles(dir: File): Set[String] = {
-    if (!dir.exists()) return Set.empty
-    val root = dir.toPath
-    val stream = java.nio.file.Files.walk(root)
-    try {
-      stream
-        .iterator()
-        .asScala
-        .filter(p => p.toString.endsWith(".parquet"))
-        .map(p => root.relativize(p).toString)
-        .toSet
-    } finally stream.close()
-  }
+  private def parquetFiles(dir: File): Set[String] =
+    IcebergTestFiles.parquetFiles(dir.toPath)
 
   private def countSnapshots(tableName: String): Long =
     try {
@@ -2633,64 +2648,92 @@ class CometIcebergWriteActionSuite
 private object NativeWriteRetryProbe {
   @volatile private var firstAttemptFiles = Set.empty[String]
   @volatile private var sawRetry = false
-  @volatile private var blockerPath: String = null
+  @volatile private var blockerPaths = Set.empty[String]
+  @volatile private var createdBlocker = false
+  @volatile private var firstAttemptFailure: Option[String] = None
 
   def reset(): Unit = synchronized {
     firstAttemptFiles = Set.empty
     sawRetry = false
-    blockerPath = null
+    blockerPaths = Set.empty
+    createdBlocker = false
+    firstAttemptFailure = None
   }
 
   def failedPaths: Set[String] = firstAttemptFiles
 
   def retrySeen: Boolean = sawRetry
 
-  def blockerCreated: Boolean = blockerPath != null
+  def blockerCreated: Boolean = createdBlocker
+
+  def blockersRemoved: Boolean = blockerPaths.isEmpty
+
+  def failureReason: Option[String] = firstAttemptFailure
+
+  private def failProbe(reason: String): Nothing = {
+    firstAttemptFailure = Some(reason)
+    throw new IllegalStateException(reason)
+  }
+
+  private def armBlockers(dataLocation: String): Unit = {
+    val root = new File(dataLocation).toPath
+    val files = IcebergTestFiles.parquetFiles(root)
+    firstAttemptFiles = files
+    // The unpartitioned writer has at most one file open; two paths mean at least one
+    // earlier file has already been finalized before this input-side failure.
+    if (files.size < 2) {
+      failProbe("native writer did not finalize before injection")
+    }
+    val numbered = files.map { relative =>
+      val name = new File(relative).getName
+      val pattern = "^(.*)-(\\d{5})\\.parquet$".r
+      name match {
+        case pattern(prefix, number) => (prefix, number.toInt)
+        case _ => failProbe(s"unexpected native file name: $name")
+      }
+    }
+    val prefixes = numbered.map(_._1)
+    if (prefixes.size != 1) {
+      failProbe(s"expected one native task prefix, got $prefixes")
+    }
+    val maxFileNumber = numbered.map(_._2).max
+    (1 to 4).foreach { offset =>
+      val number = maxFileNumber + offset
+      val blocker = root.resolve(s"${prefixes.head}-${"%05d".format(number)}.parquet")
+      try {
+        Files.createDirectory(blocker)
+        blockerPaths += blocker.toString
+        createdBlocker = true
+      } catch {
+        // The writer can advance between the directory walk and blocker creation. Keep
+        // arming later file numbers rather than turning that harmless skew into the failure.
+        case _: FileAlreadyExistsException =>
+      }
+    }
+    if (!createdBlocker) {
+      failProbe(s"native writer advanced past all blocker candidates after $maxFileNumber")
+    }
+    // The file:// store rejects writes at these paths with EISDIR. A small range tolerates
+    // the native pipeline being a few files ahead of the projection's filesystem view.
+    // Attempt-unique names keep the blockers clear of the second writer until it removes them.
+  }
 
   def check(id: Int, dataLocation: String): Int = {
     if (id == 7000) {
       val attempt = TaskContext.get().attemptNumber()
       if (attempt == 0) {
-        val root = new File(dataLocation).toPath
-        val files = if (java.nio.file.Files.exists(root)) {
-          val stream = java.nio.file.Files.walk(root)
-          try {
-            stream
-              .iterator()
-              .asScala
-              .filter(p => p.toString.endsWith(".parquet"))
-              .map(p => root.relativize(p).toString)
-              .toSet
-          } finally stream.close()
-        } else Set.empty[String]
-        firstAttemptFiles = files
-        // The unpartitioned writer has at most one file open; two paths mean at least one
-        // earlier file has already been finalized before this input-side failure.
-        if (files.size < 2) {
-          throw new IllegalStateException("native writer did not finalize before injection")
+        try armBlockers(dataLocation)
+        catch {
+          case NonFatal(e) =>
+            if (firstAttemptFailure.isEmpty) {
+              val detail = Option(e.getMessage).filter(_.nonEmpty).getOrElse(e.getClass.getName)
+              firstAttemptFailure = Some(detail)
+            }
+            throw e
         }
-        val numbered = files.map { relative =>
-          val name = new File(relative).getName
-          val pattern = "^(.*)-(\\d{5})\\.parquet$".r
-          name match {
-            case pattern(prefix, number) => (prefix, number.toInt)
-            case _ => throw new IllegalStateException(s"unexpected native file name: $name")
-          }
-        }
-        val prefixes = numbered.map(_._1)
-        if (prefixes.size != 1) {
-          throw new IllegalStateException(s"expected one native task prefix, got $prefixes")
-        }
-        val next = numbered.map(_._2).max + 1
-        val blocker = root.resolve(s"${prefixes.head}-${"%05d".format(next)}.parquet")
-        // The file:// store will reject a write at this path with EISDIR. The blocker is
-        // removed during the retry; attempt-unique names keep it clear of the second writer.
-        java.nio.file.Files.createDirectory(blocker)
-        blockerPath = blocker.toString
       } else {
-        if (blockerPath != null) {
-          java.nio.file.Files.deleteIfExists(new File(blockerPath).toPath)
-        }
+        blockerPaths.foreach(path => Files.deleteIfExists(new File(path).toPath))
+        blockerPaths = Set.empty
         sawRetry = true
       }
     }
