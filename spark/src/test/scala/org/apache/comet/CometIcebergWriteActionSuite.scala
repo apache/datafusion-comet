@@ -1766,10 +1766,10 @@ class CometIcebergWriteActionSuite
           collectWithSubqueries(p) { case w: CometIcebergWriteExec => w }.nonEmpty),
         s"failed write did not run natively:\n${failedPlans.mkString("\n--\n")}")
       val handoffs = attempts.get()
-      // This suite uses local[5,2], so Spark retries the one failed task once. Both attempts
-      // must reach the handoff and report files for their own cleanup listener to delete.
-      assert(handoffs.map(_._1).distinct == Vector(0), s"expected one task: $handoffs")
-      assert(handoffs.map(_._2).sorted == Vector(0, 1), s"expected two attempts: $handoffs")
+      // CometTestBase starts local[5]. Spark gives that master one allowed task failure, so
+      // the job aborts without a retry and the handoff runs once.
+      assert(handoffs.map(_._1) == Vector(0), s"expected one task: $handoffs")
+      assert(handoffs.map(_._2) == Vector(0), s"expected one attempt: $handoffs")
       assert(
         handoffs.forall(_._3.nonEmpty),
         s"native payload reported no written files: $handoffs")
