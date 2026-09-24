@@ -942,9 +942,9 @@ message Expand {
 }
 
 message Explode {
-  // The array expression to explode into multiple rows
+  // The array or map expression to explode into multiple rows
   spark.spark_expression.Expr child = 1;
-  // Whether this is explode_outer (produces null row for empty/null arrays)
+  // Whether this is explode_outer (produces null row for empty/null collections)
   bool outer = 2;
   // Expressions for other columns to project alongside the exploded values
   repeated spark.spark_expression.Expr project_list = 3;

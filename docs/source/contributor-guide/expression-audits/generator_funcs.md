@@ -23,18 +23,18 @@
 
 ## explode
 
-- Handled at the operator level as a `GenerateExec` (`CometExplodeExec`), not via the expression serde maps, so it is not auto-detected by the function-registry checkbox logic. Compatible for array inputs; map inputs fall back ([#2837](https://github.com/apache/datafusion-comet/issues/2837)).
+- Handled at the operator level as a `GenerateExec` (`CometExplodeExec`), not via the expression serde maps, so it is not auto-detected by the function-registry checkbox logic. Compatible for array and map inputs. Maps emit key/value columns, with a position column for `posexplode`.
 
 ## explode_outer
 
-- Same `CometExplodeExec` path as `explode`. Compatible for array inputs; empty and NULL arrays both emit one null-valued row per Spark's `outer` semantics via the `ListEmptyToNullExpr` planner bridge (works around [datafusion#19053](https://github.com/apache/datafusion/issues/19053)). Map inputs fall back.
+- Same `CometExplodeExec` path as `explode`. Compatible for array and map inputs; empty and NULL collections both emit one null-valued row per Spark's `outer` semantics via the `ListEmptyToNullExpr` planner bridge (works around [datafusion#19053](https://github.com/apache/datafusion/issues/19053)). Map entries reuse the list unnest path and expand into key/value columns.
 
 ## posexplode
 
-- Handled at the operator level as a `GenerateExec` (`CometExplodeExec`), like `explode`. Compatible for array inputs; map inputs fall back ([#2837](https://github.com/apache/datafusion-comet/issues/2837)).
+- Handled at the operator level as a `GenerateExec` (`CometExplodeExec`), like `explode`. Compatible for array and map inputs. Maps emit key/value columns, with a position column for `posexplode`.
 
 ## posexplode_outer
 
-- Same `CometExplodeExec` path as `posexplode`. Compatible for array inputs; empty and NULL arrays both emit one row with null `pos` and null `value` per Spark's `outer` semantics via the `ListEmptyToNullExpr` planner bridge (works around [datafusion#19053](https://github.com/apache/datafusion/issues/19053)).
+- Same `CometExplodeExec` path as `posexplode`. Compatible for array and map inputs; empty and NULL arrays or maps both emit one row with null `pos` and null generated columns per Spark's `outer` semantics via the `ListEmptyToNullExpr` planner bridge (works around [datafusion#19053](https://github.com/apache/datafusion/issues/19053)).
 
 [Spark Expression Support]: ../../user-guide/latest/expressions.md

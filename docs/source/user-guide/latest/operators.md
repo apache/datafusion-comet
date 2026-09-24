@@ -108,12 +108,12 @@ omitted from the tables below and may be reconsidered based on demand:
 
 ## Generators and set operations
 
-| Operator       | Status | Notes                                                                                                            |
-| -------------- | ------ | ---------------------------------------------------------------------------------------------------------------- |
-| `GenerateExec` | ✅     | Supports `explode`, `explode_outer`, `posexplode`, `posexplode_outer` over arrays. `inline` / `stack` fall back. |
-| `ExpandExec`   | ✅     |                                                                                                                  |
-| `UnionExec`    | ✅     |                                                                                                                  |
-| `CoalesceExec` | ✅     |                                                                                                                  |
+| Operator       | Status | Notes                                                                                                                     |
+| -------------- | ------ | ------------------------------------------------------------------------------------------------------------------------- |
+| `GenerateExec` | ✅     | Supports `explode`, `explode_outer`, `posexplode`, `posexplode_outer` over arrays and maps. `inline` / `stack` fall back. |
+| `ExpandExec`   | ✅     |                                                                                                                           |
+| `UnionExec`    | ✅     |                                                                                                                           |
+| `CoalesceExec` | ✅     |                                                                                                                           |
 
 ## Writes
 
