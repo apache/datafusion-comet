@@ -728,7 +728,9 @@ object CometConf extends ShimCometConf {
         "the number of system calls, but will use more memory. " +
         "The default is 1MB which provides a good balance between performance and memory usage.")
       .bytesConf(ByteUnit.BYTE)
-      .checkValue(v => v > 0, "Write buffer size must be positive")
+      .checkValue(
+        v => v > 0 && v <= Int.MaxValue,
+        s"Write buffer size must be between 1 and ${Int.MaxValue} bytes")
       .createWithDefault(1024 * 1024)
 
   val COMET_SHUFFLE_JVM_PREFER_DICTIONARY_RATIO: ConfigEntry[Double] = conf(
