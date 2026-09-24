@@ -236,8 +236,8 @@ reports the base pool's number.
 ### The unified pools
 
 `CometUnifiedMemoryPool` and `CometFairMemoryPool` (`unified_pool.rs`, `fair_pool.rs`) are the
-bridge to Spark. Their `try_grow` calls `CometTaskMemoryManager.acquireMemory` over JNI, which goes
-through Spark's ordinary `TaskMemoryManager`. That means:
+bridge to Spark. Their `try_grow` and `grow` both call `CometTaskMemoryManager.acquireMemory` over
+JNI, which goes through Spark's ordinary `TaskMemoryManager`. That means:
 
 - Comet competes with Spark's own off-heap consumers (Tungsten sorters, `BytesToBytesMap`, and so
   on) for the same `spark.memory.offHeap.size`, and Spark's unified memory manager arbitrates.
@@ -247,8 +247,14 @@ through Spark's ordinary `TaskMemoryManager`. That means:
   (`CometTaskMemoryManager.java`). A Spark allocation can therefore never make a native sorter or
   aggregate release its reservations. Native operators spill only when their _own_ `try_grow`
   fails, so a JVM consumer that is blocked behind native reservations has no way to reclaim them.
-- A partial grant (`acquired < additional`) is released immediately and reported as
+- In `try_grow`, a partial grant (`acquired < additional`) is released immediately and reported as
   `ResourcesExhausted`, which is the signal DataFusion uses to spill.
+- `grow` cannot fail, so when Spark grants less than asked the pool records the full amount anyway
+  and carries the shortfall as _overcommit_ (`spark_memory.rs`). A later `shrink` repays the
+  overcommit before returning anything to Spark, so Spark is never handed back more than it
+  granted. While overcommit is outstanding, `try_grow` asks Spark for it on top of the request and
+  is refused unless Spark can cover both, so operators spill until the debt is repaid. Both pools'
+  `Display` output and their `try_grow` errors report the current overcommit.
 
 `CometFairMemoryPool` additionally applies a local check before it asks Spark. It divides
 `pool_size` by the number of consumers currently registered with the pool and rejects the request if
@@ -268,30 +274,33 @@ reading it as one overstates the memory a multi-operator task can use.
 
 **The fair pool holds an anchor byte for its whole life.** Spark drops a task's `memoryForTask`
 entry when the task's balance reaches zero, and an acquire parked inside
-`ExecutionMemoryPool.acquireMemory` reads that entry when it wakes. So the first grow that passes
-the fair limit takes one extra byte from Spark before its own request, and the pool keeps that byte
-until it drops. While it is held, no release, the pool's own or a sibling consumer's such as the
-shuffle allocator, can zero the balance under a parked acquire, and the task stays in Spark's
-active set, so `NativeMemoryConsumer.getUsed` reports at least 1. Creating the pool makes no JVM
-call: a plan that never allocates natively never touches Spark's memory manager and never counts as
-an active task there. Spark declines the byte with a zero grant when the task is already at its
-share. The pool then runs without it and each grow retries it, as a request of its own, before the
-real one, until it is held. Until a retry lands, the grow's own request is what can park, and a
-sibling's release can still zero the balance under it; Spark then fails that acquire, and the grow
-rolls its charge back and reports an error. That is the one window the anchor does not cover.
+`ExecutionMemoryPool.acquireMemory` reads that entry when it wakes. So the first `try_grow` that
+passes the fair limit, or the first `grow`, takes one extra byte from Spark before its own request,
+and the pool keeps that byte until it drops. While it is held, no release, the pool's own or a
+sibling consumer's such as the shuffle allocator, can zero the balance under a parked acquire, and
+the task stays in Spark's active set, so `NativeMemoryConsumer.getUsed` reports at least 1. Creating
+the pool makes no JVM call: a plan that never allocates natively never touches Spark's memory
+manager and never counts as an active task there. Spark declines the byte with a zero grant when the
+task is already at its share. The pool then runs without it and each grow retries it, as a request
+of its own, before the real one, until it is held. Until a retry lands, the grow's own request is
+what can park, and a sibling's release can still zero the balance under it. Spark then fails that
+acquire. A `try_grow` rolls its charge back and reports an error, and a `grow` keeps its charge as
+overcommit. That is the one window the anchor does not cover.
 
 **The pool mutex is never held across a JNI call.** The fair limit is checked and the bytes are
-charged under the lock; the lock is dropped before `acquireMemory` or `releaseMemory` runs, and the
-bookkeeping is settled after the call returns. The reason is the parked acquire above: it waits
-inside Spark for another thread of the same task to release memory. If the release had to take a
-lock that the parked acquire was holding, it could never land and the task would hang.
+charged under the lock. The lock is dropped before `acquireMemory` or `releaseMemory` runs, and the
+bookkeeping is settled after the call returns. This holds for `grow` as well as `try_grow`: `grow`
+skips the fair limit check but charges its bytes under the lock the same way, and its JVM call runs
+without it. The reason is the parked acquire above: it waits inside Spark for another thread of the
+same task to release memory. If the release had to take a lock that the parked acquire was holding,
+it could never land and the task would hang.
 
 Settling after the call leaves two windows, both on the conservative side:
 
-- A grow is charged to the pool's total when it passes the fair limit, before Spark answers it. A
-  second grow in that window is checked against a total that includes the first, so it can be
-  refused where waiting for the first to settle would have let it through. This charge is what
-  keeps two concurrent grows from jointly exceeding the limit.
+- A `try_grow` is charged to the pool's total when it passes the fair limit, and a `grow` when it
+  is called, before Spark answers. A second `try_grow` in that window is checked against a total
+  that includes the first, so it can be refused where waiting for the first to settle would have
+  let it through. This charge is what keeps two concurrent grows from jointly exceeding the limit.
 - A shrink, and the rollback of a short grant, hand the bytes to Spark first and take them off the
   pool's total only once Spark has them. A grow in that window is checked against a total that
   still includes those bytes, so a grow that only fits once they are free is refused at the fair
@@ -300,9 +309,10 @@ Settling after the call leaves two windows, both on the conservative side:
   at its Spark share. If the rollback release itself fails, those bytes stay charged for the pool's
   life, because Spark holds them until the task ends.
 
-Neither window admits a grow the fair limit would have refused. A refusal is the ordinary
-`ResourcesExhausted` error, which a spillable operator answers by spilling; a caller that uses
-`grow` rather than `try_grow` cannot spill and panics on it, as it does on any fair limit refusal.
+Neither window admits a `try_grow` the fair limit would have refused. A refusal is the ordinary
+`ResourcesExhausted` error, which a spillable operator answers by spilling. `grow` is never refused:
+it is not subject to the fair limit, and whatever Spark declines of it becomes overcommit, as
+described above. The anchor byte is neither part of the pool's total nor of the overcommit.
 
 ### Task-shared pools and their lifetime
 
@@ -327,7 +337,9 @@ Native operators reserve through DataFusion's `MemoryConsumer` / `MemoryReservat
 - `try_grow(n)` may fail. Spillable operators (`ExternalSorter`, the grouped hash aggregate,
   sort-merge join) respond to a `ResourcesExhausted` error by spilling to disk and retrying. This is
   the only mechanism that turns memory pressure into progress rather than failure.
-- `grow(n)` is infallible and panics if the pool refuses. It is used where the caller cannot spill.
+- `grow(n)` is infallible. It is used for memory that already exists and the caller cannot spill,
+  such as a spilled batch read back from disk. The Comet pools record it even when Spark grants
+  less, as overcommit (see [The unified pools](#the-unified-pools)).
 - `shrink(n)` returns bytes to the pool.
 
 An operator that never calls `try_grow` is invisible to the pool no matter how much memory it uses.
@@ -405,6 +417,12 @@ diverge for several structural reasons:
   Imported JVM batches are reserved only while a reserving operator holds them, and exported native
   batches have usually been released by the time the JVM receives them yet stay resident until the
   JVM closes them (see [Crossing the FFI boundary](#crossing-the-ffi-boundary)).
+- **Overcommit.** Unlike everything above, this is not accidental. When Spark grants less than a
+  `grow` asked for, Comet holds the difference anyway and deliberately does not tell Spark about it
+  (see [The unified pools](#the-unified-pools)). `reserved()` includes it, but Spark's memory
+  manager does not, so until it is repaid Spark can hand the same bytes to another consumer or task.
+  The `overcommit` figure in the pool's `Display` output and `try_grow` errors shows how much is
+  outstanding.
 
 The practical consequence is that `reserved()` is a lower bound on Comet's real footprint, and the
 gap is workload-dependent. `spark.comet.exec.memoryPool.fraction` exists purely so operators can

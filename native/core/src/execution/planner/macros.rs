@@ -93,9 +93,13 @@ macro_rules! binary_expr_builder {
                         &$operator,
                         &input_schema,
                     );
-                Ok(std::sync::Arc::new(
-                    datafusion::physical_expr::expressions::BinaryExpr::new(left, $operator, right),
-                ))
+                datafusion_comet_spark_expr::spark_comparison(
+                    left,
+                    $operator,
+                    right,
+                    input_schema.as_ref(),
+                )
+                .map_err(Into::into)
             }
         }
     };

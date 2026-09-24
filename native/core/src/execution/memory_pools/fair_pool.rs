@@ -23,7 +23,8 @@ use std::{
 use jni::objects::{Global, JObject};
 use log::warn;
 
-use crate::{errors::CometResult, jvm_bridge::JVMClasses};
+use super::spark_memory::SparkMemory;
+use crate::errors::CometResult;
 use datafusion::common::resources_err;
 use datafusion::execution::memory_pool::MemoryConsumer;
 use datafusion::{
@@ -32,40 +33,10 @@ use datafusion::{
 };
 use parking_lot::Mutex;
 
-/// The task memory backend the pool acquires from and releases to. The production implementation
-/// calls Spark's task memory manager over JNI, which can block while Spark spills other consumers;
-/// keeping it behind a trait lets tests exercise the pool without a live JVM.
-trait TaskMemoryBridge: Send + Sync {
-    fn acquire(&self, additional: usize) -> CometResult<i64>;
-    fn release(&self, size: usize) -> CometResult<()>;
-}
-
-/// Delegates to the JVM side `CometTaskMemoryManager`.
-struct JniTaskMemoryBridge {
-    task_memory_manager_handle: Arc<Global<JObject<'static>>>,
-}
-
-impl TaskMemoryBridge for JniTaskMemoryBridge {
-    fn acquire(&self, additional: usize) -> CometResult<i64> {
-        let handle = self.task_memory_manager_handle.as_obj();
-        JVMClasses::with_env(|env| unsafe {
-            jni_call!(env,
-              comet_task_memory_manager(handle).acquire_memory(additional as i64) -> i64)
-        })
-    }
-
-    fn release(&self, size: usize) -> CometResult<()> {
-        let handle = self.task_memory_manager_handle.as_obj();
-        JVMClasses::with_env(|env| unsafe {
-            jni_call!(env, comet_task_memory_manager(handle).release_memory(size as i64) -> ())
-        })
-    }
-}
-
 /// Size of the anchor, the byte the pool keeps on the JVM side for its whole life.
 const ANCHOR_BYTES: usize = 1;
-// A grant short of the anchor is a zero grant, so `with_bridge` and `take_missing_anchor`
-// have nothing to hand back when Spark declines it.
+// A grant short of the anchor is a zero grant, so `take_missing_anchor` has nothing to hand
+// back when Spark declines it.
 const _: () = assert!(ANCHOR_BYTES == 1);
 
 /// A DataFusion fair `MemoryPool` implementation for Comet. Internally this is
@@ -78,8 +49,11 @@ const _: () = assert!(ANCHOR_BYTES == 1);
 /// then runs without it and each grow retries it first, so a grow's own request carries the
 /// exposure only until the first retry lands. Releases go to the JVM whole: Spark grants a
 /// parked request only when they cover it.
+///
+/// The anchor is never recorded in the pool's total and never carried as overcommit, so it goes
+/// through the Spark calls directly rather than through the [`SparkMemory`] ledger.
 pub struct CometFairMemoryPool {
-    bridge: Box<dyn TaskMemoryBridge>,
+    spark: SparkMemory,
     pool_size: usize,
     state: Mutex<CometFairPoolState>,
 }
@@ -87,10 +61,8 @@ pub struct CometFairMemoryPool {
 struct CometFairPoolState {
     used: usize,
     num: usize,
-    /// Bytes the JVM side has granted us and not yet been handed back, anchor included.
-    jvm_held: usize,
-    /// Whether the anchor is among `jvm_held`. Unset while Spark declines it, which it does
-    /// only for a task already at its share; `try_grow` retries it until it is held.
+    /// Whether the anchor byte is held on the JVM side. Unset while Spark declines it, which it
+    /// does only for a task already at its share; each grow retries it until it is held.
     anchor_held: bool,
 }
 
@@ -101,6 +73,7 @@ impl Debug for CometFairMemoryPool {
             .field("pool_size", &self.pool_size)
             .field("used", &state.used)
             .field("num", &state.num)
+            .field("overcommit", &self.spark.overcommit())
             .finish()
     }
 }
@@ -112,23 +85,21 @@ impl CometFairMemoryPool {
     pub fn new(
         task_memory_manager_handle: Arc<Global<JObject<'static>>>,
         pool_size: usize,
+        task_attempt_id: i64,
     ) -> CometFairMemoryPool {
-        Self::with_bridge(
-            Box::new(JniTaskMemoryBridge {
-                task_memory_manager_handle,
-            }),
+        Self::with_spark(
+            SparkMemory::new(task_memory_manager_handle, task_attempt_id),
             pool_size,
         )
     }
 
-    fn with_bridge(bridge: Box<dyn TaskMemoryBridge>, pool_size: usize) -> CometFairMemoryPool {
+    fn with_spark(spark: SparkMemory, pool_size: usize) -> CometFairMemoryPool {
         Self {
-            bridge,
+            spark,
             pool_size,
             state: Mutex::new(CometFairPoolState {
                 used: 0,
                 num: 0,
-                jvm_held: 0,
                 anchor_held: false,
             }),
         }
@@ -147,68 +118,50 @@ impl CometFairMemoryPool {
     /// Takes the anchor on the first grow and retries it while Spark declines it, as a
     /// request of its own that never rides on a real grow. Spark declines it only while the
     /// task sits at its share, so the extra JNI call is paid on that path alone and never
-    /// once the anchor is held. The caller rolls back its reservation if this fails.
+    /// once the anchor is held. A `try_grow` rolls back its reservation if this fails.
     fn take_missing_anchor(&self) -> CometResult<()> {
         if self.state.lock().anchor_held {
             return Ok(());
         }
         // The lock is not held across the call.
-        if !Self::anchor_granted(self.bridge.acquire(ANCHOR_BYTES)?) {
+        if !Self::anchor_granted(self.spark.manager().acquire(ANCHOR_BYTES)?) {
             return Ok(());
         }
         {
             let mut state = self.state.lock();
             if !state.anchor_held {
                 state.anchor_held = true;
-                state.jvm_held = state
-                    .jvm_held
-                    .checked_add(ANCHOR_BYTES)
-                    .expect("overflow in checked_add");
                 return Ok(());
             }
         }
         // A grow on another thread took the anchor meanwhile. This byte was never booked, so a
         // failed return only leaves Spark holding it until the task ends, as on drop.
-        if let Err(e) = self.bridge.release(ANCHOR_BYTES) {
+        if let Err(e) = self.spark.manager().release(ANCHOR_BYTES) {
             warn!("Failed to return a duplicate memory pool anchor byte: {e:?}");
         }
         Ok(())
     }
 
-    fn acquire(&self, additional: usize) -> CometResult<i64> {
-        self.bridge.acquire(additional)
-    }
-
-    fn release(&self, size: usize) -> CometResult<()> {
-        self.bridge.release(size)
-    }
-
-    /// Settles a release the JVM has accepted: the bytes come off the pool's total and off the
-    /// JVM-side balance only now, so a grow is never admitted on bytes Spark still holds.
+    /// Settles a release the JVM has accepted: the bytes come off the pool's total only now, so
+    /// a grow is never admitted on bytes Spark still holds.
     fn settle_release(&self, bytes: usize) {
         let mut state = self.state.lock();
         state.used = state
             .used
             .checked_sub(bytes)
             .expect("released more bytes than the pool tracks");
-        state.jvm_held = state
-            .jvm_held
-            .checked_sub(bytes)
-            .expect("released more bytes than the JVM side holds");
     }
 
-    /// Settles a finished bridge acquire: rolls back the bytes the JVM did not back and records
-    /// the bytes the JVM granted, which stay charged until they are handed back.
-    fn finish_acquire(&self, kept: usize, unbacked: usize) {
+    /// Settles a finished JVM acquire. `charged` bytes went on the pool's total before the call
+    /// and `held` is what Spark granted and still holds, which stays charged until it is handed
+    /// back. The difference is rolled back.
+    fn settle_acquire(&self, charged: usize, held: usize) {
         let mut state = self.state.lock();
         state.used = state
             .used
-            .checked_sub(unbacked)
-            .expect("rolled back more bytes than the pool tracks");
-        state.jvm_held = state
-            .jvm_held
-            .checked_add(kept)
-            .expect("granted more bytes than the JVM side can hold");
+            .checked_sub(charged)
+            .and_then(|used| used.checked_add(held))
+            .expect("settled more bytes than the pool tracks");
     }
 }
 
@@ -221,27 +174,22 @@ impl Drop for CometFairMemoryPool {
         let state = self.state.get_mut();
         if state.used != 0 {
             warn!(
-                "Dropped CometFairMemoryPool with {} bytes still reserved",
-                state.used
+                "Task {} dropped CometFairMemoryPool with {} bytes still reserved ({} bytes overcommitted)",
+                self.spark.task_attempt_id(),
+                state.used,
+                self.spark.overcommit()
             );
         }
         if !state.anchor_held {
             return;
         }
-        match state.jvm_held.checked_sub(ANCHOR_BYTES) {
-            Some(rest) => state.jvm_held = rest,
-            None => {
-                warn!("Memory pool anchor is held but the JVM-side balance is already zero");
-                return;
-            }
-        }
         let released = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            self.bridge.release(ANCHOR_BYTES)
+            self.spark.manager().release(ANCHOR_BYTES)
         }));
         match released {
             Ok(Ok(())) => {}
             Ok(Err(e)) => warn!("Failed to release the memory pool anchor byte: {e:?}"),
-            Err(_) => warn!("Bridge panicked while releasing the memory pool anchor byte"),
+            Err(_) => warn!("Spark call panicked while releasing the memory pool anchor byte"),
         }
     }
 }
@@ -251,8 +199,11 @@ impl Display for CometFairMemoryPool {
         let state = self.state.lock();
         write!(
             f,
-            "CometFairMemoryPool(pool_size={}, used={}, num={})",
-            self.pool_size, state.used, state.num
+            "CometFairMemoryPool(pool_size={}, used={}, num={}, overcommit={})",
+            self.pool_size,
+            state.used,
+            state.num,
+            self.spark.overcommit()
         )
     }
 }
@@ -278,8 +229,33 @@ impl MemoryPool for CometFairMemoryPool {
             .expect("unexpected amount of unregister happened");
     }
 
+    /// Records memory that already exists, so it must not fail and ignores the fair limit.
+    /// What Spark declines is carried as overcommit, see [`SparkMemory`].
     fn grow(&self, _reservation: &MemoryReservation, additional: usize) {
-        self.try_grow(_reservation, additional).unwrap();
+        if additional == 0 {
+            return;
+        }
+        // Charged before the JVM call, as in try_grow, so a try_grow racing this one is checked
+        // against a total that already includes these bytes. The JVM calls then run without
+        // the lock held.
+        {
+            let mut state = self.state.lock();
+            state.used = state.used.saturating_add(additional);
+        }
+        // The anchor is best effort here. The bytes are recorded whatever Spark answers, so a
+        // failed anchor request only leaves this grow's own request as the one that can park.
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            if let Err(e) = self.take_missing_anchor() {
+                warn!("Failed to take the memory pool anchor byte: {e:?}");
+            }
+            self.spark.acquire(additional);
+        }));
+        if let Err(panic) = outcome {
+            // The caller's reservation never records bytes its grow panicked on, so the charge
+            // must not outlive the panic either.
+            self.settle_acquire(additional, 0);
+            std::panic::resume_unwind(panic);
+        }
     }
 
     fn shrink(&self, _reservation: &MemoryReservation, subtractive: usize) {
@@ -298,10 +274,12 @@ impl MemoryPool for CometFairMemoryPool {
             // The JVM release runs without the lock so a blocked acquire on another thread can
             // never stall this release. The bytes stay charged until Spark has them back, so a
             // grow racing this shrink is not admitted on them and sent to Spark ahead of the
-            // release. A failed release here panics (the caller already gave the bytes up, there
-            // is no one left to handle an error), while the short-grant path in try_grow returns
-            // Err because its caller can still spill.
-            self.release(subtractive)
+            // release. Outstanding overcommit is repaid before anything goes back to Spark. A
+            // failed release here panics (the caller already gave the bytes up, there is no one
+            // left to handle an error), while the short-grant path in try_grow returns Err
+            // because its caller can still spill.
+            self.spark
+                .release(subtractive)
                 .unwrap_or_else(|_| panic!("Failed to release {subtractive} bytes"));
             self.settle_release(subtractive);
         }
@@ -330,7 +308,8 @@ impl MemoryPool for CometFairMemoryPool {
                     Some(total) if total <= limit => state.used = total,
                     _ => {
                         return resources_err!(
-                            "Failed to acquire {additional} bytes where {used} bytes already reserved and the fair limit is {limit} bytes, {num} registered"
+                            "Failed to acquire {additional} bytes where {used} bytes already reserved ({} bytes overcommitted) and the fair limit is {limit} bytes, {num} registered",
+                            self.spark.overcommit()
                         );
                     }
                 }
@@ -338,7 +317,7 @@ impl MemoryPool for CometFairMemoryPool {
 
             // The anchor comes after the local limit check, so a grow the pool rejects itself
             // never makes a JVM call, and before the real request, so the byte is held before
-            // the balance can reach zero. The bridge can panic inside its JNI frame; the
+            // the balance can reach zero. The JVM call can panic inside its JNI frame; the
             // optimistic reservation must not outlive either call, or the leaked bytes poison
             // the task-shared pool for every other consumer.
             match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -346,60 +325,56 @@ impl MemoryPool for CometFairMemoryPool {
             })) {
                 Ok(Ok(())) => {}
                 Ok(Err(e)) => {
-                    self.finish_acquire(0, additional);
+                    self.settle_acquire(additional, 0);
                     return Err(e.into());
                 }
                 Err(panic) => {
-                    self.finish_acquire(0, additional);
+                    self.settle_acquire(additional, 0);
                     std::panic::resume_unwind(panic);
                 }
             }
-            let acquired = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                self.acquire(additional)
+            // Spark is asked for the request plus any outstanding overcommit, and a full grant
+            // repays the overcommit. A short grant stays with Spark until this pool hands it
+            // back below, so the bytes can stay charged meanwhile.
+            let refusal = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                self.spark.try_acquire_leaving_a_short_grant(additional)
             })) {
-                Ok(Ok(acquired)) => acquired,
+                Ok(Ok(Ok(()))) => return Ok(()),
+                Ok(Ok(Err(refusal))) => refusal,
                 Ok(Err(e)) => {
-                    self.finish_acquire(0, additional);
+                    self.settle_acquire(additional, 0);
                     return Err(e.into());
                 }
                 Err(panic) => {
-                    self.finish_acquire(0, additional);
+                    self.settle_acquire(additional, 0);
                     std::panic::resume_unwind(panic);
                 }
             };
-            let granted = usize::try_from(acquired).unwrap_or(0);
-            if granted > additional {
-                // Spark never grants more than it is asked for. Clamp so a misbehaving bridge
-                // cannot push jvm_held past what the pool later releases.
-                warn!("Requested {additional} bytes from the JVM but it reports {granted} granted");
-            }
-            let granted = granted.min(additional);
             // A grant that falls short of the request is handed back whole and reported so the
-            // caller can spill.
-            if granted < additional {
-                // The bytes Spark did not back come off the books at once. The granted bytes
-                // stay charged until Spark has them back, like a shrink, so no grow is
-                // admitted on them meanwhile. A failed return leaves Spark holding them until
-                // the task ends, and they stay charged here to match; the caller still gets
-                // the short grant error below so a spillable operator spills. A panic in that
-                // release leaves the same state as an error.
-                self.finish_acquire(granted, additional - granted);
-                if granted > 0 {
-                    if let Err(e) = self.release(granted) {
-                        warn!("Failed to return a short grant of {granted} bytes: {e:?}");
-                    } else {
-                        self.settle_release(granted);
-                    }
+            // caller can spill. The bytes Spark did not back come off the books at once. The
+            // granted bytes, which can exceed the request when overcommit was asked for on top
+            // of it, stay charged until Spark has them back, like a shrink, so no grow is
+            // admitted on them meanwhile. A failed return leaves Spark holding them until the
+            // task ends, and they stay charged here to match. The caller still gets the short
+            // grant error below so a spillable operator spills. A panic in that release leaves
+            // the same state as an error.
+            let granted = refusal.granted;
+            self.settle_acquire(additional, granted);
+            if granted > 0 {
+                if let Err(e) = self.spark.manager().release(granted) {
+                    warn!("Failed to return a short grant of {granted} bytes: {e:?}");
+                } else {
+                    self.settle_release(granted);
                 }
-
-                return resources_err!(
-                    "Failed to acquire {} bytes, only got {} bytes. Reserved: {} bytes",
-                    additional,
-                    acquired,
-                    self.reserved()
-                );
             }
-            self.finish_acquire(granted, 0);
+
+            return resources_err!(
+                "Failed to acquire {} bytes plus {} bytes overcommitted, only got {} bytes. Reserved: {} bytes",
+                additional,
+                refusal.overcommit,
+                granted,
+                self.reserved()
+            );
         }
         Ok(())
     }
@@ -411,6 +386,7 @@ impl MemoryPool for CometFairMemoryPool {
 
 #[cfg(test)]
 mod tests {
+    use super::super::spark_memory::{fake::FakeSpark, SparkMemoryManager};
     use super::*;
     use crate::errors::CometError;
     use parking_lot::Condvar;
@@ -622,7 +598,7 @@ mod tests {
         }
     }
 
-    impl TaskMemoryBridge for Arc<StubTaskMemory> {
+    impl SparkMemoryManager for Arc<StubTaskMemory> {
         fn acquire(&self, additional: usize) -> CometResult<i64> {
             let n = self.acquires.fetch_add(1, SeqCst) + 1;
             if self.fail_acquire.load(SeqCst) {
@@ -699,10 +675,33 @@ mod tests {
     }
 
     fn pool_with(stub: &Arc<StubTaskMemory>, pool_size: usize) -> Arc<dyn MemoryPool> {
-        Arc::new(CometFairMemoryPool::with_bridge(
-            Box::new(Arc::clone(stub)),
+        Arc::new(CometFairMemoryPool::with_spark(
+            SparkMemory::with_manager(Box::new(Arc::clone(stub)), THIS_TASK),
             pool_size,
         ))
+    }
+
+    #[test]
+    fn grow_past_the_fair_limit_is_recorded_and_refuses_the_next_try_grow() {
+        let fake = FakeSpark::with(100);
+        let pool: Arc<dyn MemoryPool> =
+            Arc::new(CometFairMemoryPool::with_spark(fake.memory(), 100));
+        let reservation = MemoryConsumer::new("smj").register(&pool);
+
+        // Past both the fair limit and what Spark will grant. The anchor byte comes first, so
+        // Spark backs 99 of the 150 bytes and the pool carries the other 51 as overcommit.
+        reservation.grow(150);
+        assert_eq!(pool.reserved(), 150);
+        assert_eq!(fake.held(), 100);
+        assert!(reservation.try_grow(1).is_err());
+
+        drop(reservation);
+        assert_eq!(pool.reserved(), 0);
+        // Spark gets back exactly the 99 bytes it granted toward the reservation.
+        assert_eq!(fake.released(), vec![99]);
+        assert_eq!(fake.held(), ANCHOR_BYTES, "only the anchor remains");
+        drop(pool);
+        assert_eq!(fake.held(), 0, "the anchor is returned when the pool drops");
     }
 
     #[test]
