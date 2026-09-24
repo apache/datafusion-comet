@@ -219,7 +219,7 @@ class CometNativeShuffleWriter[K, V](
    * Build the unified `ShuffleWriter(child = childNativeOp)` plan with the partitioning serde,
    * compression settings, and output file paths.
    */
-  private def buildUnifiedPlan(dataFile: String, indexFile: String): Operator = {
+  private[shuffle] def buildUnifiedPlan(dataFile: String, indexFile: String): Operator = {
     val shuffleWriterBuilder = OperatorOuterClass.ShuffleWriter.newBuilder()
     shuffleWriterBuilder.setOutputDataFile(dataFile)
     shuffleWriterBuilder.setOutputIndexFile(indexFile)
