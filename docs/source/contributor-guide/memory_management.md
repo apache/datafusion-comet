@@ -245,8 +245,8 @@ reports the base pool's number.
 ### The unified pools
 
 `CometUnifiedMemoryPool` and `CometFairMemoryPool` (`unified_pool.rs`, `fair_pool.rs`) are the
-bridge to Spark. Their `try_grow` calls `CometTaskMemoryManager.acquireMemory` over JNI, which goes
-through Spark's ordinary `TaskMemoryManager`. That means:
+bridge to Spark. Their `try_grow` and `grow` both call `CometTaskMemoryManager.acquireMemory` over
+JNI, which goes through Spark's ordinary `TaskMemoryManager`. That means:
 
 - Comet competes with Spark's own off-heap consumers (Tungsten sorters, `BytesToBytesMap`, and so
   on) for the same `spark.memory.offHeap.size`, and Spark's unified memory manager arbitrates.
@@ -256,8 +256,14 @@ through Spark's ordinary `TaskMemoryManager`. That means:
   (`CometTaskMemoryManager.java`). A Spark allocation can therefore never make a native sorter or
   aggregate release its reservations. Native operators spill only when their _own_ `try_grow`
   fails, so a JVM consumer that is blocked behind native reservations has no way to reclaim them.
-- A partial grant (`acquired < additional`) is released immediately and reported as
+- In `try_grow`, a partial grant (`acquired < additional`) is released immediately and reported as
   `ResourcesExhausted`, which is the signal DataFusion uses to spill.
+- `grow` cannot fail, so when Spark grants less than asked the pool records the full amount anyway
+  and carries the shortfall as _overcommit_ (`spark_memory.rs`). A later `shrink` repays the
+  overcommit before returning anything to Spark, so Spark is never handed back more than it
+  granted. While overcommit is outstanding, `try_grow` asks Spark for it on top of the request and
+  is refused unless Spark can cover both, so operators spill until the debt is repaid. Both pools'
+  `Display` output and their `try_grow` errors report the current overcommit.
 
 `CometFairMemoryPool` additionally applies a local check before it asks Spark. It divides
 `pool_size` by the number of consumers currently registered with the pool and rejects the request if
@@ -298,7 +304,9 @@ Native operators reserve through DataFusion's `MemoryConsumer` / `MemoryReservat
 - `try_grow(n)` may fail. Spillable operators (`ExternalSorter`, the grouped hash aggregate,
   sort-merge join) respond to a `ResourcesExhausted` error by spilling to disk and retrying. This is
   the only mechanism that turns memory pressure into progress rather than failure.
-- `grow(n)` is infallible and panics if the pool refuses. It is used where the caller cannot spill.
+- `grow(n)` is infallible. It is used for memory that already exists and the caller cannot spill,
+  such as a spilled batch read back from disk. The Comet pools record it even when Spark grants
+  less, as overcommit (see [The unified pools](#the-unified-pools)).
 - `shrink(n)` returns bytes to the pool.
 
 An operator that never calls `try_grow` is invisible to the pool no matter how much memory it uses.
@@ -376,6 +384,12 @@ diverge for several structural reasons:
   Imported JVM batches are reserved only while a reserving operator holds them, and exported native
   batches have usually been released by the time the JVM receives them yet stay resident until the
   JVM closes them (see [Crossing the FFI boundary](#crossing-the-ffi-boundary)).
+- **Overcommit.** Unlike everything above, this is not accidental. When Spark grants less than a
+  `grow` asked for, Comet holds the difference anyway and deliberately does not tell Spark about it
+  (see [The unified pools](#the-unified-pools)). `reserved()` includes it, but Spark's memory
+  manager does not, so until it is repaid Spark can hand the same bytes to another consumer or task.
+  The `overcommit` figure in the pool's `Display` output and `try_grow` errors shows how much is
+  outstanding.
 
 The practical consequence is that `reserved()` is a lower bound on Comet's real footprint, and the
 gap is workload-dependent. The margin that covers it has to come from
