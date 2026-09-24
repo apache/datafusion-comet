@@ -47,9 +47,11 @@ With Comet's serializer installed as `spark.sql.cache.serializer`:
   expects, so Spark can prune whole cached batches on a predicate before any of them is decoded.
 
 Relations whose schema Comet's Arrow writer cannot store — interval types, most notably — are
-delegated in full to Spark's default cache format, per relation. Nothing about the format depends
-on a runtime config, because `spark.sql.cache.serializer` is a static setting and a relation whose
-format could change mid-session could not be read back reliably. Turning
+delegated in full to Spark's default cache format, per relation. Which format a relation uses does
+not depend on a runtime config, because `spark.sql.cache.serializer` is a static setting and a
+relation whose format could change mid-session could not be read back reliably. The compression
+codec is a runtime config, but each batch records the codec it was written with, so data cached
+under one setting stays readable after the setting changes. Turning
 `spark.comet.exec.inMemoryCache.enabled` off at runtime only sends cached scans back to Spark's
 execution path; the cached data stays readable either way.
 
@@ -70,19 +72,25 @@ column out of six does roughly a sixth of the decompression work, and a `SELECT 
 selects no columns at all, answers from the row count stored beside the payload without touching
 it.
 
-Compression defaults to `zstd`, which is faster than storing cached batches uncompressed: the
-bytes it saves cost more to copy and store than compressing them costs. Measured over a 200k-row,
-six-column relation:
+Compression defaults to `zstd`, for footprint rather than for speed. Over the same 5M-row,
+six-column relation the tables under [Performance](#performance) use — and measured by the same
+benchmark — it holds the data in a sixth of the memory and pays for that on both sides: about 40%
+longer to materialize, and, on a read wide enough to inflate everything, close to five times
+longer. A narrow projection pays far less, because it only inflates the columns it asked for.
 
 | Codec  | Materialize | Footprint | Read 1 of 6 | Read 6 of 6 |
 | ------ | ----------: | --------: | ----------: | ----------: |
-| `zstd` |      363 ms |     2 MiB |       56 ms |       62 ms |
-| `none` |     1776 ms |    13 MiB |       78 ms |       81 ms |
+| `zstd` |     1507 ms |    55 MiB |       45 ms |      295 ms |
+| `none` |     1081 ms |   315 MiB |       35 ms |       64 ms |
 
-Arrow's other IPC codec, LZ4, is deliberately not offered. It is commons-compress's pure-Java
-implementation and is unrelated to the JNI-accelerated lz4-java behind `spark.io.compression.codec`;
-it measured three orders of magnitude slower to write than `zstd` while also producing larger
-output, so no workload prefers it.
+`none` is the better setting for a relation that fits in memory uncompressed and is read at close
+to full width. The default is the other way round because a cache that does not fit costs more than
+one that is slower to read, and Spark's own cache format compresses by default too.
+
+Arrow's other IPC codec, LZ4, is deliberately not offered and the config rejects it. It is
+commons-compress's pure-Java implementation, unrelated to the JNI-accelerated lz4-java behind
+`spark.io.compression.codec`, and is orders of magnitude slower to write than `zstd` while also
+producing larger output.
 
 Dictionary-encoded columns are decoded before they are stored. A payload with no schema message has
 nowhere to record either that a column is dictionary encoded or the dictionary itself.
@@ -109,25 +117,27 @@ On a 5M-row relation of six flat columns:
 
 | Query shape                    | Spark cache scan + convert | `CometInMemoryTableScan` | Relative |
 | ------------------------------ | -------------------------: | -----------------------: | -------: |
-| Repeated scan (3 of 6 columns) |                     201 ms |                   167 ms |     1.2x |
-| Selective filter               |                      69 ms |                    61 ms |     1.1x |
-| Row count only (0 of 6)        |                      45 ms |                    47 ms |     1.0x |
-| Narrow projection (1 of 6)     |                      70 ms |                    57 ms |     1.2x |
-| Full projection (6 of 6)       |                     556 ms |                   290 ms |     1.9x |
+| Repeated scan (3 of 6 columns) |                     209 ms |                   172 ms |     1.2x |
+| Selective filter               |                      72 ms |                    61 ms |     1.2x |
+| Row count only (0 of 6)        |                      46 ms |                    38 ms |     1.2x |
+| Narrow projection (1 of 6)     |                      70 ms |                    58 ms |     1.2x |
+| Full projection (6 of 6)       |                     566 ms |                   324 ms |     1.7x |
 
 And on a 1M-row relation of six columns whose middle three are structs, one of them nested two
 levels deep:
 
 | Query shape                | Spark cache scan + convert | `CometInMemoryTableScan` | Relative |
 | -------------------------- | -------------------------: | -----------------------: | -------: |
-| Row count only (0 of 6)    |                      39 ms |                    35 ms |     1.1x |
-| Narrow projection (1 of 6) |                     109 ms |                    61 ms |     1.8x |
-| Full projection (6 of 6)   |                     282 ms |                   126 ms |     2.2x |
+| Row count only (0 of 6)    |                      38 ms |                    32 ms |     1.2x |
+| Narrow projection (1 of 6) |                     109 ms |                    58 ms |     1.9x |
+| Full projection (6 of 6)   |                     275 ms |                   130 ms |     2.1x |
+
+Both columns read the cache at the default codec, `zstd`. The codec table above shows what `none`
+changes, and it is the full projection that moves most: nothing has to be inflated, so it runs
+several times faster, at six times the memory.
 
 The two relations are not comparable to each other — different row counts, and a struct column
-carries several values per row. Within the struct relation the gap is wider than the flat one at
-every width, because the conversion the left column pays scales with the values per row rather than
-with the columns.
+carries several values per row.
 
 Array and map columns are deliberately absent from the benchmark, not from the format — the cache
 stores and projects them, and `CometInMemoryCacheSuite` covers them. They cannot be measured _here_
@@ -139,10 +149,9 @@ Read what this compares carefully. Comet execution is on in both columns, so the
 on Comet either way and only the cache-scan boundary moves: on the left, Spark's
 `InMemoryTableScanExec` feeds those same Comet operators through a `CometSparkColumnarToColumnar`
 bridge; on the right, `CometInMemoryTableScan` feeds them directly. Both columns read the same
-Comet-written `CometCachedBatch` — `spark.sql.cache.serializer` is static, so one session cannot
-also materialize Spark's format to compare against. These numbers are therefore "keep the cached
-scan native" against "fall back to a Spark cache scan and convert", not Comet against Spark
-execution, and not a comparison with Spark's own cache format.
+Comet-written `CometCachedBatch`. These numbers are therefore "keep the cached scan native" against
+"fall back to a Spark cache scan and convert", not Comet against Spark execution, and not a
+comparison with Spark's own cache format. That comparison is under [Limitations](#limitations).
 
 ## Kryo
 
@@ -166,10 +175,19 @@ registrator.
 
 ## Limitations
 
-Reads that feed **Spark** operators rather than Comet ones are still slower than Spark's own cache
-format, by roughly 1.7x to 2.5x depending on how wide the projection is. Those reads pay a row
-conversion that Spark's format avoids with generated code over its own layout. This is the main
-reason the feature is still described as experimental.
+Reads that feed **Spark** operators rather than Comet ones are slower than Spark's own cache
+format, and the narrower the read, the wider the gap. Measured by the same benchmark over the same
+5M-row relation, with Comet off so that Spark operators consume the cached data:
+
+| Read shape              | Spark's cache format | Comet's cache format | Slowdown |
+| ----------------------- | -------------------: | -------------------: | -------: |
+| Row count only (0 of 6) |                35 ms |               183 ms |     5.2x |
+| 1 of 6 columns          |                54 ms |               257 ms |     4.8x |
+| 3 of 6 columns          |                98 ms |               331 ms |     3.4x |
+| 6 of 6 columns          |               410 ms |               623 ms |     1.5x |
+
+This is the main reason the feature is still described as experimental. The cause is not yet
+established; [#5485](https://github.com/apache/datafusion-comet/issues/5485) tracks it.
 
 Comet's serializer exists because Spark's own Arrow cache format
 ([SPARK-57268](https://issues.apache.org/jira/browse/SPARK-57268)) is only available from Spark

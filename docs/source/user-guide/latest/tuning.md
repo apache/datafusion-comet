@@ -108,9 +108,13 @@ there is. That includes:
 
 Reserved memory is therefore a lower bound on what Comet really uses, and how far below it sits depends on the
 workload. This is why Comet can stay within the pool's limit and still push the executor past its container limit.
-Each executor logs how far apart the two are while Comet runs; see [Sizing the Overhead from the Memory Usage Log].
-To leave room for the part that is not counted, set `spark.comet.exec.memoryPool.fraction` to a value less than
-`1.0`, which restricts the amount of memory Comet is allowed to reserve.
+The part that is not counted has to fit in `spark.executor.memoryOverhead`, and each executor logs how large it is
+while Comet runs; see [Sizing the Overhead from the Memory Usage Log].
+
+`spark.comet.exec.memoryPool.fraction` is deprecated and does not leave room for it. Spark hands out all of
+`spark.memory.offHeap.size` to the tasks that ask for it, whatever the fraction. The `fair_unified` pool applies the
+fraction to each task separately, where Spark's own limit of an even share of the pool per running task is tighter
+whenever more than one task is running, and the `greedy_unified` pool ignores it.
 
 For more details about Spark off-heap memory mode, please refer to [Spark documentation].
 
@@ -380,6 +384,14 @@ direct-column `IS NOT NULL` checks, including conjunctions, and remaps columns w
 projects the file schema. The original null checks and residual runtime filter remain in place.
 The original join still verifies matches, including any hash collisions admitted by the filter.
 Standalone projections, other filter expressions, and limits prevent reader attachment.
+
+To preserve schema-conversion and timestamp-overflow errors, runtime reader pruning is disabled for
+each file whose projected or statically filtered columns require schema adaptations beyond direct
+column mappings or literal values. This conservative check also disables reader pruning for allowed
+`INT32` to `BIGINT` promotion and for projecting a subset of a struct's fields, even when those
+adaptations cannot fail. Nested column pruning still reads only the requested struct fields. Scans
+with supplied file statistics also skip reader attachment. These cases still use runtime filtering
+on decoded batches.
 
 Filters stay within the task's native plan and do not propagate across Spark exchanges or JVM/Arrow
 boundaries. A shuffled hash join can still filter probe batches after shuffle, but it cannot send

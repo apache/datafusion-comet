@@ -19,7 +19,7 @@
 
 package org.apache.spark.sql.comet.execution.arrow
 
-import java.io.{ByteArrayInputStream, ByteArrayOutputStream}
+import java.nio.ByteBuffer
 import java.nio.channels.Channels
 
 import scala.collection.mutable
@@ -39,6 +39,7 @@ import org.apache.arrow.vector.util.DataSizeRoundingUtil
 import org.apache.spark.SparkException
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.vectorized.ColumnarBatch
+import org.apache.spark.util.io.{ChunkedByteBuffer, ChunkedByteBufferOutputStream}
 
 import org.apache.comet.vector.CometVector
 
@@ -82,11 +83,6 @@ private[comet] object CachedBatchIpc {
         s"Unsupported Arrow compression codec for Comet's cache: $other. " +
           "Supported values: none, zstd")
   }
-
-  // Room for the encapsulated metadata message that precedes the body. The message is a small
-  // flatbuffer whose size grows with the field count, not the data, so this is a starting size for
-  // the output buffer rather than a bound -- it grows if a very wide schema needs more.
-  private val METADATA_SIZE_HINT = 8 * 1024
 
   // Decompressors are stateless and shared. Resolving one per cached batch would allocate a codec
   // per batch on every scan, and the enum lookup walks the CodecType values each time.
@@ -184,7 +180,13 @@ private[comet] object CachedBatchIpc {
   /**
    * Serialize `batch` into one encapsulated IPC RecordBatch message.
    *
-   * Returns the message bytes and the on-body compressed size of each top-level column, which the
+   * The message is written into heap chunks of `chunkSize` bytes rather than one array, so a
+   * batch is not bounded by the 2 GiB a single JVM array can hold. Nothing bounds a cached
+   * batch's bytes upstream: the row path cuts batches by row count alone, and a columnar input
+   * batch arrives at whatever size the plan above produced. Chunks are appended rather than grown
+   * and recopied, so the write also never holds the payload twice.
+   *
+   * Returns the message and the on-body compressed size of each top-level column, which the
    * caller records in the statistics row. The sizes come from the message's own buffer layout, so
    * they are the real stored sizes rather than an estimate.
    *
@@ -200,7 +202,8 @@ private[comet] object CachedBatchIpc {
   def serialize(
       batch: ColumnarBatch,
       codec: CompressionCodec,
-      allocator: BufferAllocator): (Array[Byte], Array[Long]) = {
+      allocator: BufferAllocator,
+      chunkSize: Int): (ChunkedByteBuffer, Array[Long]) = {
     val (vectors, decoded) = decodeDictionaries(batch, allocator)
     try {
       val root = new VectorSchemaRoot(vectors.asJava)
@@ -224,15 +227,14 @@ private[comet] object CachedBatchIpc {
         // clearing releases buffers, not the schema.
         root.clear()
 
-        // Sized up front from the body length the record batch already knows, plus room for the
-        // metadata message. An unsized ByteArrayOutputStream starts at 32 bytes and doubles, so a
-        // multi-MiB payload would be reallocated and recopied a dozen-odd times per batch.
-        val sizeHint = recordBatch.computeBodyLength() + METADATA_SIZE_HINT
-        val out = new ByteArrayOutputStream(
-          math.min(math.max(sizeHint, METADATA_SIZE_HINT), Int.MaxValue.toLong).toInt)
-        val channel = new WriteChannel(Channels.newChannel(out))
-        MessageSerializer.serialize(channel, recordBatch)
-        (out.toByteArray, columnSizes(fields, recordBatch))
+        val out = new ChunkedByteBufferOutputStream(chunkSize, ByteBuffer.allocate)
+        try {
+          val channel = new WriteChannel(Channels.newChannel(out))
+          MessageSerializer.serialize(channel, recordBatch)
+        } finally {
+          out.close()
+        }
+        (out.toChunkedByteBuffer, columnSizes(fields, recordBatch))
       } finally {
         recordBatch.close()
       }
@@ -278,8 +280,8 @@ private[comet] object CachedBatchIpc {
      * selected are never read, let alone inflated. The windows are then decompressed in one pass;
      * see [[decompressed]] for why that is not left to `VectorLoader`.
      */
-    def load(data: Array[Byte], allocator: BufferAllocator): VectorSchemaRoot = {
-      val readChannel = new ReadChannel(Channels.newChannel(new ByteArrayInputStream(data)))
+    def load(data: ChunkedByteBuffer, allocator: BufferAllocator): VectorSchemaRoot = {
+      val readChannel = new ReadChannel(Channels.newChannel(data.toInputStream()))
       // Reads the message metadata only. The body stays in `data` and is copied selectively.
       val metadata = MessageSerializer.readMessage(readChannel)
       if (metadata == null) {
@@ -302,7 +304,8 @@ private[comet] object CachedBatchIpc {
 
       // serialize writes exactly [encapsulated message][body] and nothing after it, so the body is
       // the tail of `data`.
-      val bodyStart = data.length - metadata.getMessageBodyLength.toInt
+      val bodyStart = data.size - metadata.getMessageBodyLength
+      val chunks = new PayloadChunks(data)
 
       val compression =
         if (batch.compression() == null) NoCompressionCodec.DEFAULT_BODY_COMPRESSION
@@ -314,48 +317,71 @@ private[comet] object CachedBatchIpc {
         nodes.add(new ArrowFieldNode(node.length(), node.nullCount()))
       }
 
+      // Under a codec, a buffer that compressing would not have shrunk is stored as it was, behind
+      // a -1 length prefix, and decompressing hands it back as a slice of whatever holds it rather
+      // than as an allocation of its own. Those windows are therefore copied into an allocation of
+      // their own: sharing one with the compressed windows, the smallest of them would keep every
+      // compressed byte of the batch alive for as long as the decoded vectors.
+      val compressedBody = compression.getCodec != NoCompressionCodec.COMPRESSION_TYPE
       val offsets = new Array[Long](bufferIndices.length)
       val lengths = new Array[Long](bufferIndices.length)
-      var total = 0L
+      val storedRaw = new Array[Boolean](bufferIndices.length)
+      var packedTotal = 0L
+      var rawTotal = 0L
       var k = 0
       while (k < bufferIndices.length) {
         val buffer = batch.buffers(bufferIndices(k))
         offsets(k) = buffer.offset()
         lengths(k) = buffer.length()
-        total += DataSizeRoundingUtil.roundUpTo8Multiple(lengths(k))
+        storedRaw(k) = compressedBody &&
+          lengths(k) >= CompressionUtil.SIZE_OF_UNCOMPRESSED_LENGTH &&
+          chunks.readLong(bodyStart + offsets(k)) == CompressionUtil.NO_COMPRESSION_LENGTH
+        val size = DataSizeRoundingUtil.roundUpTo8Multiple(lengths(k))
+        if (storedRaw(k)) rawTotal += size else packedTotal += size
         k += 1
       }
 
-      // allocator.buffer(0) is legal but yields a buffer no window can be sliced from, and an
-      // all-empty projection (every selected column a NullVector, say) would ask for exactly that.
-      val body = allocator.buffer(math.max(total, 1L))
+      var packed: ArrowBuf = null
+      var raw: ArrowBuf = null
       val compressedBatch =
         try {
+          if (packedTotal > 0) packed = allocator.buffer(packedTotal)
+          if (rawTotal > 0) raw = allocator.buffer(rawTotal)
+
+          def window(into: ArrowBuf, at: Long, i: Int): ArrowBuf = {
+            chunks.copyTo(into, at, bodyStart + offsets(i), lengths(i))
+            val slice = into.slice(at, lengths(i))
+            slice.writerIndex(lengths(i))
+            slice
+          }
+
           val buffers = new java.util.ArrayList[ArrowBuf](bufferIndices.length)
-          var position = 0L
+          var packedPosition = 0L
+          var rawPosition = 0L
           var i = 0
           while (i < bufferIndices.length) {
-            val length = lengths(i)
-            if (length > 0) {
-              body.setBytes(position, data, bodyStart + offsets(i).toInt, length.toInt)
+            val size = DataSizeRoundingUtil.roundUpTo8Multiple(lengths(i))
+            if (lengths(i) == 0) {
+              // Empty, so there is nothing to copy and no allocation for it to keep alive.
+              buffers.add(allocator.getEmpty)
+            } else if (storedRaw(i)) {
+              buffers.add(window(raw, rawPosition, i))
+              rawPosition += size
+            } else {
+              buffers.add(window(packed, packedPosition, i))
+              packedPosition += size
             }
-            val window = body.slice(position, length)
-            window.writerIndex(length)
-            buffers.add(window)
-            position += DataSizeRoundingUtil.roundUpTo8Multiple(length)
             i += 1
           }
           new ArrowRecordBatch(batch.length().toInt, nodes, buffers, compression, false)
-        } catch {
-          case NonFatal(e) =>
-            body.close()
-            throw e
+        } finally {
+          // The constructor retained each window; slice() alone does not. Dropping these
+          // references leaves the batch as sole owner of both allocations, so closing the batch
+          // is what frees them -- and if anything above threw, this is what frees them instead.
+          if (packed != null) packed.close()
+          if (raw != null) raw.close()
         }
 
-      // The constructor retained each window; slice() alone does not. Dropping `body`'s own
-      // reference leaves the batch as sole owner of the one allocation, so closing the batch is
-      // what frees it -- and closing `body` again would drive its reference count negative.
-      body.close()
       val plainBatch =
         try decompressed(compressedBatch, allocator)
         finally compressedBatch.close()
@@ -373,6 +399,74 @@ private[comet] object CachedBatchIpc {
       } finally {
         plainBatch.close()
       }
+    }
+  }
+
+  /**
+   * Random access to a chunked payload by absolute position.
+   *
+   * A buffer's window within the body is wherever the writer's chunking happened to put it, so it
+   * can start in one chunk and end several chunks later. The chunk starts are summed from the
+   * chunks themselves rather than assumed to be a multiple of the writer's chunk size, which
+   * keeps the reader independent of how the payload was cut.
+   */
+  private final class PayloadChunks(data: ChunkedByteBuffer) {
+    // Duplicates, so the positions set while copying do not touch the cached payload's buffers.
+    private val chunks: Array[ByteBuffer] = data.getChunks()
+    private val starts: Array[Long] = chunks.scanLeft(0L)(_ + _.remaining()).toArray
+
+    /** Copy `length` bytes starting at `from` in the payload into `dst` at `dstIndex`. */
+    def copyTo(dst: ArrowBuf, dstIndex: Long, from: Long, length: Long): Unit = {
+      checkRange(from, length)
+      var c = chunkAt(from)
+      var copied = 0L
+      while (copied < length) {
+        val chunk = chunks(c)
+        val offsetInChunk = (from + copied - starts(c)).toInt
+        val n = math.min(length - copied, chunk.remaining().toLong - offsetInChunk).toInt
+        if (n > 0) {
+          val window = chunk.duplicate()
+          window.position(chunk.position() + offsetInChunk)
+          window.limit(chunk.position() + offsetInChunk + n)
+          dst.setBytes(dstIndex + copied, window)
+          copied += n
+        }
+        c += 1
+      }
+    }
+
+    /** The little-endian long at `from` in the payload, which may straddle two chunks. */
+    def readLong(from: Long): Long = {
+      checkRange(from, java.lang.Long.BYTES)
+      var value = 0L
+      var i = java.lang.Long.BYTES - 1
+      while (i >= 0) {
+        val at = from + i
+        var c = chunkAt(at)
+        // Skip the empty chunks that share a start with the one holding `at`.
+        while (starts(c + 1) <= at) c += 1
+        val chunk = chunks(c)
+        value = (value << 8) | (chunk.get(chunk.position() + (at - starts(c)).toInt) & 0xffL)
+        i -= 1
+      }
+      value
+    }
+
+    // The flatbuffer accessors behind a window's position and length are unchecked, so a window
+    // reaching past the payload is a corrupt or mismatched batch, and is reported as one rather
+    // than as an index error from inside a read.
+    private def checkRange(from: Long, length: Long): Unit =
+      if (from < 0 || length < 0 || from + length > starts.last) {
+        throw new SparkException(
+          s"Comet cached batch records a buffer at [$from, ${from + length}) outside its " +
+            s"${starts.last}-byte payload")
+      }
+
+    // The last chunk whose start is at or before `from`. Empty chunks share a start with the
+    // chunk after them; callers step past those.
+    private def chunkAt(from: Long): Int = {
+      val found = java.util.Arrays.binarySearch(starts, 0, chunks.length, from)
+      if (found >= 0) found else -found - 2
     }
   }
 

@@ -26,7 +26,7 @@ import scala.collection.JavaConverters._
 import org.apache.spark.TaskContext
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
-import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression, GenericInternalRow, IsNotNull, IsNull, UnsafeProjection}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression, GenericInternalRow, IsNotNull, IsNull, StartsWith, UnsafeProjection}
 import org.apache.spark.sql.catalyst.util.TypeUtils
 import org.apache.spark.sql.columnar.{CachedBatch, SimpleMetricsCachedBatch, SimpleMetricsCachedBatchSerializer}
 import org.apache.spark.sql.comet.util.Utils
@@ -36,6 +36,7 @@ import org.apache.spark.sql.types._
 import org.apache.spark.sql.vectorized.{ColumnarBatch, ColumnVector}
 import org.apache.spark.storage.StorageLevel
 import org.apache.spark.unsafe.types.UTF8String
+import org.apache.spark.util.io.ChunkedByteBuffer
 
 import org.apache.comet.{CometArrowAllocator, CometConf, DataTypeSupport}
 import org.apache.comet.vector.NativeUtil
@@ -44,27 +45,30 @@ import org.apache.comet.vector.NativeUtil
  * Cached batch format used when Comet writes Spark in-memory cache data.
  *
  * `bytes` is one encapsulated Arrow IPC RecordBatch message and its body, with no Schema message
- * and no end-of-stream marker, produced by `CachedBatchIpc.serialize`. Compression is applied per
- * Arrow buffer rather than over the payload as a whole, which is what lets a scan decompress only
- * the columns it projected: the message records every buffer's offset and length, so
- * `CachedBatchIpc.Projection.load` copies out just the selected columns' byte ranges. The cache
- * manager still owns storage and eviction; this class only changes the cached payload.
+ * and no end-of-stream marker, produced by `CachedBatchIpc.serialize`. It is held in heap chunks
+ * rather than one array so that a batch is not capped at the 2 GiB a JVM array can address.
+ * Compression is applied per Arrow buffer rather than over the payload as a whole, which is what
+ * lets a scan decompress only the columns it projected: the message records every buffer's offset
+ * and length, so `CachedBatchIpc.Projection.load` copies out just the selected columns' byte
+ * ranges. The cache manager still owns storage and eviction; this class only changes the cached
+ * payload.
  */
 private case class CometCachedBatch(
     override val numRows: Int,
     override val sizeInBytes: Long,
     override val stats: InternalRow,
-    bytes: Array[Byte])
+    bytes: ChunkedByteBuffer)
     extends SimpleMetricsCachedBatch
 
 /**
- * The write codec, resolved on the driver and shipped to the executors in the write closure.
+ * The write codec and payload chunk size, resolved on the driver and shipped to the executors in
+ * the write closure.
  *
  * Both write paths resolve it there rather than inside their `mapPartitions` closure: on an
  * executor `CometConf` would resolve against whatever `SQLConf` happens to be current on that
  * thread rather than against this session's.
  */
-private case class CacheCodecSettings(name: String, zstdLevel: Int)
+private case class CacheWriteSettings(codecName: String, zstdLevel: Int, chunkSize: Int)
 
 /**
  * Cache serializer that stores Comet-compatible Arrow batches in Spark's in-memory cache.
@@ -372,10 +376,11 @@ class ArrowCachedBatchSerializer extends SimpleMetricsCachedBatchSerializer {
     case _ => false
   }
 
-  private def codecSettings(conf: SQLConf): CacheCodecSettings =
-    CacheCodecSettings(
+  private def writeSettings(conf: SQLConf): CacheWriteSettings =
+    CacheWriteSettings(
       CometConf.COMET_EXEC_IN_MEMORY_CACHE_COMPRESSION_CODEC.get(conf),
-      CometConf.COMET_EXEC_IN_MEMORY_CACHE_COMPRESSION_ZSTD_LEVEL.get(conf))
+      CometConf.COMET_EXEC_IN_MEMORY_CACHE_COMPRESSION_ZSTD_LEVEL.get(conf),
+      CometConf.COMET_EXEC_IN_MEMORY_CACHE_CHUNK_SIZE.get(conf).toInt)
 
   // Serialize each batch to Arrow, gathering the Spark-compatible cache stats first. The stats are
   // stored beside the Arrow bytes so Spark's cache filter can prune a CometCachedBatch without
@@ -387,11 +392,11 @@ class ArrowCachedBatchSerializer extends SimpleMetricsCachedBatchSerializer {
   private def encodeBatches(
       batches: Iterator[ColumnarBatch],
       attrs: Seq[Attribute],
-      codecSetting: CacheCodecSettings): Iterator[CachedBatch] = {
+      settings: CacheWriteSettings): Iterator[CachedBatch] = {
     val arrowSchema =
       Utils.toArrowSchema(Utils.fromAttributes(attrs), CometArrowStream.NATIVE_TIMEZONE)
     val readerFields = arrowSchema.getFields.asScala.toIndexedSeq
-    val codec = CachedBatchIpc.compressionCodec(codecSetting.name, codecSetting.zstdLevel)
+    val codec = CachedBatchIpc.compressionCodec(settings.codecName, settings.zstdLevel)
     val orderings = boundsOrderings(attrs)
 
     batches.map { batch =>
@@ -408,17 +413,17 @@ class ArrowCachedBatchSerializer extends SimpleMetricsCachedBatchSerializer {
         Utils.isArrowBacked(batch) && CachedBatchIpc.matchesReaderLayout(batch, readerFields)
 
       val (bytes, columnSizes) = if (writeDirectly) {
-        CachedBatchIpc.serialize(batch, codec, CometArrowAllocator)
+        CachedBatchIpc.serialize(batch, codec, CometArrowAllocator, settings.chunkSize)
       } else {
         val arrowBatch =
           CometArrowConverters.columnarBatchToArrowBatch(batch, arrowSchema, CometArrowAllocator)
-        try CachedBatchIpc.serialize(arrowBatch, codec, CometArrowAllocator)
+        try CachedBatchIpc.serialize(arrowBatch, codec, CometArrowAllocator, settings.chunkSize)
         finally arrowBatch.close()
       }
 
       CometCachedBatch(
         numRows = numRows,
-        sizeInBytes = bytes.length.toLong,
+        sizeInBytes = bytes.size,
         stats = statsRow(lower, upper, nulls, numRows, columnSizes),
         bytes = bytes)
     }
@@ -451,6 +456,8 @@ class ArrowCachedBatchSerializer extends SimpleMetricsCachedBatchSerializer {
   // makes a comparison against them evaluate to null and therefore prune the batch. That would
   // silently drop rows, so predicates over columns without bounds are not pushed down at all.
   // Null counts and row counts are recorded for every column, so IsNull and IsNotNull stay safe.
+  // A column that does have bounds can still be unsafe to prune on through StartsWith; see
+  // prunesOnCollatedPrefix.
   override def buildFilter(
       predicates: Seq[Expression],
       cachedAttributes: Seq[Attribute]): (Int, Iterator[CachedBatch]) => Iterator[CachedBatch] = {
@@ -460,10 +467,23 @@ class ArrowCachedBatchSerializer extends SimpleMetricsCachedBatchSerializer {
 
     val prunablePredicates = predicates.filter {
       case _: IsNull | _: IsNotNull => true
-      case p => p.references.forall(a => prunable.contains(a.exprId))
+      case p =>
+        p.references.forall(a => prunable.contains(a.exprId)) && !prunesOnCollatedPrefix(p)
     }
 
     super.buildFilter(prunablePredicates, cachedAttributes)
+  }
+
+  // Spark prunes StartsWith by cutting each bound to the prefix's length in characters, which
+  // assumes a matching value begins with as many characters as the prefix has. That holds under
+  // binary comparison but not under every collation: under UTF8_LCASE, U+0130 is one character
+  // that lowercases to two, so a batch of values beginning with it is pruned against a
+  // two-character prefix they all match. Spark's own cache prunes the same way. A predicate that
+  // holds such a StartsWith anywhere is left out whole, since leaving out a conjunct only prunes
+  // less. Equality and range predicates compare with the collation itself, so they still prune.
+  private def prunesOnCollatedPrefix(predicate: Expression): Boolean = predicate.exists {
+    case StartsWith(left, _) => left.dataType != StringType
+    case _ => false
   }
 
   // Comet's Arrow writer only handles the types listed in supportsSchema. Reporting false here
@@ -498,10 +518,10 @@ class ArrowCachedBatchSerializer extends SimpleMetricsCachedBatchSerializer {
       storageLevel: StorageLevel,
       conf: SQLConf): RDD[CachedBatch] = {
 
-    val codec = codecSettings(conf)
+    val settings = writeSettings(conf)
 
     input.mapPartitions { batches =>
-      encodeBatches(batches, schema, codec)
+      encodeBatches(batches, schema, settings)
     }
   }
 
@@ -638,7 +658,7 @@ class ArrowCachedBatchSerializer extends SimpleMetricsCachedBatchSerializer {
       fallback.convertInternalRowToCachedBatch(input, schema, storageLevel, conf)
     } else {
       val batchSize = conf.columnBatchSize
-      val codec = codecSettings(conf)
+      val settings = writeSettings(conf)
 
       input.mapPartitions { rows =>
         val iter = CometArrowConverters.rowToArrowBatchIter(
@@ -656,7 +676,7 @@ class ArrowCachedBatchSerializer extends SimpleMetricsCachedBatchSerializer {
           CometArrowStream.NATIVE_TIMEZONE,
           CometArrowAllocator)
 
-        encodeBatches(iter, schema, codec)
+        encodeBatches(iter, schema, settings)
       }
     }
   }
@@ -728,10 +748,9 @@ object ArrowCachedBatchSerializer {
    * `CometKryoRegistrator` registers these instead.
    */
   def kryoClasses: Seq[Class[_]] = Seq(
+    // The payload itself is a ChunkedByteBuffer of heap chunks, which Utils.arrowBytesKryoClasses
+    // already registers for the native broadcast path.
     classOf[CometCachedBatch],
-    // The payload itself. Kryo registers Array[Byte] by default, but registering it here is what
-    // keeps that true if the payload type ever changes again.
-    classOf[Array[Byte]],
     // The statistics row, whose values are bounds in Spark's internal representation: boxed
     // primitives, which Kryo registers by default, plus UTF8String and Decimal, which it does not.
     // A Decimal above Long precision holds a scala.math.BigDecimal, which Chill's Scala registrar
