@@ -1291,7 +1291,12 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
   }
 
   def supportedSortType(op: SparkPlan, sortOrder: Seq[SortOrder]): Boolean = {
-    if (sortOrder.length == 1) {
+    // Both single- and multi-column sorts compare strings by raw bytes. Check nested types
+    // before the single-column kernel restrictions, since multi-column keys bypass those.
+    if (sortOrder.exists(order => hasNonDefaultStringCollation(order.dataType))) {
+      withFallbackReason(op, "Sort does not support non-default string collation")
+      false
+    } else if (sortOrder.length == 1) {
       val canSort = sortOrder.head.dataType match {
         case ArrayType(elementType, _) => supportedScalarSortElementType(elementType)
         case MapType(_, valueType, _) => supportedScalarSortElementType(valueType)
