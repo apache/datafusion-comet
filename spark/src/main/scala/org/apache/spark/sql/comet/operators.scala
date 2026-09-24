@@ -30,7 +30,7 @@ import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.internal.Logging
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
-import org.apache.spark.sql.catalyst.expressions.{Ascending, Attribute, AttributeSeq, AttributeSet, Expression, ExpressionSet, Generator, NamedExpression, SortOrder, XXH64}
+import org.apache.spark.sql.catalyst.expressions.{Ascending, Attribute, AttributeSeq, AttributeSet, Expression, ExpressionSet, Generator, Literal, NamedExpression, SortOrder, XXH64}
 import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, AggregateMode, CollectList, CollectSet, Final, Mode, Partial, PartialMerge, Percentile}
 import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, BuildSide}
 import org.apache.spark.sql.catalyst.plans._
@@ -2428,12 +2428,16 @@ trait CometHashJoin {
         case FullOuter => JoinType.FullOuter
         case LeftSemi => JoinType.LeftSemi
         case LeftAnti => JoinType.LeftAnti
-        // Pass exec to native for equi-join keys only: Spark short-circuits on first match
-        // while DataFusion does not. Once DF supports short-circuit evaluation, this fallback
-        // can be removed / revisited.
+        // Native only for equi-join keys that are bare column refs / literals: Spark short-
+        // circuits on first match and can skip key evaluation, but DF evaluates all keys eagerly
+        // over the batch, so a computed key (e.g. a throwing cast) could error on skipped rows.
         case ExistenceJoin(_)
             if CometConf.COMET_EXEC_EXISTENCE_JOIN_ENABLED.get(join.conf) &&
-              join.condition.isEmpty =>
+              join.condition.isEmpty &&
+              (join.leftKeys ++ join.rightKeys).forall {
+                case _: Attribute | _: Literal => true
+                case _ => false
+              } =>
           JoinType.Existence
         case _ =>
           // Spark doesn't support other join types
