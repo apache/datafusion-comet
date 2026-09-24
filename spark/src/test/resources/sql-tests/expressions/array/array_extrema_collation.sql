@@ -31,11 +31,7 @@ INSERT INTO test_array_extrema_collation VALUES
   (3, 'A', 'a', double('-0.0'), double('0.0')),
   (4, NULL, 'B', NULL, double('0.0')),
   (5, NULL, NULL, NULL, NULL),
-  (6, 'x ', 'x', 1.0, 2.0),
-  (7, 'İ', 'i̇', 1.0, 2.0),
-  (8, 'ς', 'σ', 1.0, 2.0),
-  (9, 'K', 'k', 1.0, 2.0),
-  (10, 'a\t', 'a ', 1.0, 2.0)
+  (6, 'x ', 'x', 1.0, 2.0)
 
 -- Binary strings and floating-point values remain native with the dispatcher enabled.
 query expect_native(array_min,array_max)

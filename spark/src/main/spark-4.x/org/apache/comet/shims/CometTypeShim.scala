@@ -57,8 +57,8 @@ trait CometTypeShim {
     case _ => false
   }
 
-  def stringCollationName(dt: DataType): String =
-    CollationFactory.fetchCollation(dt.asInstanceOf[StringType].collationId).collationName
+  def stringCollationName(dt: StringType): String =
+    CollationFactory.fetchCollation(dt.collationId).collationName
 
   def collationUnicodeVersion: Int = UCharacter.getUnicodeVersion.getMajor
 

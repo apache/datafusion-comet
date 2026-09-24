@@ -214,16 +214,15 @@ License: http://www.apache.org/licenses/LICENSE-2.0
 
 --------------------------------------------------------------------------------
 
-This project includes Unicode lowercase mapping data from ICU 76.1 and ICU 78.3 in
-native/spark-expr/src/array_funcs/array_extrema/unicode_lowercase.rs.
-The data is distributed under the following Unicode License V3. The source
-commits and SHA-256 digests are recorded in dev/generate-spark-lcase.py.
+This project includes Unicode 17 lowercase mapping additions from ICU 78.3 in
+native/spark-expr/src/array_funcs/array_extrema.rs. The source data is available at
+https://github.com/unicode-org/icu/blob/21d1eb0f306e1141c10931e914dfc038c06121da/icu4c/source/data/unidata/UnicodeData.txt
+and is distributed under the following Unicode License V3.
 
 UNICODE LICENSE V3
 
 COPYRIGHT AND PERMISSION NOTICE
 
-Copyright © 2016-2024 Unicode, Inc.
 Copyright © 2016-2025 Unicode, Inc.
 
 NOTICE TO USER: Carefully read the following legal agreement. BY
