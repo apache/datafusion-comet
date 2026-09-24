@@ -326,10 +326,13 @@ use:
   writer.
 - **`CometColumnarExchange`** is the **JVM columnar shuffle** path. It accepts
   either Spark row-based input or Comet columnar input, which makes it the
-  fallback when the child is not a Comet operator or when a hash/range key
-  type is not supported by native shuffle (for example, collated strings). It
-  is still preferred over Spark's native shuffle when Comet shuffle is
-  enabled.
+  fallback when the child is not a Comet operator, when a hash/range key type
+  is not supported by native shuffle, or when native shuffle cannot serialize
+  the key expression (for example the `mapsort` wrapper Spark 4.0 and later
+  adds around an array or struct map key). A collated hash or range key is
+  not one of these cases: both Comet paths decline it and the exchange stays
+  a plain Spark `Exchange`. `CometColumnarExchange` is still preferred over
+  Spark's shuffle when Comet shuffle is enabled.
 
 Both paths support the same set of partitioning schemes
 (`HashPartitioning`, `RangePartitioning`, `RoundRobinPartitioning`,

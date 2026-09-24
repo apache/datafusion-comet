@@ -54,6 +54,20 @@ JVM shuffle (`CometColumnarExchange`) is used instead of native shuffle (`CometE
    [Supported partition key types](native_shuffle.md#when-native-shuffle-is-used) for the exact
    rules. Complex types are fully supported as data columns in both implementations.
 
+4. **Partition keys native shuffle cannot serialize**: native shuffle serializes the
+   partitioning expressions to protobuf, so a key expression Comet has no serde for, or whose
+   serde reports it incompatible, keeps the exchange off the native path. JVM shuffle has no
+   such requirement, because it evaluates the key on the JVM through `UnsafeProjection` and
+   `LazilyGeneratedOrdering`, so these exchanges land here rather than on Spark's shuffle. One
+   example is the `mapsort(...)` wrapper Spark 4.0 and later adds around a map used as a
+   shuffle key: Comet cannot serialize it for array or struct map keys, so such an exchange
+   becomes `CometColumnarExchange`.
+
+Collated strings are the exception. A hash or range key whose type is a non-`UTF8_BINARY`
+collated string is declined by both Comet paths, so the exchange stays a plain Spark
+`Exchange`. That fallback is deliberate: it also keeps the rest of the stage off Comet, which
+is currently what stops `CometSort` from ordering such a key by raw bytes.
+
 ## Input Handling
 
 ### Spark Row-Based Input
