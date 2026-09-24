@@ -117,6 +117,54 @@ private[shuffle] object NativeBatchDecoderIteratorLifecycleChecks {
     }
   }
 
+  /**
+   * A task-scoped buffer must be handed from one decoder iterator to the next without a new
+   * direct allocation, grow only when a block does not fit, and never shrink back when an
+   * iterator is closed; the old per-iterator reset reallocated on every fetched map output.
+   */
+  def reusesTaskScopedBufferAcrossIterators(): Unit = {
+    val buffer = new ShuffleBlockBuffer()
+    val small = buffer.acquire(12)
+    assert(buffer.allocations == 1)
+    assert(small.isDirect && small.position() == 0 && small.limit() == 12)
+    assert(small.capacity() >= 128 * 1024, "first allocation starts at the initial size")
+
+    // Fits in the initial allocation: same buffer, no new allocation.
+    assert(buffer.acquire(64 * 1024) eq small)
+    assert(buffer.allocations == 1)
+
+    // Larger than the allocation: grows to twice the block.
+    val large = buffer.acquire(300 * 1024)
+    assert(buffer.allocations == 2)
+    assert(large.capacity() == 600 * 1024 && large.limit() == 300 * 1024)
+
+    // Every iterator that shares the buffer sees the grown allocation, and closing one does not
+    // give it back.
+    val batch = new TrackingBatch()
+    val util = new NativeUtil {
+      override def getNextBatch(
+          numOutputCols: Int,
+          decode: (Array[Long], Array[Long]) => Long): Option[ColumnarBatch] = Some(batch)
+    }
+    try {
+      (0 until 3).foreach { _ =>
+        val decoder = NativeBatchDecoderIterator(
+          new ByteArrayInputStream(frame),
+          new SQLMetric("nsTiming", 0L),
+          null,
+          util,
+          tracingEnabled = false,
+          dataBuffer = buffer)
+        assert(decoder.hasNext)
+        decoder.close()
+      }
+    } finally {
+      util.close()
+    }
+    assert(buffer.allocations == 2, "closing iterators must not reallocate the shared buffer")
+    assert(buffer.acquire(200 * 1024) eq large)
+  }
+
   def closesPrefetchedBatch(): Unit = {
     val batch = new TrackingBatch()
     withDecoder(batch) { (decoder, inputCloseCalls) =>
