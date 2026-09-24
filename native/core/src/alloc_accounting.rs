@@ -19,7 +19,7 @@
 //!
 //! [`AccountingAllocator`] wraps the selected global allocator and maintains a single signed
 //! process-wide byte balance, which [`current_balance`] exposes so it can be compared against the
-//! memory pool's reservations in tracing output. This is observability only: it never rejects an
+//! memory pool's reservations in the executor's memory usage log and in tracing output. This is observability only: it never rejects an
 //! allocation, never panics, and never gates the memory pool.
 //!
 //! The balance counts `Layout` bytes, not resident pages: it excludes allocator fragmentation,
@@ -105,7 +105,7 @@ impl Drop for SettleOnExit {
 
 /// Bytes currently handed out by the Rust global allocator, process-wide.
 ///
-/// Returns 0 when the [`AccountingAllocator`] is not installed. Never reported negative: the
+/// Never reported negative: the
 /// balance can dip below zero transiently while per-thread deltas settle out of order.
 ///
 /// The value is approximate. Each live thread holds up to [`SETTLE_THRESHOLD`] bytes of
@@ -309,10 +309,9 @@ mod tests {
     }
 
     /// A real allocation must move the reported balance. This is the one test that checks the
-    /// wrapper is actually installed as the global allocator for the current feature set. The
-    /// block is zeroed and never touched, so it costs address space rather than resident memory.
+    /// wrapper is actually installed as the global allocator. The block is zeroed and never
+    /// touched, so it costs address space rather than resident memory.
     #[test]
-    #[cfg(feature = "alloc-accounting")]
     fn a_real_allocation_raises_the_balance() {
         use std::hint::black_box;
 
@@ -326,7 +325,7 @@ mod tests {
         assert!(
             during >= before + SIZE / 2,
             "a {SIZE} byte allocation should raise the balance (before={before}, during={during}); \
-             is the accounting wrapper installed for this feature set?"
+             is the accounting wrapper installed as the global allocator?"
         );
         drop(held);
     }
@@ -405,38 +404,45 @@ mod tests {
         unsafe { allocator.dealloc(ptr, Layout::from_size_align(SHRUNK, 8).unwrap()) };
     }
 
-    /// Threads must settle their remaining drift on exit.
+    /// A thread's remaining drift must reach the shared balance when the thread exits.
     ///
-    /// The worker registers its exit hook with a first tracked delta, writes a drift straight into
-    /// its state and exits, so the only path by which that value can reach the shared balance is
-    /// `SettleOnExit::drop`. That holds only while the wrapper is not installed: with it, thread
-    /// teardown's own allocations call `track` and flush the oversized drift before the destructor
-    /// runs, and the test would pass without one. So the test is confined to the default build,
-    /// which is the one CI runs. The injected amount is far larger than any real allocation, and
-    /// is taken back out afterwards.
+    /// This injects a drift into a registered thread's state and drops a `SettleOnExit` directly,
+    /// rather than letting the thread exit. With the wrapper installed, the thread's teardown
+    /// allocates, and those allocations flush an oversized drift through `track` before the
+    /// destructor runs, so a thread-exit test would pass without the destructor. Nothing between
+    /// the injection and the drop allocates, so only the destructor can move the drift. That the
+    /// destructor runs when a registered thread exits is the `thread_local!` guarantee; what needs
+    /// testing is that it settles the drift. The drop marks the thread exited, so the test runs on
+    /// a thread of its own. The injected amount is far larger than any real allocation, and is
+    /// taken back out afterwards.
     #[test]
-    #[cfg(not(feature = "alloc-accounting"))]
-    fn thread_exit_settles_remaining_drift() {
-        use std::thread;
-
+    fn dropping_the_exit_hook_settles_the_drift() {
         const INJECTED: isize = 1 << 40;
         let _guard = serial();
 
-        let before = BALANCE.load(Ordering::Relaxed);
-        thread::spawn(|| {
+        let (moved, phase) = std::thread::spawn(|| {
             track(1);
+            let before = BALANCE.load(Ordering::Relaxed);
             STATE.with(|state| state.drift.set(state.drift.get() + INJECTED));
+            drop(SettleOnExit);
+            let moved = BALANCE.load(Ordering::Relaxed) - before;
+            let phase = STATE.with(|state| state.phase.get());
+            track(-1);
+            (moved, phase)
         })
         .join()
         .unwrap();
-        let moved = BALANCE.load(Ordering::Relaxed) - before;
-        BALANCE.fetch_sub(INJECTED + 1, Ordering::Relaxed);
+        BALANCE.fetch_sub(INJECTED, Ordering::Relaxed);
 
         assert!(
             moved >= INJECTED / 2,
-            "drift from an exited thread never reached the shared balance: \
-             balance moved {moved} bytes, expected at least {}",
+            "a dropped exit hook never settled the thread's drift: balance moved {moved} bytes, \
+             expected at least {}",
             INJECTED / 2
+        );
+        assert_eq!(
+            phase, EXITED,
+            "a dropped exit hook did not mark the thread exited"
         );
     }
 

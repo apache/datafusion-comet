@@ -507,6 +507,8 @@ jobs:
               org.apache.spark.sql.comet.execution.shuffle.CometCelebornShuffleReaderSuite
               org.apache.spark.sql.comet.execution.shuffle.CometCelebornShufflePlanningSuite
               org.apache.spark.sql.comet.execution.shuffle.CometNativeShuffleInputRDDSuite
+              org.apache.spark.sql.comet.execution.shuffle.CometNativeShuffleWriterSuite
+              org.apache.spark.sql.comet.execution.shuffle.CometNativePositionalRoundRobinSuite
               org.apache.spark.sql.comet.execution.shuffle.CometDiskBlockWriterSuite
               org.apache.comet.exec.CometShuffleEncryptionSuite
               org.apache.comet.exec.CometShuffleManagerSuite
@@ -540,6 +542,7 @@ jobs:
               org.apache.spark.CometExecIteratorLifecycleSuite
               org.apache.spark.CometPluginsDefaultSuite
               org.apache.spark.CometPluginsMemoryOverheadWarningSuite
+              org.apache.spark.CometPluginsMemoryPoolFractionWarningSuite
               org.apache.spark.CometPluginsUnifiedModeSuite
               org.apache.comet.rules.CometScanRuleSuite
               org.apache.comet.rules.CometScanContribSuite
