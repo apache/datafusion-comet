@@ -88,6 +88,9 @@ public class GenerateRegexFixtures {
         "[-a]",
         "[a\\-z]",
         "[@-\\[]",
+        "[\\.-9]",
+        "[\\--/]",
+        "[\\\\-a]",
         "[a~b]",
         "[.]",
         "[\\]a]"
@@ -139,6 +142,8 @@ public class GenerateRegexFixtures {
     add("group-depth-32", "(".repeat(32) + "a" + ")".repeat(32), "", "a", "b");
     add("counted-bound-256", "a{256}", "", "a".repeat(255), "a".repeat(256));
     add("quantifier-depth-8", "(?:".repeat(8) + "a" + "){1}".repeat(8), "", "a", "b");
+    // Unlike nested {1}, stacked stars exercise nullable compilation state.
+    add("star-depth-8", "(".repeat(8) + "a" + ")*".repeat(8), "", "a", "aa", "b");
     add("expansion-4095", "(?:" + "a".repeat(16) + "){255}" + "a".repeat(15), "", "b");
     add("expansion-4096", "(?:" + "a".repeat(16) + "){256}", "", "b", "a".repeat(4096));
     add("capture-expansion-4096", "(" + "a".repeat(14) + "){256}", "", "b");

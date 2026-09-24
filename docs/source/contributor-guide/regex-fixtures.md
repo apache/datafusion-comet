@@ -28,12 +28,20 @@ crate's existing JNI build/link requirements still apply; see [Development](deve
 
 ## Regenerating
 
-From the repository root, use JDK 17:
+From the repository root, use JDK 17. First check the committed fixtures without
+overwriting them:
+
+```shell
+java dev/GenerateRegexFixtures.java /tmp/rlike-java-fixtures.json
+cmp spark/src/test/resources/regex/rlike-java-fixtures.json /tmp/rlike-java-fixtures.json
+```
+
+Only when intentionally updating the baseline after reviewing a generator or JDK
+change, regenerate in place and inspect the diff:
 
 ```shell
 java dev/GenerateRegexFixtures.java spark/src/test/resources/regex/rlike-java-fixtures.json
-java dev/GenerateRegexFixtures.java /tmp/rlike-java-fixtures.json
-cmp spark/src/test/resources/regex/rlike-java-fixtures.json /tmp/rlike-java-fixtures.json
+git diff -- spark/src/test/resources/regex/rlike-java-fixtures.json
 ```
 
 The initial oracle was generated with Eclipse Adoptium JDK `17.0.20.1+1`.
@@ -55,9 +63,10 @@ greedy and counted quantifiers, empty groups/branches/matches, and combinations
 of these constructs. Subjects include ASCII, non-ASCII, combining characters,
 supplementary code points, control characters, and newline variants.
 
-Dedicated cases reach group depth 32, counted bound 256, quantifier depth 8,
-and structural expansion 4095/4096, including capture and class costs. These
-use targeted subjects instead of the full subject cross product to bound Java
+Dedicated cases reach group depth 32, counted bound 256, quantifier depth 8
+(including stacked unbounded stars), and structural expansion 4095/4096, including
+capture and class costs. These use targeted subjects instead of the full subject
+cross product to bound Java
 backtracking work. Structural costs are admission heuristics, not a proof of
 Rust compilation success. Finite fixtures cannot prove equivalence for all patterns.
 
