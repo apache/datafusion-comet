@@ -40,9 +40,15 @@
 //! Comet tracks DataFusion closely and upgrades often, so a UDF ABI pinned to
 //! the DataFusion version would break users on a cadence they do not control
 //! and cannot opt out of. Keeping the FFI surface to Arrow's C Data Interface
-//! means a UDF compiled today keeps working across Comet upgrades, and the
-//! same ABI is implementable from C, C++, or any language that speaks the
-//! Arrow C Data Interface.
+//! means a DataFusion upgrade never forces a change to a UDF's source.
+//!
+//! That is narrower than binary compatibility. The ABI is experimental and
+//! specific to one Comet version (see the Stability section of [`c_abi`]), so
+//! a UDF library still has to be rebuilt against the SDK from each Comet
+//! release it runs on. Nothing in the ABI is Rust-specific, but only libraries
+//! built with this SDK are supported: no C header is published and a library
+//! written in another language gets none of the SDK's panic containment or
+//! result type checking.
 //!
 //! The tradeoff is a smaller surface: authors implement [`c_abi::CometCScalarUdf`]
 //! and get scalar functions over Arrow arrays, not the full `ScalarUDFImpl`

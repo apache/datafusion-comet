@@ -383,6 +383,9 @@ pub trait CometCScalarUdf: Send + Sync {
     fn return_field(&self, args: &[Field]) -> Result<Field, String>;
 
     /// Evaluate one batch of `n_rows` rows.
+    ///
+    /// The returned array must have the type `return_field` reported, up to the names of nested
+    /// fields. A result of any other type is refused with an error rather than handed to the host.
     fn invoke(&self, args: &[ArrayRef], n_rows: usize) -> Result<ArrayRef, String>;
 }
 
@@ -615,6 +618,23 @@ unsafe extern "C" fn c_kernel_execute(
             return C_ABI_ERR;
         }
     };
+
+    // An `FFI_ArrowArray` carries buffers but no type, so the host imports the result as whatever
+    // `init` reported. It has no way to notice that `invoke` built something else, and reading an
+    // `Int32Array`'s buffers as `Int64` returns wrong values or reads past the end of the buffer.
+    // This is the last point that knows both types, so the check has to happen here. Nested field
+    // names are ignored because they do not change the layout.
+    if let Some(declared) = priv_ref.last_return_field.as_ref() {
+        if !result.data_type().equals_datatype(declared.data_type()) {
+            priv_ref.last_error = std::ffi::CString::new(format!(
+                "invoke returned {} but return_field declared {}",
+                result.data_type(),
+                declared.data_type()
+            ))
+            .unwrap_or_default();
+            return C_ABI_ERR;
+        }
+    }
 
     let ffi_out = FFI_ArrowArray::new(&result.to_data());
     unsafe { std::ptr::write(out, ffi_out) };
@@ -917,5 +937,65 @@ mod tests {
         let msg = last_error(&mut impl_state);
         assert!(msg.contains("panic in UDF code"), "msg: {msg}");
         assert!(msg.contains("boom in invoke"), "msg: {msg}");
+    }
+
+    /// Declares `Int64` but builds an `Int32Array`.
+    struct WrongType;
+
+    impl CometCScalarUdf for WrongType {
+        fn name(&self) -> &str {
+            "wrong_type"
+        }
+        fn return_field(&self, _args: &[Field]) -> Result<Field, String> {
+            Ok(Field::new("wrong_type", DataType::Int64, true))
+        }
+        fn invoke(&self, _args: &[ArrayRef], n: usize) -> Result<ArrayRef, String> {
+            Ok(Arc::new(arrow::array::Int32Array::from(vec![1; n])))
+        }
+    }
+
+    /// The host imports the result as the type `return_field` declared, so a mismatch has to be
+    /// caught before the export. Without the check the host reads the `Int32` buffer as `Int64`.
+    #[test]
+    fn result_type_disagreeing_with_return_field_is_an_error() {
+        let kernel: CometCScalarKernel = ExportedScalarKernel::new(WrongType).into();
+        let mut impl_state = CometCScalarKernelImpl::default();
+        unsafe {
+            (kernel.new_impl.unwrap())(&kernel, &mut impl_state);
+        }
+        let arg_schema =
+            FFI_ArrowSchema::try_from(&Field::new("x", DataType::Int64, true)).unwrap();
+        let arg_schema_ptr: *const FFI_ArrowSchema = &arg_schema;
+        let mut out_schema = FFI_ArrowSchema::empty();
+        let rc = unsafe {
+            (impl_state.init.unwrap())(
+                &mut impl_state,
+                &arg_schema_ptr as *const *const FFI_ArrowSchema,
+                std::ptr::null(),
+                1,
+                &mut out_schema,
+            )
+        };
+        assert_eq!(rc, 0);
+
+        let input: Arc<dyn arrow::array::Array> = Arc::new(Int64Array::from(vec![1, 2, 3, 4]));
+        let mut input_ffi = FFI_ArrowArray::new(&input.to_data());
+        let input_ffi_ptr: *mut FFI_ArrowArray = &mut input_ffi;
+        let mut out_arr = FFI_ArrowArray::empty();
+        let rc = unsafe {
+            (impl_state.execute.unwrap())(
+                &mut impl_state,
+                &input_ffi_ptr as *const *mut FFI_ArrowArray,
+                1,
+                4,
+                &mut out_arr,
+            )
+        };
+        assert_eq!(rc, C_ABI_ERR);
+        let msg = last_error(&mut impl_state);
+        assert!(
+            msg.contains("invoke returned Int32 but return_field declared Int64"),
+            "msg: {msg}"
+        );
     }
 }
