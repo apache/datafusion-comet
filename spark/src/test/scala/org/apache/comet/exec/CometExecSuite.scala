@@ -2482,6 +2482,35 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
+  test("filter output projection preserves rows, aliases and metrics") {
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.ANSI_ENABLED.key -> "true",
+      CometConf.COMET_BATCH_SIZE.key -> "2") {
+      withParquetTable(Seq((1, "7", 1, 3), (2, "bad", 0, 0), (3, "9", 3, 3)), "tbl") {
+        for (projection <- Seq(
+            "count(*)",
+            "_3 AS x, _2 AS y, _3 AS z",
+            "*",
+            "cast(_2 AS INT) AS x")) {
+          // The rejected row must not reach the ANSI cast. Nonempty projections,
+          // including computed expressions, still run after filtering.
+          val df = sql(s"SELECT $projection FROM tbl WHERE _1 + _3 + _4 > 4")
+          val operators =
+            if (projection == "*") Seq(classOf[CometFilterExec])
+            else Seq(classOf[CometFilterExec], classOf[CometProjectExec])
+          val (_, plan) = checkSparkAnswerAndOperator(df, operators)
+          for (node <- plan.collect {
+              case p: CometProjectExec => p
+              case f: CometFilterExec => f
+            }) {
+            assert(node.metrics("output_rows").value == 2L, s"$projection: $node")
+          }
+        }
+      }
+    }
+  }
+
   test("Comet native metrics: SortMergeJoin") {
     withSQLConf(
       CometConf.COMET_EXEC_ENABLED.key -> "true",
