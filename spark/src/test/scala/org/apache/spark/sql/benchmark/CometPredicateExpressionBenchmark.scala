@@ -66,9 +66,10 @@ object CometPredicateExpressionBenchmark extends CometBenchmarkBase {
           ("Comet native", true, true),
           ("Comet fallback", true, false),
           ("Spark", false, true))
-        for (threshold <- Seq(1, width / 2, width); consumeColumns <- Seq(false, true)) {
+        for (threshold <- Seq(1, width / 2, width);
+          consumed <- Seq(0, 1, math.min(4, width), width).distinct) {
           val benchmark = new Benchmark(
-            s"na.drop: $width $kind columns, $missing% NULL, n=$threshold, consume=$consumeColumns",
+            s"na.drop: $width $kind columns, $missing% NULL, n=$threshold, consumed=$consumed",
             rows,
             output = output)
           var expected: Option[Row] = None
@@ -80,15 +81,12 @@ object CometPredicateExpressionBenchmark extends CometBenchmarkBase {
                 CometConf.COMET_EXEC_ENABLED.key -> comet.toString,
                 CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "false",
                 key -> native.toString) {
-                // Keep a count-only case to expose the cost of materializing unused columns.
-                // The other case reads every column of the filtered output.
-                val sums = if (consumeColumns) {
-                  (0 until width).map { i =>
-                    val value =
-                      if (kind == "string") s"length(c$i)" else s"if(isnan(c$i), 0D, c$i)"
-                    s"sum($value)"
-                  }
-                } else Seq.empty
+                // Compare count-only, narrow and full consumers of the filtered output.
+                val sums = (0 until consumed).map { i =>
+                  val value =
+                    if (kind == "string") s"length(c$i)" else s"if(isnan(c$i), 0D, c$i)"
+                  s"sum($value)"
+                }
                 val df = spark.read
                   .parquet(dir.getCanonicalPath)
                   .na

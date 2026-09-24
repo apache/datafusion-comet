@@ -360,10 +360,11 @@ match op.op_struct.as_ref() {
 }
 ```
 
-`ProjectionBuilder` embeds an empty projection (such as the input to `count(*)`) into a
-DataFusion filter's output to avoid materializing unused arrays. The predicate still sees its
-original input schema. Both `SparkPlan` nodes remain so each reports its own metrics. Nonempty
-projections are unchanged.
+`ProjectionBuilder` prunes a DataFusion filter's output for column-only projections, including
+empty projections such as the input to `count(*)`. Each required output column is filtered once,
+then the projection restores its order, duplicates and aliases. The predicate still sees its
+original input schema. Both `SparkPlan` nodes remain so each reports its own metrics. Computed
+projections and projections that use every input column are unchanged.
 
 #### Implement the Operator
 

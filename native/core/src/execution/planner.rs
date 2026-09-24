@@ -6323,11 +6323,14 @@ mod tests {
         use crate::execution::metrics::utils::to_native_metric_node;
         use datafusion::physical_plan::filter::FilterExec;
 
-        // Include an empty projection, reordered/duplicate columns, and a full projection.
+        // Duplicate outputs must reuse a filtered column, even when they outnumber the inputs.
         for (indices, output) in [
             (vec![], Some(vec![])),
-            (vec![2, 1, 2], None),
+            (vec![2], Some(vec![2])),
+            (vec![2, 1, 2], Some(vec![1, 2])),
+            (vec![2, 1, 2, 1, 2], Some(vec![1, 2])),
             (vec![0, 1, 2, 3], None),
+            (vec![3, 2, 1, 0], None),
         ] {
             for project_id in [2, 3] {
                 let scan = Operator {

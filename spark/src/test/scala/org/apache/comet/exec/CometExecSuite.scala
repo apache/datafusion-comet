@@ -2557,11 +2557,13 @@ class CometExecSuite extends CometTestBase {
       withParquetTable(Seq((1, "7", 1, 3), (2, "bad", 0, 0), (3, "9", 3, 3)), "tbl") {
         for (projection <- Seq(
             "count(*)",
+            "_3 AS x",
             "_3 AS x, _2 AS y, _3 AS z",
+            "_3 AS a, _2 AS b, _3 AS c, _2 AS d, _3 AS e",
             "*",
             "cast(_2 AS INT) AS x")) {
-          // The rejected row must not reach the ANSI cast. Nonempty projections,
-          // including computed expressions, still run after filtering.
+          // The rejected row must not reach the ANSI cast. Computed projections
+          // still run after filtering.
           val df = sql(s"SELECT $projection FROM tbl WHERE _1 + _3 + _4 > 4")
           val operators =
             if (projection == "*") Seq(classOf[CometFilterExec])
