@@ -41,8 +41,11 @@
 //!      synchronize into another burst; a failed refresh is briefly remembered so a throttled burst
 //!      costs one STS call rather than one per reader.
 //!
-//! The same struct is exposed as both `object_store::CredentialProvider` (raw Parquet path) and
-//! reqsign's `ProvideCredential` (Iceberg via opendal / `CustomAwsCredentialLoader`), mirroring
+//! It is wired into the Iceberg scan path (`iceberg_common::build_s3_credential_loader`), which is
+//! where the reported failure occurs: opendal's default reqsign chain is the one that downgrades to
+//! the node role. The raw-Parquet path is left on the AWS SDK default chain, which already retries
+//! and stops on a provider error rather than downgrading. The provider is exposed to opendal as
+//! reqsign's `ProvideCredential` via `CustomAwsCredentialLoader`, mirroring
 //! `credential_bridge::CometS3CredentialBridge`.
 
 use std::collections::HashMap;
@@ -50,16 +53,14 @@ use std::path::Path;
 use std::sync::{Arc, OnceLock, RwLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use async_trait::async_trait;
 use aws_config::retry::RetryConfig;
 use aws_config::BehaviorVersion;
 use aws_credential_types::provider::error::CredentialsError;
 use aws_credential_types::provider::future as creds_future;
 use aws_credential_types::provider::ProvideCredentials;
 use aws_credential_types::Credentials;
+use aws_smithy_runtime_api::client::http::SharedHttpClient;
 use iceberg_storage_opendal::AwsCredential as IcebergAwsCredential;
-use object_store::aws::AwsCredential;
-use object_store::CredentialProvider;
 use rand::RngExt;
 use reqsign_core::time::Timestamp;
 use reqsign_core::{
@@ -73,12 +74,11 @@ use crate::cloud::s3::credential_bridge::DEFAULT_EXPIRY_WHEN_UNKNOWN;
 const ENV_TOKEN_FILE: &str = "AWS_WEB_IDENTITY_TOKEN_FILE";
 const ENV_ROLE_ARN: &str = "AWS_ROLE_ARN";
 
-/// Config keys in their bare form. Each scan path resolves them under its own prefix, matching the
-/// existing `comet.credential.provider.class` SPI key: the Parquet path looks them up under
-/// `fs.s3a.` (via `get_config_trimmed`), and the Iceberg path under `s3.` in the catalog property
-/// bag (e.g. `s3.comet.credential.webIdentity.enabled`). The `s3.` prefix is required on the
-/// Iceberg side: that is how a catalog property reaches iceberg-rust's FileIO property bag (the same
-/// path `s3.comet.credential.provider.class` already uses); a bare, unprefixed key would be dropped.
+/// Config keys in their bare form. On the Iceberg path they are resolved under the `s3.` prefix in
+/// the catalog property bag (e.g. `s3.comet.credential.webIdentity.enabled`), matching the existing
+/// `s3.comet.credential.provider.class` SPI key. The `s3.` prefix is required: that is how a catalog
+/// property reaches iceberg-rust's FileIO property bag; a bare, unprefixed key would be dropped and
+/// the opt-out would silently have no effect.
 const KEY_ENABLED: &str = "comet.credential.webIdentity.enabled";
 const KEY_MAX_ATTEMPTS: &str = "comet.credential.webIdentity.maxAttempts";
 const KEY_MIN_TTL_SECS: &str = "comet.credential.webIdentity.minTtlSeconds";
@@ -286,7 +286,7 @@ async fn shared_entry(cfg: &WebIdentityConfig) -> Arc<SharedEntry> {
         return entry;
     }
 
-    let provider = build_provider(cfg).await;
+    let provider = build_provider(cfg, None).await;
     // Draw the refresh jitter once per entry (each distinct identity+settings key), so two
     // executors -- or two catalogs with different tuning -- refresh at slightly different times and
     // the cluster does not re-burst on a synchronized refresh.
@@ -317,11 +317,19 @@ async fn shared_entry(cfg: &WebIdentityConfig) -> Arc<SharedEntry> {
 /// to keep in sync -- every endpoint/region knob the SDK understands is honored. We only ever call
 /// `AssumeRoleWithWebIdentity`, so there is no IMDS/instance-role fallback to downgrade to, and the
 /// raised `RetryConfig` gives the throttle its retries.
-async fn build_provider(cfg: &WebIdentityConfig) -> Arc<dyn ProvideCredentials> {
-    let sdk = aws_config::defaults(BehaviorVersion::latest())
-        .retry_config(RetryConfig::standard().with_max_attempts(cfg.max_attempts))
-        .load()
-        .await;
+///
+/// `http_override` lets tests drive the STS client through an in-memory stub; production passes
+/// `None`.
+async fn build_provider(
+    cfg: &WebIdentityConfig,
+    http_override: Option<SharedHttpClient>,
+) -> Arc<dyn ProvideCredentials> {
+    let mut loader = aws_config::defaults(BehaviorVersion::latest())
+        .retry_config(RetryConfig::standard().with_max_attempts(cfg.max_attempts));
+    if let Some(http) = http_override {
+        loader = loader.http_client(http);
+    }
+    let sdk = loader.load().await;
     Arc::new(web_identity_provider_from(
         cfg,
         aws_sdk_sts::Client::new(&sdk),
@@ -417,10 +425,9 @@ impl ProvideCredentials for WebIdentityStsProvider {
     }
 }
 
-/// The credential provider handed to `object_store` (Parquet) and, via
-/// `CustomAwsCredentialLoader`, to opendal (Iceberg). Holds only the cheap config plus a lazily
-/// resolved handle to the process-wide shared entry, so the per-request path skips the registry
-/// lock after the first fetch.
+/// The credential provider handed to opendal via `CustomAwsCredentialLoader` (the Iceberg path).
+/// Holds only the cheap config plus a lazily resolved handle to the process-wide shared entry, so
+/// the per-request path skips the registry lock after the first fetch.
 #[derive(Debug)]
 pub struct WebIdentityCredentialProvider {
     config: WebIdentityConfig,
@@ -440,28 +447,6 @@ impl WebIdentityCredentialProvider {
     /// registry lock and the per-call `EntryKey` allocation.
     async fn entry(&self) -> &Arc<SharedEntry> {
         self.entry.get_or_init(|| shared_entry(&self.config)).await
-    }
-}
-
-#[async_trait]
-impl CredentialProvider for WebIdentityCredentialProvider {
-    type Credential = AwsCredential;
-
-    async fn get_credential(&self) -> object_store::Result<Arc<AwsCredential>> {
-        let cred =
-            self.entry()
-                .await
-                .credentials()
-                .await
-                .map_err(|e| object_store::Error::Generic {
-                    store: "S3",
-                    source: e.into(),
-                })?;
-        Ok(Arc::new(AwsCredential {
-            key_id: cred.access_key_id().to_string(),
-            secret_key: cred.secret_access_key().to_string(),
-            token: cred.session_token().map(|s| s.to_string()),
-        }))
     }
 }
 
@@ -500,19 +485,18 @@ impl IcebergProvideCredential for WebIdentityCredentialProvider {
     }
 }
 
-/// Decides whether the Comet web-identity provider should take over credential resolution. It does
-/// so only when the caller has no explicit credentials configured and IRSA is detected; otherwise
-/// the caller keeps its default chain. `resolve` reads a bare setting key (e.g. `KEY_MAX_ATTEMPTS`)
-/// from whichever config bag the caller owns. Both scan paths share this one decision.
+/// Decides whether the Comet web-identity provider should take over credential resolution on the
+/// Iceberg path. It does so only when the catalog names no explicit Comet provider class, has no
+/// explicit credentials, and IRSA is detected; otherwise opendal keeps its default chain. `resolve`
+/// reads a bare setting key (e.g. `KEY_MAX_ATTEMPTS`) from the catalog property bag.
 ///
 /// It also stands aside for any credential source the default chain ranks ahead of web-identity:
 /// static credentials in the environment (`AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY`) or a
-/// configured profile (`AWS_PROFILE`, or a shared credentials / config file). Both the AWS SDK
-/// default chain (Parquet) and opendal/reqsign (Iceberg) resolve Environment -> Profile ->
-/// WebIdentity, so taking over in those cases would silently switch identity from the user's chosen
-/// source to the service-account role. The decision is logged: `debug!` when the provider engages,
-/// `info!` (with the reason) when IRSA is detected but we stand aside, so an operator can tell which
-/// branch a run took.
+/// configured profile (`AWS_PROFILE`, or a shared credentials / config file). opendal/reqsign
+/// resolves Environment -> Profile -> WebIdentity, so taking over in those cases would silently
+/// switch identity from the user's chosen source to the service-account role. The decision is
+/// logged: `debug!` when the provider engages, `info!` (with the reason) when IRSA is detected but
+/// we stand aside, so an operator can tell which branch a run took.
 pub fn take_over_if_irsa<F>(
     explicit_credentials: bool,
     resolve: F,
@@ -636,7 +620,8 @@ mod tests {
     use aws_credential_types::provider::error::CredentialsError;
     use aws_credential_types::provider::future as creds_future;
     use aws_smithy_runtime_api::client::http::{
-        HttpClient, HttpConnector, HttpConnectorFuture, HttpConnectorSettings, SharedHttpConnector,
+        HttpClient, HttpConnector, HttpConnectorFuture, HttpConnectorSettings, SharedHttpClient,
+        SharedHttpConnector,
     };
     use aws_smithy_runtime_api::client::orchestrator::{HttpRequest, HttpResponse};
     use aws_smithy_runtime_api::client::runtime_components::RuntimeComponents;
@@ -795,9 +780,9 @@ mod tests {
         }
     }
 
-    /// Builds a `SharedEntry` whose STS calls are served by `http`, matching how production builds
-    /// the provider (STS client from a loaded `SdkConfig`) but with the canned client attached. The
-    /// identity comes from the `IrsaEnv` the test set, so the token file actually exists.
+    /// Builds a `SharedEntry` by going through the production `build_provider` with the canned STS
+    /// client injected, so the test exercises the real retry/config wiring (not a hand-rebuilt
+    /// `SdkConfig`). The identity comes from the `IrsaEnv` the test set, so the token file exists.
     async fn entry_with_http(max_attempts: u32, http: CannedStsClient) -> SharedEntry {
         let cfg = WebIdentityConfig {
             role_arn: non_empty_env(ENV_ROLE_ARN).expect("IrsaEnv sets the role arn"),
@@ -807,16 +792,9 @@ mod tests {
             min_ttl: Duration::from_secs(300),
             max_jitter: Duration::ZERO,
         };
-        let sdk = aws_config::defaults(aws_config::BehaviorVersion::latest())
-            .retry_config(
-                aws_config::retry::RetryConfig::standard().with_max_attempts(max_attempts),
-            )
-            .http_client(http)
-            .load()
-            .await;
-        let provider = web_identity_provider_from(&cfg, aws_sdk_sts::Client::new(&sdk));
+        let provider = build_provider(&cfg, Some(SharedHttpClient::new(http))).await;
         SharedEntry {
-            provider: Arc::new(provider),
+            provider,
             cached: RwLock::new(None),
             refresh_lock: tokio::sync::Mutex::new(()),
             last_failure: RwLock::new(None),
@@ -850,11 +828,14 @@ mod tests {
     fn persistent_sts_throttle_errors_without_downgrade() {
         let _guard = lock_env();
         let _env = IrsaEnv::set("always-throttled");
-        let http = CannedStsClient::new(&[400, 400, 400]); // every attempt throttles
+        // Empty queue -> every attempt throttles. Uses the DEFAULT attempt budget so this also
+        // guards the `retry_config` line in build_provider: drop it and the SDK default of 3
+        // attempts would make this fail.
+        let http = CannedStsClient::new(&[]);
         let requests = Arc::clone(&http.requests);
         let rt = tokio::runtime::Runtime::new().unwrap();
         let result = rt.block_on(async {
-            let entry = entry_with_http(3, http).await;
+            let entry = entry_with_http(DEFAULT_MAX_ATTEMPTS, http).await;
             entry.credentials().await
         });
         assert!(
@@ -863,8 +844,8 @@ mod tests {
         );
         assert_eq!(
             requests.load(Ordering::SeqCst),
-            3,
-            "retries must be bounded by maxAttempts"
+            DEFAULT_MAX_ATTEMPTS as usize,
+            "retries must be bounded by maxAttempts, and the configured budget (5) must reach the STS client"
         );
     }
 
@@ -1057,23 +1038,51 @@ mod tests {
     }
 
     #[test]
-    fn iceberg_key_lookup_uses_s3_prefix() {
-        // On the Iceberg path, config keys reach native under the `s3.` prefix (the same route as
-        // `s3.comet.credential.provider.class`). The bare keys are resolved under that prefix, so a
-        // catalog property must be spelled `s3.comet.credential.webIdentity.*` to take effect --
-        // this is the only opt-out on the Iceberg path, so it has to land.
+    fn iceberg_wiring_reads_s3_prefixed_keys() {
+        // Exercise the real Iceberg wiring (build_s3_credential_loader), not a copy of its closure,
+        // so a regression that stops installing the loader -- or the wrong key prefix -- is caught.
+        use crate::cloud::s3::credential_bridge::AccessMode;
+        use crate::execution::operators::iceberg_common::build_s3_credential_loader;
+
         let _guard = lock_env();
         let _env = IrsaEnv::set("iceberg-keys");
-        let mut catalog = HashMap::new();
-        catalog.insert(
+
+        // IRSA, no explicit provider/creds -> the loader engages.
+        let empty = HashMap::new();
+        let engaged =
+            build_s3_credential_loader("s3://bucket/db/table", &empty, "cat", AccessMode::Read)
+                .expect("loader builds");
+        assert!(
+            engaged.is_some(),
+            "IRSA with nothing configured must install the web-identity loader"
+        );
+
+        // enabled=false via the s3.-prefixed catalog key must turn it off. A bare (unprefixed) key
+        // must NOT, since that spelling never reaches the catalog bag.
+        let mut disabled = HashMap::new();
+        disabled.insert(
             "s3.comet.credential.webIdentity.enabled".to_string(),
             "false".to_string(),
         );
-        // Mirrors the closure in iceberg_common::build_s3_credential_loader.
-        let resolve = |key: &str| catalog.get(&format!("s3.{key}")).cloned();
+        let off =
+            build_s3_credential_loader("s3://bucket/db/table", &disabled, "cat", AccessMode::Read)
+                .expect("loader builds");
         assert!(
-            take_over_if_irsa(false, resolve).is_none(),
+            off.is_none(),
             "enabled=false via the s3.-prefixed catalog key must disable the take-over"
+        );
+
+        let mut bare = HashMap::new();
+        bare.insert(
+            "comet.credential.webIdentity.enabled".to_string(),
+            "false".to_string(),
+        );
+        let still_on =
+            build_s3_credential_loader("s3://bucket/db/table", &bare, "cat", AccessMode::Read)
+                .expect("loader builds");
+        assert!(
+            still_on.is_some(),
+            "a bare (unprefixed) key does not reach the catalog bag, so it must not disable anything"
         );
     }
 

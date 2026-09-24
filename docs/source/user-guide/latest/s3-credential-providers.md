@@ -100,38 +100,37 @@ Without the config set, no credential-related log lines appear at startup; nativ
 
 **Credentials silently going stale during long-running jobs.** When a vendor returns `expirationEpochMillis=0`, the bridge substitutes a 5-minute expiry before handing the credential to `opendal`, so `opendal`'s cache cannot hold a stale credential indefinitely. Returning a real expiry is preferred; the 5-minute fallback is a safety net, not a knob.
 
-## EKS / IRSA: STS throttling protection
+## EKS / IRSA: STS throttling protection (native Iceberg scan)
 
-This is automatic; there is nothing to configure to get the protection, and it does not involve a bridge class.
+This is automatic; there is nothing to configure to get the protection, and it does not involve a bridge class. It applies to the **native Iceberg scan**. The raw-Parquet path is unaffected: it uses the AWS SDK default chain, which already retries and stops on a provider error rather than downgrading.
 
-On EKS with [IAM Roles for Service Accounts (IRSA)](https://docs.aws.amazon.com/eks/latest/userguide/iam-roles-for-service-accounts.html), executors assume the application role by calling STS `AssumeRoleWithWebIdentity`. Under a large concurrent startup burst (many executors times many cores, all fetching credentials at once), STS can throttle that call. The default credential chain does not retry the throttle and falls through to the EKS node instance role, which usually lacks bucket access, so every native read then fails with a hard `403 AccessDenied` even though the throttle was transient.
+On EKS with [IAM Roles for Service Accounts (IRSA)](https://docs.aws.amazon.com/eks/latest/userguide/iam-roles-for-service-accounts.html), executors assume the application role by calling STS `AssumeRoleWithWebIdentity`. Under a large concurrent startup burst (many executors times many cores, all fetching credentials at once), STS can throttle that call. On the Iceberg path, opendal's default credential chain does not retry the throttle and falls through to the EKS node instance role, which usually lacks bucket access, so every native read then fails with a hard `403 AccessDenied` even though the throttle was transient.
 
-When Comet detects IRSA (both `AWS_WEB_IDENTITY_TOKEN_FILE` and `AWS_ROLE_ARN` are set) and no explicit credentials are configured, its native readers resolve web-identity credentials themselves instead of using the default chain. This path:
+When Comet detects IRSA (both `AWS_WEB_IDENTITY_TOKEN_FILE` and `AWS_ROLE_ARN` are set) and the catalog configures no explicit credentials, the native Iceberg reader resolves web-identity credentials itself instead of using opendal's default chain. It builds the STS client from the AWS SDK's fully-resolved config, so region, `AWS_USE_FIPS_ENDPOINT` / `AWS_USE_DUALSTACK_ENDPOINT`, and any profile/custom STS endpoint are honored. The provider:
 
 - retries the throttled `AssumeRoleWithWebIdentity` call with exponential backoff and jitter,
-- never falls back to the node instance role -- a throttle that outlasts the retries surfaces as a retryable error instead of a wrong-identity `403`,
-- caches one assumed-role credential per executor process, shared across all reader threads and scans, and refreshes it ahead of expiry with a per-process jitter so cluster-wide refreshes do not synchronize into another burst, and
-- honors `AWS_USE_FIPS_ENDPOINT` and `AWS_USE_DUALSTACK_ENDPOINT` (and the selected region) the same way the default chain would, so the STS call still uses the requested endpoint mode.
+- never falls back to the node instance role -- a throttle that outlasts the retries surfaces as a retryable error instead of a wrong-identity `403`, and
+- caches one assumed-role credential per executor process, shared across all reader threads and scans, and refreshes it ahead of expiry with a per-process jitter so cluster-wide refreshes do not synchronize into another burst.
 
-It stands aside whenever a higher-precedence credential source is configured -- a Comet bridge class, an `fs.s3a.aws.credentials.provider` (Parquet), catalog static keys / `client.assume-role.arn` (Iceberg), static credentials in the environment (`AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY`), or a configured profile (`AWS_PROFILE`, or a shared credentials / config file such as `~/.aws/credentials` or `~/.aws/config`). These all rank ahead of web-identity in the default chain, so the take-over only changes the otherwise-default behavior and never switches away from an identity -- or a profile-configured STS endpoint -- you set explicitly. On an EKS/IRSA pod none of these are normally present, so the take-over still applies there.
+It stands aside whenever a higher-precedence credential source is configured -- a Comet bridge class or catalog static keys / `client.assume-role.arn`, static credentials in the environment (`AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY`), or a configured profile (`AWS_PROFILE`, or a shared credentials / config file such as `~/.aws/credentials` or `~/.aws/config`). These all rank ahead of web-identity in opendal's default chain, so the take-over only changes the otherwise-default behavior and never switches away from an identity -- or a profile-configured STS endpoint -- you set explicitly. On an EKS/IRSA pod none of these are normally present, so the take-over still applies there.
 
-Tuning is rarely needed. The knobs, with their defaults, are the bare keys below. Each path uses its own prefix, matching the existing `comet.credential.provider.class` SPI key: prefix with `fs.s3a.` for Parquet and `s3.` for an Iceberg catalog.
+Tuning is rarely needed. Set these as catalog properties under the `s3.` prefix (the same namespace as the credential-provider SPI key):
 
-| Setting (bare key)                                  | Default | Meaning                                                        |
-| --------------------------------------------------- | ------- | -------------------------------------------------------------- |
-| `comet.credential.webIdentity.enabled`              | `true`  | Set `false` to opt out and use the default chain.              |
-| `comet.credential.webIdentity.maxAttempts`          | `5`     | STS attempts before the assume-role call is treated as failed. |
-| `comet.credential.webIdentity.minTtlSeconds`        | `300`   | Refresh this many seconds before expiry.                       |
-| `comet.credential.webIdentity.refreshJitterSeconds` | `60`    | Upper bound on the extra per-process refresh jitter.           |
+| Property (per Iceberg catalog)                         | Default | Meaning                                                        |
+| ------------------------------------------------------ | ------- | -------------------------------------------------------------- |
+| `s3.comet.credential.webIdentity.enabled`              | `true`  | Set `false` to opt out and use opendal's default chain.        |
+| `s3.comet.credential.webIdentity.maxAttempts`          | `5`     | STS attempts before the assume-role call is treated as failed. |
+| `s3.comet.credential.webIdentity.minTtlSeconds`        | `300`   | Refresh this many seconds before expiry.                       |
+| `s3.comet.credential.webIdentity.refreshJitterSeconds` | `60`    | Upper bound on the extra per-process refresh jitter.           |
 
-For example, to disable it for Parquet globally or raise the retry count for one Iceberg catalog:
+For example, to opt out of the take-over or raise the retry count for one catalog:
 
 ```
-spark.hadoop.fs.s3a.comet.credential.webIdentity.enabled=false
+spark.sql.catalog.<catalog>.s3.comet.credential.webIdentity.enabled=false
 spark.sql.catalog.<catalog>.s3.comet.credential.webIdentity.maxAttempts=8
 ```
 
-On an Iceberg catalog the `s3.` prefix is required — that is how a catalog property reaches the native reader (the same route the credential-provider SPI key uses); a key without it is dropped and has no effect.
+The `s3.` prefix is required — that is how a catalog property reaches the native reader (the same route the credential-provider SPI key uses); a key without it is dropped and has no effect.
 
 ## Iceberg: explicit S3 region required
 
