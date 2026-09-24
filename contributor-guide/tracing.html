@@ -552,16 +552,14 @@ under the License.
 <p>With this feature enabled, each Spark executor will write a JSON event log file in
 Chrome’s <a class="reference external" href="https://docs.google.com/document/d/1CvAClvFfyA5R-PhYUmn5OOQtYMH4h6I0nSsKchNAySU/preview?tab=t.0#heading=h.yr4qxyxotyw">Trace Event Format</a>. The file will be written to the executor’s current working
 directory with the filename <code class="docutils literal notranslate"><span class="pre">comet-event-trace.json</span></code>.</p>
-<p>Additionally, enabling the <code class="docutils literal notranslate"><span class="pre">jemalloc</span></code> feature will enable tracing of native memory allocations.</p>
+<p>Native memory is traced as <code class="docutils literal notranslate"><span class="pre">native_allocated</span></code>. Comet wraps whichever global allocator the build
+selected and counts the bytes it has handed out. It counts only what Rust code allocated, so it can be compared against the
+memory pool’s reservations without the allocator’s own caching in the way. The same figure appears in
+the executor’s periodic memory usage log, which does not need tracing; see
+<a class="reference internal" href="../user-guide/latest/tuning.html#sizing-the-overhead-from-the-memory-usage-log"><span class="std std-ref">Sizing the Overhead from the Memory Usage Log</span></a>.</p>
+<p>Enabling the <code class="docutils literal notranslate"><span class="pre">jemalloc</span></code> feature adds a second measure, <code class="docutils literal notranslate"><span class="pre">jemalloc_allocated</span></code>, which also includes
+jemalloc’s own metadata and fragmentation:</p>
 <div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>make<span class="w"> </span>release<span class="w"> </span><span class="nv">COMET_FEATURES</span><span class="o">=</span><span class="s2">"jemalloc"</span>
-</pre></div>
-</div>
-<p>The <code class="docutils literal notranslate"><span class="pre">alloc-accounting</span></code> feature adds a second, allocator-independent measure of native memory. It
-wraps whichever global allocator the build selected and reports the bytes it has handed out as
-<code class="docutils literal notranslate"><span class="pre">native_allocated</span></code>. Unlike <code class="docutils literal notranslate"><span class="pre">jemalloc_allocated</span></code> it does not require jemalloc, and it counts only
-what Rust code allocated, so it can be compared against the memory pool’s reservations without the
-allocator’s own caching in the way. The two features are independent and can be combined:</p>
-<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>make<span class="w"> </span>release<span class="w"> </span><span class="nv">COMET_FEATURES</span><span class="o">=</span><span class="s2">"jemalloc,alloc-accounting"</span>
 </pre></div>
 </div>
 <p>Example output:</p>
@@ -683,7 +681,7 @@ samples: they are not an atomic per-query balance, and neither is a measure of R
 <td><p>Bytes charged to the Arrow C Data Interface import allocator, a subset of <code class="docutils literal notranslate"><span class="pre">jvm_arrow_allocated</span></code>. An allocator charge, not a measure of where the bytes were allocated; see above.</p></td>
 </tr>
 <tr class="row-even"><td><p>native_allocated</p></td>
-<td><p>Bytes handed out by the Rust global allocator, process-wide (requires <code class="docutils literal notranslate"><span class="pre">alloc-accounting</span></code> feature). Approximate to within 64 KiB of un-flushed delta per live thread.</p></td>
+<td><p>Bytes handed out by the Rust global allocator, process-wide. Approximate to within 64 KiB of un-flushed delta per live thread.</p></td>
 </tr>
 <tr class="row-odd"><td><p>comet_memory_reserved_total</p></td>
 <td><p>Total memory reserved across every live Comet memory pool, process-wide, whatever the configured pool type. Counts a pool shared between execution contexts once, so unlike the per-thread counters it can be compared directly against an allocation counter.</p></td>
