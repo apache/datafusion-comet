@@ -31,19 +31,35 @@ default behavior.
 
 ## Comet SQL Plugin
 
-The entry point to Comet is the org.apache.spark.CometPlugin class, which is registered in Spark using the following
+The entry point to Comet is the `org.apache.spark.CometPlugin` class, which is registered in Spark using the following
 configuration:
 
 ```
 --conf spark.plugins=org.apache.spark.CometPlugin
 ```
 
-The plugin is loaded on the Spark driver and does not provide executor-side plugins.
+The plugin has a driver component, `CometDriverPlugin`, and an executor component, `CometExecutorPlugin`.
 
-The plugin will update the current `SparkConf` with the extra configuration provided by Comet, such as executor memory
-configuration.
+`CometDriverPlugin` runs once, when the `SparkContext` starts and before any `SparkSession` exists, so it can set static
+configuration that cannot be changed once a session has been created. It first sets `spark.comet.version` to the Comet
+version. If neither `spark.memory.offHeap.enabled` nor `spark.comet.exec.onHeap.enabled` is `true`, it logs a warning
+and skips the remaining steps. Otherwise it:
 
-The plugin also registers `CometSparkSessionExtensions` with Spark's extension API.
+- Appends `CometSparkSessionExtensions` to `spark.sql.extensions`, unless it is already listed.
+- Sets `spark.sql.cache.serializer` to Comet's `ArrowCachedBatchSerializer` when
+  `spark.comet.exec.inMemoryCache.enabled=true`, unless the application has chosen a different serializer.
+- Registers `CometSource` with Spark's metrics system and adds `CometMetricsListener` to
+  `spark.sql.queryExecutionListeners` when `spark.comet.metrics.enabled=true`.
+- Logs a warning for settings that are likely to cause problems, such as an unset `spark.executor.memoryOverhead`.
+
+The plugin does not change any executor memory setting. The [Tuning Guide](../user-guide/latest/tuning.md) covers how
+to size them.
+
+When the driver or an executor stops, the plugin shuts down Comet's native tokio runtime in that JVM.
+
+`CometSparkSessionExtensions` can also be registered without the plugin, through `spark.sql.extensions` or
+`SparkSession.Builder.withExtensions`. Most of Comet's test suites and the Spark SQL tests enable Comet this way, so
+none of the driver plugin's steps run for them.
 
 ## CometSparkSessionExtensions
 
