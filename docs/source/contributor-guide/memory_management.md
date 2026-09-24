@@ -283,9 +283,19 @@ reading it as one overstates the memory a multi-operator task can use.
 
 ### Task-shared pools and their lifetime
 
-A single Spark task can run more than one native plan concurrently: a shuffle runs the pre-shuffle
-operators and the shuffle writer as separate native execution contexts. If each got its own pool,
-the per-task limit would be enforced once per plan rather than once per task.
+A single Spark task can run more than one native plan at a time. A native shuffle is not one of
+these cases, because its writer is planned together with the native operators that feed it. These
+operators do split a task's native work into separate plans:
+
+- `CometUnionExec` and `CometCoalesceExec` read their children through the JVM, so the native plan
+  above them and the native plans below them are separate.
+- `CometCollectLimitExec` and `CometTakeOrderedAndProjectExec` apply their limit in a native plan
+  of their own, over the output of the plan below them.
+- A native Parquet or Iceberg write runs its writer as a native plan of its own, over the output of
+  the plan below it.
+
+If each plan got its own pool, the per-task limit would be enforced once per plan rather than once
+per task.
 
 `acquire_task_shared_pool` (`task_shared.rs`) keeps a process-wide
 `HashMap<task_attempt_id, Weak<TaskSharedMemoryPool>>`. Plans in the same task upgrade the existing
