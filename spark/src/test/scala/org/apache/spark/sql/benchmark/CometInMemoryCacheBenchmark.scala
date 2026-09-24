@@ -270,7 +270,7 @@ object CometInMemoryCacheBenchmark extends CometBenchmarkBase {
       }
 
       // Measured before the cases below, while each codec's copy is the one freshly materialized:
-      // the accumulator behind it belongs to whichever copy is cached now.
+      // the stats behind it belong to whichever copy is cached now.
       val footprints = codecs.map { codec =>
         cacheUnder(codec)
         codec -> cachedBytes(view)
@@ -446,7 +446,10 @@ object CometInMemoryCacheBenchmark extends CometBenchmarkBase {
       .optimizedPlan
       .collectFirst { case r: InMemoryRelation => r }
       .getOrElse(sys.error(s"$view is not cached"))
-    relation.cacheBuilder.sizeInBytesStats.value
+    // computeStats rather than the builder's size accumulator, which Spark 4.2 replaced. Before
+    // the buffers load it falls back to the plan's estimate, so insist they have.
+    assert(relation.cacheBuilder.isCachedColumnBuffersLoaded, s"$view is not materialized")
+    relation.computeStats().sizeInBytes.toLong
   }
 
   private def runStatsBenchmark(): Unit = {
