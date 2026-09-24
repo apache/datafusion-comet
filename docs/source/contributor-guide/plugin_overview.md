@@ -57,20 +57,24 @@ conversion produces. Each phase is described below.
 
 ### Phase 1: CometScanRule
 
-`CometScanRule` replaces any Parquet scans with Comet operators. There are different paths for Spark v1 and v2 data sources.
+`CometScanRule` decides which scans Comet claims. It matches `FileSourceScanExec` (DataSource V1)
+and `BatchScanExec` (DataSource V2) and routes each one to a native scan or leaves it for Spark.
+There is no JVM-side Comet Parquet reader, so a claimed scan reads entirely in Rust.
 
-When reading from Parquet v1 data sources, Comet replaces `FileSourceScanExec` with a `CometScanExec`, and for v2
-data sources, `BatchScanExec` is replaced with `CometBatchScanExec`. In both cases, Comet replaces Spark's Parquet
-reader with a custom vectorized Parquet reader. This is similar to Spark's vectorized Parquet reader used by the v2
-Parquet data source but leverages native code for decoding Parquet row groups directly into Arrow format.
+For V1 Parquet, `FileSourceScanExec` is replaced with a `CometScanExec`, which is a planning
+intermediate that `CometExecRule` then converts to a `CometNativeScanExec`. For V2, only Iceberg
+and (experimentally) CSV are read natively, through `CometBatchScanExec`. A V2 Parquet scan is not
+read natively.
 
-Comet only supports a subset of data types and will fall back to Spark's scan if unsupported types
-exist. Comet can still accelerate the rest of the query execution in this case because `CometSparkToColumnarExec` will
-convert the output from Spark's scan to Arrow arrays. Note that both `spark.comet.exec.enabled=true` and
-`spark.comet.convert.parquet.enabled=true` must be set to enable this conversion.
+Comet supports only a subset of data types and falls back to Spark's scan when an unsupported one
+appears. Comet can still accelerate the rest of the query in that case, because
+`CometSparkToColumnarExec` converts Spark's scan output to Arrow. Both
+`spark.comet.exec.enabled=true` and `spark.comet.convert.parquet.enabled=true` must be set to
+enable that conversion.
 
-Refer to the [Supported Spark Data Types](https://datafusion.apache.org/comet/user-guide/datatypes.html) section
-in the contributor guide to see a list of currently supported data types.
+Refer to [Supported Spark Data Types](https://datafusion.apache.org/comet/user-guide/datatypes.html)
+for the list of currently supported data types, and to the [Scan](scan.md) page for the subsystem
+in detail.
 
 ### Phase 2: CometExecRule
 
