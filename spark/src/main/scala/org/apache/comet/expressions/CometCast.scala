@@ -246,6 +246,16 @@ object CometCast
           }
         }
         Compatible()
+      case (from_map: MapType, to_map: MapType)
+          if evalMode == CometEvalMode.TRY && !keyCastCannotFail(
+            from_map.keyType,
+            to_map.keyType) =>
+        // Under TRY a key cast that throws becomes a null key, and Spark keeps the row. Arrow's map
+        // format requires a non-nullable key field, so neither the native cast nor the codegen
+        // dispatcher can hold that result, and `canHandle` refuses the dispatch. Key casts that
+        // cannot throw stay on the native path. Maps nested in the value are checked when the
+        // value cast recurses back into this arm.
+        Unsupported(Some(tryCastNullMapKeyReason))
       case (from_map: MapType, to_map: MapType) =>
         // Native cast_map_to_map recursively casts keys and values, so support is
         // determined by whether both inner casts are individually supported.
@@ -472,6 +482,10 @@ object CometCast
         Compatible()
       case _ => Unsupported(Some(s"Cast from DateType to $toType is not supported"))
     }
+
+  private[comet] val tryCastNullMapKeyReason: String =
+    "TRY_CAST of a map key that can fail produces a null key, which Arrow's map format " +
+      "cannot hold (https://github.com/apache/datafusion-comet/issues/5995)"
 
   /**
    * Whether evaluating `cast` can produce a map with a null key. Under TRY a key cast that throws
