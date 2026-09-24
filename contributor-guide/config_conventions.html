@@ -606,18 +606,73 @@ be a red flag; both spell it <code class="docutils literal notranslate"><span cl
 The two do not have to match segment-for-segment — brevity in the symbol is fine as long
 as the key remains descriptive.</p>
 </section>
-<section id="categories">
-<h2>Categories<a class="headerlink" href="#categories" title="Link to this heading">#</a></h2>
+<section id="categories-and-visibility">
+<h2>Categories and Visibility<a class="headerlink" href="#categories-and-visibility" title="Link to this heading">#</a></h2>
 <p>Every <code class="docutils literal notranslate"><span class="pre">ConfigEntry</span></code> must call <code class="docutils literal notranslate"><span class="pre">.category(...)</span></code>. The category is used to route the key into
 the right table in the user guide’s <code class="docutils literal notranslate"><span class="pre">configs.md</span></code>. Available categories are declared as
 <code class="docutils literal notranslate"><span class="pre">CATEGORY_*</span></code> constants at the top of <code class="docutils literal notranslate"><span class="pre">CometConf.scala</span></code>. If a new config does not fit an
 existing category, discuss adding a new one before landing the config.</p>
+<p>A second, independent choice is whether to call <code class="docutils literal notranslate"><span class="pre">.internal()</span></code>, which keeps the key out of
+<code class="docutils literal notranslate"><span class="pre">configs.md</span></code> altogether.</p>
+<p>Neither choice is cosmetic. Together they decide whether Comet’s
+<a class="reference internal" href="../about/versioning_policy.html"><span class="std std-doc">versioning policy</span></a> covers the key. The policy’s rule keys on these
+two marks and nothing else: a key is exempt only if it is in the <code class="docutils literal notranslate"><span class="pre">testing</span></code> category or is marked
+<code class="docutils literal notranslate"><span class="pre">internal()</span></code>, and every other <code class="docutils literal notranslate"><span class="pre">spark.comet.*</span></code> key is covered.</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Category</p></th>
+<th class="head"><p><code class="docutils literal notranslate"><span class="pre">internal()</span></code></p></th>
+<th class="head"><p>Appears in <code class="docutils literal notranslate"><span class="pre">configs.md</span></code></p></th>
+<th class="head"><p>Covered by the versioning policy</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>any other</p></td>
+<td><p>no</p></td>
+<td><p>yes, in its category’s table</p></td>
+<td><p><strong>yes</strong></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">testing</span></code></p></td>
+<td><p>no</p></td>
+<td><p>yes, under Development &amp; Testing</p></td>
+<td><p>no</p></td>
+</tr>
+<tr class="row-even"><td><p>any</p></td>
+<td><p>yes</p></td>
+<td><p>no</p></td>
+<td><p>no</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>Note that a key read by string rather than through a registered <code class="docutils literal notranslate"><span class="pre">ConfigEntry</span></code> — as the
+per-expression <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.&lt;Name&gt;.allowIncompatible</span></code> opt-ins are — has no way to carry
+either mark, so it is covered. Reaching for a dynamic key is therefore not a way to avoid the
+guarantee; if the key is a debugging aid, give it a real <code class="docutils literal notranslate"><span class="pre">ConfigEntry</span></code> in the <code class="docutils literal notranslate"><span class="pre">testing</span></code> category.</p>
+<p>Being covered commits the project to the key’s name, type, accepted values, default, and semantics
+across minor releases. Being
+<a class="reference internal" href="../about/versioning_policy.html#testing-and-internal-configurations-are-exempt"><span class="std std-ref">exempt</span></a> means the key
+may be renamed, retyped, redefaulted, or removed in any release, including a patch release, with no
+alias, no deprecation cycle, and no upgrade guide entry.</p>
+<p>So reach for <code class="docutils literal notranslate"><span class="pre">testing</span></code> or <code class="docutils literal notranslate"><span class="pre">internal()</span></code> only when the key exists to let Comet’s own suites, or
+someone debugging Comet itself, reach a state the rest of the code is not built to support —
+disabling native scans, running in on-heap mode, making a declined operator throw. Use <code class="docutils literal notranslate"><span class="pre">internal()</span></code>
+in particular when Comet should not publish the key at all, so that nobody can adopt it in the first
+place.</p>
+<p>If a deployment would have a legitimate reason to set the key, it belongs in a non-<code class="docutils literal notranslate"><span class="pre">testing</span></code>
+category and must not be <code class="docutils literal notranslate"><span class="pre">internal()</span></code>, and the guarantees come with it. Do not use either mechanism
+as a way to ship a production knob without committing to it.</p>
 </section>
 <section id="renaming-an-existing-config">
 <h2>Renaming an Existing Config<a class="headerlink" href="#renaming-an-existing-config" title="Link to this heading">#</a></h2>
 <p>Configs under <code class="docutils literal notranslate"><span class="pre">spark.comet.*</span></code> are stable across minor releases: users may have set them in
 production <code class="docutils literal notranslate"><span class="pre">spark-defaults.conf</span></code> files, Spark job submissions, or notebooks. Renaming a key
 must not silently break those deployments.</p>
+<p>Keys in the <code class="docutils literal notranslate"><span class="pre">testing</span></code> category, and keys marked <code class="docutils literal notranslate"><span class="pre">internal()</span></code>, are
+<a class="reference internal" href="../about/versioning_policy.html#testing-and-internal-configurations-are-exempt"><span class="std std-ref">exempt from the versioning policy</span></a>
+and may be renamed outright: skip the <code class="docutils literal notranslate"><span class="pre">withAlternative</span></code> call in step 1, and step 5 with it. The
+rest of the checklist still applies, because a stale key string left behind in code or docs is a
+bug either way.</p>
 <p>Use the <code class="docutils literal notranslate"><span class="pre">withAlternative</span></code> builder on <code class="docutils literal notranslate"><span class="pre">ConfigBuilder</span></code> to keep the old key working as a
 deprecated alias:</p>
 <div class="highlight-scala notranslate"><div class="highlight"><pre><span></span><span class="kd">val</span><span class="w"> </span><span class="nc">COMET_FORCE_SHJ</span><span class="p">:</span><span class="w"> </span><span class="nc">ConfigEntry</span><span class="p">[</span><span class="nc">Boolean</span><span class="p">]</span><span class="w"> </span><span class="o">=</span>
@@ -690,6 +745,10 @@ config only if the fix has an unusually wide blast radius, and say so in the PR 
 <li><p><strong>Changes to which expressions and operators run natively.</strong> Falling back to Spark, or ceasing
 to, changes performance rather than results.</p></li>
 </ul>
+<p>Nor does a change to a key in the <code class="docutils literal notranslate"><span class="pre">testing</span></code> category or a key marked <code class="docutils literal notranslate"><span class="pre">internal()</span></code>, both
+<a class="reference internal" href="../about/versioning_policy.html#testing-and-internal-configurations-are-exempt"><span class="std std-ref">exempt from the versioning policy</span></a>:
+the default and the meaning may change in any release, with no legacy config and no upgrade guide
+entry. Update the suites that set it in the same PR.</p>
 <p>Removing a legacy config is a major-release change, handled the same way as removing a deprecated
 alias.</p>
 </section>
@@ -744,7 +803,7 @@ alias.</p>
     <ul class="visible nav section-nav flex-column">
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#key-naming">Key Naming</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#symbol-naming-scala">Symbol Naming (Scala)</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#categories">Categories</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#categories-and-visibility">Categories and Visibility</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#renaming-an-existing-config">Renaming an Existing Config</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#changing-the-behavior-of-an-existing-config">Changing the Behavior of an Existing Config</a></li>
 </ul>

@@ -503,7 +503,14 @@ interface that vendors implement. It is small on purpose, and everything outside
 <p>The following are covered by this versioning policy:</p>
 <ul class="simple">
 <li><p><strong>Configuration keys under <code class="docutils literal notranslate"><span class="pre">spark.comet.*</span></code></strong>: their names, types, accepted values, default
-values, and semantics.</p></li>
+values, and semantics. Two classes of key are excluded — those in the <code class="docutils literal notranslate"><span class="pre">testing</span></code> category, and
+those marked internal; see
+<a class="reference internal" href="#testing-and-internal-configurations-are-exempt">Testing and Internal Configurations Are Exempt</a>.
+Every other key is covered wherever Comet documents it, including keys the
+<a class="reference internal" href="../user-guide/latest/configs.html"><span class="std std-doc">configuration reference</span></a> does not list in its own right: the
+per-expression <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.&lt;Name&gt;.allowIncompatible</span></code> opt-ins, which the
+<a class="reference internal" href="../user-guide/latest/compatibility/index.html"><span class="std std-doc">compatibility guide</span></a> documents, and the deprecated
+alias a rename leaves behind.</p></li>
 <li><p><strong>A small, enumerated public Java and Scala API</strong>: the class names users write into Spark config
 properties, and the S3 credential provider SPI that vendors implement. The full list is in
 <a class="reference internal" href="#public-scala-and-java-api">Public Scala and Java API</a>.</p></li>
@@ -514,6 +521,9 @@ contract is defined by Apache Spark rather than by Comet. See
 <p>The following are internal implementation details. They are not covered by this policy and may
 change in any release:</p>
 <ul class="simple">
+<li><p>Configuration keys in the <code class="docutils literal notranslate"><span class="pre">testing</span></code> category, and keys marked internal. They exist to let Comet’s
+own suites and maintainers reach internal behavior, and they expose that behavior directly. See
+<a class="reference internal" href="#testing-and-internal-configurations-are-exempt">Testing and Internal Configurations Are Exempt</a>.</p></li>
 <li><p>The protobuf format used to serialize query plans between the JVM and the native library. The
 JVM jar and the native library ship together and are versioned together; see
 <a class="reference internal" href="#native-library-coupling">Native Library Coupling</a>.</p></li>
@@ -526,6 +536,48 @@ native block is partitioned, and how a plan is rendered may all change between r
 fall back to Spark. An expression that ran natively in one release may fall back in the next,
 and vice versa. The results stay the same; only the speed changes.</p></li>
 </ul>
+<section id="testing-and-internal-configurations-are-exempt">
+<h3>Testing and Internal Configurations Are Exempt<a class="headerlink" href="#testing-and-internal-configurations-are-exempt" title="Link to this heading">#</a></h3>
+<p>Two kinds of configuration key sit outside this policy, and what puts a key outside is an explicit
+mark on its declaration in <code class="docutils literal notranslate"><span class="pre">CometConf.scala</span></code>: <strong>a key is exempt only if it is in the <code class="docutils literal notranslate"><span class="pre">testing</span></code>
+category or is marked <code class="docutils literal notranslate"><span class="pre">internal()</span></code>.</strong> Every other <code class="docutils literal notranslate"><span class="pre">spark.comet.*</span></code> key is covered.</p>
+<p>Absence from the <a class="reference internal" href="../user-guide/latest/configs.html"><span class="std std-doc">configuration reference</span></a> is not the test,
+because that page is not an exhaustive list of covered keys. The per-expression
+<code class="docutils literal notranslate"><span class="pre">spark.comet.expression.&lt;Name&gt;.allowIncompatible</span></code> opt-ins are read as plain strings with no
+<code class="docutils literal notranslate"><span class="pre">ConfigEntry</span></code> behind them, so no generated table ever lists them; the
+<a class="reference internal" href="../user-guide/latest/compatibility/index.html"><span class="std std-doc">compatibility guide</span></a> is where they are documented
+instead. A deprecated alias left behind by a rename has no row of its own either. Both are fully
+covered.</p>
+<p>The two mechanisms that do exempt a key are set independently of each other:</p>
+<ul class="simple">
+<li><p><strong>The <code class="docutils literal notranslate"><span class="pre">testing</span></code> category.</strong> Every key declares a category, and <code class="docutils literal notranslate"><span class="pre">testing</span></code> routes it into the
+Development &amp; Testing Settings table rather than in with the production settings. These keys
+exist so that Comet’s own suites, and contributors chasing a bug, can reach a state the rest of
+the code is not built to support: disabling native scans to isolate a planner problem, running
+Comet in on-heap mode, making a declined operator throw instead of quietly reporting itself, or
+running a partial aggregate without its final counterpart. Setting one is a debugging step, not a
+deployment choice.</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">internal()</span></code>.</strong> A key marked internal is left out of the configuration reference entirely, so
+Comet never publishes its name, its default, or what it does. A user has no supported way to
+learn that it exists, which is the point: these are escape hatches a maintainer reaches for while
+working on Comet itself.</p></li>
+</ul>
+<p>For a key caught by either mechanism, the name, type, accepted values, default value, and semantics
+may change in any release, including a patch release, and the key may be removed outright. None of
+the machinery the rest of this policy requires applies: no <code class="docutils literal notranslate"><span class="pre">spark.comet.legacy.*</span></code> escape hatch for a
+behavior change, no deprecated alias for a rename, no deprecation cycle before removal, and no
+upgrade guide entry.</p>
+<p>The exemption exists because these keys point at Comet’s internals by construction. Guaranteeing
+them across releases would pin the implementation details they expose, which is the thing the rest
+of this section deliberately leaves free to change.</p>
+<p>The corollary binds contributors: <strong>neither mechanism may be the only way to reach a behavior that
+production users need.</strong> If a knob turns out to be one that deployments legitimately set, it belongs
+in a non-<code class="docutils literal notranslate"><span class="pre">testing</span></code> category and must not be marked internal, and the guarantees come with it.
+Choosing a category, and deciding whether to mark a key internal, are therefore policy decisions
+rather than routing details; see
+<a class="reference internal" href="../contributor-guide/config_conventions.html#categories-and-visibility"><span class="std std-ref">Categories and Visibility</span></a>
+in the contributor guide.</p>
+</section>
 </section>
 <section id="what-each-version-component-means">
 <h2>What Each Version Component Means<a class="headerlink" href="#what-each-version-component-means" title="Link to this heading">#</a></h2>
@@ -557,8 +609,11 @@ public API that keep existing vendor jars working.</p></li>
 <section id="patch-releases">
 <h3>Patch Releases<a class="headerlink" href="#patch-releases" title="Link to this heading">#</a></h3>
 <p>A patch release contains bug fixes only. It adds no configuration keys and makes no behavior
-changes, with one exception: correctness fixes, which are covered in
-<a class="reference internal" href="#correctness-fixes-are-not-breaking-changes">Correctness Fixes Are Not Breaking Changes</a>.</p>
+changes, with two exceptions: correctness fixes, which are covered in
+<a class="reference internal" href="#correctness-fixes-are-not-breaking-changes">Correctness Fixes Are Not Breaking Changes</a>, and
+configuration keys in the <code class="docutils literal notranslate"><span class="pre">testing</span></code> category or marked internal, which are outside the policy
+altogether and may be added, changed, or removed in any release. See
+<a class="reference internal" href="#testing-and-internal-configurations-are-exempt">Testing and Internal Configurations Are Exempt</a>.</p>
 </section>
 </section>
 <section id="behavior-changes-and-legacy-configurations">
@@ -581,6 +636,9 @@ pin an old Comet release.</p>
 <p>Behavior changes that require this treatment include changing the default value of an existing
 configuration key, changing what an existing key’s values mean, and changing the semantics of an
 <code class="docutils literal notranslate"><span class="pre">Incompatible</span></code> expression or operator whose divergence from Spark users may have come to depend on.</p>
+<p>Changing a <code class="docutils literal notranslate"><span class="pre">testing</span></code> or internal key is not a behavior change for this purpose, and needs no escape
+hatch. See
+<a class="reference internal" href="#testing-and-internal-configurations-are-exempt">Testing and Internal Configurations Are Exempt</a>.</p>
 <section id="lifetime-of-a-legacy-configuration">
 <h3>Lifetime of a Legacy Configuration<a class="headerlink" href="#lifetime-of-a-legacy-configuration" title="Link to this heading">#</a></h3>
 <p>A <code class="docutils literal notranslate"><span class="pre">spark.comet.legacy.*</span></code> key is deprecated from the moment it is added. Its purpose is to buy users
@@ -599,6 +657,9 @@ old key is kept working as a deprecated alias using the <code class="docutils li
 The alias may only be dropped in a major release.</p>
 <p>Removing a configuration key outright requires a deprecation cycle: the key must remain available,
 with a deprecation warning, for at least one minor release before it is removed in a major release.</p>
+<p>Neither rule applies to a <code class="docutils literal notranslate"><span class="pre">testing</span></code> or internal key, which may be renamed without an alias and
+removed in any release. See
+<a class="reference internal" href="#testing-and-internal-configurations-are-exempt">Testing and Internal Configurations Are Exempt</a>.</p>
 </section>
 </section>
 <section id="correctness-fixes-are-not-breaking-changes">
@@ -834,7 +895,10 @@ incompatibilities.</p>
   </div>
   <nav class="bd-toc-nav page-toc" aria-labelledby="pst-page-navigation-heading-2">
     <ul class="visible nav section-nav flex-column">
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#comet-s-compatibility-surface">Comet’s Compatibility Surface</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#comet-s-compatibility-surface">Comet’s Compatibility Surface</a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#testing-and-internal-configurations-are-exempt">Testing and Internal Configurations Are Exempt</a></li>
+</ul>
+</li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#what-each-version-component-means">What Each Version Component Means</a><ul class="nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#major-releases">Major Releases</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#minor-releases">Minor Releases</a></li>

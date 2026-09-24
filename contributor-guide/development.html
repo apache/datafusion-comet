@@ -1085,6 +1085,11 @@ It is possible to debug both native and JVM code concurrently as described in th
 </section>
 <section id="submitting-a-pull-request">
 <h2>Submitting a Pull Request<a class="headerlink" href="#submitting-a-pull-request" title="Link to this heading">#</a></h2>
+<p>Use <code class="docutils literal notranslate"><span class="pre">git</span> <span class="pre">push</span></code> for normal updates to your PR branch. If you need to force push after a rebase
+or amend, use <code class="docutils literal notranslate"><span class="pre">git</span> <span class="pre">push</span> <span class="pre">--force-with-lease</span></code> instead of <code class="docutils literal notranslate"><span class="pre">git</span> <span class="pre">push</span> <span class="pre">--force</span></code> (or <code class="docutils literal notranslate"><span class="pre">-f</span></code>). This reduces
+the risk of accidentally overwriting another maintainer’s commits when multiple people push
+to the same PR branch. If the lease check rejects the push, inspect and integrate the remote
+changes before retrying; do not switch to <code class="docutils literal notranslate"><span class="pre">--force</span></code> to bypass the check.</p>
 <p>Before submitting a pull request, follow this checklist to ensure your changes are ready:</p>
 <section id="format-your-code">
 <h3>1. Format Your Code<a class="headerlink" href="#format-your-code" title="Link to this heading">#</a></h3>

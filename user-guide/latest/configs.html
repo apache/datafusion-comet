@@ -1153,6 +1153,17 @@ shuffle, including applications that rely only on remote reliable storage or dec
 </section>
 <section id="development-testing-settings">
 <h2>Development &amp; Testing Settings<a class="headerlink" href="#development-testing-settings" title="Link to this heading">#</a></h2>
+<p>These settings exist for Comet’s own test suites and for debugging. They are <strong>not covered by the
+<a class="reference internal" href="../../about/versioning_policy.html#testing-and-internal-configurations-are-exempt"><span class="std std-ref">versioning policy</span></a></strong>:
+their names, defaults, accepted values, and meanings may change in any release, including a patch
+release, and any of them may be removed without a deprecation cycle. Do not set them in
+production.</p>
+<p>Comet also marks a handful of keys internal and deliberately leaves them off this page entirely.
+They are maintainer escape hatches, not settings, and carry no guarantee of any kind. Absence from
+this page does not by itself mean that, though: the per-expression
+<code class="docutils literal notranslate"><span class="pre">spark.comet.expression.&lt;Name&gt;.allowIncompatible</span></code> opt-ins are documented in the
+<a class="reference internal" href="compatibility/index.html"><span class="std std-doc">compatibility guide</span></a> rather than here, and the versioning policy covers
+them like any other production setting.</p>
 <!--BEGIN:CONFIG_TABLE[testing]-->
 <!-- prettier-ignore-start -->
 <div class="pst-scrollable-table-container"><table class="table">
