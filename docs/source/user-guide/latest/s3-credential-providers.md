@@ -19,7 +19,7 @@ under the License.
 
 # S3 Credential Providers
 
-Comet's native S3 readers normally fetch credentials from the standard AWS credential chain (static keys, instance profiles, environment variables, etc.). Some clusters use a vendor-managed mechanism instead, where credentials are issued per request based on a JWT or per S3 path. For those clusters, Comet supports loading a vendor-supplied bridge class that routes every native credential request through the vendor's Java code.
+Comet's native S3 readers and native Iceberg writer normally fetch credentials from the standard AWS credential chain (static keys, instance profiles, environment variables, etc.). Some clusters use a vendor-managed mechanism instead, where credentials are issued per request based on a JWT or per S3 path. For those clusters, Comet supports loading a vendor-supplied bridge class that routes every native credential request through the vendor's Java code.
 
 ## Do I need this?
 
@@ -102,15 +102,13 @@ Without the config set, no credential-related log lines appear at startup; nativ
 
 ## Iceberg: explicit S3 region required
 
-With the bridge configured, Comet wires a custom credential loader into `iceberg-storage-opendal`. `opendal`'s built-in S3 region auto-detection only runs when no custom loader is configured, so on the bridge path the region (and endpoint for non-AWS) must be set explicitly on the Spark catalog:
+`iceberg-storage-opendal` does not auto-detect a bucket's region, with or without the bridge. When neither the catalog (`s3.region` or `client.region`) nor the executor environment (`AWS_REGION` / `AWS_DEFAULT_REGION`) supplies a region, Comet uses `us-east-1`. That suits most non-AWS S3-compatible services but fails for AWS buckets in other regions, so set the region (and the endpoint for non-AWS) explicitly on the Spark catalog:
 
 ```
 spark.sql.catalog.<catalog>.s3.region        = us-east-1
 spark.sql.catalog.<catalog>.s3.endpoint      = https://...   (non-AWS only)
 spark.sql.catalog.<catalog>.s3.path-style-access = true      (path-style endpoints only)
 ```
-
-If you hit `region is missing. Please find it by S3::detect_region() or set them in env`, this is the missing config.
 
 ## Writing a bridge
 
@@ -267,10 +265,10 @@ public final class IcebergRESTVendedS3Provider implements CometS3CredentialProvi
 
 ### Access mode
 
-| Value   | Used for                                                                   |
-| ------- | -------------------------------------------------------------------------- |
-| `READ`  | All native scan paths (raw Parquet, Iceberg). Comet today only sends READ. |
-| `WRITE` | Reserved for future native write paths.                                    |
+| Value   | Used for                                                                                                                                                                                       |
+| ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `READ`  | All native scan paths (raw Parquet, Iceberg).                                                                                                                                                  |
+| `WRITE` | The native Iceberg writer (see [Iceberg Writes](iceberg-writes.md)). If the configured provider fails to initialize, the write fails rather than falling back to the default credential chain. |
 
 A `WRITE` credential is not implicitly read-capable. Vendors that need read-during-write workflows include the required read permissions in the IAM policy attached to their `WRITE` credentials.
 

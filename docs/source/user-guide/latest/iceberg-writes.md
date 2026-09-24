@@ -44,7 +44,7 @@ and it is the foundation for the second toggle: when
 `spark.comet.iceberg.write.enabled=true` and the write passes the eligibility check below, the
 `IcebergWrite` operator's per-task Parquet write is delegated to
 [iceberg-rust](https://github.com/apache/iceberg-rust) via Comet's native execution pipeline
-([#5308](https://github.com/apache/datafusion-comet/issues/5308)).
+([#5361](https://github.com/apache/datafusion-comet/pull/5361)).
 
 ## How the native write works
 
@@ -79,7 +79,7 @@ spark.sql.catalog.<name>.warehouse=...
 # Split-operator plan (experimental, off by default)
 spark.comet.write.iceberg.splitOperator.enabled=true
 
-# Native-write eligibility detection (experimental, off by default; requires the split plan)
+# Native iceberg-rust data-file writer (experimental, off by default; requires the split plan)
 spark.comet.iceberg.write.enabled=true
 ```
 
@@ -123,7 +123,7 @@ trade-off, only no plan change.
 ## Native Parquet write eligibility
 
 When `spark.comet.iceberg.write.enabled=true`
-([#5308](https://github.com/apache/datafusion-comet/issues/5308)), the `IcebergWrite` operator's
+([#5361](https://github.com/apache/datafusion-comet/pull/5361)), the `IcebergWrite` operator's
 per-task Parquet write is delegated to [iceberg-rust](https://github.com/apache/iceberg-rust).
 The native writer must produce the same outcome as iceberg-java — the same Parquet features,
 statistics, and manifest metadata — so a write is only eligible when every table property it
@@ -132,7 +132,9 @@ feeding the write is fully Comet-native. For a partitioned table that plan inclu
 distribution and local sort Iceberg requests on its partition transforms; those stay native
 because the transforms themselves have native implementations (see
 [Iceberg system functions](iceberg.md)). Ineligible writes run through iceberg-java unchanged,
-with the reason reported as a fall-back reason in Comet's extended EXPLAIN output.
+with the reason reported as a fall-back reason in Comet's extended EXPLAIN output. A write that
+runs natively shows `CometIcebergWrite` under `IcebergCommit` in the physical plan; an ineligible
+write keeps `IcebergWrite`.
 
 **Most Iceberg write settings are not supported.** Detection is an allowlist: a write is
 eligible only when its entire effective configuration matches the table below, and anything
@@ -166,7 +168,8 @@ Within the namespaces that shape data-file bytes — `write.parquet.*` and `parq
 everything not listed above must be absent: unvetted `write.parquet.*` keys (e.g.
 `bloom-filter-max-bytes`, `stats-enabled.column.*`, keys added by future Iceberg versions),
 any `parquet.*` table property (including `parquet.enable.dictionary`), and any `parquet.*`
-key in the session Hadoop configuration (with `HadoopFileIO`-backed output those reach
+key in the session Hadoop configuration other than the reader-only
+`parquet.hadoop.vectored.io.enabled` (with `HadoopFileIO`-backed output those reach
 iceberg-java's writer but not the native one). Also gated explicitly: any `encryption.*` key,
 `write.object-storage.enabled=true`, `write.location-provider.impl`, and `io-impl`.
 
@@ -271,14 +274,13 @@ a data file but not what any reader computes from it:
   (iceberg-java names files `<partition>-<task>-<operation>-<count>`; iceberg-rust uses a
   process-local counter).
 - Partition directory names match iceberg-java 1.8+'s `PartitionSpec.partitionToPath` for every
-  partition type except `float` and `double`, where the value is rendered with Rust's shortest
-  representation instead of `Float.toString` / `Double.toString` (`f=1` where iceberg-java writes
-  `f=1.0`). On Iceberg 1.5.x, which the Spark 3.4 profile pins, iceberg-java itself spelled
-  `timestamp` and `timestamptz` directories with `LocalDateTime.toString()` /
-  `OffsetDateTime.toString()` (`ts=1969-12-31T23:59:58.500Z`) and left the partition field name
-  unescaped; Comet uses the 1.8+ spelling on every profile. Distinct partition values still get
-  distinct directories in all cases, and no reader parses these names — files are resolved through
-  committed manifests. Iceberg deprecated float and double partitioning in 1.3.
+  partition type, including `float` and `double`, which follow `Float.toString` /
+  `Double.toString` (`f=1.0`, `d=1.0E20`). On Iceberg 1.5.x, which the Spark 3.4 profile pins,
+  iceberg-java itself spelled `timestamp` and `timestamptz` directories with
+  `LocalDateTime.toString()` / `OffsetDateTime.toString()` (`ts=1969-12-31T23:59:58.500Z`) and left
+  the partition field name unescaped; Comet uses the 1.8+ spelling on every profile. Distinct
+  partition values still get distinct directories in all cases, and no reader parses these names —
+  files are resolved through committed manifests.
 - File rolling lands on the same row grid as iceberg-java but not necessarily on the same row.
   Both writers re-check the current file's size against `write.target-file-size-bytes` once
   every 1000 rows of that file (iceberg-java's `RollingFileWriter.ROWS_DIVISOR`; Comet hands the
