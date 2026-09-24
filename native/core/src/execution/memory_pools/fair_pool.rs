@@ -682,6 +682,30 @@ mod tests {
     }
 
     #[test]
+    fn try_grow_refusal_with_overcommit_outstanding_hands_back_the_full_grant() {
+        let fake = FakeSpark::with(100);
+        let pool: Arc<dyn MemoryPool> =
+            Arc::new(CometFairMemoryPool::with_spark(fake.memory(), 10_000));
+        let reservation = MemoryConsumer::new("consumer").register(&pool);
+
+        // The anchor takes one byte, leaving 99 of Spark's 100 for the 150 byte grow. 99 is
+        // granted and 51 becomes overcommit.
+        reservation.grow(150);
+        assert_eq!(fake.held(), 100);
+        assert_eq!(pool.reserved(), 150);
+
+        // 20 bytes of new headroom, not enough for the 5 byte request plus the 51 owed. Spark
+        // hands over more than the request itself, and all of it must go back.
+        fake.set_limit(120);
+        let err = reservation.try_grow(5).unwrap_err();
+        assert!(err.to_string().contains("only got"), "{err}");
+
+        assert_eq!(pool.reserved(), 150);
+        assert_eq!(fake.held(), 100);
+        assert_eq!(fake.released(), vec![20]);
+    }
+
+    #[test]
     fn grow_past_the_fair_limit_is_recorded_and_refuses_the_next_try_grow() {
         let fake = FakeSpark::with(100);
         let pool: Arc<dyn MemoryPool> =
