@@ -154,7 +154,7 @@ pub(crate) fn load_file_io(
 /// the access intent: reads warn and fall back to the default chain (a wrong-credential read
 /// fails on permissions), but writes fail closed -- silently switching which credentials perform
 /// a write after the configured provider failed is not acceptable.
-fn build_s3_credential_loader(
+pub(crate) fn build_s3_credential_loader(
     reference_path: &str,
     catalog_properties: &HashMap<String, String>,
     catalog_name: &str,

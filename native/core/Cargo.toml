@@ -69,6 +69,8 @@ url = { workspace = true }
 aws-config = { workspace = true }
 aws-credential-types = { workspace = true }
 aws-sdk-sts = { workspace = true }
+# Only for the `SharedHttpClient` type in `build_provider`'s test seam; already in the graph.
+aws-smithy-runtime-api = "1.16.0"
 parking_lot = "0.12.5"
 # Optional Delta Lake contrib (enabled by the `contrib-delta` feature). Source lives
 # under `contrib/delta/native/` so non-Delta committers can ignore it.
@@ -103,9 +105,8 @@ lazy_static = "1.4"
 assertables = "10"
 hex = "0.4.3"
 datafusion-functions-nested = { version = "55.1.0" }
-# Types for a hand-rolled in-memory HTTP client that exercises the web-identity STS retry path
-# without a socket. All are already in the dependency graph (transitive via aws-config).
-aws-smithy-runtime-api = "1.16.0"
+# Test-only helpers for a hand-rolled in-memory HTTP client that exercises the web-identity STS
+# retry path without a socket. Already in the dependency graph (transitive via aws-config).
 aws-smithy-types = "1.6.3"
 http = "1.5.0"
 
