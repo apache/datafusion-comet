@@ -887,20 +887,127 @@ batch is written as a single block that may exceed the batch size.</p>
 </section>
 <section id="round-robin-partitioning">
 <h3>Round Robin Partitioning<a class="headerlink" href="#round-robin-partitioning" title="Link to this heading">#</a></h3>
-<p>Comet implements round robin partitioning using hash-based assignment for determinism:</p>
+<p><code class="docutils literal notranslate"><span class="pre">CometPartitioning::RoundRobin</span></code> carries a <code class="docutils literal notranslate"><span class="pre">RoundRobinStrategy</span></code> that decides how rows reach output
+partitions. The default is <code class="docutils literal notranslate"><span class="pre">HashAll</span></code>; <code class="docutils literal notranslate"><span class="pre">RowGroups</span></code> is opt-in through
+<code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.native.partitioning.roundrobin.positional.enabled</span></code>, and is used only where the
+planner can establish that a retried map task replays its rows in the same order.</p>
+<p>Both are judged against what Spark does. Spark’s round robin keeps a per-task counter that starts
+at <code class="docutils literal notranslate"><span class="pre">XORShiftRandom(partitionId).nextInt(numPartitions)</span></code> and is incremented before each row, so the
+<code class="docutils literal notranslate"><span class="pre">k</span></code>th row a task sees goes to <code class="docutils literal notranslate"><span class="pre">(start</span> <span class="pre">+</span> <span class="pre">1</span> <span class="pre">+</span> <span class="pre">k)</span> <span class="pre">%</span> <span class="pre">numPartitions</span></code>. That is a function of row order,
+which a retry does not have to reproduce
+(<a class="reference external" href="https://issues.apache.org/jira/browse/SPARK-23207">SPARK-23207</a>), so by default
+(<code class="docutils literal notranslate"><span class="pre">spark.sql.execution.sortBeforeRepartition=true</span></code>) Spark first sorts each map partition on the
+binary <code class="docutils literal notranslate"><span class="pre">UnsafeRow</span></code> form. Placement then depends only on which rows the partition holds, and a
+retry only has to produce the same rows, in any order. With the sort turned off, Spark instead
+marks the repartition <code class="docutils literal notranslate"><span class="pre">isOrderSensitive</span></code>, which reports the stage <code class="docutils literal notranslate"><span class="pre">INDETERMINATE</span></code> over an
+<code class="docutils literal notranslate"><span class="pre">UNORDERED</span></code> parent, and the <code class="docutils literal notranslate"><span class="pre">DAGScheduler</span></code> rolls the whole stage back rather than re-running one
+task into a partially consumed output.</p>
+<p>Neither Comet strategy sorts, and neither places rows where Spark’s default would: Arrow’s layout
+does not reproduce the <code class="docutils literal notranslate"><span class="pre">UnsafeRow</span></code> sort order, so unsorted output can land in different partitions
+than Spark’s. Sorted output is identical. That difference is why
+<code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.native.partitioning.roundrobin.enabled</span></code> defaults to <code class="docutils literal notranslate"><span class="pre">false</span></code>.</p>
+<section id="hashall-hash-based-assignment-default">
+<h4><code class="docutils literal notranslate"><span class="pre">HashAll</span></code>: hash-based assignment (default)<a class="headerlink" href="#hashall-hash-based-assignment-default" title="Link to this heading">#</a></h4>
 <ol class="arabic simple">
 <li><p>Computes a Murmur3 hash of columns (using seed 42)</p></li>
 <li><p>Assigns partitions directly using the hash: <code class="docutils literal notranslate"><span class="pre">partition_id</span> <span class="pre">=</span> <span class="pre">hash</span> <span class="pre">%</span> <span class="pre">num_partitions</span></code></p></li>
 </ol>
-<p>This approach guarantees determinism across retries, which is critical for fault tolerance.
-However, unlike true round robin which cycles through partitions row-by-row, hash-based
-assignment only provides even distribution when the data has sufficient variation in the
-hashed columns. Data with low cardinality or identical values may result in skewed partition
-sizes.</p>
-<p>Because Spark assigns round robin partitions by sorting rows on their binary <code class="docutils literal notranslate"><span class="pre">UnsafeRow</span></code> form,
-which Arrow’s layout does not reproduce, unsorted output can land in different partitions than
-Spark’s. Sorted output is identical. That difference is why
-<code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.native.partitioning.roundrobin.enabled</span></code> defaults to <code class="docutils literal notranslate"><span class="pre">false</span></code>.</p>
+<p>Placement is a pure function of each row, so like Spark’s default it only needs a retry to produce
+the same rows. However, unlike true round robin, hash-based assignment only provides even
+distribution when the data has sufficient variation in the hashed columns: a column of one repeated
+value lands entirely on one reducer.</p>
+<p><code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.native.partitioning.roundrobin.maxHashColumns</span></code> caps how many leading columns
+are hashed. <code class="docutils literal notranslate"><span class="pre">0</span></code>, the default, hashes all of them.</p>
+</section>
+<section id="rowgroups-positional-assignment">
+<h4><code class="docutils literal notranslate"><span class="pre">RowGroups</span></code>: positional assignment<a class="headerlink" href="#rowgroups-positional-assignment" title="Link to this heading">#</a></h4>
+<p>Hashing every column of every row dominates the shuffle write on wide nested schemas, because
+<code class="docutils literal notranslate"><span class="pre">create_murmur3_hashes</span></code> recurses into every struct child per row and the resulting row-level
+scatter forces <code class="docutils literal notranslate"><span class="pre">interleave_record_batch</span></code> to walk every column and child again on flush.
+<code class="docutils literal notranslate"><span class="pre">RowGroups</span></code> places rows positionally instead: the row at task-global ordinal <code class="docutils literal notranslate"><span class="pre">i</span></code> goes to
+<code class="docutils literal notranslate"><span class="pre">(startPartition</span> <span class="pre">+</span> <span class="pre">i</span> <span class="pre">/</span> <span class="pre">groupRows)</span> <span class="pre">%</span> <span class="pre">numPartitions</span></code>. That removes the per-row hash, and it replaces
+the per-row gather with a bulk copy per contiguous run, because adjacent rows now stay together.
+It also spreads duplicate rows evenly, which <code class="docutils literal notranslate"><span class="pre">HashAll</span></code> cannot. With <code class="docutils literal notranslate"><span class="pre">groupRows</span> <span class="pre">=</span> <span class="pre">1</span></code> it is exactly
+Spark’s round robin with <code class="docutils literal notranslate"><span class="pre">sortBeforeRepartition=false</span></code>.</p>
+<p>The counter is over <strong>rows</strong>, not batches, and it carries across batch boundaries: a group that one
+input batch leaves part-way through is finished by the next. That is deliberate.
+<code class="docutils literal notranslate"><span class="pre">DeterministicLevel</span></code> describes which rows a task produces and in what order, and says nothing about
+how an operator frames them into batches, so an operator that spills can reframe under different
+memory pressure while still honouring <code class="docutils literal notranslate"><span class="pre">DETERMINATE</span></code>. Keying on a row ordinal means placement
+depends on order alone.</p>
+<p><code class="docutils literal notranslate"><span class="pre">startPartition</span></code> is the output partition a map task’s first group goes to, computed per task by
+<code class="docutils literal notranslate"><span class="pre">CometShuffleExchangeExec.positionalStartPartition</span></code> in <code class="docutils literal notranslate"><span class="pre">CometNativeShuffleWriter.buildUnifiedPlan</span></code>,
+where the map partition id is in scope, and passed down in the proto. It has to be <em>decorrelated</em>
+across mappers, not merely distinct: a task walks <code class="docutils literal notranslate"><span class="pre">ceil(rows</span> <span class="pre">/</span> <span class="pre">groupRows)</span></code> consecutive partitions
+from its start, so if consecutive tasks started on consecutive partitions their runs would all
+overlap and the partitions past <code class="docutils literal notranslate"><span class="pre">numMapTasks</span> <span class="pre">+</span> <span class="pre">groupsPerTask</span></code> would get nothing — ten map tasks of
+5,000 rows into 200 partitions at a group of 64 would leave 112 reducers empty. It also has to be a
+pure function of the map partition, or a re-executed task does not reproduce its own placement.
+Spark’s own start satisfies both, which is why it is scrambled
+(<a class="reference external" href="https://issues.apache.org/jira/browse/SPARK-21782">SPARK-21782</a>), so Comet uses it unchanged,
+including the <code class="docutils literal notranslate"><span class="pre">+</span> <span class="pre">1</span></code> for Spark’s pre-increment.</p>
+<p><code class="docutils literal notranslate"><span class="pre">groupRows</span></code> trades balance against copying. Within one map task, output partitions differ by at
+most <code class="docutils literal notranslate"><span class="pre">groupRows</span></code> rows however the reader frames its batches, so small groups balance better; large
+groups produce fewer, longer runs to copy, and a group as large as the batch size lets a whole
+input batch pass through to one partition untouched. That bound does not compose across map
+tasks: a reducer sees the sum over all of them, which is only even when each task emits many more
+groups than there are output partitions. Over 50 map tasks of a million rows into 200 partitions,
+a batch-sized group of 8192 leaves the largest reducer 1.57 times the smallest, where a group of
+64 is within 0.3%. <code class="docutils literal notranslate"><span class="pre">0</span></code>, the default, derives the group as
+<code class="docutils literal notranslate"><span class="pre">clamp(batch_size</span> <span class="pre">/</span> <span class="pre">num_partitions,</span> <span class="pre">64,</span> <span class="pre">batch_size)</span></code>, which keeps each task wrapping around the
+output partitions once per batch. The 64-row floor caps how finely a batch is cut, so that a
+partition count far larger than the batch size cannot turn the flush back into a per-row gather.
+The floor also bounds that promise: past <code class="docutils literal notranslate"><span class="pre">batch_size</span> <span class="pre">/</span> <span class="pre">64</span></code> output partitions a task covers only
+<code class="docutils literal notranslate"><span class="pre">batch_size</span> <span class="pre">/</span> <span class="pre">64</span></code> of them per batch, so small map tasks can still leave reducers empty. Ten map
+tasks of one 8192-row batch each into 1,000 partitions emit 1,280 groups between them, and leave
+311 reducers empty.</p>
+<p>The group size is resolved on the driver, in <code class="docutils literal notranslate"><span class="pre">CometShuffleExchangeExec.resolvePositionalGroupRows</span></code>,
+and frozen with the shuffle dependency. Deriving it on the executor from the task’s batch size
+would let a map task re-executed after <code class="docutils literal notranslate"><span class="pre">spark.comet.batchSize</span></code> changed use a different group
+size, and so a different placement, from the attempt it replaces.</p>
+<p>Internally, <code class="docutils literal notranslate"><span class="pre">MultiPartitionShuffleRepartitioner</span></code> records <code class="docutils literal notranslate"><span class="pre">(batch,</span> <span class="pre">start,</span> <span class="pre">len)</span></code> runs rather than
+one <code class="docutils literal notranslate"><span class="pre">(batch,</span> <span class="pre">row)</span></code> pair per row, so the index list charged against the spill reservation is
+smaller, and <code class="docutils literal notranslate"><span class="pre">RunIterator</span></code> builds each output chunk by slicing and concatenating runs. A run that
+covers an entire <code class="docutils literal notranslate"><span class="pre">batch_size</span></code> buffered batch is passed through without copying.</p>
+<p>One schema-level restriction is applied in <code class="docutils literal notranslate"><span class="pre">create_repartitioner</span></code>: positional placement is the only
+strategy that hands a sliced array to the IPC writer, and while the writer truncates a slice’s
+buffers for every other type, for <code class="docutils literal notranslate"><span class="pre">Utf8View</span></code> and <code class="docutils literal notranslate"><span class="pre">BinaryView</span></code> it serializes every shared data
+buffer in full. A schema containing a view type anywhere therefore falls back to <code class="docutils literal notranslate"><span class="pre">HashAll</span></code>, with
+the same <code class="docutils literal notranslate"><span class="pre">maxHashColumns</span></code>.</p>
+</section>
+<section id="retry-safety-under-rowgroups">
+<h4>Retry safety under <code class="docutils literal notranslate"><span class="pre">RowGroups</span></code><a class="headerlink" href="#retry-safety-under-rowgroups" title="Link to this heading">#</a></h4>
+<p>Positional placement asks more of a retry than Spark’s default does. Spark sorts first, so it
+needs the same rows; <code class="docutils literal notranslate"><span class="pre">RowGroups</span></code> does not sort, so it needs the same rows in the same order.
+Re-executing one map task against differently ordered input writes a different partitioning of the
+same rows, and once any consumer has fetched the output that attempt replaces, the reduce side
+silently gets some rows twice and others not at all. Comet establishes the condition in two places:</p>
+<ul class="simple">
+<li><p><strong>In the plan, which is the gate that matters.</strong> <code class="docutils literal notranslate"><span class="pre">CometShuffleExchangeExec.replaysRowsInOrder</span></code>
+walks the native subtree fused into the writer, which the RDD graph cannot see because the whole
+subtree collapses into one <code class="docutils literal notranslate"><span class="pre">CometNativeShuffleInputRDD</span></code>. It is a short allowlist, not a
+denylist: a native scan under nothing but projections and filters whose expressions are all
+deterministic. A native scan replays its partition because its file splits are fixed on the
+driver. A nondeterministic expression, such as a UDF marked <code class="docutils literal notranslate"><span class="pre">asNondeterministic</span></code>, is out even
+though it is evaluated row by row, because nothing bounds what it does between attempts: one
+that reorders or re-filters rows on a retry moves them to different reducers while the RDD still
+reports <code class="docutils literal notranslate"><span class="pre">DETERMINATE</span></code>. Operators that spill are the
+interesting exclusion, since an aggregate or sort under memory pressure emits output in an order
+that depends on how many times it spilled, which differs between attempts. Anything else keeps
+<code class="docutils literal notranslate"><span class="pre">HashAll</span></code>. Because nothing sorts behind it, this allowlist is the only thing standing between
+<code class="docutils literal notranslate"><span class="pre">RowGroups</span></code> and SPARK-23207, and a change that widens it needs its own argument that the new
+operator replays its rows in order.</p></li>
+<li><p><strong>In the RDD graph, as defence in depth.</strong>
+<code class="docutils literal notranslate"><span class="pre">CometNativeShuffleInputRDD.getOutputDeterministicLevel</span></code> applies Spark’s <code class="docutils literal notranslate"><span class="pre">isOrderSensitive</span></code> rule
+to everything below that RDD: a determinate parent stays determinate, and anything below another
+exchange is unordered, because reduce tasks see shuffle blocks in arrival order, and goes
+indeterminate. Under today’s allowlist it cannot fire, since the only leaf is a native scan,
+which contributes no input RDD. It starts to matter once the allowlist admits an input that
+crosses the RDD boundary.</p></li>
+</ul>
+<p><code class="docutils literal notranslate"><span class="pre">RowGroups</span></code> is also not used with the Celeborn shuffle manager, whose push path has not been shown
+to handle sliced batches or an indeterminate stage’s rollback.</p>
+</section>
 </section>
 </section>
 <section id="memory-management">
@@ -1022,6 +1129,14 @@ independently compressed, allowing parallel decompression during reads.</p>
 <td><p><code class="docutils literal notranslate"><span class="pre">0</span></code></p></td>
 <td><p>Columns to hash for round robin. <code class="docutils literal notranslate"><span class="pre">0</span></code> hashes all of them</p></td>
 </tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.native.partitioning.roundrobin.positional.enabled</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">false</span></code></p></td>
+<td><p>Place round-robin rows by position where the plan allows it</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.native.partitioning.roundrobin.positional.groupRows</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">0</span></code></p></td>
+<td><p>Rows per positional group. <code class="docutils literal notranslate"><span class="pre">0</span></code> derives it from batch size and partition count</p></td>
+</tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.jvm.batchSize</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">8192</span></code></p></td>
 <td><p>Target rows per batch</p></td>
@@ -1141,7 +1256,12 @@ independently compressed, allowing parallel decompression during reads.</p>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#hash-partitioning">Hash Partitioning</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#range-partitioning">Range Partitioning</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#single-partition">Single Partition</a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#round-robin-partitioning">Round Robin Partitioning</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#round-robin-partitioning">Round Robin Partitioning</a><ul class="nav section-nav flex-column">
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#hashall-hash-based-assignment-default"><code class="docutils literal notranslate"><span class="pre">HashAll</span></code>: hash-based assignment (default)</a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#rowgroups-positional-assignment"><code class="docutils literal notranslate"><span class="pre">RowGroups</span></code>: positional assignment</a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#retry-safety-under-rowgroups">Retry safety under <code class="docutils literal notranslate"><span class="pre">RowGroups</span></code></a></li>
+</ul>
+</li>
 </ul>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#memory-management">Memory Management</a></li>
