@@ -741,9 +741,10 @@ the only way the suite runs at all.</p>
 </pre></div>
 </div>
 <p>Applying a label starts a new run immediately at the pull request’s current commit. That run
-executes only the suite the label gates; the PR tier already ran at that commit and is not
-repeated. Its aggregate verdict is published as <code class="docutils literal notranslate"><span class="pre">Required</span> <span class="pre">Checks</span> <span class="pre">(label</span> <span class="pre">run)</span></code> rather than
-<code class="docutils literal notranslate"><span class="pre">Required</span> <span class="pre">Checks</span></code>, so it can be read alongside the commit run without replacing it.</p>
+belongs to the separate <code class="docutils literal notranslate"><span class="pre">Comet</span> <span class="pre">CI</span> <span class="pre">(label</span> <span class="pre">run)</span></code> workflow and executes only the suite the label
+gates; the PR tier already ran at that commit and is not repeated. Its aggregate verdict is
+published as <code class="docutils literal notranslate"><span class="pre">Label</span> <span class="pre">run</span> <span class="pre">/</span> <span class="pre">Required</span> <span class="pre">Checks</span> <span class="pre">(label</span> <span class="pre">run)</span></code> rather than <code class="docutils literal notranslate"><span class="pre">Required</span> <span class="pre">Checks</span></code>, so it can be
+read alongside the commit run without replacing it.</p>
 <p>For a queue-tier suite, that separate name costs nothing: the merge queue runs the suite again
 before the change lands, so a failure a label run surfaced still blocks the merge later. A
 nightly-tier suite and Spark 3.4 have no queue run behind them. A red <code class="docutils literal notranslate"><span class="pre">Required</span> <span class="pre">Checks</span> <span class="pre">(label</span> <span class="pre">run)</span></code>
