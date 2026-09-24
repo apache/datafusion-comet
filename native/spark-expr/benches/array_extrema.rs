@@ -15,11 +15,11 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! Compare ordinary-data extrema with DataFusion; special-value semantics belong in tests.
+//! Compare ordinary-data extrema with DataFusion and measure Spark UTF8_LCASE comparisons.
 
-use arrow::array::{ArrayRef, Float32Array, Float64Array, ListArray};
+use arrow::array::{Array, ArrayRef, Float32Array, Float64Array, ListArray, StringArray};
 use arrow::buffer::{NullBuffer, OffsetBuffer};
-use arrow::datatypes::Field;
+use arrow::datatypes::{DataType, Field};
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use datafusion::common::config::ConfigOptions;
 use datafusion::functions_nested::min_max::{array_max_udf, array_min_udf};
@@ -129,6 +129,74 @@ fn criterion_benchmark(c: &mut Criterion) {
                 }
             }
         }
+    }
+
+    let ascii_prefix = "a".repeat(4095);
+    let unicode_prefix = "Σ".repeat(2047);
+    for (shape, left, right, null_every) in [
+        ("ascii_short", "Alpha".into(), "zULU".into(), 0),
+        (
+            "ascii_early",
+            format!("A{ascii_prefix}"),
+            format!("Z{ascii_prefix}"),
+            0,
+        ),
+        (
+            "ascii_prefix",
+            format!("{ascii_prefix}A"),
+            format!("{ascii_prefix}Z"),
+            0,
+        ),
+        ("unicode_short", "ς".into(), "Σ".into(), 0),
+        (
+            "unicode_tail",
+            format!("{ascii_prefix}K"),
+            format!("{ascii_prefix}k"),
+            0,
+        ),
+        (
+            "unicode_prefix",
+            format!("{unicode_prefix}A"),
+            format!("{unicode_prefix}Z"),
+            0,
+        ),
+        ("sparse_nulls", "Alpha".into(), "zULU".into(), 10),
+        ("dense_nulls", "Alpha".into(), "zULU".into(), 2),
+    ] {
+        let values = StringArray::from_iter((0..64 * 8).map(|i| {
+            if null_every != 0 && i % null_every == null_every - 1 {
+                None
+            } else {
+                Some(if i % 2 == 0 { &left } else { &right })
+            }
+        }));
+        let input = list(Arc::new(values), 8, false);
+        let comet = ScalarUDF::from(
+            SparkArrayExtrema::with_collations(true, &["UTF8_LCASE".into()], 16).unwrap(),
+        );
+        let args = ScalarFunctionArgs {
+            args: vec![ColumnarValue::Array(Arc::clone(&input))],
+            arg_fields: vec![Arc::new(Field::new(
+                "input",
+                input.data_type().clone(),
+                true,
+            ))],
+            number_rows: input.len(),
+            return_field: Arc::new(Field::new("result", DataType::Utf8, true)),
+            config_options: Arc::new(ConfigOptions::default()),
+        };
+        let result = comet
+            .invoke_with_args(args.clone())
+            .unwrap()
+            .into_array(input.len())
+            .unwrap();
+        assert_eq!(
+            result.to_data(),
+            StringArray::from(vec![left.as_str(); input.len()]).to_data()
+        );
+        group.bench_function(BenchmarkId::new("lcase_min", shape), |b| {
+            b.iter(|| black_box(comet.invoke_with_args(black_box(args.clone())).unwrap()))
+        });
     }
     group.finish();
 }
