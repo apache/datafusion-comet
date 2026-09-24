@@ -19,20 +19,22 @@
 //!
 //! Exports, through the Comet UDF C ABI:
 //!
-//! - `add_one_c` — `(Int64) -> Int64`, the basic compute path
-//! - `echo_c` — identity over any type, used to check that each supported
+//! - `add_one_c`: `(Int64) -> Int64`, the basic compute path
+//! - `sub_c`: `(Int64, Int64) -> Int64`, `a - b`, which is order-sensitive
+//!   so a call that delivered its arguments swapped gives a wrong answer
+//! - `echo_c`: identity over any type, used to check that each supported
 //!   Spark type survives the round trip through the ABI with its nulls
-//! - `stringify_c` — `(any) -> Utf8`, which forces the UDF to actually
+//! - `stringify_c`: `(any) -> Utf8`, which forces the UDF to actually
 //!   decode the values rather than hand the array straight back
-//! - `make_ts_utc_c` / `make_ts_naive_c` — `(Int64) -> Timestamp`, built with
+//! - `make_ts_utc_c` / `make_ts_naive_c`: `(Int64) -> Timestamp`, built with
 //!   and without a UTC tag, pinning which one Spark's `TimestampType`
 //!   accepts
-//! - `make_map_c` — `(Int64) -> Map`, built with arrow-rs's default
+//! - `make_map_c`: `(Int64) -> Map`, built with arrow-rs's default
 //!   `MapBuilder` field names, which differ from the ones Comet emits
-//! - `panics_on_invoke` / `panics_on_return_field` — panic containment
+//! - `panics_on_invoke` / `panics_on_return_field`: panic containment
 //!
-//! Note that this crate depends only on `arrow` and `comet-udf-sdk` — no
-//! DataFusion dependency — which is the point of the ABI.
+//! Note that this crate depends only on `arrow` and `comet-udf-sdk`, with no
+//! DataFusion dependency, which is the point of the ABI.
 //!
 //! Built as `libcomet_test_udfs.{so,dylib}`.
 
@@ -81,6 +83,41 @@ impl CometCScalarUdf for AddOneC {
             .downcast_ref::<Int64Array>()
             .ok_or_else(|| "expected Int64Array".to_string())?;
         let out: Int64Array = arr.iter().map(|v| v.map(|x| x + 1)).collect();
+        Ok(Arc::new(out))
+    }
+}
+
+/// `a - b` over two `Int64` arguments.
+///
+/// Subtraction rather than addition so the argument order is observable: a
+/// host that delivered the arguments swapped would negate every result.
+#[derive(Default)]
+pub struct SubC;
+
+impl CometCScalarUdf for SubC {
+    fn name(&self) -> &str {
+        "sub_c"
+    }
+
+    fn return_field(&self, args: &[Field]) -> Result<Field, String> {
+        if args.len() != 2
+            || args[0].data_type() != &DataType::Int64
+            || args[1].data_type() != &DataType::Int64
+        {
+            return Err("sub_c expects (Int64, Int64)".to_string());
+        }
+        Ok(Field::new("sub_c", DataType::Int64, true))
+    }
+
+    fn invoke(&self, args: &[ArrayRef], _n_rows: usize) -> Result<ArrayRef, String> {
+        let int64 = |i: usize| {
+            args[i]
+                .as_any()
+                .downcast_ref::<Int64Array>()
+                .ok_or_else(|| format!("arg #{i}: expected Int64Array"))
+        };
+        let (a, b) = (int64(0)?, int64(1)?);
+        let out: Int64Array = a.iter().zip(b.iter()).map(|(a, b)| Some(a? - b?)).collect();
         Ok(Arc::new(out))
     }
 }
@@ -311,6 +348,7 @@ impl CometCScalarUdf for PanicsOnReturnField {
 
 comet_c_udf_export!(
     AddOneC,
+    SubC,
     EchoC,
     StringifyC,
     MakeTsUtcC,

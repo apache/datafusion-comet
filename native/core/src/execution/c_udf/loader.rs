@@ -55,17 +55,14 @@ pub struct LoadedLibrary {
     pub path: PathBuf,
     /// One entry per UDF, with name and ScalarUDFImpl already built.
     ///
-    /// Declared before `library` on purpose. Struct fields drop in
-    /// declaration order, and each UDF's drop calls a `release` callback
-    /// that lives in the library's text: unloading first would call
-    /// through a dangling pointer.
+    /// Each adapter holds its own reference to the library, so one cloned
+    /// out of here stays usable after this struct is dropped. The arrays an
+    /// adapter returns do not: their release callbacks live in the
+    /// library's text too, which is why every adapter handed to the planner
+    /// comes from `cache::get_or_load`, which never unloads a library.
     pub udfs: Vec<LoadedUdf>,
-    /// The loaded `Library`. Dropping the last reference unloads it, and
-    /// nothing in a `udf_impl` holds one, so an adapter cloned out of
-    /// `udfs` must not outlive this struct: its callbacks, and the release
-    /// callbacks of every array it returned, live in the library's text.
-    /// Use `cache::get_or_load`, which keeps every library loaded for the
-    /// life of the process, whenever an adapter is handed out.
+    /// The loaded `Library`. It is unloaded once this and every adapter in
+    /// `udfs` have been dropped.
     pub library: Arc<Library>,
 }
 
@@ -162,6 +159,7 @@ pub fn load(path: impl AsRef<Path>) -> Result<LoadedLibrary, LoaderError> {
         path: path.clone(),
         source,
     })?;
+    let library = Arc::new(library);
 
     // ABI version probe.
     let v = read_abi_version(&library, &path)?;
@@ -180,7 +178,7 @@ pub fn load(path: impl AsRef<Path>) -> Result<LoadedLibrary, LoaderError> {
 
     Ok(LoadedLibrary {
         path,
-        library: Arc::new(library),
+        library,
         udfs,
     })
 }
@@ -198,7 +196,7 @@ fn read_abi_version(lib: &Library, path: &Path) -> Result<u32, LoaderError> {
     Ok(unsafe { sym() })
 }
 
-fn read_c_kernels(lib: &Library, path: &Path) -> Result<Option<Vec<LoadedUdf>>, LoaderError> {
+fn read_c_kernels(lib: &Arc<Library>, path: &Path) -> Result<Option<Vec<LoadedUdf>>, LoaderError> {
     let sym: Symbol<unsafe extern "C" fn(*mut CometCScalarKernelList) -> i32> =
         match unsafe { lib.get(C_ABI_DISCOVERY_SYMBOL.as_bytes()) } {
             Ok(s) => s,
@@ -231,12 +229,13 @@ fn read_c_kernels(lib: &Library, path: &Path) -> Result<Option<Vec<LoadedUdf>>, 
             unsafe {
                 std::ptr::write(raw, comet_udf_sdk::c_abi::CometCScalarKernel::default());
             }
-            let imported = ImportedCScalarUdf::try_new(Box::new(kernel)).map_err(|e| {
-                LoaderError::Discovery {
-                    path: path.to_path_buf(),
-                    reason: format!("import C kernel idx={i}: {e}"),
-                }
-            })?;
+            let imported =
+                ImportedCScalarUdf::try_new(Box::new(kernel), Arc::clone(lib)).map_err(|e| {
+                    LoaderError::Discovery {
+                        path: path.to_path_buf(),
+                        reason: format!("import C kernel idx={i}: {e}"),
+                    }
+                })?;
             udfs.push(LoadedUdf {
                 name: imported.name().to_string(),
                 udf_impl: Arc::new(imported),
@@ -273,6 +272,7 @@ mod tests {
         let names: Vec<_> = lib.udfs.iter().map(|u| u.name.as_str()).collect();
         for expected in [
             "add_one_c",
+            "sub_c",
             "echo_c",
             "stringify_c",
             "make_ts_utc_c",

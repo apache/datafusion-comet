@@ -1027,10 +1027,16 @@ impl PhysicalPlanner {
                     )));
                 }
 
-                // Promise DataFusion the kernel's own type rather than the declared one. The two
-                // agree up to nested nullability, and using the kernel's avoids tripping
-                // DataFusion's exact-match assertion on the returned batch.
-                let return_field = Arc::new(Field::new(&call.name, kernel_return_type, true));
+                // Promise DataFusion the kernel's own type rather than the declared one, since the
+                // two can differ in nested nullability and the kernel's is what arrives. List and
+                // map child fields are renamed to Comet's canonical names, which is what every
+                // other expression producing that type uses, and the adapter relabels each result
+                // to match.
+                let return_field = Arc::new(Field::new(
+                    &call.name,
+                    crate::execution::c_udf::canonicalize_child_names(&kernel_return_type),
+                    true,
+                ));
                 let expr = Arc::new(ScalarFunctionExpr::new(
                     &call.name,
                     udf,

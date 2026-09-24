@@ -38,6 +38,7 @@
 //! See the `kernel` field docs for why the kernel itself needs no lock.
 
 use std::ffi::CStr;
+use std::sync::Arc;
 
 use arrow::array::ArrayRef;
 use arrow::datatypes::{DataType, Field};
@@ -47,6 +48,7 @@ use datafusion::common::DataFusionError;
 use datafusion::logical_expr::{
     ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl, Signature, TypeSignature, Volatility,
 };
+use libloading::Library;
 
 /// Adapter wrapping a [`CometCScalarKernel`] as a DataFusion
 /// [`ScalarUDFImpl`].
@@ -78,14 +80,24 @@ pub struct ImportedCScalarUdf {
     /// matter how many tasks were in flight.
     kernel: Box<CometCScalarKernel>,
     signature: Signature,
+    /// The library the kernel's callbacks live in, so the adapter cannot
+    /// outlive it. Declared after `kernel` on purpose: fields drop in
+    /// declaration order, and dropping the kernel calls its `release`
+    /// callback, which has to run while the library is still loaded.
+    ///
+    /// This does not cover the arrays `invoke_with_args` returns, whose
+    /// release callbacks also live in the library and which hold no
+    /// reference to it. That is safe only because `cache::get_or_load`
+    /// never unloads a library.
+    _library: Arc<Library>,
 }
 
 impl ImportedCScalarUdf {
-    /// Construct from an owned C kernel.
+    /// Construct from an owned C kernel and the library it was read from.
     ///
     /// Reads the kernel's name via its `function_name` callback and
     /// stores it for `name()` lookups.
-    pub fn try_new(kernel: Box<CometCScalarKernel>) -> Result<Self, String> {
+    pub fn try_new(kernel: Box<CometCScalarKernel>, library: Arc<Library>) -> Result<Self, String> {
         let function_name_cb = kernel
             .function_name
             .ok_or_else(|| "kernel.function_name is null".to_string())?;
@@ -120,6 +132,7 @@ impl ImportedCScalarUdf {
             name,
             kernel,
             signature,
+            _library: library,
         })
     }
 }
@@ -310,8 +323,44 @@ impl ScalarUDFImpl for ImportedCScalarUdf {
                 array.len()
             )));
         }
-        Ok(ColumnarValue::Array(array))
+        Ok(ColumnarValue::Array(conform_to_promised_type(
+            &self.name,
+            array,
+            args.return_field.data_type(),
+        )?))
     }
+}
+
+/// Give `array` the type the planner promised DataFusion for this call.
+///
+/// The planner promises the kernel's own return type with list and map
+/// child fields renamed to Comet's canonical names (see
+/// `canonicalize_child_names`), because every other Comet expression uses
+/// those names and operators that combine arrays, such as `if`, reject a
+/// column whose type differs from their schema by a field name. The kernel
+/// may use any names it likes, since they are positional in the Arrow
+/// format, so the result is renamed here. The cast only relabels the
+/// fields; the buffers are reused.
+///
+/// Anything beyond a naming difference is an error rather than a cast: the
+/// planner checked the kernel's type, and the SDK checks every result
+/// against it, so a real type difference here means the kernel's
+/// `return_field` changed between planning and execution.
+fn conform_to_promised_type(
+    name: &str,
+    array: ArrayRef,
+    promised: &DataType,
+) -> datafusion::common::Result<ArrayRef> {
+    if array.data_type() == promised {
+        return Ok(array);
+    }
+    if !array.data_type().equals_datatype(promised) {
+        return Err(DataFusionError::Execution(format!(
+            "{name}: returned {} but was planned as {promised}",
+            array.data_type()
+        )));
+    }
+    Ok(arrow::compute::cast(&array, promised)?)
 }
 
 fn build_ffi_schemas(fields: &[Field]) -> datafusion::common::Result<Vec<FFI_ArrowSchema>> {
@@ -342,24 +391,52 @@ mod tests {
     use super::*;
     use crate::execution::c_udf::cache::get_or_load;
     use crate::execution::c_udf::test_support::{test_udfs_path, BUILD_HINT};
-    use arrow::array::{Array, Int64Array};
-    use arrow::datatypes::FieldRef;
+    use arrow::array::{Array, AsArray, Int64Array};
+    use arrow::datatypes::{FieldRef, Int64Type};
+    use datafusion::common::ScalarValue;
     use datafusion::logical_expr::ScalarUDFImpl;
     use std::sync::Arc;
 
-    /// Goes through the process-wide cache, as the planner does, because the adapter does not
-    /// keep its library loaded. With a `LoadedLibrary` from `load`, the library would be dlclosed
-    /// when this returns: Linux unmaps it and the kernel's callbacks dangle, while macOS keeps an
-    /// image that has thread-locals mapped, which is why this only crashed on Linux.
-    fn add_one_c() -> Arc<dyn ScalarUDFImpl> {
-        let lib = get_or_load(test_udfs_path()).expect(BUILD_HINT);
+    fn udf_from(lib: &super::super::loader::LoadedLibrary, name: &str) -> Arc<dyn ScalarUDFImpl> {
         Arc::clone(
             &lib.udfs
                 .iter()
-                .find(|u| u.name == "add_one_c")
-                .expect("add_one_c")
+                .find(|u| u.name == name)
+                .unwrap_or_else(|| panic!("{name} not exported"))
                 .udf_impl,
         )
+    }
+
+    /// Goes through the process-wide cache, as the planner does.
+    fn cached_udf(name: &str) -> Arc<dyn ScalarUDFImpl> {
+        udf_from(&get_or_load(test_udfs_path()).expect(BUILD_HINT), name)
+    }
+
+    fn add_one_c() -> Arc<dyn ScalarUDFImpl> {
+        cached_udf("add_one_c")
+    }
+
+    fn call(
+        udf: &Arc<dyn ScalarUDFImpl>,
+        args: Vec<ColumnarValue>,
+        number_rows: usize,
+        return_type: DataType,
+    ) -> datafusion::common::Result<ArrayRef> {
+        let arg_fields = args
+            .iter()
+            .map(|a| Arc::new(Field::new("a", a.data_type(), true)))
+            .collect();
+        let out = udf.invoke_with_args(ScalarFunctionArgs {
+            args,
+            arg_fields,
+            number_rows,
+            return_field: Arc::new(Field::new("out", return_type, true)),
+            config_options: Arc::new(datafusion::config::ConfigOptions::default()),
+        })?;
+        match out {
+            ColumnarValue::Array(a) => Ok(a),
+            ColumnarValue::Scalar(_) => panic!("expected an array"),
+        }
     }
 
     fn int64_args(values: &[i64], return_field: &FieldRef) -> ScalarFunctionArgs {
@@ -417,5 +494,102 @@ mod tests {
         for t in threads {
             t.join().expect("worker thread panicked");
         }
+    }
+
+    /// The adapter keeps its library loaded, so it stays usable after the `LoadedLibrary` it came
+    /// from is dropped. The library is copied to a path of its own first: the dynamic loader
+    /// reference-counts by file, and the cache holds the original open for the whole test process,
+    /// which would keep it mapped regardless of what the adapter holds.
+    #[test]
+    fn adapter_keeps_its_library_loaded() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let copy = dir
+            .path()
+            .join(test_udfs_path().file_name().expect("file name"));
+        std::fs::copy(test_udfs_path(), &copy).expect(BUILD_HINT);
+
+        let lib = crate::execution::c_udf::loader::load(&copy).expect("load copy");
+        let udf = udf_from(&lib, "add_one_c");
+        drop(lib);
+
+        let out = call(
+            &udf,
+            vec![ColumnarValue::Array(Arc::new(Int64Array::from(vec![
+                1, 2, 3,
+            ])))],
+            3,
+            DataType::Int64,
+        )
+        .expect("invoke after the LoadedLibrary was dropped");
+        assert_eq!(out.as_primitive::<Int64Type>().values(), &[2, 3, 4]);
+        // The result's release callback lives in the library, so it goes before the adapter does.
+        drop(out);
+        drop(udf);
+    }
+
+    /// A literal argument reaches the adapter as a `ColumnarValue::Scalar` and has to be expanded
+    /// to the batch length before the kernel sees it, in either argument position.
+    #[test]
+    fn scalar_arguments_are_expanded_to_the_batch() {
+        let sub = cached_udf("sub_c");
+        let column = || ColumnarValue::Array(Arc::new(Int64Array::from(vec![1, 2, 3])));
+        let ten = || ColumnarValue::Scalar(ScalarValue::Int64(Some(10)));
+
+        let out = call(&sub, vec![column(), ten()], 3, DataType::Int64).expect("column - 10");
+        assert_eq!(out.as_primitive::<Int64Type>().values(), &[-9, -8, -7]);
+
+        let out = call(&sub, vec![ten(), column()], 3, DataType::Int64).expect("10 - column");
+        assert_eq!(out.as_primitive::<Int64Type>().values(), &[9, 8, 7]);
+
+        let out = call(
+            &add_one_c(),
+            vec![ColumnarValue::Scalar(ScalarValue::Int64(Some(41)))],
+            2,
+            DataType::Int64,
+        )
+        .expect("all-literal call");
+        assert_eq!(out.as_primitive::<Int64Type>().values(), &[42, 42]);
+    }
+
+    /// `make_map_c` builds its map with arrow-rs's default `keys` / `values` names. The adapter
+    /// hands it back under the canonical names the planner promised.
+    #[test]
+    fn result_is_relabelled_to_the_promised_child_names() {
+        let make_map = cached_udf("make_map_c");
+        let kernel_type = make_map
+            .return_type(&[DataType::Int64])
+            .expect("return_type");
+        let promised = crate::execution::c_udf::canonicalize_child_names(&kernel_type);
+        assert_ne!(
+            kernel_type, promised,
+            "make_map_c should use non-canonical names"
+        );
+
+        let out = call(
+            &make_map,
+            vec![ColumnarValue::Array(Arc::new(Int64Array::from(vec![
+                Some(1),
+                None,
+            ])))],
+            2,
+            promised.clone(),
+        )
+        .expect("invoke");
+        assert_eq!(out.data_type(), &promised);
+        assert!(out.is_valid(0) && out.is_null(1));
+    }
+
+    /// A result that differs from the promised type by more than child names is an error, not a
+    /// cast.
+    #[test]
+    fn result_of_a_different_type_is_not_cast() {
+        let err = call(
+            &add_one_c(),
+            vec![ColumnarValue::Array(Arc::new(Int64Array::from(vec![1])))],
+            1,
+            DataType::Int32,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("was planned as Int32"), "{err}");
     }
 }

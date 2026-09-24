@@ -65,7 +65,8 @@ const MAP_VALUE_NAME: &str = "value";
 /// natural constructors do not agree with Comet on them either, since `MapBuilder::new(None, ..)`
 /// names them `entries` / `keys` / `values` where Comet's Spark conversion emits `entries` /
 /// `key` / `value`. Rejecting a UDF over that would be rejecting it for a spelling. They are
-/// rewritten to Comet's names so the comparison ignores the difference.
+/// rewritten to Comet's names so the comparison ignores the difference, and the result is renamed
+/// the same way before it enters the plan (see [`canonicalize_child_names`]).
 ///
 /// Struct field names are *not* normalized: those are part of the Spark type and a caller reading
 /// `row.getAs[Row]("x").getAs[Int]("a")` depends on them.
@@ -111,6 +112,64 @@ fn normalize_for_comparison(dt: &DataType) -> DataType {
         DataType::LargeListView(f) => DataType::LargeListView(element(f)),
         DataType::FixedSizeList(f, n) => DataType::FixedSizeList(element(f), *n),
         DataType::Struct(fields) => DataType::Struct(fields.iter().map(keep_name).collect()),
+        DataType::Map(f, sorted) => DataType::Map(entries(f), *sorted),
+        other => other.clone(),
+    }
+}
+
+/// Rename every list element and map entries / key / value field in `dt` to the names Comet's
+/// Spark-to-Arrow conversion uses, keeping each field's type, nullability and metadata.
+///
+/// The planner promises DataFusion this form of the kernel's return type, and the adapter relabels
+/// each result to match. Promising the kernel's own names is not enough: a UDF that builds a map
+/// with `MapBuilder::new(None, ..)` would carry `keys` / `values` into the plan, and an operator
+/// that combines it with a map from any other expression, such as `if` or `CASE`, then fails with
+/// `column types must match schema types`.
+pub fn canonicalize_child_names(dt: &DataType) -> DataType {
+    fn with(f: &FieldRef, name: &str, data_type: DataType) -> FieldRef {
+        Arc::new(f.as_ref().clone().with_name(name).with_data_type(data_type))
+    }
+    fn element(f: &FieldRef) -> FieldRef {
+        with(
+            f,
+            LIST_ELEMENT_NAME,
+            canonicalize_child_names(f.data_type()),
+        )
+    }
+    fn entries(f: &FieldRef) -> FieldRef {
+        match f.data_type() {
+            DataType::Struct(fields) if fields.len() == 2 => {
+                let key = with(
+                    &fields[0],
+                    MAP_KEY_NAME,
+                    canonicalize_child_names(fields[0].data_type()),
+                );
+                let value = with(
+                    &fields[1],
+                    MAP_VALUE_NAME,
+                    canonicalize_child_names(fields[1].data_type()),
+                );
+                with(
+                    f,
+                    MAP_ENTRIES_NAME,
+                    DataType::Struct([key, value].into_iter().collect()),
+                )
+            }
+            other => with(f, f.name(), canonicalize_child_names(other)),
+        }
+    }
+    match dt {
+        DataType::List(f) => DataType::List(element(f)),
+        DataType::LargeList(f) => DataType::LargeList(element(f)),
+        DataType::ListView(f) => DataType::ListView(element(f)),
+        DataType::LargeListView(f) => DataType::LargeListView(element(f)),
+        DataType::FixedSizeList(f, n) => DataType::FixedSizeList(element(f), *n),
+        DataType::Struct(fields) => DataType::Struct(
+            fields
+                .iter()
+                .map(|f| with(f, f.name(), canonicalize_child_names(f.data_type())))
+                .collect(),
+        ),
         DataType::Map(f, sorted) => DataType::Map(entries(f), *sorted),
         other => other.clone(),
     }
@@ -248,6 +307,45 @@ mod tests {
             &DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),
             &DataType::Timestamp(TimeUnit::Microsecond, None)
         ));
+    }
+
+    /// Canonicalizing renames positional child fields at every depth but keeps nullability, which
+    /// Arrow enforces for map keys, and leaves struct field names alone.
+    #[test]
+    fn canonicalize_renames_positional_children_only() {
+        let inner = DataType::Struct(Fields::from(vec![Field::new(
+            "s",
+            DataType::List(Arc::new(Field::new("element", DataType::Int32, false))),
+            true,
+        )]));
+        let actual = DataType::Map(
+            Arc::new(Field::new(
+                "kv",
+                DataType::Struct(Fields::from(vec![
+                    Field::new("keys", DataType::Utf8, false),
+                    Field::new("values", inner, true),
+                ])),
+                false,
+            )),
+            false,
+        );
+        let expected_inner = DataType::Struct(Fields::from(vec![Field::new(
+            "s",
+            DataType::List(Arc::new(Field::new("item", DataType::Int32, false))),
+            true,
+        )]));
+        let expected = DataType::Map(
+            Arc::new(Field::new(
+                "entries",
+                DataType::Struct(Fields::from(vec![
+                    Field::new("key", DataType::Utf8, false),
+                    Field::new("value", expected_inner, true),
+                ])),
+                false,
+            )),
+            false,
+        );
+        assert_eq!(canonicalize_child_names(&actual), expected);
     }
 
     #[test]
