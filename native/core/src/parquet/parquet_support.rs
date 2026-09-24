@@ -61,6 +61,17 @@ use super::objectstore::s3_blob_fs_support::{
     normalize_object_store_url, NormalizedObjectStoreUrl,
 };
 
+/// Message of the error every path raises for a byte-identical duplicate Parquet field name,
+/// whether the nested resolver, the root check in `schema_adapter`, or the decoded-subtree
+/// check before a Comet cast reports it.
+pub(crate) fn duplicate_parquet_field_message(name: &str) -> String {
+    format!("Found duplicate Parquet field name '{name}'")
+}
+
+pub(crate) fn duplicate_parquet_field_error(name: &str) -> DataFusionError {
+    DataFusionError::Execution(duplicate_parquet_field_message(name))
+}
+
 // This file originates from cast.rs. While developing native scan support and implementing
 // SparkSchemaAdapter we observed that Spark's type conversion logic on Parquet reads does not
 // always align to the CAST expression's logic, so it was duplicated here to adapt its behavior.
@@ -432,10 +443,13 @@ fn resolve_struct_mapping(
                 None => None,
             },
             _ => match name_matches.get(to_folded[to_pos].as_str()) {
-                // Spark's `caseInsensitiveParquetFieldMap` rejects a requested name that folds
-                // onto more than one file field. In case-sensitive mode the fold is identity, so
-                // a collision means byte-identical siblings; Spark's own answer there is not
-                // stable across versions, so refusing beats silently picking one.
+                // Spark's `matchCaseInsensitiveField` raises `_LEGACY_ERROR_TEMP_2093` for a
+                // requested name that folds onto more than one file field, whether the siblings
+                // differ by case or are byte-identical. In case-sensitive mode the fold is
+                // identity, so a collision means byte-identical siblings. Spark's
+                // `matchCaseSensitiveField` builds its map with `toMap` there and the last field
+                // wins silently. Comet refuses instead of picking one, with the error every
+                // other path raises for a duplicate the decoder cannot represent.
                 Some(m) if m.ambiguous => {
                     let matched: Vec<&str> = from_folded
                         .iter()
@@ -444,11 +458,8 @@ fn resolve_struct_mapping(
                         .map(|(_, f)| f.name().as_str())
                         .collect();
                     if parquet_options.case_sensitive {
-                        return Err(SparkError::Internal(format!(
-                            "Found duplicate field(s) \"{}\": [{}] in a Parquet struct; Comet does \
-                             not select between sibling fields with identical names",
+                        return Err(SparkError::Internal(duplicate_parquet_field_message(
                             to_field.name(),
-                            matched.join(", ")
                         )));
                     }
                     return Err(SparkError::duplicate_field_case_insensitive(
@@ -2588,7 +2599,7 @@ mod tests {
                 .expect_err("a requested field with two identical siblings must be refused");
             let msg = err.to_string();
             assert!(
-                msg.contains("duplicate field") && msg.contains("\"d\"") && msg.contains("d, d"),
+                msg.contains("duplicate Parquet field name 'd'"),
                 "unexpected error: {msg}"
             );
         }

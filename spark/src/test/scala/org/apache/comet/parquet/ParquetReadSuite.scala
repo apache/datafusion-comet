@@ -2113,18 +2113,6 @@ abstract class ParquetReadSuite extends CometTestBase {
     }
   }
 
-  test("duplicate exact root names read the first column like Spark") {
-    // The file carries two root columns named `d`; Spark's reader binds the first one.
-    withSQLConf(SQLConf.CASE_SENSITIVE.key -> "true") {
-      val df = spark.read
-        .schema("d bigint")
-        .parquet(getResourceParquetFilePath("test-data/duplicate-root-names.parquet"))
-      df.createOrReplaceTempView("dup_root")
-      checkSparkAnswerAndOperator("SELECT d FROM dup_root ORDER BY d")
-      checkSparkAnswerAndOperator("SELECT d FROM dup_root WHERE d > 1 ORDER BY d")
-    }
-  }
-
   test("duplicate exact nested names are refused when requested and skipped otherwise") {
     // The file's struct carries two children named `dup` beside a unique `other`.
     withSQLConf(SQLConf.CASE_SENSITIVE.key -> "true") {
@@ -2144,7 +2132,7 @@ abstract class ParquetReadSuite extends CometTestBase {
       }
       val messages = causeChain(error).flatMap(e => Option(e.getMessage))
       assert(
-        messages.exists(m => m.contains("duplicate field") && m.contains("dup")),
+        messages.exists(_.contains("duplicate Parquet field name 'dup'")),
         s"expected the duplicate sibling refusal, got:\n${messages.mkString("\n")}")
     }
   }
