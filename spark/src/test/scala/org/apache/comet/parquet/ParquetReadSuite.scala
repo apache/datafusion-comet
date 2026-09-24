@@ -2428,19 +2428,19 @@ abstract class ParquetReadSuite extends CometTestBase {
   }
 
   // Spark raises a plain `RuntimeException` for a read schema with ids over a file without any.
-  // Spark 4 wraps a reader failure in a `FAILED_READ_FILE` `SparkException`, and the Comet
-  // shim does the same, so the exception sits one level deeper there.
+  // How many `SparkException` layers sit above it varies with the Spark version. Spark 4 wraps
+  // a reader failure in a `FAILED_READ_FILE` `SparkException`, and on 4.0 and 4.1 that wrapper
+  // is the exception `collect()` raises, so the `RuntimeException` is its direct cause. The
+  // Comet shim follows Spark, so walk the cause chain instead of counting the layers above it.
   private def assertMissingIdsException(cause: Throwable): Unit = {
-    val missingIds = if (isSpark40Plus) {
-      assert(cause.isInstanceOf[SparkException], cause)
-      cause.getCause
-    } else {
-      cause
+    val chain = Iterator.iterate(cause)(_.getCause).takeWhile(_ != null).toSeq
+    val missingIds = chain.find { t =>
+      t.getClass == classOf[RuntimeException] &&
+      Option(t.getMessage).exists(_.contains("Parquet file schema doesn't contain any field Ids"))
     }
-    assert(missingIds.getClass == classOf[RuntimeException], missingIds)
     assert(
-      missingIds.getMessage.contains("Parquet file schema doesn't contain any field Ids"),
-      missingIds)
+      missingIds.isDefined,
+      chain.map(t => s"${t.getClass.getName}: ${t.getMessage}").mkString("\n"))
   }
 }
 
