@@ -47,10 +47,11 @@ const CONTINUATION_MARKER: [u8; 4] = [0xff; 4];
 const SCHEMA_CACHE_CAPACITY: usize = 4;
 
 /// Maximum estimated serialized-plus-parsed size of all cached schemas on a thread, excluding
-/// allocator overhead. A shared 4 MiB budget keeps retention modest while allowing wide schemas
-/// to use space left by other entries: 8,000 short-named Int32 fields need about 1.4 MiB with
-/// Arrow 59 on a 64-bit target. Both field count and names/metadata contribute to this estimate.
-const SCHEMA_CACHE_RETAIN_LIMIT: usize = 4 << 20;
+/// allocator overhead. A shared 16 MiB budget lets all four slots hold wide schemas from
+/// interleaved shuffles: 8,000 short-named Int32 fields need about 1.4 MiB with Arrow 59 on a
+/// 64-bit target. This leaves headroom for wider schemas and names/metadata while bounding
+/// estimated cache retention per decoding thread.
+const SCHEMA_CACHE_RETAIN_LIMIT: usize = 16 << 20;
 
 /// Metadata scratch larger than this is released after the block rather than kept for the thread.
 /// This buffer-capacity limit is independent of the serialized-plus-parsed schema cache budget.
@@ -900,6 +901,49 @@ mod tests {
                     "codec {codec:?}, validate {validate}: reset releases cached schemas"
                 );
                 assert_eq!(schema_cache_stats(), stats(0, 0));
+            }
+        }
+    }
+
+    /// Interleaved shuffles must retain all four wide schemas after the first decode round.
+    #[test]
+    #[cfg_attr(miri, ignore)] // Miri cannot call Zstd's C FFI.
+    fn interleaved_wide_schemas_hit_the_cache_after_the_first_round() {
+        let batch = n_column_batch(8_000);
+        let batches: Vec<_> = (0..4)
+            .map(|schema_id| {
+                let schema = batch
+                    .schema_ref()
+                    .as_ref()
+                    .clone()
+                    .with_metadata(HashMap::from([("shuffle".into(), schema_id.to_string())]));
+                RecordBatch::try_new(Arc::new(schema), batch.columns().to_vec()).unwrap()
+            })
+            .collect();
+        for codec in CODECS {
+            let codec_name = std::str::from_utf8(codec).expect("codecs are ASCII");
+            let blocks: Vec<_> = batches
+                .iter()
+                .map(|batch| block_for(batch, codec))
+                .collect();
+            for validate in [false, true] {
+                reset_schema_cache();
+                for round in 0..10 {
+                    let context = format!(
+                        "round {}, codec {codec_name}, validate {validate}",
+                        round + 1
+                    );
+                    for (schema_id, (block, batch)) in blocks.iter().zip(&batches).enumerate() {
+                        let decoded = if validate {
+                            read_ipc_compressed_validated(block)
+                        } else {
+                            read_ipc_compressed(block)
+                        }
+                        .unwrap_or_else(|error| panic!("{context}, schema {schema_id}: {error}"));
+                        assert_eq!(&decoded, batch, "{context}, schema {schema_id}");
+                    }
+                    assert_eq!(schema_cache_stats(), stats(round * 4, 4), "{context}");
+                }
             }
         }
     }

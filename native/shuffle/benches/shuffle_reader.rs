@@ -132,7 +132,7 @@ fn criterion_benchmark(c: &mut Criterion) {
             }
         }
 
-        // Wide schemas exceed 1 MiB when both serialized and parsed metadata are counted.
+        // This 8,000-column schema uses about 1.4 MiB of the serialized-plus-parsed cache budget.
         // Compare warm and cold decoding here to catch accidental cache-admission cutoffs.
         let batch = batch_of(8000, 64, Strings::Plain);
         let block = encode_block(&batch, codec.clone());
