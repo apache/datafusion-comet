@@ -25,15 +25,17 @@ import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.catalyst.expressions.{ArrayAppend, ArrayExcept, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayRepeat}
 import org.apache.spark.sql.catalyst.expressions.{ArrayContains, ArrayRemove}
-import org.apache.spark.sql.catalyst.expressions.{AttributeReference, Cast, CreateArray, ElementAt, Literal, MonotonicallyIncreasingID}
+import org.apache.spark.sql.catalyst.expressions.{AttributeReference, Cast, Concat, CreateArray, ElementAt, Expression, IsNotNull, Literal, MonotonicallyIncreasingID, Or, RegExpReplace}
+import org.apache.spark.sql.comet.{CometFilterExec, CometProjectExec}
+import org.apache.spark.sql.execution.{FilterExec, ProjectExec}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions._
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{ArrayType, StringType}
 
-import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus}
+import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus, isSpark42Plus}
 import org.apache.comet.DataTypeSupport.isComplexType
-import org.apache.comet.serde.{CometArrayExcept, CometArrayJoin, CometArrayRemove, CometArrayReverse, CometFlatten, Compatible, ExprOuterClass, Incompatible}
+import org.apache.comet.serde.{CometArrayExcept, CometArrayJoin, CometArrayRemove, CometArrayReverse, CometFlatten, Compatible, ExprOuterClass, Incompatible, QueryPlanSerde, Unsupported}
 import org.apache.comet.testing.{DataGenOptions, ParquetGenerator, SchemaGenOptions}
 
 class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
@@ -519,7 +521,7 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
     }
   }
 
-  // No allowIncompatible opt-in: array_join runs natively by default now.
+  // No allowIncompatible opt-in: Spark-compatible array_join shapes run natively by default.
   test("array_join") {
     Seq(true, false).foreach { dictionaryEnabled =>
       withTempDir { dir =>
@@ -536,9 +538,14 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
           checkSparkAnswerAndOperator(
             sql(
               "SELECT array_join(array('hello', '-', 'world', cast(_2 as string)), ' ') from t1"))
-          // column delimiter and nullable column replacement: the guarded native shape
-          checkSparkAnswerAndOperator(
-            sql("SELECT array_join(array('a', cast(_2 as string), 'b'), _8, _8) from t1"))
+          // Before Spark 4.2, nullable non-literal replacements conservatively stay on Spark.
+          val columnReplacement =
+            sql("SELECT array_join(array('a', cast(_2 as string), 'b'), _8, _8) from t1")
+          if (isSpark42Plus) {
+            checkSparkAnswerAndOperator(columnReplacement)
+          } else {
+            checkSparkAnswer(columnReplacement)
+          }
           // a literal NULL replacement folds to Literal(null, StringType), which is
           // order-insensitive, so this takes the native path rather than the dispatcher. The
           // sql-tests fixtures cannot reach this shape because they disable ConstantFolding.
@@ -549,18 +556,17 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
     }
   }
 
-  // Result assertions cannot tell native from the dispatcher: an Incompatible verdict runs
-  // Spark's own doGenCode and matches. Pin the verdict itself.
-  test("array_join support level pins the native path") {
+  // Result assertions cannot distinguish the native, dispatcher, and Spark fallback paths. Pin
+  // the support verdict itself.
+  test("array_join support level pins execution routing") {
     val nullableArray = AttributeReference("arr", ArrayType(StringType), nullable = true)()
     val nullableStr = AttributeReference("s", StringType, nullable = true)()
     val delims = AttributeReference("delims", ArrayType(StringType), nullable = true)()
 
-    // literals and column reads stay native
+    // Literals and a column-free replacement stay native on every supported Spark version.
     Seq(
       ArrayJoin(nullableArray, Literal(","), None),
       ArrayJoin(nullableArray, Literal(","), Some(Literal("X"))),
-      ArrayJoin(nullableArray, nullableStr, Some(nullableStr)),
       ArrayJoin(nullableArray, Literal(","), Some(Literal.create(null, StringType))),
       // the array is unrestricted: it is evaluated on every path
       ArrayJoin(ElementAt(delims, Literal(1)), Literal(","), None)).foreach { expr =>
@@ -569,7 +575,19 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
         s"expected Compatible for $expr")
     }
 
-    // Anything that can throw or carry state goes to the dispatcher instead.
+    // Spark before 4.2 can infer tighter nullability around either a project or filter, so a
+    // nullable non-literal replacement conservatively stays on Spark regardless of the declared
+    // array and delimiter nullability.
+    val nullableColumnReplacement =
+      ArrayJoin(nullableArray, nullableStr, Some(nullableStr))
+    val columnSupport = CometArrayJoin.getSupportLevel(nullableColumnReplacement)
+    if (isSpark42Plus) {
+      assert(columnSupport.isInstanceOf[Compatible])
+    } else {
+      assert(columnSupport.isInstanceOf[Incompatible])
+    }
+
+    // Anything that can throw or carry state is not native by default.
     val throwingDelimiter = ElementAt(delims, Literal(0))
     val foldableThrowingDelimiter = ElementAt(CreateArray(Seq(Literal(","))), Literal(0))
     val nonDeterministicReplacement =
@@ -583,6 +601,14 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
         CometArrayJoin.getSupportLevel(expr).isInstanceOf[Incompatible],
         s"expected Incompatible for $expr")
     }
+
+    // A compound nullable replacement is never eligible for the native path: its null guard
+    // would otherwise evaluate the expression twice, including under allowIncompatible=true.
+    val compoundNullableReplacement = Concat(Seq(nullableStr, Literal("")))
+    assert(compoundNullableReplacement.nullable)
+    val unsupported = CometArrayJoin.getSupportLevel(
+      ArrayJoin(nullableArray, Literal(","), Some(compoundNullableReplacement)))
+    assert(unsupported.isInstanceOf[Unsupported])
   }
 
   test("array_join guards only a nullable replacement") {
@@ -609,6 +635,188 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
     // A nullable delimiter needs none: array_to_string already returns null for it.
     val nullableDelimiter = convert(ArrayJoin(nullableArray, nullableStr, None))
     assert(nullableDelimiter.isDefined && !nullableDelimiter.get.hasIf)
+  }
+
+  test("array_join rejects unsafe subtrees before preparing deep expression trees") {
+    val array = AttributeReference("arr", ArrayType(StringType), nullable = true)()
+    val joined = ArrayJoin(array, Literal(","), Some(Literal("X")))
+    val nested = (1 to 2048).foldLeft[Expression](IsNotNull(joined)) { case (left, _) =>
+      Or(left, Literal(false))
+    }
+    withSQLConf("spark.sql.codegen.factoryMode" -> "NO_CODEGEN") {
+      assert(QueryPlanSerde.exprToProto(nested, Seq(array)).isEmpty)
+      assert(
+        nested
+          .getTagValue(CometExplainInfo.FALLBACK_REASONS)
+          .exists(_.exists(_.contains("NO_CODEGEN"))))
+    }
+  }
+
+  test("array_join keeps interpreted projections on Spark with native opt-in") {
+    withSQLConf(
+      "spark.sql.adaptive.enabled" -> "false",
+      "spark.sql.codegen.wholeStage" -> "false",
+      "spark.sql.codegen.factoryMode" -> "NO_CODEGEN") {
+      withTable("array_join_interpreted") {
+        withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+          sql(
+            "CREATE TABLE array_join_interpreted " +
+              "(arr ARRAY<STRING>, delim STRING, nr STRING) USING parquet")
+          sql(
+            "INSERT INTO array_join_interpreted VALUES " +
+              "(array('a', NULL, 'b'), ',', 'X'), " +
+              "(array('a', NULL, 'b'), ',', NULL)")
+        }
+        Seq(false, true).foreach { dispatcherEnabled =>
+          withSQLConf(
+            CometConf.COMET_ENABLED.key -> "true",
+            CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> dispatcherEnabled.toString,
+            CometConf.getExprAllowIncompatConfigKey(classOf[ArrayJoin]) -> "true",
+            CometConf.getExprAllowIncompatConfigKey(classOf[RegExpReplace]) -> "false") {
+            // The parent's dispatcher must not bypass the interpreted-evaluation requirement,
+            // even when the user opts into ArrayJoin's otherwise incompatible native path.
+            Seq(
+              "array_join(arr, delim, nr)",
+              "regexp_replace(array_join(arr, delim, nr), delim, nr)").foreach { expression =>
+              val (_, cometPlan) = checkSparkAnswer(
+                s"SELECT $expression FROM array_join_interpreted " +
+                  "WHERE arr IS NOT NULL AND delim IS NOT NULL")
+              assert(collect(cometPlan) { case p: ProjectExec => p }.nonEmpty)
+              assert(collect(cometPlan) { case p: CometProjectExec => p }.isEmpty)
+              val explain = new ExtendedExplainInfo()
+              assert(explain.getFallbackReasons(cometPlan).exists(_.contains("NO_CODEGEN")))
+              assert(!explain.getNativeExpressions(cometPlan).contains("array_join"))
+              assert(!explain.getCodegenDispatchExpressions(cometPlan).contains("array_join"))
+              assert(!explain.getCodegenDispatchExpressions(cometPlan).contains("regexp_replace"))
+            }
+          }
+        }
+      }
+    }
+  }
+
+  test("array_join never guards a compound nullable replacement natively") {
+    withSQLConf(
+      "spark.sql.adaptive.enabled" -> "false",
+      "spark.sql.codegen.factoryMode" -> "CODEGEN_ONLY",
+      CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "true",
+      CometConf.getExprAllowIncompatConfigKey(classOf[ArrayJoin]) -> "true") {
+      withTable("array_join_compound_replacement") {
+        withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+          sql(
+            "CREATE TABLE array_join_compound_replacement " +
+              "(arr ARRAY<STRING>, delim STRING, nr STRING) USING parquet")
+          sql(
+            "INSERT INTO array_join_compound_replacement VALUES " +
+              "(array('a', NULL, 'b'), ',', 'X'), " +
+              "(array('a', NULL, 'b'), ',', NULL)")
+        }
+
+        // The explicit compatibility opt-in remains available for a simple nullable column. This
+        // shape does not tighten arr/delim, so Spark and the opted-in native path still agree.
+        val (_, simplePlan) = checkSparkAnswerAndOperator(
+          sql(
+            "SELECT array_join(arr, delim, nr) " +
+              "FROM array_join_compound_replacement"),
+          Seq(classOf[CometProjectExec]))
+        val explain = new ExtendedExplainInfo()
+        assert(explain.getNativeExpressions(simplePlan).contains("array_join"))
+
+        Seq(
+          "array_join(arr, delim, concat(nr, ''))",
+          "coalesce(array_join(arr, delim, " +
+            "concat(cast(monotonically_increasing_id() AS string), nr)), 'fallback')")
+          .foreach { expression =>
+            val query = s"SELECT $expression FROM array_join_compound_replacement"
+            val (_, cometPlan) = checkSparkAnswer(query)
+            assert(collect(cometPlan) { case p: ProjectExec => p }.nonEmpty)
+            assert(collect(cometPlan) { case p: CometProjectExec => p }.isEmpty)
+            assert(explain.getFallbackReasons(cometPlan).exists(_.contains("more than once")))
+            assert(!explain.getCodegenDispatchExpressions(cometPlan).contains("array_join"))
+            assert(!explain.getNativeExpressions(cometPlan).contains("array_join"))
+          }
+      }
+    }
+  }
+
+  test("array_join preserves pre-4.2 codegen behavior in projects and filters") {
+    withSQLConf(
+      "spark.sql.adaptive.enabled" -> "false",
+      "spark.sql.codegen.wholeStage" -> "true",
+      "spark.sql.codegen.factoryMode" -> "CODEGEN_ONLY") {
+      withTable("array_join_filtered") {
+        // A materialized source prevents ConvertToLocalRelation from using interpreted eval.
+        withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+          sql(
+            "CREATE TABLE array_join_filtered " +
+              "(arr ARRAY<STRING>, delim STRING, nr STRING) USING parquet")
+          sql(
+            "INSERT INTO array_join_filtered VALUES " +
+              "(array('a', NULL, 'b'), ',', 'X'), " +
+              "(array('a', NULL, 'b'), ',', NULL), " +
+              "(NULL, ',', 'X'), " +
+              "(array('a', NULL, 'b'), NULL, 'X')")
+        }
+
+        Seq(false, true).foreach { dispatcherEnabled =>
+          withSQLConf(
+            CometConf.COMET_ENABLED.key -> "true",
+            CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> dispatcherEnabled.toString,
+            CometConf.getExprAllowIncompatConfigKey(classOf[ArrayJoin]) -> "false",
+            CometConf.getExprAllowIncompatConfigKey(classOf[RegExpReplace]) -> "false") {
+            val query = "SELECT array_join(arr, delim, nr) FROM array_join_filtered " +
+              "WHERE arr IS NOT NULL AND delim IS NOT NULL"
+            val (_, cometPlan) = if (!isSpark42Plus) {
+              checkSparkAnswer(query)
+            } else {
+              checkSparkAnswerAndOperator(sql(query), Seq(classOf[CometProjectExec]))
+            }
+
+            val explain = new ExtendedExplainInfo()
+            if (!isSpark42Plus) {
+              assert(collect(cometPlan) { case p: ProjectExec => p }.nonEmpty)
+              assert(collect(cometPlan) { case p: CometProjectExec => p }.isEmpty)
+              assert(explain.getFallbackReasons(cometPlan).exists(_.contains("SPARK-57200")))
+            } else {
+              assert(explain.getNativeExpressions(cometPlan).contains("array_join"))
+              assert(!explain.getCodegenDispatchExpressions(cometPlan).contains("array_join"))
+            }
+
+            // A parent dispatcher cannot reconstruct nullability inherited from the child plan,
+            // so the pre-4.2 scan must find a nested ArrayJoin before the parent hides its subtree.
+            val parentQuery = "SELECT regexp_replace(array_join(arr, delim, nr), delim, nr) " +
+              "FROM array_join_filtered WHERE arr IS NOT NULL AND delim IS NOT NULL"
+            if (isSpark42Plus && dispatcherEnabled) {
+              val (_, parentPlan) =
+                checkSparkAnswerAndOperator(sql(parentQuery), Seq(classOf[CometProjectExec]))
+              assert(explain.getCodegenDispatchExpressions(parentPlan).contains("regexp_replace"))
+            } else {
+              checkSparkAnswer(parentQuery)
+            }
+
+            // Spark's FilterExec codegen tightens attribute nullability after the leading
+            // IS NOT NULL checks. An isolated dispatcher cannot reconstruct that state, so the
+            // complete filter stays on Spark before 4.2.
+            val filterQuery = "SELECT * FROM array_join_filtered " +
+              "WHERE arr IS NOT NULL AND delim IS NOT NULL " +
+              "AND array_join(arr, delim, nr) = 'a,X,b'"
+            val (_, filterPlan) = if (!isSpark42Plus) {
+              checkSparkAnswer(filterQuery)
+            } else {
+              checkSparkAnswerAndOperator(sql(filterQuery), Seq(classOf[CometFilterExec]))
+            }
+            if (!isSpark42Plus) {
+              assert(collect(filterPlan) { case f: FilterExec => f }.nonEmpty)
+              assert(collect(filterPlan) { case f: CometFilterExec => f }.isEmpty)
+              assert(explain.getFallbackReasons(filterPlan).exists(_.contains("SPARK-57200")))
+            } else {
+              assert(collect(filterPlan) { case f: CometFilterExec => f }.nonEmpty)
+              assert(explain.getNativeExpressions(filterPlan).contains("array_join"))
+            }
+          }
+        }
+      }
+    }
   }
 
   test("arrays_overlap") {
