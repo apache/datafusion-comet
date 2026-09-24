@@ -409,38 +409,41 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
   /**
    * Mapping of Spark aggregate expression class to Comet expression handler.
    */
-  val aggrSerdeMap: Map[Class[_], CometAggregateExpressionSerde[_]] = Map(
-    classOf[ApproximatePercentile] -> CometApproxPercentile,
-    classOf[HyperLogLogPlusPlus] -> CometApproxCountDistinct,
-    classOf[Average] -> CometAverage,
-    classOf[BitAndAgg] -> CometBitAndAgg,
-    classOf[BitOrAgg] -> CometBitOrAgg,
-    classOf[BitXorAgg] -> CometBitXOrAgg,
-    classOf[BloomFilterAggregate] -> CometBloomFilterAggregate,
-    classOf[CollectList] -> CometCollectList,
-    classOf[CollectSet] -> CometCollectSet,
-    classOf[Corr] -> CometCorr,
-    classOf[Count] -> CometCount,
-    classOf[CovPopulation] -> CometCovPopulation,
-    classOf[CovSample] -> CometCovSample,
-    classOf[First] -> CometFirst,
-    classOf[Last] -> CometLast,
-    classOf[Max] -> CometMax,
-    classOf[MaxBy] -> CometMaxBy,
-    classOf[Min] -> CometMin,
-    classOf[MinBy] -> CometMinBy,
-    classOf[Mode] -> CometMode,
-    classOf[Percentile] -> CometPercentile,
-    classOf[RegrIntercept] -> CometRegrIntercept,
-    classOf[RegrR2] -> CometRegrR2,
-    classOf[RegrReplacement] -> CometRegrReplacement,
-    classOf[RegrSlope] -> CometRegrSlope,
-    classOf[RegrSXY] -> CometRegrSXY,
-    classOf[StddevPop] -> CometStddevPop,
-    classOf[StddevSamp] -> CometStddevSamp,
-    classOf[Sum] -> CometSum,
-    classOf[VariancePop] -> CometVariancePop,
-    classOf[VarianceSamp] -> CometVarianceSamp)
+  val aggrSerdeMap: Map[Class[_], CometAggregateExpressionSerde[_]] = {
+    val base: Map[Class[_], CometAggregateExpressionSerde[_]] = Map(
+      classOf[ApproximatePercentile] -> CometApproxPercentile,
+      classOf[HyperLogLogPlusPlus] -> CometApproxCountDistinct,
+      classOf[Average] -> CometAverage,
+      classOf[BitAndAgg] -> CometBitAndAgg,
+      classOf[BitOrAgg] -> CometBitOrAgg,
+      classOf[BitXorAgg] -> CometBitXOrAgg,
+      classOf[BloomFilterAggregate] -> CometBloomFilterAggregate,
+      classOf[CollectList] -> CometCollectList,
+      classOf[CollectSet] -> CometCollectSet,
+      classOf[Corr] -> CometCorr,
+      classOf[Count] -> CometCount,
+      classOf[CovPopulation] -> CometCovPopulation,
+      classOf[CovSample] -> CometCovSample,
+      classOf[First] -> CometFirst,
+      classOf[Last] -> CometLast,
+      classOf[Max] -> CometMax,
+      classOf[MaxBy] -> CometMaxBy,
+      classOf[Min] -> CometMin,
+      classOf[MinBy] -> CometMinBy,
+      classOf[Mode] -> CometMode,
+      classOf[Percentile] -> CometPercentile,
+      classOf[RegrIntercept] -> CometRegrIntercept,
+      classOf[RegrR2] -> CometRegrR2,
+      classOf[RegrReplacement] -> CometRegrReplacement,
+      classOf[RegrSlope] -> CometRegrSlope,
+      classOf[RegrSXY] -> CometRegrSXY,
+      classOf[StddevPop] -> CometStddevPop,
+      classOf[StddevSamp] -> CometStddevSamp,
+      classOf[Sum] -> CometSum,
+      classOf[VariancePop] -> CometVariancePop,
+      classOf[VarianceSamp] -> CometVarianceSamp)
+    base ++ sparkVersionSpecificAggregates
+  }
 
   /**
    * Returns true if Spark can consume all the intermediate buffers produced by Comet. Used when a
