@@ -215,10 +215,13 @@ case class CometBroadcastExchangeExec(
     new CometBatchRDD(sparkContext, getNumPartitions(), broadcasted)
   }
 
-  // After https://issues.apache.org/jira/browse/SPARK-48195, Spark plan will cache created RDD.
-  // Since we may change the number of partitions in CometBatchRDD,
-  // we need a method that always creates a new CometBatchRDD.
-  def executeColumnar(numPartitions: Int): RDD[ColumnarBatch] = {
+  /**
+   * Create a fresh broadcast RDD aligned to the probe partitions. Spark can cache the RDD from
+   * doExecuteColumnar (SPARK-48195), whose partition count may differ. Keep the concrete type so
+   * a lazy native input can get each partition's actual Broadcast handle without decoding its
+   * batches.
+   */
+  def executeColumnar(numPartitions: Int): CometBatchRDD = {
     if (isCanonicalizedPlan) {
       throw SparkException.internalError("A canonicalized plan is not supposed to be executed.")
     }

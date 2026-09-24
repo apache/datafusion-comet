@@ -392,6 +392,30 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(false)
 
+  val COMET_BROADCAST_REUSE_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.broadcast.reuse.enabled")
+      .category(CATEGORY_EXEC)
+      .doc(
+        "Experimental executor-wide reuse of prepared native broadcast hash joins. " +
+          "Requires org.apache.spark.CometPlugin in spark.plugins, Spark off-heap memory, " +
+          "and a supported fixed-width or plain UTF8 build schema. " +
+          "Unsupported joins and rejected cache admissions retain ordinary execution.")
+      .booleanConf
+      .createWithDefault(false)
+
+  val COMET_BROADCAST_REUSE_MAX_MEMORY: ConfigEntry[Long] =
+    conf("spark.comet.broadcast.reuse.maxMemory")
+      .category(CATEGORY_EXEC)
+      .doc(
+        "Maximum bytes of prepared broadcast data held by active tasks per executor, charged " +
+          "to Spark off-heap storage memory. The charge is released after the last task drops " +
+          "the build. The first flat-schema broadcast input marked for reuse " +
+          "fixes this executor's cap, even if its join is later ineligible. Inputs requesting " +
+          "a different cap use ordinary execution.")
+      .bytesConf(ByteUnit.BYTE)
+      .checkValue(_ > 0, "Broadcast reuse memory limit must be positive")
+      .createWithDefault(1024L * 1024 * 1024)
+
   val COMET_FORCE_SHJ: ConfigEntry[Boolean] =
     conf(s"$COMET_EXEC_CONFIG_PREFIX.forceShuffledHashJoin")
       .withAlternative(s"$COMET_EXEC_CONFIG_PREFIX.replaceSortMergeJoin")

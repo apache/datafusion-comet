@@ -19,12 +19,15 @@
 
 package org.apache.comet.exec
 
+import java.util.concurrent.{CountDownLatch, TimeUnit}
+
 import org.scalactic.source.Position
 import org.scalatest.Tag
 
 import org.apache.hadoop.fs.Path
 import org.apache.parquet.hadoop.ParquetFileReader
 import org.apache.parquet.hadoop.util.HadoopInputFile
+import org.apache.spark.{CometBroadcastMemoryManager, SparkConf}
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.catalyst.TableIdentifier
 import org.apache.spark.sql.catalyst.analysis.UnresolvedRelation
@@ -37,11 +40,14 @@ import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{ArrayType, IntegerType, MetadataBuilder, StructField, StructType}
 
-import org.apache.comet.CometConf
+import org.apache.comet.{CometConf, NativeBase}
 
 class CometJoinSuite extends CometTestBase {
 
   import testImplicits._
+
+  override protected def sparkConf: SparkConf =
+    super.sparkConf.set("spark.plugins", "org.apache.spark.CometPlugin")
 
   override protected def test(testName: String, testTags: Tag*)(testFun: => Any)(implicit
       pos: Position): Unit = {
@@ -1093,6 +1099,181 @@ class CometJoinSuite extends CometTestBase {
     }
   }
 
+  test("prepared broadcast reuse preserves duplicate and null joins across task inputs") {
+    val build =
+      Seq[(java.lang.Long, Long)]((1L, 11L), (1L, 12L), (2L, 21L), (4L, 41L), (null, 99L))
+    val probe = (0 until 240).map { i =>
+      (if (i % 7 == 0) null else java.lang.Long.valueOf(i % 6), i.toLong)
+    }
+    withParquetTable(build, "reuse_build") {
+      withParquetTable(probe, "reuse_probe") {
+        withSQLConf(
+          CometConf.COMET_BROADCAST_REUSE_ENABLED.key -> "true",
+          CometConf.COMET_BROADCAST_REUSE_MAX_MEMORY.key -> "1g",
+          CometConf.COMET_EXEC_JOIN_DYNAMIC_FILTER_ENABLED.key -> "true",
+          CometConf.COMET_SHUFFLE_MODE.key -> "native",
+          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+          SQLConf.SHUFFLE_PARTITIONS.key -> "12") {
+          val (_, cometPlan) = checkSparkAnswerAndOperator(
+            sql("""
+                |SELECT /*+ BROADCAST(b) */ p._2, b._2
+                |FROM (SELECT /*+ REPARTITION(12, _1) */ * FROM reuse_probe) p
+                |JOIN reuse_build b ON p._1 = b._1
+                |DISTRIBUTE BY p._2
+                |""".stripMargin),
+            Seq(classOf[CometBroadcastExchangeExec], classOf[CometBroadcastHashJoinExec]))
+          val joins = collect(cometPlan) { case join: CometBroadcastHashJoinExec => join }
+          assert(joins.size == 1)
+          val join = joins.head
+          val misses = join.metrics("broadcast_build_cache_misses").value
+          assert(misses > 0L)
+          assert(join.metrics("broadcast_build_cache_fallbacks").value == 0L)
+          assert(join.metrics("broadcast_build_prepare_rows").value == 4L * misses)
+          // Finishing the join leaves no idle native storage charge for later tasks.
+          val owner = CometBroadcastMemoryManager.getOrCreate(1024L * 1024 * 1024)
+          assert(owner != null)
+          assert(owner.getUsedMemory == 0L)
+        }
+      }
+    }
+  }
+
+  test("prepared broadcast build is shared by concurrent Spark probe tasks") {
+    CometJoinSuite.probeGate = new CountDownLatch(2)
+    try {
+      withParquetTable(Seq((1L, 11L)), "reuse_hit_build") {
+        val probe = (101L to 120L).map(value => (1L, value))
+        withParquetTable(probe, "reuse_hit_probe") {
+          withSQLConf(
+            CometConf.COMET_BROADCAST_REUSE_ENABLED.key -> "true",
+            SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
+            val query = sql("""
+                |SELECT /*+ BROADCAST(b) */ p._2, b._2
+                |FROM (SELECT /*+ REPARTITION(2) */ * FROM reuse_hit_probe) p
+                |JOIN reuse_hit_build b ON p._1 = b._1
+                |""".stripMargin)
+            val plan = query.queryExecution.executedPlan
+            val joins = collect(plan) { case join: CometBroadcastHashJoinExec => join }
+            val broadcasts = collect(plan) { case b: CometBroadcastExchangeExec => b }
+            assert(joins.size == 1)
+            assert(broadcasts.size == 1)
+            // Hold each native probe open after its first output row until two tasks overlap.
+            val output = plan
+              .execute()
+              .mapPartitions { rows =>
+                rows.map { row =>
+                  val result = (row.getLong(0), row.getLong(1))
+                  val gate = CometJoinSuite.probeGate
+                  gate.countDown()
+                  Predef.require(gate.await(30, TimeUnit.SECONDS), "probe tasks did not overlap")
+                  result
+                }
+              }
+              .collect()
+              .toSet
+            assert(output == probe.map { case (_, value) => (value, 11L) }.toSet)
+            assert(joins.head.metrics("broadcast_build_cache_misses").value == 1L)
+            assert(joins.head.metrics("broadcast_build_cache_hits").value == 1L)
+          }
+        }
+      }
+    } finally {
+      CometJoinSuite.probeGate = null
+    }
+  }
+
+  test("prepared broadcast reuse handles composite string keys, payload and residual") {
+    val build = Seq[(java.lang.Long, String, String, Long, String)](
+      (1L, "M", "College", 11L, "IN"),
+      (1L, "M", "College", 12L, "OH"),
+      (2L, "S", "Advanced Degree", 21L, "NJ"),
+      (3L, "W", "2 yr Degree", 31L, null),
+      (null, "M", "College", 91L, "IN"),
+      (4L, null, "College", 92L, "LA"))
+    val probe = (0 until 360).map { i =>
+      val (key, marital, education) = i % 6 match {
+        case 0 => (java.lang.Long.valueOf(1L), "M", "College")
+        case 1 => (java.lang.Long.valueOf(2L), "S", "Advanced Degree")
+        case 2 => (java.lang.Long.valueOf(3L), "W", "2 yr Degree")
+        case 3 => (java.lang.Long.valueOf(1L), "M", "different")
+        case 4 => (null, "M", "College")
+        case _ => (java.lang.Long.valueOf(4L), null, "College")
+      }
+      (key, marital, education, i.toLong)
+    }
+    withParquetTable(build, "reuse_q85_returning_build") {
+      withParquetTable(probe, "reuse_q85_returning_probe") {
+        withSQLConf(
+          CometConf.COMET_BROADCAST_REUSE_ENABLED.key -> "true",
+          CometConf.COMET_BROADCAST_REUSE_MAX_MEMORY.key -> "1g",
+          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+          SQLConf.SHUFFLE_PARTITIONS.key -> "12") {
+          val (_, plan) = checkSparkAnswerAndOperator(
+            sql("""
+                |SELECT /*+ BROADCAST(b) */ p._4, b._4, b._2, b._3, b._5
+                |FROM (SELECT /*+ REPARTITION(12) */ * FROM reuse_q85_returning_probe) p
+                |JOIN reuse_q85_returning_build b
+                |ON p._1 = b._1 AND p._2 = b._2 AND p._3 = b._3
+                |AND (b._5 = 'IN' OR p._4 > b._4)
+                |""".stripMargin),
+            Seq(classOf[CometBroadcastExchangeExec], classOf[CometBroadcastHashJoinExec]))
+          val joins = collect(plan) { case join: CometBroadcastHashJoinExec => join }
+          assert(joins.size == 1)
+          val join = joins.head
+          assert(join.condition.nonEmpty)
+          val misses = join.metrics("broadcast_build_cache_misses").value
+          assert(misses > 0L)
+          assert(join.metrics("broadcast_build_cache_fallbacks").value == 0L)
+          assert(join.metrics("broadcast_build_prepare_rows").value == 4L * misses)
+        }
+      }
+    }
+  }
+
+  test("prepared broadcast reuse falls back for UTF8 residual joins when admission is denied") {
+    val build =
+      Seq[(String, java.lang.Long)](("a", 10L), ("a", 20L), ("b", 30L), ("c", null), (null, 99L))
+    val probe = (0 until 240).map { i =>
+      (if (i % 5 == 0) null else Seq("a", "b", "c", "missing")(i % 4), i % 35, i)
+    }
+    withParquetTable(build, "reuse_denied_utf8_build") {
+      withParquetTable(probe, "reuse_denied_utf8_probe") {
+        withSQLConf(
+          CometConf.COMET_BROADCAST_REUSE_ENABLED.key -> "true",
+          CometConf.COMET_BROADCAST_REUSE_MAX_MEMORY.key -> "1g",
+          CometConf.COMET_EXEC_JOIN_DYNAMIC_FILTER_ENABLED.key -> "true",
+          CometConf.COMET_SHUFFLE_MODE.key -> "native",
+          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+          SQLConf.SHUFFLE_PARTITIONS.key -> "12") {
+          NativeBase.clearBroadcastCache()
+          val owner = CometBroadcastMemoryManager.getOrCreate(1024L * 1024 * 1024)
+          assert(owner != null)
+          val held = owner.acquireMemory(owner.getLimit())
+          try {
+            assert(held == owner.getLimit())
+            val (_, plan) = checkSparkAnswerAndOperator(
+              sql("""
+                  |SELECT /*+ BROADCAST(b) */ p._3, b._1, b._2
+                  |FROM (SELECT /*+ REPARTITION(12, _1) */ * FROM reuse_denied_utf8_probe) p
+                  |JOIN reuse_denied_utf8_build b ON p._1 = b._1 AND p._2 < b._2
+                  |DISTRIBUTE BY p._3
+                  |""".stripMargin),
+              Seq(classOf[CometBroadcastExchangeExec], classOf[CometBroadcastHashJoinExec]))
+            val joins = collect(plan) { case join: CometBroadcastHashJoinExec => join }
+            assert(joins.size == 1)
+            val join = joins.head
+            assert(join.condition.nonEmpty)
+            assert(join.metrics("broadcast_build_cache_fallbacks").value > 0L)
+            assert(join.metrics("broadcast_build_cache_hits").value == 0L)
+            assert(join.metrics("broadcast_build_cache_misses").value == 0L)
+          } finally {
+            owner.releaseMemory(held)
+          }
+        }
+      }
+    }
+  }
+
   test("Broadcast hash join build-side batch coalescing") {
     // Use many shuffle partitions to produce many small broadcast batches,
     // then verify that coalescing reduces the build-side batch count to 1 per task.
@@ -1514,4 +1695,8 @@ class CometJoinSuite extends CometTestBase {
       }
     }
   }
+}
+
+object CometJoinSuite {
+  @volatile var probeGate: CountDownLatch = _
 }
