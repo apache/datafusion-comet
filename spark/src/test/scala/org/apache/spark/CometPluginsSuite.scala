@@ -27,7 +27,7 @@ import org.apache.spark.sql.comet.CometPlan
 import org.apache.spark.sql.comet.execution.shuffle.{CometShuffleExchangeExec, CometShuffleManager}
 import org.apache.spark.sql.internal.StaticSQLConf
 
-import org.apache.comet.{COMET_VERSION, CometConf, CometSparkSessionExtensions}
+import org.apache.comet.{COMET_VERSION, CometConf}
 
 class CometPluginsSuite extends CometTestBase {
   override protected def sparkConf: SparkConf = {
@@ -274,11 +274,13 @@ class CometPluginsExtensionOnlySuite extends CometTestBase {
   private val query = "SELECT _1 FROM tbl WHERE _1 > 5"
 
   test("Comet is disabled when off-heap memory is disabled") {
-    // Logging derives the logger name by stripping the object's trailing '$'
-    val logger = CometSparkSessionExtensions.getClass.getName.stripSuffix("$")
+    // Listen on the package logger, as CometExecRuleSuite does. For a logger with no config of its
+    // own, withLogAppender creates one that outlives the test and does not pass events up, so
+    // listening on CometSparkSessionExtensions directly would hide its warnings from later
+    // appenders on org.apache.comet.
     val appender = new LogAppender("off-heap mode warning")
     withParquetTable((0 until 10).map(i => (i, i.toString)), "tbl") {
-      withLogAppender(appender, Seq(logger), Some(Level.WARN)) {
+      withLogAppender(appender, Seq("org.apache.comet"), Some(Level.WARN)) {
         val (_, plan) = checkSparkAnswer(query)
         assert(collect(plan) { case op: CometPlan => op }.isEmpty, plan)
       }
