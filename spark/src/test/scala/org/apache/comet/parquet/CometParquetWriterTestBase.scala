@@ -19,6 +19,8 @@
 
 package org.apache.comet.parquet
 
+import java.util.concurrent.atomic.AtomicReference
+
 import org.apache.spark.CometListenerBusUtils
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.comet.{CometNativeWriteExec, CometWriteFilesExec}
@@ -62,12 +64,12 @@ abstract class CometParquetWriterTestBase extends CometTestBase {
 
   /** As above, for a write that names its own target (an `INSERT INTO`, for example). */
   protected def captureWritePlan(writeOp: => Unit): SparkPlan = {
-    var capturedPlan: Option[QueryExecution] = None
+    val capturedPlan = new AtomicReference[QueryExecution]()
 
     val listener = new org.apache.spark.sql.util.QueryExecutionListener {
       override def onSuccess(funcName: String, qe: QueryExecution, durationNs: Long): Unit = {
         if (funcName == "save" || funcName.contains("command")) {
-          capturedPlan = Some(qe)
+          capturedPlan.set(qe)
         }
       }
 
@@ -77,18 +79,18 @@ abstract class CometParquetWriterTestBase extends CometTestBase {
           exception: Exception): Unit = {}
     }
 
-    // Do not capture delayed callbacks from earlier setup writes.
+    // Listener events are delivered asynchronously, so drain the bus before registering: an
+    // earlier write's event still in flight would otherwise be captured in place of this one.
     CometListenerBusUtils.waitUntilEmpty(spark.sparkContext)
     spark.listenerManager.register(listener)
 
     try {
       writeOp
-      // The write can finish before its query-execution callback is delivered.
       CometListenerBusUtils.waitUntilEmpty(spark.sparkContext)
 
-      assert(capturedPlan.isDefined, "No execution plan captured for the write")
-
-      stripAQEPlan(capturedPlan.get.executedPlan)
+      val plan = capturedPlan.get()
+      assert(plan != null, "Listener was not called - no execution plan captured")
+      stripAQEPlan(plan.executedPlan)
     } finally {
       spark.listenerManager.unregister(listener)
     }
