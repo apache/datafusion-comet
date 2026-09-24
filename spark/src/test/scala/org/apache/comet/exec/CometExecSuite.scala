@@ -39,6 +39,7 @@ import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, Comet
 import org.apache.spark.sql.connector.catalog.InMemoryTableCatalog
 import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, BroadcastQueryStageExec}
+import org.apache.spark.sql.execution.aggregate.HashAggregateExec
 import org.apache.spark.sql.execution.columnar.CometInMemoryRelationHelper
 import org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormat
 import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, BroadcastExchangeLike, ReusedExchangeExec, ShuffleExchangeExec}
@@ -3945,6 +3946,41 @@ class CometExecSuite extends CometTestBase {
         checkSparkAnswerAndOperator(df, includeClasses = Seq(classOf[CometSparkToColumnarExec]))
       } finally {
         spark.catalog.uncacheTable("foreign_cache_serializer")
+      }
+    }
+  }
+
+  // https://github.com/apache/datafusion-comet/issues/6202
+  test("SparkToColumnar over InMemoryTableScanExec survives the AQE re-plan") {
+    assume(isSpark35Plus, "Table-cache query stages require Spark 3.5+")
+    // AQE wraps the cache scan in a TableCacheQueryStageExec and, once the stage materializes,
+    // plans the aggregate above it again. Reset the serializer so the relation is cached in
+    // Spark's format, as in the test above.
+    CometInMemoryRelationHelper.clearSerializer()
+    withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true") {
+      withTempView("table_cache_stage") {
+        spark
+          .range(0, 10000, 1, 4)
+          .selectExpr("id", "id % 10 AS k")
+          .createOrReplaceTempView("table_cache_stage")
+        spark.catalog.cacheTable("table_cache_stage")
+        try {
+          val df = spark.sql("SELECT k, count(*) FROM table_cache_stage GROUP BY k")
+          checkAnswer(df, (0L until 10L).map(k => Row(k, 1000L)))
+          val plan = df.queryExecution.executedPlan
+          assert(plan.asInstanceOf[AdaptiveSparkPlanExec].isFinalPlan)
+          assert(collect(plan) { case a: HashAggregateExec => a }.isEmpty, plan)
+          assert(collect(plan) { case s: ShuffleExchangeExec => s }.isEmpty, plan)
+          assert(
+            collect(plan) {
+              case c: CometSparkToColumnarExec
+                  if c.child.getClass.getSimpleName == "TableCacheQueryStageExec" =>
+                c
+            }.size == 1,
+            plan)
+        } finally {
+          spark.catalog.uncacheTable("table_cache_stage")
+        }
       }
     }
   }

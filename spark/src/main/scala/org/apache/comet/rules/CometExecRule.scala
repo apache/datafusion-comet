@@ -408,6 +408,20 @@ case class CometExecRule(session: SparkSession)
           }
         }
 
+      // On Spark 3.5+, AQE wraps each cache scan in a TableCacheQueryStageExec, a leaf, and once
+      // the stage materializes it plans the operators above it again. They can only convert over
+      // a native input. A Comet cache scan already produces Arrow batches, so its stage is a
+      // native input, as a Comet shuffle stage is.
+      case s: QueryStageExec if s.plan.isInstanceOf[CometInMemoryTableScanExec] =>
+        convertToComet(s, CometExchangeSink).getOrElse(s)
+
+      // A CometSparkToColumnarExec from an earlier pass. It inherits the logical link of the scan
+      // it converts, so when AQE plans the operators above a table-cache stage again, it reuses
+      // this node over the stage rather than the bare stage. Those operators need a native input,
+      // which the CometScanWrapper around this node gave them when it was converted.
+      case c: CometSparkToColumnarExec =>
+        convertToComet(c, CometScanWrapper).getOrElse(c)
+
       case op if shouldApplySparkToColumnar(conf, op) =>
         convertToComet(op, CometSparkToColumnarExec).getOrElse(op)
 
