@@ -556,10 +556,6 @@ object CometShuffleExchangeExec
           _: TimestampNTZType | _: DateType =>
         true
       case _: DecimalType =>
-        // TODO enforce this check
-        // https://github.com/apache/datafusion-comet/issues/3079
-        // Decimals with precision > 18 require Java BigDecimal conversion before hashing
-        // d.precision <= 18
         true
       case dt if isTimeType(dt) =>
         true

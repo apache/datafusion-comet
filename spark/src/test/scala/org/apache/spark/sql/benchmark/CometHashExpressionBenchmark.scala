@@ -19,6 +19,11 @@
 
 package org.apache.spark.sql.benchmark
 
+import org.apache.spark.benchmark.Benchmark
+import org.apache.spark.sql.Row
+
+import org.apache.comet.{CometConf, ExtendedExplainInfo}
+
 case class HashExprConfig(
     name: String,
     query: String,
@@ -46,6 +51,10 @@ object CometHashExpressionBenchmark extends CometBenchmarkBase {
 
   override def runCometBenchmark(mainArgs: Array[String]): Unit = {
     val values = 1024 * 1024
+    if (mainArgs.contains("--wide-decimal")) {
+      runWideDecimalBenchmarks(values)
+      return
+    }
 
     runBenchmarkWithTable("Hash expression benchmarks", values) { v =>
       withTempPath { dir =>
@@ -72,6 +81,60 @@ object CometHashExpressionBenchmark extends CometBenchmarkBase {
     }
 
     runMurmur3HashBenchmarks(values)
+  }
+
+  // Run only these cases with --wide-decimal. The fallback arm is the path used by
+  // wide-decimal hash on main before native support; codegen dispatch is tracked in #5835.
+  private def runWideDecimalBenchmarks(values: Int): Unit = {
+    runBenchmarkWithTable("Wide decimal hash", values) { rows =>
+      withTempPath { dir =>
+        withTempTable("parquetV1Table") {
+          prepareTable(
+            dir,
+            spark.sql(s"""
+            SELECT d, array(d, d) AS a FROM (
+              SELECT CASE WHEN value % 100 = 0 THEN NULL
+                WHEN value % 2 = 0 THEN CAST(value AS DECIMAL(38, 0))
+                ELSE CAST(value AS DECIMAL(38, 0)) * 1000000000000000000BD
+              END AS d FROM $tbl)
+          """))
+          for (function <- Seq("hash", "xxhash64"); column <- Seq("d", "a")) {
+            val exprName = if (function == "hash") "Murmur3Hash" else "XxHash64"
+            // A checksum consumes every hash result and avoids collecting a million rows.
+            val query =
+              s"SELECT sum(CAST($function($column) AS DECIMAL(38, 0))) FROM parquetV1Table"
+            val cases = Seq(
+              ("Spark", false, false),
+              ("Comet with Spark hash fallback", true, false),
+              ("Comet native", true, true))
+            var expected: Seq[Row] = Seq.empty
+            val benchmark =
+              new Benchmark(s"$function($column): decimal(38,0)", rows, output = output)
+            cases.foreach { case (name, comet, native) =>
+              val conf = Seq(
+                CometConf.COMET_ENABLED.key -> comet.toString,
+                CometConf.COMET_EXEC_ENABLED.key -> comet.toString,
+                CometConf.getExprEnabledConfigKey(exprName) -> native.toString)
+              withSQLConf(conf: _*) {
+                val df = spark.sql(query)
+                val actual = df.collect().toSeq
+                if (!comet) expected = actual else assert(actual == expected, name)
+                if (comet) {
+                  val plan = df.queryExecution.executedPlan
+                  val info = new ExtendedExplainInfo()
+                  assert(info.getNativeExpressions(plan).contains(function) == native, name)
+                  assert(!info.getCodegenDispatchExpressions(plan).contains(function), name)
+                }
+              }
+              benchmark.addCase(name) { _ =>
+                withSQLConf(conf: _*) { spark.sql(query).collect() }
+              }
+            }
+            benchmark.run()
+          }
+        }
+      }
+    }
   }
 
   /**

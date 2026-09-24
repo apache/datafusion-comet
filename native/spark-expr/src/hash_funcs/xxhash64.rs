@@ -47,6 +47,8 @@ const SPARK_DEFAULT_SEED: i64 = 42;
 /// - `Struct` (and anything containing one): `SparkXxhash64` does not push a parent null
 ///   mask into children, so hidden values of a NULL struct would affect the hash
 /// - a `Dictionary` nested in a list/map: `SparkXxhash64` restarts those hashes from 42
+/// - wide decimals: `SparkXxhash64` hashes fixed-width little-endian bytes instead
+///   of Spark's minimal signed big-endian representation
 /// - `Time64`, which `SparkXxhash64` does not dispatch
 pub fn spark_xxhash64(args: &[ColumnarValue]) -> Result<ColumnarValue, DataFusionError> {
     let length = args.len();
@@ -129,7 +131,7 @@ fn type_compatible_with_spark_xxhash64(dt: &DataType, in_list_or_map: bool) -> b
         Boolean | Int8 | Int16 | Int32 | Int64 | Float32 | Float64 => true,
         Utf8 | LargeUtf8 | Binary | LargeBinary | FixedSizeBinary(_) => true,
         Date32 | Date64 | Timestamp(_, _) => true,
-        Decimal128(_, _) => true,
+        Decimal128(precision, _) => *precision <= 18,
         Dictionary(_, value) if !in_list_or_map => {
             type_compatible_with_spark_xxhash64(value.as_ref(), true)
         }

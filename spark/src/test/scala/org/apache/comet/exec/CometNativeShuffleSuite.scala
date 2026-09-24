@@ -771,6 +771,27 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
     }
   }
 
+  test("native shuffle on wide decimal hash partitioning keys") {
+    withNestedHashPartitioning {
+      withTable("wide_decimals") {
+        sql("CREATE TABLE wide_decimals(id INT, c DECIMAL(38, 0)) USING parquet")
+        sql("""INSERT INTO wide_decimals VALUES (0, null), (1, 0), (2, 128), (3, -129),
+            (4, 99999999999999999999999999999999999999BD),
+            (5, -99999999999999999999999999999999999999BD), (6, 128)""")
+        Seq(Seq("c"), Seq("a"), Seq("s"), Seq("id", "c")).foreach { keys =>
+          def shuffled = sql("""SELECT id, c, array(c, c) AS a,
+              named_struct('d', c) AS s FROM wide_decimals""")
+            .repartition(10, keys.map(col): _*)
+          checkCometExchange(shuffled, 1, native = true)
+          // This pins the common hash helper's shuffle caller, including chained and nested
+          // inputs. The old fixed-width encoding produced different partition assignments.
+          checkSparkAnswer(shuffled.selectExpr("id", "spark_partition_id()"))
+          checkSparkAnswer(shuffled.groupBy("c").count())
+        }
+      }
+    }
+  }
+
   test("native shuffle on struct hash partitioning key") {
     withNestedHashPartitioning {
       Seq(10, 201).foreach { numPartitions =>
