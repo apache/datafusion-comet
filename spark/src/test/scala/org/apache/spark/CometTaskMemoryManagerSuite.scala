@@ -75,6 +75,39 @@ class CometTaskMemoryManagerSuite extends AnyFunSuite {
     }
   }
 
+  test("the memory pool's anchor byte counts for the task but not as usage") {
+    withTaskMemoryManager { taskMemoryManager =>
+      val manager = new CometTaskMemoryManager(1L, 0L)
+      val consumer = nativeMemoryConsumer(manager)
+
+      assert(manager.acquireAnchor(1L) == 1L)
+      assert(manager.getUsed == 0L, "the anchor is not a reservation")
+      assert(consumer.getUsed == 1L, "Spark's view of the consumer matches the task's balance")
+      assert(taskMemoryManager.getMemoryConsumptionForThisTask == 1L)
+
+      assert(manager.acquireMemory(128L) == 128L)
+      assert(manager.getUsed == 128L)
+      assert(consumer.getUsed == 129L)
+      assert(taskMemoryManager.getMemoryConsumptionForThisTask == 129L)
+
+      manager.releaseMemory(128L)
+      assert(manager.getUsed == 0L)
+      assert(consumer.getUsed == 1L)
+
+      manager.releaseAnchor(1L)
+      assert(consumer.getUsed == 0L)
+      assert(taskMemoryManager.getMemoryConsumptionForThisTask == 0L)
+
+      // A task at its share is declined the anchor with a zero grant, which counts nothing.
+      assert(manager.acquireMemory(1024L) == 1024L)
+      assert(manager.acquireAnchor(1L) == 0L)
+      assert(manager.getUsed == 1024L)
+      assert(consumer.getUsed == 1024L)
+      manager.releaseMemory(1024L)
+      assert(consumer.getUsed == 0L)
+    }
+  }
+
   test("managers in the same task retain separate memory accounting") {
     withTaskMemoryManager { taskMemoryManager =>
       val first = new CometTaskMemoryManager(1L, 0L)

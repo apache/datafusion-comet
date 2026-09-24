@@ -51,7 +51,11 @@ const _: () = assert!(ANCHOR_BYTES == 1);
 /// parked request only when they cover it.
 ///
 /// The anchor is never recorded in the pool's total and never carried as overcommit, so it goes
-/// through the Spark calls directly rather than through the [`SparkMemory`] ledger.
+/// through the Spark calls directly rather than through the [`SparkMemory`] ledger. It takes the
+/// manager's anchor calls rather than its plain acquire and release, which keeps it out of the
+/// usage the JVM checks when a plan closes. The pool is shared by every plan of the task and
+/// charged to the first plan's manager, so a plan closing while a sibling still held the pool
+/// would otherwise see the anchor as a leaked byte.
 pub struct CometFairMemoryPool {
     spark: SparkMemory,
     pool_size: usize,
@@ -124,7 +128,7 @@ impl CometFairMemoryPool {
             return Ok(());
         }
         // The lock is not held across the call.
-        if !Self::anchor_granted(self.spark.manager().acquire(ANCHOR_BYTES)?) {
+        if !Self::anchor_granted(self.spark.manager().acquire_anchor(ANCHOR_BYTES)?) {
             return Ok(());
         }
         {
@@ -136,7 +140,7 @@ impl CometFairMemoryPool {
         }
         // A grow on another thread took the anchor meanwhile. This byte was never booked, so a
         // failed return only leaves Spark holding it until the task ends, as on drop.
-        if let Err(e) = self.spark.manager().release(ANCHOR_BYTES) {
+        if let Err(e) = self.spark.manager().release_anchor(ANCHOR_BYTES) {
             warn!("Failed to return a duplicate memory pool anchor byte: {e:?}");
         }
         Ok(())
@@ -184,7 +188,7 @@ impl Drop for CometFairMemoryPool {
             return;
         }
         let released = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            self.spark.manager().release(ANCHOR_BYTES)
+            self.spark.manager().release_anchor(ANCHOR_BYTES)
         }));
         match released {
             Ok(Ok(())) => {}
@@ -391,7 +395,7 @@ mod tests {
     use crate::errors::CometError;
     use parking_lot::Condvar;
     use std::collections::{hash_map::Entry, HashMap};
-    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering::SeqCst};
+    use std::sync::atomic::{AtomicBool, AtomicI64, AtomicUsize, Ordering::SeqCst};
     use std::sync::mpsc::{channel, Receiver, Sender};
     use std::sync::Barrier;
     use std::thread;
@@ -483,6 +487,12 @@ mod tests {
         lock: Condvar,
         releases: AtomicUsize,
         acquires: AtomicUsize,
+        /// `CometTaskMemoryManager.used`: bytes granted to plain acquires and not yet released.
+        /// This is what the JVM checks for leaked reservations when a plan closes.
+        used: AtomicI64,
+        /// `CometTaskMemoryManager.anchor`: bytes granted to anchor acquires and not yet
+        /// released.
+        anchor: AtomicI64,
         /// When non-zero, every n-th acquire asks Spark for only half of the requested bytes,
         /// which is how a caller sees a short grant that must be rolled back.
         short_every: usize,
@@ -513,6 +523,8 @@ mod tests {
                 lock: Condvar::new(),
                 releases: AtomicUsize::new(0),
                 acquires: AtomicUsize::new(0),
+                used: AtomicI64::new(0),
+                anchor: AtomicI64::new(0),
                 short_every: 0,
                 fail_acquire: AtomicBool::new(false),
                 fail_release: AtomicBool::new(false),
@@ -598,8 +610,10 @@ mod tests {
         }
     }
 
-    impl SparkMemoryManager for Arc<StubTaskMemory> {
-        fn acquire(&self, additional: usize) -> CometResult<i64> {
+    impl StubTaskMemory {
+        /// Spark's `acquireExecutionMemory` for this task, behind both the plain and the anchor
+        /// acquire.
+        fn grant(&self, additional: usize) -> CometResult<i64> {
             let n = self.acquires.fetch_add(1, SeqCst) + 1;
             if self.fail_acquire.load(SeqCst) {
                 return Err(CometError::Internal("injected acquire failure".to_string()));
@@ -649,7 +663,9 @@ mod tests {
             }
         }
 
-        fn release(&self, size: usize) -> CometResult<()> {
+        /// Spark's `releaseExecutionMemory` for this task, behind both the plain and the anchor
+        /// release.
+        fn hand_back(&self, size: usize) -> CometResult<()> {
             if self.fail_release.load(SeqCst) {
                 return Err(CometError::Internal("injected release failure".to_string()));
             }
@@ -670,6 +686,34 @@ mod tests {
             }
             self.releases.fetch_add(1, SeqCst);
             self.lock.notify_all();
+            Ok(())
+        }
+    }
+
+    /// Keeps the two counts `CometTaskMemoryManager` keeps: the anchor calls go to the same
+    /// Spark balance as the plain ones but are counted apart from `used`.
+    impl SparkMemoryManager for Arc<StubTaskMemory> {
+        fn acquire(&self, additional: usize) -> CometResult<i64> {
+            let granted = self.grant(additional)?;
+            self.used.fetch_add(granted, SeqCst);
+            Ok(granted)
+        }
+
+        fn release(&self, size: usize) -> CometResult<()> {
+            self.hand_back(size)?;
+            self.used.fetch_sub(size as i64, SeqCst);
+            Ok(())
+        }
+
+        fn acquire_anchor(&self, size: usize) -> CometResult<i64> {
+            let granted = self.grant(size)?;
+            self.anchor.fetch_add(granted, SeqCst);
+            Ok(granted)
+        }
+
+        fn release_anchor(&self, size: usize) -> CometResult<()> {
+            self.hand_back(size)?;
+            self.anchor.fetch_sub(size as i64, SeqCst);
             Ok(())
         }
     }
@@ -1319,6 +1363,42 @@ mod tests {
         drop(pool);
         assert_eq!(stub.outstanding(), 0, "anchor is returned at drop");
         assert_eq!(stub.releases.load(SeqCst), 2, "the free and the anchor");
+    }
+
+    /// The anchor goes through Spark's anchor calls, which the JVM counts apart from the usage
+    /// it checks when a plan closes, so a pool left holding only its anchor reads as holding
+    /// nothing there. A declined anchor leaves both counts alone.
+    #[test]
+    fn anchor_is_counted_apart_from_the_usage_a_closing_plan_checks() {
+        let stub = Arc::new(StubTaskMemory::new(GIB));
+        let pool = pool_with(&stub, 1_000);
+        let res = MemoryConsumer::new("consumer").register(&pool);
+
+        res.try_grow(10).unwrap();
+        assert_eq!(stub.used.load(SeqCst), 10, "the grant alone is usage");
+        assert_eq!(stub.anchor.load(SeqCst), 1);
+        assert_eq!(stub.outstanding(), 11, "both count for the task");
+
+        res.free();
+        assert_eq!(stub.used.load(SeqCst), 0, "the anchor is not usage");
+        assert_eq!(stub.anchor.load(SeqCst), 1);
+        assert_eq!(stub.outstanding(), 1);
+
+        drop(res);
+        drop(pool);
+        assert_eq!(stub.anchor.load(SeqCst), 0);
+        assert_eq!(stub.outstanding(), 0);
+
+        // Spark declines the anchor for a task at its share. Nothing is counted for it.
+        let stub = Arc::new(StubTaskMemory::new(100));
+        stub.sibling_consumer_holds(100);
+        let pool = pool_with(&stub, 1_000);
+        let res = MemoryConsumer::new("consumer").register(&pool);
+        assert!(res.try_grow(10).is_err());
+        assert_eq!(stub.used.load(SeqCst), 0);
+        assert_eq!(stub.anchor.load(SeqCst), 0);
+        drop(res);
+        drop(pool);
     }
 
     /// A pool that never grows never touched Spark, so it has nothing to return at drop.

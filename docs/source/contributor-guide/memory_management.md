@@ -285,7 +285,13 @@ task is already at its share. The pool then runs without it and each grow retrie
 of its own, before the real one, until it is held. Until a retry lands, the grow's own request is
 what can park, and a sibling's release can still zero the balance under it. Spark then fails that
 acquire. A `try_grow` rolls its charge back and reports an error, and a `grow` keeps its charge as
-overcommit. That is the one window the anchor does not cover.
+overcommit. That is the one window the anchor does not cover. The anchor is taken through
+`CometTaskMemoryManager.acquireAnchor` rather than `acquireMemory`, so it counts toward the task's
+balance and toward `NativeMemoryConsumer.getUsed` but not toward `CometTaskMemoryManager.getUsed`,
+which is what `CometExecIterator.close` checks for reservations a plan never released. The pool is
+shared by every plan of the task and is charged to the manager of the plan that created it, so that
+plan can close while a sibling still holds the pool and with it the anchor. Without the separate
+count it would log the anchor as a leak of one byte, and a real leak would read one byte high.
 
 **The pool mutex is never held across a JNI call.** The fair limit is checked and the bytes are
 charged under the lock. The lock is dropped before `acquireMemory` or `releaseMemory` runs, and the
