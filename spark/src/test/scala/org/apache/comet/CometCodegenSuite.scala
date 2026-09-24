@@ -1315,6 +1315,24 @@ class CometCodegenSuite
     checkSparkAnswerAndOperator(df)
   }
 
+  test("a scalar subquery inside the dispatched subtree falls back to Spark") {
+    // The dispatcher serializes the tree at plan time, but a subquery's `result` is populated by
+    // the surrounding operator's `waitForSubqueries` at execution time. The deserialized copy on
+    // the executor therefore has no result, and `ScalarSubquery.doGenCode` used to fail the kernel
+    // compile with "Subquery ... has not finished" -- a runtime failure, after the plan had already
+    // committed to the kernel. `canHandle` now refuses it, so the operator falls back cleanly.
+    spark.udf.register("addOne", (i: Int) => i + 1)
+    withTable("t", "t2") {
+      sql("CREATE TABLE t (x INT) USING parquet")
+      sql("INSERT INTO t VALUES (1), (2), (3), (4), (5)")
+      sql("CREATE TABLE t2 (v INT) USING parquet")
+      sql("INSERT INTO t2 VALUES (2), (4)")
+      assertNoCodegen {
+        checkSparkAnswer(sql("SELECT addOne((SELECT max(v) FROM t2)) AS r FROM t"))
+      }
+    }
+  }
+
   test("ScalaUDF composed with reused scalar subquery across projection and filter") {
     // The same scalar subquery appears in two sites: the projection (which the dispatcher
     // compiles into a fused kernel) and the filter (a separate operator). Each site holds its
