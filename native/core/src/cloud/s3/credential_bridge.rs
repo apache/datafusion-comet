@@ -23,7 +23,7 @@ use crate::execution::operators::ExecutionError;
 use crate::jvm_bridge::{jni_new_global_ref, jni_static_call, JVMClasses};
 use async_trait::async_trait;
 use iceberg_storage_opendal::AwsCredential as IcebergAwsCredential;
-use jni::objects::{Global, JFieldID, JObject, JString, JValue};
+use jni::objects::{Global, JFieldID, JObject, JObjectArray, JString, JValue};
 use jni::signature::{Primitive, ReturnType};
 use jni::strings::JNIString;
 use jni::sys::jint;
@@ -63,16 +63,10 @@ pub enum AccessMode {
 ///
 /// Granularity: although the JVM SPI accepts `(bucket, path)`, neither
 /// `object_store::CredentialProvider::get_credential` nor
-/// `reqsign_core::ProvideCredential::provide_credential` carries a per-request path. The layer
-/// above (Comet's scope-aware `object_store` cache in `parquet_support`) reads
-/// [`Self::fetch_policy_locations`] once at construction so it can key a distinct
-/// `CometS3CredentialBridge` per scope on the bucket, and wraps the resulting store in a
-/// 403-retry safety net. On 403 the wrapper constructs a *fresh* bridge bound to the failing
-/// path and re-consults the SPI, so the vendor's scope hint reflects the actual failing
-/// request and a new scope entry is appended to the cache alongside the pre-existing one.
-/// Scoped vendors (`CometS3ScopedCredentialProvider` implementors) narrow the effective
-/// identity from per-bucket to per-scope; base providers retain the per-bucket identity that
-/// predates the sub-interface.
+/// `reqsign_core::ProvideCredential::provide_credential` carries a per-request path, so the
+/// effective identity is per-bucket (Parquet) or per-table-location (Iceberg). A Parquet provider
+/// that implements `CometS3LocationScopedCredentialProvider` gets one bridge per policy location
+/// instead; see `parquet::objectstore::location_scoped`.
 pub struct CometS3CredentialBridge {
     provider_class: String,
     dispatch_key: String,
@@ -192,27 +186,43 @@ impl CometS3CredentialBridge {
         })
     }
 
-    /// Advisory policy-scope hint from the JVM SPI. Returns the vendor's advertised prefixes for
-    /// this bridge's `(bucket, path, mode)` when the provider implements
-    /// `CometS3ScopedCredentialProvider`; returns an empty vec otherwise (single-entry-per-bucket
-    /// cache semantics). Comet's scope-aware `object_store` registry calls this once per bridge at
-    /// construction time — S3 remains authoritative via the 403-retry wrapper layered on top.
-    ///
-    /// A null return from Java, or a base-only provider, both normalize to an empty vec here.
-    pub fn fetch_policy_locations(&self) -> Result<Vec<String>, ExecutionError> {
-        JVMClasses::with_env(|env| -> Result<Vec<String>, ExecutionError> {
-            let mode = self.mode as jint;
-            let list_obj: JObject = unsafe {
+    /// Returns the bucket's policy locations when the provider implements
+    /// `CometS3LocationScopedCredentialProvider`, or `None` for any other provider. The
+    /// dispatcher copies the provider's list into a `String[]`, so provider code, including a lazy
+    /// list, runs inside the checked JNI call and its exceptions come back as errors here.
+    pub fn policy_locations(&self) -> Result<Option<Vec<String>>, ExecutionError> {
+        JVMClasses::with_env(|env| -> Result<Option<Vec<String>>, ExecutionError> {
+            let locations: JObject = unsafe {
                 jni_static_call!(env,
-                    comet_s3_credential_dispatcher.get_policy_locations_for(
+                    comet_s3_credential_dispatcher.get_policy_locations(
                         self.handle,
-                        self.bucket_jstr.as_obj(),
-                        self.path_jstr.as_obj(),
-                        mode
+                        self.bucket_jstr.as_obj()
                     ) -> JObject
                 )?
             };
-            read_java_string_list(env, &list_obj)
+            if locations.is_null() {
+                return Ok(None);
+            }
+            // SAFETY: `getPolicyLocations` is declared to return `String[]`, and the dispatcher
+            // rejects null elements, so every element is a non-null `java.lang.String`.
+            let locations = unsafe { JObjectArray::<JObject>::from_raw(env, locations.into_raw()) };
+            let len = locations.len(env).map_err(|e| {
+                ExecutionError::GeneralError(format!("policy locations length: {e}"))
+            })?;
+            let mut out = Vec::with_capacity(len);
+            for i in 0..len {
+                let element = locations.get_element(env, i).map_err(|e| {
+                    ExecutionError::GeneralError(format!("policy location {i}: {e}"))
+                })?;
+                let element = unsafe { JString::from_raw(&*env, element.into_raw()) };
+                let location = element.try_to_string(env).map_err(|e| {
+                    ExecutionError::GeneralError(format!("policy location {i}: {e}"))
+                })?;
+                // A bucket can have more locations than the local frame holds, so free each one.
+                env.delete_local_ref(element);
+                out.push(location);
+            }
+            Ok(Some(out))
         })
     }
 }
@@ -389,67 +399,4 @@ fn read_optional_string(
     jstr.try_to_string(env)
         .map(Some)
         .map_err(|e| ExecutionError::GeneralError(format!("try_to_string: {e}")))
-}
-
-/// Decode a `java.util.List<String>` into `Vec<String>`, treating null list, null elements, and
-/// non-string elements as end-of-list / skip respectively. Only called from
-/// [`CometS3CredentialBridge::fetch_policy_locations`] where the JVM dispatcher normalizes null
-/// returns to `Collections.emptyList()`, but the extra null-check keeps the helper self-contained.
-fn read_java_string_list(
-    env: &mut jni::Env,
-    list_obj: &JObject,
-) -> Result<Vec<String>, ExecutionError> {
-    if list_obj.is_null() {
-        return Ok(Vec::new());
-    }
-    let list_class = env
-        .find_class(JNIString::new("java/util/List"))
-        .map_err(|e| ExecutionError::GeneralError(format!("find_class(List): {e}")))?;
-    let size_method = env
-        .get_method_id(&list_class, jni::jni_str!("size"), jni::jni_sig!("()I"))
-        .map_err(|e| ExecutionError::GeneralError(format!("List.size: {e}")))?;
-    let get_method = env
-        .get_method_id(
-            &list_class,
-            jni::jni_str!("get"),
-            jni::jni_sig!("(I)Ljava/lang/Object;"),
-        )
-        .map_err(|e| ExecutionError::GeneralError(format!("List.get: {e}")))?;
-
-    let size: jint = unsafe {
-        env.call_method_unchecked(
-            list_obj,
-            size_method,
-            ReturnType::Primitive(Primitive::Int),
-            &[],
-        )
-    }
-    .and_then(|v| v.i())
-    .map_err(|e| ExecutionError::GeneralError(format!("List.size call: {e}")))?;
-    if size <= 0 {
-        return Ok(Vec::new());
-    }
-
-    let mut out = Vec::with_capacity(size as usize);
-    for i in 0..size {
-        let elem = unsafe {
-            env.call_method_unchecked(
-                list_obj,
-                get_method,
-                ReturnType::Object,
-                &[JValue::Int(i).as_jni()],
-            )
-        }
-        .and_then(|v| v.l())
-        .map_err(|e| ExecutionError::GeneralError(format!("List.get({i}) call: {e}")))?;
-        if elem.is_null() {
-            continue;
-        }
-        let jstr = unsafe { JString::from_raw(env, elem.into_raw()) };
-        let s = jstr
-            .try_to_string(env)
-            .map_err(|e| ExecutionError::GeneralError(format!("try_to_string(List[{i}]): {e}")))?;
-        out.push(s);
-    }
-    Ok(out)
 }

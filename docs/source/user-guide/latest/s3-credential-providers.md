@@ -201,32 +201,34 @@ public CometS3Credentials getCredentialsForPath(CometS3CredentialContext ctx) th
 }
 ```
 
-### Scope hints via `CometS3ScopedCredentialProvider`
+### Credentials per location
 
-The base `CometS3CredentialProvider` gives Comet one credential per (bucket, path) call. Vendors whose credentials are inherently *scoped* — a single STS session covers `s3://bucket/prefix-A/**` but not `s3://bucket/prefix-B/**` — can implement the opt-in sub-interface `CometS3ScopedCredentialProvider` to let Comet keep multiple scoped stores side-by-side in a single bucket instead of caching a single session and 403-ing when it is asked to serve a path outside its scope.
+On the Parquet path, a `CometS3CredentialProvider` gets one credential per bucket: Comet requests it with the path of the first file it reads from the bucket and uses it for every file there. If your policies differ by location within a bucket, for example one policy for `warehouse/sales` and another for `warehouse/finance`, implement `CometS3LocationScopedCredentialProvider` and tell Comet where those locations are:
 
 ```java
-package org.apache.comet.cloud.s3;
+public final class MyLocationProvider implements CometS3LocationScopedCredentialProvider {
+    @Override
+    public List<String> getPolicyLocations(String bucket) throws Exception {
+        return policyService.locationsWithPolicies(bucket); // ["warehouse/sales", "warehouse/finance"]
+    }
 
-public interface CometS3ScopedCredentialProvider extends CometS3CredentialProvider {
-    /**
-     * Advisory list of path prefixes (or absolute s3://... URIs) the credential
-     * returned by {@link #getCredentialsForPath(CometS3CredentialContext)} for
-     * the same {@code context} is valid against.  An empty list means "unknown /
-     * catchall"; Comet then falls back to the pre-existing single-entry-per-bucket
-     * behavior.
-     */
-    java.util.List<String> getPolicyLocationsFor(CometS3CredentialContext context);
+    @Override
+    public CometS3Credentials getCredentialsForPath(CometS3CredentialContext ctx) throws Exception {
+        // ctx.getPath() is a returned location with a leading slash, or "/" for the bucket root.
+        return sessionForLocation(ctx.getBucket(), ctx.getPath(), ctx.getMode());
+    }
 }
 ```
 
-Comet uses the hint to key the native `object_store` registry as `(bucket, config_hash, backend, scope_prefixes)` instead of the base three-tuple, so two prefixes with disjoint scopes each get their own store. **The hint is advisory.** S3 itself is authoritative: if the vendor overreports a scope and S3 returns 403 anyway, the native cache transparently rebuilds the store under a widened (catchall) scope, retries the operation once, and continues. A second 403 propagates to Spark as a real error.
+Comet serves each request with the credential of the longest location that covers its path. A location covers a path when the path is the location itself or lies below it, compared one `/`-separated segment at a time, so `warehouse/sales` covers `warehouse/sales/part-0.parquet` but not `warehouse/sales_eu/part-0.parquet`. The bucket root covers every path that no returned location covers, and an empty list serves the whole bucket with the root's credential. Write locations the way `CometS3CredentialContext.getPath()` writes paths: percent-encoded, without the scheme or bucket name. A literal `%` must be written as `%25`; other characters may be left unencoded, and a leading or trailing `/` is optional. When several locations decode to the same path, Comet keeps the first.
 
-**When you want this.** Overreporting has a runtime cost — a rebuild round-trip and a permanent widen of that bucket's cache — so only implement the sub-interface when your credential surface is genuinely per-prefix and stable at plan time. A vendor that always vends a bucket-wide session should stay on the base interface.
+Comet requests a location's credential by calling `getCredentialsForPath` with the location as the path, as you returned it but with a leading slash. Every request under a location shares that credential, so it must authorize every path the location is the longest match for, and your cache can key on the location. Locations apply to Comet's native Parquet reads only; Iceberg reads call `getCredentialsForPath` as they do for any provider.
 
-**Interaction with `initialize`.** Scope hints are per-request, exactly like `getCredentialsForPath`. Comet does not cache them across requests; if your vendor's scope evolves during a job you may return a different list on each call.
+**When Comet asks.** Comet calls `getPolicyLocations` when it creates the store for a bucket on an executor and keeps the answer for later reads of that bucket with the same S3 configuration. Reads that start at the same moment may each create a store and call it. If a read then fails with 403, Comet asks again, once for all the reads that failed on the same answer, and retries each read once if its path now falls under a different location, so a location added while a job runs is picked up. A location added or removed without causing a 403 is not seen until the executor creates a new store. Make `getPolicyLocations` thread-safe and independent of where it runs; it may be called on the driver or on executors.
 
-**Backward compatibility.** Existing implementations that only implement `CometS3CredentialProvider` (not the `Scoped` sub-interface) behave exactly as before — Comet keys and caches per-bucket, and the 403-retry path stays inactive.
+**Failures.** If `getPolicyLocations` throws or returns `null`, or returns a location that is `null` or invalid, the read fails. A location is invalid if, once decoded, it is not valid UTF-8 or has a segment that is empty, `.`, `..`, or contains a control character, so a URI such as `s3://bucket/a` is invalid too. Comet does not fall back to a broader credential.
+
+**Backward compatibility.** Providers that implement only `CometS3CredentialProvider` are unaffected. Comet calls nothing new on them and keeps one credential per bucket, as before.
 
 ### Composing multiple credential backends
 

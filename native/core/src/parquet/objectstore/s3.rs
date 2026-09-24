@@ -22,6 +22,9 @@ use url::Url;
 
 use crate::cloud::s3::credential_bridge::{AccessMode, CometS3CredentialBridge};
 use crate::execution::jni_api::get_runtime;
+use crate::parquet::objectstore::location_scoped::{
+    LocationScopedObjectStore, LocationSource, LocationStoreFactory,
+};
 use async_trait::async_trait;
 use aws_config::{
     ecs::EcsCredentialsProvider, environment::EnvironmentVariableCredentialsProvider,
@@ -35,7 +38,7 @@ use aws_credential_types::{
     Credentials,
 };
 use object_store::{
-    aws::{AmazonS3Builder, AmazonS3ConfigKey, AwsCredential},
+    aws::{AmazonS3, AmazonS3Builder, AmazonS3ConfigKey, AwsCredential, AwsCredentialProvider},
     path::Path,
     CredentialProvider, ObjectStore, ObjectStoreScheme,
 };
@@ -47,6 +50,10 @@ use std::{
 
 /// Creates an S3 object store using options specified as Hadoop S3A configurations.
 ///
+/// When the configured `CometS3CredentialProvider` implements
+/// `CometS3LocationScopedCredentialProvider`, the store is a [`LocationScopedObjectStore`] that
+/// serves each of the provider's policy locations with its own credential.
+///
 /// # Arguments
 ///
 /// * `url` - The URL of the S3 object to access.
@@ -57,71 +64,9 @@ use std::{
 ///
 /// * `(Box<dyn ObjectStore>, Path)` - The object store and path of the S3 object store.
 ///
-/// Look up the configured `CometS3CredentialProvider` FQCN and, if present, construct a
-/// bridge to it.  Callers on the SPI-aware code path (`parquet_support`) invoke this to
-/// obtain the bridge *before* store construction so they can query
-/// [`CometS3CredentialBridge::fetch_policy_locations`] and key their cache accordingly, then
-/// hand the same bridge to [`create_store_with_bridge`].
-///
-/// Returns:
-/// * `Ok(None)` — no `comet.credential.provider.class` configured for this bucket.
-/// * `Ok(Some(bridge))` — SPI resolved and initialized.
-/// * `Err(_)` — SPI class was named but initialization failed; caller should propagate.
-pub fn try_construct_bridge(
+pub fn create_store(
     url: &Url,
     configs: &HashMap<String, String>,
-) -> Result<Option<Arc<CometS3CredentialBridge>>, object_store::Error> {
-    try_construct_bridge_with_path(url, configs, None)
-}
-
-/// Same as [`try_construct_bridge`] but binds the bridge to `override_path` when set. The
-/// SPI-aware `parquet_support` cache uses this on the rebuild path so the bridge's baked-in
-/// path becomes the location that just 403'd, and `fetch_policy_locations` reports the
-/// vendor's scope for the *actual failing request* rather than the path baked in at initial
-/// construction time.
-pub fn try_construct_bridge_with_path(
-    url: &Url,
-    configs: &HashMap<String, String>,
-    override_path: Option<&str>,
-) -> Result<Option<Arc<CometS3CredentialBridge>>, object_store::Error> {
-    let bucket = url.host_str().ok_or_else(|| object_store::Error::Generic {
-        store: "S3",
-        source: "Missing bucket name in S3 URL".into(),
-    })?;
-    let Some(provider_class) = lookup_provider_class(configs, bucket) else {
-        return Ok(None);
-    };
-    // Parquet path: catalog_properties is empty; vendors here read from Hadoop conf.
-    let empty_props: HashMap<String, String> = HashMap::new();
-    let path_for_bridge = override_path.unwrap_or_else(|| url.path());
-    let bridge = CometS3CredentialBridge::new(
-        provider_class,
-        bucket,
-        bucket,
-        path_for_bridge,
-        AccessMode::Read,
-        &empty_props,
-    )
-    .map_err(|e| object_store::Error::Generic {
-        store: "S3",
-        source: format!("CometS3CredentialBridge init failed for {bucket}: {e}").into(),
-    })?;
-    Ok(Some(Arc::new(bridge)))
-}
-
-/// Build an S3 `ObjectStore` from a caller-supplied bridge (or absence thereof).
-///
-/// When `bridge` is `Some`, it is installed as the credential provider directly and no AWS
-/// credential-chain resolution is performed.  This is the entrypoint used by the SPI-aware
-/// `parquet_support` cache after it has fetched the bridge's advertised policy scope.
-///
-/// When `bridge` is `None`, the function falls back to the standard AWS credential chain
-/// (Hadoop-style `fs.s3a.aws.credentials.provider` resolution + `min_ttl`-bounded caching),
-/// preserving `create_store`'s legacy behavior for non-SPI callers.
-pub fn create_store_with_bridge(
-    url: &Url,
-    configs: &HashMap<String, String>,
-    bridge: Option<Arc<CometS3CredentialBridge>>,
     min_ttl: Duration,
 ) -> Result<(Box<dyn ObjectStore>, Path), object_store::Error> {
     let (scheme, path) = ObjectStoreScheme::parse(url)?;
@@ -133,59 +78,176 @@ pub fn create_store_with_bridge(
     }
     let path = Path::parse(path)?;
 
-    let mut builder = AmazonS3Builder::new()
-        .with_url(url.to_string())
-        .with_allow_http(true);
     let bucket = url.host_str().ok_or_else(|| object_store::Error::Generic {
         store: "S3",
         source: "Missing bucket name in S3 URL".into(),
     })?;
 
-    // Fail rather than fall back to the default chain when a bridge was named but the caller
-    // decided not to construct it — the ambiguity would let a user who asked for a specific
-    // vendor identity silently get the default one.
-    builder = match bridge {
-        Some(bridge) => builder.with_credentials(bridge),
+    // Parquet path: catalog_properties is empty; vendors here read from Hadoop conf.
+    let empty_props: HashMap<String, String> = HashMap::new();
+    let credentials = match lookup_provider_class(configs, bucket) {
+        Some(provider_class) => {
+            // Fail rather than fall back to the default chain, which could resolve to the wrong
+            // identity for a user who explicitly named a provider.
+            let bridge = CometS3CredentialBridge::new(
+                provider_class,
+                bucket,
+                bucket,
+                url.path(),
+                AccessMode::Read,
+                &empty_props,
+            )
+            .map_err(|e| object_store::Error::Generic {
+                store: "S3",
+                source: format!("CometS3CredentialBridge init failed for {bucket}: {e}").into(),
+            })?;
+            let locations =
+                bridge
+                    .policy_locations()
+                    .map_err(|e| object_store::Error::Generic {
+                        store: "S3",
+                        source: format!("Failed to get policy locations for {bucket}: {e}").into(),
+                    })?;
+            if let Some(locations) = locations {
+                let template = S3StoreTemplate::new(url, configs, bucket)?;
+                let store =
+                    location_scoped_store(template, provider_class, bucket, bridge, locations)?;
+                return Ok((Box::new(store), path));
+            }
+            S3Credentials::Provider(Arc::new(bridge))
+        }
         None => {
             match get_runtime().block_on(build_credential_provider(configs, bucket, min_ttl))? {
-                Some(provider) => builder.with_credentials(Arc::new(provider)),
-                None => builder.with_skip_signature(true),
+                Some(provider) => S3Credentials::Provider(Arc::new(provider)),
+                None => S3Credentials::SkipSignature,
             }
         }
     };
 
-    let s3_configs = extract_s3_config_options(configs, bucket);
-    debug!("S3 configs for bucket {bucket}: {s3_configs:?}");
-
-    // When using the default AWS S3 endpoint (no custom endpoint configured), a valid region
-    // is required. If no region is explicitly configured, attempt to auto-resolve it by
-    // making a HeadBucket request to determine the bucket's region.
-    if !s3_configs.contains_key(&AmazonS3ConfigKey::Endpoint)
-        && !s3_configs.contains_key(&AmazonS3ConfigKey::Region)
-    {
-        let region = get_runtime()
-            .block_on(resolve_bucket_region(bucket))
-            .map_err(|e| object_store::Error::Generic {
-                store: "S3",
-                source: format!(
-                    "Failed to resolve region: {e}. If '{bucket}' is on a non-AWS S3-compatible \
-                     service, set fs.s3a.endpoint (and optionally fs.s3a.endpoint.region, \
-                     fs.s3a.path.style.access) or the per-bucket variants \
-                     fs.s3a.bucket.{bucket}.endpoint[.region] so Comet skips the AWS HEAD probe."
-                )
-                .into(),
-            })?;
-        debug!("resolved region: {region:?}");
-        builder = builder.with_config(AmazonS3ConfigKey::Region, region.to_string());
-    }
-
-    for (key, value) in s3_configs {
-        builder = builder.with_config(key, value);
-    }
-
-    let object_store = builder.build()?;
+    let object_store = S3StoreTemplate::new(url, configs, bucket)?.build(credentials)?;
 
     Ok((Box::new(object_store), path))
+}
+
+/// How a store built from an [`S3StoreTemplate`] signs its requests.
+enum S3Credentials {
+    Provider(AwsCredentialProvider),
+    SkipSignature,
+}
+
+/// Builder settings shared by every store for one bucket. Creating a template may block on a
+/// region lookup; building a store from it does not, so location-scoped stores can be built from
+/// async code on a Tokio worker.
+struct S3StoreTemplate {
+    url: String,
+    region: Option<String>,
+    s3_configs: HashMap<AmazonS3ConfigKey, String>,
+}
+
+impl S3StoreTemplate {
+    fn new(
+        url: &Url,
+        configs: &HashMap<String, String>,
+        bucket: &str,
+    ) -> Result<Self, object_store::Error> {
+        let s3_configs = extract_s3_config_options(configs, bucket);
+        debug!("S3 configs for bucket {bucket}: {s3_configs:?}");
+
+        // When using the default AWS S3 endpoint (no custom endpoint configured), a valid region
+        // is required. If no region is explicitly configured, attempt to auto-resolve it by
+        // making a HeadBucket request to determine the bucket's region.
+        let region = if !s3_configs.contains_key(&AmazonS3ConfigKey::Endpoint)
+            && !s3_configs.contains_key(&AmazonS3ConfigKey::Region)
+        {
+            let region = get_runtime()
+                .block_on(resolve_bucket_region(bucket))
+                .map_err(|e| object_store::Error::Generic {
+                    store: "S3",
+                    source: format!(
+                        "Failed to resolve region: {e}. If '{bucket}' is on a non-AWS S3-compatible \
+                         service, set fs.s3a.endpoint (and optionally fs.s3a.endpoint.region, \
+                         fs.s3a.path.style.access) or the per-bucket variants \
+                         fs.s3a.bucket.{bucket}.endpoint[.region] so Comet skips the AWS HEAD probe."
+                    )
+                    .into(),
+                })?;
+            debug!("resolved region: {region:?}");
+            Some(region)
+        } else {
+            None
+        };
+
+        Ok(Self {
+            url: url.to_string(),
+            region,
+            s3_configs,
+        })
+    }
+
+    fn build(&self, credentials: S3Credentials) -> Result<AmazonS3, object_store::Error> {
+        let builder = AmazonS3Builder::new()
+            .with_url(self.url.clone())
+            .with_allow_http(true);
+        let mut builder = match credentials {
+            S3Credentials::Provider(provider) => builder.with_credentials(provider),
+            S3Credentials::SkipSignature => builder.with_skip_signature(true),
+        };
+        if let Some(region) = &self.region {
+            builder = builder.with_config(AmazonS3ConfigKey::Region, region.clone());
+        }
+        for (key, value) in &self.s3_configs {
+            builder = builder.with_config(*key, value.clone());
+        }
+        builder.build()
+    }
+}
+
+/// Builds the store for a `CometS3LocationScopedCredentialProvider`. `bridge` was created on this
+/// thread, which registered the provider; it is kept to fetch the locations again after a 403.
+/// Each location's bridge is created on first use, often on a Tokio worker, and reuses that
+/// registration.
+fn location_scoped_store(
+    template: S3StoreTemplate,
+    provider_class: &str,
+    bucket: &str,
+    bridge: CometS3CredentialBridge,
+    locations: Vec<String>,
+) -> Result<LocationScopedObjectStore, object_store::Error> {
+    let source_bucket = bucket.to_string();
+    let source: LocationSource = Arc::new(move || {
+        let locations = bridge
+            .policy_locations()
+            .map_err(|e| object_store::Error::Generic {
+                store: "S3",
+                source: format!("Failed to get policy locations for {source_bucket}: {e}").into(),
+            })?;
+        locations.ok_or_else(|| object_store::Error::Generic {
+            store: "S3",
+            source: format!("The provider for {source_bucket} stopped returning policy locations")
+                .into(),
+        })
+    });
+
+    let provider_class = provider_class.to_string();
+    let factory_bucket = bucket.to_string();
+    let factory: LocationStoreFactory = Arc::new(move |credential_path: &str| {
+        let bridge = CometS3CredentialBridge::new(
+            provider_class.as_str(),
+            factory_bucket.as_str(),
+            factory_bucket.as_str(),
+            credential_path,
+            AccessMode::Read,
+            &HashMap::new(),
+        )
+        .map_err(|e| object_store::Error::Generic {
+            store: "S3",
+            source: format!("CometS3CredentialBridge init failed for {factory_bucket}: {e}").into(),
+        })?;
+        let store = template.build(S3Credentials::Provider(Arc::new(bridge)))?;
+        Ok(Arc::new(store) as Arc<dyn ObjectStore>)
+    });
+
+    LocationScopedObjectStore::new(bucket.to_string(), locations, source, factory)
 }
 
 /// Process-wide cache of resolved S3 bucket regions, keyed by bucket name.
@@ -1035,12 +1097,31 @@ mod tests {
             .with_credential_provider(HADOOP_ANONYMOUS)
             .with_region("us-east-1")
             .build();
-        let (_object_store, path) =
-            create_store_with_bridge(&url, &configs, None, Duration::from_secs(300)).unwrap();
+        let (_object_store, path) = create_store(&url, &configs, Duration::from_secs(300)).unwrap();
         assert_eq!(
             path,
             Path::from("/comet/spark-warehouse/part-00000.snappy.parquet")
         );
+    }
+
+    /// A location-scoped store builds each location's store on first use, usually inside an async
+    /// read on a Tokio worker, so building from a template must not block on the runtime. The
+    /// template resolves the region when it is created; this bucket's region is already cached, so
+    /// no request is made.
+    #[test]
+    fn builds_from_a_template_inside_the_runtime() {
+        let bucket = "comet-template-test-bucket";
+        region_cache()
+            .write()
+            .unwrap()
+            .insert(bucket.to_string(), "us-west-2".to_string());
+        let url = Url::parse(&format!("s3a://{bucket}/warehouse/sales/part-0.parquet")).unwrap();
+        // With no endpoint or region configured, creating the template resolves the region.
+        let template = S3StoreTemplate::new(&url, &HashMap::new(), bucket).unwrap();
+        assert_eq!(template.region.as_deref(), Some("us-west-2"));
+
+        let store = get_runtime().block_on(async { template.build(S3Credentials::SkipSignature) });
+        assert!(store.is_ok(), "{:?}", store.err());
     }
 
     #[test]

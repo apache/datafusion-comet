@@ -19,35 +19,32 @@
 
 package org.apache.comet.cloud.s3;
 
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
- * Test-only {@link CometS3ScopedCredentialProvider} paired with {@link
- * CometS3ScopedCredentialProviderTest}. State is static because the dispatcher caches one instance
- * per (FQCN, dispatchKey) for the JVM lifetime, so per-test observation must survive across handle
- * lookups.
+ * Test-only {@link CometS3LocationScopedCredentialProvider}. State is static because the dispatcher
+ * caches one instance per (FQCN, dispatchKey) for the JVM lifetime.
  */
-public class TestCometS3ScopedCredentialProvider implements CometS3ScopedCredentialProvider {
+public class TestCometS3LocationScopedCredentialProvider
+    implements CometS3LocationScopedCredentialProvider {
 
   static final AtomicInteger callCount = new AtomicInteger(0);
-  static final AtomicInteger policyCallCount = new AtomicInteger(0);
-  static final AtomicReference<List<String>> nextPolicyLocations = new AtomicReference<>(List.of());
+  static final AtomicInteger locationCallCount = new AtomicInteger(0);
+  static final AtomicReference<List<String>> nextLocations =
+      new AtomicReference<>(Collections.emptyList());
   static volatile String lastBucket;
-  static volatile String lastPath;
-  static volatile CometS3AccessMode lastMode;
-  static volatile Exception throwOnNextPolicyCall;
+  static volatile Exception throwOnNextLocationCall;
 
   static void reset() {
     callCount.set(0);
-    policyCallCount.set(0);
-    nextPolicyLocations.set(List.of());
+    locationCallCount.set(0);
+    nextLocations.set(Collections.emptyList());
     lastBucket = null;
-    lastPath = null;
-    lastMode = null;
-    throwOnNextPolicyCall = null;
+    throwOnNextLocationCall = null;
   }
 
   @Override
@@ -60,16 +57,14 @@ public class TestCometS3ScopedCredentialProvider implements CometS3ScopedCredent
   }
 
   @Override
-  public List<String> getPolicyLocationsFor(CometS3CredentialContext context) throws Exception {
-    policyCallCount.incrementAndGet();
-    lastBucket = context.getBucket();
-    lastPath = context.getPath();
-    lastMode = context.getMode();
-    Exception toThrow = throwOnNextPolicyCall;
+  public List<String> getPolicyLocations(String bucket) throws Exception {
+    locationCallCount.incrementAndGet();
+    lastBucket = bucket;
+    Exception toThrow = throwOnNextLocationCall;
     if (toThrow != null) {
-      throwOnNextPolicyCall = null;
+      throwOnNextLocationCall = null;
       throw toThrow;
     }
-    return nextPolicyLocations.get();
+    return nextLocations.get();
   }
 }

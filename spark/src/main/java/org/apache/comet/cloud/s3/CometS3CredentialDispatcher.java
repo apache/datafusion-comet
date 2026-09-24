@@ -122,36 +122,47 @@ public final class CometS3CredentialDispatcher {
   }
 
   /**
-   * Invoked by native code when constructing a scope-aware {@code ObjectStore} cache entry. Returns
-   * the vendor's advertised policy scope for the given context, or an empty list when the provider
-   * only implements the base {@link CometS3CredentialProvider} interface (no scope hint available).
+   * Invoked by native code when it creates the object store for {@code bucket}, and again after a
+   * read through that store fails with 403. Returns {@code null} when the provider behind {@code
+   * handle} does not implement {@link CometS3LocationScopedCredentialProvider}, which leaves it
+   * with one credential per bucket. Otherwise returns a copy of the provider's locations.
    *
-   * <p>Never throws for the base-interface case; a scoped provider's own exceptions propagate so
-   * the caller can decide to fall back to broad caching.
+   * <p>Copying the list here runs any lazy {@code List} code inside this call, so its exceptions
+   * reach native code as ordinary Java exceptions, and a non-{@code String} element fails with
+   * {@link ArrayStoreException}. A {@code null} list or location is a contract violation and
+   * throws, so the read fails instead of using a broader credential.
    */
-  public static List<String> getPolicyLocationsFor(
-      long handle, String bucket, String path, int mode) throws Exception {
-    if (mode < 0 || mode >= MODES.length) {
-      throw new IllegalArgumentException("Invalid CometS3AccessMode ordinal: " + mode);
-    }
+  public static String[] getPolicyLocations(long handle, String bucket) throws Exception {
     RegisteredProvider registered = INSTANCES.get(handle);
     if (registered == null) {
       throw new IllegalStateException(
           "CometS3CredentialProvider handle "
               + handle
               + " was not initialized; "
-              + "ensureInitialized must be called before getPolicyLocationsFor");
+              + "ensureInitialized must be called before getPolicyLocations");
     }
-    if (!(registered.provider instanceof CometS3ScopedCredentialProvider)) {
-      // Base-interface provider: no scope hint. Native side treats an empty list as
-      // "single-entry-per-bucket behavior" — the pre-scope-aware cache semantics.
-      return Collections.emptyList();
+    if (!(registered.provider instanceof CometS3LocationScopedCredentialProvider)) {
+      return null;
     }
-    CometS3AccessMode accessMode = MODES[mode];
-    CometS3ScopedCredentialProvider scoped = (CometS3ScopedCredentialProvider) registered.provider;
-    List<String> hint =
-        scoped.getPolicyLocationsFor(new CometS3CredentialContext(bucket, path, accessMode));
-    return hint == null ? Collections.emptyList() : hint;
+    List<String> locations =
+        ((CometS3LocationScopedCredentialProvider) registered.provider).getPolicyLocations(bucket);
+    if (locations == null) {
+      throw new IllegalStateException(
+          registered.key.providerClassName
+              + ".getPolicyLocations returned null for bucket "
+              + bucket
+              + "; return an empty list when the bucket has no locations");
+    }
+    String[] copy = locations.toArray(new String[0]);
+    for (String location : copy) {
+      if (location == null) {
+        throw new IllegalStateException(
+            registered.key.providerClassName
+                + ".getPolicyLocations returned a null location for bucket "
+                + bucket);
+      }
+    }
+    return copy;
   }
 
   private static CometS3CredentialProvider instantiate(String providerClassName) {
