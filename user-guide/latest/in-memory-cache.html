@@ -29,7 +29,7 @@ under the License.
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Installing DataFusion Comet &#8212; Apache DataFusion Comet  documentation</title>
+    <title>In-Memory Cache &#8212; Apache DataFusion Comet  documentation</title>
   
   
   
@@ -63,13 +63,13 @@ under the License.
     <script src="../../_static/documentation_options.js?v=5929fcd5"></script>
     <script src="../../_static/doctools.js?v=9a2dae69"></script>
     <script src="../../_static/sphinx_highlight.js?v=dc90522c"></script>
-    <script>DOCUMENTATION_OPTIONS.pagename = 'user-guide/0.17/installation';</script>
+    <script>DOCUMENTATION_OPTIONS.pagename = 'user-guide/latest/in-memory-cache';</script>
     <script async="true" defer="true" src="https://buttons.github.io/buttons.js"></script>
     <script src="../../_static/comet-ux.js?v=97577a30"></script>
     <link rel="index" title="Index" href="../../genindex.html" />
     <link rel="search" title="Search" href="../../search.html" />
-    <link rel="next" title="Comet Configuration Settings" href="configs.html" />
-    <link rel="prev" title="Comet 0.17.0 User Guide" href="index.html" />
+    <link rel="next" title="PyArrow UDF Acceleration" href="pyarrow-udfs.html" />
+    <link rel="prev" title="Comet Metrics" href="metrics.html" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
@@ -489,136 +489,136 @@ under the License.
 </ul>
 
 </details></li>
-<li class="toctree-l1 has-children"><a class="reference internal" href="../latest/index.html">Development Snapshot</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><p aria-level="2" class="caption" role="heading"><span class="caption-text">Getting Started</span></p>
+<li class="toctree-l1 current active has-children"><a class="reference internal" href="index.html">Development Snapshot</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><p aria-level="2" class="caption" role="heading"><span class="caption-text">Getting Started</span></p>
 <ul>
-<li class="toctree-l2"><a class="reference internal" href="../latest/installation.html">Installing Comet</a></li>
-<li class="toctree-l2"><a class="reference internal" href="../latest/configs.html">Configuration Settings</a></li>
-<li class="toctree-l2"><a class="reference internal" href="../latest/migration-guide.html">Upgrading Comet</a></li>
+<li class="toctree-l2"><a class="reference internal" href="installation.html">Installing Comet</a></li>
+<li class="toctree-l2"><a class="reference internal" href="configs.html">Configuration Settings</a></li>
+<li class="toctree-l2"><a class="reference internal" href="migration-guide.html">Upgrading Comet</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">What Comet Supports</span></p>
 <ul>
-<li class="toctree-l2"><a class="reference internal" href="../latest/datasources.html">Supported Data Sources</a></li>
-<li class="toctree-l2"><a class="reference internal" href="../latest/datatypes.html">Supported Data Types</a></li>
-<li class="toctree-l2"><a class="reference internal" href="../latest/operators.html">Supported Operators</a></li>
-<li class="toctree-l2"><a class="reference internal" href="../latest/expressions.html">Supported Expressions</a></li>
-<li class="toctree-l2"><a class="reference internal" href="../latest/scala_java_udfs.html">ScalaUDF and Java UDF Support</a></li>
+<li class="toctree-l2"><a class="reference internal" href="datasources.html">Supported Data Sources</a></li>
+<li class="toctree-l2"><a class="reference internal" href="datatypes.html">Supported Data Types</a></li>
+<li class="toctree-l2"><a class="reference internal" href="operators.html">Supported Operators</a></li>
+<li class="toctree-l2"><a class="reference internal" href="expressions.html">Supported Expressions</a></li>
+<li class="toctree-l2"><a class="reference internal" href="scala_java_udfs.html">ScalaUDF and Java UDF Support</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Compatibility</span></p>
 <ul>
-<li class="toctree-l2"><a class="reference internal" href="../latest/compatibility/index.html">Overview</a></li>
-<li class="toctree-l2"><a class="reference internal" href="../latest/compatibility/scans.html">Parquet Compatibility</a></li>
-<li class="toctree-l2"><a class="reference internal" href="../latest/compatibility/floating-point.html">Floating-point Number Comparison</a></li>
-<li class="toctree-l2"><a class="reference internal" href="../latest/compatibility/regex.html">Regular Expressions</a></li>
-<li class="toctree-l2"><a class="reference internal" href="../latest/compatibility/operators.html">Operator Compatibility</a></li>
-<li class="toctree-l2 has-children"><a class="reference internal" href="../latest/compatibility/expressions/index.html">Expression Compatibility</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
-<li class="toctree-l3 has-children"><a class="reference internal" href="../latest/compatibility/expressions/spark-3.4/index.html">Spark 3.4</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
-<li class="toctree-l4"><a class="reference internal" href="../latest/compatibility/expressions/spark-3.4/aggregate.html">Aggregate Expressions</a></li>
-<li class="toctree-l4"><a class="reference internal" href="../latest/compatibility/expressions/spark-3.4/array.html">Array Expressions</a></li>
-<li class="toctree-l4"><a class="reference internal" href="../latest/compatibility/expressions/spark-3.4/datetime.html">Date/Time Expressions</a></li>
-<li class="toctree-l4"><a class="reference internal" href="../latest/compatibility/expressions/spark-3.4/map.html">Map Expressions</a></li>
-<li class="toctree-l4"><a class="reference internal" href="../latest/compatibility/expressions/spark-3.4/math.html">Math Expressions</a></li>
-<li class="toctree-l4"><a class="reference internal" href="../latest/compatibility/expressions/spark-3.4/misc.html">Miscellaneous Expressions</a></li>
-<li class="toctree-l4"><a class="reference internal" href="../latest/compatibility/expressions/spark-3.4/string.html">String Expressions</a></li>
-<li class="toctree-l4"><a class="reference internal" href="../latest/compatibility/expressions/spark-3.4/struct.html">Struct Expressions</a></li>
-<li class="toctree-l4"><a class="reference internal" href="../latest/compatibility/expressions/spark-3.4/url.html">URL Expressions</a></li>
-<li class="toctree-l4"><a class="reference internal" href="../latest/compatibility/expressions/spark-3.4/cast.html">Cast</a></li>
+<li class="toctree-l2"><a class="reference internal" href="compatibility/index.html">Overview</a></li>
+<li class="toctree-l2"><a class="reference internal" href="compatibility/scans.html">Parquet Compatibility</a></li>
+<li class="toctree-l2"><a class="reference internal" href="compatibility/floating-point.html">Floating-point Number Comparison</a></li>
+<li class="toctree-l2"><a class="reference internal" href="compatibility/regex.html">Regular Expressions</a></li>
+<li class="toctree-l2"><a class="reference internal" href="compatibility/operators.html">Operator Compatibility</a></li>
+<li class="toctree-l2 has-children"><a class="reference internal" href="compatibility/expressions/index.html">Expression Compatibility</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l3 has-children"><a class="reference internal" href="compatibility/expressions/spark-3.4/index.html">Spark 3.4</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-3.4/aggregate.html">Aggregate Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-3.4/array.html">Array Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-3.4/datetime.html">Date/Time Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-3.4/map.html">Map Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-3.4/math.html">Math Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-3.4/misc.html">Miscellaneous Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-3.4/string.html">String Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-3.4/struct.html">Struct Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-3.4/url.html">URL Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-3.4/cast.html">Cast</a></li>
 </ul>
 </details></li>
-<li class="toctree-l3 has-children"><a class="reference internal" href="../latest/compatibility/expressions/spark-3.5/index.html">Spark 3.5</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
-<li class="toctree-l4"><a class="reference internal" href="../latest/compatibility/expressions/spark-3.5/aggregate.html">Aggregate Expressions</a></li>
-<li class="toctree-l4"><a class="reference internal" href="../latest/compatibility/expressions/spark-3.5/array.html">Array Expressions</a></li>
-<li class="toctree-l4"><a class="reference internal" href="../latest/compatibility/expressions/spark-3.5/datetime.html">Date/Time Expressions</a></li>
-<li class="toctree-l4"><a class="reference internal" href="../latest/compatibility/expressions/spark-3.5/map.html">Map Expressions</a></li>
-<li class="toctree-l4"><a class="reference internal" href="../latest/compatibility/expressions/spark-3.5/math.html">Math Expressions</a></li>
-<li class="toctree-l4"><a class="reference internal" href="../latest/compatibility/expressions/spark-3.5/misc.html">Miscellaneous Expressions</a></li>
-<li class="toctree-l4"><a class="reference internal" href="../latest/compatibility/expressions/spark-3.5/string.html">String Expressions</a></li>
-<li class="toctree-l4"><a class="reference internal" href="../latest/compatibility/expressions/spark-3.5/struct.html">Struct Expressions</a></li>
-<li class="toctree-l4"><a class="reference internal" href="../latest/compatibility/expressions/spark-3.5/url.html">URL Expressions</a></li>
-<li class="toctree-l4"><a class="reference internal" href="../latest/compatibility/expressions/spark-3.5/cast.html">Cast</a></li>
+<li class="toctree-l3 has-children"><a class="reference internal" href="compatibility/expressions/spark-3.5/index.html">Spark 3.5</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-3.5/aggregate.html">Aggregate Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-3.5/array.html">Array Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-3.5/datetime.html">Date/Time Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-3.5/map.html">Map Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-3.5/math.html">Math Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-3.5/misc.html">Miscellaneous Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-3.5/string.html">String Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-3.5/struct.html">Struct Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-3.5/url.html">URL Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-3.5/cast.html">Cast</a></li>
 </ul>
 </details></li>
-<li class="toctree-l3 has-children"><a class="reference internal" href="../latest/compatibility/expressions/spark-4.0/index.html">Spark 4.0</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
-<li class="toctree-l4"><a class="reference internal" href="../latest/compatibility/expressions/spark-4.0/aggregate.html">Aggregate Expressions</a></li>
-<li class="toctree-l4"><a class="reference internal" href="../latest/compatibility/expressions/spark-4.0/array.html">Array Expressions</a></li>
-<li class="toctree-l4"><a class="reference internal" href="../latest/compatibility/expressions/spark-4.0/datetime.html">Date/Time Expressions</a></li>
-<li class="toctree-l4"><a class="reference internal" href="../latest/compatibility/expressions/spark-4.0/map.html">Map Expressions</a></li>
-<li class="toctree-l4"><a class="reference internal" href="../latest/compatibility/expressions/spark-4.0/math.html">Math Expressions</a></li>
-<li class="toctree-l4"><a class="reference internal" href="../latest/compatibility/expressions/spark-4.0/misc.html">Miscellaneous Expressions</a></li>
-<li class="toctree-l4"><a class="reference internal" href="../latest/compatibility/expressions/spark-4.0/string.html">String Expressions</a></li>
-<li class="toctree-l4"><a class="reference internal" href="../latest/compatibility/expressions/spark-4.0/struct.html">Struct Expressions</a></li>
-<li class="toctree-l4"><a class="reference internal" href="../latest/compatibility/expressions/spark-4.0/url.html">URL Expressions</a></li>
-<li class="toctree-l4"><a class="reference internal" href="../latest/compatibility/expressions/spark-4.0/cast.html">Cast</a></li>
+<li class="toctree-l3 has-children"><a class="reference internal" href="compatibility/expressions/spark-4.0/index.html">Spark 4.0</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-4.0/aggregate.html">Aggregate Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-4.0/array.html">Array Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-4.0/datetime.html">Date/Time Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-4.0/map.html">Map Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-4.0/math.html">Math Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-4.0/misc.html">Miscellaneous Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-4.0/string.html">String Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-4.0/struct.html">Struct Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-4.0/url.html">URL Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-4.0/cast.html">Cast</a></li>
 </ul>
 </details></li>
-<li class="toctree-l3 has-children"><a class="reference internal" href="../latest/compatibility/expressions/spark-4.1/index.html">Spark 4.1</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
-<li class="toctree-l4"><a class="reference internal" href="../latest/compatibility/expressions/spark-4.1/aggregate.html">Aggregate Expressions</a></li>
-<li class="toctree-l4"><a class="reference internal" href="../latest/compatibility/expressions/spark-4.1/array.html">Array Expressions</a></li>
-<li class="toctree-l4"><a class="reference internal" href="../latest/compatibility/expressions/spark-4.1/datetime.html">Date/Time Expressions</a></li>
-<li class="toctree-l4"><a class="reference internal" href="../latest/compatibility/expressions/spark-4.1/map.html">Map Expressions</a></li>
-<li class="toctree-l4"><a class="reference internal" href="../latest/compatibility/expressions/spark-4.1/math.html">Math Expressions</a></li>
-<li class="toctree-l4"><a class="reference internal" href="../latest/compatibility/expressions/spark-4.1/misc.html">Miscellaneous Expressions</a></li>
-<li class="toctree-l4"><a class="reference internal" href="../latest/compatibility/expressions/spark-4.1/string.html">String Expressions</a></li>
-<li class="toctree-l4"><a class="reference internal" href="../latest/compatibility/expressions/spark-4.1/struct.html">Struct Expressions</a></li>
-<li class="toctree-l4"><a class="reference internal" href="../latest/compatibility/expressions/spark-4.1/url.html">URL Expressions</a></li>
-<li class="toctree-l4"><a class="reference internal" href="../latest/compatibility/expressions/spark-4.1/cast.html">Cast</a></li>
+<li class="toctree-l3 has-children"><a class="reference internal" href="compatibility/expressions/spark-4.1/index.html">Spark 4.1</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-4.1/aggregate.html">Aggregate Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-4.1/array.html">Array Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-4.1/datetime.html">Date/Time Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-4.1/map.html">Map Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-4.1/math.html">Math Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-4.1/misc.html">Miscellaneous Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-4.1/string.html">String Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-4.1/struct.html">Struct Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-4.1/url.html">URL Expressions</a></li>
+<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-4.1/cast.html">Cast</a></li>
 </ul>
 </details></li>
 </ul>
 </details></li>
-<li class="toctree-l2"><a class="reference internal" href="../latest/compatibility/json.html">JSON Compatibility</a></li>
-<li class="toctree-l2"><a class="reference internal" href="../latest/compatibility/spark-versions.html">Spark Version Compatibility</a></li>
+<li class="toctree-l2"><a class="reference internal" href="compatibility/json.html">JSON Compatibility</a></li>
+<li class="toctree-l2"><a class="reference internal" href="compatibility/spark-versions.html">Spark Version Compatibility</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Operating Comet</span></p>
-<ul>
-<li class="toctree-l2"><a class="reference internal" href="../latest/understanding-comet-plans.html">Understanding Comet Plans</a></li>
-<li class="toctree-l2"><a class="reference internal" href="../latest/tuning.html">Tuning Guide</a></li>
-<li class="toctree-l2"><a class="reference internal" href="../latest/metrics.html">Metrics Guide</a></li>
-<li class="toctree-l2"><a class="reference internal" href="../latest/in-memory-cache.html">In-Memory Cache</a></li>
-<li class="toctree-l2"><a class="reference internal" href="../latest/pyarrow-udfs.html">PyArrow UDF Acceleration</a></li>
+<ul class="current">
+<li class="toctree-l2"><a class="reference internal" href="understanding-comet-plans.html">Understanding Comet Plans</a></li>
+<li class="toctree-l2"><a class="reference internal" href="tuning.html">Tuning Guide</a></li>
+<li class="toctree-l2"><a class="reference internal" href="metrics.html">Metrics Guide</a></li>
+<li class="toctree-l2 current"><a class="current reference internal" href="#">In-Memory Cache</a></li>
+<li class="toctree-l2"><a class="reference internal" href="pyarrow-udfs.html">PyArrow UDF Acceleration</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Integrations</span></p>
 <ul>
-<li class="toctree-l2"><a class="reference internal" href="../latest/iceberg.html">Iceberg Guide</a></li>
-<li class="toctree-l2"><a class="reference internal" href="../latest/iceberg-writes.html">Iceberg Writes</a></li>
-<li class="toctree-l2"><a class="reference internal" href="../latest/s3-credential-providers.html">S3 Credential Providers</a></li>
-<li class="toctree-l2"><a class="reference internal" href="../latest/kubernetes.html">Kubernetes Guide</a></li>
+<li class="toctree-l2"><a class="reference internal" href="iceberg.html">Iceberg Guide</a></li>
+<li class="toctree-l2"><a class="reference internal" href="iceberg-writes.html">Iceberg Writes</a></li>
+<li class="toctree-l2"><a class="reference internal" href="s3-credential-providers.html">S3 Credential Providers</a></li>
+<li class="toctree-l2"><a class="reference internal" href="kubernetes.html">Kubernetes Guide</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Advanced</span></p>
 <ul>
-<li class="toctree-l2"><a class="reference internal" href="../latest/source.html">Building From Source</a></li>
+<li class="toctree-l2"><a class="reference internal" href="source.html">Building From Source</a></li>
 </ul>
 
 </details></li>
-<li class="toctree-l1 current active has-children"><a class="reference internal" href="../older-versions.html">Older Versions</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul class="current">
-<li class="toctree-l2 current active has-children"><a class="reference internal" href="index.html">0.17.x</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul class="current">
-<li class="toctree-l3 current active"><a class="current reference internal" href="#">Installing Comet</a></li>
-<li class="toctree-l3"><a class="reference internal" href="configs.html">Configuration Settings</a></li>
-<li class="toctree-l3"><a class="reference internal" href="datasources.html">Supported Data Sources</a></li>
-<li class="toctree-l3"><a class="reference internal" href="datatypes.html">Supported Data Types</a></li>
-<li class="toctree-l3"><a class="reference internal" href="operators.html">Supported Operators</a></li>
-<li class="toctree-l3"><a class="reference internal" href="expressions.html">Supported Expressions</a></li>
-<li class="toctree-l3"><a class="reference internal" href="scala_java_udfs.html">ScalaUDF and Java UDF Support</a></li>
-<li class="toctree-l3"><a class="reference internal" href="compatibility/index.html">Overview</a></li>
-<li class="toctree-l3"><a class="reference internal" href="compatibility/scans.html">Parquet Compatibility</a></li>
-<li class="toctree-l3"><a class="reference internal" href="compatibility/floating-point.html">Floating-point Number Comparison</a></li>
-<li class="toctree-l3"><a class="reference internal" href="compatibility/regex.html">Regular Expressions</a></li>
-<li class="toctree-l3"><a class="reference internal" href="compatibility/operators.html">Operator Compatibility</a></li>
-<li class="toctree-l3 has-children"><a class="reference internal" href="compatibility/expressions/index.html">Expression Compatibility</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
-<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-3.4/index.html">Spark 3.4</a></li>
-<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-3.5/index.html">Spark 3.5</a></li>
-<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-4.0/index.html">Spark 4.0</a></li>
-<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-4.1/index.html">Spark 4.1</a></li>
+<li class="toctree-l1 has-children"><a class="reference internal" href="../older-versions.html">Older Versions</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2 has-children"><a class="reference internal" href="../0.17/index.html">0.17.x</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l3"><a class="reference internal" href="../0.17/installation.html">Installing Comet</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../0.17/configs.html">Configuration Settings</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../0.17/datasources.html">Supported Data Sources</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../0.17/datatypes.html">Supported Data Types</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../0.17/operators.html">Supported Operators</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../0.17/expressions.html">Supported Expressions</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../0.17/scala_java_udfs.html">ScalaUDF and Java UDF Support</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../0.17/compatibility/index.html">Overview</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../0.17/compatibility/scans.html">Parquet Compatibility</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../0.17/compatibility/floating-point.html">Floating-point Number Comparison</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../0.17/compatibility/regex.html">Regular Expressions</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../0.17/compatibility/operators.html">Operator Compatibility</a></li>
+<li class="toctree-l3 has-children"><a class="reference internal" href="../0.17/compatibility/expressions/index.html">Expression Compatibility</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l4"><a class="reference internal" href="../0.17/compatibility/expressions/spark-3.4/index.html">Spark 3.4</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../0.17/compatibility/expressions/spark-3.5/index.html">Spark 3.5</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../0.17/compatibility/expressions/spark-4.0/index.html">Spark 4.0</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../0.17/compatibility/expressions/spark-4.1/index.html">Spark 4.1</a></li>
 </ul>
 </details></li>
-<li class="toctree-l3"><a class="reference internal" href="compatibility/json.html">JSON Compatibility</a></li>
-<li class="toctree-l3"><a class="reference internal" href="compatibility/spark-versions.html">Spark Version Compatibility</a></li>
-<li class="toctree-l3"><a class="reference internal" href="understanding-comet-plans.html">Understanding Comet Plans</a></li>
-<li class="toctree-l3"><a class="reference internal" href="tuning.html">Tuning Guide</a></li>
-<li class="toctree-l3"><a class="reference internal" href="metrics.html">Metrics Guide</a></li>
-<li class="toctree-l3"><a class="reference internal" href="iceberg.html">Iceberg Guide</a></li>
-<li class="toctree-l3"><a class="reference internal" href="s3-credential-providers.html">S3 Credential Providers</a></li>
-<li class="toctree-l3"><a class="reference internal" href="kubernetes.html">Kubernetes Guide</a></li>
-<li class="toctree-l3"><a class="reference internal" href="source.html">Building From Source</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../0.17/compatibility/json.html">JSON Compatibility</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../0.17/compatibility/spark-versions.html">Spark Version Compatibility</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../0.17/understanding-comet-plans.html">Understanding Comet Plans</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../0.17/tuning.html">Tuning Guide</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../0.17/metrics.html">Metrics Guide</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../0.17/iceberg.html">Iceberg Guide</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../0.17/s3-credential-providers.html">S3 Credential Providers</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../0.17/kubernetes.html">Kubernetes Guide</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../0.17/source.html">Building From Source</a></li>
 </ul>
 </details></li>
 <li class="toctree-l2 has-children"><a class="reference internal" href="../0.16/index.html">0.16.x</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
@@ -738,12 +738,9 @@ under the License.
     <li class="breadcrumb-item"><a href="../index.html" class="nav-link">Comet User Guide</a></li>
     
     
-    <li class="breadcrumb-item"><a href="../older-versions.html" class="nav-link">Older Versions</a></li>
+    <li class="breadcrumb-item"><a href="index.html" class="nav-link">Comet 1.1.0-SNAPSHOT User Guide</a></li>
     
-    
-    <li class="breadcrumb-item"><a href="index.html" class="nav-link">Comet 0.17.0 User Guide</a></li>
-    
-    <li class="breadcrumb-item active" aria-current="page"><span class="ellipsis">Installing DataFusion Comet</span></li>
+    <li class="breadcrumb-item active" aria-current="page"><span class="ellipsis">In-Memory Cache</span></li>
   </ul>
 </nav>
 </div>
@@ -778,202 +775,272 @@ under the License.
   specific language governing permissions and limitations
   under the License.
 -->
-<div class="admonition warning">
-<p class="admonition-title">Warning</p>
-<p>This is <strong>out-of-date</strong> documentation. The latest Comet release is version 1.0.0.</p>
+<section id="in-memory-cache">
+<h1>In-Memory Cache<a class="headerlink" href="#in-memory-cache" title="Link to this heading">#</a></h1>
+<p>Comet can store Spark’s in-memory cache (<code class="docutils literal notranslate"><span class="pre">CACHE</span> <span class="pre">TABLE</span></code>, <code class="docutils literal notranslate"><span class="pre">df.cache()</span></code>, <code class="docutils literal notranslate"><span class="pre">df.persist()</span></code>) in an Arrow
+format that Comet operators read directly. Without it, a cached table is stored in Spark’s own
+format and every scan of it has to convert each batch before Comet can continue, which shows up in
+the plan as a <code class="docutils literal notranslate"><span class="pre">CometSparkColumnarToColumnar</span></code> above the cache scan.</p>
+<p>This feature is <strong>experimental and disabled by default</strong>. Turn it on at startup, alongside the rest
+of Comet’s configuration:</p>
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span><span class="nv">$SPARK_HOME</span>/bin/spark-shell<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>...<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--conf<span class="w"> </span>spark.comet.exec.inMemoryCache.enabled<span class="o">=</span><span class="nb">true</span>
+</pre></div>
 </div>
-<section id="installing-datafusion-comet">
-<h1>Installing DataFusion Comet<a class="headerlink" href="#installing-datafusion-comet" title="Link to this heading">#</a></h1>
-<section id="prerequisites">
-<h2>Prerequisites<a class="headerlink" href="#prerequisites" title="Link to this heading">#</a></h2>
-<p>Make sure the following requirements are met and software installed on your machine.</p>
-<section id="supported-operating-systems">
-<h3>Supported Operating Systems<a class="headerlink" href="#supported-operating-systems" title="Link to this heading">#</a></h3>
-<p>The published Comet jar files in Maven Central bundle native libraries for Linux only (amd64 and arm64). macOS
-users must <a class="reference internal" href="source.html"><span class="std std-doc">build from source</span></a>.</p>
-<div class="pst-scrollable-table-container"><table class="table">
-<thead>
-<tr class="row-odd"><th class="head"><p>Operating System</p></th>
-<th class="head"><p>Published Maven Jars</p></th>
-<th class="head"><p>Build from Source</p></th>
-</tr>
-</thead>
-<tbody>
-<tr class="row-even"><td><p>Linux (amd64)</p></td>
-<td><p>Yes</p></td>
-<td><p>Yes</p></td>
-</tr>
-<tr class="row-odd"><td><p>Linux (arm64)</p></td>
-<td><p>Yes</p></td>
-<td><p>Yes</p></td>
-</tr>
-<tr class="row-even"><td><p>Apple macOS (Apple Silicon)</p></td>
-<td><p>No</p></td>
-<td><p>Yes</p></td>
-</tr>
-</tbody>
-</table>
-</div>
-</section>
-<section id="supported-spark-versions">
-<h3>Supported Spark Versions<a class="headerlink" href="#supported-spark-versions" title="Link to this heading">#</a></h3>
-<p>Comet 0.17.0 supports the following versions of Apache Spark. Refer to the <a class="reference internal" href="compatibility/spark-versions.html"><span class="std std-doc">Spark Version Compatibility</span></a> page
-in the <a class="reference internal" href="compatibility/index.html"><span class="std std-doc">Compatibility Guide</span></a> for more information, such as known limitations per Spark version.</p>
-<p>We recommend only using Comet with Spark versions where we currently have both Comet and Spark tests enabled in CI.
-Other versions may work well enough for development and evaluation purposes.</p>
-<div class="pst-scrollable-table-container"><table class="table">
-<thead>
-<tr class="row-odd"><th class="head"><p>Spark Version</p></th>
-<th class="head"><p>Java Version</p></th>
-<th class="head"><p>Scala Version</p></th>
-<th class="head"><p>Comet Tests in CI</p></th>
-<th class="head"><p>Spark SQL Tests in CI</p></th>
-</tr>
-</thead>
-<tbody>
-<tr class="row-even"><td><p>3.4.3</p></td>
-<td><p>11/17</p></td>
-<td><p>2.12/2.13</p></td>
-<td><p>Yes</p></td>
-<td><p>Yes</p></td>
-</tr>
-<tr class="row-odd"><td><p>3.5.8</p></td>
-<td><p>11/17</p></td>
-<td><p>2.12/2.13</p></td>
-<td><p>Yes</p></td>
-<td><p>Yes</p></td>
-</tr>
-<tr class="row-even"><td><p>4.0.2</p></td>
-<td><p>17/21</p></td>
-<td><p>2.13</p></td>
-<td><p>Yes</p></td>
-<td><p>Yes</p></td>
-</tr>
-<tr class="row-odd"><td><p>4.1.2</p></td>
-<td><p>17/21</p></td>
-<td><p>2.13</p></td>
-<td><p>Yes</p></td>
-<td><p>Yes</p></td>
-</tr>
-</tbody>
-</table>
-</div>
-<p>Note that we do not test the full matrix of supported Java and Scala versions in CI for every Spark version.</p>
-<p>Experimental support is provided for the following versions of Apache Spark and is intended for development/testing
-use only and should not be used in production yet.</p>
-<div class="pst-scrollable-table-container"><table class="table">
-<thead>
-<tr class="row-odd"><th class="head"><p>Spark Version</p></th>
-<th class="head"><p>Java Version</p></th>
-<th class="head"><p>Scala Version</p></th>
-<th class="head"><p>Comet Tests in CI</p></th>
-<th class="head"><p>Spark SQL Tests in CI</p></th>
-</tr>
-</thead>
-<tbody>
-<tr class="row-even"><td><p>4.2.0-preview4</p></td>
-<td><p>17</p></td>
-<td><p>2.13</p></td>
-<td><p>No</p></td>
-<td><p>No</p></td>
-</tr>
-</tbody>
-</table>
-</div>
-<p>Note that Comet may not fully work with proprietary forks of Apache Spark such as the Spark versions offered by
-Cloud Service Providers.</p>
-</section>
-</section>
-<section id="using-a-published-jar-file">
-<h2>Using a Published JAR File<a class="headerlink" href="#using-a-published-jar-file" title="Link to this heading">#</a></h2>
-<p>Comet jar files are available in <a class="reference external" href="https://central.sonatype.com/namespace/org.apache.datafusion">Maven Central</a> for amd64 and arm64 architectures for Linux. For Apple macOS, it
-is currently necessary to build from source.</p>
-<p>For performance reasons, published Comet jar files target baseline CPUs available in modern data centers. For example,
-the amd64 build uses the <code class="docutils literal notranslate"><span class="pre">x86-64-v3</span></code> target that adds CPU instructions (<em>e.g.</em>, AVX2) common after 2013. Similarly, the
-arm64 build uses the <code class="docutils literal notranslate"><span class="pre">neoverse-n1</span></code> target, which is a common baseline for ARM cores found in AWS (Graviton2+), GCP, and
-Azure after 2019. If the Comet library fails for SIGILL (illegal instruction), please open an issue on the GitHub
-repository describing your environment, and [build from source] for your target architecture.</p>
-<p>Here are the direct links for downloading the Comet 0.17.0 jar file.</p>
+<p>It has to be set before the <code class="docutils literal notranslate"><span class="pre">SparkContext</span></code> starts. Comet’s driver plugin chooses
+<code class="docutils literal notranslate"><span class="pre">spark.sql.cache.serializer</span></code> once, while the context is initializing, so a session that started
+with the default goes on using Spark’s cache format however the config is set afterwards.</p>
+<section id="what-changes-when-it-is-enabled">
+<h2>What changes when it is enabled<a class="headerlink" href="#what-changes-when-it-is-enabled" title="Link to this heading">#</a></h2>
+<p>With Comet’s serializer installed as <code class="docutils literal notranslate"><span class="pre">spark.sql.cache.serializer</span></code>:</p>
 <ul class="simple">
-<li><p><a class="reference external" href="https://repo1.maven.org/maven2/org/apache/datafusion/comet-spark-spark3.4_2.12/0.17.0/comet-spark-spark3.4_2.12-0.17.0.jar">Comet plugin for Spark 3.4 / Scala 2.12</a></p></li>
-<li><p><a class="reference external" href="https://repo1.maven.org/maven2/org/apache/datafusion/comet-spark-spark3.4_2.13/0.17.0/comet-spark-spark3.4_2.13-0.17.0.jar">Comet plugin for Spark 3.4 / Scala 2.13</a></p></li>
-<li><p><a class="reference external" href="https://repo1.maven.org/maven2/org/apache/datafusion/comet-spark-spark3.5_2.12/0.17.0/comet-spark-spark3.5_2.12-0.17.0.jar">Comet plugin for Spark 3.5 / Scala 2.12</a></p></li>
-<li><p><a class="reference external" href="https://repo1.maven.org/maven2/org/apache/datafusion/comet-spark-spark3.5_2.13/0.17.0/comet-spark-spark3.5_2.13-0.17.0.jar">Comet plugin for Spark 3.5 / Scala 2.13</a></p></li>
-<li><p><a class="reference external" href="https://repo1.maven.org/maven2/org/apache/datafusion/comet-spark-spark4.0_2.13/0.17.0/comet-spark-spark4.0_2.13-0.17.0.jar">Comet plugin for Spark 4.0 / Scala 2.13</a></p></li>
-<li><p><a class="reference external" href="https://repo1.maven.org/maven2/org/apache/datafusion/comet-spark-spark4.1_2.13/0.17.0/comet-spark-spark4.1_2.13-0.17.0.jar">Comet plugin for Spark 4.1 / Scala 2.13</a></p></li>
+<li><p>Cached data is stored as <code class="docutils literal notranslate"><span class="pre">CometCachedBatch</span></code> rather than Spark’s <code class="docutils literal notranslate"><span class="pre">DefaultCachedBatch</span></code>.</p></li>
+<li><p>Cached tables are scanned by <code class="docutils literal notranslate"><span class="pre">CometInMemoryTableScan</span></code>, which feeds Comet operators directly.</p></li>
+<li><p>Per-batch column statistics are recorded in the layout Spark’s <code class="docutils literal notranslate"><span class="pre">SimpleMetricsCachedBatchSerializer</span></code>
+expects, so Spark can prune whole cached batches on a predicate before any of them is decoded.</p></li>
 </ul>
+<p>Relations whose schema Comet’s Arrow writer cannot store — interval types, most notably — are
+delegated in full to Spark’s default cache format, per relation. Which format a relation uses does
+not depend on a runtime config, because <code class="docutils literal notranslate"><span class="pre">spark.sql.cache.serializer</span></code> is a static setting and a
+relation whose format could change mid-session could not be read back reliably. The compression
+codec is a runtime config, but each batch records the codec it was written with, so data cached
+under one setting stays readable after the setting changes. Turning
+<code class="docutils literal notranslate"><span class="pre">spark.comet.exec.inMemoryCache.enabled</span></code> off at runtime only sends cached scans back to Spark’s
+execution path; the cached data stays readable either way.</p>
 </section>
-<section id="building-from-source">
-<h2>Building from source<a class="headerlink" href="#building-from-source" title="Link to this heading">#</a></h2>
-<p>Refer to the <a class="reference internal" href="source.html"><span class="std std-doc">Building from source</span></a> guide for instructions from building Comet from source, either from official
-source releases, or from the latest code in the GitHub repository.</p>
+<section id="storage-format">
+<h2>Storage format<a class="headerlink" href="#storage-format" title="Link to this heading">#</a></h2>
+<p>Each cached batch is stored as a single Arrow IPC record batch message and its body.</p>
+<p>The message carries <strong>no Arrow schema</strong>. The reader already has one: <code class="docutils literal notranslate"><span class="pre">InMemoryRelation</span></code> knows the
+cached relation’s attributes, and Comet maps them to exactly the Arrow fields the writer produced.
+Storing a schema in every batch would repeat the same bytes once per cached batch — for a wide
+relation cached in many batches, a large share of a payload that is not data.</p>
+<p>Compression is applied by Arrow to <strong>each buffer separately</strong>, rather than by wrapping the whole
+payload in a Spark compression codec. That is what makes a projected read cheap: the message
+metadata records every buffer’s offset and length within the body, so a scan copies out only the
+byte ranges belonging to the columns it selected, and only those are decompressed. A read of one
+column out of six does roughly a sixth of the decompression work, and a <code class="docutils literal notranslate"><span class="pre">SELECT</span> <span class="pre">count(*)</span></code>, which
+selects no columns at all, answers from the row count stored beside the payload without touching
+it.</p>
+<p>Compression defaults to <code class="docutils literal notranslate"><span class="pre">zstd</span></code>, for footprint rather than for speed. Over the same 5M-row,
+six-column relation the tables under <a class="reference internal" href="#performance">Performance</a> use — and measured by the same
+benchmark — it holds the data in a sixth of the memory and pays for that on both sides: about 40%
+longer to materialize, and, on a read wide enough to inflate everything, close to five times
+longer. A narrow projection pays far less, because it only inflates the columns it asked for.</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Codec</p></th>
+<th class="head text-right"><p>Materialize</p></th>
+<th class="head text-right"><p>Footprint</p></th>
+<th class="head text-right"><p>Read 1 of 6</p></th>
+<th class="head text-right"><p>Read 6 of 6</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">zstd</span></code></p></td>
+<td class="text-right"><p>1507 ms</p></td>
+<td class="text-right"><p>55 MiB</p></td>
+<td class="text-right"><p>45 ms</p></td>
+<td class="text-right"><p>295 ms</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">none</span></code></p></td>
+<td class="text-right"><p>1081 ms</p></td>
+<td class="text-right"><p>315 MiB</p></td>
+<td class="text-right"><p>35 ms</p></td>
+<td class="text-right"><p>64 ms</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">none</span></code> is the better setting for a relation that fits in memory uncompressed and is read at close
+to full width. The default is the other way round because a cache that does not fit costs more than
+one that is slower to read, and Spark’s own cache format compresses by default too.</p>
+<p>Arrow’s other IPC codec, LZ4, is deliberately not offered and the config rejects it. It is
+commons-compress’s pure-Java implementation, unrelated to the JNI-accelerated lz4-java behind
+<code class="docutils literal notranslate"><span class="pre">spark.io.compression.codec</span></code>, and is orders of magnitude slower to write than <code class="docutils literal notranslate"><span class="pre">zstd</span></code> while also
+producing larger output.</p>
+<p>Dictionary-encoded columns are decoded before they are stored. A payload with no schema message has
+nowhere to record either that a column is dictionary encoded or the dictionary itself.</p>
 </section>
-<section id="deploying-to-kubernetes">
-<h2>Deploying to Kubernetes<a class="headerlink" href="#deploying-to-kubernetes" title="Link to this heading">#</a></h2>
-<p>See the <a class="reference internal" href="kubernetes.html"><span class="std std-doc">Comet Kubernetes Guide</span></a> guide.</p>
+<section id="configuration">
+<h2>Configuration<a class="headerlink" href="#configuration" title="Link to this heading">#</a></h2>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Config</p></th>
+<th class="head"><p>Default</p></th>
+<th class="head"><p>Description</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.inMemoryCache.enabled</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">false</span></code></p></td>
+<td><p>Whether to store and scan Spark’s in-memory cache in Comet’s format. Read at startup.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.inMemoryCache.compression.codec</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">zstd</span></code></p></td>
+<td><p>Arrow IPC compression codec for cached data: <code class="docutils literal notranslate"><span class="pre">zstd</span></code> or <code class="docutils literal notranslate"><span class="pre">none</span></code>. Affects newly cached data only — a batch records the codec it was written with.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.inMemoryCache.compression.zstd.level</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">1</span></code></p></td>
+<td><p>Compression level when the codec is <code class="docutils literal notranslate"><span class="pre">zstd</span></code>. Ignored otherwise.</p></td>
+</tr>
+</tbody>
+</table>
+</div>
 </section>
-<section id="run-spark-shell-with-comet-enabled">
-<h2>Run Spark Shell with Comet enabled<a class="headerlink" href="#run-spark-shell-with-comet-enabled" title="Link to this heading">#</a></h2>
-<p>Make sure <code class="docutils literal notranslate"><span class="pre">SPARK_HOME</span></code> points to the same Spark version as Comet was built for.</p>
-<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span><span class="nb">export</span><span class="w"> </span><span class="nv">COMET_JAR</span><span class="o">=</span>spark/target/comet-spark-spark4.1_2.13-0.17.0.jar
-
-<span class="nv">$SPARK_HOME</span>/bin/spark-shell<span class="w"> </span><span class="se">\</span>
-<span class="w">    </span>--jars<span class="w"> </span><span class="nv">$COMET_JAR</span><span class="w"> </span><span class="se">\</span>
-<span class="w">    </span>--conf<span class="w"> </span>spark.driver.extraClassPath<span class="o">=</span><span class="nv">$COMET_JAR</span><span class="w"> </span><span class="se">\</span>
-<span class="w">    </span>--conf<span class="w"> </span>spark.executor.extraClassPath<span class="o">=</span><span class="nv">$COMET_JAR</span><span class="w"> </span><span class="se">\</span>
-<span class="w">    </span>--conf<span class="w"> </span>spark.plugins<span class="o">=</span>org.apache.spark.CometPlugin<span class="w"> </span><span class="se">\</span>
-<span class="w">    </span>--conf<span class="w"> </span>spark.shuffle.manager<span class="o">=</span>org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager<span class="w"> </span><span class="se">\</span>
-<span class="w">    </span>--conf<span class="w"> </span>spark.comet.explainFallback.enabled<span class="o">=</span><span class="nb">true</span><span class="w"> </span><span class="se">\</span>
-<span class="w">    </span>--conf<span class="w"> </span>spark.memory.offHeap.enabled<span class="o">=</span><span class="nb">true</span><span class="w"> </span><span class="se">\</span>
-<span class="w">    </span>--conf<span class="w"> </span>spark.memory.offHeap.size<span class="o">=</span>4g
+<section id="performance">
+<h2>Performance<a class="headerlink" href="#performance" title="Link to this heading">#</a></h2>
+<p>Measured with <code class="docutils literal notranslate"><span class="pre">CometInMemoryCacheBenchmark</span></code> (Apple M3 Max, JDK 17, Spark 4.1, release build).
+Regenerate with:</p>
+<div class="highlight-sh notranslate"><div class="highlight"><pre><span></span><span class="nv">SPARK_GENERATE_BENCHMARK_FILES</span><span class="o">=</span><span class="m">1</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>make<span class="w"> </span>benchmark-org.apache.spark.sql.benchmark.CometInMemoryCacheBenchmark
 </pre></div>
 </div>
-<section id="verify-comet-enabled-for-spark-sql-query">
-<h3>Verify Comet enabled for Spark SQL query<a class="headerlink" href="#verify-comet-enabled-for-spark-sql-query" title="Link to this heading">#</a></h3>
-<p>Create a test Parquet source</p>
-<div class="highlight-scala notranslate"><div class="highlight"><pre><span></span><span class="n">scala</span><span class="o">&gt;</span><span class="w"> </span><span class="p">(</span><span class="mi">0</span><span class="w"> </span><span class="n">until</span><span class="w"> </span><span class="mi">10</span><span class="p">).</span><span class="n">toDF</span><span class="p">(</span><span class="s">"a"</span><span class="p">).</span><span class="n">write</span><span class="p">.</span><span class="n">mode</span><span class="p">(</span><span class="s">"overwrite"</span><span class="p">).</span><span class="n">parquet</span><span class="p">(</span><span class="s">"/tmp/test"</span><span class="p">)</span>
-</pre></div>
+<p>On a 5M-row relation of six flat columns:</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Query shape</p></th>
+<th class="head text-right"><p>Spark cache scan + convert</p></th>
+<th class="head text-right"><p><code class="docutils literal notranslate"><span class="pre">CometInMemoryTableScan</span></code></p></th>
+<th class="head text-right"><p>Relative</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>Repeated scan (3 of 6 columns)</p></td>
+<td class="text-right"><p>209 ms</p></td>
+<td class="text-right"><p>172 ms</p></td>
+<td class="text-right"><p>1.2x</p></td>
+</tr>
+<tr class="row-odd"><td><p>Selective filter</p></td>
+<td class="text-right"><p>72 ms</p></td>
+<td class="text-right"><p>61 ms</p></td>
+<td class="text-right"><p>1.2x</p></td>
+</tr>
+<tr class="row-even"><td><p>Row count only (0 of 6)</p></td>
+<td class="text-right"><p>46 ms</p></td>
+<td class="text-right"><p>38 ms</p></td>
+<td class="text-right"><p>1.2x</p></td>
+</tr>
+<tr class="row-odd"><td><p>Narrow projection (1 of 6)</p></td>
+<td class="text-right"><p>70 ms</p></td>
+<td class="text-right"><p>58 ms</p></td>
+<td class="text-right"><p>1.2x</p></td>
+</tr>
+<tr class="row-even"><td><p>Full projection (6 of 6)</p></td>
+<td class="text-right"><p>566 ms</p></td>
+<td class="text-right"><p>324 ms</p></td>
+<td class="text-right"><p>1.7x</p></td>
+</tr>
+</tbody>
+</table>
 </div>
-<p>Comet will log output similar to:</p>
-<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>INFO<span class="w"> </span>core/src/lib.rs:<span class="w"> </span>Comet<span class="w"> </span>native<span class="w"> </span>library<span class="w"> </span>version<span class="w"> </span><span class="m">0</span>.17.0<span class="w"> </span>initialized
-WARN<span class="w"> </span>CometExecRule:<span class="w"> </span>Comet<span class="w"> </span>cannot<span class="w"> </span>execute<span class="w"> </span>some<span class="w"> </span>parts<span class="w"> </span>of<span class="w"> </span>this<span class="w"> </span>plan<span class="w"> </span>natively<span class="w"> </span><span class="o">(</span><span class="nb">set</span><span class="w"> </span>spark.comet.explainFallback.enabled<span class="o">=</span><span class="nb">false</span><span class="w"> </span>to<span class="w"> </span>disable<span class="w"> </span>this<span class="w"> </span>logging<span class="o">)</span>:
-<span class="w">  </span>Execute<span class="w"> </span>InsertIntoHadoopFsRelationCommand<span class="w"> </span><span class="o">[</span>COMET:<span class="w"> </span>Native<span class="w"> </span>support<span class="w"> </span><span class="k">for</span><span class="w"> </span>operator<span class="w"> </span>DataWritingCommandExec<span class="w"> </span>is<span class="w"> </span>disabled.<span class="w"> </span>Set<span class="w"> </span>spark.comet.parquet.write.enabled<span class="o">=</span><span class="nb">true</span><span class="w"> </span>to<span class="w"> </span><span class="nb">enable</span><span class="w"> </span>it.<span class="o">]</span>
-+-<span class="w"> </span>WriteFiles
-<span class="w">   </span>+-<span class="w">  </span>LocalTableScan<span class="w"> </span><span class="o">[</span>COMET:<span class="w"> </span>Native<span class="w"> </span>support<span class="w"> </span><span class="k">for</span><span class="w"> </span>operator<span class="w"> </span>LocalTableScanExec<span class="w"> </span>is<span class="w"> </span>disabled.<span class="w"> </span>Set<span class="w"> </span>spark.comet.exec.localTableScan.enabled<span class="o">=</span><span class="nb">true</span><span class="w"> </span>to<span class="w"> </span><span class="nb">enable</span><span class="w"> </span>it.<span class="o">]</span>
-</pre></div>
+<p>And on a 1M-row relation of six columns whose middle three are structs, one of them nested two
+levels deep:</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Query shape</p></th>
+<th class="head text-right"><p>Spark cache scan + convert</p></th>
+<th class="head text-right"><p><code class="docutils literal notranslate"><span class="pre">CometInMemoryTableScan</span></code></p></th>
+<th class="head text-right"><p>Relative</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>Row count only (0 of 6)</p></td>
+<td class="text-right"><p>38 ms</p></td>
+<td class="text-right"><p>32 ms</p></td>
+<td class="text-right"><p>1.2x</p></td>
+</tr>
+<tr class="row-odd"><td><p>Narrow projection (1 of 6)</p></td>
+<td class="text-right"><p>109 ms</p></td>
+<td class="text-right"><p>58 ms</p></td>
+<td class="text-right"><p>1.9x</p></td>
+</tr>
+<tr class="row-even"><td><p>Full projection (6 of 6)</p></td>
+<td class="text-right"><p>275 ms</p></td>
+<td class="text-right"><p>130 ms</p></td>
+<td class="text-right"><p>2.1x</p></td>
+</tr>
+</tbody>
+</table>
 </div>
-<p>Query the data from the test source and check:</p>
-<ul class="simple">
-<li><p>INFO message shows the native Comet library has been initialized.</p></li>
-<li><p>The query plan reflects Comet operators being used for this query instead of Spark ones</p></li>
-</ul>
-<div class="highlight-scala notranslate"><div class="highlight"><pre><span></span><span class="n">scala</span><span class="o">&gt;</span><span class="w"> </span><span class="n">spark</span><span class="p">.</span><span class="n">read</span><span class="p">.</span><span class="n">parquet</span><span class="p">(</span><span class="s">"/tmp/test"</span><span class="p">).</span><span class="n">createOrReplaceTempView</span><span class="p">(</span><span class="s">"t1"</span><span class="p">)</span>
-<span class="n">scala</span><span class="o">&gt;</span><span class="w"> </span><span class="n">spark</span><span class="p">.</span><span class="n">sql</span><span class="p">(</span><span class="s">"select * from t1 where a &gt; 5"</span><span class="p">).</span><span class="n">explain</span>
-</pre></div>
-</div>
-<p>Comet will log output similar to:</p>
-<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span><span class="o">==</span><span class="w"> </span>Physical<span class="w"> </span><span class="nv">Plan</span><span class="w"> </span><span class="o">==</span>
-CometNativeColumnarToRow
-+-<span class="w"> </span>CometFilter<span class="w"> </span><span class="o">[</span>a#6<span class="o">]</span>,<span class="w"> </span><span class="o">(</span>isnotnull<span class="o">(</span>a#6<span class="o">)</span><span class="w"> </span>AND<span class="w"> </span><span class="o">(</span>a#6<span class="w"> </span>&gt;<span class="w"> </span><span class="m">5</span><span class="o">))</span>
-<span class="w">   </span>+-<span class="w"> </span>CometNativeScan<span class="w"> </span>parquet<span class="w"> </span><span class="o">[</span>a#6<span class="o">]</span><span class="w"> </span>Batched:<span class="w"> </span>true,<span class="w"> </span>DataFilters:<span class="w"> </span><span class="o">[</span>isnotnull<span class="o">(</span>a#6<span class="o">)</span>,<span class="w"> </span><span class="o">(</span>a#6<span class="w"> </span>&gt;<span class="w"> </span><span class="m">5</span><span class="o">)]</span>,<span class="w"> </span>Format:<span class="w"> </span>CometParquet,<span class="w"> </span>Location:<span class="w"> </span>InMemoryFileIndex<span class="o">(</span><span class="m">1</span><span class="w"> </span>paths<span class="o">)[</span>file:/tmp/test<span class="o">]</span>,<span class="w"> </span>PartitionFilters:<span class="w"> </span><span class="o">[]</span>,<span class="w"> </span>PushedFilters:<span class="w"> </span><span class="o">[</span>IsNotNull<span class="o">(</span>a<span class="o">)</span>,<span class="w"> </span>GreaterThan<span class="o">(</span>a,5<span class="o">)]</span>,<span class="w"> </span>ReadSchema:<span class="w"> </span>struct&lt;a:int&gt;
-</pre></div>
-</div>
+<p>Both columns read the cache at the default codec, <code class="docutils literal notranslate"><span class="pre">zstd</span></code>. The codec table above shows what <code class="docutils literal notranslate"><span class="pre">none</span></code>
+changes, and it is the full projection that moves most: nothing has to be inflated, so it runs
+several times faster, at six times the memory.</p>
+<p>The two relations are not comparable to each other — different row counts, and a struct column
+carries several values per row.</p>
+<p>Array and map columns are deliberately absent from the benchmark, not from the format — the cache
+stores and projects them, and <code class="docutils literal notranslate"><span class="pre">CometInMemoryCacheSuite</span></code> covers them. They cannot be measured <em>here</em>
+because the left column would not exist: it needs Spark’s cache scan to bridge into Comet operators,
+and <code class="docutils literal notranslate"><span class="pre">CometSparkToColumnarExec</span></code> declines <code class="docutils literal notranslate"><span class="pre">ArrayType</span></code> and <code class="docutils literal notranslate"><span class="pre">MapType</span></code>, so a query projecting one falls
+back to Spark row execution above the scan and the two columns stop measuring the same boundary.</p>
+<p>Read what this compares carefully. Comet execution is on in both columns, so the aggregation runs
+on Comet either way and only the cache-scan boundary moves: on the left, Spark’s
+<code class="docutils literal notranslate"><span class="pre">InMemoryTableScanExec</span></code> feeds those same Comet operators through a <code class="docutils literal notranslate"><span class="pre">CometSparkColumnarToColumnar</span></code>
+bridge; on the right, <code class="docutils literal notranslate"><span class="pre">CometInMemoryTableScan</span></code> feeds them directly. Both columns read the same
+Comet-written <code class="docutils literal notranslate"><span class="pre">CometCachedBatch</span></code>. These numbers are therefore “keep the cached scan native” against
+“fall back to a Spark cache scan and convert”, not Comet against Spark execution, and not a
+comparison with Spark’s own cache format. That comparison is under <a class="reference internal" href="#limitations">Limitations</a>.</p>
 </section>
-</section>
-<section id="additional-configuration">
-<h2>Additional Configuration<a class="headerlink" href="#additional-configuration" title="Link to this heading">#</a></h2>
-<p>Depending on your deployment mode you may also need to set the driver &amp; executor class path(s) to
-explicitly contain Comet otherwise Spark may use a different class-loader for the Comet components than its internal
-components which will then fail at runtime. For example:</p>
-<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>--driver-class-path<span class="w"> </span>spark/target/comet-spark-spark4.1_2.13-0.17.0.jar
+<section id="kryo">
+<h2>Kryo<a class="headerlink" href="#kryo" title="Link to this heading">#</a></h2>
+<p>Spark serializes a cached batch with <code class="docutils literal notranslate"><span class="pre">spark.serializer</span></code> whenever the block leaves the heap: the
+<code class="docutils literal notranslate"><span class="pre">_SER</span></code> storage levels, replication, cross-executor fetches, and the disk half of the default
+<code class="docutils literal notranslate"><span class="pre">MEMORY_AND_DISK</span></code>. So an ordinary <code class="docutils literal notranslate"><span class="pre">df.cache()</span></code> that spills is enough to reach it.</p>
+<p>If you run with <code class="docutils literal notranslate"><span class="pre">spark.kryo.registrationRequired=true</span></code>, register Comet’s classes:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">spark</span><span class="o">.</span><span class="n">serializer</span><span class="o">=</span><span class="n">org</span><span class="o">.</span><span class="n">apache</span><span class="o">.</span><span class="n">spark</span><span class="o">.</span><span class="n">serializer</span><span class="o">.</span><span class="n">KryoSerializer</span>
+<span class="n">spark</span><span class="o">.</span><span class="n">kryo</span><span class="o">.</span><span class="n">registrationRequired</span><span class="o">=</span><span class="n">true</span>
+<span class="n">spark</span><span class="o">.</span><span class="n">kryo</span><span class="o">.</span><span class="n">registrator</span><span class="o">=</span><span class="n">org</span><span class="o">.</span><span class="n">apache</span><span class="o">.</span><span class="n">comet</span><span class="o">.</span><span class="n">CometKryoRegistrator</span>
 </pre></div>
 </div>
-<p>Some cluster managers may require additional configuration, see <a class="reference external" href="https://spark.apache.org/docs/latest/cluster-overview.html">https://spark.apache.org/docs/latest/cluster-overview.html</a></p>
-<section id="memory-tuning">
-<h3>Memory tuning<a class="headerlink" href="#memory-tuning" title="Link to this heading">#</a></h3>
-<p>In addition to Apache Spark memory configuration parameters, Comet introduces additional parameters to configure memory
-allocation for native execution. See <a class="reference internal" href="tuning.html"><span class="std std-doc">Comet Memory Tuning</span></a> for details.</p>
+<p>Comet cannot set <code class="docutils literal notranslate"><span class="pre">spark.kryo.registrator</span></code> for you the way it sets <code class="docutils literal notranslate"><span class="pre">spark.sql.cache.serializer</span></code>:
+<code class="docutils literal notranslate"><span class="pre">KryoSerializer</span></code> reads it when <code class="docutils literal notranslate"><span class="pre">SparkEnv</span></code> builds the serializer, which happens before any plugin
+runs. Without it, caching fails with a “Class is not registered” error that does not name this
+feature. Comet’s driver plugin warns at startup when it sees Kryo, <code class="docutils literal notranslate"><span class="pre">registrationRequired</span></code>, and no
+registrator.</p>
 </section>
+<section id="limitations">
+<h2>Limitations<a class="headerlink" href="#limitations" title="Link to this heading">#</a></h2>
+<p>Reads that feed <strong>Spark</strong> operators rather than Comet ones are slower than Spark’s own cache
+format, and the narrower the read, the wider the gap. Measured by the same benchmark over the same
+5M-row relation, with Comet off so that Spark operators consume the cached data:</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Read shape</p></th>
+<th class="head text-right"><p>Spark’s cache format</p></th>
+<th class="head text-right"><p>Comet’s cache format</p></th>
+<th class="head text-right"><p>Slowdown</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>Row count only (0 of 6)</p></td>
+<td class="text-right"><p>35 ms</p></td>
+<td class="text-right"><p>183 ms</p></td>
+<td class="text-right"><p>5.2x</p></td>
+</tr>
+<tr class="row-odd"><td><p>1 of 6 columns</p></td>
+<td class="text-right"><p>54 ms</p></td>
+<td class="text-right"><p>257 ms</p></td>
+<td class="text-right"><p>4.8x</p></td>
+</tr>
+<tr class="row-even"><td><p>3 of 6 columns</p></td>
+<td class="text-right"><p>98 ms</p></td>
+<td class="text-right"><p>331 ms</p></td>
+<td class="text-right"><p>3.4x</p></td>
+</tr>
+<tr class="row-odd"><td><p>6 of 6 columns</p></td>
+<td class="text-right"><p>410 ms</p></td>
+<td class="text-right"><p>623 ms</p></td>
+<td class="text-right"><p>1.5x</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>This is why the feature is off by default. The cause is not yet established;
+<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/5485">#5485</a> tracks it.</p>
+<p>Comet’s serializer exists because Spark’s own Arrow cache format
+(<a class="reference external" href="https://issues.apache.org/jira/browse/SPARK-57268">SPARK-57268</a>) is only available from Spark
+4.3, which Comet does not yet support.</p>
 </section>
 </section>
 
@@ -988,20 +1055,20 @@ allocation for native execution. See <a class="reference internal" href="tuning.
                   
 <div class="prev-next-area">
     <a class="left-prev"
-       href="index.html"
+       href="metrics.html"
        title="previous page">
       <i class="fa-solid fa-angle-left"></i>
       <div class="prev-next-info">
         <p class="prev-next-subtitle">previous</p>
-        <p class="prev-next-title">Comet 0.17.0 User Guide</p>
+        <p class="prev-next-title">Comet Metrics</p>
       </div>
     </a>
     <a class="right-next"
-       href="configs.html"
+       href="pyarrow-udfs.html"
        title="next page">
       <div class="prev-next-info">
         <p class="prev-next-subtitle">next</p>
-        <p class="prev-next-title">Comet Configuration Settings</p>
+        <p class="prev-next-title">PyArrow UDF Acceleration</p>
       </div>
       <i class="fa-solid fa-angle-right"></i>
     </a>
@@ -1024,22 +1091,12 @@ allocation for native execution. See <a class="reference internal" href="tuning.
   </div>
   <nav class="bd-toc-nav page-toc" aria-labelledby="pst-page-navigation-heading-2">
     <ul class="visible nav section-nav flex-column">
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#prerequisites">Prerequisites</a><ul class="nav section-nav flex-column">
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#supported-operating-systems">Supported Operating Systems</a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#supported-spark-versions">Supported Spark Versions</a></li>
-</ul>
-</li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#using-a-published-jar-file">Using a Published JAR File</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#building-from-source">Building from source</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#deploying-to-kubernetes">Deploying to Kubernetes</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#run-spark-shell-with-comet-enabled">Run Spark Shell with Comet enabled</a><ul class="nav section-nav flex-column">
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#verify-comet-enabled-for-spark-sql-query">Verify Comet enabled for Spark SQL query</a></li>
-</ul>
-</li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#additional-configuration">Additional Configuration</a><ul class="nav section-nav flex-column">
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#memory-tuning">Memory tuning</a></li>
-</ul>
-</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#what-changes-when-it-is-enabled">What changes when it is enabled</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#storage-format">Storage format</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#configuration">Configuration</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#performance">Performance</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#kryo">Kryo</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#limitations">Limitations</a></li>
 </ul>
   </nav></div>
 

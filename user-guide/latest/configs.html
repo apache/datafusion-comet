@@ -573,6 +573,7 @@ under the License.
 <li class="toctree-l2"><a class="reference internal" href="understanding-comet-plans.html">Understanding Comet Plans</a></li>
 <li class="toctree-l2"><a class="reference internal" href="tuning.html">Tuning Guide</a></li>
 <li class="toctree-l2"><a class="reference internal" href="metrics.html">Metrics Guide</a></li>
+<li class="toctree-l2"><a class="reference internal" href="in-memory-cache.html">In-Memory Cache</a></li>
 <li class="toctree-l2"><a class="reference internal" href="pyarrow-udfs.html">PyArrow UDF Acceleration</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Integrations</span></p>
@@ -889,8 +890,16 @@ under the License.
 <td><p>Experimental feature to force Spark to replace SortMergeJoin with ShuffledHashJoin for improved performance. This feature is not stable yet. For more information, refer to the <a class="reference external" href="https://datafusion.apache.org/comet/user-guide/latest/tuning.html">Comet Tuning Guide</a>.</p></td>
 <td><p>false</p></td>
 </tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.inMemoryCache.compression.codec</span></code></p></td>
+<td><p>The Arrow IPC compression codec used when Comet’s cache serializer writes cached data. Unlike spark.io.compression.codec, this compresses each Arrow buffer separately rather than the batch as a whole, which is what lets a projected scan decompress only the columns it selected. zstd is the default for footprint rather than speed: it stores cached data in a fraction of the memory, but makes materializing slower, and a read slower in proportion to how many columns it selects. Set to none when a relation fits in memory uncompressed and is read at close to full width. Only affects newly cached data; the codec a batch was written with is recorded in the batch itself and is what the read path uses. Arrow’s lz4 is deliberately not offered: it is a pure-Java implementation, unrelated to the JNI-accelerated lz4 behind spark.io.compression.codec, and is orders of magnitude slower to write than zstd while also producing larger output.</p></td>
+<td><p>zstd</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.inMemoryCache.compression.zstd.level</span></code></p></td>
+<td><p>The compression level to use when Comet’s cache serializer compresses cached data with zstd. Ignored for other codecs.</p></td>
+<td><p>1</p></td>
+</tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.inMemoryCache.enabled</span></code></p></td>
-<td><p>Whether to enable Comet native execution for in-memory cached tables. Its value at startup also decides whether CometDriverPlugin installs Comet’s cache serializer, which stores cached data in Arrow format. Because spark.sql.cache.serializer is a static config, the cached format is fixed for the application, and disabling this at runtime only sends cached scans back to Spark’s execution path. Relations whose schema Comet’s Arrow writer does not support are always cached in Spark’s default format. Each cached column is stored as its own compressed Arrow IPC stream, so a scan decodes only the columns it projected. Reads that feed Spark operators rather than Comet ones still pay a row conversion the default format avoids, and can be slower than Spark’s cache. With spark.kryo.registrationRequired=true, also set spark.kryo.registrator=org.apache.comet.CometKryoRegistrator before creating the SparkContext, otherwise caching fails as soon as a block is serialized, including the disk half of the default MEMORY_AND_DISK storage level.</p></td>
+<td><p>Whether to enable Comet native execution for in-memory cached tables. Its value at startup also decides whether CometDriverPlugin installs Comet’s cache serializer, which stores cached data in Arrow format. Because spark.sql.cache.serializer is a static config, the cached format is fixed for the application, and disabling this at runtime only sends cached scans back to Spark’s execution path. Relations whose schema Comet’s Arrow writer does not support are always cached in Spark’s default format. Each cached batch is stored as one Arrow IPC record batch with per-buffer zstd compression, and a scan copies out only the buffers of the columns it projected, so the unselected ones are never decompressed. Reads that feed Spark operators rather than Comet ones still pay a row conversion the default format avoids, and can be slower than Spark’s cache. With spark.kryo.registrationRequired=true, also set spark.kryo.registrator=org.apache.comet.CometKryoRegistrator before creating the SparkContext, otherwise caching fails as soon as a block is serialized, including the disk half of the default MEMORY_AND_DISK storage level.</p></td>
 <td><p>false</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.join.dynamicFilter.enabled</span></code></p></td>
