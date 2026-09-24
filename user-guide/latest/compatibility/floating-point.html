@@ -780,10 +780,13 @@ under the License.
 However, one exception is comparison. Spark does not normalize NaN and zero when comparing values
 because they are handled well in Spark (e.g., <code class="docutils literal notranslate"><span class="pre">SQLOrderingUtil.compareFloats</span></code>). But the comparison
 functions of arrow-rs used by DataFusion do not normalize NaN and zero (e.g., <a class="reference external" href="https://docs.rs/arrow/latest/arrow/compute/kernels/cmp/fn.eq.html#">arrow::compute::kernels::cmp::eq</a>).
-So Comet adds additional normalization expression of NaN and zero for comparisons, and may still have differences
-to Spark in some cases, especially when the data contains both positive and negative zero. This is likely an edge
-case that is not of concern for many users. If it is a concern, setting <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.strictFloatingPoint=true</span></code>
-will make relevant operations fall back to Spark.</p>
+For top-level <code class="docutils literal notranslate"><span class="pre">FLOAT</span></code> and <code class="docutils literal notranslate"><span class="pre">DOUBLE</span></code> comparisons, Comet normalizes both operands before native
+execution, including noncanonical NaN literals. Top-level <code class="docutils literal notranslate"><span class="pre">IN</span></code>, <code class="docutils literal notranslate"><span class="pre">InSet</span></code>, and <code class="docutils literal notranslate"><span class="pre">NOT</span> <span class="pre">IN</span></code> membership
+also normalize dynamic candidates and lists containing NaN. When every candidate is a non-NaN
+literal, Comet keeps DataFusion’s static filter and pruning path, enumerating both signed-zero
+forms when a list contains zero.</p>
+<p>This scalar membership handling does not yet recurse into floating-point leaves nested in arrays
+or structs; see <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/6019">#6019</a>.</p>
 <section id="nested-equality-and-membership">
 <h2>Nested equality and membership<a class="headerlink" href="#nested-equality-and-membership" title="Link to this heading">#</a></h2>
 <p>For arrays and structs containing <code class="docutils literal notranslate"><span class="pre">FLOAT</span></code> or <code class="docutils literal notranslate"><span class="pre">DOUBLE</span></code>, native <code class="docutils literal notranslate"><span class="pre">=</span></code>, <code class="docutils literal notranslate"><span class="pre">&lt;&gt;</span></code>, <code class="docutils literal notranslate"><span class="pre">IN</span></code>, and <code class="docutils literal notranslate"><span class="pre">NOT</span> <span class="pre">IN</span></code>
