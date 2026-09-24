@@ -25,7 +25,7 @@ import java.nio.charset.{CharacterCodingException, CodingErrorAction, StandardCh
 import scala.annotation.nowarn
 
 import org.apache.spark.sql.catalyst.expressions.aggregate.Mode
-import org.apache.spark.sql.types.{DataType, StructType}
+import org.apache.spark.sql.types.{DataType, StringType, StructType}
 import org.apache.spark.unsafe.types.UTF8String
 
 trait CometTypeShim {
@@ -41,7 +41,7 @@ trait CometTypeShim {
   def hasNonDefaultStringCollation(dt: DataType): Boolean = false
 
   @nowarn // Spark 3.x strings always use binary ordering.
-  def stringCollationName(dt: DataType): String = "UTF8_BINARY"
+  def stringCollationName(dt: StringType): String = "UTF8_BINARY"
 
   def collationUnicodeVersion: Int = 0
 

@@ -247,7 +247,7 @@ private object ArrayExtremaSupport extends CometTypeShim {
       "(https://github.com/apache/datafusion-comet/issues/4496)."
 
   private def stringCollations(dt: DataType): Seq[String] = dt match {
-    case _: StringType => Seq(stringCollationName(dt))
+    case stringType: StringType => Seq(stringCollationName(stringType))
     case ArrayType(elementType, _) => stringCollations(elementType)
     case StructType(fields) => fields.toSeq.flatMap(f => stringCollations(f.dataType))
     case _ => Seq.empty

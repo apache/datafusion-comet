@@ -3772,9 +3772,7 @@ impl PhysicalPlanner {
                 }
             };
 
-        let fun_expr = if matches!(fun_name.as_str(), "array_min" | "array_max")
-            && !expr.string_collations.is_empty()
-        {
+        let fun_expr = if matches!(fun_name.as_str(), "array_min" | "array_max") {
             Arc::new(ScalarUDF::from(SparkArrayExtrema::with_collations(
                 fun_name == "array_min",
                 &expr.string_collations,

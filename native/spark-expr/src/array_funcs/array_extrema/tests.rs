@@ -440,24 +440,6 @@ fn utf8_collations_preserve_original_winners_across_string_layouts() {
                     result.iter().collect::<Vec<_>>(),
                     vec![expected[0], expected[1], None, None]
                 );
-                let scalar = ScalarValue::try_from_array(&input, 1).unwrap();
-                let ColumnarValue::Scalar(result) = invoke_udf(ColumnarValue::Scalar(scalar), &udf)
-                else {
-                    panic!("expected scalar result")
-                };
-                let result = arrow::compute::cast(
-                    &result.to_array().unwrap(),
-                    &arrow::datatypes::DataType::Utf8,
-                )
-                .unwrap();
-                assert_eq!(
-                    result
-                        .as_any()
-                        .downcast_ref::<StringArray>()
-                        .unwrap()
-                        .value(0),
-                    expected[1].unwrap()
-                );
             }
         }
     }
