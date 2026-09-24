@@ -55,8 +55,10 @@ has reached precision 38 (`p >= 28`). Spark's generated aggregation code can ret
 intermediate sum and check precision after dividing by the count. Comet instead records an
 overflow while accumulating that sum, which can discard a valid average.
 
-Both partial and final aggregates stay in Spark, including when a shuffle separates them.
-Narrower ungrouped decimal averages remain eligible for native execution.
+This fallback applies to the whole aggregate operator: a single wide-decimal `AVG` or `TRY_AVG`
+also moves sibling aggregates such as `MIN`, `MAX`, `COUNT`, and `SUM` to Spark. Both partial and
+final aggregate operators stay in Spark, including when a shuffle separates them. Narrower
+ungrouped decimal averages remain eligible for native execution.
 
 Grouped decimal `AVG` remains eligible for native execution. Native finalization can raise an
 ANSI overflow for a group that Spark would never consume after `LIMIT`; this error-timing difference

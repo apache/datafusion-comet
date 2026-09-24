@@ -32,7 +32,7 @@ import org.apache.spark.sql.catalyst.expressions.aggregate.{Final, Partial, Part
 import org.apache.spark.sql.catalyst.optimizer.EliminateSorts
 import org.apache.spark.sql.catalyst.plans.physical.{HashPartitioning, RangePartitioning}
 import org.apache.spark.sql.comet.{CometFilterExec, CometHashAggregateExec, CometNativeExec, CometProjectExec}
-import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometShuffleExchangeExec}
+import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometNativeShuffle, CometShuffleExchangeExec}
 import org.apache.spark.sql.execution.SQLExecution
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AdaptiveSparkPlanHelper, ShuffleQueryStageExec}
 import org.apache.spark.sql.execution.aggregate.{BaseAggregateExec, HashAggregateExec, ObjectHashAggregateExec}
@@ -2261,19 +2261,21 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           .mode("overwrite")
           .parquet(dir.toString)
         withParquetTable(spark.read.parquet(dir.toString).coalesce(1), "global_avg") {
+          val expectedAverage = new java.math.BigDecimal("0.6").setScale(38)
           // Precision 27 stays native; 28 starts fallback. At 38, the intermediate 1.2
           // overflows in Comet although Spark can divide it and return 0.6.
-          for ((ansi, aggregates, nativeCount) <- Seq(
-              (false, "AVG(v27)", 2),
-              (false, "AVG(v28)", 0),
-              (true, "AVG(v38)", 0),
-              (true, "TRY_AVG(v38)", 0),
-              (false, "AVG(v38), COUNT(DISTINCT ord)", 0),
-              (false, "AVG(v38), sort_array(collect_list(ord))", 0))) {
+          for ((ansi, aggregates, nativeCount, expected) <- Seq(
+              (false, "AVG(v27)", 2, Row(expectedAverage.setScale(31))),
+              (false, "AVG(v28)", 0, Row(expectedAverage.setScale(32))),
+              (true, "AVG(v38)", 0, Row(expectedAverage)),
+              (true, "TRY_AVG(v38)", 0, Row(expectedAverage)),
+              (false, "AVG(v38), COUNT(DISTINCT ord)", 0, Row(expectedAverage, 2L)),
+              // Object aggregation overflows when materializing its partial buffer.
+              (false, "AVG(v38), sort_array(collect_list(ord))", 0, Row(null, Seq(1, 2))))) {
             withSQLConf(SQLConf.ANSI_ENABLED.key -> ansi.toString) {
-              checkSparkAnswerAndNumOfAggregates(
-                s"SELECT $aggregates FROM global_avg",
-                nativeCount)
+              val df = sql(s"SELECT $aggregates FROM global_avg")
+              checkAnswer(df, Seq(expected))
+              assert(getNumCometHashAggregate(df) == nativeCount)
             }
           }
           // Merging individually valid partials can overflow too; keep the shuffled final safe.
@@ -2281,7 +2283,9 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
             .parquet(dir.toString)
             .repartition(2, col("ord"))
             .createOrReplaceTempView("global_avg")
-          checkSparkAnswerAndNumOfAggregates("SELECT AVG(v38), TRY_AVG(v38) FROM global_avg", 0)
+          val shuffled = sql("SELECT AVG(v38), TRY_AVG(v38) FROM global_avg")
+          checkAnswer(shuffled, Seq(Row(expectedAverage, expectedAverage)))
+          assert(getNumCometHashAggregate(shuffled) == 0)
         }
       }
     }
@@ -2315,12 +2319,11 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  test("grouped decimal AVG preserves overflow across columnar shuffle") {
+  test("grouped decimal AVG preserves overflow across JVM and native shuffle") {
     withSQLConf(
       SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
       SQLConf.SHUFFLE_PARTITIONS.key -> "2",
-      CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
-      CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
+      CometConf.COMET_SHUFFLE_ENABLED.key -> "true") {
       withTempDir { dir =>
         Seq((1, 0, "0.6"), (1, 0, "0.6"), (2, 2, "0.1"), (2, 2, "0.2"), (3, 4, null))
           .toDF("k", "part", "raw_v")
@@ -2334,11 +2337,18 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           "grouped_avg") {
           val expected =
             Seq(Row(1, null), Row(2, new java.math.BigDecimal("0.15").setScale(38)), Row(3, null))
-          for ((aggregate, ansi) <- Seq(("AVG", false), ("TRY_AVG", true), ("AVG", true))) {
-            withSQLConf(SQLConf.ANSI_ENABLED.key -> ansi.toString) {
+          for {
+            (shuffleMode, shuffleType) <- Seq(
+              ("jvm", CometColumnarShuffle),
+              ("native", CometNativeShuffle))
+            (aggregate, ansi) <- Seq(("AVG", false), ("TRY_AVG", true), ("AVG", true))
+          } {
+            withSQLConf(
+              CometConf.COMET_SHUFFLE_MODE.key -> shuffleMode,
+              SQLConf.ANSI_ENABLED.key -> ansi.toString) {
               val df = sql(s"SELECT k, $aggregate(v) FROM grouped_avg GROUP BY k")
-              // The overflowing partial exports a null count whose payload becomes zero
-              // during row conversion. It must remain distinct from the all-null group.
+              // The overflowing partial exports a null count whose payload may become zero
+              // across shuffle. It must remain distinct from the all-null group.
               if (aggregate == "AVG" && ansi) {
                 val (sparkError, cometError) = checkSparkAnswerMaybeThrows(df)
                 assert(sparkError.exists(_.getMessage.contains("ARITHMETIC_OVERFLOW")))
@@ -2352,11 +2362,14 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
               }
               val plan = df.queryExecution.executedPlan
               assert(collect(plan) { case agg: CometHashAggregateExec => agg }.size == 2)
-              assert(collect(plan) {
-                case exchange: CometShuffleExchangeExec
-                    if exchange.shuffleType == CometColumnarShuffle =>
-                  exchange
-              }.nonEmpty)
+              val bufferShuffles = collect(plan) {
+                case exchange: CometShuffleExchangeExec if (exchange.child match {
+                      case agg: CometHashAggregateExec => agg.modes == Seq(Partial)
+                      case _ => false
+                    }) =>
+                  exchange.shuffleType
+              }
+              assert(bufferShuffles == Seq(shuffleType))
             }
           }
         }
