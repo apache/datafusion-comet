@@ -70,6 +70,21 @@ in `CometExecRule` rather than using `CometOperatorSerde`, because they don't ne
 
 Examples: `CometBroadcastExchangeExec`, `CometShuffleExchangeExec`
 
+#### Local TopK inside a sink
+
+`CometTakeOrderedAndProjectExec` owns local candidate selection, the optional shuffle, and final
+selection with offset and projection. When `spark.comet.exec.topK.fusion.enabled` is enabled for an
+eligible native Parquet scan, its conversion inserts `CometLocalTopKExec` before native blocks are
+serialized. The local node extends `CometUnaryExec` and serializes a bounded sort above the native
+scan, so they execute in one block. It preserves the scan's output and partitioning and advertises
+the local sort order.
+
+The inserted node keeps the original Spark TopK for plan bookkeeping, but only the outer TopK owns
+Spark's offset and projection. Both transition reversion and aggregate-buffer restoration therefore
+remove the inserted local node when restoring Spark execution. Restoring its `originalPlan` would
+apply the global TopK twice. A single input partition uses a final native limit and projection;
+multiple input partitions still require a final TopK after the shuffle.
+
 ### Choosing the Right Operator Type
 
 When adding a new operator, choose based on these criteria:
