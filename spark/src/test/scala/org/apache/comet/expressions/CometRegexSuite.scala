@@ -218,6 +218,19 @@ class CometRegexSuite extends AnyFunSuite {
     assertIncompatible(s"(($q){255}){16}b")
   }
 
+  test("nested quantifier limit applies to every admitted quantifier and group kind") {
+    for {
+      group <- Seq("(", "(?:")
+      quantifier <- Seq("*", "+", "?", "{0}", "{1}", "{2}", "{0,}", "{1,}", "{1,2}")
+    } {
+      def nested(depth: Int): String =
+        group * depth + "a" + (s")$quantifier" * depth)
+
+      assertCompatible(nested(CometRegex.MaxQuantifierNesting))
+      assertIncompatible(nested(CometRegex.MaxQuantifierNesting + 1))
+    }
+  }
+
   test("rejects capturing groups duplicated by counted repetition past the compile budget") {
     def nestedStars(atom: String, n: Int): String =
       (1 to n).foldLeft(atom) { (p, _) => s"($p)*" }
