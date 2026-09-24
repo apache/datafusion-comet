@@ -626,7 +626,8 @@ git<span class="w"> </span>apply<span class="w"> </span>../datafusion-comet/dev/
 </pre></div>
 </div>
 <ol class="arabic simple" start="2">
-<li><p>Set <code class="docutils literal notranslate"><span class="pre">ENABLE_COMET=true</span></code> in environment variables
+<li><p>Set <code class="docutils literal notranslate"><span class="pre">ENABLE_COMET=true</span></code> and <code class="docutils literal notranslate"><span class="pre">ENABLE_COMET_ONHEAP=true</span></code> in environment variables. Without
+<code class="docutils literal notranslate"><span class="pre">ENABLE_COMET_ONHEAP</span></code>, Comet stays disabled, because the tests do not enable off-heap memory.
 <img alt="img.png" src="../_images/img.png" /></p></li>
 <li><p>After the above tests are configured, spark tests can be run with debugging enabled on spark/comet code. Note that Comet is added as a dependency and the classes are readonly while debugging from Spark. Any new changes to Comet are to be built and deployed locally through the command (<code class="docutils literal notranslate"><span class="pre">PROFILES=&quot;-Pspark-3.4&quot;</span> <span class="pre">make</span> <span class="pre">release</span></code>)</p></li>
 </ol>
