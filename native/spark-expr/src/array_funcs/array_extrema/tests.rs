@@ -453,6 +453,10 @@ fn utf8_lcase_uses_spark_unicode_version_and_space_trimming() {
             ("İ", "i\u{307}", Equal),
             ("ς", "σ", Equal),
             ("K", "k", Equal),
+            ("abİx", "ABi\u{307}y", Less),
+            ("abK", "ABk", Equal),
+            ("ab", "ABΣ", Less),
+            ("aΣ", "B", Less),
             ("\u{10400}", "\u{10428}", Equal),
             ("é", "e", Greater),
             ("A ", "a", Greater),
@@ -463,6 +467,10 @@ fn utf8_lcase_uses_spark_unicode_version_and_space_trimming() {
             ),
         ] {
             assert_eq!(Utf8Collation::Lcase.compare(left, right, version), expected);
+            assert_eq!(
+                Utf8Collation::Lcase.compare(right, left, version),
+                expected.reverse()
+            );
         }
         assert_eq!(Utf8Collation::LcaseRtrim.compare("A ", "a", version), Equal);
         assert_eq!(

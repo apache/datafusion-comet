@@ -51,12 +51,6 @@ impl Utf8Collation {
         if matches!(self, Self::Binary | Self::BinaryRtrim) {
             return left.cmp(right);
         }
-        if left.is_ascii() && right.is_ascii() {
-            return left
-                .bytes()
-                .map(|b| b.to_ascii_lowercase())
-                .cmp(right.bytes().map(|b| b.to_ascii_lowercase()));
-        }
         fn lower(value: &str, unicode_version: u32) -> impl Iterator<Item = u32> + '_ {
             value.chars().flat_map(move |c| {
                 let cp = c as u32;
@@ -73,7 +67,18 @@ impl Utf8Collation {
                     .chain((second != 0).then_some(second))
             })
         }
-        lower(left, unicode_version).cmp(lower(right, unicode_version))
+        // Compare ASCII prefixes lazily so a retained long winner is not rescanned.
+        for (offset, (l, r)) in left.bytes().zip(right.bytes()).enumerate() {
+            if !l.is_ascii() || !r.is_ascii() {
+                return lower(&left[offset..], unicode_version)
+                    .cmp(lower(&right[offset..], unicode_version));
+            }
+            let ordering = l.to_ascii_lowercase().cmp(&r.to_ascii_lowercase());
+            if ordering != Ordering::Equal {
+                return ordering;
+            }
+        }
+        left.len().cmp(&right.len())
     }
 }
 
