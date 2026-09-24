@@ -110,8 +110,7 @@ pub fn create_store(
                     })?;
             if let Some(locations) = locations {
                 let template = S3StoreTemplate::new(url, configs, bucket)?;
-                let store =
-                    location_scoped_store(template, provider_class, bucket, bridge, locations)?;
+                let store = location_scoped_store(template, bucket, bridge, locations)?;
                 return Ok((Box::new(store), path));
             }
             S3Credentials::Provider(Arc::new(bridge))
@@ -203,24 +202,28 @@ impl S3StoreTemplate {
 }
 
 /// Builds the store for a `CometS3LocationScopedCredentialProvider`. `bridge` was created on this
-/// thread, which registered the provider; it is kept to fetch the locations again after a 403.
-/// Each location's bridge is created on first use, often on a Tokio worker, and reuses that
-/// registration.
+/// thread, which registered the provider. It fetches the locations again after a 403, and each
+/// location's bridge is derived from it on first use, often on a Tokio worker, so every location
+/// shares the bucket's provider registration without another `ensureInitialized` call.
 fn location_scoped_store(
     template: S3StoreTemplate,
-    provider_class: &str,
     bucket: &str,
     bridge: CometS3CredentialBridge,
     locations: Vec<String>,
 ) -> Result<LocationScopedObjectStore, object_store::Error> {
+    let bridge = Arc::new(bridge);
+
+    let source_bridge = Arc::clone(&bridge);
     let source_bucket = bucket.to_string();
     let source: LocationSource = Arc::new(move || {
-        let locations = bridge
-            .policy_locations()
-            .map_err(|e| object_store::Error::Generic {
-                store: "S3",
-                source: format!("Failed to get policy locations for {source_bucket}: {e}").into(),
-            })?;
+        let locations =
+            source_bridge
+                .policy_locations()
+                .map_err(|e| object_store::Error::Generic {
+                    store: "S3",
+                    source: format!("Failed to get policy locations for {source_bucket}: {e}")
+                        .into(),
+                })?;
         locations.ok_or_else(|| object_store::Error::Generic {
             store: "S3",
             source: format!("The provider for {source_bucket} stopped returning policy locations")
@@ -228,22 +231,19 @@ fn location_scoped_store(
         })
     });
 
-    let provider_class = provider_class.to_string();
     let factory_bucket = bucket.to_string();
     let factory: LocationStoreFactory = Arc::new(move |credential_path: &str| {
-        let bridge = CometS3CredentialBridge::new(
-            provider_class.as_str(),
-            factory_bucket.as_str(),
-            factory_bucket.as_str(),
-            credential_path,
-            AccessMode::Read,
-            &HashMap::new(),
-        )
-        .map_err(|e| object_store::Error::Generic {
-            store: "S3",
-            source: format!("CometS3CredentialBridge init failed for {factory_bucket}: {e}").into(),
-        })?;
-        let store = template.build(S3Credentials::Provider(Arc::new(bridge)))?;
+        let location_bridge =
+            bridge
+                .for_path(credential_path)
+                .map_err(|e| object_store::Error::Generic {
+                    store: "S3",
+                    source: format!(
+                        "CometS3CredentialBridge init failed for {factory_bucket}: {e}"
+                    )
+                    .into(),
+                })?;
+        let store = template.build(S3Credentials::Provider(Arc::new(location_bridge)))?;
         Ok(Arc::new(store) as Arc<dyn ObjectStore>)
     });
 

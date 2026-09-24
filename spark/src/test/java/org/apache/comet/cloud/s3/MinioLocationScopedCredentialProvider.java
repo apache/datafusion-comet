@@ -41,6 +41,13 @@ public final class MinioLocationScopedCredentialProvider
   private static final AtomicReference<List<String>> LOCATIONS =
       new AtomicReference<>(Collections.emptyList());
   private static final AtomicInteger LOCATION_CALL_COUNT = new AtomicInteger(0);
+
+  /**
+   * Counts provider instances. Not cleared by {@link #resetCounters}: the dispatcher keeps one
+   * instance per registration for the life of the JVM.
+   */
+  private static final AtomicInteger INIT_COUNT = new AtomicInteger(0);
+
   private static final Set<String> CREDENTIAL_PATHS = ConcurrentHashMap.newKeySet();
 
   public static void installCredentials(String accessKeyId, String secretAccessKey) {
@@ -55,6 +62,10 @@ public final class MinioLocationScopedCredentialProvider
     return LOCATION_CALL_COUNT.get();
   }
 
+  public static int initCount() {
+    return INIT_COUNT.get();
+  }
+
   /** The paths passed to {@link #getCredentialsForPath} since the last reset. */
   public static Set<String> credentialPaths() {
     return Set.copyOf(CREDENTIAL_PATHS);
@@ -66,7 +77,9 @@ public final class MinioLocationScopedCredentialProvider
   }
 
   @Override
-  public void initialize(Map<String, String> catalogProperties) {}
+  public void initialize(Map<String, String> catalogProperties) {
+    INIT_COUNT.incrementAndGet();
+  }
 
   @Override
   public CometS3Credentials getCredentialsForPath(CometS3CredentialContext context) {

@@ -280,6 +280,11 @@ class CometS3CredentialBridgeSuite
       MinioLocationScopedCredentialProvider.credentialPaths() ==
         java.util.Set.of("/warehouse/sales", "/warehouse/sales/eu/", "/warehouse/finance", "/"),
       s"Unexpected credential paths: ${MinioLocationScopedCredentialProvider.credentialPaths()}")
+    // Every location's bridge shares the bucket's provider registration, whatever properties the
+    // bucket's store was created with, so one provider instance serves all four locations.
+    assert(
+      MinioLocationScopedCredentialProvider.initCount() == 1,
+      s"Provider initialized ${MinioLocationScopedCredentialProvider.initCount()} times")
   }
 
   test("location-scoped provider: later scans reuse the bucket's locations") {

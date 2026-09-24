@@ -136,6 +136,31 @@ impl CometS3CredentialBridge {
         })
     }
 
+    /// Returns a bridge to the same provider registration for another path in the bucket. It
+    /// shares this bridge's handle and bucket string and creates only the path string, so it makes
+    /// no `ensureInitialized` call and needs no class loading on the calling thread.
+    pub fn for_path(&self, path: impl Into<String>) -> Result<Self, ExecutionError> {
+        let path = path.into();
+        let path_jstr = JVMClasses::with_env(|env| -> Result<_, ExecutionError> {
+            let p = env
+                .new_string(&path)
+                .map_err(|e| ExecutionError::GeneralError(format!("new_string(path): {e}")))?;
+            Ok(Arc::new(jni_new_global_ref!(env, p).map_err(|e| {
+                ExecutionError::GeneralError(format!("global_ref(path): {e}"))
+            })?))
+        })?;
+        Ok(Self {
+            provider_class: self.provider_class.clone(),
+            dispatch_key: self.dispatch_key.clone(),
+            bucket: self.bucket.clone(),
+            path,
+            mode: self.mode,
+            handle: self.handle,
+            bucket_jstr: Arc::clone(&self.bucket_jstr),
+            path_jstr,
+        })
+    }
+
     fn fetch_raw(&self) -> Result<RawCredentials, ExecutionError> {
         JVMClasses::with_env(|env| -> Result<RawCredentials, ExecutionError> {
             let mode = self.mode as jint;
