@@ -19,14 +19,20 @@
 
 package org.apache.comet.exec
 
+import java.net.URI
+import java.nio.{ByteBuffer, ByteOrder}
+import java.nio.file.Files
+
 import scala.jdk.CollectionConverters._
 
+import org.apache.spark.SparkThrowable
 import org.apache.spark.sql.{CometTestBase, Row}
 import org.apache.spark.sql.comet.{CometLocalTopKExec, CometNativeScanExec, CometTakeOrderedAndProjectExec}
 import org.apache.spark.sql.execution.{LocalTableScanExec, SparkPlan, TakeOrderedAndProjectExec}
 import org.apache.spark.sql.internal.SQLConf
 
 import org.apache.comet.CometConf
+import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
 import org.apache.comet.serde.OperatorOuterClass.Operator
 
 class CometTopKSuite extends CometTestBase {
@@ -277,6 +283,88 @@ class CometTopKSuite extends CometTestBase {
               val locals = collect(plan) { case local: CometLocalTopKExec => local }
               assert(locals.size == (if (fusion) 1 else 0), s"fusion=$fusion:\n$plan")
               assert(query.collect().toSeq == expected)
+            }
+          }
+        }
+      }
+    }
+  }
+
+  for (corruption <- Seq("footer", "page")) {
+    test(s"local TopK preserves the corrupt Parquet $corruption file in read errors") {
+      withSQLConf(
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+        SQLConf.LEAF_NODE_DEFAULT_PARALLELISM.key -> "2",
+        SQLConf.FILES_MAX_PARTITION_BYTES.key -> "4194304",
+        SQLConf.IGNORE_CORRUPT_FILES.key -> "false") {
+        withTempPath { path =>
+          spark
+            .range(0, 1000, 1, 2)
+            .selectExpr("CAST(id AS INT) AS k")
+            .write
+            .option("compression", "uncompressed")
+            .option("parquet.enable.dictionary", "false")
+            .parquet(path.getCanonicalPath)
+          val entries = Files.list(path.toPath)
+          val files =
+            try {
+              entries
+                .iterator()
+                .asScala
+                .filter(_.getFileName.toString.endsWith(".parquet"))
+                .toSeq
+                .sortBy(_.getFileName.toString)
+            } finally entries.close()
+          assert(files.size == 2)
+          val corruptFile = files.last
+          val bytes = Files.readAllBytes(corruptFile)
+          if (corruption == "footer") {
+            // Keep the file length but destroy the footer magic, failing during reader setup.
+            java.util.Arrays.fill(bytes, bytes.length - 4, bytes.length, 0xff.toByte)
+          } else {
+            val footerLength = ByteBuffer
+              .wrap(bytes, bytes.length - 8, 4)
+              .order(ByteOrder.LITTLE_ENDIAN)
+              .getInt()
+            assert(bytes.length - 8 - footerLength > 100)
+            // Keep the complete footer so setup succeeds; fail while decoding the first page.
+            java.util.Arrays.fill(bytes, 4, 100, 0xff.toByte)
+          }
+          Files.write(corruptFile, bytes)
+          withTempView("topk_corrupt_input") {
+            spark.read
+              .schema("k INT")
+              .parquet(path.getCanonicalPath)
+              .createOrReplaceTempView("topk_corrupt_input")
+            for (fusion <- Seq(false, true)) {
+              withSQLConf(CometConf.COMET_EXEC_TOPK_FUSION_ENABLED.key -> fusion.toString) {
+                val query = sql("SELECT k FROM topk_corrupt_input ORDER BY k LIMIT 5")
+                val plan = query.queryExecution.executedPlan
+                val scans = collect(plan) { case scan: CometNativeScanExec => scan }
+                assert(scans.size == 1, s"Expected one native scan:\n$plan")
+                val partitionPaths = scans.head.perPartitionFilePaths
+                assert(partitionPaths.length == 2 && partitionPaths.forall(_.size == 1))
+                val expectedPath = partitionPaths.flatten
+                  .find(file => new URI(file) == corruptFile.toUri)
+                  .getOrElse(fail(s"Missing corrupt file $corruptFile in scan partitions"))
+                val topKs = collect(plan) { case topK: CometTakeOrderedAndProjectExec => topK }
+                assert(topKs.size == 1, s"Expected one native TopK:\n$plan")
+                assert(topKs.head.child.executeColumnar().getNumPartitions == 2)
+                val locals = collect(plan) { case local: CometLocalTopKExec => local }
+                assert(locals.size == (if (fusion) 1 else 0), s"fusion=$fusion:\n$plan")
+                val failure = intercept[Exception](query.collect())
+                // Spark 3.x uses a legacy error class, but still exposes the structured path.
+                val errorClass =
+                  if (isSpark40Plus) "FAILED_READ_FILE.NO_HINT" else "_LEGACY_ERROR_TEMP_2064"
+                val readError = causeChain(failure)
+                  .collectFirst {
+                    case error: SparkThrowable if error.getErrorClass == errorClass => error
+                  }
+                  .getOrElse(fail(s"Missing $errorClass in ${causeChain(failure)}"))
+                // A lower-level cause can mention the file even when the structured path is lost.
+                // With one file per partition, the path must name only the corrupt file.
+                assert(readError.getMessageParameters.get("path") == expectedPath)
+              }
             }
           }
         }
