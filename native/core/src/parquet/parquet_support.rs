@@ -255,14 +255,17 @@ pub(crate) fn record_field_match<K: Hash + Eq>(
         .or_insert_with(|| FieldMatch::first(index));
 }
 
-/// Comma-joined names of the fields carrying `id`, for the duplicate-id error message.
+/// Names of the fields carrying `id`, for the duplicate-id error message. Bracketed and
+/// comma-joined the way Spark's `matchIdField` renders the list, so the message reads
+/// `Found duplicate field(s) "1": [x, y] in id mapping mode` on both sides.
 pub(crate) fn field_names_with_id(fields: &Fields, id: i32) -> String {
-    fields
+    let names = fields
         .iter()
         .filter(|f| field_id(f) == Some(id))
         .map(|f| f.name().as_str())
         .collect::<Vec<_>>()
-        .join(", ")
+        .join(", ");
+    format!("[{names}]")
 }
 
 /// Which file field supplies each requested field, resolved once per file and reused for
@@ -2503,7 +2506,7 @@ mod tests {
             let err = resolve_field_mapping(&from_type, &to_type, &opts).unwrap_err();
             let msg = err.to_string();
             assert!(
-                msg.contains("_LEGACY_ERROR_TEMP_2094") && msg.contains("[x, y]"),
+                msg.contains("_LEGACY_ERROR_TEMP_2094") && msg.contains("id=1 matches [x, y]"),
                 "unexpected error: {msg}"
             );
         }
@@ -2543,7 +2546,7 @@ mod tests {
             let err = parquet_convert_array(from, &to_type, &opts).unwrap_err();
             let msg = err.to_string();
             assert!(
-                msg.contains("_LEGACY_ERROR_TEMP_2094") && msg.contains("id=1"),
+                msg.contains("_LEGACY_ERROR_TEMP_2094") && msg.contains("id=1 matches [x, y]"),
                 "unexpected error: {msg}"
             );
         }

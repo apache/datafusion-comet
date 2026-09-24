@@ -3752,7 +3752,7 @@ mod test {
             .expect_err("requested id 1 matches two file columns and must error");
         let msg = err.to_string();
         assert!(
-            msg.contains("_LEGACY_ERROR_TEMP_2094") && msg.contains("id=1"),
+            msg.contains("_LEGACY_ERROR_TEMP_2094") && msg.contains("id=1 matches [x, y]"),
             "expected duplicate field id error, got: {msg}"
         );
         Ok(())
@@ -4738,24 +4738,43 @@ mod test {
         assert_eq!(defaulted.value(0), 7);
     }
 
-    /// File and requested schema are identical: `s` holding `x` and `y` that both carry
-    /// field id 1. No column needs conversion, so no cast is ever emitted, yet Spark's
-    /// `clipParquetSchema` rejects the read because requested id 1 resolves to two file
-    /// fields. The validation must therefore run when the file schema is mapped, not
-    /// only inside a cast.
+    /// A requested schema that repeats an id is declined at planning time and never reaches
+    /// the native scan, so the duplicate can only sit in the file. The file holds `s` with
+    /// `x` and `y` both carrying id 1 beside `z` with id 2, and the read asks for `x` (id 1),
+    /// `y` (id 3) and `z` (id 2). Read positionally the names line up and all three values
+    /// come back, but Spark's `clipParquetSchema` raises because requested id 1 resolves to
+    /// two file fields. The validation must run when the file schema is mapped, before any
+    /// value is handed back.
     #[tokio::test]
-    async fn parquet_duplicate_struct_field_id_rejected_without_cast() {
-        let child_fields =
-            arrow::datatypes::Fields::from(vec![field_with_id("x", 1), field_with_id("y", 1)]);
-        let struct_field = Field::new("s", DataType::Struct(child_fields.clone()), true)
-            .with_metadata(id_meta("10"));
-        let file_schema = Arc::new(Schema::new(vec![struct_field.clone()]));
-        let required_schema = Arc::new(Schema::new(vec![struct_field]));
+    async fn parquet_duplicate_file_field_id_rejected_when_requested() {
+        let file_fields = arrow::datatypes::Fields::from(vec![
+            field_with_id("x", 1),
+            field_with_id("y", 1),
+            field_with_id("z", 2),
+        ]);
+        let requested_fields = arrow::datatypes::Fields::from(vec![
+            field_with_id("x", 1),
+            field_with_id("y", 3),
+            field_with_id("z", 2),
+        ]);
+        let file_schema = Arc::new(Schema::new(vec![Field::new(
+            "s",
+            DataType::Struct(file_fields.clone()),
+            true,
+        )
+        .with_metadata(id_meta("10"))]));
+        let required_schema = Arc::new(Schema::new(vec![Field::new(
+            "s",
+            DataType::Struct(requested_fields),
+            true,
+        )
+        .with_metadata(id_meta("10"))]));
         let children: Vec<Arc<dyn arrow::array::Array>> = vec![
             Arc::new(Int64Array::from(vec![42])),
             Arc::new(Int64Array::from(vec![43])),
+            Arc::new(Int64Array::from(vec![44])),
         ];
-        let col = Arc::new(arrow::array::StructArray::new(child_fields, children, None))
+        let col = Arc::new(arrow::array::StructArray::new(file_fields, children, None))
             as Arc<dyn arrow::array::Array>;
 
         let mut opts = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
@@ -4766,7 +4785,7 @@ mod test {
             .expect_err("requested id 1 matches two file fields and must error");
         let msg = err.to_string();
         assert!(
-            msg.contains("_LEGACY_ERROR_TEMP_2094") && msg.contains("id=1"),
+            msg.contains("_LEGACY_ERROR_TEMP_2094") && msg.contains("id=1 matches [x, y]"),
             "expected duplicate field id error, got: {msg}"
         );
     }

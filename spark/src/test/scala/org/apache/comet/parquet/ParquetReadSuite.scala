@@ -49,7 +49,7 @@ import org.apache.spark.sql.types._
 import com.google.common.primitives.UnsignedLong
 
 import org.apache.comet.CometConf
-import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
+import org.apache.comet.CometSparkSessionExtensions.{isSpark40Plus, isSpark41Plus}
 import org.apache.comet.vector.CometVector
 
 abstract class ParquetReadSuite extends CometTestBase {
@@ -2079,10 +2079,122 @@ abstract class ParquetReadSuite extends CometTestBase {
     }
   }
 
-  // Verbatim port of Spark `ParquetFieldIdIOSuite.test("multiple id matches")` so the shim
-  // error path is exercised on both 3.x and 4.x. The stock suite is the CI signal but it
-  // requires the Spark test jars and `withAllParquetReaders`; keeping a copy here lets us
-  // iterate locally.
+  // The shape a schema evolution leaves behind: a nested column dropped and added back under
+  // its old name gets a fresh field id, so the file holds `struct<x (id 1), y (id 2)>` while
+  // the table reads `struct<x (id 3), y (id 2)>`. The names line up at every position, which
+  // is exactly what the metadata-only relabel shortcut in the native cast looks for, so without
+  // the field-mapping gate the scan hands back the old x values. Spark returns null for x and
+  // keeps y. One test per nesting, so a wrong answer names the level that produced it.
+  // Before Spark 4.1 the vectorized reader raises on this read below a list or map, since its
+  // column vector rejects the placeholder field the clipped schema carries for the unmatched
+  // id, so the comparison with Spark runs from 4.1 on. The pinned rows hold everywhere.
+  private def checkDroppedAndReAddedFieldId(
+      column: String,
+      expected: Seq[Row],
+      sparkReads: Boolean = true): Unit = {
+    val fileStruct = new StructType()
+      .add("x", LongType, true, withId(1))
+      .add("y", LongType, true, withId(2))
+    val readStruct = new StructType()
+      .add("x", LongType, true, withId(3))
+      .add("y", LongType, true, withId(2))
+    def schema(inner: StructType): StructType = new StructType()
+      .add("id", LongType, true, withId(10))
+      .add("s", inner, true, withId(11))
+      .add("l", ArrayType(inner), true, withId(12))
+      .add("m", MapType(StringType, inner), true, withId(13))
+    val writeData = Seq(
+      Row(1L, Row(1L, 10L), Seq(Row(2L, 20L), Row(3L, 30L)), Map("k" -> Row(4L, 40L))),
+      Row(2L, Row(5L, 50L), Seq(Row(6L, 60L), null), Map("a" -> Row(7L, 70L), "b" -> null)),
+      Row(3L, Row(null, 80L), Seq(), Map()),
+      Row(4L, null, null, null))
+
+    withSQLConf(
+      SQLConf.PARQUET_FIELD_ID_WRITE_ENABLED.key -> "true",
+      SQLConf.PARQUET_FIELD_ID_READ_ENABLED.key -> "true") {
+      withTempPath { dir =>
+        spark
+          .createDataFrame(spark.sparkContext.parallelize(writeData), schema(fileStruct))
+          .write
+          .mode("overwrite")
+          .parquet(dir.getCanonicalPath)
+        def read(): DataFrame = spark.read
+          .schema(schema(readStruct))
+          .parquet(dir.getCanonicalPath)
+          .select("id", column)
+          .sort("id")
+
+        if (sparkReads) {
+          checkSparkAnswerAndOperator(read())
+        }
+        val plan = stripAQEPlan(read().queryExecution.executedPlan)
+        assert(
+          collect(plan) { case scan: CometNativeScanExec => scan }.nonEmpty,
+          s"expected CometNativeScanExec in the plan:\n$plan")
+        // Pin the values too, so the test states what Spark answers rather than only that
+        // Comet agrees with it.
+        checkAnswer(read(), expected)
+      }
+    }
+  }
+
+  test("nested column dropped and re-added under the same name with a new field id: struct") {
+    checkDroppedAndReAddedFieldId(
+      "s",
+      Seq(
+        Row(1L, Row(null, 10L)),
+        Row(2L, Row(null, 50L)),
+        Row(3L, Row(null, 80L)),
+        Row(4L, null)))
+  }
+
+  test(
+    "nested column dropped and re-added under the same name with a new field id: list element") {
+    checkDroppedAndReAddedFieldId(
+      "l",
+      Seq(
+        Row(1L, Seq(Row(null, 20L), Row(null, 30L))),
+        Row(2L, Seq(Row(null, 60L), null)),
+        Row(3L, Seq()),
+        Row(4L, null)),
+      sparkReads = isSpark41Plus)
+  }
+
+  test("nested column dropped and re-added under the same name with a new field id: map value") {
+    checkDroppedAndReAddedFieldId(
+      "m",
+      Seq(
+        Row(1L, Map("k" -> Row(null, 40L))),
+        Row(2L, Map("a" -> Row(null, 70L), "b" -> null)),
+        Row(3L, Map()),
+        Row(4L, null)),
+      sparkReads = isSpark41Plus)
+  }
+
+  // The duplicate field id error Comet raises for `df` must carry the message Spark raises
+  // for the same read, with the matching file fields listed the way `matchIdField` lists
+  // them. `matched` is that list, for instance `"1": [x, y]`.
+  private def checkDuplicateFieldIdMessage(df: => DataFrame, matched: String): Unit = {
+    val (sparkError, cometError) = checkSparkAnswerMaybeThrows(df)
+    // The deepest cause carrying the text: the wrappers above it quote it with a stack trace.
+    def message(error: Option[Throwable]): String =
+      error.toSeq
+        .flatMap(causeChain)
+        .flatMap(e => Option(e.getMessage))
+        .reverse
+        .find(_.contains("Found duplicate field(s)"))
+        .getOrElse(fail(s"expected a duplicate field id error, got: $error"))
+    val expected = message(sparkError)
+    assert(
+      expected.contains(s"Found duplicate field(s) $matched in id mapping mode"),
+      s"Spark did not raise the expected duplicate field id error: $expected")
+    assert(message(cometError) == expected)
+  }
+
+  // Port of Spark `ParquetFieldIdIOSuite.test("multiple id matches")` so the shim error path
+  // is exercised on both 3.x and 4.x. The stock suite is the CI signal but it requires the
+  // Spark test jars and `withAllParquetReaders`. Keeping a copy here lets us iterate locally.
+  // On top of the port, the message is compared with Spark's in full.
   test("multiple id matches") {
     withSQLConf(SQLConf.PARQUET_FIELD_ID_READ_ENABLED.key -> "true") {
       withTempPath { dir =>
@@ -2109,6 +2221,9 @@ abstract class ParquetReadSuite extends CometTestBase {
         assert(
           cause.isInstanceOf[RuntimeException] &&
             cause.getMessage.contains("Found duplicate field(s)"))
+        checkDuplicateFieldIdMessage(
+          spark.read.schema(readSchema).parquet(dir.getCanonicalPath),
+          """"1": [a, rand2]""")
       }
     }
   }
@@ -2140,7 +2255,8 @@ abstract class ParquetReadSuite extends CometTestBase {
   test("duplicate field id inside a struct is rejected when a requested id matches two fields") {
     // The requested struct names one id that two file fields carry. A requested schema that
     // repeats an id itself is declined at planning time, so this is the shape the native scan
-    // still has to refuse; the schema adapter refuses it while resolving the file's fields.
+    // still has to refuse. The schema adapter refuses it while resolving the file's fields,
+    // with the message Spark raises for the same read.
     withSQLConf(SQLConf.PARQUET_FIELD_ID_READ_ENABLED.key -> "true") {
       withTempPath { dir =>
         val schema =
@@ -2174,6 +2290,7 @@ abstract class ParquetReadSuite extends CometTestBase {
         assert(
           cause.isInstanceOf[RuntimeException] &&
             cause.getMessage.contains("Found duplicate field(s)"))
+        checkDuplicateFieldIdMessage(df, """"1": [x, y]""")
       }
     }
   }
