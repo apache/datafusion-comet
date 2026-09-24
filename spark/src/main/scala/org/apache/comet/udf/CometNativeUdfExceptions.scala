@@ -34,12 +34,6 @@ class CometNativeUdfLoadException(msg: String, cause: Throwable = null)
 class CometNativeUdfAbiException(msg: String) extends CometNativeException(msg)
 
 /**
- * Thrown when the declared signature does not match what the library reports via
- * `comet_*_udf_list_v1`.
- */
-class CometNativeUdfSignatureException(msg: String) extends CometRuntimeException(msg)
-
-/**
  * Thrown by the catalog stub if a registered native UDF is invoked on the JVM (which means
  * Comet's plan rule did not replace it).
  */

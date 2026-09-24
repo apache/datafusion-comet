@@ -75,6 +75,32 @@ class CometNativeUdfSuite extends CometTestBase {
     assert(out == Seq(1L, 2L, 3L, 4L, 5L))
   }
 
+  test("a two-argument UDF receives its arguments in order") {
+    // sub_c computes a - b, so swapped arguments would negate every result.
+    CometNativeUDF.register(spark, "sub_c", libPath, Seq(LongType, LongType), LongType)
+    val out = spark
+      .range(0, 4)
+      .selectExpr("sub_c(id * 10, id) AS y")
+      .collect()
+      .map(_.getLong(0))
+      .toSeq
+    assert(out == Seq(0L, 9L, 18L, 27L))
+  }
+
+  test("literal arguments are expanded to the batch in any position") {
+    // A literal reaches the native adapter as a scalar rather than a column and has to be expanded
+    // to the batch length before the kernel sees it.
+    CometNativeUDF.register(spark, "add_one_c", libPath, Seq(LongType), LongType)
+    CometNativeUDF.register(spark, "sub_c", libPath, Seq(LongType, LongType), LongType)
+    val rows = spark
+      .range(0, 3)
+      .selectExpr("add_one_c(41L) AS a", "sub_c(id, 10L) AS b", "sub_c(10L, id) AS c")
+      .collect()
+    assert(rows.map(_.getLong(0)).toSeq == Seq(42L, 42L, 42L))
+    assert(rows.map(_.getLong(1)).toSeq == Seq(-10L, -9L, -8L))
+    assert(rows.map(_.getLong(2)).toSeq == Seq(10L, 9L, 8L))
+  }
+
   test("panic inside UDF invoke surfaces as a query error, not a crash") {
     CometNativeUDF.register(spark, "panics_on_invoke", libPath, Seq(LongType), LongType)
     val e = intercept[Exception] {
@@ -440,6 +466,27 @@ class CometNativeUdfSuite extends CometTestBase {
       .map(_.getMap[String, Int](0))
       .toSeq
     assert(maps == Seq(Map("k" -> 0), Map("k" -> 1), Map("k" -> 2)))
+  }
+
+  test("a map built with arrow-rs's default field names combines with Comet's own maps") {
+    // The native plan has to carry the map under Comet's canonical child names, not the UDF's:
+    // `if` puts both branches into one column, and a column whose map is spelled `keys` / `values`
+    // does not match a schema spelled `key` / `value`. Both branch orders, since the first branch
+    // is the one whose type the native `if` reports.
+    val mapType = MapType(StringType, IntegerType, valueContainsNull = true)
+    CometNativeUDF.register(spark, "make_map_c", libPath, Seq(LongType), mapType)
+    val other = "map_from_arrays(array('k'), array(cast(id + 100 as int)))"
+    for (sql <- Seq(
+        s"if(id > 0, make_map_c(id), $other)",
+        s"if(id = 0, $other, make_map_c(id))")) {
+      val maps = spark
+        .range(0, 3)
+        .selectExpr(s"$sql AS m")
+        .collect()
+        .map(_.getMap[String, Int](0))
+        .toSeq
+      assert(maps == Seq(Map("k" -> 100), Map("k" -> 1), Map("k" -> 2)), sql)
+    }
   }
 
   test("registering a nondeterministic UDF is refused") {
