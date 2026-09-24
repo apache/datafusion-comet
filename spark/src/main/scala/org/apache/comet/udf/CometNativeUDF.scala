@@ -54,6 +54,10 @@ object CometNativeUDF {
    * `NativeScalarUdf` proto, and each executor loads the library itself on first use. The path
    * must therefore be valid on every executor, not just the driver.
    *
+   * `inputTypes` is the signature every call must match. Comet does not convert arguments to
+   * these types: a call whose argument types differ, other than in nullability, is refused at
+   * planning time with both signatures named, so cast the arguments in the query instead.
+   *
    * `deterministic` must be `true`. Comet plans every imported kernel as immutable, so a
    * nondeterministic UDF cannot yet be expressed; passing `false` fails here rather than silently
    * planning the function as pure.

@@ -275,8 +275,10 @@ This feature is at an early stage. The current limitations are:
   your cluster's own file distribution, and pass a path that is valid cluster-wide. A path that
   exists only on the driver will fail at execution time.
 - **Up to 4 arguments** per function.
-- **No type coercion.** Arguments arrive as the types the query produces; `return_field` should
-  reject anything it does not handle. Downcast defensively in `invoke` and return a clear `Err`
+- **No type coercion.** Every call must pass exactly the argument types given to `register`,
+  apart from nullability. Comet does not cast arguments to those types; a call that passes, say,
+  an `int` column to a UDF registered with `LongType` is refused at planning time, and the fix is
+  an explicit `cast` in the query. `return_field` should still reject anything it does not handle. Downcast defensively in `invoke` and return a clear `Err`
   rather than assuming a particular array layout.
 - **Loading a library is loading native code.** It runs with the full privileges of the executor
   process and Comet cannot sandbox it: a bug in a UDF can corrupt memory or crash the executor.

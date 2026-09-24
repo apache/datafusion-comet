@@ -352,6 +352,25 @@ class CometNativeUdfSuite extends CometTestBase {
     assert(stackTraceContains(e, "CometNativeUDF.register"), s"error lacks guidance: $e")
   }
 
+  test("a call whose argument types differ from the registered ones is refused") {
+    CometNativeUDF.register(spark, "add_one_c", libPath, Seq(LongType), LongType)
+    val e = intercept[Exception] {
+      spark.range(0, 3).selectExpr("add_one_c(cast(id as int)) AS y").collect()
+    }
+    assert(
+      stackTraceContains(e, "registered with argument types (bigint) but is called with (int)"),
+      s"unhelpful error: $e")
+
+    // Casting to the registered type is the fix the message asks for.
+    val fixed = spark
+      .range(0, 3)
+      .selectExpr("add_one_c(cast(cast(id as int) as bigint)) AS y")
+      .collect()
+      .map(_.getLong(0))
+      .toSeq
+    assert(fixed == Seq(1L, 2L, 3L))
+  }
+
   test("echo_c rejects a call whose argument count it does not accept") {
     CometNativeUDF.register(spark, "echo_c", libPath, Seq(LongType), LongType)
     // The catalog stub is arity-1, so a 2-arg call is rejected during analysis.

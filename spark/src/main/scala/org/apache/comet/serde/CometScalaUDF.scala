@@ -28,10 +28,11 @@ import org.apache.spark.sql.types.BinaryType
 import org.apache.comet.CometConf
 import org.apache.comet.CometExplainInfo
 import org.apache.comet.CometSparkSessionExtensions.{withCodegenDispatchExpr, withFallbackReason}
+import org.apache.comet.DataTypeSupport.deepNullable
 import org.apache.comet.codegen.CometBatchKernelCodegen
 import org.apache.comet.serde.ExprOuterClass.Expr
 import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, serializeDataType}
-import org.apache.comet.udf.CometNativeUdfRegistry
+import org.apache.comet.udf.{CometNativeUdfArgumentTypeException, CometNativeUdfRegistry, NativeUdfMetadata}
 import org.apache.comet.udf.codegen.CometScalaUDFCodegen
 
 /**
@@ -68,7 +69,7 @@ object CometScalaUDF extends CometExpressionSerde[ScalaUDF] {
     // in. See https://github.com/apache/datafusion-comet/issues/5295.
     expr.udfName.flatMap(CometNativeUdfRegistry.get) match {
       case Some(meta) =>
-        emitNativeScalarUdf(expr, meta.libraryPath, meta.returnType, inputs, binding)
+        emitNativeScalarUdf(expr, meta, inputs, binding)
       case None =>
         emitJvmCodegenDispatch(expr, inputs, binding)
     }
@@ -76,28 +77,53 @@ object CometScalaUDF extends CometExpressionSerde[ScalaUDF] {
 
   private def emitNativeScalarUdf(
       expr: ScalaUDF,
-      libraryPath: String,
-      returnType: org.apache.spark.sql.types.DataType,
+      meta: NativeUdfMetadata,
       inputs: Seq[Attribute],
       binding: Boolean): Option[Expr] = {
     val name = expr.udfName.get
+    checkArgumentTypes(name, expr, meta)
     val argProtos = expr.children.map(c => exprToProtoInternal(c, inputs, binding))
     if (argProtos.exists(_.isEmpty)) {
       withFallbackReason(expr, "one or more native UDF arguments are not supported")
       return None
     }
-    val returnTypeProto = serializeDataType(returnType).getOrElse {
-      withFallbackReason(expr, s"return type $returnType not serializable")
+    val returnTypeProto = serializeDataType(meta.returnType).getOrElse {
+      withFallbackReason(expr, s"return type ${meta.returnType} not serializable")
       return None
     }
     val callBuilder = ExprOuterClass.NativeScalarUdf
       .newBuilder()
       .setName(name)
-      .setLibraryPath(libraryPath)
+      .setLibraryPath(meta.libraryPath)
       .setReturnType(returnTypeProto)
       .setDeterministic(expr.deterministic)
     argProtos.foreach(a => callBuilder.addArgs(a.get))
     Some(ExprOuterClass.Expr.newBuilder().setNativeScalarUdf(callBuilder.build()).build())
+  }
+
+  /**
+   * Refuse a call whose argument types differ from the ones the UDF was registered with.
+   *
+   * The catalog stub Comet installs is untyped, so Spark inserts no casts for it and a call
+   * reaches this point with whatever types its arguments happen to have. Converting them here
+   * would be a semantic choice Spark never made, so the call is refused instead, naming both
+   * signatures. Nullability is disregarded because it does not change the values a UDF receives.
+   *
+   * This throws rather than falling back: the stub cannot evaluate the UDF on the JVM, so a
+   * fallback would only fail later with a less useful message.
+   */
+  private def checkArgumentTypes(name: String, expr: ScalaUDF, meta: NativeUdfMetadata): Unit = {
+    val actual = expr.children.map(_.dataType)
+    val matches = actual.length == meta.inputTypes.length &&
+      actual.zip(meta.inputTypes).forall { case (a, d) => deepNullable(a) == deepNullable(d) }
+    if (!matches) {
+      def render(types: Seq[org.apache.spark.sql.types.DataType]) =
+        types.map(_.catalogString).mkString("(", ", ", ")")
+      throw new CometNativeUdfArgumentTypeException(
+        s"native UDF '$name' was registered with argument types ${render(meta.inputTypes)} " +
+          s"but is called with ${render(actual)}. Cast the arguments to the registered types, " +
+          "or register the UDF with the types this call produces.")
+    }
   }
 
   /**
