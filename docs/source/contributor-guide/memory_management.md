@@ -198,10 +198,19 @@ rather than asking for a separate allocation:
 memory_limit = spark.memory.offHeap.size * spark.comet.exec.memoryPool.fraction
 ```
 
-`spark.comet.exec.memoryPool.fraction` defaults to `1.0`. Lowering it is the current workaround for
-Comet's under-accounting (see [The accounting gap](#the-accounting-gap)). It holds back a slice of
-the off-heap pool that Comet is not allowed to reserve, on the assumption that Comet's real usage
-overshoots its reservations by roughly that slice.
+`spark.comet.exec.memoryPool.fraction` defaults to `1.0` and is deprecated. It was documented as
+the workaround for Comet's under-accounting (see [The accounting gap](#the-accounting-gap)), holding
+back a slice of the off-heap pool for the memory Comet does not reserve, but it cannot do that:
+
+- `greedy_unified` ignores `memory_limit`. It asks Spark for every byte it reserves.
+- `fair_unified` applies it to each task's pool, limiting each memory consumer in the task to
+  `memory_limit / num_consumers`. Spark's execution pool already limits each of N running tasks to
+  `spark.memory.offHeap.size / N`, which is the tighter limit whenever more than one task is
+  running, and the tasks together can still acquire the whole pool.
+- Spark's own off-heap consumers, non-Comet operators and off-heap storage, draw on the same pool
+  with no Comet limit at all.
+
+The only room Spark leaves for memory outside the pool is `spark.executor.memoryOverhead`.
 
 A second value, `memory_limit_per_task`, is computed and passed alongside it, but only the on-heap
 pool types read it.
@@ -431,8 +440,9 @@ diverge for several structural reasons:
   outstanding.
 
 The practical consequence is that `reserved()` is a lower bound on Comet's real footprint, and the
-gap is workload-dependent. `spark.comet.exec.memoryPool.fraction` exists purely so operators can
-hand-tune a margin that covers the gap for their workload.
+gap is workload-dependent. The margin that covers it has to come from
+`spark.executor.memoryOverhead`. The deprecated `spark.comet.exec.memoryPool.fraction` cannot provide
+one; see [Where Comet's budget comes from](#where-comets-budget-comes-from).
 
 To measure the gap on a real workload, read the executor's periodic memory usage log, which
 reports the bytes Rust's allocator has handed out next to the pools' reservations; see
@@ -519,10 +529,11 @@ declared reservations are a lower bound on physical usage. The known gaps, rough
 much they matter:
 
 - **Real native usage is observed but not acted on.** Comet counts the bytes Rust's allocator has
-  handed out, and each executor logs that count next to the pools' reservations. Nothing reads it at runtime, though: no operator, metric, or policy
-  responds to it, so an executor that outgrows its container is still stopped only by the kill.
-- **`spark.comet.exec.memoryPool.fraction` is a manual proxy for the gap.** It asks operators to
-  guess a per-workload margin rather than measuring anything.
+  handed out, and each executor logs that count next to the pools' reservations. Nothing reads it
+  at runtime, though: no operator, metric, or policy responds to it, so an executor that outgrows
+  its container is still stopped only by the kill.
+- **The memory overhead is sized by hand.** The gap has to fit in `spark.executor.memoryOverhead`,
+  and the memory usage log measures it, but nothing sizes the overhead from it.
 - **`CometArrowAllocator` is unbounded** and participates in no budget.
 - **Buffer and reservation lifetimes are independent across the FFI boundary.** A batch can be
   resident on either side with no reservation covering it, because reservations are made and
