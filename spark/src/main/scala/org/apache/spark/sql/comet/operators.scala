@@ -2155,11 +2155,12 @@ trait CometBaseAggregate {
       val bufferAttrs = aggFunc.aggBufferAttributes
       aggFunc match {
         case cs: CollectSet =>
-          val elementType = cs.children.head.dataType
+          // Match the native planner's collect argument normalization, including nested fields.
+          val elementType = cs.children.head.dataType.asNullable
           val nativeStateType = ArrayType(elementType, containsNull = true)
           output(bufferIdx) = output(bufferIdx).withDataType(nativeStateType)
         case cl: CollectList =>
-          val elementType = cl.children.head.dataType
+          val elementType = cl.children.head.dataType.asNullable
           val nativeStateType = ArrayType(elementType, containsNull = true)
           output(bufferIdx) = output(bufferIdx).withDataType(nativeStateType)
         case _: Percentile =>
