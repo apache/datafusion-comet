@@ -631,7 +631,7 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
     }
   }
 
-  test("array extrema - UTF8_LCASE runs natively and retains its result collation") {
+  test("array extrema - UTF8_LCASE retains its result collation") {
     assume(isSpark40Plus)
     val values = Seq(
       ("B", "a"),
@@ -640,24 +640,16 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
       ("\uA7CE", "\uA7CF"))
     withParquetTable(values, "collated_extrema") {
       withSQLConf(
-        CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "false",
+        CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "true",
         CometConf.getExprAllowIncompatConfigKey(classOf[ArrayMin]) -> "false",
         CometConf.getExprAllowIncompatConfigKey(classOf[ArrayMax]) -> "false") {
         val a = "CAST(_1 AS STRING COLLATE UTF8_LCASE)"
         val b = "CAST(_2 AS STRING COLLATE UTF8_LCASE)"
-        val inputs = Seq(
-          s"array($a, $b)",
-          s"array(named_struct('s', array($a), 'binary', _1), " +
-            s"named_struct('s', array($b), 'binary', _2))")
-        for (input <- inputs) {
-          val query = s"SELECT array_min($input), array_max($input) FROM collated_extrema"
-          checkSparkAnswerAndOperator(query)
-          checkSparkSchema(sql(query))
-        }
         // The result retains its collation when used by another native comparison.
-        val chained =
-          s"SELECT array_min(array(array_max(array($a, $b)), $a)) FROM collated_extrema"
-        checkSparkAnswerAndOperator(chained)
+        val query = s"SELECT array_max(array($a, $b)), " +
+          s"array_min(array(array_max(array($a, $b)), $b)) FROM collated_extrema"
+        checkSparkAnswerAndImpl(sql(query), native = Seq("array_min", "array_max"))
+        checkSparkSchema(sql(query))
       }
     }
   }

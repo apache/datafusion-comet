@@ -21,7 +21,7 @@ package org.apache.comet.expressions
 
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, Expression, Literal}
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{ArrayType, CharType, DataType, DataTypes, DecimalType, MapType, NullType, StringType, StructType, TimestampNTZType, TimestampType, VarcharType}
+import org.apache.spark.sql.types.{ArrayType, DataType, DataTypes, DecimalType, MapType, NullType, StructType, TimestampNTZType, TimestampType}
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.{isSpark40Plus, withFallbackReason}
@@ -197,12 +197,6 @@ object CometCast
 
     (fromType, toType) match {
       case (NullType, _) => Compatible()
-      // Changing only a string's collation preserves its bytes; comparison expressions carry
-      // the target collation separately from Arrow's physical string type. CHAR/VARCHAR targets
-      // also enforce length constraints, so they are not identity casts.
-      case (_: StringType, _: StringType)
-          if !toType.isInstanceOf[CharType] && !toType.isInstanceOf[VarcharType] =>
-        Compatible()
       case (dt: ArrayType, _: ArrayType) if dt.elementType == NullType => Compatible()
       case (ArrayType(DataTypes.DateType, _), ArrayType(toElementType, _))
           if toElementType != DataTypes.IntegerType && toElementType != DataTypes.StringType =>

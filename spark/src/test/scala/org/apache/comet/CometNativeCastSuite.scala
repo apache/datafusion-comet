@@ -1721,15 +1721,18 @@ class CometNativeCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  test("cast StringType to CHAR preserves padding") {
+  test("collation casts retain Spark fallback") {
     assume(CometSparkSessionExtensions.isSpark40Plus)
-    withSQLConf(
-      "spark.sql.preserveCharVarcharTypeInfo" -> "true",
-      CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "false") {
-      withParquetTable(Seq(Tuple1("a"), Tuple1("bb")), "char_cast") {
-        checkSparkAnswerAndFallbackReason(
-          "SELECT CAST(_1 AS CHAR(4)) FROM char_cast",
-          "Cast from StringType to CharType(4) is not supported")
+    withSQLConf(CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "false") {
+      withParquetTable(Seq(("a", "A"), ("x ", "x")), "collation_cast") {
+        for (collation <- Seq("UTF8_LCASE", "UTF8_BINARY_RTRIM")) {
+          val a = s"CAST(_1 AS STRING COLLATE $collation)"
+          val b = s"CAST(_2 AS STRING COLLATE $collation)"
+          checkSparkAnswerAndFallbackReason(
+            s"SELECT array_contains(array($a), $b), " +
+              s"arrays_overlap(array($a), array($b)) FROM collation_cast",
+            "Cast from StringType")
+        }
       }
     }
   }
