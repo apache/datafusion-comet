@@ -1138,7 +1138,7 @@ shuffle, including applications that rely only on remote reliable storage or dec
 <td><p>fair_unified</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.memoryPool.fraction</span></code></p></td>
-<td><p>Fraction of off-heap memory pool that is available to Comet. Only applies to off-heap mode. For more information, refer to the <a class="reference external" href="https://datafusion.apache.org/comet/user-guide/latest/tuning.html">Comet Tuning Guide</a>.</p></td>
+<td><p>Deprecated: this config will be removed in a future release. It does not leave room in spark.memory.offHeap.size for native memory that Comet’s memory pools do not track, because Spark hands out the whole off-heap pool whatever this is set to. Size spark.executor.memoryOverhead for that memory instead. Only applies to off-heap mode, where the fair_unified pool limits each memory consumer in a task to this fraction of the off-heap size divided by the task’s consumers, and the greedy_unified pool ignores it. For more information, refer to the <a class="reference external" href="https://datafusion.apache.org/comet/user-guide/latest/tuning.html">Comet Tuning Guide</a>.</p></td>
 <td><p>1.0</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.maxTempDirectorySize</span></code></p></td>

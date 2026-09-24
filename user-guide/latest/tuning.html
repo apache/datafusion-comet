@@ -849,9 +849,12 @@ free rather than returning to the operating system.</p></li>
 </ul>
 <p>Reserved memory is therefore a lower bound on what Comet really uses, and how far below it sits depends on the
 workload. This is why Comet can stay within the pool’s limit and still push the executor past its container limit.
-Each executor logs how far apart the two are while Comet runs; see <a class="reference internal" href="#sizing-the-overhead-from-the-memory-usage-log">Sizing the Overhead from the Memory Usage Log</a>.
-To leave room for the part that is not counted, set <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.memoryPool.fraction</span></code> to a value less than
-<code class="docutils literal notranslate"><span class="pre">1.0</span></code>, which restricts the amount of memory Comet is allowed to reserve.</p>
+The part that is not counted has to fit in <code class="docutils literal notranslate"><span class="pre">spark.executor.memoryOverhead</span></code>, and each executor logs how large it is
+while Comet runs; see <a class="reference internal" href="#sizing-the-overhead-from-the-memory-usage-log">Sizing the Overhead from the Memory Usage Log</a>.</p>
+<p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.memoryPool.fraction</span></code> is deprecated and does not leave room for it. Spark hands out all of
+<code class="docutils literal notranslate"><span class="pre">spark.memory.offHeap.size</span></code> to the tasks that ask for it, whatever the fraction. The <code class="docutils literal notranslate"><span class="pre">fair_unified</span></code> pool applies the
+fraction to each task separately, where Spark’s own limit of an even share of the pool per running task is tighter
+whenever more than one task is running, and the <code class="docutils literal notranslate"><span class="pre">greedy_unified</span></code> pool ignores it.</p>
 <p>For more details about Spark off-heap memory mode, please refer to <a class="reference external" href="https://spark.apache.org/docs/latest/configuration.html">Spark documentation</a>.</p>
 <p>Comet implements multiple memory pool implementations. The type of pool can be specified with <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.memoryPool</span></code>.</p>
 <p>The valid pool types are:</p>
