@@ -55,6 +55,8 @@ base64 = "0.23.0"
 ryu = "1.0"
 uuid = "1.23.3"
 datasketches = { workspace = true }
+# Pin Unicode 16 for Spark collation compatibility; newer tables can change ordering.
+unicode-case-mapping = "=1.0.0"
 
 [dev-dependencies]
 arrow = {workspace = true}
