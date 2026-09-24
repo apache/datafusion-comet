@@ -139,9 +139,23 @@ so users hunting an unexpected value have a single place to check:
   parses in Spark and returns `NULL` in Comet, while a value padded with non-ASCII whitespace such
   as `U+3000` returns `NULL` in Spark and parses in Comet
   ([#5149](https://github.com/apache/datafusion-comet/issues/5149)).
+- **Explicit positive timestamp years:** Spark accepts strings such as `+7528` as the start
+  of that year, while Comet's native string-to-timestamp cast returns NULL in non-ANSI mode
+  ([#5716](https://github.com/apache/datafusion-comet/issues/5716)).
 - Native `RANGE` window frames with an explicit `PRECEDING` / `FOLLOWING` offset diverge from
   Spark when the boundary arithmetic overflows for `DATE` or `DECIMAL` `ORDER BY` columns
   ([#5022](https://github.com/apache/datafusion-comet/issues/5022)).
+- Ungrouped decimal `SUM` keeps an unbounded intermediate and checks the result precision only
+  when a partial is written out or the sum is evaluated, which matches Spark's whole-stage codegen
+  path. Without codegen Spark buffers the aggregate in an `UnsafeRow` and latches as soon as a
+  running sum leaves the precision. Comet falls back at precision 38 when codegen is disabled by
+  `spark.sql.codegen.wholeStage`, by `spark.sql.codegen.factoryMode=NO_CODEGEN` on Spark 3.5+,
+  by an imperative sibling aggregate, by an expression Spark cannot compile such as a lambda function,
+  or by the `spark.sql.codegen.maxFields` limit on the aggregate's own output and inputs, but not
+  when Spark abandons codegen at runtime, after a compile failure under
+  `spark.sql.codegen.fallback` or when the generated code exceeds
+  `spark.sql.codegen.hugeMethodLimit`, where an intermediate overflow that later cancels out
+  returns `NULL` (or raises under ANSI) in Spark but the recovered value in Comet.
 
 ## Object store cache
 

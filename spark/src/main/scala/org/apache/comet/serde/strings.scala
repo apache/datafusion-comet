@@ -21,8 +21,10 @@ package org.apache.comet.serde
 
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Base64, BitLength, Cast, Concat, ConcatWs, Contains, Elt, Empty2Null, EndsWith, Expression, FindInSet, FormatNumber, FormatString, GetJsonObject, InitCap, Left, Length, Levenshtein, Like, Literal, Lower, Mask, OctetLength, Overlay, RegExpExtract, RegExpExtractAll, RegExpInStr, RegExpReplace, Right, RLike, SoundEx, StartsWith, StringLocate, StringLPad, StringRepeat, StringReplace, StringRPad, StringSplit, StringTranslate, Substring, SubstringIndex, ToCharacter, ToNumber, TryToNumber, UnBase64, Upper}
 import org.apache.spark.sql.types.{ArrayType, BinaryType, DataTypes, IntegerType, LongType, StringType}
+import org.apache.spark.unsafe.types.UTF8String
 
 import org.apache.comet.CometConf
+import org.apache.comet.expressions.{CometRegex, RegexFlavor}
 import org.apache.comet.serde.ExprOuterClass.Expr
 import org.apache.comet.serde.QueryPlanSerde.{createBinaryExpr, exprToProtoInternal, scalarFunctionExprToProto, scalarFunctionExprToProtoWithReturnType}
 import org.apache.comet.shims.CometTypeShim
@@ -82,14 +84,7 @@ object CometUpper extends CometCaseConversionBase[Upper]("upper")
 
 object CometLower extends CometCaseConversionBase[Lower]("lower")
 
-object CometLength extends CometScalarFunction[Length]("length") {
-  override def getUnsupportedReasons(): Seq[String] = Seq("`BinaryType` input is not supported")
-
-  override def getSupportLevel(expr: Length): SupportLevel = expr.child.dataType match {
-    case _: BinaryType => Unsupported(Some("Length on BinaryType is not supported"))
-    case _ => Compatible()
-  }
-}
+object CometLength extends CometScalarFunction[Length]("length")
 
 object CometBitLength extends CometScalarFunction[BitLength]("bit_length") {
   override def getUnsupportedReasons(): Seq[String] = Seq("`BinaryType` input is not supported")
@@ -109,7 +104,12 @@ object CometOctetLength extends CometScalarFunction[OctetLength]("octet_length")
   }
 }
 
-object CometStringTranslate extends CometScalarFunction[StringTranslate]("translate") {
+// Routes through the JVM codegen dispatcher by default via `CodegenDispatchFallback`: the
+// `Incompatible` result below reaches the dispatcher (Spark's own `doGenCode`, bit-exact) instead
+// of falling the projection back to Spark. The native path stays available via `allowIncompatible`.
+object CometStringTranslate
+    extends CometScalarFunction[StringTranslate]("translate")
+    with CodegenDispatchFallback {
   private val incompatReason =
     "DataFusion's translate iterates over Unicode graphemes (Spark uses code points) and" +
       " substitutes U+0000 instead of treating it as a deletion sentinel"
@@ -120,14 +120,24 @@ object CometStringTranslate extends CometScalarFunction[StringTranslate]("transl
     Some(incompatReason))
 }
 
-object CometLevenshtein extends CometExpressionSerde[Levenshtein] {
+/**
+ * The native `levenshtein` kernel compares raw bytes, so a non-UTF8_BINARY collation is reported
+ * as `Unsupported` and `CodegenDispatchFallback` routes it through the JVM codegen dispatcher
+ * instead of failing the projection back to Spark. Dispatching is not only the compatible answer
+ * here, it is also the faster one: over 1M rows a collated `levenshtein` measured 341ms
+ * dispatched against 378ms for Spark. See https://github.com/apache/datafusion-comet/issues/5591.
+ */
+object CometLevenshtein extends CometExpressionSerde[Levenshtein] with CodegenDispatchFallback {
 
-  override def getUnsupportedReasons(): Seq[String] = Seq(
-    "Non-default collation (non-UTF8_BINARY) is not supported")
+  private val collationReason =
+    "Non-default (non-UTF8_BINARY) collated input. The native kernel compares raw bytes, so " +
+      "collation-aware comparison has no native path."
+
+  override def getUnsupportedReasons(): Seq[String] = Seq(collationReason)
 
   override def getSupportLevel(expr: Levenshtein): SupportLevel =
     if (expr.children.exists(child => QueryPlanSerde.isStringCollationType(child.dataType))) {
-      Unsupported(Some("Levenshtein with non-default collation is not supported"))
+      Unsupported(Some(collationReason))
     } else {
       Compatible()
     }
@@ -287,43 +297,31 @@ object CometConcat
 }
 
 object CometConcatWs extends CometExpressionSerde[ConcatWs] with CodegenDispatchFallback {
-
-  // Spark's ConcatWs accepts `array<string>` arguments after the separator and flattens their
-  // elements into the list of strings to join (null elements are skipped, like null strings).
-  // DataFusion's `concat_ws` accepts only string arguments and fails at execution time when it is
-  // handed a list, so these calls have no native path. Because this serde mixes in
-  // `CodegenDispatchFallback`, they run through the JVM codegen dispatcher (Spark's own
-  // `ConcatWs.doGenCode` inside the Comet pipeline) instead, and fall back to Spark only when the
-  // dispatcher is disabled. See https://github.com/apache/datafusion-comet/issues/5675.
-  private val arrayArgumentReason =
-    "`concat_ws` with `array<string>` arguments: Spark flattens the array elements into the " +
-      "strings to join, which DataFusion's `concat_ws` does not support " +
-      "(https://github.com/apache/datafusion-comet/issues/5675)"
-
-  override def getUnsupportedReasons(): Seq[String] = Seq(arrayArgumentReason)
+  override def getUnsupportedReasons(): Seq[String] = Seq("all arguments are foldable")
 
   override def getSupportLevel(expr: ConcatWs): SupportLevel = expr.children.headOption match {
-    // A NULL separator converts directly to a NULL result, so it stays supported.
     case Some(Literal(null, _)) => Compatible()
-    case _ if expr.children.exists(_.dataType.isInstanceOf[ArrayType]) =>
-      Unsupported(Some(arrayArgumentReason))
-    // Decline all-literal args so that Spark's ConstantFolding handles them (it normally folds
-    // them before they reach Comet). With the dispatcher enabled they run through Spark's own
-    // generated code in-pipeline; otherwise the projection falls back to Spark.
     case _ if expr.children.forall(_.foldable) =>
+      // Preserve the existing ConstantFolding/codegen behavior for foldable expressions.
+      // Non-foldable runtime scalars are handled by the native adapter.
       Unsupported(Some("all arguments are foldable"))
     case _ => Compatible()
   }
 
   override def convert(expr: ConcatWs, inputs: Seq[Attribute], binding: Boolean): Option[Expr] = {
     expr.children.headOption match {
-      // Match Spark behavior: when the separator is NULL, the result of concat_ws is NULL.
       case Some(Literal(null, _)) =>
-        val nullLiteral = Literal.create(null, expr.dataType)
-        exprToProtoInternal(nullLiteral, inputs, binding)
-
+        exprToProtoInternal(Literal.create(null, expr.dataType), inputs, binding)
+      case _
+          if expr.children.length == 1 ||
+            expr.children.exists(_.dataType.isInstanceOf[ArrayType]) =>
+        val childExprs = expr.children.map(exprToProtoInternal(_, inputs, binding))
+        scalarFunctionExprToProtoWithReturnType(
+          "spark_concat_ws",
+          expr.dataType,
+          false,
+          childExprs: _*)
       case _ =>
-        // For all other cases, use the generic scalar function implementation.
         CometScalarFunction[ConcatWs]("concat_ws").convert(expr, inputs, binding)
     }
   }
@@ -377,33 +375,66 @@ object CometEndsWith
     with CollationAwareBinaryPredicate[EndsWith]
 
 /**
- * `rlike` runs Spark's own implementation through the codegen dispatcher by default, for
- * byte-exact results. The native (rust) regexp engine is faster but has different semantics from
- * Java regexp, so it is opt-in via `spark.comet.expression.RLike.allowIncompatible`; any case it
- * does not cover (a non-scalar pattern) falls through to the codegen dispatcher via
- * [[CometScalaUDF]].
+ * `rlike` uses a plan-time whitelist ([[org.apache.comet.expressions.CometRegex]]) to decide the
+ * engine. A `UTF8_BINARY` literal pattern that the analyzer proves equivalent to Java regex runs
+ * natively by default. Every other case stays on the JVM codegen dispatcher (Spark's own
+ * `doGenCode` inside the Comet pipeline) unless the user sets
+ * `spark.comet.expression.RLike.allowIncompatible=true`, which can force native execution for a
+ * non-null default-collation literal. Non-default collations remain on the JVM dispatcher because
+ * the native kernel does not implement Spark collation semantics. A non-literal or NULL pattern
+ * always stays on the dispatcher. Falls through to Spark when the dispatcher is disabled.
  */
-object CometRLike extends CometExpressionSerde[RLike] with NativeOptInAvailable {
+object CometRLike
+    extends CometExpressionSerde[RLike]
+    with NativeOptInAvailable
+    with CometTypeShim {
+
+  override def hasConditionalNativeDefault: Boolean = true
+
+  override def getCompatibleNotes(): Seq[String] =
+    Seq(
+      "A `UTF8_BINARY` literal pattern admitted by the " +
+        "[plan-time compatibility analyzer](../../regex.md#when-the-rust-engine-is-safe) is " +
+        "evaluated natively by default.")
 
   override def getIncompatibleReasons(): Seq[String] =
-    Seq("Uses Rust regexp engine, which has different behavior to Java regexp engine")
+    Seq(
+      "For applicable literal patterns outside the automatically admitted subset, the native " +
+        "Rust regex engine may behave differently from Java regex.")
 
-  private def nativeApplicable(expr: RLike): Boolean = expr.right match {
-    case Literal(_, DataTypes.StringType) => true
-    case _ => false
+  private def literalPattern(expr: RLike): Option[String] = expr.right match {
+    case Literal(v: UTF8String, _: StringType) => Some(v.toString)
+    case _ => None
   }
 
-  override def getSupportLevel(expr: RLike): SupportLevel =
-    if (!CometConf.isExprAllowIncompat(getExprConfigName(expr)) && nativeApplicable(expr)) {
+  private def hasNonDefaultCollation(expr: RLike): Boolean =
+    hasNonDefaultStringCollation(expr.left.dataType) ||
+      hasNonDefaultStringCollation(expr.right.dataType)
+
+  private def nativeApplicable(expr: RLike): Boolean =
+    !hasNonDefaultCollation(expr) && literalPattern(expr).isDefined
+
+  private def provablyCompatible(expr: RLike): Boolean =
+    nativeApplicable(expr) &&
+      literalPattern(expr).exists { p =>
+        CometRegex.supportLevel(p, RegexFlavor.RLike).isInstanceOf[Compatible]
+      }
+
+  override def getSupportLevel(expr: RLike): SupportLevel = {
+    val allowIncompat = CometConf.isExprAllowIncompat(getExprConfigName(expr))
+    if (provablyCompatible(expr) || (allowIncompat && nativeApplicable(expr))) {
+      Compatible()
+    } else if (nativeApplicable(expr)) {
       Compatible(nativeOptIn =
         Some(NativeOptIn(CometConf.getExprAllowIncompatConfigKey(getExprConfigName(expr)))))
     } else {
       Compatible()
     }
+  }
 
   override def convert(expr: RLike, inputs: Seq[Attribute], binding: Boolean): Option[Expr] = {
-    if (CometConf.isExprAllowIncompat(getExprConfigName(expr)) && nativeApplicable(expr)) {
-      // Native path: the Rust regexp engine has different semantics from Java regexp.
+    val allowIncompat = CometConf.isExprAllowIncompat(getExprConfigName(expr))
+    if (provablyCompatible(expr) || (allowIncompat && nativeApplicable(expr))) {
       return createBinaryExpr(
         expr,
         expr.left,
@@ -412,8 +443,8 @@ object CometRLike extends CometExpressionSerde[RLike] with NativeOptInAvailable 
         binding,
         (builder, binaryExpr) => builder.setRlike(binaryExpr))
     }
-    // Default: route through the codegen dispatcher so Spark's own doGenCode runs inside the Comet
-    // pipeline. Falls back to Spark when the dispatcher is disabled.
+    // Out-of-subset literal, non-literal, NULL pattern, or non-default collation: run Spark's
+    // own doGenCode inside the Comet pipeline. Falls back to Spark when the dispatcher is off.
     CometScalaUDF.emitJvmCodegenDispatch(expr, inputs, binding)
   }
 }
@@ -423,7 +454,7 @@ private object PadReasons {
   val nonLiteralPadReason = "Only scalar values are supported for the `pad` argument."
 }
 
-object CometStringRPad extends CometExpressionSerde[StringRPad] {
+object CometStringRPad extends CometExpressionSerde[StringRPad] with CodegenDispatchFallback {
 
   override def getUnsupportedReasons(): Seq[String] =
     Seq(PadReasons.literalStrReason, PadReasons.nonLiteralPadReason)
@@ -451,7 +482,7 @@ object CometStringRPad extends CometExpressionSerde[StringRPad] {
   }
 }
 
-object CometStringLPad extends CometExpressionSerde[StringLPad] {
+object CometStringLPad extends CometExpressionSerde[StringLPad] with CodegenDispatchFallback {
 
   override def getUnsupportedReasons(): Seq[String] =
     Seq(PadReasons.literalStrReason, PadReasons.nonLiteralPadReason)

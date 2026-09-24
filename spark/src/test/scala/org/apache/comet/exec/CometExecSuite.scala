@@ -22,6 +22,7 @@ package org.apache.comet.exec
 import java.sql.Date
 import java.time.{Duration, Period}
 
+import scala.collection.mutable.ListBuffer
 import scala.util.Random
 
 import org.scalactic.source.Position
@@ -34,7 +35,7 @@ import org.apache.spark.sql.catalyst.catalog.{BucketSpec, CatalogStatistics, Cat
 import org.apache.spark.sql.catalyst.expressions.{DynamicPruningExpression, Expression, ExpressionInfo, Hex, Literal}
 import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateMode, BloomFilterAggregate}
 import org.apache.spark.sql.comet._
-import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometShuffleExchangeExec}
+import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometNativeShuffle, CometShuffleExchangeExec}
 import org.apache.spark.sql.connector.catalog.InMemoryTableCatalog
 import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, BroadcastQueryStageExec}
@@ -47,6 +48,7 @@ import org.apache.spark.sql.execution.window.WindowExec
 import org.apache.spark.sql.functions._
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.internal.SQLConf.SESSION_LOCAL_TIMEZONE
+import org.apache.spark.sql.types._
 import org.apache.spark.unsafe.types.UTF8String
 
 import org.apache.comet.{CometConf, CometExecIterator, ExtendedExplainInfo}
@@ -74,10 +76,6 @@ class CometExecSuite extends CometTestBase {
       ConfigMap.parseFrom(protobuf)
     }
 
-    // test not setting the config
-    val deserialized: ConfigMap = roundtrip
-    assert(null == deserialized.getEntriesMap.get(CometConf.COMET_EXPLAIN_NATIVE_ENABLED.key))
-
     // test explicitly setting the config
     for (value <- Seq("true", "false")) {
       withSQLConf(CometConf.COMET_EXPLAIN_NATIVE_ENABLED.key -> value) {
@@ -85,6 +83,29 @@ class CometExecSuite extends CometTestBase {
         assert(
           value == deserialized.getEntriesMap.get(CometConf.COMET_EXPLAIN_NATIVE_ENABLED.key))
       }
+    }
+  }
+
+  test("SQLConf serde resolves the configs that native code parses") {
+    def entries = ConfigMap.parseFrom(CometExecIterator.serializeCometSQLConfs()).getEntriesMap
+    val flags = Seq(
+      CometConf.COMET_DEBUG_ENABLED,
+      CometConf.COMET_DEBUG_MEMORY_ENABLED,
+      CometConf.COMET_EXPLAIN_NATIVE_ENABLED,
+      CometConf.COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED,
+      CometConf.COMET_TRACING_ENABLED)
+
+    // Native code parses only a bare byte count or a lowercase boolean and silently falls back
+    // to its own default otherwise, so these cross JNI resolved, defaults included.
+    val defaults = entries
+    assert(defaults.get(CometConf.COMET_MAX_TEMP_DIRECTORY_SIZE.key) == "107374182400")
+    flags.foreach(flag => assert(defaults.get(flag.key) == "false", flag.key))
+
+    withSQLConf(
+      (CometConf.COMET_MAX_TEMP_DIRECTORY_SIZE.key -> "10g") +: flags.map(_.key -> "TRUE"): _*) {
+      val resolved = entries
+      assert(resolved.get(CometConf.COMET_MAX_TEMP_DIRECTORY_SIZE.key) == "10737418240")
+      flags.foreach(flag => assert(resolved.get(flag.key) == "true", flag.key))
     }
   }
 
@@ -2413,14 +2434,35 @@ class CometExecSuite extends CometTestBase {
             metrics.contains("time_elapsed_scanning_total"),
             s"Missing time_elapsed_scanning_total. Available: ${metrics.keys}")
           assert(metrics.contains("bytes_scanned"))
+          assert(metrics("bytes_scanned").name.contains("Number of bytes scanned"))
           assert(metrics.contains("output_rows"))
           assert(metrics.contains("time_elapsed_opening"))
           assert(metrics.contains("time_elapsed_processing"))
           assert(metrics.contains("time_elapsed_scanning_until_data"))
+          Seq(
+            "scan_io_data_bytes",
+            "scan_io_metadata_bytes",
+            "scan_io_footer_reads",
+            "scan_io_footer_bytes",
+            "scan_io_object_store_get_calls",
+            "scan_io_object_store_get_requested_bytes",
+            "scan_io_object_store_response_bytes_read",
+            "scan_io_metadata_cache_hits",
+            "scan_io_metadata_cache_misses").foreach { name =>
+            assert(metrics.contains(name), s"Missing $name. Available: ${metrics.keys}")
+          }
           assert(
             metrics("time_elapsed_scanning_total").value > 0,
             "time_elapsed_scanning_total should be > 0")
           assert(metrics("bytes_scanned").value > 0, "bytes_scanned should be > 0")
+          assert(metrics("scan_io_data_bytes").value > 0)
+          assert(metrics("scan_io_metadata_bytes").value > 0)
+          assert(metrics("scan_io_footer_reads").value > 0)
+          assert(metrics("scan_io_footer_bytes").value > 0)
+          assert(metrics("scan_io_object_store_get_calls").value == 0)
+          assert(metrics("scan_io_object_store_get_requested_bytes").value == 0)
+          assert(metrics("scan_io_object_store_response_bytes_read").value == 0)
+          assert(metrics("scan_io_metadata_cache_misses").value > 0)
           assert(metrics("output_rows").value > 0, "output_rows should be > 0")
           assert(metrics("time_elapsed_opening").value > 0, "time_elapsed_opening should be > 0")
           assert(
@@ -3704,6 +3746,98 @@ class CometExecSuite extends CometTestBase {
         }
       }
     })
+  }
+
+  test("SparkToColumnar admits only binary string arrays through the array gate") {
+    for (nullable <- Seq(false, true); containsNull <- Seq(false, true)) {
+      val field = StructField("tags", ArrayType(StringType, containsNull), nullable)
+      Seq(StructType(Seq(field)), StructType(Seq(StructField("nested", StructType(Seq(field))))))
+        .foreach { schema =>
+          assert(CometSparkToColumnarExec.isSchemaSupported(schema, ListBuffer.empty))
+        }
+    }
+    val unsupported = Seq(
+      ArrayType(IntegerType),
+      ArrayType(BinaryType),
+      ArrayType(ArrayType(StringType)),
+      ArrayType(StructType(Seq(StructField("s", StringType)))),
+      MapType(StringType, StringType)) ++
+      (if (isSpark40Plus) Seq(DataType.fromDDL("ARRAY<STRING COLLATE UTF8_LCASE>"))
+       else Seq.empty)
+    unsupported.foreach { dataType =>
+      val schema = StructType(Seq(StructField("value", dataType)))
+      assert(!CometSparkToColumnarExec.isSchemaSupported(schema, ListBuffer.empty), dataType)
+      assert(
+        !CometSparkToColumnarExec.isSchemaSupported(
+          StructType(Seq(StructField("nested", schema))),
+          ListBuffer.empty),
+        dataType)
+    }
+  }
+
+  test("SparkToColumnar string arrays cross JSON and Parquet native boundaries") {
+    val schema = new StructType()
+      .add("id", IntegerType)
+      .add("tags", ArrayType(StringType))
+      .add("nested", new StructType().add("tags", ArrayType(StringType)))
+    val rows = Seq(
+      Row(1, null, null),
+      Row(2, Seq.empty[String], Row(null)),
+      Row(3, Seq(null), Row(Seq.empty[String])),
+      Row(4, Seq("", "é", "東京", "a\u0000b", "dup", "dup"), Row(Seq(null, "x"))),
+      Row(5, Seq("東京" * 32768), Row(Seq("long"))),
+      Row(6, null, Row(null)),
+      Row(7, Seq.empty[String], null))
+    for (format <- Seq("json", "parquet"); v1 <- Seq("", format);
+      vectorized <- (if (format == "parquet") Seq(false, true) else Seq(false))) {
+      val convertKey =
+        if (format == "json") CometConf.COMET_CONVERT_FROM_JSON_ENABLED.key
+        else CometConf.COMET_CONVERT_FROM_PARQUET_ENABLED.key
+      withSQLConf(
+        SQLConf.USE_V1_SOURCE_LIST.key -> v1,
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+        SQLConf.PARQUET_VECTORIZED_READER_ENABLED.key -> vectorized.toString,
+        "spark.sql.parquet.enableNestedColumnVectorizedReader" -> "true",
+        CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "false",
+        CometConf.COMET_BATCH_SIZE.key -> "2",
+        CometConf.COMET_SHUFFLE_MODE.key -> "native",
+        convertKey -> "true") {
+        withTempPath { dir =>
+          withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+            spark
+              .createDataFrame(spark.sparkContext.parallelize(rows, 1), schema)
+              .write
+              .format(format)
+              .save(dir.toString)
+          }
+          def source = spark.read.schema(schema).format(format).load(dir.toString)
+          def query = source
+            .filter("id > 0")
+            .selectExpr("id", "tags", "nested", "size(tags) AS tag_count")
+          val (_, plan) = checkSparkAnswerAndOperator(
+            query,
+            includeClasses = Seq(
+              classOf[CometSparkToColumnarExec],
+              classOf[CometProjectExec],
+              classOf[CometFilterExec]))
+          val conversions = collect(plan) { case c: CometSparkToColumnarExec => c }
+          assert(conversions.size == 1)
+          assert(conversions.head.child.supportsColumnar == vectorized)
+          checkSparkSchema(query)
+          val (_, shuffled) = checkSparkAnswerAndOperator(
+            query.repartition(2, col("id")),
+            includeClasses = Seq(classOf[CometShuffleExchangeExec]))
+          val exchanges = collect(shuffled) { case s: CometShuffleExchangeExec => s }
+          assert(exchanges.nonEmpty && exchanges.forall(_.shuffleType == CometNativeShuffle))
+          // Stop before draining the input to exercise normal task-completion cleanup.
+          checkSparkAnswer(query.limit(1))
+          withSQLConf(convertKey -> "false") {
+            val (_, disabled) = checkSparkAnswer(query)
+            assert(collect(disabled) { case c: CometSparkToColumnarExec => c }.isEmpty)
+          }
+        }
+      }
+    }
   }
 
   test("SparkToColumnar over BatchScan (Spark Parquet reader)") {

@@ -15,59 +15,45 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! A temporary fork of DataFusion's `UnnestExec` that respects
-//! `datafusion.execution.batch_size`.
+//! A fork of DataFusion's `UnnestExec`, kept for two unnesting kernels Comet has specialized.
 //!
 //! # Why this fork exists
 //!
-//! DataFusion's `UnnestExec` emits exactly one output batch per input batch, however many
-//! rows the unnesting produces, and never consults `batch_size`. For `explode` this means
-//! an 8192-row batch of 100-element arrays comes back as a single 819,200-row batch, and
-//! peak memory scales with input batch size times array length rather than with
-//! `batch_size`.
+//! It was created because `UnnestExec` emitted exactly one output batch per input batch,
+//! however many rows the unnesting produced, and never consulted
+//! `datafusion.execution.batch_size`. That fix is now upstream
+//! (apache/datafusion#24384, in DataFusion 55.1.0), so it is no longer the reason to keep
+//! the fork. What is left are two performance paths that have not been upstreamed:
 //!
-//! The fix has been submitted upstream:
-//!
-//! * <https://github.com/apache/datafusion/issues/24383>
-//! * <https://github.com/apache/datafusion/pull/24384>
+//! * `list_output_lens`, which computes the per-row output lengths of a single `List` column
+//!   in one pass over the offsets instead of chaining six arrow kernels;
+//! * the contiguous-run fast path in `unnest_list_array`, which returns a slice of the child
+//!   values instead of gathering them, and the buffer fills in `create_take_indices`.
 //!
 //! # Deleting this file
 //!
-//! Once Comet moves to a DataFusion release carrying apache/datafusion#24384, delete this
-//! module and go back to `datafusion::physical_plan::unnest::UnnestExec` in the planner.
-//!
-//! Note that <https://github.com/apache/datafusion-comet/issues/5210> is a *different*
-//! unnest cleanup — it tracks adopting upstream `unnest_outer`
-//! (apache/datafusion#22100) to retire `ListEmptyToNullExpr`. The two upstream PRs can
-//! land in different releases, so closing 5210 is not a signal to delete this fork.
+//! Upstream those two paths, then delete this module and go back to
+//! `datafusion::physical_plan::unnest::UnnestExec` in the planner. Deleting it before that
+//! would regress `explode`, so measure with `native/core/benches/explode.rs` first.
 //!
 //! # What was forked
 //!
-//! The unnesting kernels below (`build_batch` and everything it calls) are copied from
+//! The unnesting kernels below (`build_batch` and everything it calls) started as a copy of
 //! `datafusion/physical-plan/src/unnest.rs` at DataFusion 54.1.0, upstream revision
 //! `cc7565be1ee97ba8fa2f5d6da373c5e38d81bb13`. They are private to
 //! `datafusion-physical-plan`, so they cannot be called from here without copying them.
-//! Leave them semantically unmodified so the eventual deletion is mechanical; the
-//! Comet-specific behavior lives entirely in `ExplodeExec` and `ExplodeStream`.
 //!
-//! They are not byte-identical to upstream: Comet's rustfmt uses `max_width = 100` and
-//! edition 2021, DataFusion's uses `max_width = 90` and edition 2024, so `cargo fmt`
-//! reflows some signatures. To audit for real changes, reformat this region at
-//! `max_width = 90` and diff it against upstream `unnest.rs`; that reduces the difference
-//! to a single cosmetic line wrap in `flatten_struct_cols`. The deliberate edits are:
+//! They have since been specialized for the shapes Comet actually plans, so this is no longer a
+//! copy that can be diffed against upstream line by line. The deliberate divergences are:
 //!
-//! * the `lt` import path noted below, since Comet does not depend on `arrow_ord` directly;
+//! * the `eq` and `lt` import path noted below, since Comet does not depend on `arrow_ord`
+//!   directly;
 //! * dropping upstream's `ListUnnest` declaration in favor of importing the public one;
-//! * the `precomputed_lengths` parameter on `build_batch` and `list_unnest_at_level`, which
-//!   is itself part of apache/datafusion#24384 and so disappears with the rest of the fork.
+//! * `find_longest_length` applies the empty-list bump once after the row-wise maximum rather
+//!   than once per array, which is equivalent because `max` is associative;
+//! * `list_output_lens` and the contiguous-run fast path described above.
 //!
-//! Everything else this fork does — chunking, plan properties, EOF handling — mirrors that
-//! same upstream PR, so keep the two in step: a change made here that is not in #24384
-//! either belongs upstream or does not belong at all.
-//!
-//! Note that 54.1.0 predates upstream's `NullHandling` enum and still uses
-//! `UnnestOptions::preserve_nulls`, which is why the planner wraps empty arrays with
-//! `ListEmptyToNullExpr` to get Spark's `explode_outer` semantics.
+//! `ExplodeExec` and `ExplodeStream` were always Comet's own.
 
 use arrow::array::{
     new_null_array, Array, ArrayRef, AsArray, BooleanBufferBuilder, FixedSizeListArray, Int64Array,
@@ -79,9 +65,9 @@ use arrow::compute::kernels::zip::zip;
 use arrow::compute::{cast, is_not_null, kernels, sum};
 use arrow::datatypes::{DataType, Int64Type, SchemaRef};
 use arrow::record_batch::RecordBatch;
-// Upstream imports this as `arrow_ord::cmp::lt`; Comet reaches it through `arrow`,
+// Upstream imports these as `arrow_ord::cmp::{eq, lt}`; Comet reaches them through `arrow`,
 // which does not have `arrow_ord` as a direct dependency.
-use arrow::compute::kernels::cmp::lt;
+use arrow::compute::kernels::cmp::{eq, lt};
 use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::common::{
     exec_datafusion_err, exec_err, internal_err, Constraints, HashMap, HashSet, Result,
@@ -432,8 +418,10 @@ impl ExplodeStream {
                 }
 
                 // A chunk can legitimately produce no rows at all (for example rows whose
-                // arrays are all empty and `preserve_nulls` is false); `build_batch` signals
-                // that with `None` rather than an empty batch, so move on to the next chunk.
+                // arrays are all empty under `NullHandling::Drop`, which is plain `explode`);
+                // `build_batch` signals that with `None` rather than an empty batch, so move on
+                // to the next chunk. Under the outer handling every row yields at least one row,
+                // so this cannot happen there.
                 if let Some(batch) = result? {
                     debug_assert!(batch.num_rows() > 0);
                     (&batch).record_output(&self.baseline_metrics);
@@ -508,15 +496,59 @@ impl ExplodeStream {
         // This is exactly the per-row length that `list_unnest_at_level` derives when it
         // actually unnests, so the chunk boundaries are exact rather than estimated, and each
         // chunk's slice of it is handed back to `build_batch` instead of recomputed there.
+        if let [single] = list_arrays.as_slice() {
+            if let Some(list) = single.as_any().downcast_ref::<ListArray>() {
+                return Ok(Some(list_output_lens(list, &self.options)));
+            }
+        }
         let longest_length = find_longest_length(&list_arrays, &self.options)?;
         Ok(Some(longest_length.as_primitive::<Int64Type>().clone()))
     }
 }
 
+/// The per-row unnested length of a single `List` column: the row's list length, with NULL and
+/// empty rows substituted according to [`datafusion::common::NullHandling`].
+///
+/// What [`find_longest_length`] computes when handed one array, in one pass over the offsets
+/// rather than the kernels it chains to stay generic over list types — `length` (which returns
+/// `Int32` for `List`), `cast` to widen it, `is_not_null` and `zip` to substitute the NULL
+/// length, and a second `eq`/`zip` pair to bump the empty rows. Comet only ever plans `List`,
+/// and `explode` plans exactly one of them, so this is the path every non-positional explode
+/// takes; `posexplode` unnests two arrays in parallel and uses the general version.
+fn list_output_lens(list: &ListArray, options: &UnnestOptions) -> PrimitiveArray<Int64Type> {
+    // The floor every row's length is raised to. Under `PreserveAndExpandEmpty` an empty row
+    // expands to one NULL just like a NULL row, including in an array with no validity buffer,
+    // which can still hold empty rows.
+    let min_length = if options.expand_empty_as_null() { 1 } else { 0 };
+    // `find_longest_length` applies that floor after substituting the NULL length, so it reaches
+    // substituted NULL rows too. Fold it in rather than leaning on `expand_empty_as_null`
+    // implying `preserve_nulls`, so the two agree for any future `NullHandling`.
+    let null_length = cmp::max(if options.preserve_nulls() { 1 } else { 0 }, min_length);
+    let row_length = |w: &[i32]| cmp::max((w[1] - w[0]) as i64, min_length);
+    let offsets = list.offsets();
+    // Like `find_longest_length`, the result is non-null throughout: a NULL row reports
+    // `null_length` rather than a NULL length, which `create_take_indices` relies on.
+    let lens: Vec<i64> = match list.nulls() {
+        None => offsets.windows(2).map(row_length).collect(),
+        Some(nulls) => offsets
+            .windows(2)
+            .enumerate()
+            .map(|(row, w)| {
+                if nulls.is_valid(row) {
+                    row_length(w)
+                } else {
+                    null_length
+                }
+            })
+            .collect(),
+    };
+    PrimitiveArray::<Int64Type>::from(lens)
+}
+
 // ---------------------------------------------------------------------------------------
-// Everything below is copied from DataFusion 54.1.0 `physical-plan/src/unnest.rs`
-// (revision cc7565be1ee97ba8fa2f5d6da373c5e38d81bb13). See the module docs for why, and
-// for how to audit it against upstream. Do not change it semantically.
+// Everything below started as a copy of DataFusion 54.1.0 `physical-plan/src/unnest.rs`
+// (revision cc7565be1ee97ba8fa2f5d6da373c5e38d81bb13), since specialized for Comet. See the
+// module docs for what diverges and why.
 // ---------------------------------------------------------------------------------------
 
 /// Given a set of struct column indices to flatten
@@ -884,24 +916,25 @@ fn build_batch(
 
 /// Find the longest list length among the given list arrays for each row.
 ///
-/// For example if we have the following two list arrays:
+/// The per-row length of one array is its list length, with NULL and empty rows substituted
+/// according to [`datafusion::common::NullHandling`]. For a single array:
 ///
 /// ```ignore
-/// l1: [1, 2, 3], null, [], [3]
-/// l2: [4,5], [], null, [6, 7]
+/// l1:                        [1, 2, 3], null, [], [3]
+///
+/// Drop:                              3,    0,  0,   1
+/// Preserve:                          3,    1,  0,   1
+/// PreserveAndExpandEmpty:            3,    1,  1,   1
 /// ```
 ///
-/// If `preserve_nulls` is false, the longest length array will be:
+/// The substitution happens per array, before the row-wise maximum, so a row that is empty in
+/// one array still takes the longer length from another:
 ///
 /// ```ignore
-/// longest_length: [3, 0, 0, 2]
-/// ```
+/// l2:                          [4, 5],   [], null, [6, 7]
 ///
-/// whereas if `preserve_nulls` is true, the longest length array will be:
-///
-///
-/// ```ignore
-/// longest_length: [3, 1, 1, 2]
+/// PreserveAndExpandEmpty:           2,    1,    1,      2
+/// longest_length(l1, l2):           3,    1,    1,      2
 /// ```
 fn find_longest_length(list_arrays: &[ArrayRef], options: &UnnestOptions) -> Result<ArrayRef> {
     // The length of a NULL list
@@ -928,7 +961,18 @@ fn find_longest_length(list_arrays: &[ArrayRef], options: &UnnestOptions) -> Res
             zip(&is_lt, &current, &longest)
         },
     )?;
-    Ok(longest_length)
+
+    if !options.expand_empty_as_null() {
+        return Ok(longest_length);
+    }
+    // Bump empty lists to length 1 so they produce a single NULL-padded output row. Upstream
+    // does this per array, inside the map above. `max` is associative and commutative, so
+    // `max(max(a, 1), max(b, 1)) == max(max(a, b), 1)` and one pass here is equivalent to one
+    // pass per array. The NULL substitution above has already set NULL rows to the preserved
+    // length, which is at least 1 whenever this mode is set, so they are not matched.
+    let zero = Scalar::new(Int64Array::from_value(0, 1));
+    let one = Scalar::new(Int64Array::from_value(1, 1));
+    Ok(zip(&eq(&longest_length, &zero)?, &one, &longest_length)?)
 }
 
 /// Trait defining common methods used for unnesting, implemented by list array types.
@@ -938,6 +982,14 @@ trait ListArrayType: Array {
 
     /// Returns the start and end offset of the values for the given row.
     fn value_offsets(&self, row: usize) -> (i64, i64);
+
+    /// Whether consecutive rows occupy consecutive ranges of [`values`](Self::values), so that a
+    /// run of rows is one slice of it.
+    ///
+    /// True for the offset-based list types, where row `i` is `[offsets[i], offsets[i + 1])` and
+    /// so ends exactly where row `i + 1` begins. False for the view types, whose per-row offsets
+    /// are independent and may overlap, repeat, or leave gaps.
+    fn is_contiguous(&self) -> bool;
 }
 
 impl ListArrayType for ListArray {
@@ -948,6 +1000,10 @@ impl ListArrayType for ListArray {
     fn value_offsets(&self, row: usize) -> (i64, i64) {
         let offsets = self.value_offsets();
         (offsets[row].into(), offsets[row + 1].into())
+    }
+
+    fn is_contiguous(&self) -> bool {
+        true
     }
 }
 
@@ -960,6 +1016,10 @@ impl ListArrayType for LargeListArray {
         let offsets = self.value_offsets();
         (offsets[row], offsets[row + 1])
     }
+
+    fn is_contiguous(&self) -> bool {
+        true
+    }
 }
 
 impl ListArrayType for FixedSizeListArray {
@@ -970,6 +1030,10 @@ impl ListArrayType for FixedSizeListArray {
     fn value_offsets(&self, row: usize) -> (i64, i64) {
         let start = self.value_offset(row) as i64;
         (start, start + self.value_length() as i64)
+    }
+
+    fn is_contiguous(&self) -> bool {
+        true
     }
 }
 
@@ -983,6 +1047,10 @@ impl ListArrayType for ListViewArray {
         let size = self.value_sizes()[row] as i64;
         (offset, offset + size)
     }
+
+    fn is_contiguous(&self) -> bool {
+        false
+    }
 }
 
 impl ListArrayType for LargeListViewArray {
@@ -994,6 +1062,10 @@ impl ListArrayType for LargeListViewArray {
         let offset = self.value_offsets()[row];
         let size = self.value_sizes()[row];
         (offset, offset + size)
+    }
+
+    fn is_contiguous(&self) -> bool {
+        false
     }
 }
 
@@ -1025,6 +1097,52 @@ fn unnest_list_arrays(
         .collect::<Result<_>>()
 }
 
+/// Whether unnesting `list_array` against `length_array` would gather exactly the contiguous run
+/// `values[offsets.first()..offsets.last()]`, in which case [`unnest_list_array`] can slice the
+/// child instead of building an index array and gathering through it.
+///
+/// The run is the right answer only if the loop in [`unnest_list_array`] would emit each row's
+/// values in order with nothing added and nothing skipped, which needs three things:
+///
+/// * The rows are laid out consecutively in the child, so a run of them is one slice. The view
+///   types are excluded here rather than checked, since their offsets are unordered.
+/// * No row is padded. `target >= value` holds per row, so it is enough that the totals agree:
+///   `capacity` is the sum of the targets and the offset span is the sum of the values.
+/// * No NULL row holds elements. Arrow permits a NULL list slot to span a non-empty range, and
+///   the loop skips those elements while the slice would include them. Builders and the Parquet
+///   reader emit an empty range, so this scan almost always confirms rather than rejects, and it
+///   only runs when the array has nulls at all.
+///
+/// The last two conditions are independent: a NULL row spanning elements can cancel out padding
+/// elsewhere and leave the totals matching a run that is not the one to take.
+fn is_contiguous_unnest(list_array: &dyn ListArrayType, capacity: usize) -> bool {
+    let len = list_array.len();
+    if len == 0 || !list_array.is_contiguous() {
+        return false;
+    }
+
+    let (first, _) = list_array.value_offsets(0);
+    let (_, last) = list_array.value_offsets(len - 1);
+    if last - first != capacity as i64 {
+        return false;
+    }
+
+    if list_array.null_count() > 0 {
+        let has_populated_null = (0..len).any(|row| {
+            if !list_array.is_null(row) {
+                return false;
+            }
+            let (start, end) = list_array.value_offsets(row);
+            end > start
+        });
+        if has_populated_null {
+            return false;
+        }
+    }
+
+    true
+}
+
 /// Unnest a list array according the target length array.
 ///
 /// Consider a list array like this:
@@ -1051,6 +1169,26 @@ fn unnest_list_array(
     capacity: usize,
 ) -> Result<ArrayRef> {
     let values = list_array.values();
+
+    // Unnesting a single list column pads nothing, so the elements come out in the order they
+    // are already stored and the gather below would read straight through them. Hand back a
+    // slice of the child instead: no index buffer, no copy of the element data, which for a
+    // string or nested element type is the bulk of the operator's work. Comet reaches this for
+    // plain `explode`, and for both columns of `posexplode`, whose position array is built with
+    // the same per-row lengths. `explode_outer` falls through as soon as a row is NULL or empty,
+    // because those rows are padded.
+    //
+    // The result aliases the child rather than owning a compacted copy, and `ListArray::slice`
+    // leaves `values` whole, so this is the child of the whole input batch and not of the chunk.
+    // Every chunk of one input batch therefore pins the same buffer, which between them they
+    // fill; a downstream operator that keeps only some of those chunks pins all of it. That is
+    // bounded by one input batch's expansion, which `pending_input` already holds materialized,
+    // and slicing the input is what `BatchSplitStream` above does too.
+    if is_contiguous_unnest(list_array, capacity) {
+        let (first, _) = list_array.value_offsets(0);
+        return Ok(values.slice(first as usize, capacity));
+    }
+
     let mut take_indices_builder = PrimitiveArray::<Int64Type>::builder(capacity);
     for row in 0..list_array.len() {
         let mut value_length = 0;
@@ -1067,9 +1205,7 @@ fn unnest_list_array(
             "value length is beyond the longest length"
         );
         // Pad with NULL values
-        for _ in value_length..target_length {
-            take_indices_builder.append_null();
-        }
+        take_indices_builder.append_nulls((target_length - value_length) as usize);
     }
     Ok(kernels::take::take(
         &values,
@@ -1101,13 +1237,14 @@ fn create_take_indices(
         length_array.null_count() == 0,
         "length array should not contain nulls"
     );
-    let mut builder = PrimitiveArray::<Int64Type>::builder(capacity);
-    for (index, repeat) in length_array.iter().enumerate() {
-        // The length array should not contain nulls, so unwrap is safe
-        let repeat = repeat.unwrap();
-        (0..repeat).for_each(|_| builder.append_value(index as i64));
+    // A run of one index at a time, so fill the buffer directly rather than appending element by
+    // element through a builder: there is no validity to track, and each row becomes one fill of
+    // `repeat` slots rather than `repeat` calls.
+    let mut indices: Vec<i64> = Vec::with_capacity(capacity);
+    for (index, repeat) in length_array.values().iter().enumerate() {
+        indices.resize(indices.len() + *repeat as usize, index as i64);
     }
-    builder.finish()
+    PrimitiveArray::<Int64Type>::from(indices)
 }
 
 /// Create a batch of arrays based on an input `batch` and a `indices` array.
@@ -1124,7 +1261,7 @@ fn create_take_indices(
 /// ```
 ///
 /// then the `unnested_list_arrays` contains the unnest column that will replace `c1` in
-/// the final batch if `preserve_nulls` is true:
+/// the final batch under [`datafusion::common::NullHandling::Preserve`]:
 ///
 /// ```ignore
 /// c1: 1, null, 2, 3, 4, null, 5, 6
@@ -1178,7 +1315,9 @@ fn repeat_arrs_from_indices(
 mod tests {
     use super::*;
     use arrow::array::Int32Array;
+    use arrow::buffer::{NullBuffer, OffsetBuffer, ScalarBuffer};
     use arrow::datatypes::{Field, Int32Type, Schema};
+    use datafusion::common::NullHandling;
     use datafusion::datasource::memory::MemorySourceConfig;
     use datafusion::datasource::source::DataSourceExec;
     use datafusion::physical_expr::{LexOrdering, PhysicalSortExpr};
@@ -1216,18 +1355,18 @@ mod tests {
     async fn explode(
         input: Vec<RecordBatch>,
         batch_size: usize,
-        preserve_nulls: bool,
+        null_handling: NullHandling,
     ) -> Result<Vec<RecordBatch>> {
         let input_schema = input[0].schema();
         let source = MemorySourceConfig::try_new_exec(&[input], input_schema, None)?;
-        explode_child(source, batch_size, preserve_nulls).await
+        explode_child(source, batch_size, null_handling).await
     }
 
     /// As [`explode`], but over an arbitrary child plan.
     async fn explode_child(
         child: Arc<dyn ExecutionPlan>,
         batch_size: usize,
-        preserve_nulls: bool,
+        null_handling: NullHandling,
     ) -> Result<Vec<RecordBatch>> {
         let output_schema = Arc::new(Schema::new(vec![Field::new("l", DataType::Int32, true)]));
         let explode = ExplodeExec::new(
@@ -1238,7 +1377,7 @@ mod tests {
             }],
             vec![],
             output_schema,
-            UnnestOptions::new().with_preserve_nulls(preserve_nulls),
+            UnnestOptions::new().with_null_handling(null_handling),
         )?;
         let task_ctx = Arc::new(
             TaskContext::default()
@@ -1276,7 +1415,7 @@ mod tests {
         // *several* input rows (2 rows -> 6 rows out; a third would overshoot 8). Using
         // arrays longer than batch_size would send every row down the oversized-build path
         // instead, which `single_row_exceeding_batch_size_is_sliced` already covers.
-        let batches = explode(vec![list_batch(&[Some(3); 10])], 8, true)
+        let batches = explode(vec![list_batch(&[Some(3); 10])], 8, NullHandling::Preserve)
             .await
             .unwrap();
         assert_eq!(sizes(&batches), vec![6, 6, 6, 6, 6]);
@@ -1288,9 +1427,13 @@ mod tests {
         // Pins *how* the limit is met, which is what bounds peak memory. 3 rows of 3
         // elements at batch_size=4 gives [3, 3, 3] when the input is chunked per row;
         // building all 9 first and slicing would give [4, 4, 1].
-        let batches = explode(vec![list_batch(&[Some(3), Some(3), Some(3)])], 4, true)
-            .await
-            .unwrap();
+        let batches = explode(
+            vec![list_batch(&[Some(3), Some(3), Some(3)])],
+            4,
+            NullHandling::Preserve,
+        )
+        .await
+        .unwrap();
         assert_eq!(
             sizes(&batches),
             vec![3, 3, 3],
@@ -1302,7 +1445,7 @@ mod tests {
     #[tokio::test]
     async fn single_row_exceeding_batch_size_is_sliced() {
         // One row cannot be chunked on the input side, so the oversized build is sliced.
-        let batches = explode(vec![list_batch(&[Some(25)])], 10, true)
+        let batches = explode(vec![list_batch(&[Some(25)])], 10, NullHandling::Preserve)
             .await
             .unwrap();
         assert_eq!(sizes(&batches), vec![10, 10, 5]);
@@ -1313,13 +1456,13 @@ mod tests {
     /// apply regardless of null handling: bounded, non-empty, and totalling `expected_rows`.
     async fn assert_chunking_matches_whole(
         lens: &[Option<usize>],
-        preserve_nulls: bool,
+        null_handling: NullHandling,
         expected_rows: usize,
     ) {
-        let chunked = explode(vec![list_batch(lens)], 2, preserve_nulls)
+        let chunked = explode(vec![list_batch(lens)], 2, null_handling)
             .await
             .unwrap();
-        let whole = explode(vec![list_batch(lens)], 1024, preserve_nulls)
+        let whole = explode(vec![list_batch(lens)], 1024, null_handling)
             .await
             .unwrap();
 
@@ -1334,17 +1477,27 @@ mod tests {
 
     #[tokio::test]
     async fn chunking_preserves_outer_semantics() {
-        // With preserve_nulls (Spark's explode_outer, after the planner has rewritten empty
-        // arrays to NULL), a NULL array yields one NULL row. The per-row counts driving
-        // chunking must agree, or boundaries drift out of step with the unnesting.
-        assert_chunking_matches_whole(&[Some(3), None, Some(2), None], true, 7).await;
+        // Spark's explode_outer: a NULL array and an empty one each yield one NULL row. The
+        // per-row counts driving chunking must agree, or boundaries drift out of step with the
+        // unnesting.
+        assert_chunking_matches_whole(
+            &[Some(3), None, Some(0), Some(2), None],
+            NullHandling::PreserveAndExpandEmpty,
+            8,
+        )
+        .await;
     }
 
     #[tokio::test]
     async fn chunking_preserves_non_outer_semantics() {
-        // Without preserve_nulls (plain explode), NULL arrays produce nothing. Chunks made
-        // up entirely of such rows must not stall the stream or emit an empty batch.
-        assert_chunking_matches_whole(&[None, Some(4), None, Some(1)], false, 5).await;
+        // Plain explode: NULL and empty arrays both produce nothing. Chunks made up entirely of
+        // such rows must not stall the stream or emit an empty batch.
+        assert_chunking_matches_whole(
+            &[None, Some(4), Some(0), None, Some(1)],
+            NullHandling::Drop,
+            5,
+        )
+        .await;
     }
 
     #[tokio::test]
@@ -1356,7 +1509,7 @@ mod tests {
             list_batch(&[Some(1)]),
             list_batch(&[Some(7), Some(2)]),
         ];
-        let batches = explode(input, 4, true).await.unwrap();
+        let batches = explode(input, 4, NullHandling::Preserve).await.unwrap();
         let sizes = sizes(&batches);
         assert!(
             sizes.iter().all(|s| *s <= 4),
@@ -1415,7 +1568,7 @@ mod tests {
                 depth: 1,
             }],
             struct_column_indices: HashSet::new(),
-            options: UnnestOptions::new().with_preserve_nulls(true),
+            options: UnnestOptions::new(),
             baseline_metrics: BaselineMetrics::new(&metrics, 0),
             input_batches: MetricBuilder::new(&metrics).counter("input_batches", 0),
             input_rows: MetricBuilder::new(&metrics).counter("input_rows", 0),
@@ -1478,7 +1631,7 @@ mod tests {
             }],
             vec![],
             output_schema,
-            UnnestOptions::new().with_preserve_nulls(true),
+            UnnestOptions::new(),
         )
         .unwrap();
 
@@ -1488,5 +1641,240 @@ mod tests {
             .expect("ordering on the passthrough key must survive unnesting");
         assert_eq!(ordering.len(), 1);
         assert_eq!(ordering[0].expr.as_ref(), key.as_ref());
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // Contiguous-run fast path in `unnest_list_array`
+    // ---------------------------------------------------------------------------------------
+
+    fn int_list(offsets: Vec<i32>, values: Vec<i32>, nulls: Option<Vec<bool>>) -> ListArray {
+        ListArray::new(
+            Arc::new(Field::new("item", DataType::Int32, true)),
+            OffsetBuffer::new(offsets.into()),
+            Arc::new(Int32Array::from(values)),
+            nulls.map(NullBuffer::from),
+        )
+    }
+
+    /// Unnest `list` against `lens`, returning the elements and whether the fast path was taken.
+    fn unnest(list: &ListArray, lens: Vec<i64>) -> (Vec<Option<i32>>, bool) {
+        let capacity = lens.iter().sum::<i64>() as usize;
+        let length_array = PrimitiveArray::<Int64Type>::from(lens);
+        let took_fast_path = is_contiguous_unnest(list as &dyn ListArrayType, capacity);
+        let out = unnest_list_array(list as &dyn ListArrayType, &length_array, capacity).unwrap();
+        let out = out.as_primitive::<Int32Type>().iter().collect();
+        (out, took_fast_path)
+    }
+
+    /// The pointer the array's first buffer starts at, to tell a shared child from a copy.
+    fn buffer_ptr(array: &dyn Array) -> *const u8 {
+        array.to_data().buffers()[0].as_ptr()
+    }
+
+    #[test]
+    fn contiguous_unnest_returns_a_slice_of_the_child() {
+        // Rows [1,2,3], [4], [5,6] unnest to the child verbatim, so the result must share the
+        // child's buffer rather than gather into a fresh one. This is the plain-`explode` path.
+        let list = int_list(vec![0, 3, 4, 6], vec![1, 2, 3, 4, 5, 6], None);
+        let (values, fast) = unnest(&list, vec![3, 1, 2]);
+        assert!(
+            fast,
+            "a single unpadded list column must take the fast path"
+        );
+        assert_eq!(values, (1..=6).map(Some).collect::<Vec<_>>());
+
+        let length_array = PrimitiveArray::<Int64Type>::from(vec![3i64, 1, 2]);
+        let out = unnest_list_array(&list as &dyn ListArrayType, &length_array, 6).unwrap();
+        assert_eq!(
+            buffer_ptr(out.as_ref()),
+            buffer_ptr(ListArrayType::values(&list).as_ref()),
+            "the fast path must alias the child, not copy it"
+        );
+    }
+
+    #[test]
+    fn contiguous_unnest_honors_a_non_zero_offset_base() {
+        // Slicing leaves `offsets.first() > 0` while `values` stays whole, so a fast path that
+        // sliced from 0 would silently return the wrong elements.
+        let list = int_list(vec![0, 2, 3, 5, 6], vec![1, 2, 3, 4, 5, 6], None);
+        let sliced = list.slice(1, 2);
+        let (values, fast) = unnest(&sliced, vec![1, 2]);
+        assert!(fast);
+        assert_eq!(values, vec![Some(3), Some(4), Some(5)]);
+    }
+
+    #[test]
+    fn contiguous_unnest_covers_empty_rows_and_dropped_nulls() {
+        // Row 1 is NULL and row 2 is empty, and neither holds elements.
+        let list = int_list(
+            vec![0, 2, 2, 2, 5],
+            vec![1, 2, 3, 4, 5],
+            Some(vec![true, false, true, true]),
+        );
+
+        // Plain `explode` drops both, so nothing is padded and the run stays unbroken.
+        let (values, fast) = unnest(&list, vec![2, 0, 0, 3]);
+        assert!(fast, "rows contributing nothing must not break the run");
+        assert_eq!(values, (1..=5).map(Some).collect::<Vec<_>>());
+
+        // `explode_outer` pads each of them to one NULL, which no slice of the child can
+        // produce, so the same array must now take the gather.
+        let (values, fast) = unnest(&list, vec![2, 1, 1, 3]);
+        assert!(!fast, "padded rows must break the run");
+        assert_eq!(
+            values,
+            vec![Some(1), Some(2), None, None, Some(3), Some(4), Some(5)]
+        );
+    }
+
+    #[test]
+    fn padded_rows_fall_back_to_the_gather() {
+        // `explode_outer`: the NULL row is padded to one element, so the output interleaves a
+        // NULL that no slice of the child contains.
+        let list = int_list(
+            vec![0, 2, 2, 4],
+            vec![1, 2, 3, 4],
+            Some(vec![true, false, true]),
+        );
+        let (values, fast) = unnest(&list, vec![2, 1, 2]);
+        assert!(!fast, "a padded row cannot be served by a slice");
+        assert_eq!(values, vec![Some(1), Some(2), None, Some(3), Some(4)]);
+    }
+
+    #[test]
+    fn populated_null_row_falls_back_even_when_the_totals_agree() {
+        // The arithmetic check alone is not enough. Arrow allows a NULL slot to span elements;
+        // here row 0 is NULL over two of them and row 1 is padded by two, so the offset span
+        // (5) equals the capacity (5) while the correct output skips the NULL row's elements.
+        // Slicing would return [1,2,3,4,5] instead.
+        let list = int_list(vec![0, 2, 5], vec![1, 2, 3, 4, 5], Some(vec![false, true]));
+        let (values, fast) = unnest(&list, vec![0, 5]);
+        assert!(
+            !fast,
+            "a NULL row holding elements breaks the run even when the totals match"
+        );
+        assert_eq!(values, vec![Some(3), Some(4), Some(5), None, None]);
+    }
+
+    #[test]
+    fn list_view_input_falls_back() {
+        // View offsets are independent per row, so consecutive rows need not be adjacent and a
+        // run cannot be assumed. Here they are deliberately out of order.
+        let view = ListViewArray::new(
+            Arc::new(Field::new("item", DataType::Int32, true)),
+            ScalarBuffer::from(vec![3, 0]),
+            ScalarBuffer::from(vec![2, 3]),
+            Arc::new(Int32Array::from(vec![1, 2, 3, 4, 5])),
+            None,
+        );
+        let capacity = 5;
+        assert!(!is_contiguous_unnest(&view as &dyn ListArrayType, capacity));
+
+        let length_array = PrimitiveArray::<Int64Type>::from(vec![2i64, 3]);
+        let out = unnest_list_array(&view as &dyn ListArrayType, &length_array, capacity).unwrap();
+        let values: Vec<Option<i32>> = out.as_primitive::<Int32Type>().iter().collect();
+        assert_eq!(values, vec![Some(4), Some(5), Some(1), Some(2), Some(3)]);
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // Fused per-row length computation
+    // ---------------------------------------------------------------------------------------
+
+    /// `list_output_lens` must agree with `find_longest_length` element for element, since the
+    /// chunking in `ExplodeStream` and the unnesting in `build_batch` both consume it. Both are
+    /// also pinned against `expected`, given per [`NullHandling`] in the order below, so that a
+    /// mistake made in both at once cannot pass.
+    fn assert_output_lens(list: ListArray, expected_per_mode: [&[i64]; 3]) {
+        let modes = [
+            NullHandling::Drop,
+            NullHandling::Preserve,
+            NullHandling::PreserveAndExpandEmpty,
+        ];
+        for (null_handling, expected) in modes.into_iter().zip(expected_per_mode) {
+            let options = UnnestOptions::new().with_null_handling(null_handling);
+            let arrays = vec![Arc::new(list.clone()) as ArrayRef];
+            let general = find_longest_length(&arrays, &options).unwrap();
+            let general = general.as_primitive::<Int64Type>();
+            let fused = list_output_lens(&list, &options);
+
+            assert_eq!(
+                &general.values()[..],
+                expected,
+                "general, {null_handling:?}"
+            );
+            assert_eq!(&fused.values()[..], expected, "fused, {null_handling:?}");
+            // `create_take_indices` reads the values buffer directly and relies on this.
+            assert_eq!(general.null_count(), 0, "lengths must never be NULL");
+            assert_eq!(fused.null_count(), 0, "lengths must never be NULL");
+        }
+    }
+
+    /// `find_longest_length` bumps empty rows once after the row-wise maximum rather than once
+    /// per array. That is only observably different with more than one array, which is the
+    /// `posexplode` shape, so pin the combined result directly.
+    #[test]
+    fn longest_length_combines_arrays_before_the_empty_bump() {
+        // Row 0 is non-empty in both. Row 1 is empty in l1 but 2 long in l2, so the bump must
+        // not inflate it past the other array. Row 2 is empty in both, the only row where
+        // `PreserveAndExpandEmpty` differs from `Preserve`. Row 3 is empty in l1 and NULL in l2.
+        let l1 = int_list(vec![0, 2, 2, 2, 2], vec![1, 2], None);
+        let l2 = int_list(
+            vec![0, 1, 3, 3, 3],
+            vec![4, 5, 6],
+            Some(vec![true, true, true, false]),
+        );
+        let arrays = vec![Arc::new(l1) as ArrayRef, Arc::new(l2) as ArrayRef];
+
+        for (null_handling, expected) in [
+            (NullHandling::Drop, [2, 2, 0, 0]),
+            (NullHandling::Preserve, [2, 2, 0, 1]),
+            (NullHandling::PreserveAndExpandEmpty, [2, 2, 1, 1]),
+        ] {
+            let options = UnnestOptions::new().with_null_handling(null_handling);
+            let longest = find_longest_length(&arrays, &options).unwrap();
+            let longest = longest.as_primitive::<Int64Type>();
+            assert_eq!(&longest.values()[..], &expected, "{null_handling:?}");
+            assert_eq!(longest.null_count(), 0, "lengths must never be NULL");
+        }
+    }
+
+    #[test]
+    fn output_lens_substitute_per_null_handling() {
+        // Row 2 is empty with no validity buffer at all, which is the case
+        // `PreserveAndExpandEmpty` must still bump.
+        assert_output_lens(
+            int_list(vec![0, 3, 4, 4, 6], vec![1, 2, 3, 4, 5, 6], None),
+            [&[3, 1, 0, 2], &[3, 1, 0, 2], &[3, 1, 1, 2]],
+        );
+
+        // Row 1 is NULL and row 2 is an empty non-null row, so the two substitutions are
+        // distinguishable: only `PreserveAndExpandEmpty` bumps both.
+        assert_output_lens(
+            int_list(
+                vec![0, 2, 2, 2, 5],
+                vec![1, 2, 3, 4, 5],
+                Some(vec![true, false, true, true]),
+            ),
+            [&[2, 0, 0, 3], &[2, 1, 0, 3], &[2, 1, 1, 3]],
+        );
+
+        assert_output_lens(int_list(vec![0], vec![], None), [&[], &[], &[]]);
+    }
+
+    #[test]
+    fn output_lens_handle_a_sliced_input() {
+        // Sliced offsets start away from zero; the length is still the per-row difference.
+        let list = int_list(vec![0, 2, 3, 3, 6], vec![1, 2, 3, 4, 5, 6], None);
+        assert_output_lens(list.slice(1, 3), [&[1, 0, 3], &[1, 0, 3], &[1, 1, 3]]);
+
+        // `ListArray::slice` slices the validity buffer alongside the offsets, so the row index
+        // the fused pass hands to `is_valid` has to be in the sliced row space, not the
+        // original. Rows 1..4 of this array are NULL, empty, non-empty.
+        let with_nulls = int_list(
+            vec![0, 2, 4, 4, 7],
+            vec![1, 2, 3, 4, 5, 6, 7],
+            Some(vec![true, false, true, true]),
+        );
+        assert_output_lens(with_nulls.slice(1, 3), [&[0, 0, 3], &[1, 0, 3], &[1, 1, 3]]);
     }
 }

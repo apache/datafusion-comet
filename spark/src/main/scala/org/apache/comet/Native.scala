@@ -117,6 +117,21 @@ class Native extends NativeBase {
       schemaAddrs: Array[Long]): Long
 
   /**
+   * Returns the partition offsets published by a finished native shuffle write.
+   *
+   * The writer knows every offset once its plan completes, so they are handed back in memory
+   * rather than through a temporary index file. Call only after the plan has been fully drained,
+   * and only for a plan whose root is a native shuffle writer with a local destination.
+   *
+   * @param plan
+   *   the address to native query plan.
+   * @return
+   *   `numPartitions + 1` offsets, the last being the total data file length, so that partition
+   *   lengths are successive differences.
+   */
+  @native def getShufflePartitionOffsets(plan: Long): Array[Long]
+
+  /**
    * Release and drop the native query plan object and context object.
    *
    * @param plan
@@ -136,9 +151,9 @@ class Native extends NativeBase {
    * @param file
    *   the file path to write to.
    * @param preferDictionaryRatio
-   *   the ratio of total values to distinct values in a string column that makes the writer to
-   *   prefer dictionary encoding. If it is larger than the specified ratio, dictionary encoding
-   *   will be used when writing columns of string type.
+   *   the ratio of total values to distinct values in a string or binary column that makes the
+   *   writer prefer dictionary encoding. If it is larger than the specified ratio, dictionary
+   *   encoding will be used when writing columns of either type.
    * @param batchSize
    *   the batch size on the native side to buffer outputs during the row to columnar conversion
    *   before writing them out to disk.
@@ -201,9 +216,17 @@ class Native extends NativeBase {
       tracingEnabled: Boolean): Long
 
   /**
-   * Decode a remote shuffle block with Arrow buffer/offset and logical type validation. The
-   * expected schema is serialized as a ShuffleScan protobuf. Keep the existing local decoder
-   * entry point unchanged so trusted local shuffle reads retain their fast path.
+   * Create a remote shuffle decoder that retains the expected Spark types for one iterator. The
+   * expected schema is serialized as a ShuffleScan protobuf.
+   */
+  @native def createRemoteShuffleDecoder(expectedSchema: Array[Byte]): Long
+
+  /** Release a remote shuffle decoder after its iterator finishes reading or closes early. */
+  @native def releaseRemoteShuffleDecoder(decoderHandle: Long): Unit
+
+  /**
+   * Decode a remote shuffle block with Arrow buffer/offset and logical type validation, using the
+   * expected Spark types retained by the decoder.
    */
   @native def decodeShuffleBlockWithValidation(
       shuffleBlock: ByteBuffer,
@@ -211,7 +234,7 @@ class Native extends NativeBase {
       arrayAddrs: Array[Long],
       schemaAddrs: Array[Long],
       tracingEnabled: Boolean,
-      expectedSchema: Array[Byte]): Long
+      decoderHandle: Long): Long
 
   /**
    * Log the beginning of an event.
@@ -241,6 +264,20 @@ class Native extends NativeBase {
    * Returns the Rust thread ID for the current thread.
    */
   @native def getRustThreadId(): Long
+
+  /**
+   * Returns the executor's native memory usage, for the periodic memory usage log. Reads only
+   * process-wide counters, never a plan's execution context, so it is safe to call from any
+   * thread.
+   *
+   * @return
+   *   `[nativeAllocated, poolsReserved, pools, plans]`. `nativeAllocated` is the bytes the native
+   *   allocator has handed out. `poolsReserved` is the bytes reserved across every Comet memory
+   *   pool, counting a pool shared by several plans once. `pools` is the number of live pools,
+   *   which with the default task-shared pool types is one per task running native plans, and
+   *   `plans` is the number of native plans created and not yet released.
+   */
+  @native def getMemoryUsage(): Array[Long]
 
   // Native Columnar to Row conversion methods
 
