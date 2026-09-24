@@ -33,7 +33,7 @@ import org.apache.spark.sql.internal.SQLConf
 
 import org.apache.comet.CometConf._
 import org.apache.comet.iceberg.IcebergWriteStrategy
-import org.apache.comet.rules.{CometExecRule, CometPlanAdaptiveDynamicPruningFilters, CometReuseSubquery, CometScanRule, CometSpark34AqeDppFallbackRule, EliminateRedundantTransitions, RevertNativeForTransitionHeavyStages}
+import org.apache.comet.rules.{CometPlanAdaptiveDynamicPruningFilters, CometReuseSubquery, CometRule, CometSpark34AqeDppFallbackRule, EliminateRedundantTransitions, RevertNativeForTransitionHeavyStages}
 import org.apache.comet.shims.ShimCometSparkSessionExtensions
 
 /**
@@ -48,7 +48,7 @@ import org.apache.comet.shims.ShimCometSparkSessionExtensions
  *   2. PlanSubqueries               -- Spark creates SubqueryExec for scalar subqueries
  *   3. EnsureRequirements            -- Spark inserts shuffles/sorts
  *   4. ApplyColumnarRulesAndInsertTransitions:
- *      a. preColumnarTransitions:   CometScanRule, CometExecRule
+ *      a. preColumnarTransitions:   CometRule (CometScanRule then CometExecRule)
  *         - CometExecRule.convertSubqueryBroadcasts converts SubqueryBroadcastExec to
  *           CometSubqueryBroadcastExec for exchange reuse with Comet broadcasts
  *      b. insertTransitions:        ColumnarToRow/RowToColumnar added
@@ -61,7 +61,7 @@ import org.apache.comet.shims.ShimCometSparkSessionExtensions
  * {{{
  *   Initial plan:
  *     PlanAdaptiveSubqueries:       creates SubqueryAdaptiveBroadcastExec (SAB) for AQE DPP
- *     queryStagePreparationRules:   CometScanRule, CometExecRule
+ *     queryStagePreparationRules:   CometRule (CometScanRule then CometExecRule)
  *       - CometExecRule.convertSubqueryBroadcasts wraps SABs in
  *         CometSubqueryAdaptiveBroadcastExec to prevent Spark's
  *         PlanAdaptiveDynamicPruningFilters from replacing DPP with Literal.TrueLiteral
@@ -74,7 +74,7 @@ import org.apache.comet.shims.ShimCometSparkSessionExtensions
  *           CometSubqueryBroadcastExec with BroadcastQueryStageExec for broadcast reuse
  *        d. CometReuseSubquery                       -- deduplicates converted subqueries
  *     2. postStageCreationRules -> ApplyColumnarRulesAndInsertTransitions:
- *        a. preColumnarTransitions: CometScanRule, CometExecRule (no-ops, already converted)
+ *        a. preColumnarTransitions: CometRule (no-op, already converted)
  *        b. insertTransitions
  *        c. postColumnarTransitions: RevertNativeForTransitionHeavyStages,
  *                                    EliminateRedundantTransitions
@@ -90,25 +90,19 @@ class CometSparkSessionExtensions
     with Logging
     with ShimCometSparkSessionExtensions {
   override def apply(extensions: SparkSessionExtensions): Unit = {
-    extensions.injectColumnar { session => CometScanColumnar(session) }
-    extensions.injectColumnar { session => CometExecColumnar(session) }
+    extensions.injectColumnar { session => CometColumnar(session) }
     // Pre-3.5 only: tag AQE DPP regions so the conversion rules below leave them Spark-native.
-    // Registered before CometScanRule/CometExecRule so tags are in place when conversion runs.
+    // Registered before CometRule so tags are in place when conversion runs.
     // No-op on Spark 3.5+; see CometSpark34AqeDppFallbackRule's class docstring.
     injectPreSpark35QueryStagePrepRuleShim(extensions, CometSpark34AqeDppFallbackRule)
-    extensions.injectQueryStagePrepRule { session => CometScanRule(session) }
-    extensions.injectQueryStagePrepRule { session => CometExecRule(session) }
+    extensions.injectQueryStagePrepRule { session => CometRule(session) }
     injectQueryStageOptimizerRuleShim(extensions, CometPlanAdaptiveDynamicPruningFilters)
     injectQueryStageOptimizerRuleShim(extensions, CometReuseSubquery)
     extensions.injectPlannerStrategy { session => IcebergWriteStrategy(session) }
   }
 
-  case class CometScanColumnar(session: SparkSession) extends ColumnarRule {
-    override def preColumnarTransitions: Rule[SparkPlan] = CometScanRule(session)
-  }
-
-  case class CometExecColumnar(session: SparkSession) extends ColumnarRule {
-    override def preColumnarTransitions: Rule[SparkPlan] = CometExecRule(session)
+  case class CometColumnar(session: SparkSession) extends ColumnarRule {
+    override def preColumnarTransitions: Rule[SparkPlan] = CometRule(session)
 
     override def postColumnarTransitions: Rule[SparkPlan] = {
       val rules =

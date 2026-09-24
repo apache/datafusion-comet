@@ -68,12 +68,17 @@ Native operators reserve through DataFusion's `MemoryConsumer` and `MemoryReserv
 - [ ] **`try_grow` failure turns into spilling, not an error.** For a spillable operator,
       `ResourcesExhausted` is the signal to spill and retry. A new operator that propagates it as a
       query failure has converted a recoverable condition into a lost task.
-- [ ] **`grow` is infallible and panics if the pool refuses.** It is only correct where the caller
-      genuinely cannot spill. A new `grow` call site needs that justification.
+- [ ] **Treat a new `grow` call site as potential unbacked memory.** `grow` cannot fail. When
+      Spark grants less than asked, the Comet pools record the full amount anyway and carry the
+      shortfall as overcommit, which Spark does not know about and can hand to another consumer
+      or task. Nothing caps how far successive `grow` calls overcommit short of the container
+      limit. That is acceptable only for memory that already exists and cannot be spilled, such
+      as a spilled batch read back from disk, so a new call site needs that justification.
+      Memory the caller is about to allocate belongs behind `try_grow`.
 - [ ] **Every `try_grow` has a matching `shrink`, including on the error path.** A reservation
       leaked on an early return is charged for the life of the task.
-- [ ] **A partial grant is released, not kept.** `acquired < additional` must release and report
-      `ResourcesExhausted`.
+- [ ] **In `try_grow`, a partial grant is released, not kept.** `acquired < additional` must
+      release and report `ResourcesExhausted`. Only `grow` keeps a partial grant, as overcommit.
 - [ ] **An operator that buffers without reserving is invisible to the pool.** If the PR adds
       buffering, ask where the reservation is. "It is only a few batches" is how the accounting gap
       grows.

@@ -18,6 +18,7 @@
 mod config;
 mod fair_pool;
 pub mod logging_pool;
+mod spark_memory;
 mod task_shared;
 mod unified_pool;
 
@@ -63,6 +64,7 @@ pub(crate) fn create_memory_pool(
             tracked(CometFairMemoryPool::new(
                 comet_task_memory_manager,
                 pool_size,
+                task_attempt_id,
             ))
         }),
         MemoryPoolType::Unbounded => Arc::new(UnboundedMemoryPool::default()),
