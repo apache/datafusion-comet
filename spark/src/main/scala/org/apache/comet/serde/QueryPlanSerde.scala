@@ -97,6 +97,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
 
   private val predicateExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
     classOf[And] -> CometAnd,
+    classOf[AtLeastNNonNulls] -> CometAtLeastNNonNulls,
     classOf[EqualTo] -> CometEqualTo,
     classOf[EqualNullSafe] -> CometEqualNullSafe,
     classOf[GreaterThan] -> CometGreaterThan,

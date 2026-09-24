@@ -693,6 +693,7 @@ Comet also accelerates a number of Catalyst expressions that have no Spark SQL f
 - **Operator and optimizer-injected expressions:** runtime bloom-filter join probes (`BloomFilterMightContain`, `BloomFilterAggregate`), optimized `IN` sets (`InSet`), scalar subqueries (`ScalarSubquery`), and floating-point normalization (`KnownFloatingPointNormalized`).
 - **Accessor expressions (subscript and field access, not functions):** struct field access (`col.field`), array element access (`arr[i]`), and map value access (`map[key]`).
 - **Internal decimal arithmetic:** `CheckOverflow`, `MakeDecimal`, and `UnscaledValue`, which the analyzer inserts around decimal operations.
+- **Missing-data predicates:** `AtLeastNNonNulls`, used by `DataFrame.na.drop`, counts non-null and non-NaN values natively.
 - **User-defined functions:** Scala UDFs registered through the DataFrame or SQL API.
 - **Structural expressions:** aliases, attribute references, literals, sort orders, and `CASE WHEN`.
 

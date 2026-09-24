@@ -21,7 +21,7 @@ package org.apache.comet.serde
 
 import scala.jdk.CollectionConverters._
 
-import org.apache.spark.sql.catalyst.expressions.{And, Attribute, BinaryExpression, EqualNullSafe, EqualTo, Expression, GreaterThan, GreaterThanOrEqual, In, InSet, IsNaN, IsNotNull, IsNull, KnownFloatingPointNormalized, LessThan, LessThanOrEqual, Literal, Not, Or}
+import org.apache.spark.sql.catalyst.expressions.{And, AtLeastNNonNulls, Attribute, BinaryExpression, EqualNullSafe, EqualTo, Expression, GreaterThan, GreaterThanOrEqual, In, InSet, IsNaN, IsNotNull, IsNull, KnownFloatingPointNormalized, LessThan, LessThanOrEqual, Literal, Not, Or}
 import org.apache.spark.sql.catalyst.optimizer.NormalizeNaNAndZero
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{BooleanType, DoubleType, FloatType}
@@ -500,6 +500,28 @@ object ComparisonUtils {
       // explain fallback.
       liftFallbackReasons(serializedValue, expr)
       serializedList.foreach(liftFallbackReasons(_, expr))
+      None
+    }
+  }
+}
+
+object CometAtLeastNNonNulls extends CometExpressionSerde[AtLeastNNonNulls] {
+  override def convert(
+      expr: AtLeastNNonNulls,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[Expr] = {
+    val children = expr.children.map(exprToProtoInternal(_, inputs, binding))
+    if (children.forall(_.isDefined)) {
+      Some(
+        Expr
+          .newBuilder()
+          .setAtLeastNNonNulls(
+            ExprOuterClass.AtLeastNNonNulls
+              .newBuilder()
+              .setN(expr.n)
+              .addAllChildren(children.map(_.get).asJava))
+          .build())
+    } else {
       None
     }
   }

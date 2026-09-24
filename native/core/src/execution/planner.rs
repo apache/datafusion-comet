@@ -148,11 +148,11 @@ use datafusion_comet_proto::{
     spark_partitioning::{partitioning::PartitioningStruct, Partitioning as SparkPartitioning},
 };
 use datafusion_comet_spark_expr::{
-    jvm_udf::JvmScalarUdfExpr, spark_in_list, ApproxPercentile, ArrayInsert, Avg, AvgDecimal, Cast,
-    CheckOverflow, Correlation, Covariance, CreateNamedStruct, DecimalRescaleCheckOverflow,
-    GetArrayStructFields, GetStructField, HllPlusPlus, IfExpr, ListExtract, MaxMinBy, Mode,
-    NormalizeNaNAndZero, Regr, RegrType, SparkCastOptions, Stddev, SumDecimal, ToJson,
-    UnboundColumn, Variance, WideDecimalBinaryExpr, WideDecimalOp,
+    jvm_udf::JvmScalarUdfExpr, spark_in_list, ApproxPercentile, ArrayInsert, AtLeastNNonNulls, Avg,
+    AvgDecimal, Cast, CheckOverflow, Correlation, Covariance, CreateNamedStruct,
+    DecimalRescaleCheckOverflow, GetArrayStructFields, GetStructField, HllPlusPlus, IfExpr,
+    ListExtract, MaxMinBy, Mode, NormalizeNaNAndZero, Regr, RegrType, SparkCastOptions, Stddev,
+    SumDecimal, ToJson, UnboundColumn, Variance, WideDecimalBinaryExpr, WideDecimalOp,
 };
 use itertools::Itertools;
 use jni::objects::{Global, JObject};
@@ -927,6 +927,14 @@ impl PhysicalPlanner {
                     &options.timezone,
                     csv_write_options,
                 )))
+            }
+            ExprStruct::AtLeastNNonNulls(expr) => {
+                let children = expr
+                    .children
+                    .iter()
+                    .map(|child| self.create_expr(child, Arc::clone(&input_schema)))
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(Arc::new(AtLeastNNonNulls::new(expr.n, children)))
             }
             ExprStruct::ArraysZip(expr) => {
                 if expr.values.is_empty() {
