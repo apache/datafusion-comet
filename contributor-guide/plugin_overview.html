@@ -560,15 +560,30 @@ default behavior.</p>
 <h1>Plugin Components<a class="headerlink" href="#plugin-components" title="Link to this heading">#</a></h1>
 <section id="comet-sql-plugin">
 <h2>Comet SQL Plugin<a class="headerlink" href="#comet-sql-plugin" title="Link to this heading">#</a></h2>
-<p>The entry point to Comet is the org.apache.spark.CometPlugin class, which is registered in Spark using the following
+<p>The entry point to Comet is the <code class="docutils literal notranslate"><span class="pre">org.apache.spark.CometPlugin</span></code> class, which is registered in Spark using the following
 configuration:</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="o">--</span><span class="n">conf</span> <span class="n">spark</span><span class="o">.</span><span class="n">plugins</span><span class="o">=</span><span class="n">org</span><span class="o">.</span><span class="n">apache</span><span class="o">.</span><span class="n">spark</span><span class="o">.</span><span class="n">CometPlugin</span>
 </pre></div>
 </div>
-<p>The plugin is loaded on the Spark driver and does not provide executor-side plugins.</p>
-<p>The plugin will update the current <code class="docutils literal notranslate"><span class="pre">SparkConf</span></code> with the extra configuration provided by Comet, such as executor memory
-configuration.</p>
-<p>The plugin also registers <code class="docutils literal notranslate"><span class="pre">CometSparkSessionExtensions</span></code> with Spark’s extension API.</p>
+<p>The plugin has a driver component, <code class="docutils literal notranslate"><span class="pre">CometDriverPlugin</span></code>, and an executor component, <code class="docutils literal notranslate"><span class="pre">CometExecutorPlugin</span></code>.</p>
+<p><code class="docutils literal notranslate"><span class="pre">CometDriverPlugin</span></code> runs once, when the <code class="docutils literal notranslate"><span class="pre">SparkContext</span></code> starts and before any <code class="docutils literal notranslate"><span class="pre">SparkSession</span></code> exists, so it can set static
+configuration that cannot be changed once a session has been created. It first sets <code class="docutils literal notranslate"><span class="pre">spark.comet.version</span></code> to the Comet
+version. If neither <code class="docutils literal notranslate"><span class="pre">spark.memory.offHeap.enabled</span></code> nor <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.onHeap.enabled</span></code> is <code class="docutils literal notranslate"><span class="pre">true</span></code>, it logs a warning
+and skips the remaining steps. Otherwise it:</p>
+<ul class="simple">
+<li><p>Appends <code class="docutils literal notranslate"><span class="pre">CometSparkSessionExtensions</span></code> to <code class="docutils literal notranslate"><span class="pre">spark.sql.extensions</span></code>, unless it is already listed.</p></li>
+<li><p>Sets <code class="docutils literal notranslate"><span class="pre">spark.sql.cache.serializer</span></code> to Comet’s <code class="docutils literal notranslate"><span class="pre">ArrowCachedBatchSerializer</span></code> when
+<code class="docutils literal notranslate"><span class="pre">spark.comet.exec.inMemoryCache.enabled=true</span></code>, unless the application has chosen a different serializer.</p></li>
+<li><p>Registers <code class="docutils literal notranslate"><span class="pre">CometSource</span></code> with Spark’s metrics system and adds <code class="docutils literal notranslate"><span class="pre">CometMetricsListener</span></code> to
+<code class="docutils literal notranslate"><span class="pre">spark.sql.queryExecutionListeners</span></code> when <code class="docutils literal notranslate"><span class="pre">spark.comet.metrics.enabled=true</span></code>.</p></li>
+<li><p>Logs a warning for settings that are likely to cause problems, such as an unset <code class="docutils literal notranslate"><span class="pre">spark.executor.memoryOverhead</span></code>.</p></li>
+</ul>
+<p>The plugin does not change any executor memory setting. The <a class="reference internal" href="../user-guide/latest/tuning.html"><span class="std std-doc">Tuning Guide</span></a> covers how
+to size them.</p>
+<p>When the driver or an executor stops, the plugin shuts down Comet’s native tokio runtime in that JVM.</p>
+<p><code class="docutils literal notranslate"><span class="pre">CometSparkSessionExtensions</span></code> can also be registered without the plugin, through <code class="docutils literal notranslate"><span class="pre">spark.sql.extensions</span></code> or
+<code class="docutils literal notranslate"><span class="pre">SparkSession.Builder.withExtensions</span></code>. Most of Comet’s test suites and the Spark SQL tests enable Comet this way, so
+none of the driver plugin’s steps run for them.</p>
 </section>
 <section id="cometsparksessionextensions">
 <h2>CometSparkSessionExtensions<a class="headerlink" href="#cometsparksessionextensions" title="Link to this heading">#</a></h2>
@@ -635,16 +650,27 @@ must be registered with Spark using the following configuration:</p>
 <p>For shuffle writes, a <code class="docutils literal notranslate"><span class="pre">ShuffleMapTask</span></code> runs in the executors. This task contains a <code class="docutils literal notranslate"><span class="pre">ShuffleDependency</span></code> that is
 broadcast to all of the executors. It then passes the input RDD to <code class="docutils literal notranslate"><span class="pre">ShuffleWriteProcessor.write()</span></code> which
 requests a <code class="docutils literal notranslate"><span class="pre">ShuffleWriter</span></code> from the shuffle manager, and this is where it gets a Comet shuffle writer.</p>
-<p><code class="docutils literal notranslate"><span class="pre">ShuffleWriteProcessor</span></code> then invokes the dependency RDD and fetches rows/batches and passes them to Comet’s
-shuffle writer, which writes batches to disk in Arrow IPC format.</p>
-<p>As a result, we cannot avoid having one native plan to produce the shuffle input and another native plan for
-writing the batches to the shuffle file.</p>
+<p>Comet has two shuffle implementations, native shuffle and JVM columnar shuffle.
+<a class="reference internal" href="native_shuffle.html#when-native-shuffle-is-used"><span class="std std-ref">When Native Shuffle is Used</span></a> describes how Comet chooses between them.</p>
+<p>For native shuffle, <code class="docutils literal notranslate"><span class="pre">CometNativeShuffleWriter</span></code> runs one native plan per task, with a <code class="docutils literal notranslate"><span class="pre">ShuffleWriter</span></code> operator at the
+root. When the exchange’s child is a native Comet subtree, that subtree becomes the writer’s child, so the operators
+that produce the shuffle input and the writer run in the same native plan, and no batch crosses into the JVM between
+them. Otherwise, for example when the exchange’s child is <code class="docutils literal notranslate"><span class="pre">CometSparkToColumnarExec</span></code>, the writer’s child is a scan that
+reads batches from the JVM. The writer partitions the batches and writes them in Arrow IPC format. See
+<a class="reference internal" href="native_shuffle.html"><span class="std std-doc">Native Shuffle</span></a> for details.</p>
+<p>JVM columnar shuffle takes rows instead, converting a Comet child’s output with <code class="docutils literal notranslate"><span class="pre">ColumnarToRowExec</span></code>. It assigns
+partitions with Spark’s partitioner, buffers the rows in memory pages, and calls native code to encode them to Arrow
+IPC. See <a class="reference internal" href="jvm_shuffle.html"><span class="std std-doc">JVM Shuffle</span></a> for details.</p>
 </section>
 <section id="shuffle-reads">
 <h3>Shuffle Reads<a class="headerlink" href="#shuffle-reads" title="Link to this heading">#</a></h3>
-<p>For shuffle reads a <code class="docutils literal notranslate"><span class="pre">ShuffledRDD</span></code> requests a <code class="docutils literal notranslate"><span class="pre">ShuffleReader</span></code> from the shuffle manager. Comet provides a
-<code class="docutils literal notranslate"><span class="pre">CometBlockStoreShuffleReader</span></code> which is implemented in JVM and fetches blocks from Spark and then creates an
-<code class="docutils literal notranslate"><span class="pre">ArrowReaderIterator</span></code> to process the blocks using Arrow’s <code class="docutils literal notranslate"><span class="pre">StreamReader</span></code> for decoding IPC batches.</p>
+<p>For shuffle reads, <code class="docutils literal notranslate"><span class="pre">CometShuffledBatchRDD</span></code> requests a <code class="docutils literal notranslate"><span class="pre">ShuffleReader</span></code> from the shuffle manager and gets a
+<code class="docutils literal notranslate"><span class="pre">CometBlockStoreShuffleReader</span></code>, which fetches blocks with Spark’s <code class="docutils literal notranslate"><span class="pre">ShuffleBlockFetcherIterator</span></code>. Both shuffle
+implementations write the same Arrow IPC block format, so the same reader serves both. When a native plan consumes the
+shuffle output and <code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.directRead.enabled</span></code> is <code class="docutils literal notranslate"><span class="pre">true</span></code>, the default, the compressed blocks are passed
+to that plan, which decodes them itself. Otherwise <code class="docutils literal notranslate"><span class="pre">NativeBatchDecoderIterator</span></code> decodes each block in native
+code through JNI, and Arrow FFI imports the result into the JVM as a <code class="docutils literal notranslate"><span class="pre">ColumnarBatch</span></code>. See
+<a class="reference internal" href="native_shuffle.html#read-path"><span class="std std-ref">Read Path</span></a> for details.</p>
 </section>
 </section>
 </section>
