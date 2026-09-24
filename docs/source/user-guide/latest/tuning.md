@@ -133,7 +133,8 @@ pre-shuffle operators and one for the shuffle writer). The shared pool ensures t
 memory usage stays within the per-task limit.
 
 The `fair_unified` pool prevents operators from using more than an even fraction of the available memory
-(i.e. `pool_size / num_reservations`). This pool works best when you know beforehand
+(i.e. `pool_size / num_consumers`, where `num_consumers` counts the memory consumers registered by all of the task's
+native plans). This pool works best when you know beforehand
 the query has multiple operators that will likely all need to spill. Sometimes it will cause spills even
 when there is sufficient memory in order to leave enough memory for other operators.
 
