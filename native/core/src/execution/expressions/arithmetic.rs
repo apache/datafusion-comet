@@ -45,6 +45,10 @@ impl CheckedBinaryExpr {
             query_context,
         }
     }
+
+    pub(crate) fn child(&self) -> &Arc<dyn PhysicalExpr> {
+        &self.child
+    }
 }
 
 impl Display for CheckedBinaryExpr {
