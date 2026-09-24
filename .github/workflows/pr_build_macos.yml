@@ -192,6 +192,7 @@ jobs:
               org.apache.spark.CometPluginsMemoryPoolFractionWarningSuite
               org.apache.spark.CometPluginsUnifiedModeSuite
               org.apache.spark.CometPluginsExtensionOnlySuite
+              org.apache.spark.CometPluginsSparkShuffleManagerSuite
               org.apache.comet.rules.CometScanRuleSuite
               org.apache.comet.rules.CometScanContribSuite
               org.apache.comet.rules.CometScanSchemeFallbackSuite

@@ -24,6 +24,7 @@ import java.io.File
 import org.apache.logging.log4j.Level
 import org.apache.spark.sql.{CometTestBase, SaveMode, SparkSession}
 import org.apache.spark.sql.comet.CometPlan
+import org.apache.spark.sql.comet.execution.shuffle.{CometShuffleExchangeExec, CometShuffleManager}
 import org.apache.spark.sql.internal.StaticSQLConf
 
 import org.apache.comet.{COMET_VERSION, CometConf, CometSparkSessionExtensions}
@@ -309,6 +310,47 @@ class CometPluginsExtensionOnlySuite extends CometTestBase {
       withSQLConf(CometConf.COMET_ONHEAP_ENABLED.key -> "true") {
         val (_, plan) = checkSparkAnswer(query)
         assert(collect(plan) { case op: CometPlan => op }.nonEmpty, plan)
+      }
+    }
+  }
+}
+
+class CometPluginsSparkShuffleManagerSuite extends CometTestBase {
+  // The application runs Spark's own shuffle manager.
+  override protected def sparkConf: SparkConf = {
+    val conf = new SparkConf()
+    conf.set("spark.memory.offHeap.enabled", "true")
+    conf.set("spark.memory.offHeap.size", "2g")
+    conf.set("spark.comet.enabled", "true")
+    conf.set("spark.comet.exec.enabled", "true")
+    conf
+  }
+
+  private val query = "SELECT _2, count(*) FROM tbl GROUP BY _2"
+
+  test("Comet stays disabled when only the session conf names the Comet shuffle manager") {
+    withParquetTable((0 until 100).map(i => (i, (i % 7).toString)), "tbl") {
+      // The session already exists, so the builder only copies the setting into its SQLConf.
+      // Spark's shuffle manager still runs the shuffle, and it cannot read a Comet shuffle.
+      val manager = classOf[CometShuffleManager].getName
+      val session = SparkSession.builder().config("spark.shuffle.manager", manager).getOrCreate()
+      try {
+        assert(session eq spark)
+        assert(spark.sessionState.conf.getConfString("spark.shuffle.manager") == manager)
+        val (_, plan) = checkSparkAnswer(query)
+        assert(collect(plan) { case op: CometPlan => op }.isEmpty, plan)
+      } finally {
+        spark.sessionState.conf.unsetConf("spark.shuffle.manager")
+      }
+    }
+  }
+
+  test("Comet runs with Spark's shuffle when Comet shuffle is disabled") {
+    withParquetTable((0 until 100).map(i => (i, (i % 7).toString)), "tbl") {
+      withSQLConf(CometConf.COMET_SHUFFLE_ENABLED.key -> "false") {
+        val (_, plan) = checkSparkAnswer(query)
+        assert(collect(plan) { case op: CometPlan => op }.nonEmpty, plan)
+        assert(collect(plan) { case op: CometShuffleExchangeExec => op }.isEmpty, plan)
       }
     }
   }

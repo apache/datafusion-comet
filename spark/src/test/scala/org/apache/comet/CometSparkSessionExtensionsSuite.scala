@@ -62,23 +62,19 @@ class CometSparkSessionExtensionsSuite extends CometTestBase {
     NativeBase.setLoaded(true)
   }
 
-  test("isCometLoaded requires CometShuffleManager when shuffle.enabled=true") {
-    val conf = new SQLConf
-    conf.setConfString(CometConf.COMET_ENABLED.key, "true")
-
-    // Default: shuffle.enabled=true. Without spark.shuffle.manager set, Comet must be disabled.
-    assert(!isCometLoaded(conf))
-
-    // Opt out: shuffle.enabled=false. Comet should load (assumes native lib is available).
-    conf.setConfString(CometConf.COMET_SHUFFLE_ENABLED.key, "false")
-    assert(isCometLoaded(conf))
-
-    // shuffle.enabled=true with the Comet shuffle manager registered: Comet should load.
-    conf.setConfString(CometConf.COMET_SHUFFLE_ENABLED.key, "true")
-    conf.setConfString(
-      "spark.shuffle.manager",
-      "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
-    assert(isCometLoaded(conf))
+  test("isCometLoaded follows the application's shuffle manager, not the session conf") {
+    // This suite's SparkContext runs CometShuffleManager. A session conf naming another manager,
+    // which SparkSession.Builder can leave behind, does not change what runs the shuffle.
+    Seq(
+      "org.apache.spark.shuffle.sort.SortShuffleManager",
+      "org.apache.spark.shuffle.celeborn.SparkShuffleManager").foreach { manager =>
+      val conf = new SQLConf
+      conf.setConfString(CometConf.COMET_ENABLED.key, "true")
+      conf.setConfString(CometConf.COMET_SHUFFLE_ENABLED.key, "true")
+      conf.setConfString("spark.shuffle.manager", manager)
+      assert(isCometShuffleEnabled(conf), manager)
+      assert(isCometLoaded(conf), manager)
+    }
   }
 
   test("the composite manager is recognized without requiring the optional Celeborn client") {
@@ -87,22 +83,10 @@ class CometSparkSessionExtensionsSuite extends CometTestBase {
     conf.setConfString(CometConf.COMET_SHUFFLE_ENABLED.key, "true")
     conf.setConfString(CometConf.COMET_SHUFFLE_MODE.key, "native")
     conf.setConfString("spark.shuffle.manager", classOf[CometCelebornShuffleManager].getName)
-    assert(isCometShuffleManagerEnabled(conf))
+    assert(isCometShuffleManagerEnabled)
     assert(isCometLoaded(conf))
     // A session-only setting must not replace this suite's actual local shuffle manager.
     assert(!isCometShuffleEnabled(conf))
-  }
-
-  test("the stock Celeborn manager cannot accept Comet shuffle dependencies") {
-    val conf = new SQLConf
-    conf.setConfString(CometConf.COMET_ENABLED.key, "true")
-    conf.setConfString(CometConf.COMET_SHUFFLE_ENABLED.key, "true")
-    conf.setConfString(
-      "spark.shuffle.manager",
-      "org.apache.spark.shuffle.celeborn.SparkShuffleManager")
-    assert(!isCometShuffleManagerEnabled(conf))
-    assert(!isCometShuffleEnabled(conf))
-    assert(!isCometLoaded(conf))
   }
 
   test("local auto mode retains Comet columnar fallback for unsupported native partitioning") {

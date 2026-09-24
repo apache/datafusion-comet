@@ -141,7 +141,7 @@ object CometSparkSessionExtensions extends Logging {
       return false
     }
 
-    if (COMET_SHUFFLE_ENABLED.get(conf) && !isCometShuffleManagerEnabled(conf)) {
+    if (COMET_SHUFFLE_ENABLED.get(conf) && !isCometShuffleManagerEnabled) {
       logWarning(
         "Comet extension is disabled because spark.shuffle.manager is not set to " +
           s"${classOf[CometShuffleManager].getName} or " +
@@ -185,7 +185,7 @@ object CometSparkSessionExtensions extends Logging {
   // dependencies without passing through ordinary exchange selection. Celeborn requires explicit
   // native opt-in and compatible application settings; local Comet shuffle keeps its behavior.
   def isCometShuffleEnabled(conf: SQLConf): Boolean =
-    COMET_SHUFFLE_ENABLED.get(conf) && isCometShuffleManagerEnabled(conf) &&
+    COMET_SHUFFLE_ENABLED.get(conf) && isCometShuffleManagerEnabled &&
       cometCelebornShuffleFallbackReason(conf, numPartitions = 1).isEmpty
 
   private def activeCelebornShuffleManager: Option[CometCelebornShuffleManager] =
@@ -198,14 +198,14 @@ object CometSparkSessionExtensions extends Logging {
       conf.getConfString(SHUFFLE_MANAGER_KEY, "") ==
       classOf[CometCelebornShuffleManager].getName
 
-  def isCometShuffleManagerEnabled(conf: SQLConf): Boolean = {
-    conf.contains(SHUFFLE_MANAGER_KEY) && {
-      val manager = conf.getConfString(SHUFFLE_MANAGER_KEY)
-      manager == classOf[CometShuffleManager].getName ||
-      manager == classOf[CometCelebornShuffleManager].getName ||
-      activeCelebornShuffleManager.isDefined
+  // Inspect the manager SparkEnv holds rather than spark.shuffle.manager in the session's
+  // SQLConf. The manager is created once for the application, and when the SparkContext already
+  // exists, SparkSession.Builder copies core configs into the SQLConf without applying them.
+  def isCometShuffleManagerEnabled: Boolean =
+    Option(SparkEnv.get).flatMap(env => Option(env.shuffleManager)).exists {
+      case _: CometShuffleManager | _: CometCelebornShuffleManager => true
+      case _ => false
     }
-  }
 
   /**
    * Native mode and execution can be chosen per query. Encryption, stage recovery, and Celeborn
