@@ -60,6 +60,68 @@ public class GenerateRegexFixtures {
     }
   }
 
+  private static void addRange(String start, char lo, String end, char hi) {
+    // Probe both endpoints, an interior point, and the immediately adjacent nonmembers.
+    for (String prefix : new String[] {"[", "[^"}) {
+      add(
+          "escaped-range-boundaries",
+          prefix + start + "-" + end + "]",
+          "",
+          String.valueOf((char) (lo - 1)),
+          String.valueOf(lo),
+          String.valueOf((char) ((lo + hi) / 2)),
+          String.valueOf(hi),
+          String.valueOf((char) (hi + 1)),
+          "\n",
+          "\ud83d\ude00");
+    }
+  }
+
+  private static void addRangeMatrix() {
+    // Every escape admitted by parseEscape(inClass = true), including the class-only hyphen.
+    char[] escapes = ".*+?()[]{}|^$\\-".toCharArray();
+    for (char start : escapes) {
+      addRange("\\" + start, start, "~", '~');
+      addRange("!", '!', "\\" + start, start);
+      for (char end : escapes) {
+        if (start <= end) {
+          addRange("\\" + start, start, "\\" + end, end);
+        }
+      }
+    }
+  }
+
+  private static void addQuantifierMatrix() {
+    String[] quantifiers = {"*", "+", "?", "{0}", "{1}", "{2}", "{0,}", "{1,}", "{1,2}"};
+    for (String group : new String[] {"(", "(?:"}) {
+      // All ordered pairs, including nullable bodies. Required surrounding literals prevent
+      // find() from skipping the repeated input and matching only the trailing delimiter.
+      for (String atom : new String[] {"a", "a|"}) {
+        for (String inner : quantifiers) {
+          for (String outer : quantifiers) {
+            String pattern = "c" + group + group + atom + ")" + inner + ")" + outer + "b";
+            add(
+                "nested-quantifier-pairs",
+                pattern,
+                "", "c", "ca", "cb", "cab", "caab", "caaaab", "caac", "xcabx");
+          }
+        }
+      }
+      // Near-limit depths exercise real compilation, not only scanner admission. Keep subjects
+      // short for ambiguous unbounded repetitions to bound Java backtracking work.
+      for (String quantifier : quantifiers) {
+        for (int depth : new int[] {1, 2, 7, 8}) {
+          String pattern = group.repeat(depth) + "a" + (")" + quantifier).repeat(depth);
+          add("quantifier-depth-matrix", pattern, "", "a", "aa", "b");
+          if (quantifier.equals("{2}")) {
+            int minimum = 1 << depth;
+            add("nested-counted-boundaries", pattern, "a".repeat(minimum - 1), "a".repeat(minimum));
+          }
+        }
+      }
+    }
+  }
+
   public static void main(String[] args) throws Exception {
     if (args.length != 1 || Runtime.version().feature() != 17) {
       throw new IllegalArgumentException(
@@ -139,6 +201,8 @@ public class GenerateRegexFixtures {
         add("generated-composition", "(?:" + atom + quantifier + ")b|cd", subjects);
       }
     }
+    addRangeMatrix();
+    addQuantifierMatrix();
     add("group-depth-32", "(".repeat(32) + "a" + ")".repeat(32), "", "a", "b");
     add("counted-bound-256", "a{256}", "", "a".repeat(255), "a".repeat(256));
     add("quantifier-depth-8", "(?:".repeat(8) + "a" + "){1}".repeat(8), "", "a", "b");

@@ -66,9 +66,22 @@ supplementary code points, control characters, and newline variants.
 Dedicated cases reach group depth 32, counted bound 256, quantifier depth 8
 (including stacked unbounded stars), and structural expansion 4095/4096, including
 capture and class costs. These use targeted subjects instead of the full subject
-cross product to bound Java
-backtracking work. Structural costs are admission heuristics, not a proof of
+cross product to bound Java backtracking work. Structural costs are admission heuristics, not a proof of
 Rust compilation success. Finite fixtures cannot prove equivalence for all patterns.
+
+The escaped-range matrix covers every admitted class escape as a start and an
+end, all ordered pairs of escaped endpoints (including equal endpoints), and
+both positive and negated classes. Each range probes its endpoints, an interior
+point, immediately adjacent nonmembers, empty input, newline, and supplementary
+Unicode input.
+
+The nested-quantifier matrix covers all ordered pairs of `*`, `+`, `?`, `{0}`,
+`{1}`, `{2}`, `{0,}`, `{1,}`, and `{1,2}`, with capturing and non-capturing groups
+and both non-nullable and nullable bodies. Required surrounding literals make
+consumption differences observable while still exercising unanchored search. Homogeneous nesting is also exercised at
+depths 1, 2, 7, and 8, with match-length boundaries for nested `{2}`. Scala tests
+check that depth 9 is rejected for each quantifier and group kind. This is a
+bounded matrix of grammar shapes and limits, not exhaustive regex enumeration.
 
 `CometRegexSuite` checks that every fixture is still admitted and that the
 current Java engine agrees with the stored oracle. `CometRegexParitySuite`
