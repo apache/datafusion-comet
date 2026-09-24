@@ -1288,7 +1288,9 @@ class CometExecRuleSuite extends CometTestBase {
       "collect" -> (df => df.collect()),
       "toRdd.count" -> (df => df.queryExecution.toRdd.count()))
     // In the second shape `RemoveRedundantSorts` drops the root sort, so the mark lands on the
-    // join and the empty re-plan's root inherits the unmarked sort's tags.
+    // join and the empty re-plan's root inherits the unmarked sort's tags. In the third the
+    // global aggregate survives the empty join, so the re-plan is not itself empty. The fourth
+    // is empty from the start, which must not be mistaken for a re-plan.
     (shape, query, marker) <- Seq(
       (
         "aggregate",
@@ -1300,7 +1302,14 @@ class CometExecRuleSuite extends CometTestBase {
           |JOIN range(0, 20, 1, 2) b ON a.id % 7 = b.id % 7
           |WHERE a.id < 0
           |SORT BY a.id % 7""".stripMargin,
-        "SortMergeJoin"))
+        "SortMergeJoin"),
+      (
+        "global aggregate over a join",
+        """SELECT count(*) FROM range(0, 20, 1, 2) a
+          |JOIN range(0, 20, 1, 2) b ON a.id % 7 = b.id % 7
+          |WHERE a.id < 0""".stripMargin,
+        "SortMergeJoin"),
+      ("initially empty", "SELECT id FROM range(0) DISTRIBUTE BY id", "Exchange"))
   } {
     test(s"plan-only mode: one report when the plan becomes empty ($shape, AQE=$aqe, $action)") {
       withSQLConf(
@@ -1319,22 +1328,42 @@ class CometExecRuleSuite extends CometTestBase {
     }
   }
 
-  test("plan-only mode: a subquery referenced twice is reported once") {
-    withPlanOnlyTable(aqe = false) {
-      val reports = capturePlanOnlyReports {
-        spark
-          .sql("""SELECT _1,
-                 |  (SELECT max(_2) FROM tbl
-                 |   WHERE _1 > (SELECT min(_2) FROM tbl)) AS a,
-                 |  (SELECT max(_2) FROM tbl
-                 |   WHERE _1 > (SELECT min(_2) FROM tbl)) AS b
-                 |FROM tbl""".stripMargin)
-          .collect()
+  for {
+    aqe <- Seq(true, false)
+    (action, runIt) <- Seq[(String, org.apache.spark.sql.DataFrame => Unit)](
+      "collect" -> (df => df.collect()),
+      "toRdd.count" -> (df => df.queryExecution.toRdd.count()))
+  } {
+    test(s"plan-only mode: a subquery referenced twice is reported once (AQE=$aqe, $action)") {
+      withPlanOnlyTable(aqe = aqe) {
+        val reports = capturePlanOnlyReports {
+          runIt(spark.sql("""SELECT _1,
+                            |  (SELECT max(_2) FROM tbl
+                            |   WHERE _1 > (SELECT min(_2) FROM tbl)) AS a,
+                            |  (SELECT max(_2) FROM tbl
+                            |   WHERE _1 > (SELECT min(_2) FROM tbl)) AS b
+                            |FROM tbl""".stripMargin))
+        }
+        // The `min` subquery, the `max` subquery and the outer query.
+        assert(
+          reports.size == 3,
+          s"expected three reports, got ${reports.size}:\n${reports.mkString("\n\n")}")
       }
-      // The `min` subquery, the `max` subquery and the outer query.
-      assert(
-        reports.size == 3,
-        s"expected three reports, got ${reports.size}:\n${reports.mkString("\n\n")}")
+    }
+  }
+
+  test("plan-only mode: the report does not depend on spark.comet.explain.format") {
+    withSQLConf(
+      CometConf.COMET_EXTENDED_EXPLAIN_FORMAT.key ->
+        CometConf.COMET_EXTENDED_EXPLAIN_FORMAT_FALLBACK) {
+      withPlanOnlyTable() {
+        val reports = capturePlanOnlyReports(sql("SELECT _1 + 1 FROM tbl").collect())
+        assert(reports.size == 1, s"expected one report, got:\n${reports.mkString("\n\n")}")
+        val (accelerated, eligible) = coverageOf(reports.head)
+        assert(
+          accelerated > 0 && accelerated == eligible,
+          s"unexpected coverage:\n${reports.head}")
+      }
     }
   }
 

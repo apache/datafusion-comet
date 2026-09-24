@@ -19,13 +19,14 @@
 
 package org.apache.comet.rules
 
+import scala.collection.mutable
 import scala.util.control.NonFatal
 
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.catalyst.trees.TreeNodeTag
-import org.apache.spark.sql.execution.{ApplyColumnarRulesAndInsertTransitions, BaseSubqueryExec, ColumnarToRowExec, ExecSubqueryExpression, InputAdapter, ReusedSubqueryExec, RowToColumnarExec, SparkPlan, SQLExecution, WholeStageCodegenExec}
-import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, QueryStageExec}
+import org.apache.spark.sql.execution.{ApplyColumnarRulesAndInsertTransitions, BaseSubqueryExec, ColumnarToRowExec, ExecSubqueryExpression, InputAdapter, QueryExecution, ReusedSubqueryExec, RowToColumnarExec, SparkPlan, WholeStageCodegenExec}
+import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, InsertAdaptiveSparkPlan, QueryStageExec}
 import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, Exchange}
 import org.apache.spark.sql.execution.reuse.ReuseExchangeAndSubquery
 
@@ -42,15 +43,13 @@ object CometRule {
       EliminateRedundantTransitions(session))
 
   /**
-   * `executionId:canonicalPlanHash` keys already reported, LRU-bounded for long-lived drivers.
+   * Canonical hashes of the subquery plans reported for the query this thread is preparing. Spark
+   * prepares a query's subqueries synchronously, before the query itself, so the scope is reset
+   * when the query's own plan arrives. This works whether or not a SQL execution ID is set.
    */
-  private val planOnlyReportedPlans: java.util.Set[String] =
-    java.util.Collections.newSetFromMap(
-      java.util.Collections.synchronizedMap(
-        new java.util.LinkedHashMap[String, java.lang.Boolean](16, 0.75f, true) {
-          override def removeEldestEntry(
-              eldest: java.util.Map.Entry[String, java.lang.Boolean]): Boolean = size() > 1024
-        }))
+  private val reportedSubqueries = new ThreadLocal[mutable.Set[Int]] {
+    override def initialValue(): mutable.Set[Int] = mutable.Set.empty
+  }
 
   /**
    * Marks the root of a reported plan. Catalyst copies tags onto replacement nodes, so later
@@ -58,17 +57,30 @@ object CometRule {
    */
   private val PLAN_ONLY_REPORTED: TreeNodeTag[Unit] = TreeNodeTag[Unit]("comet.planOnlyReported")
 
+  /** Where in Spark's planning the rule is running, read off the call stack. */
+  private case class PlanningContext(replanning: Boolean, subquery: Boolean)
+
+  private def planningContext(): PlanningContext = {
+    val frames = Thread.currentThread().getStackTrace
+    def within(cls: Class[_], method: String): Boolean =
+      frames.exists(f => f.getMethodName == method && f.getClassName == cls.getName)
+    PlanningContext(
+      replanning = within(classOf[AdaptiveSparkPlanExec], "reOptimize"),
+      // Subqueries are prepared by `PlanSubqueries` and `PlanDynamicPruningFilters` without AQE,
+      // and by `InsertAdaptiveSparkPlan` and `PlanAdaptiveDynamicPruningFilters` with it.
+      subquery = within(QueryExecution.getClass, "prepareExecutedPlan") ||
+        within(classOf[InsertAdaptiveSparkPlan], "compileSubquery"))
+  }
+
   /**
    * Whether plan-only mode should report `plan`, marking it reported if so.
    *
    * Under AQE the rule sees one query several times: the initial plan (prep rule, the one to
    * report), the same plan wrapped in `AdaptiveSparkPlanExec`, each query stage, each
    * re-optimization and the final plan. Only the first is reported. Each scalar or DPP subquery
-   * is prepared as a top-level plan of its own and gets its own report. None of this can rely on
-   * a SQL execution ID, since `df.rdd.count()` and `executedPlan` plan without one.
+   * is prepared as a plan of its own and gets its own report.
    */
   private[comet] def shouldReportPlanOnly(
-      executionId: Option[String],
       plan: SparkPlan,
       queryStagePrep: Boolean,
       aqeEnabled: Boolean): Boolean = {
@@ -80,19 +92,25 @@ object CometRule {
       p.isInstanceOf[QueryStageExec] || p.isInstanceOf[AdaptiveSparkPlanExec] ||
         p.getTagValue(PLAN_ONLY_REPORTED).isDefined)
     if (isQueryStage || isReapplication) {
+      // Execution is under way, so any subquery prepared from here on belongs to a new scope.
+      reportedSubqueries.get().clear()
       false
     } else {
-      // Mark even when not reporting, so the final plan built from an empty re-plan is recognized.
+      // Mark even when not reporting, so the final plan built from a re-plan is recognized.
       plan.setTagValue(PLAN_ONLY_REPORTED, ())
-      // AQE re-plans to an empty relation when a stage materializes empty, sharing no nodes or
-      // stages with the reported plan. Only the prep rule sees re-plans, so a genuinely empty
-      // query still reaches the columnar rule and is reported.
-      val replannedToNothing =
-        aqeEnabled && queryStagePrep && plan.logicalLink.exists(_.maxRows.contains(0L))
-      // A subquery referenced twice is prepared twice, differing only in expression IDs, so dedupe
-      // on the canonical plan within an execution. Tags are not part of the canonical form.
-      !replannedToNothing &&
-      executionId.forall(id => planOnlyReportedPlans.add(s"$id:${plan.canonicalized.hashCode()}"))
+      val context = planningContext()
+      if (context.replanning) {
+        // AQE re-plans a query mid-execution, for example to an empty relation once a stage
+        // materializes empty, and the result can share no nodes or stages with the reported plan.
+        false
+      } else if (context.subquery) {
+        // A subquery referenced twice is prepared twice, differing only in expression IDs.
+        // Tags are not part of the canonical form.
+        reportedSubqueries.get().add(plan.canonicalized.hashCode())
+      } else {
+        reportedSubqueries.get().clear()
+        true
+      }
     }
   }
 }
@@ -142,16 +160,10 @@ case class CometRule(session: SparkSession, queryStagePrep: Boolean = false)
   /** Logs the Comet plan for `plan` unless already reported. Never fails the query. */
   private def reportPlanOnlyCoverage(plan: SparkPlan): Unit = {
     try {
-      val executionId = Option(
-        session.sparkContext.getLocalProperty(SQLExecution.EXECUTION_ID_KEY))
-      if (CometRule.shouldReportPlanOnly(
-          executionId,
-          plan,
-          queryStagePrep,
-          conf.adaptiveExecutionEnabled)) {
+      if (CometRule.shouldReportPlanOnly(plan, queryStagePrep, conf.adaptiveExecutionEnabled)) {
         val preview = buildPreview(plan, topLevel = true)
         logWarning(
-          s"[Comet plan-only]\n${new ExtendedExplainInfo().generateExtendedInfo(preview)}")
+          s"[Comet plan-only]\n${new ExtendedExplainInfo().generateVerboseInfo(preview)}")
       }
     } catch {
       case NonFatal(e) =>
