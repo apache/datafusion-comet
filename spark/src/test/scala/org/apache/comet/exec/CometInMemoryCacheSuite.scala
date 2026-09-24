@@ -31,13 +31,13 @@ import org.apache.arrow.vector.compression.{CompressionCodec, CompressionUtil, N
 import org.apache.arrow.vector.types.pojo.ArrowType
 import org.apache.spark.CometDriverPlugin
 import org.apache.spark.SparkConf
-import org.apache.spark.sql.{CometTestBase, Row}
+import org.apache.spark.sql.{CometTestBase, QueryTest, Row}
 import org.apache.spark.sql.catalyst.expressions.{And, Attribute, AttributeReference, Expression, GreaterThanOrEqual, LessThan, Literal}
 import org.apache.spark.sql.columnar.{CachedBatch, SimpleMetricsCachedBatch}
-import org.apache.spark.sql.comet.{CometBroadcastHashJoinExec, CometInMemoryTableScanExec, CometPlan, CometSortExec, CometSortMergeJoinExec, CometSparkToColumnarExec}
+import org.apache.spark.sql.comet.{CometBroadcastHashJoinExec, CometInMemoryTableScanExec, CometSortExec, CometSortMergeJoinExec}
 import org.apache.spark.sql.comet.execution.arrow.{ArrowCachedBatchSerializer, CometCachedBatchHelper}
 import org.apache.spark.sql.comet.util.Utils
-import org.apache.spark.sql.execution.{InputAdapter, SortExec, SparkPlan, WholeStageCodegenExec}
+import org.apache.spark.sql.execution.SortExec
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AQEShuffleReadExec, QueryStageExec, ShuffleQueryStageExec}
 import org.apache.spark.sql.execution.columnar.{CometInMemoryRelationHelper, InMemoryRelation, InMemoryTableScanExec}
 import org.apache.spark.sql.execution.exchange.{Exchange, ReusedExchangeExec, ShuffleExchangeLike}
@@ -227,22 +227,6 @@ class CometInMemoryCacheSuite extends CometTestBase {
     }
   }
 
-  // Match by name because this suite must also compile on Spark 3.4.
-  private def isTableCacheStage(plan: SparkPlan): Boolean =
-    plan.getClass.getSimpleName == "TableCacheQueryStageExec"
-
-  // The operators of an executed adaptive plan that run on Spark, including those inside query
-  // stages. The scan under a CometSparkToColumnar is the Spark input that node converts, so it is
-  // not reported.
-  private def sparkOperators(plan: SparkPlan): Seq[String] = plan match {
-    case a: AdaptiveSparkPlanExec => sparkOperators(a.executedPlan)
-    case s: QueryStageExec => sparkOperators(s.plan)
-    case _: CometSparkToColumnarExec => Seq.empty
-    case _: CometPlan | _: AQEShuffleReadExec | _: WholeStageCodegenExec | _: InputAdapter =>
-      plan.children.flatMap(sparkOperators)
-    case _ => plan.nodeName +: plan.children.flatMap(sparkOperators)
-  }
-
   // https://github.com/apache/datafusion-comet/issues/6202
   test("AQE keeps the operators above a table cache stage native once the stage materializes") {
     assume(isSpark35Plus, "Table-cache query stages require Spark 3.5+")
@@ -252,44 +236,41 @@ class CometInMemoryCacheSuite extends CometTestBase {
       "SELECT name, sum(id) FROM t JOIN d ON k = k2 GROUP BY name" ->
         (0L until 10L).map(k => Row(s"n$k", 1000L * k + 4995000L)),
       "SELECT sum(id) FROM t WHERE k = 3" -> Seq(Row(4998000L)))
-    for {
-      nativeCache <- Seq(true, false)
-      warm <- Seq(false, true)
-      (query, expected) <- queries
-    } {
-      withAQECache {
-        withSQLConf(CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> nativeCache.toString) {
-          withTempView("t", "d") {
-            spark
-              .range(0, 10000, 1, 4)
-              .selectExpr("id", "id % 10 AS k")
-              .createOrReplaceTempView("t")
-            spark
-              .range(10)
-              .selectExpr("id AS k2", "concat('n', id) AS name")
-              .createOrReplaceTempView("d")
+    withTempView("t", "d") {
+      spark
+        .range(0, 10000, 1, 4)
+        .selectExpr("id", "id % 10 AS k")
+        .createOrReplaceTempView("t")
+      spark
+        .range(10)
+        .selectExpr("id AS k2", "concat('n', id) AS name")
+        .createOrReplaceTempView("d")
+      for {
+        nativeCache <- Seq(true, false)
+        (query, expected) <- queries
+      } {
+        withAQECache {
+          withSQLConf(CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> nativeCache.toString) {
             spark.catalog.cacheTable("t")
             spark.catalog.cacheTable("d")
-            if (warm) {
-              spark.table("t").count()
-              spark.table("d").count()
+            val scanClass: Class[_] =
+              if (nativeCache) classOf[CometInMemoryTableScanExec]
+              else classOf[InMemoryTableScanExec]
+            // The first run materializes the cache through the stage and the second reads it warm.
+            // checkToRDD = false keeps checkAnswer from warming the cache with a run of its own.
+            Seq("cold", "warm").foreach { cache =>
+              val df = sql(query)
+              QueryTest.checkAnswer(df, expected, checkToRDD = false)
+              val plan = df.queryExecution.executedPlan
+              withClue(s"nativeCache=$nativeCache, $cache cache: $query\n$plan\n") {
+                val cacheScans = collect(plan) {
+                  case s: QueryStageExec if isTableCacheStage(s) => s.plan
+                }
+                assert(cacheScans.nonEmpty)
+                assert(cacheScans.forall(scanClass.isInstance))
+                checkCometOperatorsInFinalPlan(plan, classOf[InMemoryTableScanExec])
+              }
             }
-
-            val df = sql(query)
-            checkAnswer(df, expected)
-            val plan = df.queryExecution.executedPlan
-            val clue = s"nativeCache=$nativeCache, warm=$warm: $query\n$plan"
-            assert(plan.asInstanceOf[AdaptiveSparkPlanExec].isFinalPlan, clue)
-            val cacheScans = collect(plan) {
-              case s: QueryStageExec if isTableCacheStage(s) => s.plan
-            }
-            assert(cacheScans.nonEmpty, clue)
-            if (nativeCache) {
-              assert(cacheScans.forall(_.isInstanceOf[CometInMemoryTableScanExec]), clue)
-            } else {
-              assert(cacheScans.forall(_.isInstanceOf[InMemoryTableScanExec]), clue)
-            }
-            assert(sparkOperators(plan).isEmpty, clue)
           }
         }
       }
