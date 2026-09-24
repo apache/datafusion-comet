@@ -139,9 +139,10 @@ gh pr edit <number> --add-label run-spark-3.5-tests
 ```
 
 Applying a label starts a new run immediately at the pull request's current commit. That run
-executes only the suite the label gates; the PR tier already ran at that commit and is not
-repeated. Its aggregate verdict is published as `Required Checks (label run)` rather than
-`Required Checks`, so it can be read alongside the commit run without replacing it.
+belongs to the separate `Comet CI (label run)` workflow and executes only the suite the label
+gates; the PR tier already ran at that commit and is not repeated. Its aggregate verdict is
+published as `Label run / Required Checks (label run)` rather than `Required Checks`, so it can be
+read alongside the commit run without replacing it.
 
 For a queue-tier suite, that separate name costs nothing: the merge queue runs the suite again
 before the change lands, so a failure a label run surfaced still blocks the merge later. A
