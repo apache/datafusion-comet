@@ -856,8 +856,8 @@ under the License.
       shape. Suppressing these one by one with `@nowarn` does not work across profiles:
       some shared sources warn under Scala 2.12 but not 2.13 (`CometScanContrib.scala`,
       for example), so an annotation that silences one profile is unused on the other,
-      which `-Xlint:_` reports via `-Xlint:nowarn` and `-Xfatal-warnings` turns into a
-      build failure.
+      which `-Xlint:_` reports through `-Ywarn-unused:nowarn` and `-Xfatal-warnings`
+      turns into a build failure.
 
       `-Ywarn-value-discard` stays on for main sources, where a discarded result is
       usually a dropped builder or a swallowed return, but is off for test sources,
