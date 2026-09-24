@@ -39,7 +39,6 @@ use crate::execution::operators::IcebergScanExec;
 use crate::execution::operators::IcebergWriteExec;
 use crate::execution::operators::{PartitionedRankLimitExec, WindowFnKind};
 use crate::execution::{
-    expressions::list_empty_to_null::ListEmptyToNullExpr,
     expressions::list_positions::ListPositionsExpr,
     expressions::subquery::Subquery,
     operators::{
@@ -98,7 +97,7 @@ use datafusion_comet_spark_expr::{
 use iceberg::expr::Bind;
 
 use crate::execution::operators::ExecutionError::GeneralError;
-use crate::execution::shuffle::{CometPartitioning, CompressionCodec};
+use crate::execution::shuffle::{CometPartitioning, CompressionCodec, RoundRobinStrategy};
 use crate::execution::spark_plan::SparkPlan;
 use crate::parquet::objectstore::s3_blob_fs_support::normalize_object_store_url;
 use crate::parquet::parquet_support::prepare_object_store_with_configs;
@@ -127,7 +126,7 @@ use arrow::array::{
 use arrow::buffer::{BooleanBuffer, NullBuffer, OffsetBuffer};
 use arrow::row::{OwnedRow, RowConverter, SortField};
 use datafusion::common::utils::SingleRowListArrayBuilder;
-use datafusion::common::UnnestOptions;
+use datafusion::common::{NullHandling, UnnestOptions};
 use datafusion::physical_plan::filter::FilterExec;
 use datafusion::physical_plan::joins::NestedLoopJoinExec;
 use datafusion::physical_plan::limit::GlobalLimitExec;
@@ -2066,7 +2065,7 @@ impl PhysicalPlanner {
                     self.create_plan(&children[0], inputs, partition_count)?;
 
                 // Create the expression for the array to explode
-                let raw_child_expr = if let Some(child_expr) = &explode.child {
+                let child_expr = if let Some(child_expr) = &explode.child {
                     self.create_expr(child_expr, child.schema())?
                 } else {
                     return Err(ExecutionError::GeneralError(
@@ -2075,26 +2074,11 @@ impl PhysicalPlanner {
                 };
 
                 let child_schema = child.schema();
-                let child_field_name = raw_child_expr
+                let child_field_name = child_expr
                     .return_field(&child_schema)
                     .expect("Failed to get field from child expression")
                     .name()
                     .to_string();
-
-                // Bridge Spark's outer semantics: DataFusion's `UnnestExec` with
-                // `preserve_nulls = true` emits one null row for a NULL list but drops rows
-                // whose list is empty. Spark's `explode_outer`/`posexplode_outer` must emit
-                // exactly one null row in both cases, so we mark empty rows as null before
-                // unnesting. See https://github.com/apache/datafusion/issues/19053. Once
-                // Comet moves to a DataFusion release carrying
-                // https://github.com/apache/datafusion/pull/22100, `ListEmptyToNullExpr`
-                // can be removed in favor of `NullHandling::PreserveAndExpandEmpty`. See
-                // https://github.com/apache/datafusion-comet/issues/5210.
-                let child_expr: Arc<dyn PhysicalExpr> = if explode.outer {
-                    Arc::new(ListEmptyToNullExpr::new(raw_child_expr))
-                } else {
-                    raw_child_expr
-                };
 
                 // Both posexplode variants reference the array twice: once for positions
                 // and once for values. Materialize computed arrays so both references
@@ -2210,9 +2194,17 @@ impl PhysicalPlanner {
                     depth: 1,
                 });
 
-                let unnest_options = UnnestOptions::new().with_preserve_nulls(explode.outer);
+                // Spark's `explode_outer`/`posexplode_outer` emit exactly one null row for both
+                // a NULL array and an empty one, which is `PreserveAndExpandEmpty`. Plain
+                // `explode` drops both.
+                let null_handling = if explode.outer {
+                    NullHandling::PreserveAndExpandEmpty
+                } else {
+                    NullHandling::Drop
+                };
+                let unnest_options = UnnestOptions::new().with_null_handling(null_handling);
 
-                // Comet's batch-size-respecting fork of `UnnestExec`; see `operators::explode`.
+                // Comet's specialized fork of `UnnestExec`; see `operators::explode`.
                 let unnest_exec = Arc::new(ExplodeExec::new(
                     project_exec,
                     list_unnests,
@@ -3671,15 +3663,33 @@ impl PhysicalPlanner {
             }
             PartitioningStruct::SinglePartition(_) => Ok(CometPartitioning::SinglePartition),
             PartitioningStruct::RoundRobinPartition(rr_partition) => {
-                // Treat negative max_hash_columns as 0 (no limit)
-                let max_hash_columns = if rr_partition.max_hash_columns <= 0 {
-                    0
+                // Treat negative max_hash_columns as 0 (no limit).
+                let max_hash_columns = rr_partition.max_hash_columns.max(0) as usize;
+                let strategy = if rr_partition.positional {
+                    // Resolved on the driver and frozen with the shuffle dependency. Deriving it
+                    // here from the executor's batch size would let a retried task use a
+                    // different group size, and so a different placement, than the attempt it
+                    // replaces.
+                    if rr_partition.positional_group_rows <= 0 {
+                        return Err(GeneralError(format!(
+                            "Positional round robin needs a positive group size, got {}",
+                            rr_partition.positional_group_rows
+                        )));
+                    }
+                    RoundRobinStrategy::RowGroups {
+                        // Computed per task on the JVM, where the Spark map partition id is in
+                        // scope. See `CometShuffleExchangeExec.positionalStartPartition`.
+                        start_partition: rr_partition.positional_start_partition.max(0) as usize,
+                        group_rows: rr_partition.positional_group_rows as usize,
+                        // Kept for the case where the schema rules positional placement out.
+                        max_hash_columns,
+                    }
                 } else {
-                    rr_partition.max_hash_columns as usize
+                    RoundRobinStrategy::HashAll { max_hash_columns }
                 };
                 Ok(CometPartitioning::RoundRobin(
                     rr_partition.num_partitions as usize,
-                    max_hash_columns,
+                    strategy,
                 ))
             }
         }
@@ -6502,9 +6512,13 @@ mod tests {
                         if computed { 2 } else { 0 },
                         "{context}"
                     );
+                    // The array is pre-projected only to share one evaluation between the
+                    // `pos` and `value` references, so only a computed child needs it. `outer`
+                    // does not, since it is now a `UnnestOptions` mode rather than a wrapper
+                    // expression around the child.
                     assert_eq!(
                         projections,
-                        1 + usize::from(position && (outer || computed)),
+                        1 + usize::from(position && computed),
                         "{context}"
                     );
                     let expected_values = if outer {

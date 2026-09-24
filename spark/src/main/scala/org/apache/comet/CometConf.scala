@@ -317,6 +317,22 @@ object CometConf extends ShimCometConf {
     .booleanConf
     .createWithDefault(false)
 
+  val COMET_MEMORY_LOG_INTERVAL: ConfigEntry[Long] = conf("spark.comet.memory.logInterval")
+    .category(CATEGORY_TUNING)
+    .doc(
+      "How often each executor logs its native memory usage at INFO level while Comet native " +
+        "plans are running: the bytes the native allocator has handed out, and the bytes " +
+        "reserved in Comet's memory pools. The difference is native memory that the pools are " +
+        "not accounting for. The executor logs one line per interval however many tasks are " +
+        "running, and one more after the last plan finishes. It logs a warning when the " +
+        "native memory looks larger than the executor's container allows. This is an executor " +
+        "setting, read when an executor starts its first Comet native plan, so it must be set " +
+        "when the application is submitted. An invalid value disables the log with a warning. " +
+        s"Set to 0 to disable. $TUNING_GUIDE.")
+    .timeConf(TimeUnit.MILLISECONDS)
+    .checkValue(_ >= 0, "The memory usage log interval must not be negative")
+    .createWithDefault(TimeUnit.SECONDS.toMillis(10))
+
   val COMET_ONHEAP_MEMORY_OVERHEAD: ConfigEntry[Long] = conf("spark.comet.memoryOverhead")
     .category(CATEGORY_TESTING)
     .doc(
@@ -473,6 +489,46 @@ object CometConf extends ShimCometConf {
       .checkValue(
         v => v >= 0,
         "The maximum number of columns to hash for round robin partitioning must be non-negative.")
+      .createWithDefault(0)
+
+  val COMET_SHUFFLE_NATIVE_ROUND_ROBIN_PARTITIONING_POSITIONAL_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.shuffle.native.partitioning.roundrobin.positional.enabled")
+      .category(CATEGORY_SHUFFLE)
+      .doc(
+        "When true, Comet's native round-robin shuffle places rows by position rather than by " +
+          "hashing their contents, sending each map task's rows to the output partitions in " +
+          "turn, in contiguous groups. This skips a murmur3 pass over every column of every " +
+          "row and replaces the per-row gather on flush with a bulk copy per group, which is " +
+          "what dominates the shuffle write on wide nested schemas, and it spreads duplicate " +
+          "rows evenly where hashing sends them all to one partition. Placement then depends " +
+          "on the order a map task reads its rows in, so it is only used where Comet can " +
+          "establish from the plan that a retried task reads them in the same order: a native " +
+          "scan under nothing but deterministic projections and filters, and not with the " +
+          "Celeborn shuffle manager. Any other plan keeps content-hash placement. " +
+          s"Has no effect unless ${COMET_SHUFFLE_NATIVE_ROUND_ROBIN_PARTITIONING_ENABLED.key} " +
+          "is also true.")
+      .booleanConf
+      .createWithDefault(false)
+
+  val COMET_SHUFFLE_NATIVE_ROUND_ROBIN_PARTITIONING_POSITIONAL_GROUP_ROWS: ConfigEntry[Int] =
+    conf("spark.comet.shuffle.native.partitioning.roundrobin.positional.groupRows")
+      .category(CATEGORY_SHUFFLE)
+      .doc("Rows per contiguous group under positional round robin. Smaller groups balance " +
+        "better and larger ones are cheaper to copy. Within one map task, output partitions " +
+        "differ by at most this many rows, but a reducer receives groups from every map task, " +
+        "so the stage is only evenly balanced when each task emits many more groups than " +
+        "there are output partitions; a group approaching a task's whole input skews the " +
+        "stage and can leave reducers empty. When set to 0 (the default) Comet derives it " +
+        "from the batch size and the partition count when the query is planned, which keeps " +
+        "each task wrapping around the output partitions about once per batch. The derived " +
+        "group is at least 64 rows, so with more than a sixty-fourth of the batch size in " +
+        "output partitions a task needs several batches to wrap once, and map tasks of only a " +
+        "few batches can still leave reducers empty. Only applies when " +
+        s"${COMET_SHUFFLE_NATIVE_ROUND_ROBIN_PARTITIONING_POSITIONAL_ENABLED.key} is true.")
+      .intConf
+      .checkValue(
+        v => v >= 0,
+        "The group size for positional round robin partitioning must be non-negative.")
       .createWithDefault(0)
 
   val COMET_SHUFFLE_CONVERT_FROM_SPARK_PLAN_ENABLED: ConfigEntry[Boolean] =
@@ -846,9 +902,13 @@ object CometConf extends ShimCometConf {
     conf("spark.comet.exec.memoryPool.fraction")
       .category(CATEGORY_TUNING)
       .doc(
-        "Fraction of off-heap memory pool that is available to Comet. " +
-          "Only applies to off-heap mode. " +
-          s"$TUNING_GUIDE.")
+        "Deprecated: this config will be removed in a future release. It does not leave room " +
+          "in spark.memory.offHeap.size for native memory that Comet's memory pools do not " +
+          "track, because Spark hands out the whole off-heap pool whatever this is set to. Size " +
+          "spark.executor.memoryOverhead for that memory instead. Only applies to off-heap " +
+          "mode, where the fair_unified pool limits each memory consumer in a task to this " +
+          "fraction of the off-heap size divided by the task's consumers, and the " +
+          s"greedy_unified pool ignores it. $TUNING_GUIDE.")
       .doubleConf
       .createWithDefault(1.0)
 
