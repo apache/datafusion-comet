@@ -29,6 +29,8 @@ pub mod operator_registry;
 // and calls into that crate.
 #[cfg(feature = "contrib-delta")]
 mod delta_scan;
+#[cfg(feature = "contrib-lance")]
+mod lance_scan;
 
 use crate::execution::operators::init_csv_datasource_exec;
 use crate::execution::operators::AlignedArrowStreamReader;
@@ -47,7 +49,7 @@ use crate::execution::{
     planner::expression_registry::ExpressionRegistry,
     planner::operator_registry::OperatorRegistry,
     serde::{to_arrow_datatype, to_arrow_field},
-    shuffle::{SchemaAlignExec, ShuffleWriterDestination, ShuffleWriterExec},
+    shuffle::{PartitionOffsets, SchemaAlignExec, ShuffleWriterDestination, ShuffleWriterExec},
 };
 use crate::jvm_bridge::{jni_call, JVMClasses, ShufflePartitionPusher};
 use arrow::compute::CastOptions;
@@ -72,8 +74,7 @@ use datafusion::{
     logical_expr::Operator as DataFusionOperator,
     physical_expr::{
         expressions::{
-            in_list, BinaryExpr, CaseExpr, CastExpr, Column, IsNullExpr,
-            Literal as DataFusionLiteral,
+            BinaryExpr, CaseExpr, CastExpr, Column, IsNullExpr, Literal as DataFusionLiteral,
         },
         PhysicalExpr, PhysicalSortExpr, ScalarFunctionExpr,
     },
@@ -91,7 +92,8 @@ use datafusion::{
 use datafusion_comet_spark_expr::{
     create_comet_physical_fun, create_comet_physical_fun_with_eval_mode, BinaryOutputStyle,
     BloomFilterAgg, BloomFilterMightContain, CometCollectList, CometCollectSet, CsvWriteOptions,
-    EvalMode, SparkArraysZipFunc, SparkBloomFilterVersion, SparkPercentile, SumInteger, ToCsv,
+    EvalMode, SparkArraysZipFunc, SparkBloomFilterVersion, SparkListAgg, SparkPercentile,
+    SumInteger, ToCsv,
 };
 use iceberg::expr::Bind;
 
@@ -146,11 +148,11 @@ use datafusion_comet_proto::{
     spark_partitioning::{partitioning::PartitioningStruct, Partitioning as SparkPartitioning},
 };
 use datafusion_comet_spark_expr::{
-    jvm_udf::JvmScalarUdfExpr, ApproxPercentile, ArrayInsert, Avg, AvgDecimal, Cast, CheckOverflow,
-    Correlation, Covariance, CreateNamedStruct, DecimalRescaleCheckOverflow, GetArrayStructFields,
-    GetStructField, HllPlusPlus, IfExpr, ListExtract, MaxMinBy, Mode, NormalizeNaNAndZero, Regr,
-    RegrType, SparkCastOptions, Stddev, SumDecimal, ToJson, UnboundColumn, Variance,
-    WideDecimalBinaryExpr, WideDecimalOp,
+    jvm_udf::JvmScalarUdfExpr, spark_in_list, ApproxPercentile, ArrayInsert, Avg, AvgDecimal, Cast,
+    CheckOverflow, Correlation, Covariance, CreateNamedStruct, DecimalRescaleCheckOverflow,
+    GetArrayStructFields, GetStructField, HllPlusPlus, IfExpr, ListExtract, MaxMinBy, Mode,
+    NormalizeNaNAndZero, Regr, RegrType, SparkCastOptions, Stddev, SumDecimal, ToJson,
+    UnboundColumn, Variance, WideDecimalBinaryExpr, WideDecimalOp,
 };
 use itertools::Itertools;
 use jni::objects::{Global, JObject};
@@ -559,6 +561,9 @@ impl PhysicalPlanner {
                         DataType::Duration(TimeUnit::Microsecond) => {
                             ScalarValue::DurationMicrosecond(None)
                         }
+                        DataType::Interval(arrow::datatypes::IntervalUnit::MonthDayNano) => {
+                            ScalarValue::IntervalMonthDayNano(None)
+                        }
                         dt => {
                             return Err(GeneralError(format!("{dt:?} is not supported in Comet")))
                         }
@@ -588,9 +593,12 @@ impl PhysicalPlanner {
                             DataType::Duration(TimeUnit::Microsecond) => {
                                 ScalarValue::DurationMicrosecond(Some(*value))
                             }
+                            DataType::Time64(TimeUnit::Nanosecond) => {
+                                ScalarValue::Time64Nanosecond(Some(*value))
+                            }
                             dt => {
                                 return Err(GeneralError(format!(
-                                    "Expected 'Int64', 'Timestamp', or 'Duration(Microsecond)' for LongVal, but found {dt:?}"
+                                    "Expected 'Int64', 'Timestamp', 'Duration(Microsecond)', or 'Time64(Nanosecond)' for LongVal, but found {dt:?}"
                                 )))
                             }
                         },
@@ -757,7 +765,8 @@ impl PhysicalPlanner {
                     .map(|x| self.create_expr(x, Arc::clone(&input_schema)))
                     .collect::<Result<Vec<_>, _>>()?;
 
-                in_list(value, list, &expr.negated, input_schema.as_ref()).map_err(|e| e.into())
+                spark_in_list(value, list, expr.negated, input_schema.as_ref())
+                    .map_err(|e| e.into())
             }
             ExprStruct::If(expr) => {
                 let if_expr =
@@ -1876,10 +1885,14 @@ impl PhysicalPlanner {
                 if let Some(result) = delta_scan::try_plan_contrib_scan(self, spark_plan, contrib) {
                     return result;
                 }
+                #[cfg(feature = "contrib-lance")]
+                if let Some(result) = lance_scan::try_plan_contrib_scan(self, spark_plan, contrib) {
+                    return result;
+                }
                 Err(GeneralError(format!(
                     "Received a contrib_scan operator (type_url: {}) but core was built without a \
-                     contrib that handles it. Rebuild with the matching contrib feature -- e.g. \
-                     `-Pcontrib-delta` (Maven) + `--features contrib-delta` (Cargo) for Delta Lake.",
+                     contrib that handles it. Rebuild with the matching Maven profile and Cargo \
+                     feature.",
                     contrib.type_url
                 )))
             }
@@ -1982,11 +1995,7 @@ impl PhysicalPlanner {
                 let parquet_writer = Arc::new(ParquetWriterExec::try_new(
                     Arc::clone(&child.native_plan),
                     writer.output_path.clone(),
-                    writer
-                        .work_dir
-                        .as_ref()
-                        .expect("work_dir is provided")
-                        .clone(),
+                    writer.work_dir.clone(),
                     writer.job_id.clone(),
                     writer.task_attempt_id,
                     codec,
@@ -3176,6 +3185,13 @@ impl PhysicalPlanner {
                 let func = AggregateUDF::new_from_impl(HllPlusPlus::new(expr.precision));
                 Self::create_aggr_func_expr("approx_count_distinct", schema, vec![child], func)
             }
+            AggExprStruct::ListAgg(expr) => {
+                let child = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&schema))?;
+                let delimiter =
+                    self.create_expr(expr.delimiter.as_ref().unwrap(), Arc::clone(&schema))?;
+                let func = AggregateUDF::new_from_impl(SparkListAgg::new());
+                Self::create_aggr_func_expr("listagg", schema, vec![child, delimiter], func)
+            }
             AggExprStruct::MaxBy(expr) => {
                 let value = self.create_expr(expr.value.as_ref().unwrap(), Arc::clone(&schema))?;
                 let ordering =
@@ -4157,7 +4173,7 @@ fn shuffle_writer_destination(
 
         return Ok(ShuffleWriterDestination::Local {
             output_data_file: writer.output_data_file.clone(),
-            output_index_file: writer.output_index_file.clone(),
+            partition_offsets: Arc::new(PartitionOffsets::default()),
         });
     };
 
@@ -4166,12 +4182,6 @@ fn shuffle_writer_destination(
             if local.output_data_file.is_empty() {
                 return Err(GeneralError(
                     "Local shuffle partition writer is missing its output data file".to_string(),
-                ));
-            }
-
-            if local.output_index_file.is_empty() {
-                return Err(GeneralError(
-                    "Local shuffle partition writer is missing its output index file".to_string(),
                 ));
             }
 
@@ -4185,16 +4195,6 @@ fn shuffle_writer_destination(
                 ));
             }
 
-            if !writer.output_index_file.is_empty()
-                && writer.output_index_file != local.output_index_file
-            {
-                return Err(GeneralError(
-                    "Local shuffle partition writer output index file conflicts with the legacy \
-                     shuffle output index file"
-                        .to_string(),
-                ));
-            }
-
             if shuffle_partition_pusher.is_some() {
                 return Err(GeneralError(
                     "Local shuffle partition writer cannot use a remote shuffle callback"
@@ -4204,11 +4204,11 @@ fn shuffle_writer_destination(
 
             Ok(ShuffleWriterDestination::Local {
                 output_data_file: local.output_data_file.clone(),
-                output_index_file: local.output_index_file.clone(),
+                partition_offsets: Arc::new(PartitionOffsets::default()),
             })
         }
         Some(spark_operator::partition_writer::Writer::Rss(_)) => {
-            if !writer.output_data_file.is_empty() || !writer.output_index_file.is_empty() {
+            if !writer.output_data_file.is_empty() {
                 return Err(GeneralError(
                     "RSS shuffle partition writer cannot have local output files".to_string(),
                 ));
@@ -5207,15 +5207,11 @@ mod tests {
         }
     }
 
-    fn local_shuffle_partition_writer(
-        output_data_file: &str,
-        output_index_file: &str,
-    ) -> spark_operator::PartitionWriter {
+    fn local_shuffle_partition_writer(output_data_file: &str) -> spark_operator::PartitionWriter {
         spark_operator::PartitionWriter {
             writer: Some(spark_operator::partition_writer::Writer::Local(
                 spark_operator::LocalPartitionWriter {
                     output_data_file: output_data_file.to_string(),
-                    output_index_file: output_index_file.to_string(),
                 },
             )),
         }
@@ -5232,15 +5228,15 @@ mod tests {
     fn assert_local_shuffle_destination(
         writer: &spark_operator::ShuffleWriter,
         expected_data_file: &str,
-        expected_index_file: &str,
     ) {
         match super::shuffle_writer_destination(writer, None).unwrap() {
             ShuffleWriterDestination::Local {
                 output_data_file,
-                output_index_file,
+                partition_offsets,
             } => {
                 assert_eq!(output_data_file, expected_data_file);
-                assert_eq!(output_index_file, expected_index_file);
+                // A fresh destination has not run a writer yet, so nothing is published.
+                assert!(partition_offsets.get().is_none());
             }
             destination => panic!("expected a local shuffle destination, got {destination:?}"),
         }
@@ -5250,49 +5246,38 @@ mod tests {
     fn shuffle_partition_writer_legacy_paths_remain_supported() {
         let writer = spark_operator::ShuffleWriter {
             output_data_file: "legacy.data".to_string(),
-            output_index_file: "legacy.index".to_string(),
             ..Default::default()
         };
 
-        assert_local_shuffle_destination(&writer, "legacy.data", "legacy.index");
+        assert_local_shuffle_destination(&writer, "legacy.data");
     }
 
     #[test]
     fn shuffle_partition_writer_uses_nested_local_paths() {
         let writer = spark_operator::ShuffleWriter {
-            partition_writer: Some(local_shuffle_partition_writer(
-                "shuffle.data",
-                "shuffle.index",
-            )),
+            partition_writer: Some(local_shuffle_partition_writer("shuffle.data")),
             ..Default::default()
         };
 
-        assert_local_shuffle_destination(&writer, "shuffle.data", "shuffle.index");
+        assert_local_shuffle_destination(&writer, "shuffle.data");
     }
 
     #[test]
     fn shuffle_partition_writer_accepts_matching_legacy_paths() {
         let writer = spark_operator::ShuffleWriter {
             output_data_file: "shuffle.data".to_string(),
-            output_index_file: "shuffle.index".to_string(),
-            partition_writer: Some(local_shuffle_partition_writer(
-                "shuffle.data",
-                "shuffle.index",
-            )),
+            partition_writer: Some(local_shuffle_partition_writer("shuffle.data")),
             ..Default::default()
         };
 
-        assert_local_shuffle_destination(&writer, "shuffle.data", "shuffle.index");
+        assert_local_shuffle_destination(&writer, "shuffle.data");
     }
 
     #[test]
     fn shuffle_partition_writer_rejects_conflicting_legacy_data_path() {
         let writer = spark_operator::ShuffleWriter {
             output_data_file: "legacy.data".to_string(),
-            partition_writer: Some(local_shuffle_partition_writer(
-                "shuffle.data",
-                "shuffle.index",
-            )),
+            partition_writer: Some(local_shuffle_partition_writer("shuffle.data")),
             ..Default::default()
         };
 
@@ -5304,49 +5289,16 @@ mod tests {
     }
 
     #[test]
-    fn shuffle_partition_writer_rejects_conflicting_legacy_index_path() {
-        let writer = spark_operator::ShuffleWriter {
-            output_index_file: "legacy.index".to_string(),
-            partition_writer: Some(local_shuffle_partition_writer(
-                "shuffle.data",
-                "shuffle.index",
-            )),
-            ..Default::default()
-        };
-
-        let error = super::shuffle_writer_destination(&writer, None).unwrap_err();
-        assert!(
-            error.to_string().contains("output index file conflicts"),
-            "unexpected error: {error}"
-        );
-    }
-
-    #[test]
     fn shuffle_partition_writer_rejects_empty_local_data_path() {
         let writer = spark_operator::ShuffleWriter {
             output_data_file: "legacy.data".to_string(),
-            partition_writer: Some(local_shuffle_partition_writer("", "shuffle.index")),
+            partition_writer: Some(local_shuffle_partition_writer("")),
             ..Default::default()
         };
 
         let error = super::shuffle_writer_destination(&writer, None).unwrap_err();
         assert!(
             error.to_string().contains("missing its output data file"),
-            "unexpected error: {error}"
-        );
-    }
-
-    #[test]
-    fn shuffle_partition_writer_rejects_empty_local_index_path() {
-        let writer = spark_operator::ShuffleWriter {
-            output_index_file: "legacy.index".to_string(),
-            partition_writer: Some(local_shuffle_partition_writer("shuffle.data", "")),
-            ..Default::default()
-        };
-
-        let error = super::shuffle_writer_destination(&writer, None).unwrap_err();
-        assert!(
-            error.to_string().contains("missing its output index file"),
             "unexpected error: {error}"
         );
     }
@@ -5739,27 +5691,9 @@ mod tests {
     }
 
     #[test]
-    fn shuffle_partition_writer_rejects_rss_with_legacy_index_path() {
-        let writer = spark_operator::ShuffleWriter {
-            output_index_file: "legacy.index".to_string(),
-            partition_writer: Some(rss_shuffle_partition_writer()),
-            ..Default::default()
-        };
-        let callback: Arc<dyn ShufflePartitionPusher> =
-            Arc::new(RecordingShufflePartitionPusher::default());
-
-        let error = super::shuffle_writer_destination(&writer, Some(&callback)).unwrap_err();
-        assert!(
-            error.to_string().contains("cannot have local output files"),
-            "unexpected error: {error}"
-        );
-    }
-
-    #[test]
     fn shuffle_partition_writer_rejects_callback_for_legacy_local_destination() {
         let writer = spark_operator::ShuffleWriter {
             output_data_file: "legacy.data".to_string(),
-            output_index_file: "legacy.index".to_string(),
             ..Default::default()
         };
         let callback: Arc<dyn ShufflePartitionPusher> =
@@ -5777,10 +5711,7 @@ mod tests {
     #[test]
     fn shuffle_partition_writer_rejects_callback_for_explicit_local_destination() {
         let writer = spark_operator::ShuffleWriter {
-            partition_writer: Some(local_shuffle_partition_writer(
-                "shuffle.data",
-                "shuffle.index",
-            )),
+            partition_writer: Some(local_shuffle_partition_writer("shuffle.data")),
             ..Default::default()
         };
         let callback: Arc<dyn ShufflePartitionPusher> =
@@ -6260,12 +6191,14 @@ mod tests {
                 assert_eq!(metrics.metrics["build_input_rows"], 4);
                 if enabled {
                     assert_eq!(metrics.metrics["input_rows"], 3);
-                    assert_eq!(metrics.metrics["dynamic_filter_rows_evaluated"], 100);
-                    assert_eq!(metrics.metrics["dynamic_filter_rows_pruned"], 97);
-                    assert_eq!(metrics.metrics["dynamic_filter_rows_bypassed"], 0);
+                    assert_eq!(metrics.metrics["dynamic_filter_join_rows_evaluated"], 100);
+                    assert_eq!(metrics.metrics["dynamic_filter_join_rows_pruned"], 97);
+                    assert_eq!(metrics.metrics["dynamic_filter_join_rows_bypassed"], 0);
                 } else {
                     assert_eq!(metrics.metrics["input_rows"], 100);
-                    assert!(!metrics.metrics.contains_key("dynamic_filter_rows_pruned"));
+                    assert!(!metrics
+                        .metrics
+                        .contains_key("dynamic_filter_join_rows_pruned"));
                 }
             }
         }

@@ -19,8 +19,9 @@ use crate::execution::operators::ExecutionError;
 use crate::parquet::eager_page_index_reader_factory::{EagerPageIndexReaderFactory, ScanIoSource};
 use crate::parquet::encryption_support::{CometEncryptionConfig, ENCRYPTION_FACTORY_ID};
 use crate::parquet::name_fold::fold_schema_names;
-use crate::parquet::parquet_support::ObjectStoreBackend;
-use crate::parquet::parquet_support::SparkParquetOptions;
+use crate::parquet::parquet_support::{
+    object_store_authority, ObjectStoreBackend, SparkParquetOptions,
+};
 use crate::parquet::schema_adapter::SparkPhysicalExprAdapterFactory;
 use arrow::datatypes::{Field, FieldRef, SchemaRef};
 use datafusion::config::{ParquetOptions, TableParquetOptions};
@@ -120,8 +121,8 @@ pub(crate) fn init_datasource_exec(
             // Fold the data and required field names once (the same JVM `toLowerCase(Locale.ROOT)`
             // fold the schema adapter uses), then match on the folded names so this plan-time
             // projection stays consistent with the adapter's case-insensitive remap.
-            let data_folded = fold_schema_names(schema, case_sensitive);
-            let required_folded = fold_schema_names(&required_schema, case_sensitive);
+            let data_folded = fold_schema_names(schema, case_sensitive)?;
+            let required_folded = fold_schema_names(&required_schema, case_sensitive)?;
             let projection: Vec<usize> = required_folded
                 .iter()
                 .filter_map(|req| data_folded.iter().position(|d| d == req))
@@ -340,7 +341,7 @@ fn get_options(
                 uri_base: format!(
                     "{}://{}/",
                     physical_object_store_scheme(object_store_url),
-                    &store_url[url::Position::BeforeHost..url::Position::AfterPort],
+                    object_store_authority(store_url),
                 ),
             },
         );
@@ -511,6 +512,12 @@ mod tests {
         assert_eq!(
             encryption_uri("file+comet-0123456789abcdef-hdfs:///"),
             "file:///"
+        );
+        assert_eq!(
+            encryption_uri(
+                "abfss+comet-0123456789abcdef-native://container@account.dfs.core.windows.net/"
+            ),
+            "abfss://container@account.dfs.core.windows.net/"
         );
         // A physical custom scheme containing a similar, incomplete suffix is not
         // itself a synthetic registration URL.

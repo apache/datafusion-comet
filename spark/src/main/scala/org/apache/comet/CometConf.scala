@@ -48,7 +48,7 @@ object CometConf extends ShimCometConf {
   val COMPAT_GUIDE: String = "For more information, refer to the Comet Compatibility " +
     "Guide (https://datafusion.apache.org/comet/user-guide/latest/compatibility/index.html)"
 
-  private val TUNING_GUIDE = "For more information, refer to the Comet Tuning " +
+  val TUNING_GUIDE: String = "For more information, refer to the Comet Tuning " +
     "Guide (https://datafusion.apache.org/comet/user-guide/latest/tuning.html)"
 
   private val TRACING_GUIDE = "For more information, refer to the Comet Tracing " +
@@ -255,6 +255,8 @@ object CometConf extends ShimCometConf {
     createExecEnabledConfig("takeOrderedAndProject", defaultValue = true)
   val COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED: ConfigEntry[Boolean] =
     createExecEnabledConfig("localTableScan", defaultValue = false)
+  val COMET_EXEC_EMPTY_RELATION_ENABLED: ConfigEntry[Boolean] =
+    createExecEnabledConfig("emptyRelation", defaultValue = true)
   val COMET_EXEC_SAMPLE_ENABLED: ConfigEntry[Boolean] =
     createExecEnabledConfig("sample", defaultValue = true)
 
@@ -314,6 +316,22 @@ object CometConf extends ShimCometConf {
     .doc(s"Enable fine-grained tracing of events and memory usage. $TRACING_GUIDE.")
     .booleanConf
     .createWithDefault(false)
+
+  val COMET_MEMORY_LOG_INTERVAL: ConfigEntry[Long] = conf("spark.comet.memory.logInterval")
+    .category(CATEGORY_TUNING)
+    .doc(
+      "How often each executor logs its native memory usage at INFO level while Comet native " +
+        "plans are running: the bytes the native allocator has handed out, and the bytes " +
+        "reserved in Comet's memory pools. The difference is native memory that the pools are " +
+        "not accounting for. The executor logs one line per interval however many tasks are " +
+        "running, and one more after the last plan finishes. It logs a warning when the " +
+        "native memory looks larger than the executor's container allows. This is an executor " +
+        "setting, read when an executor starts its first Comet native plan, so it must be set " +
+        "when the application is submitted. An invalid value disables the log with a warning. " +
+        s"Set to 0 to disable. $TUNING_GUIDE.")
+    .timeConf(TimeUnit.MILLISECONDS)
+    .checkValue(_ >= 0, "The memory usage log interval must not be negative")
+    .createWithDefault(TimeUnit.SECONDS.toMillis(10))
 
   val COMET_ONHEAP_MEMORY_OVERHEAD: ConfigEntry[Long] = conf("spark.comet.memoryOverhead")
     .category(CATEGORY_TESTING)
@@ -637,11 +655,11 @@ object CometConf extends ShimCometConf {
     .withAlternative("spark.comet.shuffle.preferDictionary.ratio")
     .category(CATEGORY_SHUFFLE)
     .doc(
-      "The ratio of total values to distinct values in a string column to decide whether to " +
-        "prefer dictionary encoding when shuffling the column. If the ratio is higher than " +
-        "this config, dictionary encoding will be used on shuffling string column. This config " +
-        "is effective if it is higher than 1.0. Note that this " +
-        "config is only used when `spark.comet.shuffle.mode` is `jvm`.")
+      "The ratio of total values to distinct values in a string or binary column to decide " +
+        "whether to prefer dictionary encoding when shuffling the column. If the ratio is " +
+        "higher than this config, dictionary encoding will be used when shuffling the column. " +
+        "This config is effective if it is higher than 1.0. Note that this config is only " +
+        "used when `spark.comet.shuffle.mode` is `jvm`.")
     .doubleConf
     .createWithDefault(10.0)
 
@@ -933,7 +951,11 @@ object CometConf extends ShimCometConf {
       .category(CATEGORY_EXEC)
       .doc(
         "When enabled, fall back to Spark for floating-point operations that may differ from " +
-          s"Spark, such as when comparing or sorting -0.0 and 0.0. $COMPAT_GUIDE.")
+          "Spark, such as comparing -0.0 and 0.0, sorting floating-point values nested in " +
+          "arrays, structs, or maps, or sorting the elements of a floating-point array with " +
+          "`sort_array`. Scalar `ORDER BY`, window ordering and range partitioning keys are " +
+          "unaffected, because Comet normalizes those comparison keys to match Spark. " +
+          s"$COMPAT_GUIDE.")
       .booleanConf
       .createWithDefault(false)
 
@@ -1018,8 +1040,28 @@ object CometConf extends ShimCometConf {
     .booleanConf
     .createWithEnvVarOrDefault("ENABLE_COMET_STRICT_TESTING", false)
 
+  /**
+   * Deprecated alternatives for `spark.comet.operator.<name>.allowIncompatible`, keyed by
+   * operator name. `CometExecRule` resolves these configs by operator name rather than through
+   * the registered `ConfigEntry`, so `isOperatorAllowIncompat` has to consult the alternatives
+   * itself - otherwise an old key would read `true` from the entry while the planner saw `false`.
+   */
+  private val operatorIncompatAlternatives =
+    scala.collection.mutable.Map.empty[String, String]
+
+  /** Spark 3.x only: native writes replace the whole `DataWritingCommandExec` there. */
   val COMET_OPERATOR_DATA_WRITING_COMMAND_ALLOW_INCOMPAT: ConfigEntry[Boolean] =
     createOperatorIncompatConfig("DataWritingCommandExec")
+
+  /**
+   * Spark 4.0+ only: native writes replace just the `WriteFilesExec` child, so the opt-in moved
+   * with the operator. The old `DataWritingCommandExec` key keeps working for anyone who had
+   * already enabled the experimental writer.
+   */
+  val COMET_OPERATOR_WRITE_FILES_ALLOW_INCOMPAT: ConfigEntry[Boolean] =
+    createOperatorIncompatConfig(
+      "WriteFilesExec",
+      Some(getOperatorAllowIncompatConfigKey("DataWritingCommandExec")))
 
   /** Create a config to enable a specific operator */
   private def createExecEnabledConfig(
@@ -1044,15 +1086,21 @@ object CometConf extends ShimCometConf {
   private def configKeyToEnvVar(configKey: String): String =
     configKey.toUpperCase(Locale.ROOT).replace('.', '_')
 
-  private def createOperatorIncompatConfig(name: String): ConfigEntry[Boolean] = {
+  private def createOperatorIncompatConfig(
+      name: String,
+      alternative: Option[String] = None): ConfigEntry[Boolean] = {
     val configKey = getOperatorAllowIncompatConfigKey(name)
     val envVar = configKeyToEnvVar(configKey)
-    conf(configKey)
+    val builder = conf(configKey)
       .category(CATEGORY_EXEC)
       .doc(s"Whether to allow incompatibility for operator: $name. " +
         s"False by default. Can be overridden with $envVar env variable")
-      .booleanConf
-      .createWithEnvVarOrDefault(envVar, false)
+    alternative.foreach { alt =>
+      operatorIncompatAlternatives.put(name, alt)
+      // ConfigBuilder mutates in place, so the result of withAlternative is `builder` itself.
+      builder.withAlternative(alt)
+    }
+    builder.booleanConf.createWithEnvVarOrDefault(envVar, false)
   }
 
   def isExprEnabled(name: String, conf: SQLConf = SQLConf.get): Boolean = {
@@ -1076,7 +1124,11 @@ object CometConf extends ShimCometConf {
   }
 
   def isOperatorAllowIncompat(name: String, conf: SQLConf = SQLConf.get): Boolean = {
-    getBooleanConf(getOperatorAllowIncompatConfigKey(name), defaultValue = false, conf)
+    val value = CometConfDeprecations.readWithAlternatives(
+      conf,
+      getOperatorAllowIncompatConfigKey(name),
+      operatorIncompatAlternatives.get(name).toSeq)
+    value != null && value.toLowerCase(Locale.ROOT) == "true"
   }
 
   def getOperatorAllowIncompatConfigKey(name: String): String = {
