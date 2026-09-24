@@ -240,4 +240,47 @@ class CometTopKSuite extends CometTestBase {
       }
     }
   }
+
+  test("local TopK preserves partition columns in empty buckets") {
+    val session = spark
+    import session.implicits._
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.BUCKETING_ENABLED.key -> "true",
+      "spark.sql.sources.bucketing.autoBucketedScan.enabled" -> "false") {
+      withTable("topk_bucketed_partitioned") {
+        // Two rows cannot fill eight buckets, so the native plan must also handle empty scans.
+        Seq((1, 10), (2, 20))
+          .toDF("id", "p")
+          .coalesce(1)
+          .write
+          .format("parquet")
+          .partitionBy("p")
+          .bucketBy(8, "id")
+          .saveAsTable("topk_bucketed_partitioned")
+        for (fusion <- Seq(false, true)) {
+          withSQLConf(CometConf.COMET_EXEC_TOPK_FUSION_ENABLED.key -> fusion.toString) {
+            for ((columns, expected) <- Seq(
+                "id, p" -> Seq(Row(1, 10), Row(2, 20)),
+                "p, id" -> Seq(Row(10, 1), Row(20, 2)))) {
+              val query =
+                sql(s"SELECT $columns FROM topk_bucketed_partitioned ORDER BY p LIMIT 5")
+              val plan = query.queryExecution.executedPlan
+              val scans = collect(plan) { case scan: CometNativeScanExec => scan }
+              assert(scans.size == 1, s"Expected one native scan:\n$plan")
+              assert(scans.head.bucketedScan)
+              assert(scans.head.perPartitionData.length == 8)
+              assert(scans.head.perPartitionFilePaths.count(_.isEmpty) >= 6)
+              val topKs = collect(plan) { case topK: CometTakeOrderedAndProjectExec => topK }
+              assert(topKs.size == 1, s"Expected one native TopK:\n$plan")
+              assert(topKs.head.child.executeColumnar().getNumPartitions == 8)
+              val locals = collect(plan) { case local: CometLocalTopKExec => local }
+              assert(locals.size == (if (fusion) 1 else 0), s"fusion=$fusion:\n$plan")
+              assert(query.collect().toSeq == expected)
+            }
+          }
+        }
+      }
+    }
+  }
 }
