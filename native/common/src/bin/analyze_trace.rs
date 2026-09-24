@@ -31,8 +31,8 @@ use std::{env, fs::File};
 
 /// The process-wide allocation counters the tool understands, most preferred first.
 ///
-/// `native_allocated` (the `alloc-accounting` feature) counts only the bytes Rust code holds from
-/// the global allocator, so it is the tighter comparison against pool reservations.
+/// `native_allocated` (emitted by every build) counts only the bytes Rust code holds from the
+/// global allocator, so it is the tighter comparison against pool reservations.
 /// `jemalloc_allocated` (the `jemalloc` feature) also includes jemalloc's own metadata. A trace
 /// that carries both is analyzed against `native_allocated` alone; a trace with neither cannot be
 /// analyzed.
@@ -250,7 +250,8 @@ fn main() {
     let Some(source) = source.map(|rank| ALLOCATED_COUNTERS[rank]) else {
         eprintln!(
             "No process-wide allocation counter found in the trace: expected one of {}. \
-             Build the native library with the `alloc-accounting` or `jemalloc` feature.",
+             Was the trace produced by a native library older than the `native_allocated` \
+             counter?",
             ALLOCATED_COUNTERS.join(", ")
         );
         std::process::exit(1);
