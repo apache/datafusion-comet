@@ -94,6 +94,7 @@ message Expr {
     Shuffle shuffle = 72;
     RandStr rand_str = 73;
     Uuid uuid = 74;
+    AtLeastNNonNulls at_least_n_non_nulls = 75;
   }
 
   reserved 20;
@@ -689,4 +690,10 @@ message JvmScalarUdf {
   DataType return_type = 3;
   // Whether the result column may contain nulls.
   bool return_nullable = 4;
+}
+
+// Counts non-null and non-NaN children, with per-row short-circuit evaluation.
+message AtLeastNNonNulls {
+  int32 n = 1;
+  repeated Expr children = 2;
 }
