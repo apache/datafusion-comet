@@ -106,9 +106,11 @@ assertables = "10"
 hex = "0.4.3"
 datafusion-functions-nested = { version = "55.1.0" }
 # Test-only helpers for a hand-rolled in-memory HTTP client that exercises the web-identity STS
-# retry path without a socket. Already in the dependency graph (transitive via aws-config).
+# retry path without a socket, plus reqsign's SigV4 signer for the signing round-trip test. Already
+# in the dependency graph (transitive via aws-config and iceberg-storage-opendal).
 aws-smithy-types = "1.6.3"
 http = "1.5.0"
+reqsign-aws-v4 = "3"
 
 [features]
 backtrace = ["datafusion/backtrace"]

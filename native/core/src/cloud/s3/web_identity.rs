@@ -34,12 +34,12 @@
 //!   2. No silent downgrade. It only ever calls `AssumeRoleWithWebIdentity` -- there is no
 //!      credential chain and no IMDS/instance-role fallback -- so a throttle that outlasts the
 //!      retries surfaces as an error instead of a wrong-identity credential.
-//!   3. Shared, jittered cache. One assumed-role credential is cached per process, keyed by
-//!      identity (role_arn, token_file, region) and the resolved retry/refresh settings, and shared
-//!      across all reader threads and scans that resolve to the same key. Refresh fires ahead of
-//!      expiry by `min_ttl` plus a per-process random jitter so cluster-wide refreshes do not
-//!      synchronize into another burst; a failed refresh is briefly remembered so a throttled burst
-//!      costs one STS call rather than one per reader.
+//!   3. Shared cache. One assumed-role credential is cached per process, keyed by identity
+//!      (role_arn, token_file, region) and the resolved settings, and shared across all reader
+//!      threads and scans that resolve to the same key -- so a startup burst makes one STS call per
+//!      executor rather than one per reader thread. A failed refresh keeps serving the still-valid
+//!      cached credential and is briefly remembered so a throttled burst costs one STS call rather
+//!      than one per reader.
 //!
 //! It is wired into the Iceberg scan path (`iceberg_common::build_s3_credential_loader`), which is
 //! where the reported failure occurs: opendal's default reqsign chain is the one that downgrades to
@@ -59,9 +59,9 @@ use aws_credential_types::provider::error::CredentialsError;
 use aws_credential_types::provider::future as creds_future;
 use aws_credential_types::provider::ProvideCredentials;
 use aws_credential_types::Credentials;
+use aws_sdk_sts::error::DisplayErrorContext;
 use aws_smithy_runtime_api::client::http::SharedHttpClient;
 use iceberg_storage_opendal::AwsCredential as IcebergAwsCredential;
-use rand::RngExt;
 use reqsign_core::time::Timestamp;
 use reqsign_core::{
     Context, Error as ReqsignError, ErrorKind as ReqsignErrorKind,
@@ -76,18 +76,24 @@ const ENV_ROLE_ARN: &str = "AWS_ROLE_ARN";
 
 /// Config keys in their bare form. On the Iceberg path they are resolved under the `s3.` prefix in
 /// the catalog property bag (e.g. `s3.comet.credential.webIdentity.enabled`), matching the existing
-/// `s3.comet.credential.provider.class` SPI key. The `s3.` prefix is required: that is how a catalog
-/// property reaches iceberg-rust's FileIO property bag; a bare, unprefixed key would be dropped and
-/// the opt-out would silently have no effect.
+/// `s3.comet.credential.provider.class` SPI key. A bare key without the `s3.` prefix still reaches
+/// the catalog bag (Comet forwards the unfiltered FileIO properties), but the lookup below adds the
+/// prefix, so only the `s3.`-spelled key takes effect.
 const KEY_ENABLED: &str = "comet.credential.webIdentity.enabled";
 const KEY_MAX_ATTEMPTS: &str = "comet.credential.webIdentity.maxAttempts";
 const KEY_MIN_TTL_SECS: &str = "comet.credential.webIdentity.minTtlSeconds";
-const KEY_JITTER_SECS: &str = "comet.credential.webIdentity.refreshJitterSeconds";
 
 const DEFAULT_ENABLED: bool = true;
 const DEFAULT_MAX_ATTEMPTS: u32 = 5;
 const DEFAULT_MIN_TTL_SECS: u64 = 300;
-const DEFAULT_JITTER_SECS: u64 = 60;
+
+/// reqsign's signer treats a credential as needing refresh once it is within 120s of its reported
+/// expiry (`Credential::is_valid` in reqsign-aws-v4) and refuses to sign within 10s of it
+/// (`CREDENTIAL_OPERATION_HEADROOM`). We must (a) report the real STS expiry so the signer never
+/// sees a credential that is nominally inside those margins, and (b) refresh our own cache at or
+/// before the signer's 120s point so that when the signer asks us to reload it gets a fresh
+/// credential. So `min_ttl` is floored to this value.
+const REQSIGN_REFRESH_MARGIN: Duration = Duration::from_secs(120);
 
 /// After a refresh exhausts its STS retries and fails, waiters within this window get the failure
 /// without each firing their own assume-role call. Bounds STS pressure during a sustained throttle
@@ -102,42 +108,40 @@ const FAILURE_COOLDOWN: Duration = Duration::from_secs(1);
 pub struct WebIdentityConfig {
     role_arn: String,
     token_file: String,
-    /// From `AWS_REGION` / `AWS_DEFAULT_REGION`; only part of the cache key. The STS client's
-    /// actual region (and endpoint) comes from the resolved `SdkConfig`.
+    /// From `AWS_REGION` / `AWS_DEFAULT_REGION`. The STS client's region comes from the resolved
+    /// `SdkConfig`; we also require it to be present before taking over (see `take_over_if_irsa`),
+    /// because a web-identity STS client with no region silently fails.
     region: Option<String>,
     max_attempts: u32,
+    /// Refresh margin for our own cache. Floored to `REQSIGN_REFRESH_MARGIN` so our cache refreshes
+    /// at or before the point reqsign asks the loader to reload, avoiding a signing dead zone.
     min_ttl: Duration,
-    max_jitter: Duration,
 }
 
 impl WebIdentityConfig {
     /// Returns a config only when IRSA is in effect (both env vars present) and the feature is
-    /// enabled. `resolve` looks up a bare setting key (e.g. `KEY_MAX_ATTEMPTS`) in whichever config
-    /// bag the caller owns -- the Iceberg catalog bag or the Parquet `fs.s3a.*` bag -- so the two
-    /// scan paths share one detection routine without sharing a config-key scheme. Returns `None`
-    /// when IRSA is not detected or the feature is disabled.
+    /// enabled. `resolve` looks up a bare setting key (e.g. `KEY_MAX_ATTEMPTS`) in the catalog
+    /// property bag. Returns `None` when IRSA is not detected or the feature is disabled.
     pub fn detect_with<F>(resolve: F) -> Option<Self>
     where
         F: Fn(&str) -> Option<String>,
     {
         let token_file = non_empty_env(ENV_TOKEN_FILE)?;
         let role_arn = non_empty_env(ENV_ROLE_ARN)?;
-        if !parse_setting(resolve(KEY_ENABLED), DEFAULT_ENABLED) {
+        if !parse_enabled(resolve(KEY_ENABLED)) {
             return None;
         }
+        let min_ttl = Duration::from_secs(parse_setting(
+            resolve(KEY_MIN_TTL_SECS),
+            DEFAULT_MIN_TTL_SECS,
+        ))
+        .max(REQSIGN_REFRESH_MARGIN);
         Some(Self {
             role_arn,
             token_file,
             region: non_empty_env("AWS_REGION").or_else(|| non_empty_env("AWS_DEFAULT_REGION")),
             max_attempts: parse_u32(resolve(KEY_MAX_ATTEMPTS), DEFAULT_MAX_ATTEMPTS),
-            min_ttl: Duration::from_secs(parse_setting(
-                resolve(KEY_MIN_TTL_SECS),
-                DEFAULT_MIN_TTL_SECS,
-            )),
-            max_jitter: Duration::from_secs(parse_setting(
-                resolve(KEY_JITTER_SECS),
-                DEFAULT_JITTER_SECS,
-            )),
+            min_ttl,
         })
     }
 
@@ -148,7 +152,6 @@ impl WebIdentityConfig {
             region: self.region.clone(),
             max_attempts: self.max_attempts,
             min_ttl: self.min_ttl,
-            max_jitter: self.max_jitter,
         }
     }
 }
@@ -164,12 +167,10 @@ struct EntryKey {
     region: Option<String>,
     max_attempts: u32,
     min_ttl: Duration,
-    max_jitter: Duration,
 }
 
 /// The shared, cached credential for one identity. `provider` resolves credentials via STS;
-/// `cached` holds the last credential; `refresh_jitter` is drawn once per entry so each executor
-/// refreshes at a slightly different time. `last_failure` coalesces a burst of readers that hit a
+/// `cached` holds the last credential. `last_failure` coalesces a burst of readers that hit a
 /// persistent failure into a single STS call, and remembers the real error so every waiter sees it.
 #[derive(Debug)]
 struct SharedEntry {
@@ -182,27 +183,25 @@ struct SharedEntry {
     /// one per reader and every reader sees the real cause (throttle vs bad token vs trust policy).
     last_failure: RwLock<Option<(Instant, String)>>,
     min_ttl: Duration,
-    refresh_jitter: Duration,
 }
 
 impl SharedEntry {
-    /// Returns the cached credential if it is still fresh, i.e. it does not expire within
-    /// `min_ttl + refresh_jitter`.
+    /// Returns the cached credential if it is still fresh, i.e. it does not expire within `min_ttl`.
     fn fresh(&self) -> Option<Credentials> {
         let guard = self.cached.read().unwrap();
         let cred = guard.as_ref()?;
-        if self.expires_within_margin(cred) {
+        if self.expires_within(cred, self.min_ttl) {
             None
         } else {
             Some(cred.clone())
         }
     }
 
-    /// True if `cred` expires within the refresh margin (`min_ttl + refresh_jitter`). A credential
-    /// with no reported expiry never does.
-    fn expires_within_margin(&self, cred: &Credentials) -> bool {
+    /// True if `cred` expires within `margin` from now. A credential with no reported expiry never
+    /// does.
+    fn expires_within(&self, cred: &Credentials, margin: Duration) -> bool {
         match cred.expiry() {
-            Some(expiry) => expiry <= SystemTime::now() + self.min_ttl + self.refresh_jitter,
+            Some(expiry) => expiry <= SystemTime::now() + margin,
             None => false,
         }
     }
@@ -217,15 +216,25 @@ impl SharedEntry {
             .then(|| format!("{err} (backing off before retrying STS)"))
     }
 
-    /// Fetches a fresh credential, refreshing from STS at most once at a time. On a refresh error
-    /// the error propagates -- we never fall back to a lower-privilege identity -- and is briefly
-    /// remembered so concurrent waiters do not each re-issue the same throttled call.
+    /// The cached credential if it is still safely signable -- outside reqsign's refresh margin --
+    /// even though it is inside our own (larger) refresh margin. Used to keep serving reads when a
+    /// refresh fails but the current credential still has real headroom.
+    fn still_signable(&self) -> Option<Credentials> {
+        let guard = self.cached.read().unwrap();
+        let cred = guard.as_ref()?;
+        (!self.expires_within(cred, REQSIGN_REFRESH_MARGIN)).then(|| cred.clone())
+    }
+
+    /// Fetches a fresh credential, refreshing from STS at most once at a time. On a refresh error we
+    /// keep serving the cached credential while it is still safely signable; only once it is too
+    /// close to expiry does the error propagate. We never fall back to a lower-privilege identity.
+    /// The failure is recorded so concurrent waiters do not each re-issue the same throttled call.
     async fn credentials(&self) -> Result<Credentials, String> {
         if let Some(cred) = self.fresh() {
             return Ok(cred);
         }
         if let Some(err) = self.in_failure_cooldown() {
-            return Err(err);
+            return self.still_signable().ok_or(err);
         }
         let _guard = self.refresh_lock.lock().await;
         // Re-check: another task may have refreshed (or just failed) while we waited on the lock.
@@ -233,7 +242,7 @@ impl SharedEntry {
             return Ok(cred);
         }
         if let Some(err) = self.in_failure_cooldown() {
-            return Err(err);
+            return self.still_signable().ok_or(err);
         }
         match self.provider.provide_credentials().await {
             Ok(cred) => {
@@ -243,19 +252,26 @@ impl SharedEntry {
                 Ok(cred)
             }
             Err(e) => {
-                let err = format!("web-identity assume-role failed: {e}");
+                let err = format!(
+                    "web-identity assume-role failed: {}",
+                    DisplayErrorContext(&e)
+                );
+                log::warn!("Comet web-identity credential refresh failed: {err}");
                 *self.last_failure.write().unwrap() = Some((Instant::now(), err.clone()));
-                Err(err)
+                // A refresh failure while the current credential is still safely signable must not
+                // fail reads that would have worked; keep serving it and let the cooldown throttle
+                // retries.
+                self.still_signable().ok_or(err)
             }
         }
     }
 
-    /// Warns once if a freshly fetched credential already falls inside the refresh margin -- a sign
+    /// Warns once if a freshly fetched credential already falls inside our refresh margin -- a sign
     /// `minTtlSeconds` is misconfigured larger than the STS session lifetime, which would make every
     /// request refresh (the very burst this provider avoids).
     fn warn_if_immediately_stale(&self, cred: &Credentials) {
         static WARNED: OnceLock<()> = OnceLock::new();
-        if self.expires_within_margin(cred) && WARNED.set(()).is_ok() {
+        if self.expires_within(cred, self.min_ttl) && WARNED.set(()).is_ok() {
             log::warn!(
                 "A freshly fetched web-identity credential already falls within the {}s refresh \
                  margin; comet.credential.webIdentity.minTtlSeconds may be larger than the STS \
@@ -287,21 +303,12 @@ async fn shared_entry(cfg: &WebIdentityConfig) -> Arc<SharedEntry> {
     }
 
     let provider = build_provider(cfg, None).await;
-    // Draw the refresh jitter once per entry (each distinct identity+settings key), so two
-    // executors -- or two catalogs with different tuning -- refresh at slightly different times and
-    // the cluster does not re-burst on a synchronized refresh.
-    let jitter = if cfg.max_jitter.is_zero() {
-        Duration::ZERO
-    } else {
-        Duration::from_secs(rand::rng().random_range(0..=cfg.max_jitter.as_secs()))
-    };
     let entry = Arc::new(SharedEntry {
         provider,
         cached: RwLock::new(None),
         refresh_lock: tokio::sync::Mutex::new(()),
         last_failure: RwLock::new(None),
         min_ttl: cfg.min_ttl,
-        refresh_jitter: jitter,
     });
 
     let mut map = registry().lock().unwrap();
@@ -428,10 +435,20 @@ impl ProvideCredentials for WebIdentityStsProvider {
 /// The credential provider handed to opendal via `CustomAwsCredentialLoader` (the Iceberg path).
 /// Holds only the cheap config plus a lazily resolved handle to the process-wide shared entry, so
 /// the per-request path skips the registry lock after the first fetch.
-#[derive(Debug)]
 pub struct WebIdentityCredentialProvider {
     config: WebIdentityConfig,
     entry: tokio::sync::OnceCell<Arc<SharedEntry>>,
+}
+
+// Compact, secret-free Debug. reqsign's `ProvideCredentialChain` logs `{provider:?}` at warn on a
+// load error; the derived Debug would dump the whole STS client config and the cached credential
+// (tens of KB), so print only the identity, mirroring `CometS3CredentialBridge`.
+impl std::fmt::Debug for WebIdentityCredentialProvider {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WebIdentityCredentialProvider")
+            .field("role_arn", &self.config.role_arn)
+            .finish_non_exhaustive()
+    }
 }
 
 impl WebIdentityCredentialProvider {
@@ -463,16 +480,13 @@ impl IcebergProvideCredential for WebIdentityCredentialProvider {
             .await
             .map_err(|e| ReqsignError::new(ReqsignErrorKind::CredentialInvalid, e))?;
 
-        // Report the jittered refresh deadline (true expiry minus min_ttl minus jitter) as the
-        // expiry opendal caches against, so opendal refreshes when our own cache would, and each
-        // executor's refresh is spread out rather than synchronized.
+        // Report the real STS expiry. reqsign's signer refuses to sign within ~10s of the reported
+        // expiry and reloads within 120s of it; reporting an artificially early deadline (as an
+        // earlier version did) put the credential inside those margins and caused a signing dead
+        // zone before every refresh. Our own cache refreshes at `min_ttl` (>= 120s), so when reqsign
+        // reloads at its 120s point it gets a freshly minted credential.
         let expires_in = match cred.expiry() {
-            Some(expiry) => {
-                let deadline = expiry
-                    .checked_sub(entry.min_ttl + entry.refresh_jitter)
-                    .unwrap_or(expiry);
-                Some(system_time_to_timestamp(deadline)?)
-            }
+            Some(expiry) => Some(system_time_to_timestamp(expiry)?),
             None => Some(Timestamp::now() + DEFAULT_EXPIRY_WHEN_UNKNOWN),
         };
 
@@ -515,11 +529,16 @@ where
         Some("static AWS credentials are set in the environment")
     } else if configured_profile() {
         Some("an AWS profile or config file is present")
+    } else if !region_present() {
+        // A web-identity STS client with no region sends no request and fails opaquely; the default
+        // chain, in contrast, falls back to the global STS endpoint. Defer to it. EKS injects
+        // AWS_REGION, so this only stands aside for non-EKS OIDC setups that rely on that fallback.
+        Some("no AWS region is set (AWS_REGION / AWS_DEFAULT_REGION)")
     } else {
         None
     };
     if let Some(reason) = stand_aside_reason {
-        log::info!("IRSA detected but the Comet web-identity provider is standing aside: {reason}");
+        log_stand_aside_once(reason);
         return None;
     }
     match WebIdentityConfig::detect_with(resolve) {
@@ -531,9 +550,7 @@ where
             Some(WebIdentityCredentialProvider::new(cfg))
         }
         None => {
-            log::info!(
-                "IRSA detected but the Comet web-identity provider is standing aside: {KEY_ENABLED} is false"
-            );
+            log_stand_aside_once("comet.credential.webIdentity.enabled is false");
             None
         }
     }
@@ -542,6 +559,23 @@ where
 /// True when both IRSA env vars are set, i.e. this is an EKS pod using a web-identity token.
 fn irsa_present() -> bool {
     non_empty_env(ENV_TOKEN_FILE).is_some() && non_empty_env(ENV_ROLE_ARN).is_some()
+}
+
+/// True if a region is set in the environment. The STS client resolves its region from here.
+fn region_present() -> bool {
+    non_empty_env("AWS_REGION").is_some() || non_empty_env("AWS_DEFAULT_REGION").is_some()
+}
+
+/// Logs a stand-aside reason at most once per process per reason. `load_file_io` runs per scan and
+/// write task, so without this the same INFO line would print on every task (see the once-per-process
+/// warning latch in `credential_bridge.rs`).
+fn log_stand_aside_once(reason: &'static str) {
+    static LOGGED: OnceLock<std::sync::Mutex<std::collections::HashSet<&'static str>>> =
+        OnceLock::new();
+    let logged = LOGGED.get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()));
+    if logged.lock().unwrap().insert(reason) {
+        log::info!("IRSA detected but the Comet web-identity provider is standing aside: {reason}");
+    }
 }
 
 /// True if explicit static credentials are present in the environment. These outrank web-identity
@@ -612,6 +646,29 @@ fn parse_u32(value: Option<String>, default: u32) -> u32 {
         .and_then(|v| v.trim().parse::<u32>().ok())
         .filter(|v| *v > 0)
         .unwrap_or(default)
+}
+
+/// Parses the `enabled` flag case-insensitively (`str::parse::<bool>` only accepts lowercase). Since
+/// this is the only opt-out, an unrecognized value warns once and falls back to the default rather
+/// than silently leaving the take-over on.
+fn parse_enabled(value: Option<String>) -> bool {
+    match value {
+        None => DEFAULT_ENABLED,
+        Some(v) => match v.trim().to_ascii_lowercase().as_str() {
+            "true" => true,
+            "false" => false,
+            other => {
+                static WARNED: OnceLock<()> = OnceLock::new();
+                if WARNED.set(()).is_ok() {
+                    log::warn!(
+                        "Ignoring unrecognized value {other:?} for {KEY_ENABLED}; expected true or \
+                         false. Defaulting to {DEFAULT_ENABLED}"
+                    );
+                }
+                DEFAULT_ENABLED
+            }
+        },
+    }
 }
 
 #[cfg(test)]
@@ -790,7 +847,6 @@ mod tests {
             region: Some("us-east-1".to_string()),
             max_attempts,
             min_ttl: Duration::from_secs(300),
-            max_jitter: Duration::ZERO,
         };
         let provider = build_provider(&cfg, Some(SharedHttpClient::new(http))).await;
         SharedEntry {
@@ -799,7 +855,6 @@ mod tests {
             refresh_lock: tokio::sync::Mutex::new(()),
             last_failure: RwLock::new(None),
             min_ttl: cfg.min_ttl,
-            refresh_jitter: Duration::ZERO,
         }
     }
 
@@ -895,7 +950,6 @@ mod tests {
             refresh_lock: tokio::sync::Mutex::new(()),
             last_failure: RwLock::new(None),
             min_ttl,
-            refresh_jitter: Duration::ZERO,
         })
     }
 
@@ -1194,6 +1248,171 @@ mod tests {
     }
 
     #[test]
+    fn refresh_failure_serves_still_valid_cached_credential() {
+        // A refresh failure while the cached credential is still safely signable must not fail the
+        // read; serve the cached credential and let the cooldown throttle retries.
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let calls = Arc::new(AtomicUsize::new(0));
+        // Expires in 200s: inside our 300s refresh margin (so fresh() forces a refresh) but well
+        // outside reqsign's 120s margin (so it is still signable).
+        let cached = Credentials::new(
+            "AKIDCACHED",
+            "SECRETCACHED",
+            Some("TOKENCACHED".to_string()),
+            Some(SystemTime::now() + Duration::from_secs(200)),
+            "cached",
+        );
+        let entry = SharedEntry {
+            provider: Arc::new(CountingProvider {
+                calls: Arc::clone(&calls),
+                expiry: None,
+                fail: true,
+            }),
+            cached: RwLock::new(Some(cached)),
+            refresh_lock: tokio::sync::Mutex::new(()),
+            last_failure: RwLock::new(None),
+            min_ttl: Duration::from_secs(300),
+        };
+        let cred = rt
+            .block_on(entry.credentials())
+            .expect("still-valid cached credential must be served despite the refresh failure");
+        assert_eq!(cred.access_key_id(), "AKIDCACHED");
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "exactly one (failed) refresh attempt was made"
+        );
+    }
+
+    #[test]
+    fn provide_credential_reports_real_expiry() {
+        // Regression guard for the signing dead zone (comment on L469): provide_credential must
+        // report the credential's real expiry, not an early `expiry - min_ttl` deadline that would
+        // land inside reqsign's 120s cache / 10s signing margins. The cached credential here expires
+        // just past our 300s refresh margin; the reported expiry must still be well outside 120s.
+        let _guard = lock_env();
+        let _env = IrsaEnv::set("real-expiry");
+        let real_expiry = SystemTime::now() + Duration::from_secs(305);
+        let cfg = WebIdentityConfig {
+            role_arn: "arn:aws:iam::1:role/app".to_string(),
+            token_file: "/token".to_string(),
+            region: Some("us-east-1".to_string()),
+            max_attempts: 5,
+            min_ttl: Duration::from_secs(300),
+        };
+        let provider = WebIdentityCredentialProvider::new(cfg);
+        provider
+            .entry
+            .set(Arc::new(SharedEntry {
+                provider: Arc::new(CountingProvider {
+                    calls: Arc::new(AtomicUsize::new(0)),
+                    expiry: None,
+                    fail: true, // must not be called: the cached credential is still fresh
+                }),
+                cached: RwLock::new(Some(Credentials::new(
+                    "AKID",
+                    "SECRET",
+                    Some("TOKEN".to_string()),
+                    Some(real_expiry),
+                    "test",
+                ))),
+                refresh_lock: tokio::sync::Mutex::new(()),
+                last_failure: RwLock::new(None),
+                min_ttl: Duration::from_secs(300),
+            }))
+            .expect("entry not yet set");
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let cred = rt
+            .block_on(provider.provide_credential(&Context::new()))
+            .expect("provide_credential succeeds")
+            .expect("credential present");
+        let reported = cred.expires_in.expect("expiry reported");
+        assert!(
+            reported > Timestamp::now() + REQSIGN_REFRESH_MARGIN,
+            "reported expiry must stay outside reqsign's refresh margin (real expiry, not an early deadline)"
+        );
+    }
+
+    #[test]
+    fn signs_through_reqsign_without_dead_zone() {
+        // End-to-end guard for the signing dead zone: sign a real request through reqsign's SigV4
+        // signer using our provider as the loader. The cached credential expires just past our
+        // 300s refresh margin. Reporting its real expiry keeps it comfortably outside reqsign's
+        // 120s/10s signing margins, so signing succeeds. The earlier `expiry - min_ttl` reporting
+        // would have reported ~5s and made reqsign reject it with "expires before the requested
+        // operation deadline".
+        let _guard = lock_env();
+        let _env = IrsaEnv::set("signer");
+        let cfg = WebIdentityConfig {
+            role_arn: "arn:aws:iam::1:role/app".to_string(),
+            token_file: "/token".to_string(),
+            region: Some("us-east-1".to_string()),
+            max_attempts: 5,
+            min_ttl: Duration::from_secs(300),
+        };
+        let provider = WebIdentityCredentialProvider::new(cfg);
+        provider
+            .entry
+            .set(Arc::new(SharedEntry {
+                provider: Arc::new(CountingProvider {
+                    calls: Arc::new(AtomicUsize::new(0)),
+                    expiry: None,
+                    fail: true, // not called: the cached credential is still fresh
+                }),
+                cached: RwLock::new(Some(Credentials::new(
+                    "AKID",
+                    "SECRET",
+                    Some("TOKEN".to_string()),
+                    Some(SystemTime::now() + Duration::from_secs(305)),
+                    "test",
+                ))),
+                refresh_lock: tokio::sync::Mutex::new(()),
+                last_failure: RwLock::new(None),
+                min_ttl: Duration::from_secs(300),
+            }))
+            .expect("entry not yet set");
+
+        let signer = reqsign_core::Signer::new(
+            reqsign_core::Context::new(),
+            provider,
+            reqsign_aws_v4::RequestSigner::new("s3", "us-east-1"),
+        );
+        let (mut parts, _) = http::Request::builder()
+            .method("GET")
+            .uri("https://bucket.s3.us-east-1.amazonaws.com/key")
+            .body(())
+            .unwrap()
+            .into_parts();
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(signer.sign(&mut parts, None))
+            .expect("signing must succeed; a credential within our margin must not hit reqsign's");
+        assert!(
+            parts.headers.contains_key("authorization"),
+            "a signed request carries an Authorization header"
+        );
+    }
+
+    #[test]
+    fn missing_region_stands_aside() {
+        // A web-identity STS client with no region fails opaquely, so defer to the default chain
+        // (which falls back to the global STS endpoint) when no region is set.
+        let _guard = lock_env();
+        let _env = IrsaEnv::set("no-region"); // sets AWS_REGION
+        assert!(
+            take_over_if_irsa(false, |_| None).is_some(),
+            "IRSA with a region set should take over"
+        );
+        std::env::remove_var("AWS_REGION");
+        std::env::remove_var("AWS_DEFAULT_REGION");
+        assert!(
+            take_over_if_irsa(false, |_| None).is_none(),
+            "no AWS region set -> stand aside"
+        );
+    }
+
+    #[test]
     fn session_name_honors_env() {
         let _guard = lock_env();
         std::env::remove_var("AWS_ROLE_SESSION_NAME");
@@ -1220,7 +1439,6 @@ mod tests {
             region: Some("us-east-1".to_string()),
             max_attempts: 5,
             min_ttl: Duration::from_secs(300),
-            max_jitter: Duration::from_secs(60),
         };
         let mut more_attempts = base.clone();
         more_attempts.max_attempts = 8;
@@ -1255,9 +1473,19 @@ mod tests {
             parse_u32(props.get(KEY_MAX_ATTEMPTS).cloned(), DEFAULT_MAX_ATTEMPTS),
             DEFAULT_MAX_ATTEMPTS
         );
-        assert_eq!(
-            parse_setting::<u64>(props.get(KEY_JITTER_SECS).cloned(), DEFAULT_JITTER_SECS),
-            DEFAULT_JITTER_SECS
+    }
+
+    #[test]
+    fn enabled_parses_case_insensitively() {
+        assert!(parse_enabled(None), "absent -> default (enabled)");
+        assert!(parse_enabled(Some("true".to_string())));
+        assert!(!parse_enabled(Some("false".to_string())));
+        assert!(
+            !parse_enabled(Some("FALSE".to_string())),
+            "case-insensitive"
         );
+        assert!(!parse_enabled(Some("  False  ".to_string())), "trimmed");
+        // Unrecognized -> default (enabled), with a one-time warning.
+        assert!(parse_enabled(Some("nope".to_string())));
     }
 }
