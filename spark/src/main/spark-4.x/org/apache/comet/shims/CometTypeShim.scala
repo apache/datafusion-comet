@@ -20,9 +20,12 @@
 package org.apache.comet.shims
 
 import org.apache.spark.sql.catalyst.expressions.aggregate.Mode
+import org.apache.spark.sql.catalyst.util.CollationFactory
 import org.apache.spark.sql.execution.datasources.VariantMetadata
 import org.apache.spark.sql.types.{ArrayType, DataType, MapType, StringType, StructType, VariantType}
 import org.apache.spark.unsafe.types.UTF8String
+
+import com.ibm.icu.lang.UCharacter
 
 trait CometTypeShim {
   // `reverseOpt` is set for `mode() WITHIN GROUP (ORDER BY col [DESC])` and the
@@ -53,6 +56,11 @@ trait CometTypeShim {
     case StructType(fields) => fields.exists(f => hasNonDefaultStringCollation(f.dataType))
     case _ => false
   }
+
+  def stringCollationName(dt: DataType): String =
+    CollationFactory.fetchCollation(dt.asInstanceOf[StringType].collationId).collationName
+
+  def collationUnicodeVersion: Int = UCharacter.getUnicodeVersion.getMajor
 
   // Spark 4.0's `PushVariantIntoScan` rewrites `VariantType` columns into a `StructType` whose
   // fields each carry `__VARIANT_METADATA_KEY` metadata, then pushes `variant_get` paths down as

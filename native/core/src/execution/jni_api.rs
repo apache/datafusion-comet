@@ -2101,6 +2101,7 @@ mod tests {
                         }],
                         return_type: None,
                         fail_on_error: false,
+                        ..Default::default()
                     })),
                     query_context: None,
                     expr_id: None,

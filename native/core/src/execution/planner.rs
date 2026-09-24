@@ -92,8 +92,8 @@ use datafusion::{
 use datafusion_comet_spark_expr::{
     create_comet_physical_fun, create_comet_physical_fun_with_eval_mode, BinaryOutputStyle,
     BloomFilterAgg, BloomFilterMightContain, CometCollectList, CometCollectSet, CsvWriteOptions,
-    EvalMode, SparkArraysZipFunc, SparkBloomFilterVersion, SparkListAgg, SparkPercentile,
-    SumInteger, ToCsv,
+    EvalMode, SparkArrayExtrema, SparkArraysZipFunc, SparkBloomFilterVersion, SparkListAgg,
+    SparkPercentile, SumInteger, ToCsv,
 };
 use iceberg::expr::Bind;
 
@@ -3772,12 +3772,22 @@ impl PhysicalPlanner {
                 }
             };
 
-        let fun_expr = create_comet_physical_fun(
-            fun_name,
-            data_type.clone(),
-            &self.session_ctx.state(),
-            Some(expr.fail_on_error),
-        )?;
+        let fun_expr = if matches!(fun_name.as_str(), "array_min" | "array_max")
+            && !expr.string_collations.is_empty()
+        {
+            Arc::new(ScalarUDF::from(SparkArrayExtrema::with_collations(
+                fun_name == "array_min",
+                &expr.string_collations,
+                expr.collation_unicode_version,
+            )?))
+        } else {
+            create_comet_physical_fun(
+                fun_name,
+                data_type.clone(),
+                &self.session_ctx.state(),
+                Some(expr.fail_on_error),
+            )?
+        };
 
         let args = args
             .into_iter()
@@ -6501,6 +6511,7 @@ mod tests {
                         args: vec![array_col, array_col_1],
                         return_type: None,
                         fail_on_error: false,
+                        ..Default::default()
                     })),
                     query_context: None,
                     expr_id: None,
@@ -6627,6 +6638,7 @@ mod tests {
                         args: vec![array_col, array_col_1],
                         return_type: None,
                         fail_on_error: false,
+                        ..Default::default()
                     })),
                     query_context: None,
                     expr_id: None,

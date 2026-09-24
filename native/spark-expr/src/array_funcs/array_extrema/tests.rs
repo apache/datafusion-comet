@@ -15,9 +15,10 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use super::SparkArrayExtrema;
+use super::{SparkArrayExtrema, Utf8Collation};
 use arrow::array::{
-    Array, ArrayRef, Float64Array, Int32Array, ListArray, PrimitiveArray, StringArray, StructArray,
+    Array, ArrayRef, Float64Array, Int32Array, LargeStringArray, ListArray, PrimitiveArray,
+    StringArray, StringViewArray, StructArray,
 };
 use arrow::buffer::OffsetBuffer;
 use arrow::datatypes::{Field, Float32Type, Float64Type, Int32Type};
@@ -26,7 +27,10 @@ use datafusion::logical_expr::{ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl}
 use std::sync::Arc;
 
 fn invoke(input: ColumnarValue, is_min: bool) -> ColumnarValue {
-    let udf = SparkArrayExtrema::new(is_min);
+    invoke_udf(input, &SparkArrayExtrema::new(is_min))
+}
+
+fn invoke_udf(input: ColumnarValue, udf: &SparkArrayExtrema) -> ColumnarValue {
     let input_type = input.data_type();
     let return_type = udf.return_type(std::slice::from_ref(&input_type)).unwrap();
     let number_rows = match &input {
@@ -379,5 +383,113 @@ fn empty_string_batch_retains_element_type() {
         let result = extrema(&input, is_min);
         assert!(result.is_empty());
         assert_eq!(result.data_type(), &input.value_type());
+    }
+}
+
+#[test]
+fn utf8_collations_preserve_original_winners_across_string_layouts() {
+    let values = vec![
+        Some("unused"),
+        Some("B"),
+        Some("a"),
+        Some("x "),
+        Some("x"),
+        None,
+        None,
+    ];
+    let layouts: Vec<ArrayRef> = vec![
+        Arc::new(StringArray::from(values.clone())),
+        Arc::new(LargeStringArray::from(values.clone())),
+        Arc::new(StringViewArray::from(values)),
+    ];
+    for values in layouts {
+        let input = list(values, &[0, 1, 3, 5, 7, 7]).slice(1, 4);
+        for (name, min, max) in [
+            (
+                "UTF8_BINARY",
+                [Some("B"), Some("x")],
+                [Some("a"), Some("x ")],
+            ),
+            (
+                "UTF8_BINARY_RTRIM",
+                [Some("B"), Some("x ")],
+                [Some("a"), Some("x ")],
+            ),
+            (
+                "UTF8_LCASE",
+                [Some("a"), Some("x")],
+                [Some("B"), Some("x ")],
+            ),
+            (
+                "UTF8_LCASE_RTRIM",
+                [Some("a"), Some("x ")],
+                [Some("B"), Some("x ")],
+            ),
+        ] {
+            for (is_min, expected) in [(true, min), (false, max)] {
+                let udf = SparkArrayExtrema::with_collations(is_min, &[name.into()], 16).unwrap();
+                let ColumnarValue::Array(result) =
+                    invoke_udf(ColumnarValue::Array(Arc::new(input.clone())), &udf)
+                else {
+                    panic!("expected array result")
+                };
+                let result =
+                    arrow::compute::cast(&result, &arrow::datatypes::DataType::Utf8).unwrap();
+                let result = result.as_any().downcast_ref::<StringArray>().unwrap();
+                assert_eq!(
+                    result.iter().collect::<Vec<_>>(),
+                    vec![expected[0], expected[1], None, None]
+                );
+                let scalar = ScalarValue::try_from_array(&input, 1).unwrap();
+                let ColumnarValue::Scalar(result) = invoke_udf(ColumnarValue::Scalar(scalar), &udf)
+                else {
+                    panic!("expected scalar result")
+                };
+                let result = arrow::compute::cast(
+                    &result.to_array().unwrap(),
+                    &arrow::datatypes::DataType::Utf8,
+                )
+                .unwrap();
+                assert_eq!(
+                    result
+                        .as_any()
+                        .downcast_ref::<StringArray>()
+                        .unwrap()
+                        .value(0),
+                    expected[1].unwrap()
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn utf8_lcase_uses_spark_unicode_version_and_space_trimming() {
+    use std::cmp::Ordering::{Equal, Greater, Less};
+    for version in [16, 17] {
+        for (left, right, expected) in [
+            ("İ", "i\u{307}", Equal),
+            ("ς", "σ", Equal),
+            ("K", "k", Equal),
+            ("\u{10400}", "\u{10428}", Equal),
+            ("é", "e", Greater),
+            ("A ", "a", Greater),
+            (
+                "\u{a7ce}",
+                "\u{a7cf}",
+                if version == 16 { Less } else { Equal },
+            ),
+        ] {
+            assert_eq!(Utf8Collation::Lcase.compare(left, right, version), expected);
+        }
+        assert_eq!(Utf8Collation::LcaseRtrim.compare("A ", "a", version), Equal);
+        assert_eq!(
+            Utf8Collation::LcaseRtrim.compare("A\t", "a", version),
+            Greater
+        );
+        assert_eq!(
+            Utf8Collation::LcaseRtrim.compare("A\u{a0}", "a", version),
+            Greater
+        );
     }
 }

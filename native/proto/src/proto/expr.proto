@@ -540,6 +540,10 @@ message ScalarFunc {
   repeated Expr args = 2;
   DataType return_type = 3;
   bool fail_on_error = 4;
+  // array_min/max only: collations of every string leaf in the element type,
+  // visiting array elements and struct fields depth-first. Empty means binary ordering.
+  repeated string string_collations = 5;
+  uint32 collation_unicode_version = 6;
 }
 
 message CaseWhen {

@@ -19,8 +19,9 @@ use std::cmp::Ordering;
 use std::sync::Arc;
 
 use arrow::array::{
-    make_array, make_comparator, new_empty_array, Array, ArrayRef, AsArray, DynComparator,
-    ListArray, MutableArrayData, PrimitiveArray, PrimitiveBuilder, StructArray, UInt32Array,
+    make_array, make_comparator, new_empty_array, Array, ArrayAccessor, ArrayRef, AsArray,
+    DynComparator, ListArray, MutableArrayData, PrimitiveArray, PrimitiveBuilder, StringArrayType,
+    StructArray, UInt32Array,
 };
 use arrow::buffer::NullBuffer;
 use arrow::compute::{take, SortOptions};
@@ -32,6 +33,42 @@ use datafusion::logical_expr::{
 };
 use num::Float;
 
+mod unicode_lowercase;
+
+#[derive(Debug, Clone, Copy, Hash, Eq, PartialEq)]
+enum Utf8Collation {
+    Binary,
+    BinaryRtrim,
+    Lcase,
+    LcaseRtrim,
+}
+
+impl Utf8Collation {
+    fn compare(self, mut left: &str, mut right: &str, unicode_version: u32) -> Ordering {
+        if matches!(self, Self::BinaryRtrim | Self::LcaseRtrim) {
+            // Spark RTRIM ignores trailing U+0020, not arbitrary Unicode whitespace.
+            left = left.trim_end_matches(' ');
+            right = right.trim_end_matches(' ');
+        }
+        if matches!(self, Self::Binary | Self::BinaryRtrim) {
+            return left.cmp(right);
+        }
+        if left.is_ascii() && right.is_ascii() {
+            return left
+                .bytes()
+                .map(|b| b.to_ascii_lowercase())
+                .cmp(right.bytes().map(|b| b.to_ascii_lowercase()));
+        }
+        fn lower(value: &str, unicode_version: u32) -> impl Iterator<Item = char> + '_ {
+            value.chars().flat_map(move |c| {
+                let (first, second) = unicode_lowercase::lowercase(c, unicode_version);
+                std::iter::once(first).chain(second)
+            })
+        }
+        lower(left, unicode_version).cmp(lower(right, unicode_version))
+    }
+}
+
 /// Spark's array_min/array_max retain the first non-null value on an ordering tie.
 /// In particular, signed zeros compare equal and all NaNs compare equal and greater
 /// than non-NaNs. Nested arrays and structs use the same ordering, with nulls first.
@@ -39,6 +76,8 @@ use num::Float;
 pub struct SparkArrayExtrema {
     is_min: bool,
     datafusion_udf: Arc<ScalarUDF>,
+    string_collations: Vec<Utf8Collation>,
+    unicode_version: u32,
 }
 
 impl SparkArrayExtrema {
@@ -52,7 +91,39 @@ impl SparkArrayExtrema {
             } else {
                 array_max_udf()
             },
+            string_collations: Vec::new(),
+            unicode_version: 0,
         }
+    }
+
+    /// Collations follow the string leaves of the element type in depth-first order.
+    pub fn with_collations(
+        is_min: bool,
+        collations: &[String],
+        unicode_version: u32,
+    ) -> Result<Self> {
+        let string_collations = collations
+            .iter()
+            .map(|name| match name.as_str() {
+                "UTF8_BINARY" => Ok(Utf8Collation::Binary),
+                "UTF8_BINARY_RTRIM" => Ok(Utf8Collation::BinaryRtrim),
+                "UTF8_LCASE" => Ok(Utf8Collation::Lcase),
+                "UTF8_LCASE_RTRIM" => Ok(Utf8Collation::LcaseRtrim),
+                _ => exec_err!("Unsupported array extrema collation: {name}"),
+            })
+            .collect::<Result<Vec<_>>>()?;
+        if string_collations
+            .iter()
+            .any(|c| matches!(c, Utf8Collation::Lcase | Utf8Collation::LcaseRtrim))
+            && !matches!(unicode_version, 16 | 17)
+        {
+            return exec_err!("Unsupported UTF8_LCASE Unicode version: {unicode_version}");
+        }
+        Ok(Self {
+            string_collations,
+            unicode_version,
+            ..Self::new(is_min)
+        })
     }
 }
 
@@ -84,10 +155,12 @@ impl ScalarUDFImpl for SparkArrayExtrema {
         if matches!(input, ColumnarValue::Array(array) if array.is_empty()) {
             return Ok(ColumnarValue::Array(new_empty_array(&element_type)));
         }
-        if !matches!(
-            element_type,
-            DataType::Float32 | DataType::Float64 | DataType::List(_) | DataType::Struct(_)
-        ) {
+        if self.string_collations.is_empty()
+            && !matches!(
+                element_type,
+                DataType::Float32 | DataType::Float64 | DataType::List(_) | DataType::Struct(_)
+            )
+        {
             return self.datafusion_udf.invoke_with_args(args);
         }
 
@@ -97,7 +170,16 @@ impl ScalarUDFImpl for SparkArrayExtrema {
             ColumnarValue::Scalar(value) => value.to_array()?,
         };
         // Spark arrays use Arrow's 32-bit List layout.
-        let result = array_extrema(array.as_list::<i32>(), self.is_min)?;
+        let result = if self.string_collations.is_empty() {
+            array_extrema(array.as_list::<i32>(), self.is_min)?
+        } else {
+            nested_extrema(
+                array.as_list::<i32>(),
+                self.is_min,
+                Some(self.string_collations.iter()),
+                self.unicode_version,
+            )?
+        };
 
         if is_scalar {
             Ok(ColumnarValue::Scalar(ScalarValue::try_from_array(
@@ -113,7 +195,7 @@ fn array_extrema(array: &ListArray, is_min: bool) -> Result<ArrayRef> {
     match array.value_type() {
         DataType::Float32 => Ok(Arc::new(float_extrema::<Float32Type>(array, is_min))),
         DataType::Float64 => Ok(Arc::new(float_extrema::<Float64Type>(array, is_min))),
-        _ => nested_extrema(array, is_min),
+        _ => nested_extrema(array, is_min, None, 0),
     }
 }
 
@@ -159,9 +241,14 @@ where
     result.finish()
 }
 
-fn nested_extrema(array: &ListArray, is_min: bool) -> Result<ArrayRef> {
+fn nested_extrema(
+    array: &ListArray,
+    is_min: bool,
+    mut collations: Option<std::slice::Iter<Utf8Collation>>,
+    unicode_version: u32,
+) -> Result<ArrayRef> {
     let values = array.values();
-    let compare = spark_comparator(values)?;
+    let compare = spark_comparator(values, &mut collations, unicode_version)?;
     let nulls = values.nulls();
     let ordering = if is_min {
         Ordering::Less
@@ -233,13 +320,17 @@ fn take_extrema_values(values: &ArrayRef, indices: &UInt32Array) -> Result<Array
 
 /// Build one comparator per child array, not per row. This is local to extrema:
 /// DataFusion's ScalarValue nested comparisons put inner nulls last, unlike Spark.
-fn spark_comparator(array: &ArrayRef) -> Result<DynComparator> {
+fn spark_comparator(
+    array: &ArrayRef,
+    collations: &mut Option<std::slice::Iter<Utf8Collation>>,
+    unicode_version: u32,
+) -> Result<DynComparator> {
     match array.data_type() {
         DataType::Float32 => Ok(float_comparator::<Float32Type>(array)),
         DataType::Float64 => Ok(float_comparator::<Float64Type>(array)),
         DataType::List(_) => {
             let array = array.as_list::<i32>();
-            let compare = spark_comparator(array.values())?;
+            let compare = spark_comparator(array.values(), collations, unicode_version)?;
             let offsets = array.offsets().clone();
             Ok(nulls_first(array.nulls().cloned(), move |left, right| {
                 let left_start = offsets[left] as usize;
@@ -260,7 +351,7 @@ fn spark_comparator(array: &ArrayRef) -> Result<DynComparator> {
             let fields = array
                 .columns()
                 .iter()
-                .map(spark_comparator)
+                .map(|field| spark_comparator(field, collations, unicode_version))
                 .collect::<Result<Vec<_>>>()?;
             Ok(nulls_first(array.nulls().cloned(), move |left, right| {
                 fields
@@ -269,6 +360,24 @@ fn spark_comparator(array: &ArrayRef) -> Result<DynComparator> {
                     .find(|&ordering| ordering != Ordering::Equal)
                     .unwrap_or(Ordering::Equal)
             }))
+        }
+        DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View if collations.is_some() => {
+            let Some(collation) = collations.as_mut().and_then(Iterator::next) else {
+                return exec_err!("Missing array extrema string collation");
+            };
+            Ok(match array.data_type() {
+                DataType::Utf8 => string_comparator(
+                    array.as_string::<i32>().clone(),
+                    *collation,
+                    unicode_version,
+                ),
+                DataType::LargeUtf8 => string_comparator(
+                    array.as_string::<i64>().clone(),
+                    *collation,
+                    unicode_version,
+                ),
+                _ => string_comparator(array.as_string_view().clone(), *collation, unicode_version),
+            })
         }
         _ => Ok(make_comparator(
             array.as_ref(),
@@ -279,6 +388,16 @@ fn spark_comparator(array: &ArrayRef) -> Result<DynComparator> {
             },
         )?),
     }
+}
+
+fn string_comparator<A>(array: A, collation: Utf8Collation, unicode_version: u32) -> DynComparator
+where
+    A: Array + 'static,
+    for<'a> &'a A: StringArrayType<'a>,
+{
+    nulls_first(array.nulls().cloned(), move |left, right| {
+        collation.compare((&array).value(left), (&array).value(right), unicode_version)
+    })
 }
 
 fn float_comparator<T: ArrowPrimitiveType>(array: &ArrayRef) -> DynComparator

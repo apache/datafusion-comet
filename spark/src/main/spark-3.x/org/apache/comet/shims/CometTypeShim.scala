@@ -40,6 +40,11 @@ trait CometTypeShim {
   @nowarn // Spark 4 feature; stubbed to false in Spark 3.x for compatibility.
   def hasNonDefaultStringCollation(dt: DataType): Boolean = false
 
+  @nowarn // Spark 3.x strings always use binary ordering.
+  def stringCollationName(dt: DataType): String = "UTF8_BINARY"
+
+  def collationUnicodeVersion: Int = 0
+
   @nowarn // Spark 4 feature; collation does not exist in Spark 3.x.
   def hasCollationSupport: Boolean = false
 
