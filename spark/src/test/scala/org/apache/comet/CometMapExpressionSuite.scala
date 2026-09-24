@@ -484,6 +484,30 @@ class CometMapExpressionSuite extends CometTestBase {
     }
   }
 
+  // The same native OFFSET slices the list children the map constructors read. A sliced boolean
+  // child keeps an offset that Arrow Java's import ignores (#2051), so the maps must not reuse it.
+  // `map_from_arrays` only sees the sliced batch when every row passes its null guard, and the
+  // NULL entry makes a `map_from_entries` row NULL inside the slice. Not a SQL fixture:
+  // `CometSqlFileTestSuite` excludes `ConstantFolding`, so it cannot plan `LIMIT ... OFFSET`.
+  test("map constructors on a sliced batch read the visible rows") {
+    withTable("sliced_map_input") {
+      sql(
+        "CREATE TABLE sliced_map_input(id INT, k ARRAY<BOOLEAN>, v ARRAY<BOOLEAN>, " +
+          "e ARRAY<STRUCT<key: BOOLEAN, value: BOOLEAN>>) USING parquet")
+      sql(
+        "INSERT INTO sliced_map_input VALUES " +
+          "(1, array(true, false), array(false, NULL), array(struct(true, false))), " +
+          "(2, array(false), array(true), array(struct(false, true), NULL)), " +
+          "(3, array(true, false), array(NULL, true), " +
+          "array(struct(true, NULL), struct(false, false))), " +
+          "(4, array(true), array(false), array(struct(false, false))), " +
+          "(5, array(false, true), array(true, true), NULL)")
+      checkSparkAnswerAndOperator(
+        "SELECT id, map_from_arrays(k, v), map_from_entries(e) " +
+          "FROM (SELECT * FROM sliced_map_input ORDER BY id LIMIT 3 OFFSET 1)")
+    }
+  }
+
   // A lookup key that varies per row takes a different path than a constant key: the key has to be
   // lined up against every entry of its own row. Rows whose key is missing, whose map is NULL, and
   // whose key is NULL all have to come back NULL.

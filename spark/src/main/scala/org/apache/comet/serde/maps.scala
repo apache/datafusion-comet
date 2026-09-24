@@ -23,6 +23,7 @@ import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
+import org.apache.comet.CometConf
 import org.apache.comet.DataTypeSupport.isComplexType
 import org.apache.comet.serde.QueryPlanSerde.{createBinaryExpr, exprToProtoInternal, hasNonDefaultStringCollation, scalarFunctionExprToProto}
 import org.apache.comet.shims.CometTypeShim
@@ -132,19 +133,48 @@ object CometMapExtract extends CometExpressionSerde[GetMapValue] {
   }
 }
 
-private object MapKeyDedupPolicySupport {
-  val incompatibleReason: String =
+/**
+ * Shared gate for the native builders in `map_builder.rs`, which implement only
+ * `spark.sql.mapKeyDedupPolicy=EXCEPTION` and compare keys by their Arrow values.
+ */
+private object MapBuilderSupport {
+  private val lastWinReason: String =
     s"`${SQLConf.MAP_KEY_DEDUP_POLICY.key}` is set to " +
       s"`${SQLConf.MapKeyDedupPolicy.LAST_WIN}`; Comet's native map construction " +
       "does not implement LAST_WIN dedup semantics."
 
-  val nullKeyReason: String =
-    "Spark rejects a `NULL` element inside the keys array with a `RuntimeException`" +
-      " (`Cannot use null as map key`); Comet's native `map_from_arrays` / `map_from_entries`" +
-      " does not detect a per-element `NULL` key and produces a map with a `NULL` key instead" +
-      " ([#4680](https://github.com/apache/datafusion-comet/issues/4680))."
+  private val collationReason: String =
+    "Comet's native map construction compares string keys as `UTF8_BINARY`, so keys that are " +
+      "equal under a non-default collation are not detected as duplicates."
 
-  def isLastWin: Boolean =
+  /** Subject of both the runtime reason and the generated docs, so the two cannot drift. */
+  private val floatingPointKeyMapBuild = "Building a map with floating-point keys"
+
+  val incompatibleReasons: Seq[String] = Seq(
+    lastWinReason,
+    collationReason,
+    s"$floatingPointKeyMapBuild is not 100% compatible with Spark when " +
+      s"`${CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key}=true`.")
+
+  val floatingPointNote: String =
+    "Comet compares floating-point keys, top level or nested, by their bits, so a map that Spark " +
+      "rejects with `DUPLICATED_MAP_KEY` can build on Comet " +
+      "([details](../../floating-point.md#map-keys))."
+
+  def supportLevel(keyType: DataType): SupportLevel = {
+    if (isLastWin) {
+      Incompatible(Some(lastWinReason))
+    } else if (hasNonDefaultStringCollation(keyType)) {
+      Incompatible(Some(collationReason))
+    } else {
+      SupportLevel
+        .strictFloatingPointReason(keyType, floatingPointKeyMapBuild)
+        .map(reason => Incompatible(Some(reason)))
+        .getOrElse(Compatible())
+    }
+  }
+
+  private def isLastWin: Boolean =
     SQLConf.get
       .getConf(SQLConf.MAP_KEY_DEDUP_POLICY)
       .toString
@@ -153,19 +183,12 @@ private object MapKeyDedupPolicySupport {
 
 object CometMapFromArrays extends CometExpressionSerde[MapFromArrays] {
 
-  override def getIncompatibleReasons(): Seq[String] =
-    Seq(MapKeyDedupPolicySupport.incompatibleReason)
+  override def getIncompatibleReasons(): Seq[String] = MapBuilderSupport.incompatibleReasons
 
-  override def getCompatibleNotes(): Seq[String] =
-    Seq(MapKeyDedupPolicySupport.nullKeyReason)
+  override def getCompatibleNotes(): Seq[String] = Seq(MapBuilderSupport.floatingPointNote)
 
-  override def getSupportLevel(expr: MapFromArrays): SupportLevel = {
-    if (MapKeyDedupPolicySupport.isLastWin) {
-      Incompatible(Some(MapKeyDedupPolicySupport.incompatibleReason))
-    } else {
-      Compatible(None)
-    }
-  }
+  override def getSupportLevel(expr: MapFromArrays): SupportLevel =
+    MapBuilderSupport.supportLevel(expr.dataType.keyType)
 
   override def convert(
       expr: MapFromArrays,
@@ -178,7 +201,7 @@ object CometMapFromArrays extends CometExpressionSerde[MapFromArrays] {
     val returnType = MapType(keyType = keyType, valueType = valueType)
     for {
       andBinaryExprProto <- createAndBinaryExpr(expr, inputs, binding)
-      mapFromArraysExprProto <- scalarFunctionExprToProto("map", keysExpr, valuesExpr)
+      mapFromArraysExprProto <- scalarFunctionExprToProto("map_from_arrays", keysExpr, valuesExpr)
       nullLiteralExprProto <- exprToProtoInternal(Literal(null, returnType), inputs, binding)
     } yield {
       val caseWhenExprProto = ExprOuterClass.CaseWhen
@@ -217,20 +240,17 @@ object CometMapFromEntries
     "`BinaryType` is not supported as a map value in `map_from_entries`"
 
   override def getIncompatibleReasons(): Seq[String] =
-    Seq(keyUnsupportedReason, valueUnsupportedReason, MapKeyDedupPolicySupport.incompatibleReason)
+    Seq(keyUnsupportedReason, valueUnsupportedReason) ++ MapBuilderSupport.incompatibleReasons
 
-  override def getCompatibleNotes(): Seq[String] =
-    Seq(MapKeyDedupPolicySupport.nullKeyReason)
+  override def getCompatibleNotes(): Seq[String] = Seq(MapBuilderSupport.floatingPointNote)
 
   override def getSupportLevel(expr: MapFromEntries): SupportLevel = {
     if (SupportLevel.containsType(expr.dataType.keyType, classOf[BinaryType])) {
       Incompatible(Some(keyUnsupportedReason))
     } else if (SupportLevel.containsType(expr.dataType.valueType, classOf[BinaryType])) {
       Incompatible(Some(valueUnsupportedReason))
-    } else if (MapKeyDedupPolicySupport.isLastWin) {
-      Incompatible(Some(MapKeyDedupPolicySupport.incompatibleReason))
     } else {
-      Compatible(None)
+      MapBuilderSupport.supportLevel(expr.dataType.keyType)
     }
   }
 }

@@ -35,3 +35,39 @@ SELECT map_from_entries(array(struct(10, cast('x' as binary))))
 -- literal arguments
 query spark_answer_only
 SELECT map_from_entries(array(struct('x', 10), struct('y', 20), struct('z', 30)))
+
+-- an array holding a NULL entry is NULL before its keys are checked for NULL or a repeat
+statement
+CREATE TABLE test_map_from_entries_keys(
+  id int,
+  i array<struct<key: int, value: string>>,
+  d array<struct<key: double, value: string>>,
+  s array<struct<key: string, value: string>>) USING parquet
+
+statement
+INSERT INTO test_map_from_entries_keys VALUES
+  (1,
+   array(struct(-2147483648, 'x'), struct(2147483647, NULL), struct(0, 'z')),
+   array(struct(double('NaN'), 'x'), struct(double('Infinity'), NULL),
+     struct(double('-Infinity'), 'z'), struct(double('0.0'), 'w')),
+   array(struct('', 'x'), struct('é', NULL), struct('中文', 'z'))),
+  (2, array(), array(), array()),
+  (3, NULL, NULL, NULL),
+  (4, array(struct(1, 'a'), NULL, struct(1, 'b'), struct(NULL, 'c')), array(NULL),
+   array(struct('a', 'x'), NULL)),
+  (5, array(struct(1, 'a'), struct(2, 'b'), struct(1, 'c'), struct(NULL, 'd')), NULL, NULL),
+  (6, array(struct(NULL, 'a'), struct(1, 'b'), struct(1, 'c')), NULL, NULL)
+
+-- `d` leaves out `-0.0`, which Spark 4.0+ returns as `0.0` (see floating-point.md#map-keys)
+query
+SELECT id, map_from_entries(i), map_from_entries(d), map_from_entries(s)
+FROM test_map_from_entries_keys WHERE id <= 4
+
+-- the repeat comes before the NULL key. Matched on the hint only Spark's message carries, as
+-- datafusion-spark's `map_from_entries` message also names `DUPLICATED_MAP_KEY`.
+query expect_error(you can set "spark.sql.mapKeyDedupPolicy" to "LAST_WIN")
+SELECT map_from_entries(i) FROM test_map_from_entries_keys WHERE id = 5
+
+-- the NULL key comes before the repeat
+query expect_error(NULL_MAP_KEY)
+SELECT map_from_entries(i) FROM test_map_from_entries_keys WHERE id = 6

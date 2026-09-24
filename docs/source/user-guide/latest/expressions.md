@@ -400,8 +400,8 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | `map_concat` | ✅ | Codegen dispatch |  |
 | `map_contains_key` | ✅ | — |  |
 | `map_entries` | ✅ | Native |  |
-| `map_from_arrays` | ✅ | Native |  |
-| `map_from_entries` | ✅ | Hybrid | BinaryType key/value falls back (Incompatible) ([details](compatibility/expressions/map.md)) |
+| `map_from_arrays` | ✅ | Native | NaN/signed-zero key handling may differ ([details](compatibility/floating-point.md#map-keys)) |
+| `map_from_entries` | ✅ | Hybrid | BinaryType key/value falls back (Incompatible) ([details](compatibility/expressions/map.md)), NaN/signed-zero key handling may differ ([details](compatibility/floating-point.md#map-keys)) |
 | `map_keys` | ✅ | Native |  |
 | `map_values` | ✅ | Native |  |
 | `str_to_map` | ✅ | Hybrid |  |

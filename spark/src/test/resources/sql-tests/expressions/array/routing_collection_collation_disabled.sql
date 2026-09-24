@@ -18,6 +18,7 @@
 -- MinSparkVersion: 4.0
 -- Config: spark.comet.exec.scalaUDF.codegen.enabled=false
 -- Config: spark.comet.expression.ArrayJoin.allowIncompatible=false
+-- Config: spark.comet.expression.MapFromEntries.allowIncompatible=false
 -- Config: spark.comet.expression.StringToMap.allowIncompatible=false
 
 statement
@@ -31,3 +32,7 @@ SELECT array_join(transform(a, x -> x COLLATE UTF8_LCASE), ',') FROM routing_col
 
 query expect_fallback(str_to_map: spark.comet.exec.scalaUDF.codegen.enabled=false)
 SELECT str_to_map(s COLLATE UTF8_LCASE) FROM routing_collection_collation
+
+query expect_fallback(map_from_entries: spark.comet.exec.scalaUDF.codegen.enabled=false)
+SELECT map_from_entries(transform(a, x -> named_struct('key', x COLLATE UTF8_LCASE, 'value', 1)))
+FROM routing_collection_collation

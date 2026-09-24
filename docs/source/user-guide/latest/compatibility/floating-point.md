@@ -42,6 +42,18 @@ Equality and dynamic membership compare nested elements directly and stop at the
 Constant membership sets use normalized comparison values for static lookup. These operations
 preserve SQL null semantics and do not change the values returned by projections.
 
+## Map keys
+
+When `map_from_arrays` and `map_from_entries` look for duplicate keys, Comet compares
+floating-point keys, top level or nested, by their bits, so `-0.0` and `0.0` are different keys
+and two NaN keys are the same key only when their bits match. Spark treats every NaN key as the
+same key, and `-0.0` and `0.0` as the same key when they are nested in a struct or array key or,
+from Spark 4.0 unless `spark.sql.legacy.disableMapKeyNormalization=true`, when they are the key
+itself. A map that Spark rejects with `DUPLICATED_MAP_KEY` can therefore build on Comet. From
+Spark 4.0, `map_from_entries` also returns a `-0.0` key as `0.0`, while Comet returns it
+unchanged. Under `spark.comet.exec.strictFloatingPoint=true` these maps are built by Spark's own
+code.
+
 ## Ordering: NaN and signed zero (`-0.0` vs `+0.0`)
 
 Spark's `ORDER BY`, `RANK`, `DENSE_RANK`, and window frame comparisons route through

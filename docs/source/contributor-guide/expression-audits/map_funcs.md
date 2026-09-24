@@ -46,16 +46,18 @@
 
 - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
 - Spark 3.5.8 (audited 2026-05-27): baseline. `MapFromArrays(left, right) extends BinaryExpression with NullIntolerant`; Spark uses `ArrayBasedMapBuilder` to detect duplicate keys (subject to `spark.sql.mapKeyDedupPolicy`) and rejects null keys with `RuntimeException("Cannot use null as map key")`. Comet `CometMapFromArrays` wraps the inputs in `CaseWhen(IsNotNull(left) AND IsNotNull(right), map(left, right), null)` so NULL-array inputs return NULL rather than triggering the previously reported native crash ([#3327](https://github.com/apache/datafusion-comet/issues/3327)).
-- Spark 4.0.1 (audited 2026-05-27): semantics unchanged; `NullIntolerant` trait replaced by `nullIntolerant: Boolean`.
+- Spark 4.0.1 (audited 2026-05-27): `NullIntolerant` trait replaced by `nullIntolerant: Boolean`. `ArrayBasedMapBuilder` now normalizes a top-level floating-point key (`-0.0` to `0.0`, one `NaN`) unless `spark.sql.legacy.disableMapKeyNormalization=true`, see [Map keys](../../user-guide/latest/compatibility/floating-point.md#map-keys).
 - Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.
+- Correctness (2026-09-24, [#4680](https://github.com/apache/datafusion-comet/issues/4680)): the `CaseWhen` now wraps Comet's native `map_from_arrays` in place of DataFusion's `map`. It follows `ArrayBasedMapBuilder` under `spark.sql.mapKeyDedupPolicy=EXCEPTION`, checking each row's key/value lengths and then each key in order, so it raises the error Spark raises first (`_LEGACY_ERROR_TEMP_2128` for the lengths, then `NULL_MAP_KEY` or `DUPLICATED_MAP_KEY`). `LAST_WIN`, non-default collations and, under `spark.comet.exec.strictFloatingPoint=true`, floating-point keys fall back.
 
 ## map_from_entries
 
 - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
 - Spark 3.5.8 (audited 2026-05-27): baseline. `MapFromEntries(child) extends UnaryExpression with NullIntolerant`; expects an array of structs and produces a map. Wired as `CometScalarFunction("map_from_entries")`.
-- Spark 4.0.1 (audited 2026-05-27): semantics unchanged; trait refactor.
+- Spark 4.0.1 (audited 2026-05-27): trait refactor. The floating-point key normalization noted under `map_from_arrays` applies here too, and the normalized key is also the one returned.
 - Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.
 - Known limitation: input arrays where the struct's key or value type contains `BinaryType` are marked `Incompatible` and fall back unless `spark.comet.expression.MapFromEntries.allowIncompatible=true`.
+- Correctness (2026-09-24, [#4680](https://github.com/apache/datafusion-comet/issues/4680)): wired to Comet's native `map_from_entries` in place of `datafusion-spark`'s, which did not reject a `NULL` key and misread a sliced input. It shares `map_from_arrays`'s builder: an array holding a `NULL` entry is NULL, and otherwise each key is checked in order for `NULL_MAP_KEY` and `DUPLICATED_MAP_KEY`. `LAST_WIN`, non-default collations and, under `spark.comet.exec.strictFloatingPoint=true`, floating-point keys route through the JVM codegen dispatcher.
 
 ## map_keys
 

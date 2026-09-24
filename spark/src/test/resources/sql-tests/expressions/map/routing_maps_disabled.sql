@@ -16,13 +16,14 @@
 -- under the License.
 
 -- Config: spark.comet.exec.scalaUDF.codegen.enabled=false
+-- Config: spark.comet.exec.strictFloatingPoint=true
 -- Config: spark.comet.expression.MapFromEntries.allowIncompatible=false
 
 statement
-CREATE TABLE routing_maps(s STRING, entries ARRAY<STRUCT<key: STRING, value: INT>>, binary_entries ARRAY<STRUCT<key: BINARY, value: INT>>) USING parquet
+CREATE TABLE routing_maps(s STRING, entries ARRAY<STRUCT<key: STRING, value: INT>>, binary_entries ARRAY<STRUCT<key: BINARY, value: INT>>, double_entries ARRAY<STRUCT<key: DOUBLE, value: INT>>) USING parquet
 
 statement
-INSERT INTO routing_maps VALUES ('a:1,b:2', array(named_struct('key', 'a', 'value', 1)), array(named_struct('key', unhex('41'), 'value', 1))), ('', array(), array()), (NULL, NULL, NULL)
+INSERT INTO routing_maps VALUES ('a:1,b:2', array(named_struct('key', 'a', 'value', 1)), array(named_struct('key', unhex('41'), 'value', 1)), array(named_struct('key', 1.5D, 'value', 1))), ('', array(), array(), array()), (NULL, NULL, NULL, NULL)
 
 query expect_native(str_to_map)
 SELECT str_to_map(s) FROM routing_maps
@@ -32,3 +33,6 @@ SELECT map_from_entries(entries) FROM routing_maps
 
 query expect_fallback(map_from_entries: spark.comet.exec.scalaUDF.codegen.enabled=false)
 SELECT map_from_entries(binary_entries) FROM routing_maps
+
+query expect_fallback(map_from_entries: spark.comet.exec.scalaUDF.codegen.enabled=false)
+SELECT map_from_entries(double_entries) FROM routing_maps
