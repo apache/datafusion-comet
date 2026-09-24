@@ -131,8 +131,12 @@ object CometSparkSessionExtensions extends Logging {
     }
 
     // CometDriverPlugin makes the same check before registering this extension, but an
-    // application can also register the extension directly with spark.sql.extensions.
-    if (!isOffHeapEnabled(conf) && !COMET_ONHEAP_ENABLED.get(conf)) {
+    // application can also register the extension directly with spark.sql.extensions. The memory
+    // mode comes from the SparkContext's conf, which is what executors use. A session's SQLConf
+    // can disagree: when the SparkContext already exists, SparkSession.Builder copies core
+    // configs into it without applying them.
+    val offHeapEnabled = Option(SparkEnv.get).exists(env => isOffHeapEnabled(env.conf))
+    if (!offHeapEnabled && !COMET_ONHEAP_ENABLED.get(conf)) {
       logWarning("Comet extension is disabled because Spark is not running in off-heap mode.")
       return false
     }
@@ -297,12 +301,6 @@ object CometSparkSessionExtensions extends Logging {
 
   def isOffHeapEnabled(sparkConf: SparkConf): Boolean = {
     sparkConf.getBoolean("spark.memory.offHeap.enabled", false)
-  }
-
-  // Spark copies the SparkConf into each session's SQLConf and, by default, refuses to set core
-  // configs such as this one at session level, so this is the application's memory mode.
-  private def isOffHeapEnabled(conf: SQLConf): Boolean = {
-    conf.getConfString("spark.memory.offHeap.enabled", "false").toBoolean
   }
 
   /**

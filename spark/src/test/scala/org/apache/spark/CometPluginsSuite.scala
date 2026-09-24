@@ -22,7 +22,7 @@ package org.apache.spark
 import java.io.File
 
 import org.apache.logging.log4j.Level
-import org.apache.spark.sql.{CometTestBase, SaveMode}
+import org.apache.spark.sql.{CometTestBase, SaveMode, SparkSession}
 import org.apache.spark.sql.comet.CometPlan
 import org.apache.spark.sql.internal.StaticSQLConf
 
@@ -285,6 +285,23 @@ class CometPluginsExtensionOnlySuite extends CometTestBase {
     assert(
       appender.loggingEvents
         .exists(_.getMessage.getFormattedMessage.contains("not running in off-heap mode")))
+  }
+
+  test("Comet stays disabled when only the session conf enables off-heap memory") {
+    withParquetTable((0 until 10).map(i => (i, i.toString)), "tbl") {
+      // The session already exists, so the builder only copies the setting into its SQLConf.
+      // The SparkContext, whose conf the executors use, stays on-heap.
+      val session =
+        SparkSession.builder().config("spark.memory.offHeap.enabled", "true").getOrCreate()
+      try {
+        assert(session eq spark)
+        assert(spark.sessionState.conf.getConfString("spark.memory.offHeap.enabled") == "true")
+        val (_, plan) = checkSparkAnswer(query)
+        assert(collect(plan) { case op: CometPlan => op }.isEmpty, plan)
+      } finally {
+        spark.sessionState.conf.unsetConf("spark.memory.offHeap.enabled")
+      }
+    }
   }
 
   test("spark.comet.exec.onHeap.enabled enables Comet without off-heap memory") {
