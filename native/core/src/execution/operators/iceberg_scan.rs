@@ -52,6 +52,7 @@ use crate::parquet::schema_adapter::SparkPhysicalExprAdapterFactory;
 use datafusion_comet_spark_expr::EvalMode;
 use datafusion_physical_expr_adapter::{PhysicalExprAdapter, PhysicalExprAdapterFactory};
 use iceberg::scan::{FileScanTask, FileScanTaskDeleteFile};
+use iceberg::spec::DataFileFormat;
 
 /// A valid Parquet file ends with at least an 8-byte footer (4-byte metadata length + "PAR1").
 /// A delete file that stats below this cannot be read, so we reject it in the fill step. opendal
@@ -272,6 +273,12 @@ impl IcebergScanExec {
                 // trust manifest sizes (pending the unreleased apache/iceberg#12554 fix), skip
                 // already-sized files here instead of asserting.
                 debug_assert_eq!(delete.file_size_in_bytes, 0);
+                // A deletion vector is range-read from content_offset, and iceberg-rust consults
+                // file_size_in_bytes only on the Parquet delete path. Statting the Puffin file
+                // would be one HEAD per file per Spark partition for a value nothing reads.
+                if delete.file_format == DataFileFormat::Puffin {
+                    continue;
+                }
                 needed.insert(delete.file_path.clone());
             }
         }
@@ -428,6 +435,13 @@ where
     type Item = DFResult<RecordBatch>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        // Time the whole poll (driving the inner reader plus schema adaptation) as elapsed_compute.
+        // record_poll only records output rows; without this explicit timer elapsed_compute stays
+        // 0, so the Spark "scan time" metric never moves. Clone the Time metric (Arc-backed) so the
+        // guard does not hold a borrow of self across the inner poll below.
+        let elapsed_compute = self.baseline_metrics.elapsed_compute().clone();
+        let _timer = elapsed_compute.timer();
+
         let poll_result = self.inner.poll_next_unpin(cx);
 
         let result = match poll_result {

@@ -134,34 +134,37 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
     }
   }
 
-  test("native reader duplicate nested struct fields in case-insensitive mode (non-ASCII)") {
-    withTempPath { path =>
-      // Sibling struct fields that fold to the same name; the nested convert must raise the same
-      // duplicate-field error Spark raises, not panic or resolve arbitrarily.
-      withSQLConf(SQLConf.CASE_SENSITIVE.key -> "true") {
-        spark
-          .range(3)
-          .selectExpr("named_struct('CAFÉ', id, 'café', id) as s")
-          .write
-          .mode("overwrite")
-          .parquet(path.toString)
-      }
-      val readSchema =
-        new StructType().add("s", new StructType().add("Café", LongType, nullable = true))
-      withSQLConf(SQLConf.CASE_SENSITIVE.key -> "false") {
-        val df = spark.read.schema(readSchema).parquet(path.toString)
-        // Confirm Comet's native scan (its nested Struct convert) raises this, not a Spark
-        // fallback that emits the same "duplicate field" substring for the same input.
-        assert(
-          find(df.queryExecution.executedPlan)(_.isInstanceOf[CometNativeScanExec]).isDefined,
-          "expected a CometNativeScanExec so the duplicate error is raised by Comet")
-        val e = intercept[Exception] {
-          df.collect()
+  for (requestedName <- Seq("Café", "café")) {
+    test(s"native reader duplicate nested struct fields: $requestedName (case-insensitive)") {
+      withTempPath { path =>
+        // Sibling struct fields that fold to the same name; the nested convert must raise the same
+        // duplicate-field error Spark raises, not panic or resolve arbitrarily.
+        withSQLConf(SQLConf.CASE_SENSITIVE.key -> "true") {
+          spark
+            .range(3)
+            .selectExpr("named_struct('CAFÉ', id, 'café', id) as s")
+            .write
+            .mode("overwrite")
+            .parquet(path.toString)
         }
-        assert(
-          e.getMessage.contains("duplicate field") ||
-            (e.getCause != null && e.getCause.getMessage.contains("duplicate field")),
-          s"Expected duplicate field error, got: ${e.getMessage}")
+        val readSchema =
+          new StructType()
+            .add("s", new StructType().add(requestedName, LongType, nullable = true))
+        withSQLConf(SQLConf.CASE_SENSITIVE.key -> "false") {
+          val df = spark.read.schema(readSchema).parquet(path.toString)
+          // Confirm Comet's native scan (its nested Struct convert) raises this, not a Spark
+          // fallback that emits the same "duplicate field" substring for the same input.
+          assert(
+            find(df.queryExecution.executedPlan)(_.isInstanceOf[CometNativeScanExec]).isDefined,
+            "expected a CometNativeScanExec so the duplicate error is raised by Comet")
+          val e = intercept[Exception] {
+            df.collect()
+          }
+          assert(
+            e.getMessage.contains("duplicate field") ||
+              (e.getCause != null && e.getCause.getMessage.contains("duplicate field")),
+            s"Expected duplicate field error, got: ${e.getMessage}")
+        }
       }
     }
   }
@@ -924,6 +927,112 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
         checkSparkAnswer(df)
       }
     }
+  }
+
+  private def withFieldId(name: String, id: Int): StructField =
+    StructField(
+      name,
+      LongType,
+      nullable = true,
+      new MetadataBuilder().putLong("parquet.field.id", id.toLong).build())
+
+  /**
+   * Write a one-row file and assert Comet hands the read back to Spark under field id matching,
+   * and keeps it native without.
+   *
+   * The file must carry no key-value metadata: arrow-rs folds Spark's metadata into the physical
+   * schema, so a Spark-written file never compares equal to the requested schema and always
+   * reaches the expression adapter that would have caught the ambiguity. `writeDirect` is what
+   * keeps the metadata out. See https://github.com/apache/datafusion-comet/issues/5801.
+   */
+  private def checkDuplicateFieldIdsFallBack(
+      messageType: String,
+      writeRecord: RecordConsumer => Unit,
+      readSchema: StructType): Unit = withTempPath { dir =>
+    writeDirect(
+      new Path(dir.getCanonicalPath, "duplicate-field-ids.parquet").toString,
+      messageType,
+      writeRecord)
+
+    withSQLConf(SQLConf.PARQUET_FIELD_ID_READ_ENABLED.key -> "true") {
+      val df = spark.read.schema(readSchema).parquet(dir.getCanonicalPath)
+      val plan = df.queryExecution.executedPlan
+      assert(
+        collect(plan) { case scan: CometNativeScanExec => scan }.isEmpty,
+        s"expected no native scan, got:\n$plan")
+      val error = intercept[Exception](df.collect())
+      assert(
+        causeChain(error).exists(e =>
+          String.valueOf(e.getMessage).contains("""Found duplicate field(s) "1"""")),
+        s"unexpected error: $error")
+    }
+
+    withSQLConf(SQLConf.PARQUET_FIELD_ID_READ_ENABLED.key -> "false") {
+      val df = spark.read.schema(readSchema).parquet(dir.getCanonicalPath)
+      assert(
+        collect(df.queryExecution.executedPlan) { case scan: CometNativeScanExec =>
+          scan
+        }.nonEmpty,
+        "expected a native scan with field id matching off")
+      checkSparkAnswer(df)
+    }
+  }
+
+  test("native scan declines a nested struct whose fields repeat a Parquet field id") {
+    // Spark resolves each requested field to the one Parquet field carrying its id and raises when
+    // more than one answers. DataFusion's opener skips the expression adapter when the file's
+    // physical schema compares equal to the logical schema and no predicate is pushed, so the
+    // native scan read this positionally and returned rows where Spark raises.
+    checkDuplicateFieldIdsFallBack(
+      """message spark_schema {
+        |  optional group s {
+        |    optional int64 x = 1;
+        |    optional int64 y = 1;
+        |  }
+        |}
+      """.stripMargin,
+      { rc: RecordConsumer =>
+        rc.startMessage()
+        rc.startField("s", 0)
+        rc.startGroup()
+        rc.startField("x", 0)
+        rc.addLong(10L)
+        rc.endField("x", 0)
+        rc.startField("y", 1)
+        rc.addLong(20L)
+        rc.endField("y", 1)
+        rc.endGroup()
+        rc.endField("s", 0)
+        rc.endMessage()
+      },
+      StructType(
+        Seq(
+          StructField(
+            "s",
+            StructType(Seq(withFieldId("x", 1), withFieldId("y", 1))),
+            nullable = true))))
+  }
+
+  test("native scan declines top-level fields that repeat a Parquet field id") {
+    // The same ambiguity one level up. It reaches the guard through a different override, because
+    // `isTypeSupported` only sees field data types and so never compares two top-level fields.
+    checkDuplicateFieldIdsFallBack(
+      """message spark_schema {
+        |  optional int64 x = 1;
+        |  optional int64 y = 1;
+        |}
+      """.stripMargin,
+      { rc: RecordConsumer =>
+        rc.startMessage()
+        rc.startField("x", 0)
+        rc.addLong(10L)
+        rc.endField("x", 0)
+        rc.startField("y", 1)
+        rc.addLong(20L)
+        rc.endField("y", 1)
+        rc.endMessage()
+      },
+      StructType(Seq(withFieldId("x", 1), withFieldId("y", 1))))
   }
 
   /** Write a Parquet file using a raw RecordConsumer for full schema control. */

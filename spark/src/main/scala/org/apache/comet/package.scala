@@ -21,7 +21,7 @@ package org.apache
 
 import java.util.Properties
 
-import org.apache.arrow.memory.RootAllocator
+import org.apache.arrow.memory.{BufferAllocator, RootAllocator}
 import org.apache.spark.internal.Logging
 
 package object comet {
@@ -34,6 +34,30 @@ package object comet {
    * leaked. To avoid this, we use a single allocator for the whole execution process.
    */
   val CometArrowAllocator = new RootAllocator(Long.MaxValue)
+
+  /**
+   * The allocator that the Arrow C Data Interface import path allocates from.
+   *
+   * Arrow charges a buffer to whichever allocator owns it, so imports taken directly against
+   * [[CometArrowAllocator]] are indistinguishable from buffers the JVM allocated itself. Giving
+   * the import path its own child keeps the two separable for tracing. The child reserves
+   * nothing, so every byte still escalates to the parent and the root keeps reporting the total.
+   * Like the root, it is never closed: imported buffers are reference counted and routinely
+   * outlive the task that imported them.
+   *
+   * What this counts is what the import path is charged for, not where the bytes were allocated.
+   * Ownership and allocation come apart in both directions. Bytes the JVM allocated land here:
+   * Arrow's importer allocates the owning `ArrowArray` struct from this allocator, and
+   * `BitVectorHelper.loadValidityBuffer` allocates a validity bitmap here when an imported vector
+   * is all-valid or all-null and carries no validity buffer. Imported bytes land elsewhere: an
+   * ownership transfer re-parents a charge without moving the payload, so a vector that shares
+   * buffers with an import can leave the root accountable for memory the producer allocated.
+   *
+   * So read this and the root's total as allocator charges. Their difference is not a bound on
+   * the Arrow memory the JVM allocated itself, and neither is a count of unique physical bytes.
+   */
+  val CometArrowImportAllocator: BufferAllocator =
+    CometArrowAllocator.newChildAllocator("comet-ffi-imports", 0, Long.MaxValue)
 
   /**
    * Provides access to build information about the Comet libraries. This will be used by the

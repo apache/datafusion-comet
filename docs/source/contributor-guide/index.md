@@ -48,6 +48,7 @@ Comet Plugin Overview <plugin_overview>
 Arrow FFI <ffi>
 JVM Shuffle <jvm_shuffle>
 Native Shuffle <native_shuffle>
+Memory Management <memory_management>
 ANSI Error Propagation <sql_error_propagation>
 S3 Credential Provider Design <s3-credential-provider-design>
 ```
@@ -70,6 +71,7 @@ Adding a New Spark Version <adding_a_new_spark_version>
 Comet SQL Tests <sql-file-tests.md>
 Spark SQL Tests <spark-sql-tests.md>
 Iceberg Spark Tests <iceberg-spark-tests.md>
+Continuous Integration <ci>
 ```
 
 ```{toctree}

@@ -41,8 +41,9 @@ runs:
         cd native
         cargo install cargo-machete --version 0.7.0 && cargo machete
 
-    - name: Cache Maven dependencies
-      uses: actions/cache@v4
+    - name: Restore Maven dependencies
+      id: maven-cache
+      uses: actions/cache/restore@v4
       with:
         path: |
           ~/.m2/repository
@@ -56,6 +57,19 @@ runs:
       run: |
         cd common
         ../mvnw -B clean compile -DskipTests
+
+    # Saved only on main: an entry written from a pull request or a
+    # `gh-readonly-queue/*` branch cannot be restored by any later run, and it
+    # evicts main's from the shared budget. See "Large caches are written on
+    # main only" in ../../workflows/README.md.
+    - name: Save Maven dependencies
+      if: ${{ github.ref == 'refs/heads/main' && steps.maven-cache.outputs.cache-hit != 'true' }}
+      uses: actions/cache/save@v4
+      with:
+        path: |
+          ~/.m2/repository
+          /root/.m2/repository
+        key: ${{ runner.os }}-rust-maven-${{ hashFiles('**/pom.xml') }}
 
     - name: Install nextest
       shell: bash
@@ -78,4 +92,17 @@ runs:
         # Set LD_LIBRARY_PATH to include JVM library path for tests that use JNI
         export LD_LIBRARY_PATH=${JAVA_HOME}/lib/server:${LD_LIBRARY_PATH}
         RUST_BACKTRACE=1 cargo nextest run
+
+    # The `alloc-accounting` feature is off by default, so nothing else in CI compiles the
+    # allocator wrapper, its backend selection, or the benchmark's liveness guards. Lint them with
+    # the accounting wrapper over jemalloc, run the accounting tests with the wrapper installed, and
+    # check the system-allocator arm.
+    - name: Check and test the alloc-accounting feature
+      shell: bash
+      run: |
+        cd native
+        export LD_LIBRARY_PATH=${JAVA_HOME}/lib/server:${LD_LIBRARY_PATH}
+        cargo clippy --color=never -p datafusion-comet --all-targets --features jemalloc,alloc-accounting -- -D warnings
+        RUST_BACKTRACE=1 cargo nextest run -p datafusion-comet --lib --features jemalloc,alloc-accounting alloc_accounting
+        cargo check -p datafusion-comet --features alloc-accounting
 

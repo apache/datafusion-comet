@@ -29,10 +29,26 @@ on:
   # https://docs.github.com/en/actions/managing-workflow-runs/manually-running-a-workflow
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   miri:
-    name: "Miri"
+    name: Miri (${{ matrix.suite }})
     runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      # Keep Miri focused on Comet's memory-access code. Whole-workspace tests
+      # abort in external FFI or platform-specific dependencies before these
+      # safety checks run.
+      matrix:
+        include:
+          - suite: Spark unsafe rows
+            package: datafusion-comet-shuffle
+            filter: 'spark_unsafe::'
+          - suite: Hash kernels
+            package: datafusion-comet-spark-expr
+            filter: 'hash_funcs::'
     steps:
       - uses: actions/checkout@v7
       - name: Install Build Dependencies
@@ -43,10 +59,49 @@ jobs:
           sudo apt-get install -y clang
       - name: Install Miri
         run: |
-          rustup toolchain install nightly --component miri
-          rustup override set nightly
-          cargo miri setup
+          rustup toolchain install nightly --profile minimal --component miri
+          cargo +nightly miri setup
       - name: Test with Miri
+        env:
+          PACKAGE: ${{ matrix.package }}
+          TEST_FILTER: ${{ matrix.filter }}
+          MIRIFLAGS: '-Zmiri-disable-isolation'
+        shell: bash
         run: |
           cd native
-          MIRIFLAGS="-Zmiri-disable-isolation" cargo miri test --lib --bins --tests --examples
+          cargo +nightly miri test --locked -p "$PACKAGE" --lib "$TEST_FILTER" \
+            | tee "$RUNNER_TEMP/miri-tests.log"
+          # A renamed module or an all-ignored suite must not silently turn green.
+          if ! grep -Eq '^test result: ok\. [1-9][0-9]* passed;' "$RUNNER_TEMP/miri-tests.log"; then
+            echo "::error::Miri did not execute any tests for $PACKAGE / $TEST_FILTER"
+            exit 1
+          fi
+
+  nightly_report:
+    name: Nightly failure report
+    needs: miri
+    if: failure() && github.event_name == 'schedule'
+    permissions:
+      issues: write
+    runs-on: ubuntu-slim
+    steps:
+      - uses: actions/github-script@v9
+        with:
+          script: |
+            const label = 'ci-nightly-failure';
+            const { owner, repo } = context.repo;
+            const runUrl = `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`;
+            const day = new Date().toISOString().slice(0, 10);
+            const body = `The nightly Miri safety checks at ${context.sha.slice(0, 10)} failed: ${runUrl}`;
+
+            // Share the nightly CI issue so repeated failures do not open an issue every day.
+            const { data: open } = await github.rest.issues.listForRepo({
+              owner, repo, labels: label, state: 'open', per_page: 1,
+            });
+            if (open.length > 0) {
+              await github.rest.issues.createComment({ owner, repo, issue_number: open[0].number, body });
+            } else {
+              await github.rest.issues.create({
+                owner, repo, title: `Nightly CI failed on ${day}`, body, labels: [label],
+              });
+            }
