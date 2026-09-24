@@ -48,9 +48,16 @@ edition = "2021"
 crate-type = ["cdylib"]
 
 [dependencies]
-arrow = "58"
-comet-udf-sdk = { git = "https://github.com/apache/datafusion-comet" }
+arrow = "59"
+comet-udf-sdk = { git = "https://github.com/apache/datafusion-comet", tag = "1.1.0" }
 ```
+
+Pin `tag` to the Comet release your cluster runs. The SDK is not published to crates.io, and a
+library built against one release's SDK is refused by any other (see [Limitations](#limitations)),
+so an untagged dependency that follows `main` will eventually stop loading. Use the same `arrow`
+major version as that release's SDK, which is the `arrow` entry in `native/Cargo.toml` at the tag.
+The trait's signatures use the SDK's `arrow` types, so a different major version fails to compile
+with `E0053` (incompatible type for trait).
 
 Implement the `CometCScalarUdf` trait and export it:
 
@@ -119,8 +126,8 @@ Note that the library depends only on `arrow` and the SDK, not on DataFusion. Th
 purely on the [Arrow C Data Interface](https://arrow.apache.org/docs/format/CDataInterface.html),
 which keeps your library decoupled from the DataFusion version Comet happens to use.
 
-Nothing in that ABI is Rust-specific — it is C structs of function pointers carrying Arrow C Data
-Interface arrays — so a library written in C or C++ could implement it. That is not supported or
+Nothing in that ABI is Rust-specific, since it is C structs of function pointers carrying Arrow C
+Data Interface arrays, so a library written in C or C++ could implement it. That is not supported or
 tested today, though: no C header is published, the struct layouts are only defined in the Rust
 source and are not stable across Comet releases, and the SDK's panic guards, which keep a bug in
 your UDF from taking down the executor, have no automatic equivalent in another language. Treat the
@@ -224,7 +231,9 @@ Complex types are supported and may be nested arbitrarily:
 The field names shown for `List` and `Map` are the ones Comet itself emits, but you do not have to
 match them. Arrow addresses a list's element and a map's entries by position, so those names are
 disregarded when the declared type is compared against your `return_field`, and arrow-rs's
-`MapBuilder::new(None, ..)` defaults (`entries` / `keys` / `values`) work unchanged.
+`MapBuilder::new(None, ..)` defaults (`entries` / `keys` / `values`) work unchanged. Comet renames
+them to its own names before your result enters the plan, so it combines with maps and arrays from
+any other expression, for example in `if` or `CASE`.
 
 Struct field names are different: they are part of the Spark type and are how a caller reads the
 result, so they are compared exactly, in order.
@@ -240,9 +249,17 @@ such as Variant and Geometry.
 Returning `Err(String)` from `return_field` or `invoke` fails the query with your message attached.
 This is the intended way to reject bad input.
 
+The array `invoke` returns must have the type `return_field` declared, apart from the names of
+nested fields. The SDK checks this before handing the result to Comet and fails the query if it
+does not hold, since Comet would otherwise read the buffers as the declared type.
+
 Panics in your code are caught at the FFI boundary and converted into query errors, so an `unwrap`
 on `None` fails that query rather than taking down the executor. Do not rely on this as a control
 flow mechanism: prefer returning `Err`, which produces a much better message.
+
+Catching a panic requires the library to be built with `panic = "unwind"`, which is Cargo's
+default. A library built with `panic = "abort"` in its profile aborts the whole executor process on
+the first panic, and the SDK cannot prevent it.
 
 ## Limitations
 
@@ -264,8 +281,12 @@ This feature is at an early stage. The current limitations are:
 - **Loading a library is loading native code.** It runs with the full privileges of the executor
   process and Comet cannot sandbox it: a bug in a UDF can corrupt memory or crash the executor.
   Only register libraries you trust and control.
-- Once loaded, a library stays loaded for the life of the process. Replacing the file on disk has
-  no effect until the executors restart.
+- Once loaded, a library stays loaded for the life of the process, and `register` loads it on the
+  driver as well as on the executors. To deploy a new build, write it to a new path and register
+  that, or restart the executors and the driver. Never copy a new build over a library that is
+  already loaded: overwriting the file in place changes the code under a running process and can
+  crash the executors and the driver. Moving a new file into place with a rename is safe, but the
+  running processes keep using the old library until they restart.
 - The ABI is versioned and checked strictly at load time. A library built against a different
   Comet's SDK is refused with an explicit ABI-mismatch error rather than being loaded unsafely.
   Rebuild your UDF library when upgrading Comet.
