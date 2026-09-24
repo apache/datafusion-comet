@@ -73,6 +73,7 @@ class CometDriverPlugin extends DriverPlugin with Logging {
     CometDriverPlugin.registerCometMetrics(sc)
 
     CometDriverPlugin.warnIfExecutorMemoryOverheadUnset(sc.getConf)
+    CometDriverPlugin.warnIfMemoryPoolFractionSet(sc.getConf)
 
     extraConfs
   }
@@ -175,6 +176,22 @@ object CometDriverPlugin extends Logging {
           "leave the executor short and the cluster manager may kill it. Set " +
           s"${EXECUTOR_MEMORY_OVERHEAD.key} before creating the SparkContext; it cannot be set " +
           s"later. ${CometConf.TUNING_GUIDE}.")
+    }
+  }
+
+  // spark.comet.exec.memoryPool.fraction was documented as holding back part of the off-heap pool
+  // for the native memory that Comet does not reserve. It cannot: Spark hands out the whole pool
+  // to the tasks that ask for it, and the fraction only caps each task's consumers under
+  // fair_unified. Users who set it for that purpose need to size the memory overhead instead.
+  private[apache] def warnIfMemoryPoolFractionSet(conf: SparkConf): Unit = {
+    val key = CometConf.COMET_OFFHEAP_MEMORY_POOL_FRACTION.key
+    conf.getOption(key).foreach { value =>
+      logWarning(
+        s"$key=$value is deprecated and will be removed in a future release. It does not leave " +
+          "room in spark.memory.offHeap.size for native memory that Comet's memory pools do " +
+          "not track, because Spark hands out the whole off-heap pool whatever it is set to. " +
+          s"Size ${EXECUTOR_MEMORY_OVERHEAD.key} for that memory instead. " +
+          s"${CometConf.TUNING_GUIDE}.")
     }
   }
 
