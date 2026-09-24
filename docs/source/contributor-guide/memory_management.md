@@ -198,10 +198,19 @@ rather than asking for a separate allocation:
 memory_limit = spark.memory.offHeap.size * spark.comet.exec.memoryPool.fraction
 ```
 
-`spark.comet.exec.memoryPool.fraction` defaults to `1.0`. Lowering it is the current workaround for
-Comet's under-accounting (see [The accounting gap](#the-accounting-gap)). It holds back a slice of
-the off-heap pool that Comet is not allowed to reserve, on the assumption that Comet's real usage
-overshoots its reservations by roughly that slice.
+`spark.comet.exec.memoryPool.fraction` defaults to `1.0` and is deprecated. It was documented as
+the workaround for Comet's under-accounting (see [The accounting gap](#the-accounting-gap)), holding
+back a slice of the off-heap pool for the memory Comet does not reserve, but it cannot do that:
+
+- `greedy_unified` ignores `memory_limit`. It asks Spark for every byte it reserves.
+- `fair_unified` applies it to each task's pool, limiting each memory consumer in the task to
+  `memory_limit / num_consumers`. Spark's execution pool already limits each of N running tasks to
+  `spark.memory.offHeap.size / N`, which is the tighter limit whenever more than one task is
+  running, and the tasks together can still acquire the whole pool.
+- Spark's own off-heap consumers, non-Comet operators and off-heap storage, draw on the same pool
+  with no Comet limit at all.
+
+The only room Spark leaves for memory outside the pool is `spark.executor.memoryOverhead`.
 
 A second value, `memory_limit_per_task`, is computed and passed alongside it, but only the on-heap
 pool types read it.
@@ -236,8 +245,8 @@ reports the base pool's number.
 ### The unified pools
 
 `CometUnifiedMemoryPool` and `CometFairMemoryPool` (`unified_pool.rs`, `fair_pool.rs`) are the
-bridge to Spark. Their `try_grow` calls `CometTaskMemoryManager.acquireMemory` over JNI, which goes
-through Spark's ordinary `TaskMemoryManager`. That means:
+bridge to Spark. Their `try_grow` and `grow` both call `CometTaskMemoryManager.acquireMemory` over
+JNI, which goes through Spark's ordinary `TaskMemoryManager`. That means:
 
 - Comet competes with Spark's own off-heap consumers (Tungsten sorters, `BytesToBytesMap`, and so
   on) for the same `spark.memory.offHeap.size`, and Spark's unified memory manager arbitrates.
@@ -247,8 +256,14 @@ through Spark's ordinary `TaskMemoryManager`. That means:
   (`CometTaskMemoryManager.java`). A Spark allocation can therefore never make a native sorter or
   aggregate release its reservations. Native operators spill only when their _own_ `try_grow`
   fails, so a JVM consumer that is blocked behind native reservations has no way to reclaim them.
-- A partial grant (`acquired < additional`) is released immediately and reported as
+- In `try_grow`, a partial grant (`acquired < additional`) is released immediately and reported as
   `ResourcesExhausted`, which is the signal DataFusion uses to spill.
+- `grow` cannot fail, so when Spark grants less than asked the pool records the full amount anyway
+  and carries the shortfall as _overcommit_ (`spark_memory.rs`). A later `shrink` repays the
+  overcommit before returning anything to Spark, so Spark is never handed back more than it
+  granted. While overcommit is outstanding, `try_grow` asks Spark for it on top of the request and
+  is refused unless Spark can cover both, so operators spill until the debt is repaid. Both pools'
+  `Display` output and their `try_grow` errors report the current overcommit.
 
 `CometFairMemoryPool` additionally applies a local check before it asks Spark. It divides
 `pool_size` by the number of consumers currently registered with the pool and rejects the request if
@@ -289,7 +304,9 @@ Native operators reserve through DataFusion's `MemoryConsumer` / `MemoryReservat
 - `try_grow(n)` may fail. Spillable operators (`ExternalSorter`, the grouped hash aggregate,
   sort-merge join) respond to a `ResourcesExhausted` error by spilling to disk and retrying. This is
   the only mechanism that turns memory pressure into progress rather than failure.
-- `grow(n)` is infallible and panics if the pool refuses. It is used where the caller cannot spill.
+- `grow(n)` is infallible. It is used for memory that already exists and the caller cannot spill,
+  such as a spilled batch read back from disk. The Comet pools record it even when Spark grants
+  less, as overcommit (see [The unified pools](#the-unified-pools)).
 - `shrink(n)` returns bytes to the pool.
 
 An operator that never calls `try_grow` is invisible to the pool no matter how much memory it uses.
@@ -355,26 +372,37 @@ diverge for several structural reasons:
   Freeing memory does not necessarily return pages to the OS.
 - **Non-Rust allocations.** Memory allocated by C dependencies through libc `malloc`, and anything
   `mmap`ed, never passes through Rust's `GlobalAlloc`, so neither the memory pool nor the
-  `jemalloc_allocated` metric sees it. In a default build the C dependencies are libzstd
-  (`zstd-sys`, behind the Parquet `zstd` codec), libhdfs (`hdfs-sys`, pulled in by the default
-  `hdfs-opendal` feature), and the TLS stack used for cloud object stores (`aws-lc-sys`). Building
-  with the `jemalloc` or `mimalloc` feature adds the allocator itself (`tikv-jemalloc-sys`,
-  `libmimalloc-sys`). It is worth knowing which dependencies are _not_ C, because several names
-  suggest otherwise: the other Parquet codecs are pure Rust in this build, `snap` for Snappy,
-  `lz4_flex` for LZ4 and `zlib-rs` for gzip, as is `libbz2-rs-sys` despite its name, so those
-  allocations do pass through `GlobalAlloc` and are counted.
+  allocation counters (`native_allocated`, `jemalloc_allocated`) see it. In a default build the C
+  dependencies are libzstd (`zstd-sys`, behind the Parquet `zstd` codec), libhdfs (`hdfs-sys`,
+  pulled in by the default `hdfs-opendal` feature), and the TLS stack used for cloud object stores
+  (`aws-lc-sys`). Building with the `jemalloc` or `mimalloc` feature adds the allocator itself
+  (`tikv-jemalloc-sys`, `libmimalloc-sys`). It is worth knowing which dependencies are _not_ C,
+  because several names suggest otherwise: the other Parquet codecs are pure Rust in this build,
+  `snap` for Snappy, `lz4_flex` for LZ4 and `zlib-rs` for gzip, as is `libbz2-rs-sys` despite its
+  name, so those allocations do pass through `GlobalAlloc` and are counted.
 - **Batches in flight across the FFI boundary.** Reservations stop at the operator that made them.
   Imported JVM batches are reserved only while a reserving operator holds them, and exported native
   batches have usually been released by the time the JVM receives them yet stay resident until the
   JVM closes them (see [Crossing the FFI boundary](#crossing-the-ffi-boundary)).
+- **Overcommit.** Unlike everything above, this is not accidental. When Spark grants less than a
+  `grow` asked for, Comet holds the difference anyway and deliberately does not tell Spark about it
+  (see [The unified pools](#the-unified-pools)). `reserved()` includes it, but Spark's memory
+  manager does not, so until it is repaid Spark can hand the same bytes to another consumer or task.
+  The `overcommit` figure in the pool's `Display` output and `try_grow` errors shows how much is
+  outstanding.
 
 The practical consequence is that `reserved()` is a lower bound on Comet's real footprint, and the
-gap is workload-dependent. `spark.comet.exec.memoryPool.fraction` exists purely so operators can
-hand-tune a margin that covers the gap for their workload.
+gap is workload-dependent. The margin that covers it has to come from
+`spark.executor.memoryOverhead`. The deprecated `spark.comet.exec.memoryPool.fraction` cannot provide
+one; see [Where Comet's budget comes from](#where-comets-budget-comes-from).
 
-To measure the gap on a real query, enable tracing with the `jemalloc` feature and compare
-`jemalloc_allocated` against the summed `thread_NNN_comet_memory_reserved` values; see
-[Tracing](tracing.md#analyzing-memory-usage).
+To measure the gap on a real workload, read the executor's periodic memory usage log, which
+reports the bytes Rust's allocator has handed out next to the pools' reservations; see
+[Sizing the Overhead from the Memory Usage Log][memory-usage-log]. For a view per event rather
+than per interval, enable tracing and compare `native_allocated` against
+`comet_memory_reserved_total`; see [Tracing](tracing.md#analyzing-memory-usage).
+
+[memory-usage-log]: ../user-guide/latest/tuning.md#sizing-the-overhead-from-the-memory-usage-log
 
 ## What the container sees
 
@@ -452,11 +480,12 @@ has bounds _declared reservations_, and the sections above describe several stru
 declared reservations are a lower bound on physical usage. The known gaps, roughly in order of how
 much they matter:
 
-- **No signal for real native usage.** The only way to observe the gap today is to enable tracing
-  with the `jemalloc` feature and compare `jemalloc_allocated` against summed reservations after
-  the fact. There is no runtime value that an operator, a metric, or a policy could read.
-- **`spark.comet.exec.memoryPool.fraction` is a manual proxy for the gap.** It asks operators to
-  guess a per-workload margin rather than measuring anything.
+- **Real native usage is observed but not acted on.** Comet counts the bytes Rust's allocator has
+  handed out, and each executor logs that count next to the pools' reservations. Nothing reads it
+  at runtime, though: no operator, metric, or policy responds to it, so an executor that outgrows
+  its container is still stopped only by the kill.
+- **The memory overhead is sized by hand.** The gap has to fit in `spark.executor.memoryOverhead`,
+  and the memory usage log measures it, but nothing sizes the overhead from it.
 - **`CometArrowAllocator` is unbounded** and participates in no budget.
 - **Buffer and reservation lifetimes are independent across the FFI boundary.** A batch can be
   resident on either side with no reservation covering it, because reservations are made and
@@ -469,13 +498,14 @@ much they matter:
 
 ## Debugging memory issues
 
-| Tool                                             | What it gives you                                                          |
-| ------------------------------------------------ | -------------------------------------------------------------------------- |
-| `spark.comet.debug.memory=true`                  | `LoggingMemoryPool` logs every register/grow/shrink with the consumer name |
-| `spark.comet.explain.native.enabled=true`        | Native plan with per-operator metrics, including spill counts              |
-| [Tracing](tracing.md#analyzing-memory-usage)     | `jemalloc_allocated` vs summed pool reservations; the accounting gap       |
-| `TrackConsumersPool`                             | Names the top 10 consumers in `ResourcesExhausted` messages (always on)    |
-| [`thresher`](https://github.com/cetra3/thresher) | Third-party crate that dumps a jemalloc heap profile at a threshold        |
+| Tool                                                                                             | What it gives you                                                                           |
+| ------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------- |
+| `spark.comet.debug.memory=true`                                                                  | `LoggingMemoryPool` logs every register/grow/shrink with the consumer name                  |
+| `spark.comet.explain.native.enabled=true`                                                        | Native plan with per-operator metrics, including spill counts                               |
+| [Memory usage log](../user-guide/latest/tuning.md#sizing-the-overhead-from-the-memory-usage-log) | Executor-wide native allocation vs pool reservations, logged every 10 seconds by default    |
+| [Tracing](tracing.md#analyzing-memory-usage)                                                     | `native_allocated` vs `comet_memory_reserved_total` per event; the accounting gap over time |
+| `TrackConsumersPool`                                                                             | Names the top 10 consumers in `ResourcesExhausted` messages (always on)                     |
+| [`thresher`](https://github.com/cetra3/thresher)                                                 | Third-party crate that dumps a jemalloc heap profile at a threshold                         |
 
 A checklist for triaging an executor OOM kill:
 
@@ -484,9 +514,10 @@ A checklist for triaging an executor OOM kill:
    treats it as fatal, so the executor is lost either way and the exit code is what distinguishes
    them. A failed task with `SparkOutOfMemoryError` and a surviving executor is Spark's managed
    memory pool, which is the only one of the three that is recoverable at task level.
-2. Compare `jemalloc_allocated` against the summed pool reservations from a trace. A large excess
-   points at undeclared native allocations; a small excess points at the budget simply being too
-   small, or at the JVM side.
+2. Compare `allocated` against `reserved` in the executor's `Comet native memory usage` log lines
+   leading up to the kill, or `native_allocated` against `comet_memory_reserved_total` in a trace.
+   A large excess points at undeclared native allocations; a small excess points at the budget
+   simply being too small, or at the JVM side.
 3. Check `spark.comet.batchSize` against the schema width. Peak memory scales with
    `batch_size * columns`, and wide or deeply nested schemas amplify it.
 4. Check whether the operators involved can spill at all. `ShuffledHashJoin` cannot, so

@@ -17,7 +17,80 @@
 
 use arrow::row::{OwnedRow, RowConverter};
 use datafusion::physical_expr::{LexOrdering, PhysicalExpr};
+use std::ops::Range;
 use std::sync::Arc;
+
+/// How [`CometPartitioning::RoundRobin`] decides which output partition a row belongs to.
+///
+/// What each strategy trades, and why positional placement is only used where it is, is written
+/// up once in the contributor guide's `native_shuffle.md`, under "Round Robin Partitioning".
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RoundRobinStrategy {
+    /// Hash each row over its leading `max_hash_columns` columns (`0` meaning all of them) and
+    /// place it at `pmod(hash, num_partitions)`. A pure function of the row, so it reproduces
+    /// whatever order a re-executed map task sees its input in.
+    HashAll { max_hash_columns: usize },
+
+    /// Place the row at task-global ordinal `i` at
+    /// `(start_partition + i / group_rows) % num_partitions`. The ordinal counts rows across
+    /// input batch boundaries, so placement does not depend on how the input was framed, but it
+    /// does depend on row order: only reproducible when the map task replays its rows in the same
+    /// order, which the planner establishes before choosing this.
+    RowGroups {
+        /// Output partition the task's first group goes to, chosen per map task by
+        /// `CometShuffleExchangeExec.positionalStartPartition`.
+        start_partition: usize,
+        /// Rows per group. Resolved on the driver and frozen with the shuffle dependency, so that a
+        /// re-executed task uses the same group size whatever batch size its executor runs with.
+        group_rows: usize,
+        /// What [`Self::HashAll`] hashes if `create_repartitioner` rules positional placement out
+        /// for the schema, so that the fallback honours the configured column cap.
+        max_hash_columns: usize,
+    },
+}
+
+impl Default for RoundRobinStrategy {
+    /// Hashing every column, which is what Comet's round robin did before `RowGroups` existed.
+    fn default() -> Self {
+        Self::HashAll {
+            max_hash_columns: 0,
+        }
+    }
+}
+
+/// Splits the rows `[row_seq, row_seq + num_rows)` of a task's input into the runs that
+/// [`RoundRobinStrategy::RowGroups`] placement produces, in row order, each as an output
+/// partition and the batch-relative rows bound for it.
+///
+/// `row_seq` is the count of rows the task has already placed, which is what makes the split
+/// independent of where batch boundaries happen to fall: a group straddling two input batches
+/// comes back as a trailing run of the first and a leading run of the second, and the rows land
+/// on the same partition either way.
+pub(crate) fn positional_runs(
+    row_seq: u64,
+    num_rows: usize,
+    start_partition: usize,
+    group_rows: usize,
+    num_partitions: usize,
+) -> impl Iterator<Item = (usize, Range<u32>)> {
+    let group_rows = group_rows.max(1) as u64;
+    let num_partitions = num_partitions.max(1) as u64;
+    let num_rows = num_rows as u64;
+    let mut offset = 0u64;
+    std::iter::from_fn(move || {
+        if offset >= num_rows {
+            return None;
+        }
+        let global = row_seq + offset;
+        // Rows left in the group `global` falls into, so the first run of a batch picks up a
+        // group that a previous batch left part-way through.
+        let len = (group_rows - global % group_rows).min(num_rows - offset);
+        let partition = (start_partition as u64 + global / group_rows) % num_partitions;
+        let rows = offset as u32..(offset + len) as u32;
+        offset += len;
+        Some((partition as usize, rows))
+    })
+}
 
 /// Partitioning scheme for distributing rows across shuffle output partitions.
 #[derive(Debug, Clone)]
@@ -32,10 +105,9 @@ pub enum CometPartitioning {
     /// Rows for comparing to 4) OwnedRows that represent the boundaries of each partition, used with
     /// LexOrdering to bin each value in the RecordBatch to a partition.
     RangePartitioning(LexOrdering, usize, Arc<RowConverter>, Vec<OwnedRow>),
-    /// Round robin partitioning. Distributes rows across partitions by sorting them by hash
-    /// (computed from columns) and then assigning partitions sequentially. Args are:
-    /// 1) number of partitions, 2) max columns to hash (0 means no limit).
-    RoundRobin(usize, usize),
+    /// Round robin partitioning. Args are 1) the number of partitions and 2) the strategy that
+    /// decides where each row goes. See [`RoundRobinStrategy`] for the trade-offs.
+    RoundRobin(usize, RoundRobinStrategy),
 }
 
 impl CometPartitioning {
@@ -68,5 +140,24 @@ mod tests {
         // expected partition from Spark with n=200
         let expected = vec![69, 5, 193, 171, 115];
         assert_eq!(result, expected);
+    }
+
+    /// A group that a previous batch left part-way through is finished by the next batch, rather
+    /// than restarting at a group boundary.
+    #[test]
+    fn positional_runs_resume_a_partial_group() {
+        // Rows 2..4 of the task finish group 0; rows 4..8 are group 1.
+        assert_eq!(
+            positional_runs(2, 6, 0, 4, 3).collect::<Vec<_>>(),
+            vec![(0, 0..2), (1, 2..6)]
+        );
+    }
+
+    #[test]
+    fn positional_runs_group_larger_than_batch_yields_one_run() {
+        assert_eq!(
+            positional_runs(0, 100, 3, 8192, 200).collect::<Vec<_>>(),
+            vec![(3, 0..100)]
+        );
     }
 }
