@@ -1721,6 +1721,19 @@ class CometNativeCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("cast StringType to CHAR preserves padding") {
+    assume(CometSparkSessionExtensions.isSpark40Plus)
+    withSQLConf(
+      "spark.sql.preserveCharVarcharTypeInfo" -> "true",
+      CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "false") {
+      withParquetTable(Seq(Tuple1("a"), Tuple1("bb")), "char_cast") {
+        checkSparkAnswerAndFallbackReason(
+          "SELECT CAST(_1 AS CHAR(4)) FROM char_cast",
+          "Cast from StringType to CharType(4) is not supported")
+      }
+    }
+  }
+
   // CAST from BinaryType
 
   test("cast BinaryType to StringType") {

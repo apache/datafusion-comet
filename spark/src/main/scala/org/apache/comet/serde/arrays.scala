@@ -242,16 +242,51 @@ object CometArrayIntersect
 
 private object ArrayExtremaSupport extends CometTypeShim {
   val incompatReason: String =
-    "Array extrema use binary string ordering for non-UTF8_BINARY collations " +
+    "Array extrema support UTF8_BINARY and UTF8_LCASE collations, including RTRIM, natively; " +
+      "UTF8_LCASE requires Unicode 16 or 17. Other collations use binary ordering when opted in " +
       "(https://github.com/apache/datafusion-comet/issues/4496)."
 
-  def getSupportLevel(elementType: DataType): SupportLevel = {
-    if (hasNonDefaultStringCollation(elementType)) {
-      // The dispatcher runs Spark's own comparison with the original collation IDs, including
-      // strings nested in arrays or structs. Keep the native bytewise comparison opt-in only.
-      Incompatible(Some(incompatReason))
-    } else {
+  private def stringCollations(dt: DataType): Seq[String] = dt match {
+    case _: StringType => Seq(stringCollationName(dt))
+    case ArrayType(elementType, _) => stringCollations(elementType)
+    case StructType(fields) => fields.toSeq.flatMap(f => stringCollations(f.dataType))
+    case _ => Seq.empty
+  }
+
+  private def supportsCollations(collations: Seq[String]): Boolean = collations.forall {
+    case "UTF8_BINARY" | "UTF8_BINARY_RTRIM" => true
+    case "UTF8_LCASE" | "UTF8_LCASE_RTRIM" =>
+      collationUnicodeVersion == 16 || collationUnicodeVersion == 17
+    case _ => false
+  }
+
+  def getSupportLevel(elementType: DataType): SupportLevel =
+    if (supportsCollations(stringCollations(elementType))) {
       Compatible()
+    } else {
+      Incompatible(Some(incompatReason))
+    }
+
+  def convert(
+      expr: Expression,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    val collations = stringCollations(expr.dataType)
+    val child = exprToProtoInternal(expr.children.head, inputs, binding)
+    if (collations.forall(_ == "UTF8_BINARY") || !supportsCollations(collations)) {
+      // Preserve the existing binary comparison when unsupported collations are explicitly
+      // opted in. By default those expressions use the JVM dispatcher.
+      scalarFunctionExprToProto(expr.prettyName, child)
+    } else {
+      child.map { input =>
+        val function = ExprOuterClass.ScalarFunc
+          .newBuilder()
+          .setFunc(expr.prettyName)
+          .addArgs(input)
+          .addAllStringCollations(collations.asJava)
+          .setCollationUnicodeVersion(collationUnicodeVersion)
+        ExprOuterClass.Expr.newBuilder().setScalarFunc(function).build()
+      }
     }
   }
 }
@@ -267,13 +302,8 @@ object CometArrayMax extends CometExpressionSerde[ArrayMax] with CodegenDispatch
   override def convert(
       expr: ArrayMax,
       inputs: Seq[Attribute],
-      binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val arrayExprProto = exprToProtoInternal(expr.children.head, inputs, binding)
-
-    val arrayMaxScalarExpr =
-      scalarFunctionExprToProto("array_max", arrayExprProto)
-    arrayMaxScalarExpr
-  }
+      binding: Boolean): Option[ExprOuterClass.Expr] =
+    ArrayExtremaSupport.convert(expr, inputs, binding)
 }
 
 object CometArrayMin extends CometExpressionSerde[ArrayMin] with CodegenDispatchFallback {
@@ -287,12 +317,8 @@ object CometArrayMin extends CometExpressionSerde[ArrayMin] with CodegenDispatch
   override def convert(
       expr: ArrayMin,
       inputs: Seq[Attribute],
-      binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val arrayExprProto = exprToProtoInternal(expr.children.head, inputs, binding)
-
-    val arrayMinScalarExpr = scalarFunctionExprToProto("array_min", arrayExprProto)
-    arrayMinScalarExpr
-  }
+      binding: Boolean): Option[ExprOuterClass.Expr] =
+    ArrayExtremaSupport.convert(expr, inputs, binding)
 }
 
 object CometArraysOverlap extends CometExpressionSerde[ArraysOverlap] {
