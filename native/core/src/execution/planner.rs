@@ -97,7 +97,7 @@ use datafusion_comet_spark_expr::{
 use iceberg::expr::Bind;
 
 use crate::execution::operators::ExecutionError::GeneralError;
-use crate::execution::shuffle::{CometPartitioning, CompressionCodec};
+use crate::execution::shuffle::{CometPartitioning, CompressionCodec, RoundRobinStrategy};
 use crate::execution::spark_plan::SparkPlan;
 use crate::parquet::objectstore::s3::apply_executor_object_store_defaults;
 use crate::parquet::objectstore::s3_blob_fs_support::normalize_object_store_url;
@@ -3658,15 +3658,33 @@ impl PhysicalPlanner {
             }
             PartitioningStruct::SinglePartition(_) => Ok(CometPartitioning::SinglePartition),
             PartitioningStruct::RoundRobinPartition(rr_partition) => {
-                // Treat negative max_hash_columns as 0 (no limit)
-                let max_hash_columns = if rr_partition.max_hash_columns <= 0 {
-                    0
+                // Treat negative max_hash_columns as 0 (no limit).
+                let max_hash_columns = rr_partition.max_hash_columns.max(0) as usize;
+                let strategy = if rr_partition.positional {
+                    // Resolved on the driver and frozen with the shuffle dependency. Deriving it
+                    // here from the executor's batch size would let a retried task use a
+                    // different group size, and so a different placement, than the attempt it
+                    // replaces.
+                    if rr_partition.positional_group_rows <= 0 {
+                        return Err(GeneralError(format!(
+                            "Positional round robin needs a positive group size, got {}",
+                            rr_partition.positional_group_rows
+                        )));
+                    }
+                    RoundRobinStrategy::RowGroups {
+                        // Computed per task on the JVM, where the Spark map partition id is in
+                        // scope. See `CometShuffleExchangeExec.positionalStartPartition`.
+                        start_partition: rr_partition.positional_start_partition.max(0) as usize,
+                        group_rows: rr_partition.positional_group_rows as usize,
+                        // Kept for the case where the schema rules positional placement out.
+                        max_hash_columns,
+                    }
                 } else {
-                    rr_partition.max_hash_columns as usize
+                    RoundRobinStrategy::HashAll { max_hash_columns }
                 };
                 Ok(CometPartitioning::RoundRobin(
                     rr_partition.num_partitions as usize,
-                    max_hash_columns,
+                    strategy,
                 ))
             }
         }
