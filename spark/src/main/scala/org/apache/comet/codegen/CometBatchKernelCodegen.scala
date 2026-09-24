@@ -23,11 +23,12 @@ import org.apache.arrow.vector._
 import org.apache.arrow.vector.complex.{ListVector, MapVector, StructVector}
 import org.apache.arrow.vector.types.pojo.Field
 import org.apache.spark.internal.Logging
-import org.apache.spark.sql.catalyst.expressions.{BoundReference, Expression, Literal, Unevaluable}
+import org.apache.spark.sql.catalyst.expressions.{BoundReference, Cast, Expression, Literal, Unevaluable}
 import org.apache.spark.sql.catalyst.expressions.codegen._
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
+import org.apache.comet.expressions.CometCast
 import org.apache.comet.shims.{CometExprTraitShim, CometTypeShim}
 
 /**
@@ -129,6 +130,19 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim with Come
   def canHandle(boundExpr: Expression): Option[String] = {
     if (!isSupportedDataType(boundExpr.dataType)) {
       return Some(s"codegen dispatch: unsupported output type ${boundExpr.dataType}")
+    }
+    // A TRY cast whose key cast can fail can produce a map with a null key. Arrow's map format
+    // cannot hold one, and Spark's own readers disagree about it: `map_keys` shows the null while
+    // `collect`, `element_at` and a cast to string read the key as the type's default. Only Spark
+    // evaluating the whole tree matches Spark for every consumer, so refuse any tree holding such
+    // a cast. See https://github.com/apache/datafusion-comet/issues/6172.
+    if (boundExpr.find {
+        case c: Cast => CometCast.canProduceNullMapKey(c)
+        case _ => false
+      }.isDefined) {
+      return Some(
+        "codegen dispatch: a TRY cast can produce a null map key, which Arrow cannot hold " +
+          "(https://github.com/apache/datafusion-comet/issues/6172)")
     }
     // Mirror WSCG's `spark.sql.codegen.maxFields` gate. Wide schemas blow the generated class's
     // typed input field count, the typed-getter switch, and the constant pool. Refuse here so the
