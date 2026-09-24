@@ -77,7 +77,8 @@ class Native extends NativeBase {
       taskCPUs: Long,
       keyUnwrapper: CometFileKeyUnwrapper,
       taskContext: TaskContext,
-      classLoader: ClassLoader): Long
+      classLoader: ClassLoader,
+      sharedPlanScope: String = ""): Long
   // scalastyle:on
 
   /**
