@@ -117,6 +117,21 @@ class Native extends NativeBase {
       schemaAddrs: Array[Long]): Long
 
   /**
+   * Returns the partition offsets published by a finished native shuffle write.
+   *
+   * The writer knows every offset once its plan completes, so they are handed back in memory
+   * rather than through a temporary index file. Call only after the plan has been fully drained,
+   * and only for a plan whose root is a native shuffle writer with a local destination.
+   *
+   * @param plan
+   *   the address to native query plan.
+   * @return
+   *   `numPartitions + 1` offsets, the last being the total data file length, so that partition
+   *   lengths are successive differences.
+   */
+  @native def getShufflePartitionOffsets(plan: Long): Array[Long]
+
+  /**
    * Release and drop the native query plan object and context object.
    *
    * @param plan
@@ -249,6 +264,20 @@ class Native extends NativeBase {
    * Returns the Rust thread ID for the current thread.
    */
   @native def getRustThreadId(): Long
+
+  /**
+   * Returns the executor's native memory usage, for the periodic memory usage log. Reads only
+   * process-wide counters, never a plan's execution context, so it is safe to call from any
+   * thread.
+   *
+   * @return
+   *   `[nativeAllocated, poolsReserved, pools, plans]`. `nativeAllocated` is the bytes the native
+   *   allocator has handed out. `poolsReserved` is the bytes reserved across every Comet memory
+   *   pool, counting a pool shared by several plans once. `pools` is the number of live pools,
+   *   which with the default task-shared pool types is one per task running native plans, and
+   *   `plans` is the number of native plans created and not yet released.
+   */
+  @native def getMemoryUsage(): Array[Long]
 
   // Native Columnar to Row conversion methods
 
