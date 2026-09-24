@@ -107,7 +107,7 @@ The tables below list every Spark built-in expression with its current status.
 | `kurtosis` | 🔜 | — | Not yet implemented natively |
 | `last` | ✅ | Native |  |
 | `last_value` | ✅ | Native |  |
-| `listagg` | 🔜 | — | String aggregation |
+| `listagg` | ✅ | Native | Spark 4.0+. `StringType` input with a literal delimiter; `WITHIN GROUP (ORDER BY ...)` and `BinaryType` inputs fall back to Spark. Without `WITHIN GROUP`, concatenation order is the (non-deterministic) group arrival order, matching Spark. |
 | `max` | ✅ | Native |  |
 | `max_by` | ✅ | Native | Value and ordering must be fixed-length types |
 | `mean` | ✅ | Native |  |
@@ -133,7 +133,7 @@ The tables below list every Spark built-in expression with its current status.
 | `stddev` | ✅ | Native |  |
 | `stddev_pop` | ✅ | Native |  |
 | `stddev_samp` | ✅ | Native |  |
-| `string_agg` | 🔜 | — | String aggregation (alias of `listagg`) |
+| `string_agg` | ✅ | Native | Alias of `listagg`; same restrictions apply. |
 | `sum` | ✅ | Native |  |
 | `try_avg` | ✅ | — | Interval types fall back |
 | `try_sum` | ✅ | — |  |
@@ -317,7 +317,7 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | `unix_micros` | ✅ | Codegen dispatch |  |
 | `unix_millis` | ✅ | Codegen dispatch |  |
 | `unix_seconds` | ✅ | Codegen dispatch |  |
-| `unix_timestamp` | ✅ | Native |  |
+| `unix_timestamp` | ✅ | Hybrid | String parsing uses Spark's codegen and honors the time parser policy, ANSI mode, and session time zone. Date and timestamp inputs ignore the format and use native execution. |
 | `weekday` | ✅ | Native |  |
 | `weekofyear` | ✅ | Native |  |
 | `window` | ✅ | — | Batch tumbling and sliding time-window grouping runs natively |
