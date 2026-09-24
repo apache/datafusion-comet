@@ -340,15 +340,19 @@ fn read_last_error(impl_state: &mut CometCScalarKernelImpl) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::execution::c_udf::loader::load;
+    use crate::execution::c_udf::cache::get_or_load;
     use crate::execution::c_udf::test_support::{test_udfs_path, BUILD_HINT};
     use arrow::array::{Array, Int64Array};
     use arrow::datatypes::FieldRef;
     use datafusion::logical_expr::ScalarUDFImpl;
     use std::sync::Arc;
 
+    /// Goes through the process-wide cache, as the planner does, because the adapter does not
+    /// keep its library loaded. With a `LoadedLibrary` from `load`, the library would be dlclosed
+    /// when this returns: Linux unmaps it and the kernel's callbacks dangle, while macOS keeps an
+    /// image that has thread-locals mapped, which is why this only crashed on Linux.
     fn add_one_c() -> Arc<dyn ScalarUDFImpl> {
-        let lib = load(test_udfs_path()).expect(BUILD_HINT);
+        let lib = get_or_load(test_udfs_path()).expect(BUILD_HINT);
         Arc::clone(
             &lib.udfs
                 .iter()

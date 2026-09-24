@@ -60,8 +60,12 @@ pub struct LoadedLibrary {
     /// that lives in the library's text: unloading first would call
     /// through a dangling pointer.
     pub udfs: Vec<LoadedUdf>,
-    /// The loaded `Library`. Held inside an `Arc` so loaded UDFs can
-    /// outlive lookups. Library is never unloaded for the process lifetime.
+    /// The loaded `Library`. Dropping the last reference unloads it, and
+    /// nothing in a `udf_impl` holds one, so an adapter cloned out of
+    /// `udfs` must not outlive this struct: its callbacks, and the release
+    /// callbacks of every array it returned, live in the library's text.
+    /// Use `cache::get_or_load`, which keeps every library loaded for the
+    /// life of the process, whenever an adapter is handed out.
     pub library: Arc<Library>,
 }
 
