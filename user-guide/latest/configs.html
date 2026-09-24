@@ -1151,7 +1151,7 @@ shuffle, including applications that rely only on remote reliable storage or dec
 <td><p>1.0</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.maxTempDirectorySize</span></code></p></td>
-<td><p>The maximum amount of data (in bytes) stored inside the temporary directories used by native operators when spilling. Applied per Spark task, so an executor running N concurrent tasks may use up to N times this value on shared local disks. Once the limit is reached, further spills will fail and the query will error out.</p></td>
+<td><p>The maximum amount of data (in bytes) stored inside the temporary directories used by native operators when spilling. Applied to each Comet native plan separately, and a Spark task can run more than one native plan at a time, so an executor running N concurrent tasks may use more than N times this value on shared local disks. Once the limit is reached, further spills will fail and the query will error out.</p></td>
 <td><p>107374182400b</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.memory.logInterval</span></code></p></td>
