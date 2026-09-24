@@ -303,8 +303,10 @@ class CometS3CredentialBridgeSuite
     assert(
       MinioLocationScopedCredentialProvider.locationCallCount() == 0,
       s"Locations fetched ${MinioLocationScopedCredentialProvider.locationCallCount()} times")
+    // Collections.singleton, not Set.of: Scala 2.12 cannot choose between Set.of(E) and
+    // Set.of(E...) for a single argument.
     assert(
-      MinioLocationScopedCredentialProvider.credentialPaths() == java.util.Set.of(
+      MinioLocationScopedCredentialProvider.credentialPaths() == java.util.Collections.singleton(
         "/warehouse/finance"),
       s"Unexpected credential paths: ${MinioLocationScopedCredentialProvider.credentialPaths()}")
   }
