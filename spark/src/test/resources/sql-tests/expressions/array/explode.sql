@@ -304,16 +304,16 @@ INSERT INTO test_explode_multi VALUES
 query
 SELECT id, name, extra, explode_outer(arr) AS v FROM test_explode_multi
 
--- ===== Pre-projection wiring: carry the array column through alongside its
+-- ===== Projection wiring: carry the array column through alongside its
 -- explosion. The passthrough `arr` shows the original array (empty rows stay
--- []) while the exploded value is NULL for empty rows, so this is the only
--- shape where the difference between the original array and the null-marked
--- copy is observable at the query level.
+-- []) while the exploded value is NULL for those same rows, so this is the
+-- shape that shows the outer substitution applying to the generated column
+-- only.
 
 query
 SELECT id, arr, explode_outer(arr) FROM test_explode_int
 
--- ===== Pre-projection wiring: no passthrough columns. This drives the
+-- ===== Projection wiring: no passthrough columns. This drives the
 -- planner's `project_list` to empty (no columns carried through) and covers
 -- the codepath where the second projection contains only the exploded array.
 
