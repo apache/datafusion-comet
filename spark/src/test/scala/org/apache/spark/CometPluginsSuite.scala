@@ -23,9 +23,10 @@ import java.io.File
 
 import org.apache.logging.log4j.Level
 import org.apache.spark.sql.{CometTestBase, SaveMode}
+import org.apache.spark.sql.comet.CometPlan
 import org.apache.spark.sql.internal.StaticSQLConf
 
-import org.apache.comet.COMET_VERSION
+import org.apache.comet.{COMET_VERSION, CometConf, CometSparkSessionExtensions}
 
 class CometPluginsSuite extends CometTestBase {
   override protected def sparkConf: SparkConf = {
@@ -251,5 +252,47 @@ class CometPluginsUnifiedModeSuite extends CometTestBase {
     assert(execMemOverhead2 == "1G")
     assert(execMemOverhead3 == "1G")
     assert(execMemOverhead4 == "1G")
+  }
+}
+
+class CometPluginsExtensionOnlySuite extends CometTestBase {
+  // No plugin and no off-heap memory. CometTestBase registers CometSparkSessionExtensions
+  // directly, as an application can with spark.sql.extensions.
+  override protected def sparkConf: SparkConf = {
+    val conf = new SparkConf()
+    conf.set(
+      "spark.shuffle.manager",
+      "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
+    conf.set("spark.comet.enabled", "true")
+    conf.set("spark.comet.exec.enabled", "true")
+    // Set explicitly, since ENABLE_COMET_ONHEAP in the environment changes the default.
+    conf.set(CometConf.COMET_ONHEAP_ENABLED.key, "false")
+    conf
+  }
+
+  private val query = "SELECT _1 FROM tbl WHERE _1 > 5"
+
+  test("Comet is disabled when off-heap memory is disabled") {
+    // Logging derives the logger name by stripping the object's trailing '$'
+    val logger = CometSparkSessionExtensions.getClass.getName.stripSuffix("$")
+    val appender = new LogAppender("off-heap mode warning")
+    withParquetTable((0 until 10).map(i => (i, i.toString)), "tbl") {
+      withLogAppender(appender, Seq(logger), Some(Level.WARN)) {
+        val (_, plan) = checkSparkAnswer(query)
+        assert(collect(plan) { case op: CometPlan => op }.isEmpty, plan)
+      }
+    }
+    assert(
+      appender.loggingEvents
+        .exists(_.getMessage.getFormattedMessage.contains("not running in off-heap mode")))
+  }
+
+  test("spark.comet.exec.onHeap.enabled enables Comet without off-heap memory") {
+    withParquetTable((0 until 10).map(i => (i, i.toString)), "tbl") {
+      withSQLConf(CometConf.COMET_ONHEAP_ENABLED.key -> "true") {
+        val (_, plan) = checkSparkAnswer(query)
+        assert(collect(plan) { case op: CometPlan => op }.nonEmpty, plan)
+      }
+    }
   }
 }

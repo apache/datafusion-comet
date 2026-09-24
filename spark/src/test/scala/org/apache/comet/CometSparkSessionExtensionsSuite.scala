@@ -36,8 +36,16 @@ class CometSparkSessionExtensionsSuite extends CometTestBase {
 
   import CometSparkSessionExtensions._
 
-  test("isCometLoaded") {
+  // isCometLoaded also requires off-heap memory, so the tests of its other checks start from a
+  // conf that has it.
+  private def offHeapSQLConf(): SQLConf = {
     val conf = new SQLConf
+    conf.setConfString("spark.memory.offHeap.enabled", "true")
+    conf
+  }
+
+  test("isCometLoaded") {
+    val conf = offHeapSQLConf()
     // Disable Comet shuffle so this test can focus on other checks without needing
     // spark.shuffle.manager to be set.
     conf.setConfString(CometConf.COMET_SHUFFLE_ENABLED.key, "false")
@@ -63,7 +71,7 @@ class CometSparkSessionExtensionsSuite extends CometTestBase {
   }
 
   test("isCometLoaded requires CometShuffleManager when shuffle.enabled=true") {
-    val conf = new SQLConf
+    val conf = offHeapSQLConf()
     conf.setConfString(CometConf.COMET_ENABLED.key, "true")
 
     // Default: shuffle.enabled=true. Without spark.shuffle.manager set, Comet must be disabled.
@@ -81,8 +89,24 @@ class CometSparkSessionExtensionsSuite extends CometTestBase {
     assert(isCometLoaded(conf))
   }
 
-  test("the composite manager is recognized without requiring the optional Celeborn client") {
+  test("isCometLoaded requires off-heap memory unless on-heap mode is enabled") {
     val conf = new SQLConf
+    conf.setConfString(CometConf.COMET_ENABLED.key, "true")
+    conf.setConfString(CometConf.COMET_SHUFFLE_ENABLED.key, "false")
+    // Set explicitly, since ENABLE_COMET_ONHEAP in the environment changes the default.
+    conf.setConfString(CometConf.COMET_ONHEAP_ENABLED.key, "false")
+    assert(!isCometLoaded(conf))
+
+    conf.setConfString("spark.memory.offHeap.enabled", "true")
+    assert(isCometLoaded(conf))
+
+    conf.setConfString("spark.memory.offHeap.enabled", "false")
+    conf.setConfString(CometConf.COMET_ONHEAP_ENABLED.key, "true")
+    assert(isCometLoaded(conf))
+  }
+
+  test("the composite manager is recognized without requiring the optional Celeborn client") {
+    val conf = offHeapSQLConf()
     conf.setConfString(CometConf.COMET_ENABLED.key, "true")
     conf.setConfString(CometConf.COMET_SHUFFLE_ENABLED.key, "true")
     conf.setConfString(CometConf.COMET_SHUFFLE_MODE.key, "native")
@@ -94,7 +118,7 @@ class CometSparkSessionExtensionsSuite extends CometTestBase {
   }
 
   test("the stock Celeborn manager cannot accept Comet shuffle dependencies") {
-    val conf = new SQLConf
+    val conf = offHeapSQLConf()
     conf.setConfString(CometConf.COMET_ENABLED.key, "true")
     conf.setConfString(CometConf.COMET_SHUFFLE_ENABLED.key, "true")
     conf.setConfString(

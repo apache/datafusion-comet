@@ -130,6 +130,13 @@ object CometSparkSessionExtensions extends Logging {
       return false
     }
 
+    // CometDriverPlugin makes the same check before registering this extension, but an
+    // application can also register the extension directly with spark.sql.extensions.
+    if (!isOffHeapEnabled(conf) && !COMET_ONHEAP_ENABLED.get(conf)) {
+      logWarning("Comet extension is disabled because Spark is not running in off-heap mode.")
+      return false
+    }
+
     if (COMET_SHUFFLE_ENABLED.get(conf) && !isCometShuffleManagerEnabled(conf)) {
       logWarning(
         "Comet extension is disabled because spark.shuffle.manager is not set to " +
@@ -290,6 +297,12 @@ object CometSparkSessionExtensions extends Logging {
 
   def isOffHeapEnabled(sparkConf: SparkConf): Boolean = {
     sparkConf.getBoolean("spark.memory.offHeap.enabled", false)
+  }
+
+  // Spark copies the SparkConf into each session's SQLConf and, by default, refuses to set core
+  // configs such as this one at session level, so this is the application's memory mode.
+  private def isOffHeapEnabled(conf: SQLConf): Boolean = {
+    conf.getConfString("spark.memory.offHeap.enabled", "false").toBoolean
   }
 
   /**
