@@ -339,6 +339,21 @@ struct RawCredentials {
     expiration_epoch_millis: i64,
 }
 
+/// The bridge could not get a credential from the provider, as opposed to S3 rejecting one. It is
+/// the source of the error `get_credential` returns, which `object_store` passes through to the
+/// read unchanged. A `LocationScopedObjectStore` treats it like a 403, because a provider that has
+/// no policy for a location throws, and that can mean the location changed since its snapshot.
+#[derive(Debug)]
+pub(crate) struct CredentialProviderError(pub(crate) String);
+
+impl fmt::Display for CredentialProviderError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for CredentialProviderError {}
+
 #[async_trait]
 impl CredentialProvider for CometS3CredentialBridge {
     type Credential = AwsCredential;
@@ -346,7 +361,7 @@ impl CredentialProvider for CometS3CredentialBridge {
     async fn get_credential(&self) -> object_store::Result<Arc<AwsCredential>> {
         let raw = self.fetch_raw().map_err(|e| object_store::Error::Generic {
             store: "S3",
-            source: e.to_string().into(),
+            source: Box::new(CredentialProviderError(e.to_string())),
         })?;
         Ok(Arc::new(AwsCredential {
             key_id: raw.access_key_id,
