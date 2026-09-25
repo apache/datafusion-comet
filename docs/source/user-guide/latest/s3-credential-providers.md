@@ -36,6 +36,41 @@ You probably do, if any of these are true:
 - You have a custom Iceberg `client.factory` that injects a configured S3 client.
 - Spark queries against your S3 paths work, but the same queries with Comet enabled fail with 403.
 
+## Built-in adapters
+
+If a native Parquet scan fails with `Unsupported credential provider: <class>` (for example `com.amazonaws.auth.DefaultAWSCredentialsProviderChain`), the class you named in `fs.s3a.aws.credentials.provider` is one that plain Spark/Hadoop accepts but Comet's native reader does not reimplement. Comet ships two built-in `CometS3CredentialProvider` adapters that fix this with a one-line config change; you leave your existing `fs.s3a.aws.credentials.provider` untouched.
+
+These adapters cover the Parquet native scan path only. Enabling one is opt-in: naming it is what activates it. Note the native side forwards the `fs.s3a.*` config to `initialize()` for _any_ provider class named on the Parquet path, not just these two adapters: a vendor `CometS3CredentialProvider` that received an empty map in Comet 1.0 now receives the `fs.s3a.*` subset (including static keys), and one cached instance per distinct `fs.s3a.*` config rather than one per bucket. This is additive, but a provider that logs the map or treats an empty map as "the Parquet path" should be aware of it.
+
+The adapters and the AWS SDK are loaded through the class loader that loaded Comet, so `hadoop-aws` and the matching AWS SDK must be visible from there — put them on the same classpath as Comet (`spark.executor.extraClassPath` / `spark.driver.extraClassPath`, or `$SPARK_HOME/jars`), not only via `--packages`. If they are only on the user-jar loader, credential resolution fails at planning with `NoClassDefFoundError` before the adapter can report anything useful.
+
+### `HadoopS3ACredentialProviderAdapter` (recommended)
+
+Delegates to Hadoop S3A's own provider construction, so it accepts everything the `fs.s3a.aws.credentials.provider` chain accepts (the default chain, web-identity, assumed-role, per-bucket config). This is the general answer for the failure above. It does **not** cover `fs.s3a.custom.signers` — the native reader signs SigV4 itself with whatever the chain returns and never invokes a custom signer, so a signer's identity would not be applied; a custom-signer setup needs a vendor bridge (see "Do I need this?"). And it **refuses** `fs.s3a.delegation.token.binding`: Spark would use the delegation-token provider and bypass the chain, so rather than resolve a different identity the adapter fails with a message naming that key.
+
+```
+spark.hadoop.fs.s3a.comet.credential.provider.class=org.apache.comet.cloud.s3.HadoopS3ACredentialProviderAdapter
+# leave your existing config as-is, for example:
+spark.hadoop.fs.s3a.aws.credentials.provider=com.amazonaws.auth.DefaultAWSCredentialsProviderChain
+```
+
+It needs no extra config: it reads the standard `fs.s3a.aws.credentials.provider` (and the per-bucket `fs.s3a.bucket.<bucket>.aws.credentials.provider`) itself, and Comet forwards the full `fs.s3a.*` config to it, so a provider chain (including static keys and assumed-role) resolves the same way it would under Spark.
+
+### `AwsSdkCredentialProviderAdapter`
+
+Wraps a single raw AWS SDK credential-provider class that is not registered through S3A. Name the delegate in a separate key:
+
+```
+spark.hadoop.fs.s3a.comet.credential.provider.class=org.apache.comet.cloud.s3.AwsSdkCredentialProviderAdapter
+spark.hadoop.fs.s3a.comet.credential.adapter.class=<FQCN of your credential provider>
+# per-bucket variant:
+spark.hadoop.fs.s3a.bucket.<bucket>.comet.credential.adapter.class=<FQCN>
+```
+
+### Which one, and which Spark version
+
+Use `HadoopS3ACredentialProviderAdapter` unless you have a plain SDK provider not wired through S3A. Both class names are the same on every Comet build; each build automatically uses the AWS SDK its Hadoop line ships (v1 on the Spark 3.4/3.5 builds, v2 on 4.0+), so you configure one name and get the right implementation.
+
 ## Enabling a bridge
 
 A bridge is activated by naming the vendor's class in a Spark config. Putting a JAR on the classpath alone has no effect; the config key must be set.
@@ -88,6 +123,8 @@ Without the config set, no credential-related log lines appear at startup; nativ
 
 ## Troubleshooting
 
+**`Generic S3 error: Unsupported credential provider: <class>`** (native Parquet scan). The class in `fs.s3a.aws.credentials.provider` is one Hadoop S3A accepts but Comet's native reader does not reimplement. Name `HadoopS3ACredentialProviderAdapter` as the Comet provider class (see [Built-in adapters](#built-in-adapters)) and leave your existing config alone.
+
 **`CometS3CredentialProvider class not found: <name>`**. The class named in the config is not on the executor classpath. Re-check `--jars` / `spark.jars`. On YARN or Kubernetes, confirm the JAR actually reached the executor and not only the driver.
 
 **`<class> does not implement org.apache.comet.cloud.s3.CometS3CredentialProvider`**. The configured class exists but does not implement the SPI. Double-check the FQCN against the vendor's documentation.
@@ -138,7 +175,7 @@ The class must have a public no-arg constructor. `getCredentialsForPath` may be 
 
 Comet keys provider instances by `(FQCN, dispatchKey, catalogProperties)`. The dispatch key is the Spark V2 catalog name on the Iceberg path and the S3 bucket name on the Parquet path. The first time a given key is seen on an executor, Comet reflects the class, calls `initialize(Map)` exactly once, and caches the instance for the JVM lifetime. Two catalogs sharing one provider FQCN therefore get isolated instances with their own `initialize` maps. Including `catalogProperties` in the key matters in multi-tenant JVMs (Spark Connect, Thrift Server, `SparkSession.newSession()`) where two sessions can otherwise collide on the same `(FQCN, dispatchKey)` and have the second session silently use the first session's credentials.
 
-`initialize` should be cheap and non-blocking. Defer real credential fetches (REST round-trips, STS calls) to the first `getCredentialsForPath` invocation. On the Iceberg path the supplied `catalogProperties` carries the unfiltered FileIO bag, including REST-vended fields like `credentials.uri`, OAuth tokens, and any vendor-custom keys you set on the catalog config. The map may contain secrets, so do not log it.
+`initialize` should be cheap and non-blocking. Defer real credential fetches (REST round-trips, STS calls) to the first `getCredentialsForPath` invocation. On the Iceberg path the supplied `catalogProperties` carries the unfiltered FileIO bag, including REST-vended fields like `credentials.uri`, OAuth tokens, and any vendor-custom keys you set on the catalog config. On the Parquet path it carries the `fs.s3a.*` config subset (including static keys such as `fs.s3a.access.key`); in Comet 1.0 this map was empty on the Parquet path. The map may contain secrets, so do not log it.
 
 `close()` is invoked from a JVM shutdown hook installed by the dispatcher. The default no-op is fine for stateless providers. Override it to release HTTP clients, scheduled-refresh executors, or STS connection pools. Shutdown hooks are best-effort: a `SIGKILL` or abrupt JVM termination skips them, so do not depend on `close()` for correctness.
 
