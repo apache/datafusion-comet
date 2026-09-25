@@ -16,6 +16,7 @@
 // under the License.
 
 use std::{
+    collections::HashMap,
     fmt::{Debug, Display, Formatter, Result as FmtResult},
     sync::Arc,
 };
@@ -64,10 +65,45 @@ pub struct CometFairMemoryPool {
 
 struct CometFairPoolState {
     used: usize,
-    num: usize,
+    /// Bytes held by each registered consumer, keyed by [`MemoryConsumer::id`]. The sibling
+    /// reservations that `new_empty()`, `split()` and `take()` create belong to the same consumer,
+    /// so they count against one share. The pool keeps these totals itself because
+    /// `reservation.size()` covers only one reservation, and DataFusion updates it after calling
+    /// `try_grow` but before calling `shrink`. Bytes are charged here and to `used` together, and
+    /// settle together once the JVM has answered.
+    consumers: HashMap<usize, usize>,
     /// Whether the anchor byte is held on the JVM side. Unset while Spark declines it, which it
     /// does only for a task already at its share; each grow retries it until it is held.
     anchor_held: bool,
+}
+
+impl CometFairPoolState {
+    /// The bytes held by `consumer` across all of its reservations.
+    fn consumer_used(&mut self, consumer: usize) -> &mut usize {
+        self.consumers
+            .get_mut(&consumer)
+            .expect("reservation's consumer is not registered with the pool")
+    }
+
+    /// Charges `bytes` to the pool's total and to `consumer`'s share.
+    fn charge(&mut self, consumer: usize, bytes: usize) {
+        self.used = self.used.saturating_add(bytes);
+        let consumer_used = self.consumer_used(consumer);
+        *consumer_used = consumer_used.saturating_add(bytes);
+    }
+
+    /// Takes `charged` bytes off the pool's total and `consumer`'s share and puts `held` back.
+    fn settle(&mut self, consumer: usize, charged: usize, held: usize) {
+        let settle = |total: usize| {
+            total
+                .checked_sub(charged)
+                .and_then(|total| total.checked_add(held))
+                .expect("settled more bytes than the pool tracks")
+        };
+        self.used = settle(self.used);
+        let consumer_used = self.consumer_used(consumer);
+        *consumer_used = settle(*consumer_used);
+    }
 }
 
 impl Debug for CometFairMemoryPool {
@@ -76,7 +112,7 @@ impl Debug for CometFairMemoryPool {
         f.debug_struct("CometFairMemoryPool")
             .field("pool_size", &self.pool_size)
             .field("used", &state.used)
-            .field("num", &state.num)
+            .field("num", &state.consumers.len())
             .field("overcommit", &self.spark.overcommit())
             .finish()
     }
@@ -84,7 +120,7 @@ impl Debug for CometFairMemoryPool {
 
 impl CometFairMemoryPool {
     /// Creating the pool makes no JVM call: the anchor byte is taken by the first grow that
-    /// passes the fair limit, so a plan that never allocates natively never touches Spark's
+    /// passes the pool's limits, so a plan that never allocates natively never touches Spark's
     /// memory manager and never counts as an active task there.
     pub fn new(
         task_memory_manager_handle: Arc<Global<JObject<'static>>>,
@@ -103,7 +139,7 @@ impl CometFairMemoryPool {
             pool_size,
             state: Mutex::new(CometFairPoolState {
                 used: 0,
-                num: 0,
+                consumers: HashMap::new(),
                 anchor_held: false,
             }),
         }
@@ -146,26 +182,17 @@ impl CometFairMemoryPool {
         Ok(())
     }
 
-    /// Settles a release the JVM has accepted: the bytes come off the pool's total only now, so
-    /// a grow is never admitted on bytes Spark still holds.
-    fn settle_release(&self, bytes: usize) {
-        let mut state = self.state.lock();
-        state.used = state
-            .used
-            .checked_sub(bytes)
-            .expect("released more bytes than the pool tracks");
+    /// Settles a release the JVM has accepted: the bytes come off the pool's total and the
+    /// consumer's share only now, so a grow is never admitted on bytes Spark still holds.
+    fn settle_release(&self, consumer: usize, bytes: usize) {
+        self.state.lock().settle(consumer, bytes, 0);
     }
 
-    /// Settles a finished JVM acquire. `charged` bytes went on the pool's total before the call
-    /// and `held` is what Spark granted and still holds, which stays charged until it is handed
-    /// back. The difference is rolled back.
-    fn settle_acquire(&self, charged: usize, held: usize) {
-        let mut state = self.state.lock();
-        state.used = state
-            .used
-            .checked_sub(charged)
-            .and_then(|used| used.checked_add(held))
-            .expect("settled more bytes than the pool tracks");
+    /// Settles a finished JVM acquire. `charged` bytes went on the pool's total and the
+    /// consumer's share before the call and `held` is what Spark granted and still holds, which
+    /// stays charged until it is handed back. The difference is rolled back.
+    fn settle_acquire(&self, consumer: usize, charged: usize, held: usize) {
+        self.state.lock().settle(consumer, charged, held);
     }
 }
 
@@ -206,7 +233,7 @@ impl Display for CometFairMemoryPool {
             "CometFairMemoryPool(pool_size={}, used={}, num={}, overcommit={})",
             self.pool_size,
             state.used,
-            state.num,
+            state.consumers.len(),
             self.spark.overcommit()
         )
     }
@@ -217,35 +244,27 @@ impl MemoryPool for CometFairMemoryPool {
         "CometFairMemoryPool"
     }
 
-    fn register(&self, _: &MemoryConsumer) {
-        let mut state = self.state.lock();
-        state.num = state
-            .num
-            .checked_add(1)
-            .expect("unexpected amount of register happened");
+    fn register(&self, consumer: &MemoryConsumer) {
+        self.state.lock().consumers.insert(consumer.id(), 0);
     }
 
-    fn unregister(&self, _: &MemoryConsumer) {
-        let mut state = self.state.lock();
-        state.num = state
-            .num
-            .checked_sub(1)
-            .expect("unexpected amount of unregister happened");
+    fn unregister(&self, consumer: &MemoryConsumer) {
+        // DataFusion unregisters a consumer after its last reservation has dropped and released
+        // its bytes. If a release panicked, this runs while unwinding, so it must not panic too.
+        self.state.lock().consumers.remove(&consumer.id());
     }
 
-    /// Records memory that already exists, so it must not fail and ignores the fair limit.
-    /// What Spark declines is carried as overcommit, see [`SparkMemory`].
-    fn grow(&self, _reservation: &MemoryReservation, additional: usize) {
+    /// Records memory that already exists, so it must not fail and ignores the fair and pool
+    /// limits. What Spark declines is carried as overcommit, see [`SparkMemory`].
+    fn grow(&self, reservation: &MemoryReservation, additional: usize) {
         if additional == 0 {
             return;
         }
+        let consumer = reservation.consumer().id();
         // Charged before the JVM call, as in try_grow, so a try_grow racing this one is checked
-        // against a total that already includes these bytes. The JVM calls then run without
-        // the lock held.
-        {
-            let mut state = self.state.lock();
-            state.used = state.used.saturating_add(additional);
-        }
+        // against totals that already include these bytes. The JVM calls then run without the
+        // lock held.
+        self.state.lock().charge(consumer, additional);
         // The anchor is best effort here. The bytes are recorded whatever Spark answers, so a
         // failed anchor request only leaves this grow's own request as the one that can park.
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -257,21 +276,19 @@ impl MemoryPool for CometFairMemoryPool {
         if let Err(panic) = outcome {
             // The caller's reservation never records bytes its grow panicked on, so the charge
             // must not outlive the panic either.
-            self.settle_acquire(additional, 0);
+            self.settle_acquire(consumer, additional, 0);
             std::panic::resume_unwind(panic);
         }
     }
 
-    fn shrink(&self, _reservation: &MemoryReservation, subtractive: usize) {
+    fn shrink(&self, reservation: &MemoryReservation, subtractive: usize) {
         if subtractive > 0 {
+            let consumer = reservation.consumer().id();
             {
-                let state = self.state.lock();
-                // `used` is the pool's total across every consumer, so the bounds check runs
-                // against that total rather than against this reservation's size.
-                if state.used < subtractive {
+                let consumer_used = *self.state.lock().consumer_used(consumer);
+                if consumer_used < subtractive {
                     panic!(
-                        "Failed to release {subtractive} bytes where only {} bytes tracked by pool",
-                        state.used
+                        "Failed to release {subtractive} bytes where only {consumer_used} bytes tracked for the consumer"
                     )
                 }
             }
@@ -285,41 +302,49 @@ impl MemoryPool for CometFairMemoryPool {
             self.spark
                 .release(subtractive)
                 .unwrap_or_else(|_| panic!("Failed to release {subtractive} bytes"));
-            self.settle_release(subtractive);
+            self.settle_release(consumer, subtractive);
         }
     }
 
     fn try_grow(
         &self,
-        _reservation: &MemoryReservation,
+        reservation: &MemoryReservation,
         additional: usize,
     ) -> Result<(), DataFusionError> {
         if additional > 0 {
-            // Checking the fair limit and reserving the bytes is one atomic step, so concurrent
-            // grows can never jointly exceed pool_size / num. The blocking JVM calls then run
-            // without any lock held, and the reservation rolls back if the JVM does not back it.
+            let consumer = reservation.consumer().id();
+            // Checking both limits and charging the bytes is one atomic step, so concurrent grows
+            // can never jointly take a consumer past its share or the pool past pool_size. The
+            // blocking JVM calls then run without any lock held, and the charge rolls back if
+            // the JVM does not back it.
             {
                 let mut state = self.state.lock();
-                let num = state.num;
+                let num = state.consumers.len();
                 let limit = self
                     .pool_size
                     .checked_div(num)
                     .expect("overflow in checked_div");
-                // The pool tracks one total across every consumer and checks the fair limit
-                // against that total, not against this reservation's own size.
-                let used = state.used;
-                match used.checked_add(additional) {
-                    Some(total) if total <= limit => state.used = total,
-                    _ => {
-                        return resources_err!(
-                            "Failed to acquire {additional} bytes where {used} bytes already reserved ({} bytes overcommitted) and the fair limit is {limit} bytes, {num} registered",
-                            self.spark.overcommit()
-                        );
-                    }
+                let consumer_used = *state.consumer_used(consumer);
+                if limit < consumer_used.saturating_add(additional) {
+                    return resources_err!(
+                        "Failed to acquire {additional} bytes where this consumer already holds {consumer_used} bytes and the fair limit is {limit} bytes, {num} registered ({} bytes overcommitted)",
+                        self.spark.overcommit()
+                    );
                 }
+                // The shares alone do not bound the pool's total, because a consumer keeps what
+                // it reserved before another consumer registered.
+                let used = state.used;
+                if self.pool_size < used.saturating_add(additional) {
+                    return resources_err!(
+                        "Failed to acquire {additional} bytes where {used} bytes already reserved ({} bytes overcommitted) and the pool limit is {} bytes",
+                        self.spark.overcommit(),
+                        self.pool_size
+                    );
+                }
+                state.charge(consumer, additional);
             }
 
-            // The anchor comes after the local limit check, so a grow the pool rejects itself
+            // The anchor comes after the local limit checks, so a grow the pool rejects itself
             // never makes a JVM call, and before the real request, so the byte is held before
             // the balance can reach zero. The JVM call can panic inside its JNI frame; the
             // optimistic reservation must not outlive either call, or the leaked bytes poison
@@ -329,11 +354,11 @@ impl MemoryPool for CometFairMemoryPool {
             })) {
                 Ok(Ok(())) => {}
                 Ok(Err(e)) => {
-                    self.settle_acquire(additional, 0);
+                    self.settle_acquire(consumer, additional, 0);
                     return Err(e.into());
                 }
                 Err(panic) => {
-                    self.settle_acquire(additional, 0);
+                    self.settle_acquire(consumer, additional, 0);
                     std::panic::resume_unwind(panic);
                 }
             }
@@ -346,11 +371,11 @@ impl MemoryPool for CometFairMemoryPool {
                 Ok(Ok(Ok(()))) => return Ok(()),
                 Ok(Ok(Err(refusal))) => refusal,
                 Ok(Err(e)) => {
-                    self.settle_acquire(additional, 0);
+                    self.settle_acquire(consumer, additional, 0);
                     return Err(e.into());
                 }
                 Err(panic) => {
-                    self.settle_acquire(additional, 0);
+                    self.settle_acquire(consumer, additional, 0);
                     std::panic::resume_unwind(panic);
                 }
             };
@@ -363,12 +388,12 @@ impl MemoryPool for CometFairMemoryPool {
             // grant error below so a spillable operator spills. A panic in that release leaves
             // the same state as an error.
             let granted = refusal.granted;
-            self.settle_acquire(additional, granted);
+            self.settle_acquire(consumer, additional, granted);
             if granted > 0 {
                 if let Err(e) = self.spark.manager().release(granted) {
                     warn!("Failed to return a short grant of {granted} bytes: {e:?}");
                 } else {
-                    self.settle_release(granted);
+                    self.settle_release(consumer, granted);
                 }
             }
 
@@ -1110,10 +1135,13 @@ mod tests {
                         if (i + t) % 41 == 0 {
                             res.free();
                         }
+                        // Each consumer has one reservation, so its size is the consumer's
+                        // share of the pool.
                         assert!(
-                            pool.reserved() <= POOL_SIZE / THREADS,
-                            "pool exceeded its fair limit"
+                            res.size() <= POOL_SIZE / THREADS,
+                            "consumer exceeded its fair limit"
                         );
+                        assert!(pool.reserved() <= POOL_SIZE, "pool exceeded its size");
                     }
                     // Keep all consumers registered until every thread stops growing, so the
                     // fair-limit assertion above stays valid for the whole run.
@@ -1572,16 +1600,18 @@ mod tests {
     }
 
     /// A shrink hands its bytes back to Spark before the pool stops counting them. While that
-    /// release is still on its way, a grow that only fits if the shrunk bytes were free is
-    /// refused at the fair limit without a JVM call, instead of reaching Spark ahead of the
-    /// release and coming back with a short grant.
+    /// release is still on its way, a grow of the same consumer that only fits if the shrunk
+    /// bytes were free is refused at the fair limit without a JVM call, instead of reaching
+    /// Spark ahead of the release and coming back with a short grant.
     #[test]
     fn grow_racing_a_shrink_is_not_admitted_on_bytes_the_jvm_still_holds() {
         let stub = Arc::new(StubTaskMemory::new(100));
         // Two consumers: a 100 byte fair limit against a task whose Spark share is 100 bytes.
         let pool = pool_with(&stub, 200);
         let holder = MemoryConsumer::new("holder").register(&pool);
-        let grower = MemoryConsumer::new("grower").register(&pool);
+        // A sibling reservation draws on the holder's share.
+        let grower = holder.new_empty();
+        let other = MemoryConsumer::new("other").register(&pool);
         holder.try_grow(99).unwrap();
         assert_eq!(stub.outstanding(), 100, "the task sits at its Spark share");
 
@@ -1626,13 +1656,14 @@ mod tests {
         grower.free();
         drop(holder);
         drop(grower);
+        drop(other);
         drop(pool);
         assert_eq!(stub.outstanding(), 0);
     }
 
     /// A short grant is rolled back by handing the granted bytes to Spark. Until that
-    /// release lands, the pool keeps charging them, so a grow on another thread cannot be
-    /// admitted on bytes Spark still holds for this task.
+    /// release lands, the pool keeps charging them, so a grow of the same consumer on another
+    /// thread cannot be admitted on bytes Spark still holds for this task.
     #[test]
     fn short_grant_rollback_keeps_the_bytes_charged_until_the_jvm_has_them_back() {
         // The first acquire is the anchor; the second, the 100 byte request, is granted 50.
@@ -1640,7 +1671,9 @@ mod tests {
         // Two consumers: a 100 byte fair limit.
         let pool = pool_with(&stub, 200);
         let first = MemoryConsumer::new("first").register(&pool);
-        let second = MemoryConsumer::new("second").register(&pool);
+        // A sibling reservation draws on the first consumer's share.
+        let second = first.new_empty();
+        let other = MemoryConsumer::new("other").register(&pool);
 
         stub.release_gate.arm();
         let first_thread = thread::spawn(move || {
@@ -1684,25 +1717,25 @@ mod tests {
         assert_eq!(pool.reserved(), 60);
         second.free();
         drop(second);
+        drop(other);
         drop(pool);
         assert_eq!(stub.outstanding(), 0);
     }
 
-    /// A grow is charged to the pool when it passes the fair limit, before Spark answers it.
-    /// While it is in flight, another grow that would push the total past the limit is
-    /// refused, which is what keeps two grows from jointly exceeding the limit. The charge
-    /// is rolled back if Spark does not back it.
+    /// A grow is charged to the pool when it passes the limits, before Spark answers it. While
+    /// it is in flight, another consumer's grow that would push the total past the pool size is
+    /// refused, which is what keeps two grows from jointly exceeding the pool. The charge is
+    /// rolled back if Spark does not back it.
     #[test]
-    fn a_grow_in_flight_counts_against_the_fair_limit_until_it_settles() {
+    fn a_grow_in_flight_counts_against_the_pool_limit_until_it_settles() {
         let stub = Arc::new(StubTaskMemory::new(GIB));
-        // Two consumers: a 100 byte fair limit.
-        let pool = pool_with(&stub, 200);
+        let pool = pool_with(&stub, 100);
         let grower = MemoryConsumer::new("grower").register(&pool);
-        let other = MemoryConsumer::new("other").register(&pool);
         // Hold the anchor first so the gate below catches the real request.
-        other.try_grow(1).unwrap();
-        other.free();
+        grower.try_grow(1).unwrap();
+        grower.free();
 
+        // Alone, the grower's share is the whole pool.
         stub.acquire_gate.arm();
         let grower_thread = thread::spawn(move || {
             grower.try_grow(60).unwrap();
@@ -1710,6 +1743,8 @@ mod tests {
         });
         stub.acquire_gate.wait_entered("grower acquire");
 
+        // A second consumer halves the shares. The 60 bytes in flight still count for the pool.
+        let other = MemoryConsumer::new("other").register(&pool);
         let reserved_during = pool.reserved();
         let acquires_before = stub.acquires.load(SeqCst);
         let result = other.try_grow(50);
@@ -1720,8 +1755,8 @@ mod tests {
         let grower = grower_thread.join().unwrap();
 
         assert_eq!(reserved_during, 60, "the grow in flight is already charged");
-        let err = result.expect_err("60 in flight plus 50 exceeds the 100 byte limit");
-        assert!(err.to_string().contains("fair limit"), "{err}");
+        let err = result.expect_err("60 in flight plus 50 exceeds the 100 byte pool");
+        assert!(err.to_string().contains("pool limit"), "{err}");
         assert_eq!(
             acquires_during, acquires_before,
             "the refused grow must not reach Spark"
@@ -1748,7 +1783,9 @@ mod tests {
         // Two consumers: a 100 byte fair limit.
         let pool = pool_with(&stub, 200);
         let first = MemoryConsumer::new("first").register(&pool);
-        let second = MemoryConsumer::new("second").register(&pool);
+        // A sibling reservation draws on the first consumer's share.
+        let second = first.new_empty();
+        let other = MemoryConsumer::new("other").register(&pool);
         stub.fail_release.store(true, SeqCst);
 
         let err = first.try_grow(100).unwrap_err();
@@ -1768,6 +1805,7 @@ mod tests {
         stub.fail_release.store(false, SeqCst);
         drop(first);
         drop(second);
+        drop(other);
         drop(pool);
         assert_eq!(
             stub.outstanding(),
@@ -1839,5 +1877,109 @@ mod tests {
         drop(grower);
         drop(pool);
         assert_eq!(stub.outstanding(), 0);
+    }
+
+    #[test]
+    fn each_consumer_is_limited_to_its_own_share() {
+        // Spark grants everything, so only the pool's own checks refuse.
+        let fake = FakeSpark::with(usize::MAX);
+        let pool: Arc<dyn MemoryPool> =
+            Arc::new(CometFairMemoryPool::with_spark(fake.memory(), 100));
+        let first = MemoryConsumer::new("first").register(&pool);
+        let second = MemoryConsumer::new("second").register(&pool);
+
+        // Each consumer's share is 50 bytes, whatever the other one holds.
+        first.try_grow(40).unwrap();
+        second.try_grow(20).unwrap();
+        first.try_grow(10).unwrap();
+        assert!(first.try_grow(1).is_err());
+        second.try_grow(30).unwrap();
+        assert!(second.try_grow(1).is_err());
+        assert_eq!(pool.reserved(), 100);
+        assert_eq!(fake.held(), 100 + ANCHOR_BYTES);
+    }
+
+    #[test]
+    fn a_consumer_registered_late_is_limited_by_the_pool_total() {
+        let fake = FakeSpark::with(usize::MAX);
+        let pool: Arc<dyn MemoryPool> =
+            Arc::new(CometFairMemoryPool::with_spark(fake.memory(), 90));
+        let first = MemoryConsumer::new("first").register(&pool);
+        // Alone, the first consumer's share is the whole pool.
+        first.try_grow(60).unwrap();
+
+        // A second consumer halves both shares, but the first keeps the 60 bytes it holds.
+        let second = MemoryConsumer::new("second").register(&pool);
+        assert!(first.try_grow(1).is_err());
+        second.try_grow(30).unwrap();
+        // The second consumer is 15 bytes under its share, but the pool is full.
+        assert!(second.try_grow(1).is_err());
+        assert_eq!(pool.reserved(), 90);
+
+        // Once the first consumer releases memory, the second can use the rest of its share.
+        first.shrink(30);
+        second.try_grow(15).unwrap();
+        assert!(second.try_grow(1).is_err());
+
+        // Unregistering the second consumer gives the first the whole pool again.
+        drop(second);
+        first.try_grow(60).unwrap();
+        assert_eq!(pool.reserved(), 90);
+        assert_eq!(fake.held(), 90 + ANCHOR_BYTES);
+    }
+
+    #[test]
+    fn sibling_reservations_draw_on_one_share() {
+        let fake = FakeSpark::with(usize::MAX);
+        let pool: Arc<dyn MemoryPool> =
+            Arc::new(CometFairMemoryPool::with_spark(fake.memory(), 100));
+        let first = MemoryConsumer::new("first").register(&pool);
+        // Like the reservation that a sort's streaming merge creates for each batch it reads.
+        let sibling = first.new_empty();
+        let second = MemoryConsumer::new("second").register(&pool);
+
+        // Both of the first consumer's reservations draw on its one 50-byte share.
+        first.try_grow(40).unwrap();
+        assert!(sibling.try_grow(40).is_err());
+        sibling.try_grow(10).unwrap();
+        assert!(first.try_grow(1).is_err());
+        assert!(sibling.try_grow(1).is_err());
+
+        // So the second consumer can still reserve its whole share.
+        second.try_grow(50).unwrap();
+        assert_eq!(pool.reserved(), 100);
+
+        // Dropping a reservation returns its bytes to the consumer's share. The consumer stays
+        // registered while its other reservation lives.
+        drop(first);
+        sibling.try_grow(40).unwrap();
+        assert!(sibling.try_grow(1).is_err());
+        assert_eq!(pool.reserved(), 100);
+        assert_eq!(fake.held(), 100 + ANCHOR_BYTES);
+    }
+
+    #[test]
+    fn split_and_take_keep_the_bytes_on_their_consumer() {
+        let fake = FakeSpark::with(usize::MAX);
+        let pool: Arc<dyn MemoryPool> =
+            Arc::new(CometFairMemoryPool::with_spark(fake.memory(), 100));
+        let mut first = MemoryConsumer::new("first").register(&pool);
+        let _second = MemoryConsumer::new("second").register(&pool);
+
+        first.try_grow(50).unwrap();
+        let split = first.split(20);
+        let taken = first.take();
+        // The consumer's 50 bytes now sit in split and taken, and the emptied reservation gets no
+        // share of its own.
+        for reservation in [&first, &split, &taken] {
+            assert!(reservation.try_grow(1).is_err());
+        }
+
+        // Shrinking one reservation makes room in the share for another.
+        split.shrink(10);
+        first.try_grow(10).unwrap();
+        assert!(taken.try_grow(1).is_err());
+        assert_eq!(pool.reserved(), 50);
+        assert_eq!(fake.held(), 50 + ANCHOR_BYTES);
     }
 }

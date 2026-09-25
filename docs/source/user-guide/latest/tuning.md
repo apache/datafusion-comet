@@ -127,15 +127,21 @@ The valid pool types are:
 - `fair_unified` (default when `spark.memory.offHeap.enabled=true` is set)
 - `greedy_unified`
 
-Both pool types are shared across all native execution contexts within the same Spark task. When
-Comet executes a shuffle, it runs two native execution contexts concurrently (e.g. one for
-pre-shuffle operators and one for the shuffle writer). The shared pool ensures that the combined
-memory usage stays within the per-task limit.
+Both pool types are shared by all the native plans in the same Spark task. A task can run more than
+one native plan at a time, for example the native operators on either side of a union or a
+coalesce. The shared pool ensures that their combined memory usage stays within the per-task limit.
 
 The `fair_unified` pool prevents operators from using more than an even fraction of the available memory
-(i.e. `pool_size / num_reservations`). This pool works best when you know beforehand
+(i.e. `pool_size / num_consumers`, where `num_consumers` counts the memory consumers registered by all of the task's
+native plans). This pool works best when you know beforehand
 the query has multiple operators that will likely all need to spill. Sometimes it will cause spills even
 when there is sufficient memory in order to leave enough memory for other operators.
+
+Comet 0.15.0 through 1.0.0 capped the memory of all of a task's operators combined at one operator's share, because of a
+bug ([#5961](https://github.com/apache/datafusion-comet/issues/5961)). Tasks with several operators can now reserve more
+memory before they spill than they could in those releases. The difference is largest on executors that run few tasks
+at once, where Spark's own limit on each task is loosest. If you sized executor memory against one of those releases,
+check that executors still have enough headroom; see [Sizing the Overhead from the Memory Usage Log].
 
 The `greedy_unified` pool type implements a greedy first-come first-serve limit. This pool works well for queries that do not
 need to spill or have a single spillable operator.

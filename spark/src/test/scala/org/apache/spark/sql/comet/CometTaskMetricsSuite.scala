@@ -292,7 +292,7 @@ class CometTaskMetricsSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       memoryManager.limit(10 * 1024 * 1024)
       val taskMemoryManager = new TaskMemoryManager(memoryManager, 0)
       val allocator =
-        CometShuffleMemoryAllocator.getInstance(conf, taskMemoryManager, pageSize)
+        CometShuffleMemoryAllocator.getInstance(taskMemoryManager, pageSize)
       val taskContext = TaskContext.empty()
       val writeMetrics = taskContext.taskMetrics.shuffleWriteMetrics
       val sorter = new CometShuffleExternalSorter(

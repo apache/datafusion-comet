@@ -195,16 +195,16 @@ crates before, and the "Key Classes" tables in the docs are exactly what goes st
 
 ## 7. Tests
 
-| Suite                                                               | Covers                                           |
-| ------------------------------------------------------------------- | ------------------------------------------------ |
-| `org.apache.comet.exec.CometNativeShuffleSuite`                     | Native shuffle end to end                        |
-| `org.apache.comet.exec.CometColumnarShuffleSuite`                   | JVM columnar shuffle end to end                  |
-| `CometShuffle4_0Suite`                                              | Spark 4.x specific behavior                      |
-| `CometDiskBlockWriterSuite`                                         | JVM spill and page handling                      |
-| `NativeBatchDecoderIteratorLifecycleChecks`, `...ConcurrencyChecks` | Reader lifetime and concurrency                  |
-| `CometNativeShuffleInputRDDSuite`                                   | The scheduling-anchor RDD                        |
-| `CometCeleborn*Suite`                                               | The Celeborn path, which is easy to forget       |
-| `CometShuffleBenchmark`                                             | Throughput, needs `-Dspark.comet.memoryOverhead` |
+| Suite                                                               | Covers                                     |
+| ------------------------------------------------------------------- | ------------------------------------------ |
+| `org.apache.comet.exec.CometNativeShuffleSuite`                     | Native shuffle end to end                  |
+| `org.apache.comet.exec.CometColumnarShuffleSuite`                   | JVM columnar shuffle end to end            |
+| `CometShuffle4_0Suite`                                              | Spark 4.x specific behavior                |
+| `CometDiskBlockWriterSuite`                                         | JVM spill and page handling                |
+| `NativeBatchDecoderIteratorLifecycleChecks`, `...ConcurrencyChecks` | Reader lifetime and concurrency            |
+| `CometNativeShuffleInputRDDSuite`                                   | The scheduling-anchor RDD                  |
+| `CometCeleborn*Suite`                                               | The Celeborn path, which is easy to forget |
+| `CometShuffleBenchmark`                                             | Throughput                                 |
 
 Ask specifically:
 

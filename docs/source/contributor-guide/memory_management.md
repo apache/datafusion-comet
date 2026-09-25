@@ -26,9 +26,12 @@ anyone debugging an out-of-memory report. For user-facing tuning advice, see the
 
 This page covers off-heap mode (`spark.memory.offHeap.enabled=true`) only. Comet also has an
 on-heap mode, but it exists so that the Spark SQL test suite can run against Comet without changing
-Spark's memory configuration. It must not be used in production, and it is not described here. The
-pool types that only on-heap mode exposes belong to the `CATEGORY_TESTING` config group for the
-same reason.
+Spark's memory configuration. Comet performs no memory accounting in it: the native side gets
+DataFusion's `UnboundedMemoryPool` and the JVM shuffle allocator
+(`CometUnboundedShuffleMemoryAllocator`) hands out `Unsafe` pages against no budget. Native memory
+is not on the JVM heap, so there is no Spark pool it could honestly be charged to, and the
+fixed-size pool that used to stand in for one bounded nothing the container cares about. On-heap
+mode must not be used in production, and it is not described further here.
 
 ## Overview
 
@@ -163,6 +166,16 @@ Spark's monitor and would wait for the consumer's, while whatever held the consu
 Spark's. For the same reason, nothing reachable from a `spill` callback may allocate memory that
 routes back through the same consumer.
 
+**A short grant must not take the `TaskMemoryManager` monitor again.** `acquireExecutionMemory`
+holds that monitor for the whole call, including while `ExecutionMemoryPool.acquireMemory` waits in
+`lock.wait()`, which gives up the memory manager's monitor but not the task's. When
+`CometTaskMemoryManager.acquireMemory` gets less than it asked for, its thread holds those bytes
+until native code hands them back, and another acquire of the same task can be waiting for exactly
+those bytes. If the first thread then took the task's monitor, for example through
+`TaskMemoryManager.showMemoryUsage`, neither thread could go on until an unrelated task freed
+memory. So a short grant is logged with the figures already in hand and
+`getMemoryConsumptionForThisTask`, which takes only the memory manager's monitor.
+
 **`scala.util.control.NonFatal` does not contain an acquisition.** `acquireExecutionMemory` fails in
 three ways and `NonFatal` catches only the first. It runs other consumers' `spill`, where
 `TaskMemoryManager` turns an interrupted spill into a `RuntimeException` and an `IOException` into a
@@ -212,9 +225,6 @@ back a slice of the off-heap pool for the memory Comet does not reserve, but it 
 
 The only room Spark leaves for memory outside the pool is `spark.executor.memoryOverhead`.
 
-A second value, `memory_limit_per_task`, is computed and passed alongside it, but only the on-heap
-pool types read it.
-
 ### Resolving the pool type
 
 `parse_memory_pool_config` (`native/core/src/execution/memory_pools/config.rs`) turns the pool-type
@@ -225,7 +235,8 @@ string and the limit into a `MemoryPoolConfig`. Two pool types are valid in off-
 | `fair_unified` (default) | `memory_limit`      | Delegates to Spark's `TaskMemoryManager`; task-shared |
 | `greedy_unified`         | n/a (pool size `0`) | Spark owns the limit entirely; task-shared            |
 
-Any other pool type is rejected with a configuration error.
+Any other pool type is rejected with a configuration error. In on-heap mode the pool-type string is
+ignored and the pool is always `UnboundedMemoryPool`.
 
 ## The pool stack
 
@@ -265,26 +276,39 @@ JNI, which goes through Spark's ordinary `TaskMemoryManager`. That means:
   is refused unless Spark can cover both, so operators spill until the debt is repaid. Both pools'
   `Display` output and their `try_grow` errors report the current overcommit.
 
-`CometFairMemoryPool` additionally applies a local check before it asks Spark. It divides
-`pool_size` by the number of consumers currently registered with the pool and rejects the request if
-the pool's _total_ reserved bytes plus the request would exceed that quotient. Two details matter
-for tuning:
+`CometFairMemoryPool` additionally applies two local checks before it asks Spark, and refuses the
+request without calling Spark if either fails:
 
-- The comparison is against the shared total (`state.used`), not against the requesting consumer's
-  own reservation. With an 8 GiB pool and two registered consumers, once one of them holds 3 GiB a
-  2 GiB request from the other is rejected, even though neither would exceed 4 GiB. In effect the
-  usable pool shrinks to `pool_size / num_consumers` in aggregate as soon as more than one consumer
-  is registered.
+- **The requesting consumer against its share.** The share is `pool_size` divided by the number of
+  consumers currently registered with the pool. What the consumer already holds plus the request
+  must not exceed it. That counts all of the consumer's reservations, including the sibling
+  reservations that `new_empty()`, `split()` and `take()` create, so an operator that holds several
+  reservations still gets one share. A sort's streaming merge, for example, creates one for each
+  batch it reads. The pool keeps a running total for each consumer, because `reservation.size()`
+  covers only one reservation. With an 8 GiB pool and two registered consumers, each share is
+  4 GiB, so once one consumer holds 3 GiB the other can still reserve up to 4 GiB.
+- **The pool's total against `pool_size`.** The shares alone do not bound the total, because a
+  consumer keeps what it reserved while fewer consumers were registered. `pool_size` is computed
+  for the executor but applied to each task's pool, so Spark's own limit on the task is at least as
+  tight unless the deprecated `spark.comet.exec.memoryPool.fraction` is below `1.0`.
+
+Two details matter for tuning:
+
 - The pool is task-shared (see below), so `num_consumers` counts every registered consumer across
-  every native plan in the task, not just the plan making the request.
+  every native plan in the task, not just the plan making the request. Registering a consumer
+  lowers every other consumer's share, but does not take back memory they already hold.
+- Every registered consumer gets a share, whether or not it can spill. DataFusion's
+  `FairSpillPool` divides the pool among spillable consumers only.
+  [Issue #5465](https://github.com/apache/datafusion-comet/issues/5465) tracks doing the same here.
 
-This is why `fair_unified` spills earlier than `greedy_unified`. It is not a per-consumer quota, and
-reading it as one overstates the memory a multi-operator task can use.
+This is why `fair_unified` can spill earlier than `greedy_unified`: a consumer at its share is
+refused even when the rest of the pool is free, which keeps that memory for the task's other
+consumers.
 
 **The fair pool holds an anchor byte for its whole life.** Spark drops a task's `memoryForTask`
 entry when the task's balance reaches zero, and an acquire parked inside
 `ExecutionMemoryPool.acquireMemory` reads that entry when it wakes. So the first `try_grow` that
-passes the fair limit, or the first `grow`, takes one extra byte from Spark before its own request,
+passes both checks, or the first `grow`, takes one extra byte from Spark before its own request,
 and the pool keeps that byte until it drops. While it is held, no release, the pool's own or a
 sibling consumer's such as the shuffle allocator, can zero the balance under a parked acquire, and
 the task stays in Spark's active set, so `NativeMemoryConsumer.getUsed` reports at least 1. Creating
@@ -302,38 +326,49 @@ shared by every plan of the task and is charged to the manager of the plan that 
 plan can close while a sibling still holds the pool and with it the anchor. Without the separate
 count it would log the anchor as a leak of one byte, and a real leak would read one byte high.
 
-**The pool mutex is never held across a JNI call.** The fair limit is checked and the bytes are
-charged under the lock. The lock is dropped before `acquireMemory` or `releaseMemory` runs, and the
-bookkeeping is settled after the call returns. This holds for `grow` as well as `try_grow`: `grow`
-skips the fair limit check but charges its bytes under the lock the same way, and its JVM call runs
-without it. The reason is the parked acquire above: it waits inside Spark for another thread of the
-same task to release memory. If the release had to take a lock that the parked acquire was holding,
-it could never land and the task would hang.
+**The pool mutex is never held across a JNI call.** Both checks run, and the bytes are charged to
+the pool's total and to the consumer's running total, under the lock. The lock is dropped before
+`acquireMemory` or `releaseMemory` runs, and the bookkeeping is settled after the call returns. This
+holds for `grow` as well as `try_grow`: `grow` skips both checks but charges its bytes under the
+lock the same way, and its JVM call runs without it. The reason is the parked acquire above: it
+waits inside Spark for another thread of the same task to release memory. If the release had to take
+a lock that the parked acquire was holding, it could never land and the task would hang.
 
 Settling after the call leaves two windows, both on the conservative side:
 
-- A `try_grow` is charged to the pool's total when it passes the fair limit, and a `grow` when it
-  is called, before Spark answers. A second `try_grow` in that window is checked against a total
-  that includes the first, so it can be refused where waiting for the first to settle would have
-  let it through. This charge is what keeps two concurrent grows from jointly exceeding the limit.
+- A `try_grow` is charged to the pool's total and its consumer's when it passes both checks, and a
+  `grow` when it is called, before Spark answers. A second `try_grow` in that window is checked
+  against totals that include the first, so it can be refused where waiting for the first to settle
+  would have let it through. This charge is what keeps two concurrent grows from jointly taking a
+  consumer past its share or the pool past `pool_size`.
 - A shrink, and the rollback of a short grant, hand the bytes to Spark first and take them off the
-  pool's total only once Spark has them. A grow in that window is checked against a total that
-  still includes those bytes, so a grow that only fits once they are free is refused at the fair
-  limit instead of being sent to Spark ahead of the release. A grow that fits without them still
-  goes to Spark and can come back with a short grant if the release has not landed and the task is
-  at its Spark share. If the rollback release itself fails, those bytes stay charged for the pool's
-  life, because Spark holds them until the task ends.
+  pool's total and the consumer's only once Spark has them. A grow in that window is checked against
+  totals that still include those bytes, so a grow that only fits once they are free is refused by
+  the share or pool check instead of being sent to Spark ahead of the release. A grow that fits
+  without them still goes to Spark and can come back with a short grant if the release has not
+  landed and the task is at its Spark share. If the rollback release itself fails, those bytes stay
+  charged for the pool's life, because Spark holds them until the task ends.
 
-Neither window admits a `try_grow` the fair limit would have refused. A refusal is the ordinary
+Neither window admits a `try_grow` that the two checks would have refused. A refusal is the ordinary
 `ResourcesExhausted` error, which a spillable operator answers by spilling. `grow` is never refused:
-it is not subject to the fair limit, and whatever Spark declines of it becomes overcommit, as
+it is not subject to either check, and whatever Spark declines of it becomes overcommit, as
 described above. The anchor byte is neither part of the pool's total nor of the overcommit.
 
 ### Task-shared pools and their lifetime
 
-A single Spark task can run more than one native plan concurrently: a shuffle runs the pre-shuffle
-operators and the shuffle writer as separate native execution contexts. If each got its own pool,
-the per-task limit would be enforced once per plan rather than once per task.
+A single Spark task can run more than one native plan at a time. A native shuffle is not one of
+these cases, because its writer is planned together with the native operators that feed it. These
+operators do split a task's native work into separate plans:
+
+- `CometUnionExec` and `CometCoalesceExec` read their children through the JVM, so the native plan
+  above them and the native plans below them are separate.
+- `CometCollectLimitExec` and `CometTakeOrderedAndProjectExec` apply their limit in a native plan
+  of their own, over the output of the plan below them.
+- A native Parquet or Iceberg write runs its writer as a native plan of its own, over the output of
+  the plan below it.
+
+If each plan got its own pool, the per-task limit would be enforced once per plan rather than once
+per task.
 
 `acquire_task_shared_pool` (`task_shared.rs`) keeps a process-wide
 `HashMap<task_attempt_id, Weak<TaskSharedMemoryPool>>`. Plans in the same task upgrade the existing

@@ -20,11 +20,13 @@
 package org.apache.spark
 
 import java.util.Properties
+import java.util.concurrent.{CountDownLatch, TimeUnit}
+import java.util.concurrent.atomic.AtomicLong
 
 import org.scalatest.funsuite.AnyFunSuite
 
 import org.apache.spark.executor.TaskMetrics
-import org.apache.spark.memory.{MemoryConsumer, TaskMemoryManager, TestMemoryManager}
+import org.apache.spark.memory.{MemoryConsumer, MemoryMode, TaskMemoryManager, TestMemoryManager, UnifiedMemoryManager}
 
 class CometTaskMemoryManagerSuite extends AnyFunSuite {
 
@@ -137,10 +139,99 @@ class CometTaskMemoryManagerSuite extends AnyFunSuite {
     }
   }
 
+  test("a short grant is handed back while another acquire of the task waits in Spark") {
+    // A 100 byte off-heap execution pool. Another task holds 82 bytes and a third holds 1.
+    val conf = new SparkConf()
+      .set("spark.memory.offHeap.enabled", "true")
+      .set("spark.memory.offHeap.size", "100")
+      .set("spark.memory.storageFraction", "0")
+    val memoryManager = new UnifiedMemoryManager(conf, 1000L, 500L, 1)
+    val otherTask = new OffHeapConsumer(new TaskMemoryManager(memoryManager, 1L))
+    val thirdTask = new OffHeapConsumer(new TaskMemoryManager(memoryManager, 2L))
+    assert(otherTask.acquireMemory(82L) == 82L)
+    assert(thirdTask.acquireMemory(1L) == 1L)
+
+    val shortGrant = new CountDownLatch(1)
+    val secondParked = new CountDownLatch(1)
+    val taskMemoryManager = new TaskMemoryManager(memoryManager, 0L) {
+      override def acquireExecutionMemory(required: Long, consumer: MemoryConsumer): Long = {
+        val got = super.acquireExecutionMemory(required, consumer)
+        // Out of Spark's monitor, the short grant waits until the second acquire has parked.
+        if (got < required && shortGrant.getCount > 0) {
+          shortGrant.countDown()
+          secondParked.await(TimeoutSeconds, TimeUnit.SECONDS)
+        }
+        got
+      }
+    }
+
+    withTaskContext(taskMemoryManager) { _ =>
+      val manager = new CometTaskMemoryManager(1L, 0L)
+      // The fair pool's anchor keeps this task in Spark's active set.
+      assert(manager.acquireAnchor(1L) == 1L)
+
+      // Three active tasks and 16 bytes free: a 30 byte request is short granted 16 bytes, which
+      // native code then hands back.
+      val firstGranted = new AtomicLong(-1L)
+      val first = new Thread(() => {
+        firstGranted.set(manager.acquireMemory(30L))
+        manager.releaseMemory(firstGranted.get)
+      })
+      val secondGranted = new AtomicLong(-1L)
+      val second = new Thread(() => secondGranted.set(manager.acquireMemory(10L)))
+      Seq(first, second).foreach(_.setDaemon(true))
+
+      try {
+        first.start()
+        assert(shortGrant.await(TimeoutSeconds, TimeUnit.SECONDS), "no short grant")
+        // The third task leaves. With two active tasks this task's minimum share is 25 bytes and
+        // 1 byte is free, so a 10 byte request waits inside Spark holding the task's monitor.
+        thirdTask.freeMemory(1L)
+        second.start()
+        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(TimeoutSeconds)
+        while (!waitingInSpark(second) && System.nanoTime() < deadline) Thread.sleep(10)
+        assert(waitingInSpark(second), s"the second acquire is ${second.getState}")
+        secondParked.countDown()
+
+        // Handing back the short grant is what lets the second acquire through.
+        second.join(TimeUnit.SECONDS.toMillis(TimeoutSeconds))
+        assert(
+          !second.isAlive,
+          s"the first acquire is ${first.getState} and the second is ${second.getState}")
+        assert(firstGranted.get == 16L)
+        assert(secondGranted.get == 10L)
+      } finally {
+        secondParked.countDown()
+        // Free the other task's memory so that neither thread outlives a failed test.
+        otherTask.freeMemory(otherTask.getUsed)
+        Seq(first, second).foreach(_.join(TimeUnit.SECONDS.toMillis(TimeoutSeconds)))
+      }
+      manager.releaseMemory(secondGranted.get)
+      manager.releaseAnchor(1L)
+      assert(taskMemoryManager.getMemoryConsumptionForThisTask == 0L)
+    }
+  }
+
+  private val TimeoutSeconds = 10L
+
+  private def waitingInSpark(thread: Thread): Boolean =
+    thread.getState == Thread.State.WAITING &&
+      thread.getStackTrace.exists(_.getClassName == "org.apache.spark.memory.ExecutionMemoryPool")
+
+  /** An off-heap consumer of another task, which never spills. */
+  private class OffHeapConsumer(taskMemoryManager: TaskMemoryManager)
+      extends MemoryConsumer(taskMemoryManager, 0L, MemoryMode.OFF_HEAP) {
+    override def spill(size: Long, trigger: MemoryConsumer): Long = 0L
+  }
+
   private def withTaskMemoryManager(f: TaskMemoryManager => Unit): Unit = {
     val memoryManager = new TestMemoryManager(new SparkConf())
     memoryManager.limit(1024)
-    val taskMemoryManager = new TaskMemoryManager(memoryManager, 0L)
+    withTaskContext(new TaskMemoryManager(memoryManager, 0L))(f)
+  }
+
+  private def withTaskContext(taskMemoryManager: TaskMemoryManager)(
+      f: TaskMemoryManager => Unit): Unit = {
     val taskContext = new TaskContextImpl(
       stageId = 0,
       stageAttemptNumber = 0,
