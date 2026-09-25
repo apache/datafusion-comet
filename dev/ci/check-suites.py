@@ -15,6 +15,7 @@
 # specific language governing permissions and limitations
 # under the License.
 
+import re
 import sys
 from pathlib import Path
 
@@ -58,3 +59,37 @@ if __name__ == "__main__":
                     print(f"Suite not found in workflow {workflow_filename}: {class_name}")
                     sys.exit(-1)
                 print(f"Found {class_name} in {workflow_filename}")
+
+    # Forward check: every suite named in a workflow must be declared in a source file.
+    # Filename-based discovery is not enough here, because several suites are declared
+    # inside a file named after a different class (e.g. CometShuffleSuite is declared in
+    # CometColumnarShuffleSuite.scala), and version-specific suites such as
+    # CometStringDecodeSuite live only in the spark-3.x sourceset.
+    declared = set()
+    suite_declaration = re.compile(
+        r"^\s*(?:(?:final|sealed|abstract|private|case)\s+)*(?:class|trait|object)\s+(\w*Suite)\b"
+    )
+    for path in Path(".").rglob("*.scala"):
+        if "target" in path.parts:
+            continue
+        class_name = file_to_class_name(path)
+        if class_name:
+            declared.add(class_name.rsplit(".", 1)[-1])
+        for line in path.read_text(encoding="utf-8", errors="ignore").splitlines():
+            match = suite_declaration.match(line)
+            if match:
+                declared.add(match.group(1))
+
+    listed_suite = re.compile(r"\borg\.apache\.[A-Za-z0-9_.]*Suite\b")
+    undeclared = []
+    for workflow_filename in [".github/workflows/pr_build_linux.yml", ".github/workflows/pr_build_macos.yml"]:
+        workflow = open(workflow_filename, encoding="utf-8").read()
+        for name in sorted(set(listed_suite.findall(workflow))):
+            if name.rsplit(".", 1)[-1] not in declared:
+                undeclared.append((workflow_filename, name))
+
+    if undeclared:
+        for workflow_filename, name in undeclared:
+            print(f"Workflow lists an undeclared suite {name} in {workflow_filename}")
+        sys.exit(-1)
+    print("All workflow-listed suites are declared")
