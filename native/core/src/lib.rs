@@ -54,6 +54,7 @@ use errors::{try_unwrap_or_throw, CometError, CometResult};
 
 pub mod alloc_accounting;
 pub mod cloud;
+pub mod comet_native_udf_bridge;
 pub mod execution;
 pub mod parquet;
 // this module is for non release only. Intended for debugging/profiling purposes
