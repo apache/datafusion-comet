@@ -565,7 +565,6 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
     off_heap_mode: jboolean,
     memory_pool_type: JString,
     memory_limit: jlong,
-    memory_limit_per_task: jlong,
     task_attempt_id: jlong,
     task_cpus: jlong,
     key_unwrapper_obj: JObject,
@@ -621,7 +620,6 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
                 off_heap_mode != JNI_FALSE,
                 memory_pool_type,
                 memory_limit,
-                memory_limit_per_task,
             )?;
             let memory_pool =
                 create_memory_pool(&memory_pool_config, task_memory_manager, task_attempt_id);
