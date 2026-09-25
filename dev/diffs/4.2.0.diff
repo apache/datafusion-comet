@@ -4307,10 +4307,10 @@ index e2c74533e7f..a12d55848ea 100644
      val tblTargetName = "tbl_target"
      val tblSourceQualified = s"default.$tblSourceName"
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/test/SharedSparkSession.scala b/sql/core/src/test/scala/org/apache/spark/sql/test/SharedSparkSession.scala
-index fb26d3311eb..b17fe1f293d 100644
+index fb26d3311eb..13dc8b89a91 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/test/SharedSparkSession.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/test/SharedSparkSession.scala
-@@ -102,6 +102,21 @@ trait SharedSparkSessionBase
+@@ -102,6 +102,20 @@ trait SharedSparkSessionBase
        // this rule may potentially block testing of other optimization rules such as
        // ConstantPropagation etc.
        .set(SQLConf.OPTIMIZER_EXCLUDED_RULES.key, ConvertToLocalRelation.ruleName)
@@ -4326,7 +4326,6 @@ index fb26d3311eb..b17fe1f293d 100644
 +        .set("spark.shuffle.manager",
 +          "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
 +        .set("spark.comet.shuffle.enabled", "true")
-+        .set("spark.comet.memoryOverhead", "2g")
 +
 +    }
      conf.set(
