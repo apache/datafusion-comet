@@ -76,12 +76,23 @@
 //!    described in points 1 and 2. A provider class is validated whenever it is set,
 //!    provided OAuth is the mechanism read (with or without an explicit auth type): MSI
 //!    stands alone, Workload Identity needs the client id and tenant, client credentials
-//!    need the secret, and any other class is an error. Keys that select a mechanism with
-//!    no native counterpart (a SAS token provider class, an account key provider class, a
-//!    refresh token, or a user name or password) are errors too. In every one of these
-//!    cases the environment is not consulted either, so the scan can neither borrow an
-//!    ambient identity nor fall back to managed identity in place of the one Hadoop was
-//!    told to use.
+//!    need the secret, and any other class is an error. Once one of those three classes is
+//!    set, only the OAuth keys that class reads in Hadoop's `getTokenProvider` are
+//!    translated or checked for blank values and unsupported mechanisms, so the builder
+//!    sees only what Hadoop would read. Client credentials read the client id, secret and
+//!    endpoint (the tenant comes from the endpoint alone), MSI the MSI endpoint, tenant,
+//!    client id and authority, and Workload Identity the authority, tenant, client id and
+//!    token file. Settings a shared configuration keeps for another provider (a user
+//!    password, a refresh token, an MSI tenant or endpoint, a client secret) are ignored.
+//!    Keys that select a mechanism with no native counterpart (a SAS token provider class,
+//!    an account key provider class other than Hadoop's default
+//!    `org.apache.hadoop.fs.azurebfs.services.SimpleKeyProvider`, a refresh token, or a
+//!    user name or password) are errors too. An explicit `SimpleKeyProvider`, spelled
+//!    exactly with no surrounding whitespace as Hadoop loads it, reads the account key
+//!    exactly as when the setting is left out, so it builds as `SharedKey` and is an error
+//!    without the key. In every one of these cases the environment is
+//!    not consulted either, so the scan can neither borrow an ambient identity nor fall
+//!    back to managed identity in place of the one Hadoop was told to use.
 //!
 //! Within the Hadoop keys, the account-scoped variant
 //! (`fs.azure.account.X.<account>.dfs.core.windows.net`) wins over the global one
@@ -174,11 +185,39 @@ const HADOOP_CREDENTIAL_MAPPINGS: &[(&str, AzureConfigKey, AuthMechanism)] = &[
         AuthMechanism::OAuth,
     ),
 ];
+/// The OAuth keys each supported provider class reads in Hadoop's
+/// `AbfsConfiguration.getTokenProvider`, limited to the keys this module knows. Once a
+/// provider class resolves, every other OAuth key is inactive: it is neither translated
+/// nor validated.
+const HADOOP_CLIENT_CREDS_PROVIDER_KEYS: &[&str] = &[
+    HADOOP_OAUTH_CLIENT_ENDPOINT,
+    HADOOP_OAUTH_CLIENT_ID,
+    HADOOP_OAUTH_CLIENT_SECRET,
+];
+const HADOOP_MSI_PROVIDER_KEYS: &[&str] = &[
+    HADOOP_MSI_ENDPOINT,
+    HADOOP_MSI_TENANT,
+    HADOOP_OAUTH_CLIENT_ID,
+    HADOOP_MSI_AUTHORITY,
+];
+const HADOOP_WI_PROVIDER_KEYS: &[&str] = &[
+    HADOOP_MSI_AUTHORITY,
+    HADOOP_MSI_TENANT,
+    HADOOP_OAUTH_CLIENT_ID,
+    HADOOP_WI_TOKEN_FILE,
+];
+const HADOOP_KEY_PROVIDER: &str = "fs.azure.account.keyprovider";
+/// The key provider Hadoop's `AbfsConfiguration.getStorageAccountKey` uses when
+/// `fs.azure.account.keyprovider` is unset. It reads `fs.azure.account.key`, so naming it
+/// explicitly is the same as leaving the setting out. Hadoop loads the class by the exact
+/// configured value, so no shorter or padded form is accepted.
+const HADOOP_SIMPLE_KEY_PROVIDER_CLASS: &str =
+    "org.apache.hadoop.fs.azurebfs.services.SimpleKeyProvider";
 /// Hadoop keys that each select an auth mechanism with no native counterpart, and the
 /// mechanism each belongs to.
 const HADOOP_UNSUPPORTED_MECHANISM_KEYS: &[(&str, AuthMechanism)] = &[
     ("fs.azure.sas.token.provider.type", AuthMechanism::Sas),
-    ("fs.azure.account.keyprovider", AuthMechanism::SharedKey),
+    (HADOOP_KEY_PROVIDER, AuthMechanism::SharedKey),
     (
         "fs.azure.account.oauth2.refresh.token",
         AuthMechanism::OAuth,
@@ -258,6 +297,65 @@ fn active_provider_class(
     account_scoped_entry(configs, HADOOP_OAUTH_PROVIDER_TYPE, account)
 }
 
+/// The OAuth keys Hadoop reads for the account, resolved once per store from the active
+/// provider class and passed to every step that translates or validates an OAuth key.
+/// It holds the keys the class reads when it is one the native scan supports, and
+/// `None` for every OAuth key when there is no provider class or one the scan rejects.
+#[derive(Debug, Clone, Copy)]
+struct OAuthKeys(Option<&'static [&'static str]>);
+
+impl OAuthKeys {
+    fn resolve(configs: &HashMap<String, String>, account: Option<&str>) -> Self {
+        Self(active_provider_keys(configs, account))
+    }
+
+    /// Whether the OAuth key `base` is read.
+    fn reads(self, base: &str) -> bool {
+        self.0.is_none_or(|keys| keys.contains(&base))
+    }
+}
+
+/// Whether Hadoop reads the key `base` of `mechanism` for this account, which decides
+/// both translation and validation: the mechanism must be read, and an OAuth key must
+/// also be one of `oauth_keys`.
+fn key_is_read(
+    configs: &HashMap<String, String>,
+    account: Option<&str>,
+    oauth_keys: OAuthKeys,
+    base: &str,
+    mechanism: AuthMechanism,
+) -> bool {
+    mechanism_is_read(configs, account, mechanism)
+        && (mechanism != AuthMechanism::OAuth || oauth_keys.reads(base))
+}
+
+/// The OAuth keys the active provider class reads, when it is one the native scan supports.
+fn active_provider_keys(
+    configs: &HashMap<String, String>,
+    account: Option<&str>,
+) -> Option<&'static [&'static str]> {
+    let (_, class) = active_provider_class(configs, account)?;
+    [
+        (
+            HADOOP_CLIENT_CREDS_PROVIDER_CLASS,
+            HADOOP_CLIENT_CREDS_PROVIDER_KEYS,
+        ),
+        (HADOOP_MSI_PROVIDER_CLASS, HADOOP_MSI_PROVIDER_KEYS),
+        (HADOOP_WI_PROVIDER_CLASS, HADOOP_WI_PROVIDER_KEYS),
+    ]
+    .into_iter()
+    .find(|(name, _)| is_provider_class(&class, name))
+    .map(|(_, keys)| keys)
+}
+
+/// Whether `class` names Hadoop's built-in `SimpleKeyProvider`. The comparison is exact:
+/// `getStorageAccountKey` passes the value of `fs.azure.account.keyprovider` untrimmed to
+/// `Configuration.getClassByName`, so a padded name is a class Hadoop cannot load, not
+/// this one.
+fn is_simple_key_provider(class: &str) -> bool {
+    class == HADOOP_SIMPLE_KEY_PROVIDER_CLASS
+}
+
 const ENDPOINT_SUFFIXES: &[&str] = &["dfs.core.windows.net", "blob.core.windows.net"];
 
 /// Environment variable object_store's `from_env` reads for the managed identity endpoint.
@@ -298,7 +396,13 @@ fn create_store_with_env(
     let account = extract_account(url);
     let container = extract_container(url);
 
-    let translated = translate_hadoop_configs(configs, account.as_deref(), container.as_deref());
+    let oauth_keys = OAuthKeys::resolve(configs, account.as_deref());
+    let translated = translate_hadoop_configs(
+        configs,
+        account.as_deref(),
+        container.as_deref(),
+        oauth_keys,
+    );
     debug!(
         "Azure configs for account={:?}, container={:?}: keys={:?}",
         account,
@@ -315,6 +419,7 @@ fn create_store_with_env(
         &translated,
         account.as_deref(),
         container.as_deref(),
+        oauth_keys,
         env_token_file(&env).is_some(),
     )?;
     let store = build_builder(
@@ -322,6 +427,7 @@ fn create_store_with_env(
         configs,
         account.as_deref(),
         container.as_deref(),
+        oauth_keys,
         &translated,
         env.into_iter(),
     )
@@ -346,6 +452,7 @@ fn validate_translated(
     translated: &[(AzureConfigKey, String)],
     account: Option<&str>,
     container: Option<&str>,
+    oauth_keys: OAuthKeys,
     has_env_token_file: bool,
 ) -> Result<(), object_store::Error> {
     let account_name = account.unwrap_or("<unknown>");
@@ -354,11 +461,11 @@ fn validate_translated(
             "Hadoop configuration for account {account_name}: {reason}"
         )))
     };
-    if let Some(reason) = hadoop_problem(configs, account, container, translated) {
+    if let Some(reason) = hadoop_problem(configs, account, container, oauth_keys, translated) {
         return fail(reason);
     }
     let has = |wanted: AzureConfigKey| translated.iter().any(|(key, _)| *key == wanted);
-    let borrows_env_token_file = env_policy(configs, account, container, translated)
+    let borrows_env_token_file = env_policy(configs, account, container, oauth_keys, translated)
         == EnvPolicy::TokenFileOnly
         && !has(AzureConfigKey::FederatedTokenFile);
     if borrows_env_token_file && !has_env_token_file {
@@ -381,9 +488,12 @@ fn validate_translated(
         missing.push(format!("`{HADOOP_OAUTH_CLIENT_ID}`"));
     }
     if !has(AzureConfigKey::AuthorityId) {
-        missing.push(format!(
-            "`{HADOOP_MSI_TENANT}` or `{HADOOP_OAUTH_CLIENT_ENDPOINT}`"
-        ));
+        let tenant_keys: Vec<String> = [HADOOP_MSI_TENANT, HADOOP_OAUTH_CLIENT_ENDPOINT]
+            .into_iter()
+            .filter(|base| key_is_read(configs, account, oauth_keys, base, AuthMechanism::OAuth))
+            .map(|base| format!("`{base}`"))
+            .collect();
+        missing.push(tenant_keys.join(" or "));
     }
     if missing.is_empty() {
         return Ok(());
@@ -402,12 +512,32 @@ fn hadoop_problem(
     configs: &HashMap<String, String>,
     account: Option<&str>,
     container: Option<&str>,
+    oauth_keys: OAuthKeys,
     translated: &[(AzureConfigKey, String)],
 ) -> Option<String> {
-    blank_value_problem(configs, account, container)
+    blank_value_problem(configs, account, container, oauth_keys)
         .or_else(|| auth_type_problem(configs, account, translated))
         .or_else(|| provider_class_problem(configs, account, translated))
-        .or_else(|| unsupported_key_problem(configs, account))
+        .or_else(|| key_provider_problem(configs, account, translated))
+        .or_else(|| unsupported_key_problem(configs, account, oauth_keys))
+}
+
+/// Whether an explicit `SimpleKeyProvider` has the account key it reads. Hadoop fails
+/// when that key is missing, so the scan must not proceed with another credential.
+fn key_provider_problem(
+    configs: &HashMap<String, String>,
+    account: Option<&str>,
+    translated: &[(AzureConfigKey, String)],
+) -> Option<String> {
+    if !mechanism_is_read(configs, account, AuthMechanism::SharedKey) {
+        return None;
+    }
+    let (key, class) = account_scoped_entry(configs, HADOOP_KEY_PROVIDER, account)?;
+    let has_key = translated
+        .iter()
+        .any(|(key, _)| *key == AzureConfigKey::AccessKey);
+    (is_simple_key_provider(&class) && !has_key)
+        .then(|| format!("`{key}={class}` needs `{HADOOP_KEY}`"))
 }
 
 /// A blank SAS token or credential value, named by the exact key that holds it.
@@ -421,6 +551,7 @@ fn blank_value_problem(
     configs: &HashMap<String, String>,
     account: Option<&str>,
     container: Option<&str>,
+    oauth_keys: OAuthKeys,
 ) -> Option<String> {
     if let Some((key, value)) = active_sas_token(configs, account, container) {
         if value.trim().is_empty() {
@@ -439,7 +570,7 @@ fn blank_value_problem(
         .is_some_and(|(_, class)| is_provider_class(&class, HADOOP_MSI_PROVIDER_CLASS));
     HADOOP_CREDENTIAL_MAPPINGS
         .iter()
-        .filter(|(_, _, mechanism)| mechanism_is_read(configs, account, *mechanism))
+        .filter(|(base, _, mechanism)| key_is_read(configs, account, oauth_keys, base, *mechanism))
         .filter(|(base, _, _)| !(msi_provider && HADOOP_MSI_OPTIONAL_KEYS.contains(base)))
         .find_map(|(base, _, _)| {
             account_scoped_entry(configs, base, account)
@@ -547,26 +678,35 @@ fn provider_class_problem(
 }
 
 /// The first Hadoop key present that selects a mechanism with no native counterpart,
-/// named exactly as the user set it.
+/// named exactly as the user set it. An explicit `SimpleKeyProvider` is the default key
+/// provider, not a separate mechanism.
 fn unsupported_key_problem(
     configs: &HashMap<String, String>,
     account: Option<&str>,
+    oauth_keys: OAuthKeys,
 ) -> Option<String> {
     HADOOP_UNSUPPORTED_MECHANISM_KEYS
         .iter()
-        .filter(|(_, mechanism)| mechanism_is_read(configs, account, *mechanism))
+        .filter(|(base, mechanism)| key_is_read(configs, account, oauth_keys, base, *mechanism))
         .find_map(|(base, _)| {
-            account_scoped_entry(configs, base, account).map(|(key, _)| {
-                format!(
-                    "`{key}` selects an authentication mechanism the native scan does not support"
-                )
-            })
+            account_scoped_entry(configs, base, account)
+                .filter(|(_, value)| {
+                    !(*base == HADOOP_KEY_PROVIDER && is_simple_key_provider(value))
+                })
+                .map(|(key, _)| {
+                    format!(
+                        "`{key}` selects an authentication mechanism the native scan does not \
+                         support"
+                    )
+                })
         })
 }
 
 /// Whether `class` is the Hadoop token provider with `simple_name`: the bare simple name,
 /// or a qualified name whose last segment is exactly it, so that a lookalike such as
-/// `com.attacker.EvilWorkloadIdentityTokenProvider` does not pass as the real class.
+/// `com.attacker.EvilWorkloadIdentityTokenProvider` does not pass as the real class. The
+/// value is trimmed because Hadoop reads it with `Configuration.getClass`, which calls
+/// `getTrimmed` before loading the class.
 fn is_provider_class(class: &str, simple_name: &str) -> bool {
     let class = class.trim();
     class == simple_name
@@ -607,11 +747,12 @@ fn build_builder(
     configs: &HashMap<String, String>,
     account: Option<&str>,
     container: Option<&str>,
+    oauth_keys: OAuthKeys,
     translated: &[(AzureConfigKey, String)],
     env: impl Iterator<Item = (String, String)>,
 ) -> MicrosoftAzureBuilder {
     let mut builder = MicrosoftAzureBuilder::new();
-    match env_policy(configs, account, container, translated) {
+    match env_policy(configs, account, container, oauth_keys, translated) {
         EnvPolicy::All => builder = apply_env(builder, env),
         EnvPolicy::TokenFileOnly => builder = apply_env_token_file(builder, translated, env),
         EnvPolicy::Nothing => {}
@@ -648,6 +789,7 @@ fn env_policy(
     configs: &HashMap<String, String>,
     account: Option<&str>,
     container: Option<&str>,
+    oauth_keys: OAuthKeys,
     translated: &[(AzureConfigKey, String)],
 ) -> EnvPolicy {
     let has_mechanism_key = translated.iter().any(|(key, _)| {
@@ -671,7 +813,7 @@ fn env_policy(
     // `build_builder` never borrows the environment even when called without validation.
     if has_mechanism_key
         || chooses_mechanism
-        || hadoop_problem(configs, account, container, translated).is_some()
+        || hadoop_problem(configs, account, container, oauth_keys, translated).is_some()
     {
         return EnvPolicy::Nothing;
     }
@@ -753,13 +895,14 @@ fn translate_hadoop_configs(
     configs: &HashMap<String, String>,
     account: Option<&str>,
     container: Option<&str>,
+    oauth_keys: OAuthKeys,
 ) -> Vec<(AzureConfigKey, String)> {
     let mut out: Vec<(AzureConfigKey, String)> = Vec::new();
 
     // A blank value is left out so it never reaches the builder; validation reports it
     // as an error before the store is built.
     for (hadoop_base, azure_key, mechanism) in HADOOP_CREDENTIAL_MAPPINGS {
-        if !mechanism_is_read(configs, account, *mechanism) {
+        if !key_is_read(configs, account, oauth_keys, hadoop_base, *mechanism) {
             continue;
         }
         if let Some(value) = account_scoped_value(configs, hadoop_base, account) {
@@ -776,7 +919,15 @@ fn translate_hadoop_configs(
     let has_authority_id = out
         .iter()
         .any(|(k, _)| matches!(k, AzureConfigKey::AuthorityId));
-    if !has_authority_id && mechanism_is_read(configs, account, AuthMechanism::OAuth) {
+    if !has_authority_id
+        && key_is_read(
+            configs,
+            account,
+            oauth_keys,
+            HADOOP_OAUTH_CLIENT_ENDPOINT,
+            AuthMechanism::OAuth,
+        )
+    {
         if let Some(endpoint) = account_scoped_value(configs, HADOOP_OAUTH_CLIENT_ENDPOINT, account)
         {
             if let Some(tenant) = tenant_from_oauth_endpoint(&endpoint) {
@@ -914,6 +1065,20 @@ mod tests {
         Url::parse(s).unwrap()
     }
 
+    /// `translate_hadoop_configs` with the OAuth keys resolved as `create_store` does.
+    fn translate(
+        configs: &HashMap<String, String>,
+        account: Option<&str>,
+        container: Option<&str>,
+    ) -> Vec<(AzureConfigKey, String)> {
+        translate_hadoop_configs(
+            configs,
+            account,
+            container,
+            OAuthKeys::resolve(configs, account),
+        )
+    }
+
     #[test]
     fn extracts_account_and_container_from_abfss_url() {
         let u = url("abfss://data@myacct.dfs.core.windows.net/path/file.parquet");
@@ -966,7 +1131,7 @@ mod tests {
             "fs.azure.account.oauth2.token.file.myacct.dfs.core.windows.net".into(),
             "/var/run/secrets/azure/tokens/azure-identity-token".into(),
         );
-        let translated = translate_hadoop_configs(&configs, Some("myacct"), Some("data"));
+        let translated = translate(&configs, Some("myacct"), Some("data"));
 
         let by_key: HashMap<_, _> = translated.into_iter().collect();
         assert_eq!(
@@ -992,7 +1157,7 @@ mod tests {
             "fs.azure.account.key.myacct.blob.core.windows.net".into(),
             "secret==".into(),
         );
-        let translated = translate_hadoop_configs(&configs, Some("myacct"), None);
+        let translated = translate(&configs, Some("myacct"), None);
         let by_key: HashMap<_, _> = translated.into_iter().collect();
         assert_eq!(
             by_key.get(&AzureConfigKey::AccessKey).map(String::as_str),
@@ -1007,7 +1172,7 @@ mod tests {
             "fs.azure.sas.data.myacct.dfs.core.windows.net".into(),
             "sv=2020-08-04&sig=xyz".into(),
         );
-        let translated = translate_hadoop_configs(&configs, Some("myacct"), Some("data"));
+        let translated = translate(&configs, Some("myacct"), Some("data"));
         let by_key: HashMap<_, _> = translated.into_iter().collect();
         assert_eq!(
             by_key.get(&AzureConfigKey::SasKey).map(String::as_str),
@@ -1023,7 +1188,7 @@ mod tests {
             "https://login.microsoftonline.com/00000000-1111-2222-3333-444444444444/oauth2/token"
                 .into(),
         );
-        let translated = translate_hadoop_configs(&configs, Some("myacct"), None);
+        let translated = translate(&configs, Some("myacct"), None);
         let by_key: HashMap<_, _> = translated.into_iter().collect();
         assert_eq!(
             by_key.get(&AzureConfigKey::AuthorityId).map(String::as_str),
@@ -1042,7 +1207,7 @@ mod tests {
             "fs.azure.account.oauth2.client.endpoint".into(),
             "https://login.microsoftonline.com/from-endpoint/oauth2/token".into(),
         );
-        let translated = translate_hadoop_configs(&configs, Some("myacct"), None);
+        let translated = translate(&configs, Some("myacct"), None);
         let by_key: HashMap<_, _> = translated.into_iter().collect();
         assert_eq!(
             by_key.get(&AzureConfigKey::AuthorityId).map(String::as_str),
@@ -1117,12 +1282,14 @@ mod tests {
         env: &[(&str, &str)],
     ) -> MicrosoftAzureBuilder {
         let u = url("abfss://data@myacct.dfs.core.windows.net/path/file.parquet");
-        let translated = translate_hadoop_configs(hadoop, Some("myacct"), Some("data"));
+        let oauth_keys = OAuthKeys::resolve(hadoop, Some("myacct"));
+        let translated = translate_hadoop_configs(hadoop, Some("myacct"), Some("data"), oauth_keys);
         build_builder(
             &u,
             hadoop,
             Some("myacct"),
             Some("data"),
+            oauth_keys,
             &translated,
             env_of(env),
         )
@@ -1616,7 +1783,7 @@ mod tests {
             "fs.azure.sas.fixed.token.myacct.dfs.core.windows.net",
         ] {
             let configs = hadoop(&[(key, "sv=2020-08-04&sig=fixed")]);
-            let translated = translate_hadoop_configs(&configs, Some("myacct"), Some("data"));
+            let translated = translate(&configs, Some("myacct"), Some("data"));
             let by_key: HashMap<_, _> = translated.into_iter().collect();
             assert_eq!(
                 by_key.get(&AzureConfigKey::SasKey).map(String::as_str),
@@ -1635,7 +1802,7 @@ mod tests {
                 "sv=2020-08-04&sig=fixed",
             ),
         ]);
-        let translated = translate_hadoop_configs(&configs, Some("myacct"), Some("data"));
+        let translated = translate(&configs, Some("myacct"), Some("data"));
         let sas: Vec<_> = translated
             .iter()
             .filter(|(k, _)| *k == AzureConfigKey::SasKey)
@@ -1733,7 +1900,7 @@ mod tests {
         ] {
             for blank in ["", "  "] {
                 let configs = hadoop(&[(key, blank)]);
-                let translated = translate_hadoop_configs(&configs, Some("myacct"), Some("data"));
+                let translated = translate(&configs, Some("myacct"), Some("data"));
                 assert!(
                     !translated.iter().any(|(k, _)| *k == AzureConfigKey::SasKey),
                     "key {key}, value {blank:?}"
@@ -1824,9 +1991,14 @@ mod tests {
         configs.insert("fs.azure.account.auth.type".into(), "OAuth".into());
         create_store_with_env(&u, &configs, env_of(&[]))
             .expect("store builds without a provider type");
+        // `ClientCredsTokenProvider` takes its tenant from the endpoint, as Hadoop does.
         configs.insert(
             "fs.azure.account.oauth.provider.type".into(),
             "org.apache.hadoop.fs.azurebfs.oauth2.ClientCredsTokenProvider".into(),
+        );
+        configs.insert(
+            "fs.azure.account.oauth2.client.endpoint".into(),
+            "https://login.microsoftonline.com/hadoop-tenant/oauth2/token".into(),
         );
         create_store_with_env(&u, &configs, env_of(&[]))
             .expect("store builds with the client creds provider");
@@ -1928,12 +2100,13 @@ mod tests {
         )]);
         let account = extract_account(&u);
         assert_eq!(account.as_deref(), Some("MyAcct"));
-        let translated = translate_hadoop_configs(&configs, account.as_deref(), Some("data"));
+        let translated = translate(&configs, account.as_deref(), Some("data"));
         let builder = build_builder(
             &u,
             &configs,
             account.as_deref(),
             Some("data"),
+            OAuthKeys::resolve(&configs, account.as_deref()),
             &translated,
             env_of(&[("AZURE_STORAGE_TOKEN", "ambient")]),
         );
@@ -1959,7 +2132,7 @@ mod tests {
             account_scoped_entry(&configs, HADOOP_KEY, account.as_deref()),
             None
         );
-        let translated = translate_hadoop_configs(&configs, account.as_deref(), Some("data"));
+        let translated = translate(&configs, account.as_deref(), Some("data"));
         assert!(translated.is_empty(), "{translated:?}");
     }
 
@@ -1969,7 +2142,7 @@ mod tests {
             ("fs.azure.sas.data.myacct", "  "),
             ("fs.azure.sas.fixed.token", "sv=2020-08-04&sig=fixed"),
         ]);
-        let translated = translate_hadoop_configs(&configs, Some("myacct"), Some("data"));
+        let translated = translate(&configs, Some("myacct"), Some("data"));
         assert!(!translated.iter().any(|(k, _)| *k == AzureConfigKey::SasKey));
         let err = err_of(&configs);
         assert!(
@@ -2004,7 +2177,7 @@ mod tests {
             "fs.azure.account.oauth2.token.file",
         ] {
             let configs = hadoop(&[(key, " ")]);
-            let translated = translate_hadoop_configs(&configs, Some("myacct"), Some("data"));
+            let translated = translate(&configs, Some("myacct"), Some("data"));
             assert!(translated.is_empty(), "key {key}: {translated:?}");
         }
     }
@@ -2734,5 +2907,488 @@ mod tests {
             value(&builder, AzureConfigKey::AccessKey).as_deref(),
             Some("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
         );
+    }
+
+    const CLIENT_CREDS_PROVIDER: &str =
+        "org.apache.hadoop.fs.azurebfs.oauth2.ClientCredsTokenProvider";
+    const SIMPLE_KEY_PROVIDER: &str = "org.apache.hadoop.fs.azurebfs.services.SimpleKeyProvider";
+    const VALID_ACCOUNT_KEY: &str = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+    /// Every credential the environment could offer in place of the configured one.
+    const AMBIENT_CREDENTIALS: &[(&str, &str)] = &[
+        ("AZURE_STORAGE_TOKEN", "ambient"),
+        ("AZURE_STORAGE_ACCOUNT_KEY", "ambient=="),
+        ("AZURE_CLIENT_ID", "ambient-client"),
+        ("AZURE_TENANT_ID", "ambient-tenant"),
+        (
+            "AZURE_FEDERATED_TOKEN_FILE",
+            "/var/run/secrets/azure/tokens/token",
+        ),
+    ];
+
+    /// A complete `ClientCredsTokenProvider` configuration, the way Hadoop reads it.
+    fn client_creds_with(extra: &[(&str, &str)]) -> HashMap<String, String> {
+        let mut pairs = vec![
+            ("fs.azure.account.auth.type", "OAuth"),
+            (
+                "fs.azure.account.oauth.provider.type",
+                CLIENT_CREDS_PROVIDER,
+            ),
+            ("fs.azure.account.oauth2.client.id", "hadoop-client"),
+            ("fs.azure.account.oauth2.client.secret", "hadoop-secret"),
+            (
+                "fs.azure.account.oauth2.client.endpoint",
+                "https://login.microsoftonline.com/hadoop-tenant/oauth2/token",
+            ),
+        ];
+        pairs.extend_from_slice(extra);
+        hadoop(&pairs)
+    }
+
+    /// The store builds and the builder holds the client-secret principal from Hadoop and
+    /// nothing from the environment.
+    fn assert_builds_client_secret_store(configs: &HashMap<String, String>, context: &str) {
+        let u = url("abfss://data@myacct.dfs.core.windows.net/path/file.parquet");
+        if let Err(err) = create_store_with_env(&u, configs, env_of(AMBIENT_CREDENTIALS)) {
+            panic!("{context}: store must build: {err}");
+        }
+        let builder = builder_for(configs, AMBIENT_CREDENTIALS);
+        assert_eq!(
+            value(&builder, AzureConfigKey::ClientSecret).as_deref(),
+            Some("hadoop-secret"),
+            "{context}"
+        );
+        assert_eq!(
+            value(&builder, AzureConfigKey::ClientId).as_deref(),
+            Some("hadoop-client"),
+            "{context}"
+        );
+        assert_eq!(
+            value(&builder, AzureConfigKey::AuthorityId).as_deref(),
+            Some("hadoop-tenant"),
+            "{context}"
+        );
+        assert_eq!(value(&builder, AzureConfigKey::Token), None, "{context}");
+        assert_eq!(
+            value(&builder, AzureConfigKey::AccessKey),
+            None,
+            "{context}"
+        );
+        assert_eq!(
+            value(&builder, AzureConfigKey::FederatedTokenFile),
+            None,
+            "{context}"
+        );
+    }
+
+    #[test]
+    fn client_creds_provider_ignores_unused_user_password() {
+        // Hadoop's `ClientCredsTokenProvider` reads only the client id, secret and
+        // endpoint, so a password left over for another provider is irrelevant.
+        for key in [
+            "fs.azure.account.oauth2.user.password",
+            "fs.azure.account.oauth2.user.password.myacct.dfs.core.windows.net",
+        ] {
+            let configs = client_creds_with(&[(key, "unused")]);
+            assert_builds_client_secret_store(&configs, key);
+        }
+    }
+
+    #[test]
+    fn client_creds_provider_ignores_blank_unused_msi_endpoint() {
+        for blank in ["", " "] {
+            let configs = client_creds_with(&[("fs.azure.account.oauth2.msi.endpoint", blank)]);
+            assert_builds_client_secret_store(&configs, &format!("msi.endpoint={blank:?}"));
+        }
+    }
+
+    #[test]
+    fn shared_configuration_builds_for_the_active_provider_only() {
+        // One configuration serving several accounts carries settings for the
+        // `UserPasswordTokenProvider`, `RefreshTokenBasedTokenProvider` and
+        // `MsiTokenProvider`. The account selects `ClientCredsTokenProvider`, so the others
+        // are inactive, blank or not.
+        let configs = client_creds_with(&[
+            ("fs.azure.account.oauth2.user.name", "alice"),
+            ("fs.azure.account.oauth2.user.password", "hunter2"),
+            ("fs.azure.account.oauth2.refresh.token", "refresh-token"),
+            ("fs.azure.account.oauth2.msi.endpoint", ""),
+            ("fs.azure.account.oauth2.token.file", ""),
+        ]);
+        assert_builds_client_secret_store(&configs, "client credentials");
+
+        // The same shared settings beside an account-scoped Workload Identity provider,
+        // with a blank client secret left for the client credentials provider. The token
+        // file still comes from Hadoop and nothing else is read.
+        let configs = hadoop(&[
+            ("fs.azure.account.auth.type", "OAuth"),
+            (
+                "fs.azure.account.oauth.provider.type.myacct.dfs.core.windows.net",
+                "org.apache.hadoop.fs.azurebfs.oauth2.WorkloadIdentityTokenProvider",
+            ),
+            ("fs.azure.account.oauth2.client.id", "hadoop-client"),
+            ("fs.azure.account.oauth2.msi.tenant", "hadoop-tenant"),
+            (
+                "fs.azure.account.oauth2.token.file",
+                "/var/run/secrets/hadoop/token",
+            ),
+            ("fs.azure.account.oauth2.client.secret", ""),
+            ("fs.azure.account.oauth2.user.name", "alice"),
+            ("fs.azure.account.oauth2.user.password", "hunter2"),
+            ("fs.azure.account.oauth2.refresh.token", "refresh-token"),
+        ]);
+        let u = url("abfss://data@myacct.dfs.core.windows.net/path/file.parquet");
+        if let Err(err) = create_store_with_env(&u, &configs, env_of(AMBIENT_CREDENTIALS)) {
+            panic!("workload identity: store must build: {err}");
+        }
+        let builder = builder_for(&configs, AMBIENT_CREDENTIALS);
+        assert_eq!(
+            value(&builder, AzureConfigKey::FederatedTokenFile).as_deref(),
+            Some("/var/run/secrets/hadoop/token")
+        );
+        assert_eq!(
+            value(&builder, AzureConfigKey::ClientId).as_deref(),
+            Some("hadoop-client")
+        );
+        assert_eq!(value(&builder, AzureConfigKey::ClientSecret), None);
+        assert_eq!(value(&builder, AzureConfigKey::Token), None);
+        assert_eq!(value(&builder, AzureConfigKey::AccessKey), None);
+    }
+
+    #[test]
+    fn active_provider_still_rejects_its_own_blank_credential() {
+        // Scoping validation to the provider's fields must not hide a blank field the
+        // provider does read.
+        let configs = hadoop(&[
+            ("fs.azure.account.auth.type", "OAuth"),
+            (
+                "fs.azure.account.oauth.provider.type",
+                CLIENT_CREDS_PROVIDER,
+            ),
+            ("fs.azure.account.oauth2.client.id", "hadoop-client"),
+            ("fs.azure.account.oauth2.client.secret", " "),
+            (
+                "fs.azure.account.oauth2.client.endpoint",
+                "https://login.microsoftonline.com/hadoop-tenant/oauth2/token",
+            ),
+        ]);
+        let err = err_of(&configs);
+        assert!(
+            err.contains("fs.azure.account.oauth2.client.secret") && err.contains("blank"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn explicit_simple_key_provider_builds_as_shared_key() {
+        // `SimpleKeyProvider` is the provider Hadoop uses when the setting is omitted, so
+        // naming it changes nothing: the account key is the credential.
+        for auth_type in [Some("SharedKey"), None] {
+            for provider_key in [
+                "fs.azure.account.keyprovider",
+                "fs.azure.account.keyprovider.myacct.dfs.core.windows.net",
+            ] {
+                let context = format!("auth type {auth_type:?}, {provider_key}");
+                let mut pairs = vec![
+                    (provider_key, SIMPLE_KEY_PROVIDER),
+                    (
+                        "fs.azure.account.key.myacct.dfs.core.windows.net",
+                        VALID_ACCOUNT_KEY,
+                    ),
+                ];
+                if let Some(auth_type) = auth_type {
+                    pairs.push(("fs.azure.account.auth.type", auth_type));
+                }
+                let configs = hadoop(&pairs);
+                let u = url("abfss://data@myacct.dfs.core.windows.net/path/file.parquet");
+                if let Err(err) = create_store_with_env(&u, &configs, env_of(AMBIENT_CREDENTIALS)) {
+                    panic!("{context}: store must build: {err}");
+                }
+                let builder = builder_for(&configs, AMBIENT_CREDENTIALS);
+                assert_eq!(
+                    value(&builder, AzureConfigKey::AccessKey).as_deref(),
+                    Some(VALID_ACCOUNT_KEY),
+                    "{context}"
+                );
+                assert_eq!(value(&builder, AzureConfigKey::Token), None, "{context}");
+                assert_eq!(value(&builder, AzureConfigKey::ClientId), None, "{context}");
+            }
+        }
+    }
+
+    #[test]
+    fn simple_key_provider_without_a_key_is_rejected() {
+        // Hadoop's `SimpleKeyProvider` finds no key and fails, so the native scan must not
+        // fall through to the environment or another mechanism instead. With no auth type,
+        // nothing else selects `SharedKey`, so only `key_provider_problem` can catch this.
+        // (`auth.type=SharedKey` without a key is already an auth type error.)
+        let expected = format!(
+            "`fs.azure.account.keyprovider={SIMPLE_KEY_PROVIDER}` needs `fs.azure.account.key`"
+        );
+        for extra in [vec![], CLIENT_SECRET_PRINCIPAL.to_vec()] {
+            let mut pairs = vec![("fs.azure.account.keyprovider", SIMPLE_KEY_PROVIDER)];
+            pairs.extend(extra);
+            let configs = hadoop(&pairs);
+            let err = err_of(&configs);
+            assert!(
+                err.ends_with(&expected),
+                "{pairs:?}: unexpected error: {err}"
+            );
+            assert_hides(&err, &["hadoop-secret"]);
+            let builder = builder_for(&configs, AMBIENT_CREDENTIALS);
+            assert_eq!(value(&builder, AzureConfigKey::Token), None, "{pairs:?}");
+            assert_eq!(
+                value(&builder, AzureConfigKey::AccessKey),
+                None,
+                "{pairs:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn custom_key_provider_is_still_rejected_beside_an_account_key() {
+        // Only Hadoop's own class, by its full name, is accepted. Hadoop loads the class
+        // by name, so a bare or lookalike name is a different provider.
+        for class in [
+            "com.example.KeyProvider",
+            "com.example.SimpleKeyProvider",
+            "SimpleKeyProvider",
+            " org.apache.hadoop.fs.azurebfs.services.SimpleKeyProvider",
+            "org.apache.hadoop.fs.azurebfs.services.SimpleKeyProvider\n",
+            "org.apache.hadoop.fs.azurebfs.services.ShellDecryptionKeyProvider",
+        ] {
+            let configs = hadoop(&[
+                ("fs.azure.account.keyprovider", class),
+                ("fs.azure.account.key", VALID_ACCOUNT_KEY),
+            ]);
+            let err = err_of(&configs);
+            assert!(
+                err.contains("fs.azure.account.keyprovider") && err.contains("does not support"),
+                "{class:?}: unexpected error: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn client_creds_provider_takes_the_tenant_from_the_endpoint_only() {
+        // `ClientCredsTokenProvider` never reads `msi.tenant`, so a global one kept for
+        // another provider must not replace the tenant in `client.endpoint`.
+        for key in [
+            "fs.azure.account.oauth2.msi.tenant",
+            "fs.azure.account.oauth2.msi.tenant.myacct.dfs.core.windows.net",
+        ] {
+            let configs = client_creds_with(&[(key, "other-tenant")]);
+            assert_builds_client_secret_store(&configs, key);
+        }
+        // With no endpoint, `msi.tenant` does not stand in for it.
+        let configs = hadoop(&[
+            ("fs.azure.account.auth.type", "OAuth"),
+            (
+                "fs.azure.account.oauth.provider.type",
+                CLIENT_CREDS_PROVIDER,
+            ),
+            ("fs.azure.account.oauth2.client.id", "hadoop-client"),
+            ("fs.azure.account.oauth2.client.secret", "hadoop-secret"),
+            ("fs.azure.account.oauth2.msi.tenant", "other-tenant"),
+        ]);
+        let err = err_of(&configs);
+        assert!(
+            err.contains("fs.azure.account.oauth2.client.endpoint")
+                && !err.contains("fs.azure.account.oauth2.msi.tenant"),
+            "unexpected error: {err}"
+        );
+        assert_hides(&err, &["hadoop-secret"]);
+    }
+
+    #[test]
+    fn msi_provider_does_not_build_a_client_secret_credential() {
+        // `MsiTokenProvider` never reads `client.secret`. Handed to the builder, it would
+        // outrank the managed identity with the client id and tenant beside it.
+        let configs = hadoop(&[
+            ("fs.azure.account.auth.type", "OAuth"),
+            (
+                "fs.azure.account.oauth.provider.type",
+                "org.apache.hadoop.fs.azurebfs.oauth2.MsiTokenProvider",
+            ),
+            ("fs.azure.account.oauth2.client.id", "hadoop-client"),
+            ("fs.azure.account.oauth2.msi.tenant", "hadoop-tenant"),
+            ("fs.azure.account.oauth2.client.secret", "unused-secret"),
+            (
+                "fs.azure.account.oauth2.token.file",
+                "/var/run/secrets/hadoop/token",
+            ),
+        ]);
+        let u = url("abfss://data@myacct.dfs.core.windows.net/path/file.parquet");
+        if let Err(err) = create_store_with_env(&u, &configs, env_of(AMBIENT_CREDENTIALS)) {
+            panic!("store must build: {err}");
+        }
+        let builder = builder_for(&configs, AMBIENT_CREDENTIALS);
+        assert_eq!(value(&builder, AzureConfigKey::ClientSecret), None);
+        assert_eq!(value(&builder, AzureConfigKey::FederatedTokenFile), None);
+        assert_eq!(
+            value(&builder, AzureConfigKey::ClientId).as_deref(),
+            Some("hadoop-client")
+        );
+        assert_eq!(value(&builder, AzureConfigKey::Token), None);
+        assert_eq!(value(&builder, AzureConfigKey::AccessKey), None);
+    }
+
+    #[test]
+    fn workload_identity_provider_ignores_unused_msi_endpoint() {
+        // `WorkloadIdentityTokenProvider` never reads `msi.endpoint`, so one kept for the
+        // MSI provider must not change what the builder takes from the environment.
+        let base = [
+            ("fs.azure.account.auth.type", "OAuth"),
+            (
+                "fs.azure.account.oauth.provider.type",
+                "org.apache.hadoop.fs.azurebfs.oauth2.WorkloadIdentityTokenProvider",
+            ),
+            ("fs.azure.account.oauth2.client.id", "hadoop-client"),
+            ("fs.azure.account.oauth2.msi.tenant", "hadoop-tenant"),
+        ];
+        let without = hadoop(&base);
+        let mut with = without.clone();
+        with.insert(
+            "fs.azure.account.oauth2.msi.endpoint".into(),
+            "http://169.254.169.254/metadata/identity/oauth2/token".into(),
+        );
+        let u = url("abfss://data@myacct.dfs.core.windows.net/path/file.parquet");
+        for (name, configs) in [("without", &without), ("with", &with)] {
+            if let Err(err) = create_store_with_env(&u, configs, env_of(AMBIENT_CREDENTIALS)) {
+                panic!("{name} msi.endpoint: store must build: {err}");
+            }
+        }
+        let keys = [
+            AzureConfigKey::FederatedTokenFile,
+            AzureConfigKey::ClientId,
+            AzureConfigKey::AuthorityId,
+            AzureConfigKey::MsiEndpoint,
+            AzureConfigKey::Token,
+            AzureConfigKey::AccessKey,
+        ];
+        let expected = builder_for(&without, AMBIENT_CREDENTIALS);
+        let actual = builder_for(&with, AMBIENT_CREDENTIALS);
+        for key in keys {
+            assert_eq!(value(&actual, key), value(&expected, key), "{key:?}");
+        }
+        assert_eq!(
+            value(&actual, AzureConfigKey::FederatedTokenFile).as_deref(),
+            Some("/var/run/secrets/azure/tokens/token")
+        );
+        assert_eq!(value(&actual, AzureConfigKey::MsiEndpoint), None);
+    }
+
+    const MSI_PROVIDER: &str = "org.apache.hadoop.fs.azurebfs.oauth2.MsiTokenProvider";
+    const WI_PROVIDER: &str = "org.apache.hadoop.fs.azurebfs.oauth2.WorkloadIdentityTokenProvider";
+    const LEFTOVER_ENDPOINT: &str =
+        "https://login.microsoftonline.com/endpoint-tenant/oauth2/token";
+
+    /// `auth.type=OAuth` with `provider`, the client id, and `extra`.
+    fn oauth_provider_with(provider: &str, extra: &[(&str, &str)]) -> HashMap<String, String> {
+        let mut pairs = vec![
+            ("fs.azure.account.auth.type", "OAuth"),
+            ("fs.azure.account.oauth.provider.type", provider),
+            ("fs.azure.account.oauth2.client.id", "hadoop-client"),
+        ];
+        pairs.extend_from_slice(extra);
+        hadoop(&pairs)
+    }
+
+    #[test]
+    fn msi_and_workload_identity_providers_ignore_a_leftover_client_endpoint() {
+        // Neither provider reads `client.endpoint`, so one kept for the client credentials
+        // provider must not supply or replace their tenant.
+        for provider in [MSI_PROVIDER, WI_PROVIDER] {
+            let configs = oauth_provider_with(
+                provider,
+                &[
+                    ("fs.azure.account.oauth2.msi.tenant", "hadoop-tenant"),
+                    ("fs.azure.account.oauth2.client.endpoint", LEFTOVER_ENDPOINT),
+                    (
+                        "fs.azure.account.oauth2.token.file",
+                        "/var/run/secrets/hadoop/token",
+                    ),
+                ],
+            );
+            let u = url("abfss://data@myacct.dfs.core.windows.net/path/file.parquet");
+            if let Err(err) = create_store_with_env(&u, &configs, env_of(AMBIENT_CREDENTIALS)) {
+                panic!("{provider}: store must build: {err}");
+            }
+            let builder = builder_for(&configs, AMBIENT_CREDENTIALS);
+            assert_eq!(
+                value(&builder, AzureConfigKey::AuthorityId).as_deref(),
+                Some("hadoop-tenant"),
+                "{provider}"
+            );
+        }
+
+        // With no `msi.tenant`, the endpoint does not stand in for it. MSI accepts the
+        // missing tenant, as Hadoop 3.4 does, and Workload Identity reports it.
+        let configs = oauth_provider_with(
+            MSI_PROVIDER,
+            &[("fs.azure.account.oauth2.client.endpoint", LEFTOVER_ENDPOINT)],
+        );
+        let u = url("abfss://data@myacct.dfs.core.windows.net/path/file.parquet");
+        if let Err(err) = create_store_with_env(&u, &configs, env_of(AMBIENT_CREDENTIALS)) {
+            panic!("MSI without a tenant: store must build: {err}");
+        }
+        let builder = builder_for(&configs, AMBIENT_CREDENTIALS);
+        assert_eq!(value(&builder, AzureConfigKey::AuthorityId), None);
+
+        let configs = oauth_provider_with(
+            WI_PROVIDER,
+            &[
+                ("fs.azure.account.oauth2.client.endpoint", LEFTOVER_ENDPOINT),
+                (
+                    "fs.azure.account.oauth2.token.file",
+                    "/var/run/secrets/hadoop/token",
+                ),
+            ],
+        );
+        let err = err_of(&configs);
+        assert!(
+            err.contains("fs.azure.account.oauth2.msi.tenant")
+                && !err.contains("fs.azure.account.oauth2.client.endpoint"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn msi_authority_is_read_only_by_the_providers_that_read_it() {
+        // Hadoop reads `msi.authority` for MSI and Workload Identity, and it becomes the
+        // builder's `AuthorityHost`. `ClientCredsTokenProvider` takes its authority from
+        // `client.endpoint` and never reads it.
+        let authority = "https://login.chinacloudapi.cn/";
+        let msi_authority = ("fs.azure.account.oauth2.msi.authority", authority);
+        let tenant = ("fs.azure.account.oauth2.msi.tenant", "hadoop-tenant");
+        let token_file = (
+            "fs.azure.account.oauth2.token.file",
+            "/var/run/secrets/hadoop/token",
+        );
+        for (provider, configs) in [
+            (
+                MSI_PROVIDER,
+                oauth_provider_with(MSI_PROVIDER, &[tenant, msi_authority]),
+            ),
+            (
+                WI_PROVIDER,
+                oauth_provider_with(WI_PROVIDER, &[tenant, token_file, msi_authority]),
+            ),
+        ] {
+            let u = url("abfss://data@myacct.dfs.core.windows.net/path/file.parquet");
+            if let Err(err) = create_store_with_env(&u, &configs, env_of(AMBIENT_CREDENTIALS)) {
+                panic!("{provider}: store must build: {err}");
+            }
+            let builder = builder_for(&configs, AMBIENT_CREDENTIALS);
+            assert_eq!(
+                value(&builder, AzureConfigKey::AuthorityHost).as_deref(),
+                Some(authority),
+                "{provider}"
+            );
+        }
+
+        let configs = client_creds_with(&[msi_authority]);
+        assert_builds_client_secret_store(&configs, "client credentials");
+        let builder = builder_for(&configs, AMBIENT_CREDENTIALS);
+        assert_eq!(value(&builder, AzureConfigKey::AuthorityHost), None);
     }
 }
