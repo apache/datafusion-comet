@@ -15,11 +15,12 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- Confirms Comet falls back to Spark when a parquet scan's schema contains a
--- VariantType column. VariantType is a Spark 4.0+ data type that Comet does
--- not currently support, so any scan exposing it must be executed by Spark.
+-- Checks Variant pruning and fallback with Spark's strict unshredded reader.
 
 -- MinSparkVersion: 4.0
+-- Config: spark.sql.variant.allowReadingShredded=false
+-- Config: spark.sql.variant.pushVariantIntoScan=false
+-- Config: spark.sql.variant.writeShredding.enabled=false
 
 statement
 CREATE TABLE test_variant(id INT, v VARIANT, tail STRING) USING parquet
@@ -47,16 +48,16 @@ SELECT id, tail FROM test_variant WHERE tail IS NOT NULL ORDER BY id
 query expect_fallback(Native operators do not support schemas containing type VariantType)
 SELECT CAST(id AS VARIANT) FROM test_variant
 
-query expect_fallback(type VariantType)
+query expect_fallback(Native Variant scans require allowReadingShredded=true)
 SELECT id, v FROM test_variant ORDER BY id
 
-query expect_fallback(type VariantType)
+query expect_fallback(Native Variant scans require allowReadingShredded=true)
 SELECT variant_get(v, '$.a', 'int') AS a FROM test_variant ORDER BY id
 
-query expect_fallback(type VariantType)
+query expect_fallback(Native Variant scans require allowReadingShredded=true)
 SELECT id FROM test_variant WHERE variant_get(v, '$.a', 'int') = 1
 
-query expect_fallback(type VariantType)
+query expect_fallback(Native Variant scans require allowReadingShredded=true)
 SELECT COUNT(*) FROM test_variant WHERE v IS NOT NULL
 
 statement

@@ -34,7 +34,7 @@ use parquet::{
     },
     file::{properties::WriterProperties, writer::SerializedFileWriter},
     schema::types::{Type as ParquetType, TypePtr},
-    variant::{Variant, VariantArray, VariantBuilder, VariantDecimal16},
+    variant::{Variant, VariantArray, VariantBuilder, VariantDecimal4},
 };
 use std::{fs::File, path::PathBuf};
 fn required_variant_schema() -> SchemaRef {
@@ -275,7 +275,7 @@ async fn variant_scan_uses_parquet_physical_types_instead_of_arrow_schema_hints(
     let output = write_and_scan_shredded_variant(decimal, false).await;
     assert_eq!(
         output.value(0),
-        Variant::Decimal16(VariantDecimal16::try_new(123, 2).unwrap())
+        Variant::Decimal4(VariantDecimal4::try_new(123, 2).unwrap())
     );
 
     let date64: ArrayRef = Arc::new(Date64Array::from(vec![86_400_000]));
@@ -344,7 +344,7 @@ async fn variant_scan_reads_wide_physical_decimal_as_decimal128() {
         for (index, value) in [123, -123].into_iter().enumerate() {
             assert_eq!(
                 output.value(index),
-                Variant::Decimal16(VariantDecimal16::try_new(value, 2).unwrap())
+                Variant::Decimal4(VariantDecimal4::try_new(value, 2).unwrap())
             );
         }
     }
