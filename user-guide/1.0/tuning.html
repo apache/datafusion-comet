@@ -855,12 +855,14 @@ flushes sorted spill files. It must not exceed <code class="docutils literal not
 </section>
 <section id="limiting-spill-disk-usage">
 <h3>Limiting Spill Disk Usage<a class="headerlink" href="#limiting-spill-disk-usage" title="Link to this heading">#</a></h3>
-<p>Native operators that spill to disk (aggregate, sort, shuffle) are collectively bounded by
-<code class="docutils literal notranslate"><span class="pre">spark.comet.maxTempDirectorySize</span></code> (default 100 GB). The limit is applied per Spark task, so an
-executor running <code class="docutils literal notranslate"><span class="pre">N</span></code> concurrent tasks may use up to <code class="docutils literal notranslate"><span class="pre">N</span></code> times this value on shared local disks.
-If the limit is reached, further spills fail and the query errors out. Raise this on workloads
-with large sort/aggregate/shuffle spills, or lower it to protect executors on shared disks
-(remembering to divide by task concurrency to reason about the aggregate).</p>
+<p>Native operators that spill to disk (aggregate, sort, shuffle) are bounded by
+<code class="docutils literal notranslate"><span class="pre">spark.comet.maxTempDirectorySize</span></code> (default 100 GB). The operators of one Comet native plan share
+the limit. A Spark task can run more than one native plan at a time, for example the native
+operators on either side of a union or a coalesce, so an executor running <code class="docutils literal notranslate"><span class="pre">N</span></code> concurrent tasks may
+use more than <code class="docutils literal notranslate"><span class="pre">N</span></code> times this value on shared local disks. If the limit is reached, further spills
+fail and the query errors out. Raise this on workloads with large sort/aggregate/shuffle spills, or
+lower it to protect executors on shared disks, remembering that the total across an executor is a
+multiple of this value.</p>
 </section>
 </section>
 <section id="parquet-reader-tuning">

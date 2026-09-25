@@ -870,13 +870,6 @@ with Spark. For dates beyond this range, functions that involve timezone-aware c
 <li><p>The native implementation converts seconds to <code class="docutils literal notranslate"><span class="pre">Float64</span></code>, which can lose microsecond precision, and stores time in nanoseconds, which overflows for large time components (hours, minutes, seconds) that Spark can represent.</p></li>
 </ul>
 </section>
-<section id="maketimestamp">
-<h2>MakeTimestamp<a class="headerlink" href="#maketimestamp" title="Link to this heading">#</a></h2>
-<p>By default, <code class="docutils literal notranslate"><span class="pre">MakeTimestamp</span></code> is evaluated in the JVM using Spark’s own code-generated implementation (run inside the Comet pipeline), which matches Spark exactly. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.MakeTimestamp.allowIncompatible=true</span></code> to opt into Comet’s native implementation instead, which has the following differences from Spark:</p>
-<ul class="simple">
-<li><p>make_timestamp does not support non-UTF8_BINARY collations (https://github.com/apache/datafusion-comet/issues/4646)</p></li>
-</ul>
-</section>
 <section id="nextday">
 <h2>NextDay<a class="headerlink" href="#nextday" title="Link to this heading">#</a></h2>
 <p>By default, <code class="docutils literal notranslate"><span class="pre">NextDay</span></code> is evaluated in the JVM using Spark’s own code-generated implementation (run inside the Comet pipeline), which matches Spark exactly. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.NextDay.allowIncompatible=true</span></code> to opt into Comet’s native implementation instead, which has the following differences from Spark:</p>
@@ -903,13 +896,6 @@ with Spark. For dates beyond this range, functions that involve timezone-aware c
 <p>By default, <code class="docutils literal notranslate"><span class="pre">ToUTCTimestamp</span></code> is evaluated in the JVM using Spark’s own code-generated implementation (run inside the Comet pipeline), which matches Spark exactly. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.ToUTCTimestamp.allowIncompatible=true</span></code> to opt into Comet’s native implementation instead, which has the following differences from Spark:</p>
 <ul class="simple">
 <li><p>Comet’s native timezone parser only accepts IANA zone IDs (e.g. <code class="docutils literal notranslate"><span class="pre">America/Los_Angeles</span></code>) and fixed offsets in <code class="docutils literal notranslate"><span class="pre">+HH:MM</span></code> form. Spark also accepts forms such as <code class="docutils literal notranslate"><span class="pre">GMT+1</span></code>, <code class="docutils literal notranslate"><span class="pre">UTC+1</span></code>, or three-letter abbreviations like <code class="docutils literal notranslate"><span class="pre">PST</span></code>; queries using those forms will throw a native parse error at execution time. See https://github.com/apache/datafusion-comet/issues/2013.</p></li>
-</ul>
-</section>
-<section id="tounixtimestamp">
-<h2>ToUnixTimestamp<a class="headerlink" href="#tounixtimestamp" title="Link to this heading">#</a></h2>
-<p>By default, <code class="docutils literal notranslate"><span class="pre">ToUnixTimestamp</span></code> is evaluated in the JVM using Spark’s own code-generated implementation (run inside the Comet pipeline), which matches Spark exactly. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.ToUnixTimestamp.allowIncompatible=true</span></code> to opt into Comet’s native implementation instead, which has the following differences from Spark:</p>
-<ul class="simple">
-<li><p>to_unix_timestamp does not support non-UTF8_BINARY collations (https://github.com/apache/datafusion-comet/issues/4646)</p></li>
 </ul>
 </section>
 <section id="truncdate">
@@ -1002,12 +988,10 @@ with Spark. For dates beyond this range, functions that involve timezone-aware c
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#fromunixtime">FromUnixTime</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#hours">Hours</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#makeinterval">MakeInterval</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#maketimestamp">MakeTimestamp</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#nextday">NextDay</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#precisetimestampconversion">PreciseTimestampConversion</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#secondstotimestamp">SecondsToTimestamp</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#toutctimestamp">ToUTCTimestamp</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#tounixtimestamp">ToUnixTimestamp</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#truncdate">TruncDate</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#trunctimestamp">TruncTimestamp</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#unixtimestamp">UnixTimestamp</a></li>
