@@ -208,6 +208,31 @@ operators were arranged after Comet's serialization). See the
 [Metrics Guide](metrics.md) for details on the DataFusion metrics that appear
 in this output.
 
+### `spark.comet.explain.planOnly.enabled`
+
+When enabled, Comet plans every query as it normally would, logs the resulting Comet plan and
+coverage summary to the driver log with the prefix `[Comet plan-only]`, and then executes the
+original plan on Spark. Use it to estimate how much of a workload Comet would accelerate
+without changing execution. The report is the same annotated plan that
+`spark.comet.explain.format=verbose` produces, and reflects Comet's post-columnar rules, so a
+stage Comet would revert to Spark for having too many transitions is reported as reverted.
+Requires `spark.comet.exec.enabled=true`.
+
+Keep the following in mind when reading the reports:
+
+- Spark plans scalar and dynamic partition pruning subqueries separately from the query that
+  contains them, so each gets its own report alongside the outer query's. The outer report
+  also counts its subqueries, so do not add the reports together.
+- Only the JVM side of planning runs. Anything that would fail when DataFusion builds the
+  native plan still counts as accelerated, so treat the percentage as an upper bound.
+- Comet's split Iceberg V2 write (`spark.comet.write.iceberg.splitOperator.enabled`) is
+  declined in plan-only mode, so such writes run on, and are reported as, Spark.
+- Under AQE the report describes the plan before any adaptive re-planning, so coverage of the
+  plan that finally executes can differ. In particular, AQE plans subqueries into the outer
+  query only after the report is produced, so the outer report counts their operators as
+  Spark. For subquery-heavy queries, read the per-subquery reports or disable AQE for the
+  evaluation run.
+
 ## Programmatic Access to Fallback Reasons
 
 The configs above route fallback reasons to logs or the SQL UI. If you want

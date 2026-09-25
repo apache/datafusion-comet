@@ -193,9 +193,8 @@ The following scenarios will fall back to the JVM Iceberg reader:
   transform functions (partition pruning still works, but row-level filtering of these
   transforms falls back)
 
-Writes are not accelerated by default. Comet has an experimental, opt-in native writer for
-Iceberg V1 and V2 Parquet tables (`spark.comet.write.iceberg.splitOperator.enabled=true` and
-`spark.comet.iceberg.write.enabled=true`); see [Iceberg Writes](iceberg-writes.md).
+Writes are not covered by this list. By default Iceberg writes use Spark's own writer; see
+[Iceberg Writes](iceberg-writes.md) for the experimental native writer and when it applies.
 
 ### Iceberg UDFs
 

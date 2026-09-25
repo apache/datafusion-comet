@@ -161,7 +161,7 @@ Here is a guide to some of the native metrics.
 | ---------------------- | --------------------------------------------------------------------------------------- |
 | `elapsed_compute`      | Total time excluding any child operators.                                               |
 | `repart_time`          | Time to repartition batches.                                                            |
-| `interleave_time`      | Time to interleave partitioned batches before writing them.                             |
+| `interleave_time`      | Time to gather partitioned rows into output batches before writing.                     |
 | `encode_time`          | Time to encode batches in Arrow IPC format and compress them with the configured codec. |
 | `write_time`           | Time spent writing encoded data to its destination.                                     |
 | `input_batches`        | Number of input batches.                                                                |
