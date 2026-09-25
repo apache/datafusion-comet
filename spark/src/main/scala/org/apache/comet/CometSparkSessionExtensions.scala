@@ -23,7 +23,6 @@ import java.nio.ByteOrder
 
 import org.apache.spark.{SparkConf, SparkEnv}
 import org.apache.spark.internal.Logging
-import org.apache.spark.network.util.ByteUnit
 import org.apache.spark.sql.{SparkSession, SparkSessionExtensions}
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.catalyst.trees.{TreeNode, TreeNodeTag}
@@ -251,53 +250,6 @@ object CometSparkSessionExtensions extends Logging {
 
   def isSpark42Plus: Boolean = {
     org.apache.spark.SPARK_VERSION >= "4.2"
-  }
-
-  /**
-   * Determines required memory overhead in MB per executor process for Comet when running in
-   * on-heap mode.
-   */
-  def getCometMemoryOverheadInMiB(sparkConf: SparkConf): Long = {
-    if (isOffHeapEnabled(sparkConf)) {
-      // off-heap mode sizes the native memory pool from spark.memory.offHeap.size instead
-      // (see CometExecIterator.getMemoryConfig), so this value does not apply
-      return 0
-    }
-    ConfigHelpers.byteFromString(
-      sparkConf.get(
-        COMET_ONHEAP_MEMORY_OVERHEAD.key,
-        COMET_ONHEAP_MEMORY_OVERHEAD.defaultValueString),
-      ByteUnit.MiB)
-  }
-
-  /**
-   * Calculates required memory overhead in bytes per executor process for Comet when running in
-   * on-heap mode.
-   */
-  def getCometMemoryOverhead(sparkConf: SparkConf): Long = {
-    ByteUnit.MiB.toBytes(getCometMemoryOverheadInMiB(sparkConf))
-  }
-
-  /**
-   * Calculates required shuffle memory size in bytes per executor process for Comet when running
-   * in on-heap mode.
-   */
-  def getCometShuffleMemorySize(sparkConf: SparkConf, conf: SQLConf = SQLConf.get): Long = {
-    assert(!isOffHeapEnabled(sparkConf))
-
-    val cometMemoryOverhead = getCometMemoryOverheadInMiB(sparkConf)
-
-    val overheadFactor = COMET_SHUFFLE_JVM_MEMORY_FACTOR.get(conf)
-
-    val shuffleMemorySize = (overheadFactor * cometMemoryOverhead).toLong
-    if (shuffleMemorySize > cometMemoryOverhead) {
-      logWarning(
-        s"Configured shuffle memory size $shuffleMemorySize is larger than Comet memory overhead " +
-          s"$cometMemoryOverhead, using Comet memory overhead instead.")
-      ByteUnit.MiB.toBytes(cometMemoryOverhead)
-    } else {
-      ByteUnit.MiB.toBytes(shuffleMemorySize)
-    }
   }
 
   def isOffHeapEnabled(sparkConf: SparkConf): Boolean = {

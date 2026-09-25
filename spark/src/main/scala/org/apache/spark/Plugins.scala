@@ -38,7 +38,7 @@ import org.apache.comet.annotation.Public
 /**
  * Comet driver plugin. This class is loaded by Spark's plugin framework. It will be instantiated
  * on driver side only. It will update the SparkConf with the extra configuration provided by
- * Comet, e.g., Comet memory configurations.
+ * Comet, e.g., the cache serializer and the session extension.
  *
  * Note that `SparkContext.conf` is spark package only. So this plugin must be in spark package.
  * Although `SparkContext.getConf` is public, it returns a copy of the SparkConf, so it cannot
@@ -153,13 +153,14 @@ object CometDriverPlugin extends Logging {
   }
 
   // Comet's native allocations are made by the Rust global allocator and live in the native heap.
-  // The share that operators reserve is charged against a memory pool, but everything else --
-  // expression kernels and Arrow array builders, decompression buffers, Parquet reader structures,
-  // object store buffers, the tokio runtime, allocator overhead -- is covered by no budget at all,
-  // and neither is Comet's JVM-side Arrow allocator. The only slack the executor container has for
-  // that is spark.executor.memoryOverhead, which the JVM's own non-heap usage already draws on.
+  // In off-heap mode the share that operators reserve is charged against a memory pool, but
+  // everything else -- expression kernels and Arrow array builders, decompression buffers, Parquet
+  // reader structures, object store buffers, the tokio runtime, allocator overhead -- is covered by
+  // no budget at all, and neither is Comet's JVM-side Arrow allocator. In on-heap mode the pool is
+  // unbounded and nothing is bounded at all. The only slack the executor container has for that is
+  // spark.executor.memoryOverhead, which the JVM's own non-heap usage already draws on.
   //
-  // Comet used to add spark.comet.memoryOverhead to it here, but a driver plugin cannot: on Spark
+  // Comet used to add an overhead of its own to it here, but a driver plugin cannot: on Spark
   // 3.4, 3.5 and 4.0, SparkContext builds the default ResourceProfile before it creates the plugin
   // container, and the cluster managers size executors from that profile rather than re-reading
   // the conf, so the new value never reached the container. Say so while the application is still
