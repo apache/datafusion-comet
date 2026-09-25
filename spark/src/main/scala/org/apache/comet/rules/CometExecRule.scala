@@ -408,6 +408,16 @@ case class CometExecRule(session: SparkSession)
           }
         }
 
+      // For AQE table-cache stage (Spark 3.5+) on a Comet cache scan. The operators above it are
+      // planned again once it materializes, and like a Comet shuffle stage it is a native input.
+      case s: QueryStageExec if s.plan.isInstanceOf[CometInMemoryTableScanExec] =>
+        convertToComet(s, CometExchangeSink).getOrElse(s)
+
+      // A CometSparkToColumnarExec from an earlier pass, which AQE reuses over a table-cache stage
+      // because it carries its scan's logical link. Wrap it again so re-planned parents convert.
+      case c: CometSparkToColumnarExec =>
+        convertToComet(c, CometScanWrapper).getOrElse(c)
+
       case op if shouldApplySparkToColumnar(conf, op) =>
         convertToComet(op, CometSparkToColumnarExec).getOrElse(op)
 
@@ -893,7 +903,8 @@ case class CometExecRule(session: SparkSession)
         case writeFiles: WriteFilesExec => Seq(writeFiles.child)
         case other => Seq(other)
       }
-      if ((op.output ++ dataProducingChildren.flatMap(_.output)).exists(attr =>
+      if (!op.isInstanceOf[CometScanExec] &&
+        (op.output ++ dataProducingChildren.flatMap(_.output)).exists(attr =>
           containsVariantType(attr.dataType))) {
         withFallbackReason(
           op,

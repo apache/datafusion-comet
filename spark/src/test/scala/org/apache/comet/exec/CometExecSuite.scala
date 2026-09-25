@@ -39,7 +39,7 @@ import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, Comet
 import org.apache.spark.sql.connector.catalog.InMemoryTableCatalog
 import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, BroadcastQueryStageExec}
-import org.apache.spark.sql.execution.columnar.CometInMemoryRelationHelper
+import org.apache.spark.sql.execution.columnar.{CometInMemoryRelationHelper, InMemoryTableScanExec}
 import org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormat
 import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, BroadcastExchangeLike, ReusedExchangeExec, ShuffleExchangeExec}
 import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, BroadcastNestedLoopJoinExec, CartesianProductExec, SortMergeJoinExec}
@@ -3945,6 +3945,32 @@ class CometExecSuite extends CometTestBase {
         checkSparkAnswerAndOperator(df, includeClasses = Seq(classOf[CometSparkToColumnarExec]))
       } finally {
         spark.catalog.uncacheTable("foreign_cache_serializer")
+      }
+    }
+  }
+
+  // https://github.com/apache/datafusion-comet/issues/6202
+  test("SparkToColumnar over InMemoryTableScanExec survives the AQE re-plan") {
+    assume(isSpark35Plus, "Table-cache query stages require Spark 3.5+")
+    // CometInMemoryCacheSuite covers this too, but registers Comet's rules twice, through its
+    // plugin and CometTestBase. This suite registers them once, as production does. Reset the
+    // serializer so the relation is cached in Spark's format, as in the test above.
+    CometInMemoryRelationHelper.clearSerializer()
+    withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true") {
+      withTempView("table_cache_stage") {
+        spark
+          .range(0, 10000, 1, 4)
+          .selectExpr("id", "id % 10 AS k")
+          .createOrReplaceTempView("table_cache_stage")
+        spark.catalog.cacheTable("table_cache_stage")
+        val df = spark.sql("SELECT k, count(*) FROM table_cache_stage GROUP BY k")
+        checkAnswer(df, (0L until 10L).map(k => Row(k, 1000L)))
+        val plan = df.queryExecution.executedPlan
+        checkCometOperatorsInFinalPlan(plan, classOf[InMemoryTableScanExec])
+        val conversions = collect(plan) {
+          case c: CometSparkToColumnarExec if isTableCacheStage(c.child) => c
+        }
+        assert(conversions.size == 1, plan)
       }
     }
   }
