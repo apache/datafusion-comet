@@ -1274,6 +1274,89 @@ def check_cache_save_scope():
     return not failures
 
 
+TPC_WORKFLOW = WORKFLOWS / "pr_build_linux.yml"
+TPC_WORKFLOW_HASH = re.compile(
+    r"hashFiles\(\s*['\"]\.github/workflows/pr_build_linux\.yml['\"]\s*\)"
+)
+TPCDS_KIT_CHECKOUT = re.compile(
+    r"repository:[ \t]*databricks/tpcds-kit\n"
+    r"(?:[ \t]+[^\n]*\n)*?"
+    r"[ \t]+ref:[ \t]*([0-9a-f]{40})"
+)
+TPCH_CACHE_KEY = re.compile(
+    r"key:\s*tpch-sf1-\$\{\{\s*hashFiles\("
+    r"'spark/src/test/scala/org/apache/spark/sql/GenTPCHData\.scala'\)\s*\}\}"
+)
+TPCDS_CACHE_KEY = re.compile(r"key:\s*tpcds-sf1-([0-9a-f]{12})\b")
+GIT_COMMIT = re.compile(r"\b[0-9a-f]{40}\b")
+GIT_CHECKOUT = re.compile(r"git checkout")
+
+
+def check_tpc_dataset_caches():
+    """The TPC datasets are keyed on a pinned generator, not on the workflow file.
+
+    Both dataset caches used `hashFiles('.github/workflows/pr_build_linux.yml')`
+    as their key, and PR #5973 left them exempt from the main-only save rule
+    because `./tpch` and `./tpcds-sf-1` are not dependency trees. The workflow
+    file is one of the most edited files in the repository, so the key rotated
+    with every CI change, orphaning main's entry and regenerating a
+    multi-hundred-megabyte dataset -- and the dataset kept competing with the
+    ~4.1 GiB `Linux-cargo-debug` cache whose eviction costs a ~26 minute cold
+    build. Key them on the generator input and pin the generators themselves, so
+    a dataset is regenerated only when the generator changes.
+    """
+    failures = []
+    text = TPC_WORKFLOW.read_text(encoding="utf-8")
+    workflow_hash = TPC_WORKFLOW_HASH.search(text)
+    if workflow_hash:
+        failures.append(
+            f"{TPC_WORKFLOW}: `{workflow_hash.group(0)}` keys a TPC dataset on "
+            f"this workflow file, so every CI edit rotates the cache key and "
+            f"regenerates the SF=1 dataset. Key it on the pinned generator"
+        )
+    if not TPCH_CACHE_KEY.search(text):
+        failures.append(
+            f"{TPC_WORKFLOW}: the TPC-H dataset cache key is not keyed on "
+            f"`GenTPCHData.scala`, so a generator change would not rotate it"
+        )
+    kit = TPCDS_KIT_CHECKOUT.search(text)
+    if not kit:
+        failures.append(
+            f"{TPC_WORKFLOW}: the `databricks/tpcds-kit` checkout has no pinned "
+            f"`ref:`, so the TPC-DS dataset can change without the key rotating"
+        )
+    else:
+        key = TPCDS_CACHE_KEY.search(text)
+        if not key or key.group(1) != kit.group(1)[:12]:
+            failures.append(
+                f"{TPC_WORKFLOW}: the TPC-DS dataset cache key does not embed the "
+                f"`tpcds-kit` revision `{kit.group(1)[:12]}`, so a generator bump "
+                f"would not rotate it"
+            )
+    for line_no, uses, step in _cache_steps(text.splitlines()):
+        if not CACHE_RW_USES.match(uses):
+            continue
+        body = "\n".join(step)
+        if "tpch" not in body and "tpcds" not in body:
+            continue
+        failures.append(
+            f"{TPC_WORKFLOW}:{line_no}: a TPC dataset cache uses "
+            f"`actions/cache@vN`, whose save runs in an implicit post step that "
+            f"no `if:` can reach. Split it into `actions/cache/restore` plus a "
+            f"main-only `actions/cache/save`"
+        )
+    generator = Path("spark/src/test/scala/org/apache/spark/sql/GenTPCHData.scala")
+    generator_text = generator.read_text(encoding="utf-8")
+    if not (GIT_COMMIT.search(generator_text) and GIT_CHECKOUT.search(generator_text)):
+        failures.append(
+            f"{generator}: the tpch-dbgen checkout is not pinned to a commit, so "
+            f"the TPC-H dataset can change without the cache key rotating"
+        )
+    for failure in failures:
+        print(f"tpc dataset cache: {failure}")
+    return not failures
+
+
 if __name__ == "__main__":
     ok = check_change_filters()
     ok = check_event_policy() and ok
@@ -1287,6 +1370,7 @@ if __name__ == "__main__":
     ok = check_nightly_scope() and ok
     ok = check_nightly_base_fallback() and ok
     ok = check_cache_save_scope() and ok
+    ok = check_tpc_dataset_caches() and ok
     ok = check_local_ci_config() and ok
     if not ok:
         sys.exit(1)
