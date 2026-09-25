@@ -84,6 +84,7 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
   // `oss` is deliberately absent: iceberg-rust has an OSS backend, but Comet does not forward
   // `oss.*` catalog properties to it and no functional test covers the path, so an OSS write
   // could silently drop endpoint/credential configuration. Fail closed until it is covered.
+  // `gs` is additionally gated on the resolved FileIO (`requireGcsFileIOForGcsDataLocation`).
   private val SupportedStorageSchemes: Set[String] =
     Set("file", "memory", "s3", "s3a", "gs")
   private val MinUnsupportedFormatVersion = 3
@@ -192,6 +193,7 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
     requirePositiveIntParquetSizes,
     requireNoParquetHadoopConfOverrides,
     requireSupportedStorageScheme,
+    requireGcsFileIOForGcsDataLocation,
     requireExecutorReflectionResolvable)
 
   private val requireFormatParquet: TriggerRule = ctx =>
@@ -305,17 +307,48 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
       .find(k => !IgnoredHadoopParquetConfKeys.contains(k))
       .map(k => s"Hadoop configuration sets $k (reaches iceberg-java's writer but not native)")
 
+  private def storageScheme(location: String): String =
+    if (location.contains("://")) {
+      location.substring(0, location.indexOf("://")).toLowerCase(Locale.ROOT)
+    } else {
+      "file"
+    }
+
   private val requireSupportedStorageScheme: TriggerRule = ctx =>
     IcebergReflection.getDataLocation(ctx.table) match {
       case None => Some("could not resolve the table data location")
       case Some(location) =>
-        val scheme = if (location.contains("://")) {
-          location.substring(0, location.indexOf("://")).toLowerCase(Locale.ROOT)
-        } else {
-          "file"
-        }
+        val scheme = storageScheme(location)
         if (SupportedStorageSchemes.contains(scheme)) None
         else Some(s"unsupported storage scheme: $scheme")
+    }
+
+  // HadoopFileIO takes its GCS configuration from `fs.gs.*`, which is not forwarded to the
+  // native writer (only `fs.s3a.*` is bridged). Admit a gs:// data location only when the FileIO
+  // Iceberg resolves for it is a GCSFileIO, whose `gcs.*` settings are forwarded.
+  private val requireGcsFileIOForGcsDataLocation: TriggerRule = ctx =>
+    IcebergReflection.getDataLocation(ctx.table).filter(storageScheme(_) == "gs").flatMap {
+      location =>
+        val resolved = IcebergReflection
+          .getFileIO(ctx.table)
+          .flatMap(io => IcebergReflection.resolveFileIOClass(io, location))
+        gcsDataLocationRejection(location, resolved)
+    }
+
+  private[comet] def gcsDataLocationRejection(
+      location: String,
+      resolvedFileIO: Option[Class[_]]): Option[String] =
+    resolvedFileIO match {
+      case Some(cls)
+          if IcebergReflection
+            .classNameInHierarchy(cls, Set(IcebergReflection.ClassNames.GCS_FILE_IO)) =>
+        None
+      case Some(cls) =>
+        Some(
+          s"gs:// data location $location is written through ${cls.getName}, whose fs.gs.* " +
+            "Hadoop configuration is not forwarded to the native writer")
+      case None =>
+        Some(s"could not resolve the FileIO for the gs:// data location $location")
     }
 
   // The commit-message assembly that runs on executors after iceberg-rust has already written

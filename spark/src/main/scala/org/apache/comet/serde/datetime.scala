@@ -40,12 +40,7 @@ private object CometGetDateField extends Enumeration {
   val Year: Value = Value("year")
   val Month: Value = Value("month")
   val DayOfMonth: Value = Value("day")
-  // Datafusion: day of the week where Sunday is 0, but spark sunday is 1 (1 = Sunday,
-  // 2 = Monday, ..., 7 = Saturday).
-  val DayOfWeek: Value = Value("dow")
   val DayOfYear: Value = Value("doy")
-  // Datafusion `isodow` is 1..=7 with Monday=1; Spark `WeekDay` is 0..=6 with Monday=0.
-  val WeekDay: Value = Value("isodow")
   val WeekOfYear: Value = Value("week")
   val Quarter: Value = Value("quarter")
 }
@@ -111,61 +106,33 @@ object CometDayOfMonth
   }
 }
 
-object CometDayOfWeek
-    extends CometExpressionSerde[DayOfWeek]
-    with CometExprGetDateField[DayOfWeek] {
+/**
+ * Spark `dayofweek` numbers Sunday = 1 through Saturday = 7. The native `spark_dayofweek` kernel
+ * derives that from the epoch day with a single modulo, replacing a `datepart('dow', ..)` call
+ * (which builds a calendar datetime per row) plus a separate `+ 1` arithmetic node.
+ */
+object CometDayOfWeek extends CometExpressionSerde[DayOfWeek] {
   override def convert(
       expr: DayOfWeek,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    // Datafusion: day of the week where Sunday is 0, but spark sunday is 1 (1 = Sunday,
-    // 2 = Monday, ..., 7 = Saturday). So we need to add 1 to the result of datepart(dow, ...)
-    val optExpr = getDateField(expr, CometGetDateField.DayOfWeek, inputs, binding)
-      .zip(exprToProtoInternal(Literal(1), inputs, binding))
-      .map { case (left, right) =>
-        Expr
-          .newBuilder()
-          .setAdd(
-            ExprOuterClass.MathExpr
-              .newBuilder()
-              .setLeft(left)
-              .setRight(right)
-              .setEvalMode(ExprOuterClass.EvalMode.LEGACY)
-              .setReturnType(serializeDataType(IntegerType).get)
-              .build())
-          .build()
-      }
-      .headOption
-    optExpr
+    val childExpr = exprToProtoInternal(expr.child, inputs, binding)
+    scalarFunctionExprToProto("spark_dayofweek", childExpr)
   }
 }
 
-object CometWeekDay extends CometExpressionSerde[WeekDay] with CometExprGetDateField[WeekDay] {
+/**
+ * Spark `weekday` numbers Monday = 0 through Sunday = 6, a different convention from
+ * [[CometDayOfWeek]]. The native `spark_weekday` kernel derives it from the epoch day directly,
+ * replacing `datepart('isodow', ..)` plus a `- 1` arithmetic node.
+ */
+object CometWeekDay extends CometExpressionSerde[WeekDay] {
   override def convert(
       expr: WeekDay,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    // Datafusion `isodow` is 1..=7 with Monday=1, but Spark `WeekDay` is 0..=6 with Monday=0,
-    // so subtract 1 from the result of datepart(isodow, ...).
-    // TODO: fix upstream to avoid substraction
-    // https://github.com/apache/datafusion/issues/22599
-    val optExpr = getDateField(expr, CometGetDateField.WeekDay, inputs, binding)
-      .zip(exprToProtoInternal(Literal(1), inputs, binding))
-      .map { case (left, right) =>
-        Expr
-          .newBuilder()
-          .setSubtract(
-            ExprOuterClass.MathExpr
-              .newBuilder()
-              .setLeft(left)
-              .setRight(right)
-              .setEvalMode(ExprOuterClass.EvalMode.LEGACY)
-              .setReturnType(serializeDataType(IntegerType).get)
-              .build())
-          .build()
-      }
-      .headOption
-    optExpr
+    val childExpr = exprToProtoInternal(expr.child, inputs, binding)
+    scalarFunctionExprToProto("spark_weekday", childExpr)
   }
 }
 
@@ -290,15 +257,12 @@ private[serde] object DatetimeCollation extends CometTypeShim {
     expr.children.exists(c => hasNonDefaultStringCollation(c.dataType))
 }
 
-object CometUnixTimestamp extends CometExpressionSerde[UnixTimestamp] {
-
-  private val collationReason = DatetimeCollation.reason("unix_timestamp")
+object CometUnixTimestamp
+    extends CometExpressionSerde[UnixTimestamp]
+    with CodegenDispatchFallback {
 
   override def getUnsupportedReasons(): Seq[String] = Seq(
-    "Only `DateType`, `TimestampType`, and `TimestampNTZType` inputs are supported.")
-
-  override def getIncompatibleReasons(): Seq[String] =
-    DatetimeCollation.incompatibleReasons("unix_timestamp")
+    "String inputs, including collated strings, have no native implementation.")
 
   private def isSupportedInputType(expr: UnixTimestamp): Boolean = {
     expr.children.head.dataType match {
@@ -309,16 +273,10 @@ object CometUnixTimestamp extends CometExpressionSerde[UnixTimestamp] {
   }
 
   override def getSupportLevel(expr: UnixTimestamp): SupportLevel = {
-    // The input type is screened ahead of the collation check on purpose. A non-date/timestamp
-    // input has no native path at all, so it must report `Unsupported` rather than
-    // `Incompatible`: the latter is waved straight through to `convert` when
-    // `spark.comet.expression.UnixTimestamp.allowIncompatible=true`, and the native kernel then
-    // raises an execution error on the string child instead of falling back to Spark.
+    // Strings have no native path, even when incompatible expressions are allowed.
     if (!isSupportedInputType(expr)) {
       val inputType = expr.children.head.dataType
       Unsupported(Some(s"unix_timestamp does not support input type: $inputType"))
-    } else if (DatetimeCollation.hasNonDefaultCollation(expr)) {
-      Incompatible(Some(collationReason))
     } else {
       Compatible()
     }
@@ -906,23 +864,7 @@ object CometAddMonths extends CometCodegenDispatch[AddMonths]
 
 object CometMonthsBetween extends CometCodegenDispatch[MonthsBetween]
 
-object CometMakeTimestamp
-    extends CometCodegenDispatch[MakeTimestamp]
-    with CodegenDispatchFallback {
-
-  private val collationReason = DatetimeCollation.reason("make_timestamp")
-
-  override def getIncompatibleReasons(): Seq[String] =
-    DatetimeCollation.incompatibleReasons("make_timestamp")
-
-  override def getSupportLevel(expr: MakeTimestamp): SupportLevel = {
-    if (DatetimeCollation.hasNonDefaultCollation(expr)) {
-      Incompatible(Some(collationReason))
-    } else {
-      Compatible()
-    }
-  }
-}
+object CometMakeTimestamp extends CometCodegenDispatch[MakeTimestamp]
 
 object CometMicrosToTimestamp extends CometCodegenDispatch[MicrosToTimestamp]
 
@@ -934,23 +876,7 @@ object CometUnixMillis extends CometCodegenDispatch[UnixMillis]
 
 object CometUnixMicros extends CometCodegenDispatch[UnixMicros]
 
-object CometToUnixTimestamp
-    extends CometCodegenDispatch[ToUnixTimestamp]
-    with CodegenDispatchFallback {
-
-  private val collationReason = DatetimeCollation.reason("to_unix_timestamp")
-
-  override def getIncompatibleReasons(): Seq[String] =
-    DatetimeCollation.incompatibleReasons("to_unix_timestamp")
-
-  override def getSupportLevel(expr: ToUnixTimestamp): SupportLevel = {
-    if (DatetimeCollation.hasNonDefaultCollation(expr)) {
-      Incompatible(Some(collationReason))
-    } else {
-      Compatible()
-    }
-  }
-}
+object CometToUnixTimestamp extends CometCodegenDispatch[ToUnixTimestamp]
 
 object CometGetTimestamp extends CometCodegenDispatch[GetTimestamp]
 

@@ -31,6 +31,12 @@
 # import sys
 # sys.path.insert(0, os.path.abspath('.'))
 
+from pathlib import Path
+
+# docs/, whether this file is read from docs/source/ (a direct sphinx-build) or
+# from the docs/temp/ copy that docs/build.sh generates.
+DOCS_DIR = Path(__file__).resolve().parent.parent
+
 # -- Project information -----------------------------------------------------
 
 project = 'Apache DataFusion Comet'
@@ -53,12 +59,45 @@ extensions = [
     'sphinx.ext.napoleon',
     'myst_parser',
     'sphinx_reredirects',
+    # Renders the ```mermaid fences in the contributor guide. See mermaid_output_format
+    # below: the diagrams are drawn at build time, not in the reader's browser.
+    'sphinxcontrib.mermaid',
 ]
 
 source_suffix = {
     '.rst': 'restructuredtext',
     '.md': 'markdown',
 }
+
+# Route ```mermaid fences to the mermaid directive rather than treating them as a literal
+# code block, so the same source renders as a diagram here and on github.com, which
+# understands that fence natively.
+myst_fence_as_directive = ['mermaid']
+
+# Draw the diagrams at build time with mermaid-cli (mmdc) instead of shipping mermaid.js to
+# the browser. The default 'raw' format emits `import mermaid from "https://cdn.jsdelivr.net/..."`,
+# and the ASF serves *.apache.org with a Content-Security-Policy whose script-src allows only
+# 'self' plus a few apache.org hosts, so that import is blocked and no diagram ever renders on
+# the published site. Pre-rendered SVG is served from 'self' and needs no script at all.
+# apache/arrow sets this for the same reason.
+#
+# This makes mmdc a build dependency: `npm install -g @mermaid-js/mermaid-cli`. Without it the
+# build still succeeds but logs a warning and drops the diagrams. See docs/README.md.
+mermaid_output_format = 'svg'
+
+# -b transparent: render on a transparent background so one SVG suits both the light and dark
+# site themes; mmdc otherwise bakes in a white background.
+#
+# -p puppeteer-config.json: mmdc draws each diagram by driving headless Chrome through puppeteer.
+# Chrome's setuid sandbox needs unprivileged user namespaces, which Ubuntu restricts by AppArmor
+# policy from 23.10 onwards, so on an ubuntu-24.04 runner Chrome can fail to launch at all. The
+# config file turns that sandbox off; the CI container is already the isolation boundary.
+#
+# Any such failure is invisible without help: mmdc exits non-zero, sphinxcontrib-mermaid turns
+# that into a warning and drops the diagram, and the build publishes a page with a hole in it.
+# That is issue #6062, and dev/ci/check-mermaid.py is what makes it loud. It reads the arguments
+# below rather than repeating them, so the check renders exactly as the build does.
+mermaid_params = ['-b', 'transparent', '-p', str(DOCS_DIR / 'puppeteer-config.json')]
 
 # Add any paths that contain templates here, relative to this directory.
 templates_path = ['_templates']

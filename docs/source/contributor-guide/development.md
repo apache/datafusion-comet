@@ -567,6 +567,12 @@ It is possible to debug both native and JVM code concurrently as described in th
 
 ## Submitting a Pull Request
 
+Use `git push` for normal updates to your PR branch. If you need to force push after a rebase
+or amend, use `git push --force-with-lease` instead of `git push --force` (or `-f`). This reduces
+the risk of accidentally overwriting another maintainer's commits when multiple people push
+to the same PR branch. If the lease check rejects the push, inspect and integrate the remote
+changes before retrying; do not switch to `--force` to bypass the check.
+
 Before submitting a pull request, follow this checklist to ensure your changes are ready:
 
 ### 1. Format Your Code
@@ -667,9 +673,10 @@ excluded and how to run it. Run a manual suite with:
 
 Only add a suite to that list with a good reason; the default is that a new suite runs in CI.
 
-The macOS suites only run in the merge queue by default. See
-[Continuous Integration](ci.md) for the two tiers and the labels that opt a pull request into a
-queue-only suite.
+On a pull request and in the merge queue the Linux build runs these suites against the default
+Spark profile (4.1) only; the nightly run covers the other Spark profiles, and the macOS suites
+only run in the merge queue by default. See [Continuous Integration](ci.md) for the three tiers
+and the labels that opt a pull request into a queue-only or nightly suite.
 
 ### Pre-PR Summary
 

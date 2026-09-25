@@ -29,20 +29,60 @@ Comet operators report the following metrics in the Spark SQL UI.
 | ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `scan time` | Total time to scan a Parquet file. This is not comparable to the same metric in Spark because Comet's scan metric is more accurate. Although both Comet and Spark measure the time in nanoseconds, Spark rounds this time to the nearest millisecond per batch and Comet does not. |
 
+### CometIcebergNativeScan
+
+The native Iceberg scan reports two groups of metrics. The runtime metrics are produced natively
+during execution; the planning metrics are Iceberg's own scan-report counters, computed by
+Iceberg's Java planner on the driver and surfaced here so they show in the UI as they do for a
+plain Spark + Iceberg `BatchScan`.
+
+| Metric                            | Description                                                                                                                                                                                                                                                                                                                          |
+| --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `number of output rows`           | Rows produced by the scan.                                                                                                                                                                                                                                                                                                           |
+| `number of bytes scanned`         | Bytes read from storage, including data and delete files.                                                                                                                                                                                                                                                                            |
+| `number of file splits processed` | File scan tasks (splits) read by this scan.                                                                                                                                                                                                                                                                                          |
+| `scan time`                       | Time spent in the native scan's record-batch polling, covering the iceberg-rust reader plus Comet's schema adaptation. It excludes time the stream spends waiting between polls, so it is decode/compute time, not end-to-end scan latency. This differs from the `scan time` under `CometScanExec`, which times Parquet file reads. |
+
+The planning metrics below mirror Iceberg's `ScanReport`. They are driver-side values known after
+scan planning and do not change during execution.
+
+| Metric                   | Description                                         |
+| ------------------------ | --------------------------------------------------- |
+| `totalPlanningDuration`  | Time Iceberg spent planning the scan.               |
+| `totalDataManifest`      | Data manifests in the snapshot.                     |
+| `scannedDataManifests`   | Data manifests read during planning.                |
+| `skippedDataManifests`   | Data manifests skipped by partition/stat filtering. |
+| `resultDataFiles`        | Data files selected for the scan.                   |
+| `skippedDataFiles`       | Data files skipped by filtering.                    |
+| `totalDataFileSize`      | Total size of the selected data files.              |
+| `totalDeleteManifests`   | Delete manifests in the snapshot.                   |
+| `scannedDeleteManifests` | Delete manifests read during planning.              |
+| `skippedDeleteManifests` | Delete manifests skipped by filtering.              |
+| `resultDeleteFiles`      | Delete files applied to the scan.                   |
+| `skippedDeleteFiles`     | Delete files skipped by filtering.                  |
+| `totalDeleteFileSize`    | Total size of the applied delete files.             |
+| `equalityDeleteFiles`    | Equality delete files applied.                      |
+| `positionalDeleteFiles`  | Positional delete files applied.                    |
+| `indexedDeleteFiles`     | Delete files served from the delete-file index.     |
+
+Iceberg's `numDeletes` (deletes applied at read time) is not reported: it is a Java-reader runtime
+counter, and Comet reads natively through iceberg-rust, which exposes no deletes-applied count, so
+the value would always be 0.
+
 ### Hash Joins
 
 With `spark.comet.exec.join.dynamicFilter.enabled=true`, native broadcast and shuffled hash joins
 report these additional metric keys. See [Join Runtime Filters](tuning.md#join-runtime-filters) for
 eligibility and reader restrictions.
 
-| Metric                                   | Description                                                       |
-| ---------------------------------------- | ----------------------------------------------------------------- |
-| `dynamic_filter_rows_evaluated`          | Probe rows evaluated by the runtime filter.                       |
-| `dynamic_filter_rows_pruned`             | Probe rows rejected by that filter before the hash probe.         |
-| `dynamic_filter_rows_bypassed`           | Probe rows passed through while the runtime filter is inactive.   |
-| `dynamic_filter_eval_time`               | Time evaluating the runtime filter.                               |
-| `dynamic_filter_reader_filters_attached` | Executions that attach their runtime filter to a native reader.   |
-| `dynamic_filter_reader_filters_skipped`  | Executions whose probe input is ineligible for reader attachment. |
+| Metric                                 | Description                                                       |
+| -------------------------------------- | ----------------------------------------------------------------- |
+| `dynamic_filter_join_rows_evaluated`   | Probe rows evaluated by the runtime filter.                       |
+| `dynamic_filter_join_rows_pruned`      | Probe rows rejected by that filter before the hash probe.         |
+| `dynamic_filter_join_rows_bypassed`    | Probe rows passed through while the runtime filter is inactive.   |
+| `dynamic_filter_join_eval_time`        | Time evaluating the runtime filter.                               |
+| `dynamic_filter_join_filters_attached` | Executions that attach their runtime filter to a native reader.   |
+| `dynamic_filter_join_filters_skipped`  | Executions whose probe input is ineligible for reader attachment. |
 
 The row counters measure residual filtering of decoded probe batches. They exclude rows skipped
 by the reader. An attached filter does not guarantee that any row groups are pruned: compare the
@@ -99,7 +139,7 @@ Here is a guide to some of the native metrics.
 | ---------------------- | --------------------------------------------------------------------- |
 | `elapsed_compute`      | Total time excluding any child operators.                             |
 | `repart_time`          | Time to repartition batches.                                          |
-| `interleave_time`      | Time to interleave partitioned batches before writing them.           |
+| `interleave_time`      | Time to gather partitioned rows into output batches before writing.   |
 | `ipc_time`             | Time to encode batches in IPC format and compress using ZSTD.         |
 | `mempool_time`         | Time interacting with memory pool.                                    |
 | `write_time`           | Time spent writing bytes to disk.                                     |
