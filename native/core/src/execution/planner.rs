@@ -4538,6 +4538,142 @@ mod tests {
         assert_eq!("ScanExec", projection_exec.children[0].native_plan.name());
     }
 
+    /// A `Final` HashAggregate grouping a Binary scan column, with useLargeDataTypes on.
+    fn create_final_binary_group_by() -> Operator {
+        let binary = spark_expression::DataType {
+            type_id: 8, // Bytes
+            type_info: None,
+        };
+        let scan = Operator {
+            plan_id: 0,
+            sql_text_pool: vec![],
+            children: vec![],
+            op_struct: Some(OpStruct::Scan(spark_operator::Scan {
+                fields: vec![binary.clone()],
+                source: "".to_string(),
+            })),
+        };
+        Operator {
+            plan_id: 1,
+            sql_text_pool: vec![],
+            children: vec![scan],
+            op_struct: Some(OpStruct::HashAgg(spark_operator::HashAggregate {
+                grouping_exprs: vec![Expr {
+                    expr_struct: Some(Bound(spark_expression::BoundReference {
+                        index: 0,
+                        datatype: Some(binary),
+                    })),
+                    query_context: None,
+                    expr_id: None,
+                }],
+                agg_exprs: vec![],
+                mode: spark_operator::AggregateMode::Final as i32,
+                expr_modes: vec![],
+                initial_input_buffer_offset: 0,
+                ordered_by_grouping_keys: false,
+                use_large_data_types: true,
+            })),
+        }
+    }
+
+    /// DataFusion's final hash aggregation spills against its input schema, so a promoted key has
+    /// to reach it as an input column of the promoted type, not as a cast group-by expression.
+    #[test]
+    fn final_aggregate_promotes_group_keys_at_its_input() {
+        use datafusion::physical_plan::aggregates::AggregateExec;
+        use datafusion::physical_plan::projection::ProjectionExec;
+
+        let (_scans, _shuffle_scans, plan) = PhysicalPlanner::default()
+            .create_plan(&create_final_binary_group_by(), &mut vec![], 1)
+            .unwrap();
+
+        // The key leaves the operator as Binary again.
+        assert_eq!(
+            plan.native_plan.schema().field(0).data_type(),
+            &DataType::Binary
+        );
+        let children = plan.native_plan.children();
+        let aggregate = children[0]
+            .downcast_ref::<AggregateExec>()
+            .expect("the revert should wrap the AggregateExec");
+        assert!(aggregate.input().is::<ProjectionExec>());
+        assert_eq!(
+            aggregate.schema().field(0).data_type(),
+            &DataType::LargeBinary
+        );
+        assert_eq!(
+            aggregate.input().schema().field(0).data_type(),
+            &DataType::LargeBinary
+        );
+    }
+
+    /// Before the keys were promoted at the input, the first spill of this aggregate failed with
+    /// `column types must match schema types, expected Binary but found LargeBinary at column
+    /// index 0`.
+    #[tokio::test]
+    async fn final_aggregate_with_large_group_keys_survives_spill() {
+        use arrow::array::BinaryArray;
+        use datafusion::execution::runtime_env::RuntimeEnvBuilder;
+        use datafusion::physical_plan::aggregates::AggregateExec;
+
+        const NUM_KEYS: usize = 50_000;
+        const INPUT_BATCH_ROWS: usize = 512;
+
+        // The pool is small enough that the aggregate spills several times. DataFusion does not
+        // reserve the sorted chunks it writes while spilling, so the session batch size, which
+        // sets the chunk size, stays small to fit in the headroom left when a spill starts.
+        let runtime = RuntimeEnvBuilder::new()
+            .with_memory_limit(1024 * 1024, 1.0)
+            .build_arc()
+            .unwrap();
+        let session =
+            SessionContext::new_with_config_rt(SessionConfig::new().with_batch_size(16), runtime);
+        let task_ctx = session.task_ctx();
+        let planner = PhysicalPlanner::new(Arc::new(session), 0);
+        let (mut scans, _shuffle_scans, plan) = planner
+            .create_plan(&create_final_binary_group_by(), &mut vec![], 1)
+            .unwrap();
+
+        let mut inputs = (0..NUM_KEYS)
+            .step_by(INPUT_BATCH_ROWS)
+            .map(|start| {
+                let end = (start + INPUT_BATCH_ROWS).min(NUM_KEYS);
+                let keys = BinaryArray::from_iter_values(
+                    (start..end).map(|i| format!("key-{i:059}").into_bytes()),
+                );
+                InputBatch::Batch(vec![Arc::new(keys) as ArrayRef], end - start)
+            })
+            .chain(std::iter::once(InputBatch::EOF));
+
+        let mut stream = plan.native_plan.execute(0, task_ctx).unwrap();
+        let mut output_rows = 0;
+        while let Some(batch) = futures::future::poll_fn(|cx| {
+            let result = stream.poll_next_unpin(cx);
+            if result.is_pending() && scans[0].batch.try_lock().unwrap().is_none() {
+                if let Some(batch) = inputs.next() {
+                    scans[0].set_input_batch(batch);
+                    cx.waker().wake_by_ref();
+                }
+            }
+            result
+        })
+        .await
+        {
+            let batch = batch.unwrap();
+            assert_eq!(batch.column(0).data_type(), &DataType::Binary);
+            output_rows += batch.num_rows();
+        }
+        assert_eq!(output_rows, NUM_KEYS);
+
+        let children = plan.native_plan.children();
+        let aggregate = children[0].downcast_ref::<AggregateExec>().unwrap();
+        let spill_count = aggregate
+            .metrics()
+            .and_then(|metrics| metrics.spill_count())
+            .unwrap_or_default();
+        assert!(spill_count > 0, "the final aggregate should have spilled");
+    }
+
     #[tokio::test]
     async fn keyless_aggregate_without_functions_emits_one_empty_row() {
         use arrow::array::RecordBatchOptions;

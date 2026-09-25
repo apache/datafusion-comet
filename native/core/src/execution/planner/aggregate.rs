@@ -74,6 +74,8 @@ use ExecutionError::GeneralError;
 
 // For clippy error on type_complexity.
 type PhyAggResult = Result<Vec<AggregateFunctionExpr>, ExecutionError>;
+type PromotedAggInputResult =
+    Result<(Arc<dyn ExecutionPlan>, Vec<Option<DataType>>), ExecutionError>;
 
 /// Promote a Utf8/Binary group-by expression to its Large* variant.
 ///
@@ -84,21 +86,81 @@ type PhyAggResult = Result<Vec<AggregateFunctionExpr>, ExecutionError>;
 /// together with the original DataType, so the caller can build a matching
 /// cast-back projection above the aggregate; returns `None` when the input
 /// is not Utf8/Binary (no promotion needed).
+///
+/// Only valid for aggregates that DataFusion runs in `Partial` or `Single` mode, which derive their
+/// state and spill schemas from the group-by expressions. `Final` aggregates use
+/// [`promote_final_group_keys`].
 fn promote_byte_group_key(
     expr: Arc<dyn PhysicalExpr>,
     schema: &Schema,
 ) -> Result<(Arc<dyn PhysicalExpr>, Option<DataType>), ExecutionError> {
-    match expr.data_type(schema)? {
-        DataType::Utf8 => Ok((
-            Arc::new(CastExpr::new(expr, DataType::LargeUtf8, None)),
-            Some(DataType::Utf8),
-        )),
-        DataType::Binary => Ok((
-            Arc::new(CastExpr::new(expr, DataType::LargeBinary, None)),
-            Some(DataType::Binary),
-        )),
-        _ => Ok((expr, None)),
+    let data_type = expr.data_type(schema)?;
+    match large_byte_type(&data_type) {
+        Some(large) => Ok((Arc::new(CastExpr::new(expr, large, None)), Some(data_type))),
+        None => Ok((expr, None)),
     }
+}
+
+/// The LargeUtf8/LargeBinary counterpart of a Utf8/Binary type, `None` for any other type.
+fn large_byte_type(data_type: &DataType) -> Option<DataType> {
+    match data_type {
+        DataType::Utf8 => Some(DataType::LargeUtf8),
+        DataType::Binary => Some(DataType::LargeBinary),
+        _ => None,
+    }
+}
+
+/// Promote the Utf8/Binary group keys of an aggregate that DataFusion runs in `Final` mode.
+///
+/// DataFusion's final hash aggregation builds the batches it spills against its input schema
+/// (`AggregateHashTable<FinalMarker>::new` takes `agg.input().schema()`), so it assumes every
+/// group-by expression is an input column of the same type. A key cast inside the group-by
+/// expression, as [`promote_byte_group_key`] does, breaks that on the first spill: the LargeBinary
+/// group values are stamped with the Binary input field and the task fails with `column types must
+/// match schema types, expected Binary but found LargeBinary`. Casting the key columns in a
+/// pass-through projection below the aggregate keeps its input, its group values and its spill
+/// files on one type.
+///
+/// Returns the aggregate input and, per group-by expression, the original type of a promoted key.
+/// Spark binds a final aggregate's grouping expressions to the partial aggregate's output, so each
+/// one is expected to be a plain column. If one is not, no key is promoted.
+fn promote_final_group_keys(
+    input: &Arc<dyn ExecutionPlan>,
+    group_exprs: &[Arc<dyn PhysicalExpr>],
+) -> PromotedAggInputResult {
+    let schema = input.schema();
+    let mut promoted: Vec<Option<DataType>> = vec![None; schema.fields().len()];
+    let mut reverts = Vec::with_capacity(group_exprs.len());
+    for expr in group_exprs {
+        let Some(column) = expr.downcast_ref::<Column>() else {
+            return Ok((Arc::clone(input), vec![None; group_exprs.len()]));
+        };
+        let data_type = schema.field(column.index()).data_type();
+        let large = large_byte_type(data_type);
+        reverts.push(large.as_ref().map(|_| data_type.clone()));
+        if large.is_some() {
+            promoted[column.index()] = large;
+        }
+    }
+    if promoted.iter().all(Option::is_none) {
+        return Ok((Arc::clone(input), reverts));
+    }
+    let exprs: Vec<(Arc<dyn PhysicalExpr>, String)> = schema
+        .fields()
+        .iter()
+        .zip(promoted)
+        .enumerate()
+        .map(|(idx, (field, large))| {
+            let column: Arc<dyn PhysicalExpr> = Arc::new(Column::new(field.name(), idx));
+            let expr: Arc<dyn PhysicalExpr> = match large {
+                Some(large) => Arc::new(CastExpr::new(column, large, None)),
+                None => column,
+            };
+            (expr, field.name().to_string())
+        })
+        .collect();
+    let projection = ProjectionExec::try_new(exprs, Arc::clone(input))?;
+    Ok((Arc::new(projection), reverts))
 }
 
 /// Builder for `HashAgg`, which plans both Spark's hash and sort aggregates.
@@ -158,46 +220,25 @@ impl OperatorBuilder for HashAggBuilder {
             ));
         }
 
-        // When `spark.comet.exec.aggregation.useLargeDataTypes` is on, wrap Utf8/Binary
-        // group keys in a Cast to LargeUtf8/LargeBinary so DataFusion dispatches
-        // to ByteGroupValueBuilder::<i64> and the per-task group-key byte buffer
-        // is no longer capped at i32::MAX (2 GiB). The promotion is reverted at
-        // the aggregate's output by a Projection below, so LargeUtf8/LargeBinary
-        // never leaves this operator -- keeps the FFI, JVM shuffle, and Spark
-        // consumer paths untouched.
-        let use_large = agg.use_large_data_types;
         let child_schema_ref = child.schema();
-        let child_schema = child_schema_ref.as_ref();
-        // Per group column: `Some(original_dt)` when the column was promoted to a
-        // Large* variant, `None` when it was passed through as-is. Populated in
-        // lockstep with `group_exprs` and consumed below to build the revert
-        // projection.
-        let mut group_reverts: Vec<Option<DataType>> =
-            Vec::with_capacity(agg.grouping_exprs.len());
-        let group_exprs: Vec<(Arc<dyn PhysicalExpr>, String)> = agg
+        let raw_group_exprs = agg
             .grouping_exprs
             .iter()
-            .enumerate()
-            .map(|(idx, expr)| {
+            .map(|expr| {
                 // A native sort normalizes float keys, so normalize float grouping keys
                 // the same way for DataFusion to see that the sort below a sort aggregate
                 // orders them. Spark already normalized these values, so this changes
                 // none of them.
-                let raw = if agg.ordered_by_grouping_keys {
+                if agg.ordered_by_grouping_keys {
                     planner.create_normalized_key_expr(expr, Arc::clone(&child_schema_ref))
                 } else {
                     planner.create_expr(expr, Arc::clone(&child_schema_ref))
-                }?;
-                let (wrapped, revert) = if use_large {
-                    promote_byte_group_key(raw, child_schema)?
-                } else {
-                    (raw, None)
-                };
-                group_reverts.push(revert);
-                Ok((wrapped, format!("col_{idx}")))
+                }
             })
-            .collect::<Result<Vec<_>, ExecutionError>>()?;
-        let group_by = PhysicalGroupBy::new_single(group_exprs);
+            .collect::<Result<Vec<_>, _>>()?;
+        // Aggregate expressions stay bound to the child's schema even when a `Final`
+        // aggregate reads the promoted projection below: they merge the state columns, which
+        // the projection passes through unchanged.
         let schema = Arc::clone(&child_schema_ref);
 
         let proto_mode = ProtoAggregateMode::try_from(agg.mode).map_err(|_| {
@@ -311,11 +352,11 @@ impl OperatorBuilder for HashAggBuilder {
         let mode = if proto_mode == ProtoAggregateMode::PartialMerge
             && input_is_keys_then_states(agg, &aggr_expr, &schema)?
             && {
-                let keys = group_by.input_exprs();
+                let keys = &raw_group_exprs;
                 let sorted_on = child
                     .native_plan
                     .equivalence_properties()
-                    .find_longest_permutation(&keys)?
+                    .find_longest_permutation(keys)?
                     .1;
                 // DataFusion's InputOrderMode is PartiallySorted when some, not all, keys match.
                 !sorted_on.is_empty() && sorted_on.len() < keys.len()
@@ -325,13 +366,49 @@ impl OperatorBuilder for HashAggBuilder {
             mode
         };
 
+        // When `spark.comet.exec.aggregation.useLargeDataTypes` is on, promote Utf8/Binary
+        // group keys to LargeUtf8/LargeBinary so DataFusion dispatches
+        // to ByteGroupValueBuilder::<i64> and the per-task group-key byte buffer
+        // is no longer capped at i32::MAX (2 GiB). A `Final` aggregate casts the key
+        // columns of its input, every other mode casts the group-by expressions (see
+        // `promote_final_group_keys`). This runs after the mode is settled, because a
+        // PartialMerge can switch to `Final` above. The promotion is reverted at the
+        // aggregate's output below, so LargeUtf8/LargeBinary never leaves this operator --
+        // keeps the FFI, JVM shuffle, and Spark consumer paths untouched.
+        let use_large = agg.use_large_data_types;
+        // Per group column: `Some(original_dt)` when the column was promoted to a
+        // Large* variant, `None` when it was passed through as-is. Consumed below to
+        // build the revert.
+        let (agg_input, group_exprs, group_reverts) = if !use_large {
+            let reverts = vec![None; raw_group_exprs.len()];
+            (Arc::clone(&child.native_plan), raw_group_exprs, reverts)
+        } else if mode == DFAggregateMode::Final {
+            let (input, reverts) = promote_final_group_keys(&child.native_plan, &raw_group_exprs)?;
+            (input, raw_group_exprs, reverts)
+        } else {
+            let (exprs, reverts): (Vec<_>, Vec<_>) = raw_group_exprs
+                .into_iter()
+                .map(|expr| promote_byte_group_key(expr, child_schema_ref.as_ref()))
+                .collect::<Result<Vec<_>, _>>()?
+                .into_iter()
+                .unzip();
+            (Arc::clone(&child.native_plan), exprs, reverts)
+        };
+        let group_by = PhysicalGroupBy::new_single(
+            group_exprs
+                .into_iter()
+                .enumerate()
+                .map(|(idx, expr)| (expr, format!("col_{idx}")))
+                .collect(),
+        );
+
         let aggregate: Arc<dyn ExecutionPlan> = Arc::new(
             datafusion::physical_plan::aggregates::AggregateExec::try_new(
                 mode,
                 group_by,
                 aggr_expr,
                 filter_exprs?,
-                Arc::clone(&child.native_plan),
+                agg_input,
                 Arc::clone(&schema),
             )?,
         );
