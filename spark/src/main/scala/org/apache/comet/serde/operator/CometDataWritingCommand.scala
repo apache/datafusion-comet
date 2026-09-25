@@ -149,7 +149,7 @@ object CometDataWritingCommand extends CometOperatorSerde[DataWritingCommandExec
           Some(
             op.session.sessionState.conf.getConf(SQLConf.PARQUET_FIELD_ID_WRITE_ENABLED))).asJava)
       // CometNativeWriteExec replaces output_path with the committer's exact task filename
-      // at execution time, leaving work_dir unset.
+      // at execution time.
 
       // Collect S3/cloud storage configurations
       val session = op.session
