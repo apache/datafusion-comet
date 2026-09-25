@@ -119,7 +119,9 @@ use datafusion::physical_expr::expressions::{LambdaExpr, LambdaVariable, Literal
 use datafusion::physical_expr::window::WindowExpr;
 use datafusion::physical_expr::{HigherOrderFunctionExpr, LexOrdering};
 
-use crate::execution::lambda::{EmptyBatchGuardExpr, LambdaScope, LambdaScopes};
+use crate::execution::lambda::{
+    rewrite_short_circuit_binary, EmptyBatchGuardExpr, LambdaScope, LambdaScopes,
+};
 use crate::parquet::parquet_exec::init_datasource_exec;
 use arrow::array::{
     new_empty_array, Array, ArrayRef, BinaryBuilder, BooleanArray, Date32Array, Decimal128Array,
@@ -3816,6 +3818,8 @@ impl PhysicalPlanner {
         let body_expr = self
             .lambda_scopes
             .with_scope(scope, || self.create_expr(lambda_body, body_schema))?;
+
+        let body_expr = rewrite_short_circuit_binary(body_expr)?;
 
         let guarded_body = Arc::new(EmptyBatchGuardExpr::new(body_expr));
         Ok(Arc::new(LambdaExpr::try_new(param_names, guarded_body)?))

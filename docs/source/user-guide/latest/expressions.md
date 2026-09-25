@@ -374,12 +374,12 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 
 ## lambda_funcs
 
-| Function | Status | Implementation | Notes |
-| --- | --- | --- | --- |
+| Function | Status | Implementation   | Notes |
+| --- | --- |------------------| --- |
 | `aggregate` | ✅ | Codegen dispatch |  |
 | `array_sort` | ✅ | Codegen dispatch |  |
 | `exists` | ✅ | Codegen dispatch |  |
-| `filter` | ✅ | Native | General lambda routed through the JVM codegen dispatcher; the `array_compact` form runs natively |
+| `filter` | ✅ | Hybrid           | Single-argument lambdas and array_compact run natively with strict per-element short-circuiting; two-argument lambdas (with index) and expressions requiring JVM codegen degrade to Codegen dispatch. |
 | `forall` | ✅ | Codegen dispatch |  |
 | `map_filter` | ✅ | Codegen dispatch |  |
 | `map_zip_with` | ✅ | Codegen dispatch |  |
