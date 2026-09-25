@@ -64,8 +64,11 @@ object_store = { version = "0.13.2", features = ["gcp", "azure", "aws", "http"] 
 url = "2.2"
 aws-config = "1.8.18"
 aws-credential-types = "1.2.13"
-iceberg = { git = "https://github.com/apache/iceberg-rust", rev = "665c64e48e8d33797ecb1a421f327edd9b024879" }
-iceberg-storage-opendal = { git = "https://github.com/apache/iceberg-rust", rev = "665c64e48e8d33797ecb1a421f327edd9b024879", features = ["opendal-memory", "opendal-fs", "opendal-s3", "opendal-gcs", "opendal-oss", "opendal-azdls"] }
+# Pinned to a revision rather than a release because no published iceberg-rust
+# version is on our arrow: 0.10.1 requires arrow/parquet ^58. Move to a plain
+# version requirement once a release ships on arrow 59. Bump policy: #5645.
+iceberg = { git = "https://github.com/apache/iceberg-rust", rev = "bb1e4a4861f02377489eff818b75138f414c4cb0" }
+iceberg-storage-opendal = { git = "https://github.com/apache/iceberg-rust", rev = "bb1e4a4861f02377489eff818b75138f414c4cb0", features = ["opendal-memory", "opendal-fs", "opendal-s3", "opendal-gcs", "opendal-oss", "opendal-azdls"] }
 reqsign-core = "3"
 
 [profile.release]
