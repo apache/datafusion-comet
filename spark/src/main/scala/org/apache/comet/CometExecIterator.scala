@@ -135,7 +135,6 @@ class CometExecIterator(
       memoryConfig.offHeapMode,
       memoryConfig.memoryPoolType,
       memoryConfig.memoryLimit,
-      memoryConfig.memoryLimitPerTask,
       taskAttemptId,
       taskCPUs,
       keyUnwrapper,
@@ -616,8 +615,6 @@ object CometExecIterator extends Logging {
   }
 
   def getMemoryConfig(conf: SparkConf): MemoryConfig = {
-    val numCores = numDriverOrExecutorCores(conf)
-    val coresPerTask = conf.get("spark.task.cpus", "1").toInt
     // there are different paths for on-heap vs off-heap mode
     val offHeapMode = CometSparkSessionExtensions.isOffHeapEnabled(conf)
     if (offHeapMode) {
@@ -625,28 +622,19 @@ object CometExecIterator extends Logging {
       val offHeapSize = conf.getSizeAsBytes("spark.memory.offHeap.size")
       val memoryFraction = CometConf.COMET_OFFHEAP_MEMORY_POOL_FRACTION.get()
       val memoryLimit = (offHeapSize * memoryFraction).toLong
-      val memoryLimitPerTask = (memoryLimit.toDouble * coresPerTask / numCores).toLong
       val memoryPoolType = COMET_OFFHEAP_MEMORY_POOL_TYPE.get()
       logDebug(
         s"memoryPoolType=$memoryPoolType, " +
           s"offHeapSize=${toMB(offHeapSize)}, " +
           s"memoryFraction=$memoryFraction, " +
-          s"memoryLimit=${toMB(memoryLimit)}, " +
-          s"memoryLimitPerTask=${toMB(memoryLimitPerTask)}")
-      MemoryConfig(offHeapMode, memoryPoolType = memoryPoolType, memoryLimit, memoryLimitPerTask)
+          s"memoryLimit=${toMB(memoryLimit)}")
+      MemoryConfig(offHeapMode, memoryPoolType, memoryLimit)
     } else {
-      // we'll use the built-in memory pool from DF, and initializes with `memory_limit`
-      // and `memory_fraction` below.
-      val memoryLimit = CometSparkSessionExtensions.getCometMemoryOverhead(conf)
-      // example 16GB maxMemory * 16 cores with 4 cores per task results
-      // in memory_limit_per_task = 16 GB * 4 / 16 = 16 GB / 4 = 4GB
-      val memoryLimitPerTask = (memoryLimit.toDouble * coresPerTask / numCores).toLong
-      val memoryPoolType = COMET_ONHEAP_MEMORY_POOL_TYPE.get()
-      logDebug(
-        s"memoryPoolType=$memoryPoolType, " +
-          s"memoryLimit=${toMB(memoryLimit)}, " +
-          s"memoryLimitPerTask=${toMB(memoryLimitPerTask)}")
-      MemoryConfig(offHeapMode, memoryPoolType = memoryPoolType, memoryLimit, memoryLimitPerTask)
+      // On-heap mode exists only so that the Spark SQL tests can run against Comet without
+      // changing Spark's memory configuration, and native memory cannot be charged to Spark's
+      // on-heap pool, so nothing is accounted. See the memory management contributor guide.
+      logDebug("on-heap mode: native memory is unbounded and unaccounted")
+      MemoryConfig(offHeapMode, memoryPoolType = "unbounded", memoryLimit = 0)
     }
   }
 
@@ -678,8 +666,4 @@ object CometExecIterator extends Logging {
   }
 }
 
-case class MemoryConfig(
-    offHeapMode: Boolean,
-    memoryPoolType: String,
-    memoryLimit: Long,
-    memoryLimitPerTask: Long)
+case class MemoryConfig(offHeapMode: Boolean, memoryPoolType: String, memoryLimit: Long)
