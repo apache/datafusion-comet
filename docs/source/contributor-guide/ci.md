@@ -341,6 +341,30 @@ and Iceberg 1.11. If everything is skipped, open the run's `Detect changes` job:
 `Nightly base:` commit it diffed against and the list of changed files, which is enough to tell a
 genuinely quiet day from a base that has drifted.
 
+## Release branches
+
+Release branches (`branch-N.M`) have the same workflow files as `main`, but only the PR tier runs on
+them. The merge queue covers only `main`, `ci.yml` runs on push only for `main`, and GitHub fires
+scheduled workflows only on the default branch, so a release branch gets no scheduled `ci.yml`,
+Miri or CodeQL run. A pull request targeting a release branch, such as a backport, runs the PR tier,
+and nothing runs after it merges.
+
+Label a backport for the suites it could affect, as described in
+[Opting a pull request into a suite the PR tier skips](#opting-a-pull-request-into-a-suite-the-pr-tier-skips).
+On a release branch a label is the only way a queue-tier suite runs before the change lands, and
+there is no nightly behind it to catch what the labels missed.
+
+To run every suite against a release branch, dispatch `ci.yml` on it:
+
+```sh
+gh workflow run ci.yml --repo apache/datafusion-comet --ref branch-N.M
+```
+
+The release process does this before tagging each release candidate; see
+[Run the Full CI Suite](release_process.md#run-the-full-ci-suite). A failed dispatched run opens no
+`ci-nightly-failure` issue. The `docs` job, which publishes the website, runs only from `main`, so
+a dispatch on a release branch leaves the site alone.
+
 ## Reproducing a suite failure locally
 
 `dev/local-ci.sh` builds the same sandbox a runner builds and runs the Spark SQL or Iceberg

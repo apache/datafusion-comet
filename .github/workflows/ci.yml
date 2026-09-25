@@ -397,8 +397,11 @@ jobs:
   docs:
     name: Deploy Comet site
     needs: changes
-    # docs deploys to asf-site, so only run on push-to-main (or a manual dispatch).
-    if: needs.changes.outputs.docs == 'true'
+    # docs deploys to asf-site, so only run on push-to-main (or a manual
+    # dispatch of main). The ref check is for dispatch: it runs every job, and
+    # a dispatch on a release branch would otherwise publish that branch's docs
+    # over the site.
+    if: needs.changes.outputs.docs == 'true' && github.ref == 'refs/heads/main'
     uses: ./.github/workflows/docs.yaml
 
   spark_3_4:
