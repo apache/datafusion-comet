@@ -800,6 +800,9 @@ message Projection {
 // one result column is appended for each function in order.
 message ArrowPythonUdf {
   repeated ArrowPythonFunction functions = 1;
+  // Spark's Arrow writer splits input batches before calling a scalar Arrow UDF.
+  // A non-positive value disables the limit.
+  int32 max_records_per_batch = 2;
 }
 
 message ArrowPythonFunction {

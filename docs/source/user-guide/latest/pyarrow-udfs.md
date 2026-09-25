@@ -111,7 +111,8 @@ query does not use an Arrow UDF.
 Comet passes each argument as a `pyarrow.Array` through the Arrow C Data Interface, invokes the
 pickled Python function with PyO3, and appends the result array to the input batch. It checks the
 result length and safely casts it to the declared return type, matching Spark's scalar Arrow UDF
-serializer. A native worker is created per partition.
+serializer. It splits larger input batches according to
+`spark.sql.execution.arrow.maxRecordsPerBatch`. A native worker is created per partition.
 
 Each partition unpickles its own callable. Imported modules and their global state are shared by
 concurrent tasks in the executor's embedded Python interpreter.
@@ -129,8 +130,10 @@ normal path.
 
 The initial native path accepts scalar `@arrow_udf` calls with regular or named arguments and
 multiple independent UDFs in one `ArrowEvalPythonExec`. Chained Python UDFs, broadcast variables,
-Python includes, per-function environment overrides, and
-`spark.sql.execution.arrow.useLargeVarTypes=true` stay on Spark's path. Iterator Arrow UDFs,
+Python includes, per-function environment overrides other than Spark's default
+`PYTHONHASHSEED=0`, and `spark.sql.execution.arrow.useLargeVarTypes=true` stay on Spark's path.
+The embedded interpreter starts with the same default hash seed as Spark's Python workers.
+Iterator Arrow UDFs,
 ordinary `udf(..., useArrow=True)`, scalar pandas UDFs, and `mapInArrow` are separate execution
 types; `mapInArrow` retains the columnar runner described above.
 

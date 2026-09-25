@@ -30,6 +30,7 @@ use datafusion::physical_plan::{
     apply_expression_roots, DisplayAs, DisplayFormatType, ExecutionPlan, ExecutionPlanProperties,
     PlanProperties, SendableRecordBatchStream,
 };
+use futures::stream;
 use futures::StreamExt;
 
 use crate::execution::python_udf::ArrowPythonUdf;
@@ -51,12 +52,17 @@ pub struct ArrowPythonUdfSpec {
 pub struct ArrowPythonUdfExec {
     child: Arc<dyn ExecutionPlan>,
     specs: Vec<ArrowPythonUdfSpec>,
+    max_records_per_batch: usize,
     schema: SchemaRef,
     cache: Arc<PlanProperties>,
 }
 
 impl ArrowPythonUdfExec {
-    pub fn try_new(child: Arc<dyn ExecutionPlan>, specs: Vec<ArrowPythonUdfSpec>) -> Result<Self> {
+    pub fn try_new(
+        child: Arc<dyn ExecutionPlan>,
+        specs: Vec<ArrowPythonUdfSpec>,
+        max_records_per_batch: i32,
+    ) -> Result<Self> {
         if specs.is_empty() {
             return exec_err!("ArrowPythonUdfExec requires at least one UDF");
         }
@@ -89,6 +95,7 @@ impl ArrowPythonUdfExec {
         Ok(Self {
             child,
             specs,
+            max_records_per_batch: max_records_per_batch.max(0) as usize,
             schema,
             cache,
         })
@@ -159,6 +166,7 @@ impl ExecutionPlan for ArrowPythonUdfExec {
         Ok(Arc::new(Self::try_new(
             Arc::clone(&children[0]),
             self.specs.clone(),
+            self.max_records_per_batch as i32,
         )?))
     }
 
@@ -181,14 +189,50 @@ impl ExecutionPlan for ArrowPythonUdfExec {
                 )
             })
             .collect::<std::result::Result<_, _>>()?;
-        let specs = self.specs.clone();
+        let workers = Arc::new(workers);
+        let specs = Arc::new(self.specs.clone());
         let schema = Arc::clone(&self.schema);
-        let stream = input.map(move |batch| {
-            // Keep the JVM scan path synchronous so its Pending loop does not spin while
-            // Python runs. On a tokio worker, this hands its other tasks to another worker.
-            tokio::task::block_in_place(|| {
-                Self::evaluate_batch(&specs, &workers, Arc::clone(&schema), batch?)
-            })
+        let max_records_per_batch = self.max_records_per_batch;
+        let stream = input.flat_map(move |batch| {
+            let workers = Arc::clone(&workers);
+            let specs = Arc::clone(&specs);
+            let schema = Arc::clone(&schema);
+            let (batch, mut error) = match batch {
+                Ok(batch) => (Some(batch), None),
+                Err(error) => (None, Some(error)),
+            };
+            let mut offset = 0;
+            let mut emitted_empty_batch = false;
+            // RecordBatch::slice shares Arrow buffers. Produce one result per poll
+            // so the remaining slices do not pin a second set of output batches.
+            stream::iter(std::iter::from_fn(move || {
+                if let Some(error) = error.take() {
+                    return Some(Err(error));
+                }
+                let batch = batch.as_ref()?;
+                if offset == batch.num_rows() && (offset != 0 || emitted_empty_batch) {
+                    return None;
+                }
+                let length = if max_records_per_batch == 0 {
+                    batch.num_rows() - offset
+                } else {
+                    (batch.num_rows() - offset).min(max_records_per_batch)
+                };
+                let slice = if offset == 0 && length == batch.num_rows() {
+                    batch.clone()
+                } else {
+                    batch.slice(offset, length)
+                };
+                offset += length;
+                if length == 0 {
+                    emitted_empty_batch = true;
+                }
+                // Keep the JVM scan path synchronous so its Pending loop does not spin while
+                // Python runs. On a tokio worker, this hands its other tasks to another worker.
+                Some(tokio::task::block_in_place(|| {
+                    Self::evaluate_batch(&specs, &workers, Arc::clone(&schema), slice)
+                }))
+            }))
         });
         Ok(Box::pin(RecordBatchStreamAdapter::new(
             Arc::clone(&self.schema),

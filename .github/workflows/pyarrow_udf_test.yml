@@ -116,6 +116,8 @@ jobs:
           # ModuleNotFoundError.
           PYSPARK_PYTHON: /tmp/venv/bin/python
           PYSPARK_DRIVER_PYTHON: /tmp/venv/bin/python
+          # The embedded interpreter does not inherit PySpark worker sys.path setup.
+          PYTHONPATH: /tmp/venv/lib/python3.11/site-packages
         run: |
           /tmp/venv/bin/python -m pytest -v \
             spark/src/test/resources/pyspark/test_pyarrow_udf.py

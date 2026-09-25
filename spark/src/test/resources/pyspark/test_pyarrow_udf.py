@@ -112,6 +112,50 @@ def _assert_plan_matches_mode(
         )
 
 
+def test_scalar_arrow_udf_uses_native_path_and_spark_batch_limit(spark):
+    # This must use PySpark's real UDF wrapper: it populates the default
+    # PYTHONHASHSEED entry that a hand-built SimplePythonFunction omits.
+    from pyspark.sql.pandas import functions as pandas_functions
+
+    if not hasattr(pandas_functions, "arrow_udf"):
+        pytest.skip("scalar arrow_udf requires Spark 4.1 or later")
+
+    @pandas_functions.arrow_udf("long")
+    def batch_length(values):
+        return pa.array([len(values)] * len(values), type=pa.int64())
+
+    @pandas_functions.arrow_udf("long")
+    def string_hash(values):
+        return pa.array([hash(value) for value in values.to_pylist()], type=pa.int64())
+
+    source = spark.range(1, 5, 1, 1)
+    spark.conf.set("spark.sql.adaptive.enabled", "false")
+    spark.conf.set("spark.sql.execution.arrow.maxRecordsPerBatch", "2")
+    spark.conf.set("spark.comet.sparkToColumnar.enabled", "true")
+    try:
+        spark.conf.set("spark.comet.exec.nativeArrowPythonUDF.enabled", "false")
+        spark_rows = source.select(batch_length("id")).collect()
+
+        spark.conf.set("spark.comet.exec.nativeArrowPythonUDF.enabled", "true")
+        result = source.select(batch_length("id"))
+        assert "CometArrowEvalPython" in _executed_plan(result)
+        assert result.collect() == spark_rows
+        assert [row[0] for row in spark_rows] == [2, 2, 2, 2]
+
+        strings = source.selectExpr("cast(id as string) as value")
+        spark.conf.set("spark.comet.exec.nativeArrowPythonUDF.enabled", "false")
+        spark_hashes = strings.select(string_hash("value")).collect()
+        spark.conf.set("spark.comet.exec.nativeArrowPythonUDF.enabled", "true")
+        native_hashes = strings.select(string_hash("value"))
+        assert "CometArrowEvalPython" in _executed_plan(native_hashes)
+        assert native_hashes.collect() == spark_hashes
+    finally:
+        spark.conf.set("spark.comet.exec.nativeArrowPythonUDF.enabled", "false")
+        spark.conf.unset("spark.sql.execution.arrow.maxRecordsPerBatch")
+        spark.conf.unset("spark.comet.sparkToColumnar.enabled")
+        spark.conf.unset("spark.sql.adaptive.enabled")
+
+
 def test_map_in_arrow_doubles_value(spark, tmp_path, accelerated):
     data = [(i, float(i * 1.5), f"name_{i}") for i in range(100)]
     src = str(tmp_path / "src.parquet")

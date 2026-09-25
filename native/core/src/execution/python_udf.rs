@@ -28,6 +28,52 @@ use pyo3::ffi::Py_uintptr_t;
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyTuple};
 
+fn initialize_python() -> Result<()> {
+    use std::ffi::CStr;
+    use std::sync::OnceLock;
+
+    static RESULT: OnceLock<std::result::Result<(), String>> = OnceLock::new();
+    RESULT
+        .get_or_init(|| {
+            // Spark sets PYTHONHASHSEED=0 on its Python workers by default.
+            // Match that seed before any Python object is created in the embedded
+            // interpreter, without changing the JVM process environment.
+            // SAFETY: OnceLock serializes initialization by Comet. No other Comet
+            // code accesses the Python C API before this function returns.
+            unsafe {
+                if pyo3::ffi::Py_IsInitialized() != 0 {
+                    return Ok(());
+                }
+                let mut config = std::mem::MaybeUninit::<pyo3::ffi::PyConfig>::uninit();
+                pyo3::ffi::PyConfig_InitPythonConfig(config.as_mut_ptr());
+                let mut config = config.assume_init();
+                config.install_signal_handlers = 0;
+                config.use_hash_seed = 1;
+                config.hash_seed = 0;
+                let status = pyo3::ffi::Py_InitializeFromConfig(&config);
+                let error = if pyo3::ffi::PyStatus_Exception(status) != 0 {
+                    if status.err_msg.is_null() {
+                        "Python interpreter initialization failed".to_string()
+                    } else {
+                        CStr::from_ptr(status.err_msg)
+                            .to_string_lossy()
+                            .into_owned()
+                    }
+                } else {
+                    String::new()
+                };
+                pyo3::ffi::PyConfig_Clear(&mut config);
+                if !error.is_empty() {
+                    return Err(error);
+                }
+                pyo3::ffi::PyEval_SaveThread();
+                Ok(())
+            }
+        })
+        .clone()
+        .map_err(ArrowError::ComputeError)
+}
+
 #[cfg(target_os = "linux")]
 fn make_python_symbols_global() -> Result<()> {
     use std::ffi::CStr;
@@ -111,6 +157,7 @@ impl ArrowPythonUdf {
         python_version: &str,
     ) -> Result<Self> {
         make_python_symbols_global()?;
+        initialize_python()?;
         Python::attach(|py| {
             if !python_version.is_empty() {
                 let info = py
@@ -195,14 +242,16 @@ impl ArrowPythonUdf {
             let mut py_args = Vec::with_capacity(args.len());
             for arg in args {
                 let data = arg.to_data();
-                let ffi_array = FFI_ArrowArray::new(&data);
-                let ffi_schema = FFI_ArrowSchema::try_from(data.data_type())?;
+                // PyArrow takes ownership of these C Data structs and clears their
+                // release callbacks, so the pointed-to storage must be writable.
+                let mut ffi_array = FFI_ArrowArray::new(&data);
+                let mut ffi_schema = FFI_ArrowSchema::try_from(data.data_type())?;
                 let py_arg = array_class
                     .call_method1(
                         "_import_from_c",
                         (
-                            &raw const ffi_array as Py_uintptr_t,
-                            &raw const ffi_schema as Py_uintptr_t,
+                            &raw mut ffi_array as Py_uintptr_t,
+                            &raw mut ffi_schema as Py_uintptr_t,
                         ),
                     )
                     .map_err(python_error)?;
@@ -238,13 +287,13 @@ impl ArrowPythonUdf {
                 )));
             }
 
-            let ffi_return_type = FFI_ArrowSchema::try_from(&self.return_type)?;
+            let mut ffi_return_type = FFI_ArrowSchema::try_from(&self.return_type)?;
             let expected_type = pa
                 .getattr("DataType")
                 .map_err(python_error)?
                 .call_method1(
                     "_import_from_c",
-                    (&raw const ffi_return_type as Py_uintptr_t,),
+                    (&raw mut ffi_return_type as Py_uintptr_t,),
                 )
                 .map_err(python_error)?;
             let actual_type = result.getattr("type").map_err(python_error)?;
@@ -315,6 +364,7 @@ mod tests {
 
     #[test]
     fn evaluates_arrow_arrays_and_nulls() {
+        initialize_python().unwrap();
         Python::attach(|py| {
             let command = pickled_command(py, "pyarrow.compute", "negate");
             let udf =
@@ -328,6 +378,7 @@ mod tests {
 
     #[test]
     fn rejects_wrong_length_and_non_array_result() {
+        initialize_python().unwrap();
         Python::attach(|py| {
             let command = pickled_command(py, "builtins", "len");
             let udf =
@@ -344,6 +395,7 @@ mod tests {
 
     #[test]
     fn supports_named_arguments_and_safe_cast() {
+        initialize_python().unwrap();
         Python::attach(|py| {
             let callable = py
                 .eval(
@@ -377,6 +429,7 @@ mod tests {
 
     #[test]
     fn rejects_python_result_with_wrong_length() {
+        initialize_python().unwrap();
         Python::attach(|py| {
             let command = pickled_command(py, "pyarrow.compute", "drop_null");
             let udf =

@@ -238,6 +238,27 @@ class CometArrowPythonUdfSuite extends CometTestBase {
         val plan = source.select(arrowUdf(LongType)(source.col("id"))).queryExecution.executedPlan
         assert(plan.collect { case _: CometArrowEvalPythonExec => true }.isEmpty)
       }
+
+      Seq(
+        Collections.singletonMap("PYTHONHASHSEED", "123"),
+        Collections.singletonMap("CUSTOM_PYTHON_SETTING", "value")).foreach { env =>
+        val withEnvironment = SimplePythonFunction(
+          Array.emptyByteArray,
+          env,
+          Collections.emptyList[String](),
+          "python3",
+          "3.11",
+          Collections.emptyList(),
+          null)
+        val udf = UserDefinedPythonFunction(
+          "planning_only",
+          withEnvironment,
+          LongType,
+          PythonEvalType.SQL_SCALAR_ARROW_UDF,
+          udfDeterministic = true)
+        val plan = source.select(udf(source.col("id"))).queryExecution.executedPlan
+        assert(plan.collect { case _: CometArrowEvalPythonExec => true }.isEmpty)
+      }
     }
   }
 }

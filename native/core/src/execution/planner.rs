@@ -1341,6 +1341,7 @@ impl PhysicalPlanner {
                 let native_plan = Arc::new(ArrowPythonUdfExec::try_new(
                     Arc::clone(&child.native_plan),
                     specs,
+                    udf.max_records_per_batch,
                 )?);
                 Ok((
                     scans,

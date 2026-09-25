@@ -37,6 +37,13 @@ import org.apache.comet.serde.OperatorOuterClass.Operator
 /** Native execution for Spark 4.1+ scalar `@arrow_udf` functions. */
 object CometArrowEvalPythonExec extends CometOperatorSerde[ArrowEvalPythonExec] {
 
+  // SparkContext adds this entry even when the user has not configured a Python
+  // environment. Keep other overrides on Spark's worker path.
+  private def hasUnsupportedEnvironment(env: java.util.Map[String, String]): Boolean =
+    env != null && env.asScala.exists { case (key, value) =>
+      key != "PYTHONHASHSEED" || value != "0"
+    }
+
   private def hasCompatibleArrowSchema(dataType: DataType): Boolean = dataType match {
     case _: BooleanType | _: ByteType | _: ShortType | _: IntegerType | _: LongType |
         _: FloatType | _: DoubleType | _: BinaryType | _: DateType | _: DecimalType |
@@ -76,7 +83,7 @@ object CometArrowEvalPythonExec extends CometOperatorSerde[ArrowEvalPythonExec] 
         "Arrow UDF broadcast variables are not supported in-process"
       case udf if udf.func.pythonIncludes != null && !udf.func.pythonIncludes.isEmpty =>
         "Arrow UDF Python includes are not supported in-process"
-      case udf if udf.func.envVars != null && !udf.func.envVars.isEmpty =>
+      case udf if hasUnsupportedEnvironment(udf.func.envVars) =>
         "Arrow UDF Python environment overrides are not supported in-process"
       case udf if udf.children.exists(_.find(_.isInstanceOf[PythonUDF]).nonEmpty) =>
         "Chained Arrow UDFs are not supported in-process"
@@ -126,6 +133,7 @@ object CometArrowEvalPythonExec extends CometOperatorSerde[ArrowEvalPythonExec] 
       val native = OperatorOuterClass.ArrowPythonUdf
         .newBuilder()
         .addAllFunctions(functions.map(_.get).asJava)
+        .setMaxRecordsPerBatch(op.conf.arrowMaxRecordsPerBatch)
       Some(builder.setArrowPythonUdf(native).build())
     }
   }
