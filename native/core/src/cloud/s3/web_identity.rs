@@ -337,10 +337,66 @@ async fn build_provider(
         loader = loader.http_client(http);
     }
     let sdk = loader.load().await;
+    let sts_config = configure_sts_endpoint(aws_sdk_sts::config::Builder::from(&sdk), &sdk).build();
     Arc::new(web_identity_provider_from(
         cfg,
-        aws_sdk_sts::Client::new(&sdk),
+        aws_sdk_sts::Client::from_conf(sts_config),
     ))
+}
+
+/// Chooses the STS endpoint to match the default (reqsign) chain, with FIPS taking strict
+/// precedence:
+///
+/// - FIPS requested (`AWS_USE_FIPS_ENDPOINT` / profile): keep the SDK's regional FIPS resolution.
+///   There is no global FIPS STS endpoint, so FIPS always wins. If `AWS_STS_REGIONAL_ENDPOINTS` is
+///   also `legacy`, that request is incompatible and is ignored with a one-time warning.
+/// - `AWS_STS_REGIONAL_ENDPOINTS=regional`: keep the SDK's regional resolution.
+/// - Otherwise (`legacy` or unset): use the global `sts.amazonaws.com` endpoint signed as the
+///   partition's global region, matching reqsign. Partitions with no global endpoint (GovCloud,
+///   ISO) fall back to the SDK's regional resolution.
+fn configure_sts_endpoint(
+    builder: aws_sdk_sts::config::Builder,
+    sdk: &aws_config::SdkConfig,
+) -> aws_sdk_sts::config::Builder {
+    if sdk.use_fips().unwrap_or(false) {
+        if sts_regional_setting().as_deref() == Some("legacy") {
+            static WARNED: OnceLock<()> = OnceLock::new();
+            if WARNED.set(()).is_ok() {
+                log::warn!(
+                    "AWS_STS_REGIONAL_ENDPOINTS=legacy is ignored because FIPS is enabled: there is \
+                     no global FIPS STS endpoint, so the regional FIPS endpoint is used"
+                );
+            }
+        }
+        return builder; // regional FIPS endpoint from the resolved config
+    }
+    if sts_regional_setting().as_deref() == Some("regional") {
+        return builder; // regional endpoint from the resolved config
+    }
+    // legacy or unset: match reqsign's global endpoint, signed as the partition's global region.
+    match global_sts_endpoint(sdk.region().map(|r| r.as_ref())) {
+        Some((endpoint, signing_region)) => builder
+            .endpoint_url(endpoint)
+            .region(aws_sdk_sts::config::Region::new(signing_region)),
+        None => builder, // no global endpoint for this partition; use regional resolution
+    }
+}
+
+/// The value of `AWS_STS_REGIONAL_ENDPOINTS`, lowercased and trimmed. The SDK does not resolve this
+/// setting itself, so we read it directly (matching reqsign).
+fn sts_regional_setting() -> Option<String> {
+    non_empty_env("AWS_STS_REGIONAL_ENDPOINTS").map(|v| v.trim().to_ascii_lowercase())
+}
+
+/// The global STS endpoint and its signing region for `region`'s partition, or `None` if the
+/// partition has no global endpoint. Mirrors reqsign: standard partition -> `sts.amazonaws.com`
+/// (us-east-1), China -> `sts.amazonaws.com.cn` (cn-north-1).
+fn global_sts_endpoint(region: Option<&str>) -> Option<(&'static str, &'static str)> {
+    match region {
+        Some(r) if r.starts_with("cn-") => Some(("https://sts.amazonaws.com.cn", "cn-north-1")),
+        Some(r) if r.starts_with("us-gov-") || r.starts_with("us-iso") => None,
+        _ => Some(("https://sts.amazonaws.com", "us-east-1")),
+    }
 }
 
 /// Assembles the provider from an STS client. Split out so tests can supply a client built with an
@@ -807,6 +863,7 @@ mod tests {
                 "AWS_PROFILE",
                 "AWS_USE_FIPS_ENDPOINT",
                 "AWS_USE_DUALSTACK_ENDPOINT",
+                "AWS_STS_REGIONAL_ENDPOINTS",
             ] {
                 std::env::remove_var(var);
             }
@@ -830,6 +887,7 @@ mod tests {
                 "AWS_SECRET_ACCESS_KEY",
                 "AWS_USE_FIPS_ENDPOINT",
                 "AWS_USE_DUALSTACK_ENDPOINT",
+                "AWS_STS_REGIONAL_ENDPOINTS",
             ] {
                 std::env::remove_var(var);
             }
@@ -1391,6 +1449,60 @@ mod tests {
         assert!(
             parts.headers.contains_key("authorization"),
             "a signed request carries an Authorization header"
+        );
+    }
+
+    /// Drives one successful STS call through `build_provider` with the given env and returns the
+    /// URI the STS client resolved, so endpoint-selection tests can assert on the host.
+    fn resolved_sts_uri() -> String {
+        let http = CannedStsClient::new(&[200]);
+        let last_uri = Arc::clone(&http.last_uri);
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let entry = entry_with_http(5, http).await;
+            entry.credentials().await.expect("mock STS returns success");
+        });
+        let uri = last_uri.lock().unwrap().clone();
+        uri.expect("a request was made")
+    }
+
+    #[test]
+    fn unset_regional_endpoints_uses_global_sts() {
+        // Matches reqsign: with AWS_STS_REGIONAL_ENDPOINTS unset (the baseline), STS uses the global
+        // endpoint, so a network that only reaches the global endpoint keeps working after upgrade.
+        let _guard = lock_env();
+        let _env = IrsaEnv::set("global-unset");
+        let uri = resolved_sts_uri();
+        assert!(
+            uri.contains("//sts.amazonaws.com/"),
+            "expected the global STS endpoint, got {uri}"
+        );
+    }
+
+    #[test]
+    fn regional_endpoints_setting_uses_regional_sts() {
+        let _guard = lock_env();
+        let _env = IrsaEnv::set("regional");
+        std::env::set_var("AWS_STS_REGIONAL_ENDPOINTS", "regional");
+        let uri = resolved_sts_uri();
+        assert!(
+            uri.contains("sts.us-east-1.amazonaws.com"),
+            "expected the regional STS endpoint, got {uri}"
+        );
+    }
+
+    #[test]
+    fn fips_wins_over_legacy_sts_endpoint() {
+        // FIPS has strict precedence: there is no global FIPS endpoint, so even with legacy
+        // requested the regional FIPS endpoint is used (and a warning is logged).
+        let _guard = lock_env();
+        let _env = IrsaEnv::set("fips-legacy");
+        std::env::set_var("AWS_USE_FIPS_ENDPOINT", "true");
+        std::env::set_var("AWS_STS_REGIONAL_ENDPOINTS", "legacy");
+        let uri = resolved_sts_uri();
+        assert!(
+            uri.contains("sts-fips.us-east-1.amazonaws.com"),
+            "FIPS must win over legacy, got {uri}"
         );
     }
 
