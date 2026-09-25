@@ -22,18 +22,19 @@
 //! operator over in-memory batches so a change to the unnesting kernels shows up undiluted.
 //!
 //! The dimensions are the ones that drive its cost: how far each row fans out, the element type
-//! being unnested, how many columns are replicated alongside the generated one, and whether the
-//! input has the NULL rows that force outer semantics.
+//! being unnested, how many columns are replicated alongside the generated one, whether the input
+//! holds the NULL and empty rows that outer semantics pad, and whether a parallel positions column
+//! is unnested alongside the array as `posexplode` does.
 
 use std::sync::Arc;
 
-use arrow::array::{Array, ArrayRef, Int64Array, ListArray, StringArray, StructArray};
+use arrow::array::{Array, ArrayRef, Int32Array, Int64Array, ListArray, StringArray, StructArray};
 use arrow::buffer::{NullBuffer, OffsetBuffer};
 use arrow::datatypes::{DataType, Field, Fields, Schema, SchemaRef};
 use arrow::record_batch::RecordBatch;
 use comet::execution::operators::ExplodeExec;
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
-use datafusion::common::UnnestOptions;
+use datafusion::common::{NullHandling, UnnestOptions};
 use datafusion::datasource::memory::MemorySourceConfig;
 use datafusion::execution::TaskContext;
 use datafusion::physical_plan::unnest::ListUnnest;
@@ -99,27 +100,103 @@ impl Element {
     }
 }
 
-/// One input batch: a `List` column of `fan_out`-element rows, plus `carried` passthrough
-/// columns that unnesting has to replicate.
+/// Which rows the input holds.
 ///
-/// With `nulls`, every tenth row is a NULL list. That is the shape `explode_outer` sees, and it
-/// is also what decides whether the unnested column can be sliced out of the child or has to be
-/// gathered: a NULL row under outer semantics is padded, which breaks the run.
-fn input_batch(element: Element, fan_out: usize, carried: usize, nulls: bool) -> RecordBatch {
-    let total = ROWS_PER_BATCH * fan_out;
-    let offsets: Vec<i32> = (0..=ROWS_PER_BATCH).map(|r| (r * fan_out) as i32).collect();
-    let null_buffer =
-        nulls.then(|| NullBuffer::from_iter((0..ROWS_PER_BATCH).map(|row| row % 10 != 0)));
+/// `Dense` is the plain `explode` shape, where every row fans out and the unnested column can be
+/// sliced straight out of the child. `NullsAndEmpties` is the shape `explode_outer` exists for:
+/// both a NULL row and an empty row are padded to one NULL, which breaks the contiguous run and
+/// forces the gather. Spark treats the two identically, so a benchmark of the outer path that
+/// holds only NULL rows leaves the empty-row substitution unmeasured.
+#[derive(Clone, Copy, PartialEq)]
+enum RowMix {
+    Dense,
+    NullsAndEmpties,
+}
+
+impl RowMix {
+    fn name(self) -> &'static str {
+        match self {
+            RowMix::Dense => "dense",
+            RowMix::NullsAndEmpties => "nulls_and_empties",
+        }
+    }
+
+    /// The per-row element count. Every tenth row is NULL and every tenth is empty, so a batch
+    /// holds a fifth padded rows.
+    fn row_len(self, fan_out: usize, row: usize) -> usize {
+        match self {
+            RowMix::Dense => fan_out,
+            RowMix::NullsAndEmpties if self.is_null(row) || row % 10 == 5 => 0,
+            RowMix::NullsAndEmpties => fan_out,
+        }
+    }
+
+    fn is_null(self, row: usize) -> bool {
+        self == RowMix::NullsAndEmpties && row.is_multiple_of(10)
+    }
+
+    /// The options the planner builds for this shape. `Dense` stands in for plain `explode`,
+    /// which drops NULL and empty rows alike.
+    fn unnest_options(self) -> UnnestOptions {
+        UnnestOptions::new().with_null_handling(match self {
+            RowMix::Dense => NullHandling::Drop,
+            RowMix::NullsAndEmpties => NullHandling::PreserveAndExpandEmpty,
+        })
+    }
+}
+
+/// One input batch: a `List` column of `mix`-shaped rows, optionally a parallel `List<Int32>` of
+/// positions, plus `carried` passthrough columns that unnesting has to replicate.
+///
+/// The positions column is what `ListPositionsExpr` builds for `posexplode`: the same offsets and
+/// the same validity as the array, with values `0..len`. Unnesting the two together is the only
+/// shape that exercises the multi-array row-wise maximum in `find_longest_length`.
+fn input_batch(
+    element: Element,
+    fan_out: usize,
+    carried: usize,
+    mix: RowMix,
+    positions: bool,
+) -> RecordBatch {
+    let offsets: Vec<i32> = std::iter::once(0)
+        .chain((0..ROWS_PER_BATCH).scan(0i32, |end, row| {
+            *end += mix.row_len(fan_out, row) as i32;
+            Some(*end)
+        }))
+        .collect();
+    let total = *offsets.last().unwrap() as usize;
+    let offsets = OffsetBuffer::new(offsets.into());
+
+    let nulls = (mix != RowMix::Dense)
+        .then(|| NullBuffer::from_iter((0..ROWS_PER_BATCH).map(|row| !mix.is_null(row))));
 
     let list = ListArray::new(
         Arc::new(Field::new("item", element.data_type(), true)),
-        OffsetBuffer::new(offsets.into()),
+        offsets.clone(),
         element.values(total),
-        null_buffer,
+        nulls.clone(),
     );
 
-    let mut fields = vec![Field::new("arr", list.data_type().clone(), true)];
-    let mut columns: Vec<ArrayRef> = vec![Arc::new(list)];
+    let mut fields = Vec::new();
+    let mut columns: Vec<ArrayRef> = Vec::new();
+
+    if positions {
+        // Per-row lengths come back off the offsets rather than a second pass over `row_len`.
+        let pos_values =
+            Int32Array::from_iter_values(offsets.windows(2).flat_map(|w| 0..w[1] - w[0]));
+        let pos = ListArray::new(
+            Arc::new(Field::new("item", DataType::Int32, true)),
+            offsets,
+            Arc::new(pos_values),
+            nulls,
+        );
+        fields.push(Field::new("pos", pos.data_type().clone(), true));
+        columns.push(Arc::new(pos));
+    }
+
+    fields.push(Field::new("arr", list.data_type().clone(), true));
+    columns.push(Arc::new(list));
+
     for c in 0..carried {
         fields.push(Field::new(format!("k{c}"), DataType::Int64, true));
         columns.push(Arc::new(Int64Array::from_iter_values(
@@ -130,12 +207,17 @@ fn input_batch(element: Element, fan_out: usize, carried: usize, nulls: bool) ->
     RecordBatch::try_new(Arc::new(Schema::new(fields)), columns).unwrap()
 }
 
-/// The operator's output schema: the unnested element column, then the passthrough columns.
+/// The operator's output schema: the unnested position column when positional, the unnested
+/// element column, then the passthrough columns.
 ///
 /// This mirrors what the planner builds, except that the planner puts the passthrough columns
 /// first; the order does not change the work, only which index the unnest targets.
-fn output_schema(element: Element, carried: usize) -> SchemaRef {
-    let mut fields = vec![Field::new("arr", element.data_type(), true)];
+fn output_schema(element: Element, carried: usize, positions: bool) -> SchemaRef {
+    let mut fields = Vec::new();
+    if positions {
+        fields.push(Field::new("pos", DataType::Int32, true));
+    }
+    fields.push(Field::new("arr", element.data_type(), true));
     for c in 0..carried {
         fields.push(Field::new(format!("k{c}"), DataType::Int64, true));
     }
@@ -146,24 +228,31 @@ fn explode_plan(
     element: Element,
     fan_out: usize,
     carried: usize,
-    outer: bool,
+    mix: RowMix,
+    positions: bool,
 ) -> Arc<dyn ExecutionPlan> {
     let batches: Vec<RecordBatch> = (0..BATCHES)
-        .map(|_| input_batch(element, fan_out, carried, outer))
+        .map(|_| input_batch(element, fan_out, carried, mix, positions))
         .collect();
     let schema = batches[0].schema();
     let source = MemorySourceConfig::try_new_exec(&[batches], schema, None).unwrap();
 
+    // Positional unnesting targets the positions column and the array together, in the order the
+    // planner projects them: `0..=1` when positional, just the array at 0 otherwise.
+    let list_unnests = (0..=usize::from(positions))
+        .map(|index_in_input_schema| ListUnnest {
+            index_in_input_schema,
+            depth: 1,
+        })
+        .collect();
+
     Arc::new(
         ExplodeExec::new(
             source,
-            vec![ListUnnest {
-                index_in_input_schema: 0,
-                depth: 1,
-            }],
+            list_unnests,
             vec![],
-            output_schema(element, carried),
-            UnnestOptions::new().with_preserve_nulls(outer),
+            output_schema(element, carried, positions),
+            mix.unnest_options(),
         )
         .unwrap(),
     )
@@ -184,7 +273,7 @@ fn criterion_benchmark(c: &mut Criterion) {
 
     let mut group = c.benchmark_group("explode_fan_out");
     for fan_out in [2usize, 10, 100] {
-        let plan = explode_plan(Element::Int64, fan_out, 0, false);
+        let plan = explode_plan(Element::Int64, fan_out, 0, RowMix::Dense, false);
         group.bench_with_input(BenchmarkId::from_parameter(fan_out), &fan_out, |b, _| {
             b.iter(|| run(&runtime, &plan, &ctx))
         });
@@ -193,27 +282,42 @@ fn criterion_benchmark(c: &mut Criterion) {
 
     let mut group = c.benchmark_group("explode_element_type");
     for element in [Element::Int64, Element::Utf8, Element::Struct] {
-        let plan = explode_plan(element, 10, 0, false);
+        let plan = explode_plan(element, 10, 0, RowMix::Dense, false);
         group.bench_function(element.name(), |b| b.iter(|| run(&runtime, &plan, &ctx)));
     }
     group.finish();
 
     let mut group = c.benchmark_group("explode_carried_columns");
     for carried in [0usize, 3] {
-        let plan = explode_plan(Element::Int64, 10, carried, false);
+        let plan = explode_plan(Element::Int64, 10, carried, RowMix::Dense, false);
         group.bench_with_input(BenchmarkId::from_parameter(carried), &carried, |b, _| {
             b.iter(|| run(&runtime, &plan, &ctx))
         });
     }
     group.finish();
 
-    // NULL rows under outer semantics are padded, so this is the shape that cannot be served by
-    // slicing the child and has to gather instead. Kept as its own group so the two paths are
-    // not averaged together.
+    // NULL and empty rows under outer semantics are padded, so this is the shape that cannot be
+    // served by slicing the child and has to gather instead. Kept as its own group so the two
+    // paths are not averaged together.
     let mut group = c.benchmark_group("explode_outer_with_nulls");
     for element in [Element::Int64, Element::Utf8] {
-        let plan = explode_plan(element, 10, 0, true);
+        let plan = explode_plan(element, 10, 0, RowMix::NullsAndEmpties, false);
         group.bench_function(element.name(), |b| b.iter(|| run(&runtime, &plan, &ctx)));
+    }
+    group.finish();
+
+    // `posexplode` unnests the positions column alongside the array, which is the only shape that
+    // reaches the multi-array row-wise maximum in `find_longest_length`. Short arrays are the
+    // interesting case: the per-batch length work is fixed, so the shorter the rows the larger
+    // its share of the total.
+    let mut group = c.benchmark_group("posexplode_fan_out");
+    for mix in [RowMix::Dense, RowMix::NullsAndEmpties] {
+        for fan_out in [2usize, 10] {
+            let plan = explode_plan(Element::Int64, fan_out, 0, mix, true);
+            group.bench_with_input(BenchmarkId::new(mix.name(), fan_out), &fan_out, |b, _| {
+                b.iter(|| run(&runtime, &plan, &ctx))
+            });
+        }
     }
     group.finish();
 }

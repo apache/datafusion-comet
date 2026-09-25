@@ -30,6 +30,7 @@ publish = false
 
 [dependencies]
 arrow = { workspace = true }
+arrow-data = { workspace = true }
 arrow-select = { workspace = true }
 async-trait = { workspace = true }
 bytes = { workspace = true }

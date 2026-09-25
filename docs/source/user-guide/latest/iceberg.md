@@ -45,7 +45,8 @@ $SPARK_HOME/bin/spark-shell \
     --conf spark.shuffle.manager=org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager \
     --conf spark.comet.explain.fallback.enabled=true \
     --conf spark.memory.offHeap.enabled=true \
-    --conf spark.memory.offHeap.size=2g
+    --conf spark.memory.offHeap.size=2g \
+    --conf spark.executor.memoryOverhead=2g
 ```
 
 Catalog configuration is standard Iceberg-on-Spark and independent of Comet. The native reader has been tested with Hadoop, Hive, and REST catalogs. The example above uses a Hadoop catalog. For the full catalog configuration reference, see Iceberg's [Spark catalog configuration](https://iceberg.apache.org/docs/latest/spark-configuration/#catalogs).
@@ -138,7 +139,8 @@ $SPARK_HOME/bin/spark-shell \
     --conf spark.shuffle.manager=org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager \
     --conf spark.comet.explain.fallback.enabled=true \
     --conf spark.memory.offHeap.enabled=true \
-    --conf spark.memory.offHeap.size=2g
+    --conf spark.memory.offHeap.size=2g \
+    --conf spark.executor.memoryOverhead=2g
 ```
 
 Note that REST catalogs require explicit namespace creation before creating tables:
@@ -179,12 +181,14 @@ The following scenarios will fall back to the JVM Iceberg reader:
 - v3 column types the native reader cannot read (`variant`, `geometry`, `geography`, `unknown`)
 - Encrypted tables with 192-bit data keys (no AES-192-GCM in the underlying crypto)
 - Delete files in a format other than Parquet or Puffin (Avro or ORC positional/equality deletes)
-- Iceberg writes (reads are accelerated, writes use Spark)
 - Tables backed by Avro or ORC data files (only Parquet is accelerated)
 - Tables partitioned on `BINARY` or `DECIMAL` (with precision >28) columns
 - Scans with residual filters using `truncate`, `bucket`, `year`, `month`, `day`, or `hour`
   transform functions (partition pruning still works, but row-level filtering of these
   transforms falls back)
+
+Writes are not covered by this list. By default Iceberg writes use Spark's own writer; see
+[Iceberg Writes](iceberg-writes.md) for the experimental native writer and when it applies.
 
 ### Iceberg UDFs
 
