@@ -165,7 +165,7 @@ jobs:
               org.apache.comet.exec.CometAsyncShuffleSuite
               org.apache.comet.exec.DisableAQECometShuffleSuite
               org.apache.comet.exec.DisableAQECometAsyncShuffleSuite
-              org.apache.spark.shuffle.comet.CometBoundedShuffleMemoryAllocatorSuite
+              org.apache.spark.shuffle.comet.CometUnboundedShuffleMemoryAllocatorSuite
               org.apache.spark.shuffle.sort.SpillSorterSuite
           - name: "exec"
             value: |
