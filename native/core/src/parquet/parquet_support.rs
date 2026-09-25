@@ -22,7 +22,7 @@ use arrow::array::{
 };
 use arrow::buffer::NullBuffer;
 use arrow::compute::can_cast_types;
-use arrow::datatypes::{Field, FieldRef, Fields};
+use arrow::datatypes::{FieldRef, Fields};
 use arrow::{
     array::{
         cast::AsArray, new_null_array, types::TimestampMicrosecondType,
@@ -104,15 +104,6 @@ pub struct SparkParquetOptions {
     /// (mirrors Spark's `spark.sql.parquet.fieldId.read.enabled`). Only takes effect
     /// when both physical and logical fields actually carry IDs.
     pub use_field_id: bool,
-    /// When false (Spark's default), reading a file that has no field ids while the
-    /// requested schema does carry ids raises a runtime error rather than silently
-    /// producing nulls (mirrors `spark.sql.parquet.fieldId.read.ignoreMissing`).
-    pub ignore_missing_field_id: bool,
-    /// Whether the schema Spark asked the scan for carries a Parquet field id at any depth.
-    /// Spark's `ParquetReadSupport` runs its missing-id check against that pruned schema, so
-    /// the planner computes this once from `required_schema`. The reader factory tests it when
-    /// it reads a file's footer, against the Parquet schema found there.
-    pub requested_schema_has_field_ids: bool,
     /// Whether type promotion (schema evolution) is allowed, e.g. INT32 -> INT64,
     /// FLOAT -> DOUBLE. Mirrors spark.comet.schemaEvolution.enabled.
     pub allow_type_promotion: bool,
@@ -140,8 +131,6 @@ impl SparkParquetOptions {
             case_sensitive: false,
             return_null_struct_if_all_fields_missing: true,
             use_field_id: false,
-            ignore_missing_field_id: false,
-            requested_schema_has_field_ids: false,
             allow_type_promotion: false,
             allow_timestamp_ltz_to_ntz: false,
             checked_timestamp_overflow: true,
@@ -158,8 +147,6 @@ impl SparkParquetOptions {
             case_sensitive: false,
             return_null_struct_if_all_fields_missing: true,
             use_field_id: false,
-            ignore_missing_field_id: false,
-            requested_schema_has_field_ids: false,
             allow_type_promotion: false,
             allow_timestamp_ltz_to_ntz: false,
             checked_timestamp_overflow: true,
@@ -423,51 +410,6 @@ fn field_id(field: &arrow::datatypes::Field) -> Option<i32> {
         .metadata()
         .get(PARQUET_FIELD_ID_META_KEY)
         .and_then(|v| v.parse::<i32>().ok())
-}
-
-/// True when a field in `fields`, at any nesting depth, carries a Parquet field id. Spark's
-/// `containsFieldIds` walks the whole file schema the same way, and `ParquetUtils.hasFieldIds`
-/// walks the read schema. The planner runs this over the requested schema once, at plan time.
-/// The file side is not an Arrow walk at all: the reader factory checks the Parquet schema in
-/// the footer, because the Arrow schema the adapter sees can lose ids (the INT96 coercion
-/// rebuilds container fields without their metadata) and never shows an id that sits on a
-/// `list` or `key_value` group. The root-only `schema_has_field_ids` in the schema adapter
-/// stays as the gate for id matching, which only ever renames root fields.
-pub(crate) fn any_nested_field_has_id(fields: &Fields) -> bool {
-    fields.iter().any(|f| field_holds_id(f))
-}
-
-/// Whether `field` or anything nested under it carries a Parquet field id.
-///
-/// This walks the requested schema, where only struct fields can hold the metadata: Spark's
-/// `hasFieldIds` recurses through `ArrayType` and `MapType` into their element and key or value
-/// types, only a `StructField` carries metadata, and the serde never populates the element or
-/// key and value fields. The walk still descends through list and map fields to reach the
-/// structs nested inside them. The file side is checked by the reader factory over the raw
-/// Parquet schema, where any node can carry an id, as Spark's `containsFieldIds` does.
-///
-/// Dictionary and run-end-encoded wrappers are not walked, because the Parquet read path never
-/// nests a struct, list or map inside them.
-fn field_holds_id(field: &Field) -> bool {
-    field_id(field).is_some()
-        || match field.data_type() {
-            DataType::Struct(fields) => any_nested_field_has_id(fields),
-            DataType::Map(entries, _) => field_holds_id(entries),
-            other => list_element_field(other).is_some_and(|f| field_holds_id(f)),
-        }
-}
-
-/// The element field of a list in any Arrow representation, or `None` for a type that is not a
-/// list.
-fn list_element_field(data_type: &DataType) -> Option<&FieldRef> {
-    match data_type {
-        DataType::List(f)
-        | DataType::LargeList(f)
-        | DataType::FixedSizeList(f, _)
-        | DataType::ListView(f)
-        | DataType::LargeListView(f) => Some(f),
-        _ => None,
-    }
 }
 
 /// Resolve each requested (`to`) struct field to the index of the file (`from`) field it reads
@@ -2127,59 +2069,5 @@ mod tests {
             err.to_string().contains("Hdfs support is not enabled"),
             "unexpected error: {err}"
         );
-    }
-
-    /// The recursive id check sees an id on a root field, on a struct child, on the element of
-    /// every list representation, and on a map key or value. It sees none on a schema without
-    /// ids and none on an empty schema.
-    #[test]
-    fn any_nested_field_has_id_finds_ids_at_every_depth() {
-        use super::any_nested_field_has_id;
-        use arrow::datatypes::{DataType, Field, Fields};
-        use parquet::arrow::PARQUET_FIELD_ID_META_KEY;
-
-        let plain = |name: &str| Field::new(name, DataType::Int32, true);
-        let tagged = |name: &str| {
-            plain(name).with_metadata(HashMap::from([(
-                PARQUET_FIELD_ID_META_KEY.to_string(),
-                "7".to_string(),
-            )]))
-        };
-        let root = |field: Field| Fields::from(vec![field]);
-        let has_id = |field: Field| any_nested_field_has_id(&root(field));
-
-        assert!(!any_nested_field_has_id(&Fields::empty()));
-        assert!(!has_id(plain("x")));
-        assert!(has_id(tagged("x")));
-
-        let strukt = |child: Field| Field::new("s", DataType::Struct(root(child)), true);
-        assert!(has_id(strukt(tagged("c"))));
-        assert!(!has_id(strukt(plain("c"))));
-
-        let element = Arc::new(tagged("item"));
-        for list_type in [
-            DataType::List(Arc::clone(&element)),
-            DataType::LargeList(Arc::clone(&element)),
-            DataType::FixedSizeList(Arc::clone(&element), 2),
-            DataType::ListView(Arc::clone(&element)),
-            DataType::LargeListView(Arc::clone(&element)),
-        ] {
-            let list = Field::new("l", list_type.clone(), true);
-            assert!(has_id(list), "{list_type}");
-        }
-        let plain_list = Field::new("l", DataType::List(Arc::new(plain("item"))), true);
-        assert!(!has_id(plain_list));
-
-        let map = |key: Field, value: Field| {
-            let entries = Field::new(
-                "entries",
-                DataType::Struct(Fields::from(vec![key, value])),
-                false,
-            );
-            Field::new("m", DataType::Map(Arc::new(entries), false), true)
-        };
-        assert!(has_id(map(tagged("key"), plain("value"))));
-        assert!(has_id(map(plain("key"), tagged("value"))));
-        assert!(!has_id(map(plain("key"), plain("value"))));
     }
 }

@@ -648,8 +648,7 @@ fn throw_spark_error_as_json(env: &mut Env, spark_error: &SparkError) -> jni::er
     )
 }
 
-/// A `SparkError` raised by the Parquet reader while opening a file, such as the missing field
-/// id check in the reader factory's `get_metadata`, arrives as
+/// A `SparkError` the Parquet reader raised on open arrives as
 /// `DataFusionError::ParquetError(ParquetError::External(spark_error))`. Unwrap it so the error
 /// keeps its own JVM exception class instead of being classified as a file read failure.
 /// `Context` and `Shared` wrappers are looked through, as `try_classify_file_read_error` does.
@@ -1396,21 +1395,23 @@ mod tests {
     #[test]
     fn parquet_external_spark_error_keeps_its_type() {
         let raised = DataFusionError::ParquetError(Box::new(ParquetError::External(Box::new(
-            SparkError::ParquetMissingFieldIds,
+            SparkError::ParquetMissingFieldIds {
+                file_path: "a.parquet".to_string(),
+            },
         ))));
         assert!(matches!(
             parquet_external_spark_error(&raised),
-            Some(SparkError::ParquetMissingFieldIds)
+            Some(SparkError::ParquetMissingFieldIds { file_path }) if file_path == "a.parquet"
         ));
         let wrapped = DataFusionError::Context("open".to_string(), Box::new(raised));
         assert!(matches!(
             parquet_external_spark_error(&wrapped),
-            Some(SparkError::ParquetMissingFieldIds)
+            Some(SparkError::ParquetMissingFieldIds { .. })
         ));
         let shared = DataFusionError::Shared(Arc::new(wrapped));
         assert!(matches!(
             parquet_external_spark_error(&shared),
-            Some(SparkError::ParquetMissingFieldIds)
+            Some(SparkError::ParquetMissingFieldIds { .. })
         ));
         let corrupt = DataFusionError::ParquetError(Box::new(ParquetError::General(
             "corrupt footer".to_string(),
