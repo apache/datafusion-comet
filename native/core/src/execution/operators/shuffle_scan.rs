@@ -128,17 +128,17 @@ impl ShuffleScanExec {
     }
 
     /// Pulls the next input batch from the JVM unless one is already buffered, then wakes the
-    /// stream waiting for it. Called externally before poll_next() because JNI calls cannot
-    /// happen from within poll_next on tokio threads.
-    pub fn get_next_batch(&mut self) -> Result<(), CometError> {
+    /// stream waiting for it. Returns whether it made the JNI call. Called externally before
+    /// poll_next() because JNI calls cannot happen from within poll_next on tokio threads.
+    pub fn get_next_batch(&mut self) -> Result<bool, CometError> {
         if self.input_source.is_none() {
             // Unit test mode - no JNI calls needed.
-            return Ok(());
+            return Ok(false);
         }
 
         let mut current_batch = self.batch.try_lock().unwrap();
         if current_batch.is_some() {
-            return Ok(());
+            return Ok(false);
         }
 
         let mut timer = self.baseline_metrics.elapsed_compute().timer();
@@ -154,7 +154,7 @@ impl ShuffleScanExec {
         drop(current_batch);
         self.waker.wake();
 
-        Ok(())
+        Ok(true)
     }
 
     /// Invokes JNI calls to get the next compressed shuffle block and decode it.

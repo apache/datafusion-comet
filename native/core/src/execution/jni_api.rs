@@ -1005,16 +1005,17 @@ fn prepare_output(
 /// Because the input source could be another native execution stream, which
 /// will be executed in another tokio blocking thread. It causes JNI throw
 /// Java exception. So we pull input batches here and insert them into scan
-/// operators before polling the stream,
+/// operators before polling the stream. Returns whether any scan made a JNI call.
 #[inline]
-fn pull_input_batches(exec_context: &mut ExecutionContext) -> Result<(), CometError> {
+fn pull_input_batches(exec_context: &mut ExecutionContext) -> Result<bool, CometError> {
+    let mut pulled = false;
     for scan in exec_context.scans.iter_mut() {
-        scan.get_next_batch()?;
+        pulled |= scan.get_next_batch()?;
     }
     for scan in exec_context.shuffle_scans.iter_mut() {
-        scan.get_next_batch()?;
+        pulled |= scan.get_next_batch()?;
     }
-    Ok(())
+    Ok(pulled)
 }
 
 /// Yields once, so the `block_on` thread sleeps until a waker registered by an earlier poll
@@ -1032,10 +1033,16 @@ async fn park_until_woken() {
 }
 
 /// Drives `stream` to its next item. JVM-fed scans return `Pending` until `on_pending` refills
-/// them, so every pending poll runs it and then parks instead of polling again at once.
+/// them, so every pending poll runs it. `on_pending` returns whether it made a JNI call, and the
+/// loop parks only when it did not, because the stream is then waiting on native I/O.
+///
+/// After a JNI call the loop polls again without parking. The call can run another Comet plan on
+/// this thread, as when a native writer's input is itself native, and that plan's `block_on`
+/// shares this thread's parker. If the native I/O completes while the nested plan is parked, the
+/// nested park takes the wake-up, and a park here would wait for a wake that has already fired.
 async fn next_batch<S>(
     stream: &mut S,
-    mut on_pending: impl FnMut() -> Result<(), CometError>,
+    mut on_pending: impl FnMut() -> Result<bool, CometError>,
 ) -> Result<Option<RecordBatch>, CometError>
 where
     S: Stream<Item = DataFusionResult<RecordBatch>> + Unpin,
@@ -1047,8 +1054,10 @@ where
                 // JNI call to pull batches from JVM into ScanExec operators.
                 // block_in_place lets tokio move other tasks off this worker
                 // while we wait for JVM data.
-                tokio::task::block_in_place(&mut on_pending)?;
-                park_until_woken().await;
+                let pulled = tokio::task::block_in_place(&mut on_pending)?;
+                if !pulled {
+                    park_until_woken().await;
+                }
             }
         }
     }
@@ -1192,12 +1201,13 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
             }
 
             // ScanExec path: JVM-fed scans return `Pending` until `pull_input_batches` refills
-            // them and wakes the stream, so a poll that is still pending after the pull waits on
-            // native I/O and the loop parks for it.
+            // them. A poll that is still pending when no scan needed a batch waits on native
+            // I/O, and the loop parks for it; see `next_batch` for why it doesn't after a pull.
             let mut stream = exec_context.stream.take().unwrap();
             let next = get_runtime().block_on(next_batch(&mut stream, || {
-                pull_input_batches(exec_context)?;
-                update_metrics_on_interval(env, exec_context)
+                let pulled = pull_input_batches(exec_context)?;
+                update_metrics_on_interval(env, exec_context)?;
+                Ok(pulled)
             }));
             exec_context.stream = Some(stream);
             let next = next?;
@@ -2380,8 +2390,9 @@ mod tests {
         let mut pulls = 0;
         let next = single_worker_runtime()
             .block_on(within_ten_seconds(next_batch(&mut stream, || {
+                // Every JVM-fed scan is already full, so the pull makes no JNI call.
                 pulls += 1;
-                Ok(())
+                Ok(false)
             })))
             .unwrap();
         assert!(next.is_some());
@@ -2404,9 +2415,10 @@ mod tests {
             if let Some(input) = inputs.next() {
                 scan.set_input_batch(input);
             }
-            Ok::<(), CometError>(())
+            Ok::<bool, CometError>(false)
         };
-        // Only the refill's wake ends each park.
+        // The refill makes no JNI call, so the loop parks after it and only the refill's wake
+        // ends each park.
         single_worker_runtime().block_on(within_ten_seconds(async {
             let first = next_batch(&mut stream, &mut pull).await.unwrap();
             assert_eq!(first.unwrap().num_rows(), 3);
@@ -2416,5 +2428,37 @@ mod tests {
             assert!(next_batch(&mut stream, &mut pull).await.unwrap().is_none());
             assert_eq!(pulls.get(), 2);
         }));
+    }
+
+    /// A pull that runs another Comet plan on this thread, whose `block_on` parks until after the
+    /// stream's native I/O has completed. The nested park takes the I/O's wake-up, so a loop that
+    /// parked after the pull would sleep until `within_ten_seconds`'s timer woke it. That rescue
+    /// still returns the batch, so the test asserts on elapsed time.
+    #[test]
+    fn next_batch_does_not_park_after_a_pull_that_ran_a_nested_block_on() {
+        let runtime = single_worker_runtime();
+        let handle = runtime.handle().clone();
+        let batch = RecordBatch::new_empty(Arc::new(Schema::empty()));
+        let mut stream = futures::stream::once(async move {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            Ok::<_, DataFusionError>(batch)
+        })
+        .boxed();
+        let mut pulls = 0;
+        let start = Instant::now();
+        let next = runtime
+            .block_on(within_ten_seconds(next_batch(&mut stream, || {
+                pulls += 1;
+                handle.block_on(tokio::time::sleep(Duration::from_millis(100)));
+                Ok(true)
+            })))
+            .unwrap();
+        let elapsed = start.elapsed();
+        assert!(next.is_some());
+        assert_eq!(pulls, 1);
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "next_batch took {elapsed:?}: the park after the pull lost the stream's wake-up"
+        );
     }
 }
