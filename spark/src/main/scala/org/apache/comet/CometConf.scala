@@ -727,9 +727,11 @@ object CometConf extends ShimCometConf {
         "shuffle data to disk. Larger values may improve write performance by reducing " +
         "the number of system calls, but will use more memory. " +
         "The default is 1MB which provides a good balance between performance and memory usage.")
-      .bytesConf(ByteUnit.MiB)
-      .checkValue(v => v > 0, "Write buffer size must be positive")
-      .createWithDefault(1)
+      .bytesConf(ByteUnit.BYTE)
+      .checkValue(
+        v => v > 0 && v <= Int.MaxValue,
+        s"Write buffer size must be between 1 and ${Int.MaxValue} bytes")
+      .createWithDefault(1024 * 1024)
 
   val COMET_SHUFFLE_JVM_PREFER_DICTIONARY_RATIO: ConfigEntry[Double] = conf(
     "spark.comet.shuffle.jvm.preferDictionary.ratio")
@@ -879,6 +881,17 @@ object CometConf extends ShimCometConf {
       .doc("When enabled, Comet annotates the surrounding Comet operator with a `[COMET-INFO: " +
         "JVM codegen dispatcher: <names>]` segment listing every expression it routed through " +
         "the JVM codegen dispatcher. Disabled by default.")
+      .booleanConf
+      .createWithDefault(false)
+
+  val COMET_EXPLAIN_PLAN_ONLY_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.explain.planOnly.enabled")
+      .category(CATEGORY_EXEC_EXPLAIN)
+      .doc(
+        "When enabled, Comet logs the plan it would have executed, with a coverage " +
+          "summary, to the driver log and then lets Spark execute the query unchanged. Native " +
+          "planning failures are not detected, so the coverage can be optimistic. Requires " +
+          "`spark.comet.exec.enabled=true`.")
       .booleanConf
       .createWithDefault(false)
 
@@ -1102,9 +1115,11 @@ object CometConf extends ShimCometConf {
       .category(CATEGORY_TUNING)
       .doc(
         "The maximum amount of data (in bytes) stored inside the temporary directories " +
-          "used by native operators when spilling. Applied per Spark task, so an executor " +
-          "running N concurrent tasks may use up to N times this value on shared local disks. " +
-          "Once the limit is reached, further spills will fail and the query will error out.")
+          "used by native operators when spilling. Applied to each Comet native plan " +
+          "separately, and a Spark task can run more than one native plan at a time, so an " +
+          "executor running N concurrent tasks may use more than N times this value on shared " +
+          "local disks. Once the limit is reached, further spills will fail and the query will " +
+          "error out.")
       .bytesConf(ByteUnit.BYTE)
       .createWithDefault(100L * 1024 * 1024 * 1024) // 100 GB
 

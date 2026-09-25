@@ -21,7 +21,7 @@ package org.apache.comet
 
 import org.scalatest.funsuite.AnyFunSuite
 
-import org.apache.comet.serde.CometRLike
+import org.apache.comet.serde.{CometMakeTimestamp, CometRLike, CometToUnixTimestamp, NativeOptInAvailable}
 
 class GenerateDocsSuite extends AnyFunSuite {
 
@@ -60,6 +60,23 @@ class GenerateDocsSuite extends AnyFunSuite {
     assert(
       markdown.contains(
         "[plan-time compatibility analyzer](../../regex.md#when-the-rust-engine-is-safe)"))
+  }
+
+  test("dispatch-only datetime expressions have no native opt-in compatibility notes") {
+    val notes =
+      Seq("MakeTimestamp" -> CometMakeTimestamp, "ToUnixTimestamp" -> CometToUnixTimestamp).map {
+        case (name, serde) =>
+          GenerateDocs.ExprNotes(
+            name,
+            serde.getCompatibleNotes(),
+            serde.getIncompatibleReasons(),
+            serde.getUnsupportedReasons(),
+            nativeOptIn = serde.isInstanceOf[NativeOptInAvailable],
+            nativeOptInConfigKey = CometConf.getExprAllowIncompatConfigKey(name),
+            conditionalNativeDefault = false,
+            codegenDispatchFallback = false)
+      }
+    assert(GenerateDocs.renderExpressionCompatNotes(notes).isEmpty)
   }
 
   test("ordinary native opt-in expression output is unchanged") {
