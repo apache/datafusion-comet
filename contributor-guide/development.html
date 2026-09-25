@@ -570,11 +570,18 @@ paths depending on whether the plan reads data from the JVM:</p>
 onto a tokio worker thread and batches are delivered to the executor thread via an <code class="docutils literal notranslate"><span class="pre">mpsc</span></code> channel.
 The executor thread parks in <code class="docutils literal notranslate"><span class="pre">blocking_recv()</span></code> until the next batch is ready. This avoids
 busy-polling on I/O-bound workloads.</p>
-<p><strong>JVM data source path (ScanExec present):</strong> The executor thread calls <code class="docutils literal notranslate"><span class="pre">block_on()</span></code> and polls the
-DataFusion stream directly, interleaving <code class="docutils literal notranslate"><span class="pre">pull_input_batches()</span></code> calls on <code class="docutils literal notranslate"><span class="pre">Poll::Pending</span></code> to feed
-data from the JVM into ScanExec operators.</p>
-<p>In both cases, DataFusion operators execute on <strong>tokio worker threads</strong>, not on the Spark executor
-task thread. All Spark tasks on an executor share one tokio runtime.</p>
+<p><strong>JVM data source path (ScanExec or ShuffleScanExec present):</strong> The executor thread calls
+<code class="docutils literal notranslate"><span class="pre">block_on()</span></code> and polls the DataFusion stream directly. On <code class="docutils literal notranslate"><span class="pre">Poll::Pending</span></code> it calls
+<code class="docutils literal notranslate"><span class="pre">pull_input_batches()</span></code> to feed data from the JVM into the ScanExec and ShuffleScanExec operators,
+whose streams register the poll’s waker and are woken by the refill. The stream is polled with a
+waker that also sets a flag. If the flag is still clear when the pull returns, the stream is
+waiting on native I/O, and the thread parks until a waker fires instead of busy-polling. If it is
+set, the loop polls again. It checks the flag rather than trusting the thread’s parker because the
+pull can run another Comet plan on the same thread, and that plan’s <code class="docutils literal notranslate"><span class="pre">block_on()</span></code> shares the parker
+and can consume the wake-up meant for the outer loop.</p>
+<p>On the async I/O path, DataFusion operators execute on <strong>tokio worker threads</strong>. On the JVM data
+source path, <code class="docutils literal notranslate"><span class="pre">block_on()</span></code> polls them on the Spark executor task thread, and any tasks they spawn
+run on the shared runtime. All Spark tasks on an executor share one tokio runtime.</p>
 </section>
 <section id="rules-for-native-code">
 <h3>Rules for native code<a class="headerlink" href="#rules-for-native-code" title="Link to this heading">#</a></h3>
