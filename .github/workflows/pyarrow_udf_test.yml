@@ -44,12 +44,15 @@ jobs:
           - name: Spark 4.0
             maven_profiles: "-Pspark-4.0 -Pscala-2.13"
             pyspark: "4.0.4"
+            native_python_udf: false
           - name: Spark 4.1
             maven_profiles: "-Pspark-4.1"
             pyspark: "4.1.3"
+            native_python_udf: true
           - name: Spark 4.2
             maven_profiles: "-Pspark-4.2"
             pyspark: "4.2.0"
+            native_python_udf: true
     container:
       # Pinned to the Debian 12 (bookworm) base so the system `python3` is 3.11. The default
       # `amd64/rust` image is Debian 13 (trixie) which ships Python 3.13 and no python3.11 apt
@@ -77,18 +80,33 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-java-maven-
 
-      - name: Build Comet (debug, ${{ matrix.name }} / Scala 2.13)
-        run: |
-          cd native && cargo build
-          cd .. && ./mvnw -B install -DskipTests ${{ matrix.maven_profiles }}
-
       - name: Install Python 3.11 and pip
         run: |
           apt-get update
-          apt-get install -y --no-install-recommends python3 python3-venv python3-pip
+          apt-get install -y --no-install-recommends python3 python3-dev python3-venv python3-pip
           python3 -m venv /tmp/venv
           /tmp/venv/bin/pip install --upgrade pip
           /tmp/venv/bin/pip install "pyspark==${{ matrix.pyspark }}" "pyarrow>=14" pandas pytest
+
+      - name: Build Comet (debug, ${{ matrix.name }} / Scala 2.13)
+        env:
+          PYO3_PYTHON: /tmp/venv/bin/python
+        run: |
+          if [ "${{ matrix.native_python_udf }}" = "true" ]; then
+            (cd native && cargo build --features python-udf)
+          else
+            (cd native && cargo build)
+          fi
+          ./mvnw -B install -DskipTests ${{ matrix.maven_profiles }}
+
+      - name: Run native Arrow UDF Scala suite
+        if: matrix.native_python_udf
+        env:
+          PYSPARK_PYTHON: /tmp/venv/bin/python
+          PYTHONPATH: /tmp/venv/lib/python3.11/site-packages
+        run: |
+          ./mvnw -B test ${{ matrix.maven_profiles }} \
+            -Dsuites=org.apache.spark.sql.comet.CometArrowPythonUdfSuite
 
       - name: Run PyArrow UDF pytest
         env:
@@ -98,6 +116,8 @@ jobs:
           # ModuleNotFoundError.
           PYSPARK_PYTHON: /tmp/venv/bin/python
           PYSPARK_DRIVER_PYTHON: /tmp/venv/bin/python
+          # The embedded interpreter does not inherit PySpark worker sys.path setup.
+          PYTHONPATH: /tmp/venv/lib/python3.11/site-packages
         run: |
           /tmp/venv/bin/python -m pytest -v \
             spark/src/test/resources/pyspark/test_pyarrow_udf.py
