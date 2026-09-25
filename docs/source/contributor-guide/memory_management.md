@@ -268,16 +268,18 @@ JNI, which goes through Spark's ordinary `TaskMemoryManager`. That means:
 `CometFairMemoryPool` additionally applies two local checks before it asks Spark, and refuses the
 request without calling Spark if either fails:
 
-- **The requesting reservation against its share.** The share is `pool_size` divided by the number
-  of consumers currently registered with the pool. The reservation's size plus the request must
-  not exceed it. With an 8 GiB pool and two registered consumers, each share is 4 GiB, so once one
-  consumer holds 3 GiB the other can still reserve up to 4 GiB.
-- **The pool's total against `pool_size`.** The shares alone do not bound the total. A consumer
-  keeps what it reserved while fewer consumers were registered, and the sibling reservations that
-  `new_empty()`, `split()` and `take()` create under one consumer are each checked against the
-  share on their own. `pool_size` is computed for the executor but applied to each task's pool, so
-  Spark's own limit on the task is at least as tight unless the deprecated
-  `spark.comet.exec.memoryPool.fraction` is below `1.0`.
+- **The requesting consumer against its share.** The share is `pool_size` divided by the number of
+  consumers currently registered with the pool. What the consumer already holds plus the request
+  must not exceed it. That counts all of the consumer's reservations, including the sibling
+  reservations that `new_empty()`, `split()` and `take()` create, so an operator that holds several
+  reservations still gets one share. A sort's streaming merge, for example, creates one for each
+  batch it reads. The pool keeps a running total for each consumer, because `reservation.size()`
+  covers only one reservation. With an 8 GiB pool and two registered consumers, each share is
+  4 GiB, so once one consumer holds 3 GiB the other can still reserve up to 4 GiB.
+- **The pool's total against `pool_size`.** The shares alone do not bound the total, because a
+  consumer keeps what it reserved while fewer consumers were registered. `pool_size` is computed
+  for the executor but applied to each task's pool, so Spark's own limit on the task is at least as
+  tight unless the deprecated `spark.comet.exec.memoryPool.fraction` is below `1.0`.
 
 Two details matter for tuning:
 

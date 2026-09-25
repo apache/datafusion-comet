@@ -138,6 +138,12 @@ native plans). This pool works best when you know beforehand
 the query has multiple operators that will likely all need to spill. Sometimes it will cause spills even
 when there is sufficient memory in order to leave enough memory for other operators.
 
+Comet 0.15.0 through 1.0.0 capped the memory of all of a task's operators combined at one operator's share, because of a
+bug ([#5961](https://github.com/apache/datafusion-comet/issues/5961)). Tasks with several operators can now reserve more
+memory before they spill than they could in those releases. The difference is largest on executors that run few tasks
+at once, where Spark's own limit on each task is loosest. If you sized executor memory against one of those releases,
+check that executors still have enough headroom; see [Sizing the Overhead from the Memory Usage Log].
+
 The `greedy_unified` pool type implements a greedy first-come first-serve limit. This pool works well for queries that do not
 need to spill or have a single spillable operator.
 

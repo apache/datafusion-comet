@@ -100,14 +100,16 @@ configuration, from the inside out:
 
 - [ ] A new decorator forwards **every** `MemoryPool` method to its inner pool. A partial
       implementation makes `reserved()` disagree between levels.
-- [ ] **`fair_unified` checks the requesting reservation against its share, and the total against
-      the pool.** It divides `pool_size` by the number of registered consumers and rejects if the
-      reservation's size plus the request exceeds that quotient, or if the pool's total reserved
+- [ ] **`fair_unified` checks the requesting consumer against its share, and the total against
+      the pool.** It divides `pool_size` by the number of registered consumers and rejects if what
+      the consumer holds plus the request exceeds that quotient, or if the pool's total reserved
       plus the request exceeds `pool_size`. With two consumers and an 8 GiB pool, once one holds
-      3 GiB the other can still reserve up to 4 GiB. `try_grow` can read `reservation.size()`
-      because DataFusion calls the pool before adding to the size, but `shrink` cannot, because
-      DataFusion subtracts first. Sibling reservations from `new_empty()` or `split()` are each
-      checked against the share. If the PR changes either comparison it changes when every query
+      3 GiB the other can still reserve up to 4 GiB. The pool keeps a running total for each
+      consumer id, so the sibling reservations that `new_empty()`, `split()` and `take()` create
+      count against one share. A PR that checks `reservation.size()` instead lets an operator with
+      several reservations, such as a sort's streaming merge, take other consumers' shares. It
+      also depends on when DataFusion updates the size, which is after it calls `try_grow` but
+      before it calls `shrink`. If the PR changes either comparison it changes when every query
       spills, so it needs benchmark evidence, not reasoning.
 - [ ] **`num_consumers` counts every consumer in the task**, across every native plan, because the
       pool is task-shared.
