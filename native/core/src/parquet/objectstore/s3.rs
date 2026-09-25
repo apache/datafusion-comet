@@ -202,9 +202,10 @@ impl S3StoreTemplate {
 }
 
 /// Builds the store for a `CometS3LocationScopedCredentialProvider`. `bridge` was created on this
-/// thread, which registered the provider. It fetches the locations again after a 403, and each
-/// location's bridge is derived from it on first use, often on a Tokio worker, so every location
-/// shares the bucket's provider registration without another `ensureInitialized` call.
+/// thread, which registered the provider. It fetches the locations again after a 403 or a failure
+/// to get a location's credential, and each location's bridge is derived from it on first use,
+/// often on a Tokio worker, so every location shares the bucket's provider registration without
+/// another `ensureInitialized` call.
 fn location_scoped_store(
     template: S3StoreTemplate,
     bucket: &str,
