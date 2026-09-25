@@ -77,7 +77,6 @@ use datafusion_spark::function::string::substring::SparkSubstring;
 use datafusion_spark::function::url::try_url_decode::TryUrlDecode as SparkTryUrlDecode;
 use datafusion_spark::function::url::url_decode::UrlDecode as SparkUrlDecode;
 use datafusion_spark::function::url::url_encode::UrlEncode as SparkUrlEncode;
-use futures::poll;
 use futures::stream::{Stream, StreamExt};
 use futures::FutureExt;
 use jni::objects::JByteBuffer;
@@ -95,8 +94,13 @@ use parking_lot::Mutex;
 use prost::Message;
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
-use std::{future::poll_fn, sync::Arc, task::Poll};
+use std::{
+    future::poll_fn,
+    sync::Arc,
+    task::{Context, Poll, Wake, Waker},
+};
 use tokio::runtime::{Handle, Runtime};
 use tokio::sync::mpsc;
 
@@ -1005,62 +1009,79 @@ fn prepare_output(
 /// Because the input source could be another native execution stream, which
 /// will be executed in another tokio blocking thread. It causes JNI throw
 /// Java exception. So we pull input batches here and insert them into scan
-/// operators before polling the stream. Returns whether any scan made a JNI call.
+/// operators before polling the stream,
 #[inline]
-fn pull_input_batches(exec_context: &mut ExecutionContext) -> Result<bool, CometError> {
-    let mut pulled = false;
-    for scan in exec_context.scans.iter_mut() {
-        pulled |= scan.get_next_batch()?;
-    }
-    for scan in exec_context.shuffle_scans.iter_mut() {
-        pulled |= scan.get_next_batch()?;
-    }
-    Ok(pulled)
+fn pull_input_batches(exec_context: &mut ExecutionContext) -> Result<(), CometError> {
+    exec_context.scans.iter_mut().try_for_each(|scan| {
+        scan.get_next_batch()?;
+        Ok::<(), CometError>(())
+    })?;
+    exec_context.shuffle_scans.iter_mut().try_for_each(|scan| {
+        scan.get_next_batch()?;
+        Ok::<(), CometError>(())
+    })
 }
 
-/// Yields once, so the `block_on` thread sleeps until a waker registered by an earlier poll
-/// fires: a JVM-fed scan refilled by `pull_input_batches`, or native I/O that completed.
-async fn park_until_woken() {
-    let mut polled = false;
-    poll_fn(|_| {
-        if std::mem::replace(&mut polled, true) {
-            Poll::Ready(())
-        } else {
-            Poll::Pending
-        }
-    })
-    .await
+/// Forwards a wake-up to the `block_on` task and records that it happened, so `next_batch` can
+/// tell whether the stream was woken even if something else took the wake-up from the thread's
+/// parker.
+struct WakeFlag {
+    woken: AtomicBool,
+    parent: Waker,
+}
+
+impl Wake for WakeFlag {
+    fn wake(self: Arc<Self>) {
+        self.wake_by_ref()
+    }
+
+    fn wake_by_ref(self: &Arc<Self>) {
+        self.woken.store(true, Ordering::Release);
+        self.parent.wake_by_ref();
+    }
 }
 
 /// Drives `stream` to its next item. JVM-fed scans return `Pending` until `on_pending` refills
-/// them, so every pending poll runs it. `on_pending` returns whether it made a JNI call, and the
-/// loop parks only when it did not, because the stream is then waiting on native I/O.
+/// them, so every pending poll runs it, and the refill wakes the stream.
 ///
-/// After a JNI call the loop polls again without parking. The call can run another Comet plan on
-/// this thread, as when a native writer's input is itself native, and that plan's `block_on`
-/// shares this thread's parker. If the native I/O completes while the nested plan is parked, the
-/// nested park takes the wake-up, and a park here would wait for a wake that has already fired.
+/// Each poll gives the stream a `WakeFlag` waker. If the flag is still clear when `on_pending`
+/// returns, the stream is waiting on native I/O and `block_on` parks until it completes.
+/// Otherwise `next_batch` wakes `block_on` itself so that it polls again at once. It can't rely on
+/// the wake-up that set the flag, because `on_pending` can run another Comet plan on this thread,
+/// as when a native writer's input is itself native. That plan's `block_on` shares this thread's
+/// parker, which holds a single wake-up, and its park can take this one.
+///
+/// It polls again by yielding to `block_on` rather than looping here, so that each poll starts
+/// with a fresh coop budget. A stream that has spent its budget wakes itself and returns
+/// `Pending`, and a loop here would only get past that because `block_in_place` happens to leave
+/// this thread's budget unconstrained.
 async fn next_batch<S>(
     stream: &mut S,
-    mut on_pending: impl FnMut() -> Result<bool, CometError>,
+    mut on_pending: impl FnMut() -> Result<(), CometError>,
 ) -> Result<Option<RecordBatch>, CometError>
 where
     S: Stream<Item = DataFusionResult<RecordBatch>> + Unpin,
 {
-    loop {
-        match poll!(stream.next()) {
-            Poll::Ready(item) => return Ok(item.transpose()?),
-            Poll::Pending => {
-                // JNI call to pull batches from JVM into ScanExec operators.
-                // block_in_place lets tokio move other tasks off this worker
-                // while we wait for JVM data.
-                let pulled = tokio::task::block_in_place(&mut on_pending)?;
-                if !pulled {
-                    park_until_woken().await;
-                }
-            }
+    poll_fn(|cx| {
+        let flag = Arc::new(WakeFlag {
+            woken: AtomicBool::new(false),
+            parent: cx.waker().clone(),
+        });
+        let waker = Waker::from(Arc::clone(&flag));
+        if let Poll::Ready(item) = stream.poll_next_unpin(&mut Context::from_waker(&waker)) {
+            return Poll::Ready(Ok(item.transpose()?));
         }
-    }
+        // JNI call to pull batches from JVM into ScanExec operators.
+        // block_in_place lets tokio move other tasks off this worker
+        // while we wait for JVM data.
+        tokio::task::block_in_place(&mut on_pending)?;
+        if flag.woken.load(Ordering::Acquire) {
+            // Poll again at once: a nested `block_on` may have taken the wake-up.
+            cx.waker().wake_by_ref();
+        }
+        Poll::Pending
+    })
+    .await
 }
 
 /// Accept serialized query plan and the addresses of Arrow Arrays from Spark,
@@ -1201,13 +1222,13 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
             }
 
             // ScanExec path: JVM-fed scans return `Pending` until `pull_input_batches` refills
-            // them. A poll that is still pending when no scan needed a batch waits on native
-            // I/O, and the loop parks for it; see `next_batch` for why it doesn't after a pull.
+            // them and wakes the stream. A poll that is still pending, with nothing having woken
+            // the stream by the end of the pull, waits on native I/O, and `next_batch` parks
+            // until it completes.
             let mut stream = exec_context.stream.take().unwrap();
             let next = get_runtime().block_on(next_batch(&mut stream, || {
-                let pulled = pull_input_batches(exec_context)?;
-                update_metrics_on_interval(env, exec_context)?;
-                Ok(pulled)
+                pull_input_batches(exec_context)?;
+                update_metrics_on_interval(env, exec_context)
             }));
             exec_context.stream = Some(stream);
             let next = next?;
@@ -2364,6 +2385,7 @@ mod tests {
             assert_eq!(ret.data_type(), &DataType::Int32, "length({input})");
         }
     }
+
     fn single_worker_runtime() -> Runtime {
         tokio::runtime::Builder::new_multi_thread()
             .worker_threads(1)
@@ -2372,11 +2394,20 @@ mod tests {
             .unwrap()
     }
 
-    /// Fails instead of hanging the suite when a wake is lost.
-    async fn within_ten_seconds<F: Future>(future: F) -> F::Output {
-        tokio::time::timeout(Duration::from_secs(10), future)
+    /// Fails when a wake is lost. The timeout keeps a lost wake from hanging the suite, but when
+    /// its timer fires it polls `future` again, which can finish it, so this also fails when
+    /// `future` took more than five seconds.
+    async fn without_a_lost_wake<F: Future>(future: F) -> F::Output {
+        let start = Instant::now();
+        let output = tokio::time::timeout(Duration::from_secs(10), future)
             .await
-            .expect("timed out: a wake was lost")
+            .expect("timed out: a wake was lost");
+        let elapsed = start.elapsed();
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "took {elapsed:?}: a wake was lost, and only the timeout's timer woke the task"
+        );
+        output
     }
 
     #[test]
@@ -2389,10 +2420,10 @@ mod tests {
         .boxed();
         let mut pulls = 0;
         let next = single_worker_runtime()
-            .block_on(within_ten_seconds(next_batch(&mut stream, || {
-                // Every JVM-fed scan is already full, so the pull makes no JNI call.
+            .block_on(without_a_lost_wake(next_batch(&mut stream, || {
+                // Every JVM-fed scan already holds a batch, so the pull wakes nothing.
                 pulls += 1;
-                Ok(false)
+                Ok(())
             })))
             .unwrap();
         assert!(next.is_some());
@@ -2415,11 +2446,10 @@ mod tests {
             if let Some(input) = inputs.next() {
                 scan.set_input_batch(input);
             }
-            Ok::<bool, CometError>(false)
+            Ok::<(), CometError>(())
         };
-        // The refill makes no JNI call, so the loop parks after it and only the refill's wake
-        // ends each park.
-        single_worker_runtime().block_on(within_ten_seconds(async {
+        // Only the refill's wake gets the stream polled again.
+        single_worker_runtime().block_on(without_a_lost_wake(async {
             let first = next_batch(&mut stream, &mut pull).await.unwrap();
             assert_eq!(first.unwrap().num_rows(), 3);
             assert_eq!(pulls.get(), 1);
@@ -2431,11 +2461,11 @@ mod tests {
     }
 
     /// A pull that runs another Comet plan on this thread, whose `block_on` parks until after the
-    /// stream's native I/O has completed. The nested park takes the I/O's wake-up, so a loop that
-    /// parked after the pull would sleep until `within_ten_seconds`'s timer woke it. That rescue
-    /// still returns the batch, so the test asserts on elapsed time.
+    /// stream's native I/O has completed. The nested park takes the I/O's wake-up from the
+    /// thread's parker, so `next_batch` has to have seen the wake some other way, or it parks
+    /// until `without_a_lost_wake`'s timer wakes it.
     #[test]
-    fn next_batch_does_not_park_after_a_pull_that_ran_a_nested_block_on() {
+    fn next_batch_polls_again_when_a_nested_block_on_took_the_wake_up() {
         let runtime = single_worker_runtime();
         let handle = runtime.handle().clone();
         let batch = RecordBatch::new_empty(Arc::new(Schema::empty()));
@@ -2445,20 +2475,14 @@ mod tests {
         })
         .boxed();
         let mut pulls = 0;
-        let start = Instant::now();
         let next = runtime
-            .block_on(within_ten_seconds(next_batch(&mut stream, || {
+            .block_on(without_a_lost_wake(next_batch(&mut stream, || {
                 pulls += 1;
                 handle.block_on(tokio::time::sleep(Duration::from_millis(100)));
-                Ok(true)
+                Ok(())
             })))
             .unwrap();
-        let elapsed = start.elapsed();
         assert!(next.is_some());
         assert_eq!(pulls, 1);
-        assert!(
-            elapsed < Duration::from_secs(5),
-            "next_batch took {elapsed:?}: the park after the pull lost the stream's wake-up"
-        );
     }
 }

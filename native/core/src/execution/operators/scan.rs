@@ -117,17 +117,16 @@ impl ScanExec {
     }
 
     /// Pulls the next input batch from the upstream `ArrowArrayStreamReader` unless one is
-    /// already buffered, then wakes the stream waiting for it. Returns whether it made the JNI
-    /// call.
-    pub fn get_next_batch(&mut self) -> Result<bool, CometError> {
+    /// already buffered, then wakes the stream waiting for it.
+    pub fn get_next_batch(&mut self) -> Result<(), CometError> {
         if self.input_source.is_none() {
             // This is a unit test. Input batches are seeded via `set_input_batch`.
-            return Ok(false);
+            return Ok(());
         }
 
         let mut current_batch = self.batch.try_lock().unwrap();
         if current_batch.is_some() {
-            return Ok(false);
+            return Ok(());
         }
 
         let mut timer = self.baseline_metrics.elapsed_compute().timer();
@@ -138,7 +137,7 @@ impl ScanExec {
         drop(current_batch);
         self.waker.wake();
 
-        Ok(true)
+        Ok(())
     }
 
     /// Pull the next `RecordBatch` from the stream and convert it to an `InputBatch`. Dictionary
