@@ -520,6 +520,11 @@ type ObjectStoreCache = RwLock<HashMap<(String, u64), Arc<dyn ObjectStore>>>;
 /// connection pool + DNS resolution), and there is no meaningful benefit from eviction, so
 /// no eviction policy is applied.
 ///
+/// A provider that implements `CometS3LocationScopedCredentialProvider` gets one entry per
+/// bucket as well: a `LocationScopedObjectStore` that holds an S3 store for each of the
+/// provider's locations that has been read, so it grows with the provider's location list, not
+/// with the number of paths read.
+///
 /// ## Credential invalidation
 ///
 /// Object stores that use dynamic credentials (IMDS, WebIdentity, ECS role, STS assume-role)
