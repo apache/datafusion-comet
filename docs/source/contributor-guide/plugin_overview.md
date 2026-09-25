@@ -31,19 +31,35 @@ default behavior.
 
 ## Comet SQL Plugin
 
-The entry point to Comet is the org.apache.spark.CometPlugin class, which is registered in Spark using the following
+The entry point to Comet is the `org.apache.spark.CometPlugin` class, which is registered in Spark using the following
 configuration:
 
 ```
 --conf spark.plugins=org.apache.spark.CometPlugin
 ```
 
-The plugin is loaded on the Spark driver and does not provide executor-side plugins.
+The plugin has a driver component, `CometDriverPlugin`, and an executor component, `CometExecutorPlugin`.
 
-The plugin will update the current `SparkConf` with the extra configuration provided by Comet, such as executor memory
-configuration.
+`CometDriverPlugin` runs once, when the `SparkContext` starts and before any `SparkSession` exists, so it can set static
+configuration that cannot be changed once a session has been created. It first sets `spark.comet.version` to the Comet
+version. If neither `spark.memory.offHeap.enabled` nor `spark.comet.exec.onHeap.enabled` is `true`, it logs a warning
+and skips the remaining steps. Otherwise it:
 
-The plugin also registers `CometSparkSessionExtensions` with Spark's extension API.
+- Appends `CometSparkSessionExtensions` to `spark.sql.extensions`, unless it is already listed.
+- Sets `spark.sql.cache.serializer` to Comet's `ArrowCachedBatchSerializer` when
+  `spark.comet.exec.inMemoryCache.enabled=true`, unless the application has chosen a different serializer.
+- Registers `CometSource` with Spark's metrics system and adds `CometMetricsListener` to
+  `spark.sql.queryExecutionListeners` when `spark.comet.metrics.enabled=true`.
+- Logs a warning for settings that are likely to cause problems, such as an unset `spark.executor.memoryOverhead`.
+
+The plugin does not change any executor memory setting. The [Tuning Guide](../user-guide/latest/tuning.md) covers how
+to size them.
+
+When the driver or an executor stops, the plugin shuts down Comet's native tokio runtime in that JVM.
+
+`CometSparkSessionExtensions` can also be registered without the plugin, through `spark.sql.extensions` or
+`SparkSession.Builder.withExtensions`. Most of Comet's test suites and the Spark SQL tests enable Comet this way, so
+none of the driver plugin's steps run for them.
 
 ## CometSparkSessionExtensions
 
@@ -124,14 +140,26 @@ For shuffle writes, a `ShuffleMapTask` runs in the executors. This task contains
 broadcast to all of the executors. It then passes the input RDD to `ShuffleWriteProcessor.write()` which
 requests a `ShuffleWriter` from the shuffle manager, and this is where it gets a Comet shuffle writer.
 
-`ShuffleWriteProcessor` then invokes the dependency RDD and fetches rows/batches and passes them to Comet's
-shuffle writer, which writes batches to disk in Arrow IPC format.
+Comet has two shuffle implementations, native shuffle and JVM columnar shuffle.
+[When Native Shuffle is Used](native_shuffle.md#when-native-shuffle-is-used) describes how Comet chooses between them.
 
-As a result, we cannot avoid having one native plan to produce the shuffle input and another native plan for
-writing the batches to the shuffle file.
+For native shuffle, `CometNativeShuffleWriter` runs one native plan per task, with a `ShuffleWriter` operator at the
+root. When the exchange's child is a native Comet subtree, that subtree becomes the writer's child, so the operators
+that produce the shuffle input and the writer run in the same native plan, and no batch crosses into the JVM between
+them. Otherwise, for example when the exchange's child is `CometSparkToColumnarExec`, the writer's child is a scan that
+reads batches from the JVM. The writer partitions the batches and writes them in Arrow IPC format. See
+[Native Shuffle](native_shuffle.md) for details.
+
+JVM columnar shuffle takes rows instead, converting a Comet child's output with `ColumnarToRowExec`. It assigns
+partitions with Spark's partitioner, buffers the rows in memory pages, and calls native code to encode them to Arrow
+IPC. See [JVM Shuffle](jvm_shuffle.md) for details.
 
 ### Shuffle Reads
 
-For shuffle reads a `ShuffledRDD` requests a `ShuffleReader` from the shuffle manager. Comet provides a
-`CometBlockStoreShuffleReader` which is implemented in JVM and fetches blocks from Spark and then creates an
-`ArrowReaderIterator` to process the blocks using Arrow's `StreamReader` for decoding IPC batches.
+For shuffle reads, `CometShuffledBatchRDD` requests a `ShuffleReader` from the shuffle manager and gets a
+`CometBlockStoreShuffleReader`, which fetches blocks with Spark's `ShuffleBlockFetcherIterator`. Both shuffle
+implementations write the same Arrow IPC block format, so the same reader serves both. When a native plan consumes the
+shuffle output and `spark.comet.shuffle.directRead.enabled` is `true`, the default, the compressed blocks are passed
+to that plan, which decodes them itself. Otherwise `NativeBatchDecoderIterator` decodes each block in native
+code through JNI, and Arrow FFI imports the result into the JVM as a `ColumnarBatch`. See
+[Read Path](native_shuffle.md#read-path) for details.
