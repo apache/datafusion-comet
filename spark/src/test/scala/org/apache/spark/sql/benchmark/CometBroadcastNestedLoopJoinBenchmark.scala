@@ -44,6 +44,7 @@ object CometBroadcastNestedLoopJoinBenchmark extends CometBenchmarkBase {
       .set(
         "spark.shuffle.manager",
         "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
+      .set("spark.comet.exec.onHeap.enabled", "true")
 
     val sparkSession = SparkSession
       .builder()
