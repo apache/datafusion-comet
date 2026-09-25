@@ -48,8 +48,11 @@ const _: () = assert!(ANCHOR_BYTES == 1);
 /// it until it drops, so once held no release, this pool's or a sibling consumer's, can zero the
 /// balance under a waiter. Spark declines the byte for a task already at its share; the pool
 /// then runs without it and each grow retries it first, so a grow's own request carries the
-/// exposure only until the first retry lands. Releases go to the JVM whole: Spark grants a
-/// parked request only when they cover it.
+/// exposure only until the first retry lands. The pool can still come to hold bytes from Spark
+/// while the anchor is missing, when Spark frees up between a declined retry and the real
+/// request. The first release that hands bytes back to Spark in that state keeps one of them
+/// as the anchor, so a retry parked meanwhile never loses the task's entry. Other releases go
+/// to the JVM whole: Spark grants a parked request only when they cover it.
 ///
 /// The anchor is never recorded in the pool's total and never carried as overcommit, so it goes
 /// through the Spark calls directly rather than through the [`SparkMemory`] ledger. It takes the
@@ -73,7 +76,8 @@ struct CometFairPoolState {
     /// settle together once the JVM has answered.
     consumers: HashMap<usize, usize>,
     /// Whether the anchor byte is held on the JVM side. Unset while Spark declines it, which it
-    /// does only for a task already at its share; each grow retries it until it is held.
+    /// does only for a task already at its share; each grow retries it until it is held, and
+    /// the first release to Spark while it is unset keeps one of its bytes as the anchor.
     anchor_held: bool,
 }
 
@@ -174,12 +178,33 @@ impl CometFairMemoryPool {
                 return Ok(());
             }
         }
-        // A grow on another thread took the anchor meanwhile. This byte was never booked, so a
-        // failed return only leaves Spark holding it until the task ends, as on drop.
+        // A grow or a release on another thread took the anchor meanwhile. This byte was never
+        // booked, so a failed return only leaves Spark holding it until the task ends, as on
+        // drop.
         if let Err(e) = self.spark.manager().release_anchor(ANCHOR_BYTES) {
             warn!("Failed to return a duplicate memory pool anchor byte: {e:?}");
         }
         Ok(())
+    }
+
+    /// Hands `bytes` that Spark granted this pool back to it. While the anchor is missing, one
+    /// of them is kept as the anchor instead: this pool holds at least those bytes from Spark,
+    /// so the release cannot take the task's balance to zero under an acquire parked there.
+    /// Claiming the anchor under the lock means one release keeps it, and an anchor retry that
+    /// lands afterwards hands its byte back as a duplicate. The JVM releases to Spark before it
+    /// moves its counters, so a failed call has moved nothing: the claim is rolled back and the
+    /// pool is unanchored again, with Spark still holding the bytes, and later grows retry the
+    /// anchor as usual. A retry that returned its byte while the claim stood holds nothing.
+    fn release_to_spark(&self, bytes: usize) -> CometResult<()> {
+        let keep_anchor = !std::mem::replace(&mut self.state.lock().anchor_held, true);
+        if !keep_anchor {
+            return self.spark.manager().release(bytes);
+        }
+        let released = self.spark.manager().release_keeping_anchor(bytes);
+        if released.is_err() {
+            self.state.lock().anchor_held = false;
+        }
+        released
     }
 
     /// Settles a release the JVM has accepted: the bytes come off the pool's total and the
@@ -300,7 +325,7 @@ impl MemoryPool for CometFairMemoryPool {
             // left to handle an error), while the short-grant path in try_grow returns Err
             // because its caller can still spill.
             self.spark
-                .release(subtractive)
+                .release_through(subtractive, |bytes| self.release_to_spark(bytes))
                 .unwrap_or_else(|_| panic!("Failed to release {subtractive} bytes"));
             self.settle_release(consumer, subtractive);
         }
@@ -386,11 +411,12 @@ impl MemoryPool for CometFairMemoryPool {
             // admitted on them meanwhile. A failed return leaves Spark holding them until the
             // task ends, and they stay charged here to match. The caller still gets the short
             // grant error below so a spillable operator spills. A panic in that release leaves
-            // the same state as an error.
+            // the same state as an error. Without the anchor, one granted byte is kept as the
+            // anchor, see `release_to_spark`.
             let granted = refusal.granted;
             self.settle_acquire(consumer, additional, granted);
             if granted > 0 {
-                if let Err(e) = self.spark.manager().release(granted) {
+                if let Err(e) = self.release_to_spark(granted) {
                     warn!("Failed to return a short grant of {granted} bytes: {e:?}");
                 } else {
                     self.settle_release(consumer, granted);
@@ -741,6 +767,16 @@ mod tests {
             self.anchor.fetch_sub(size as i64, SeqCst);
             Ok(())
         }
+
+        fn release_keeping_anchor(&self, size: usize) -> CometResult<()> {
+            // Like the JVM, Spark first and the counters only once it has answered.
+            if size > ANCHOR_BYTES {
+                self.hand_back(size - ANCHOR_BYTES)?;
+            }
+            self.used.fetch_sub(size as i64, SeqCst);
+            self.anchor.fetch_add(ANCHOR_BYTES as i64, SeqCst);
+            Ok(())
+        }
     }
 
     fn pool_with(stub: &Arc<StubTaskMemory>, pool_size: usize) -> Arc<dyn MemoryPool> {
@@ -1040,6 +1076,108 @@ mod tests {
             releases_before,
             "a pool that never held the anchor releases nothing on drop"
         );
+    }
+
+    /// Spark declines the anchor, then frees up before the same grow's real request, so the
+    /// pool holds real bytes without its anchor. The next grow's anchor retry parks, and the
+    /// release of those real bytes must not zero the task's balance under it: the pool keeps
+    /// one of them as its anchor.
+    #[test]
+    fn release_while_unanchored_keeps_a_byte_under_a_parked_anchor_retry() {
+        let stub = Arc::new(StubTaskMemory::new(100));
+        stub.sibling_consumer_holds(100);
+        let pool = pool_with(&stub, 1_000);
+        let holder = MemoryConsumer::new("holder").register(&pool);
+        let grower = MemoryConsumer::new("grower").register(&pool);
+
+        // The anchor retry is declined at the task's share. Before the real request reaches
+        // Spark the sibling frees its 100 bytes and another task takes 90.
+        stub.acquire_gate.arm();
+        let holder_thread = thread::spawn(move || {
+            holder.try_grow(10).unwrap();
+            holder
+        });
+        stub.acquire_gate.wait_entered("holder's anchor retry");
+        stub.acquire_gate.open();
+        stub.acquire_gate.wait_entered("holder's real request");
+        stub.acquire_gate.disarm();
+        stub.sibling_consumer_releases(100);
+        stub.other_task_holds(90);
+        stub.acquire_gate.open();
+        let holder = holder_thread.join().unwrap();
+        assert_eq!(stub.outstanding(), 10, "real bytes held without the anchor");
+
+        // Two active tasks, a 25 byte minimum share and nothing free: the anchor retry parks.
+        // Once it is through, 9 bytes are free for the grow itself.
+        let grower_thread = thread::spawn(move || {
+            grower.try_grow(5).unwrap();
+            grower.free();
+        });
+        stub.wait_parked("grower's anchor retry");
+
+        holder.free();
+        grower_thread
+            .join()
+            .expect("parked anchor retry crashed when the pool released its last real bytes");
+        assert_eq!(pool.reserved(), 0);
+        assert_eq!(stub.outstanding(), 1, "only the anchor may remain");
+        assert_eq!(stub.used.load(SeqCst), 0, "no reservation is left counted");
+        assert_eq!(
+            stub.anchor.load(SeqCst),
+            1,
+            "the kept byte is counted as the anchor"
+        );
+        drop(holder);
+        drop(pool);
+        assert_eq!(stub.outstanding(), 0);
+        assert_eq!(stub.anchor.load(SeqCst), 0);
+    }
+
+    /// A release that would keep a byte as the anchor fails before Spark sees it. Spark still
+    /// holds every byte, so the pool is left without an anchor: the next grow takes it and drop
+    /// hands back only that one.
+    #[test]
+    fn failed_release_keeping_the_anchor_leaves_the_pool_unanchored() {
+        // The second acquire, the real request, is granted half.
+        let stub = Arc::new(StubTaskMemory::new(100).short_every(2));
+        stub.sibling_consumer_holds(100);
+        let pool = pool_with(&stub, 1_000);
+        let res = MemoryConsumer::new("consumer").register(&pool);
+
+        // The anchor retry is declined at the task's share, then the sibling frees its bytes
+        // before the real request, which gets 5 of 10 and hands them back as a short grant.
+        stub.acquire_gate.arm();
+        let grow = thread::spawn(move || {
+            let err = res.try_grow(10).unwrap_err();
+            assert!(err.to_string().contains("only got"), "{err}");
+            res
+        });
+        stub.acquire_gate.wait_entered("anchor retry");
+        stub.acquire_gate.open();
+        stub.acquire_gate.wait_entered("real request");
+        stub.acquire_gate.disarm();
+        stub.sibling_consumer_releases(100);
+        stub.fail_release.store(true, SeqCst);
+        stub.acquire_gate.open();
+        let res = grow.join().unwrap();
+        stub.fail_release.store(false, SeqCst);
+        assert_eq!(stub.outstanding(), 5, "Spark still holds the whole grant");
+        assert_eq!(stub.anchor.load(SeqCst), 0, "no byte was kept");
+
+        let _ = res.try_grow(10);
+        assert_eq!(
+            stub.anchor.load(SeqCst),
+            1,
+            "the next grow takes the anchor again"
+        );
+        drop(res);
+        drop(pool);
+        assert_eq!(
+            stub.anchor.load(SeqCst),
+            0,
+            "drop hands back the one anchor it holds"
+        );
+        assert_eq!(stub.outstanding(), 5, "only the stranded grant remains");
     }
 
     /// Two grows retry a missing anchor at once and Spark grants both: one byte is kept and

@@ -21,7 +21,7 @@ package org.apache.spark
 
 import java.util.Properties
 import java.util.concurrent.{CountDownLatch, TimeUnit}
-import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.{AtomicLong, AtomicReference}
 
 import org.scalatest.funsuite.AnyFunSuite
 
@@ -207,6 +207,67 @@ class CometTaskMemoryManagerSuite extends AnyFunSuite {
         Seq(first, second).foreach(_.join(TimeUnit.SECONDS.toMillis(TimeoutSeconds)))
       }
       manager.releaseMemory(secondGranted.get)
+      manager.releaseAnchor(1L)
+      assert(taskMemoryManager.getMemoryConsumptionForThisTask == 0L)
+    }
+  }
+
+  test("releasing the last bytes held without the anchor keeps a parked anchor retry's entry") {
+    // A 100 byte off-heap execution pool.
+    val conf = new SparkConf()
+      .set("spark.memory.offHeap.enabled", "true")
+      .set("spark.memory.offHeap.size", "100")
+      .set("spark.memory.storageFraction", "0")
+    val memoryManager = new UnifiedMemoryManager(conf, 1000L, 500L, 1)
+    val otherTask = new OffHeapConsumer(new TaskMemoryManager(memoryManager, 1L))
+    val taskMemoryManager = new TaskMemoryManager(memoryManager, 0L)
+
+    withTaskContext(taskMemoryManager) { _ =>
+      val manager = new CometTaskMemoryManager(1L, 0L)
+      val sibling = new OffHeapConsumer(taskMemoryManager)
+
+      // A sibling consumer holds the task's whole share, so Spark declines the anchor. It frees
+      // its memory and another task takes 90 bytes before the pool's real request of 10.
+      assert(sibling.acquireMemory(100L) == 100L)
+      assert(manager.acquireAnchor(1L) == 0L)
+      sibling.freeMemory(100L)
+      assert(otherTask.acquireMemory(90L) == 90L)
+      assert(manager.acquireMemory(10L) == 10L)
+
+      // The next grow retries the anchor. With two active tasks its minimum share is 25 bytes
+      // and nothing is free, so it waits inside Spark.
+      val retryGranted = new AtomicLong(-1L)
+      val retryFailure = new AtomicReference[Throwable]()
+      val retry = new Thread(() =>
+        try retryGranted.set(manager.acquireAnchor(1L))
+        catch { case t: Throwable => retryFailure.set(t) })
+      retry.setDaemon(true)
+
+      try {
+        retry.start()
+        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(TimeoutSeconds)
+        while (!waitingInSpark(retry) && System.nanoTime() < deadline) Thread.sleep(10)
+        assert(waitingInSpark(retry), s"the anchor retry is ${retry.getState}")
+
+        // The pool releases its 10 bytes while the anchor is still missing, and keeps one of
+        // them as the anchor. Releasing all 10 would remove the task's entry under the retry.
+        manager.releaseKeepingAnchor(10L)
+
+        retry.join(TimeUnit.SECONDS.toMillis(TimeoutSeconds))
+        assert(!retry.isAlive, s"the anchor retry is ${retry.getState}")
+        assert(retryFailure.get == null, s"the anchor retry failed: ${retryFailure.get}")
+        assert(retryGranted.get == 1L)
+      } finally {
+        // Free the other task's memory so that the retry does not outlive a failed test.
+        otherTask.freeMemory(otherTask.getUsed)
+        retry.join(TimeUnit.SECONDS.toMillis(TimeoutSeconds))
+      }
+
+      // The pool already holds the kept byte, so it hands the retry's byte back.
+      manager.releaseAnchor(1L)
+      assert(manager.getUsed == 0L, "the kept byte is not a reservation")
+      assert(nativeMemoryConsumer(manager).getUsed == 1L)
+      assert(taskMemoryManager.getMemoryConsumptionForThisTask == 1L)
       manager.releaseAnchor(1L)
       assert(taskMemoryManager.getMemoryConsumptionForThisTask == 0L)
     }

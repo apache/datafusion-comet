@@ -34,6 +34,9 @@ pub(super) trait SparkMemoryManager: Send + Sync {
     /// balance but not toward the usage it checks for leaked reservations when a plan closes.
     fn acquire_anchor(&self, size: usize) -> CometResult<i64>;
     fn release_anchor(&self, size: usize) -> CometResult<()>;
+    /// Like [`Self::release`], except that one of the `size` bytes stays with Spark as the
+    /// pool's anchor, to be handed back later through [`Self::release_anchor`].
+    fn release_keeping_anchor(&self, size: usize) -> CometResult<()>;
 }
 
 /// Calls [`crate::jvm_bridge::CometTaskMemoryManager`] over JNI.
@@ -67,6 +70,14 @@ impl SparkMemoryManager for JniMemoryManager {
         let handle = self.0.as_obj();
         JVMClasses::with_env(|env| unsafe {
             jni_call!(env, comet_task_memory_manager(handle).release_anchor(size as i64) -> ())
+        })
+    }
+
+    fn release_keeping_anchor(&self, size: usize) -> CometResult<()> {
+        let handle = self.0.as_obj();
+        JVMClasses::with_env(|env| unsafe {
+            jni_call!(env,
+              comet_task_memory_manager(handle).release_keeping_anchor(size as i64) -> ())
         })
     }
 }
@@ -191,9 +202,19 @@ impl SparkMemory {
 
     /// Frees `size` bytes, repaying overcommit before releasing the rest to Spark.
     pub(super) fn release(&self, size: usize) -> CometResult<()> {
+        self.release_through(size, |to_release| self.manager.release(to_release))
+    }
+
+    /// Like [`Self::release`], with `hand_back` making the call that returns what is left once
+    /// the overcommit is repaid. It is not called when nothing is left.
+    pub(super) fn release_through(
+        &self,
+        size: usize,
+        hand_back: impl FnOnce(usize) -> CometResult<()>,
+    ) -> CometResult<()> {
         let to_release = size - self.repay(size);
         if to_release > 0 {
-            self.manager.release(to_release)?;
+            hand_back(to_release)?;
         }
         Ok(())
     }
@@ -312,6 +333,10 @@ pub(super) mod fake {
 
         fn release_anchor(&self, size: usize) -> CometResult<()> {
             self.release(size)
+        }
+
+        fn release_keeping_anchor(&self, size: usize) -> CometResult<()> {
+            self.release(size - 1)
         }
     }
 }

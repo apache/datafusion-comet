@@ -134,6 +134,28 @@ public class CometTaskMemoryManager {
     internal.releaseExecutionMemory(size, nativeMemoryConsumer);
   }
 
+  // Called by Comet native through JNI.
+  // Hands back `size` bytes of the pool's reservations except for one, which the pool keeps as
+  // its anchor. The pool does this for a release while Spark has declined the anchor, so that the
+  // release cannot zero the task's balance under an acquire parked inside Spark. Spark is called
+  // first and the counters move only once it returns, so a throw leaves both untouched and the
+  // pool stays unanchored. The kept byte moves from `used` to `anchor` and is returned later
+  // through releaseAnchor.
+  public void releaseKeepingAnchor(long size) {
+    if (size > 1) {
+      internal.releaseExecutionMemory(size - 1, nativeMemoryConsumer);
+    }
+    long newUsed = used.addAndGet(-size);
+    anchor.incrementAndGet();
+    if (newUsed < 0) {
+      logger.error(
+          "Task {} used memory is negative ({}) after releasing {} bytes",
+          taskAttemptId,
+          newUsed,
+          size);
+    }
+  }
+
   /**
    * Bytes Comet's memory pools hold from Spark through this manager, without any anchor. A non-zero
    * value once the plan is released is a reservation that was never freed.

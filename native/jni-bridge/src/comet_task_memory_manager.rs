@@ -33,11 +33,13 @@ pub struct CometTaskMemoryManager<'a> {
     pub method_release_memory: JMethodID,
     pub method_acquire_anchor: JMethodID,
     pub method_release_anchor: JMethodID,
+    pub method_release_keeping_anchor: JMethodID,
 
     pub method_acquire_memory_ret: ReturnType,
     pub method_release_memory_ret: ReturnType,
     pub method_acquire_anchor_ret: ReturnType,
     pub method_release_anchor_ret: ReturnType,
+    pub method_release_keeping_anchor_ret: ReturnType,
 }
 
 impl<'a> CometTaskMemoryManager<'a> {
@@ -68,10 +70,16 @@ impl<'a> CometTaskMemoryManager<'a> {
                 jni::jni_str!("releaseAnchor"),
                 jni::jni_sig!("(J)V"),
             )?,
+            method_release_keeping_anchor: env.get_method_id(
+                JNIString::new(Self::JVM_CLASS),
+                jni::jni_str!("releaseKeepingAnchor"),
+                jni::jni_sig!("(J)V"),
+            )?,
             method_acquire_memory_ret: ReturnType::Primitive(Primitive::Long),
             method_release_memory_ret: ReturnType::Primitive(Primitive::Void),
             method_acquire_anchor_ret: ReturnType::Primitive(Primitive::Long),
             method_release_anchor_ret: ReturnType::Primitive(Primitive::Void),
+            method_release_keeping_anchor_ret: ReturnType::Primitive(Primitive::Void),
         };
         Ok(result)
     }

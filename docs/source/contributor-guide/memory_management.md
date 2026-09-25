@@ -315,11 +315,17 @@ the task stays in Spark's active set, so `NativeMemoryConsumer.getUsed` reports 
 the pool makes no JVM call: a plan that never allocates natively never touches Spark's memory
 manager and never counts as an active task there. Spark declines the byte with a zero grant when the
 task is already at its share. The pool then runs without it and each grow retries it, as a request
-of its own, before the real one, until it is held. Until a retry lands, the grow's own request is
-what can park, and a sibling's release can still zero the balance under it. Spark then fails that
-acquire. A `try_grow` rolls its charge back and reports an error, and a `grow` keeps its charge as
-overcommit. That is the one window the anchor does not cover. The anchor is taken through
-`CometTaskMemoryManager.acquireAnchor` rather than `acquireMemory`, so it counts toward the task's
+of its own, before the real one, until it is held. If Spark frees up between a declined retry and
+the real request, the pool holds bytes from Spark without the anchor, and the next retry can park.
+So the first release that hands bytes back to Spark while the anchor is missing, a shrink or the
+rollback of a short grant, keeps one of them as the anchor through
+`CometTaskMemoryManager.releaseKeepingAnchor`, and none of the pool's own releases can zero the
+balance. Until a retry lands, a JVM consumer of the same task such as the shuffle allocator can
+still free its last bytes while a request of the pool is parked and the pool holds nothing from
+Spark. Spark then fails that acquire. A `try_grow` rolls its charge back and reports an error, and a
+`grow` keeps its charge as overcommit. That is the one window the anchor does not cover. The anchor
+is taken through `CometTaskMemoryManager.acquireAnchor` rather than `acquireMemory`, and a byte kept
+by a release is moved to the same count, so it counts toward the task's
 balance and toward `NativeMemoryConsumer.getUsed` but not toward `CometTaskMemoryManager.getUsed`,
 which is what `CometExecIterator.close` checks for reservations a plan never released. The pool is
 shared by every plan of the task and is charged to the manager of the plan that created it, so that
