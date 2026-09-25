@@ -3092,39 +3092,35 @@ class CometExecSuite extends CometTestBase {
   }
 
   test("spill sort with (multiple) dictionaries") {
-    withSQLConf(CometConf.COMET_ONHEAP_MEMORY_OVERHEAD.key -> "15MB") {
-      withTempDir { dir =>
-        val path = new Path(dir.toURI.toString, "part-r-0.parquet")
-        makeRawTimeParquetFileColumns(path, dictionaryEnabled = true, n = 1000, rowGroupSize = 10)
-        readParquetFile(path.toString) { df =>
-          Seq(
-            $"_0".desc_nulls_first,
-            $"_0".desc_nulls_last,
-            $"_0".asc_nulls_first,
-            $"_0".asc_nulls_last).foreach { colOrder =>
-            val query = df.sortWithinPartitions(colOrder)
-            checkSparkAnswerAndOperator(query)
-          }
+    withTempDir { dir =>
+      val path = new Path(dir.toURI.toString, "part-r-0.parquet")
+      makeRawTimeParquetFileColumns(path, dictionaryEnabled = true, n = 1000, rowGroupSize = 10)
+      readParquetFile(path.toString) { df =>
+        Seq(
+          $"_0".desc_nulls_first,
+          $"_0".desc_nulls_last,
+          $"_0".asc_nulls_first,
+          $"_0".asc_nulls_last).foreach { colOrder =>
+          val query = df.sortWithinPartitions(colOrder)
+          checkSparkAnswerAndOperator(query)
         }
       }
     }
   }
 
   test("spill sort with (multiple) dictionaries on mixed columns") {
-    withSQLConf(CometConf.COMET_ONHEAP_MEMORY_OVERHEAD.key -> "15MB") {
-      withTempDir { dir =>
-        val path = new Path(dir.toURI.toString, "part-r-0.parquet")
-        makeRawTimeParquetFile(path, dictionaryEnabled = true, n = 1000, rowGroupSize = 10)
-        readParquetFile(path.toString) { df =>
-          Seq(
-            $"_6".desc_nulls_first,
-            $"_6".desc_nulls_last,
-            $"_6".asc_nulls_first,
-            $"_6".asc_nulls_last).foreach { colOrder =>
-            // TODO: We should be able to sort on dictionary timestamp column
-            val query = df.sortWithinPartitions(colOrder)
-            checkSparkAnswerAndOperator(query)
-          }
+    withTempDir { dir =>
+      val path = new Path(dir.toURI.toString, "part-r-0.parquet")
+      makeRawTimeParquetFile(path, dictionaryEnabled = true, n = 1000, rowGroupSize = 10)
+      readParquetFile(path.toString) { df =>
+        Seq(
+          $"_6".desc_nulls_first,
+          $"_6".desc_nulls_last,
+          $"_6".asc_nulls_first,
+          $"_6".asc_nulls_last).foreach { colOrder =>
+          // TODO: We should be able to sort on dictionary timestamp column
+          val query = df.sortWithinPartitions(colOrder)
+          checkSparkAnswerAndOperator(query)
         }
       }
     }
