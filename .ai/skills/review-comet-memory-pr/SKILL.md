@@ -100,11 +100,17 @@ configuration, from the inside out:
 
 - [ ] A new decorator forwards **every** `MemoryPool` method to its inner pool. A partial
       implementation makes `reserved()` disagree between levels.
-- [ ] **`fair_unified` compares against the shared total, not a per-consumer quota.** It divides
-      `pool_size` by the number of registered consumers and rejects if the pool's total reserved
-      plus the request exceeds that quotient. With two consumers and an 8 GiB pool, once one holds
-      3 GiB a 2 GiB request from the other is refused. If the PR changes this comparison it changes
-      when every query spills, so it needs benchmark evidence, not reasoning.
+- [ ] **`fair_unified` checks the requesting consumer against its share, and the total against
+      the pool.** It divides `pool_size` by the number of registered consumers and rejects if what
+      the consumer holds plus the request exceeds that quotient, or if the pool's total reserved
+      plus the request exceeds `pool_size`. With two consumers and an 8 GiB pool, once one holds
+      3 GiB the other can still reserve up to 4 GiB. The pool keeps a running total for each
+      consumer id, so the sibling reservations that `new_empty()`, `split()` and `take()` create
+      count against one share. A PR that checks `reservation.size()` instead lets an operator with
+      several reservations, such as a sort's streaming merge, take other consumers' shares. It
+      also depends on when DataFusion updates the size, which is after it calls `try_grow` but
+      before it calls `shrink`. If the PR changes either comparison it changes when every query
+      spills, so it needs benchmark evidence, not reasoning.
 - [ ] **`num_consumers` counts every consumer in the task**, across every native plan, because the
       pool is task-shared.
 - [ ] **Task-shared pool lifetime.** `acquire_task_shared_pool` keeps a process-wide
@@ -194,7 +200,8 @@ will not catch. Check:
 - The **pool stack** diagram, if a decorator is added, removed, or reordered
 - The **pool type** table, if a pool type is added, removed, or changes how it is sized
 - The `memory_limit` formula, if the budget calculation changes
-- The **fair pool** description, which spells out the shared-total comparison and its consequence
+- The **fair pool** description, which spells out the share and pool-total checks and their
+  consequences
 - The **Crossing the FFI boundary** section, which names the operators that reserve for imported
   batches
 - The **Open problems** list. If the PR closes one of these gaps, the entry must be removed or

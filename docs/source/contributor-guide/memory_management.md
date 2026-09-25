@@ -266,21 +266,34 @@ JNI, which goes through Spark's ordinary `TaskMemoryManager`. That means:
   is refused unless Spark can cover both, so operators spill until the debt is repaid. Both pools'
   `Display` output and their `try_grow` errors report the current overcommit.
 
-`CometFairMemoryPool` additionally applies a local check before it asks Spark. It divides
-`pool_size` by the number of consumers currently registered with the pool and rejects the request if
-the pool's _total_ reserved bytes plus the request would exceed that quotient. Two details matter
-for tuning:
+`CometFairMemoryPool` additionally applies two local checks before it asks Spark, and refuses the
+request without calling Spark if either fails:
 
-- The comparison is against the shared total (`state.used`), not against the requesting consumer's
-  own reservation. With an 8 GiB pool and two registered consumers, once one of them holds 3 GiB a
-  2 GiB request from the other is rejected, even though neither would exceed 4 GiB. In effect the
-  usable pool shrinks to `pool_size / num_consumers` in aggregate as soon as more than one consumer
-  is registered.
+- **The requesting consumer against its share.** The share is `pool_size` divided by the number of
+  consumers currently registered with the pool. What the consumer already holds plus the request
+  must not exceed it. That counts all of the consumer's reservations, including the sibling
+  reservations that `new_empty()`, `split()` and `take()` create, so an operator that holds several
+  reservations still gets one share. A sort's streaming merge, for example, creates one for each
+  batch it reads. The pool keeps a running total for each consumer, because `reservation.size()`
+  covers only one reservation. With an 8 GiB pool and two registered consumers, each share is
+  4 GiB, so once one consumer holds 3 GiB the other can still reserve up to 4 GiB.
+- **The pool's total against `pool_size`.** The shares alone do not bound the total, because a
+  consumer keeps what it reserved while fewer consumers were registered. `pool_size` is computed
+  for the executor but applied to each task's pool, so Spark's own limit on the task is at least as
+  tight unless the deprecated `spark.comet.exec.memoryPool.fraction` is below `1.0`.
+
+Two details matter for tuning:
+
 - The pool is task-shared (see below), so `num_consumers` counts every registered consumer across
-  every native plan in the task, not just the plan making the request.
+  every native plan in the task, not just the plan making the request. Registering a consumer
+  lowers every other consumer's share, but does not take back memory they already hold.
+- Every registered consumer gets a share, whether or not it can spill. DataFusion's
+  `FairSpillPool` divides the pool among spillable consumers only.
+  [Issue #5465](https://github.com/apache/datafusion-comet/issues/5465) tracks doing the same here.
 
-This is why `fair_unified` spills earlier than `greedy_unified`. It is not a per-consumer quota, and
-reading it as one overstates the memory a multi-operator task can use.
+This is why `fair_unified` can spill earlier than `greedy_unified`: a consumer at its share is
+refused even when the rest of the pool is free, which keeps that memory for the task's other
+consumers.
 
 ### Task-shared pools and their lifetime
 
