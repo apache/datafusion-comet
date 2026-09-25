@@ -78,7 +78,7 @@ use datafusion::{
         PhysicalExpr, PhysicalSortExpr, ScalarFunctionExpr,
     },
     physical_plan::{
-        aggregates::{AggregateMode as DFAggregateMode, PhysicalGroupBy},
+        aggregates::{AggregateExec, AggregateMode as DFAggregateMode, PhysicalGroupBy},
         empty::EmptyExec,
         joins::{utils::JoinFilter, HashJoinExec, PartitionMode, SortMergeJoinExec},
         limit::LocalLimitExec,
@@ -1337,6 +1337,26 @@ impl PhysicalPlanner {
                 assert_eq!(children.len(), 1);
                 let (scans, shuffle_scans, child) =
                     self.create_plan(&children[0], inputs, partition_count)?;
+
+                if agg.grouping_exprs.is_empty() && agg.agg_exprs.is_empty() {
+                    // Zero-column no-grouping aggregate: DataFusion's AggregateStream now handles
+                    // this directly via RecordBatchOptions::with_row_count(Some(1)). Emit one
+                    // empty row without needing a workaround column.
+                    let aggregate: Arc<dyn ExecutionPlan> = Arc::new(AggregateExec::try_new(
+                        DFAggregateMode::Single,
+                        PhysicalGroupBy::new_single(vec![]),
+                        vec![],
+                        vec![],
+                        Arc::clone(&child.native_plan),
+                        child.schema(),
+                    )?);
+
+                    return Ok((
+                        scans,
+                        shuffle_scans,
+                        Arc::new(SparkPlan::new(spark_plan.plan_id, aggregate, vec![child])),
+                    ));
+                }
 
                 let group_exprs: PhyExprResult = agg
                     .grouping_exprs
@@ -7719,5 +7739,30 @@ mod tests {
             err.to_string().contains("Non-empty FileScanTask partition"),
             "unexpected error: {err}"
         );
+    }
+
+    #[test]
+    fn empty_global_aggregate_registers_its_aggregate_for_metrics() {
+        // Zero-column no-grouping aggregate now emits AggregateExec directly, which is the plan root.
+        let op = Operator {
+            children: vec![create_scan()],
+            op_struct: Some(OpStruct::HashAgg(spark_operator::HashAggregate {
+                grouping_exprs: vec![],
+                agg_exprs: vec![],
+                mode: spark_operator::AggregateMode::Partial as i32,
+                expr_modes: vec![],
+                initial_input_buffer_offset: 0,
+            })),
+            ..Default::default()
+        };
+
+        let planner = PhysicalPlanner::default();
+        let (_scans, _shuffle_scans, planned) = planner.create_plan(&op, &mut vec![], 1).unwrap();
+
+        assert_eq!("AggregateExec", planned.native_plan.name());
+        assert_eq!(0, planned.native_plan.schema().fields().len());
+        assert_eq!(0, planned.additional_native_plans.len());
+        assert_eq!(1, planned.children.len());
+        assert_eq!("ScanExec", planned.children[0].native_plan.name());
     }
 }

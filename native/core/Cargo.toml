@@ -101,7 +101,7 @@ jni = { version = "0.22.4", features = ["invocation"] }
 lazy_static = "1.4"
 assertables = "10"
 hex = "0.4.3"
-datafusion-functions-nested = { version = "55.1.0" }
+datafusion-functions-nested = { path = "../../../datafusion/datafusion/functions-nested" }
 
 [features]
 backtrace = ["datafusion/backtrace"]

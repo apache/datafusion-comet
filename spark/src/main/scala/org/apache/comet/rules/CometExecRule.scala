@@ -1354,8 +1354,6 @@ case class CometExecRule(session: SparkSession)
     val aggregateExpressions = agg.aggregateExpressions
     val groupingExpressions = agg.groupingExpressions
 
-    if (groupingExpressions.isEmpty && aggregateExpressions.isEmpty) return false
-
     if (groupingExpressions.exists(e =>
         SupportLevel.containsType(e.dataType, classOf[MapType]))) {
       return false
