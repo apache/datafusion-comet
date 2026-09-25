@@ -22,12 +22,9 @@ mod spark_memory;
 mod task_shared;
 mod unified_pool;
 
-use datafusion::execution::memory_pool::{
-    FairSpillPool, GreedyMemoryPool, MemoryPool, TrackConsumersPool, UnboundedMemoryPool,
-};
+use datafusion::execution::memory_pool::{MemoryPool, TrackConsumersPool, UnboundedMemoryPool};
 use fair_pool::CometFairMemoryPool;
 use jni::objects::{Global, JObject};
-use once_cell::sync::OnceCell;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 use unified_pool::CometUnifiedMemoryPool;
@@ -70,26 +67,6 @@ pub(crate) fn create_memory_pool(
                 task_attempt_id,
             ))
         }),
-        MemoryPoolType::GreedyTaskShared => acquire_task_shared_pool(task_attempt_id, || {
-            tracked(GreedyMemoryPool::new(pool_size))
-        }),
-        MemoryPoolType::FairSpillTaskShared => {
-            acquire_task_shared_pool(task_attempt_id, || tracked(FairSpillPool::new(pool_size)))
-        }
-        MemoryPoolType::Greedy => tracked(GreedyMemoryPool::new(pool_size)),
-        MemoryPoolType::FairSpill => tracked(FairSpillPool::new(pool_size)),
-        MemoryPoolType::GreedyGlobal => {
-            static GLOBAL_MEMORY_POOL_GREEDY: OnceCell<Arc<dyn MemoryPool>> = OnceCell::new();
-            let memory_pool =
-                GLOBAL_MEMORY_POOL_GREEDY.get_or_init(|| tracked(GreedyMemoryPool::new(pool_size)));
-            Arc::clone(memory_pool)
-        }
-        MemoryPoolType::FairSpillGlobal => {
-            static GLOBAL_MEMORY_POOL_FAIR: OnceCell<Arc<dyn MemoryPool>> = OnceCell::new();
-            let memory_pool =
-                GLOBAL_MEMORY_POOL_FAIR.get_or_init(|| tracked(FairSpillPool::new(pool_size)));
-            Arc::clone(memory_pool)
-        }
         MemoryPoolType::Unbounded => Arc::new(UnboundedMemoryPool::default()),
     }
 }
