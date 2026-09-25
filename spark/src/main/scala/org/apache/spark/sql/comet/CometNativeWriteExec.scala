@@ -118,59 +118,79 @@ case class CometNativeWriteExec(
       }
     }
 
-    val numPartitions = childRDD.getNumPartitions
+    // SPARK-23271: a zero-partition input would spawn no task and therefore write no file at all,
+    // so the output directory would carry no schema for readers. Swap in a single empty
+    // partition, as Spark's FileFormatWriter and CometWriteFilesExec do.
+    val writeRDD = if (childRDD.getNumPartitions == 0) {
+      sparkContext.parallelize(Seq.empty[ColumnarBatch], 1)
+    } else {
+      childRDD
+    }
+
+    // The task closure below must not touch `this`, which holds `nativeOp` plus the whole
+    // converted child subtree; capture what it needs by value instead, as CometWriteFilesExec
+    // does.
+    val numPartitions = writeRDD.getNumPartitions
     val childSchema = CometUtils.fromAttributes(child.output)
     val capturedNativeOp = nativeOp
     val capturedCommitter = committer
+    val capturedJobTrackerID = jobTrackerID
     val writerFactory = outputWriterFactory
     val nativeMetrics = CometMetricNode.fromCometPlan(this)
     val commitMessages = new Array[TaskCommitMessage](numPartitions)
 
     sparkContext.runJob(
-      childRDD,
+      writeRDD,
       (context: TaskContext, batches: Iterator[ColumnarBatch]) => {
-        val taskContext = createTaskContext(hadoopConf.value, context)
+        val taskContext =
+          CometNativeWriteExec.createTaskContext(hadoopConf.value, capturedJobTrackerID, context)
         capturedCommitter.setupTask(taskContext)
         // Guard filename allocation, native iterator construction, execution, cleanup and commit.
         // Spark's helper preserves the original error if abortTask also fails.
         Utils.tryWithSafeFinallyAndFailureCallbacks(block = {
-          val extension = writerFactory.getFileExtension(taskContext)
-          val filePath = capturedCommitter.newTaskTempFile(
-            taskContext,
-            None,
-            FileNameSpec("", "-c000" + extension))
-          NativeWriteUtils.checkNativeWriteDestination(filePath)
-          val writer = capturedNativeOp.getParquetWriter.toBuilder
-            .setOutputPath(filePath)
-            .clearWorkDir()
-            .build()
-          val taskOp = capturedNativeOp.toBuilder.setParquetWriter(writer).build()
+          // Mirrors FileFormatWriter's EmptyDirectoryDataWriter case: an empty input still writes
+          // one file from partition 0 so that the output carries the schema, but every other
+          // empty partition produces no file at all.
+          if (context.partitionId() == 0 || batches.hasNext) {
+            val extension = writerFactory.getFileExtension(taskContext)
+            val filePath = capturedCommitter.newTaskTempFile(
+              taskContext,
+              None,
+              FileNameSpec("", "-c000" + extension))
+            NativeWriteUtils.checkNativeWriteDestination(filePath)
+            val writer = capturedNativeOp.getParquetWriter.toBuilder
+              .setOutputPath(filePath)
+              .build()
+            val taskOp = capturedNativeOp.toBuilder.setParquetWriter(writer).build()
 
-          // Register before the iterator so this listener runs after its cleanup.
-          nativeMetrics.reportNativeWriteOutputMetrics(context)
-          val execIterator = CometExec.getCometIterator(
-            CometArrowStream.inputObjects(batches, childSchema, "CometNativeWriteExec"),
-            childSchema.length,
-            taskOp,
-            nativeMetrics,
-            numPartitions,
-            context.partitionId(),
-            None,
-            Seq.empty)
+            // Register before the iterator so this listener runs after its cleanup.
+            nativeMetrics.reportNativeWriteOutputMetrics(context)
+            val execIterator = CometExec.getCometIterator(
+              CometArrowStream.inputObjects(batches, childSchema, "CometNativeWriteExec"),
+              childSchema.length,
+              taskOp,
+              nativeMetrics,
+              numPartitions,
+              context.partitionId(),
+              None,
+              Seq.empty)
 
-          // Close before committing. A failed write must remain the primary error even if
-          // native teardown (including the final metrics update) also throws.
-          Utils.tryWithSafeFinally {
-            while (execIterator.hasNext) {
-              execIterator.next().close()
+            // Close before committing. A failed write must remain the primary error even if
+            // native teardown (including the final metrics update) also throws.
+            Utils.tryWithSafeFinally {
+              while (execIterator.hasNext) {
+                execIterator.next().close()
+              }
+            } {
+              execIterator.close()
             }
-          } {
-            execIterator.close()
           }
+          // `hasNext` already ran an empty partition's child to completion, so there is nothing
+          // to drain or release when no file was written.
           capturedCommitter.commitTask(taskContext)
         })(catchBlock = capturedCommitter.abortTask(taskContext))
       },
-      childRDD.partitions.indices,
+      writeRDD.partitions.indices,
       (index, message: TaskCommitMessage) => {
         committer.onTaskCommit(message)
         commitMessages(index) = message
@@ -212,8 +232,18 @@ case class CometNativeWriteExec(
     }
   }
 
-  /** Match FileFormatWriter's Hadoop task identifiers and configuration. */
-  private def createTaskContext(conf: Configuration, context: TaskContext): TaskAttemptContext = {
+}
+
+object CometNativeWriteExec {
+
+  /**
+   * Match FileFormatWriter's Hadoop task identifiers and configuration. Kept off the exec node so
+   * that the task closure does not capture it.
+   */
+  private def createTaskContext(
+      conf: Configuration,
+      jobTrackerID: String,
+      context: TaskContext): TaskAttemptContext = {
     val hadoopConf = new Configuration(conf)
     val jobId = SparkHadoopWriterUtils.createJobID(jobTrackerID, context.stageId())
     val taskId = new TaskID(jobId, TaskType.MAP, context.partitionId())
