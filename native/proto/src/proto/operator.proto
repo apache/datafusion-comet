@@ -187,6 +187,12 @@ message NativeScan {
 
   // Single partition's file list (injected at execution time)
   SparkFilePartition file_partition = 2;
+
+  // Hash half of the key under which this scan's planning data is stored and looked up at
+  // execution time; the other half is common.source. Derived once on the driver
+  // (CometNativeScanExec) so executors rebuild the key instead of hashing the common per task.
+  // JVM-consumed only; the native side ignores it.
+  optional int32 source_key_hash = 3;
 }
 
 message CsvScan {
@@ -851,10 +857,12 @@ message PartitionWriter {
   }
 }
 
-// Local shuffle output consists of a data file and its partition-offset index.
+// Local shuffle output consists of a data file. The partition offsets are returned to the JVM via JNI
 message LocalPartitionWriter {
+  reserved 2;
+  reserved "output_index_file";
+
   string output_data_file = 1;
-  string output_index_file = 2;
 }
 
 // Marker for remote shuffle output. The task-owned callback is bound outside
@@ -863,10 +871,12 @@ message RssPartitionWriter {}
 
 message ShuffleWriter {
   spark.spark_partitioning.Partitioning partitioning = 1;
+  reserved 4;
+  reserved "output_index_file";
+
   // Retained for compatibility with native binaries that predate partition_writer.
-  // Local plans also carry these paths in partition_writer.local.
+  // Local plans also carry this path in partition_writer.local.
   string output_data_file = 3;
-  string output_index_file = 4;
   CompressionCodec codec = 5;
   int32 compression_level = 6;
   bool tracing_enabled = 7;

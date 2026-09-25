@@ -62,14 +62,32 @@ The following limitation may produce incorrect results without falling back to S
 
 The following limitations raise an error at scan time rather than falling back to Spark:
 
+- Selecting a field by name when multiple physical siblings match, including inside structs,
+  arrays, and maps. Comet raises a duplicate-field error instead of resolving the collision.
+  Checks cover referenced columns, including predicates; unselected roots do not prevent
+  reading a unique field by name or field ID. Exact-name projections of unique children in
+  structs and arrays of structs remain supported. Casts that cannot use this pruning reject
+  byte-identical duplicate siblings anywhere in the decoded physical subtree, including maps.
+  Field-ID resolution retains precedence, but selecting a byte-identically duplicated physical
+  root name still raises a duplicate-field error, even when the requested field is renamed.
+  Names in separate groups do not collide. Spark may read a duplicate-bearing file with an
+  explicit schema in case-sensitive mode, but its choice of sibling depends on the field shape
+  and can produce unexpected values. Spark rejects schema inference from a single file with
+  duplicate names; inference across files can depend on merge order.
+  Resolution is tracked in [#5884](https://github.com/apache/datafusion-comet/issues/5884),
+  with mixed-type behavior in [#5964](https://github.com/apache/datafusion-comet/issues/5964).
 - Invalid UTF-8 bytes in `STRING` columns. Spark permits arbitrary byte sequences in a `STRING`
   column (for example from `CAST(X'C1' AS STRING)`), but Comet's native execution path is built on
   Arrow, whose string type is strictly UTF-8. Reading a Parquet file whose `STRING` column contains
   non-UTF-8 bytes fails with `Parquet error: encountered non UTF-8 data`. Disable Comet for the
   query, or cast the column to `BINARY` before persisting, if you need to preserve non-UTF-8 bytes.
-  Separately, non-UTF-8 bytes that reach native execution from a JVM-side columnar source are not
-  currently validated at the Arrow FFI import boundary. See [#4121](https://github.com/apache/datafusion-comet/issues/4121)
-  and the tracking issue [#4764](https://github.com/apache/datafusion-comet/issues/4764).
+  By contrast, Comet decodes non-UTF-8 bytes at the JVM-to-native Arrow FFI boundaries using
+  JVM-compatible replacement semantics. This covers native query input from the JVM-exported Arrow
+  stream (including JVM scans, shuffle reads, and `mapInArrow`), columnar-to-row conversion, and JVM
+  UDF results. It does not change the native Parquet reader: rejecting invalid UTF-8 there remains
+  Gap A of [#4764](https://github.com/apache/datafusion-comet/issues/4764). See
+  [Strings with non-UTF-8 bytes](index.md#strings-with-non-utf-8-bytes),
+  [#4121](https://github.com/apache/datafusion-comet/issues/4121), and the tracking issue above.
 - Reading `TimestampLTZ` as `TimestampNTZ` on Spark 3.x. Spark raises an error per
   [SPARK-36182](https://issues.apache.org/jira/browse/SPARK-36182) because LTZ encodes UTC-adjusted
   instants that cannot be safely reinterpreted as timezone-free values, and Comet matches this by

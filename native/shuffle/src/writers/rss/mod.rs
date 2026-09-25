@@ -18,18 +18,17 @@
 pub(crate) mod rss_partition_writer;
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::rss_partition_writer::RssPartitionWriter;
     use crate::metrics::ShufflePartitionerMetrics;
     use crate::writers::PartitionWriter;
-    use crate::{read_ipc_compressed, CompressionCodec, ShuffleBlockWriter};
+    use crate::{read_ipc_compressed, CompressionCodec, ShuffleBlockWriter, ShuffleCodecContext};
     use arrow::array::{
         Array, ArrayRef, DictionaryArray, Int32Array, ListArray, MapArray, StringArray, StructArray,
     };
     use arrow::buffer::OffsetBuffer;
     use arrow::compute::cast;
     use arrow::datatypes::{DataType, Field, Int32Type, Schema};
-    use arrow::ipc::writer::IpcWriteContext;
     use arrow::record_batch::RecordBatch;
     use datafusion::common::{DataFusionError, Result};
     use datafusion::physical_plan::metrics::{ExecutionPlanMetricsSet, Time};
@@ -45,7 +44,8 @@ mod tests {
     /// Test-only allocation observation on a synchronous encoder thread. Production execution
     /// does not use thread-local state. Zstd's C allocations are covered separately by its public
     /// streaming-workspace estimate; this observes Rust buffers and their realloc overlap.
-    mod allocations {
+    /// Shared with the reader tests in `ipc.rs`, since a crate has one global allocator.
+    pub(crate) mod allocations {
         use std::alloc::{GlobalAlloc, Layout, System};
         use std::cell::Cell;
 
@@ -126,7 +126,7 @@ mod tests {
         }
 
         // Allocation/reallocation requests and requested bytes, not retained memory.
-        pub(super) fn totals() -> (usize, usize) {
+        pub(crate) fn totals() -> (usize, usize) {
             COUNTERS.with(|counter| {
                 let value = counter.get().unwrap();
                 (value.allocations, value.allocated_bytes)
@@ -156,7 +156,7 @@ mod tests {
             });
         }
 
-        pub(super) fn measure<T>(run: impl FnOnce() -> T) -> (T, usize) {
+        pub(crate) fn measure<T>(run: impl FnOnce() -> T) -> (T, usize) {
             struct Reset;
             impl Drop for Reset {
                 fn drop(&mut self) {
@@ -216,7 +216,7 @@ mod tests {
                     }
                     .unwrap();
                     let time = Time::default();
-                    let write = |buffer: &mut Vec<u8>, context: &mut IpcWriteContext| {
+                    let write = |buffer: &mut Vec<u8>, context: &mut ShuffleCodecContext| {
                         buffer.clear();
                         let mut out = Cursor::new(buffer);
                         if rss {
@@ -230,13 +230,13 @@ mod tests {
                         let mut results = Vec::new();
                         let mut outputs = Vec::new();
                         for reuse in [false, true] {
-                            let mut context = IpcWriteContext::default();
+                            let mut context = ShuffleCodecContext::default();
                             let mut buffer = Vec::new();
                             write(&mut buffer, &mut context);
                             let (counts, _) = allocations::measure(|| {
                                 for _ in 0..BLOCKS {
                                     if !reuse {
-                                        context = IpcWriteContext::default();
+                                        context = ShuffleCodecContext::default();
                                     }
                                     write(&mut buffer, &mut context);
                                 }
@@ -500,14 +500,9 @@ mod tests {
         let block_writer =
             ShuffleBlockWriter::try_new(batch.schema().as_ref(), CompressionCodec::None).unwrap();
         let mut frame = Cursor::new(Vec::new());
-        let mut compression_context = IpcWriteContext::default();
+        let mut codec_context = ShuffleCodecContext::default();
         block_writer
-            .write_batch(
-                batch,
-                &mut frame,
-                &mut compression_context,
-                &Time::default(),
-            )
+            .write_batch(batch, &mut frame, &mut codec_context, &Time::default())
             .unwrap()
     }
 

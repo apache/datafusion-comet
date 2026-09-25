@@ -28,10 +28,13 @@ import org.apache.hadoop.mapreduce.lib.output.FileOutputFormat
 import org.apache.spark.internal.io.FileCommitProtocol
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.util.CaseInsensitiveMap
-import org.apache.spark.sql.comet.{CometNativeExec, CometNativeWriteExec}
+import org.apache.spark.sql.comet.{CometEmptyRelationExec, CometNativeExec, CometNativeWriteExec, CometScanWrapper}
+import org.apache.spark.sql.execution.SparkPlan
+import org.apache.spark.sql.execution.adaptive.QueryStageExec
 import org.apache.spark.sql.execution.command.DataWritingCommandExec
 import org.apache.spark.sql.execution.datasources.{InsertIntoHadoopFsRelationCommand, WriteFilesExec}
 import org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormat
+import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.util.SerializableConfiguration
 
@@ -59,6 +62,16 @@ object CometDataWritingCommand extends CometOperatorSerde[DataWritingCommandExec
       case cmd: InsertIntoHadoopFsRelationCommand =>
         cmd.fileFormat match {
           case _: ParquetFileFormat =>
+            // AQE can replace the write input with a zero-partition empty relation. Keep
+            // Spark's writer, which creates an empty task to preserve the output file schema.
+            // The native writer only maps existing partitions; see #5303. This guard is
+            // conservative: an empty relation below an exchange can have nonzero partitions
+            // at the write input. Revisit the guard when native empty-file handling is fixed.
+            if (hasEmptyRelationInput(op.child)) {
+              return Unsupported(Some(
+                "Parquet writes with empty-relation inputs require Spark's empty-file handling"))
+            }
+
             if (!cmd.outputPath.toString.startsWith("file:") && !cmd.outputPath.toString
                 .startsWith("hdfs:")) {
               return Unsupported(Some("Supported output filesystems: local, HDFS"))
@@ -91,6 +104,14 @@ object CometDataWritingCommand extends CometOperatorSerde[DataWritingCommandExec
       case other =>
         Unsupported(Some(s"Unsupported write command: ${other.getClass}"))
     }
+  }
+
+  private def hasEmptyRelationInput(plan: SparkPlan): Boolean = plan match {
+    case _: CometEmptyRelationExec => true
+    case wrapper: CometScanWrapper => hasEmptyRelationInput(wrapper.originalPlan)
+    case stage: QueryStageExec => hasEmptyRelationInput(stage.plan)
+    case reused: ReusedExchangeExec => hasEmptyRelationInput(reused.child)
+    case _ => plan.children.exists(hasEmptyRelationInput)
   }
 
   override def convert(

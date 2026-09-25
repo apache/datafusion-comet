@@ -145,6 +145,17 @@ so users hunting an unexpected value have a single place to check:
 - Native `RANGE` window frames with an explicit `PRECEDING` / `FOLLOWING` offset diverge from
   Spark when the boundary arithmetic overflows for `DATE` or `DECIMAL` `ORDER BY` columns
   ([#5022](https://github.com/apache/datafusion-comet/issues/5022)).
+- Ungrouped decimal `SUM` keeps an unbounded intermediate and checks the result precision only
+  when a partial is written out or the sum is evaluated, which matches Spark's whole-stage codegen
+  path. Without codegen Spark buffers the aggregate in an `UnsafeRow` and latches as soon as a
+  running sum leaves the precision. Comet falls back at precision 38 when codegen is disabled by
+  `spark.sql.codegen.wholeStage`, by `spark.sql.codegen.factoryMode=NO_CODEGEN` on Spark 3.5+,
+  by an imperative sibling aggregate, by an expression Spark cannot compile such as a lambda function,
+  or by the `spark.sql.codegen.maxFields` limit on the aggregate's own output and inputs, but not
+  when Spark abandons codegen at runtime, after a compile failure under
+  `spark.sql.codegen.fallback` or when the generated code exceeds
+  `spark.sql.codegen.hugeMethodLimit`, where an intermediate overflow that later cancels out
+  returns `NULL` (or raises under ANSI) in Spark but the recovered value in Comet.
 
 ## Object store cache
 
