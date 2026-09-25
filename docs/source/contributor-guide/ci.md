@@ -193,6 +193,11 @@ gh pr merge <number> --squash --auto
 The pull request's own checks do not have to be finished, though it is polite not to queue a pull
 request whose PR tier is red.
 
+Approval is the mechanical requirement, not the whole of it. A non-trivial pull request should
+also have been open for at least 24 hours before it is queued, so that reviewers in other time
+zones have had a chance to see it; see
+[Review expectations](contributing.md#review-expectations).
+
 GitHub then builds a temporary branch named `gh-readonly-queue/main/...` containing the pull
 request's commits squashed on top of the current `main`, batched with up to four other queued pull
 requests, and runs `ci.yml` against it with a `merge_group` event. When `Required Checks` on that
