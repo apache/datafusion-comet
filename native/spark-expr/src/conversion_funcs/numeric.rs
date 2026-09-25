@@ -20,15 +20,18 @@ use crate::conversion_funcs::utils::cast_overflow;
 use crate::conversion_funcs::utils::MICROS_PER_SECOND;
 use crate::{EvalMode, SparkError, SparkResult};
 use arrow::array::{
-    Array, ArrayRef, AsArray, BooleanBuilder, Decimal128Array, Float32Array, Float64Array,
+    Array, ArrayRef, AsArray, BooleanArray, Decimal128Array, Float32Array, Float64Array,
     GenericStringBuilder, Int16Array, Int32Array, Int64Array, Int8Array, OffsetSizeTrait,
-    PrimitiveArray, StringBuilder, TimestampMicrosecondBuilder,
+    PrimitiveArray, Scalar, StringBuilder, TimestampMicrosecondBuilder,
 };
+use arrow::buffer::BooleanBuffer;
+use arrow::compute::kernels::cmp::neq;
 use arrow::datatypes::{
     format_decimal_str, i256, is_validate_decimal_precision, ArrowPrimitiveType, DataType,
     Decimal128Type, Float32Type, Float64Type, Int16Type, Int32Type, Int64Type, Int8Type,
 };
-use num::{cast::AsPrimitive, ToPrimitive, Zero};
+use num::{cast::AsPrimitive, Float, ToPrimitive};
+use std::fmt::{self, Write};
 use std::sync::Arc;
 
 /// Check if DataFusion cast from integer types is Spark compatible
@@ -82,8 +85,8 @@ pub(crate) fn is_df_cast_from_decimal_spark_compatible(to_type: &DataType) -> bo
             | DataType::Utf8
     )
     // Note: Boolean is intentionally absent. Decimal-to-boolean uses a dedicated
-    // spark_cast_decimal_to_boolean function (in cast.rs) that checks the raw i128
-    // value, bypassing the DataFusion cast kernel entirely.
+    // spark_cast_decimal_to_boolean function that compares against a zero decimal of
+    // the same precision/scale, bypassing the DataFusion cast kernel entirely.
 }
 
 macro_rules! cast_float_to_timestamp_impl {
@@ -136,95 +139,174 @@ macro_rules! cast_float_to_timestamp_impl {
     }};
 }
 
-macro_rules! cast_float_to_string {
-    ($from:expr, $eval_mode:expr, $type:ty, $output_type:ty, $offset_type:ty, $min_value:expr) => {{
+/// A float width that Java renders through `Float.toString` / `Double.toString`.
+///
+/// `num::Float` supplies the arithmetic predicates; the two widths differ only in the plain-notation
+/// window's endpoints and in the literal text of the smallest subnormal, which Java's algorithm
+/// spells with more digits than a shortest-round-trip formatter produces.
+///
+/// Sealed: the crate root re-exports this module, and `f32` and `f64` are the only widths Java has.
+pub trait JavaFloatString: sealed::Sealed + Float + fmt::Display + fmt::UpperExp {
+    /// `Float.MIN_VALUE` / `Double.MIN_VALUE`: the value one ULP above zero, the one Java does not
+    /// render shortest. `Float::min_positive_value` is the smallest *normal*, so this has no `num`
+    /// equivalent.
+    const MIN_SUBNORMAL: Self;
+    /// `MIN_SUBNORMAL` as Java spells it.
+    const MIN_SUBNORMAL_TEXT: &'static str;
+    /// Plain notation covers `[0.001, 10^7)`; anything outside it is scientific.
+    const PLAIN_LOWER: Self;
+    const PLAIN_UPPER: Self;
+}
 
-        fn cast<OffsetSize>(
-            from: &dyn Array,
-            _eval_mode: EvalMode,
-        ) -> SparkResult<ArrayRef>
-        where
-            OffsetSize: OffsetSizeTrait, {
-                use std::fmt::Write;
+mod sealed {
+    pub trait Sealed {}
+    impl Sealed for f32 {}
+    impl Sealed for f64 {}
+}
 
-                let array = from.as_any().downcast_ref::<$output_type>().unwrap();
+impl JavaFloatString for f32 {
+    const MIN_SUBNORMAL: Self = f32::from_bits(1);
+    const MIN_SUBNORMAL_TEXT: &'static str = "1.4E-45";
+    const PLAIN_LOWER: Self = 0.001;
+    const PLAIN_UPPER: Self = 10000000.0;
+}
 
-                // If the absolute number is less than 10,000,000 and greater or equal than 0.001, the
-                // result is expressed without scientific notation with at least one digit on either side of
-                // the decimal point. Otherwise, Spark uses a mantissa followed by E and an
-                // exponent. The mantissa has an optional leading minus sign followed by one digit to the
-                // left of the decimal point, and the minimal number of digits greater than zero to the
-                // right. The exponent has and optional leading minus sign.
-                // source: https://docs.databricks.com/en/sql/language-manual/functions/cast.html
+impl JavaFloatString for f64 {
+    const MIN_SUBNORMAL: Self = f64::from_bits(1);
+    const MIN_SUBNORMAL_TEXT: &'static str = "4.9E-324";
+    const PLAIN_LOWER: Self = 0.001;
+    const PLAIN_UPPER: Self = 10000000.0;
+}
 
-                const LOWER_SCIENTIFIC_BOUND: $type = 0.001;
-                const UPPER_SCIENTIFIC_BOUND: $type = 10000000.0;
-
-                // Values are formatted straight into the builder, so no intermediate String
-                // is allocated per row. Capacity hint matches arrow-rs's own AVERAGE_STRING_LENGTH
-                // (16 bytes / value) so typical fractional and scientific outputs like
-                // "1234.5678" or "-1.4E-45" do not force a mid-loop grow.
-                let mut builder = GenericStringBuilder::<OffsetSize>::with_capacity(
-                    array.len(),
-                    array.len() * 16,
-                );
-                // Reused across rows by the scientific-notation path, which has to inspect
-                // the formatted text before emitting it.
-                let mut scratch = String::with_capacity(32);
-
-                for value in array.iter() {
-                    let Some(value) = value else {
-                        builder.append_null();
-                        continue;
-                    };
-                    let abs = value.abs();
-                    if (LOWER_SCIENTIFIC_BOUND..UPPER_SCIENTIFIC_BOUND).contains(&abs)
-                        || abs == 0.0
-                    {
-                        let _ = write!(builder, "{value}");
-                        if value.fract() == 0.0 {
-                            // Spark always renders a fractional digit; Rust omits it.
-                            let _ = builder.write_str(".0");
-                        }
-                        builder.append_value("");
-                    } else if !value.is_finite() {
-                        // NaN and the infinities are excluded by the range check above.
-                        builder.append_value(if value.is_nan() {
-                            "NaN"
-                        } else if value.is_sign_positive() {
-                            "Infinity"
-                        } else {
-                            "-Infinity"
-                        });
-                    } else if abs.to_bits() == 1 {
-                        // Java's Double.toString / Float.toString are not shortest-roundtrip
-                        // and render the smallest subnormals with more digits than Rust does.
-                        builder.append_value(if value.is_sign_negative() {
-                            concat!("-", $min_value)
-                        } else {
-                            $min_value
-                        });
-                    } else {
-                        scratch.clear();
-                        let _ = write!(scratch, "{value:E}");
-                        match scratch.split_once('E') {
-                            Some((coefficient, exponent)) if !coefficient.contains('.') => {
-                                // Spark keeps the fractional digit Rust drops from a whole
-                                // coefficient.
-                                let _ = builder.write_str(coefficient);
-                                let _ = builder.write_str(".0E");
-                                builder.append_value(exponent);
-                            }
-                            _ => builder.append_value(&scratch),
-                        }
-                    }
-                }
-
-                Ok(Arc::new(builder.finish()))
+/// Writes `value` as Java's `Float.toString` / `Double.toString` renders it.
+///
+/// If the absolute value is less than 10,000,000 and greater or equal than 0.001, the result is
+/// expressed without scientific notation with at least one digit on either side of the decimal
+/// point. Otherwise the value is a mantissa followed by `E` and an exponent, the mantissa having
+/// an optional leading minus sign followed by one digit to the left of the decimal point and the
+/// minimal number of digits greater than zero to the right.
+/// Source: <https://docs.databricks.com/en/sql/language-manual/functions/cast.html>
+///
+/// Rust's own `Display` and `UpperExp` give the same digits but drop a whole coefficient's
+/// fractional zero (`1` for `1.0`) and never switch to an exponent, so `Double.MAX_VALUE` would
+/// render as 309 digits. Both matter beyond cosmetics: Spark spells a `cast(double as string)`
+/// this way, and iceberg-java spells a float or double partition directory this way, where the
+/// unabbreviated form overruns the filesystem's limit on one path component.
+///
+/// Rust's digits are shortest-round-trip, which is what JDK 19+ `Double.toString` produces. Earlier
+/// JDKs sometimes emit a longer string (JDK-4511638: `2.0E23` came out as `1.9999999999999998E23`),
+/// and those values are not corrected for here. The smallest subnormal, which every JDK spells as
+/// `4.9E-324` rather than the shortest `5E-324`, is.
+///
+/// Errors only if `out` does. Writing into a `String` or an arrow string builder cannot fail, which
+/// is what lets the callers of this function discard the result.
+pub fn write_java_float_string<T: JavaFloatString, W: fmt::Write>(
+    value: T,
+    out: &mut W,
+) -> fmt::Result {
+    let abs = value.abs();
+    if (T::PLAIN_LOWER..T::PLAIN_UPPER).contains(&abs) || abs.is_zero() {
+        write!(out, "{value}")?;
+        if value.fract().is_zero() {
+            // Java always renders a fractional digit; Rust omits it.
+            out.write_str(".0")?;
+        }
+        Ok(())
+    } else if !value.is_finite() {
+        // NaN and the infinities are excluded by the range check above.
+        out.write_str(if value.is_nan() {
+            "NaN"
+        } else if value.is_sign_negative() {
+            "-Infinity"
+        } else {
+            "Infinity"
+        })
+    } else if abs == T::MIN_SUBNORMAL {
+        if value.is_sign_negative() {
+            out.write_str("-")?;
+        }
+        out.write_str(T::MIN_SUBNORMAL_TEXT)
+    } else {
+        // The coefficient has to be inspected before any of it is emitted, so it is formatted
+        // into a stack buffer rather than into `out`, which may not be rewindable.
+        let mut scratch = ExponentBuf::default();
+        write!(scratch, "{value:E}")?;
+        let text = scratch.as_str();
+        match text.split_once('E') {
+            Some((coefficient, exponent)) if !coefficient.contains('.') => {
+                // Java keeps the fractional digit Rust drops from a whole coefficient.
+                out.write_str(coefficient)?;
+                out.write_str(".0E")?;
+                out.write_str(exponent)
             }
+            _ => out.write_str(text),
+        }
+    }
+}
 
-        cast::<$offset_type>($from, $eval_mode)
-    }};
+/// `Float.toString` / `Double.toString` of `value` as an owned `String`, for callers that need one
+/// rendering rather than a column of them.
+pub fn java_float_string<T: JavaFloatString>(value: T) -> String {
+    let mut out = String::new();
+    // Cannot fail; see `write_java_float_string`.
+    let _ = write_java_float_string(value, &mut out);
+    out
+}
+
+/// Scratch space for one `{:E}` rendering. `{:E}` emits at most 17 significant digits for an
+/// `f64`, so the longest output is sign + digit + point + 16 digits + `E` + sign + 3 exponent
+/// digits, 24 bytes.
+#[derive(Default)]
+struct ExponentBuf {
+    bytes: [u8; 32],
+    len: usize,
+}
+
+impl ExponentBuf {
+    fn as_str(&self) -> &str {
+        // Only `{:E}` output, which is ASCII, is ever written.
+        std::str::from_utf8(&self.bytes[..self.len]).expect("ascii float text")
+    }
+}
+
+impl fmt::Write for ExponentBuf {
+    fn write_str(&mut self, s: &str) -> fmt::Result {
+        let end = self.len + s.len();
+        // Unreachable for `{:E}` of an f32 or f64 (see the size bound above); returning an error
+        // rather than panicking keeps a future caller's mistake out of the JNI boundary.
+        let target = self.bytes.get_mut(self.len..end).ok_or(fmt::Error)?;
+        target.copy_from_slice(s.as_bytes());
+        self.len = end;
+        Ok(())
+    }
+}
+
+/// Casts a float array to strings the way Spark's `cast(float as string)` does, which is Java's
+/// `Float.toString` / `Double.toString`.
+fn spark_cast_float_to_utf8<T, OffsetSize>(from: &dyn Array) -> SparkResult<ArrayRef>
+where
+    T: ArrowPrimitiveType,
+    T::Native: JavaFloatString,
+    OffsetSize: OffsetSizeTrait,
+{
+    let array = from.as_primitive::<T>();
+    // Values are formatted straight into the builder, so no intermediate String is allocated per
+    // row. Capacity hint matches arrow-rs's own AVERAGE_STRING_LENGTH (16 bytes / value) so
+    // typical fractional and scientific outputs like "1234.5678" or "-1.4E-45" do not force a
+    // mid-loop grow.
+    let mut builder =
+        GenericStringBuilder::<OffsetSize>::with_capacity(array.len(), array.len() * 16);
+    for value in array.iter() {
+        match value {
+            None => builder.append_null(),
+            Some(value) => {
+                // Cannot fail; see `write_java_float_string`.
+                let _ = write_java_float_string(value, &mut builder);
+                builder.append_value("");
+            }
+        }
+    }
+    Ok(Arc::new(builder.finish()))
 }
 
 // eval mode is not needed since all ints can be implemented in binary format
@@ -707,7 +789,7 @@ pub(crate) fn spark_cast_float64_to_utf8<OffsetSize>(
 where
     OffsetSize: OffsetSizeTrait,
 {
-    cast_float_to_string!(from, _eval_mode, f64, Float64Array, OffsetSize, "4.9E-324")
+    spark_cast_float_to_utf8::<Float64Type, OffsetSize>(from)
 }
 
 pub(crate) fn spark_cast_float32_to_utf8<OffsetSize>(
@@ -717,7 +799,7 @@ pub(crate) fn spark_cast_float32_to_utf8<OffsetSize>(
 where
     OffsetSize: OffsetSizeTrait,
 {
-    cast_float_to_string!(from, _eval_mode, f32, Float32Array, OffsetSize, "1.4E-45")
+    spark_cast_float_to_utf8::<Float32Type, OffsetSize>(from)
 }
 
 fn cast_int_to_decimal128_internal<T>(
@@ -848,15 +930,33 @@ pub(crate) fn spark_cast_int_to_int(
 
 pub(crate) fn spark_cast_decimal_to_boolean(array: &dyn Array) -> SparkResult<ArrayRef> {
     let decimal_array = array.as_primitive::<Decimal128Type>();
-    let mut result = BooleanBuilder::with_capacity(decimal_array.len());
-    for i in 0..decimal_array.len() {
-        if decimal_array.is_null(i) {
-            result.append_null()
-        } else {
-            result.append_value(!decimal_array.value(i).is_zero());
-        }
+    // All-null fast path: skips the zero-scalar construction for a batch whose output
+    // is trivially all-null. Also covers all-null `Decimal128(0, 0)`, which the default
+    // path cannot handle (see the precision-zero fast path below).
+    if decimal_array.null_count() == decimal_array.len() {
+        return Ok(Arc::new(BooleanArray::new_null(decimal_array.len())));
     }
-    Ok(Arc::new(result.finish()))
+    // Precision-zero fast path. Arrow rejects `precision == 0` in `with_precision_and_scale`,
+    // so the default `neq`-against-zero path cannot round-trip a `Decimal128(0, 0)` batch
+    // even when it has valid slots. Spark reaches this shape via JVM-side writers that do
+    // not validate precision (e.g. a UDF returning `BigInteger.ZERO` written through
+    // `DecimalVector.setSafe(long)`). The type contract says only 0 is representable, but
+    // we still cast the raw i128 payload (`v != 0`) rather than hard-coding `false`, so an
+    // out-of-contract non-zero value in a valid slot still round-trips correctly.
+    if decimal_array.precision() == 0 {
+        let values: BooleanBuffer = decimal_array.values().iter().map(|&v| v != 0).collect();
+        return Ok(Arc::new(BooleanArray::new(
+            values,
+            decimal_array.nulls().cloned(),
+        )));
+    }
+    // Arrow has no Decimal-to-Boolean cast. `neq` against a zero of the same
+    // precision/scale is exactly `!value.is_zero()`, including null handling.
+    let zero = Scalar::new(
+        Decimal128Array::from(vec![0i128])
+            .with_precision_and_scale(decimal_array.precision(), decimal_array.scale())?,
+    );
+    Ok(Arc::new(neq(decimal_array, &zero)?))
 }
 
 /// Powers of ten that are exactly representable as `f64` (`10^n = 2^n * 5^n` and `5^22 < 2^53`);
@@ -1717,6 +1817,91 @@ mod tests {
         assert!(bool_array.value(1)); // 100 -> true
         assert!(bool_array.value(2)); // -100 -> true
         assert!(bool_array.is_null(3)); // null -> null
+
+        // A different precision/scale must still compare against a matching zero scalar.
+        let array: ArrayRef = Arc::new(
+            Decimal128Array::from(vec![Some(0), Some(1)])
+                .with_precision_and_scale(38, 0)
+                .unwrap(),
+        );
+        let result = spark_cast_decimal_to_boolean(&array).unwrap();
+        let bool_array = result.as_boolean();
+        assert!(!bool_array.value(0));
+        assert!(bool_array.value(1));
+
+        // All-null Decimal128(0, 0) is reachable via Spark's RDD row-to-Arrow path;
+        // `with_precision_and_scale(0, 0)` rejects precision 0, so the all-null fast path
+        // must yield an all-null boolean array without constructing the zero scalar.
+        // SAFETY: builds a well-formed Decimal128 ArrayData:
+        //   - len = 2 slots
+        //   - values buffer = 32 bytes = 2 * 16 (Decimal128 slot width), zero-initialized
+        //   - null buffer = 1 byte, all bits clear, covering >= len bits as required
+        //   Precision 0 skips ArrowError validation but is otherwise a legal DataType tag;
+        //   no non-null slot is ever read, so precision-range invariants are vacuous.
+        let array_data = unsafe {
+            arrow::array::ArrayData::builder(DataType::Decimal128(0, 0))
+                .len(2)
+                .null_bit_buffer(Some(arrow::buffer::Buffer::from(&[0u8])))
+                .add_buffer(arrow::buffer::Buffer::from(&[0u8; 32]))
+                .build_unchecked()
+        };
+        let array: ArrayRef = Arc::new(Decimal128Array::from(array_data));
+        assert_eq!(array.data_type(), &DataType::Decimal128(0, 0));
+        let result = spark_cast_decimal_to_boolean(&array).unwrap();
+        let bool_array = result.as_boolean();
+        assert_eq!(bool_array.len(), 2);
+        assert!(bool_array.is_null(0));
+        assert!(bool_array.is_null(1));
+
+        // Empty Decimal128(0, 0) input: `null_count() == len()` (0 == 0) must still take
+        // the fast path. Precision 0 makes this discriminating — without the fast path,
+        // building the zero scalar would fail regardless of the empty length.
+        // SAFETY: len = 0, so both the (empty) values buffer and the absent null buffer
+        // trivially cover every slot; the precision-range invariant is vacuous.
+        let array_data = unsafe {
+            arrow::array::ArrayData::builder(DataType::Decimal128(0, 0))
+                .len(0)
+                .add_buffer(arrow::buffer::Buffer::from(&[] as &[u8]))
+                .build_unchecked()
+        };
+        let array: ArrayRef = Arc::new(Decimal128Array::from(array_data));
+        // The load-bearing check is that `spark_cast_decimal_to_boolean` returns Ok — without
+        // the fast path, precision 0 would fail during zero-scalar construction. Length is
+        // asserted for completeness; null_count is trivially 0 on any empty array.
+        let result = spark_cast_decimal_to_boolean(&array).unwrap();
+        assert_eq!(result.as_boolean().len(), 0);
+
+        // Mixed valid + null Decimal128(0, 0). Reachable via JVM-side writers that do not
+        // validate precision (e.g. a Java UDF returning `BigInteger.ZERO` declared as
+        // `DecimalType(0, 0)`, written through `DecimalVector.setSafe(long)`). The all-null
+        // fast path does not cover this: `null_count() < len()` yet the batch still cannot
+        // round-trip through a zero scalar. We build a 3-row batch where slot 0 is a valid
+        // zero, slot 1 is null, and slot 2 is an out-of-contract non-zero i128; the path
+        // must read the raw value (not hard-code `false`) so slot 2 comes back as `true`.
+        // Expected output: `[false, null, true]`.
+        // SAFETY: len = 3; values buffer = 48 bytes = 3 * 16, with i128(0), i128(0),
+        // i128(7) laid out little-endian; null bit buffer 0b0000_0101 = slots 0 and 2
+        // valid, slot 1 null.
+        let mut vals = [0u8; 48];
+        vals[32..48].copy_from_slice(&7i128.to_le_bytes()); // slot 2 = 7
+        let array_data = unsafe {
+            arrow::array::ArrayData::builder(DataType::Decimal128(0, 0))
+                .len(3)
+                .null_bit_buffer(Some(arrow::buffer::Buffer::from(&[0b0000_0101u8])))
+                .add_buffer(arrow::buffer::Buffer::from(&vals))
+                .build_unchecked()
+        };
+        let array: ArrayRef = Arc::new(Decimal128Array::from(array_data));
+        assert_eq!(array.data_type(), &DataType::Decimal128(0, 0));
+        assert_eq!(array.null_count(), 1);
+        let result = spark_cast_decimal_to_boolean(&array).unwrap();
+        let bool_array = result.as_boolean();
+        assert_eq!(bool_array.len(), 3);
+        assert!(!bool_array.is_null(0));
+        assert!(!bool_array.value(0)); // valid zero -> false
+        assert!(bool_array.is_null(1)); // null -> null
+        assert!(!bool_array.is_null(2));
+        assert!(bool_array.value(2)); // valid non-zero i128 -> true (raw-value cast)
     }
 
     #[test]

@@ -31,7 +31,7 @@ use std::collections::HashSet;
 use arrow::array::{Array, RecordBatch, UInt32Array};
 use arrow::compute::{take, TakeOptions};
 use arrow::datatypes::DataType as ArrowDataType;
-use datafusion::common::{DataFusionError, Result as DataFusionResult, ScalarValue};
+use datafusion::common::{DataFusionError, Result as DataFusionResult};
 use datafusion::execution::disk_manager::DiskManagerMode;
 use datafusion::execution::memory_pool::MemoryPool;
 use datafusion::execution::runtime_env::RuntimeEnvBuilder;
@@ -41,7 +41,9 @@ use datafusion::{
     physical_plan::{display::DisplayableExecutionPlan, SendableRecordBatchStream},
     prelude::{SessionConfig, SessionContext},
 };
-use datafusion_comet_proto::spark_operator::{Operator, ShuffleScan};
+use datafusion_comet_common::decode_string_arrays;
+use datafusion_comet_proto::spark_expression::agg_expr::ExprStruct as AggExprStruct;
+use datafusion_comet_proto::spark_operator::{AggregateMode, Operator, ShuffleScan};
 use datafusion_comet_spark_expr::url_funcs::{CometParseUrl, CometTryParseUrl};
 use datafusion_spark::function::array::array_contains::SparkArrayContains;
 use datafusion_spark::function::array::repeat::SparkArrayRepeat;
@@ -68,6 +70,7 @@ use datafusion_spark::function::math::trigonometry::SparkSec;
 use datafusion_spark::function::math::width_bucket::SparkWidthBucket;
 use datafusion_spark::function::string::char::CharFunc;
 use datafusion_spark::function::string::concat::SparkConcat;
+use datafusion_spark::function::string::length::SparkLengthFunc;
 use datafusion_spark::function::string::luhn_check::SparkLuhnCheck;
 use datafusion_spark::function::string::space::SparkSpace;
 use datafusion_spark::function::string::substring::SparkSubstring;
@@ -100,12 +103,12 @@ use tokio::sync::mpsc;
 use crate::execution::memory_pools::{create_memory_pool, parse_memory_pool_config};
 use crate::execution::operators::{ScanExec, ShuffleScanExec};
 use crate::execution::shuffle::{
-    decode_remote_shuffle_batch, read_ipc_compressed, CompressionCodec,
+    decode_remote_shuffle_batch, read_ipc_compressed, CompressionCodec, ShuffleWriterExec,
 };
 use crate::execution::spark_plan::SparkPlan;
 
 use crate::execution::tracing::{
-    get_thread_id, log_memory_usage, trace_begin, trace_end, with_trace,
+    get_thread_id, log_memory_usage, trace_begin, trace_end, with_trace, POOL_TOTAL_METRIC,
 };
 
 use crate::execution::memory_pools::logging_pool::LoggingMemoryPool;
@@ -115,6 +118,7 @@ use crate::execution::spark_config::{
     COMET_TRACING_ENABLED, SPARK_EXECUTOR_CORES,
 };
 use crate::parquet::encryption_support::{CometEncryptionFactory, ENCRYPTION_FACTORY_ID};
+use crate::parquet::parquet_support::CometObjectStoreRegistry;
 use datafusion_comet_proto::spark_operator::operator::OpStruct;
 use log::{info, warn};
 use std::sync::OnceLock;
@@ -131,8 +135,26 @@ fn log_jemalloc_usage() {
     log_memory_usage("jemalloc_allocated", allocated.read().unwrap() as u64);
 }
 
+/// Reports the bytes currently handed out by the Rust global allocator, process-wide.
+///
+/// Logged alongside the per-thread pool reservations so the two can be compared directly: a large
+/// and growing excess is native memory the pool is not accounting for.
+fn log_native_allocated() {
+    log_memory_usage(
+        "native_allocated",
+        crate::alloc_accounting::current_balance() as u64,
+    );
+}
+
 /// Registry of active memory pools per Rust thread ID.
-/// Used to sum memory reservations across all contexts on the same thread for tracing.
+/// Used to sum memory reservations across all contexts for the memory usage log and tracing.
+///
+/// Never read a pool's reservation while holding this registry's lock; copy the pools out with
+/// [`snapshot_registry`] and read them after it is released. `CometFairMemoryPool` holds its own
+/// lock across the JNI call that acquires memory from Spark, and Spark can park that call until
+/// another task frees memory. A finishing task frees its reservations only after `releasePlan` has
+/// taken this lock to unregister, so a reservation read under this lock can wait on a pool that is
+/// itself waiting on the lock.
 type ThreadPoolMap = HashMap<u64, HashMap<i64, Arc<dyn MemoryPool>>>;
 
 static THREAD_MEMORY_POOLS: OnceLock<Mutex<ThreadPoolMap>> = OnceLock::new();
@@ -149,10 +171,26 @@ fn register_memory_pool(thread_id: u64, context_id: i64, pool: Arc<dyn MemoryPoo
         .insert(context_id, pool);
 }
 
+/// Removes a context's pool from the registry, without reading any reservation.
+fn unregister_memory_pool(thread_id: u64, context_id: i64) {
+    let removed = {
+        let mut map = get_thread_memory_pools().lock();
+        let Some(pools) = map.get_mut(&thread_id) else {
+            return;
+        };
+        let removed = pools.remove(&context_id);
+        if pools.is_empty() {
+            map.remove(&thread_id);
+        }
+        removed
+    };
+    // Dropped after the lock is released, in case it was the last reference to the pool.
+    drop(removed);
+}
+
 struct ThreadMemoryPoolRegistration {
     thread_id: u64,
     context_id: i64,
-    registered: bool,
 }
 
 impl ThreadMemoryPoolRegistration {
@@ -161,61 +199,131 @@ impl ThreadMemoryPoolRegistration {
         Self {
             thread_id,
             context_id,
-            registered: true,
         }
-    }
-
-    fn unregister_and_total(mut self) -> usize {
-        self.registered = false;
-        unregister_and_total(self.thread_id, self.context_id)
     }
 }
 
 impl Drop for ThreadMemoryPoolRegistration {
     fn drop(&mut self) {
-        if self.registered {
-            unregister_and_total(self.thread_id, self.context_id);
-        }
+        unregister_memory_pool(self.thread_id, self.context_id);
     }
 }
 
-/// Unregister a context's pool and return the remaining total reserved for the thread.
-fn unregister_and_total(thread_id: u64, context_id: i64) -> usize {
-    let mut map = get_thread_memory_pools().lock();
-    if let Some(pools) = map.get_mut(&thread_id) {
-        pools.remove(&context_id);
-        if pools.is_empty() {
-            map.remove(&thread_id);
-            return 0;
-        }
-        let mut seen = HashSet::new();
-        return pools
-            .values()
-            .filter_map(|p| {
-                let ptr = Arc::as_ptr(p) as *const ();
-                seen.insert(ptr).then(|| p.reserved())
-            })
-            .sum::<usize>();
+/// Pools copied out of the registry in one acquisition of its lock, so that their reservations can
+/// be read after it is released; see [`ThreadPoolMap`].
+///
+/// Execution contexts routinely share one pool (every context in a task under the task-shared pool
+/// types, every context in the process under the global ones) and each of them registers it, so
+/// both lists are deduplicated by pool identity or a sum over them would report one reservation
+/// several times.
+struct RegistrySnapshot {
+    /// Distinct pools registered on the requested thread. Empty when no thread was requested.
+    thread_pools: Vec<Arc<dyn MemoryPool>>,
+    /// Distinct pools across every thread. Deduplicated across the whole registry, not within each
+    /// thread: a task-shared or global pool spans threads.
+    all_pools: Vec<Arc<dyn MemoryPool>>,
+    /// Registered contexts, which is one per native plan created and not yet released.
+    plans: usize,
+}
+
+fn snapshot_registry(thread_id: Option<u64>) -> RegistrySnapshot {
+    fn distinct<'a>(
+        pools: impl IntoIterator<Item = &'a Arc<dyn MemoryPool>>,
+        seen: &mut HashSet<*const ()>,
+    ) -> Vec<Arc<dyn MemoryPool>> {
+        pools
+            .into_iter()
+            .filter(|pool| seen.insert(Arc::as_ptr(pool) as *const ()))
+            .cloned()
+            .collect()
     }
-    0
+
+    let map = get_thread_memory_pools().lock();
+    let thread_pools = thread_id
+        .and_then(|id| map.get(&id))
+        .map(|pools| distinct(pools.values(), &mut HashSet::new()))
+        .unwrap_or_default();
+    let all_pools = distinct(map.values().flat_map(HashMap::values), &mut HashSet::new());
+    let plans = map.values().map(HashMap::len).sum();
+    RegistrySnapshot {
+        thread_pools,
+        all_pools,
+        plans,
+    }
+}
+
+fn sum_reserved(pools: &[Arc<dyn MemoryPool>]) -> usize {
+    pools.iter().map(|pool| pool.reserved()).sum()
 }
 
 fn total_reserved_for_thread(thread_id: u64) -> usize {
-    let map = get_thread_memory_pools().lock();
-    map.get(&thread_id)
-        .map(|pools| {
-            // Deduplicate pools that share the same underlying allocation
-            // (e.g. task-shared pools registered by multiple execution contexts)
-            let mut seen = HashSet::new();
-            pools
-                .values()
-                .filter_map(|p| {
-                    let ptr = Arc::as_ptr(p) as *const ();
-                    seen.insert(ptr).then(|| p.reserved())
-                })
-                .sum::<usize>()
-        })
-        .unwrap_or(0)
+    sum_reserved(&snapshot_registry(Some(thread_id)).thread_pools)
+}
+
+/// Reservation totals read from one snapshot of the pool registry.
+struct ReservedTotals {
+    /// Bytes reserved by the pools registered on the requested thread, deduplicated within it.
+    /// Zero when no thread was requested.
+    for_thread: usize,
+    /// Bytes reserved across every live Comet memory pool in the process.
+    ///
+    /// This is the figure to compare against a process-wide allocation counter, so it has to
+    /// account for every live pool rather than only the ones a traced plan created. Allocation is
+    /// process-wide and a plan running with tracing off still holds memory, which is why
+    /// `createPlan` registers its pool unconditionally: with two concurrent plans configured
+    /// differently, counting only the traced one would report the untraced plan's reservation as
+    /// untracked allocation. It covers every pool type, because each plan registers whichever pool
+    /// `create_memory_pool` gave it, and it counts a pool once however many contexts or threads
+    /// hold it.
+    ///
+    /// The per-thread `thread_NNN_comet_memory_reserved` counters must not be summed to obtain it:
+    /// a shared pool reports its full reservation on every thread that references it, so adding
+    /// them across threads multiplies that pool by its thread count.
+    across_threads: usize,
+}
+
+/// Reads both totals from one snapshot of the registry.
+///
+/// They are emitted as a pair, and a pair taken from two snapshots can describe two different
+/// sets of pools. Taking the lock once also halves the tracing traffic through a mutex the
+/// executor needs in order to register and release pools.
+///
+/// `thread_id` of `None` skips the per-thread figure; the caller is only after the process total.
+fn total_reserved(thread_id: Option<u64>) -> ReservedTotals {
+    let snapshot = snapshot_registry(thread_id);
+    ReservedTotals {
+        for_thread: sum_reserved(&snapshot.thread_pools),
+        across_threads: sum_reserved(&snapshot.all_pools),
+    }
+}
+
+/// Executor-wide memory figures for one line of the periodic memory usage log.
+#[derive(Debug, PartialEq)]
+struct MemoryUsage {
+    /// Bytes handed out by the Rust global allocator, process-wide.
+    native_allocated: usize,
+    /// Bytes reserved across every live Comet memory pool, counting each pool once however many
+    /// plans share it.
+    pools_reserved: usize,
+    /// Live memory pools. With the task-shared pool types, which include both defaults, that is one
+    /// per task running native plans.
+    pools: usize,
+    /// Native plans that have been created and not yet released.
+    plans: usize,
+}
+
+/// Reads the executor's memory usage for the periodic memory usage log.
+///
+/// This runs on a timer thread, concurrently with every plan in the executor, so it reads only the
+/// allocation counter and the pool registry, never an execution context.
+fn memory_usage() -> MemoryUsage {
+    let snapshot = snapshot_registry(None);
+    MemoryUsage {
+        native_allocated: crate::alloc_accounting::current_balance(),
+        pools_reserved: sum_reserved(&snapshot.all_pools),
+        pools: snapshot.all_pools.len(),
+        plans: snapshot.plans,
+    }
 }
 
 fn parse_usize_env_var(name: &str) -> Option<usize> {
@@ -520,10 +628,18 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
 
             // Register the shared base pool before wrapping it for per-plan debug logging. The
             // guard removes the entry if any later plan setup step fails.
+            //
+            // Registration is not conditional on this plan's tracing setting. `tracing.enabled` is
+            // a session config, so an executor can run a traced and an untraced plan at once,
+            // while the allocation counter a trace compares against is process-wide. Registering
+            // only traced plans would leave the untraced plan's reservation out of the total and
+            // report it as allocation held outside any pool.
             let rust_thread_id = get_thread_id();
-            let memory_pool_registration = tracing_enabled.then(|| {
-                ThreadMemoryPoolRegistration::new(rust_thread_id, id, Arc::clone(&memory_pool))
-            });
+            let memory_pool_registration = Some(ThreadMemoryPoolRegistration::new(
+                rust_thread_id,
+                id,
+                Arc::clone(&memory_pool),
+            ));
 
             let memory_pool = if logging_memory_pool {
                 Arc::new(LoggingMemoryPool::new(task_attempt_id as u64, memory_pool))
@@ -551,6 +667,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
                 max_temp_directory_size,
                 task_cpus as usize,
                 &spark_config,
+                &spark_plan,
             )?;
 
             let plan_creation_time = start.elapsed();
@@ -668,6 +785,42 @@ pub extern "system" fn Java_org_apache_comet_Native_setShufflePartitionPusher(
     })
 }
 
+/// Only admit the validated native-shuffle path. A session belongs to one fused Spark plan,
+/// so an unsafe partial aggregate disables skipping for the whole plan, including its children.
+/// This deliberately gives up some opportunities rather than changing execution contexts per op.
+fn configure_skip_partial_aggregation(config: &mut SessionConfig, plan: &Operator) {
+    fn supported(plan: &Operator) -> bool {
+        let supported_aggregate = match &plan.op_struct {
+            Some(OpStruct::HashAgg(agg)) => match AggregateMode::try_from(agg.mode) {
+                // Final never skips. Still inspect its children below.
+                Ok(AggregateMode::Final) => true,
+                Ok(AggregateMode::Partial) => {
+                    agg.expr_modes
+                        .iter()
+                        .all(|mode| *mode == AggregateMode::Partial as i32)
+                        && agg.agg_exprs.iter().all(|expr| {
+                            matches!(&expr.expr_struct, Some(AggExprStruct::Count(count))
+                                if count.children.len() == 1)
+                        })
+                }
+                // PartialMerge is represented as native Partial, but consumes states, not rows.
+                _ => false,
+            },
+            _ => true,
+        };
+        supported_aggregate && plan.children.iter().all(supported)
+    }
+
+    if !matches!(&plan.op_struct, Some(OpStruct::ShuffleWriter(_))) || !supported(plan) {
+        // Enforce safety after config pass-through: a testing override cannot make unsupported
+        // accumulators convertible. DF 55 removed supports_convert_to_state().
+        config
+            .options_mut()
+            .execution
+            .skip_partial_aggregation_probe_ratio_threshold = 1.1;
+    }
+}
+
 /// Configure DataFusion session context.
 fn prepare_datafusion_session_context(
     batch_size: usize,
@@ -676,12 +829,15 @@ fn prepare_datafusion_session_context(
     max_temp_directory_size: u64,
     task_cpus: usize,
     spark_config: &HashMap<String, String>,
+    spark_plan: &Operator,
 ) -> CometResult<SessionContext> {
     let paths = local_dirs.into_iter().map(PathBuf::from).collect();
     let disk_manager = DiskManagerBuilder::default()
         .with_mode(DiskManagerMode::Directories(paths))
         .with_max_temp_directory_size(max_temp_directory_size);
-    let mut rt_config = RuntimeEnvBuilder::new().with_disk_manager_builder(disk_manager);
+    let mut rt_config = RuntimeEnvBuilder::new()
+        .with_disk_manager_builder(disk_manager)
+        .with_object_store_registry(Arc::new(CometObjectStoreRegistry::default()));
     rt_config = rt_config.with_memory_pool(memory_pool);
 
     let mut session_config = SessionConfig::new()
@@ -689,17 +845,7 @@ fn prepare_datafusion_session_context(
         // This DataFusion context is within the scope of an executing Spark Task. We want to set
         // its internal parallelism to the number of CPUs allocated to Spark Tasks. This can be
         // modified by changing spark.task.cpus in the Spark config.
-        .with_batch_size(batch_size)
-        // DataFusion partial aggregates can emit duplicate rows so we disable the
-        // skip partial aggregation feature because this is not compatible with Spark's
-        // use of partial aggregates.
-        .set(
-            "datafusion.execution.skip_partial_aggregation_probe_ratio_threshold",
-            // this is the threshold of number of groups / number of rows and the
-            // maximum value is 1.0, so we set the threshold a little higher just
-            // to be safe
-            &ScalarValue::Float64(Some(1.1)),
-        );
+        .with_batch_size(batch_size);
 
     // Translate the Comet-namespaced row-level pushdown flag into the equivalent
     // DataFusion session options. `pushdown_filters` enables the parquet reader's
@@ -725,6 +871,8 @@ fn prepare_datafusion_session_context(
             session_config = session_config.set_str(&df_key, value);
         }
     }
+
+    configure_skip_partial_aggregation(&mut session_config, spark_plan);
 
     let runtime = rt_config.build()?;
 
@@ -775,6 +923,11 @@ fn register_datafusion_spark_function(session_ctx: &SessionContext) {
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkBitShift::right_unsigned()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkSoundex::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkSubstring::default()));
+    // Serves length, char_length, character_length and len. SparkLengthFunc does not unwrap
+    // dictionary arrays and its uniform signature gets no planner coercion, so it relies on
+    // every input reaching expressions as plain Utf8 or Binary: ScanExec and the shuffle scan
+    // unpack dictionaries and the Parquet adapter casts to the required Spark type.
+    session_ctx.register_udf(ScalarUDF::new_from_impl(SparkLengthFunc::default()));
 }
 
 /// Prepares arrow arrays for output.
@@ -1058,10 +1211,18 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
         if exec_context.tracing_enabled {
             #[cfg(feature = "jemalloc")]
             log_jemalloc_usage();
+            log_native_allocated();
+            // Both totals come from one read of the registry, so the pair describes a single
+            // instant, and both are emitted next to the allocation counter above so a trace can
+            // compare them. The per-thread counter cannot be summed across threads to obtain the
+            // process-wide one: it reports a shared pool's full reservation once per referencing
+            // thread.
+            let totals = total_reserved(Some(exec_context.rust_thread_id));
             log_memory_usage(
                 &exec_context.tracing_memory_metric_name,
-                total_reserved_for_thread(exec_context.rust_thread_id) as u64,
+                totals.for_thread as u64,
             );
+            log_memory_usage(POOL_TOTAL_METRIC, totals.across_threads as u64);
         }
 
         result
@@ -1090,12 +1251,14 @@ pub extern "system" fn Java_org_apache_comet_Native_releasePlan(
         let mut execution_context: Box<ExecutionContext> =
             Box::from_raw(exec_context as *mut ExecutionContext);
 
-        // Unregister this context's pool and emit the remaining total for the thread
-        if let Some(memory_pool_registration) = execution_context.memory_pool_registration.take() {
-            let remaining = memory_pool_registration.unregister_and_total();
+        // Unregister this context's pool and, when tracing, emit the remaining total for the
+        // thread. Every context registers, but only a traced one writes counters, so the
+        // reservations are read only then.
+        drop(execution_context.memory_pool_registration.take());
+        if execution_context.tracing_enabled {
             log_memory_usage(
                 &execution_context.tracing_memory_metric_name,
-                remaining as u64,
+                total_reserved_for_thread(execution_context.rust_thread_id) as u64,
             );
         }
 
@@ -1153,6 +1316,60 @@ fn get_execution_context<'a>(id: i64) -> &'a mut ExecutionContext {
             .as_mut()
             .expect("Comet execution context shouldn't be null!")
     }
+}
+
+/// Returns the partition offsets published by a finished native shuffle write.
+///
+/// The returned array holds `num_output_partitions + 1` offsets, the last being the total data
+/// file length.
+#[no_mangle]
+pub extern "system" fn Java_org_apache_comet_Native_getShufflePartitionOffsets(
+    e: EnvUnowned,
+    _class: JClass,
+    exec_context: jlong,
+) -> jlongArray {
+    try_unwrap_or_throw(&e, |env| {
+        let context = get_execution_context(exec_context);
+
+        let root_op = context.root_op.as_ref().ok_or_else(|| {
+            CometError::Internal(
+                "Cannot read shuffle partition offsets before the plan has been executed"
+                    .to_string(),
+            )
+        })?;
+
+        // `ExecutionPlan` has `Any` as a supertrait but no `as_any` method of its own, so upcast
+        // the trait object before downcasting to the writer.
+        let writer = (root_op.native_plan.as_ref() as &dyn std::any::Any)
+            .downcast_ref::<ShuffleWriterExec>()
+            .ok_or_else(|| {
+                CometError::Internal(
+                    "Shuffle partition offsets are only available on a native shuffle write plan"
+                        .to_string(),
+                )
+            })?;
+
+        let offsets = writer
+            .partition_offsets()
+            .ok_or_else(|| {
+                CometError::Internal(
+                    "Shuffle partition offsets are not published by a remote shuffle destination"
+                        .to_string(),
+                )
+            })?
+            .get()
+            .ok_or_else(|| {
+                CometError::Internal(
+                    "Shuffle writer has not published its partition offsets; the plan was not \
+                     drained to completion"
+                        .to_string(),
+                )
+            })?;
+
+        let long_array = env.new_long_array(offsets.len())?;
+        long_array.set_region(env, 0, offsets)?;
+        Ok(long_array.into_raw())
+    })
 }
 
 /// Used by Comet shuffle external sorter to write sorted records to disk.
@@ -1446,6 +1663,28 @@ pub extern "system" fn Java_org_apache_comet_Native_getRustThreadId(
     get_thread_id() as jlong
 }
 
+#[no_mangle]
+/// Returns the executor's memory usage for the periodic memory usage log, as
+/// `[native_allocated, pools_reserved, pools, plans]`; see [`MemoryUsage`]. Safe to call from any
+/// thread; see [`memory_usage`].
+pub extern "system" fn Java_org_apache_comet_Native_getMemoryUsage(
+    e: EnvUnowned,
+    _class: JClass,
+) -> jlongArray {
+    try_unwrap_or_throw(&e, |env| {
+        let usage = memory_usage();
+        let values = [
+            usage.native_allocated as jlong,
+            usage.pools_reserved as jlong,
+            usage.pools as jlong,
+            usage.plans as jlong,
+        ];
+        let long_array = env.new_long_array(values.len())?;
+        long_array.set_region(env, 0, &values)?;
+        Ok(long_array.into_raw())
+    })
+}
+
 // ============================================================================
 // Native Columnar to Row Conversion
 // ============================================================================
@@ -1530,7 +1769,8 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_columnarToRowConvert(
             let array_data = from_ffi(ffi_array, &ffi_schema)
                 .map_err(|e| CometError::Internal(format!("Failed to import array: {}", e)))?;
 
-            arrays.push(arrow::array::make_array(array_data));
+            let imported = arrow::array::make_array(array_data);
+            arrays.push(decode_string_arrays(&imported)?);
         }
 
         // Convert columnar to row
@@ -1589,7 +1829,127 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_columnarToRowClose(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use datafusion::execution::memory_pool::{MemoryConsumer, UnboundedMemoryPool};
+    use arrow::datatypes::{DataType, Field, Schema};
+    use datafusion::execution::memory_pool::{
+        MemoryConsumer, MemoryReservation, UnboundedMemoryPool,
+    };
+    use datafusion::execution::FunctionRegistry;
+    use datafusion::logical_expr::ReturnFieldArgs;
+    use datafusion_comet_proto::spark_expression;
+    use datafusion_comet_proto::spark_expression::{AggExpr, Count, Expr, Sum};
+    use datafusion_comet_proto::spark_operator::{HashAggregate, ShuffleWriter};
+
+    #[test]
+    fn skip_partial_eligibility_is_fail_closed() {
+        let count = AggExpr {
+            expr_struct: Some(AggExprStruct::Count(Count {
+                children: vec![Expr::default()],
+            })),
+            ..Default::default()
+        };
+        let sum = AggExpr {
+            expr_struct: Some(AggExprStruct::Sum(Sum::default())),
+            ..Default::default()
+        };
+        let partial = HashAggregate {
+            grouping_exprs: vec![Expr::default()],
+            agg_exprs: vec![count.clone()],
+            mode: AggregateMode::Partial as i32,
+            ..Default::default()
+        };
+        let writer = |agg: HashAggregate| Operator {
+            op_struct: Some(OpStruct::ShuffleWriter(ShuffleWriter::default())),
+            children: vec![Operator {
+                op_struct: Some(OpStruct::HashAgg(agg)),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let ratio = |plan: &Operator, requested: f64| {
+            let mut config = SessionConfig::new();
+            config
+                .options_mut()
+                .execution
+                .skip_partial_aggregation_probe_rows_threshold = 37;
+            config
+                .options_mut()
+                .execution
+                .skip_partial_aggregation_probe_ratio_threshold = requested;
+            configure_skip_partial_aggregation(&mut config, plan);
+            assert_eq!(
+                config
+                    .options()
+                    .execution
+                    .skip_partial_aggregation_probe_rows_threshold,
+                37
+            );
+            config
+                .options()
+                .execution
+                .skip_partial_aggregation_probe_ratio_threshold
+        };
+
+        for agg in [
+            partial.clone(),
+            HashAggregate {
+                agg_exprs: vec![],
+                ..partial.clone()
+            },
+            HashAggregate {
+                agg_exprs: vec![count.clone(), count],
+                ..partial.clone()
+            },
+        ] {
+            let plan = writer(agg);
+            assert_eq!(ratio(&plan, 0.8), 0.8);
+            assert_eq!(ratio(&plan, 0.5), 0.5);
+            assert_eq!(ratio(&plan, 1.1), 1.1);
+            // Non-native shuffle / standalone native blocks stay disabled.
+            assert_eq!(ratio(&plan.children[0], 0.8), 1.1);
+        }
+
+        for agg in [
+            HashAggregate {
+                agg_exprs: vec![sum],
+                ..partial.clone()
+            },
+            HashAggregate {
+                agg_exprs: vec![AggExpr::default()],
+                ..partial.clone()
+            },
+            HashAggregate {
+                agg_exprs: vec![AggExpr {
+                    expr_struct: Some(AggExprStruct::Count(Count {
+                        children: vec![Expr::default(), Expr::default()],
+                    })),
+                    ..Default::default()
+                }],
+                ..partial.clone()
+            },
+            HashAggregate {
+                mode: AggregateMode::PartialMerge as i32,
+                ..partial.clone()
+            },
+            HashAggregate {
+                expr_modes: vec![AggregateMode::PartialMerge as i32],
+                ..partial.clone()
+            },
+            HashAggregate {
+                mode: 99,
+                ..partial.clone()
+            },
+        ] {
+            let plan = writer(agg);
+            assert_eq!(ratio(&plan, 0.8), 1.1);
+            // An eligible sibling or a Final parent must not hide the unsafe child.
+            let mut nested = writer(HashAggregate {
+                mode: AggregateMode::Final as i32,
+                ..partial.clone()
+            });
+            nested.children[0].children = plan.children;
+            assert_eq!(ratio(&nested, 0.8), 1.1);
+        }
+    }
 
     fn entry_count(thread_id: u64) -> usize {
         get_thread_memory_pools()
@@ -1601,6 +1961,7 @@ mod tests {
 
     #[test]
     fn thread_memory_pool_registration_is_scoped_and_deduplicates_base_pool() {
+        let _guard = serial();
         const THREAD_ID: u64 = u64::MAX;
         let pool: Arc<dyn MemoryPool> = Arc::new(UnboundedMemoryPool::default());
         let reservation = MemoryConsumer::new("test").register(&pool);
@@ -1649,5 +2010,308 @@ mod tests {
         drop(reservation);
         drop(pool);
         assert!(weak.upgrade().is_none());
+    }
+
+    /// `THREAD_MEMORY_POOLS` is process-wide and the crate's tests run in parallel, so any test
+    /// that registers a pool perturbs another's view of the process-wide total. The tests below
+    /// take this lock so their deltas are exact; without it they observe each other's pools.
+    static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn serial() -> std::sync::MutexGuard<'static, ()> {
+        SERIAL
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    fn reserving(bytes: usize) -> (Arc<dyn MemoryPool>, MemoryReservation) {
+        let pool: Arc<dyn MemoryPool> = Arc::new(UnboundedMemoryPool::default());
+        let reservation = MemoryConsumer::new("test").register(&pool);
+        reservation.grow(bytes);
+        (pool, reservation)
+    }
+
+    fn total_reserved_across_threads() -> usize {
+        total_reserved(None).across_threads
+    }
+
+    /// The property that makes this total comparable against a process-wide allocation counter,
+    /// and the one summing the per-thread counters gets wrong: a pool shared by several contexts
+    /// on several threads contributes its reservation once.
+    #[test]
+    fn a_shared_pool_is_counted_once_however_many_contexts_hold_it() {
+        let _guard = serial();
+        let before = total_reserved_across_threads();
+        let (pool, reservation) = reserving(4096);
+
+        let _first = ThreadMemoryPoolRegistration::new(11, 1, Arc::clone(&pool));
+        assert_eq!(
+            total_reserved_across_threads() - before,
+            4096,
+            "a registered pool's reservation must appear in the total"
+        );
+
+        // A second context in the same task, and a third on another thread, both register the
+        // same pool. Summing the per-thread counters would report 4096 three times over.
+        let _second = ThreadMemoryPoolRegistration::new(11, 2, Arc::clone(&pool));
+        let _third = ThreadMemoryPoolRegistration::new(12, 3, Arc::clone(&pool));
+        assert_eq!(
+            total_reserved_across_threads() - before,
+            4096,
+            "a shared pool must be counted once, not once per holder"
+        );
+        assert_eq!(total_reserved_for_thread(11), 4096);
+        assert_eq!(total_reserved_for_thread(12), 4096);
+
+        drop(reservation);
+    }
+
+    /// The total has to cover every pool type, not just the task-shared ones: `greedy`,
+    /// `fair_spill`, the `_global` variants and `unbounded` all bypass the task-shared registry,
+    /// and reporting zero for them would make the analyzer call live reservations untracked.
+    #[test]
+    fn independent_pools_each_contribute_to_the_total() {
+        let _guard = serial();
+        let before = total_reserved_across_threads();
+        let (first_pool, first_reservation) = reserving(4096);
+        let (second_pool, second_reservation) = reserving(8192);
+
+        let _first = ThreadMemoryPoolRegistration::new(13, 1, first_pool);
+        let _second = ThreadMemoryPoolRegistration::new(13, 2, second_pool);
+        assert_eq!(total_reserved_across_threads() - before, 4096 + 8192);
+
+        drop(first_reservation);
+        drop(second_reservation);
+    }
+
+    #[test]
+    fn released_pools_leave_the_total() {
+        let _guard = serial();
+        let before = total_reserved_across_threads();
+        let (pool, reservation) = reserving(8192);
+        {
+            let _registration = ThreadMemoryPoolRegistration::new(14, 1, pool);
+            assert_eq!(total_reserved_across_threads() - before, 8192);
+        }
+        assert_eq!(
+            total_reserved_across_threads(),
+            before,
+            "unregistering the last context must remove the pool from the total"
+        );
+        drop(reservation);
+    }
+
+    /// What the traced thread sees when a plan on another thread holds memory it knows nothing
+    /// about, which is the case a tracing-gated registry got wrong: `tracing.enabled` is a session
+    /// config, so an untraced plan can run alongside a traced one, and its reservation is part of
+    /// the process-wide allocation the trace compares against. The per-thread figure stays local —
+    /// that counter is for attribution — while the process total has to include the other thread.
+    #[test]
+    fn the_process_total_includes_pools_registered_on_other_threads() {
+        let _guard = serial();
+        let before = total_reserved_across_threads();
+        let (traced_pool, traced_reservation) = reserving(20 * 1024 * 1024);
+        let (untraced_pool, untraced_reservation) = reserving(100 * 1024 * 1024);
+
+        let _traced = ThreadMemoryPoolRegistration::new(15, 1, traced_pool);
+        let _untraced = ThreadMemoryPoolRegistration::new(16, 2, untraced_pool);
+
+        let totals = total_reserved(Some(15));
+        assert_eq!(
+            totals.for_thread,
+            20 * 1024 * 1024,
+            "the per-thread counter attributes only this thread's pools"
+        );
+        assert_eq!(
+            totals.across_threads - before,
+            120 * 1024 * 1024,
+            "the process total must cover the pool held by the other thread"
+        );
+
+        drop(traced_reservation);
+        drop(untraced_reservation);
+    }
+
+    /// The periodic memory usage log counts every plan, and every pool once. Two plans of one task
+    /// share a pool across threads, as a task-shared pool does, and a third plan has a pool of its
+    /// own.
+    #[test]
+    fn memory_usage_counts_every_plan_and_every_pool_once() {
+        let _guard = serial();
+        let before = memory_usage();
+        let (shared_pool, shared_reservation) = reserving(4096);
+        let (own_pool, own_reservation) = reserving(8192);
+
+        let _first = ThreadMemoryPoolRegistration::new(18, -6001, Arc::clone(&shared_pool));
+        let _second = ThreadMemoryPoolRegistration::new(19, -6002, Arc::clone(&shared_pool));
+        let third = ThreadMemoryPoolRegistration::new(18, -6003, own_pool);
+
+        let during = memory_usage();
+        assert_eq!(during.plans - before.plans, 3);
+        assert_eq!(
+            during.pools - before.pools,
+            2,
+            "a pool shared by two plans must be counted once"
+        );
+        assert_eq!(during.pools_reserved - before.pools_reserved, 4096 + 8192);
+
+        drop(third);
+        let after = memory_usage();
+        assert_eq!(after.plans - before.plans, 2);
+        assert_eq!(after.pools - before.pools, 1);
+        assert_eq!(after.pools_reserved - before.pools_reserved, 4096);
+
+        drop(shared_reservation);
+        drop(own_reservation);
+    }
+
+    /// Stands in for a `CometFairMemoryPool` whose lock is held across a Spark acquire: it counts
+    /// its reservation reads, and notes whether the registry lock was held during any of them.
+    #[derive(Debug, Default)]
+    struct RegistryProbePool {
+        reads: std::sync::atomic::AtomicUsize,
+        read_under_registry_lock: std::sync::atomic::AtomicBool,
+    }
+
+    impl std::fmt::Display for RegistryProbePool {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "RegistryProbePool")
+        }
+    }
+
+    impl MemoryPool for RegistryProbePool {
+        fn name(&self) -> &str {
+            "RegistryProbePool"
+        }
+
+        fn grow(&self, _: &MemoryReservation, _: usize) {}
+
+        fn shrink(&self, _: &MemoryReservation, _: usize) {}
+
+        fn try_grow(&self, _: &MemoryReservation, _: usize) -> DataFusionResult<()> {
+            Ok(())
+        }
+
+        fn reserved(&self) -> usize {
+            self.reads
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            if get_thread_memory_pools().try_lock().is_none() {
+                self.read_under_registry_lock
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+            4096
+        }
+    }
+
+    /// No path may read a reservation while holding the registry lock; see `ThreadPoolMap`. The
+    /// memory usage log reads from a thread running no plan, tracing reads from a plan's thread,
+    /// and `releasePlan` unregisters on every plan, so all of them are covered. Unregistering must
+    /// not read a reservation at all, since it runs whether or not anything is traced.
+    #[test]
+    fn reservations_are_read_outside_the_registry_lock() {
+        use std::sync::atomic::Ordering::Relaxed;
+
+        let _guard = serial();
+        let before = memory_usage().pools_reserved;
+        let probe = Arc::new(RegistryProbePool::default());
+        let registration =
+            ThreadMemoryPoolRegistration::new(20, -7001, Arc::clone(&probe) as Arc<dyn MemoryPool>);
+        let second =
+            ThreadMemoryPoolRegistration::new(20, -7002, Arc::clone(&probe) as Arc<dyn MemoryPool>);
+
+        assert_eq!(memory_usage().pools_reserved - before, 4096);
+        assert_eq!(total_reserved(Some(20)).for_thread, 4096);
+        assert_eq!(total_reserved_for_thread(20), 4096);
+        let reads = probe.reads.load(Relaxed);
+        assert!(reads >= 3, "each reader should have read the probe");
+
+        drop(registration);
+        drop(second);
+        assert_eq!(
+            probe.reads.load(Relaxed),
+            reads,
+            "unregistering read a reservation"
+        );
+        assert!(
+            !probe.read_under_registry_lock.load(Relaxed),
+            "a pool's reservation was read while the registry lock was held"
+        );
+    }
+
+    #[test]
+    fn length_resolves_to_spark_length_for_string_and_binary() {
+        use datafusion::physical_expr::expressions::{CastExpr, Column};
+        use datafusion::physical_expr::ScalarFunctionExpr;
+        use datafusion_comet_proto::spark_expression::data_type::DataTypeId;
+        use datafusion_comet_proto::spark_expression::expr::ExprStruct;
+        use datafusion_comet_proto::spark_expression::{BoundReference, ScalarFunc};
+
+        let ctx = Arc::new(SessionContext::new());
+        register_datafusion_spark_function(&ctx);
+        let planner = PhysicalPlanner::new(Arc::clone(&ctx), 0);
+        // The planner path: a uniform signature gets no coercion, so the input reaches the
+        // kernel exactly as the scan produced it.
+        for (type_id, input) in [
+            (DataTypeId::String, DataType::Utf8),
+            (DataTypeId::Bytes, DataType::Binary),
+        ] {
+            let schema = Arc::new(Schema::new(vec![Field::new("arg0", input.clone(), true)]));
+            for name in ["length", "char_length", "character_length"] {
+                let expr = Expr {
+                    expr_struct: Some(ExprStruct::ScalarFunc(ScalarFunc {
+                        func: name.to_string(),
+                        args: vec![Expr {
+                            expr_struct: Some(ExprStruct::Bound(BoundReference {
+                                index: 0,
+                                datatype: Some(spark_expression::DataType {
+                                    type_id: type_id as i32,
+                                    type_info: None,
+                                }),
+                            })),
+                            query_context: None,
+                            expr_id: None,
+                        }],
+                        return_type: None,
+                        fail_on_error: false,
+                    })),
+                    query_context: None,
+                    expr_id: None,
+                };
+                let physical = planner
+                    .create_expr(&expr, Arc::clone(&schema))
+                    .unwrap_or_else(|e| panic!("{name}({input}) failed to plan: {e}"));
+                assert_eq!(
+                    physical.data_type(&schema).unwrap(),
+                    DataType::Int32,
+                    "{name}({input})"
+                );
+                let func = physical
+                    .downcast_ref::<ScalarFunctionExpr>()
+                    .unwrap_or_else(|| panic!("{name}({input}) is not a scalar function"));
+                assert_eq!(func.fun().name(), "length", "{name}({input})");
+                assert!(
+                    func.args()[0].downcast_ref::<Column>().is_some()
+                        && func.args()[0].downcast_ref::<CastExpr>().is_none(),
+                    "{name}({input}) should take the column without a cast"
+                );
+            }
+        }
+        // Wider and view encodings never come out of a Comet scan, but the kernel accepts them
+        // with the same Int32 result should a future input path produce them.
+        let udf = ctx.udf("length").unwrap();
+        for input in [
+            DataType::LargeUtf8,
+            DataType::Utf8View,
+            DataType::LargeBinary,
+            DataType::BinaryView,
+        ] {
+            let arg = Arc::new(Field::new("arg0", input.clone(), true));
+            let ret = udf
+                .return_field_from_args(ReturnFieldArgs {
+                    arg_fields: &[arg],
+                    scalar_arguments: &[None],
+                })
+                .unwrap();
+            assert_eq!(ret.data_type(), &DataType::Int32, "length({input})");
+        }
     }
 }

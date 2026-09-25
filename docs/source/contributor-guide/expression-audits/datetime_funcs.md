@@ -37,12 +37,20 @@
 
 - Spark 4.0+. Implemented natively: maps a `DateType` value to a fixed US-English abbreviated day name (`DayOfWeek.getDisplayName(TextStyle.SHORT, Locale.US)`), with no session-locale or timezone dependence.
 
+## dayofweek
+
+- Performance (tuned 2026-09-08, PR [#5771](https://github.com/apache/datafusion-comet/pull/5771)): computed directly from the epoch day (`((days + 4).rem_euclid(7) + 1)`) by the native `spark_dayofweek` kernel, replacing `datepart('dow', ..)` -- which reconstructs a `NaiveDateTime` per row and recomputes the null mask via `unary_opt` -- plus a separate `+ 1` arithmetic node. About 9x faster on flat input with no or sparse nulls, 3-4x at 87.5% nulls, and roughly 1.1x on an all-null batch or a cardinality-8 dictionary, where the replaced path already did little work (about 2x at cardinality 1024). Note the old path returned NULL for epoch days outside chrono's range; the kernel is correct across the full `i32` domain. Benchmark: `benches/dayofweek_weekday.rs`.
+
 ## from_utc_timestamp
 
 - Spark 3.4.3 (audited 2026-05-12): identical to 3.5.8.
 - Spark 3.5.8 (audited 2026-05-12): baseline.
 - Spark 4.0.1 (audited 2026-05-12): `inputTypes` widened to `StringTypeWithCollation`; behaviour unchanged for ASCII timezone strings.
 - Marked `Incompatible`: Comet's native timezone parser only accepts IANA zone IDs (e.g. `America/Los_Angeles`) and fixed `+HH:MM` offsets, while Spark also accepts legacy forms (`GMT+1`, `UTC+1`, three-letter abbreviations like `PST`). By default it runs through the codegen dispatcher (Spark-correct) and uses the native path only when incompatible expressions are explicitly allowed, where legacy zone forms throw a native parse error at execution.
+
+## hour
+
+- Performance (tuned 2026-09-08, PR [#5771](https://github.com/apache/datafusion-comet/pull/5771)): `hour`/`minute`/`second` take an integer fast path when no timezone offset applies -- `TimestampNTZ`, or a timezone-aware timestamp in a UTC session -- computing the field from the stored microseconds with Euclidean division instead of building a `chrono` datetime per row via `date_part`. Dictionaries, non-microsecond units and offset timezones keep the general path. Every fast-path shape with a baseline of at least 2 µs takes 82-94% less time; offset session zones and dictionary input keep the general path and stay within noise on a repeat. Benchmark: `benches/extract_date_part.rs`.
 
 ## make_timestamp_ltz
 
@@ -52,6 +60,10 @@
 
 - The 6-argument form rewrites to `MakeTimestamp` and runs via the codegen dispatcher. The 2-argument `(date, time)` form requires the Spark 4.1 TIME type and falls back.
 
+## minute
+
+- Performance (tuned 2026-09-08, PR [#5771](https://github.com/apache/datafusion-comet/pull/5771)): `hour`/`minute`/`second` take an integer fast path when no timezone offset applies -- `TimestampNTZ`, or a timezone-aware timestamp in a UTC session -- computing the field from the stored microseconds with Euclidean division instead of building a `chrono` datetime per row via `date_part`. Dictionaries, non-microsecond units and offset timezones keep the general path. Every fast-path shape with a baseline of at least 2 µs takes 82-94% less time; offset session zones and dictionary input keep the general path and stay within noise on a repeat. Benchmark: `benches/extract_date_part.rs`.
+
 ## monthname
 
 - Spark 4.0+. Implemented natively: maps a `DateType` value to a fixed US-English abbreviated month name (`Month.getDisplayName(TextStyle.SHORT, Locale.US)`), with no session-locale or timezone dependence.
@@ -59,6 +71,10 @@
 ## now
 
 - Alias of `current_timestamp`; constant-folded to a literal by Spark's `ComputeCurrentTime` rule before Comet sees the plan.
+
+## second
+
+- Performance (tuned 2026-09-08, PR [#5771](https://github.com/apache/datafusion-comet/pull/5771)): `hour`/`minute`/`second` take an integer fast path when no timezone offset applies -- `TimestampNTZ`, or a timezone-aware timestamp in a UTC session -- computing the field from the stored microseconds with Euclidean division instead of building a `chrono` datetime per row via `date_part`. Dictionaries, non-microsecond units and offset timezones keep the general path. Every fast-path shape with a baseline of at least 2 µs takes 82-94% less time; offset session zones and dictionary input keep the general path and stay within noise on a repeat. Benchmark: `benches/extract_date_part.rs`.
 
 ## to_date
 
@@ -95,4 +111,18 @@
 
 - Rewrites to `Cast(..., EvalMode.LEGACY)` (no format, native) or `GetTimestamp(..., failOnError = false)` (with format, via the codegen dispatcher) before Comet sees the plan. In non-ANSI mode the rewritten tree is identical to `to_timestamp`; invalid inputs return NULL to match Spark.
 
+## unix_timestamp
+
+- Spark 3.4.3 (audited 2026-09-13): baseline. String inputs accept literal or column formats. Date, timestamp, and timestamp without time zone inputs ignore the format argument.
+- Spark 3.5.8 (audited 2026-09-13): parsing failures use structured timestamp parsing errors.
+- Spark 4.0.1 (audited 2026-09-13): `inputTypes` widened to `StringTypeWithCollation` for the input and format arguments.
+- Spark 4.1.1 (audited 2026-09-13): same input types and parsing behavior as Spark 4.0.1.
+- String inputs use Spark's generated parser through codegen dispatch, including collated strings and formats. Literal and column formats preserve null handling, ANSI errors, parser policy, and session time zone.
+- Date, timestamp, and timestamp without time zone inputs retain native execution and ignore the format, including its collation. String input stays unsupported by the native serializer so `allowIncompatible=true` cannot send it to the native kernel.
+- Native timestamp conversion truncates fractional seconds toward zero, matching Spark's `ToTimestamp`. This fixes the previous use of floor division for negative fractional timestamps: at UTC, `1969-12-31 23:59:58.5` produces `-1`, not `-2`. Casting a timestamp to `BIGINT` deliberately uses floor division in Spark and Comet, so that cast still produces `-2`.
+
 [Spark Expression Support]: ../../user-guide/latest/expressions.md
+
+## weekday
+
+- Performance (tuned 2026-09-08, PR [#5771](https://github.com/apache/datafusion-comet/pull/5771)): computed directly from the epoch day (`(days + 3).rem_euclid(7)`) by the native `spark_weekday` kernel, replacing `datepart('isodow', ..)` plus a `- 1` arithmetic node. About 9x faster on flat input with no or sparse nulls, 3-4x at 87.5% nulls, and roughly 1.1x on an all-null batch or a cardinality-8 dictionary, where the replaced path already did little work (about 2x at cardinality 1024). `weekday` numbers Monday = 0 through Sunday = 6, a different convention from `dayofweek`. Benchmark: `benches/dayofweek_weekday.rs`.

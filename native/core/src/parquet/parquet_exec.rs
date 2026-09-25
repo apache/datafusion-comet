@@ -19,8 +19,9 @@ use crate::execution::operators::ExecutionError;
 use crate::parquet::eager_page_index_reader_factory::{EagerPageIndexReaderFactory, ScanIoSource};
 use crate::parquet::encryption_support::{CometEncryptionConfig, ENCRYPTION_FACTORY_ID};
 use crate::parquet::name_fold::fold_schema_names;
-use crate::parquet::parquet_support::ObjectStoreBackend;
-use crate::parquet::parquet_support::SparkParquetOptions;
+use crate::parquet::parquet_support::{
+    object_store_authority, ObjectStoreBackend, SparkParquetOptions,
+};
 use crate::parquet::schema_adapter::SparkPhysicalExprAdapterFactory;
 use arrow::datatypes::{Field, FieldRef, SchemaRef};
 use datafusion::config::{ParquetOptions, TableParquetOptions};
@@ -37,8 +38,12 @@ use datafusion::prelude::SessionContext;
 use datafusion::scalar::ScalarValue;
 use datafusion_comet_spark_expr::EvalMode;
 use datafusion_datasource::TableSchema;
+use parquet::variant::VariantType;
 use std::collections::HashMap;
 use std::sync::Arc;
+
+#[cfg(test)]
+mod variant_tests;
 
 /// Initializes a DataSourceExec plan with a ParquetSource for Comet's native Parquet scan.
 ///
@@ -116,8 +121,8 @@ pub(crate) fn init_datasource_exec(
             // Fold the data and required field names once (the same JVM `toLowerCase(Locale.ROOT)`
             // fold the schema adapter uses), then match on the folded names so this plan-time
             // projection stays consistent with the adapter's case-insensitive remap.
-            let data_folded = fold_schema_names(schema, case_sensitive);
-            let required_folded = fold_schema_names(&required_schema, case_sensitive);
+            let data_folded = fold_schema_names(schema, case_sensitive)?;
+            let required_folded = fold_schema_names(&required_schema, case_sensitive)?;
             let projection: Vec<usize> = required_folded
                 .iter()
                 .filter_map(|req| data_folded.iter().position(|d| d == req))
@@ -147,6 +152,15 @@ pub(crate) fn init_datasource_exec(
         .with_table_parquet_options(table_parquet_options)
         .with_metadata_size_hint(512 * 1024); // Same as DataFusion's default
 
+    let projects_variant = required_schema
+        .fields()
+        .iter()
+        .any(|field| field.has_valid_extension_type::<VariantType>());
+    if projects_variant && encryption_enabled {
+        return Err(ExecutionError::GeneralError(
+            "Projected Variant with Parquet encryption requires Spark fallback".to_string(),
+        ));
+    }
     if encryption_enabled {
         parquet_source = parquet_source.with_encryption_factory(
             session_ctx
@@ -163,7 +177,7 @@ pub(crate) fn init_datasource_exec(
     // `store_sales`), the page index is re-fetched, uncached, on every open (comet#3978).
     // `EagerPageIndexReaderFactory` forces the page index to load on the first fetch and be
     // cached with the footer, at the cost of losing the skip's benefit when it would have
-    // applied. Filed upstream as apache/datafusion#23978; revert this once that's fixed.
+    // applied. Filed upstream as apache/datafusion#23978.
     //
     // Preserve bytes_scanned's existing requested data/Bloom-filter range accounting. Footer
     // and page-index reads through get_metadata bypass it, and coalescing may fetch extra bytes.
@@ -173,12 +187,15 @@ pub(crate) fn init_datasource_exec(
     let store = runtime_env.object_store(&object_store_url)?;
     let metadata_cache = runtime_env.cache_manager.get_file_metadata_cache();
     let scan_io_source = scan_io_source(object_store_backend);
-    let reader_factory = Arc::new(EagerPageIndexReaderFactory::new(
-        store,
-        metadata_cache,
-        scan_io_source,
-        parquet_source.metrics(),
-    ));
+    let reader_factory = Arc::new(
+        EagerPageIndexReaderFactory::new(
+            store,
+            metadata_cache,
+            scan_io_source,
+            parquet_source.metrics(),
+        )
+        .with_spark_variant_schema(projects_variant),
+    );
     parquet_source = parquet_source.with_parquet_file_reader_factory(reader_factory);
 
     // Route data filters through `try_pushdown_filters` rather than calling
@@ -324,7 +341,7 @@ fn get_options(
                 uri_base: format!(
                     "{}://{}/",
                     physical_object_store_scheme(object_store_url),
-                    &store_url[url::Position::BeforeHost..url::Position::AfterPort],
+                    object_store_authority(store_url),
                 ),
             },
         );
@@ -495,6 +512,12 @@ mod tests {
         assert_eq!(
             encryption_uri("file+comet-0123456789abcdef-hdfs:///"),
             "file:///"
+        );
+        assert_eq!(
+            encryption_uri(
+                "abfss+comet-0123456789abcdef-native://container@account.dfs.core.windows.net/"
+            ),
+            "abfss://container@account.dfs.core.windows.net/"
         );
         // A physical custom scheme containing a similar, incomplete suffix is not
         // itself a synthetic registration URL.

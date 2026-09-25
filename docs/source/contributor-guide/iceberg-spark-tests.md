@@ -35,10 +35,30 @@ Here is an overview of the changes that the diffs make to Iceberg:
   native scan in every Comet-configured session. The flag is off by default for users, so Iceberg's own suites
   are the only place the split plan (`IcebergCommit -> IcebergWrite`) is exercised against Iceberg's write,
   commit, and row-level-operation tests. See [#5259]
+- Enable Comet's native (iceberg-rust) Parquet writer (`spark.comet.iceberg.write.enabled`) in the same sessions.
+  The native writer is experimental and off by default for users, so this is where it runs against Iceberg's
+  write, commit, and row-level-operation tests.
+- Enable `spark.comet.exec.localTableScan.enabled` in the same sessions. `CometIcebergNativeWrite` sets
+  `requiresNativeChildren`, so without this flag a write fed by an inline `VALUES` list keeps Spark's row-based
+  `LocalTableScanExec`, the conversion is declined, and the write silently runs on the JVM writer. Many Iceberg
+  suites seed their data that way, so leaving it off hides the native writer from most of the write surface.
+- Enable fallback logging (`spark.comet.explainFallback.enabled`) so that every operator Comet declines is
+  reported in the test output together with the reason it was declined.
 
 [#3739]: https://github.com/apache/datafusion-comet/pull/3739
 [#5259]: https://github.com/apache/datafusion-comet/issues/5259
 [apache/iceberg#15674]: https://github.com/apache/iceberg/pull/15674
+
+`dev/local-ci.sh` runs all of the steps below the way CI runs them:
+
+```shell
+dev/local-ci.sh iceberg              # every target the workflow runs
+dev/local-ci.sh iceberg shard-2      # one shard of the core test job
+dev/local-ci.sh iceberg 1.9 shard-2  # a non-default Iceberg version
+```
+
+See [Continuous Integration](ci.md#reproducing-a-suite-failure-locally). The manual steps below
+are still the reference, and are what you want when updating a diff.
 
 ## 1. Install Comet
 
@@ -99,11 +119,13 @@ diff must be generated against its own tag.
 ## Running Tests in CI
 
 The `iceberg_spark_test_<version>.yml` workflows apply these diffs and run the three Gradle targets above
-against each Iceberg version. Iceberg 1.8.1 runs against Spark 3.4.3 with Java 11; Iceberg 1.9.1 and 1.10.0
-run against Spark 3.5.9 with Java 17; Iceberg 1.11.0 runs against Spark 4.1.3 with Java 17. Iceberg 1.11
-(the only version testing Spark 4.1) runs on every pull request and on pushes to main; the older versions
-(1.8, 1.9, 1.10) run only on pushes to main, or on a pull request labeled `run-iceberg-tests`. All caller
-workflows delegate to `iceberg_spark_test_reusable.yml`, which holds the build and test job logic.
+against each Iceberg version, all with Java 17. Iceberg 1.8.1 runs against Spark 3.4.3; Iceberg 1.9.1 and 1.10.0
+run against Spark 3.5.9; Iceberg 1.11.0 runs against Spark 4.1.3. Iceberg 1.11.0 runs in the
+merge queue; 1.8.1, 1.9.1 and 1.10.0 run once a night against `main`. All four run earlier on a
+pull request labeled `run-iceberg-tests`; none runs on an unlabeled pull request. All caller
+workflows delegate to `iceberg_spark_test_reusable.yml`, which holds the build and test job logic. See
+[.github/workflows/README.md](https://github.com/apache/datafusion-comet/blob/main/.github/workflows/README.md)
+for how the pull-request, merge-queue and nightly tiers differ.
 
 The core Spark test target runs in four independent workers. The workflow passes
 `dev/ci/iceberg-test-shards.gradle` as a Gradle init script: one worker runs the long
@@ -127,6 +149,8 @@ combined candidate classes and executed test cases equal an unsharded run exactl
 checks nested, parameterized, inherited, and dynamically generated tests, existing exclusions,
 and failure propagation. The fixture does not compile Spark or Iceberg.
 
-Apply the `run-iceberg-tests` label to a pull request whenever it touches reflection code
-(`org.apache.comet.iceberg.IcebergReflection`) or other logic whose behavior can differ across Iceberg
-versions, since Iceberg 1.11 alone will not catch a regression that only affects 1.8, 1.9, or 1.10.
+Apply the `run-iceberg-tests` label to a pull request whenever it touches the Iceberg scan or write
+path, reflection code (`org.apache.comet.iceberg.IcebergReflection`), or other logic whose behavior
+can differ across Iceberg versions. The Comet test suites in the Linux build do not exercise Iceberg's
+own Spark tests, so without the label the first Iceberg 1.11 verdict is the merge queue's, and the
+first verdict on the older Iceberg versions is the nightly run's, after the change has landed.
