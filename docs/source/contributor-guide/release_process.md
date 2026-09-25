@@ -143,12 +143,11 @@ gh api repos/apache/datafusion-comet/branches/branch-0.13 --jq .protected
 This prints `true` once ASF has applied the change. If it still prints `false`, check that the branch is listed
 under `protected_branches` on `main`.
 
-Protection requires a review but not a green CI run, and the release branch gets much less CI than `main`. It has
-no merge queue, no nightly run, and no CI on push. A pull request targeting it runs only the PR tier. That
-includes the documentation, version, and change log pull requests below, and every backport. Add the `run-*`
-labels for the suites a change could affect, as you would for a pull request to `main`.
-[Release branches](ci.md#release-branches) explains what runs and why. The
-[full CI run before tagging](#run-the-full-ci-suite) covers the rest.
+Protection requires a review but not a green CI run, so check that a pull request's run passed before merging it.
+The release branch has no merge queue, no nightly run, and no CI on push, so a pull request targeting it runs every
+suite that the PR, queue, and nightly tiers run on `main`. That includes the documentation, version, and change
+log pull requests below, and every backport. [Release branches](ci.md#release-branches) explains what runs and
+why. The [full CI run before tagging](#run-the-full-ci-suite) tests the branch with every change merged.
 
 ### Generate Release Documentation
 
@@ -188,11 +187,9 @@ Any hit outside the change log is a place that will break on the release branch.
 match a bare version too. Prefer patterns such as `comet-spark-spark3.5_2.12-*.jar` over
 `comet-spark-spark3.5_2.12-*-SNAPSHOT.jar`, and prefer resolving the jar by glob over hardcoding a version.
 The release branch has the same CI workflows as `main`, so a `-SNAPSHOT`-only glob in a test harness or script
-fails only after the release branch is cut. It may not fail on the version bump pull request itself. That pull
-request runs only the PR tier. The suites that find the jar by file name or version, such as the PyArrow UDF
-tests and the Spark SQL and Iceberg suites, are outside that tier. Add their `run-*` labels to the version bump
-pull request to find out before it merges. Otherwise the [full CI run](#run-the-full-ci-suite) before tagging is
-the first to catch it.
+fails only after the release branch is cut. The version bump pull request is where it shows up. It changes the
+`pom.xml` files, so it runs the suites that find the jar by file name or version, such as the PyArrow UDF tests and
+the Spark SQL and Iceberg suites. The Spark SQL suite for Spark 3.4 runs only with the `run-spark-3.4-tests` label.
 
 ### Update Version in main
 
@@ -233,8 +230,9 @@ change log file into `main`.
 ### Run the Full CI Suite
 
 Once the generated docs, version bump, and change log have merged to the release branch, run every CI suite
-against it. Since the branch was cut, only the PR tier and any labeled suites have run on it. Dispatch both
-workflows on the release branch:
+against it. Each pull request ran against the branch as it stood when its run started, so nothing has yet tested
+the branch with all of them merged. Pull requests there also skip the Spark SQL suite for Spark 3.4 unless it is
+labeled, and Miri, which runs only on a schedule on `main`. Dispatch both workflows on the release branch:
 
 ```shell
 gh workflow run ci.yml --repo apache/datafusion-comet --ref branch-0.13

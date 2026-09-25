@@ -169,6 +169,15 @@ its path filter or event criteria don't match. Skipped checks count as
 passing for branch protection, so a name that can report `skipped` is not
 safe to make a required check.
 
+A pull request whose base is a release branch (`branch-N.M`) is the one
+exception to the table: it runs every job the table puts in the PR, merge
+group or nightly tier, because a release branch has no merge queue and no
+nightly to run the last two later. `docs` stays push-only and `spark_3_4`
+still needs its label, so a `labeled` run there adds `spark_3_4` or nothing.
+`changes` hands the base branch to `compute-changes.py` as `PR_BASE_REF`.
+`check-ci-config.py` pins that wiring, because a dropped variable reads as an
+empty string and would route the pull request as if it targeted `main`.
+
 ### Label events
 
 `ci_label.yml` fires on `pull_request.types: [labeled]` and calls `ci.yml`

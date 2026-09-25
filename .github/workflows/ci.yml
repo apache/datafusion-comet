@@ -40,6 +40,11 @@
 # Spark 3.4 is deprecated and sits outside all three tiers: it runs only when
 # a pull request carries `run-spark-3.4-tests`, or from a manual dispatch.
 #
+# Release branches (`branch-N.M`) get neither the queue nor the nightly: the
+# queue ruleset covers only the default branch, `push` below is main-only, and
+# GitHub fires `schedule` only on the default branch. So a pull request that
+# targets one runs all three tiers at once, still routed by the path filters.
+#
 # Which tier a job sits in is POLICY in dev/ci/compute-changes.py, not an
 # expression here. Heavy jobs deliberately have no `push` tier: the queue
 # already tested the exact commit that lands, so re-running the pipeline on
@@ -262,6 +267,7 @@ jobs:
           EVENT_ACTION: ${{ github.event.action }}
           LABEL_NAME:   ${{ github.event.label.name }}
           PR_LABELS:    ${{ toJSON(github.event.pull_request.labels.*.name) }}
+          PR_BASE_REF:  ${{ github.event.pull_request.base.ref }}
           PR_BASE_SHA:  ${{ github.event.pull_request.base.sha }}
           PR_HEAD_SHA:  ${{ github.event.pull_request.head.sha }}
           MQ_BASE_SHA:  ${{ github.event.merge_group.base_sha }}

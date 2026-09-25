@@ -27,6 +27,10 @@
 #      could not be tested; POLICY_CASES below is the test it never had. The
 #      expected sets are transcribed from the `if:` expressions ci.yml carried
 #      before the policy moved, so a regression here is a behaviour change.
+#      The event reaches the script as environment variables set by ci.yml's
+#      `Detect changes` step, and a variable dropped there reads as an empty
+#      string, which is a valid value (no label, no base branch), so that
+#      wiring is pinned as well.
 #
 #   3. Required-check coverage. `Required Checks` in ci.yml is the job that
 #      `.asf.yaml` can name in `required_status_checks` for main. A heavy job
@@ -390,6 +394,53 @@ POLICY_CASES = [
         },
         set(),
     ),
+    # A pull request against a release branch runs the queue and nightly tiers
+    # as well, because a release branch has no queue and no nightly to run them
+    # later. The site deploy still never runs from a pull request, and the
+    # deprecated Spark 3.4 suite still waits for its label.
+    (
+        {"name": "pull_request", "action": "opened", "labels": [], "base": "branch-1.1"},
+        QUEUE_TIER | NIGHTLY_TIER,
+    ),
+    (
+        {"name": "pull_request", "action": "synchronize", "labels": [], "base": "branch-2.0"},
+        QUEUE_TIER | NIGHTLY_TIER,
+    ),
+    (
+        {
+            "name": "pull_request",
+            "action": "synchronize",
+            "labels": ["run-spark-3.4-tests"],
+            "base": "branch-1.1",
+        },
+        QUEUE_TIER | NIGHTLY_TIER | SPARK_DEPRECATED,
+    ),
+    # There the commit run already covered everything a label gates except
+    # Spark 3.4, so a `labeled` run adds Spark 3.4 or nothing.
+    (
+        {
+            "name": "pull_request",
+            "action": "labeled",
+            "label": "run-spark-3.4-tests",
+            "labels": ["run-spark-3.4-tests"],
+            "base": "branch-1.1",
+        },
+        SPARK_DEPRECATED,
+    ),
+    (
+        {
+            "name": "pull_request",
+            "action": "labeled",
+            "label": "run-iceberg-tests",
+            "labels": ["run-iceberg-tests"],
+            "base": "branch-1.1",
+        },
+        set(),
+    ),
+    # Only `branch-N.M` is a release branch. A pull request against main, or
+    # one stacked on another branch in the repository, keeps the PR tier.
+    ({"name": "pull_request", "action": "synchronize", "labels": [], "base": "main"}, PR_TIER),
+    ({"name": "pull_request", "action": "synchronize", "labels": [], "base": "pr-5654"}, PR_TIER),
 ]
 
 
@@ -654,6 +705,8 @@ def check_event_policy():
                 label += f"/{event['action']}"
             if event.get("label"):
                 label += f" +{event['label']}"
+            if event.get("base"):
+                label += f" base={event['base']}"
             failures.append(
                 f"{label} labels={event.get('labels', [])}: "
                 f"unexpectedly allowed {sorted(actual - expected) or 'nothing'}, "
@@ -685,6 +738,74 @@ def check_event_policy():
             )
     for failure in failures:
         print(f"event policy: {failure}")
+    return not failures
+
+
+# The environment variables `event_from_env` in compute-changes.py reads, and
+# the `github` context expression ci.yml's `Compute outputs` step must set each
+# one from. A typo in an expression is as silent as a missing variable: both
+# arrive as an empty string.
+EVENT_ENV_SOURCES = {
+    "EVENT_NAME": "github.event_name",
+    "EVENT_ACTION": "github.event.action",
+    "LABEL_NAME": "github.event.label.name",
+    "PR_LABELS": "toJSON(github.event.pull_request.labels.*.name)",
+    "PR_BASE_REF": "github.event.pull_request.base.ref",
+}
+ENV_READ = re.compile(r'os\.environ\.get\("([A-Z_]+)"')
+ENV_SET = re.compile(r"^\s+([A-Z_]+):\s+\$\{\{\s*(.+?)\s*\}\}\s*$")
+
+
+def compute_step_env():
+    """{variable: expression} from the `env:` of ci.yml's `Compute outputs` step."""
+    env, in_step, in_env = {}, False, False
+    for line in CI_WORKFLOW.read_text(encoding="utf-8").splitlines():
+        if re.match(r"^\s+- name: Compute outputs\s*$", line):
+            in_step = True
+        elif in_step and not in_env:
+            if re.match(r"^\s+- ", line):
+                break  # the next step; this one has no `env:`
+            in_env = bool(re.match(r"^\s+env:\s*$", line))
+        elif in_env:
+            match = ENV_SET.match(line)
+            if not match:
+                break
+            env[match.group(1)] = match.group(2)
+    return env
+
+
+def check_event_env():
+    """Every variable POLICY reads is set by `Detect changes`, from the right context.
+
+    Without PR_BASE_REF, for instance, every pull request against a release
+    branch would quietly fall back to the PR tier and every check would pass.
+    """
+    failures = []
+    source = Path("dev/ci/compute-changes.py").read_text(encoding="utf-8")
+    body = source.split("\ndef event_from_env", 1)[1].split("\ndef ", 1)[0]
+    read = set(ENV_READ.findall(body))
+    env = compute_step_env()
+    for name in sorted(read - set(EVENT_ENV_SOURCES)):
+        failures.append(
+            f"event_from_env reads {name}, which EVENT_ENV_SOURCES does not "
+            f"list; add the `github` context expression it comes from"
+        )
+    for name in sorted(set(EVENT_ENV_SOURCES) - read):
+        failures.append(f"EVENT_ENV_SOURCES lists {name}, which event_from_env no longer reads")
+    for name in sorted(read & set(EVENT_ENV_SOURCES)):
+        expected = EVENT_ENV_SOURCES[name]
+        if name not in env:
+            failures.append(
+                f"{CI_WORKFLOW}: the `Compute outputs` step does not set {name}, "
+                f"so compute-changes.py reads it as empty"
+            )
+        elif env[name] != expected:
+            failures.append(
+                f"{CI_WORKFLOW}: the `Compute outputs` step sets {name} from "
+                f"`{env[name]}`, not `{expected}`"
+            )
+    for failure in failures:
+        print(f"event env: {failure}")
     return not failures
 
 
@@ -1277,6 +1398,7 @@ def check_cache_save_scope():
 if __name__ == "__main__":
     ok = check_change_filters()
     ok = check_event_policy() and ok
+    ok = check_event_env() and ok
     ok = check_spark_sql_modules() and ok
     ok = check_linux_test_profiles() and ok
     ok = check_artifact_names() and ok
