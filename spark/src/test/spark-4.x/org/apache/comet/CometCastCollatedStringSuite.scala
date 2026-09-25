@@ -120,9 +120,9 @@ class CometCastCollatedStringSuite extends CometTestBase {
 
   test("cast collated string to the same collation has no native path") {
     // The `fromType == toType` shortcut answered `Compatible()` here before the guard existed.
-    // The cast is a byte-level no-op so results were right, but the plan reached the native side
-    // with the collation stripped and nothing recording that. This is the implicit behaviour
-    // #4489 names, so the guard sits above the shortcut.
+    // The result would be right, since the cast is a byte-level no-op, but `isSupported` was
+    // clearing a collated type for a proto that cannot carry the collation, and nothing recorded
+    // that. This is the implicit behaviour #4489 names, so the guard sits above the shortcut.
     assertNoNativePath(lcase, lcase)
   }
 
@@ -160,8 +160,8 @@ class CometCastCollatedStringSuite extends CometTestBase {
 
   test("cast struct whose collated field is unchanged while a sibling field is cast") {
     // The field zip used to answer per field, so the collated field hit the identity shortcut
-    // and reported Compatible while the sibling carried the cast. That let a collated field ride
-    // into the native plan on another field's back. The guard answers for the whole struct.
+    // and reported Compatible while the sibling carried the cast. That cleared a collated field
+    // for the native plan on another field's back. The guard answers for the whole struct.
     val from = StructType(Seq(StructField("a", IntegerType), StructField("s", lcase)))
     val to = StructType(Seq(StructField("a", DataTypes.StringType), StructField("s", lcase)))
     assertNoNativePath(from, to)
@@ -172,9 +172,9 @@ class CometCastCollatedStringSuite extends CometTestBase {
   }
 
   test("cast array of nulls to array of collated strings has no native path") {
-    // `case (dt: ArrayType, _: ArrayType) if dt.elementType == NullType` returns Compatible ahead
-    // of every other branch, so this was one more way to reach the native side with a collation
-    // attached to the target.
+    // `case (dt: ArrayType, _: ArrayType) if dt.elementType == NullType` returns Compatible
+    // without looking at the target element type, so this was one more pair where
+    // `isSupported` cleared a collated target type.
     assertNoNativePath(ArrayType(DataTypes.NullType), ArrayType(lcase))
   }
 
@@ -196,7 +196,7 @@ class CometCastCollatedStringSuite extends CometTestBase {
 
   // ---- end to end -----------------------------------------------------------------
   //
-  // The matrix above only exercises `isSupported`. These three run a query and pin down what the
+  // The matrix above only exercises `isSupported`. These four run a query and pin down what the
   // planner actually does with the answer, which is what #4489 asked for. A plain-string Parquet
   // column with `COLLATE` applied on top reaches the cast as a collated child, the same shape
   // the datetime tests in `CometCollationSuite` rely on. The cast child has to be a column
@@ -241,10 +241,13 @@ class CometCastCollatedStringSuite extends CometTestBase {
   }
 
   test("cast of a struct carrying a collated field has no native path end to end") {
-    // A pair the guard changed the answer for, not just the reason string. The sibling field
-    // changes type so the cast survives `SimplifyCasts`, and on the old code the field zip
-    // answered `Compatible`, since the collated field matched the identity shortcut, so the
-    // struct went native with the collation dropped.
+    // A pair the guard changes the outcome for, not just the reason string. The sibling field
+    // changes type so the cast survives `SimplifyCasts`. Without the guard the field zip
+    // answered `Compatible`, since the collated field matched the identity shortcut, but the
+    // query still fell back to Spark: `Collate` has no serde, so serializing the struct stopped
+    // at the collated field with "collate is not supported". With the guard the cast itself
+    // is `Unsupported`: with the dispatcher off the plan carries the collation reason, and with
+    // it on (next test) the query moves out of that Spark fallback and into the dispatcher.
     withCollatedTable {
       withSQLConf(CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "false") {
         checkSparkAnswerAndFallbackReason(
