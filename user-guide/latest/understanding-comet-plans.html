@@ -979,6 +979,31 @@ operators were arranged after Comet’s serialization). See the
 <a class="reference internal" href="metrics.html"><span class="std std-doc">Metrics Guide</span></a> for details on the DataFusion metrics that appear
 in this output.</p>
 </section>
+<section id="spark-comet-explain-planonly-enabled">
+<h3><code class="docutils literal notranslate"><span class="pre">spark.comet.explain.planOnly.enabled</span></code><a class="headerlink" href="#spark-comet-explain-planonly-enabled" title="Link to this heading">#</a></h3>
+<p>When enabled, Comet plans every query as it normally would, logs the resulting Comet plan and
+coverage summary to the driver log with the prefix <code class="docutils literal notranslate"><span class="pre">[Comet</span> <span class="pre">plan-only]</span></code>, and then executes the
+original plan on Spark. Use it to estimate how much of a workload Comet would accelerate
+without changing execution. The report is the same annotated plan that
+<code class="docutils literal notranslate"><span class="pre">spark.comet.explain.format=verbose</span></code> produces, and reflects Comet’s post-columnar rules, so a
+stage Comet would revert to Spark for having too many transitions is reported as reverted.
+Requires <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.enabled=true</span></code>.</p>
+<p>Keep the following in mind when reading the reports:</p>
+<ul class="simple">
+<li><p>Spark plans scalar and dynamic partition pruning subqueries separately from the query that
+contains them, so each gets its own report alongside the outer query’s. The outer report
+also counts its subqueries, so do not add the reports together.</p></li>
+<li><p>Only the JVM side of planning runs. Anything that would fail when DataFusion builds the
+native plan still counts as accelerated, so treat the percentage as an upper bound.</p></li>
+<li><p>Comet’s split Iceberg V2 write (<code class="docutils literal notranslate"><span class="pre">spark.comet.write.iceberg.splitOperator.enabled</span></code>) is
+declined in plan-only mode, so such writes run on, and are reported as, Spark.</p></li>
+<li><p>Under AQE the report describes the plan before any adaptive re-planning, so coverage of the
+plan that finally executes can differ. In particular, AQE plans subqueries into the outer
+query only after the report is produced, so the outer report counts their operators as
+Spark. For subquery-heavy queries, read the per-subquery reports or disable AQE for the
+evaluation run.</p></li>
+</ul>
+</section>
 </section>
 <section id="programmatic-access-to-fallback-reasons">
 <h2>Programmatic Access to Fallback Reasons<a class="headerlink" href="#programmatic-access-to-fallback-reasons" title="Link to this heading">#</a></h2>
@@ -1266,6 +1291,7 @@ columnar.</p>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#spark-comet-explain-codegen-enabled"><code class="docutils literal notranslate"><span class="pre">spark.comet.explain.codegen.enabled</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#spark-comet-explain-format"><code class="docutils literal notranslate"><span class="pre">spark.comet.explain.format</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#spark-comet-explain-native-enabled"><code class="docutils literal notranslate"><span class="pre">spark.comet.explain.native.enabled</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#spark-comet-explain-planonly-enabled"><code class="docutils literal notranslate"><span class="pre">spark.comet.explain.planOnly.enabled</span></code></a></li>
 </ul>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#programmatic-access-to-fallback-reasons">Programmatic Access to Fallback Reasons</a></li>

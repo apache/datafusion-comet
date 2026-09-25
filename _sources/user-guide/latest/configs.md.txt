@@ -93,6 +93,7 @@ These settings can be used to determine which parts of the plan are accelerated 
 | `spark.comet.explain.fallback.log.enabled` | When this setting is enabled, Comet will log warnings for all fallback reasons. It can be overridden by the environment variable `ENABLE_COMET_LOG_FALLBACK_REASONS`. | false |
 | `spark.comet.explain.format` | Choose extended explain output. The default format of 'verbose' will provide the full query plan annotated with fallback reasons as well as a summary of how much of the plan was accelerated by Comet. The format 'fallback' provides a list of fallback reasons instead. | verbose |
 | `spark.comet.explain.native.enabled` | When this setting is enabled, Comet will provide a tree representation of the native query plan before execution and again after execution, with metrics. | false |
+| `spark.comet.explain.planOnly.enabled` | When enabled, Comet logs the plan it would have executed, with a coverage summary, to the driver log and then lets Spark execute the query unchanged. Native planning failures are not detected, so the coverage can be optimistic. Requires `spark.comet.exec.enabled=true`. | false |
 | `spark.comet.explain.rules` | When this setting is enabled, Comet will log all plan transformations performed in physical optimizer rules. Default: false | false |
 <!-- prettier-ignore-end -->
 <!--END:CONFIG_TABLE-->
