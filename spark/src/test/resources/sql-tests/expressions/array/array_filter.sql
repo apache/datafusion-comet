@@ -16,6 +16,7 @@
 -- under the License.
 
 -- Config: spark.comet.exec.scalaUDF.codegen.enabled=false
+-- Config: spark.comet.exec.scalaUDF.codegen.enabled=false
 
 statement
 CREATE TABLE test_array_filter(arr array<int>, threshold int) USING parquet

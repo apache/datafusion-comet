@@ -34,3 +34,15 @@ SELECT filter(a, x -> exists(b, y -> y > x)) FROM test_dispatch;
 
 query
 SELECT filter(a, x -> array_max(transform(b, y -> y + x)) > 31) FROM test_dispatch;
+
+-- All elements are <= 0, so the THEN branch containing CAST('bad' AS INT)
+-- is never reached at runtime. Eager constant evaluation must not abort planning.
+statement
+CREATE TABLE test_guarded_case(a ARRAY<INT>) USING parquet;
+
+statement
+INSERT INTO test_guarded_case VALUES (array(-1, 0));
+
+query
+SELECT filter(a, x -> CASE WHEN x > 0 THEN CAST('bad' AS INT) > 0 ELSE false END) FROM test_guarded_case;
+

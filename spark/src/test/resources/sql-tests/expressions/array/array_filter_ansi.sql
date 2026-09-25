@@ -16,6 +16,7 @@
 -- under the License.
 
 -- Config: spark.sql.ansi.enabled=true
+-- Config: spark.comet.exec.scalaUDF.codegen.enabled=false
 
 -- =========================================================================
 -- 1. Empty and mixed empty/null arrays (Zero-row lambda guard regression)
@@ -61,24 +62,8 @@ INSERT INTO test_guarded_or VALUES (array(0, 1));
 query
 SELECT filter(a, x -> x = 0 OR (1 DIV x) > 0) FROM test_guarded_or;
 
-
 -- =========================================================================
--- 4. Guarded CASE WHEN in ANSI mode (Speculative serialization regression)
--- =========================================================================
--- All elements are <= 0, so the THEN branch containing CAST('bad' AS INT)
--- is never reached at runtime. Eager constant evaluation must not abort planning.
-statement
-CREATE TABLE test_guarded_case(a ARRAY<INT>) USING parquet;
-
-statement
-INSERT INTO test_guarded_case VALUES (array(-1, 0));
-
-query
-SELECT filter(a, x -> CASE WHEN x > 0 THEN CAST('bad' AS INT) > 0 ELSE false END) FROM test_guarded_case;
-
-
--- =========================================================================
--- 5. Stateful / non-deterministic expression in guarded OR branch
+-- 4. Stateful / non-deterministic expression in guarded OR branch
 -- =========================================================================
 -- In Spark, for x = 0, the left-hand condition evaluates to true, so
 -- monotonically_increasing_id() must NOT be evaluated for that element.
@@ -94,7 +79,7 @@ SELECT filter(a, x -> x = 0 OR monotonically_increasing_id() = 0) FROM test_guar
 
 
 -- =========================================================================
--- 6. Invalid index 0 with element_at in guarded OR branch (fails in all modes)
+-- 5. Invalid index 0 with element_at in guarded OR branch (fails in all modes)
 -- =========================================================================
 -- In Spark, array indexing is 1-based. element_at(..., 0) throws INVALID_INDEX_VALUE
 -- even when ANSI mode is disabled. For x = 0, this branch must not be evaluated.
@@ -109,7 +94,7 @@ SELECT filter(a, x -> x = 0 OR element_at(array(1, 2), 0) = 1) FROM test_guarded
 
 
 -- =========================================================================
--- 7. Arithmetic overflow with abs(INT_MIN) in guarded OR branch
+-- 6. Arithmetic overflow with abs(INT_MIN) in guarded OR branch
 -- =========================================================================
 -- In ANSI mode, abs(-2147483648) throws ARITHMETIC_OVERFLOW.
 -- For x = 0, the left condition is true, so the right branch must not be evaluated.
@@ -124,7 +109,7 @@ SELECT filter(a, x -> x = 0 OR abs(-2147483648) > 0) FROM test_guarded_abs_overf
 
 
 -- =========================================================================
--- 8. Non-deterministic rand() in guarded OR branch
+-- 7. Non-deterministic rand() in guarded OR branch
 -- ========================================================
 -- rand() must not advance its PRNG sequence when short-circuited.
 statement
@@ -138,7 +123,7 @@ SELECT filter(a, x -> x = 0 OR rand(42L) > 0.5) FROM test_guarded_rand;
 
 
 -- =========================================================================
--- 9. Safe whitelist control: pure comparisons continue to work natively
+-- 8. Safe whitelist control: pure comparisons continue to work natively
 -- ========================================================
 -- Verifies that standard comparison predicates are accepted by the whitelist
 -- and evaluated natively without falling back.
@@ -152,7 +137,7 @@ query
 SELECT filter(a, x -> x > 0 AND x < 10) FROM test_safe_predicates;
 
 -- =========================================================================
--- 10. Nullable boolean conditions (SQL Three-Valued Logic / 3VL)
+-- 9. Nullable boolean conditions (SQL Three-Valued Logic / 3VL)
 -- =========================================================================
 -- Verifies that RHS is evaluated when LHS is NULL:
 -- - In OR:  NULL OR true  evaluates to TRUE  (element preserved)
@@ -173,7 +158,7 @@ SELECT filter(a, x -> (x > 0) AND (x IS NOT NULL AND x > 10)) FROM test_guarded_
 
 
 -- =========================================================================
--- 11. Nested conditional predicates (recursive tree rewriting)
+-- 10. Nested conditional predicates (recursive tree rewriting)
 -- =========================================================================
 -- Verifies that rewrite_short_circuit_binary correctly handles nested trees
 -- combining both AND and OR with guarded fallible expressions.
