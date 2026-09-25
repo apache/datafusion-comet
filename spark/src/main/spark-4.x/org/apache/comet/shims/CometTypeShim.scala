@@ -19,10 +19,17 @@
 
 package org.apache.comet.shims
 
+import org.apache.spark.sql.catalyst.expressions.aggregate.Mode
 import org.apache.spark.sql.execution.datasources.VariantMetadata
 import org.apache.spark.sql.types.{ArrayType, DataType, MapType, StringType, StructType, VariantType}
+import org.apache.spark.unsafe.types.UTF8String
 
 trait CometTypeShim {
+  // `reverseOpt` is set for `mode() WITHIN GROUP (ORDER BY col [DESC])` and the
+  // `mode(col, deterministic)` form, both of which carry ordered tie-breaking that Comet does not
+  // implement yet. The plain `mode(col)` form leaves it as `None`.
+  def modeHasUnsupportedOrdering(expr: Mode): Boolean = expr.reverseOpt.isDefined
+
   // A `StringType` carries collation metadata in Spark 4.0. Only non-default (non-UTF8_BINARY)
   // collations have semantics Comet's byte-level hashing/sorting/equality cannot honor. The
   // default `StringType` object is `StringType(UTF8_BINARY_COLLATION_ID)`, so comparing
@@ -49,13 +56,12 @@ trait CometTypeShim {
 
   // Spark 4.0's `PushVariantIntoScan` rewrites `VariantType` columns into a `StructType` whose
   // fields each carry `__VARIANT_METADATA_KEY` metadata, then pushes `variant_get` paths down as
-  // ordinary struct field accesses. Comet's native scans don't understand the on-disk Parquet
-  // variant shredding layout, so reading such a struct natively returns nulls. Detect the marker
-  // and force scan fallback.
+  // ordinary struct field accesses. The whole-value Variant reader does not support this pushed
+  // representation. Detect the marker and force scan fallback.
   def isVariantStruct(s: StructType): Boolean = VariantMetadata.isVariantStruct(s)
 
-  // Comet has no native execution path for Spark 4's `VariantType` (introduced in
-  // SPARK-45827). Serdes call this to route casts/expressions touching the type back to Spark
+  // Outside direct Parquet projection, Comet has no native execution path for Spark 4's
+  // `VariantType`. Serdes call this to route casts/expressions touching the type back to Spark
   // rather than serializing an unsupported datatype into the native plan. Stubbed to `false` in
   // Spark 3.x where `VariantType` does not exist.
   def isVariantType(dt: DataType): Boolean = dt.isInstanceOf[VariantType]
@@ -73,6 +79,8 @@ trait CometTypeShim {
 
   def isTimeType(dt: DataType): Boolean =
     dt.getClass.getSimpleName.startsWith("TimeType")
+
+  def isValidUtf8(s: UTF8String): Boolean = s.isValid
 
   def hasCollationSupport: Boolean = true
 }

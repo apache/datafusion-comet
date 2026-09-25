@@ -23,11 +23,12 @@ import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.Attribute
 import org.apache.spark.sql.connector.write.{BatchWrite, Write, WriterCommitMessage}
+import org.apache.spark.sql.errors.QueryExecutionErrors
 import org.apache.spark.sql.execution.{SparkPlan, SQLExecution, UnaryExecNode}
 import org.apache.spark.sql.execution.datasources.v2.V2CommandExec
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
 
-import org.apache.comet.iceberg.IcebergDriverMetricsShim
+import org.apache.comet.iceberg.{IcebergDriverMetricsShim, IcebergReflection}
 
 /**
  * Driver-side committer for Comet's split-operator Iceberg V2 write.
@@ -64,21 +65,40 @@ case class IcebergCommitExec(
   }
 
   private def collectAndCommit(): Seq[InternalRow] = {
-    val messages: Array[WriterCommitMessage] =
-      try {
-        child.executeCollect().map { row =>
-          IcebergWriteExec.deserializeMessage(row.getBinary(0))
-        }
-      } catch {
-        case cause: Throwable =>
-          // The write job failed; the BatchWrite contract still expects a job-level abort.
-          try batchWrite.abort(Array.empty[WriterCommitMessage])
-          catch {
-            case abortFailure: Throwable =>
-              cause.addSuppressed(abortFailure)
+    // Collect each task's commit message as its task finishes, the way Spark's own V2 write
+    // does, so that a job failure still knows which tasks completed. `executeCollect` would
+    // only hand back the messages once every task succeeded.
+    val rdd = child.execute()
+    val messages = new Array[WriterCommitMessage](rdd.partitions.length)
+    try {
+      sparkContext.runJob(
+        rdd,
+        (iter: Iterator[InternalRow]) => iter.map(_.getBinary(0)).toArray,
+        (index: Int, payloads: Array[Array[Byte]]) => {
+          payloads.foreach { payload =>
+            messages(index) = IcebergWriteExec.deserializeMessage(payload)
           }
-          throw cause
-      }
+        })
+    } catch {
+      case cause: Throwable =>
+        val completed = messages.filter(_ != null)
+        logError(
+          s"Iceberg write job failed; aborting with ${completed.length} completed task " +
+            "message(s)",
+          cause)
+        // The BatchWrite contract expects a job-level abort. Iceberg's own `SparkWrite.abort`
+        // only deletes files after a cleanable *commit* failure and skips cleanup otherwise, so
+        // the data files of tasks that completed before the job failed would stay behind even
+        // though nothing can reference them (no commit was attempted). Delete them here; the
+        // failed task's own files are cleaned up by the task itself.
+        val failure = abortAfter(completed, cause)
+        try deleteCompletedTaskFiles(completed)
+        catch {
+          case cleanupFailure: Throwable =>
+            cause.addSuppressed(cleanupFailure)
+        }
+        throw failure
+    }
     longMetric("numCommittedMessages").add(messages.length)
 
     try {
@@ -88,16 +108,49 @@ case class IcebergCommitExec(
     } catch {
       case cause: Throwable =>
         logError(s"Iceberg commit failed; aborting ${messages.length} task message(s)", cause)
-        try batchWrite.abort(messages)
-        catch {
-          case abortFailure: Throwable =>
-            cause.addSuppressed(abortFailure)
-        }
-        throw cause
+        throw abortAfter(messages, cause)
     }
 
     refreshCache()
     Nil
+  }
+
+  /**
+   * Aborts the write after `cause` and returns what the failed write throws, matching Spark's
+   * `V2TableWriteExec.writeWithV2` on every supported Spark version: `cause` itself when the
+   * abort succeeds, or, when the abort also fails, a `SparkException` ("Writing job failed.")
+   * wrapping `cause` with the abort failure attached to it as suppressed.
+   */
+  private def abortAfter(messages: Array[WriterCommitMessage], cause: Throwable): Throwable =
+    try {
+      batchWrite.abort(messages)
+      cause
+    } catch {
+      case abortFailure: Throwable =>
+        logError("Iceberg write abort failed")
+        cause.addSuppressed(abortFailure)
+        QueryExecutionErrors.writingJobFailedError(cause)
+    }
+
+  private def deleteCompletedTaskFiles(completed: Array[WriterCommitMessage]): Unit = {
+    val locations = completed.toSeq.flatMap(m => IcebergReflection.taskCommitFileLocations(m))
+    if (locations.nonEmpty) {
+      val io = IcebergReflection
+        .getOuterSparkWrite(batchWrite)
+        .flatMap(IcebergReflection.getTableFromSparkWrite)
+        .flatMap(IcebergReflection.getTableIO)
+      io match {
+        case Some(fileIO) =>
+          IcebergReflection.deleteFilesQuietly(
+            fileIO,
+            locations,
+            s"job abort, ${completed.length} completed task(s)")
+        case None =>
+          logWarning(
+            s"Could not resolve the table FileIO; leaving ${locations.size} data file(s) from " +
+              "completed tasks of a failed write job for remove_orphan_files")
+      }
+    }
   }
 
   private def postDriverMetrics(): Unit = {

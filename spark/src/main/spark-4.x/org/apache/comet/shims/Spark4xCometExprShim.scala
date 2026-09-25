@@ -20,14 +20,14 @@
 package org.apache.comet.shims
 
 import org.apache.spark.sql.catalyst.expressions._
-import org.apache.spark.sql.catalyst.expressions.aggregate.{HllSketchAgg, HllUnionAgg}
+import org.apache.spark.sql.catalyst.expressions.aggregate.{HllSketchAgg, HllUnionAgg, ListAgg}
 import org.apache.spark.sql.catalyst.expressions.json.{JsonExpressionUtils, StructsToJsonEvaluator}
 import org.apache.spark.sql.catalyst.expressions.objects.{Invoke, StaticInvoke}
 import org.apache.spark.sql.catalyst.expressions.url.ParseUrlEvaluator
 
 import org.apache.comet.CometExplainInfo
 import org.apache.comet.expressions.CometEvalMode
-import org.apache.comet.serde.{CometAggregateExpressionSerde, CometExpressionSerde, CometHllSketchAgg, CometHllSketchEstimate, CometHllUnion, CometHllUnionAgg, CometMapSort, CometRandStr, CometToPrettyString, CometWidthBucket}
+import org.apache.comet.serde.{CometAggregateExpressionSerde, CometExpressionSerde, CometHllSketchAgg, CometHllSketchEstimate, CometHllUnion, CometHllUnionAgg, CometListAgg, CometMapSort, CometRandStr, CometToPrettyString}
 import org.apache.comet.serde.ExprOuterClass.Expr
 import org.apache.comet.serde.QueryPlanSerde.exprToProtoInternal
 
@@ -44,7 +44,7 @@ trait Spark4xCometExprShim extends CometExprShim4x {
       : Map[Class[_ <: Expression], CometExpressionSerde[_]] =
     Map(classOf[RandStr] -> CometRandStr)
   def sparkVersionSpecificMathExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] =
-    Map(classOf[WidthBucket] -> CometWidthBucket)
+    Map.empty
   def sparkVersionSpecificMiscExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] =
     Map(
       classOf[ToPrettyString] -> CometToPrettyString,
@@ -53,7 +53,10 @@ trait Spark4xCometExprShim extends CometExprShim4x {
   def sparkVersionSpecificMapExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] =
     Map(classOf[MapSort] -> CometMapSort)
   def sparkVersionSpecificAggregates: Map[Class[_], CometAggregateExpressionSerde[_]] =
-    Map(classOf[HllSketchAgg] -> CometHllSketchAgg, classOf[HllUnionAgg] -> CometHllUnionAgg)
+    Map(
+      classOf[HllSketchAgg] -> CometHllSketchAgg,
+      classOf[HllUnionAgg] -> CometHllUnionAgg,
+      classOf[ListAgg] -> CometListAgg)
 
   def sparkVersionSpecificExprToProtoInternal(
       expr: Expression,

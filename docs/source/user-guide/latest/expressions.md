@@ -111,14 +111,14 @@ The tables below list every Spark built-in expression with its current status.
 | `kurtosis` | 🔜 | — | Not yet implemented natively |
 | `last` | ✅ | Native |  |
 | `last_value` | ✅ | Native |  |
-| `listagg` | 🔜 | — | String aggregation |
+| `listagg` | ✅ | Native | Spark 4.0+. `StringType` input with a literal delimiter; `WITHIN GROUP (ORDER BY ...)` and `BinaryType` inputs fall back to Spark. Without `WITHIN GROUP`, concatenation order is the (non-deterministic) group arrival order, matching Spark. |
 | `max` | ✅ | Native |  |
-| `max_by` | 🔜 | — | [#3841](https://github.com/apache/datafusion-comet/issues/3841) |
+| `max_by` | ✅ | Native | Value and ordering must be fixed-length types |
 | `mean` | ✅ | Native |  |
 | `median` | ✅ | — | Rewrites to `percentile(col, 0.5)` and runs natively for supported percentile inputs |
 | `min` | ✅ | Native |  |
-| `min_by` | 🔜 | — | [#3841](https://github.com/apache/datafusion-comet/issues/3841) |
-| `mode` | 🔜 | — | [#3970](https://github.com/apache/datafusion-comet/issues/3970) |
+| `min_by` | ✅ | Native | Value and ordering must be fixed-length types |
+| `mode` | ✅ | Native | `mode(col)` only; Spark breaks ties non-deterministically, so Comet returns the smallest tied value and falls back by default, opt-in via allowIncompatible ([#3970](https://github.com/apache/datafusion-comet/issues/3970)) |
 | `percentile` | ✅ | Native | Single literal percentage on numeric input runs natively; array of percentages and a frequency argument fall back to Spark |
 | `percentile_cont` | ✅ | — | Spark 4.0+ `WITHIN GROUP (ORDER BY ...)`; ascending only runs natively, `DESC` falls back to Spark |
 | `percentile_disc` | 🔜 | — | Percentile aggregate |
@@ -137,7 +137,7 @@ The tables below list every Spark built-in expression with its current status.
 | `stddev` | ✅ | Native |  |
 | `stddev_pop` | ✅ | Native |  |
 | `stddev_samp` | ✅ | Native |  |
-| `string_agg` | 🔜 | — | String aggregation (alias of `listagg`) |
+| `string_agg` | ✅ | Native | Alias of `listagg`; same restrictions apply. |
 | `sum` | ✅ | Native |  |
 | `try_avg` | ✅ | — | Interval types fall back |
 | `try_sum` | ✅ | — |  |
@@ -243,7 +243,7 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | --- | --- | --- | --- |
 | `from_csv` | ✅ | Codegen dispatch |  |
 | `schema_of_csv` | ✅ | Codegen dispatch |  |
-| `to_csv` | ✅ | Native |  |
+| `to_csv` | ✅ | Hybrid | Codegen dispatch by default; the native path is opt-in via allowIncompatible |
 
 ---
 
@@ -273,7 +273,7 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | `dayofmonth` | ✅ | Native |  |
 | `dayofweek` | ✅ | Native |  |
 | `dayofyear` | ✅ | Native |  |
-| `extract` | ✅ | — |  |
+| `extract` | ✅ | — | `SECOND FROM TIME` is native for Spark 4.1+ with `Decimal(8,6)` output |
 | `from_unixtime` | ✅ | Hybrid |  |
 | `from_utc_timestamp` | ✅ | Hybrid | Routes through the JVM codegen dispatcher by default (handles all timezone forms); the native path is opt-in via allowIncompatible ([details](compatibility/expressions/datetime.md)) |
 | `hour` | ✅ | Native |  |
@@ -321,7 +321,7 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | `unix_micros` | ✅ | Codegen dispatch |  |
 | `unix_millis` | ✅ | Codegen dispatch |  |
 | `unix_seconds` | ✅ | Codegen dispatch |  |
-| `unix_timestamp` | ✅ | Native |  |
+| `unix_timestamp` | ✅ | Hybrid | String parsing uses Spark's codegen and honors the time parser policy, ANSI mode, and session time zone. Date and timestamp inputs ignore the format and use native execution. |
 | `weekday` | ✅ | Native |  |
 | `weekofyear` | ✅ | Native |  |
 | `window` | ✅ | — | Batch tumbling and sliding time-window grouping runs natively |
@@ -422,7 +422,7 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | `+` | ✅ | Native |  |
 | `-` | ✅ | Native |  |
 | `/` | ✅ | Native |  |
-| `abs` | ✅ | Native | Interval types fall back |
+| `abs` | ✅ | Hybrid | Interval types route through the JVM codegen dispatcher; numeric types run natively |
 | `acos` | ✅ | Native |  |
 | `acosh` | ✅ | Native |  |
 | `asin` | ✅ | Native |  |
@@ -547,9 +547,9 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | `like` | ✅ | Hybrid |  |
 | `not` | ✅ | Native |  |
 | `or` | ✅ | Native |  |
-| `regexp` | ✅ | Hybrid | Falls back by default; opt-in via allowIncompatible ([details](compatibility/regex.md)) |
-| `regexp_like` | ✅ | Hybrid | Falls back by default; opt-in via allowIncompatible ([details](compatibility/regex.md)) |
-| `rlike` | ✅ | Hybrid | Falls back by default; opt-in via allowIncompatible ([details](compatibility/regex.md)) |
+| `regexp` | ✅ | Hybrid | In-subset literals run natively; others fall back by default ([details](compatibility/regex.md)) |
+| `regexp_like` | ✅ | Hybrid | In-subset literals run natively; others fall back by default ([details](compatibility/regex.md)) |
+| `rlike` | ✅ | Hybrid | In-subset literals run natively; others fall back by default ([details](compatibility/regex.md)) |
 
 ---
 
@@ -567,11 +567,11 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | `chr` | ✅ | Native |  |
 | `collate` | 🔜 | — | Spark collation (umbrella [#2190](https://github.com/apache/datafusion-comet/issues/2190)) |
 | `collation` | ✅ | — | Constant-folded to a literal (Spark 4.0+) |
-| `concat_ws` | ✅ | Hybrid | Array arguments route through the JVM codegen dispatcher; string arguments run natively ([details](compatibility/expressions/string.md)) |
+| `concat_ws` | ✅ | Hybrid | Mixed string and array arguments run natively; all-foldable arguments use codegen dispatch |
 | `contains` | ✅ | — |  |
 | `decode` | ✅ | — |  |
 | `elt` | ✅ | Codegen dispatch |  |
-| `encode` | ✅ | — | Spark 4.0+ lowers to `StaticInvoke(Encode.encode)`, which runs via codegen dispatch; on Spark 3.x it falls back |
+| `encode` | ✅ | — |  |
 | `endswith` | ✅ | — |  |
 | `find_in_set` | ✅ | Codegen dispatch |  |
 | `format_number` | ✅ | Codegen dispatch |  |
@@ -585,7 +585,7 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | `levenshtein` | ✅ | Hybrid | Non-UTF8_BINARY collated input routes through the JVM codegen dispatcher; other input runs natively |
 | `locate` | ✅ | Codegen dispatch |  |
 | `lower` | ✅ | Hybrid |  |
-| `lpad` | ✅ | — |  |
+| `lpad` | ✅ | Hybrid | String inputs use the native kernel with a column string and literal padding; literal strings and column padding use codegen dispatch. Binary inputs use codegen dispatch. |
 | `ltrim` | ✅ | Native |  |
 | `luhn_check` | ✅ | — | Native via `StaticInvoke` (tests: luhn_check.sql) |
 | `mask` | ✅ | — | Routed through the JVM codegen dispatcher |
@@ -602,7 +602,7 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | `repeat` | ✅ | Native |  |
 | `replace` | ✅ | Hybrid |  |
 | `right` | ✅ | Native |  |
-| `rpad` | ✅ | — |  |
+| `rpad` | ✅ | Hybrid | String inputs use the native kernel with a column string and literal padding; literal strings and column padding use codegen dispatch. Binary inputs use codegen dispatch. |
 | `rtrim` | ✅ | Native |  |
 | `soundex` | ✅ | Native |  |
 | `space` | ✅ | Native |  |
@@ -616,7 +616,7 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | `to_char` | ✅ | Codegen dispatch |  |
 | `to_number` | ✅ | Codegen dispatch |  |
 | `to_varchar` | ✅ | Codegen dispatch |  |
-| `translate` | ✅ | Native | DataFusion's `translate` iterates over Unicode graphemes (Spark uses code points) and substitutes U+0000 instead of treating it as a deletion sentinel, so the native path is opt-in via allowIncompatible |
+| `translate` | ✅ | Hybrid | Codegen dispatch by default: DataFusion's `translate` iterates over Unicode graphemes (Spark uses code points) and substitutes U+0000 instead of treating it as a deletion sentinel, so the native path is opt-in via allowIncompatible |
 | `trim` | ✅ | Native |  |
 | `try_to_binary` | ✅ | — | Runs natively (rewrites to `try_eval(to_binary(...))`) |
 | `try_to_number` | ✅ | Codegen dispatch | Routed through the JVM codegen dispatcher |
