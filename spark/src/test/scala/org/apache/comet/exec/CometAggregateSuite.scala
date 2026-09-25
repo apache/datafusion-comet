@@ -35,7 +35,7 @@ import org.apache.spark.sql.comet.{CometFilterExec, CometHashAggregateExec, Come
 import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
 import org.apache.spark.sql.execution.SQLExecution
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AdaptiveSparkPlanHelper, ShuffleQueryStageExec}
-import org.apache.spark.sql.execution.aggregate.{BaseAggregateExec, ObjectHashAggregateExec}
+import org.apache.spark.sql.execution.aggregate.{BaseAggregateExec, HashAggregateExec, ObjectHashAggregateExec}
 import org.apache.spark.sql.execution.exchange.{ReusedExchangeExec, ShuffleExchangeExec}
 import org.apache.spark.sql.functions.{avg, col, count_distinct, expr, sum}
 import org.apache.spark.sql.internal.SQLConf
@@ -3340,6 +3340,69 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           pruned.nonEmpty,
           s"Expected a HashAggregateExec with empty resultExpressions in:\n$plan")
         checkSparkAnswerAndOperator(sql)
+      }
+    }
+  }
+
+  // Regression: Spark plans a global aggregate with neither grouping keys nor aggregate
+  // functions whenever the aggregate's output goes unused. ColumnPruning rewrites
+  // `Project(_, Aggregate(Nil, [count(1)], child))` into `Aggregate(Nil, Nil, child)`, and
+  // nothing downstream removes it: RemoveRedundantAggregates refuses when the lower aggregate
+  // is global, and OptimizeOneRowPlan needs non-empty groupingExpressions. AggUtils then emits
+  // a partial/final pair with a SinglePartition exchange between them, so both halves used to
+  // fall back with "No group by or aggregation" and force a transition above the scan.
+  private def assertEmptyGlobalAggregate(df: => DataFrame): Unit = {
+    val plan = df.queryExecution.executedPlan
+    val aggregates = collectWithSubqueries(plan) {
+      case a: HashAggregateExec
+          if a.groupingExpressions.isEmpty && a.aggregateExpressions.isEmpty =>
+        a
+      case a: CometHashAggregateExec
+          if a.groupingExpressions.isEmpty && a.aggregateExpressions.isEmpty =>
+        a
+    }
+    assert(
+      aggregates.nonEmpty,
+      s"Expected an aggregate with no grouping keys and no aggregate functions in:\n$plan")
+  }
+
+  test("global aggregate with no grouping keys and no aggregate functions (issue #6001)") {
+    withSQLConf(
+      CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true",
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
+      // A global aggregate emits its row even for an empty input, so both queries return
+      // exactly one row. The "regardless of input cardinality" half is what the second case
+      // pins down: the WHERE filters everything out and the row still appears.
+      Seq(
+        "SELECT 1 FROM (SELECT count(*) FROM VALUES (1) AS v(a))",
+        "SELECT 1 FROM (SELECT count(*) FROM VALUES (1) AS v(a) WHERE a > 5)").foreach { query =>
+        assertEmptyGlobalAggregate(sql(query))
+        checkSparkAnswerAndOperator(query)
+      }
+    }
+  }
+
+  test("count() over an aggregated DataFrame (issue #6001)") {
+    withSQLConf(
+      CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true",
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
+      // Dataset.count() is groupBy().count(), and the outer count references nothing from the
+      // inner aggregate, so ColumnPruning strips the inner one to the empty form. This is the
+      // likeliest way to hit the shape in real code.
+      def df: DataFrame = Seq(1, 2).toDF("a").agg(sum($"a")).groupBy().count()
+      assertEmptyGlobalAggregate(df)
+      checkSparkAnswerAndOperator(df)
+    }
+  }
+
+  test("empty global aggregate over Parquet with a fully pruned scan (issue #6001)") {
+    withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
+      // Not specific to local relations: over Parquet the scan is pruned to no columns, so the
+      // aggregate's input carries a row count and nothing else.
+      withParquetTable((0 until 10).map(i => (i, i.toString)), "tbl") {
+        val query = "SELECT 1 FROM (SELECT count(*) FROM tbl)"
+        assertEmptyGlobalAggregate(sql(query))
+        checkSparkAnswerAndOperator(query)
       }
     }
   }
