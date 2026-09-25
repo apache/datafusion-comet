@@ -181,12 +181,14 @@ The following scenarios will fall back to the JVM Iceberg reader:
 - v3 column types the native reader cannot read (`variant`, `geometry`, `geography`, `unknown`)
 - Encrypted tables with 192-bit data keys (no AES-192-GCM in the underlying crypto)
 - Delete files in a format other than Parquet or Puffin (Avro or ORC positional/equality deletes)
-- Iceberg writes (reads are accelerated, writes use Spark)
 - Tables backed by Avro or ORC data files (only Parquet is accelerated)
 - Tables partitioned on `BINARY` or `DECIMAL` (with precision >28) columns
 - Scans with residual filters using `truncate`, `bucket`, `year`, `month`, `day`, or `hour`
   transform functions (partition pruning still works, but row-level filtering of these
   transforms falls back)
+
+Writes are not covered by this list. By default Iceberg writes use Spark's own writer; see
+[Iceberg Writes](iceberg-writes.md) for the experimental native writer and when it applies.
 
 ### Iceberg UDFs
 

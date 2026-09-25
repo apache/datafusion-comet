@@ -997,6 +997,19 @@ impl PhysicalPlanner {
         }
     }
 
+    /// Only constant literals are supported as scan defaults.
+    fn create_default_value(
+        &self,
+        spark_expr: &Expr,
+        input_schema: SchemaRef,
+    ) -> Result<ScalarValue, ExecutionError> {
+        let expr = self.create_expr(spark_expr, Arc::clone(&input_schema))?;
+        if let Some(literal) = expr.downcast_ref::<DataFusionLiteral>() {
+            return Ok(literal.value().clone());
+        }
+        Err(GeneralError("Expected a literal scan default".to_string()))
+    }
+
     /// Create a DataFusion physical sort expression from Spark physical expression
     fn create_sort_expr<'a>(
         &'a self,
@@ -1655,43 +1668,34 @@ impl PhysicalPlanner {
                             .collect()
                     };
 
-                let default_values: Option<HashMap<Column, ScalarValue>> = if !common
-                    .default_values
-                    .is_empty()
-                {
-                    // We have default values. Extract the two lists (same length) of values and
-                    // indexes in the schema, and then create a HashMap to use in the SchemaMapper.
-                    let default_values: Result<Vec<ScalarValue>, DataFusionError> = common
-                        .default_values
-                        .iter()
-                        .map(|expr| {
-                            let literal = self.create_expr(expr, Arc::clone(&required_schema))?;
-                            let df_literal =
-                                literal.downcast_ref::<DataFusionLiteral>().ok_or_else(|| {
-                                    GeneralError("Expected literal of default value.".to_string())
-                                })?;
-                            Ok(df_literal.value().clone())
-                        })
-                        .collect();
-                    let default_values = default_values?;
-                    let default_values_indexes: Vec<usize> = common
-                        .default_values_indexes
-                        .iter()
-                        .map(|offset| *offset as usize)
-                        .collect();
-                    Some(
-                        default_values_indexes
-                            .into_iter()
-                            .zip(default_values)
-                            .map(|(idx, scalar_value)| {
-                                let field = required_schema.field(idx);
-                                let column = Column::new(field.name().as_str(), idx);
-                                (column, scalar_value)
-                            })
-                            .collect(),
-                    )
-                } else {
+                if common.default_values.len() != common.default_values_indexes.len() {
+                    return Err(GeneralError(
+                        "Scan default values and indexes have different lengths".to_string(),
+                    ));
+                }
+                let default_values = if common.default_values.is_empty() {
                     None
+                } else {
+                    Some(
+                        common
+                            .default_values
+                            .iter()
+                            .zip(&common.default_values_indexes)
+                            .map(|(expr, offset)| {
+                                let idx = usize::try_from(*offset).map_err(|_| {
+                                    GeneralError(format!("Invalid scan default index {offset}"))
+                                })?;
+                                let field = required_schema.fields().get(idx).ok_or_else(|| {
+                                    GeneralError(format!(
+                                        "Scan default index {idx} is outside schema"
+                                    ))
+                                })?;
+                                let value =
+                                    self.create_default_value(expr, Arc::clone(&required_schema))?;
+                                Ok((Column::new(field.name(), idx), value))
+                            })
+                            .collect::<Result<HashMap<_, _>, ExecutionError>>()?,
+                    )
                 };
 
                 // Get one file from this partition (we know it's not empty due to early return above)
@@ -5181,6 +5185,39 @@ mod tests {
 
     struct BoundedShufflePartitionPusher {
         max_frame_size: usize,
+    }
+
+    #[test]
+    fn scan_default_rejects_struct_expressions() {
+        let planner = PhysicalPlanner::new(Arc::new(SessionContext::new()), 0);
+        let storage = DataType::Struct(Fields::from(vec![
+            Field::new("value", DataType::Binary, false),
+            Field::new("metadata", DataType::Binary, false),
+        ]));
+        let field = Field::new("v", storage.clone(), true).with_extension_type(VariantType);
+        let schema = Arc::new(Schema::new(vec![field.clone()]));
+        let bytes = |value| Expr {
+            expr_struct: Some(ExprStruct::Literal(spark_expression::Literal {
+                value: Some(literal::Value::BytesVal(value)),
+                datatype: Some(spark_expression::DataType {
+                    type_id: spark_expression::data_type::DataTypeId::Bytes as i32,
+                    type_info: None,
+                }),
+                is_null: false,
+            })),
+            ..Default::default()
+        };
+        let value = spark_expression::CreateNamedStruct {
+            names: vec!["value".to_string(), "metadata".to_string()],
+            values: vec![bytes(vec![0]), bytes(vec![1, 0, 0])],
+        };
+        let default_expr = |value| Expr {
+            expr_struct: Some(ExprStruct::CreateNamedStruct(value)),
+            ..Default::default()
+        };
+        assert!(planner
+            .create_default_value(&default_expr(value), schema)
+            .is_err());
     }
 
     #[test]
