@@ -27,7 +27,7 @@ import org.apache.comet.CometConf
 import org.apache.comet.expressions.{CometRegex, RegexFlavor}
 import org.apache.comet.serde.ExprOuterClass.Expr
 import org.apache.comet.serde.QueryPlanSerde.{createBinaryExpr, exprToProtoInternal, scalarFunctionExprToProto, scalarFunctionExprToProtoWithReturnType}
-import org.apache.comet.shims.CometTypeShim
+import org.apache.comet.shims.{CometExprShim, CometTypeShim}
 
 object CometStringRepeat extends CometExpressionSerde[StringRepeat] {
 
@@ -691,15 +691,17 @@ object CometRegExpInStr extends CometCodegenDispatch[RegExpInStr]
  * `spark.comet.expression.GetJsonObject.allowIncompatible`; otherwise it rides the codegen
  * dispatcher via [[CometCodegenDispatch]].
  */
-object CometGetJsonObject extends CometCodegenDispatch[GetJsonObject] with NativeOptInAvailable {
+object CometGetJsonObject
+    extends CometCodegenDispatch[GetJsonObject]
+    with NativeOptInAvailable
+    with CometExprShim {
 
   override def getIncompatibleReasons(): Seq[String] =
     Seq(
       "Spark allows single-quoted JSON and unescaped control characters" +
         " which Comet does not support",
-      "For JSON objects containing duplicate keys, Spark returns the value of the first" +
-        " occurrence while Comet's native implementation returns the last occurrence" +
-        " ([#4947](https://github.com/apache/datafusion-comet/issues/4947))")
+      "When a returned object or array contains duplicate keys, Spark preserves them" +
+        " while Comet's native JSON materialization keeps only the last value")
 
   override def getSupportLevel(expr: GetJsonObject): SupportLevel =
     if (!CometConf.isExprAllowIncompat(getExprConfigName(expr))) {
@@ -717,7 +719,7 @@ object CometGetJsonObject extends CometCodegenDispatch[GetJsonObject] with Nativ
       val jsonExpr = exprToProtoInternal(expr.json, inputs, binding)
       val pathExpr = exprToProtoInternal(expr.path, inputs, binding)
       val optExpr = scalarFunctionExprToProtoWithReturnType(
-        "get_json_object",
+        getJsonObjectNativeFunctionName,
         expr.dataType,
         false,
         jsonExpr,

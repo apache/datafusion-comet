@@ -23,6 +23,7 @@ use datafusion::logical_expr::ColumnarValue;
 use serde::de::{DeserializeSeed, IgnoredAny, MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer};
 use serde_json::Value;
+use smallvec::{smallvec, SmallVec};
 use std::fmt;
 use std::sync::Arc;
 
@@ -49,6 +50,18 @@ fn scalar_to_str(scalar: &ScalarValue, arg_name: &str) -> DataFusionResult<Optio
 /// - `.*` or `['*']` — child wildcard (accepted for parse compatibility; never
 ///   matches, matching Spark, whose field-wildcard arm is unreachable)
 pub fn spark_get_json_object(args: &[ColumnarValue]) -> DataFusionResult<ColumnarValue> {
+    spark_get_json_object_impl(args, true)
+}
+
+/// Spark 3.4's Jackson 2.14 does not impose a default number-length limit.
+pub fn spark_get_json_object_spark34(args: &[ColumnarValue]) -> DataFusionResult<ColumnarValue> {
+    spark_get_json_object_impl(args, false)
+}
+
+fn spark_get_json_object_impl(
+    args: &[ColumnarValue],
+    check_number_length: bool,
+) -> DataFusionResult<ColumnarValue> {
     if args.len() != 2 {
         return exec_err!(
             "get_json_object expects 2 arguments (json, path), got {}",
@@ -83,7 +96,11 @@ pub fn spark_get_json_object(args: &[ColumnarValue]) -> DataFusionResult<Columna
                     builder.append_null();
                 } else {
                     let json_str = json_strings.value(i);
-                    match evaluate_path(json_str, &parsed_path) {
+                    match evaluate_path_with_number_limit(
+                        json_str,
+                        &parsed_path,
+                        check_number_length,
+                    ) {
                         Some(result) => builder.append_value(&result),
                         None => builder.append_null(),
                     }
@@ -108,7 +125,8 @@ pub fn spark_get_json_object(args: &[ColumnarValue]) -> DataFusionResult<Columna
                 None => return Ok(ColumnarValue::Scalar(ScalarValue::Utf8(None))),
             };
 
-            let result = evaluate_path(&json_str, &parsed_path);
+            let result =
+                evaluate_path_with_number_limit(&json_str, &parsed_path, check_number_length);
             Ok(ColumnarValue::Scalar(ScalarValue::Utf8(result)))
         }
         // Column json, column path
@@ -124,7 +142,11 @@ pub fn spark_get_json_object(args: &[ColumnarValue]) -> DataFusionResult<Columna
                     let json_str = json_strings.value(i);
                     let path_str = path_strings.value(i);
                     match parse_json_path(path_str) {
-                        Some(parsed_path) => match evaluate_path(json_str, &parsed_path) {
+                        Some(parsed_path) => match evaluate_path_with_number_limit(
+                            json_str,
+                            &parsed_path,
+                            check_number_length,
+                        ) {
                             Some(result) => builder.append_value(&result),
                             None => builder.append_null(),
                         },
@@ -287,14 +309,6 @@ fn parse_json_path(path: &str) -> Option<ParsedPath> {
     Some(ParsedPath { segments })
 }
 
-/// Jackson (and therefore Spark) rejects numbers whose digit count exceeds
-/// 1000 wherever they appear in the document — including values this evaluation
-/// skips — so `get_json_object` returns null. serde_json enforces no such limit
-/// when skipping (see its `ignore_integer`/`ignore_decimal`), so mirror
-/// Jackson's `StreamReadConstraints` counters with a byte scan before parsing:
-/// the sign and the decimal point do not count, integers are limited by their
-/// digit count, and floats by the sum of their integer-part (a lone leading
-/// zero counts as zero digits), fraction and exponent digit counts.
 /// Find the end of a string body starting at `i` (just past the opening
 /// quote). Short bodies are scanned inline; long bodies use memchr2, the same
 /// approach as serde_json's `ignore_str`. Returns the index just past the
@@ -303,29 +317,38 @@ fn parse_json_path(path: &str) -> Option<ParsedPath> {
 #[inline]
 fn skip_string_body(bytes: &[u8], mut i: usize) -> Option<usize> {
     const SHORT_STRING: usize = 32;
-    if bytes.len() - i <= SHORT_STRING {
+    if bytes.len().checked_sub(i)? <= SHORT_STRING {
         while i < bytes.len() {
             match bytes[i] {
                 b'"' => return Some(i + 1),
-                b'\\' => i += 2,
+                b'\\' => i = i.checked_add(2)?,
                 _ => i += 1,
             }
         }
         return None;
     }
     loop {
-        match memchr::memchr2(b'"', b'\\', &bytes[i..]) {
+        match memchr::memchr2(b'"', b'\\', bytes.get(i..)?) {
             Some(off) if bytes[i + off] == b'"' => return Some(i + off + 1),
-            Some(off) => i += off + 2, // escaped byte
+            Some(off) => i = i.checked_add(off)?.checked_add(2)?, // escaped byte
             None => return None,
         }
     }
 }
 
+/// Spark 3.5+ bundles Jackson versions that reject numbers beyond the default
+/// 1000-digit limit, including values this evaluation skips. serde_json's
+/// `IgnoredAny` enforces no such limit, so inspect number tokens before parsing.
+/// Spark 3.4's Jackson has no default limit and bypasses this scan.
 fn has_oversized_number(json: &str) -> bool {
     const MAX_NUMBER_DIGITS: usize = 1000;
+    const JACKSON_READER_BUFFER_UNITS: usize = 4000;
     let bytes = json.as_bytes();
     let mut i = 0;
+    // Only near-limit floats need the Reader's UTF-16 position. Keep the
+    // prefix count between candidates so many long numbers stay linear.
+    let mut counted_through = 0;
+    let mut utf16_units = 0;
     while i < bytes.len() {
         match bytes[i] {
             // Skip string bodies: Jackson applies no numeric constraint to
@@ -364,21 +387,23 @@ fn has_oversized_number(json: &str) -> bool {
                 }
                 let is_float = fract_len > 0 || exp_len > 0;
                 let digit_count = if is_float {
-                    // jackson-core counts a lone leading-zero integer part as
-                    // zero digits — except when both a fraction and an
-                    // exponent are present, where it counts as one (verified
-                    // against jackson-core 2.21.2: `0.5e` followed by 999
-                    // exponent digits is rejected with "Number value length
-                    // (1001) exceeds the maximum allowed (1000)").
-                    let int_digits = if int_len == 1
-                        && bytes[int_start] == b'0'
-                        && !(fract_len > 0 && exp_len > 0)
-                    {
-                        0
+                    // Spark parses UTF8String via InputStreamReader, then
+                    // ReaderBasedJsonParser with a 4000-UTF-16-unit buffer.
+                    // Its slow path uses -1 for an absent fraction or exponent,
+                    // forgiving one digit when a number reaches a buffer edge
+                    // or EOF. Numbers starting with zero always take that path.
+                    let starts_with_zero = int_len == 1 && bytes[int_start] == b'0';
+                    let reaches_buffer_edge = if int_len + fract_len + exp_len > MAX_NUMBER_DIGITS {
+                        utf16_units += json[counted_through..i].encode_utf16().count();
+                        counted_through = i;
+                        utf16_units % JACKSON_READER_BUFFER_UNITS + (j - i)
+                            >= JACKSON_READER_BUFFER_UNITS
                     } else {
-                        int_len
+                        false
                     };
-                    int_digits + fract_len + exp_len
+                    let slow_path = starts_with_zero || reaches_buffer_edge || j == bytes.len();
+                    let absent_component = fract_len == 0 || exp_len == 0;
+                    int_len + fract_len + exp_len - usize::from(slow_path && absent_component)
                 } else {
                     int_len
                 };
@@ -395,8 +420,17 @@ fn has_oversized_number(json: &str) -> bool {
 
 /// Evaluate a parsed JSONPath against a JSON string.
 /// Returns the result as a string, or None if no match.
+#[cfg(test)]
 fn evaluate_path(json_str: &str, path: &ParsedPath) -> Option<String> {
-    if has_oversized_number(json_str) {
+    evaluate_path_with_number_limit(json_str, path, true)
+}
+
+fn evaluate_path_with_number_limit(
+    json_str: &str,
+    path: &ParsedPath,
+    check_number_length: bool,
+) -> Option<String> {
+    if check_number_length && has_oversized_number(json_str) {
         return None;
     }
 
@@ -406,7 +440,7 @@ fn evaluate_path(json_str: &str, path: &ParsedPath) -> Option<String> {
     }
     // The top level is not an array context. Jackson's generator separates
     // consecutive root-level writes with a single space, so join with one.
-    Some(result.writes.join(" "))
+    Some(PathResult::join(result.writes, " "))
 }
 
 /// Descends into the document while it is being parsed, so only the matched
@@ -448,22 +482,32 @@ struct PathSeed<'a> {
 /// here rather than discarded.
 #[derive(Default)]
 struct PathResult {
-    writes: Vec<String>,
+    // A simple field or index lookup produces one write; keep it inline while
+    // descending through nested objects and arrays.
+    writes: SmallVec<[String; 1]>,
     matched: bool,
 }
 
 impl PathResult {
+    fn join(mut writes: SmallVec<[String; 1]>, separator: &str) -> String {
+        if writes.len() == 1 {
+            writes.pop().unwrap()
+        } else {
+            writes.join(separator)
+        }
+    }
+
     /// A single verbatim write of a matched value, honoring the output style:
     /// a string in Raw style is written unquoted (Spark's scalar-unwrap arm),
     /// everything else keeps JSON serialization.
     fn write(value: Value, style: Style) -> Self {
         match value {
             Value::String(s) if style == Style::Raw => Self {
-                writes: vec![s],
+                writes: smallvec![s],
                 matched: true,
             },
             value => Self {
-                writes: vec![value.to_string()],
+                writes: smallvec![value.to_string()],
                 matched: true,
             },
         }
@@ -472,9 +516,20 @@ impl PathResult {
     /// Wrap the accumulated writes in an array wrapper, as Jackson's generator
     /// does after `writeStartArray`: one write whose content is the writes
     /// joined with commas.
-    fn wrap(writes: Vec<String>, matched: bool) -> Self {
+    fn wrap(writes: SmallVec<[String; 1]>, matched: bool) -> Self {
+        let mut output = String::with_capacity(
+            2 + writes.iter().map(String::len).sum::<usize>() + writes.len().saturating_sub(1),
+        );
+        output.push('[');
+        for (index, write) in writes.into_iter().enumerate() {
+            if index != 0 {
+                output.push(',');
+            }
+            output.push_str(&write);
+        }
+        output.push(']');
         Self {
-            writes: vec![format!("[{}]", writes.join(","))],
+            writes: smallvec![output],
             matched,
         }
     }
@@ -500,7 +555,7 @@ impl<'de> DeserializeSeed<'de> for PathSeed<'_> {
                         for element in arr {
                             flatten_into(element, &mut leaves);
                         }
-                        let writes: Vec<String> =
+                        let writes: SmallVec<[String; 1]> =
                             leaves.into_iter().map(|v| v.to_string()).collect();
                         PathResult {
                             matched: !writes.is_empty(),
@@ -576,7 +631,11 @@ impl<'de> Visitor<'de> for SegmentVisitor<'_> {
                     reject_direct_null: true,
                 })?;
                 found.matched |= candidate.matched;
-                found.writes.append(&mut candidate.writes);
+                if found.writes.is_empty() {
+                    found.writes = candidate.writes;
+                } else {
+                    found.writes.append(&mut candidate.writes);
+                }
             } else {
                 map.next_value::<IgnoredAny>()?;
             }
@@ -617,7 +676,7 @@ impl<'de> Visitor<'de> for SegmentVisitor<'_> {
                 // remaining path applies to the outer elements in flatten
                 // style, and the collected writes always form a single array,
                 // even when there is only one element or none matched.
-                let mut writes = Vec::new();
+                let mut writes = SmallVec::new();
                 let mut matched = false;
                 while let Some(mut result) = seq.next_element_seed(PathSeed {
                     segments: &self.segments[1..],
@@ -633,7 +692,7 @@ impl<'de> Visitor<'de> for SegmentVisitor<'_> {
                 // Quoted style: the array wrapper is always kept, even for a
                 // single match.
                 Style::Quoted => {
-                    let mut writes = Vec::new();
+                    let mut writes = SmallVec::new();
                     let mut matched = false;
                     while let Some(mut result) = seq.next_element_seed(PathSeed {
                         segments: &self.segments[1..],
@@ -656,7 +715,7 @@ impl<'de> Visitor<'de> for SegmentVisitor<'_> {
                         Style::Flatten
                     };
                     let mut writers = 0;
-                    let mut writes = Vec::new();
+                    let mut writes = SmallVec::new();
                     while let Some(mut result) = seq.next_element_seed(PathSeed {
                         segments: &self.segments[1..],
                         style: child_style,
@@ -672,7 +731,7 @@ impl<'de> Visitor<'de> for SegmentVisitor<'_> {
                         // Strip the buffered array's outer brackets: the
                         // buffered content becomes a single write.
                         1 => Ok(PathResult {
-                            writes: vec![writes.join(",")],
+                            writes: smallvec![PathResult::join(writes, ",")],
                             matched: true,
                         }),
                         _ => Ok(PathResult::wrap(writes, true)),
@@ -1147,6 +1206,53 @@ mod tests {
         assert_eq!(evaluate_path(&oversized, &path), None);
         let in_string = format!(r#"{{"a":1,"b":"{}"}}"#, "9".repeat(1001));
         assert_eq!(evaluate_path(&in_string, &path), Some("1".to_string()));
+    }
+
+    #[test]
+    fn test_number_limit_depends_on_spark_version() {
+        let path = parse_json_path("$.a").unwrap();
+        let json = format!(r#"{{"a":1,"ignored":{}}}"#, "9".repeat(1001));
+        // Spark 3.4 uses Jackson 2.14, which has no default numeric length limit.
+        assert_eq!(
+            evaluate_path_with_number_limit(&json, &path, false),
+            Some("1".to_string())
+        );
+        assert_eq!(evaluate_path_with_number_limit(&json, &path, true), None);
+    }
+
+    #[test]
+    fn test_float_limit_at_jackson_reader_boundary() {
+        let path = parse_json_path("$.a").unwrap();
+        let fraction = format!("1.{}", "1".repeat(1000));
+        let exponent = format!("1e{}", "0".repeat(1000));
+        for number in [&fraction, &exponent] {
+            // Jackson's ReaderBasedJsonParser reads 4000 UTF-16 units at a time.
+            // When the number reaches the buffer edge, its fallback parser
+            // discounts one absent component (fraction or exponent).
+            let before_edge = format!(r#"{{"a":1,"pad":"{}","n":{number}}}"#, "x".repeat(2977));
+            let at_edge = format!(r#"{{"a":1,"pad":"{}","n":{number}}}"#, "x".repeat(2978));
+            let new_buffer = format!(r#"{{"a":1,"pad":"{}","n":{number}}}"#, "x".repeat(3980));
+            assert_eq!(evaluate_path(&before_edge, &path), None);
+            assert_eq!(evaluate_path(&at_edge, &path), Some("1".to_string()));
+            assert_eq!(evaluate_path(&new_buffer, &path), None);
+
+            // An emoji occupies two UTF-16 units despite using four UTF-8 bytes.
+            let emoji_edge = format!(r#"{{"a":1,"pad":"{}","n":{number}}}"#, "🎉".repeat(1489));
+            assert_eq!(evaluate_path(&emoji_edge, &path), Some("1".to_string()));
+        }
+
+        // A root number at EOF also takes Jackson's fallback branch.
+        assert!(!has_oversized_number(&fraction));
+        assert!(has_oversized_number(&format!("{fraction} ")));
+        assert!(!has_oversized_number(&exponent));
+        assert!(has_oversized_number(&format!("{exponent} ")));
+    }
+
+    #[test]
+    fn test_unterminated_long_string_ending_in_escape_returns_null() {
+        let path = parse_json_path("$.a").unwrap();
+        let json = format!("{{\"a\":1,\"b\":\"{}\\", "x".repeat(64));
+        assert_eq!(evaluate_path(&json, &path), None);
     }
 
     #[test]

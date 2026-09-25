@@ -233,10 +233,9 @@ SELECT get_json_object('{"a":[{"b":[1,2]},{"b":[3]}]}', '$.a[*].b[*]')
 query
 SELECT get_json_object('[[[1,2],[]]]', '$[*][*][*]'), get_json_object('[[[1,2]]]', '$[*][*][*]')
 
--- Jackson rejects numbers whose digit count exceeds 1000 anywhere in the
--- document, including values the path never selects; the sign, decimal point
--- and exponent sign do not count, floats are limited by the summed digit
--- counts of their parts, and a lone leading zero contributes nothing
+-- Spark 3.5+ rejects numbers whose digit count exceeds Jackson's default
+-- 1000-digit limit, including values the path never selects. Spark 3.4's
+-- Jackson version does not impose this limit.
 query
 SELECT get_json_object(concat('[{"a":1,"b":', repeat('9', 1000), '}]'), '$[*].a'),
        get_json_object(concat('[{"a":1,"b":', repeat('9', 1001), '}]'), '$[*].a'),
@@ -247,6 +246,20 @@ SELECT get_json_object(concat('[{"a":1,"b":', repeat('9', 1000), '}]'), '$[*].a'
        get_json_object(concat('[{"a":1,"b":0.', repeat('1', 1000), '}]'), '$[*].a'),
        get_json_object(concat('[{"a":1,"b":1e', repeat('0', 999), '}]'), '$[*].a'),
        get_json_object(concat('[{"a":1,"b":1e', repeat('0', 1000), '}]'), '$[*].a')
+
+-- Jackson's ReaderBasedJsonParser uses 4000 UTF-16-unit buffers. A float
+-- reaching a buffer edge takes a parser branch that accepts one more digit
+-- when only a fraction or exponent is present.
+query
+SELECT get_json_object(concat('{"a":1,"pad":"', repeat('x', 2977), '","n":1.', repeat('1', 1000), '}'), '$.a'),
+       get_json_object(concat('{"a":1,"pad":"', repeat('x', 2978), '","n":1.', repeat('1', 1000), '}'), '$.a'),
+       get_json_object(concat('{"a":1,"pad":"', repeat('x', 3980), '","n":1.', repeat('1', 1000), '}'), '$.a'),
+       get_json_object(concat('{"a":1,"pad":"', repeat('🎉', 1489), '","n":1.', repeat('1', 1000), '}'), '$.a'),
+       get_json_object(concat('{"a":1,"pad":"', repeat('x', 2978), '","n":1e', repeat('0', 1000), '}'), '$.a')
+
+-- A truncated long string ending in an escape must produce SQL NULL.
+query
+SELECT get_json_object(concat('{"a":1,"b":"', repeat('x', 64), chr(92)), '$.a')
 
 -- `.*` and `['*']` wildcards never match: Spark's parser emits a bare wildcard
 -- instruction that no evaluator dispatch case consumes

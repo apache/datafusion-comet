@@ -2111,6 +2111,7 @@ dependencies = [
  "ryu",
  "serde",
  "serde_json",
+ "smallvec",
  "tokio",
  "twox-hash",
  "uuid",
