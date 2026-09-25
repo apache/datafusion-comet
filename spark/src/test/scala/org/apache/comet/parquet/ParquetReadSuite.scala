@@ -2079,25 +2079,22 @@ abstract class ParquetReadSuite extends CometTestBase {
     }
   }
 
-  // The shape a schema evolution leaves behind: a nested column dropped and added back under
-  // its old name gets a fresh field id, so the file holds `struct<x (id 1), y (id 2)>` while
-  // the table reads `struct<x (id 3), y (id 2)>`. The names line up at every position, which
-  // is exactly what the metadata-only relabel shortcut in the native cast looks for, so without
-  // the field-mapping gate the scan hands back the old x values. Spark returns null for x and
-  // keeps y. One test per nesting, so a wrong answer names the level that produced it.
-  // Before Spark 4.1 the vectorized reader raises on this read below a list or map, since its
-  // column vector rejects the placeholder field the clipped schema carries for the unmatched
-  // id, so the comparison with Spark runs from 4.1 on. The pinned rows hold everywhere.
-  private def checkDroppedAndReAddedFieldId(
-      column: String,
-      expected: Seq[Row],
-      sparkReads: Boolean = true): Unit = {
-    val fileStruct = new StructType()
-      .add("x", LongType, true, withId(1))
-      .add("y", LongType, true, withId(2))
-    val readStruct = new StructType()
-      .add("x", LongType, true, withId(3))
-      .add("y", LongType, true, withId(2))
+  // The two shapes of #6192. A nested column dropped and added back under its old name gets a
+  // fresh field id, so the file holds `struct<x (id 1), y (id 2)>` while the table reads
+  // `struct<x (id 3), y (id 2)>`, and a swapped pair reads `struct<x (id 2), y (id 1)>`. The
+  // names line up at every position, which is exactly what the metadata-only relabel shortcut
+  // in the native cast looks for, so without the field id check in that shortcut the scan
+  // hands back the file's values by position. Spark returns null for the re-added `x` and
+  // keeps `y`, and swaps the two values for the swapped ids. Each nesting is read on its own,
+  // so a wrong answer names the level that produced it. Before Spark 4.1 the vectorized reader
+  // raises on both reads below a list or map, since its column vector rejects the clipped
+  // struct, which carries a placeholder field for the unmatched id and the file's field order
+  // for the swapped ids, so that comparison with Spark runs from 4.1 on. The pinned rows hold
+  // everywhere.
+  test("nested field ids resolve by id below struct, list and map, not by position") {
+    def struct(xId: Int, yId: Int): StructType = new StructType()
+      .add("x", LongType, true, withId(xId))
+      .add("y", LongType, true, withId(yId))
     def schema(inner: StructType): StructType = new StructType()
       .add("id", LongType, true, withId(10))
       .add("s", inner, true, withId(11))
@@ -2108,67 +2105,50 @@ abstract class ParquetReadSuite extends CometTestBase {
       Row(2L, Row(5L, 50L), Seq(Row(6L, 60L), null), Map("a" -> Row(7L, 70L), "b" -> null)),
       Row(3L, Row(null, 80L), Seq(), Map()),
       Row(4L, null, null, null))
+    // Each read schema with what Spark answers for one file struct `(x, y)` under it.
+    val cases = Seq(
+      ("dropped and re-added", struct(3, 2), (r: Row) => Row(null, r.get(1))),
+      ("swapped", struct(2, 1), (r: Row) => Row(r.get(1), r.get(0))))
+    val columns = Seq(("s", 1), ("l", 2), ("m", 3))
 
     withSQLConf(
       SQLConf.PARQUET_FIELD_ID_WRITE_ENABLED.key -> "true",
       SQLConf.PARQUET_FIELD_ID_READ_ENABLED.key -> "true") {
       withTempPath { dir =>
         spark
-          .createDataFrame(spark.sparkContext.parallelize(writeData), schema(fileStruct))
+          .createDataFrame(spark.sparkContext.parallelize(writeData), schema(struct(1, 2)))
           .write
           .mode("overwrite")
           .parquet(dir.getCanonicalPath)
-        def read(): DataFrame = spark.read
-          .schema(schema(readStruct))
-          .parquet(dir.getCanonicalPath)
-          .select("id", column)
-          .sort("id")
+        for ((label, readStruct, remap) <- cases; (column, index) <- columns) {
+          withClue(s"$label, column $column: ") {
+            def read(): DataFrame = spark.read
+              .schema(schema(readStruct))
+              .parquet(dir.getCanonicalPath)
+              .select("id", column)
+              .sort("id")
+            def remapNested(value: Any): Any = value match {
+              case null => null
+              case r: Row => remap(r)
+              case seq: Seq[_] => seq.map(remapNested)
+              case map: Map[_, _] => map.map { case (k, v) => k -> remapNested(v) }
+            }
+            val expected = writeData.map(r => Row(r.get(0), remapNested(r.get(index))))
 
-        if (sparkReads) {
-          checkSparkAnswerAndOperator(read())
+            if (column == "s" || isSpark41Plus) {
+              checkSparkAnswerAndOperator(read())
+            }
+            val plan = stripAQEPlan(read().queryExecution.executedPlan)
+            assert(
+              collect(plan) { case scan: CometNativeScanExec => scan }.nonEmpty,
+              s"expected CometNativeScanExec in the plan:\n$plan")
+            // Pin the values too, so the test states what Spark answers rather than only
+            // that Comet agrees with it.
+            checkAnswer(read(), expected)
+          }
         }
-        val plan = stripAQEPlan(read().queryExecution.executedPlan)
-        assert(
-          collect(plan) { case scan: CometNativeScanExec => scan }.nonEmpty,
-          s"expected CometNativeScanExec in the plan:\n$plan")
-        // Pin the values too, so the test states what Spark answers rather than only that
-        // Comet agrees with it.
-        checkAnswer(read(), expected)
       }
     }
-  }
-
-  test("nested column dropped and re-added under the same name with a new field id: struct") {
-    checkDroppedAndReAddedFieldId(
-      "s",
-      Seq(
-        Row(1L, Row(null, 10L)),
-        Row(2L, Row(null, 50L)),
-        Row(3L, Row(null, 80L)),
-        Row(4L, null)))
-  }
-
-  test(
-    "nested column dropped and re-added under the same name with a new field id: list element") {
-    checkDroppedAndReAddedFieldId(
-      "l",
-      Seq(
-        Row(1L, Seq(Row(null, 20L), Row(null, 30L))),
-        Row(2L, Seq(Row(null, 60L), null)),
-        Row(3L, Seq()),
-        Row(4L, null)),
-      sparkReads = isSpark41Plus)
-  }
-
-  test("nested column dropped and re-added under the same name with a new field id: map value") {
-    checkDroppedAndReAddedFieldId(
-      "m",
-      Seq(
-        Row(1L, Map("k" -> Row(null, 40L))),
-        Row(2L, Map("a" -> Row(null, 70L), "b" -> null)),
-        Row(3L, Map()),
-        Row(4L, null)),
-      sparkReads = isSpark41Plus)
   }
 
   // The duplicate field id error Comet raises for `df` must carry the message Spark raises
@@ -2225,30 +2205,6 @@ abstract class ParquetReadSuite extends CometTestBase {
           spark.read.schema(readSchema).parquet(dir.getCanonicalPath),
           """"1": [a, rand2]""")
       }
-    }
-  }
-
-  test("duplicate exact nested names are refused when requested and skipped otherwise") {
-    // The file's struct carries two children named `dup` beside a unique `other`.
-    withSQLConf(SQLConf.CASE_SENSITIVE.key -> "true") {
-      val path = getResourceParquetFilePath("test-data/duplicate-nested-names.parquet")
-      spark.read
-        .schema("id bigint, s struct<other: bigint>")
-        .parquet(path)
-        .createOrReplaceTempView("dup_nested_other")
-      checkSparkAnswerAndOperator("SELECT id, s.other FROM dup_nested_other ORDER BY id")
-
-      spark.read
-        .schema("id bigint, s struct<dup: bigint>")
-        .parquet(path)
-        .createOrReplaceTempView("dup_nested_dup")
-      val error = intercept[Exception] {
-        sql("SELECT id, s.dup FROM dup_nested_dup ORDER BY id").collect()
-      }
-      val messages = causeChain(error).flatMap(e => Option(e.getMessage))
-      assert(
-        messages.exists(_.contains("duplicate Parquet field name 'dup'")),
-        s"expected the duplicate sibling refusal, got:\n${messages.mkString("\n")}")
     }
   }
 
