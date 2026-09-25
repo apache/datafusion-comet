@@ -788,8 +788,20 @@ writes the same Arrow IPC block format as native shuffle, so direct read applies
 <section id="memory-management">
 <h2>Memory Management<a class="headerlink" href="#memory-management" title="Link to this heading">#</a></h2>
 <ul class="simple">
-<li><p><code class="docutils literal notranslate"><span class="pre">CometShuffleMemoryAllocator</span></code>: Custom allocator for off-heap memory pages</p></li>
-<li><p>Memory is allocated in pages; when allocation fails, writers spill to disk</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">CometShuffleMemoryAllocator.getInstance</span></code> returns the allocator for the task. Pages are always
+<code class="docutils literal notranslate"><span class="pre">Unsafe</span></code>-allocated, because their addresses are handed to native code, but what bounds them
+depends on Spark’s memory mode.</p></li>
+<li><p>Off-heap mode gets <code class="docutils literal notranslate"><span class="pre">CometUnifiedShuffleMemoryAllocator</span></code>, an ordinary Spark <code class="docutils literal notranslate"><span class="pre">MemoryConsumer</span></code>
+drawing from <code class="docutils literal notranslate"><span class="pre">spark.memory.offHeap.size</span></code>. When it cannot acquire a page the writer spills to
+disk.</p></li>
+<li><p>On-heap mode gets <code class="docutils literal notranslate"><span class="pre">CometUnboundedShuffleMemoryAllocator</span></code>, which keeps no budget and so never
+refuses a page. Nothing bounds these allocations, and memory pressure never triggers a spill.
+That mode exists only so the Spark SQL tests can run against Comet. See
+<a class="reference internal" href="memory_management.html"><span class="std std-doc">Memory Management</span></a>.</p></li>
+<li><p>Row count still triggers spilling in either mode. <code class="docutils literal notranslate"><span class="pre">CometDiskBlockWriter</span></code> spills at
+<code class="docutils literal notranslate"><span class="pre">min(spark.comet.shuffle.jvm.spillThreshold,</span> <span class="pre">spark.comet.shuffle.jvm.batchSize)</span></code>.
+<code class="docutils literal notranslate"><span class="pre">CometShuffleExternalSorter</span></code> spills at <code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.jvm.spillThreshold</span></code> alone, which
+defaults to <code class="docutils literal notranslate"><span class="pre">Int.MaxValue</span></code>, so on the sort path that trigger is effectively off by default.</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">CometDiskBlockWriter</span></code> coordinates spilling across all partition writers (largest first)</p></li>
 </ul>
 </section>

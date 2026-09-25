@@ -555,9 +555,12 @@ anyone debugging an out-of-memory report. For user-facing tuning advice, see the
 <a class="reference internal" href="../user-guide/latest/tuning.html"><span class="std std-doc">Tuning Guide</span></a>.</p>
 <p>This page covers off-heap mode (<code class="docutils literal notranslate"><span class="pre">spark.memory.offHeap.enabled=true</span></code>) only. Comet also has an
 on-heap mode, but it exists so that the Spark SQL test suite can run against Comet without changing
-Spark’s memory configuration. It must not be used in production, and it is not described here. The
-pool types that only on-heap mode exposes belong to the <code class="docutils literal notranslate"><span class="pre">CATEGORY_TESTING</span></code> config group for the
-same reason.</p>
+Spark’s memory configuration. Comet performs no memory accounting in it: the native side gets
+DataFusion’s <code class="docutils literal notranslate"><span class="pre">UnboundedMemoryPool</span></code> and the JVM shuffle allocator
+(<code class="docutils literal notranslate"><span class="pre">CometUnboundedShuffleMemoryAllocator</span></code>) hands out <code class="docutils literal notranslate"><span class="pre">Unsafe</span></code> pages against no budget. Native memory
+is not on the JVM heap, so there is no Spark pool it could honestly be charged to, and the
+fixed-size pool that used to stand in for one bounded nothing the container cares about. On-heap
+mode must not be used in production, and it is not described further here.</p>
 <section id="overview">
 <h2>Overview<a class="headerlink" href="#overview" title="Link to this heading">#</a></h2>
 <p>A Comet executor has to satisfy three separate memory budgets at once, and they are enforced by
@@ -767,8 +770,6 @@ running, and the tasks together can still acquire the whole pool.</p></li>
 with no Comet limit at all.</p></li>
 </ul>
 <p>The only room Spark leaves for memory outside the pool is <code class="docutils literal notranslate"><span class="pre">spark.executor.memoryOverhead</span></code>.</p>
-<p>A second value, <code class="docutils literal notranslate"><span class="pre">memory_limit_per_task</span></code>, is computed and passed alongside it, but only the on-heap
-pool types read it.</p>
 <section id="resolving-the-pool-type">
 <h3>Resolving the pool type<a class="headerlink" href="#resolving-the-pool-type" title="Link to this heading">#</a></h3>
 <p><code class="docutils literal notranslate"><span class="pre">parse_memory_pool_config</span></code> (<code class="docutils literal notranslate"><span class="pre">native/core/src/execution/memory_pools/config.rs</span></code>) turns the pool-type
@@ -792,7 +793,8 @@ string and the limit into a <code class="docutils literal notranslate"><span cla
 </tbody>
 </table>
 </div>
-<p>Any other pool type is rejected with a configuration error.</p>
+<p>Any other pool type is rejected with a configuration error. In on-heap mode the pool-type string is
+ignored and the pool is always <code class="docutils literal notranslate"><span class="pre">UnboundedMemoryPool</span></code>.</p>
 </section>
 </section>
 <section id="the-pool-stack">
@@ -830,27 +832,50 @@ granted. While overcommit is outstanding, <code class="docutils literal notransl
 is refused unless Spark can cover both, so operators spill until the debt is repaid. Both pools’
 <code class="docutils literal notranslate"><span class="pre">Display</span></code> output and their <code class="docutils literal notranslate"><span class="pre">try_grow</span></code> errors report the current overcommit.</p></li>
 </ul>
-<p><code class="docutils literal notranslate"><span class="pre">CometFairMemoryPool</span></code> additionally applies a local check before it asks Spark. It divides
-<code class="docutils literal notranslate"><span class="pre">pool_size</span></code> by the number of consumers currently registered with the pool and rejects the request if
-the pool’s <em>total</em> reserved bytes plus the request would exceed that quotient. Two details matter
-for tuning:</p>
+<p><code class="docutils literal notranslate"><span class="pre">CometFairMemoryPool</span></code> additionally applies two local checks before it asks Spark, and refuses the
+request without calling Spark if either fails:</p>
 <ul class="simple">
-<li><p>The comparison is against the shared total (<code class="docutils literal notranslate"><span class="pre">state.used</span></code>), not against the requesting consumer’s
-own reservation. With an 8 GiB pool and two registered consumers, once one of them holds 3 GiB a
-2 GiB request from the other is rejected, even though neither would exceed 4 GiB. In effect the
-usable pool shrinks to <code class="docutils literal notranslate"><span class="pre">pool_size</span> <span class="pre">/</span> <span class="pre">num_consumers</span></code> in aggregate as soon as more than one consumer
-is registered.</p></li>
-<li><p>The pool is task-shared (see below), so <code class="docutils literal notranslate"><span class="pre">num_consumers</span></code> counts every registered consumer across
-every native plan in the task, not just the plan making the request.</p></li>
+<li><p><strong>The requesting consumer against its share.</strong> The share is <code class="docutils literal notranslate"><span class="pre">pool_size</span></code> divided by the number of
+consumers currently registered with the pool. What the consumer already holds plus the request
+must not exceed it. That counts all of the consumer’s reservations, including the sibling
+reservations that <code class="docutils literal notranslate"><span class="pre">new_empty()</span></code>, <code class="docutils literal notranslate"><span class="pre">split()</span></code> and <code class="docutils literal notranslate"><span class="pre">take()</span></code> create, so an operator that holds several
+reservations still gets one share. A sort’s streaming merge, for example, creates one for each
+batch it reads. The pool keeps a running total for each consumer, because <code class="docutils literal notranslate"><span class="pre">reservation.size()</span></code>
+covers only one reservation. With an 8 GiB pool and two registered consumers, each share is
+4 GiB, so once one consumer holds 3 GiB the other can still reserve up to 4 GiB.</p></li>
+<li><p><strong>The pool’s total against <code class="docutils literal notranslate"><span class="pre">pool_size</span></code>.</strong> The shares alone do not bound the total, because a
+consumer keeps what it reserved while fewer consumers were registered. <code class="docutils literal notranslate"><span class="pre">pool_size</span></code> is computed
+for the executor but applied to each task’s pool, so Spark’s own limit on the task is at least as
+tight unless the deprecated <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.memoryPool.fraction</span></code> is below <code class="docutils literal notranslate"><span class="pre">1.0</span></code>.</p></li>
 </ul>
-<p>This is why <code class="docutils literal notranslate"><span class="pre">fair_unified</span></code> spills earlier than <code class="docutils literal notranslate"><span class="pre">greedy_unified</span></code>. It is not a per-consumer quota, and
-reading it as one overstates the memory a multi-operator task can use.</p>
+<p>Two details matter for tuning:</p>
+<ul class="simple">
+<li><p>The pool is task-shared (see below), so <code class="docutils literal notranslate"><span class="pre">num_consumers</span></code> counts every registered consumer across
+every native plan in the task, not just the plan making the request. Registering a consumer
+lowers every other consumer’s share, but does not take back memory they already hold.</p></li>
+<li><p>Every registered consumer gets a share, whether or not it can spill. DataFusion’s
+<code class="docutils literal notranslate"><span class="pre">FairSpillPool</span></code> divides the pool among spillable consumers only.
+<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/5465">Issue #5465</a> tracks doing the same here.</p></li>
+</ul>
+<p>This is why <code class="docutils literal notranslate"><span class="pre">fair_unified</span></code> can spill earlier than <code class="docutils literal notranslate"><span class="pre">greedy_unified</span></code>: a consumer at its share is
+refused even when the rest of the pool is free, which keeps that memory for the task’s other
+consumers.</p>
 </section>
 <section id="task-shared-pools-and-their-lifetime">
 <h3>Task-shared pools and their lifetime<a class="headerlink" href="#task-shared-pools-and-their-lifetime" title="Link to this heading">#</a></h3>
-<p>A single Spark task can run more than one native plan concurrently: a shuffle runs the pre-shuffle
-operators and the shuffle writer as separate native execution contexts. If each got its own pool,
-the per-task limit would be enforced once per plan rather than once per task.</p>
+<p>A single Spark task can run more than one native plan at a time. A native shuffle is not one of
+these cases, because its writer is planned together with the native operators that feed it. These
+operators do split a task’s native work into separate plans:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">CometUnionExec</span></code> and <code class="docutils literal notranslate"><span class="pre">CometCoalesceExec</span></code> read their children through the JVM, so the native plan
+above them and the native plans below them are separate.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">CometCollectLimitExec</span></code> and <code class="docutils literal notranslate"><span class="pre">CometTakeOrderedAndProjectExec</span></code> apply their limit in a native plan
+of their own, over the output of the plan below them.</p></li>
+<li><p>A native Parquet or Iceberg write runs its writer as a native plan of its own, over the output of
+the plan below it.</p></li>
+</ul>
+<p>If each plan got its own pool, the per-task limit would be enforced once per plan rather than once
+per task.</p>
 <p><code class="docutils literal notranslate"><span class="pre">acquire_task_shared_pool</span></code> (<code class="docutils literal notranslate"><span class="pre">task_shared.rs</span></code>) keeps a process-wide
 <code class="docutils literal notranslate"><span class="pre">HashMap&lt;task_attempt_id,</span> <span class="pre">Weak&lt;TaskSharedMemoryPool&gt;&gt;</span></code>. Plans in the same task upgrade the existing
 <code class="docutils literal notranslate"><span class="pre">Weak</span></code> and share one pool; the returned <code class="docutils literal notranslate"><span class="pre">Arc</span></code> is the only lifetime handle, so the registry entry
