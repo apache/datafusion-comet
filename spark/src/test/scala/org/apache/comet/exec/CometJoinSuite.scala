@@ -1672,8 +1672,9 @@ class CometJoinSuite extends CometTestBase {
         // Build side repeats keys 0..4 many times; the existence marker must stay "at least one
         // match" and must not multiply matching probe rows.
         withParquetTable((0 until 30).map(i => (i % 5, i)), "tbl_b") {
-          val df = sql("SELECT * FROM tbl_a a WHERE a._2 = 'US' OR EXISTS " +
-            "(SELECT /*+ BROADCAST(b) */ 1 FROM tbl_b b WHERE b._1 = a._1)")
+          val df = sql(
+            "SELECT * FROM tbl_a a WHERE a._2 = 'US' OR EXISTS " +
+              "(SELECT /*+ BROADCAST(b) */ 1 FROM tbl_b b WHERE b._1 = a._1)")
           checkSparkAnswerAndOperator(
             df,
             Seq(classOf[CometBroadcastExchangeExec], classOf[CometBroadcastHashJoinExec]))
@@ -1689,8 +1690,9 @@ class CometJoinSuite extends CometTestBase {
       SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "10MB") {
       withParquetTable((0 until 100).map(i => (i, if (i % 3 == 0) "US" else "EU")), "tbl_a") {
         withParquetTable((0 until 30).map(i => (i, i + 1)), "tbl_b") {
-          val df = sql("SELECT * FROM tbl_a a WHERE a._2 = 'US' OR NOT EXISTS " +
-            "(SELECT /*+ BROADCAST(b) */ 1 FROM tbl_b b WHERE b._1 = a._1)")
+          val df = sql(
+            "SELECT * FROM tbl_a a WHERE a._2 = 'US' OR NOT EXISTS " +
+              "(SELECT /*+ BROADCAST(b) */ 1 FROM tbl_b b WHERE b._1 = a._1)")
           checkSparkAnswerAndOperator(
             df,
             Seq(classOf[CometBroadcastExchangeExec], classOf[CometBroadcastHashJoinExec]))

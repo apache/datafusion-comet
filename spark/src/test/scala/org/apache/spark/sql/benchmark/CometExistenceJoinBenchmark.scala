@@ -93,7 +93,11 @@ object CometExistenceJoinBenchmark extends CometBenchmarkBase {
           SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "10MB",
           SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "10MB") {
           runBenchmark("ExistenceJoin - BroadcastHashJoin") {
-            runExpressionBenchmark("exists OR predicate (BHJ)", probeRows, query, existenceEnabled)
+            runExpressionBenchmark(
+              "exists OR predicate (BHJ)",
+              probeRows,
+              query,
+              existenceEnabled)
           }
         }
 
@@ -103,7 +107,11 @@ object CometExistenceJoinBenchmark extends CometBenchmarkBase {
           SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
           SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
           runBenchmark("ExistenceJoin - ShuffledHashJoin") {
-            runExpressionBenchmark("exists OR predicate (SHJ)", probeRows, query, existenceEnabled)
+            runExpressionBenchmark(
+              "exists OR predicate (SHJ)",
+              probeRows,
+              query,
+              existenceEnabled)
           }
         }
       }

@@ -30,7 +30,7 @@ import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.internal.Logging
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
-import org.apache.spark.sql.catalyst.expressions.{Ascending, Attribute, AttributeSeq, AttributeSet, CodegenObjectFactoryMode, Expression, ExpressionSet, Generator, LeafExpression, NamedExpression, SortOrder, XXH64}
+import org.apache.spark.sql.catalyst.expressions.{Ascending, Attribute, AttributeSeq, AttributeSet, CodegenObjectFactoryMode, Expression, ExpressionSet, Generator, LeafExpression, Literal, NamedExpression, SortOrder, XXH64}
 import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, AggregateMode, CollectList, CollectSet, Final, ImperativeAggregate, Mode, Partial, PartialMerge, Percentile, Sum}
 import org.apache.spark.sql.catalyst.expressions.codegen.CodegenFallback
 import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, BuildSide}
