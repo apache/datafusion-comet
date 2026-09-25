@@ -248,8 +248,8 @@ fn extract_s3_config_options(
 
     // Extract endpoint configuration and shape it for the selected addressing style. The flag is
     // taken from the normalized result so the endpoint and the flag never disagree. A custom
-    // endpoint decides the dotted-bucket rule by its own scheme inside normalize_endpoint; the
-    // default AWS endpoint is HTTPS, so the rule applies to it here.
+    // endpoint decides the bucket-name rule by its own scheme inside normalize_endpoint; the
+    // default AWS endpoint is HTTPS, so the rule applies to it here without dots.
     let custom_endpoint = get_config_trimmed(configs, bucket, "endpoint")
         .and_then(|endpoint| normalize_endpoint(endpoint, bucket, virtual_hosted_style_request));
     match custom_endpoint {
@@ -258,7 +258,7 @@ fn extract_s3_config_options(
             s3_configs.insert(AmazonS3ConfigKey::Endpoint, normalized.endpoint);
         }
         None => {
-            if bucket_needs_path_style_over_https(bucket) {
+            if !is_virtual_hostable_bucket(bucket, false) {
                 virtual_hosted_style_request = false;
             }
         }
@@ -280,10 +280,31 @@ fn extract_s3_config_options(
     s3_configs
 }
 
-/// Whether the AWS SDK would refuse to virtual-host `bucket` over HTTPS: a dot in the name
-/// makes `bucket.s3.<region>.amazonaws.com` fall outside S3's wildcard certificate.
-fn bucket_needs_path_style_over_https(bucket: &str) -> bool {
-    bucket.contains('.')
+/// Whether the AWS SDK would virtual-host `bucket`, following its `isVirtualHostableS3Bucket`
+/// endpoint rule: 3 to 63 lowercase letters, digits and hyphens that start and end with a letter
+/// or digit. Other names, such as mixed-case legacy buckets, are addressed path-style, since a
+/// hostname is case-insensitive. The SDK allows dots only over plain HTTP, since a dotted host
+/// falls outside S3's wildcard certificate, and then rejects an IPv4-shaped name and a dot or
+/// hyphen next to another.
+fn is_virtual_hostable_bucket(bucket: &str, allow_dots: bool) -> bool {
+    let bytes = bucket.as_bytes();
+    let edge = |b: &u8| b.is_ascii_lowercase() || b.is_ascii_digit();
+    let inner = |b: &u8| edge(b) || *b == b'-' || (allow_dots && *b == b'.');
+    if !(3..=63).contains(&bytes.len())
+        || !bytes.first().is_some_and(edge)
+        || !bytes.last().is_some_and(edge)
+        || !bytes.iter().all(inner)
+    {
+        return false;
+    }
+    let ipv4_shaped = bucket.split('.').count() == 4
+        && bucket
+            .split('.')
+            .all(|label| label.bytes().all(|b| b.is_ascii_digit()));
+    let separators_touch = bytes
+        .windows(2)
+        .any(|pair| pair.iter().all(|b| *b == b'.' || *b == b'-'));
+    !(allow_dots && (ipv4_shaped || separators_touch))
 }
 
 /// An endpoint shaped for object_store together with the addressing mode it was shaped for.
@@ -327,7 +348,7 @@ fn normalize_endpoint(
     if !virtual_hosted_style_request {
         return path_style(endpoint);
     }
-    if endpoint.starts_with("https://") && bucket_needs_path_style_over_https(bucket) {
+    if !is_virtual_hostable_bucket(bucket, endpoint.starts_with("http://")) {
         return path_style(endpoint);
     }
 
@@ -2437,6 +2458,111 @@ mod tests {
             s3_configs.get(&AmazonS3ConfigKey::Endpoint),
             Some(&"http://review.dotted.bucket.storage.example.test".to_string())
         );
+    }
+
+    /// The URL object_store sends a GET for `s3a://<bucket>/object` to under the options Comet
+    /// derives from `configs`, read from a presigned URL so no request leaves the test.
+    async fn final_url(bucket: &str, configs: &HashMap<String, String>) -> String {
+        use object_store::signer::Signer;
+
+        let mut builder = AmazonS3Builder::new()
+            .with_url(format!("s3a://{bucket}/object"))
+            .with_allow_http(true)
+            .with_access_key_id("test_access_key")
+            .with_secret_access_key("test_secret_key");
+        for (key, value) in extract_s3_config_options(configs, bucket) {
+            builder = builder.with_config(key, value);
+        }
+        let signed = match builder.build() {
+            Ok(store) => {
+                store
+                    .signed_url(
+                        reqwest::Method::GET,
+                        &Path::from("object"),
+                        Duration::from_secs(60),
+                    )
+                    .await
+            }
+            Err(e) => Err(e),
+        };
+        match signed {
+            Ok(mut url) => {
+                url.set_query(None);
+                url.to_string()
+            }
+            Err(e) => format!("error: {e}"),
+        }
+    }
+
+    #[tokio::test]
+    #[cfg_attr(miri, ignore)] // object_store calls foreign functions
+    async fn test_bucket_the_sdk_cannot_virtual_host_stays_path_style() {
+        // The AWS SDK virtual-hosts a bucket only when its name is a DNS label: 3 to 63
+        // lowercase letters, digits and hyphens that start and end with a letter or digit.
+        // Other names, such as the mixed-case ones US East accepted before March 2018, go
+        // path-style, since a hostname would lowercase the bucket into a different one.
+        let default_endpoint = TestConfigBuilder::new().with_region("us-east-1").build();
+        let http_endpoint = TestConfigBuilder::new()
+            .with_region("us-east-1")
+            .with_property("endpoint", "http://storage.example.test")
+            .build();
+        let long = "a".repeat(64);
+        let cases = [
+            (
+                &default_endpoint,
+                "LegacyBucket",
+                "https://s3.us-east-1.amazonaws.com/LegacyBucket/object".to_string(),
+            ),
+            (
+                &default_endpoint,
+                "legacy_bucket",
+                "https://s3.us-east-1.amazonaws.com/legacy_bucket/object".to_string(),
+            ),
+            (
+                &default_endpoint,
+                "-legacy-bucket",
+                "https://s3.us-east-1.amazonaws.com/-legacy-bucket/object".to_string(),
+            ),
+            (
+                &default_endpoint,
+                "legacy-bucket-",
+                "https://s3.us-east-1.amazonaws.com/legacy-bucket-/object".to_string(),
+            ),
+            (
+                &default_endpoint,
+                long.as_str(),
+                format!("https://s3.us-east-1.amazonaws.com/{long}/object"),
+            ),
+            (
+                &default_endpoint,
+                "legacy-bucket",
+                "https://legacy-bucket.s3.us-east-1.amazonaws.com/object".to_string(),
+            ),
+            // Over plain HTTP the SDK also accepts dots, but not an IPv4-shaped name, a dot next
+            // to a hyphen or an uppercase letter
+            (
+                &http_endpoint,
+                "192.168.10.12",
+                "http://storage.example.test/192.168.10.12/object".to_string(),
+            ),
+            (
+                &http_endpoint,
+                "legacy-.bucket",
+                "http://storage.example.test/legacy-.bucket/object".to_string(),
+            ),
+            (
+                &http_endpoint,
+                "LegacyBucket",
+                "http://storage.example.test/LegacyBucket/object".to_string(),
+            ),
+        ];
+        let mut actual = Vec::new();
+        let mut expected = Vec::new();
+        for (configs, bucket, url) in cases {
+            actual.push(format!("{bucket}: {}", final_url(bucket, configs).await));
+            expected.push(format!("{bucket}: {url}"));
+        }
+        assert_eq!(actual, expected);
     }
 
     #[tokio::test]
