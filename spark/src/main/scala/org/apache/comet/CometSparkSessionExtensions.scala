@@ -34,7 +34,7 @@ import org.apache.spark.sql.internal.SQLConf
 
 import org.apache.comet.CometConf._
 import org.apache.comet.iceberg.IcebergWriteStrategy
-import org.apache.comet.rules.{CometPlanAdaptiveDynamicPruningFilters, CometReuseSubquery, CometRule, CometSpark34AqeDppFallbackRule, EliminateRedundantTransitions, RevertNativeForTransitionHeavyStages}
+import org.apache.comet.rules.{CometPlanAdaptiveDynamicPruningFilters, CometReuseSubquery, CometRule, CometSpark34AqeDppFallbackRule}
 import org.apache.comet.shims.ShimCometSparkSessionExtensions
 
 /**
@@ -96,7 +96,9 @@ class CometSparkSessionExtensions
     // Registered before CometRule so tags are in place when conversion runs.
     // No-op on Spark 3.5+; see CometSpark34AqeDppFallbackRule's class docstring.
     injectPreSpark35QueryStagePrepRuleShim(extensions, CometSpark34AqeDppFallbackRule)
-    extensions.injectQueryStagePrepRule { session => CometRule(session) }
+    extensions.injectQueryStagePrepRule { session =>
+      CometRule(session, queryStagePrep = true)
+    }
     injectQueryStageOptimizerRuleShim(extensions, CometPlanAdaptiveDynamicPruningFilters)
     injectQueryStageOptimizerRuleShim(extensions, CometReuseSubquery)
     extensions.injectPlannerStrategy { session => IcebergWriteStrategy(session) }
@@ -106,8 +108,7 @@ class CometSparkSessionExtensions
     override def preColumnarTransitions: Rule[SparkPlan] = CometRule(session)
 
     override def postColumnarTransitions: Rule[SparkPlan] = {
-      val rules =
-        Seq(RevertNativeForTransitionHeavyStages(session), EliminateRedundantTransitions(session))
+      val rules = CometRule.postColumnarRules(session)
       plan => rules.foldLeft(plan) { case (p, rule) => rule(p) }
     }
   }
@@ -130,7 +131,18 @@ object CometSparkSessionExtensions extends Logging {
       return false
     }
 
-    if (COMET_SHUFFLE_ENABLED.get(conf) && !isCometShuffleManagerEnabled(conf)) {
+    // CometDriverPlugin makes the same check before registering this extension, but an
+    // application can also register the extension directly with spark.sql.extensions. The memory
+    // mode comes from the SparkContext's conf, which is what executors use. A session's SQLConf
+    // can disagree: when the SparkContext already exists, SparkSession.Builder copies core
+    // configs into it without applying them.
+    val offHeapEnabled = Option(SparkEnv.get).exists(env => isOffHeapEnabled(env.conf))
+    if (!offHeapEnabled && !COMET_ONHEAP_ENABLED.get(conf)) {
+      logWarning("Comet extension is disabled because Spark is not running in off-heap mode.")
+      return false
+    }
+
+    if (COMET_SHUFFLE_ENABLED.get(conf) && !isCometShuffleManagerEnabled) {
       logWarning(
         "Comet extension is disabled because spark.shuffle.manager is not set to " +
           s"${classOf[CometShuffleManager].getName} or " +
@@ -174,7 +186,7 @@ object CometSparkSessionExtensions extends Logging {
   // dependencies without passing through ordinary exchange selection. Celeborn requires explicit
   // native opt-in and compatible application settings; local Comet shuffle keeps its behavior.
   def isCometShuffleEnabled(conf: SQLConf): Boolean =
-    COMET_SHUFFLE_ENABLED.get(conf) && isCometShuffleManagerEnabled(conf) &&
+    COMET_SHUFFLE_ENABLED.get(conf) && isCometShuffleManagerEnabled &&
       cometCelebornShuffleFallbackReason(conf, numPartitions = 1).isEmpty
 
   private def activeCelebornShuffleManager: Option[CometCelebornShuffleManager] =
@@ -187,14 +199,14 @@ object CometSparkSessionExtensions extends Logging {
       conf.getConfString(SHUFFLE_MANAGER_KEY, "") ==
       classOf[CometCelebornShuffleManager].getName
 
-  def isCometShuffleManagerEnabled(conf: SQLConf): Boolean = {
-    conf.contains(SHUFFLE_MANAGER_KEY) && {
-      val manager = conf.getConfString(SHUFFLE_MANAGER_KEY)
-      manager == classOf[CometShuffleManager].getName ||
-      manager == classOf[CometCelebornShuffleManager].getName ||
-      activeCelebornShuffleManager.isDefined
+  // Inspect the manager SparkEnv holds rather than spark.shuffle.manager in the session's
+  // SQLConf. The manager is created once for the application, and when the SparkContext already
+  // exists, SparkSession.Builder copies core configs into the SQLConf without applying them.
+  def isCometShuffleManagerEnabled: Boolean =
+    Option(SparkEnv.get).flatMap(env => Option(env.shuffleManager)).exists {
+      case _: CometShuffleManager | _: CometCelebornShuffleManager => true
+      case _ => false
     }
-  }
 
   /**
    * Native mode and execution can be chosen per query. Encryption, stage recovery, and Celeborn

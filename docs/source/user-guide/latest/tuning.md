@@ -108,8 +108,13 @@ there is. That includes:
 
 Reserved memory is therefore a lower bound on what Comet really uses, and how far below it sits depends on the
 workload. This is why Comet can stay within the pool's limit and still push the executor past its container limit.
-To leave room for the part that is not counted, set `spark.comet.exec.memoryPool.fraction` to a value less than
-`1.0`, which restricts the amount of memory Comet is allowed to reserve.
+The part that is not counted has to fit in `spark.executor.memoryOverhead`, and each executor logs how large it is
+while Comet runs; see [Sizing the Overhead from the Memory Usage Log].
+
+`spark.comet.exec.memoryPool.fraction` is deprecated and does not leave room for it. Spark hands out all of
+`spark.memory.offHeap.size` to the tasks that ask for it, whatever the fraction. The `fair_unified` pool applies the
+fraction to each task separately, where Spark's own limit of an even share of the pool per running task is tighter
+whenever more than one task is running, and the `greedy_unified` pool ignores it.
 
 For more details about Spark off-heap memory mode, please refer to [Spark documentation].
 
@@ -180,9 +185,64 @@ spark.executor.memoryOverheadFactor=0.2
 
 Raise the value further if executors are killed by the cluster manager (on Kubernetes,
 `ExecutorLostFailure` with exit code 137) rather than failing with a task-level out-of-memory error.
+To measure how much Comet needs rather than guessing, see [Sizing the Overhead from the Memory Usage Log].
 
 Note that on Kubernetes and YARN the overhead is added to the container size, so raising it reduces
 how many executors fit on a node.
+
+[Sizing the Overhead from the Memory Usage Log]: #sizing-the-overhead-from-the-memory-usage-log
+
+### Sizing the Overhead from the Memory Usage Log
+
+While Comet native plans are running, each executor logs its native memory usage at INFO level,
+one line every 10 seconds for the whole executor:
+
+```
+Comet native memory usage: allocated 5412.3 MiB, reserved 3890.0 MiB (16 native plans, 8 memory pools)
+```
+
+- `allocated` is the memory that Comet's native code has allocated and not yet freed, whether or not
+  a pool tracks it.
+- `reserved` is the part that Comet's memory pools track. It is charged against
+  `spark.memory.offHeap.size`, so the container already has room for it.
+
+The difference between the two, `allocated - reserved`, is Comet's untracked native memory. It is
+the part of Comet's footprint that has to fit in `spark.executor.memoryOverhead`, alongside the
+JVM's own non-heap memory. To size the overhead from it:
+
+1. Run a representative workload and find the line with the largest difference in each executor's
+   log. Take both figures from the same line: they are sampled together, and figures from different
+   lines describe different moments. Setting `spark.comet.memory.logInterval=1s` for this run makes a
+   short-lived peak less likely to fall between samples.
+2. Start from the overhead the executors had before Comet was enabled, which covers the JVM's own
+   non-heap memory, and add the largest difference seen on any executor.
+3. Add a margin on top. The log can miss the true peak between samples, and neither figure includes
+   the allocator's fragmentation and retained pages, memory allocated by native C libraries such as
+   zstd, or Comet's Arrow buffers on the JVM side.
+
+For example, a 16 GiB executor derives an overhead of 1638 MiB. If the largest difference in its
+log is the 1522.3 MiB in the line above, the overhead needs to be at least 1638 + 1523 = 3161 MiB
+before any margin, so `spark.executor.memoryOverhead=4g` would be a reasonable setting.
+
+The executor also logs a warning when its native memory looks larger than its container allows:
+when the difference, plus everything in use in Spark's off-heap memory pool (which includes Comet's
+reservations), exceeds `spark.memory.offHeap.size` plus the memory overhead. This counts the part of
+the off-heap pool that nothing has acquired at that moment, which untracked memory can occupy until
+Spark hands it out, so a quiet log is not a sign that the overhead is large enough: size it from the
+largest difference as described above. The overhead also has to hold the JVM's own non-heap memory,
+so by the time the warning appears the executor has likely outgrown its container. It warns the first time this
+happens, and again each time it happens after dropping back below. The overhead it uses is
+`spark.executor.memoryOverhead` if set, otherwise `spark.executor.memoryOverheadFactor` of
+`spark.executor.memory` with a minimum of `spark.executor.minMemoryOverhead`, as Spark sizes the
+default container. There is no warning in local mode.
+
+Look more closely before raising the overhead if the difference keeps growing through a run rather
+than levelling off: native memory that is not being released will exhaust any overhead eventually.
+The executor logs one more line after its last native plan finishes, and an `allocated` figure there
+that grows from one query to the next points the same way.
+
+`spark.comet.memory.logInterval` is read when an executor starts its first Comet native plan, so set
+it when the application is submitted. Set it to `0` to turn the log off.
 
 ### Determining How Much Memory to Allocate
 
@@ -223,12 +283,14 @@ flushes sorted spill files. It must not exceed `spark.comet.batchSize`.
 
 ### Limiting Spill Disk Usage
 
-Native operators that spill to disk (aggregate, sort, shuffle) are collectively bounded by
-`spark.comet.maxTempDirectorySize` (default 100 GB). The limit is applied per Spark task, so an
-executor running `N` concurrent tasks may use up to `N` times this value on shared local disks.
-If the limit is reached, further spills fail and the query errors out. Raise this on workloads
-with large sort/aggregate/shuffle spills, or lower it to protect executors on shared disks
-(remembering to divide by task concurrency to reason about the aggregate).
+Native operators that spill to disk (aggregate, sort, shuffle) are bounded by
+`spark.comet.maxTempDirectorySize` (default 100 GB). The operators of one Comet native plan share
+the limit. A Spark task can run more than one native plan at a time, for example the native
+operators on either side of a union or a coalesce, so an executor running `N` concurrent tasks may
+use more than `N` times this value on shared local disks. If the limit is reached, further spills
+fail and the query errors out. Raise this on workloads with large sort/aggregate/shuffle spills, or
+lower it to protect executors on shared disks, remembering that the total across an executor is a
+multiple of this value.
 
 ## Parquet Reader Tuning
 
@@ -324,6 +386,14 @@ direct-column `IS NOT NULL` checks, including conjunctions, and remaps columns w
 projects the file schema. The original null checks and residual runtime filter remain in place.
 The original join still verifies matches, including any hash collisions admitted by the filter.
 Standalone projections, other filter expressions, and limits prevent reader attachment.
+
+To preserve schema-conversion and timestamp-overflow errors, runtime reader pruning is disabled for
+each file whose projected or statically filtered columns require schema adaptations beyond direct
+column mappings or literal values. This conservative check also disables reader pruning for allowed
+`INT32` to `BIGINT` promotion and for projecting a subset of a struct's fields, even when those
+adaptations cannot fail. Nested column pruning still reads only the requested struct fields. Scans
+with supplied file statistics also skip reader attachment. These cases still use runtime filtering
+on decoded batches.
 
 Filters stay within the task's native plan and do not propagate across Spark exchanges or JVM/Arrow
 boundaries. A shuffled hash join can still filter probe batches after shuffle, but it cannot send

@@ -22,9 +22,11 @@ package org.apache.spark
 import java.{util => ju}
 import java.util.Collections
 
+import scala.util.Try
+
 import org.apache.spark.api.plugin.{DriverPlugin, ExecutorPlugin, PluginContext, SparkPlugin}
 import org.apache.spark.internal.Logging
-import org.apache.spark.internal.config.EXECUTOR_MEMORY_OVERHEAD
+import org.apache.spark.internal.config.{EXECUTOR_MEMORY_OVERHEAD, EXECUTOR_MEMORY_OVERHEAD_FACTOR}
 import org.apache.spark.sql.internal.StaticSQLConf
 
 import org.apache.comet.{COMET_VERSION, CometSparkSessionExtensions, NativeBase}
@@ -73,6 +75,7 @@ class CometDriverPlugin extends DriverPlugin with Logging {
     CometDriverPlugin.registerCometMetrics(sc)
 
     CometDriverPlugin.warnIfExecutorMemoryOverheadUnset(sc.getConf)
+    CometDriverPlugin.warnIfMemoryPoolFractionSet(sc.getConf)
 
     extraConfs
   }
@@ -166,15 +169,54 @@ object CometDriverPlugin extends Logging {
     val cometExecEnabled = getBooleanConf(conf, CometConf.COMET_EXEC_ENABLED)
     val cometShuffleEnabled = getBooleanConf(conf, CometConf.COMET_SHUFFLE_ENABLED)
     val cometActive = cometEnabled && (cometExecEnabled || cometShuffleEnabled)
+    // Local mode, local-cluster included, has no executor container to size
+    val localMode = conf.get("spark.master", "").startsWith("local")
 
-    if (cometActive && !conf.contains(EXECUTOR_MEMORY_OVERHEAD.key)) {
+    if (cometActive && !localMode && !isExecutorMemoryOverheadSet(conf)) {
       logWarning(
-        s"${EXECUTOR_MEMORY_OVERHEAD.key} is not set. Comet allocates outside the JVM heap, and " +
-          "the part of that which no memory pool tracks is not covered by " +
-          "spark.executor.memory or spark.memory.offHeap.size, so Spark's default overhead can " +
-          "leave the executor short and the cluster manager may kill it. Set " +
-          s"${EXECUTOR_MEMORY_OVERHEAD.key} before creating the SparkContext; it cannot be set " +
-          s"later. ${CometConf.TUNING_GUIDE}.")
+        s"Neither ${EXECUTOR_MEMORY_OVERHEAD.key} nor ${EXECUTOR_MEMORY_OVERHEAD_FACTOR.key} is " +
+          "set. Comet allocates outside the JVM heap, and the part of that which no memory pool " +
+          "tracks is not covered by spark.executor.memory or spark.memory.offHeap.size, so " +
+          "Spark's default overhead can leave the executor short and the cluster manager may " +
+          "kill it. Set one of them before creating the SparkContext; neither can be set later. " +
+          s"${CometConf.TUNING_GUIDE}.")
+    }
+  }
+
+  // Whether the application sized the executor memory overhead itself, as an amount or as a
+  // factor of spark.executor.memory, rather than leaving it at Spark's default.
+  private def isExecutorMemoryOverheadSet(conf: SparkConf): Boolean =
+    conf.contains(EXECUTOR_MEMORY_OVERHEAD.key) ||
+      conf.contains(EXECUTOR_MEMORY_OVERHEAD_FACTOR.key) ||
+      isKubernetesMemoryOverheadFactorSet(conf)
+
+  // Kubernetes falls back to spark.kubernetes.memoryOverheadFactor when
+  // spark.executor.memoryOverheadFactor is unset. In cluster mode spark-submit sets it for the
+  // driver even when the application did not, to 0.4 for PySpark and SparkR applications and 0.1
+  // for the rest, so only a different value shows that the application set it.
+  private def isKubernetesMemoryOverheadFactorSet(conf: SparkConf): Boolean = {
+    val submitDefault = conf.get("spark.kubernetes.resource.type", "java") match {
+      case "python" | "r" => 0.4
+      case _ => 0.1
+    }
+    conf
+      .getOption("spark.kubernetes.memoryOverheadFactor")
+      .exists(factor => !Try(factor.toDouble).toOption.contains(submitDefault))
+  }
+
+  // spark.comet.exec.memoryPool.fraction was documented as holding back part of the off-heap pool
+  // for the native memory that Comet does not reserve. It cannot: Spark hands out the whole pool
+  // to the tasks that ask for it, and the fraction only caps each task's consumers under
+  // fair_unified. Users who set it for that purpose need to size the memory overhead instead.
+  private[apache] def warnIfMemoryPoolFractionSet(conf: SparkConf): Unit = {
+    val key = CometConf.COMET_OFFHEAP_MEMORY_POOL_FRACTION.key
+    conf.getOption(key).foreach { value =>
+      logWarning(
+        s"$key=$value is deprecated and will be removed in a future release. It does not leave " +
+          "room in spark.memory.offHeap.size for native memory that Comet's memory pools do " +
+          "not track, because Spark hands out the whole off-heap pool whatever it is set to. " +
+          s"Size ${EXECUTOR_MEMORY_OVERHEAD.key} for that memory instead. " +
+          s"${CometConf.TUNING_GUIDE}.")
     }
   }
 

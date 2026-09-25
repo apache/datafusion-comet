@@ -127,6 +127,8 @@ jobs:
               org.apache.spark.sql.comet.ParquetDatetimeRebaseV2Suite
               org.apache.spark.sql.comet.ParquetEncryptionITCase
               org.apache.comet.exec.CometNativeReaderSuite
+              org.apache.comet.CometVariantProjectionSuite
+              org.apache.spark.sql.CometVariantShreddingSuite
               org.apache.comet.CometIcebergNativeSuite
               org.apache.comet.CometIcebergEncryptionSuite
               org.apache.comet.CometIcebergRewriteActionSuite
@@ -156,6 +158,8 @@ jobs:
               org.apache.spark.sql.comet.execution.shuffle.CometCelebornShuffleReaderSuite
               org.apache.spark.sql.comet.execution.shuffle.CometCelebornShufflePlanningSuite
               org.apache.spark.sql.comet.execution.shuffle.CometNativeShuffleInputRDDSuite
+              org.apache.spark.sql.comet.execution.shuffle.CometNativeShuffleWriterSuite
+              org.apache.spark.sql.comet.execution.shuffle.CometNativePositionalRoundRobinSuite
               org.apache.spark.sql.comet.execution.shuffle.CometDiskBlockWriterSuite
               org.apache.comet.exec.CometShuffleEncryptionSuite
               org.apache.comet.exec.CometShuffleManagerSuite
@@ -189,7 +193,10 @@ jobs:
               org.apache.spark.CometExecIteratorLifecycleSuite
               org.apache.spark.CometPluginsDefaultSuite
               org.apache.spark.CometPluginsMemoryOverheadWarningSuite
+              org.apache.spark.CometPluginsMemoryPoolFractionWarningSuite
               org.apache.spark.CometPluginsUnifiedModeSuite
+              org.apache.spark.CometPluginsExtensionOnlySuite
+              org.apache.spark.CometPluginsSparkShuffleManagerSuite
               org.apache.comet.rules.CometScanRuleSuite
               org.apache.comet.rules.CometScanContribSuite
               org.apache.comet.rules.CometScanSchemeFallbackSuite
