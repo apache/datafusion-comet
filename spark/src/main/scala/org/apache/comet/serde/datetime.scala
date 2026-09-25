@@ -864,23 +864,7 @@ object CometAddMonths extends CometCodegenDispatch[AddMonths]
 
 object CometMonthsBetween extends CometCodegenDispatch[MonthsBetween]
 
-object CometMakeTimestamp
-    extends CometCodegenDispatch[MakeTimestamp]
-    with CodegenDispatchFallback {
-
-  private val collationReason = DatetimeCollation.reason("make_timestamp")
-
-  override def getIncompatibleReasons(): Seq[String] =
-    DatetimeCollation.incompatibleReasons("make_timestamp")
-
-  override def getSupportLevel(expr: MakeTimestamp): SupportLevel = {
-    if (DatetimeCollation.hasNonDefaultCollation(expr)) {
-      Incompatible(Some(collationReason))
-    } else {
-      Compatible()
-    }
-  }
-}
+object CometMakeTimestamp extends CometCodegenDispatch[MakeTimestamp]
 
 object CometMicrosToTimestamp extends CometCodegenDispatch[MicrosToTimestamp]
 
@@ -892,23 +876,7 @@ object CometUnixMillis extends CometCodegenDispatch[UnixMillis]
 
 object CometUnixMicros extends CometCodegenDispatch[UnixMicros]
 
-object CometToUnixTimestamp
-    extends CometCodegenDispatch[ToUnixTimestamp]
-    with CodegenDispatchFallback {
-
-  private val collationReason = DatetimeCollation.reason("to_unix_timestamp")
-
-  override def getIncompatibleReasons(): Seq[String] =
-    DatetimeCollation.incompatibleReasons("to_unix_timestamp")
-
-  override def getSupportLevel(expr: ToUnixTimestamp): SupportLevel = {
-    if (DatetimeCollation.hasNonDefaultCollation(expr)) {
-      Incompatible(Some(collationReason))
-    } else {
-      Compatible()
-    }
-  }
-}
+object CometToUnixTimestamp extends CometCodegenDispatch[ToUnixTimestamp]
 
 object CometGetTimestamp extends CometCodegenDispatch[GetTimestamp]
 
