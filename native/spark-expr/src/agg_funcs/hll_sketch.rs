@@ -29,9 +29,9 @@
 //! *compact* form, whereas Spark emits the *updatable* form. The bytes are
 //! therefore not byte-identical to Spark's output for small inputs, but
 //! DataSketches `deserialize` reads both forms, so estimates round-trip in both
-//! directions. Comet must own both Partial and Final aggregation
-//! (`supportsMixedPartialFinal = false`) so this compact intermediate is only
-//! ever read back by Comet.
+//! directions. Comet must own both Partial and Final aggregation (the HLL serdes leave
+//! `supportsSparkPartialToNativeFinal` and `supportsNativePartialToSparkFinal` false) so this
+//! compact intermediate is only ever read back by Comet.
 
 use datafusion::error::DataFusionError;
 use datasketches::hash_value::raw_bytes;
@@ -41,6 +41,75 @@ use datasketches::hll::{HllSketch, HllType, HllUnion};
 #[derive(Debug)]
 pub struct SparkHllSketch {
     inner: HllSketch,
+    /// Whether `inner` is known to hold the dense register array; see `layout`. Once set it
+    /// stays set, because a union's result estimates from its registers, and near the promotion
+    /// point that estimate can fall back below `layout::max_coupons`.
+    dense: bool,
+}
+
+/// The in-memory layout `datasketches` 0.3.0 gives an HLL_8 sketch, which the crate keeps
+/// private (`HllSketch::mode` is `pub(super)`). Accumulator `size()` reports it: most sketches
+/// stay small, and charging every group the dense register array up front makes grouped
+/// high-`lgConfigK` queries exhaust the memory pool.
+///
+/// A sketch starts in LIST mode, an 8-slot coupon array. When that fills it moves to SET mode, a
+/// hash table that starts at 32 slots and doubles once more than 3/4 full. At `2^(lgConfigK - 3)`
+/// slots it is promoted to the register array instead, one byte per register. Below lgConfigK 8
+/// a full LIST goes straight to the register array. Modes only move forward, and a union's
+/// gadget follows the same path.
+///
+/// The crate exposes only the estimate, which is enough. In LIST and SET mode `estimate()` is
+/// `max(couponCount, interpolation)`, so it is never below the coupon count. Promotion seeds the
+/// HIP accumulator with that estimate, so from the moment the register array exists the estimate
+/// exceeds `max_coupons`. The one other way into the register array is a union with a sketch
+/// already in it, which the caller tracks as `dense`.
+///
+/// `heap_size_follows_the_crates_layout` checks this against the preamble the crate serializes,
+/// so a `datasketches` bump that changes the layout fails that test.
+mod layout {
+    const COUPON_BYTES: usize = 4;
+    const LIST_BYTES: usize = COUPON_BYTES << 3;
+    const MIN_SET_SLOTS: usize = 1 << 5;
+    /// Below this lgConfigK there is no SET mode.
+    const MIN_LG_K_WITH_SET: u8 = 8;
+
+    /// The most coupons a sketch at `lg_config_k` holds before the register array replaces them.
+    pub fn max_coupons(lg_config_k: u8) -> usize {
+        if lg_config_k < MIN_LG_K_WITH_SET {
+            7
+        } else {
+            // 3/4 of the largest SET, 2^(lgConfigK - 3) slots.
+            3 << (lg_config_k - 5)
+        }
+    }
+
+    /// Whether a sketch at `lg_config_k` holds the register array, given its `estimate()` and
+    /// whether it is already known to.
+    pub fn is_dense(lg_config_k: u8, known_dense: bool, estimate: f64) -> bool {
+        known_dense || estimate > max_coupons(lg_config_k) as f64
+    }
+
+    /// Heap bytes held by an HLL_8 sketch or union gadget, never less than the crate allocated.
+    /// It is exact except just below a SET resize or the promotion, where the estimate, which
+    /// corrects for coupon collisions, runs slightly ahead of the coupon count and this charges
+    /// the next size up.
+    pub fn heap_bytes(lg_config_k: u8, known_dense: bool, estimate: f64) -> usize {
+        let registers = 1usize << lg_config_k;
+        if lg_config_k < MIN_LG_K_WITH_SET {
+            // The larger of a LIST and the register array, 128 bytes at most.
+            return registers.max(LIST_BYTES);
+        }
+        if is_dense(lg_config_k, known_dense, estimate) {
+            return registers;
+        }
+        let coupons = estimate as usize;
+        if coupons < 8 {
+            LIST_BYTES
+        } else {
+            let slots = (4 * coupons).div_ceil(3).next_power_of_two();
+            COUPON_BYTES * slots.max(MIN_SET_SLOTS)
+        }
+    }
 }
 
 /// Byte offsets into the DataSketches HLL preamble, and the bits we need from it.
@@ -151,6 +220,7 @@ impl SparkHllSketch {
     pub fn new(lg_config_k: u8) -> Self {
         Self {
             inner: HllSketch::new(lg_config_k, HllType::Hll8),
+            dense: false,
         }
     }
 
@@ -182,9 +252,11 @@ impl SparkHllSketch {
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, DataFusionError> {
         reject_undecodable_hll4(bytes)?;
         let normalized = normalize_compact_hll_array(bytes);
-        HllSketch::deserialize(normalized.as_deref().unwrap_or(bytes))
-            .map(|inner| Self { inner })
-            .map_err(|e| DataFusionError::Execution(format!("invalid HLL sketch bytes: {e}")))
+        let inner = HllSketch::deserialize(normalized.as_deref().unwrap_or(bytes))
+            .map_err(|e| DataFusionError::Execution(format!("invalid HLL sketch bytes: {e}")))?;
+        // `deserialize` has validated the preamble, so the mode byte is there.
+        let dense = bytes[preamble::MODE] & preamble::CUR_MODE_MASK == preamble::CUR_MODE_HLL;
+        Ok(Self { inner, dense })
     }
 
     /// The configured `lgConfigK`.
@@ -199,10 +271,19 @@ impl SparkHllSketch {
 
     /// Merge another sketch into this one via a union, keeping HLL_8 output.
     pub fn merge_sketch(&mut self, other: &SparkHllSketch) {
-        let mut u = HllUnion::new(self.lg_config_k());
-        u.update(&self.inner);
-        u.update(&other.inner);
-        self.inner = u.to_sketch(HllType::Hll8);
+        let mut u = SparkHllUnion::new(self.lg_config_k());
+        u.merge(self);
+        u.merge(other);
+        *self = u.to_sketch();
+    }
+
+    fn is_dense(&self) -> bool {
+        layout::is_dense(self.lg_config_k(), self.dense, self.inner.estimate())
+    }
+
+    /// Heap bytes the sketch currently holds, for accumulator `size()`.
+    pub fn heap_size(&self) -> usize {
+        layout::heap_bytes(self.lg_config_k(), self.dense, self.inner.estimate())
     }
 }
 
@@ -210,6 +291,9 @@ impl SparkHllSketch {
 #[derive(Debug)]
 pub struct SparkHllUnion {
     inner: HllUnion,
+    /// Whether the union's gadget is known to hold the dense register array. Merging a sketch
+    /// that holds one always promotes the gadget. See `SparkHllSketch::dense`.
+    dense: bool,
 }
 
 impl SparkHllUnion {
@@ -217,17 +301,36 @@ impl SparkHllUnion {
     pub fn new(lg_max_k: u8) -> Self {
         Self {
             inner: HllUnion::new(lg_max_k),
+            dense: false,
         }
     }
 
     /// Merge a sketch into the union.
     pub fn merge(&mut self, sketch: &SparkHllSketch) {
+        self.dense = self.is_dense() || sketch.is_dense();
         self.inner.update(&sketch.inner);
+    }
+
+    /// The union result as an HLL_8 sketch.
+    fn to_sketch(&self) -> SparkHllSketch {
+        SparkHllSketch {
+            inner: self.inner.to_sketch(HllType::Hll8),
+            dense: self.is_dense(),
+        }
     }
 
     /// The union result as an HLL_8 sketch's serialized bytes.
     pub fn to_sketch_bytes(&self) -> Vec<u8> {
         self.inner.to_sketch(HllType::Hll8).serialize()
+    }
+
+    fn is_dense(&self) -> bool {
+        layout::is_dense(self.inner.lg_config_k(), self.dense, self.inner.estimate())
+    }
+
+    /// Heap bytes the union's gadget currently holds, for accumulator `size()`.
+    pub fn heap_size(&self) -> usize {
+        layout::heap_bytes(self.inner.lg_config_k(), self.dense, self.inner.estimate())
     }
 }
 
@@ -369,5 +472,119 @@ mod tests {
             "estimate {}",
             read.estimate()
         );
+    }
+
+    /// Heap bytes the crate allocated for an HLL_8 sketch, read back from the preamble it
+    /// serializes: `2^lgArr` four-byte slots in LIST and SET mode, one byte per register in HLL.
+    fn allocated(bytes: &[u8]) -> usize {
+        const LG_K: usize = 3;
+        const LG_ARR: usize = 4;
+        if bytes[preamble::MODE] & preamble::CUR_MODE_MASK == preamble::CUR_MODE_HLL {
+            1 << bytes[LG_K]
+        } else {
+            4 << bytes[LG_ARR]
+        }
+    }
+
+    /// `heap_size` must never report less than the crate holds, and it should track the real
+    /// layout rather than the dense maximum. Walk each lgConfigK through every SET resize and the
+    /// promotion, with duplicates mixed in, and compare against what the crate serializes.
+    #[test]
+    fn heap_size_follows_the_crates_layout() {
+        for lg_k in [4u8, 7, 8, 11, 14] {
+            let mut sketch = SparkHllSketch::new(lg_k);
+            let steps = 2 * layout::max_coupons(lg_k) + 64;
+            let mut exact = 0;
+            for i in 0..steps as i64 {
+                sketch.update_i64(i);
+                sketch.update_i64(i / 2);
+                let actual = allocated(&sketch.to_sketch_bytes());
+                let charged = sketch.heap_size();
+                assert!(
+                    charged >= actual,
+                    "lgConfigK {lg_k}, value {i}: charged {charged} bytes, crate holds {actual}"
+                );
+                // Off by at most one size step. Below lgConfigK 8 the charge is a flat 128 bytes
+                // at most.
+                assert!(
+                    charged <= (2 * actual).max(128),
+                    "lgConfigK {lg_k}, value {i}: charged {charged} bytes, crate holds {actual}"
+                );
+                exact += usize::from(charged == actual);
+            }
+            if lg_k >= 8 {
+                assert!(
+                    exact * 100 >= steps * 99,
+                    "lgConfigK {lg_k}: exact for only {exact} of {steps} cardinalities"
+                );
+            }
+        }
+    }
+
+    /// At lgConfigK 21 the register array is 2 MiB, but a small group holds a few dozen bytes and
+    /// a large one only becomes dense after ~200,000 distinct values.
+    #[test]
+    fn high_lg_config_k_is_charged_for_what_it_holds() {
+        let mut sketch = SparkHllSketch::new(21);
+        let mut next = 0i64;
+        for checkpoint in [1i64, 100, 10_000, 150_000, 250_000] {
+            while next < checkpoint {
+                sketch.update_i64(next);
+                next += 1;
+            }
+            let actual = allocated(&sketch.to_sketch_bytes());
+            assert_eq!(sketch.heap_size(), actual, "after {checkpoint} values");
+            if checkpoint == 1 {
+                assert_eq!(actual, 32, "one value sits in an 8-slot LIST");
+            }
+        }
+        assert_eq!(sketch.heap_size(), 1 << 21);
+    }
+
+    /// A union's gadget stays small while it takes small sketches. Merging a sketch that holds the
+    /// register array promotes it however little that sketch has seen, so it is the preamble's
+    /// mode, not the estimate, that has to decide.
+    #[test]
+    fn union_heap_size_follows_the_crates_layout() {
+        let sketch = |values: std::ops::Range<i64>| {
+            let mut s = SparkHllSketch::new(16);
+            for v in values {
+                s.update_i64(v);
+            }
+            s
+        };
+        let mut union = SparkHllUnion::new(16);
+        union.merge(&sketch(0..5));
+        union.merge(&sketch(5..40));
+        assert_eq!(union.heap_size(), allocated(&union.to_sketch_bytes()));
+        assert_eq!(union.heap_size(), 256, "40 coupons fit a 64-slot SET");
+
+        // An HLL-mode sketch with one register set: every estimate it or a union with it gives is
+        // tiny. Preamble offsets: HIP 8, KxQ0 16, KxQ1 24, zero-register count 32.
+        let mut bytes = sketch(0..20_000).to_sketch_bytes();
+        assert_eq!(allocated(&bytes), 1 << 16);
+        let registers = &mut bytes[preamble::HLL_SIZE..];
+        registers.fill(0);
+        registers[0] = 1;
+        let zeros = (1u32 << 16) - 1;
+        bytes[8..16].copy_from_slice(&1.0f64.to_le_bytes());
+        bytes[16..24].copy_from_slice(&(f64::from(zeros) + 0.5).to_le_bytes());
+        bytes[24..32].copy_from_slice(&0.0f64.to_le_bytes());
+        bytes[32..36].copy_from_slice(&zeros.to_le_bytes());
+        let barely_used = SparkHllSketch::from_bytes(&bytes).unwrap();
+        assert!(barely_used.estimate() < 2.0);
+        assert_eq!(barely_used.heap_size(), 1 << 16);
+
+        union.merge(&barely_used);
+        assert!(union.inner.estimate() < 100.0);
+        assert_eq!(allocated(&union.to_sketch_bytes()), 1 << 16);
+        assert_eq!(union.heap_size(), 1 << 16);
+
+        // `merge_sketch` goes through a union too, and keeps the flag.
+        let mut small = sketch(0..5);
+        small.merge_sketch(&barely_used);
+        assert!(small.estimate() < 100.0);
+        assert_eq!(allocated(&small.to_sketch_bytes()), 1 << 16);
+        assert_eq!(small.heap_size(), 1 << 16);
     }
 }

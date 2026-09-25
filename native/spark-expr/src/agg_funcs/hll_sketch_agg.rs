@@ -151,9 +151,9 @@ impl Accumulator for HllSketchAccumulator {
     }
 
     fn size(&self) -> usize {
-        // An HLL_8 sketch at lgConfigK=k can heap-allocate up to 1 << k bytes;
-        // account for that so memory reservation reflects actual usage.
-        std::mem::size_of_val(self) + (1usize << self.sketch.lg_config_k() as usize)
+        // What the sketch holds now, not the 1 << lgConfigK dense maximum: a group stays in a
+        // few-dozen-byte coupon list until it has seen enough distinct values.
+        std::mem::size_of_val(self) + self.sketch.heap_size()
     }
 
     fn state(&mut self) -> Result<Vec<ScalarValue>> {
@@ -286,5 +286,39 @@ mod tests {
             "size() should account for the sketch heap allocation, got {}",
             acc.size()
         );
+    }
+
+    /// 64 singleton groups at lgConfigK=21, grouped through a real Partial/Final plan in a 16 MiB
+    /// pool. Each group's sketch holds one coupon in an 8-slot LIST, 32 bytes, and Spark runs the
+    /// same query without trouble. Charging every group the 2 MiB dense register array instead
+    /// asks for 128 MiB, and the Final aggregation fails even with spilling.
+    #[tokio::test]
+    async fn singleton_groups_at_high_lg_config_k_fit_a_small_pool() {
+        use arrow::array::RecordBatch;
+        use datafusion::execution::runtime_env::RuntimeEnvBuilder;
+        use datafusion::logical_expr::AggregateUDF;
+        use datafusion::prelude::{SessionConfig, SessionContext};
+
+        let runtime = RuntimeEnvBuilder::new()
+            .with_memory_limit(16 * 1024 * 1024, 1.0)
+            .build_arc()
+            .unwrap();
+        let ctx = SessionContext::new_with_config_rt(
+            SessionConfig::new().with_target_partitions(2),
+            runtime,
+        );
+        ctx.register_udaf(AggregateUDF::new_from_impl(HllSketchAgg::new(21)));
+        let ids: ArrayRef = Arc::new(Int64Array::from((0..64i64).collect::<Vec<_>>()));
+        ctx.register_batch("t", RecordBatch::try_from_iter([("id", ids)]).unwrap())
+            .unwrap();
+
+        let batches = ctx
+            .sql("SELECT id, hll_sketch_agg(id) FROM t GROUP BY id")
+            .await
+            .unwrap()
+            .collect()
+            .await
+            .unwrap();
+        assert_eq!(batches.iter().map(|b| b.num_rows()).sum::<usize>(), 64);
     }
 }

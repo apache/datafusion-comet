@@ -134,13 +134,8 @@ impl Accumulator for HllUnionAccumulator {
         }
     }
     fn size(&self) -> usize {
-        // An HLL_8 sketch at lgConfigK=k can heap-allocate up to 1 << k bytes;
-        // account for that so memory reservation reflects actual usage.
-        std::mem::size_of_val(self)
-            + self
-                .seen_lg_config_k
-                .map(|k| 1usize << k as usize)
-                .unwrap_or(0)
+        // What the union's gadget holds now, not the dense maximum; see `HllSketchAccumulator`.
+        std::mem::size_of_val(self) + self.union.as_ref().map_or(0, SparkHllUnion::heap_size)
     }
     fn state(&mut self) -> Result<Vec<ScalarValue>> {
         // Unlike `evaluate`, an empty partial emits NULL rather than an empty lgConfigK=12
@@ -312,5 +307,48 @@ mod tests {
             (est - 2000).abs() <= 80,
             "union of two disjoint compact sketches estimated {est}, expected ~2000"
         );
+    }
+
+    /// The union counterpart of the `hll_sketch_agg` test: 64 groups, each unioning a single
+    /// one-value lgConfigK=21 sketch, grouped through Partial/Final in a 16 MiB pool.
+    #[tokio::test]
+    async fn singleton_groups_at_high_lg_config_k_fit_a_small_pool() {
+        use arrow::array::{Int64Array, RecordBatch};
+        use datafusion::execution::runtime_env::RuntimeEnvBuilder;
+        use datafusion::logical_expr::AggregateUDF;
+        use datafusion::prelude::{SessionConfig, SessionContext};
+
+        let runtime = RuntimeEnvBuilder::new()
+            .with_memory_limit(16 * 1024 * 1024, 1.0)
+            .build_arc()
+            .unwrap();
+        let ctx = SessionContext::new_with_config_rt(
+            SessionConfig::new().with_target_partitions(2),
+            runtime,
+        );
+        ctx.register_udaf(AggregateUDF::new_from_impl(HllUnionAgg::new(false)));
+        let sketches: Vec<Vec<u8>> = (0..64i64)
+            .map(|i| {
+                let mut s = SparkHllSketch::new(21);
+                s.update_i64(i);
+                s.to_sketch_bytes()
+            })
+            .collect();
+        let ids: ArrayRef = Arc::new(Int64Array::from((0..64i64).collect::<Vec<_>>()));
+        let sketches: ArrayRef = Arc::new(BinaryArray::from_iter_values(sketches));
+        ctx.register_batch(
+            "t",
+            RecordBatch::try_from_iter([("id", ids), ("s", sketches)]).unwrap(),
+        )
+        .unwrap();
+
+        let batches = ctx
+            .sql("SELECT id, hll_union_agg(s) FROM t GROUP BY id")
+            .await
+            .unwrap()
+            .collect()
+            .await
+            .unwrap();
+        assert_eq!(batches.iter().map(|b| b.num_rows()).sum::<usize>(), 64);
     }
 }
