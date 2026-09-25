@@ -127,10 +127,9 @@ The valid pool types are:
 - `fair_unified` (default when `spark.memory.offHeap.enabled=true` is set)
 - `greedy_unified`
 
-Both pool types are shared across all native execution contexts within the same Spark task. When
-Comet executes a shuffle, it runs two native execution contexts concurrently (e.g. one for
-pre-shuffle operators and one for the shuffle writer). The shared pool ensures that the combined
-memory usage stays within the per-task limit.
+Both pool types are shared by all the native plans in the same Spark task. A task can run more than
+one native plan at a time, for example the native operators on either side of a union or a
+coalesce. The shared pool ensures that their combined memory usage stays within the per-task limit.
 
 The `fair_unified` pool prevents operators from using more than an even fraction of the available memory
 (i.e. `pool_size / num_consumers`, where `num_consumers` counts the memory consumers registered by all of the task's
