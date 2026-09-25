@@ -332,6 +332,14 @@ case class CometScanRule(session: SparkSession)
       withFallbackReason(scanExec, "Native Parquet scan does not support encryption")
       return None
     }
+    // TODO: Remove this fallback once DataFusion can ignore embedded Arrow schema hints and
+    // preserve Spark's ENUM inference without losing Parquet decryption state.
+    // https://github.com/apache/datafusion-comet/issues/5477
+    if (encryptionEnabled(hadoopConf) &&
+      scanExec.requiredSchema.exists(field => isVariantType(field.dataType))) {
+      withFallbackReason(scanExec, "Native Parquet Variant scans do not support encryption")
+      return None
+    }
     // input_file_name, input_file_block_start, and input_file_block_length read from
     // InputFileBlockHolder, a thread-local set by Spark's FileScanRDD. The native DataFusion
     // scan does not use FileScanRDD, so these expressions would return empty/default values.
@@ -1020,8 +1028,17 @@ case class CometScanRule(session: SparkSession)
   private def isSchemaSupported(scanExec: FileSourceScanExec, r: HadoopFsRelation): Boolean = {
     val fallbackReasons = new ListBuffer[String]()
     val typeChecker = CometScanTypeChecker()
+    // Admit Variant only at a required root in ordinary Parquet. Recursive and Iceberg type
+    // checks continue to use CometScanTypeChecker's stricter support rules.
+    val requiredSchemaChecker = new CometScanTypeChecker {
+      override def isTypeSupported(
+          dt: DataType,
+          name: String,
+          reasons: ListBuffer[String]): Boolean =
+        isVariantType(dt) || typeChecker.isTypeSupported(dt, name, reasons)
+    }
     val schemaSupported =
-      typeChecker.isSchemaSupported(scanExec.requiredSchema, fallbackReasons)
+      requiredSchemaChecker.isSchemaSupported(scanExec.requiredSchema, fallbackReasons)
     if (!schemaSupported) {
       withFallbackReason(
         scanExec,

@@ -109,6 +109,7 @@ object DeltaScanSupport {
     // Mirrors core's CometScanRule.isSchemaSupported so scan-time type gates (unsigned-small-int
     // fallback, collation, shredded-variant-struct) apply identically here. Pure in-memory check,
     // so it runs first, ahead of every I/O-bearing gate below.
+    // Unlike core, a required Variant root stays declined: this path lacks core's Variant gates.
     val schemaFallbackReasons = new ListBuffer[String]()
     val typeChecker = CometScanTypeChecker()
     val requiredSchemaSupported =
