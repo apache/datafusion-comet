@@ -32,9 +32,11 @@ import org.json4s.jackson.JsonMethods._
 import org.apache.spark.SparkConf
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.comet.{CometIcebergWriteExec, IcebergWriteExec}
+import org.apache.spark.sql.connector.write.BatchWrite
 import org.apache.spark.sql.execution.{CommandResultExec, QueryExecution, SparkPlan}
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, QueryStageExec}
-import org.apache.spark.sql.execution.datasources.v2.V2ExistingTableWriteExec
+import org.apache.spark.sql.execution.datasources.v2.{V2ExistingTableWriteExec, WriteToDataSourceV2Exec}
+import org.apache.spark.sql.execution.streaming.sources.MicroBatchWrite
 import org.apache.spark.sql.util.QueryExecutionListener
 
 import org.apache.comet.CometConf.COMET_ICEBERG_WRITE_REPORT_DIR
@@ -111,9 +113,23 @@ object IcebergWriteReportListener {
     case w: IcebergWriteExec =>
       val reasons = w.getTagValue(CometExplainInfo.FALLBACK_REASONS).getOrElse(Set.empty)
       Seq(IcebergWrite(Jvm, w.nodeName, reasons.toSeq.sorted))
-    case w: V2ExistingTableWriteExec
-        if w.write.getClass.getName.startsWith("org.apache.iceberg.") =>
+    case w: V2ExistingTableWriteExec if isIceberg(w.write) =>
+      Seq(IcebergWrite(Spark, w.nodeName, Nil))
+    // A streaming micro-batch, which Comet's split operator never plans.
+    case w: WriteToDataSourceV2Exec if isIcebergMicroBatch(w.batchWrite) =>
+      Seq(IcebergWrite(Spark, w.nodeName, Nil))
+    // Spark 3.4 writes a CTAS or RTAS from the create or replace exec itself. Later versions run
+    // that write as a nested append or overwrite, which this listener sees as a query of its own.
+    case w if IcebergTableAsSelectShim.writeCatalog(w).exists(isIceberg) =>
       Seq(IcebergWrite(Spark, w.nodeName, Nil))
     case p => p.children.flatMap(writes)
   }
+
+  private def isIcebergMicroBatch(write: BatchWrite): Boolean = write match {
+    case m: MicroBatchWrite => isIceberg(m.writeSupport)
+    case _ => false
+  }
+
+  private def isIceberg(obj: AnyRef): Boolean =
+    obj.getClass.getName.startsWith("org.apache.iceberg.")
 }

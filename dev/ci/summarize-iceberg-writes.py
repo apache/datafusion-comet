@@ -27,8 +27,11 @@ many Spark planned without Comet's split operator:
 
 Files under a directory named like a shard artifact (...-shard-N-attempt-M)
 are counted only for the latest attempt of each shard, so a rerun of failed
-jobs does not count a shard twice. The summary is also appended to
-$GITHUB_STEP_SUMMARY when that is set. It never fails the job.
+jobs does not count a shard twice. The latest attempt is the newest such
+directory, whether or not it holds any report files, so a rerun that recorded
+no writes is reported as missing rather than replaced by an earlier attempt.
+The summary is also appended to $GITHUB_STEP_SUMMARY when that is set. It
+never fails the job.
 """
 
 import argparse
@@ -48,40 +51,59 @@ WRITERS = [
 TOP_REASONS = 20
 
 
+def shard_attempt(path):
+    """The (shard, attempt) of the shard artifact directory holding path, or None."""
+    for part in path.parts:
+        match = SHARD_ATTEMPT.search(part)
+        if match:
+            return int(match.group(1)), int(match.group(2))
+    return None
+
+
 def report_files(roots):
-    """Every report file under roots, keeping only the latest attempt of each shard."""
+    """Every report file under roots, keeping only the latest attempt of each shard.
+
+    Returns the files and the (shard, attempt) pairs whose latest attempt holds no report file.
+    The latest attempt comes from the artifact directories rather than the report files, because
+    an attempt that recorded no writes still uploads its shard inventory and test reports.
+    """
     latest = {}
     files = []
-    for root in roots:
-        for path in sorted(Path(root).rglob("*.jsonl")):
-            match = next(
-                (SHARD_ATTEMPT.search(part) for part in path.parts if SHARD_ATTEMPT.search(part)),
-                None,
-            )
-            if match:
-                shard, attempt = int(match.group(1)), int(match.group(2))
-                latest[shard] = max(latest.get(shard, 0), attempt)
-                files.append((path, (shard, attempt)))
-            else:
-                files.append((path, None))
-    return [path for path, key in files if key is None or latest[key[0]] == key[1]]
+    for root in map(Path, roots):
+        for path in [root, *sorted(root.rglob("*"))]:
+            key = shard_attempt(path)
+            if key:
+                latest[key[0]] = max(latest.get(key[0], 0), key[1])
+            if path.suffix == ".jsonl" and path.is_file():
+                files.append((path, key))
+    kept = [(path, key) for path, key in files if key is None or latest[key[0]] == key[1]]
+    reported = {key for _, key in kept}
+    missing = sorted(key for key in latest.items() if key not in reported)
+    return [path for path, _ in kept], missing
 
 
 def load(roots):
+    files, missing = report_files(roots)
     writes = []
-    for path in report_files(roots):
+    for path in files:
         for line in path.read_text(encoding="utf-8").splitlines():
             if line.strip():
                 writes.append(json.loads(line))
-    return writes
+    return writes, missing
 
 
 def cell(text):
     return " ".join(text.split()).replace("|", "\\|")
 
 
-def summarize(title, writes):
+def summarize(title, writes, missing=()):
     lines = [f"### Iceberg writes: {title}", ""]
+    for shard, attempt in missing:
+        lines += [
+            f"Shard {shard} recorded no Iceberg writes in its latest attempt ({attempt}), "
+            "so none of its writes are counted below.",
+            "",
+        ]
     if not writes:
         lines.append(
             "No Iceberg writes were recorded. Either the target ran none or "
@@ -137,7 +159,7 @@ def main():
     parser.add_argument("roots", nargs="+", help="directories holding the report files")
     args = parser.parse_args()
 
-    summary = summarize(args.title, load(args.roots))
+    summary = summarize(args.title, *load(args.roots))
     print(summary)
     step_summary = os.environ.get("GITHUB_STEP_SUMMARY")
     if step_summary:

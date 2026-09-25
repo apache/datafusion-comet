@@ -170,12 +170,14 @@ records one of three writers:
 - `native`: Comet's native writer (`CometIcebergWriteExec`).
 - `jvm`: Comet's split operator planned the write but kept Iceberg's JVM writer (`IcebergWriteExec`).
   The line includes the reasons Comet recorded for not converting it.
-- `spark`: Spark's own V2 write operator ran the write, for example `WriteDelta` for merge-on-read,
-  so Comet's split operator never saw it.
+- `spark`: Spark's own V2 write operator ran the write, so Comet's split operator never saw it. Examples
+  are `WriteDelta` for merge-on-read, `WriteToDataSourceV2` for a streaming micro-batch, and on Spark
+  3.4 the CTAS and RTAS execs, which write the table themselves.
 
 `dev/ci/summarize-iceberg-writes.py` turns these records into a table on the job's summary page. It
 shows the count and share of each writer, the most common fallback reasons, and the Spark write
 operators. Each shard and the extensions job gets its own table. The shard coverage job adds one for
-all shards together. The raw records are uploaded with the job's other reports. The summary never
-fails a job. `dev/local-ci.sh iceberg` prints the same summary after each shard and after the
-extensions target.
+all shards together, counting only the latest attempt of each shard. A shard whose latest attempt
+recorded no writes is named above the table rather than counted from an earlier attempt. The raw
+records are uploaded with the job's other reports. The summary never fails a job.
+`dev/local-ci.sh iceberg` prints the same summary after each shard and after the extensions target.
