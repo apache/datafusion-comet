@@ -1250,12 +1250,12 @@ class CometParquetWriterSuite extends CometParquetWriterTestBase {
   }
 
   test("empty input still writes a schema-only file (SPARK-23271)") {
-    assume(isSpark40Plus, "Requires the WriteFilesExec seam")
     // An empty input must still leave a schema behind for downstream readers: `spark.read.parquet`
     // of the output must see the write's schema, not fail. Comet reaches this in two ways - if the
-    // native child has one partition producing no batches, the partition-0 branch of executeTask
-    // writes a metadata-only file; if it produces zero partitions, doExecuteWrite swaps in a dummy
-    // single-partition RDD to get to the same branch. This test exercises the first; the
+    // native child has one partition producing no batches, the partition-0 branch of the write
+    // task writes a metadata-only file; if it produces zero partitions, the writer swaps in a
+    // dummy single-partition RDD to get to the same branch. Both CometWriteFilesExec (Spark 4.0+)
+    // and CometNativeWriteExec (Spark 3.x) do this. This test exercises the first; the
     // zero-partition swap is reached by an AQE-collapsed empty relation and is covered by
     // CometEmptyRelationParquetWriterSuite.
     withTempPath { dir =>
@@ -1326,8 +1326,7 @@ class CometParquetWriterSuite extends CometParquetWriterTestBase {
   }
 
   test("an empty partition writes no file and still commits") {
-    assume(isSpark40Plus, "Requires the WriteFilesExec seam")
-    // executeTask's `sparkPartitionId != 0 && !batches.hasNext` branch must skip newTaskTempFile
+    // The write task's `partitionId != 0 && !batches.hasNext` branch must skip newTaskTempFile
     // altogether and still commit the task, matching FileFormatWriter's EmptyDirectoryDataWriter.
     // Hash-partitioning into eight and keeping a single id leaves at most one partition with
     // rows, so at most two files can appear: that one, plus partition 0's schema-only file when
