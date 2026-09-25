@@ -1002,12 +1002,24 @@ functions. Remaining work is tracked by
 </thead>
 <tbody>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">VariantType</span></code></p></td>
-<td><p>🔜</p></td>
-<td><p>Spark 4.0+. Native scan support is tracked by <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4295">#4295</a>; shredded Parquet read/write by <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/3983">#3983</a>.</p></td>
+<td><p>⚠️</p></td>
+<td><p>Spark 4.0+. Native Parquet scans support direct projection of top-level Variant columns. Non-null existence defaults fall back.</p></td>
 </tr>
 </tbody>
 </table>
 </div>
+<p>Direct projection requires explicit configuration on every supported Spark version:
+<code class="docutils literal notranslate"><span class="pre">spark.sql.variant.allowReadingShredded=true</span></code> (defaults to false in Spark 4.0) and
+<code class="docutils literal notranslate"><span class="pre">spark.sql.variant.pushVariantIntoScan=false</span></code> (defaults to true in Spark 4.1+), with the default
+Parquet timestamp inference settings. Support for Spark’s whole-value pushdown rewrite is tracked
+by <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/5519">#5519</a>. Nested Variant columns, pushed-down
+Variant field extraction, expressions, writes, shuffle and spill, Python operators, encrypted
+files, and Iceberg scans fall back to Spark. Spark also handles columnar-to-row conversion of
+the native scan output and strict reads with <code class="docutils literal notranslate"><span class="pre">allowReadingShredded=false</span></code>. Broader
+support is tracked by <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4295">#4295</a> and
+<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/3983">#3983</a>.</p>
+<p>Shredded reconstruction can be slower than Spark’s reader; see the
+<a class="reference external" href="https://github.com/apache/datafusion-comet/pull/5868">focused scan and allocation measurements in PR #5868</a>.</p>
 </section>
 <section id="other">
 <h2>Other<a class="headerlink" href="#other" title="Link to this heading">#</a></h2>
