@@ -843,7 +843,7 @@ object CometShuffleExchangeExec
   private def isCometShuffleEnabledReason(op: SparkPlan): Option[String] = {
     if (!COMET_SHUFFLE_ENABLED.get(op.conf)) {
       Some(s"Comet shuffle is not enabled: ${COMET_SHUFFLE_ENABLED.key} is not enabled")
-    } else if (!isCometShuffleManagerEnabled(op.conf)) {
+    } else if (!isCometShuffleManagerEnabled) {
       Some(
         s"spark.shuffle.manager is not set to ${classOf[CometShuffleManager].getName} or " +
           classOf[CometCelebornShuffleManager].getName)
