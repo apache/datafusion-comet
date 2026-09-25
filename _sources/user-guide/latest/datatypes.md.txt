@@ -84,14 +84,14 @@ All three interval types are mapped to Arrow and flow through serde, native shuf
 codegen dispatcher, so interval columns and the interval-producing expressions run natively.
 Several operators still gate on the type and fall back: Parquet scans of ANSI interval columns,
 single-column sorts, hash aggregates (`min` / `max` / `sum` / `avg`), `GROUP BY`, window
-functions, and hashing a `CalendarInterval`. Remaining work is tracked by
+functions. Remaining work is tracked by
 [#5061](https://github.com/apache/datafusion-comet/issues/5061).
 
-| Type                    | Status | Notes                                                                                      |
-| ----------------------- | ------ | ------------------------------------------------------------------------------------------ |
-| `YearMonthIntervalType` | ⚠️     | Parquet scan, single-column sort, aggregate, `GROUP BY`, and window operators fall back.   |
-| `DayTimeIntervalType`   | ⚠️     | Parquet scan, single-column sort, aggregate, `GROUP BY`, and window operators fall back.   |
-| `CalendarIntervalType`  | ⚠️     | As above, plus `hash` / `xxhash64` of a `CalendarInterval` fails rather than falling back. |
+| Type                    | Status | Notes                                                                                    |
+| ----------------------- | ------ | ---------------------------------------------------------------------------------------- |
+| `YearMonthIntervalType` | ⚠️     | Parquet scan, single-column sort, aggregate, `GROUP BY`, and window operators fall back. |
+| `DayTimeIntervalType`   | ⚠️     | Parquet scan, single-column sort, aggregate, `GROUP BY`, and window operators fall back. |
+| `CalendarIntervalType`  | ⚠️     | Parquet scan, single-column sort, aggregate, `GROUP BY`, and window operators fall back. |
 
 ## Complex
 

@@ -939,7 +939,7 @@ the tables below and may be reconsidered based on demand:</p>
 codegen dispatcher, so interval columns and the interval-producing expressions run natively.
 Several operators still gate on the type and fall back: Parquet scans of ANSI interval columns,
 single-column sorts, hash aggregates (<code class="docutils literal notranslate"><span class="pre">min</span></code> / <code class="docutils literal notranslate"><span class="pre">max</span></code> / <code class="docutils literal notranslate"><span class="pre">sum</span></code> / <code class="docutils literal notranslate"><span class="pre">avg</span></code>), <code class="docutils literal notranslate"><span class="pre">GROUP</span> <span class="pre">BY</span></code>, window
-functions, and hashing a <code class="docutils literal notranslate"><span class="pre">CalendarInterval</span></code>. Remaining work is tracked by
+functions. Remaining work is tracked by
 <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/5061">#5061</a>.</p>
 <div class="pst-scrollable-table-container"><table class="table">
 <thead>
@@ -959,7 +959,7 @@ functions, and hashing a <code class="docutils literal notranslate"><span class=
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">CalendarIntervalType</span></code></p></td>
 <td><p>⚠️</p></td>
-<td><p>As above, plus <code class="docutils literal notranslate"><span class="pre">hash</span></code> / <code class="docutils literal notranslate"><span class="pre">xxhash64</span></code> of a <code class="docutils literal notranslate"><span class="pre">CalendarInterval</span></code> fails rather than falling back.</p></td>
+<td><p>Parquet scan, single-column sort, aggregate, <code class="docutils literal notranslate"><span class="pre">GROUP</span> <span class="pre">BY</span></code>, and window operators fall back.</p></td>
 </tr>
 </tbody>
 </table>
