@@ -23,7 +23,7 @@ import scala.util.Random
 
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.CometTestBase
-import org.apache.spark.sql.catalyst.expressions.{ArrayAppend, ArrayExcept, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayRepeat}
+import org.apache.spark.sql.catalyst.expressions.{ArrayAppend, ArrayExcept, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayMax, ArrayMin, ArrayRepeat}
 import org.apache.spark.sql.catalyst.expressions.{ArrayContains, ArrayRemove}
 import org.apache.spark.sql.catalyst.expressions.{AttributeReference, Cast, CreateArray, ElementAt, Literal, MonotonicallyIncreasingID}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
@@ -626,6 +626,103 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
             "SELECT arrays_overlap(array('a', null), array('b', null)) from t1 where _1 is not null"))
           checkSparkAnswerAndOperator(spark.sql(
             "SELECT arrays_overlap((CASE WHEN _2 =_3 THEN array(_6, _7) END), array(_6, _7)) FROM t1"));
+        }
+      }
+    }
+  }
+
+  test("array extrema - UTF8_LCASE retains its result collation") {
+    assume(isSpark40Plus)
+    val values = Seq(
+      ("B", "a"),
+      ("A", "a"),
+      // This case pair was added in Unicode 17; older Spark ICU versions keep it distinct.
+      ("\uA7CE", "\uA7CF"))
+    withParquetTable(values, "collated_extrema") {
+      withSQLConf(
+        CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "true",
+        CometConf.getExprAllowIncompatConfigKey(classOf[ArrayMin]) -> "false",
+        CometConf.getExprAllowIncompatConfigKey(classOf[ArrayMax]) -> "false") {
+        val a = "CAST(_1 AS STRING COLLATE UTF8_LCASE)"
+        val b = "CAST(_2 AS STRING COLLATE UTF8_LCASE)"
+        // The result retains its collation when used by another native comparison.
+        val query = s"SELECT array_max(array($a, $b)), " +
+          s"array_min(array(array_max(array($a, $b)), $b)) FROM collated_extrema"
+        checkSparkAnswerAndImpl(sql(query), native = Seq("array_min", "array_max"))
+        checkSparkSchema(sql(query))
+      }
+    }
+  }
+
+  test("array extrema - ICU collations fall back when the dispatcher is disabled") {
+    assume(isSpark40Plus)
+    withParquetTable(Seq(("a", "B"), ("B", "a"), ("A", "a")), "collated_extrema") {
+      val a = "CAST(_1 AS STRING COLLATE UNICODE_CI)"
+      val b = "CAST(_2 AS STRING COLLATE UNICODE_CI)"
+      val inputs = Seq(
+        s"array($a, $b)",
+        s"array(named_struct('s', array($a)), named_struct('s', array($b)))")
+      withSQLConf(
+        CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "false",
+        CometConf.getExprAllowIncompatConfigKey(classOf[ArrayMin]) -> "false",
+        CometConf.getExprAllowIncompatConfigKey(classOf[ArrayMax]) -> "false") {
+        for (function <- Seq("array_min", "array_max"); input <- inputs) {
+          checkSparkAnswerAndFallbackReason(
+            s"SELECT $function($input) FROM collated_extrema",
+            "Array extrema support UTF8_BINARY and UTF8_LCASE collations")
+        }
+      }
+    }
+  }
+
+  test("array extrema - runtime NaN representations") {
+    withParquetTable(Seq((Float.NaN, Double.NaN)), "floating_point_extrema") {
+      for (strict <- Seq(false, true)) {
+        withSQLConf(
+          CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key -> strict.toString,
+          CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "false",
+          CometConf.getExprAllowIncompatConfigKey(classOf[ArrayMin]) -> "false",
+          CometConf.getExprAllowIncompatConfigKey(classOf[ArrayMax]) -> "false") {
+          for (function <- Seq("array_min", "array_max")) {
+            // Parquet canonicalizes NaNs. Negating the column after the scan supplies a
+            // different representation at runtime; ordinary SQL equality cannot check
+            // that extrema preserve the bits of the first equal NaN.
+            val query = sql(s"""
+              SELECT $function(array(-_1, _1)), $function(array(_1, -_1)),
+                     $function(array(-_2, _2)), $function(array(_2, -_2)),
+                     $function(array(-_1, CAST(1 AS FLOAT))),
+                     $function(array(-_2, CAST(1 AS DOUBLE))),
+                     $function(array(named_struct('v', -_1, 'n', 1),
+                                     named_struct('v', _1, 'n', 1))).v,
+                     $function(array(named_struct('v', -_2, 'n', 1),
+                                     named_struct('v', _2, 'n', 1))).v
+              FROM floating_point_extrema
+            """)
+            checkSparkAnswerAndOperator(query)
+            val row = query.head()
+            val floatBits = java.lang.Float.floatToRawIntBits(Float.NaN)
+            val doubleBits = java.lang.Double.doubleToRawLongBits(Double.NaN)
+            val negativeFloatBits = floatBits | Int.MinValue
+            val negativeDoubleBits = doubleBits | Long.MinValue
+            assert(java.lang.Float.floatToRawIntBits(row.getFloat(0)) == negativeFloatBits)
+            assert(java.lang.Float.floatToRawIntBits(row.getFloat(1)) == floatBits)
+            assert(java.lang.Double.doubleToRawLongBits(row.getDouble(2)) == negativeDoubleBits)
+            assert(java.lang.Double.doubleToRawLongBits(row.getDouble(3)) == doubleBits)
+            val expectedFloatBits = if (function == "array_min") {
+              java.lang.Float.floatToRawIntBits(1.0f)
+            } else {
+              negativeFloatBits
+            }
+            val expectedDoubleBits = if (function == "array_min") {
+              java.lang.Double.doubleToRawLongBits(1.0d)
+            } else {
+              negativeDoubleBits
+            }
+            assert(java.lang.Float.floatToRawIntBits(row.getFloat(4)) == expectedFloatBits)
+            assert(java.lang.Double.doubleToRawLongBits(row.getDouble(5)) == expectedDoubleBits)
+            assert(java.lang.Float.floatToRawIntBits(row.getFloat(6)) == negativeFloatBits)
+            assert(java.lang.Double.doubleToRawLongBits(row.getDouble(7)) == negativeDoubleBits)
+          }
         }
       }
     }
