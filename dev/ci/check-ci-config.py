@@ -108,6 +108,7 @@ BUILD_JOBS = {
     "spark_4_0",
     "spark_4_1",
     "spark_4_1_hive",
+    "spark_4_2",
     "iceberg_1_8",
     "iceberg_1_9",
     "iceberg_1_10",
@@ -191,6 +192,7 @@ QUEUE_TIER = PR_TIER | {
 NIGHTLY_TIER = {
     "spark_3_5",
     "spark_4_0",
+    "spark_4_2",
     "iceberg_1_8",
     "iceberg_1_9",
     "iceberg_1_10",
@@ -349,6 +351,21 @@ POLICY_CASES = [
             "labels": ["run-spark-3.4-tests"],
         },
         {"spark_3_4"},
+    ),
+    # Spark 4.2 runs nightly, and its label brings that run forward onto a pull
+    # request, the same shape as 3.5 and 4.0. It pulls in no other Spark version.
+    (
+        {"name": "pull_request", "action": "synchronize", "labels": ["run-spark-4.2-tests"]},
+        PR_TIER | {"spark_4_2"},
+    ),
+    (
+        {
+            "name": "pull_request",
+            "action": "labeled",
+            "label": "run-spark-4.2-tests",
+            "labels": ["run-spark-4.2-tests"],
+        },
+        {"spark_4_2"},
     ),
     (
         {"name": "pull_request", "action": "synchronize", "labels": ["run-iceberg-tests"]},

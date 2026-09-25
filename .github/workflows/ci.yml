@@ -32,8 +32,8 @@
 #                 the default profile's.
 #   schedule      the nightly regression sweep of everything else: the Linux
 #                 test matrix against the other Spark profiles, Spark SQL on
-#                 Spark 3.5 and 4.0, and Iceberg 1.8/1.9/1.10, routed by the
-#                 same path filters over what landed on main since the last
+#                 Spark 3.5, 4.0 and 4.2, and Iceberg 1.8/1.9/1.10, routed by
+#                 the same path filters over what landed on main since the last
 #                 green nightly. A failure opens (or comments on) an issue
 #                 labelled `ci-nightly-failure`.
 #
@@ -96,6 +96,14 @@ on:
     # first people look. Miri runs at 04:00 and the snapshot publish at 03:00.
     - cron: '0 6 * * *'
   workflow_dispatch:
+
+# Least-privilege default for the whole pipeline: every job here builds and tests,
+# and nothing needs to write back to the repository. Jobs that call reusable
+# workflows inherit this, and a callee can only narrow it further -- so the one
+# job that does need to write (docs, which pushes the built site to asf-site)
+# raises it to `contents: write` on itself.
+permissions:
+  contents: read
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -243,6 +251,7 @@ jobs:
       spark_4_0:    ${{ steps.compute.outputs.spark_4_0 }}
       spark_4_1:    ${{ steps.compute.outputs.spark_4_1 }}
       spark_4_1_hive: ${{ steps.compute.outputs.spark_4_1_hive }}
+      spark_4_2:    ${{ steps.compute.outputs.spark_4_2 }}
       iceberg_1_8:  ${{ steps.compute.outputs.iceberg_1_8 }}
       iceberg_1_9:  ${{ steps.compute.outputs.iceberg_1_9 }}
       iceberg_1_10: ${{ steps.compute.outputs.iceberg_1_10 }}
@@ -399,6 +408,10 @@ jobs:
     needs: changes
     # docs deploys to asf-site, so only run on push-to-main (or a manual dispatch).
     if: needs.changes.outputs.docs == 'true'
+    # docs.yaml commits and pushes the generated site to the asf-site branch, so
+    # this job needs write access on top of the read-only default above.
+    permissions:
+      contents: write
     uses: ./.github/workflows/docs.yaml
 
   spark_3_4:
@@ -466,6 +479,20 @@ jobs:
         ${{ needs.changes.outputs.spark_4_1 != 'true' && 'hive'
             || needs.changes.outputs.spark_4_1_hive != 'true' && 'core'
             || 'all' }}
+
+  spark_4_2:
+    name: Spark SQL Tests (Spark 4.2)
+    needs: changes
+    # Nightly by default; PRs need the `run-spark-4.2-tests` label. Spark 4.2
+    # support is still experimental, so it sits in the nightly tier rather
+    # than the queue: a regression there blocks no merge, but it is caught
+    # within a day instead of whenever someone next asks for the suite.
+    if: needs.changes.outputs.spark_4_2 == 'true'
+    uses: ./.github/workflows/spark_sql_test_reusable.yml
+    with:
+      spark-short: '4.2'
+      spark-full: '4.2.0'
+      java: 17
 
   iceberg_1_8:
     name: Iceberg Spark SQL Tests (Iceberg 1.8)
@@ -570,6 +597,7 @@ jobs:
       - spark_3_5
       - spark_4_0
       - spark_4_1
+      - spark_4_2
       - iceberg_1_8
       - iceberg_1_9
       - iceberg_1_10

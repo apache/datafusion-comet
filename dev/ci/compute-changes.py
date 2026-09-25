@@ -297,6 +297,34 @@ FILTERS = {
         ".mvn/**",
         "mvnw",
     ],
+    "spark_4_2": [
+        "native/**/src/**",
+        "native/**/Cargo.toml",
+        "native/Cargo.lock",
+        "common/src/main/**",
+        "common/pom.xml",
+        "spark/src/main/**",
+        "!spark/src/main/spark-3.4/**",
+        "!spark/src/main/spark-3.5/**",
+        "!spark/src/main/spark-3.x/**",
+        "!spark/src/main/spark-4.0/**",
+        "!spark/src/main/spark-4.1/**",
+        "!spark/src/main/scala/org/apache/comet/GenerateDocs.scala",
+        "spark/pom.xml",
+        "dev/diffs/4.2.0.diff",
+        "pom.xml",
+        "rust-toolchain.toml",
+        ".github/workflows/ci.yml",
+        ".github/workflows/spark_sql_test_reusable.yml",
+        "dev/ci/spark-sql-modules.py",
+        ".github/actions/setup-builder/**",
+        ".github/actions/setup-spark-builder/**",
+        ".github/actions/upload-artifact-retry/**",
+        ".github/actions/download-artifact-retry/**",
+        ".github/actions/maven-bootstrap/**",
+        ".mvn/**",
+        "mvnw",
+    ],
     # Same inputs as spark_4_1: this is not a separate job but a second
     # POLICY decision for the same call, selecting the sql_hive matrix rows.
     # ci.yml folds the two outputs into the reusable workflow's `modules`
@@ -489,8 +517,8 @@ POLICY = {
     # anyone who wants to check a change against 3.4 still can.
     "spark_3_4": ["label:run-spark-3.4-tests"],
     # Spark 4.1 is the default build profile and the one Spark SQL suite the
-    # queue runs; 3.5 and 4.0 run nightly, or on a pull request with their
-    # label.
+    # queue runs; 3.5, 4.0 and 4.2 run nightly, or on a pull request with
+    # their label.
     "spark_3_5": ["nightly", "label:run-spark-3.5-tests"],
     "spark_4_0": ["nightly", "label:run-spark-4.0-tests"],
     # No Spark SQL suite runs on a plain pull request. Spark 4.1 was the last
@@ -508,6 +536,14 @@ POLICY = {
         "label:run-spark-4.1-tests",
         "label:run-spark-4.1-hive-tests",
     ],
+    # Spark 4.2 support is experimental, but the suite passes, so it sits in
+    # the nightly tier with the other non-default versions rather than being
+    # reachable only on demand. Nightly is the right tier for it twice over:
+    # a 4.2 regression blocks nobody's merge, and running it every night is
+    # what keeps the 4.2 diff in `dev/diffs` from silently rotting as the
+    # other diffs are updated -- the failure mode an on-demand suite hides
+    # until someone thinks to ask for it.
+    "spark_4_2": ["nightly", "label:run-spark-4.2-tests"],
     # Same shape for Iceberg: 1.11 is the only Spark 4.1 coverage, so it is
     # the one Iceberg version the queue runs; the three older versions run
     # nightly. One label opts a pull request into all four.

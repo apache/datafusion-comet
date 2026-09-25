@@ -45,7 +45,7 @@ flowchart LR
 
   PRTIER["PR tier<br>Linux build, lint, Rust tests<br>TPC-H / TPC-DS<br>Comet suites, Spark 4.1"]
   QUEUE["Queue tier, on top of the PR tier<br>Spark SQL, Spark 4.1<br>Iceberg 1.11<br>macOS build and Comet suites<br>Benchmark check, Delta gate<br>PyArrow UDF, Spark 4.0 / 4.1 / 4.2"]
-  NIGHTLY["Nightly tier<br>Comet suites, Spark 3.4 / 3.5 / 4.0 / 4.2<br>Spark SQL, Spark 3.5 / 4.0<br>Iceberg 1.8 / 1.9 / 1.10"]
+  NIGHTLY["Nightly tier<br>Comet suites, Spark 3.4 / 3.5 / 4.0 / 4.2<br>Spark SQL, Spark 3.5 / 4.0 / 4.2<br>Iceberg 1.8 / 1.9 / 1.10"]
   S34["Neither tier<br>Spark SQL, Spark 3.4"]
   CACHE["Cache-refresh-only mode<br>the four cache-writing jobs, plus Lint"]
 ```
@@ -64,7 +64,7 @@ Suite by suite:
 | Delta contrib build gate                          | with label   | yes         | no      |
 | PyArrow UDF tests, Spark 4.0 / 4.1 / 4.2          | with label   | yes         | no      |
 | Comet test suites, Spark 3.4 / 3.5 / 4.0 / 4.2    | with label   | no          | yes     |
-| Spark SQL tests, Spark 3.5 / 4.0                  | with label   | no          | yes     |
+| Spark SQL tests, Spark 3.5 / 4.0 / 4.2            | with label   | no          | yes     |
 | Iceberg Spark SQL tests, Iceberg 1.8 / 1.9 / 1.10 | with label   | no          | yes     |
 | Spark SQL tests, Spark 3.4                        | with label   | no          | no      |
 
@@ -121,6 +121,7 @@ Each suite outside the PR tier has a label that runs it on a pull request:
 | `run-spark-3.4-tests`      | Spark SQL tests against Spark 3.4                     |
 | `run-spark-3.5-tests`      | Spark SQL tests against Spark 3.5                     |
 | `run-spark-4.0-tests`      | Spark SQL tests against Spark 4.0                     |
+| `run-spark-4.2-tests`      | Spark SQL tests against Spark 4.2                     |
 | `run-iceberg-tests`        | Iceberg Spark SQL tests against every Iceberg version |
 
 For a queue-tier suite the label only brings the run forward; the queue would have run it anyway
@@ -240,7 +241,7 @@ re-armed automatically.
 
 `ci.yml` also runs on a schedule, at 06:00 UTC every day, against what landed on `main` since the
 last successful scheduled run. That run executes only the nightly tier: the Comet test suites against the Spark
-profiles other than 4.1, the Spark SQL suites for Spark 3.5 and 4.0, and the Iceberg suites for
+profiles other than 4.1, the Spark SQL suites for Spark 3.5, 4.0 and 4.2, and the Iceberg suites for
 1.8, 1.9 and 1.10, each only when the day's changes touched files it covers. The queue already ran
 everything else against the same tree, so nothing in the queue tier is repeated. A day with no
 merges, or with only documentation changes, runs nothing.
@@ -335,8 +336,9 @@ gh run view "$run" --repo apache/datafusion-comet --json jobs \
         | group_by(.conclusion)[] | "\(length)\t\(.[0].conclusion)"'
 ```
 
-A healthy run over a day of normal merges reports about 40 successes, with the handful of skips
-being the suites that belong to the queue tier rather than the nightly one — Spark 3.4, Spark 4.1
+A healthy run over a day of normal merges reports about 47 successes — seven Spark SQL shards for
+each of 3.5, 4.0 and 4.2, plus the Iceberg shards — with the handful of skips being the suites that
+belong to the queue tier rather than the nightly one — Spark 3.4, Spark 4.1
 and Iceberg 1.11. If everything is skipped, open the run's `Detect changes` job: it logs the
 `Nightly base:` commit it diffed against and the list of changed files, which is enough to tell a
 genuinely quiet day from a base that has drifted.

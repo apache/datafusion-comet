@@ -43,6 +43,12 @@ required one, so a red 3.4 there changes nothing. It is the next push with
 the label still applied that runs 3.4 under `Required Checks`, and with the
 queue run gone that push is the only thing that makes a 3.4 failure blocking.
 
+`spark_4_2` is in the nightly tier despite Spark 4.2 support being
+experimental. Nightly is what keeps `dev/diffs/4.2.0.diff` honest: the diff
+files for the supported versions are updated together whenever a Comet change
+needs one, and a 4.2 suite that only ran on request would let its diff rot
+unnoticed between requests.
+
 Heavy jobs have no `push` tier. The queue already tested the exact tree that
 lands, so re-running them on push to main would double the cost of every
 merge. Two jobs are still on `push`: `docs`, because it deploys to `asf-site`
@@ -113,6 +119,7 @@ tiers partition the list and that the `pr` tier is exactly the default profile.
                                         (other profiles)
                                       spark_3_5           run-spark-3.5-tests
                                       spark_4_0           run-spark-4.0-tests
+                                      spark_4_2           run-spark-4.2-tests
                                       iceberg_1_8         run-iceberg-tests
                                       iceberg_1_9         run-iceberg-tests
                                       iceberg_1_10        run-iceberg-tests
@@ -157,6 +164,7 @@ tiers partition the list and that the `pr` tier is exactly the default profile.
 | `spark_4_1`          | merge group, **or** PR with `run-spark-4.1-tests`; the `sql_hive` shards alone with `run-spark-4.1-hive-tests`                                                                                                                                         | Spark 4.1 sources                   |
 | `spark_3_4`          | PR with `run-spark-3.4-tests`, or dispatch                                                                                                                                                                                                             | Spark 3.4 sources                   |
 | `spark_4_0`          | nightly, **or** PR with `run-spark-4.0-tests`                                                                                                                                                                                                          | Spark 4.0 sources                   |
+| `spark_4_2`          | nightly, **or** PR with `run-spark-4.2-tests`                                                                                                                                                                                                          | Spark 4.2 sources                   |
 | `iceberg_1_11`       | merge group, **or** PR with `run-iceberg-tests`                                                                                                                                                                                                        | Iceberg sources                     |
 | `iceberg_1_8`        | nightly, **or** PR with `run-iceberg-tests`                                                                                                                                                                                                            | Iceberg sources                     |
 | `iceberg_1_9`        | nightly, **or** PR with `run-iceberg-tests`                                                                                                                                                                                                            | Iceberg sources                     |
@@ -274,16 +282,16 @@ umbrella doesn't watch, or operate independently of the rest of CI:
 
 ## Reusable workflows (called by `ci.yml`)
 
-| File                              | Called from `ci.yml` job(s)                                  |
-| --------------------------------- | ------------------------------------------------------------ |
-| `pr_build_linux.yml`              | `pr_build_linux`                                             |
-| `pr_build_macos.yml`              | `pr_build_macos`                                             |
-| `pr_benchmark_check.yml`          | `pr_benchmark_check`                                         |
-| `delta_build_gate.yml`            | `delta_build_gate`                                           |
-| `pyarrow_udf_test.yml`            | `pyarrow_udf_test`                                           |
-| `docs.yaml`                       | `docs`                                                       |
-| `spark_sql_test_reusable.yml`     | `spark_3_4`, `spark_3_5`, `spark_4_0`, `spark_4_1`           |
-| `iceberg_spark_test_reusable.yml` | `iceberg_1_8`, `iceberg_1_9`, `iceberg_1_10`, `iceberg_1_11` |
+| File                              | Called from `ci.yml` job(s)                                     |
+| --------------------------------- | --------------------------------------------------------------- |
+| `pr_build_linux.yml`              | `pr_build_linux`                                                |
+| `pr_build_macos.yml`              | `pr_build_macos`                                                |
+| `pr_benchmark_check.yml`          | `pr_benchmark_check`                                            |
+| `delta_build_gate.yml`            | `delta_build_gate`                                              |
+| `pyarrow_udf_test.yml`            | `pyarrow_udf_test`                                              |
+| `docs.yaml`                       | `docs`                                                          |
+| `spark_sql_test_reusable.yml`     | `spark_3_4`, `spark_3_5`, `spark_4_0`, `spark_4_1`, `spark_4_2` |
+| `iceberg_spark_test_reusable.yml` | `iceberg_1_8`, `iceberg_1_9`, `iceberg_1_10`, `iceberg_1_11`    |
 
 ## Changing what runs when
 
