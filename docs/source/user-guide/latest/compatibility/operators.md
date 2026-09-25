@@ -35,23 +35,14 @@ readable empty output files and their schema metadata.
 ## In-Memory Cache
 
 Comet can store cached relations (`df.cache()`, `CACHE TABLE`) in Arrow format and scan them
-natively. This is experimental and disabled by default. Enable it with
-`spark.comet.exec.inMemoryCache.enabled=true` before the application starts: the value at startup
-decides whether Comet sets `spark.sql.cache.serializer` to its Arrow cache serializer, and
-because that is a static config the cache format is fixed for the application. Comet does not
-replace a `spark.sql.cache.serializer` that the application has already set. Disabling the
-setting later only sends cached scans back to Spark's execution path.
+natively. This is experimental and disabled by default; see [In-Memory Cache](../in-memory-cache.md)
+for how to enable it. Comet does not replace a `spark.sql.cache.serializer` that the application
+has already set. Relations whose schema Comet's Arrow writer does not support are cached in
+Spark's default format, and their scans fall back to Spark. Reads that feed Spark operators rather
+than Comet operators can be slower than Spark's cache.
 
-Relations whose schema Comet's Arrow writer does not support are cached in Spark's default
-format, and their scans fall back to Spark. Each cached column is stored as its own compressed
-Arrow IPC stream, so a scan decodes only the columns it projects. Reads that feed Spark operators
-rather than Comet operators still pay a row conversion that Spark's default format avoids, and
-can be slower than Spark's cache.
-
-With `spark.kryo.registrationRequired=true`, also set
-`spark.kryo.registrator=org.apache.comet.CometKryoRegistrator` before creating the
-`SparkContext`. Otherwise caching fails as soon as a block is serialized, including the disk
-half of the default `MEMORY_AND_DISK` storage level.
+With Kryo and `spark.kryo.registrationRequired=true`, Comet needs its Kryo registrator whether or
+not the cache is enabled; see [Kryo serialization](../installation.md#kryo-serialization).
 
 ## Sampling
 

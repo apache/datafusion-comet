@@ -261,3 +261,20 @@ Some cluster managers may require additional configuration, see <https://spark.a
 
 In addition to Apache Spark memory configuration parameters, Comet introduces additional parameters to configure memory
 allocation for native execution. See [Comet Memory Tuning](./tuning.md) for details.
+
+### Kryo serialization
+
+If the application uses Kryo (`spark.serializer=org.apache.spark.serializer.KryoSerializer`) with
+`spark.kryo.registrationRequired=true`, also register Comet's classes with Kryo:
+
+```shell
+--conf spark.kryo.registrator=org.apache.comet.CometKryoRegistrator
+```
+
+Without it, any query that uses Comet's native broadcast exchange, which is enabled by default,
+fails with Kryo's "Class is not registered" error, for example on the first broadcast hash join.
+The [in-memory cache](in-memory-cache.md#kryo) needs the same registrator. Set it before the
+`SparkContext` is created: `KryoSerializer` reads it before Comet's plugin runs, so Comet cannot
+add it for you. `spark.kryo.registrator` accepts a comma-separated list, so an application with
+its own registrator can list both. Comet logs a warning at startup when Kryo requires registration
+and this registrator is missing.
