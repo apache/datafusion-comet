@@ -109,7 +109,6 @@ class CometExecIteratorLifecycleSuite extends CometTestBase {
             true,
             "fair_unified",
             64L << 20,
-            64L << 20,
             taskAttemptId,
             1L,
             null,

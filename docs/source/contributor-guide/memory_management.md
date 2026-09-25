@@ -26,9 +26,12 @@ anyone debugging an out-of-memory report. For user-facing tuning advice, see the
 
 This page covers off-heap mode (`spark.memory.offHeap.enabled=true`) only. Comet also has an
 on-heap mode, but it exists so that the Spark SQL test suite can run against Comet without changing
-Spark's memory configuration. It must not be used in production, and it is not described here. The
-pool types that only on-heap mode exposes belong to the `CATEGORY_TESTING` config group for the
-same reason.
+Spark's memory configuration. Comet performs no memory accounting in it: the native side gets
+DataFusion's `UnboundedMemoryPool` and the JVM shuffle allocator
+(`CometUnboundedShuffleMemoryAllocator`) hands out `Unsafe` pages against no budget. Native memory
+is not on the JVM heap, so there is no Spark pool it could honestly be charged to, and the
+fixed-size pool that used to stand in for one bounded nothing the container cares about. On-heap
+mode must not be used in production, and it is not described further here.
 
 ## Overview
 
@@ -212,9 +215,6 @@ back a slice of the off-heap pool for the memory Comet does not reserve, but it 
 
 The only room Spark leaves for memory outside the pool is `spark.executor.memoryOverhead`.
 
-A second value, `memory_limit_per_task`, is computed and passed alongside it, but only the on-heap
-pool types read it.
-
 ### Resolving the pool type
 
 `parse_memory_pool_config` (`native/core/src/execution/memory_pools/config.rs`) turns the pool-type
@@ -225,7 +225,8 @@ string and the limit into a `MemoryPoolConfig`. Two pool types are valid in off-
 | `fair_unified` (default) | `memory_limit`      | Delegates to Spark's `TaskMemoryManager`; task-shared |
 | `greedy_unified`         | n/a (pool size `0`) | Spark owns the limit entirely; task-shared            |
 
-Any other pool type is rejected with a configuration error.
+Any other pool type is rejected with a configuration error. In on-heap mode the pool-type string is
+ignored and the pool is always `UnboundedMemoryPool`.
 
 ## The pool stack
 
@@ -265,27 +266,50 @@ JNI, which goes through Spark's ordinary `TaskMemoryManager`. That means:
   is refused unless Spark can cover both, so operators spill until the debt is repaid. Both pools'
   `Display` output and their `try_grow` errors report the current overcommit.
 
-`CometFairMemoryPool` additionally applies a local check before it asks Spark. It divides
-`pool_size` by the number of consumers currently registered with the pool and rejects the request if
-the pool's _total_ reserved bytes plus the request would exceed that quotient. Two details matter
-for tuning:
+`CometFairMemoryPool` additionally applies two local checks before it asks Spark, and refuses the
+request without calling Spark if either fails:
 
-- The comparison is against the shared total (`state.used`), not against the requesting consumer's
-  own reservation. With an 8 GiB pool and two registered consumers, once one of them holds 3 GiB a
-  2 GiB request from the other is rejected, even though neither would exceed 4 GiB. In effect the
-  usable pool shrinks to `pool_size / num_consumers` in aggregate as soon as more than one consumer
-  is registered.
+- **The requesting consumer against its share.** The share is `pool_size` divided by the number of
+  consumers currently registered with the pool. What the consumer already holds plus the request
+  must not exceed it. That counts all of the consumer's reservations, including the sibling
+  reservations that `new_empty()`, `split()` and `take()` create, so an operator that holds several
+  reservations still gets one share. A sort's streaming merge, for example, creates one for each
+  batch it reads. The pool keeps a running total for each consumer, because `reservation.size()`
+  covers only one reservation. With an 8 GiB pool and two registered consumers, each share is
+  4 GiB, so once one consumer holds 3 GiB the other can still reserve up to 4 GiB.
+- **The pool's total against `pool_size`.** The shares alone do not bound the total, because a
+  consumer keeps what it reserved while fewer consumers were registered. `pool_size` is computed
+  for the executor but applied to each task's pool, so Spark's own limit on the task is at least as
+  tight unless the deprecated `spark.comet.exec.memoryPool.fraction` is below `1.0`.
+
+Two details matter for tuning:
+
 - The pool is task-shared (see below), so `num_consumers` counts every registered consumer across
-  every native plan in the task, not just the plan making the request.
+  every native plan in the task, not just the plan making the request. Registering a consumer
+  lowers every other consumer's share, but does not take back memory they already hold.
+- Every registered consumer gets a share, whether or not it can spill. DataFusion's
+  `FairSpillPool` divides the pool among spillable consumers only.
+  [Issue #5465](https://github.com/apache/datafusion-comet/issues/5465) tracks doing the same here.
 
-This is why `fair_unified` spills earlier than `greedy_unified`. It is not a per-consumer quota, and
-reading it as one overstates the memory a multi-operator task can use.
+This is why `fair_unified` can spill earlier than `greedy_unified`: a consumer at its share is
+refused even when the rest of the pool is free, which keeps that memory for the task's other
+consumers.
 
 ### Task-shared pools and their lifetime
 
-A single Spark task can run more than one native plan concurrently: a shuffle runs the pre-shuffle
-operators and the shuffle writer as separate native execution contexts. If each got its own pool,
-the per-task limit would be enforced once per plan rather than once per task.
+A single Spark task can run more than one native plan at a time. A native shuffle is not one of
+these cases, because its writer is planned together with the native operators that feed it. These
+operators do split a task's native work into separate plans:
+
+- `CometUnionExec` and `CometCoalesceExec` read their children through the JVM, so the native plan
+  above them and the native plans below them are separate.
+- `CometCollectLimitExec` and `CometTakeOrderedAndProjectExec` apply their limit in a native plan
+  of their own, over the output of the plan below them.
+- A native Parquet or Iceberg write runs its writer as a native plan of its own, over the output of
+  the plan below it.
+
+If each plan got its own pool, the per-task limit would be enforced once per plan rather than once
+per task.
 
 `acquire_task_shared_pool` (`task_shared.rs`) keeps a process-wide
 `HashMap<task_attempt_id, Weak<TaskSharedMemoryPool>>`. Plans in the same task upgrade the existing

@@ -23,7 +23,6 @@ import java.nio.ByteOrder
 
 import org.apache.spark.{SparkConf, SparkEnv}
 import org.apache.spark.internal.Logging
-import org.apache.spark.network.util.ByteUnit
 import org.apache.spark.sql.{SparkSession, SparkSessionExtensions}
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.catalyst.trees.{TreeNode, TreeNodeTag}
@@ -34,7 +33,7 @@ import org.apache.spark.sql.internal.SQLConf
 
 import org.apache.comet.CometConf._
 import org.apache.comet.iceberg.IcebergWriteStrategy
-import org.apache.comet.rules.{CometPlanAdaptiveDynamicPruningFilters, CometReuseSubquery, CometRule, CometSpark34AqeDppFallbackRule, EliminateRedundantTransitions, RevertNativeForTransitionHeavyStages}
+import org.apache.comet.rules.{CometPlanAdaptiveDynamicPruningFilters, CometReuseSubquery, CometRule, CometSpark34AqeDppFallbackRule}
 import org.apache.comet.shims.ShimCometSparkSessionExtensions
 
 /**
@@ -96,7 +95,9 @@ class CometSparkSessionExtensions
     // Registered before CometRule so tags are in place when conversion runs.
     // No-op on Spark 3.5+; see CometSpark34AqeDppFallbackRule's class docstring.
     injectPreSpark35QueryStagePrepRuleShim(extensions, CometSpark34AqeDppFallbackRule)
-    extensions.injectQueryStagePrepRule { session => CometRule(session) }
+    extensions.injectQueryStagePrepRule { session =>
+      CometRule(session, queryStagePrep = true)
+    }
     injectQueryStageOptimizerRuleShim(extensions, CometPlanAdaptiveDynamicPruningFilters)
     injectQueryStageOptimizerRuleShim(extensions, CometReuseSubquery)
     extensions.injectPlannerStrategy { session => IcebergWriteStrategy(session) }
@@ -106,8 +107,7 @@ class CometSparkSessionExtensions
     override def preColumnarTransitions: Rule[SparkPlan] = CometRule(session)
 
     override def postColumnarTransitions: Rule[SparkPlan] = {
-      val rules =
-        Seq(RevertNativeForTransitionHeavyStages(session), EliminateRedundantTransitions(session))
+      val rules = CometRule.postColumnarRules(session)
       plan => rules.foldLeft(plan) { case (p, rule) => rule(p) }
     }
   }
@@ -250,53 +250,6 @@ object CometSparkSessionExtensions extends Logging {
 
   def isSpark42Plus: Boolean = {
     org.apache.spark.SPARK_VERSION >= "4.2"
-  }
-
-  /**
-   * Determines required memory overhead in MB per executor process for Comet when running in
-   * on-heap mode.
-   */
-  def getCometMemoryOverheadInMiB(sparkConf: SparkConf): Long = {
-    if (isOffHeapEnabled(sparkConf)) {
-      // off-heap mode sizes the native memory pool from spark.memory.offHeap.size instead
-      // (see CometExecIterator.getMemoryConfig), so this value does not apply
-      return 0
-    }
-    ConfigHelpers.byteFromString(
-      sparkConf.get(
-        COMET_ONHEAP_MEMORY_OVERHEAD.key,
-        COMET_ONHEAP_MEMORY_OVERHEAD.defaultValueString),
-      ByteUnit.MiB)
-  }
-
-  /**
-   * Calculates required memory overhead in bytes per executor process for Comet when running in
-   * on-heap mode.
-   */
-  def getCometMemoryOverhead(sparkConf: SparkConf): Long = {
-    ByteUnit.MiB.toBytes(getCometMemoryOverheadInMiB(sparkConf))
-  }
-
-  /**
-   * Calculates required shuffle memory size in bytes per executor process for Comet when running
-   * in on-heap mode.
-   */
-  def getCometShuffleMemorySize(sparkConf: SparkConf, conf: SQLConf = SQLConf.get): Long = {
-    assert(!isOffHeapEnabled(sparkConf))
-
-    val cometMemoryOverhead = getCometMemoryOverheadInMiB(sparkConf)
-
-    val overheadFactor = COMET_SHUFFLE_JVM_MEMORY_FACTOR.get(conf)
-
-    val shuffleMemorySize = (overheadFactor * cometMemoryOverhead).toLong
-    if (shuffleMemorySize > cometMemoryOverhead) {
-      logWarning(
-        s"Configured shuffle memory size $shuffleMemorySize is larger than Comet memory overhead " +
-          s"$cometMemoryOverhead, using Comet memory overhead instead.")
-      ByteUnit.MiB.toBytes(cometMemoryOverhead)
-    } else {
-      ByteUnit.MiB.toBytes(shuffleMemorySize)
-    }
   }
 
   def isOffHeapEnabled(sparkConf: SparkConf): Boolean = {
