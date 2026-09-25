@@ -1342,6 +1342,7 @@ impl PhysicalPlanner {
                     Arc::clone(&child.native_plan),
                     specs,
                     udf.max_records_per_batch,
+                    udf.max_bytes_per_batch,
                 )?);
                 Ok((
                     scans,

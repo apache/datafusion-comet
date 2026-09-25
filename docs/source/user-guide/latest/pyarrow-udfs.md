@@ -112,7 +112,8 @@ Comet passes each argument as a `pyarrow.Array` through the Arrow C Data Interfa
 pickled Python function with PyO3, and appends the result array to the input batch. It checks the
 result length and safely casts it to the declared return type, matching Spark's scalar Arrow UDF
 serializer. It splits larger input batches according to
-`spark.sql.execution.arrow.maxRecordsPerBatch`. A native worker is created per partition.
+`spark.sql.execution.arrow.maxRecordsPerBatch` and
+`spark.sql.execution.arrow.maxBytesPerBatch`. A native worker is created per partition.
 
 Each partition unpickles its own callable. Imported modules and their global state are shared by
 concurrent tasks in the executor's embedded Python interpreter.

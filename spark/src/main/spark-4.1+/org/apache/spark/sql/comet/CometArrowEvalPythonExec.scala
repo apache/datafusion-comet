@@ -134,6 +134,7 @@ object CometArrowEvalPythonExec extends CometOperatorSerde[ArrowEvalPythonExec] 
         .newBuilder()
         .addAllFunctions(functions.map(_.get).asJava)
         .setMaxRecordsPerBatch(op.conf.arrowMaxRecordsPerBatch)
+        .setMaxBytesPerBatch(op.conf.arrowMaxBytesPerBatch)
       Some(builder.setArrowPythonUdf(native).build())
     }
   }

@@ -128,30 +128,77 @@ def test_scalar_arrow_udf_uses_native_path_and_spark_batch_limit(spark):
     def string_hash(values):
         return pa.array([hash(value) for value in values.to_pylist()], type=pa.int64())
 
-    source = spark.range(1, 5, 1, 1)
+    previous_comet_enabled = spark.conf.get("spark.comet.enabled")
     spark.conf.set("spark.sql.adaptive.enabled", "false")
     spark.conf.set("spark.sql.execution.arrow.maxRecordsPerBatch", "2")
     spark.conf.set("spark.comet.sparkToColumnar.enabled", "true")
     try:
-        spark.conf.set("spark.comet.exec.nativeArrowPythonUDF.enabled", "false")
-        spark_rows = source.select(batch_length("id")).collect()
+        # Spark 4.2's columnar Python input does not apply the row limit.
+        # Disable Comet so the reference uses Spark's row-based Arrow writer.
+        spark.conf.set("spark.comet.enabled", "false")
+        spark_source = spark.range(1, 5, 1, 1)
+        spark_reference = spark_source.select(batch_length("id"))
+        assert "Comet" not in _executed_plan(spark_reference)
+        spark_rows = spark_reference.collect()
 
+        spark.conf.set("spark.comet.enabled", "true")
         spark.conf.set("spark.comet.exec.nativeArrowPythonUDF.enabled", "true")
+        source = spark.range(1, 5, 1, 1)
         result = source.select(batch_length("id"))
         assert "CometArrowEvalPython" in _executed_plan(result)
         assert result.collect() == spark_rows
         assert [row[0] for row in spark_rows] == [2, 2, 2, 2]
 
+        spark.conf.set("spark.comet.enabled", "false")
+        spark_strings = spark.range(1, 5, 1, 1).selectExpr("cast(id as string) as value")
+        spark_hashes = spark_strings.select(string_hash("value")).collect()
+        spark.conf.set("spark.comet.enabled", "true")
         strings = source.selectExpr("cast(id as string) as value")
-        spark.conf.set("spark.comet.exec.nativeArrowPythonUDF.enabled", "false")
-        spark_hashes = strings.select(string_hash("value")).collect()
-        spark.conf.set("spark.comet.exec.nativeArrowPythonUDF.enabled", "true")
         native_hashes = strings.select(string_hash("value"))
         assert "CometArrowEvalPython" in _executed_plan(native_hashes)
         assert native_hashes.collect() == spark_hashes
     finally:
         spark.conf.set("spark.comet.exec.nativeArrowPythonUDF.enabled", "false")
+        spark.conf.set("spark.comet.enabled", previous_comet_enabled)
         spark.conf.unset("spark.sql.execution.arrow.maxRecordsPerBatch")
+        spark.conf.unset("spark.comet.sparkToColumnar.enabled")
+        spark.conf.unset("spark.sql.adaptive.enabled")
+
+
+def test_scalar_arrow_udf_respects_spark_byte_batch_limit(spark):
+    from pyspark.sql.pandas import functions as pandas_functions
+
+    if not hasattr(pandas_functions, "arrow_udf"):
+        pytest.skip("scalar arrow_udf requires Spark 4.1 or later")
+
+    @pandas_functions.arrow_udf("long")
+    def checked_batch_size(values):
+        if values.nbytes > 16:
+            raise ValueError(f"configured byte cap exceeded: {values.nbytes} > 16")
+        return pa.array([values.nbytes] * len(values), type=pa.int64())
+
+    previous_comet_enabled = spark.conf.get("spark.comet.enabled")
+    spark.conf.set("spark.sql.adaptive.enabled", "false")
+    spark.conf.set("spark.sql.execution.arrow.maxRecordsPerBatch", "10000")
+    spark.conf.set("spark.sql.execution.arrow.maxBytesPerBatch", "16")
+    spark.conf.set("spark.comet.sparkToColumnar.enabled", "true")
+    try:
+        spark.conf.set("spark.comet.enabled", "false")
+        spark_reference = spark.range(1, 5, 1, 1).select(checked_batch_size("id"))
+        assert "Comet" not in _executed_plan(spark_reference)
+        spark_rows = spark_reference.collect()
+
+        spark.conf.set("spark.comet.enabled", "true")
+        spark.conf.set("spark.comet.exec.nativeArrowPythonUDF.enabled", "true")
+        native_rows = spark.range(1, 5, 1, 1).select(checked_batch_size("id"))
+        assert "CometArrowEvalPython" in _executed_plan(native_rows)
+        assert native_rows.collect() == spark_rows
+        assert [row[0] for row in spark_rows] == [16, 16, 16, 16]
+    finally:
+        spark.conf.set("spark.comet.exec.nativeArrowPythonUDF.enabled", "false")
+        spark.conf.set("spark.comet.enabled", previous_comet_enabled)
+        spark.conf.unset("spark.sql.execution.arrow.maxRecordsPerBatch")
+        spark.conf.unset("spark.sql.execution.arrow.maxBytesPerBatch")
         spark.conf.unset("spark.comet.sparkToColumnar.enabled")
         spark.conf.unset("spark.sql.adaptive.enabled")
 

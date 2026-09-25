@@ -803,6 +803,8 @@ message ArrowPythonUdf {
   // Spark's Arrow writer splits input batches before calling a scalar Arrow UDF.
   // A non-positive value disables the limit.
   int32 max_records_per_batch = 2;
+  // Spark also stops a batch once its Arrow input buffers reach this size.
+  int64 max_bytes_per_batch = 3;
 }
 
 message ArrowPythonFunction {
