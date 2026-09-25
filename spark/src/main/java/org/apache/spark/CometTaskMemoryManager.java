@@ -81,6 +81,11 @@ public class CometTaskMemoryManager {
     long acquired = internal.acquireExecutionMemory(size, nativeMemoryConsumer);
     long newUsed = used.addAndGet(acquired);
     if (acquired < size) {
+      // This thread holds the short grant until native code hands it back, and another acquire
+      // of this task can be waiting inside Spark for those bytes while it holds the
+      // TaskMemoryManager monitor. So nothing here may take that monitor, which rules out
+      // TaskMemoryManager.showMemoryUsage. getMemoryConsumptionForThisTask takes only the memory
+      // manager's monitor, which a waiting acquire gives up.
       logger.warn(
           "Task {} requested {} bytes but only received {} bytes. Current allocation is {} and "
               + "the total memory consumption is {} bytes.",
@@ -89,8 +94,6 @@ public class CometTaskMemoryManager {
           acquired,
           newUsed,
           internal.getMemoryConsumptionForThisTask());
-      // If memory manager is not able to acquire the requested size, log memory usage
-      internal.showMemoryUsage();
     }
     return acquired;
   }
