@@ -199,19 +199,6 @@ index 96dddafd82a..efedbbb3c0e 100644
  
  -- Test tables
  CREATE table  explain_temp1 (key int, val int) USING PARQUET;
-diff --git a/sql/core/src/test/resources/sql-tests/inputs/hll.sql b/sql/core/src/test/resources/sql-tests/inputs/hll.sql
-index 35128da97fd..25b873ae859 100644
---- a/sql/core/src/test/resources/sql-tests/inputs/hll.sql
-+++ b/sql/core/src/test/resources/sql-tests/inputs/hll.sql
-@@ -1,3 +1,8 @@
-+-- TODO(https://github.com/apache/datafusion-comet/issues/4121)
-+-- Comet's native scan rejects invalid UTF-8 byte sequences inserted into the
-+-- string test table, which Spark allows.
-+--SET spark.comet.enabled = false
-+
- -- Positive test cases
- -- Create a table with some testing data.
- DROP TABLE IF EXISTS t1;
 diff --git a/sql/core/src/test/resources/sql-tests/inputs/join-nearest-by.sql b/sql/core/src/test/resources/sql-tests/inputs/join-nearest-by.sql
 index 40cfa87c4cd..4e1d5407100 100644
 --- a/sql/core/src/test/resources/sql-tests/inputs/join-nearest-by.sql
@@ -361,32 +348,6 @@ index 3df495e0524..82a95c278bb 100644
  -- A test suite for set-operations in parent side, subquery, and both predicate subquery
  -- It includes correlated cases.
  --ONLY_IF spark
-diff --git a/sql/core/src/test/resources/sql-tests/inputs/thetasketch.sql b/sql/core/src/test/resources/sql-tests/inputs/thetasketch.sql
-index 4782d2017f2..3c7fe46dcb3 100644
---- a/sql/core/src/test/resources/sql-tests/inputs/thetasketch.sql
-+++ b/sql/core/src/test/resources/sql-tests/inputs/thetasketch.sql
-@@ -1,3 +1,8 @@
-+-- TODO(https://github.com/apache/datafusion-comet/issues/4121)
-+-- Comet's native scan rejects invalid UTF-8 byte sequences inserted into the
-+-- string test table, which Spark allows.
-+--SET spark.comet.enabled = false
-+
- -- Positive test cases
- -- Create tables with two columns for each data type
- 
-diff --git a/sql/core/src/test/resources/sql-tests/inputs/tuplesketch.sql b/sql/core/src/test/resources/sql-tests/inputs/tuplesketch.sql
-index fa83a54c830..1a9862bb565 100644
---- a/sql/core/src/test/resources/sql-tests/inputs/tuplesketch.sql
-+++ b/sql/core/src/test/resources/sql-tests/inputs/tuplesketch.sql
-@@ -1,3 +1,8 @@
-+-- TODO(https://github.com/apache/datafusion-comet/issues/4121)
-+-- Comet's native scan rejects invalid UTF-8 byte sequences inserted into the
-+-- string test table, which Spark allows.
-+--SET spark.comet.enabled = false
-+
- -- Positive test cases
- -- Create tables with key-value pairs for tuple sketches
- 
 diff --git a/sql/core/src/test/resources/sql-tests/inputs/view-schema-binding-config.sql b/sql/core/src/test/resources/sql-tests/inputs/view-schema-binding-config.sql
 index e803254ea64..74db78aee38 100644
 --- a/sql/core/src/test/resources/sql-tests/inputs/view-schema-binding-config.sql
@@ -1377,10 +1338,44 @@ index da6f6aca2ad..c02b7c99490 100644
        verifyCallCount(
          df.selectExpr("testUdf(a + 1) + testUdf(1 + a)", "testUdf(a + 1)"), Row(4, 2), 1)
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/SQLQueryTestSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/SQLQueryTestSuite.scala
-index 395cb67f441..755213ea10a 100644
+index 395cb67f441..33ac6ed19af 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/SQLQueryTestSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/SQLQueryTestSuite.scala
-@@ -829,9 +829,24 @@ class SQLQueryTestSuite extends SharedSparkSession with SQLHelper
+@@ -190,6 +190,33 @@ class SQLQueryTestSuite extends SharedSparkSession with SQLHelper
+   protected def ignoreList: Set[String] = Set(
+     "ignored.sql" // Do NOT remove this one. It is here to test the ignore functionality.
+   ) ++ otherIgnoreList
++
++  // Comet: hll.sql, thetasketch.sql and tuplesketch.sql each create one of these tables and fill
++  // it with invalid UTF-8, which Spark allows in a STRING column and Comet's native scan rejects.
++  // Only the queries that name one of them run with the native scan disabled, so every other
++  // query in those files still runs with Comet.
++  // TODO: https://github.com/apache/datafusion-comet/issues/4121
++  private val cometInvalidUtf8Tables = Seq("hll_string_test", "t_string_collation")
++
++  override protected def getNormalizedQueryExecutionResult(
++      session: SparkSession, sql: String): (String, Seq[String]) = {
++    if (isCometEnabled && cometInvalidUtf8Tables.exists(sql.contains)) {
++      val key = "spark.comet.scan.enabled"
++      val previous = session.conf.getOption(key)
++      session.conf.set(key, "false")
++      try {
++        super.getNormalizedQueryExecutionResult(session, sql)
++      } finally {
++        previous match {
++          case Some(value) => session.conf.set(key, value)
++          case None => session.conf.unset(key)
++        }
++      }
++    } else {
++      super.getNormalizedQueryExecutionResult(session, sql)
++    }
++  }
++
+   /** List of test cases that require TPCDS table schemas to be loaded. */
+   private def requireTPCDSCases: Seq[String] = Seq("pipe-operators.sql")
+   /** List of TPCDS table names and schemas to load from the [[TPCDSSchema]] base class. */
+@@ -829,9 +856,24 @@ class SQLQueryTestSuite extends SharedSparkSession with SQLHelper
          s"Schema did not match for query #$i\n${expected.sql}: $output") {
          output.schema
        }
