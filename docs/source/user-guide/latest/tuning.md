@@ -108,9 +108,13 @@ there is. That includes:
 
 Reserved memory is therefore a lower bound on what Comet really uses, and how far below it sits depends on the
 workload. This is why Comet can stay within the pool's limit and still push the executor past its container limit.
-Each executor logs how far apart the two are while Comet runs; see [Sizing the Overhead from the Memory Usage Log].
-To leave room for the part that is not counted, set `spark.comet.exec.memoryPool.fraction` to a value less than
-`1.0`, which restricts the amount of memory Comet is allowed to reserve.
+The part that is not counted has to fit in `spark.executor.memoryOverhead`, and each executor logs how large it is
+while Comet runs; see [Sizing the Overhead from the Memory Usage Log].
+
+`spark.comet.exec.memoryPool.fraction` is deprecated and does not leave room for it. Spark hands out all of
+`spark.memory.offHeap.size` to the tasks that ask for it, whatever the fraction. The `fair_unified` pool applies the
+fraction to each task separately, where Spark's own limit of an even share of the pool per running task is tighter
+whenever more than one task is running, and the `greedy_unified` pool ignores it.
 
 For more details about Spark off-heap memory mode, please refer to [Spark documentation].
 
@@ -123,15 +127,21 @@ The valid pool types are:
 - `fair_unified` (default when `spark.memory.offHeap.enabled=true` is set)
 - `greedy_unified`
 
-Both pool types are shared across all native execution contexts within the same Spark task. When
-Comet executes a shuffle, it runs two native execution contexts concurrently (e.g. one for
-pre-shuffle operators and one for the shuffle writer). The shared pool ensures that the combined
-memory usage stays within the per-task limit.
+Both pool types are shared by all the native plans in the same Spark task. A task can run more than
+one native plan at a time, for example the native operators on either side of a union or a
+coalesce. The shared pool ensures that their combined memory usage stays within the per-task limit.
 
 The `fair_unified` pool prevents operators from using more than an even fraction of the available memory
-(i.e. `pool_size / num_reservations`). This pool works best when you know beforehand
+(i.e. `pool_size / num_consumers`, where `num_consumers` counts the memory consumers registered by all of the task's
+native plans). This pool works best when you know beforehand
 the query has multiple operators that will likely all need to spill. Sometimes it will cause spills even
 when there is sufficient memory in order to leave enough memory for other operators.
+
+Comet 0.15.0 through 1.0.0 capped the memory of all of a task's operators combined at one operator's share, because of a
+bug ([#5961](https://github.com/apache/datafusion-comet/issues/5961)). Tasks with several operators can now reserve more
+memory before they spill than they could in those releases. The difference is largest on executors that run few tasks
+at once, where Spark's own limit on each task is loosest. If you sized executor memory against one of those releases,
+check that executors still have enough headroom; see [Sizing the Overhead from the Memory Usage Log].
 
 The `greedy_unified` pool type implements a greedy first-come first-serve limit. This pool works well for queries that do not
 need to spill or have a single spillable operator.
@@ -279,12 +289,14 @@ flushes sorted spill files. It must not exceed `spark.comet.batchSize`.
 
 ### Limiting Spill Disk Usage
 
-Native operators that spill to disk (aggregate, sort, shuffle) are collectively bounded by
-`spark.comet.maxTempDirectorySize` (default 100 GB). The limit is applied per Spark task, so an
-executor running `N` concurrent tasks may use up to `N` times this value on shared local disks.
-If the limit is reached, further spills fail and the query errors out. Raise this on workloads
-with large sort/aggregate/shuffle spills, or lower it to protect executors on shared disks
-(remembering to divide by task concurrency to reason about the aggregate).
+Native operators that spill to disk (aggregate, sort, shuffle) are bounded by
+`spark.comet.maxTempDirectorySize` (default 100 GB). The operators of one Comet native plan share
+the limit. A Spark task can run more than one native plan at a time, for example the native
+operators on either side of a union or a coalesce, so an executor running `N` concurrent tasks may
+use more than `N` times this value on shared local disks. If the limit is reached, further spills
+fail and the query errors out. Raise this on workloads with large sort/aggregate/shuffle spills, or
+lower it to protect executors on shared disks, remembering that the total across an executor is a
+multiple of this value.
 
 ## Parquet Reader Tuning
 
@@ -380,6 +392,14 @@ direct-column `IS NOT NULL` checks, including conjunctions, and remaps columns w
 projects the file schema. The original null checks and residual runtime filter remain in place.
 The original join still verifies matches, including any hash collisions admitted by the filter.
 Standalone projections, other filter expressions, and limits prevent reader attachment.
+
+To preserve schema-conversion and timestamp-overflow errors, runtime reader pruning is disabled for
+each file whose projected or statically filtered columns require schema adaptations beyond direct
+column mappings or literal values. This conservative check also disables reader pruning for allowed
+`INT32` to `BIGINT` promotion and for projecting a subset of a struct's fields, even when those
+adaptations cannot fail. Nested column pruning still reads only the requested struct fields. Scans
+with supplied file statistics also skip reader attachment. These cases still use runtime filtering
+on decoded batches.
 
 Filters stay within the task's native plan and do not propagate across Spark exchanges or JVM/Arrow
 boundaries. A shuffled hash join can still filter probe batches after shuffle, but it cannot send
