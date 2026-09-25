@@ -32,7 +32,7 @@ import org.apache.hadoop.fs.Path
 import org.apache.spark.sql._
 import org.apache.spark.sql.catalyst.{FunctionIdentifier, TableIdentifier}
 import org.apache.spark.sql.catalyst.catalog.{BucketSpec, CatalogStatistics, CatalogTable}
-import org.apache.spark.sql.catalyst.expressions.{DynamicPruningExpression, Expression, ExpressionInfo, Hex, Literal}
+import org.apache.spark.sql.catalyst.expressions.{DynamicPruningExpression, Expression, ExpressionInfo, GetStructField, Hex, Literal, ScalarSubquery => LogicalScalarSubquery}
 import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateMode, BloomFilterAggregate}
 import org.apache.spark.sql.comet._
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometNativeShuffle, CometShuffleExchangeExec}
@@ -2313,6 +2313,230 @@ class CometExecSuite extends CometTestBase {
           val df4 = sql(s"SELECT (SELECT $column1 FROM tbl LIMIT 1) AS a, _1, _2 FROM tbl")
           checkSparkAnswerAndOperator(df4)
         }
+      }
+    }
+  }
+
+  test("scalar subqueries merged into a struct") {
+    val numRows = 1024
+    withTempPath { dir =>
+      // Keep the consuming input in one file: local[5] writes the old five-row input as five
+      // one-row files, hiding a scalar field incorrectly returned as a one-element array.
+      (0 until numRows)
+        .map(i => (i, i + 10))
+        .toDF("_1", "_2")
+        .coalesce(1)
+        .write
+        .parquet(dir.getCanonicalPath)
+      Seq(false, true).foreach { aqeEnabled =>
+        withSQLConf(
+          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqeEnabled.toString,
+          SQLConf.SUBQUERY_REUSE_ENABLED.key -> "true",
+          CometConf.COMET_BATCH_SIZE.key -> numRows.toString,
+          CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
+          withParquetTable(dir.getCanonicalPath, "tbl") {
+            assert(spark.table("tbl").inputFiles.length == 1)
+            // MergeScalarSubqueries combines the aggregate results into one struct and reads its
+            // fields at each original scalar-subquery site. There is no explicit struct in the SQL.
+            val df = sql("""
+              |SELECT _1,
+              |       (SELECT max(_1) AS maximum FROM tbl) AS maximum,
+              |       (SELECT sum(_2) AS total FROM tbl) AS total,
+              |       (SELECT avg(_2) AS mean FROM tbl) AS mean
+              |FROM tbl
+              |""".stripMargin)
+            val mergedSubqueries = df.queryExecution.optimizedPlan.collect { case p =>
+              p.expressions.flatMap(_.collect {
+                case GetStructField(s: LogicalScalarSubquery, _, _)
+                    if s.dataType.isInstanceOf[StructType] =>
+                  s
+              })
+            }.flatten
+            assert(
+              mergedSubqueries.nonEmpty,
+              s"Expected merged struct scalar subqueries:\n${df.queryExecution.optimizedPlan}")
+            assert(mergedSubqueries.exists(_.dataType.asInstanceOf[StructType].length == 3))
+
+            val (_, cometPlan) =
+              checkSparkAnswerAndOperator(df, Seq(classOf[CometProjectExec]))
+            val nativeProjections = stripAQEPlan(cometPlan)
+              .collect { case p: CometProjectExec =>
+                val fields = p.projectList.flatMap(_.collect {
+                  case g @ GetStructField(s: ScalarSubquery, _, _)
+                      if s.dataType.isInstanceOf[StructType] =>
+                    g
+                })
+                (p, fields)
+              }
+              .filter(_._2.nonEmpty)
+            assert(
+              nativeProjections.nonEmpty,
+              s"Expected CometProjectExec to consume a struct scalar subquery:\n$cometPlan")
+            nativeProjections.foreach { case (projection, fields) =>
+              assert(fields.map(_.ordinal).toSet == Set(0, 1, 2))
+              assert(fields.forall(_.child.dataType.asInstanceOf[StructType].length == 3))
+              // Projection preserves its input batch length. Read sizes inside each task while
+              // the iterator owns the batches, and bring only integers back to the driver.
+              val batchSizes = projection
+                .executeColumnar()
+                .mapPartitions(batches => batches.map(_.numRows()))
+                .collect()
+              assert(batchSizes.sum == numRows)
+              assert(
+                batchSizes.exists(_ > 1),
+                s"Expected a multi-row consuming batch, got ${batchSizes.mkString(", ")}")
+            }
+          }
+        }
+      }
+    }
+  }
+
+  test("struct scalar subquery with nested Parquet field IDs") {
+    import org.apache.spark.sql.types.{IntegerType, LongType, MetadataBuilder, StringType, StructField}
+
+    import org.apache.comet.vector.CometVector
+
+    def fieldId(id: Long) = new MetadataBuilder().putLong("parquet.field.id", id).build()
+    val nestedType = StructType(
+      Seq(
+        StructField("number", IntegerType, nullable = true, fieldId(5)),
+        StructField("optional", LongType, nullable = true, fieldId(6))))
+    val payloadType = StructType(
+      Seq(
+        StructField("label", StringType, nullable = true, fieldId(3)),
+        StructField("nested", nestedType, nullable = true, fieldId(4))))
+    val schema = StructType(
+      Seq(
+        StructField("id", IntegerType, nullable = true, fieldId(1)),
+        StructField("payload", payloadType, nullable = true, fieldId(2))))
+    val rows =
+      Seq(Row(1, Row("kept", Row(17, null))), Row(2, null), Row(3, Row("other", Row(-91, 42L))))
+
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.PARQUET_FIELD_ID_WRITE_ENABLED.key -> "true",
+      SQLConf.PARQUET_FIELD_ID_READ_ENABLED.key -> "false") {
+      withTempPath { dir =>
+        withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+          spark
+            .createDataFrame(spark.sparkContext.parallelize(rows, 1), schema)
+            .write
+            .parquet(dir.getCanonicalPath)
+        }
+        withTempView("struct_metadata_subquery") {
+          spark.read
+            .schema(schema)
+            .parquet(dir.getCanonicalPath)
+            .createOrReplaceTempView("struct_metadata_subquery")
+          Seq(1, 2).foreach { id =>
+            val df = sql(s"""
+              |SELECT id,
+              |       (SELECT payload FROM struct_metadata_subquery WHERE id = $id) AS s
+              |FROM struct_metadata_subquery
+              |""".stripMargin)
+            val structSubqueries = stripAQEPlan(df.queryExecution.executedPlan).collect {
+              case p: CometProjectExec =>
+                p.projectList.flatMap(_.collect {
+                  case s: ScalarSubquery if s.dataType.isInstanceOf[StructType] => s
+                })
+            }.flatten
+            assert(structSubqueries.nonEmpty)
+            structSubqueries.foreach { subquery =>
+              val resultType = subquery.dataType.asInstanceOf[StructType]
+              assert(resultType == payloadType)
+              assert(resultType("label").metadata.getLong("parquet.field.id") == 3L)
+              assert(resultType("nested").metadata.getLong("parquet.field.id") == 4L)
+              val nested = resultType("nested").dataType.asInstanceOf[StructType]
+              assert(nested("number").metadata.getLong("parquet.field.id") == 5L)
+              assert(nested("optional").metadata.getLong("parquet.field.id") == 6L)
+            }
+            // Exercise native whole-struct output for both present and NULL results. The companion
+            // JVM IPC test pins the metadata difference between the wire and planned types.
+            val (_, cometPlan) =
+              checkSparkAnswerAndOperator(df, Seq(classOf[CometProjectExec]))
+            val nativeProjections = stripAQEPlan(cometPlan).collect {
+              case p: CometProjectExec if p.projectList.exists(_.exists {
+                    case s: ScalarSubquery => s.dataType == payloadType
+                    case _ => false
+                  }) =>
+                p
+            }
+            assert(nativeProjections.nonEmpty)
+            nativeProjections.foreach { projection =>
+              assert(projection.output.map(_.name) == Seq("id", "s"))
+              // Inspect the schema imported from native output while the iterator owns each
+              // batch. Return only ordinary Scala values, never live Arrow fields or vectors.
+              val batches = projection
+                .executeColumnar()
+                .mapPartitions { iter =>
+                  iter.map { batch =>
+                    val value = batch.column(1).asInstanceOf[CometVector]
+                    val fields = value.getValueVector.getField.getChildren
+                    val nested = fields.get(1).getChildren
+                    val metadata = Seq(fields.get(0), fields.get(1), nested.get(0), nested.get(1))
+                      .map(field =>
+                        field.getName -> Option(field.getMetadata.get("PARQUET:field_id")))
+                    val nulls = (0 until batch.numRows()).count(value.isNullAt)
+                    (batch.numRows(), metadata, nulls)
+                  }
+                }
+                .collect()
+              assert(batches.map(_._1).sum == rows.size)
+              batches.foreach { case (size, metadata, nulls) =>
+                assert(
+                  metadata == Seq(
+                    "label" -> Some("3"),
+                    "nested" -> Some("4"),
+                    "number" -> Some("5"),
+                    "optional" -> Some("6")))
+                assert(nulls == (if (id == 2) size else 0))
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  test("merged one-row aggregate subplans retain native projection and union") {
+    assume(isSpark42Plus, "MergeSubplans merges bare aggregate subplans in Spark 4.2+")
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.SUBQUERY_REUSE_ENABLED.key -> "true") {
+      withParquetTable((0 until 100).map(i => (i, i * 2)), "tbl") {
+        // Regression for #5834: this SQL has no scalar subqueries. MergeSubplans introduces
+        // them, and a Spark projection at either site also prevents native union execution.
+        // Distinct aliases keep the merged struct outside the duplicate-name limitation.
+        val df = sql("""
+            |SELECT sum(s) FROM (
+            |  SELECT max(_1) AS s FROM tbl
+            |  UNION ALL
+            |  SELECT min(_2) AS t FROM tbl)
+            |""".stripMargin)
+        val mergedSubqueries = df.queryExecution.optimizedPlan.collect { case p =>
+          p.expressions.flatMap(_.collect {
+            case s: LogicalScalarSubquery if s.dataType.isInstanceOf[StructType] => s
+          })
+        }.flatten
+        assert(
+          mergedSubqueries.exists(_.dataType.asInstanceOf[StructType].length == 2),
+          s"Expected MergeSubplans to introduce a struct scalar:\n${df.queryExecution.optimizedPlan}")
+
+        val (_, cometPlan) = checkSparkAnswerAndOperator(
+          df,
+          Seq(
+            classOf[CometProjectExec],
+            classOf[CometUnionExec],
+            classOf[CometHashAggregateExec]))
+        val nativeStructSubqueries = stripAQEPlan(cometPlan).collect { case p: CometProjectExec =>
+          p.projectList.flatMap(_.collect {
+            case s: ScalarSubquery if s.dataType.isInstanceOf[StructType] => s
+          })
+        }.flatten
+        assert(
+          nativeStructSubqueries.nonEmpty,
+          s"Expected CometProjectExec to consume the introduced struct scalar:\n$cometPlan")
       }
     }
   }
