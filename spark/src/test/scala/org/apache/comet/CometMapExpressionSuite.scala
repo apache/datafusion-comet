@@ -31,7 +31,7 @@ import org.apache.spark.sql.types.BinaryType
 import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
 import org.apache.comet.testing.{DataGenOptions, ParquetGenerator, SchemaGenOptions}
 
-class CometMapExpressionSuite extends CometTestBase {
+class CometMapExpressionSuite extends CometTestBase with CometCodegenAssertions {
 
   test("read map[int, int] from parquet") {
 
@@ -123,6 +123,41 @@ class CometMapExpressionSuite extends CometTestBase {
       spark.read.parquet(filename).createOrReplaceTempView("t1")
       val df = spark.sql("SELECT map_from_arrays(array(c12), array(c3)) FROM t1")
       checkSparkAnswerAndOperator(df)
+    }
+  }
+
+  test("map_from_arrays LAST_WIN dispatcher preserves builder errors") {
+    withSQLConf(
+      SQLConf.MAP_KEY_DEDUP_POLICY.key -> "LAST_WIN",
+      CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "true") {
+      withTable("test_map_from_arrays_errors") {
+        sql(
+          "CREATE TABLE test_map_from_arrays_errors " +
+            "(id INT, k ARRAY<STRING>, v ARRAY<INT>) USING parquet")
+        sql(
+          "INSERT INTO test_map_from_arrays_errors VALUES " +
+            "(1, array('a', NULL), array(1, 2)), " +
+            "(2, array('a', 'b'), array(1)), " +
+            "(3, array('a'), array(1, 2))")
+
+        Seq(1 -> "NULL_MAP_KEY", 2 -> "_LEGACY_ERROR_TEMP_2128", 3 -> "_LEGACY_ERROR_TEMP_2128")
+          .foreach { case (id, errorClass) =>
+            withClue(s"map_from_arrays error case $id: ") {
+              val df = sql(
+                "SELECT map_from_arrays(k, v) " +
+                  s"FROM test_map_from_arrays_errors WHERE id = $id")
+              // The SQL fixture checks error messages, but an error alone could pass on Spark
+              // fallback. Pin the error query's route and actual dispatcher activity as well.
+              assertExpressionImpl(
+                df.queryExecution.executedPlan,
+                native = Seq.empty,
+                dispatched = Seq("map_from_arrays"))
+              assertCodegenRan {
+                checkSparkError(df, errorClass)
+              }
+            }
+          }
+      }
     }
   }
 
