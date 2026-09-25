@@ -1,0 +1,1104 @@
+<!--
+Licensed to the Apache Software Foundation (ASF) under one
+or more contributor license agreements.  See the NOTICE file
+distributed with this work for additional information
+regarding copyright ownership.  The ASF licenses this file
+to you under the Apache License, Version 2.0 (the
+"License"); you may not use this file except in compliance
+with the License.  You may obtain a copy of the License at
+
+  http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing,
+software distributed under the License is distributed on an
+"AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+KIND, either express or implied.  See the License for the
+specific language governing permissions and limitations
+under the License.
+-->
+
+
+
+
+<!DOCTYPE html>
+
+
+<html lang="en" data-content_root="../" data-theme="light">
+
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <title>Iceberg Writes &#8212; Apache DataFusion Comet  documentation</title>
+  
+  
+  
+  <script data-cfasync="false">
+    document.documentElement.dataset.mode = localStorage.getItem("mode") || "light";
+    document.documentElement.dataset.theme = localStorage.getItem("theme") || "light";
+  </script>
+  <!--
+    this give us a css class that will be invisible only if js is disabled
+  -->
+  <noscript>
+    <style>
+      .pst-js-only { display: none !important; }
+
+    </style>
+  </noscript>
+  
+  <!-- Loaded before other Sphinx assets -->
+  <link href="../_static/styles/theme.css?digest=8878045cc6db502f8baf" rel="stylesheet" />
+<link href="../_static/styles/pydata-sphinx-theme.css?digest=8878045cc6db502f8baf" rel="stylesheet" />
+
+    <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=8f2a1f02" />
+    <link rel="stylesheet" type="text/css" href="../_static/theme_overrides.css?v=bfdde722" />
+  
+  <!-- So that users can add custom icons -->
+  <script src="../_static/scripts/fontawesome.js?digest=8878045cc6db502f8baf"></script>
+  <!-- Pre-loaded scripts that we'll load fully later -->
+  <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=8878045cc6db502f8baf" />
+<link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=8878045cc6db502f8baf" />
+
+    <script src="../_static/documentation_options.js?v=5929fcd5"></script>
+    <script src="../_static/doctools.js?v=9a2dae69"></script>
+    <script src="../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script>DOCUMENTATION_OPTIONS.pagename = 'contributor-guide/iceberg-writes';</script>
+    <script async="true" defer="true" src="https://buttons.github.io/buttons.js"></script>
+    <script src="../_static/comet-ux.js?v=97577a30"></script>
+    <link rel="index" title="Index" href="../genindex.html" />
+    <link rel="search" title="Search" href="../search.html" />
+    <link rel="next" title="ANSI SQL Error Propagation in Comet" href="sql_error_propagation.html" />
+    <link rel="prev" title="Memory Management" href="memory_management.html" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="docsearch:language" content="en"/>
+  <meta name="docsearch:version" content="" />
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="preload" as="style"
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
+<link rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap"
+      media="print" onload="this.media='all'">
+<noscript>
+  <link rel="stylesheet"
+        href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
+</noscript>
+
+  </head>
+  
+  
+  <body data-bs-spy="scroll" data-bs-target=".bd-toc-nav" data-offset="180" data-bs-root-margin="0px 0px -60%" data-default-mode="light">
+
+  
+  
+  <div id="pst-skip-link" class="skip-link d-print-none"><a href="#main-content">Skip to main content</a></div>
+  
+  <div id="pst-scroll-pixel-helper"></div>
+  
+  <button type="button" class="btn rounded-pill" id="pst-back-to-top">
+    <i class="fa-solid fa-arrow-up"></i>Back to top</button>
+
+  
+  <dialog id="pst-search-dialog">
+    
+<form class="bd-search d-flex align-items-center"
+      action="../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         placeholder="Search the docs ..."
+         aria-label="Search the docs ..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form>
+  </dialog>
+
+  <div class="pst-async-banner-revealer d-none">
+  <aside id="bd-header-version-warning" class="d-none d-print-none" aria-label="Version warning"></aside>
+</div>
+
+  
+    <header class="bd-header navbar navbar-expand-lg bd-navbar d-print-none">
+<div class="bd-header__inner bd-page-width">
+  <button class="pst-navbar-icon sidebar-toggle primary-toggle" aria-label="Site navigation">
+    <span class="fa-solid fa-bars"></span>
+  </button>
+  
+  
+  <div class="col-lg-3 navbar-header-items__start">
+    
+      <div class="navbar-item">
+
+  
+    
+  
+
+<a class="navbar-brand logo" href="../index.html">
+  
+  
+  
+  
+  
+    
+    
+    
+    <img src="../_static/DataFusionComet-Logo-Light.png" class="logo__image only-light" alt="Apache DataFusion Comet  documentation - Home"/>
+    <img src="../_static/DataFusionComet-Logo-Dark.png" class="logo__image only-dark pst-js-only" alt="Apache DataFusion Comet  documentation - Home"/>
+  
+  
+</a></div>
+    
+  </div>
+  
+  <div class="col-lg-9 navbar-header-items">
+    
+    <div class="me-auto navbar-header-items__center">
+      
+        <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../user-guide/index.html">
+    User Guide
+  </a>
+</li>
+
+
+<li class="nav-item current active">
+  <a class="nav-link nav-internal" href="index.html">
+    Contributor Guide
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../changelog/index.html">
+    Changelog
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../about/index.html">
+    About
+  </a>
+</li>
+
+  </ul>
+</nav></div>
+      
+    </div>
+    
+    
+    <div class="navbar-header-items__end">
+      
+        <div class="navbar-item navbar-persistent--container">
+          
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+        </div>
+      
+      
+        <div class="navbar-item"><ul class="navbar-icon-links"
+    aria-label="Icon Links">
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://github.com/apache/datafusion-comet" title="GitHub" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-github fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">GitHub</span></a>
+        </li>
+</ul></div>
+      
+        <div class="navbar-item">
+
+<button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button pst-js-only" aria-label="Color mode" data-bs-title="Color mode"  data-bs-placement="bottom" data-bs-toggle="tooltip">
+  <i class="theme-switch fa-solid fa-sun                fa-lg" data-mode="light" title="Light"></i>
+  <i class="theme-switch fa-solid fa-moon               fa-lg" data-mode="dark"  title="Dark"></i>
+  <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg" data-mode="auto"  title="System Settings"></i>
+</button></div>
+      
+    </div>
+    
+  </div>
+  
+  
+    <div class="navbar-persistent--mobile">
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+    </div>
+  
+
+  
+    <button class="pst-navbar-icon sidebar-toggle secondary-toggle" aria-label="On this page">
+      <span class="fa-solid fa-outdent"></span>
+    </button>
+  
+</div>
+
+    </header>
+  
+
+  <div class="bd-container">
+    <div class="bd-container__inner bd-page-width">
+      
+      
+      
+      <dialog id="pst-primary-sidebar-modal"></dialog>
+      <div id="pst-primary-sidebar" class="bd-sidebar-primary bd-sidebar">
+        
+
+  
+  <div class="sidebar-header-items sidebar-primary__section">
+    
+    
+      <div class="sidebar-header-items__center">
+        
+          
+          
+            <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../user-guide/index.html">
+    User Guide
+  </a>
+</li>
+
+
+<li class="nav-item current active">
+  <a class="nav-link nav-internal" href="index.html">
+    Contributor Guide
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../changelog/index.html">
+    Changelog
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../about/index.html">
+    About
+  </a>
+</li>
+
+  </ul>
+</nav></div>
+          
+        
+      </div>
+    
+    
+    
+      <div class="sidebar-header-items__end">
+        
+          <div class="navbar-item"><ul class="navbar-icon-links"
+    aria-label="Icon Links">
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://github.com/apache/datafusion-comet" title="GitHub" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-github fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">GitHub</span></a>
+        </li>
+</ul></div>
+        
+          <div class="navbar-item">
+
+<button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button pst-js-only" aria-label="Color mode" data-bs-title="Color mode"  data-bs-placement="bottom" data-bs-toggle="tooltip">
+  <i class="theme-switch fa-solid fa-sun                fa-lg" data-mode="light" title="Light"></i>
+  <i class="theme-switch fa-solid fa-moon               fa-lg" data-mode="dark"  title="Dark"></i>
+  <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg" data-mode="auto"  title="System Settings"></i>
+</button></div>
+        
+      </div>
+    
+  </div>
+  
+    <div class="sidebar-primary-items__start sidebar-primary__section">
+        <div class="sidebar-primary-item">
+<form class="bd-search d-flex align-items-center"
+      action="../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         placeholder="Search the docs ..."
+         aria-label="Search the docs ..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form></div>
+        <div class="sidebar-primary-item"><!--
+Licensed to the Apache Software Foundation (ASF) under one
+or more contributor license agreements.  See the NOTICE file
+distributed with this work for additional information
+regarding copyright ownership.  The ASF licenses this file
+to you under the Apache License, Version 2.0 (the
+"License"); you may not use this file except in compliance
+with the License.  You may obtain a copy of the License at
+
+  http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing,
+software distributed under the License is distributed on an
+"AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+KIND, either express or implied.  See the License for the
+specific language governing permissions and limitations
+under the License.
+-->
+
+
+
+
+  
+
+<nav class="bd-links" id="bd-docs-nav" aria-label="Main navigation">
+  <div class="bd-toc-item active">
+    
+      <p aria-level="2" class="caption" role="heading"><span class="caption-text">Getting Started</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="contributing.html">Getting Started</a></li>
+<li class="toctree-l1"><a class="reference internal" href="development.html">Development Guide</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Project Architecture</span></p>
+<ul class="current nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="plugin_overview.html">Comet Plugin Architecture</a></li>
+
+<li class="toctree-l1"><a class="reference internal" href="ffi.html">Arrow FFI</a></li>
+<li class="toctree-l1"><a class="reference internal" href="jvm_shuffle.html">JVM Shuffle</a></li>
+<li class="toctree-l1"><a class="reference internal" href="native_shuffle.html">Native Shuffle</a></li>
+<li class="toctree-l1"><a class="reference internal" href="memory_management.html">Memory Management</a></li>
+<li class="toctree-l1 current active"><a class="current reference internal" href="#">Iceberg Writes</a></li>
+<li class="toctree-l1"><a class="reference internal" href="sql_error_propagation.html">ANSI Error Propagation</a></li>
+<li class="toctree-l1"><a class="reference internal" href="s3-credential-provider-design.html">S3 Credential Provider Design</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Adding Functionality</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="adding_a_new_operator.html">Adding a New Operator</a></li>
+<li class="toctree-l1"><a class="reference internal" href="adding_a_new_expression.html">Adding a New Expression</a></li>
+<li class="toctree-l1"><a class="reference internal" href="adding_a_new_spark_version.html">Adding a New Spark Version</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Testing</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="sql-file-tests.html">Comet SQL Tests</a></li>
+<li class="toctree-l1"><a class="reference internal" href="spark-sql-tests.html">Spark SQL Tests</a></li>
+<li class="toctree-l1"><a class="reference internal" href="iceberg-spark-tests.html">Iceberg Spark Tests</a></li>
+<li class="toctree-l1"><a class="reference internal" href="ci.html">Continuous Integration</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Debugging and Performance</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="debugging.html">Debugging Guide</a></li>
+<li class="toctree-l1 has-children"><a class="reference internal" href="benchmarking.html">Benchmarking Guide</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="benchmark-results/tpc-ds.html">TPC-DS</a></li>
+<li class="toctree-l2"><a class="reference internal" href="benchmarking_macos.html">Comet Benchmarking on macOS</a></li>
+<li class="toctree-l2"><a class="reference internal" href="benchmarking_aws_ec2.html">Comet Benchmarking in EC2</a></li>
+<li class="toctree-l2"><a class="reference internal" href="benchmarking_micro_ec2.html">Micro Benchmarking on AWS EC2</a></li>
+<li class="toctree-l2"><a class="reference internal" href="benchmarking_spark_sql_perf.html">TPC-DS Benchmarking with spark-sql-perf</a></li>
+</ul>
+</details></li>
+<li class="toctree-l1"><a class="reference internal" href="optimizing_expressions.html">Optimizing Scalar Expressions</a></li>
+<li class="toctree-l1"><a class="reference internal" href="profiling.html">Profiling</a></li>
+<li class="toctree-l1"><a class="reference internal" href="tracing.html">Tracing</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Reference</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1 has-children"><a class="reference internal" href="expression-audits/index.html">Expression Audits</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="expression-audits/agg_funcs.html">agg_funcs</a></li>
+<li class="toctree-l2"><a class="reference internal" href="expression-audits/array_funcs.html">array_funcs</a></li>
+<li class="toctree-l2"><a class="reference internal" href="expression-audits/bitwise_funcs.html">bitwise_funcs</a></li>
+<li class="toctree-l2"><a class="reference internal" href="expression-audits/collection_funcs.html">collection_funcs</a></li>
+<li class="toctree-l2"><a class="reference internal" href="expression-audits/conditional_funcs.html">conditional_funcs</a></li>
+<li class="toctree-l2"><a class="reference internal" href="expression-audits/conversion_funcs.html">conversion_funcs</a></li>
+<li class="toctree-l2"><a class="reference internal" href="expression-audits/datetime_funcs.html">datetime_funcs</a></li>
+<li class="toctree-l2"><a class="reference internal" href="expression-audits/generator_funcs.html">generator_funcs</a></li>
+<li class="toctree-l2"><a class="reference internal" href="expression-audits/hash_funcs.html">hash_funcs</a></li>
+<li class="toctree-l2"><a class="reference internal" href="expression-audits/json_funcs.html">json_funcs</a></li>
+<li class="toctree-l2"><a class="reference internal" href="expression-audits/map_funcs.html">map_funcs</a></li>
+<li class="toctree-l2"><a class="reference internal" href="expression-audits/math_funcs.html">math_funcs</a></li>
+<li class="toctree-l2"><a class="reference internal" href="expression-audits/misc_funcs.html">misc_funcs</a></li>
+<li class="toctree-l2"><a class="reference internal" href="expression-audits/predicate_funcs.html">predicate_funcs</a></li>
+<li class="toctree-l2"><a class="reference internal" href="expression-audits/string_funcs.html">string_funcs</a></li>
+<li class="toctree-l2"><a class="reference internal" href="expression-audits/struct_funcs.html">struct_funcs</a></li>
+<li class="toctree-l2"><a class="reference internal" href="expression-audits/url_funcs.html">url_funcs</a></li>
+<li class="toctree-l2"><a class="reference internal" href="expression-audits/window_funcs.html">window_funcs</a></li>
+</ul>
+</details></li>
+<li class="toctree-l1"><a class="reference internal" href="spark_configs_support.html">Supported Spark Configurations</a></li>
+<li class="toctree-l1"><a class="reference internal" href="config_conventions.html">Configuration Conventions</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Project Mechanics</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="bug_triage.html">Bug Triage</a></li>
+<li class="toctree-l1"><a class="reference internal" href="release_process.html">Release Process</a></li>
+<li class="toctree-l1"><a class="reference internal" href="roadmap.html">Roadmap</a></li>
+<li class="toctree-l1"><a class="reference external" href="https://github.com/apache/datafusion-comet">Github and Issue Tracker</a></li>
+</ul>
+
+    
+  </div>
+</nav></div>
+    </div>
+  
+  
+  <div class="sidebar-primary-items__end sidebar-primary__section">
+      <div class="sidebar-primary-item">
+<div id="ethical-ad-placement"
+      class="flat"
+      data-ea-publisher="readthedocs"
+      data-ea-type="readthedocs-sidebar"
+      data-ea-manual="true">
+</div></div>
+  </div>
+
+
+      </div>
+      
+      <main id="main-content" class="bd-main" role="main">
+        
+        
+          <div class="bd-content">
+            <div class="bd-article-container">
+              
+              <div class="bd-header-article d-print-none">
+<div class="header-article-items header-article__inner">
+  
+    <div class="header-article-items__start">
+      
+        <div class="header-article-item">
+
+<nav aria-label="Breadcrumb" class="d-print-none">
+  <ul class="bd-breadcrumbs">
+    
+    <li class="breadcrumb-item breadcrumb-home">
+      <a href="../index.html" class="nav-link" aria-label="Home">
+        <i class="fa-solid fa-home"></i>
+      </a>
+    </li>
+    
+    <li class="breadcrumb-item"><a href="index.html" class="nav-link">Comet Contributor Guide</a></li>
+    
+    <li class="breadcrumb-item active" aria-current="page"><span class="ellipsis">Iceberg Writes</span></li>
+  </ul>
+</nav>
+</div>
+      
+    </div>
+  
+  
+</div>
+</div>
+              
+              
+              
+                
+<div id="searchbox"></div>
+                <article class="bd-article">
+                  
+  <!--
+  Licensed to the Apache Software Foundation (ASF) under one
+  or more contributor license agreements.  See the NOTICE file
+  distributed with this work for additional information
+  regarding copyright ownership.  The ASF licenses this file
+  to you under the Apache License, Version 2.0 (the
+  "License"); you may not use this file except in compliance
+  with the License.  You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing,
+  software distributed under the License is distributed on an
+  "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+  KIND, either express or implied.  See the License for the
+  specific language governing permissions and limitations
+  under the License.
+-->
+<section id="iceberg-writes">
+<h1>Iceberg Writes<a class="headerlink" href="#iceberg-writes" title="Link to this heading">#</a></h1>
+<p>This document describes how Comet writes Iceberg tables. It covers the split-operator plan that
+replaces Spark’s single write operator, how a write is admitted to the native writer, what crosses
+the JVM/native boundary in each direction, who owns cleanup when a task fails, and how to test a
+change to any of it.</p>
+<p>For the user-facing view (configuration, the eligibility table, and the accepted differences from
+iceberg-java’s output), see <a class="reference internal" href="../user-guide/latest/iceberg-writes.html"><span class="std std-doc">Iceberg Writes</span></a>. This page
+does not repeat those lists; it explains the code that implements them.</p>
+<section id="overview">
+<h2>Overview<a class="headerlink" href="#overview" title="Link to this heading">#</a></h2>
+<p>Two flags, each of which builds on the one before it:</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Flag</p></th>
+<th class="head"><p>What it changes</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.write.iceberg.splitOperator.enabled</span></code></p></td>
+<td><p>The plan shape. Spark’s single V2 write operator becomes <code class="docutils literal notranslate"><span class="pre">IcebergCommit</span></code> over <code class="docutils literal notranslate"><span class="pre">IcebergWrite</span></code>. iceberg-java still writes the data files.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.iceberg.write.enabled</span></code></p></td>
+<td><p>Who writes the data files. An eligible <code class="docutils literal notranslate"><span class="pre">IcebergWrite</span></code> becomes <code class="docutils literal notranslate"><span class="pre">CometIcebergWrite</span></code>, which writes Parquet with iceberg-rust.</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>The native flag does nothing without the split flag, because it converts a node only the split plan
+creates. Both default to <code class="docutils literal notranslate"><span class="pre">false</span></code>. The roadmap for making them the default, and the criteria for it,
+are tracked in <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/5644">#5644</a> under the epic
+<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/5649">#5649</a>.</p>
+<p>One rule runs through the whole native path: <strong>the native writer must produce the outcome
+iceberg-java would have produced, or decline.</strong> iceberg-java is the reference for every data file,
+manifest entry, partition value and failure behaviour. Where Comet cannot show that it reproduces
+iceberg-java for some table or setting, the write falls back to iceberg-java at plan time. The
+consequences of getting this wrong are asymmetric. A decline costs performance on one write. A
+native write that differs from iceberg-java writes a table that every later reader, Comet or not,
+has to live with.</p>
+<p>A second rule follows from the first: <strong>decide at plan time, never mid-write.</strong> Once the plan
+contains a <code class="docutils literal notranslate"><span class="pre">CometIcebergWrite</span></code>, there is no runtime switch back to the JVM writer. Anything the
+native side could reject at execution time (a storage scheme, a type, a partition spec, a
+reflective accessor the executor needs) has to be rejected by the planning gate first, or the user
+gets a failed query instead of a fallback.</p>
+</section>
+<section id="the-split-operator-plan">
+<h2>The Split-Operator Plan<a class="headerlink" href="#the-split-operator-plan" title="Link to this heading">#</a></h2>
+<p>Spark plans an Iceberg write as one physical operator (<code class="docutils literal notranslate"><span class="pre">AppendDataExec</span></code>, <code class="docutils literal notranslate"><span class="pre">ReplaceDataExec</span></code> and so
+on) that runs the input query, writes the files, and commits, all outside AQE. The split plan
+replaces it with two operators so that the write’s input becomes an ordinary query stage.</p>
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>IcebergCommit                 driver: collect task commit messages, BatchWrite.commit
++- IcebergWrite               executors: write data files, emit one commit message per task
+   +- &lt;input query&gt;           scans, projects, exchanges, sorts; now visible to AQE and Comet
+</pre></div>
+</div>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Component</p></th>
+<th class="head"><p>Location</p></th>
+<th class="head"><p>Role</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">IcebergWriteStrategy</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">spark/src/main/scala/org/apache/comet/iceberg/</span></code></p></td>
+<td><p>Planner strategy. Matches <code class="docutils literal notranslate"><span class="pre">AppendData</span></code>, <code class="docutils literal notranslate"><span class="pre">OverwriteByExpression</span></code>, <code class="docutils literal notranslate"><span class="pre">OverwritePartitionsDynamic</span></code>, <code class="docutils literal notranslate"><span class="pre">ReplaceData</span></code> (and Iceberg’s own <code class="docutils literal notranslate"><span class="pre">ReplaceIcebergData</span></code>, which Iceberg 1.5.2 plans on Spark 3.4) whose <code class="docutils literal notranslate"><span class="pre">Write</span></code> is an Iceberg <code class="docutils literal notranslate"><span class="pre">SparkWrite</span></code>.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">IcebergWriteLogical</span></code></p></td>
+<td><p>same</p></td>
+<td><p>Logical anchor for the writer, so AQE re-plans re-emit only the writer and not a second committer.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">IcebergWriteExec</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">spark/src/main/scala/org/apache/spark/sql/comet/</span></code></p></td>
+<td><p>JVM writer. Runs iceberg-java’s <code class="docutils literal notranslate"><span class="pre">DataWriter</span></code> per task and returns the serialized <code class="docutils literal notranslate"><span class="pre">WriterCommitMessage</span></code> as one binary row.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">IcebergCommitExec</span></code></p></td>
+<td><p>same</p></td>
+<td><p>Driver committer. A <code class="docutils literal notranslate"><span class="pre">V2CommandExec</span></code>, so <code class="docutils literal notranslate"><span class="pre">run()</span></code> is memoized and the commit happens once.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">IcebergReplaceDataShim</span></code>, <code class="docutils literal notranslate"><span class="pre">IcebergRefreshCacheShim</span></code>, <code class="docutils literal notranslate"><span class="pre">IcebergDriverMetricsShim</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">spark/src/main/spark-*/org/apache/comet/iceberg/</span></code></p></td>
+<td><p>Version differences: Spark 4.x operation-coded <code class="docutils literal notranslate"><span class="pre">ReplaceData</span></code> rows, cache refresh by name on 4.1+, driver metric reporting.</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>Things to know before changing this layer:</p>
+<ul class="simple">
+<li><p><strong>One <code class="docutils literal notranslate"><span class="pre">BatchWrite</span></code> is shared.</strong> <code class="docutils literal notranslate"><span class="pre">buildTwoOp</span></code> calls <code class="docutils literal notranslate"><span class="pre">write.toBatch</span></code> once and hands the same
+instance to both operators. Iceberg’s commit-time validation must see the instance the writer
+wrote through, and <code class="docutils literal notranslate"><span class="pre">toBatch()</span></code> returns a new one per call.</p></li>
+<li><p><strong>The commit message column is the contract between the two operators.</strong> Both <code class="docutils literal notranslate"><span class="pre">IcebergWriteExec</span></code>
+and <code class="docutils literal notranslate"><span class="pre">CometIcebergWriteExec</span></code> emit a single non-null <code class="docutils literal notranslate"><span class="pre">BINARY</span></code> column named
+<code class="docutils literal notranslate"><span class="pre">iceberg_commit_message</span></code>, holding a Java-serialized <code class="docutils literal notranslate"><span class="pre">WriterCommitMessage</span></code>. <code class="docutils literal notranslate"><span class="pre">IcebergCommitExec</span></code>
+does not know which writer produced it.</p></li>
+<li><p><strong>Messages are collected per task as tasks finish</strong> (<code class="docutils literal notranslate"><span class="pre">sparkContext.runJob</span></code> with a result
+handler), not with <code class="docutils literal notranslate"><span class="pre">executeCollect</span></code>. That is how a failed job still knows which tasks completed,
+so it can delete their files.</p></li>
+<li><p><strong>Commit-coordinator writes are not intercepted.</strong> Iceberg’s <code class="docutils literal notranslate"><span class="pre">SparkWrite</span></code> never asks for one; the
+check in <code class="docutils literal notranslate"><span class="pre">buildTwoOp</span></code> is defensive.</p></li>
+<li><p><strong>What is not intercepted:</strong> merge-on-read (<code class="docutils literal notranslate"><span class="pre">WriteDelta</span></code>), streaming writes, and CTAS/RTAS on
+Spark 3.4. Those keep Spark’s plan.</p></li>
+</ul>
+</section>
+<section id="from-icebergwrite-to-cometicebergwrite">
+<h2>From <code class="docutils literal notranslate"><span class="pre">IcebergWrite</span></code> to <code class="docutils literal notranslate"><span class="pre">CometIcebergWrite</span></code><a class="headerlink" href="#from-icebergwrite-to-cometicebergwrite" title="Link to this heading">#</a></h2>
+<p><code class="docutils literal notranslate"><span class="pre">CometExecRule</span></code> converts an <code class="docutils literal notranslate"><span class="pre">IcebergWriteExec</span></code> with the <code class="docutils literal notranslate"><span class="pre">CometIcebergNativeWrite</span></code> operator serde
+when <code class="docutils literal notranslate"><span class="pre">spark.comet.iceberg.write.enabled</span></code> is on. Two arms in <code class="docutils literal notranslate"><span class="pre">CometExecRule</span></code> handle it: one unwraps
+the double conversion AQE can produce when it re-fires write planning over a sub-tree that already
+contains a <code class="docutils literal notranslate"><span class="pre">CometIcebergWriteExec</span></code>, and the other calls <code class="docutils literal notranslate"><span class="pre">convertToComet</span></code>.</p>
+<p><code class="docutils literal notranslate"><span class="pre">CometIcebergNativeWrite.requiresNativeChildren</span></code> is <code class="docutils literal notranslate"><span class="pre">true</span></code>. The native writer consumes Arrow
+batches from its child over FFI, so the conversion is declined unless the child is already a Comet
+native operator. This is why a write fed by a <code class="docutils literal notranslate"><span class="pre">LocalTableScanExec</span></code> (<code class="docutils literal notranslate"><span class="pre">INSERT</span> <span class="pre">...</span> <span class="pre">VALUES</span></code>, a local
+DataFrame) stays on the JVM writer unless <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.localTableScan.enabled</span></code> is also set.</p>
+<p><code class="docutils literal notranslate"><span class="pre">CometIcebergWriteExec</span></code> is row-based (it emits the commit message row) over a columnar child, so
+Spark inserts a columnar-to-row transition beneath it. <code class="docutils literal notranslate"><span class="pre">EliminateRedundantTransitions</span></code> removes that
+transition in a dedicated pass that runs before its main <code class="docutils literal notranslate"><span class="pre">transformUp</span></code>, and the scaladoc on
+<code class="docutils literal notranslate"><span class="pre">stripIcebergWriteInputTransition</span></code> explains why the order matters. Do not try to suppress the
+transition by making the write a <code class="docutils literal notranslate"><span class="pre">ColumnarToRowTransition</span></code>: Spark then skips the whole subtree
+below it and never inserts the transitions the rest of the plan needs
+(<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/5689">#5689</a>, visible only with AQE off).</p>
+<p><code class="docutils literal notranslate"><span class="pre">CometIcebergWriteExec</span></code> carries its own serialized plan (<code class="docutils literal notranslate"><span class="pre">serializedPlanOpt</span></code> serializes <code class="docutils literal notranslate"><span class="pre">nativeOp</span></code>
+on demand), so <code class="docutils literal notranslate"><span class="pre">CometExecRule</span></code> resets <code class="docutils literal notranslate"><span class="pre">firstNativeOp</span></code> at the write and lets its child start a
+separate native block.</p>
+</section>
+<section id="the-eligibility-gate">
+<h2>The Eligibility Gate<a class="headerlink" href="#the-eligibility-gate" title="Link to this heading">#</a></h2>
+<p><code class="docutils literal notranslate"><span class="pre">CometIcebergNativeWrite.getSupportLevel</span></code> evaluates an ordered list of <code class="docutils literal notranslate"><span class="pre">TriggerRule</span></code>s against a
+<code class="docutils literal notranslate"><span class="pre">TriggerContext</span></code> and reports the first reason it finds as <code class="docutils literal notranslate"><span class="pre">Unsupported</span></code>. A rule is a function from
+the context to <code class="docutils literal notranslate"><span class="pre">Option[String]</span></code>: <code class="docutils literal notranslate"><span class="pre">None</span></code> means the rule has no objection.</p>
+<p>The gate has these properties, and a new rule has to keep them:</p>
+<ul class="simple">
+<li><p><strong>It is an allow list.</strong> It accepts only configurations shown to produce iceberg-java’s output.
+Unknown <code class="docutils literal notranslate"><span class="pre">write.parquet.*</span></code> keys, any <code class="docutils literal notranslate"><span class="pre">parquet.*</span></code> table property, and any <code class="docutils literal notranslate"><span class="pre">parquet.*</span></code> key in the
+session Hadoop configuration are declined, including keys a future Iceberg version adds. When you
+support a new setting, add it to the vetted set and translate it; do not widen a prefix.</p></li>
+<li><p><strong>It reads the effective configuration.</strong> <code class="docutils literal notranslate"><span class="pre">TriggerContext.properties</span></code> is the table’s properties
+overlaid with <code class="docutils literal notranslate"><span class="pre">SparkWrite.writeProperties</span></code>, which is where iceberg-java resolves per-write options
+and <code class="docutils literal notranslate"><span class="pre">spark.sql.iceberg.*</span></code> session overrides. Reading table properties alone misses those.</p></li>
+<li><p><strong>It checks instantiated state as well as properties.</strong> A catalog or a custom <code class="docutils literal notranslate"><span class="pre">TableOperations</span></code>
+can install a <code class="docutils literal notranslate"><span class="pre">FileIO</span></code> or an <code class="docutils literal notranslate"><span class="pre">EncryptionManager</span></code> without any property changing, so
+<code class="docutils literal notranslate"><span class="pre">requireRecognizedTableFileIO</span></code> and <code class="docutils literal notranslate"><span class="pre">requirePlaintextEncryptionManager</span></code> look at <code class="docutils literal notranslate"><span class="pre">table.io()</span></code> and
+<code class="docutils literal notranslate"><span class="pre">table.encryption()</span></code> themselves.</p></li>
+<li><p><strong>It fails closed.</strong> A reflection lookup that cannot answer returns a reason, not <code class="docutils literal notranslate"><span class="pre">None</span></code>, and
+<code class="docutils literal notranslate"><span class="pre">getSupportLevel</span></code> turns any non-fatal exception into <code class="docutils literal notranslate"><span class="pre">Unsupported</span></code>. <code class="docutils literal notranslate"><span class="pre">convert</span></code> does the same for
+failures while building the proto.</p></li>
+<li><p><strong>It covers what the executor will need.</strong> <code class="docutils literal notranslate"><span class="pre">requireExecutorReflectionResolvable</span></code> resolves every
+iceberg-java class, method and constructor that the executor-side commit-message assembly calls
+reflectively. An Iceberg release that moves one of them becomes a plan-time fallback rather than
+a task failure after the data is written.</p></li>
+<li><p><strong>It agrees with the native side.</strong> When the gate and the native code both interpret the same
+input (a location’s scheme, a partition spec, a column type), they must interpret it the same
+way. A gate that is more permissive than the native code turns a fallback into a failed query
+(<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/6140">#6140</a> is an example: the gate and
+<code class="docutils literal notranslate"><span class="pre">scheme_of</span></code> split a location’s scheme differently). Prefer sharing one implementation, or pin the
+pair with a test that feeds both the same inputs.</p></li>
+</ul>
+<p>Every rule is pinned by <code class="docutils literal notranslate"><span class="pre">CometIcebergWriteDetectionSuite</span></code>. Add a case there for any new rule, for
+both the accepted and the declined side. Update the eligibility table in the user guide in the same
+change. Whether each existing restriction is permanent is tracked in
+<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/5643">#5643</a>.</p>
+</section>
+<section id="what-crosses-the-boundary">
+<h2>What Crosses the Boundary<a class="headerlink" href="#what-crosses-the-boundary" title="Link to this heading">#</a></h2>
+<section id="jvm-to-native-the-icebergwrite-proto">
+<h3>JVM to native: the <code class="docutils literal notranslate"><span class="pre">IcebergWrite</span></code> proto<a class="headerlink" href="#jvm-to-native-the-icebergwrite-proto" title="Link to this heading">#</a></h3>
+<p><code class="docutils literal notranslate"><span class="pre">buildIcebergWriteProto</span></code> builds an <code class="docutils literal notranslate"><span class="pre">IcebergWrite</span></code> message (<code class="docutils literal notranslate"><span class="pre">native/proto/src/proto/operator.proto</span></code>)
+on the driver. Almost all of it is the per-write <code class="docutils literal notranslate"><span class="pre">IcebergWriteCommon</span></code>:</p>
+<ul class="simple">
+<li><p>the write schema and partition spec as Iceberg JSON (<code class="docutils literal notranslate"><span class="pre">SchemaParser</span></code> / <code class="docutils literal notranslate"><span class="pre">PartitionSpecParser</span></code>),
+taken from the <code class="docutils literal notranslate"><span class="pre">SparkWrite</span></code> rather than the table, so a concurrent schema change cannot alter
+what this write produces</p></li>
+<li><p>the data location, the operation id (the <code class="docutils literal notranslate"><span class="pre">SparkWrite</span></code> query id, used in file names), the target
+file size, and the writer mode (unpartitioned, fanout or clustered, resolved the way <code class="docutils literal notranslate"><span class="pre">SparkWrite</span></code>
+chooses its own writer)</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">IcebergParquetWriteSettings</span></code>, translated from the effective properties by
+<code class="docutils literal notranslate"><span class="pre">IcebergWriteProtoTranslation</span></code></p></li>
+<li><p>the sort order id, which the native side ignores and the JVM stamps onto the files afterwards</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">catalog_properties</span></code> for the native <code class="docutils literal notranslate"><span class="pre">FileIO</span></code>: the table’s <code class="docutils literal notranslate"><span class="pre">FileIO.properties()</span></code> merged over the
+<code class="docutils literal notranslate"><span class="pre">fs.s3a.*</span></code> settings translated from the Hadoop configuration, the same translation the native
+scan uses</p></li>
+</ul>
+<p>The per-task <code class="docutils literal notranslate"><span class="pre">partition_id</span></code> and <code class="docutils literal notranslate"><span class="pre">task_attempt_id</span></code> are stamped onto a copy of the proto inside the
+task closure in <code class="docutils literal notranslate"><span class="pre">CometIcebergWriteExec.doExecuteColumnar</span></code>. The native side refuses to run without
+them, since defaulting them would make every task write the same file names.</p>
+<p><code class="docutils literal notranslate"><span class="pre">catalog_properties</span></code> can carry credentials. <code class="docutils literal notranslate"><span class="pre">CometIcebergWriteExec.stringArgs</span></code> deliberately prints
+only the data location and writer mode, because the default <code class="docutils literal notranslate"><span class="pre">argString</span></code> would put the protobuf’s
+text dump, secrets included, into <code class="docutils literal notranslate"><span class="pre">explain()</span></code>, the SQL UI and the event log. Keep it that way when
+adding fields.</p>
+<p>On Spark 4.x, copy-on-write <code class="docutils literal notranslate"><span class="pre">DELETE</span></code>/<code class="docutils literal notranslate"><span class="pre">UPDATE</span></code>/<code class="docutils literal notranslate"><span class="pre">MERGE</span></code> rows arrive with an operation code and file
+metadata columns around the data columns. <code class="docutils literal notranslate"><span class="pre">dropNonDataColumns</span></code> inserts a native <code class="docutils literal notranslate"><span class="pre">Projection</span></code> that
+keeps only the write schema’s columns. This is only equivalent to the JVM writer while format
+version 3 is declined, because on v3 iceberg-java reads row-lineage fields from those metadata
+columns.</p>
+</section>
+<section id="native-execution">
+<h3>Native execution<a class="headerlink" href="#native-execution" title="Link to this heading">#</a></h3>
+<p>The planner builds <code class="docutils literal notranslate"><span class="pre">IcebergWriteExec</span></code> (<code class="docutils literal notranslate"><span class="pre">native/core/src/execution/operators/iceberg_write.rs</span></code>) over
+the FFI scan of the child’s batches. <code class="docutils literal notranslate"><span class="pre">run_write_task</span></code> builds iceberg-rust’s writer stack once per
+task:</p>
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>ParquetWriterBuilder -&gt; RollingFileWriterBuilder -&gt; DataFileWriterBuilder
+  -&gt; UnpartitionedWriter | FanoutWriter | ClusteredWriter
+</pre></div>
+</div>
+<p>Points where Comet adapts iceberg-rust to match iceberg-java:</p>
+<ul class="simple">
+<li><p><strong>Location generation.</strong> <code class="docutils literal notranslate"><span class="pre">CometLocationGenerator</span></code> (<code class="docutils literal notranslate"><span class="pre">iceberg_partition_path.rs</span></code>) replaces
+iceberg-rust’s <code class="docutils literal notranslate"><span class="pre">DefaultLocationGenerator</span></code> and renders partition directories the way iceberg-java’s
+<code class="docutils literal notranslate"><span class="pre">PartitionSpec.partitionToPath</span></code> does. iceberg-rust’s own rendering differs for several types, and
+panics for pre-1970 <code class="docutils literal notranslate"><span class="pre">timestamptz</span></code>. Float and double values use Comet’s Java <code class="docutils literal notranslate"><span class="pre">Double.toString</span></code>
+renderer (<code class="docutils literal notranslate"><span class="pre">java_float_string</span></code>), shared with <code class="docutils literal notranslate"><span class="pre">cast(float</span> <span class="pre">as</span> <span class="pre">string)</span></code>. The partition type is
+resolved once when the generator is built, because <code class="docutils literal notranslate"><span class="pre">LocationGenerator::generate_location</span></code> cannot
+return an error.</p></li>
+<li><p><strong>File names.</strong> <code class="docutils literal notranslate"><span class="pre">file_name_prefix</span></code> embeds the partition id, the task attempt id and the operation
+id, so a retried or speculative attempt never reuses another attempt’s file names.</p></li>
+<li><p><strong>Row pacing.</strong> iceberg-java’s rolling writer checks the target file size every 1000 rows of the
+current file. iceberg-rust checks once per <code class="docutils literal notranslate"><span class="pre">write</span></code> call. <code class="docutils literal notranslate"><span class="pre">RowPacer</span></code> hands the writer rows in
+<code class="docutils literal notranslate"><span class="pre">ROWS_DIVISOR</span></code> (1000) row units per file, so both writers roll on the same grid.</p></li>
+<li><p><strong>Field ids and casting.</strong> <code class="docutils literal notranslate"><span class="pre">decorate_batch_with_field_ids</span></code> casts each batch to the
+field-id-annotated Arrow schema derived from the Iceberg schema, with <code class="docutils literal notranslate"><span class="pre">safe:</span> <span class="pre">false</span></code>, so a type
+mismatch fails the task instead of writing NULLs.</p></li>
+<li><p><strong>Deterministic output order.</strong> iceberg-rust’s <code class="docutils literal notranslate"><span class="pre">FanoutWriter</span></code> closes its writers out of a
+<code class="docutils literal notranslate"><span class="pre">HashMap</span></code>, so the fanout path sorts its <code class="docutils literal notranslate"><span class="pre">DataFile</span></code>s by path before returning them
+(<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/5776">#5776</a>). Manifest order becomes the row
+order of an unordered read, so any map iteration that reaches the output needs the same care.</p></li>
+</ul>
+<p><code class="docutils literal notranslate"><span class="pre">FileIO</span></code> comes from <code class="docutils literal notranslate"><span class="pre">load_file_io</span></code> in <code class="docutils literal notranslate"><span class="pre">iceberg_common.rs</span></code>, shared with the native scan. It picks
+the storage backend from the data location’s scheme and wires in Comet’s S3 credential bridge when
+one is configured. For writes the bridge fails closed: if a configured provider cannot initialize,
+the task fails rather than writing with the default credential chain.</p>
+</section>
+<section id="native-to-jvm-the-task-payload">
+<h3>Native to JVM: the task payload<a class="headerlink" href="#native-to-jvm-the-task-payload" title="Link to this heading">#</a></h3>
+<p>Each task emits exactly one batch with one row and two <code class="docutils literal notranslate"><span class="pre">BINARY</span></code> columns (<code class="docutils literal notranslate"><span class="pre">build_output_schema</span></code>):</p>
+<ol class="arabic simple">
+<li><p>The task’s <code class="docutils literal notranslate"><span class="pre">DataFile</span></code>s encoded as an Iceberg v2 data manifest, written by iceberg-rust’s
+<code class="docutils literal notranslate"><span class="pre">ManifestWriter</span></code> into an in-process <code class="docutils literal notranslate"><span class="pre">memory:</span></code> <code class="docutils literal notranslate"><span class="pre">FileIO</span></code>. Empty when the task wrote no files.</p></li>
+<li><p>Every location the task’s writers were handed (<code class="docutils literal notranslate"><span class="pre">encode_locations</span></code>: a big-endian count, then a
+length-prefixed UTF-8 string per location).</p></li>
+</ol>
+<p><code class="docutils literal notranslate"><span class="pre">CometIcebergWriteExec.doExecute</span></code> then, per task:</p>
+<ol class="arabic simple">
+<li><p>takes cleanup ownership of the locations from column 2 (see below)</p></li>
+<li><p>decodes the manifest with Iceberg’s own <code class="docutils literal notranslate"><span class="pre">ManifestFiles.read</span></code> (<code class="docutils literal notranslate"><span class="pre">decodeManifestToDataFiles</span></code>)</p></li>
+<li><p>rebuilds each <code class="docutils literal notranslate"><span class="pre">DataFile</span></code>’s metrics with iceberg-java’s <code class="docutils literal notranslate"><span class="pre">ParquetUtil.footerMetrics</span></code> and
+<code class="docutils literal notranslate"><span class="pre">MetricsConfig.forTable</span></code>, reading each written file’s footer (<code class="docutils literal notranslate"><span class="pre">rebuildDataFilesWithJavaMetrics</span></code>).
+Only float/double NaN counts and bounds are carried over from the native writer, because the
+footer does not have them.</p></li>
+<li><p>stamps the write’s sort order id, which iceberg-rust does not set</p></li>
+<li><p>builds a genuine <code class="docutils literal notranslate"><span class="pre">SparkWrite$TaskCommit</span></code> reflectively, reports Spark output metrics the way
+iceberg-java’s <code class="docutils literal notranslate"><span class="pre">TaskCommit</span></code> does, and serializes it as the commit message</p></li>
+</ol>
+<p>Rebuilding metrics on the JVM is the main reason manifest parity holds: metrics modes, truncation,
+the inferred-column cap and list/map bounds suppression are decided by iceberg-java’s code. When
+touching the native writer, do not try to make iceberg-rust’s own metrics authoritative; the JVM
+discards them. The price is one footer read per written file.</p>
+</section>
+</section>
+<section id="failure-handling-and-cleanup-ownership">
+<h2>Failure Handling and Cleanup Ownership<a class="headerlink" href="#failure-handling-and-cleanup-ownership" title="Link to this heading">#</a></h2>
+<p>A failed attempt must leave no data files behind, as iceberg-java’s <code class="docutils literal notranslate"><span class="pre">DataWriter.abort()</span></code> does, and a
+failed job must not commit anything. The files are always owned by exactly one side:</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Phase</p></th>
+<th class="head"><p>Owner</p></th>
+<th class="head"><p>Mechanism</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>Writing, closing writers, encoding the manifest, building the batch</p></td>
+<td><p>Native</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">TrackingLocationGenerator</span></code> records every location. <code class="docutils literal notranslate"><span class="pre">AbortOnDrop</span></code> deletes them on an error, and also when the plan is dropped mid-write, from inside or outside a Tokio runtime.</p></td>
+</tr>
+<tr class="row-odd"><td><p>After the batch reaches the JVM, until the task succeeds</p></td>
+<td><p>JVM task</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">WrittenFileCleanup</span></code>, a task failure listener registered before the payload is read, takes the locations before the manifest is decoded.</p></td>
+</tr>
+<tr class="row-even"><td><p>Job failure after some tasks completed</p></td>
+<td><p>Driver (<code class="docutils literal notranslate"><span class="pre">IcebergCommitExec</span></code>)</p></td>
+<td><p>Calls <code class="docutils literal notranslate"><span class="pre">BatchWrite.abort</span></code> with the completed messages, then deletes their files through the table’s <code class="docutils literal notranslate"><span class="pre">FileIO</span></code>.</p></td>
+</tr>
+<tr class="row-odd"><td><p>Commit failure</p></td>
+<td><p>Iceberg</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">SparkWrite.abort</span></code> on the genuine <code class="docutils literal notranslate"><span class="pre">TaskCommit</span></code> messages, the same as the stock path.</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>The handoff between the first two rows is why the payload carries the locations separately from the
+manifest: a failure decoding the manifest would otherwise lose the list of files to delete. All
+deletion is best effort and logged. It must never replace the original exception, and anything it
+misses is unreferenced and reclaimed by Iceberg’s <code class="docutils literal notranslate"><span class="pre">remove_orphan_files</span></code>.</p>
+<p>The same planning-time rule applies to failures: a failure that happens because the native side
+rejected something the gate admitted is a bug in the gate, even if cleanup works.</p>
+</section>
+<section id="matching-iceberg-java">
+<h2>Matching iceberg-java<a class="headerlink" href="#matching-iceberg-java" title="Link to this heading">#</a></h2>
+<p>Changes to the native path are measured against iceberg-java’s output in three tiers, which are the
+same tiers the user guide’s “accepted divergences” section uses:</p>
+<ol class="arabic simple">
+<li><p><strong>Logical content and manifest metadata must match.</strong> Row data, partition values, record
+counts, metrics, spec ids and sort order ids. A difference here outlives the write, because later
+readers prune on it. There are two documented exceptions, both analyzed as unable to change a
+pruning decision.</p></li>
+<li><p><strong>Physical file layout may differ</strong> where no reader bases a decision on it: footer key-value
+metadata, <code class="docutils literal notranslate"><span class="pre">created_by</span></code>, encodings, compressed bytes, row-group and file roll points, file names,
+and fanout file order.</p></li>
+<li><p><strong>Anything else is a fallback.</strong> If the native writer cannot match tier 1 for some table or
+setting, add a gate rule rather than documenting a new divergence.</p></li>
+</ol>
+<p>A new accepted divergence belongs in the user guide’s list with the reasoning for why no reader can
+observe it, not only in a code comment.</p>
+<p>Useful places to look when checking parity:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">CometIcebergWriteActionSuite</span></code> writes the same data through both writers into sibling tables and
+compares rows, <code class="docutils literal notranslate"><span class="pre">readable_metrics</span></code> and partition paths.</p></li>
+<li><p>iceberg-rust’s own code, at the pinned revision. iceberg-rust makes different choices from
+iceberg-java in places that matter to the table’s contents, for example grouping partition keys
+with <code class="docutils literal notranslate"><span class="pre">OrderedFloat</span></code>, which treats <code class="docutils literal notranslate"><span class="pre">-0.0</span></code> and <code class="docutils literal notranslate"><span class="pre">0.0</span></code> as equal
+(<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/6138">#6138</a>). Check how iceberg-rust
+compares, hashes and renders values, not only what it writes.</p></li>
+</ul>
+<section id="the-iceberg-rust-pin">
+<h3>The iceberg-rust pin<a class="headerlink" href="#the-iceberg-rust-pin" title="Link to this heading">#</a></h3>
+<p><code class="docutils literal notranslate"><span class="pre">native/Cargo.toml</span></code> pins <code class="docutils literal notranslate"><span class="pre">iceberg</span></code> and <code class="docutils literal notranslate"><span class="pre">iceberg-storage-opendal</span></code> to a git revision, not a release.
+Some Comet code depends on iceberg-rust behaviour that is not a stable API. For example,
+<code class="docutils literal notranslate"><span class="pre">clustered_write_err</span></code> recognizes the clustered writer’s unsorted-input error by its message text and
+restates it as iceberg-java’s error, which applications match on. A pin bump can change file bytes, manifests or partition layout, so treat it as a change to
+the writer: run the write suites and the Iceberg Spark tests. The pin policy is tracked in
+<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/5645">#5645</a>.</p>
+</section>
+</section>
+<section id="testing">
+<h2>Testing<a class="headerlink" href="#testing" title="Link to this heading">#</a></h2>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Suite</p></th>
+<th class="head"><p>What it covers</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">CometIcebergWriteActionSuite</span></code></p></td>
+<td><p>End-to-end writes through the split plan and the native writer: parity with iceberg-java, row-level DML, partition evolution, file order, cleanup on task and job failure, AQE re-planning.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">CometIcebergWriteDetectionSuite</span></code></p></td>
+<td><p>One case per eligibility rule, accepted and declined.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">CometIcebergSystemFunctionSuite</span></code></p></td>
+<td><p>Native <code class="docutils literal notranslate"><span class="pre">bucket</span></code>, <code class="docutils literal notranslate"><span class="pre">truncate</span></code>, <code class="docutils literal notranslate"><span class="pre">years</span></code>/<code class="docutils literal notranslate"><span class="pre">months</span></code>/<code class="docutils literal notranslate"><span class="pre">days</span></code>/<code class="docutils literal notranslate"><span class="pre">hours</span></code>, which keep a partitioned write’s hash distribution and sort native end to end.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">CometIcebergRewriteActionSuite</span></code></p></td>
+<td><p>Iceberg’s <code class="docutils literal notranslate"><span class="pre">rewrite_data_files</span></code> with the split plan and the native writer.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">IcebergWriteProtoTranslationSuite</span></code></p></td>
+<td><p>Translation of properties into <code class="docutils literal notranslate"><span class="pre">IcebergParquetWriteSettings</span></code> and the writer mode.</p></td>
+</tr>
+<tr class="row-odd"><td><p>Rust tests in <code class="docutils literal notranslate"><span class="pre">iceberg_write.rs</span></code> and <code class="docutils literal notranslate"><span class="pre">iceberg_partition_path.rs</span></code></p></td>
+<td><p>File rolling on the 1000-row grid, fanout order, clustered input checks, cleanup guard, manifest round trip, partition path rendering.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">CometIcebergWriteBenchmark</span></code></p></td>
+<td><p>Native versus iceberg-java for unpartitioned, clustered, fanout and copy-on-write delete writes. It checks each arm’s plan before timing it.</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>The Comet suites run against the Iceberg version each Spark profile pins in <code class="docutils literal notranslate"><span class="pre">spark/pom.xml</span></code>: 1.5.2
+for Spark 3.4, 1.8.1 for 3.5, 1.10.0 for 4.0 and 4.2, and 1.11.0 for 4.1. Only the default profile
+runs on every pull request. Behaviour that differs between Iceberg versions, such as reflection
+targets, metrics conventions and partition path spelling, needs a test that runs on each.</p>
+<p>When writing a native-write test:</p>
+<ul class="simple">
+<li><p><strong>Assert that the native writer ran.</strong> Every fallback is silent to the query, so a passing
+comparison can mean both sides used iceberg-java. Use <code class="docutils literal notranslate"><span class="pre">assertNativeWriteEngages</span></code>, or collect
+<code class="docutils literal notranslate"><span class="pre">CometIcebergWriteExec</span></code> from the captured plans. Enable the writer with <code class="docutils literal notranslate"><span class="pre">withNativeEnabled</span></code>, which
+also turns on <code class="docutils literal notranslate"><span class="pre">localTableScan</span></code> so <code class="docutils literal notranslate"><span class="pre">INSERT</span> <span class="pre">...</span> <span class="pre">VALUES</span></code> input is native.</p></li>
+<li><p><strong>Compare against iceberg-java, not against expected literals.</strong> Write the same rows through the
+JVM writer into a sibling table and compare.</p></li>
+<li><p><strong>Run plan-shape and transition changes with AQE off as well as on.</strong> The suites run with AQE on
+by default, and several write-path bugs only appeared with it off. Iceberg’s own extension tests
+pick AQE on or off at random per session, so a bug that depends on AQE shows up there as
+intermittent.</p></li>
+<li><p><strong>Use enough partitions to catch ordering bugs.</strong> With two partitions, a random order is right
+half the time. The fanout order test uses eight.</p></li>
+<li><p><strong>Check storage state for failure tests</strong>, not only the table: list the files under the data
+location and compare them with what the manifests reference.</p></li>
+</ul>
+<p>The upstream Iceberg Spark tests also run with both flags and <code class="docutils literal notranslate"><span class="pre">localTableScan</span></code> enabled (see
+<a class="reference internal" href="iceberg-spark-tests.html"><span class="std std-doc">Running Iceberg Spark Tests</span></a>). They are a broad regression net, but they do
+not assert which writer ran, and Comet’s fallback reasons do not appear in their CI logs, so a green
+run is not evidence that the native writer handled a given test
+(<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/6148">#6148</a>).</p>
+</section>
+<section id="pitfalls">
+<h2>Pitfalls<a class="headerlink" href="#pitfalls" title="Link to this heading">#</a></h2>
+<p>Each of these has caused a bug on this path:</p>
+<ul class="simple">
+<li><p><strong>A permissive gate is a failed query.</strong> Anything the native side rejects at execution has to be
+rejected at plan time, using the same interpretation of the input.</p></li>
+<li><p><strong>Dropped settings are silent.</strong> A table, <code class="docutils literal notranslate"><span class="pre">FileIO</span></code> or Hadoop setting the native writer does not
+read produces a successful write that ignores it. Fail closed on unknown settings in every
+namespace that reaches the writer, as the <code class="docutils literal notranslate"><span class="pre">gs://</span></code> path does
+(<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/5637">#5637</a>,
+<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/6139">#6139</a>).</p></li>
+<li><p><strong>Map iteration order leaks.</strong> It reaches file names, manifest order and read order.</p></li>
+<li><p><strong>Values that compare equal in Rust may not in Java.</strong> Signed zeros and NaN under <code class="docutils literal notranslate"><span class="pre">OrderedFloat</span></code>,
+and string or float rendering in partition paths.</p></li>
+<li><p><strong>Partition evolution leaves <code class="docutils literal notranslate"><span class="pre">void</span></code> fields behind.</strong> A v1 spec keeps a dropped partition field as
+a <code class="docutils literal notranslate"><span class="pre">void</span></code> transform, whose source column may later be dropped from the schema. Resolving the spec
+against the schema then fails
+(<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/5691">#5691</a>,
+<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/5693">#5693</a>,
+<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/6141">#6141</a>).</p></li>
+<li><p><strong>Plan rewrites must keep the write node.</strong> Rules that restore Spark operators from a Comet
+node’s <code class="docutils literal notranslate"><span class="pre">originalPlan</span></code> have to handle the write execs, whose <code class="docutils literal notranslate"><span class="pre">originalPlan</span></code> today is their child
+(<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/5719">#5719</a>).</p></li>
+<li><p><strong>The kill switch must still work.</strong> Code that runs for Iceberg writes has to respect
+<code class="docutils literal notranslate"><span class="pre">spark.comet.enabled</span></code>, so that disabling Comet restores Spark’s own plan
+(<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/6142">#6142</a>).</p></li>
+</ul>
+</section>
+</section>
+
+
+                </article>
+              
+              
+              
+              
+              
+                <footer class="prev-next-footer d-print-none">
+                  
+<div class="prev-next-area">
+    <a class="left-prev"
+       href="memory_management.html"
+       title="previous page">
+      <i class="fa-solid fa-angle-left"></i>
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">previous</p>
+        <p class="prev-next-title">Memory Management</p>
+      </div>
+    </a>
+    <a class="right-next"
+       href="sql_error_propagation.html"
+       title="next page">
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">next</p>
+        <p class="prev-next-title">ANSI SQL Error Propagation in Comet</p>
+      </div>
+      <i class="fa-solid fa-angle-right"></i>
+    </a>
+</div>
+                </footer>
+              
+            </div>
+            
+            
+              
+                <dialog id="pst-secondary-sidebar-modal"></dialog>
+                <div id="pst-secondary-sidebar" class="bd-sidebar-secondary bd-toc"><div class="sidebar-secondary-items sidebar-secondary__inner">
+
+
+  <div class="sidebar-secondary-item">
+<div
+    id="pst-page-navigation-heading-2"
+    class="page-toc tocsection onthispage">
+    <i class="fa-solid fa-list"></i> On this page
+  </div>
+  <nav class="bd-toc-nav page-toc" aria-labelledby="pst-page-navigation-heading-2">
+    <ul class="visible nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#overview">Overview</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#the-split-operator-plan">The Split-Operator Plan</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#from-icebergwrite-to-cometicebergwrite">From <code class="docutils literal notranslate"><span class="pre">IcebergWrite</span></code> to <code class="docutils literal notranslate"><span class="pre">CometIcebergWrite</span></code></a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#the-eligibility-gate">The Eligibility Gate</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#what-crosses-the-boundary">What Crosses the Boundary</a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#jvm-to-native-the-icebergwrite-proto">JVM to native: the <code class="docutils literal notranslate"><span class="pre">IcebergWrite</span></code> proto</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#native-execution">Native execution</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#native-to-jvm-the-task-payload">Native to JVM: the task payload</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#failure-handling-and-cleanup-ownership">Failure Handling and Cleanup Ownership</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#matching-iceberg-java">Matching iceberg-java</a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#the-iceberg-rust-pin">The iceberg-rust pin</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#testing">Testing</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#pitfalls">Pitfalls</a></li>
+</ul>
+  </nav></div>
+
+</div></div>
+              
+            
+          </div>
+          <footer class="bd-footer-content">
+            
+          </footer>
+        
+      </main>
+    </div>
+  </div>
+  
+  <!-- Scripts loaded after <body> so the DOM is not blocked -->
+  <script defer src="../_static/scripts/bootstrap.js?digest=8878045cc6db502f8baf"></script>
+<script defer src="../_static/scripts/pydata-sphinx-theme.js?digest=8878045cc6db502f8baf"></script>
+
+<footer class="comet-footer" role="contentinfo">
+  <div class="comet-footer__inner">
+
+    <!-- Brand: logo only — no duplicated tagline -->
+    <a class="comet-footer__brand" href="../index.html" aria-label="Apache DataFusion Comet — home">
+      <img src="../_static/images/DataFusionComet-Logo-Light.png"
+           class="comet-footer__logo only-light"
+           width="3256" height="836"
+           loading="lazy" decoding="async"
+           alt="" />
+      <img src="../_static/images/DataFusionComet-Logo-Dark.png"
+           class="comet-footer__logo only-dark pst-js-only"
+           width="3256" height="836"
+           loading="lazy" decoding="async"
+           alt="" />
+    </a>
+
+    <!-- Two compact link columns: documentation + community -->
+    <nav class="comet-footer__links" aria-label="Footer navigation">
+      <div class="comet-footer__col">
+        <div class="comet-footer__col-title">Documentation</div>
+        <a href="../user-guide/index.html">User Guide</a>
+        <a href="index.html">Contributor Guide</a>
+        <a href="../changelog/index.html">Changelog</a>
+      </div>
+
+      <div class="comet-footer__col">
+        <div class="comet-footer__col-title">Community</div>
+        <a href="https://github.com/apache/datafusion-comet" target="_blank" rel="noopener">GitHub</a>
+        <a href="https://datafusion.apache.org/contributor-guide/communication.html" target="_blank" rel="noopener">Slack &amp; Discord</a>
+        <a href="https://apache.org" target="_blank" rel="noopener">Apache Software Foundation</a>
+      </div>
+    </nav>
+  </div>
+
+  <!-- Legal: license, copyright, trademark — single quiet line -->
+  <div class="comet-footer__legal">
+    <p>
+      &copy; 2023&ndash;2026 Apache Software Foundation &nbsp;·&nbsp;
+      Licensed under the <a href="https://www.apache.org/licenses/LICENSE-2.0" target="_blank" rel="noopener">Apache License 2.0</a>
+    </p>
+    <p class="comet-footer__trademark">
+      Apache DataFusion, Apache DataFusion Comet, the Apache feather logo, and the Apache DataFusion project logo are trademarks of The Apache Software Foundation.
+    </p>
+  </div>
+</footer>
+
+  </body>
+</html>

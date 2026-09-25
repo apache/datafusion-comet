@@ -833,8 +833,12 @@ is untouched: <code class="docutils literal notranslate"><span class="pre">Icebe
 <span class="c1"># Split-operator plan (experimental, off by default)</span>
 <span class="n">spark</span><span class="o">.</span><span class="n">comet</span><span class="o">.</span><span class="n">write</span><span class="o">.</span><span class="n">iceberg</span><span class="o">.</span><span class="n">splitOperator</span><span class="o">.</span><span class="n">enabled</span><span class="o">=</span><span class="n">true</span>
 
-<span class="c1"># Native-write eligibility detection (experimental, off by default; requires the split plan)</span>
+<span class="c1"># Native Parquet writer (experimental, off by default; requires the split plan)</span>
 <span class="n">spark</span><span class="o">.</span><span class="n">comet</span><span class="o">.</span><span class="n">iceberg</span><span class="o">.</span><span class="n">write</span><span class="o">.</span><span class="n">enabled</span><span class="o">=</span><span class="n">true</span>
+
+<span class="c1"># Lets writes whose input is a local relation (INSERT ... VALUES, a local DataFrame) use the</span>
+<span class="c1"># native writer; see "Native Parquet write eligibility" below</span>
+<span class="n">spark</span><span class="o">.</span><span class="n">comet</span><span class="o">.</span><span class="n">exec</span><span class="o">.</span><span class="n">localTableScan</span><span class="o">.</span><span class="n">enabled</span><span class="o">=</span><span class="n">true</span>
 </pre></div>
 </div>
 </section>
@@ -887,6 +891,12 @@ distribution and local sort Iceberg requests on its partition transforms; those 
 because the transforms themselves have native implementations (see
 <a class="reference internal" href="iceberg.html"><span class="std std-doc">Iceberg system functions</span></a>). Ineligible writes run through iceberg-java unchanged,
 with the reason reported as a fall-back reason in Comet’s extended EXPLAIN output.</p>
+<p>The native writer reads its input as Arrow batches from a Comet operator, so the write’s input
+must itself run in Comet. A write whose input is a local relation, such as <code class="docutils literal notranslate"><span class="pre">INSERT</span> <span class="pre">...</span> <span class="pre">VALUES</span></code> or
+<code class="docutils literal notranslate"><span class="pre">df.writeTo(...).append()</span></code> on a DataFrame built from local data, is fed by Spark’s
+<code class="docutils literal notranslate"><span class="pre">LocalTableScanExec</span></code>, which Comet only converts when <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.localTableScan.enabled=true</span></code>
+(off by default). Without that setting such writes run through iceberg-java even when both write
+flags are on.</p>
 <p><strong>Most Iceberg write settings are not supported.</strong> Detection is an allowlist: a write is
 eligible only when its entire effective configuration matches the table below, and anything
 else — any other write-affecting property, any key added by a future Iceberg version, any
@@ -1046,19 +1056,26 @@ should have read; page pruning uses the column index, which the native writer do
 <li><p>Dictionary-encoded pages are labeled <code class="docutils literal notranslate"><span class="pre">RLE_DICTIONARY</span></code> (parquet-mr v1 files: <code class="docutils literal notranslate"><span class="pre">PLAIN_DICTIONARY</span></code>).</p></li>
 <li><p>Fixed-length binary columns (<code class="docutils literal notranslate"><span class="pre">uuid</span></code>, <code class="docutils literal notranslate"><span class="pre">fixed</span></code>, decimals with precision &gt; 18) are not
 dictionary-encoded (parquet-mr dictionary-encodes them).</p></li>
+<li><p>High-cardinality columns keep a dictionary page. parquet-mr abandons dictionary encoding for a
+column chunk, and writes no dictionary page, when the first check shows the dictionary is not
+saving space. parquet-rs keeps dictionary encoding until the dictionary reaches
+<code class="docutils literal notranslate"><span class="pre">write.parquet.dict-size-bytes</span></code> (2 MB by default), then switches to plain encoding for the rest
+of the chunk and still writes the dictionary page. Results are the same, but a selective read of
+a native-written file fetches that dictionary page for every column chunk it touches, so it
+reads more bytes than it would from an iceberg-java file
+(<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/6114">#6114</a>).</p></li>
 <li><p>Row-group boundaries: parquet-mr flushes by byte size at a record-count check cadence,
 parquet-rs buffers by row count. File naming follows the same cadence-style difference
 (iceberg-java names files <code class="docutils literal notranslate"><span class="pre">&lt;partition&gt;-&lt;task&gt;-&lt;operation&gt;-&lt;count&gt;</span></code>; iceberg-rust uses a
 process-local counter).</p></li>
 <li><p>Partition directory names match iceberg-java 1.8+’s <code class="docutils literal notranslate"><span class="pre">PartitionSpec.partitionToPath</span></code> for every
-partition type except <code class="docutils literal notranslate"><span class="pre">float</span></code> and <code class="docutils literal notranslate"><span class="pre">double</span></code>, where the value is rendered with Rust’s shortest
-representation instead of <code class="docutils literal notranslate"><span class="pre">Float.toString</span></code> / <code class="docutils literal notranslate"><span class="pre">Double.toString</span></code> (<code class="docutils literal notranslate"><span class="pre">f=1</span></code> where iceberg-java writes
-<code class="docutils literal notranslate"><span class="pre">f=1.0</span></code>). On Iceberg 1.5.x, which the Spark 3.4 profile pins, iceberg-java itself spelled
-<code class="docutils literal notranslate"><span class="pre">timestamp</span></code> and <code class="docutils literal notranslate"><span class="pre">timestamptz</span></code> directories with <code class="docutils literal notranslate"><span class="pre">LocalDateTime.toString()</span></code> /
-<code class="docutils literal notranslate"><span class="pre">OffsetDateTime.toString()</span></code> (<code class="docutils literal notranslate"><span class="pre">ts=1969-12-31T23:59:58.500Z</span></code>) and left the partition field name
-unescaped; Comet uses the 1.8+ spelling on every profile. Distinct partition values still get
-distinct directories in all cases, and no reader parses these names — files are resolved through
-committed manifests. Iceberg deprecated float and double partitioning in 1.3.</p></li>
+partition type. <code class="docutils literal notranslate"><span class="pre">float</span></code> and <code class="docutils literal notranslate"><span class="pre">double</span></code> values are rendered with Java’s <code class="docutils literal notranslate"><span class="pre">Float.toString</span></code> /
+<code class="docutils literal notranslate"><span class="pre">Double.toString</span></code> rules (<code class="docutils literal notranslate"><span class="pre">f=1.0</span></code>, <code class="docutils literal notranslate"><span class="pre">f=1.0E10</span></code>), as iceberg-java renders them. On Iceberg 1.5.x,
+which the Spark 3.4 profile pins, iceberg-java itself spelled <code class="docutils literal notranslate"><span class="pre">timestamp</span></code> and <code class="docutils literal notranslate"><span class="pre">timestamptz</span></code>
+directories with <code class="docutils literal notranslate"><span class="pre">LocalDateTime.toString()</span></code> / <code class="docutils literal notranslate"><span class="pre">OffsetDateTime.toString()</span></code>
+(<code class="docutils literal notranslate"><span class="pre">ts=1969-12-31T23:59:58.500Z</span></code>) and left the partition field name unescaped; Comet uses the
+1.8+ spelling on every profile. Distinct partition values still get distinct directories in all
+cases, and no reader parses these names: files are resolved through committed manifests.</p></li>
 <li><p>File rolling lands on the same row grid as iceberg-java but not necessarily on the same row.
 Both writers re-check the current file’s size against <code class="docutils literal notranslate"><span class="pre">write.target-file-size-bytes</span></code> once
 every 1000 rows of that file (iceberg-java’s <code class="docutils literal notranslate"><span class="pre">RollingFileWriter.ROWS_DIVISOR</span></code>; Comet hands the
@@ -1096,8 +1113,9 @@ so a divergence here would outlive the write. This class is deliberately kept al
 from each written file’s parquet footer through iceberg-java’s own <code class="docutils literal notranslate"><span class="pre">ParquetUtil.footerMetrics</span></code>
 and <code class="docutils literal notranslate"><span class="pre">MetricsConfig.forTable</span></code> (see above). Metrics modes, lower/upper bound truncation, the
 null-count conventions, and list/map bounds suppression are therefore iceberg-java’s code
-making iceberg-java’s decisions, and the parity suite compares committed manifests
-byte-for-byte against JVM-written ones. Two footer-derived values can still differ from what
+making iceberg-java’s decisions. The parity tests write the same rows through both writers and
+compare the committed <code class="docutils literal notranslate"><span class="pre">readable_metrics</span></code> (value, null and NaN counts, and lower and upper bounds)
+for the column types they cover. Two footer-derived values can still differ from what
 iceberg-java’s <em>writer-tracked</em> state would have recorded, and both are analyzed safe:</p>
 <ul class="simple">
 <li><p>Float/double bounds involving zero may differ in sign: parquet-rs normalises footer

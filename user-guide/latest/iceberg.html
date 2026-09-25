@@ -926,13 +926,14 @@ configure Spark to use a REST catalog with Comet’s native Iceberg scan:</p>
 <li><p>v3 column types the native reader cannot read (<code class="docutils literal notranslate"><span class="pre">variant</span></code>, <code class="docutils literal notranslate"><span class="pre">geometry</span></code>, <code class="docutils literal notranslate"><span class="pre">geography</span></code>, <code class="docutils literal notranslate"><span class="pre">unknown</span></code>)</p></li>
 <li><p>Encrypted tables with 192-bit data keys (no AES-192-GCM in the underlying crypto)</p></li>
 <li><p>Delete files in a format other than Parquet or Puffin (Avro or ORC positional/equality deletes)</p></li>
-<li><p>Iceberg writes (reads are accelerated, writes use Spark)</p></li>
 <li><p>Tables backed by Avro or ORC data files (only Parquet is accelerated)</p></li>
 <li><p>Tables partitioned on <code class="docutils literal notranslate"><span class="pre">BINARY</span></code> or <code class="docutils literal notranslate"><span class="pre">DECIMAL</span></code> (with precision &gt;28) columns</p></li>
 <li><p>Scans with residual filters using <code class="docutils literal notranslate"><span class="pre">truncate</span></code>, <code class="docutils literal notranslate"><span class="pre">bucket</span></code>, <code class="docutils literal notranslate"><span class="pre">year</span></code>, <code class="docutils literal notranslate"><span class="pre">month</span></code>, <code class="docutils literal notranslate"><span class="pre">day</span></code>, or <code class="docutils literal notranslate"><span class="pre">hour</span></code>
 transform functions (partition pruning still works, but row-level filtering of these
 transforms falls back)</p></li>
 </ul>
+<p>Writes are not covered by this list. By default Iceberg writes use Spark’s own writer; see
+<a class="reference internal" href="iceberg-writes.html"><span class="std std-doc">Iceberg Writes</span></a> for the experimental native writer and when it applies.</p>
 </section>
 <section id="iceberg-udfs">
 <h3>Iceberg UDFs<a class="headerlink" href="#iceberg-udfs" title="Link to this heading">#</a></h3>
