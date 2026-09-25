@@ -26,9 +26,12 @@ anyone debugging an out-of-memory report. For user-facing tuning advice, see the
 
 This page covers off-heap mode (`spark.memory.offHeap.enabled=true`) only. Comet also has an
 on-heap mode, but it exists so that the Spark SQL test suite can run against Comet without changing
-Spark's memory configuration. It must not be used in production, and it is not described here. The
-pool types that only on-heap mode exposes belong to the `CATEGORY_TESTING` config group for the
-same reason.
+Spark's memory configuration. Comet performs no memory accounting in it: the native side gets
+DataFusion's `UnboundedMemoryPool` and the JVM shuffle allocator
+(`CometUnboundedShuffleMemoryAllocator`) hands out `Unsafe` pages against no budget. Native memory
+is not on the JVM heap, so there is no Spark pool it could honestly be charged to, and the
+fixed-size pool that used to stand in for one bounded nothing the container cares about. On-heap
+mode must not be used in production, and it is not described further here.
 
 ## Overview
 
@@ -212,9 +215,6 @@ back a slice of the off-heap pool for the memory Comet does not reserve, but it 
 
 The only room Spark leaves for memory outside the pool is `spark.executor.memoryOverhead`.
 
-A second value, `memory_limit_per_task`, is computed and passed alongside it, but only the on-heap
-pool types read it.
-
 ### Resolving the pool type
 
 `parse_memory_pool_config` (`native/core/src/execution/memory_pools/config.rs`) turns the pool-type
@@ -225,7 +225,8 @@ string and the limit into a `MemoryPoolConfig`. Two pool types are valid in off-
 | `fair_unified` (default) | `memory_limit`      | Delegates to Spark's `TaskMemoryManager`; task-shared |
 | `greedy_unified`         | n/a (pool size `0`) | Spark owns the limit entirely; task-shared            |
 
-Any other pool type is rejected with a configuration error.
+Any other pool type is rejected with a configuration error. In on-heap mode the pool-type string is
+ignored and the pool is always `UnboundedMemoryPool`.
 
 ## The pool stack
 

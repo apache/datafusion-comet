@@ -115,9 +115,11 @@ configuration, from the inside out:
       so it only removes an entry that is still its own, which handles the race where an `acquire`
       observes an expired `Weak` and inserts a replacement first. Do not let that check be
       simplified away.
-- [ ] **Only `fair_unified` and `greedy_unified` are valid in off-heap mode.** Other pool types are
-      on-heap only and belong to `CATEGORY_TESTING`, because on-heap mode exists so the Spark SQL
-      test suite can run against Comet and must not be used in production.
+- [ ] **`fair_unified` and `greedy_unified` are the only pool types.** On-heap mode ignores the
+      pool-type string and always gets `UnboundedMemoryPool`: it exists so the Spark SQL test suite
+      can run against Comet, it accounts for nothing, and it must not be used in production. A PR
+      re-adding a sized on-heap pool is reintroducing a budget that bounds nothing real (see
+      issue #6063).
 
 ## 4. The Spark Bridge
 
@@ -145,8 +147,6 @@ memory_limit = spark.memory.offHeap.size * spark.comet.exec.memoryPool.fraction
       native code.
 - [ ] Changing `memoryPool.fraction` semantics affects every deployment that tuned it as a haircut
       for the accounting gap.
-- [ ] `memory_limit_per_task` is read only by the on-heap pool types. A PR wiring it into an
-      off-heap path is probably confused.
 - [ ] On Kubernetes, `spark.memory.offHeap.size` is **part of** the pod limit, not headroom on top
       of it. A PR whose fix is "raise the off-heap size" is asking for fewer executors per node.
       `spark.executor.memoryOverhead` is the only real slack in the container, and JVM non-heap
@@ -182,7 +182,7 @@ what test was added. Ask for at least one of:
   is recoverable at task level.
 
 `spark/src/test/scala/org/apache/spark/CometTaskMemoryManagerSuite.scala` and
-`CometBoundedShuffleMemoryAllocatorSuite.scala` are the existing JVM-side tests. A change to the
+`CometUnboundedShuffleMemoryAllocatorSuite.scala` are the existing JVM-side tests. A change to the
 bridge or an allocator should extend one of them.
 
 ## 8. Does the PR Make `memory_management.md` Stale?
