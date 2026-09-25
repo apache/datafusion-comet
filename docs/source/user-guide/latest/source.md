@@ -26,7 +26,7 @@ It is sometimes preferable to build from source for a specific platform.
 <!-- IF_SNAPSHOT -->
 
 This documentation is for the current development version of Comet. Published source releases are only available for released versions.
-To use this version of Comet, see the following section on building from the GitHubn repository.
+To use this version of Comet, see the following section on building from the GitHub repository.
 
 <!-- ENDIF -->
 
