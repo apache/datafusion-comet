@@ -1071,9 +1071,8 @@ where
         if let Poll::Ready(item) = stream.poll_next_unpin(&mut Context::from_waker(&waker)) {
             return Poll::Ready(Ok(item.transpose()?));
         }
-        // JNI call to pull batches from JVM into ScanExec operators.
-        // block_in_place lets tokio move other tasks off this worker
-        // while we wait for JVM data.
+        // `on_pending` calls into the JVM, which can run another Comet plan on this thread.
+        // `block_in_place` exits the runtime context so that plan's `block_on` doesn't panic.
         tokio::task::block_in_place(&mut on_pending)?;
         if flag.woken.load(Ordering::Acquire) {
             // Poll again at once: a nested `block_on` may have taken the wake-up.
