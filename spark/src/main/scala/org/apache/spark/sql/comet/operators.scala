@@ -30,8 +30,9 @@ import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.internal.Logging
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
-import org.apache.spark.sql.catalyst.expressions.{Ascending, Attribute, AttributeSeq, AttributeSet, Expression, ExpressionSet, Generator, NamedExpression, SortOrder, XXH64}
-import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, AggregateMode, CollectList, CollectSet, Final, Mode, Partial, PartialMerge, Percentile}
+import org.apache.spark.sql.catalyst.expressions.{Ascending, Attribute, AttributeSeq, AttributeSet, CodegenObjectFactoryMode, Expression, ExpressionSet, Generator, LeafExpression, NamedExpression, SortOrder, XXH64}
+import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, AggregateMode, CollectList, CollectSet, Final, ImperativeAggregate, Mode, Partial, PartialMerge, Percentile, Sum}
+import org.apache.spark.sql.catalyst.expressions.codegen.CodegenFallback
 import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, BuildSide}
 import org.apache.spark.sql.catalyst.plans._
 import org.apache.spark.sql.catalyst.plans.physical._
@@ -44,6 +45,7 @@ import org.apache.spark.sql.execution.aggregate.{BaseAggregateExec, HashAggregat
 import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
 import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, BroadcastNestedLoopJoinExec, HashJoin, ShuffledHashJoinExec, SortMergeJoinExec}
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
+import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, ByteType, DataType, DateType, DecimalType, DoubleType, FloatType, IntegerType, LongType, MapType, ShortType, StringType, StructField, StructType, TimestampNTZType, TimestampType}
 import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.spark.unsafe.Platform
@@ -54,7 +56,7 @@ import com.google.common.base.Objects
 import com.google.protobuf.CodedOutputStream
 
 import org.apache.comet.{CometConf, CometExecIterator, CometRuntimeException, ConfigEntry, ContribServices}
-import org.apache.comet.CometSparkSessionExtensions.{isCometShuffleEnabled, withFallbackReason}
+import org.apache.comet.CometSparkSessionExtensions.{isCometShuffleEnabled, isSpark35Plus, withFallbackReason}
 import org.apache.comet.parquet.CometParquetUtils
 import org.apache.comet.rules.CometExecRule
 import org.apache.comet.serde.{CometOperatorSerde, Compatible, OperatorOuterClass, QueryContextInterner, SupportLevel, Unsupported}
@@ -438,7 +440,8 @@ private[comet] object PlanDataInjector extends Logging {
         // Post the Iceberg planning metrics to the SQL UI here rather than only from the scan's
         // doExecuteColumnar: when the scan is fused under a parent native operator, its own
         // doExecuteColumnar never runs, so this walk is the only execution-time hook that reaches
-        // it. Safe to also call for a root scan (re-posting the same values is a no-op).
+        // it. sendDriverMetrics guards on the execution id, so the standalone-scan path (which
+        // posts from doExecuteColumnar) and this fused path never double-post.
         iceberg.sendDriverMetrics()
         if (iceberg.commonData.nonEmpty && iceberg.perPartitionData.nonEmpty) {
           // A self-join/self-merge can put two scans of the same table (same metadata_location)
@@ -1047,7 +1050,14 @@ abstract class CometNativeExec extends CometExec {
       commonByKey = commonByKey,
       perPartitionByKey = perPartitionByKey,
       shuffleScanIndices = shuffleScanIndices,
-      hasScanInput = sparkPlans.exists(_.isInstanceOf[CometNativeScanExec]))
+      // A leaf Comet scan (`CometNativeScanExec`, `CometIcebergNativeScanExec`) can
+      // contribute `bytes_scanned` / `output_rows` to Spark's task-level input metrics,
+      // which drive the Input column on the UI's Stages and Executors tabs.
+      // Matching on `CometLeafExec` rather than `CometNativeScanExec` keeps every scan
+      // reported once the scan is fused into a larger native block, where only the block
+      // root's `compute` runs. `reportScanInputMetrics` self-filters on the `bytes_scanned`
+      // metric, so leaves that don't track it are a no-op.
+      hasScanInput = sparkPlans.exists(_.isInstanceOf[CometLeafExec]))
   }
 
   /**
@@ -1862,6 +1872,20 @@ case class CometUnionExec(
 
 trait CometBaseAggregate {
 
+  /**
+   * Whether a decimal SUM's result precision is DecimalType.MAX_PRECISION, the only case with no
+   * headroom above the input where an intermediate overflow can change the answer.
+   */
+  protected def hasMaxPrecisionDecimalSum(op: BaseAggregateExec): Boolean =
+    op.aggregateExpressions.exists(_.aggregateFunction match {
+      case sum: Sum =>
+        sum.dataType match {
+          case decimal: DecimalType => decimal.precision == DecimalType.MAX_PRECISION
+          case _ => false
+        }
+      case _ => false
+    })
+
   def doConvert(
       aggregate: BaseAggregateExec,
       builder: Operator.Builder,
@@ -2214,6 +2238,26 @@ object CometHashAggregateExec
       op.aggregateExpressions.exists(_.mode == Final)) {
       return Unsupported(Some("Final aggregates disabled via test config"))
     }
+    // Without codegen Spark buffers an ungrouped aggregate in an UnsafeRow, which latches a
+    // decimal sum that leaves the precision, while the native accumulator keeps it unbounded.
+    // Spark turns codegen off by config, for an imperative aggregate, for a non-leaf
+    // CodegenFallback expression, or when the output or an input exceeds its field limit. The
+    // NO_CODEGEN factory mode turns whole-stage codegen off only from Spark 3.5 (SPARK-44236).
+    val codegenOff = !op.conf.wholeStageEnabled ||
+      (isSpark35Plus && op.conf
+        .getConfString(SQLConf.CODEGEN_FACTORY_MODE.key)
+        .equalsIgnoreCase(CodegenObjectFactoryMode.NO_CODEGEN.toString)) ||
+      op.aggregateExpressions.exists(_.aggregateFunction.isInstanceOf[ImperativeAggregate]) ||
+      WholeStageCodegenExec.isTooManyFields(op.conf, op.schema) ||
+      op.children.exists(child => WholeStageCodegenExec.isTooManyFields(op.conf, child.schema)) ||
+      op.expressions.exists(_.exists(e =>
+        e.isInstanceOf[CodegenFallback] && !e.isInstanceOf[LeafExpression]))
+    if (op.groupingExpressions.isEmpty && codegenOff && hasMaxPrecisionDecimalSum(op)) {
+      return Unsupported(
+        Some(
+          "Ungrouped decimal SUM at maximum precision without codegen cannot match Spark's " +
+            "latching UnsafeRow buffer"))
+    }
     Compatible()
   }
 
@@ -2272,6 +2316,15 @@ object CometObjectHashAggregateExec
         Some(
           "Comet shuffle is not enabled, so converting ObjectHashAggregate would split the " +
             "aggregate across Comet and Spark"))
+    }
+    // Spark's object aggregation buffers the intermediate decimal sum unbounded, while Comet's
+    // grouped accumulator latches to null once a running sum leaves the precision, so the
+    // grouped case declines. Decimal AVG has the same gap and is tracked separately.
+    if (op.groupingExpressions.nonEmpty && hasMaxPrecisionDecimalSum(op)) {
+      return Unsupported(
+        Some(
+          "Grouped decimal SUM at maximum precision cannot match Spark's unbounded object " +
+            "aggregation buffer"))
     }
     Compatible()
   }

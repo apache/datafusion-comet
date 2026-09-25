@@ -74,6 +74,7 @@ to read more.
    Understanding Comet Plans <understanding-comet-plans>
    Tuning Guide <tuning>
    Metrics Guide <metrics>
+   In-Memory Cache <in-memory-cache>
    PyArrow UDF Acceleration <pyarrow-udfs>
 
 .. toctree::
