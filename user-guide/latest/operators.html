@@ -834,7 +834,7 @@ omitted from the tables below and may be reconsidered based on demand:</p>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">BatchScanExec</span></code></p></td>
 <td><p>✅</p></td>
-<td><p>Parquet, Apache Iceberg Parquet, and CSV (native) scans. See <a class="reference internal" href="compatibility/scans.html"><span class="std std-doc">Parquet Scan Compatibility</span></a> and the <a class="reference internal" href="iceberg.html"><span class="std std-doc">Iceberg Guide</span></a>.</p></td>
+<td><p>Apache Iceberg Parquet scans run natively. Native CSV scans are experimental and disabled by default. DataSource V2 Parquet scans are not accelerated. See <a class="reference internal" href="compatibility/scans.html"><span class="std std-doc">Parquet Scan Compatibility</span></a> and the <a class="reference internal" href="iceberg.html"><span class="std std-doc">Iceberg Guide</span></a>.</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">LocalTableScanExec</span></code></p></td>
 <td><p>⚠️</p></td>
@@ -845,8 +845,8 @@ omitted from the tables below and may be reconsidered based on demand:</p>
 <td><p>Spark 4.0 and later. See <a class="reference internal" href="compatibility/operators.html#empty-relations"><span class="std std-ref">Empty Relations</span></a> for native-input support and writer fallback.</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">InMemoryTableScanExec</span></code></p></td>
-<td><p>🔜</p></td>
-<td><p>Cached / in-memory table scans fall back today.</p></td>
+<td><p>⚠️</p></td>
+<td><p>Experimental, disabled by default. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.inMemoryCache.enabled=true</span></code> before the application starts so Comet installs its Arrow cache serializer. Relations with unsupported column types stay in Spark’s cache format and fall back. See <a class="reference internal" href="in-memory-cache.html"><span class="std std-doc">In-Memory Cache</span></a>.</p></td>
 </tr>
 </tbody>
 </table>
@@ -928,7 +928,7 @@ omitted from the tables below and may be reconsidered based on demand:</p>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">ObjectHashAggregateExec</span></code></p></td>
 <td><p>✅</p></td>
-<td><p>Supports a limited set of aggregates, such as <code class="docutils literal notranslate"><span class="pre">bloom_filter_agg</span></code>. Falls back when Comet shuffle is disabled, which would otherwise split the aggregate across Comet and Spark. See the <a class="reference internal" href="tuning.html"><span class="std std-doc">Tuning Guide</span></a>.</p></td>
+<td><p>Runs the object-buffer aggregates Comet supports, such as <code class="docutils literal notranslate"><span class="pre">collect_list</span></code>, <code class="docutils literal notranslate"><span class="pre">collect_set</span></code>, <code class="docutils literal notranslate"><span class="pre">percentile</span></code>, <code class="docutils literal notranslate"><span class="pre">approx_percentile</span></code>, <code class="docutils literal notranslate"><span class="pre">mode</span></code>, <code class="docutils literal notranslate"><span class="pre">bloom_filter_agg</span></code>, and (Spark 4.0+) <code class="docutils literal notranslate"><span class="pre">listagg</span></code>. Falls back when Comet shuffle is disabled, which would otherwise split the aggregate across Comet and Spark. See <a class="reference internal" href="tuning.html#shuffle"><span class="std std-ref">Shuffle</span></a>.</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">SortAggregateExec</span></code></p></td>
 <td><p>🔜</p></td>
@@ -958,7 +958,7 @@ omitted from the tables below and may be reconsidered based on demand:</p>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">SortMergeJoinExec</span></code></p></td>
 <td><p>✅</p></td>
-<td><p></p></td>
+<td><p>Supports <code class="docutils literal notranslate"><span class="pre">BINARY</span></code> join keys. Nested-type (struct, array, map) and collated-string join keys fall back to Spark.</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">BroadcastNestedLoopJoinExec</span></code></p></td>
 <td><p>✅</p></td>
@@ -1006,7 +1006,7 @@ omitted from the tables below and may be reconsidered based on demand:</p>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">WindowGroupLimitExec</span></code></p></td>
 <td><p>✅</p></td>
-<td><p>Streaming per-partition top-K pushdown for <code class="docutils literal notranslate"><span class="pre">ROW_NUMBER</span></code>, <code class="docutils literal notranslate"><span class="pre">RANK</span></code>, and <code class="docutils literal notranslate"><span class="pre">DENSE_RANK</span></code>.</p></td>
+<td><p>Spark 3.5 and later. Streaming per-partition top-K pushdown for <code class="docutils literal notranslate"><span class="pre">ROW_NUMBER</span></code>, <code class="docutils literal notranslate"><span class="pre">RANK</span></code>, and <code class="docutils literal notranslate"><span class="pre">DENSE_RANK</span></code>.</p></td>
 </tr>
 </tbody>
 </table>
@@ -1060,6 +1060,10 @@ omitted from the tables below and may be reconsidered based on demand:</p>
 <td><p>⚠️</p></td>
 <td><p>Spark 3.4/3.5 only. Experimental native Parquet writes, disabled by default (opt-in). Replaced by <code class="docutils literal notranslate"><span class="pre">WriteFilesExec</span></code> on Spark 4.0+ and removed with Spark 3.x support.</p></td>
 </tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">AppendDataExec</span></code>, <code class="docutils literal notranslate"><span class="pre">OverwriteByExpressionExec</span></code>, <code class="docutils literal notranslate"><span class="pre">OverwritePartitionsDynamicExec</span></code>, <code class="docutils literal notranslate"><span class="pre">ReplaceDataExec</span></code></p></td>
+<td><p>⚠️</p></td>
+<td><p>Apache Iceberg tables only. Experimental, disabled by default. See <a class="reference internal" href="iceberg-writes.html"><span class="std std-doc">Iceberg Writes</span></a>.</p></td>
+</tr>
 </tbody>
 </table>
 </div>
@@ -1074,9 +1078,13 @@ omitted from the tables below and may be reconsidered based on demand:</p>
 </tr>
 </thead>
 <tbody>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">ArrowEvalPythonExec</span></code>, <code class="docutils literal notranslate"><span class="pre">MapInArrowExec</span></code>, <code class="docutils literal notranslate"><span class="pre">MapInPandasExec</span></code>, <code class="docutils literal notranslate"><span class="pre">FlatMapGroupsInPandasExec</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">MapInArrowExec</span></code>, <code class="docutils literal notranslate"><span class="pre">MapInPandasExec</span></code></p></td>
+<td><p>⚠️</p></td>
+<td><p>Spark 4.0 and later. Experimental, disabled by default (<code class="docutils literal notranslate"><span class="pre">spark.comet.exec.pyarrowUDF.enabled</span></code>). See <a class="reference internal" href="pyarrow-udfs.html"><span class="std std-doc">PyArrow UDF Acceleration</span></a>.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">ArrowEvalPythonExec</span></code>, <code class="docutils literal notranslate"><span class="pre">FlatMapGroupsInPandasExec</span></code></p></td>
 <td><p>🔜</p></td>
-<td><p>Experimental accelerated PyArrow UDF support is in progress (<a class="reference external" href="https://github.com/apache/datafusion-comet/pull/4234">#4234</a>).</p></td>
+<td><p>Scalar <code class="docutils literal notranslate"><span class="pre">&#64;pandas_udf</span></code> (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/5386">#5386</a>) and grouped <code class="docutils literal notranslate"><span class="pre">applyInPandas</span></code> (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/5123">#5123</a>) fall back to Spark.</p></td>
 </tr>
 </tbody>
 </table>

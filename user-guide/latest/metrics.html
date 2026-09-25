@@ -780,8 +780,8 @@ under the License.
 <section id="spark-sql-metrics">
 <h2>Spark SQL Metrics<a class="headerlink" href="#spark-sql-metrics" title="Link to this heading">#</a></h2>
 <p>Comet operators report the following metrics in the Spark SQL UI.</p>
-<section id="cometscanexec">
-<h3>CometScanExec<a class="headerlink" href="#cometscanexec" title="Link to this heading">#</a></h3>
+<section id="cometbatchscan">
+<h3>CometBatchScan<a class="headerlink" href="#cometbatchscan" title="Link to this heading">#</a></h3>
 <div class="pst-scrollable-table-container"><table class="table">
 <thead>
 <tr class="row-odd"><th class="head"><p>Metric</p></th>
@@ -790,11 +790,13 @@ under the License.
 </thead>
 <tbody>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">scan</span> <span class="pre">time</span></code></p></td>
-<td><p>Total time to scan a Parquet file. This is not comparable to the same metric in Spark because Comet’s scan metric is more accurate. Although both Comet and Spark measure the time in nanoseconds, Spark rounds this time to the nearest millisecond per batch and Comet does not.</p></td>
+<td><p>Time spent reading batches from the wrapped DataSource V2 reader. Comet measures this time in nanoseconds and does not round it to the nearest millisecond per batch.</p></td>
 </tr>
 </tbody>
 </table>
 </div>
+<p>Parquet scans through the DataSource V1 API appear in plans as <code class="docutils literal notranslate"><span class="pre">CometNativeScan</span></code> and report the
+native metrics described under <a class="reference internal" href="#native-parquet-scans">Native Parquet scans</a> rather than <code class="docutils literal notranslate"><span class="pre">scan</span> <span class="pre">time</span></code>.</p>
 </section>
 <section id="cometicebergnativescan">
 <h3>CometIcebergNativeScan<a class="headerlink" href="#cometicebergnativescan" title="Link to this heading">#</a></h3>
@@ -819,7 +821,7 @@ plain Spark + Iceberg <code class="docutils literal notranslate"><span class="pr
 <td><p>File scan tasks (splits) read by this scan.</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">scan</span> <span class="pre">time</span></code></p></td>
-<td><p>Time spent in the native scan’s record-batch polling, covering the iceberg-rust reader plus Comet’s schema adaptation. It excludes time the stream spends waiting between polls, so it is decode/compute time, not end-to-end scan latency. This differs from the <code class="docutils literal notranslate"><span class="pre">scan</span> <span class="pre">time</span></code> under <code class="docutils literal notranslate"><span class="pre">CometScanExec</span></code>, which times Parquet file reads.</p></td>
+<td><p>Time spent in the native scan’s record-batch polling, covering the iceberg-rust reader plus Comet’s schema adaptation. It excludes time the stream spends waiting between polls, so it is decode/compute time, not end-to-end scan latency. This differs from the <code class="docutils literal notranslate"><span class="pre">scan</span> <span class="pre">time</span></code> under <code class="docutils literal notranslate"><span class="pre">CometBatchScan</span></code>, which times batch reads from a DataSource V2 reader.</p></td>
 </tr>
 </tbody>
 </table>
@@ -888,6 +890,37 @@ scan planning and do not change during execution.</p>
 counter, and Comet reads natively through iceberg-rust, which exposes no deletes-applied count, so
 the value would always be 0.</p>
 </section>
+<section id="comethashaggregate">
+<h3>CometHashAggregate<a class="headerlink" href="#comethashaggregate" title="Link to this heading">#</a></h3>
+<p>Native aggregates with grouping keys report these additional metrics:</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Metric</p></th>
+<th class="head"><p>Description</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">rows</span> <span class="pre">bypassing</span> <span class="pre">partial</span> <span class="pre">aggregation</span></code></p></td>
+<td><p>Input rows passed through without partial aggregation. See <a class="reference internal" href="tuning.html#adaptive-partial-aggregation"><span class="std std-ref">Adaptive Partial Aggregation</span></a>.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">number</span> <span class="pre">of</span> <span class="pre">spills</span></code></p></td>
+<td><p>Number of times the aggregate spilled to disk.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">total</span> <span class="pre">spilled</span> <span class="pre">bytes</span></code></p></td>
+<td><p>Bytes written to aggregate spill files.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">number</span> <span class="pre">of</span> <span class="pre">spilled</span> <span class="pre">rows</span></code></p></td>
+<td><p>Rows written to aggregate spill files.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">peak</span> <span class="pre">native</span> <span class="pre">aggregate</span> <span class="pre">memory</span></code></p></td>
+<td><p>Peak memory used by the native aggregate.</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>Spill bytes from native sorts, aggregates, and sort-merge joins are also added to Spark’s task-level
+<code class="docutils literal notranslate"><span class="pre">diskBytesSpilled</span></code> metric in every stage, not only in shuffle stages.</p>
+</section>
 <section id="hash-joins">
 <h3>Hash Joins<a class="headerlink" href="#hash-joins" title="Link to this heading">#</a></h3>
 <p>With <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.join.dynamicFilter.enabled=true</span></code>, native broadcast and shuffled hash joins
@@ -936,8 +969,8 @@ reader savings. Existing join, scan, and intervening filter metrics retain their
 </tr>
 </thead>
 <tbody>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">native</span> <span class="pre">shuffle</span> <span class="pre">time</span></code></p></td>
-<td><p>Total time in native code excluding any child operators.</p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">native</span> <span class="pre">shuffle</span> <span class="pre">writer</span> <span class="pre">time</span></code></p></td>
+<td><p>Total time in the native shuffle writer, excluding any child operators.</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">repartition</span> <span class="pre">time</span></code></p></td>
 <td><p>Time to repartition batches.</p></td>
@@ -945,21 +978,29 @@ reader savings. Existing join, scan, and intervening filter metrics retain their
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">partition</span> <span class="pre">interleaving</span> <span class="pre">time</span></code></p></td>
 <td><p>Time to interleave partitioned batches before writing them.</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">memory</span> <span class="pre">pool</span> <span class="pre">time</span></code></p></td>
-<td><p>Time interacting with memory pool.</p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">encoding</span> <span class="pre">and</span> <span class="pre">compression</span> <span class="pre">time</span></code></p></td>
+<td><p>Time to encode batches in Arrow IPC format and compress them with the configured codec (<code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.compression.codec</span></code>, default <code class="docutils literal notranslate"><span class="pre">lz4</span></code>).</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">encoding</span> <span class="pre">and</span> <span class="pre">compression</span> <span class="pre">time</span></code></p></td>
-<td><p>Time to encode batches in IPC format and compress using ZSTD.</p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">decoding</span> <span class="pre">and</span> <span class="pre">decompression</span> <span class="pre">time</span></code></p></td>
+<td><p>Time to decompress and decode shuffle blocks when they are read.</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">disk</span> <span class="pre">spilled</span> <span class="pre">bytes</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">number</span> <span class="pre">of</span> <span class="pre">spills</span></code></p></td>
+<td><p>Number of native shuffle spills.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">disk</span> <span class="pre">spilled</span> <span class="pre">bytes</span></code></p></td>
 <td><p>Actual bytes written to native shuffle spill files on disk.</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">memory</span> <span class="pre">spilled</span> <span class="pre">bytes</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">memory</span> <span class="pre">spilled</span> <span class="pre">bytes</span></code></p></td>
 <td><p>Uncompressed Arrow backing-buffer and partition-index data before spilling.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">number</span> <span class="pre">of</span> <span class="pre">input</span> <span class="pre">batches</span></code></p></td>
+<td><p>Batches received by the native shuffle writer.</p></td>
 </tr>
 </tbody>
 </table>
 </div>
+<p>Comet exchanges also report Spark’s standard shuffle read and write metrics, including when native
+operators read shuffle blocks directly.</p>
 <p>Disk and memory spilled bytes measure different representations of the same native shuffle spill.
 Disk spill bytes count the actual bytes written to disk: compressed when shuffle compression is
 enabled and uncompressed when <code class="docutils literal notranslate"><span class="pre">spark.shuffle.compress=false</span></code>. Memory spill bytes follow Spark’s
@@ -992,11 +1033,8 @@ logged for each native plan (and there is one plan per task, so this is very ver
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">elapsed_compute</span></code></p></td>
 <td><p>Total time spent in this operator, fetching batches from a JVM iterator.</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">jvm_fetch_time</span></code></p></td>
-<td><p>Time spent in the JVM fetching input batches to be read by this <code class="docutils literal notranslate"><span class="pre">ScanExec</span></code> instance.</p></td>
-</tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">arrow_ffi_time</span></code></p></td>
-<td><p>Time spent using Arrow FFI to create Arrow batches from the memory addresses returned from the JVM.</p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">cast_time</span></code></p></td>
+<td><p>Time spent casting columns to the requested data types during the scan.</p></td>
 </tr>
 </tbody>
 </table>
@@ -1020,14 +1058,14 @@ logged for each native plan (and there is one plan per task, so this is very ver
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">interleave_time</span></code></p></td>
 <td><p>Time to gather partitioned rows into output batches before writing.</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">ipc_time</span></code></p></td>
-<td><p>Time to encode batches in IPC format and compress using ZSTD.</p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">encode_time</span></code></p></td>
+<td><p>Time to encode batches in Arrow IPC format and compress them with the configured codec.</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">mempool_time</span></code></p></td>
-<td><p>Time interacting with memory pool.</p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">write_time</span></code></p></td>
+<td><p>Time spent writing encoded data to its destination.</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">write_time</span></code></p></td>
-<td><p>Time spent writing bytes to disk.</p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">input_batches</span></code></p></td>
+<td><p>Number of input batches.</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spill_count</span></code></p></td>
 <td><p>Number of native shuffle spills.</p></td>
@@ -1176,8 +1214,9 @@ filesystem or network traffic accounting.</p>
   <nav class="bd-toc-nav page-toc" aria-labelledby="pst-page-navigation-heading-2">
     <ul class="visible nav section-nav flex-column">
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#spark-sql-metrics">Spark SQL Metrics</a><ul class="nav section-nav flex-column">
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#cometscanexec">CometScanExec</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#cometbatchscan">CometBatchScan</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#cometicebergnativescan">CometIcebergNativeScan</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#comethashaggregate">CometHashAggregate</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#hash-joins">Hash Joins</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#exchange">Exchange</a></li>
 </ul>

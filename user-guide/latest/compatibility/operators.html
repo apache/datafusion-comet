@@ -789,6 +789,17 @@ operator restrictions and aggregate buffer compatibility checks still apply.
 Parquet writes whose input plans contain an empty relation use Spark’s writer to preserve
 readable empty output files and their schema metadata.</p>
 </section>
+<section id="in-memory-cache">
+<h2>In-Memory Cache<a class="headerlink" href="#in-memory-cache" title="Link to this heading">#</a></h2>
+<p>Comet can store cached relations (<code class="docutils literal notranslate"><span class="pre">df.cache()</span></code>, <code class="docutils literal notranslate"><span class="pre">CACHE</span> <span class="pre">TABLE</span></code>) in Arrow format and scan them
+natively. This is experimental and disabled by default; see <a class="reference internal" href="../in-memory-cache.html"><span class="std std-doc">In-Memory Cache</span></a>
+for how to enable it. Comet does not replace a <code class="docutils literal notranslate"><span class="pre">spark.sql.cache.serializer</span></code> that the application
+has already set. Relations whose schema Comet’s Arrow writer does not support are cached in
+Spark’s default format, and their scans fall back to Spark. Reads that feed Spark operators rather
+than Comet operators can be slower than Spark’s cache.</p>
+<p>With Kryo and <code class="docutils literal notranslate"><span class="pre">spark.kryo.registrationRequired=true</span></code>, Comet needs its Kryo registrator whether or
+not the cache is enabled; see <a class="reference internal" href="../installation.html#kryo-serialization"><span class="std std-ref">Kryo serialization</span></a>.</p>
+</section>
 <section id="sampling">
 <h2>Sampling<a class="headerlink" href="#sampling" title="Link to this heading">#</a></h2>
 <p>Comet runs <code class="docutils literal notranslate"><span class="pre">SampleExec</span></code> natively when sampling is performed without replacement, which covers
@@ -848,8 +859,11 @@ comparing Arrow row-encoded keys for byte equality, which splits peers that Spar
 </ul>
 <p><strong>Known incompatibilities:</strong></p>
 <ul class="simple">
-<li><p>Signed-zero ordering (<code class="docutils literal notranslate"><span class="pre">-0.0</span></code> vs <code class="docutils literal notranslate"><span class="pre">+0.0</span></code>) diverges from Spark’s <code class="docutils literal notranslate"><span class="pre">RankLimitIterator</span></code>; see
-<a class="reference internal" href="floating-point.html#ordering-signed-zero-00-vs-00"><span class="std std-ref">floating-point ordering</span></a>.</p></li>
+<li><p>Floating-point values nested in array or struct <code class="docutils literal notranslate"><span class="pre">ORDER</span> <span class="pre">BY</span></code> keys are compared with Arrow’s raw
+total ordering, so ranks can differ from Spark when the data mixes <code class="docutils literal notranslate"><span class="pre">-0.0</span></code> and <code class="docutils literal notranslate"><span class="pre">+0.0</span></code> or more
+than one NaN representation (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/5507">#5507</a>).
+Scalar <code class="docutils literal notranslate"><span class="pre">FLOAT</span></code> and <code class="docutils literal notranslate"><span class="pre">DOUBLE</span></code> keys are normalized and match Spark; see
+<a class="reference internal" href="floating-point.html"><span class="std std-doc">floating-point ordering</span></a>.</p></li>
 </ul>
 </section>
 <section id="round-robin-partitioning">
@@ -924,6 +938,7 @@ they will be identical to Spark. Unsorted results may have different row orderin
   <nav class="bd-toc-nav page-toc" aria-labelledby="pst-page-navigation-heading-2">
     <ul class="visible nav section-nav flex-column">
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#empty-relations">Empty Relations</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#in-memory-cache">In-Memory Cache</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#sampling">Sampling</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#window-functions">Window Functions</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#round-robin-partitioning">Round-Robin Partitioning</a></li>

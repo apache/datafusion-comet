@@ -832,6 +832,8 @@ version you are running:</p>
 </li>
 </ul>
 </div>
+<p>Spark 3.4 support is deprecated and will be removed in a future release; see
+<a class="reference internal" href="../spark-versions.html#spark-3-4"><span class="std std-ref">Spark Version Compatibility</span></a>.</p>
 <p>Expressions that are not 100% Spark-compatible fall back to Spark by default, except those
 with a JVM codegen-dispatch path, which stay in Comet’s native pipeline and match Spark
 exactly. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.EXPRNAME.allowIncompatible=true</span></code>, where <code class="docutils literal notranslate"><span class="pre">EXPRNAME</span></code> is

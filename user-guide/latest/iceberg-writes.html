@@ -800,7 +800,7 @@ and it is the foundation for the second toggle: when
 <code class="docutils literal notranslate"><span class="pre">spark.comet.iceberg.write.enabled=true</span></code> and the write passes the eligibility check below, the
 <code class="docutils literal notranslate"><span class="pre">IcebergWrite</span></code> operator’s per-task Parquet write is delegated to
 <a class="reference external" href="https://github.com/apache/iceberg-rust">iceberg-rust</a> via Comet’s native execution pipeline
-(<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/5308">#5308</a>).</p>
+(<a class="reference external" href="https://github.com/apache/datafusion-comet/pull/5361">#5361</a>).</p>
 </section>
 <section id="how-the-native-write-works">
 <h2>How the native write works<a class="headerlink" href="#how-the-native-write-works" title="Link to this heading">#</a></h2>
@@ -881,7 +881,7 @@ trade-off, only no plan change.</p>
 <section id="native-parquet-write-eligibility">
 <h2>Native Parquet write eligibility<a class="headerlink" href="#native-parquet-write-eligibility" title="Link to this heading">#</a></h2>
 <p>When <code class="docutils literal notranslate"><span class="pre">spark.comet.iceberg.write.enabled=true</span></code>
-(<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/5308">#5308</a>), the <code class="docutils literal notranslate"><span class="pre">IcebergWrite</span></code> operator’s
+(<a class="reference external" href="https://github.com/apache/datafusion-comet/pull/5361">#5361</a>), the <code class="docutils literal notranslate"><span class="pre">IcebergWrite</span></code> operator’s
 per-task Parquet write is delegated to <a class="reference external" href="https://github.com/apache/iceberg-rust">iceberg-rust</a>.
 The native writer must produce the same outcome as iceberg-java — the same Parquet features,
 statistics, and manifest metadata — so a write is only eligible when every table property it
@@ -890,7 +890,9 @@ feeding the write is fully Comet-native. For a partitioned table that plan inclu
 distribution and local sort Iceberg requests on its partition transforms; those stay native
 because the transforms themselves have native implementations (see
 <a class="reference internal" href="iceberg.html"><span class="std std-doc">Iceberg system functions</span></a>). Ineligible writes run through iceberg-java unchanged,
-with the reason reported as a fall-back reason in Comet’s extended EXPLAIN output.</p>
+with the reason reported as a fall-back reason in Comet’s extended EXPLAIN output. A write that
+runs natively shows <code class="docutils literal notranslate"><span class="pre">CometIcebergWrite</span></code> under <code class="docutils literal notranslate"><span class="pre">IcebergCommit</span></code> in the physical plan; an ineligible
+write keeps <code class="docutils literal notranslate"><span class="pre">IcebergWrite</span></code>.</p>
 <p>The native writer reads its input as Arrow batches from a Comet operator, so the write’s input
 must itself run in Comet. A write whose input is a local relation, such as <code class="docutils literal notranslate"><span class="pre">INSERT</span> <span class="pre">...</span> <span class="pre">VALUES</span></code> or
 <code class="docutils literal notranslate"><span class="pre">df.writeTo(...).append()</span></code> on a DataFrame built from local data, is fed by Spark’s
@@ -964,7 +966,8 @@ iceberg-java resolves per-write options and <code class="docutils literal notran
 everything not listed above must be absent: unvetted <code class="docutils literal notranslate"><span class="pre">write.parquet.*</span></code> keys (e.g.
 <code class="docutils literal notranslate"><span class="pre">bloom-filter-max-bytes</span></code>, <code class="docutils literal notranslate"><span class="pre">stats-enabled.column.*</span></code>, keys added by future Iceberg versions),
 any <code class="docutils literal notranslate"><span class="pre">parquet.*</span></code> table property (including <code class="docutils literal notranslate"><span class="pre">parquet.enable.dictionary</span></code>), and any <code class="docutils literal notranslate"><span class="pre">parquet.*</span></code>
-key in the session Hadoop configuration (with <code class="docutils literal notranslate"><span class="pre">HadoopFileIO</span></code>-backed output those reach
+key in the session Hadoop configuration other than the reader-only
+<code class="docutils literal notranslate"><span class="pre">parquet.hadoop.vectored.io.enabled</span></code> (with <code class="docutils literal notranslate"><span class="pre">HadoopFileIO</span></code>-backed output those reach
 iceberg-java’s writer but not the native one). Also gated explicitly: any <code class="docutils literal notranslate"><span class="pre">encryption.*</span></code> key,
 <code class="docutils literal notranslate"><span class="pre">write.object-storage.enabled=true</span></code>, <code class="docutils literal notranslate"><span class="pre">write.location-provider.impl</span></code>, and <code class="docutils literal notranslate"><span class="pre">io-impl</span></code>.</p>
 <p>Two checks look past properties at the table’s instantiated state, because both can be

@@ -787,13 +787,15 @@ Arrow format, allowing the Comet pipeline to take over after that, but the proce
 </section>
 <section id="apache-iceberg">
 <h3>Apache Iceberg<a class="headerlink" href="#apache-iceberg" title="Link to this heading">#</a></h3>
-<p>Comet accelerates Iceberg scans of Parquet files. See the <a class="reference internal" href="iceberg.html"><span class="std std-doc">Iceberg Guide</span></a> for more information.</p>
+<p>Comet accelerates Iceberg scans of Parquet files and has an experimental, opt-in native Iceberg writer.
+See the <a class="reference internal" href="iceberg.html"><span class="std std-doc">Iceberg Guide</span></a> and <a class="reference internal" href="iceberg-writes.html"><span class="std std-doc">Iceberg Writes</span></a> for more information.</p>
 </section>
 <section id="csv">
 <h3>CSV<a class="headerlink" href="#csv" title="Link to this heading">#</a></h3>
 <p>Comet provides experimental Rust-based CSV scan support. When <code class="docutils literal notranslate"><span class="pre">spark.comet.scan.csv.v2.enabled</span></code> is enabled, CSV files
 are read in Rust for improved performance. This feature is experimental and performance benefits are
-workload-dependent.</p>
+workload-dependent. Only Spark’s DataSource V2 CSV scan is accelerated, and Spark reads CSV through the V1 API by
+default, so also remove <code class="docutils literal notranslate"><span class="pre">csv</span></code> from <code class="docutils literal notranslate"><span class="pre">spark.sql.sources.useV1SourceList</span></code>.</p>
 <p>Alternatively, when <code class="docutils literal notranslate"><span class="pre">spark.comet.convert.csv.enabled</span></code> is enabled, data from Spark’s CSV reader is immediately
 converted into Arrow format, allowing the Comet pipeline to take over after that.</p>
 </section>
@@ -1108,6 +1110,9 @@ described in <a class="reference internal" href="#additional-s3-configuration-op
 credential providers and options documented above also apply to alias-scheme URLs. The same
 translation feeds the native Iceberg scan; see
 <a class="reference internal" href="iceberg.html#object-store-configuration-s3"><span class="std std-ref">Object store configuration (S3)</span></a> in the Iceberg guide.</p>
+<p>A native Parquet scan whose alias-scheme paths span more than one bucket falls back to Spark. Alias
+schemes apply to native scans only: a native Iceberg write to an alias-scheme location falls back to
+iceberg-java.</p>
 </section>
 <section id="examples">
 <h3>Examples<a class="headerlink" href="#examples" title="Link to this heading">#</a></h3>
@@ -1138,7 +1143,7 @@ translation feeds the native Iceberg scan; see
 <p>Comet’s S3 support has the following limitations:</p>
 <ol class="arabic simple">
 <li><p><strong>Partial Hadoop S3A configuration support</strong>: Not all Hadoop S3A configurations are currently supported. Only the configurations listed in the tables above are translated and applied to the underlying <code class="docutils literal notranslate"><span class="pre">object_store</span></code> crate.</p></li>
-<li><p><strong>Custom credential providers</strong>: Custom implementations of AWS credential providers are not supported. The implementation only supports the standard credential providers listed in the table above. We are planning to add support for custom credential providers through a JNI-based adapter that will allow calling Java credential providers from Rust code. See <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/1829">#1829</a> for more details.</p></li>
+<li><p><strong>Custom credential providers</strong>: Custom credential provider classes named in <code class="docutils literal notranslate"><span class="pre">fs.s3a.aws.credentials.provider</span></code> are not supported; only the standard providers listed in the table above are. To route credential requests through your own Java code, implement Comet’s <code class="docutils literal notranslate"><span class="pre">CometS3CredentialProvider</span></code> SPI; see <a class="reference internal" href="s3-credential-providers.html"><span class="std std-doc">S3 Credential Providers</span></a>. Broader Hadoop S3A integration is tracked in <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/1829">#1829</a>.</p></li>
 </ol>
 </section>
 </section>

@@ -1079,6 +1079,15 @@ by role. Names match what is shown in the plan output.</p>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">CometCsvNativeScan</span></code></p></td>
 <td><p>CSV scan that runs entirely in Rust via DataFusion (experimental).</p></td>
 </tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">CometInMemoryTableScan</span></code></p></td>
+<td><p>JVM-side scan of a table cached in Comet’s Arrow format (experimental, disabled by default).</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">CometLocalTableScan</span></code></p></td>
+<td><p>JVM-side scan of a <code class="docutils literal notranslate"><span class="pre">LocalTableScanExec</span></code> (disabled by default).</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">CometEmptyRelation</span></code></p></td>
+<td><p>Empty native input that replaces <code class="docutils literal notranslate"><span class="pre">EmptyRelationExec</span></code> (Spark 4.0 and later).</p></td>
+</tr>
 </tbody>
 </table>
 </div>
@@ -1130,11 +1139,26 @@ consecutively in a plan, they execute as a single fused block.</p>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">CometSortMergeJoin</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">SortMergeJoinExec</span></code></p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">CometWindow</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">CometWindowExec</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">WindowExec</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">CometWindowGroupLimitExec</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">WindowGroupLimitExec</span></code> (Spark 3.5 and later)</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">CometSample</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">SampleExec</span></code> (sampling without replacement)</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">CometTakeOrderedAndProject</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">TakeOrderedAndProjectExec</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">CometWriteFiles</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">WriteFilesExec</span></code> (Spark 4.0 and later, experimental native Parquet writes)</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">CometNativeWrite</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">DataWritingCommandExec</span></code> (Spark 3.x, experimental native Parquet writes)</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">CometIcebergWrite</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">IcebergWrite</span></code> (experimental native Iceberg data-file writes)</p></td>
 </tr>
 </tbody>
 </table>
@@ -1165,6 +1189,15 @@ consecutively in a plan, they execute as a single fused block.</p>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">CometSubqueryBroadcast</span></code></p></td>
 <td><p>Companion to <code class="docutils literal notranslate"><span class="pre">CometBroadcastExchange</span></code> for dynamic partition pruning subqueries.</p></td>
 </tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">CometMapInBatch</span></code></p></td>
+<td><p>Runs <code class="docutils literal notranslate"><span class="pre">mapInArrow</span></code> / <code class="docutils literal notranslate"><span class="pre">mapInPandas</span></code> Python UDFs on Comet’s Arrow batches (experimental). See <a class="reference internal" href="pyarrow-udfs.html"><span class="std std-doc">PyArrow UDF Acceleration</span></a>.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">IcebergWrite</span></code></p></td>
+<td><p>Executor-side Iceberg data-file write in Comet’s split-operator Iceberg write plan (experimental). See <a class="reference internal" href="iceberg-writes.html"><span class="std std-doc">Iceberg Writes</span></a>.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">IcebergCommit</span></code></p></td>
+<td><p>Driver-side commit for Comet’s split-operator Iceberg write plan (experimental).</p></td>
+</tr>
 </tbody>
 </table>
 </div>
@@ -1177,21 +1210,26 @@ use:</p>
 <li><p><strong><code class="docutils literal notranslate"><span class="pre">CometExchange</span></code></strong> is the <strong>native shuffle</strong> path. The child must already
 be a Comet operator producing columnar Arrow batches; the node calls
 <code class="docutils literal notranslate"><span class="pre">executeColumnar()</span></code> on its child and the partition, encode, and compress
-steps run in Rust. Hash and range partitioning <strong>keys</strong> must be
-primitive types because the Rust hashing and ordering do not support complex
-types, but the data columns themselves can include <code class="docutils literal notranslate"><span class="pre">StructType</span></code>,
-<code class="docutils literal notranslate"><span class="pre">ArrayType</span></code>, and <code class="docutils literal notranslate"><span class="pre">MapType</span></code> since batches are serialized via the Arrow IPC
-writer.</p></li>
+steps run in Rust. Range partitioning <strong>keys</strong> must be scalar types. Hash
+partitioning keys must also be scalar types unless
+<code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.native.partitioning.hash.nested.enabled=true</span></code>, which
+admits struct, array, and (Spark 4.0 and later) map keys. The data columns
+themselves can include <code class="docutils literal notranslate"><span class="pre">StructType</span></code>, <code class="docutils literal notranslate"><span class="pre">ArrayType</span></code>, and <code class="docutils literal notranslate"><span class="pre">MapType</span></code> since
+batches are serialized via the Arrow IPC writer.</p></li>
 <li><p><strong><code class="docutils literal notranslate"><span class="pre">CometColumnarExchange</span></code></strong> is the <strong>JVM columnar shuffle</strong> path. It accepts
 either Spark row-based input or Comet columnar input, which makes it the
 fallback when the child is not a Comet operator or when a hash/range key
-type is not supported by native shuffle (for example, collated strings). It
-is still preferred over Spark’s native shuffle when Comet shuffle is
-enabled.</p></li>
+type is not supported by native shuffle (for example, a struct or array
+hash key while nested hash keys are disabled). It is still preferred over
+Spark’s native shuffle when Comet shuffle is enabled. Keys with a
+non-default string collation are supported by neither path and use Spark’s
+shuffle.</p></li>
 </ul>
 <p>Both paths support the same set of partitioning schemes
 (<code class="docutils literal notranslate"><span class="pre">HashPartitioning</span></code>, <code class="docutils literal notranslate"><span class="pre">RangePartitioning</span></code>, <code class="docutils literal notranslate"><span class="pre">RoundRobinPartitioning</span></code>,
-<code class="docutils literal notranslate"><span class="pre">SinglePartition</span></code>) and both can carry complex types in data columns.</p>
+<code class="docutils literal notranslate"><span class="pre">SinglePartition</span></code>) and both can carry complex types in data columns. Native
+round-robin partitioning is disabled by default; see
+<a class="reference internal" href="compatibility/operators.html#round-robin-partitioning"><span class="std std-ref">Round-Robin Partitioning</span></a>.</p>
 <p>The choice between the two is automatic. See the
 <a class="reference internal" href="tuning.html#shuffle"><span class="std std-ref">Tuning Guide shuffle section</span></a> for how to enable Comet
 shuffle and choose between the implementations.</p>

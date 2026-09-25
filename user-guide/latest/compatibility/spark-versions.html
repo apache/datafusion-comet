@@ -789,20 +789,17 @@ of the versioning policy.</p>
 <p class="admonition-title">Warning</p>
 <p>Spark 3.4 support is deprecated as of the 1.0.0 release and will be removed in a future release.
 Comet continues to build and publish Spark 3.4 binaries in the meantime, but Apache Spark’s own
-SQL test suite is no longer run against Spark 3.4 on every change: it runs only when a contributor
+SQL test suite no longer runs against Spark 3.4 automatically: it runs only when a contributor
 opts a pull request into it. Regressions specific to Spark 3.4 are therefore more likely to reach a
 release than on the other supported versions. We recommend moving to Spark 3.5 or later.</p>
 </div>
 <section id="known-limitations">
 <h3>Known Limitations<a class="headerlink" href="#known-limitations" title="Link to this heading">#</a></h3>
 <ul class="simple">
-<li><p><strong>Reading <code class="docutils literal notranslate"><span class="pre">TimestampLTZ</span></code> as <code class="docutils literal notranslate"><span class="pre">TimestampNTZ</span></code></strong>: Spark 3.4 raises an error for this operation
-(SPARK-36182), but Comet’s Parquet scan silently returns the raw UTC value instead.
-See <a class="reference internal" href="scans.html#parquet-scan-limitations"><span class="std std-ref">Parquet Compatibility</span></a> for details.</p></li>
-<li><p><strong>Unsupported Parquet type conversions</strong>: Spark 3.4 raises schema incompatibility errors for
-certain type mismatches (e.g., reading INT32 as BIGINT, decimal precision changes), but Comet’s
-Comet’s Parquet scan may not detect these and could return unexpected values.
-See <a class="reference internal" href="scans.html#parquet-scan-limitations"><span class="std std-ref">Parquet Compatibility</span></a> for details.</p></li>
+<li><p><strong>Extra <code class="docutils literal notranslate"><span class="pre">SparkException</span></code> layer in Parquet schema mismatch errors</strong>: when a Parquet read is
+rejected because a file’s type cannot be converted to the requested type, the error’s cause chain
+has one more <code class="docutils literal notranslate"><span class="pre">SparkException</span></code> layer than Spark’s own reader produces.
+See <a class="reference internal" href="scans.html#schema-mismatch-handling"><span class="std std-ref">Parquet Compatibility</span></a> for details.</p></li>
 </ul>
 </section>
 </section>
@@ -812,19 +809,16 @@ See <a class="reference internal" href="scans.html#parquet-scan-limitations"><sp
 <section id="id1">
 <h3>Known Limitations<a class="headerlink" href="#id1" title="Link to this heading">#</a></h3>
 <ul class="simple">
-<li><p><strong>Reading <code class="docutils literal notranslate"><span class="pre">TimestampLTZ</span></code> as <code class="docutils literal notranslate"><span class="pre">TimestampNTZ</span></code></strong>: Spark 3.5 raises an error for this operation
-(SPARK-36182), but Comet’s Parquet scan silently returns the raw UTC value instead.
-See <a class="reference internal" href="scans.html#parquet-scan-limitations"><span class="std std-ref">Parquet Compatibility</span></a> for details.</p></li>
-<li><p><strong>Unsupported Parquet type conversions</strong>: Spark 3.5 raises schema incompatibility errors for
-certain type mismatches (e.g., reading INT32 as BIGINT, decimal precision changes), but Comet’s
-Comet’s Parquet scan may not detect these and could return unexpected values.
-See <a class="reference internal" href="scans.html#parquet-scan-limitations"><span class="std std-ref">Parquet Compatibility</span></a> for details.</p></li>
+<li><p><strong>Extra <code class="docutils literal notranslate"><span class="pre">SparkException</span></code> layer in Parquet schema mismatch errors</strong>: when a Parquet read is
+rejected because a file’s type cannot be converted to the requested type, the error’s cause chain
+has one more <code class="docutils literal notranslate"><span class="pre">SparkException</span></code> layer than Spark’s own reader produces.
+See <a class="reference internal" href="scans.html#schema-mismatch-handling"><span class="std std-ref">Parquet Compatibility</span></a> for details.</p></li>
 </ul>
 </section>
 </section>
 <section id="spark-4-0">
 <h2>Spark 4.0<a class="headerlink" href="#spark-4-0" title="Link to this heading">#</a></h2>
-<p>Spark 4.0.4 is supported with Java 17 and Scala 2.13.</p>
+<p>Spark 4.0.4 is supported with Java 17/21 and Scala 2.13.</p>
 <section id="id2">
 <h3>Known Limitations<a class="headerlink" href="#id2" title="Link to this heading">#</a></h3>
 <ul class="simple">
@@ -855,8 +849,9 @@ persisting, or read the file with Comet disabled for that query.</p></li>
 <p>Spark 4.2.0 is provided as experimental support with Java 17 and Scala 2.13.</p>
 <div class="admonition warning">
 <p class="admonition-title">Warning</p>
-<p>Spark 4.2 support is experimental. Comet tests run in CI for this version, but the Spark SQL tests
-do not yet. It is intended for early evaluation only and should not be used in production.</p>
+<p>Spark 4.2 support is experimental. Comet’s own test suites run nightly for this version, but
+Apache Spark’s SQL test suite does not run against it yet. It is intended for early evaluation only
+and should not be used in production.</p>
 </div>
 </section>
 </section>

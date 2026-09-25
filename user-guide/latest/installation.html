@@ -818,8 +818,8 @@ Other versions may work well enough for development and evaluation purposes.</p>
 <div class="admonition warning">
 <p class="admonition-title">Warning</p>
 <p>Spark 3.4 support is deprecated as of the 1.0.0 release and will be removed in a future release.
-Apache Spark’s own SQL test suite is no longer run against Spark 3.4 on every change; it runs only
-on demand. We recommend moving to Spark 3.5 or later.</p>
+Apache Spark’s own SQL test suite no longer runs against Spark 3.4 automatically; it runs only on
+demand. We recommend moving to Spark 3.5 or later.</p>
 </div>
 <div class="pst-scrollable-table-container"><table class="table">
 <thead>
@@ -834,34 +834,36 @@ on demand. We recommend moving to Spark 3.5 or later.</p>
 <tr class="row-even"><td><p>3.4.3</p></td>
 <td><p>17</p></td>
 <td><p>2.12/2.13</p></td>
-<td><p>Yes</p></td>
+<td><p>Nightly</p></td>
 <td><p>On demand</p></td>
 </tr>
 <tr class="row-odd"><td><p>3.5.9</p></td>
 <td><p>17</p></td>
 <td><p>2.12/2.13</p></td>
-<td><p>Yes</p></td>
-<td><p>Yes</p></td>
+<td><p>Nightly</p></td>
+<td><p>Nightly</p></td>
 </tr>
 <tr class="row-even"><td><p>4.0.4</p></td>
 <td><p>17/21</p></td>
 <td><p>2.13</p></td>
-<td><p>Yes</p></td>
-<td><p>Yes</p></td>
+<td><p>Nightly</p></td>
+<td><p>Nightly</p></td>
 </tr>
 <tr class="row-odd"><td><p>4.1.3</p></td>
 <td><p>17/21</p></td>
 <td><p>2.13</p></td>
-<td><p>Yes</p></td>
-<td><p>Yes</p></td>
+<td><p>Before merge</p></td>
+<td><p>Before merge</p></td>
 </tr>
 </tbody>
 </table>
 </div>
 <p>Note that we do not test the full matrix of supported Java and Scala versions in CI for every Spark version.</p>
-<p>“On demand” in the table above means the suite is not run automatically before a change is merged.
-A contributor can still run it against an individual pull request, but Spark 3.4 is no longer
-covered by default.</p>
+<p>“Before merge” in the table above means the suite must pass before a change is merged. “Nightly” means
+the suite runs once a day against the <code class="docutils literal notranslate"><span class="pre">main</span></code> branch, so a regression it finds is caught after the change
+has been merged rather than before. “On demand” means the suite does not run automatically at all. A
+contributor can still run it against an individual pull request, but Spark 3.4 is no longer covered by
+default.</p>
 <p>Experimental support is provided for the following versions of Apache Spark and is intended for development/testing
 use only and should not be used in production yet.</p>
 <div class="pst-scrollable-table-container"><table class="table">
@@ -877,7 +879,7 @@ use only and should not be used in production yet.</p>
 <tr class="row-even"><td><p>4.2.0</p></td>
 <td><p>17</p></td>
 <td><p>2.13</p></td>
-<td><p>Yes</p></td>
+<td><p>Nightly</p></td>
 <td><p>No</p></td>
 </tr>
 </tbody>
@@ -1021,6 +1023,21 @@ components which will then fail at runtime. For example:</p>
 <p>In addition to Apache Spark memory configuration parameters, Comet introduces additional parameters to configure memory
 allocation for native execution. See <a class="reference internal" href="tuning.html"><span class="std std-doc">Comet Memory Tuning</span></a> for details.</p>
 </section>
+<section id="kryo-serialization">
+<h3>Kryo serialization<a class="headerlink" href="#kryo-serialization" title="Link to this heading">#</a></h3>
+<p>If the application uses Kryo (<code class="docutils literal notranslate"><span class="pre">spark.serializer=org.apache.spark.serializer.KryoSerializer</span></code>) with
+<code class="docutils literal notranslate"><span class="pre">spark.kryo.registrationRequired=true</span></code>, also register Comet’s classes with Kryo:</p>
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>--conf<span class="w"> </span>spark.kryo.registrator<span class="o">=</span>org.apache.comet.CometKryoRegistrator
+</pre></div>
+</div>
+<p>Without it, any query that uses Comet’s native broadcast exchange, which is enabled by default,
+fails with Kryo’s “Class is not registered” error, for example on the first broadcast hash join.
+The <a class="reference internal" href="in-memory-cache.html#kryo"><span class="std std-ref">in-memory cache</span></a> needs the same registrator. Set it before the
+<code class="docutils literal notranslate"><span class="pre">SparkContext</span></code> is created: <code class="docutils literal notranslate"><span class="pre">KryoSerializer</span></code> reads it before Comet’s plugin runs, so Comet cannot
+add it for you. <code class="docutils literal notranslate"><span class="pre">spark.kryo.registrator</span></code> accepts a comma-separated list, so an application with
+its own registrator can list both. Comet logs a warning at startup when Kryo requires registration
+and this registrator is missing.</p>
+</section>
 </section>
 </section>
 
@@ -1086,6 +1103,7 @@ allocation for native execution. See <a class="reference internal" href="tuning.
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#checking-the-comet-version">Checking the Comet Version</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#additional-configuration">Additional Configuration</a><ul class="nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#memory-tuning">Memory tuning</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#kryo-serialization">Kryo serialization</a></li>
 </ul>
 </li>
 </ul>

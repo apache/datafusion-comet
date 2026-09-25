@@ -805,6 +805,8 @@ Spark’s parquet-mr semantics (silent overflow, null-on-narrowing), which Comet
 does not replicate. By default Comet falls back to Spark in this case. Set
 <code class="docutils literal notranslate"><span class="pre">spark.comet.scan.allowDisabledParquetVectorizedReader=true</span></code> to opt in to running the
 Comet Parquet scan regardless.</p></li>
+<li><p>A read schema that repeats a Parquet field id, at the top level or within a struct, when
+<code class="docutils literal notranslate"><span class="pre">spark.sql.parquet.fieldId.read.enabled=true</span></code>.</p></li>
 </ul>
 <p>The following limitation may produce incorrect results without falling back to Spark:</p>
 <ul class="simple">

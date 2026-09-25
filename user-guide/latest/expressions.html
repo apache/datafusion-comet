@@ -786,9 +786,9 @@ transparently falls back to Spark for that part of the plan; results are unaffec
 Those cases must be opted into per expression with
 <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.EXPRNAME.allowIncompatible=true</span></code> (where <code class="docutils literal notranslate"><span class="pre">EXPRNAME</span></code> is the Spark
 expression class name, for example <code class="docutils literal notranslate"><span class="pre">Cast</span></code>). There is no global opt-in. By default such a case
-either falls back to Spark (for example <code class="docutils literal notranslate"><span class="pre">cast</span></code>) or, when the expression has a Spark-compatible
-codegen-dispatch implementation, runs through that instead (for example the regex and JSON
-families). See <a class="reference internal" href="compatibility/index.html#native-and-codegen-dispatch-implementations"><span class="std std-ref">Native and codegen-dispatch implementations</span></a>
+either falls back to Spark (for example the <code class="docutils literal notranslate"><span class="pre">mode</span></code> aggregate) or, when the expression has a
+Spark-compatible codegen-dispatch implementation, runs through that instead (for example <code class="docutils literal notranslate"><span class="pre">cast</span></code>
+and the regex and JSON families). See <a class="reference internal" href="compatibility/index.html#native-and-codegen-dispatch-implementations"><span class="std std-ref">Native and codegen-dispatch implementations</span></a>
 for how Comet chooses.</p>
 <p>Most expressions can also be disabled with <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.EXPRNAME.enabled=false</span></code>, where
 <code class="docutils literal notranslate"><span class="pre">EXPRNAME</span></code> is the Spark expression class name (for example <code class="docutils literal notranslate"><span class="pre">Length</span></code> or <code class="docutils literal notranslate"><span class="pre">StartsWith</span></code>). See the
@@ -842,17 +842,17 @@ for how Comet chooses.</p>
 <section id="not-currently-planned">
 <h2>Not currently planned<a class="headerlink" href="#not-currently-planned" title="Link to this heading">#</a></h2>
 <p>Comet focuses acceleration on mainstream relational, string, datetime, math, and collection
-expressions. The following function families are <strong>not currently planned</strong> for native acceleration (they are not on the 1.0 roadmap): specialized functionality with narrow real-world analytics use and high implementation cost. They fall back to Spark and may be reconsidered based on demand:</p>
+expressions. The following function families are <strong>not currently planned</strong> for native acceleration (they are not on the current roadmap): specialized functionality with narrow real-world analytics use and high implementation cost. They fall back to Spark and may be reconsidered based on demand:</p>
 <ul class="simple">
 <li><p><strong>Probabilistic sketches and approximate top-k</strong> (<code class="docutils literal notranslate"><span class="pre">kll_sketch_*</span></code>, <code class="docutils literal notranslate"><span class="pre">hll_*</span></code>, <code class="docutils literal notranslate"><span class="pre">theta_*</span></code>, <code class="docutils literal notranslate"><span class="pre">count_min_sketch</span></code>, <code class="docutils literal notranslate"><span class="pre">bitmap_*</span></code>, <code class="docutils literal notranslate"><span class="pre">approx_top_k*</span></code>): specialized data structures with exact-correctness traps.</p></li>
 <li><p><strong>Geospatial</strong> (<code class="docutils literal notranslate"><span class="pre">st_*</span></code>): brand-new Spark 4.1 functionality, specialized.</p></li>
 <li><p><strong>Avro / Protobuf codecs</strong> (<code class="docutils literal notranslate"><span class="pre">from_avro</span></code>, <code class="docutils literal notranslate"><span class="pre">to_avro</span></code>, <code class="docutils literal notranslate"><span class="pre">from_protobuf</span></code>, <code class="docutils literal notranslate"><span class="pre">to_protobuf</span></code>, <code class="docutils literal notranslate"><span class="pre">schema_of_avro</span></code>): format conversion belongs at the IO layer, not expression evaluation.</p></li>
-<li><p><strong>JVM reflection</strong> (<code class="docutils literal notranslate"><span class="pre">java_method</span></code>, <code class="docutils literal notranslate"><span class="pre">reflect</span></code>): niche, and they invoke arbitrary JVM methods (a security concern).</p></li>
+<li><p><strong>JVM reflection</strong> (<code class="docutils literal notranslate"><span class="pre">java_method</span></code>, <code class="docutils literal notranslate"><span class="pre">reflect</span></code>, <code class="docutils literal notranslate"><span class="pre">try_reflect</span></code>): niche, and they invoke arbitrary JVM methods (a security concern).</p></li>
 <li><p><strong>UTF-8 validation</strong> (<code class="docutils literal notranslate"><span class="pre">is_valid_utf8</span></code>, <code class="docutils literal notranslate"><span class="pre">make_valid_utf8</span></code>, <code class="docutils literal notranslate"><span class="pre">validate_utf8</span></code>, <code class="docutils literal notranslate"><span class="pre">try_validate_utf8</span></code>): niche Spark 4.x string-validation helpers.</p></li>
 <li><p><strong>Miscellaneous niche</strong> (<code class="docutils literal notranslate"><span class="pre">histogram_numeric</span></code>, <code class="docutils literal notranslate"><span class="pre">version</span></code>, <code class="docutils literal notranslate"><span class="pre">sentences</span></code>, <code class="docutils literal notranslate"><span class="pre">quote</span></code>): low-value or specialized functions with little benefit from native acceleration.</p></li>
 </ul>
 <p>The file-metadata functions <code class="docutils literal notranslate"><span class="pre">input_file_name</span></code>, <code class="docutils literal notranslate"><span class="pre">input_file_block_start</span></code>, and <code class="docutils literal notranslate"><span class="pre">input_file_block_length</span></code> depend on scan-internal per-row file information rather than the expression layer; their support status is covered in the <a class="reference internal" href="compatibility/scans.html"><span class="std std-doc">scan compatibility guide</span></a>.</p>
-<p>Note that <code class="docutils literal notranslate"><span class="pre">median</span></code> and <code class="docutils literal notranslate"><span class="pre">mode</span></code> are planned: they are mainstream exact aggregates. <code class="docutils literal notranslate"><span class="pre">approx_count_distinct</span></code> is supported because Comet ports Spark’s <code class="docutils literal notranslate"><span class="pre">HyperLogLogPlusPlus</span></code> exactly, so its result is bit-identical to Spark.</p>
+<p>Note that <code class="docutils literal notranslate"><span class="pre">median</span></code> and <code class="docutils literal notranslate"><span class="pre">mode</span></code> are supported: they are mainstream exact aggregates. <code class="docutils literal notranslate"><span class="pre">mode</span></code> runs natively only with <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.Mode.allowIncompatible=true</span></code>. <code class="docutils literal notranslate"><span class="pre">approx_count_distinct</span></code> is supported because Comet ports Spark’s <code class="docutils literal notranslate"><span class="pre">HyperLogLogPlusPlus</span></code> exactly, so its result is bit-identical to Spark.</p>
 <p>The tables below list every Spark built-in expression with its current status.</p>
 </section>
 <section id="agg-funcs">
@@ -1034,129 +1034,134 @@ expressions. The following function families are <strong>not currently planned</
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">mode</span></code></p></td>
 <td><p>✅</p></td>
 <td><p>—</p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">mode(col)</span></code> only; Spark breaks ties non-deterministically, so Comet returns the smallest tied value and falls back by default, opt-in via allowIncompatible (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/3970">#3970</a>)</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">mode(col)</span></code> only; Spark breaks ties non-deterministically, so Comet returns the smallest tied value and falls back by default, opt-in via allowIncompatible</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">percentile</span></code></p></td>
 <td><p>✅</p></td>
 <td><p>Native</p></td>
 <td><p>Single literal percentage on numeric input runs natively; array of percentages and a frequency argument fall back to Spark</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">percentile_cont</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">percentile_approx</span></code></p></td>
+<td><p>✅</p></td>
+<td><p>Native</p></td>
+<td><p>Alias of <code class="docutils literal notranslate"><span class="pre">approx_percentile</span></code>; same restrictions apply</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">percentile_cont</span></code></p></td>
 <td><p>✅</p></td>
 <td><p>—</p></td>
 <td><p>Spark 4.0+ <code class="docutils literal notranslate"><span class="pre">WITHIN</span> <span class="pre">GROUP</span> <span class="pre">(ORDER</span> <span class="pre">BY</span> <span class="pre">...)</span></code>; ascending only runs natively, <code class="docutils literal notranslate"><span class="pre">DESC</span></code> falls back to Spark</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">percentile_disc</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">percentile_disc</span></code></p></td>
 <td><p>🔜</p></td>
 <td><p>—</p></td>
 <td><p>Percentile aggregate</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">regr_avgx</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">regr_avgx</span></code></p></td>
 <td><p>✅</p></td>
 <td><p>—</p></td>
 <td><p>Native: Spark rewrites to <code class="docutils literal notranslate"><span class="pre">Average</span></code> (tests in <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/4551">#4551</a>)</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">regr_avgy</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">regr_avgy</span></code></p></td>
 <td><p>✅</p></td>
 <td><p>—</p></td>
 <td><p>Native: Spark rewrites to <code class="docutils literal notranslate"><span class="pre">Average</span></code> (tests in <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/4551">#4551</a>)</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">regr_count</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">regr_count</span></code></p></td>
 <td><p>✅</p></td>
 <td><p>—</p></td>
 <td><p>Native: Spark rewrites to <code class="docutils literal notranslate"><span class="pre">Count</span></code> (tests in <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/4551">#4551</a>)</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">regr_intercept</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">regr_intercept</span></code></p></td>
 <td><p>✅</p></td>
 <td><p>Native</p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">regr_r2</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">regr_r2</span></code></p></td>
 <td><p>✅</p></td>
 <td><p>Native</p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">regr_slope</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">regr_slope</span></code></p></td>
 <td><p>✅</p></td>
 <td><p>Native</p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">regr_sxx</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">regr_sxx</span></code></p></td>
 <td><p>✅</p></td>
 <td><p>—</p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">regr_sxy</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">regr_sxy</span></code></p></td>
 <td><p>✅</p></td>
 <td><p>Native</p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">regr_syy</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">regr_syy</span></code></p></td>
 <td><p>✅</p></td>
 <td><p>—</p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">skewness</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">skewness</span></code></p></td>
 <td><p>🔜</p></td>
 <td><p>—</p></td>
 <td><p>Not yet implemented natively</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">some</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">some</span></code></p></td>
 <td><p>✅</p></td>
 <td><p>—</p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">std</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">std</span></code></p></td>
 <td><p>✅</p></td>
 <td><p>Native</p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">stddev</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">stddev</span></code></p></td>
 <td><p>✅</p></td>
 <td><p>Native</p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">stddev_pop</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">stddev_pop</span></code></p></td>
 <td><p>✅</p></td>
 <td><p>Native</p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">stddev_samp</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">stddev_samp</span></code></p></td>
 <td><p>✅</p></td>
 <td><p>Native</p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">string_agg</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">string_agg</span></code></p></td>
 <td><p>✅</p></td>
 <td><p>Native</p></td>
 <td><p>Alias of <code class="docutils literal notranslate"><span class="pre">listagg</span></code>; same restrictions apply.</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">sum</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">sum</span></code></p></td>
 <td><p>✅</p></td>
 <td><p>Native</p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">try_avg</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">try_avg</span></code></p></td>
 <td><p>✅</p></td>
 <td><p>—</p></td>
 <td><p>Interval types fall back</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">try_sum</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">try_sum</span></code></p></td>
 <td><p>✅</p></td>
 <td><p>—</p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">var_pop</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">var_pop</span></code></p></td>
 <td><p>✅</p></td>
 <td><p>Native</p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">var_samp</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">var_samp</span></code></p></td>
 <td><p>✅</p></td>
 <td><p>Native</p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">variance</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">variance</span></code></p></td>
 <td><p>✅</p></td>
 <td><p>Native</p></td>
 <td><p></p></td>
@@ -1195,7 +1200,7 @@ expressions. The following function families are <strong>not currently planned</
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">array_contains</span></code></p></td>
 <td><p>✅</p></td>
 <td><p>Hybrid</p></td>
-<td><p>NaN/signed-zero handling may differ (<a class="reference internal" href="compatibility/floating-point.html"><span class="std std-doc">details</span></a>)</p></td>
+<td><p>Float/double element arrays route through the JVM codegen dispatcher by default; the native path is opt-in via allowIncompatible</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">array_distinct</span></code></p></td>
 <td><p>✅</p></td>
@@ -1230,7 +1235,7 @@ expressions. The following function families are <strong>not currently planned</
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">array_min</span></code></p></td>
 <td><p>✅</p></td>
 <td><p>Native</p></td>
-<td><p>NaN ordering may differ (<a class="reference internal" href="compatibility/floating-point.html"><span class="std std-doc">details</span></a>)</p></td>
+<td><p>May return <code class="docutils literal notranslate"><span class="pre">-0.0</span></code> where Spark returns <code class="docutils literal notranslate"><span class="pre">0.0</span></code> when both zeros are present</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">array_position</span></code></p></td>
 <td><p>✅</p></td>
@@ -1300,7 +1305,7 @@ expressions. The following function families are <strong>not currently planned</
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">sort_array</span></code></p></td>
 <td><p>✅</p></td>
 <td><p>Hybrid</p></td>
-<td><p>Nested struct/null arrays fall back</p></td>
+<td><p>Struct, nested-array, and null elements run natively; other element types (for example intervals), and floating-point elements when <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.strictFloatingPoint=true</span></code>, route through the JVM codegen dispatcher</p></td>
 </tr>
 </tbody>
 </table>
@@ -1407,12 +1412,12 @@ expressions. The following function families are <strong>not currently planned</
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">concat</span></code></p></td>
 <td><p>✅</p></td>
 <td><p>Hybrid</p></td>
-<td><p>Binary/array children fall back</p></td>
+<td><p>Binary/array children and non-UTF8_BINARY collations route through the JVM codegen dispatcher</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">reverse</span></code></p></td>
 <td><p>✅</p></td>
 <td><p>Hybrid</p></td>
-<td><p>Binary-element arrays fall back (Incompatible) (<a class="reference internal" href="#compatibility/expressions/array.md"><span class="xref myst">details</span></a>)</p></td>
+<td><p>Arrays with binary, struct, or map elements, and collated strings, route through the JVM codegen dispatcher (<a class="reference internal" href="#compatibility/expressions/array.md"><span class="xref myst">details</span></a>)</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">size</span></code></p></td>
 <td><p>✅</p></td>
@@ -1505,7 +1510,7 @@ expressions. The following function families are <strong>not currently planned</
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">cast</span></code></p></td>
 <td><p>✅</p></td>
 <td><p>Hybrid</p></td>
-<td><p>Some casts fall back; float-to-decimal is opt-in (<a class="reference internal" href="#compatibility/expressions/cast.md"><span class="xref myst">details</span></a>)</p></td>
+<td><p>Casts without a native path (for example boolean to decimal) route through the JVM codegen dispatcher (<a class="reference internal" href="#compatibility/expressions/cast.md"><span class="xref myst">details</span></a>)</p></td>
 </tr>
 </tbody>
 </table>
@@ -1710,9 +1715,9 @@ expressions. The following function families are <strong>not currently planned</
 <td><p>Routes through the JVM codegen dispatcher by default; intervals outside Arrow’s nanosecond range are tracked by <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/5279">#5279</a>; the native path is opt-in via allowIncompatible (<a class="reference internal" href="#compatibility/expressions/datetime.md"><span class="xref myst">details</span></a>)</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">make_time</span></code></p></td>
-<td><p>🔜</p></td>
+<td><p>✅</p></td>
 <td><p>—</p></td>
-<td><p>Spark 4.1 TIME type; tracked by <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4288">#4288</a></p></td>
+<td><p>Spark 4.1+; requires <code class="docutils literal notranslate"><span class="pre">spark.sql.timeType.enabled=true</span></code>, which Spark leaves off by default. Runs natively; remaining TIME type work is tracked by <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4288">#4288</a></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">make_timestamp</span></code></p></td>
 <td><p>✅</p></td>
@@ -1825,9 +1830,9 @@ expressions. The following function families are <strong>not currently planned</
 <td><p>Rewrites to <code class="docutils literal notranslate"><span class="pre">Cast</span></code> (or <code class="docutils literal notranslate"><span class="pre">Cast(GetTimestamp)</span></code> with a format) before Comet sees the plan</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">to_time</span></code></p></td>
-<td><p>🔜</p></td>
+<td><p>✅</p></td>
 <td><p>—</p></td>
-<td><p>Spark 4.1 TIME type; tracked by <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4288">#4288</a></p></td>
+<td><p>Spark 4.1+; requires <code class="docutils literal notranslate"><span class="pre">spark.sql.timeType.enabled=true</span></code>, which Spark leaves off by default. The one-argument form runs natively</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">to_timestamp</span></code></p></td>
 <td><p>✅</p></td>
@@ -1869,15 +1874,25 @@ expressions. The following function families are <strong>not currently planned</
 <td><p>—</p></td>
 <td><p></p></td>
 </tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">try_make_timestamp_ltz</span></code></p></td>
+<td><p>✅</p></td>
+<td><p>—</p></td>
+<td><p>Same support as <code class="docutils literal notranslate"><span class="pre">try_make_timestamp</span></code> (Spark 4.0+)</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">try_make_timestamp_ntz</span></code></p></td>
+<td><p>✅</p></td>
+<td><p>—</p></td>
+<td><p>Same support as <code class="docutils literal notranslate"><span class="pre">try_make_timestamp</span></code> (Spark 4.0+)</p></td>
+</tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">try_to_date</span></code></p></td>
 <td><p>✅</p></td>
 <td><p>—</p></td>
 <td><p>Rewrites to <code class="docutils literal notranslate"><span class="pre">Cast</span></code>/<code class="docutils literal notranslate"><span class="pre">GetTimestamp</span></code> before Comet sees the plan; same support as <code class="docutils literal notranslate"><span class="pre">to_date</span></code></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">try_to_time</span></code></p></td>
-<td><p>🔜</p></td>
+<td><p>✅</p></td>
 <td><p>—</p></td>
-<td><p>Spark 4.1 TIME type; tracked by <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4288">#4288</a></p></td>
+<td><p>Same support as <code class="docutils literal notranslate"><span class="pre">to_time</span></code></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">try_to_timestamp</span></code></p></td>
 <td><p>✅</p></td>
@@ -1942,7 +1957,8 @@ expressions. The following function families are <strong>not currently planned</
 <section id="generator-funcs">
 <h2>generator_funcs<a class="headerlink" href="#generator-funcs" title="Link to this heading">#</a></h2>
 <p><code class="docutils literal notranslate"><span class="pre">explode</span></code>, <code class="docutils literal notranslate"><span class="pre">explode_outer</span></code>, <code class="docutils literal notranslate"><span class="pre">posexplode</span></code>, and <code class="docutils literal notranslate"><span class="pre">posexplode_outer</span></code> are supported via
-<code class="docutils literal notranslate"><span class="pre">CometExplodeExec</span></code> (operator-level, not expression-level). Enabled by default via
+<code class="docutils literal notranslate"><span class="pre">CometExplodeExec</span></code> (operator-level, not expression-level) for array input; map input falls back
+to Spark (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/2837">#2837</a>). Enabled by default via
 <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.explode.enabled</span></code>.</p>
 <div class="pst-scrollable-table-container"><table class="table">
 <thead>
@@ -2058,17 +2074,17 @@ expressions. The following function families are <strong>not currently planned</
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">from_json</span></code></p></td>
 <td><p>✅</p></td>
 <td><p>Hybrid</p></td>
-<td><p>Falls back by default; opt-in via allowIncompatible (<a class="reference internal" href="../../contributor-guide/expression-audits/json_funcs.html#from-json"><span class="std std-ref">audit</span></a>)</p></td>
+<td><p>Routes through the JVM codegen dispatcher by default; the native path (supported schemas only) is opt-in via allowIncompatible (<a class="reference internal" href="../../contributor-guide/expression-audits/json_funcs.html#from-json"><span class="std std-ref">audit</span></a>)</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">get_json_object</span></code></p></td>
 <td><p>✅</p></td>
 <td><p>Hybrid</p></td>
-<td><p>Some inputs need allowIncompatible (<a class="reference internal" href="../../contributor-guide/expression-audits/json_funcs.html#get-json-object"><span class="std std-ref">audit</span></a>)</p></td>
+<td><p>Routes through the JVM codegen dispatcher by default; the native path is opt-in via allowIncompatible (<a class="reference internal" href="../../contributor-guide/expression-audits/json_funcs.html#get-json-object"><span class="std std-ref">audit</span></a>)</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">json_array_length</span></code></p></td>
 <td><p>✅</p></td>
 <td><p>Hybrid</p></td>
-<td><p>Single-quoted/trailing JSON needs allowIncompatible (<a class="reference internal" href="../../contributor-guide/expression-audits/json_funcs.html#json-array-length"><span class="std std-ref">audit</span></a>)</p></td>
+<td><p>Routes through the JVM codegen dispatcher by default; the native path, which differs for single-quoted JSON, unescaped control characters, and trailing content, is opt-in via allowIncompatible (<a class="reference internal" href="../../contributor-guide/expression-audits/json_funcs.html#json-array-length"><span class="std std-ref">audit</span></a>)</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">json_object_keys</span></code></p></td>
 <td><p>✅</p></td>
@@ -2088,7 +2104,7 @@ expressions. The following function families are <strong>not currently planned</
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">to_json</span></code></p></td>
 <td><p>✅</p></td>
 <td><p>Hybrid</p></td>
-<td><p>Options and map/array inputs fall back (<a class="reference internal" href="../../contributor-guide/expression-audits/json_funcs.html#to-json"><span class="std std-ref">audit</span></a>)</p></td>
+<td><p>Routes through the JVM codegen dispatcher by default, including options and map/array inputs; the native path is opt-in via allowIncompatible (<a class="reference internal" href="../../contributor-guide/expression-audits/json_funcs.html#to-json"><span class="std std-ref">audit</span></a>)</p></td>
 </tr>
 </tbody>
 </table>
@@ -2215,7 +2231,7 @@ expressions. The following function families are <strong>not currently planned</
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">map_from_entries</span></code></p></td>
 <td><p>✅</p></td>
 <td><p>Hybrid</p></td>
-<td><p>BinaryType key/value falls back (Incompatible) (<a class="reference internal" href="#compatibility/expressions/map.md"><span class="xref myst">details</span></a>)</p></td>
+<td><p>BinaryType keys/values and <code class="docutils literal notranslate"><span class="pre">spark.sql.mapKeyDedupPolicy=LAST_WIN</span></code> route through the JVM codegen dispatcher (<a class="reference internal" href="#compatibility/expressions/map.md"><span class="xref myst">details</span></a>)</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">map_keys</span></code></p></td>
 <td><p>✅</p></td>
@@ -2501,7 +2517,7 @@ expressions. The following function families are <strong>not currently planned</
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">random</span></code></p></td>
 <td><p>✅</p></td>
 <td><p>Native</p></td>
-<td><p>Alias for <code class="docutils literal notranslate"><span class="pre">rand</span></code> (Spark 4.0+); seed must be a literal</p></td>
+<td><p>Alias for <code class="docutils literal notranslate"><span class="pre">rand</span></code>; seed must be a literal</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">randstr</span></code></p></td>
 <td><p>✅</p></td>
@@ -2858,17 +2874,17 @@ expressions. The following function families are <strong>not currently planned</
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">regexp</span></code></p></td>
 <td><p>✅</p></td>
 <td><p>Hybrid</p></td>
-<td><p>In-subset literals run natively; others fall back by default (<a class="reference internal" href="compatibility/regex.html"><span class="std std-doc">details</span></a>)</p></td>
+<td><p>In-subset literal patterns run natively; other patterns route through the JVM codegen dispatcher (<a class="reference internal" href="compatibility/regex.html"><span class="std std-doc">details</span></a>)</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">regexp_like</span></code></p></td>
 <td><p>✅</p></td>
 <td><p>Hybrid</p></td>
-<td><p>In-subset literals run natively; others fall back by default (<a class="reference internal" href="compatibility/regex.html"><span class="std std-doc">details</span></a>)</p></td>
+<td><p>In-subset literal patterns run natively; other patterns route through the JVM codegen dispatcher (<a class="reference internal" href="compatibility/regex.html"><span class="std std-doc">details</span></a>)</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">rlike</span></code></p></td>
 <td><p>✅</p></td>
 <td><p>Hybrid</p></td>
-<td><p>In-subset literals run natively; others fall back by default (<a class="reference internal" href="compatibility/regex.html"><span class="std std-doc">details</span></a>)</p></td>
+<td><p>In-subset literal patterns run natively; other patterns route through the JVM codegen dispatcher (<a class="reference internal" href="compatibility/regex.html"><span class="std std-doc">details</span></a>)</p></td>
 </tr>
 </tbody>
 </table>
@@ -3069,7 +3085,7 @@ expressions. The following function families are <strong>not currently planned</
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">regexp_count</span></code></p></td>
 <td><p>✅</p></td>
 <td><p>—</p></td>
-<td><p>Runs natively (rewrites to <code class="docutils literal notranslate"><span class="pre">size(regexp_extract_all(...))</span></code>)</p></td>
+<td><p>Rewrites to <code class="docutils literal notranslate"><span class="pre">size(regexp_extract_all(...))</span></code>; <code class="docutils literal notranslate"><span class="pre">regexp_extract_all</span></code> routes through the JVM codegen dispatcher by default</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">regexp_extract</span></code></p></td>
 <td><p>✅</p></td>
@@ -3094,7 +3110,7 @@ expressions. The following function families are <strong>not currently planned</
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">regexp_substr</span></code></p></td>
 <td><p>✅</p></td>
 <td><p>—</p></td>
-<td><p>Runs natively (rewrites to <code class="docutils literal notranslate"><span class="pre">nullif(regexp_extract(...),</span> <span class="pre">'')</span></code>)</p></td>
+<td><p>Rewrites to <code class="docutils literal notranslate"><span class="pre">nullif(regexp_extract(...),</span> <span class="pre">'')</span></code>; <code class="docutils literal notranslate"><span class="pre">regexp_extract</span></code> routes through the JVM codegen dispatcher by default</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">repeat</span></code></p></td>
 <td><p>✅</p></td>
@@ -3164,7 +3180,7 @@ expressions. The following function families are <strong>not currently planned</
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">to_binary</span></code></p></td>
 <td><p>✅</p></td>
 <td><p>—</p></td>
-<td><p>Hex and base64 forms accelerated natively; the <code class="docutils literal notranslate"><span class="pre">utf-8</span></code> form rewrites to <code class="docutils literal notranslate"><span class="pre">encode</span></code> and runs via codegen dispatch on Spark 4.0+</p></td>
+<td><p>The hex form runs natively; the base64 and <code class="docutils literal notranslate"><span class="pre">utf-8</span></code> forms route through the JVM codegen dispatcher</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">to_char</span></code></p></td>
 <td><p>✅</p></td>
@@ -3194,7 +3210,7 @@ expressions. The following function families are <strong>not currently planned</
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">try_to_binary</span></code></p></td>
 <td><p>✅</p></td>
 <td><p>—</p></td>
-<td><p>Runs natively (rewrites to <code class="docutils literal notranslate"><span class="pre">try_eval(to_binary(...))</span></code>)</p></td>
+<td><p>Rewrites to <code class="docutils literal notranslate"><span class="pre">try_eval(to_binary(...))</span></code>, which routes through the JVM codegen dispatcher</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">try_to_number</span></code></p></td>
 <td><p>✅</p></td>
@@ -3209,7 +3225,7 @@ expressions. The following function families are <strong>not currently planned</
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">unbase64</span></code></p></td>
 <td><p>✅</p></td>
 <td><p>Hybrid</p></td>
-<td><p></p></td>
+<td><p>Column or literal input runs natively; other child expressions, and the strict form used by <code class="docutils literal notranslate"><span class="pre">to_binary(str,</span> <span class="pre">'base64')</span></code>, route through the JVM codegen dispatcher</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">upper</span></code></p></td>
 <td><p>✅</p></td>
@@ -3263,17 +3279,22 @@ expressions. The following function families are <strong>not currently planned</
 <td><p>Native</p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">try_url_decode</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">try_parse_url</span></code></p></td>
+<td><p>✅</p></td>
+<td><p>—</p></td>
+<td><p>Spark 4.0+; runs natively and returns NULL for an invalid URL</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">try_url_decode</span></code></p></td>
 <td><p>✅</p></td>
 <td><p>—</p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">url_decode</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">url_decode</span></code></p></td>
 <td><p>✅</p></td>
 <td><p>—</p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">url_encode</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">url_encode</span></code></p></td>
 <td><p>✅</p></td>
 <td><p>—</p></td>
 <td><p></p></td>
@@ -3438,6 +3459,8 @@ for the full list of supported functions, frames, and fallback cases.</p>
 <li><p><strong>Accessor expressions (subscript and field access, not functions):</strong> struct field access (<code class="docutils literal notranslate"><span class="pre">col.field</span></code>), array element access (<code class="docutils literal notranslate"><span class="pre">arr[i]</span></code>), and map value access (<code class="docutils literal notranslate"><span class="pre">map[key]</span></code>).</p></li>
 <li><p><strong>Internal decimal arithmetic:</strong> <code class="docutils literal notranslate"><span class="pre">CheckOverflow</span></code>, <code class="docutils literal notranslate"><span class="pre">MakeDecimal</span></code>, and <code class="docutils literal notranslate"><span class="pre">UnscaledValue</span></code>, which the analyzer inserts around decimal operations.</p></li>
 <li><p><strong>User-defined functions:</strong> Scala UDFs registered through the DataFrame or SQL API.</p></li>
+<li><p><strong>DataSource V2 catalog functions:</strong> Iceberg’s system functions <code class="docutils literal notranslate"><span class="pre">bucket</span></code>, <code class="docutils literal notranslate"><span class="pre">truncate</span></code>, <code class="docutils literal notranslate"><span class="pre">years</span></code>, <code class="docutils literal notranslate"><span class="pre">months</span></code>, <code class="docutils literal notranslate"><span class="pre">days</span></code>, and <code class="docutils literal notranslate"><span class="pre">hours</span></code> (for example <code class="docutils literal notranslate"><span class="pre">system.bucket(16,</span> <span class="pre">id)</span></code>) run natively; see <a class="reference internal" href="iceberg.html#iceberg-system-functions"><span class="std std-ref">Iceberg system functions</span></a>.</p></li>
+<li><p><strong>Lowered built-ins:</strong> Spark lowers some built-in functions to <code class="docutils literal notranslate"><span class="pre">StaticInvoke</span></code> or <code class="docutils literal notranslate"><span class="pre">Invoke</span></code> calls. Those without a native mapping run through the JVM codegen dispatcher when their input and output types are supported.</p></li>
 <li><p><strong>Structural expressions:</strong> aliases, attribute references, literals, sort orders, and <code class="docutils literal notranslate"><span class="pre">CASE</span> <span class="pre">WHEN</span></code>.</p></li>
 </ul>
 <p>This list is illustrative, not exhaustive: the per-function tables are not the complete set of expressions Comet can accelerate.</p>

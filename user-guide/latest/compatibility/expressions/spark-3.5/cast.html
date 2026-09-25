@@ -786,17 +786,22 @@ under the License.
 <p>Cast operations in Comet fall into three levels of support:</p>
 <ul class="simple">
 <li><p><strong>C (Compatible)</strong>: The results match Apache Spark</p></li>
-<li><p><strong>I (Incompatible)</strong>: The results may match Apache Spark for some inputs, but there are known issues where some inputs
-will result in incorrect results or exceptions. The query stage will fall back to Spark by default. Setting
-<code class="docutils literal notranslate"><span class="pre">spark.comet.expression.Cast.allowIncompatible=true</span></code> will allow all incompatible casts to run natively in Comet, but this is not
-recommended for production use.</p></li>
-<li><p><strong>U (Unsupported)</strong>: Comet does not provide a native version of this cast expression and the query stage will fall back to
-Spark.</p></li>
+<li><p><strong>I (Incompatible)</strong>: Comet’s native cast may produce different results from Apache Spark for some inputs. By
+default, Comet instead runs Spark’s own code-generated cast inside the Comet pipeline, so the results match Spark.
+Setting <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.Cast.allowIncompatible=true</span></code> selects the native cast, but this is not recommended
+for production use.</p></li>
+<li><p><strong>U (Unsupported)</strong>: Comet does not provide a native version of this cast, so it runs Spark’s own code-generated
+cast inside the Comet pipeline.</p></li>
 <li><p><strong>N/A</strong>: Spark does not support this cast.</p></li>
 </ul>
-<section id="ansi-mode-fallback">
-<h2>ANSI Mode Fallback<a class="headerlink" href="#ansi-mode-fallback" title="Link to this heading">#</a></h2>
-<p>Cast will fall back to Spark in some cases when ANSI mode is enabled. This can be enabled by setting <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.Cast.allowIncompatible=true</span></code>. See the <a class="reference internal" href="../../../expressions.html"><span class="std std-doc">Comet Supported Expressions Guide</span></a> for more information on this configuration setting.</p>
+<p>Incompatible and unsupported casts fall back to Spark only when Comet’s codegen dispatcher cannot handle them (for
+example, casts involving <code class="docutils literal notranslate"><span class="pre">VariantType</span></code>) or when <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.scalaUDF.codegen.enabled=false</span></code>.</p>
+<section id="ansi-mode-support">
+<h2>ANSI Mode Support<a class="headerlink" href="#ansi-mode-support" title="Link to this heading">#</a></h2>
+<p>Enabling ANSI mode does not by itself make a cast fall back to Spark or require
+<code class="docutils literal notranslate"><span class="pre">spark.comet.expression.Cast.allowIncompatible=true</span></code>: every cast that Spark permits in ANSI mode has the same support
+level as in legacy mode. See the <a class="reference internal" href="#ansi-mode">ANSI Mode</a> table below for per-pair support, and the
+<a class="reference internal" href="../../../expressions.html"><span class="std std-doc">Comet Supported Expressions Guide</span></a> for more information on the <code class="docutils literal notranslate"><span class="pre">allowIncompatible</span></code> setting.</p>
 </section>
 <section id="whitespace-trimming-in-casts-from-string">
 <h2>Whitespace Trimming in Casts from String<a class="headerlink" href="#whitespace-trimming-in-casts-from-string" title="Link to this heading">#</a></h2>
@@ -942,20 +947,12 @@ the same result regardless of the session timezone.</p>
 zero-padded to four digits (e.g. year 999 renders as <code class="docutils literal notranslate"><span class="pre">0999-01-01</span></code>). Years above 9999 are
 rendered without truncation. The cast is timezone-independent.</p>
 </section>
-<section id="id1">
-<h2>String to TimestampNTZ<a class="headerlink" href="#id1" title="Link to this heading">#</a></h2>
-<p>Comet’s native <code class="docutils literal notranslate"><span class="pre">CAST(string</span> <span class="pre">AS</span> <span class="pre">TIMESTAMP_NTZ)</span></code> implementation matches Apache Spark’s behavior.
-Unlike <code class="docutils literal notranslate"><span class="pre">CAST(string</span> <span class="pre">AS</span> <span class="pre">TIMESTAMP)</span></code>, this cast is timezone-independent: any timezone offset in
-the input string (e.g. <code class="docutils literal notranslate"><span class="pre">+08:00</span></code>, <code class="docutils literal notranslate"><span class="pre">Z</span></code>, <code class="docutils literal notranslate"><span class="pre">UTC</span></code>) is silently discarded, and the local date-time
-components are preserved as-is. Time-only strings (e.g. <code class="docutils literal notranslate"><span class="pre">T12:34:56</span></code>, <code class="docutils literal notranslate"><span class="pre">12:34</span></code>) produce <code class="docutils literal notranslate"><span class="pre">NULL</span></code>.
-The result is always a wall-clock timestamp with no timezone conversion or DST adjustment.</p>
-</section>
 <section id="decimal-with-negative-scale-to-string">
 <h2>Decimal with Negative Scale to String<a class="headerlink" href="#decimal-with-negative-scale-to-string" title="Link to this heading">#</a></h2>
 <p>Casting a <code class="docutils literal notranslate"><span class="pre">DecimalType</span></code> with a negative scale to <code class="docutils literal notranslate"><span class="pre">StringType</span></code> is marked as incompatible when
 <code class="docutils literal notranslate"><span class="pre">spark.sql.legacy.allowNegativeScaleOfDecimal</span></code> is <code class="docutils literal notranslate"><span class="pre">false</span></code> (the default). When that config is
-disabled, Spark cannot create negative-scale decimals, so Comet falls back to avoid running
-native execution on unexpected inputs.</p>
+disabled, Spark cannot create negative-scale decimals, so by default Comet runs Spark’s
+code-generated cast instead of the native one.</p>
 <p>When <code class="docutils literal notranslate"><span class="pre">spark.sql.legacy.allowNegativeScaleOfDecimal=true</span></code>, the cast is compatible. Comet matches
 Spark’s behavior of using Java <code class="docutils literal notranslate"><span class="pre">BigDecimal.toString()</span></code> semantics, which produces scientific
 notation (e.g. a value of 12300 stored as <code class="docutils literal notranslate"><span class="pre">Decimal(7,-2)</span></code> with unscaled value 123 is rendered
@@ -1706,7 +1703,7 @@ as <code class="docutils literal notranslate"><span class="pre">&quot;1.23E+4&qu
   </div>
   <nav class="bd-toc-nav page-toc" aria-labelledby="pst-page-navigation-heading-2">
     <ul class="visible nav section-nav flex-column">
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#ansi-mode-fallback">ANSI Mode Fallback</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#ansi-mode-support">ANSI Mode Support</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#whitespace-trimming-in-casts-from-string">Whitespace Trimming in Casts from String</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#string-to-decimal">String to Decimal</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#string-to-date">String to Date</a></li>
@@ -1717,7 +1714,6 @@ as <code class="docutils literal notranslate"><span class="pre">&quot;1.23E+4&qu
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#string-to-timestampntz">String to TimestampNTZ</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#timestampntz-casts">TimestampNTZ Casts</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#date-to-string">Date to String</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#id1">String to TimestampNTZ</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#decimal-with-negative-scale-to-string">Decimal with Negative Scale to String</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#legacy-mode">Legacy Mode</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#try-mode">Try Mode</a></li>

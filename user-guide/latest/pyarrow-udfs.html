@@ -786,7 +786,7 @@ RecordBatches or Pandas DataFrames. Under the hood, Spark communicates with the 
 using the Arrow IPC format.</p>
 <p>Without Comet, the execution path for these UDFs involves unnecessary data conversions:</p>
 <ol class="arabic simple">
-<li><p>Comet reads data in Arrow columnar format (via CometScan)</p></li>
+<li><p>Comet reads data in Arrow columnar format (via <code class="docutils literal notranslate"><span class="pre">CometNativeScan</span></code>)</p></li>
 <li><p>Spark inserts a ColumnarToRow transition (converts Arrow to UnsafeRow)</p></li>
 <li><p>The Python runner converts those rows back to Arrow to send to Python</p></li>
 <li><p>Python executes the UDF on Arrow batches</p></li>
@@ -796,8 +796,8 @@ using the Arrow IPC format.</p>
 </section>
 <section id="how-comet-optimizes-this">
 <h2>How Comet Optimizes This<a class="headerlink" href="#how-comet-optimizes-this" title="Link to this heading">#</a></h2>
-<p>When enabled, Comet detects <code class="docutils literal notranslate"><span class="pre">PythonMapInArrowExec</span></code> / <code class="docutils literal notranslate"><span class="pre">MapInArrowExec</span></code> and <code class="docutils literal notranslate"><span class="pre">MapInPandasExec</span></code>
-operators in the physical plan and replaces them with <code class="docutils literal notranslate"><span class="pre">CometMapInBatchExec</span></code>, which:</p>
+<p>When enabled, Comet detects <code class="docutils literal notranslate"><span class="pre">MapInArrowExec</span></code> and <code class="docutils literal notranslate"><span class="pre">MapInPandasExec</span></code> operators in the physical plan
+and replaces them with <code class="docutils literal notranslate"><span class="pre">CometMapInBatchExec</span></code> (shown as <code class="docutils literal notranslate"><span class="pre">CometMapInBatch</span></code> in plans), which:</p>
 <ul class="simple">
 <li><p>Reads Arrow columnar batches directly from the upstream Comet operator</p></li>
 <li><p>Feeds them to the Python runner without the expensive UnsafeProjection copy</p></li>
@@ -811,16 +811,14 @@ copies that remain.</p>
 <section id="plan-flow">
 <h3>Plan flow<a class="headerlink" href="#plan-flow" title="Link to this heading">#</a></h3>
 <p>Without Comet’s optimization:</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">PythonMapInArrow</span> <span class="o">/</span> <span class="n">MapInArrow</span> <span class="o">/</span> <span class="n">MapInPandas</span>
-<span class="o">+-</span> <span class="n">ColumnarToRow</span>         <span class="o">&lt;-</span> <span class="n">Arrow</span> <span class="o">-&gt;</span> <span class="n">Row</span> <span class="n">copy</span>
-   <span class="o">+-</span> <span class="n">CometNativeExec</span>    <span class="o">&lt;-</span> <span class="n">Arrow</span> <span class="n">batch</span>
-      <span class="o">+-</span> <span class="n">CometScan</span>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">MapInArrow</span> <span class="o">/</span> <span class="n">MapInPandas</span>
+<span class="o">+-</span> <span class="n">CometColumnarToRow</span>    <span class="o">&lt;-</span> <span class="n">Arrow</span> <span class="o">-&gt;</span> <span class="n">Row</span> <span class="n">copy</span>
+   <span class="o">+-</span> <span class="n">CometNativeScan</span>    <span class="o">&lt;-</span> <span class="n">Arrow</span> <span class="n">batch</span>
 </pre></div>
 </div>
 <p>With the optimization enabled:</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">CometMapInBatch</span>          <span class="o">&lt;-</span> <span class="n">Arrow</span> <span class="n">batch</span> <span class="ow">in</span><span class="o">/</span><span class="n">out</span><span class="p">,</span> <span class="n">Python</span> <span class="n">runner</span> <span class="n">attached</span>
-<span class="o">+-</span> <span class="n">CometNativeExec</span>
-   <span class="o">+-</span> <span class="n">CometScan</span>
+<span class="o">+-</span> <span class="n">CometNativeScan</span>
 </pre></div>
 </div>
 </section>
@@ -853,7 +851,7 @@ worker. Both confs can be set independently.</p>
 </thead>
 <tbody>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">df.mapInArrow(func,</span> <span class="pre">schema)</span></code></p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">PythonMapInArrowExec</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">MapInArrowExec</span></code></p></td>
 <td><p>Yes</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">df.mapInPandas(func,</span> <span class="pre">schema)</span></code></p></td>
@@ -912,22 +910,20 @@ worker. Both confs can be set independently.</p>
 </div>
 <p>You should see:</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">CometMapInBatch</span> <span class="o">...</span>
-<span class="o">+-</span> <span class="n">CometNativeExec</span> <span class="o">...</span>
-   <span class="o">+-</span> <span class="n">CometScan</span> <span class="o">...</span>
+<span class="o">+-</span> <span class="n">CometNativeScan</span> <span class="n">parquet</span> <span class="o">...</span>
 </pre></div>
 </div>
 <p>Instead of the unoptimized plan:</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">PythonMapInArrow</span> <span class="o">...</span>
-<span class="o">+-</span> <span class="n">ColumnarToRow</span>
-   <span class="o">+-</span> <span class="n">CometNativeExec</span> <span class="o">...</span>
-      <span class="o">+-</span> <span class="n">CometScan</span> <span class="o">...</span>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">MapInArrow</span> <span class="o">...</span>
+<span class="o">+-</span> <span class="n">CometColumnarToRow</span>
+   <span class="o">+-</span> <span class="n">CometNativeScan</span> <span class="n">parquet</span> <span class="o">...</span>
 </pre></div>
 </div>
 <p>When AQE is enabled (the Spark default) and the query contains a shuffle, the
 optimization is applied during stage materialization. Calling <code class="docutils literal notranslate"><span class="pre">explain()</span></code> before
 running an action will show the unoptimized plan:</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">AdaptiveSparkPlan</span> <span class="n">isFinalPlan</span><span class="o">=</span><span class="n">false</span>
-<span class="o">+-</span> <span class="n">PythonMapInArrow</span> <span class="o">...</span>
+<span class="o">+-</span> <span class="n">MapInArrow</span> <span class="o">...</span>
    <span class="o">+-</span> <span class="n">CometExchange</span> <span class="o">...</span>
 </pre></div>
 </div>

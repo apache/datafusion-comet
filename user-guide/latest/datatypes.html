@@ -927,7 +927,7 @@ the tables below and may be reconsidered based on demand:</p>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">TimeType</span></code></p></td>
 <td><p>⚠️</p></td>
-<td><p>Spark 4.1+. Native serialization is in place; some operators (sort, shuffle, min/max) are still being wired up (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4288">#4288</a>).</p></td>
+<td><p>Spark 4.1+. Native serialization is in place; some operators (sort, min/max) are still being wired up (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4288">#4288</a>).</p></td>
 </tr>
 </tbody>
 </table>
@@ -977,7 +977,7 @@ functions. Remaining work is tracked by
 <tbody>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">StructType</span></code></p></td>
 <td><p>✅</p></td>
-<td><p>Empty structs (no fields) fall back.</p></td>
+<td><p>Empty structs (no fields) and structs with duplicate field names fall back.</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">ArrayType</span></code></p></td>
 <td><p>✅</p></td>
@@ -1014,8 +1014,9 @@ functions. Remaining work is tracked by
 Parquet timestamp inference settings. Support for Spark’s whole-value pushdown rewrite is tracked
 by <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/5519">#5519</a>. Nested Variant columns, pushed-down
 Variant field extraction, expressions, writes, shuffle and spill, Python operators, encrypted
-files, and Iceberg scans fall back to Spark. Spark also handles columnar-to-row conversion of
-the native scan output and strict reads with <code class="docutils literal notranslate"><span class="pre">allowReadingShredded=false</span></code>. Broader
+files, and Iceberg scans that read a Variant column fall back to Spark. Iceberg scans of tables
+whose Variant columns the query does not read run natively. Spark also handles columnar-to-row
+conversion of the native scan output and strict reads with <code class="docutils literal notranslate"><span class="pre">allowReadingShredded=false</span></code>. Broader
 support is tracked by <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4295">#4295</a> and
 <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/3983">#3983</a>.</p>
 <p>Shredded reconstruction can be slower than Spark’s reader; see the

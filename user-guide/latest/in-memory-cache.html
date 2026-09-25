@@ -987,7 +987,7 @@ comparison with Spark’s own cache format. That comparison is under <a class="r
 <p>Spark serializes a cached batch with <code class="docutils literal notranslate"><span class="pre">spark.serializer</span></code> whenever the block leaves the heap: the
 <code class="docutils literal notranslate"><span class="pre">_SER</span></code> storage levels, replication, cross-executor fetches, and the disk half of the default
 <code class="docutils literal notranslate"><span class="pre">MEMORY_AND_DISK</span></code>. So an ordinary <code class="docutils literal notranslate"><span class="pre">df.cache()</span></code> that spills is enough to reach it.</p>
-<p>If you run with <code class="docutils literal notranslate"><span class="pre">spark.kryo.registrationRequired=true</span></code>, register Comet’s classes:</p>
+<p>If you run Kryo with <code class="docutils literal notranslate"><span class="pre">spark.kryo.registrationRequired=true</span></code>, register Comet’s classes:</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">spark</span><span class="o">.</span><span class="n">serializer</span><span class="o">=</span><span class="n">org</span><span class="o">.</span><span class="n">apache</span><span class="o">.</span><span class="n">spark</span><span class="o">.</span><span class="n">serializer</span><span class="o">.</span><span class="n">KryoSerializer</span>
 <span class="n">spark</span><span class="o">.</span><span class="n">kryo</span><span class="o">.</span><span class="n">registrationRequired</span><span class="o">=</span><span class="n">true</span>
 <span class="n">spark</span><span class="o">.</span><span class="n">kryo</span><span class="o">.</span><span class="n">registrator</span><span class="o">=</span><span class="n">org</span><span class="o">.</span><span class="n">apache</span><span class="o">.</span><span class="n">comet</span><span class="o">.</span><span class="n">CometKryoRegistrator</span>
@@ -997,7 +997,8 @@ comparison with Spark’s own cache format. That comparison is under <a class="r
 <code class="docutils literal notranslate"><span class="pre">KryoSerializer</span></code> reads it when <code class="docutils literal notranslate"><span class="pre">SparkEnv</span></code> builds the serializer, which happens before any plugin
 runs. Without it, caching fails with a “Class is not registered” error that does not name this
 feature. Comet’s driver plugin warns at startup when it sees Kryo, <code class="docutils literal notranslate"><span class="pre">registrationRequired</span></code>, and no
-registrator.</p>
+registrator. Native broadcast needs the same registrator even when the cache is disabled; see
+<a class="reference internal" href="installation.html#kryo-serialization"><span class="std std-ref">Kryo serialization</span></a>.</p>
 </section>
 <section id="limitations">
 <h2>Limitations<a class="headerlink" href="#limitations" title="Link to this heading">#</a></h2>

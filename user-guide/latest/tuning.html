@@ -780,12 +780,11 @@ under the License.
 <p>Comet provides some tuning options to help you get the best performance from your queries.</p>
 <section id="configuring-tokio-runtime">
 <h2>Configuring Tokio Runtime<a class="headerlink" href="#configuring-tokio-runtime" title="Link to this heading">#</a></h2>
-<p>Comet uses a global tokio runtime per executor process using tokio’s defaults of one worker thread per core and a
-maximum of 512 blocking threads. These values can be overridden using the environment variables <code class="docutils literal notranslate"><span class="pre">COMET_WORKER_THREADS</span></code>
-and <code class="docutils literal notranslate"><span class="pre">COMET_MAX_BLOCKING_THREADS</span></code>.</p>
-<p>It is recommended that <code class="docutils literal notranslate"><span class="pre">COMET_WORKER_THREADS</span></code> be set to the number of executor cores. This may not be necessary
-in some environments, such as Kubernetes, where the number of cores allocated to a pod will already be equal to the
-number of executor cores.</p>
+<p>Comet uses a global tokio runtime per executor process. By default it starts one worker thread per executor core
+(<code class="docutils literal notranslate"><span class="pre">spark.executor.cores</span></code>, or the thread count of <code class="docutils literal notranslate"><span class="pre">local[N]</span></code> and <code class="docutils literal notranslate"><span class="pre">local[*]</span></code> masters) and allows up to 512 blocking
+threads, which is tokio’s default. If <code class="docutils literal notranslate"><span class="pre">spark.executor.cores</span></code> is not set outside local mode, Comet starts a single
+worker thread. These values can be overridden using the environment variables <code class="docutils literal notranslate"><span class="pre">COMET_WORKER_THREADS</span></code> and
+<code class="docutils literal notranslate"><span class="pre">COMET_MAX_BLOCKING_THREADS</span></code>.</p>
 </section>
 <section id="adaptive-partial-aggregation">
 <h2>Adaptive Partial Aggregation<a class="headerlink" href="#adaptive-partial-aggregation" title="Link to this heading">#</a></h2>
@@ -1131,13 +1130,17 @@ back to Spark for shuffle operations.</p>
 <section id="native-shuffle">
 <h4>Native Shuffle<a class="headerlink" href="#native-shuffle" title="Link to this heading">#</a></h4>
 <p>Comet provides a fully native shuffle implementation, which generally provides the best performance. Native shuffle
-supports <code class="docutils literal notranslate"><span class="pre">HashPartitioning</span></code>, <code class="docutils literal notranslate"><span class="pre">RangePartitioning</span></code> and <code class="docutils literal notranslate"><span class="pre">SinglePartitioning</span></code> but currently only supports primitive type
-partitioning keys. Columns that are not partitioning keys may contain complex types like maps, structs, and arrays.</p>
+supports <code class="docutils literal notranslate"><span class="pre">HashPartitioning</span></code>, <code class="docutils literal notranslate"><span class="pre">RangePartitioning</span></code>, and <code class="docutils literal notranslate"><span class="pre">SinglePartition</span></code>, plus <code class="docutils literal notranslate"><span class="pre">RoundRobinPartitioning</span></code> when enabled
+(see <a class="reference internal" href="compatibility/operators.html#round-robin-partitioning"><span class="std std-ref">Round-Robin Partitioning</span></a>). Range partitioning keys must be
+scalar types. Hash partitioning keys must be scalar types unless
+<code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.native.partitioning.hash.nested.enabled=true</span></code>, which also admits struct, array, and (Spark 4.0
+and later) map keys. That setting is disabled by default until the performance of the nested hashing paths has been
+measured. Columns that are not partitioning keys may contain complex types like maps, structs, and arrays.</p>
 </section>
 <section id="columnar-jvm-shuffle">
 <h4>Columnar (JVM) Shuffle<a class="headerlink" href="#columnar-jvm-shuffle" title="Link to this heading">#</a></h4>
 <p>Comet Columnar shuffle is JVM-based and supports <code class="docutils literal notranslate"><span class="pre">HashPartitioning</span></code>, <code class="docutils literal notranslate"><span class="pre">RoundRobinPartitioning</span></code>, <code class="docutils literal notranslate"><span class="pre">RangePartitioning</span></code>, and
-<code class="docutils literal notranslate"><span class="pre">SinglePartitioning</span></code>. This shuffle implementation supports complex data types as partitioning keys.</p>
+<code class="docutils literal notranslate"><span class="pre">SinglePartition</span></code>. This shuffle implementation supports complex data types as partitioning keys.</p>
 <p>By default, Comet will convert a Spark <code class="docutils literal notranslate"><span class="pre">ShuffleExchangeExec</span></code> to columnar shuffle even when the shuffle’s child is a
 non-Comet (Spark) plan. The benefit is that the next query stage can start as native Comet execution, since the
 shuffle output is already in Arrow format. The cost is a row to columnar conversion at the shuffle boundary on the
@@ -1148,17 +1151,18 @@ on Spark.</p>
 </section>
 <section id="automatic-revert-to-spark-shuffle">
 <h4>Automatic Revert to Spark Shuffle<a class="headerlink" href="#automatic-revert-to-spark-shuffle" title="Link to this heading">#</a></h4>
-<p>When a Comet columnar shuffle ends up between two non-Comet operators (for example, a partial/final hash aggregate
-pair that Comet could not convert), Comet reverts it to Spark’s built-in shuffle. Keeping columnar shuffle between
-two row-based operators would add <code class="docutils literal notranslate"><span class="pre">row</span> <span class="pre">-&gt;</span> <span class="pre">Arrow</span> <span class="pre">-&gt;</span> <span class="pre">shuffle</span> <span class="pre">-&gt;</span> <span class="pre">Arrow</span> <span class="pre">-&gt;</span> <span class="pre">row</span></code> conversions with no Comet consumer on
-either side to benefit from columnar output.</p>
+<p>When a Comet columnar shuffle ends up between a partial and a final aggregate that Comet could not convert (both
+remain Spark <code class="docutils literal notranslate"><span class="pre">HashAggregateExec</span></code> or <code class="docutils literal notranslate"><span class="pre">ObjectHashAggregateExec</span></code> operators), Comet reverts it to Spark’s built-in shuffle.
+Keeping columnar shuffle between the two row-based aggregates would add <code class="docutils literal notranslate"><span class="pre">row</span> <span class="pre">-&gt;</span> <span class="pre">Arrow</span> <span class="pre">-&gt;</span> <span class="pre">shuffle</span> <span class="pre">-&gt;</span> <span class="pre">Arrow</span> <span class="pre">-&gt;</span> <span class="pre">row</span></code>
+conversions with no Comet consumer on either side to benefit from columnar output. Other shuffles between non-Comet
+operators are not reverted.</p>
 <p>This shifts the affected shuffles from Comet’s off-heap memory pool back to the JVM execution memory pool. Clusters
 tuned for a small JVM heap may see <code class="docutils literal notranslate"><span class="pre">ExternalSorter</span></code> spills on queries where this revert fires. Shuffle I/O may also
 grow marginally because Spark’s row-based serializer generally compresses less well than Comet’s Arrow IPC format.</p>
 <p>Each revert is logged at <code class="docutils literal notranslate"><span class="pre">INFO</span></code> level on the driver as <code class="docutils literal notranslate"><span class="pre">Reverting</span> <span class="pre">Comet</span> <span class="pre">columnar</span> <span class="pre">shuffle</span> <span class="pre">to</span> <span class="pre">Spark</span> <span class="pre">shuffle</span> <span class="pre">between</span> <span class="pre">&lt;parent&gt;</span> <span class="pre">and</span> <span class="pre">&lt;child&gt;</span></code>, which lets you correlate any unexpected behavior with this optimization.</p>
 <p>This optimization is enabled by default and can be disabled by setting
 <code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.revertRedundantColumnar.enabled=false</span></code>, in which case Comet will keep the columnar shuffle
-even when both its parent and child are non-Comet operators.</p>
+even when both of those aggregates run on Spark.</p>
 </section>
 </section>
 <section id="remote-shuffle-with-celeborn">
@@ -1249,26 +1253,28 @@ repeated columnar-to-row and row-to-columnar conversions that dominate stage run
 <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.transitionRevert.enabled=true</span></code> to have Comet revert the entire stage to Spark row execution
 when the number of columnar-to-row transitions exceeds
 <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.transitionRevert.maxTransitions</span></code> (default <code class="docutils literal notranslate"><span class="pre">2</span></code>). This trades native execution of a small
-subset of operators for eliminating conversion overhead across the stage.</p>
-<section id="entire-plan-fallback-for-wide-or-deeply-nested-schemas">
-<h3>Entire-Plan Fallback for Wide or Deeply Nested Schemas<a class="headerlink" href="#entire-plan-fallback-for-wide-or-deeply-nested-schemas" title="Link to this heading">#</a></h3>
+subset of operators for eliminating conversion overhead across the stage. A stage is not reverted when it holds a
+native aggregate whose intermediate buffer Spark cannot exchange with Comet across a stage boundary, because
+reverting it would split that aggregate between the two engines.</p>
+<section id="wide-or-deeply-nested-schemas">
+<h3>Wide or Deeply Nested Schemas<a class="headerlink" href="#wide-or-deeply-nested-schemas" title="Link to this heading">#</a></h3>
 <p>The cost of each conversion also grows sharply with schema shape: for wide or deeply nested schemas,
 columnar-to-row conversion is especially expensive because the conversion work scales with the number of
 columns and nested fields. If profiling shows these conversions dominating a query over such a schema, set
 <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.transitionRevert.enabled=true</span></code> and lower
-<code class="docutils literal notranslate"><span class="pre">spark.comet.exec.transitionRevert.maxTransitions</span></code> (default <code class="docutils literal notranslate"><span class="pre">2</span></code>) to <code class="docutils literal notranslate"><span class="pre">1</span></code>. Note that this causes the entire
-plan to fall back to Spark row-based execution — Comet removes its native operators rather than running a
+<code class="docutils literal notranslate"><span class="pre">spark.comet.exec.transitionRevert.maxTransitions</span></code> (default <code class="docutils literal notranslate"><span class="pre">2</span></code>) to <code class="docutils literal notranslate"><span class="pre">1</span></code>. Note that this reverts every stage that
+exceeds the threshold to Spark row-based execution — Comet removes the stage’s native operators rather than running a
 mix of native and fallback operators joined by repeated conversions — which can be cheaper than paying the
 expensive conversions again and again.</p>
 </section>
 </section>
 <section id="metrics-overhead">
 <h2>Metrics Overhead<a class="headerlink" href="#metrics-overhead" title="Link to this heading">#</a></h2>
-<p>Comet exposes rich native operator metrics for observability (see <a class="reference internal" href="metrics.html"><span class="std std-doc">Metrics</span></a>), but they are
-disabled by default because traversing the Spark plan on every task adds measurable overhead, and metrics
-require an external sink (for example Prometheus) to be useful. Enable them with
-<code class="docutils literal notranslate"><span class="pre">spark.comet.metrics.enabled=true</span></code> when you have a metrics sink configured. This setting must be applied
-before the <code class="docutils literal notranslate"><span class="pre">SparkSession</span></code> is created.</p>
+<p>The SQL metrics described in <a class="reference internal" href="metrics.html"><span class="std std-doc">Metrics</span></a> are always collected. Setting <code class="docutils literal notranslate"><span class="pre">spark.comet.metrics.enabled=true</span></code>
+additionally publishes plan-coverage counters (<code class="docutils literal notranslate"><span class="pre">operators.native</span></code>, <code class="docutils literal notranslate"><span class="pre">operators.spark</span></code>, <code class="docutils literal notranslate"><span class="pre">queries.planned</span></code>,
+<code class="docutils literal notranslate"><span class="pre">transitions</span></code>, and <code class="docutils literal notranslate"><span class="pre">acceleration.ratio</span></code>) through Spark’s metrics system under the <code class="docutils literal notranslate"><span class="pre">comet</span></code> source. It is disabled by
+default because it walks every executed plan on the driver after each query, and the counters are only useful with an
+external sink (for example Prometheus) configured. This setting must be applied before the <code class="docutils literal notranslate"><span class="pre">SparkSession</span></code> is created.</p>
 </section>
 <section id="explain-plan">
 <h2>Explain Plan<a class="headerlink" href="#explain-plan" title="Link to this heading">#</a></h2>
@@ -1358,7 +1364,7 @@ fallback to Spark works, see <a class="reference internal" href="understanding-c
 </ul>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#reducing-row-columnar-conversion-overhead">Reducing Row/Columnar Conversion Overhead</a><ul class="nav section-nav flex-column">
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#entire-plan-fallback-for-wide-or-deeply-nested-schemas">Entire-Plan Fallback for Wide or Deeply Nested Schemas</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#wide-or-deeply-nested-schemas">Wide or Deeply Nested Schemas</a></li>
 </ul>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#metrics-overhead">Metrics Overhead</a></li>
