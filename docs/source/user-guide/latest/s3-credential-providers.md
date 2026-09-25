@@ -112,17 +112,18 @@ When Comet detects IRSA (both `AWS_WEB_IDENTITY_TOKEN_FILE` and `AWS_ROLE_ARN` a
 - never falls back to the node instance role, and
 - caches one assumed-role credential per executor process, shared across all reader threads and scans, so a startup burst makes one STS call per executor rather than one per thread. If a refresh is throttled while the current credential is still valid, it keeps serving that credential.
 
-**STS endpoint selection** follows the default chain, with FIPS taking strict precedence. When `AWS_USE_FIPS_ENDPOINT` is set, the regional FIPS endpoint is always used, because there is no global FIPS STS endpoint. If `AWS_STS_REGIONAL_ENDPOINTS=legacy` is also set, it is ignored (FIPS wins) and a warning is logged. Otherwise, `AWS_STS_REGIONAL_ENDPOINTS=regional` uses the regional endpoint, and `legacy` or unset uses the global `sts.amazonaws.com` endpoint, matching the previous behavior so a network that only reaches the global endpoint keeps working.
+**STS endpoint selection** uses the global `sts.amazonaws.com` endpoint only in the plain commercial case, and leaves everything else to the AWS SDK. The global endpoint is used when your region is in the standard commercial partition, FIPS and dual-stack are both off, no custom STS endpoint is set, and `AWS_STS_REGIONAL_ENDPOINTS` is `legacy` or unset. That matches the previous behavior, so a network that only reaches the global endpoint keeps working. In every other case the SDK's own regional endpoint is used: FIPS (`AWS_USE_FIPS_ENDPOINT`) always uses the regional FIPS endpoint since there is no global FIPS STS endpoint (an accompanying `AWS_STS_REGIONAL_ENDPOINTS=legacy` is ignored and a warning is logged), dual-stack (`AWS_USE_DUALSTACK_ENDPOINT`) uses the dual-stack regional endpoint, a custom STS endpoint (`AWS_ENDPOINT_URL_STS` or a profile) is honored, `AWS_STS_REGIONAL_ENDPOINTS=regional` stays regional, and the China, GovCloud, ISO and EUSC regions use their own regional endpoints.
 
 It stands aside whenever a higher-precedence credential source is configured -- a Comet bridge class or catalog static keys / `client.assume-role.arn`, static credentials in the environment (`AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY`), or a configured profile (`AWS_PROFILE`, or a shared credentials / config file such as `~/.aws/credentials` or `~/.aws/config`) -- and when no region is set (`AWS_REGION` / `AWS_DEFAULT_REGION`). These all rank ahead of web-identity in opendal's default chain or need its no-region fallback, so the take-over only changes the otherwise-default behavior and never switches away from an identity -- or a profile-configured STS endpoint -- you set explicitly. On an EKS/IRSA pod none of these apply, so the take-over still engages there.
 
 Tuning is rarely needed. Set these as catalog properties under the `s3.` prefix (the same namespace as the credential-provider SPI key):
 
-| Property (per Iceberg catalog)                  | Default | Meaning                                                        |
-| ----------------------------------------------- | ------- | -------------------------------------------------------------- |
-| `s3.comet.credential.webIdentity.enabled`       | `true`  | Set `false` to opt out and use opendal's default chain.        |
-| `s3.comet.credential.webIdentity.maxAttempts`   | `5`     | STS attempts before the assume-role call is treated as failed. |
-| `s3.comet.credential.webIdentity.minTtlSeconds` | `300`   | Refresh this many seconds before expiry (floored to 120s).     |
+| Property (per Iceberg catalog)                         | Default | Meaning                                                                               |
+| ------------------------------------------------------ | ------- | ------------------------------------------------------------------------------------- |
+| `s3.comet.credential.webIdentity.enabled`              | `true`  | Set `false` to opt out and use opendal's default chain.                               |
+| `s3.comet.credential.webIdentity.maxAttempts`          | `5`     | STS attempts before the assume-role call is treated as failed.                        |
+| `s3.comet.credential.webIdentity.minTtlSeconds`        | `300`   | Refresh this many seconds before expiry (floored to 120s).                            |
+| `s3.comet.credential.webIdentity.refreshJitterSeconds` | `60`    | Random slack added on top of `minTtlSeconds` so executors do not all refresh at once. |
 
 For example, to opt out of the take-over or raise the retry count for one catalog:
 

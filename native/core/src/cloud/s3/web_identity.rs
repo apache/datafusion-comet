@@ -34,12 +34,14 @@
 //!   2. No silent downgrade. It only ever calls `AssumeRoleWithWebIdentity` -- there is no
 //!      credential chain and no IMDS/instance-role fallback -- so a throttle that outlasts the
 //!      retries surfaces as an error instead of a wrong-identity credential.
-//!   3. Shared cache. One assumed-role credential is cached per process, keyed by identity
+//!   3. Shared, jittered cache. One assumed-role credential is cached per process, keyed by identity
 //!      (role_arn, token_file, region) and the resolved settings, and shared across all reader
 //!      threads and scans that resolve to the same key -- so a startup burst makes one STS call per
-//!      executor rather than one per reader thread. A failed refresh keeps serving the still-valid
-//!      cached credential and is briefly remembered so a throttled burst costs one STS call rather
-//!      than one per reader.
+//!      executor rather than one per reader thread. Refresh fires ahead of expiry by `min_ttl` plus
+//!      a per-entry random jitter, so executors that assumed the role in the same startup burst do
+//!      not all refresh in the same second an hour later. A failed refresh keeps serving the
+//!      still-valid cached credential and is briefly remembered so a throttled burst costs one STS
+//!      call rather than one per reader.
 //!
 //! It is wired into the Iceberg scan path (`iceberg_common::build_s3_credential_loader`), which is
 //! where the reported failure occurs: opendal's default reqsign chain is the one that downgrades to
@@ -82,10 +84,12 @@ const ENV_ROLE_ARN: &str = "AWS_ROLE_ARN";
 const KEY_ENABLED: &str = "comet.credential.webIdentity.enabled";
 const KEY_MAX_ATTEMPTS: &str = "comet.credential.webIdentity.maxAttempts";
 const KEY_MIN_TTL_SECS: &str = "comet.credential.webIdentity.minTtlSeconds";
+const KEY_JITTER_SECS: &str = "comet.credential.webIdentity.refreshJitterSeconds";
 
 const DEFAULT_ENABLED: bool = true;
 const DEFAULT_MAX_ATTEMPTS: u32 = 5;
 const DEFAULT_MIN_TTL_SECS: u64 = 300;
+const DEFAULT_JITTER_SECS: u64 = 60;
 
 /// reqsign's signer treats a credential as needing refresh once it is within 120s of its reported
 /// expiry (`Credential::is_valid` in reqsign-aws-v4) and refuses to sign within 10s of it
@@ -116,6 +120,10 @@ pub struct WebIdentityConfig {
     /// Refresh margin for our own cache. Floored to `REQSIGN_REFRESH_MARGIN` so our cache refreshes
     /// at or before the point reqsign asks the loader to reload, avoiding a signing dead zone.
     min_ttl: Duration,
+    /// Upper bound on the per-entry random refresh jitter. A jitter drawn once in `[0, max_jitter]`
+    /// is added to `min_ttl` so executors that assumed the role together do not all refresh in the
+    /// same second. Jitter only ever moves our refresh earlier, so it cannot reopen the dead zone.
+    max_jitter: Duration,
 }
 
 impl WebIdentityConfig {
@@ -142,6 +150,10 @@ impl WebIdentityConfig {
             region: non_empty_env("AWS_REGION").or_else(|| non_empty_env("AWS_DEFAULT_REGION")),
             max_attempts: parse_u32(resolve(KEY_MAX_ATTEMPTS), DEFAULT_MAX_ATTEMPTS),
             min_ttl,
+            max_jitter: Duration::from_secs(parse_setting(
+                resolve(KEY_JITTER_SECS),
+                DEFAULT_JITTER_SECS,
+            )),
         })
     }
 
@@ -152,6 +164,7 @@ impl WebIdentityConfig {
             region: self.region.clone(),
             max_attempts: self.max_attempts,
             min_ttl: self.min_ttl,
+            max_jitter: self.max_jitter,
         }
     }
 }
@@ -167,6 +180,7 @@ struct EntryKey {
     region: Option<String>,
     max_attempts: u32,
     min_ttl: Duration,
+    max_jitter: Duration,
 }
 
 /// The shared, cached credential for one identity. `provider` resolves credentials via STS;
@@ -183,14 +197,19 @@ struct SharedEntry {
     /// one per reader and every reader sees the real cause (throttle vs bad token vs trust policy).
     last_failure: RwLock<Option<(Instant, String)>>,
     min_ttl: Duration,
+    /// Random slack in `[0, max_jitter]`, drawn once when this entry is built, added to `min_ttl` for
+    /// the refresh decision. De-synchronizes refreshes across executors that started together. Only
+    /// ever refreshes us earlier than `min_ttl` alone, so it cannot reopen reqsign's dead zone.
+    refresh_jitter: Duration,
 }
 
 impl SharedEntry {
-    /// Returns the cached credential if it is still fresh, i.e. it does not expire within `min_ttl`.
+    /// Returns the cached credential if it is still fresh, i.e. it does not expire within
+    /// `min_ttl + refresh_jitter`.
     fn fresh(&self) -> Option<Credentials> {
         let guard = self.cached.read().unwrap();
         let cred = guard.as_ref()?;
-        if self.expires_within(cred, self.min_ttl) {
+        if self.expires_within(cred, self.min_ttl + self.refresh_jitter) {
             None
         } else {
             Some(cred.clone())
@@ -309,6 +328,8 @@ async fn shared_entry(cfg: &WebIdentityConfig) -> Arc<SharedEntry> {
         refresh_lock: tokio::sync::Mutex::new(()),
         last_failure: RwLock::new(None),
         min_ttl: cfg.min_ttl,
+        // Drawn once per entry. `0..=0` (jitter disabled) is a valid non-empty range -> 0.
+        refresh_jitter: Duration::from_secs(rand::random_range(0..=cfg.max_jitter.as_secs())),
     });
 
     let mut map = registry().lock().unwrap();
@@ -344,16 +365,26 @@ async fn build_provider(
     ))
 }
 
-/// Chooses the STS endpoint to match the default (reqsign) chain, with FIPS taking strict
-/// precedence:
+/// Chooses the STS endpoint. The default goal is to match the old reqsign chain, which for a plain
+/// commercial cluster signs the global `sts.amazonaws.com`. But we only override the SDK's own
+/// endpoint resolution in the one narrow case where doing so is both safe and matches reqsign.
+/// Everything else is left to the SDK, which resolves it correctly:
 ///
-/// - FIPS requested (`AWS_USE_FIPS_ENDPOINT` / profile): keep the SDK's regional FIPS resolution.
-///   There is no global FIPS STS endpoint, so FIPS always wins. If `AWS_STS_REGIONAL_ENDPOINTS` is
-///   also `legacy`, that request is incompatible and is ignored with a one-time warning.
-/// - `AWS_STS_REGIONAL_ENDPOINTS=regional`: keep the SDK's regional resolution.
-/// - Otherwise (`legacy` or unset): use the global `sts.amazonaws.com` endpoint signed as the
-///   partition's global region, matching reqsign. Partitions with no global endpoint (GovCloud,
-///   ISO) fall back to the SDK's regional resolution.
+/// - FIPS requested (`AWS_USE_FIPS_ENDPOINT` / profile): the SDK's regional FIPS endpoint. There is
+///   no global FIPS STS endpoint, so FIPS always wins. If `AWS_STS_REGIONAL_ENDPOINTS` is also
+///   `legacy`, that request is incompatible and is ignored with a one-time warning.
+/// - Dual-stack requested (`AWS_USE_DUALSTACK_ENDPOINT`): the SDK's dual-stack regional endpoint.
+///   Combining a custom `endpoint_url` with dual-stack is rejected by the SDK before any request is
+///   sent, so we must not override here.
+/// - A custom/VPC/profile STS endpoint (`AWS_ENDPOINT_URL_STS` or a profile `endpoint_url`): honored
+///   by the SDK. Overriding it would silently ignore a caller's explicit endpoint.
+/// - `AWS_STS_REGIONAL_ENDPOINTS=regional`: the SDK's regional endpoint.
+/// - A non-commercial partition (China, GovCloud, ISO, EUSC): the SDK's regional endpoint. There is
+///   no commercial-style global endpoint for these, and `sts.amazonaws.com` would be wrong.
+///
+/// Only when none of those apply -- commercial partition, no FIPS, no dual-stack, no custom
+/// endpoint, and `legacy` or unset -- do we override to the global `sts.amazonaws.com` signed as
+/// us-east-1, so a network that only reaches the global endpoint keeps working after upgrade.
 fn configure_sts_endpoint(
     builder: aws_sdk_sts::config::Builder,
     sdk: &aws_config::SdkConfig,
@@ -370,15 +401,20 @@ fn configure_sts_endpoint(
         }
         return builder; // regional FIPS endpoint from the resolved config
     }
-    if sts_regional_setting().as_deref() == Some("regional") {
-        return builder; // regional endpoint from the resolved config
+    // Anything the SDK resolves specially is left to it: overriding would either send the wrong
+    // request or be rejected outright (dual-stack + a custom endpoint is rejected before sending).
+    if sdk.use_dual_stack().unwrap_or(false)
+        || sdk.endpoint_url().is_some()
+        || sts_regional_setting().as_deref() == Some("regional")
+    {
+        return builder;
     }
-    // legacy or unset: match reqsign's global endpoint, signed as the partition's global region.
-    match global_sts_endpoint(sdk.region().map(|r| r.as_ref())) {
+    // legacy or unset, commercial partition only: match reqsign's global endpoint, signed us-east-1.
+    match commercial_global_sts_endpoint(sdk.region().map(|r| r.as_ref())) {
         Some((endpoint, signing_region)) => builder
             .endpoint_url(endpoint)
             .region(aws_sdk_sts::config::Region::new(signing_region)),
-        None => builder, // no global endpoint for this partition; use regional resolution
+        None => builder, // non-commercial partition; use the SDK's regional resolution
     }
 }
 
@@ -388,15 +424,25 @@ fn sts_regional_setting() -> Option<String> {
     non_empty_env("AWS_STS_REGIONAL_ENDPOINTS").map(|v| v.trim().to_ascii_lowercase())
 }
 
-/// The global STS endpoint and its signing region for `region`'s partition, or `None` if the
-/// partition has no global endpoint. Mirrors reqsign: standard partition -> `sts.amazonaws.com`
-/// (us-east-1), China -> `sts.amazonaws.com.cn` (cn-north-1).
-fn global_sts_endpoint(region: Option<&str>) -> Option<(&'static str, &'static str)> {
+/// The commercial-partition global STS endpoint and its signing region, or `None` for any other
+/// partition. Only the standard commercial partition has a `sts.amazonaws.com` global endpoint that
+/// reqsign used. China, GovCloud, ISO and EUSC have no such host, so they return `None` and are left
+/// to the SDK's regional resolution.
+fn commercial_global_sts_endpoint(region: Option<&str>) -> Option<(&'static str, &'static str)> {
     match region {
-        Some(r) if r.starts_with("cn-") => Some(("https://sts.amazonaws.com.cn", "cn-north-1")),
-        Some(r) if r.starts_with("us-gov-") || r.starts_with("us-iso") => None,
-        _ => Some(("https://sts.amazonaws.com", "us-east-1")),
+        Some(r) if is_commercial_partition(r) => Some(("https://sts.amazonaws.com", "us-east-1")),
+        _ => None,
     }
+}
+
+/// Whether `region` is in the standard commercial partition (`aws`). Non-commercial partitions have
+/// their own STS hosts, so the global-endpoint override does not apply to them.
+fn is_commercial_partition(region: &str) -> bool {
+    !(region.starts_with("cn-")            // China
+        || region.starts_with("us-gov-")   // GovCloud
+        || region.starts_with("us-iso")    // ISO / ISOB / ISOF
+        || region.starts_with("eusc-")     // European Sovereign Cloud
+        || region.starts_with("eu-isoe-")) // ISOE
 }
 
 /// Assembles the provider from an STS client. Split out so tests can supply a client built with an
@@ -905,6 +951,7 @@ mod tests {
             region: Some("us-east-1".to_string()),
             max_attempts,
             min_ttl: Duration::from_secs(300),
+            max_jitter: Duration::ZERO,
         };
         let provider = build_provider(&cfg, Some(SharedHttpClient::new(http))).await;
         SharedEntry {
@@ -913,6 +960,7 @@ mod tests {
             refresh_lock: tokio::sync::Mutex::new(()),
             last_failure: RwLock::new(None),
             min_ttl: cfg.min_ttl,
+            refresh_jitter: Duration::ZERO,
         }
     }
 
@@ -1008,6 +1056,7 @@ mod tests {
             refresh_lock: tokio::sync::Mutex::new(()),
             last_failure: RwLock::new(None),
             min_ttl,
+            refresh_jitter: Duration::ZERO,
         })
     }
 
@@ -1330,6 +1379,7 @@ mod tests {
             refresh_lock: tokio::sync::Mutex::new(()),
             last_failure: RwLock::new(None),
             min_ttl: Duration::from_secs(300),
+            refresh_jitter: Duration::ZERO,
         };
         let cred = rt
             .block_on(entry.credentials())
@@ -1357,6 +1407,7 @@ mod tests {
             region: Some("us-east-1".to_string()),
             max_attempts: 5,
             min_ttl: Duration::from_secs(300),
+            max_jitter: Duration::ZERO,
         };
         let provider = WebIdentityCredentialProvider::new(cfg);
         provider
@@ -1377,6 +1428,7 @@ mod tests {
                 refresh_lock: tokio::sync::Mutex::new(()),
                 last_failure: RwLock::new(None),
                 min_ttl: Duration::from_secs(300),
+                refresh_jitter: Duration::ZERO,
             }))
             .expect("entry not yet set");
 
@@ -1408,6 +1460,7 @@ mod tests {
             region: Some("us-east-1".to_string()),
             max_attempts: 5,
             min_ttl: Duration::from_secs(300),
+            max_jitter: Duration::ZERO,
         };
         let provider = WebIdentityCredentialProvider::new(cfg);
         provider
@@ -1428,6 +1481,7 @@ mod tests {
                 refresh_lock: tokio::sync::Mutex::new(()),
                 last_failure: RwLock::new(None),
                 min_ttl: Duration::from_secs(300),
+                refresh_jitter: Duration::ZERO,
             }))
             .expect("entry not yet set");
 
@@ -1507,6 +1561,79 @@ mod tests {
     }
 
     #[test]
+    fn legacy_regional_endpoints_uses_global_sts() {
+        // Plain legacy on a commercial region must reach the global endpoint, matching reqsign. This
+        // is the case the other endpoint tests miss: unset also hits global and regional hits
+        // regional, so without this a bug that treated "legacy" like "regional" would pass silently.
+        let _guard = lock_env();
+        let _env = IrsaEnv::set("legacy-global");
+        std::env::set_var("AWS_REGION", "us-west-2");
+        std::env::set_var("AWS_STS_REGIONAL_ENDPOINTS", "legacy");
+        let uri = resolved_sts_uri();
+        assert!(
+            uri.contains("//sts.amazonaws.com/"),
+            "legacy on a commercial region must use the global endpoint, got {uri}"
+        );
+    }
+
+    #[test]
+    fn dualstack_defers_to_sdk_regional() {
+        // With dual-stack requested we must NOT install a custom global endpoint: the SDK rejects a
+        // custom endpoint combined with dual-stack before sending anything, which would break
+        // credential acquisition entirely. Deferring to the SDK resolves the dual-stack regional
+        // host and the call succeeds. A passing resolved_sts_uri() proves it did not error.
+        let _guard = lock_env();
+        let _env = IrsaEnv::set("dualstack");
+        std::env::set_var("AWS_REGION", "us-west-2");
+        std::env::set_var("AWS_USE_DUALSTACK_ENDPOINT", "true");
+        // legacy left unset, so without the guard the global override would engage and be rejected.
+        let uri = resolved_sts_uri();
+        assert!(
+            uri.contains("sts.us-west-2.api.aws"),
+            "dual-stack must resolve the SDK's dual-stack regional endpoint, got {uri}"
+        );
+    }
+
+    #[test]
+    fn china_region_defers_to_sdk_regional() {
+        // China has no sts.amazonaws.com global endpoint. The override must stand aside so the SDK
+        // resolves the China regional host, rather than sending to a host that does not resolve.
+        let _guard = lock_env();
+        let _env = IrsaEnv::set("china");
+        std::env::set_var("AWS_REGION", "cn-north-1");
+        let uri = resolved_sts_uri();
+        assert!(
+            uri.contains("sts.cn-north-1.amazonaws.com.cn"),
+            "China must use the SDK's regional endpoint, got {uri}"
+        );
+    }
+
+    #[test]
+    fn only_commercial_partition_gets_global_override() {
+        // The global sts.amazonaws.com override is commercial-only. Every other partition has its
+        // own STS host and must fall through to the SDK's regional resolution.
+        assert!(is_commercial_partition("us-east-1"));
+        assert!(is_commercial_partition("eu-west-1"));
+        for non_commercial in [
+            "cn-north-1",
+            "us-gov-west-1",
+            "us-iso-east-1",
+            "us-isob-east-1",
+            "eusc-de-east-1",
+            "eu-isoe-west-1",
+        ] {
+            assert!(
+                !is_commercial_partition(non_commercial),
+                "{non_commercial} is not in the commercial partition"
+            );
+            assert!(
+                commercial_global_sts_endpoint(Some(non_commercial)).is_none(),
+                "{non_commercial} must not get the global override"
+            );
+        }
+    }
+
+    #[test]
     fn missing_region_stands_aside() {
         // A web-identity STS client with no region fails opaquely, so defer to the default chain
         // (which falls back to the global STS endpoint) when no region is set.
@@ -1551,6 +1678,7 @@ mod tests {
             region: Some("us-east-1".to_string()),
             max_attempts: 5,
             min_ttl: Duration::from_secs(300),
+            max_jitter: Duration::from_secs(60),
         };
         let mut more_attempts = base.clone();
         more_attempts.max_attempts = 8;
@@ -1559,10 +1687,52 @@ mod tests {
             more_attempts.entry_key(),
             "different maxAttempts must not share a cache entry"
         );
+        let mut more_jitter = base.clone();
+        more_jitter.max_jitter = Duration::from_secs(30);
+        assert_ne!(
+            base.entry_key(),
+            more_jitter.entry_key(),
+            "different refreshJitterSeconds must not share a cache entry"
+        );
         assert_eq!(
             base.entry_key(),
             base.clone().entry_key(),
             "identical identity and settings must share one entry"
+        );
+    }
+
+    #[test]
+    fn jitter_refreshes_earlier_than_min_ttl_alone() {
+        // A credential expiring inside (min_ttl, min_ttl + jitter): min_ttl alone keeps it fresh, but
+        // the jitter pulls the refresh earlier so it is treated as needing refresh. This is what
+        // de-synchronizes executors that assumed the role together. Jitter never delays a refresh.
+        let min_ttl = Duration::from_secs(300);
+        let cached = Credentials::new(
+            "AKID",
+            "SECRET",
+            Some("TOKEN".to_string()),
+            Some(SystemTime::now() + min_ttl + Duration::from_secs(30)),
+            "test",
+        );
+        let build = |jitter: Duration| SharedEntry {
+            provider: Arc::new(CountingProvider {
+                calls: Arc::new(AtomicUsize::new(0)),
+                expiry: None,
+                fail: false,
+            }),
+            cached: RwLock::new(Some(cached.clone())),
+            refresh_lock: tokio::sync::Mutex::new(()),
+            last_failure: RwLock::new(None),
+            min_ttl,
+            refresh_jitter: jitter,
+        };
+        assert!(
+            build(Duration::ZERO).fresh().is_some(),
+            "without jitter the credential is still fresh"
+        );
+        assert!(
+            build(Duration::from_secs(60)).fresh().is_none(),
+            "jitter must pull the refresh earlier so the same credential needs refresh"
         );
     }
 
