@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::{env, fs, io::Write, path::PathBuf};
 
 /// Returns file handle for a temp file in 'target' directory with a provided content
@@ -41,13 +42,28 @@ pub fn get_temp_file(file_name: &str, content: &[u8]) -> fs::File {
     file.unwrap()
 }
 
+/// Returns a path, in the same `target/debug/testdata` directory, that no other caller will pick.
+///
+/// The directory is shared by every test in the crate and `cargo nextest` runs each test in its
+/// own process, several at a time, so the name has to be unique across processes as well as within
+/// one. Drawing it from 65536 random values was not: `fs::File::create` truncates, so two tests
+/// landing on the same name leave one of them reading a Parquet file that the other has just
+/// emptied, and it fails with an out-of-range read that says nothing about the real cause. The
+/// process ID plus a counter is unique among the processes alive at any one time, which is all
+/// that is needed — a leftover file from an earlier run is simply overwritten.
 pub fn get_temp_filename() -> PathBuf {
+    static NEXT_ID: AtomicU64 = AtomicU64::new(0);
+
     let mut path_buf = env::current_dir().unwrap();
     path_buf.push("target");
     path_buf.push("debug");
     path_buf.push("testdata");
     fs::create_dir_all(&path_buf).unwrap();
-    path_buf.push(rand::random::<i16>().to_string());
+    path_buf.push(format!(
+        "{}-{}",
+        std::process::id(),
+        NEXT_ID.fetch_add(1, Ordering::Relaxed)
+    ));
 
     path_buf
 }

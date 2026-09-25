@@ -65,6 +65,16 @@ FILTERS = {
         "!spark/src/test/scala/org/apache/spark/sql/benchmark/**",
         "!spark/src/main/scala/org/apache/comet/GenerateDocs.scala",
     ],
+    # Same inputs as build_linux: not a separate job but a second POLICY
+    # decision for the same call, selecting the full pipeline rather than the
+    # cache-populating subset. ci.yml folds it into the reusable workflow's
+    # `cache-refresh-only` input. Populated below, after the dict, so the two
+    # lists cannot drift.
+    "build_linux_full": [],
+    # A third POLICY decision on the same inputs: whether the linux-test matrix
+    # runs every Spark profile or only the PR-tier one. ci.yml folds it into
+    # the reusable workflow's `profiles` input. Populated below as well.
+    "build_linux_all_profiles": [],
     "build_macos": [
         "native/**",
         "common/**",
@@ -83,6 +93,7 @@ FILTERS = {
         ".github/actions/java-test/**",
         ".github/actions/upload-artifact-retry/**",
         ".github/actions/download-artifact-retry/**",
+        ".github/actions/maven-bootstrap/**",
         "!**.md",
         "!native/core/benches/**",
         "!native/spark-expr/benches/**",
@@ -94,10 +105,77 @@ FILTERS = {
         "native/spark-expr/benches/**",
         "spark/src/test/scala/org/apache/spark/sql/benchmark/**",
     ],
+    # dev/verify-contrib-delta-gate.sh proves the default cargo, Maven and
+    # libcomet builds carry no Delta surface and that the gated build does.
+    # It reads the cargo tree, the effective pom, the compiled classes and the
+    # dylib symbol table: main sources and build inputs, never tests.
+    "delta_gate": [
+        "native/**",
+        "common/src/main/**",
+        "spark/src/main/**",
+        "contrib/delta/**",
+        "pom.xml",
+        "**/pom.xml",
+        ".mvn/**",
+        "mvnw",
+        "Makefile",
+        "rust-toolchain.toml",
+        "dev/verify-contrib-delta-gate.sh",
+        ".github/workflows/ci.yml",
+        ".github/workflows/delta_build_gate.yml",
+        ".github/actions/setup-builder/**",
+        ".github/actions/maven-bootstrap/**",
+        "!**.md",
+        "!native/core/benches/**",
+        "!native/spark-expr/benches/**",
+        "!spark/src/main/scala/org/apache/comet/GenerateDocs.scala",
+    ],
+    # A real Python worker against each Spark 4.x Arrow runner. The list is
+    # deliberately narrow: the suite builds Comet three times, once per Spark
+    # version, and only the map-in-batch wiring can change its verdict.
+    "pyarrow_udf": [
+        "pom.xml",
+        "common/pom.xml",
+        "native/shuffle/src/spark_unsafe/row.rs",
+        "spark/pom.xml",
+        "spark/src/main/java/org/apache/comet/vector/**",
+        "spark/src/main/java/org/apache/spark/sql/comet/execution/shuffle/SpillWriter.java",
+        "spark/src/main/scala/org/apache/comet/CometConf.scala",
+        "spark/src/main/scala/org/apache/comet/rules/EliminateRedundantTransitions.scala",
+        "spark/src/main/scala/org/apache/comet/vector/**",
+        "spark/src/main/scala/org/apache/spark/sql/comet/CometMapInBatchExec.scala",
+        "spark/src/main/scala/org/apache/spark/sql/comet/shims/MapInBatchInfo.scala",
+        "spark/src/main/spark-3.4/org/apache/spark/sql/comet/shims/ShimCometMapInBatch.scala",
+        "spark/src/main/spark-3.5/org/apache/spark/sql/comet/shims/ShimCometMapInBatch.scala",
+        "spark/src/main/spark-4.0/org/apache/spark/sql/comet/shims/ShimCometMapInBatch.scala",
+        "spark/src/main/spark-4.0/org/apache/spark/sql/execution/python/CometArrowPythonRunner.scala",
+        "spark/src/main/spark-4.1/org/apache/spark/sql/comet/shims/ShimCometMapInBatch.scala",
+        "spark/src/main/spark-4.1/org/apache/spark/sql/execution/python/CometArrowPythonRunner.scala",
+        "spark/src/main/spark-4.2/org/apache/spark/sql/comet/shims/ShimCometMapInBatch.scala",
+        "spark/src/main/spark-4.2/org/apache/spark/sql/execution/python/CometArrowPythonRunner.scala",
+        "spark/src/main/spark-4.x/org/apache/spark/sql/comet/shims/Spark4xMapInBatchSupport.scala",
+        "spark/src/main/spark-4.x/org/apache/spark/sql/execution/python/CometArrowPythonRunnerBase.scala",
+        "spark/src/test/resources/pyspark/conftest.py",
+        "spark/src/test/resources/pyspark/test_pyarrow_udf.py",
+        "spark/src/test/resources/pyspark/test_pyarrow_udf_dictionary_shuffle.py",
+        "spark/src/test/spark-3.5/org/apache/spark/sql/comet/CometMapInBatchSuite.scala",
+        "spark/src/test/spark-4.x/org/apache/spark/sql/comet/CometMapInBatchSuite.scala",
+        "spark/src/test/spark-4.x/org/apache/spark/sql/execution/python/CometArrowPythonRunnerSuite.scala",
+        ".mvn/**",
+        "mvnw",
+        ".github/workflows/ci.yml",
+        ".github/workflows/pyarrow_udf_test.yml",
+        ".github/actions/setup-builder/**",
+        ".github/actions/maven-bootstrap/**",
+    ],
     "docs": [
         ".asf.yaml",
         ".github/workflows/docs.yaml",
         "docs/**",
+        # The docs deploy renders and then verifies the site's mermaid diagrams with this
+        # script, so a change to it has to be exercised by a real build, not just by the
+        # preflight run that renders the fences.
+        "dev/ci/check-mermaid.py",
         # Generated docs (configs.md, per-version expression compatibility pages) are
         # built from these Scala sources by GenerateDocs, so changes to them must
         # republish the site even when no docs/ file is touched.
@@ -131,6 +209,7 @@ FILTERS = {
         ".github/actions/setup-spark-builder/**",
         ".github/actions/upload-artifact-retry/**",
         ".github/actions/download-artifact-retry/**",
+        ".github/actions/maven-bootstrap/**",
         ".mvn/**",
         "mvnw",
     ],
@@ -158,6 +237,7 @@ FILTERS = {
         ".github/actions/setup-spark-builder/**",
         ".github/actions/upload-artifact-retry/**",
         ".github/actions/download-artifact-retry/**",
+        ".github/actions/maven-bootstrap/**",
         ".mvn/**",
         "mvnw",
     ],
@@ -185,6 +265,7 @@ FILTERS = {
         ".github/actions/setup-spark-builder/**",
         ".github/actions/upload-artifact-retry/**",
         ".github/actions/download-artifact-retry/**",
+        ".github/actions/maven-bootstrap/**",
         ".mvn/**",
         "mvnw",
     ],
@@ -212,6 +293,7 @@ FILTERS = {
         ".github/actions/setup-spark-builder/**",
         ".github/actions/upload-artifact-retry/**",
         ".github/actions/download-artifact-retry/**",
+        ".github/actions/maven-bootstrap/**",
         ".mvn/**",
         "mvnw",
     ],
@@ -241,6 +323,7 @@ FILTERS = {
         "dev/ci/test-iceberg-shards.py",
         ".github/actions/upload-artifact-retry/**",
         ".github/actions/download-artifact-retry/**",
+        ".github/actions/maven-bootstrap/**",
         ".mvn/**",
         "mvnw",
     ],
@@ -265,6 +348,7 @@ FILTERS = {
         "dev/ci/test-iceberg-shards.py",
         ".github/actions/upload-artifact-retry/**",
         ".github/actions/download-artifact-retry/**",
+        ".github/actions/maven-bootstrap/**",
         ".mvn/**",
         "mvnw",
     ],
@@ -289,6 +373,7 @@ FILTERS = {
         "dev/ci/test-iceberg-shards.py",
         ".github/actions/upload-artifact-retry/**",
         ".github/actions/download-artifact-retry/**",
+        ".github/actions/maven-bootstrap/**",
         ".mvn/**",
         "mvnw",
     ],
@@ -313,16 +398,20 @@ FILTERS = {
         "dev/ci/test-iceberg-shards.py",
         ".github/actions/upload-artifact-retry/**",
         ".github/actions/download-artifact-retry/**",
+        ".github/actions/maven-bootstrap/**",
         ".mvn/**",
         "mvnw",
     ],
 }
 FILTERS["spark_4_1_hive"] = FILTERS["spark_4_1"]
+FILTERS["build_linux_full"] = FILTERS["build_linux"]
+FILTERS["build_linux_all_profiles"] = FILTERS["build_linux"]
 
 # Which events may run each job, independent of the path filters above.
 #
 #   "pr"              every pull request
 #   "queue"           the merge queue, i.e. a merge_group event
+#   "nightly"         the scheduled run against main, once a day
 #   "push"            push to main
 #   "label:<name>"    a pull request carrying that label
 #
@@ -331,21 +420,52 @@ FILTERS["spark_4_1_hive"] = FILTERS["spark_4_1"]
 # requests or opt-in, never both -- and check-ci-config.py rejects a job that
 # lists both rather than letting the label quietly win.
 #
-# Almost everything is "queue": the merge queue is the authoritative gate, and
-# it tests the merge result rather than the PR head. "push" is reserved for
-# work that can only happen once a commit is on main. Adding "push" back to a
-# test job would make every merge run it twice, once in the queue and once
-# after, which is the thing the queue was adopted to avoid.
+# The merge queue is the authoritative gate: it tests the merge result rather
+# than the PR head, and every "queue" job has to pass before a change lands.
+# "nightly" is for the suites that catch a regression on a Spark or Iceberg
+# version other than the default one: about 870 of the 1,900 runner-minutes a
+# queue run cost in September 2026, and the most common reason a queue run
+# went red on a good tree (issue #5870). A regression there is real but rare,
+# and a day's delay in seeing it costs less than running the suites on every
+# merge. The scheduled run diffs main against the commit the last successful
+# scheduled run tested and routes through FILTERS like any other event. A job
+# is "queue" or "nightly", never both; check-ci-config.py enforces that.
+#
+# "push" is reserved for work that can only happen once a commit is on main.
+# Adding "push" back to a test job would make every merge run it twice, once
+# in the queue and once after, which is the thing the queue was adopted to
+# avoid.
 POLICY = {
     # The one test job that also runs on push to main, and only because of
     # actions/cache scoping: a pull request can restore caches saved on its
     # own branch or on main, and nowhere else. The queue runs on a throwaway
     # gh-readonly-queue/* branch, so whatever it saves is deleted with that
     # branch. Without a push run, a Cargo.lock or pom.xml change would leave
-    # main's cargo-registry, Maven and TPC-H/TPC-DS caches stale forever, and
-    # every later pull request would pay the delta on top of the restore-keys
-    # prefix match.
+    # main's cargo-ci, cargo-debug, Maven and TPC-H/TPC-DS caches stale
+    # forever, and every later pull request would pay the delta on top of the
+    # restore-keys prefix match.
+    #
+    # On push that is the *only* thing it is for. The queue already tested the
+    # exact tree that landed, so re-running the lints and the linux-test
+    # matrix there tests nothing, and they are 514 of the 587 runner-minutes a
+    # push run costs. The split below keeps the cache writers on push and moves
+    # everything else behind `build_linux_full`.
     "build_linux": ["pr", "queue", "push"],
+    # The lints and the test matrix inside pr_build_linux.yml. Deliberately no
+    # "push": ci.yml turns this output into the workflow's `cache-refresh-only`
+    # input, so dropping "push" here is what trims the push tier down to the
+    # jobs that write an actions/cache entry. See issue #5929.
+    "build_linux_full": ["pr", "queue"],
+    # The linux-test matrix's Spark profiles other than the default one. The
+    # five profiles cost about the same each, roughly 2,300 runner-minutes a
+    # day apiece on pull requests in mid-September 2026, and together they
+    # were three quarters of the Linux build. A pull request and the queue run
+    # the Comet test suites against Spark 4.1 only; the nightly run covers the
+    # other four. The lint-java matrix still compiles Spark 3.4/3.5/4.0 on
+    # every pull request, so what waits for the nightly is runtime behaviour,
+    # not a shim that fails to build. ci.yml turns this output into the
+    # workflow's `profiles` input.
+    "build_linux_all_profiles": ["nightly", "label:run-all-spark-profiles"],
     # macOS runners are the scarcest capacity we have, and the Linux build
     # already covers rustfmt and the Rust/JVM compile on every PR. The label
     # is for a change that touches platform-specific code.
@@ -353,25 +473,48 @@ POLICY = {
     # Benchmark sources are compiled and linted, never run, so a break there
     # cannot affect a PR's correctness verdict; the queue catches it.
     "benchmark": ["queue", "label:run-benchmark-check"],
+    # The Delta build gate only proves a build-system property, and the
+    # PyArrow suite builds Comet once per Spark 4.x version to drive a real
+    # Python worker. Neither changes often enough to earn a PR-tier slot; the
+    # queue catches a regression before it lands, and the label is the escape
+    # hatch for a change to the surface they cover.
+    "delta_gate": ["queue", "label:run-delta-build-gate"],
+    "pyarrow_udf": ["queue", "label:run-pyarrow-udf-tests"],
     # docs deploys to asf-site, so it must not run from a pull request or from
     # the queue's throwaway branch.
     "docs": ["push"],
-    "spark_3_4": ["queue", "label:run-spark-3.4-tests"],
-    "spark_3_5": ["queue", "label:run-spark-3.5-tests"],
-    "spark_4_0": ["queue", "label:run-spark-4.0-tests"],
-    # Spark 4.1 is the default build profile, so it is the cheapest early
-    # warning that a change is wrong and stays in the PR tier. Only the
-    # catalyst and sql_core shards, though: over Aug 12 to Sep 11 2026 the
-    # three sql_hive shards cost about 65 runner-hours a day on pull requests
-    # and were the only failing job on 7 PR runs, against 33 for sql_core, and
-    # their 67-minute shard set the PR tier's wall clock. See issue #5870.
-    "spark_4_1": ["pr", "queue"],
-    "spark_4_1_hive": ["queue", "label:run-spark-4.1-hive-tests"],
-    "iceberg_1_8": ["queue", "label:run-iceberg-tests"],
-    "iceberg_1_9": ["queue", "label:run-iceberg-tests"],
-    "iceberg_1_10": ["queue", "label:run-iceberg-tests"],
-    # Iceberg 1.11 is our only Spark 4.1 Iceberg coverage, so it is not opt-in.
-    "iceberg_1_11": ["pr", "queue"],
+    # Spark 3.4 is deprecated, so it is the one test job outside the queue
+    # tier: a failure there no longer blocks a merge. It stays runnable on
+    # demand -- the label on a pull request, or a workflow_dispatch -- so
+    # anyone who wants to check a change against 3.4 still can.
+    "spark_3_4": ["label:run-spark-3.4-tests"],
+    # Spark 4.1 is the default build profile and the one Spark SQL suite the
+    # queue runs; 3.5 and 4.0 run nightly, or on a pull request with their
+    # label.
+    "spark_3_5": ["nightly", "label:run-spark-3.5-tests"],
+    "spark_4_0": ["nightly", "label:run-spark-4.0-tests"],
+    # No Spark SQL suite runs on a plain pull request. Spark 4.1 was the last
+    # one in the PR tier, first whole (issue #5870 pulled the sql_hive shards
+    # out) and then catalyst and sql_core alone. What changed is how often a
+    # pull request is pushed: with agent-driven review and agent-driven
+    # replies to review, a PR now goes through several more rounds before it
+    # is queued, and each round paid for the whole 4.1 build. The queue still
+    # runs every shard before anything lands; the two labels bring the run
+    # forward. `run-spark-4.1-tests` selects the whole suite, so it appears on
+    # both outputs; `run-spark-4.1-hive-tests` selects only the hive shards.
+    "spark_4_1": ["queue", "label:run-spark-4.1-tests"],
+    "spark_4_1_hive": [
+        "queue",
+        "label:run-spark-4.1-tests",
+        "label:run-spark-4.1-hive-tests",
+    ],
+    # Same shape for Iceberg: 1.11 is the only Spark 4.1 coverage, so it is
+    # the one Iceberg version the queue runs; the three older versions run
+    # nightly. One label opts a pull request into all four.
+    "iceberg_1_8": ["nightly", "label:run-iceberg-tests"],
+    "iceberg_1_9": ["nightly", "label:run-iceberg-tests"],
+    "iceberg_1_10": ["nightly", "label:run-iceberg-tests"],
+    "iceberg_1_11": ["queue", "label:run-iceberg-tests"],
 }
 
 
@@ -395,6 +538,8 @@ def event_allows(job, event):
         return "push" in tiers
     if name == "merge_group":
         return "queue" in tiers
+    if name == "schedule":
+        return "nightly" in tiers
     if name != "pull_request":
         return False
 

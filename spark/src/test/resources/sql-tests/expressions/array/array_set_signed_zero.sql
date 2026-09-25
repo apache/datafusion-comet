@@ -70,6 +70,15 @@ query
 SELECT array_union(array(double('0.0')), array(double('-0.0')))
 
 query
+SELECT array_except(array(double('0.0'), double('-0.0'), double('1.0')), array(double('0.0'))),
+       array_except(array(double('0.0'), double('1.0')), array(double('-0.0')))
+
+query
+SELECT array_intersect(array(double('-0.0')), array(double('0.0'))),
+       array_intersect(array(double('0.0')), array(double('-0.0'))),
+       array_intersect(array(double('-0.0')), array(double('-0.0')))
+
+query
 SELECT a, b, array_distinct(a) FROM test_array_set_signed_zero_double
 
 query

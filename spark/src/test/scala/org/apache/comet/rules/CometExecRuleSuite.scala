@@ -21,22 +21,25 @@ package org.apache.comet.rules
 
 import scala.util.Random
 
+import org.apache.logging.log4j.Level
 import org.apache.spark.sql._
 import org.apache.spark.sql.catalyst.FunctionIdentifier
-import org.apache.spark.sql.catalyst.expressions.{Expression, ExpressionInfo}
-import org.apache.spark.sql.catalyst.expressions.aggregate.{BloomFilterAggregate, Partial}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeReference, Expression, ExpressionInfo, In, InSet, KnownFloatingPointNormalized, Literal, Not}
+import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, BloomFilterAggregate, Final, Min, Partial, PartialMerge}
+import org.apache.spark.sql.catalyst.optimizer.NormalizeNaNAndZero
 import org.apache.spark.sql.comet._
 import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
 import org.apache.spark.sql.execution._
-import org.apache.spark.sql.execution.adaptive.QueryStageExec
+import org.apache.spark.sql.execution.adaptive.{QueryStageExec, ShuffleQueryStageExec}
 import org.apache.spark.sql.execution.aggregate.{HashAggregateExec, ObjectHashAggregateExec}
+import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
 import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ShuffleExchangeExec}
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{DataTypes, StructField, StructType}
+import org.apache.spark.sql.types.{DataTypes, DoubleType, FloatType, StructField, StructType}
 
-import org.apache.comet.{CometConf, CometExplainInfo, ExtendedExplainInfo}
-import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus, isSpark42Plus}
-import org.apache.comet.serde.{Compatible, Unsupported}
+import org.apache.comet.{CometConf, CometCoverageStats, CometExplainInfo, ExtendedExplainInfo}
+import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus, isSpark42Plus, withFallbackReason}
+import org.apache.comet.serde.{CometAggregateExpressionSerde, Compatible, ExprOuterClass, QueryPlanSerde, Unsupported}
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator}
 
 /**
@@ -132,6 +135,191 @@ class CometExecRuleSuite extends CometTestBase {
         assert(
           !reasons.exists(_.contains("is not supported")),
           s"a real reason was available but the generic message was used too: $reasons")
+      }
+    }
+  }
+
+  for (dataType <- Seq(FloatType, DoubleType)) {
+    test(s"floating ${dataType.sql} IN serialization preserves prunable literal lists") {
+      withSQLConf("spark.sql.legacy.nullInEmptyListBehavior" -> "false") {
+        val value = AttributeReference("value", dataType)()
+        val other = AttributeReference("other", dataType)()
+        def literal(v: Double): Literal = dataType match {
+          case FloatType => Literal(v.toFloat)
+          case DoubleType => Literal(v)
+        }
+        val ordinary = Seq(1.0d, 3.0d).map(literal)
+        val infinities = Seq(Double.PositiveInfinity, Double.NegativeInfinity).map(literal)
+        val nullLiteral = Literal.create(null, dataType)
+        val lists: Seq[(Seq[Expression], Boolean, Int)] = Seq(
+          (ordinary, false, 0),
+          (ordinary :+ nullLiteral, false, 0),
+          (infinities, false, 0),
+          (infinities :+ nullLiteral, false, 0),
+          (Seq(nullLiteral), false, 0),
+          (Seq(value, other), true, 0)) ++
+          Seq(Double.PositiveInfinity, Double.NegativeInfinity)
+            .map(v => (ordinary :+ literal(v), false, 0)) ++
+          Seq(Double.NaN)
+            .flatMap(v => Seq(ordinary, infinities).map(list => (list :+ literal(v), true, 0))) ++
+          Seq(0.0d, -0.0d)
+            .flatMap(v =>
+              Seq(ordinary, infinities).map(list => (list :+ literal(v), false, 1))) ++
+          Seq((ordinary ++ Seq(literal(0.0d), literal(-0.0d)), false, 0)) ++
+          (if (isSpark35Plus) Seq((Seq.empty[Expression], false, 0)) else Nil)
+        for ((list, needsNormalization, extraStaticCandidates) <- lists;
+          asSet <- Seq(false, true) if !asSet || list.forall(_.isInstanceOf[Literal]);
+          negate <- Seq(false, true);
+          alreadyNormalized <- Seq(false, true)) {
+          withClue(s"list=$list, asSet=$asSet, negate=$negate, normalized=$alreadyNormalized: ") {
+            val needle = if (alreadyNormalized) {
+              KnownFloatingPointNormalized(NormalizeNaNAndZero(value))
+            } else {
+              value
+            }
+            val in = if (asSet) {
+              InSet(needle, list.collect { case l: Literal => l.value }.toSet)
+            } else {
+              In(needle, list)
+            }
+            val result = QueryPlanSerde
+              .exprToProto(if (negate) Not(in) else in, Seq(value, other))
+              .get
+            // NOT InSet uses a separate Not node; NOT In is fused into the membership node.
+            val serialized = if (result.hasNot) result.getNot.getChild else result
+            assert(serialized.hasIn)
+            assert(result.hasNot == (asSet && negate))
+            assert(serialized.getIn.getNegated == (negate && !asSet))
+            val serializedValue = serialized.getIn.getInValue
+            if (needsNormalization || alreadyNormalized) {
+              assert(serializedValue.hasNormalizeNanAndZero)
+              assert(serializedValue.getNormalizeNanAndZero.getChild.hasBound)
+            } else {
+              assert(serializedValue.hasBound)
+            }
+            assert(serialized.getIn.getListsCount == list.size + extraStaticCandidates)
+            for (i <- list.indices) {
+              val candidate = serialized.getIn.getLists(i)
+              if (list(i).isInstanceOf[Literal]) {
+                assert(candidate.hasLiteral)
+              } else {
+                assert(candidate.hasNormalizeNanAndZero)
+                assert(candidate.getNormalizeNanAndZero.getChild.hasBound)
+              }
+            }
+            for (i <- list.size until list.size + extraStaticCandidates) {
+              assert(serialized.getIn.getLists(i).hasLiteral)
+            }
+          }
+        }
+      }
+    }
+
+    test(
+      s"floating ${dataType.sql} IN serialization retains normalized operand fallback reasons") {
+      val expressionNames = Seq("Literal", "KnownFloatingPointNormalized")
+      for (disabled <- None +: expressionNames.map(Some(_));
+        literalValue <- Seq(false, true);
+        negate <- Seq(false, true)) {
+        val configs = expressionNames.map { name =>
+          CometConf.getExprEnabledConfigKey(name) -> (!disabled.contains(name)).toString
+        }
+        withSQLConf(configs: _*) {
+          withClue(s"disabled=$disabled, literalValue=$literalValue, negate=$negate: ") {
+            val value = AttributeReference("value", dataType)()
+            val other = AttributeReference("other", dataType)()
+            val literals = dataType match {
+              case FloatType => Seq(Literal(Float.NaN), Literal(3.0f))
+              case DoubleType => Seq(Literal(Double.NaN), Literal(3.0d))
+            }
+            // Exercise temporary literals and normalizers in both the value and the list.
+            val in =
+              if (literalValue) In(literals.head, Seq(value, other)) else In(value, literals)
+            val expr = if (negate) Not(in) else in
+            val result = QueryPlanSerde.exprToProto(expr, Seq(value, other))
+            val reasons = in
+              .getTagValue(CometExplainInfo.FALLBACK_REASONS)
+              .getOrElse(Set.empty[String])
+            disabled match {
+              case Some(name) =>
+                assert(result.isEmpty)
+                val key = CometConf.getExprEnabledConfigKey(name)
+                assert(
+                  reasons == Set(s"Expression support is disabled. Set $key=true to enable it."))
+              case None =>
+                assert(result.exists(_.hasIn))
+                assert(result.get.getIn.getNegated == negate)
+                assert(reasons.isEmpty)
+            }
+          }
+        }
+      }
+    }
+
+    test(s"floating ${dataType.sql} IN planning retains normalized operand fallback reasons") {
+      val expressionNames = Seq("Literal", "KnownFloatingPointNormalized")
+      for (disabled <- None +: expressionNames.map(Some(_));
+        strict <- Seq(false, true);
+        literalValue <- Seq(false, true);
+        negate <- Seq(false, true)) {
+        val configs = Seq(
+          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+          SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "false",
+          "spark.sql.optimizer.inSetConversionThreshold" -> "100",
+          CometConf.COMET_SPARK_TO_ARROW_ENABLED.key -> "true",
+          CometConf.COMET_SPARK_TO_ARROW_SUPPORTED_OPERATOR_LIST.key -> "Range",
+          CometConf.COMET_EXEC_TRANSITION_REVERT_ENABLED.key -> "false",
+          CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "false",
+          CometConf.COMET_STRICT_FALLBACK_REASONS.key -> strict.toString) ++
+          expressionNames.map { name =>
+            CometConf.getExprEnabledConfigKey(name) -> (!disabled.contains(name)).toString
+          }
+        withSQLConf(configs: _*) {
+          withClue(
+            s"disabled=$disabled, strict=$strict, literalValue=$literalValue, negate=$negate: ") {
+            val column = s"CAST(id AS ${dataType.sql})"
+            val predicate = if (literalValue) {
+              s"CAST(1 AS ${dataType.sql}) IN ($column, -$column)"
+            } else {
+              // Keep a dynamic candidate here: all-literal non-NaN zero lists now stay static and
+              // intentionally avoid the normalization wrappers this fallback test exercises.
+              s"$column IN (CAST(0 AS ${dataType.sql}), -$column)"
+            }
+            val expression = if (negate) s"NOT ($predicate)" else predicate
+            val df = sql(s"SELECT $expression AS hit FROM range(0, 4, 1, 1)")
+            val optimized = df.queryExecution.optimizedPlan
+            val expressions = optimized.flatMap(_.expressions)
+            val membership = expressions.flatMap(_.collect { case in: In => in })
+            // A folded predicate, singleton equality, or InSet would miss this serializer.
+            assert(membership.size == 1 && membership.head.list.size == 2, optimized.toString)
+            assert(membership.head.value.isInstanceOf[Literal] == literalValue)
+            assert(expressions.exists(_.exists {
+              case Not(_: In) => true
+              case _ => false
+            }) == negate)
+
+            // Planning itself used to throw in strict mode, before a native task could run.
+            val plan = df.queryExecution.executedPlan
+            val projects = plan.collect { case p: ProjectExec => p }
+            disabled match {
+              case Some(name) =>
+                assert(projects.size == 1, plan.toString)
+                assert(plan.find(_.isInstanceOf[CometProjectExec]).isEmpty, plan.toString)
+                val key = CometConf.getExprEnabledConfigKey(name)
+                val reasons = projects.head
+                  .getTagValue(CometExplainInfo.FALLBACK_REASONS)
+                  .getOrElse(Set.empty[String])
+                assert(
+                  reasons == Set(s"Expression support is disabled. Set $key=true to enable it."))
+              case None =>
+                assert(projects.isEmpty, plan.toString)
+                assert(plan.find(_.isInstanceOf[CometProjectExec]).isDefined, plan.toString)
+                assert(
+                  !plan.exists(
+                    _.getTagValue(CometExplainInfo.FALLBACK_REASONS).exists(_.nonEmpty)))
+            }
+          }
+        }
       }
     }
   }
@@ -353,8 +541,7 @@ class CometExecRuleSuite extends CometTestBase {
     }
   }
 
-  // Regression test for https://github.com/apache/datafusion-comet/issues/1389
-  test("CometExecRule should not allow Comet partial and Spark final hash aggregate") {
+  test("CometExecRule should allow COUNT Comet partial and Spark final hash aggregate") {
     withTempView("test_data") {
       createTestDataFrame.createOrReplaceTempView("test_data")
 
@@ -370,11 +557,10 @@ class CometExecRuleSuite extends CometTestBase {
         CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
         val transformedPlan = applyCometExecRule(sparkPlan)
 
-        // COUNT is intentionally excluded from mixed execution (AQE / count-bug reasons), so if
-        // the final aggregate cannot be converted to Comet, neither should the partial.
-        assert(
-          countOperators(transformedPlan, classOf[HashAggregateExec]) == originalHashAggCount)
-        assert(countOperators(transformedPlan, classOf[CometHashAggregateExec]) == 0)
+        // COUNT's buffer is compatible in this direction. Keeping the Final in Spark also keeps
+        // the AQE/count-bug rewrites that prevent the reverse direction from being admitted.
+        assert(countOperators(transformedPlan, classOf[HashAggregateExec]) == 1)
+        assert(countOperators(transformedPlan, classOf[CometHashAggregateExec]) == 1)
       }
     }
   }
@@ -395,8 +581,8 @@ class CometExecRuleSuite extends CometTestBase {
         CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
         val transformedPlan = applyCometExecRule(sparkPlan)
 
-        // COUNT blocks mixed execution, so if the partial cannot be converted, neither should
-        // the final.
+        // COUNT still blocks Spark Partial to Comet Final, independently of the safe reverse
+        // direction, so if the partial cannot be converted, neither should the final.
         assert(
           countOperators(transformedPlan, classOf[HashAggregateExec]) == originalHashAggCount)
         assert(countOperators(transformedPlan, classOf[CometHashAggregateExec]) == 0)
@@ -483,7 +669,7 @@ class CometExecRuleSuite extends CometTestBase {
     }
   }
 
-  test("CometExecRule should allow AVG mixed Comet partial and Spark final") {
+  test("CometExecRule should not allow AVG Comet partial and Spark final before buffer repair") {
     withTempView("test_data") {
       createTestDataFrame.createOrReplaceTempView("test_data")
       val sparkPlan =
@@ -493,8 +679,9 @@ class CometExecRuleSuite extends CometTestBase {
         CometConf.COMET_ENABLE_FINAL_HASH_AGGREGATE.key -> "false",
         CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
         val transformedPlan = applyCometExecRule(sparkPlan)
-        assert(countOperators(transformedPlan, classOf[HashAggregateExec]) == 1) // final
-        assert(countOperators(transformedPlan, classOf[CometHashAggregateExec]) == 1) // partial
+        // Matching field types do not make native AVG's empty (null, 0) state safe for Spark.
+        assert(countOperators(transformedPlan, classOf[HashAggregateExec]) == 2)
+        assert(countOperators(transformedPlan, classOf[CometHashAggregateExec]) == 0)
       }
     }
   }
@@ -541,6 +728,175 @@ class CometExecRuleSuite extends CometTestBase {
     }
   }
 
+  for (distinct <- Seq(false, true)) {
+    test(
+      s"unsafe aggregate buffers fall back when native shuffle is ineligible (distinct=$distinct)") {
+      withTempView("test_data") {
+        createTestDataFrame.createOrReplaceTempView("test_data")
+        val aggregates = "AVG(id)" + (if (distinct) ", SUM(DISTINCT id)" else "")
+
+        for (fallback <- Seq("disabled hash partitioning", "prior shuffle fallback", "none")) {
+          withSQLConf(
+            CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true",
+            CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
+            CometConf.COMET_SHUFFLE_MODE.key -> "native",
+            CometConf.COMET_SHUFFLE_NATIVE_HASH_PARTITIONING_ENABLED.key ->
+              (fallback != "disabled hash partitioning").toString) {
+            val sparkPlan =
+              createSparkPlan(spark, s"SELECT $aggregates FROM test_data GROUP BY (id % 3)")
+            val aggregateCount = countOperators(sparkPlan, classOf[HashAggregateExec])
+            assert(aggregateCount == (if (distinct) 4 else 2))
+            if (fallback == "prior shuffle fallback") {
+              // Tag only the lowest exchange. A DISTINCT plan's upper exchange must inherit
+              // the native-only refusal from its now-Spark merge inputs, not from another tag.
+              val lowerShuffle = stripAQEPlan(sparkPlan).collect {
+                case shuffle: ShuffleExchangeExec => shuffle
+              }.last
+              withFallbackReason(lowerShuffle, fallback)
+            }
+            val transformed = applyCometExecRule(sparkPlan)
+            val nativeExpected = fallback == "none"
+
+            // Shuffle is enabled, but a native-only shuffle can still fall back. The distinct
+            // rewrite also has intermediate PartialMerge and mixed Partial/PartialMerge stages.
+            for (plan <- Seq(transformed, applyCometExecRule(transformed))) {
+              assert(
+                countOperators(plan, classOf[CometHashAggregateExec]) ==
+                  (if (nativeExpected) aggregateCount else 0))
+              assert(
+                countOperators(plan, classOf[HashAggregateExec]) ==
+                  (if (nativeExpected) 0 else aggregateCount))
+            }
+            // AQE reapplies the rule to an exchange without its Final aggregate. The tagged
+            // Partial must remain in Spark in that stage-only pass too.
+            transformed.collect { case shuffle: ShuffleExchangeExec => shuffle }.foreach {
+              shuffle =>
+                val stage = applyCometExecRule(shuffle)
+                assert(countOperators(stage, classOf[CometHashAggregateExec]) == 0)
+            }
+          }
+        }
+      }
+    }
+  }
+
+  test("aggregate buffer direction opt-ins are independent") {
+    // A policy-only handler opts into consuming Spark state. Its inherited producer policy
+    // must stay false; serializing any expression is outside the scope of this fixture.
+    val reverseOnly = new CometAggregateExpressionSerde[Min] {
+      override def supportsSparkPartialToNativeFinal(fn: Min): Boolean = true
+
+      override def convert(
+          aggExpr: AggregateExpression,
+          expr: Min,
+          inputs: Seq[Attribute],
+          binding: Boolean,
+          conf: SQLConf): Option[ExprOuterClass.AggExpr] = None
+    }
+    val fn = Min(Literal(1L))
+    assert(reverseOnly.supportsSparkPartialToNativeFinal(fn))
+    assert(!reverseOnly.supportsNativePartialToSparkFinal(fn))
+  }
+
+  test("restored partial records its reason when its current child is not native") {
+    // Wrap a converted input to prevent a re-entrant serde call from supplying the reason.
+    // This planner-only fixture never executes its synthetic buffer boundary.
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "false",
+      CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true",
+      CometConf.COMET_SHUFFLE_MODE.key -> "native") {
+      withTempView("test_data") {
+        createTestDataFrame.createOrReplaceTempView("test_data")
+        val plan = applyCometExecRule(
+          createSparkPlan(spark, "SELECT AVG(id) FROM test_data GROUP BY (id % 3)"))
+        val partial = plan.collectFirst {
+          case agg: CometHashAggregateExec if agg.modes == Seq(Partial) => agg
+        }.get
+        val sparkFinal = plan.collectFirst {
+          case agg: CometHashAggregateExec if agg.modes == Seq(Final) =>
+            agg.originalPlan.asInstanceOf[HashAggregateExec]
+        }.get
+        val nonNativeChild = InputAdapter(partial.child)
+        val restored = CometExecRule(spark).revertUnsafePartialAggregates(
+          sparkFinal.copy(child = partial.copy(child = nonNativeChild)))
+        val sparkPartial = restored.children.head
+        assert(sparkPartial.isInstanceOf[HashAggregateExec])
+        assert(sparkPartial.children.head.isInstanceOf[InputAdapter])
+        assert(sparkPartial.children.head.output == nonNativeChild.output)
+        val reason = sparkPartial.getTagValue(CometExecRule.COMET_UNSAFE_PARTIAL).get
+        assert(sparkPartial.getTagValue(CometExplainInfo.FALLBACK_REASONS).get.contains(reason))
+        assert(new ExtendedExplainInfo().getFallbackReasons(sparkPartial).contains(reason))
+      }
+    }
+  }
+
+  test("unrepaired native aggregate buffers warn once without rewriting query stages") {
+    // Construct the stage placeholder emitted by CometExchangeSink, including a native merge
+    // above it. No SQL reproduction or materialization is assumed: this pins the diagnostic
+    // when repair stops at a stage, and the absence of warnings for unrelated inner producers.
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "false",
+      CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true",
+      CometConf.COMET_SHUFFLE_MODE.key -> "native") {
+      withTempView("test_data") {
+        createTestDataFrame.createOrReplaceTempView("test_data")
+        val plan = applyCometExecRule(
+          createSparkPlan(spark, "SELECT AVG(id) FROM test_data GROUP BY (id % 3)"))
+        val partial = plan.collectFirst {
+          case agg: CometHashAggregateExec if agg.modes == Seq(Partial) => agg
+        }.get
+        val nativeFinal = plan.collectFirst {
+          case agg: CometHashAggregateExec if agg.modes == Seq(Final) => agg
+        }.get
+        val sparkFinal = nativeFinal.originalPlan.asInstanceOf[HashAggregateExec]
+        val sparkPartial = partial.originalPlan.asInstanceOf[HashAggregateExec]
+        val exchange = ShuffleExchangeExec(
+          org.apache.spark.sql.catalyst.plans.physical.SinglePartition,
+          partial)
+        val stage = ShuffleQueryStageExec(0, exchange, exchange.canonicalized)
+        val placeholder = CometSinkPlaceHolder(
+          org.apache.comet.serde.OperatorOuterClass.Operator.getDefaultInstance,
+          stage,
+          stage)
+        val nativeMerge = partial.copy(
+          aggregateExpressions = partial.aggregateExpressions.map(_.copy(mode = PartialMerge)),
+          child = placeholder)
+        val warning = "Comet could not restore a native intermediate buffer producer"
+        val rule = CometExecRule(spark)
+        for {
+          (child, shouldWarn) <- Seq(
+            nativeMerge -> true,
+            placeholder -> true,
+            sparkPartial.copy(child = nativeFinal) -> false,
+            nativeFinal -> false)
+          logFallback <- Seq("false", "true")
+        } {
+          withSQLConf(CometConf.COMET_EXPLAIN_FALLBACK_LOG_ENABLED.key -> logFallback) {
+            val consumer = sparkFinal.copy(child = child)
+            val appender = new LogAppender("unrepaired aggregate buffers")
+            withLogAppender(appender, Seq("org.apache.comet"), Some(Level.WARN)) {
+              assert(rule.revertUnsafePartialAggregates(consumer) eq consumer)
+              assert(rule.revertUnsafePartialAggregates(consumer) eq consumer)
+            }
+            assert(consumer.child eq child)
+            val warnings =
+              appender.loggingEvents.count(_.getMessage.getFormattedMessage.contains(warning))
+            assert(warnings == (if (shouldWarn) 1 else 0), s"$child: $warnings")
+            assert(
+              new ExtendedExplainInfo()
+                .getFallbackReasons(consumer)
+                .exists(_.contains(warning)) ==
+                shouldWarn)
+          }
+        }
+        assert(stage.plan eq exchange)
+        assert(exchange.child eq partial)
+      }
+    }
+  }
+
   test("CometExecRule should not allow decimal SUM mixed execution") {
     withTempView("test_data") {
       createTestDataFrame.createOrReplaceTempView("test_data")
@@ -556,9 +912,9 @@ class CometExecRuleSuite extends CometTestBase {
         CometConf.COMET_ENABLE_FINAL_HASH_AGGREGATE.key -> "false",
         CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
         val transformedPlan = applyCometExecRule(sparkPlan)
-        // Decimal SUM overflow detection (ANSI throw / Legacy null) does not survive a
-        // Spark-partial / Comet-final split, so mixed execution is unsafe and the partial
-        // must also fall back to Spark.
+        // Native decimal SUM makes precision overflow sticky (or throws eagerly in ANSI),
+        // while Spark's generated scalar Partial can recover after a later cancelling input.
+        // Keep the Partial in Spark even though the emitted buffer field types match.
         assert(countOperators(transformedPlan, classOf[HashAggregateExec]) == 2)
         assert(countOperators(transformedPlan, classOf[CometHashAggregateExec]) == 0)
       }
@@ -913,6 +1269,408 @@ class CometExecRuleSuite extends CometTestBase {
 
         assert(countOperators(transformedPlan, classOf[ShuffleExchangeExec]) == 0)
         assert(countOperators(transformedPlan, classOf[CometShuffleExchangeExec]) == 1)
+      }
+    }
+  }
+
+  private val PLAN_ONLY_PREFIX = "[Comet plan-only]"
+
+  /**
+   * Runs `f` over a Parquet table `tbl`. The source list must be set before the table is created,
+   * since `withParquetTable` bakes the V1/V2 choice into the temp view.
+   */
+  private def withPlanOnlyTable(
+      aqe: Boolean = true,
+      planOnly: Boolean = true,
+      useV1: Boolean = true)(f: => Unit): Unit = {
+    withSQLConf(
+      SQLConf.USE_V1_SOURCE_LIST.key -> (if (useV1) "parquet" else ""),
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqe.toString,
+      CometConf.COMET_EXPLAIN_PLAN_ONLY_ENABLED.key -> planOnly.toString) {
+      withParquetTable((0 until 100).map(i => (i, i % 5)), "tbl")(f)
+    }
+  }
+
+  /** Plans `sql` in plan-only mode and asserts nothing was offloaded to native. */
+  private def runPlanOnlyAndAssertReverted(
+      sql: String,
+      useV1: Boolean = true,
+      aqe: Boolean = true): Unit = {
+    withPlanOnlyTable(aqe = aqe, useV1 = useV1) {
+      val executed = stripAQEPlan(spark.sql(sql).queryExecution.executedPlan)
+      val cometNodes = executed.collect { case p: CometPlan => p }
+      assert(
+        cometNodes.isEmpty,
+        s"plan-only mode must not offload; found Comet operators: $cometNodes")
+      val expectedScan = if (useV1) classOf[FileSourceScanExec] else classOf[BatchScanExec]
+      assert(
+        executed.exists(p => expectedScan.isInstance(p)),
+        s"expected ${expectedScan.getSimpleName}, got:\n$executed")
+    }
+  }
+
+  /** Runs `f` and returns the `[Comet plan-only]` reports that `CometRule` logged. */
+  private def capturePlanOnlyReports(f: => Unit): Seq[String] = {
+    val appender = new LogAppender("Comet plan-only reports")
+    withLogAppender(
+      appender,
+      loggerNames = Seq(classOf[CometRule].getName),
+      level = Some(Level.WARN)) {
+      f
+    }
+    appender.loggingEvents
+      .map(_.getMessage.getFormattedMessage)
+      .filter(_.startsWith(PLAN_ONLY_PREFIX))
+      .toSeq
+  }
+
+  /** The `Comet accelerated N out of M eligible operators` counts in a plan-only report. */
+  private def coverageOf(report: String): (Int, Int) = {
+    val pattern = """Comet accelerated (\d+) out of (\d+) eligible operators""".r
+    pattern
+      .findFirstMatchIn(report)
+      .map(m => (m.group(1).toInt, m.group(2).toInt))
+      .getOrElse(fail(s"report has no coverage summary:\n$report"))
+  }
+
+  /**
+   * Runs `query` normally, then in plan-only mode, and asserts the one report containing `marker`
+   * has the same coverage as the executed plan. Returns the executed plan.
+   */
+  private def assertReportMatchesExecuted(query: String, marker: String): SparkPlan = {
+    val df = sql(query)
+    df.collect()
+    val plan = df.queryExecution.executedPlan
+    val executed = CometCoverageStats.forPlan(plan)
+    withSQLConf(CometConf.COMET_EXPLAIN_PLAN_ONLY_ENABLED.key -> "true") {
+      val reports = capturePlanOnlyReports(sql(query).collect())
+      val matching = reports.filter(_.contains(marker))
+      assert(
+        matching.size == 1,
+        s"expected one report containing '$marker', got:\n${reports.mkString("\n\n")}")
+      assert(
+        coverageOf(matching.head) ==
+          (executed.cometOperators, executed.cometOperators + executed.sparkOperators),
+        s"report disagrees with the executed plan ($executed):\n${matching.head}")
+    }
+    plan
+  }
+
+  for {
+    useV1 <- Seq(true, false)
+    aqe <- Seq(true, false)
+  } {
+    val label = s"${if (useV1) "V1" else "V2"} scan, AQE=$aqe"
+    test(s"plan-only mode: $label") {
+      runPlanOnlyAndAssertReverted(
+        "SELECT _2, count(*) FROM tbl GROUP BY _2",
+        useV1 = useV1,
+        aqe = aqe)
+    }
+  }
+
+  test("plan-only mode: scalar subquery is also reverted") {
+    runPlanOnlyAndAssertReverted("SELECT _1 FROM tbl WHERE _1 > (SELECT max(_2) FROM tbl)")
+  }
+
+  test("plan-only mode: same query with the config off runs on Comet") {
+    withPlanOnlyTable(planOnly = false) {
+      val plan =
+        spark.sql("SELECT _2, count(*) FROM tbl GROUP BY _2").queryExecution.executedPlan
+      val cometNodes = stripAQEPlan(plan).collect { case p: CometPlan => p }
+      assert(cometNodes.nonEmpty, "expected Comet operators when plan-only mode is disabled")
+    }
+  }
+
+  // Subqueries are planned before the outer query, which must still get its own report.
+  for (aqe <- Seq(true, false)) {
+    test(s"plan-only mode: report describes the outer query, not just a subquery (AQE=$aqe)") {
+      withPlanOnlyTable(aqe = aqe) {
+        val reports = capturePlanOnlyReports {
+          spark.sql("SELECT _1 FROM tbl WHERE _1 > (SELECT max(_2) FROM tbl)").collect()
+        }
+        // Filter appears only in the outer plan.
+        assert(
+          reports.exists(_.contains("Filter")),
+          s"no report describes the outer query:\n${reports.mkString("\n\n")}")
+        // One for the subquery, one for the outer query.
+        assert(
+          reports.size == 2,
+          s"expected two reports, got ${reports.size}:\n${reports.mkString("\n\n")}")
+      }
+    }
+  }
+
+  test("plan-only mode: coverage accounts for post-columnar stage reversion") {
+    withSQLConf(CometConf.COMET_EXEC_PROJECT_ENABLED.key -> "false") {
+      // AQE off: Spark applies the post-columnar rules to the whole plan once, as the preview does.
+      withPlanOnlyTable(aqe = false, planOnly = false) {
+        // SUM and MAX can be split across a stage boundary in either direction, which leaves the
+        // stage free to revert. COUNT cannot, and would block the reversion under test.
+        val query = "SELECT _2, sum(_1), max(_1) FROM tbl GROUP BY _2"
+
+        var unreverted = 0
+        withSQLConf(CometConf.COMET_EXEC_TRANSITION_REVERT_ENABLED.key -> "false") {
+          val df = sql(query)
+          df.collect()
+          unreverted = CometCoverageStats.forPlan(df.queryExecution.executedPlan).cometOperators
+          assert(unreverted > 0)
+        }
+
+        withSQLConf(
+          CometConf.COMET_EXEC_TRANSITION_REVERT_ENABLED.key -> "true",
+          CometConf.COMET_EXEC_TRANSITION_REVERT_MAX_TRANSITIONS.key -> "0") {
+          val executed = CometCoverageStats.forPlan(assertReportMatchesExecuted(query, ""))
+          // Guard against a vacuous test: reversion must actually fire.
+          assert(
+            executed.cometOperators < unreverted,
+            s"stage reversion did not fire, so this test is vacuous: $executed")
+        }
+      }
+    }
+  }
+
+  // These paths plan without a SQL execution ID and must still report once per query.
+  for (aqe <- Seq(true, false)) {
+    test(s"plan-only mode: one report per query without a SQL execution ID (AQE=$aqe)") {
+      withPlanOnlyTable(aqe = aqe) {
+        val query = "SELECT _2, count(*) FROM tbl GROUP BY _2"
+
+        val viaRdd = capturePlanOnlyReports(spark.sql(query).rdd.count())
+        assert(
+          viaRdd.size == 1,
+          s"expected one report for df.rdd.count(), got ${viaRdd.size}:\n" +
+            viaRdd.mkString("\n\n"))
+
+        val viaExecutedPlan =
+          capturePlanOnlyReports(spark.sql(query).queryExecution.executedPlan)
+        assert(
+          viaExecutedPlan.size == 1,
+          s"expected one report for executedPlan, got ${viaExecutedPlan.size}:\n" +
+            viaExecutedPlan.mkString("\n\n"))
+      }
+    }
+  }
+
+  // The outer report must count the subquery's converted operators. AQE off so the preview and
+  // the executed plan are the same single pass.
+  test("plan-only mode: outer report coverage matches normal planning for a scalar subquery") {
+    withPlanOnlyTable(aqe = false, planOnly = false) {
+      val plan = assertReportMatchesExecuted(
+        "SELECT _1 FROM tbl WHERE _1 > (SELECT max(_2) FROM tbl)",
+        marker = "Filter")
+      assert(
+        CometCoverageStats.forPlan(plan).cometOperators > 0,
+        "test query must be partly accelerated for the comparison to mean anything")
+    }
+  }
+
+  // AQE can collapse a plan whose stage materializes empty into an empty relation that shares
+  // nothing with the reported plan.
+  for {
+    aqe <- Seq(true, false)
+    // `toRdd.count` runs without a SQL execution ID, like PySpark's `df.rdd`.
+    (action, runIt) <- Seq[(String, org.apache.spark.sql.DataFrame => Unit)](
+      "collect" -> (df => df.collect()),
+      "toRdd.count" -> (df => df.queryExecution.toRdd.count()))
+    // In the second shape `RemoveRedundantSorts` drops the root sort, so the mark lands on the
+    // join and the empty re-plan's root inherits the unmarked sort's tags. In the third the
+    // global aggregate survives the empty join, so the re-plan is not itself empty. The fourth
+    // is empty from the start, which must not be mistaken for a re-plan.
+    (shape, query, marker) <- Seq(
+      (
+        "aggregate",
+        "SELECT id % 2 AS k, count(*) AS n FROM range(20) WHERE id < 0 GROUP BY id % 2",
+        "HashAggregate"),
+      (
+        "join under a removed root sort",
+        """SELECT a.id FROM range(0, 20, 1, 2) a
+          |JOIN range(0, 20, 1, 2) b ON a.id % 7 = b.id % 7
+          |WHERE a.id < 0
+          |SORT BY a.id % 7""".stripMargin,
+        "SortMergeJoin"),
+      (
+        "global aggregate over a join",
+        """SELECT count(*) FROM range(0, 20, 1, 2) a
+          |JOIN range(0, 20, 1, 2) b ON a.id % 7 = b.id % 7
+          |WHERE a.id < 0""".stripMargin,
+        "SortMergeJoin"),
+      ("initially empty", "SELECT id FROM range(0) DISTRIBUTE BY id", "Exchange"))
+  } {
+    test(s"plan-only mode: one report when the plan becomes empty ($shape, AQE=$aqe, $action)") {
+      withSQLConf(
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqe.toString,
+        SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+        SQLConf.SHUFFLE_PARTITIONS.key -> "2",
+        CometConf.COMET_EXPLAIN_PLAN_ONLY_ENABLED.key -> "true") {
+        val reports = capturePlanOnlyReports(runIt(spark.sql(query)))
+        assert(
+          reports.size == 1,
+          s"expected one report, got ${reports.size}:\n${reports.mkString("\n\n")}")
+        assert(
+          reports.head.contains(marker),
+          s"the report does not describe the query:\n${reports.head}")
+      }
+    }
+  }
+
+  for {
+    aqe <- Seq(true, false)
+    (action, runIt) <- Seq[(String, org.apache.spark.sql.DataFrame => Unit)](
+      "collect" -> (df => df.collect()),
+      "toRdd.count" -> (df => df.queryExecution.toRdd.count()))
+  } {
+    test(s"plan-only mode: a subquery referenced twice is reported once (AQE=$aqe, $action)") {
+      withPlanOnlyTable(aqe = aqe) {
+        val reports = capturePlanOnlyReports {
+          runIt(spark.sql("""SELECT _1,
+                            |  (SELECT max(_2) FROM tbl
+                            |   WHERE _1 > (SELECT min(_2) FROM tbl)) AS a,
+                            |  (SELECT max(_2) FROM tbl
+                            |   WHERE _1 > (SELECT min(_2) FROM tbl)) AS b
+                            |FROM tbl""".stripMargin))
+        }
+        // The `min` subquery, the `max` subquery and the outer query.
+        assert(
+          reports.size == 3,
+          s"expected three reports, got ${reports.size}:\n${reports.mkString("\n\n")}")
+      }
+    }
+  }
+
+  test("plan-only mode: the report does not depend on spark.comet.explain.format") {
+    withSQLConf(
+      CometConf.COMET_EXTENDED_EXPLAIN_FORMAT.key ->
+        CometConf.COMET_EXTENDED_EXPLAIN_FORMAT_FALLBACK) {
+      withPlanOnlyTable() {
+        val reports = capturePlanOnlyReports(sql("SELECT _1 + 1 FROM tbl").collect())
+        assert(reports.size == 1, s"expected one report, got:\n${reports.mkString("\n\n")}")
+        val (accelerated, eligible) = coverageOf(reports.head)
+        assert(
+          accelerated > 0 && accelerated == eligible,
+          s"unexpected coverage:\n${reports.head}")
+      }
+    }
+  }
+
+  private val dppQuery = "SELECT f.fact_id, f.fact_str, d.dim_str FROM fact f " +
+    "JOIN dim d ON f.fact_key = d.dim_key WHERE d.dim_id < 10"
+
+  /** Registers a `fact` table partitioned on the join key plus a small `dim` table. */
+  private def withDppTables(f: => Unit): Unit = {
+    withTempDir { dir =>
+      withSQLConf(CometConf.COMET_EXEC_ENABLED.key -> "false") {
+        val sess = spark
+        import sess.implicits._
+        (0 until 400)
+          .map(i => (i, i % 10, s"f$i"))
+          .toDF("fact_id", "fact_key", "fact_str")
+          .write
+          .partitionBy("fact_key")
+          .parquet(s"${dir.getAbsolutePath}/fact")
+        (0 until 10)
+          .map(i => (i, i, s"d$i"))
+          .toDF("dim_id", "dim_key", "dim_str")
+          .write
+          .parquet(s"${dir.getAbsolutePath}/dim")
+      }
+      spark.read.parquet(s"${dir.getAbsolutePath}/fact").createOrReplaceTempView("fact")
+      spark.read.parquet(s"${dir.getAbsolutePath}/dim").createOrReplaceTempView("dim")
+      withTempView("fact", "dim")(f)
+    }
+  }
+
+  // The DPP build must be previewed below its BroadcastExchangeExec so that stage reversion fires
+  // as in real planning. Reversion is forced on so a missed reversion changes the number.
+  test("plan-only mode: outer report coverage matches normal planning for a DPP subquery") {
+    withSQLConf(
+      SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
+      // AQE off: the preview describes the pre-adaptive plan.
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.DYNAMIC_PARTITION_PRUNING_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_TRANSITION_REVERT_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_TRANSITION_REVERT_MAX_TRANSITIONS.key -> "0",
+      CometConf.COMET_EXEC_PROJECT_ENABLED.key -> "false") {
+      withDppTables {
+        val plan = assertReportMatchesExecuted(dppQuery, marker = "BroadcastHashJoin")
+        // `exists` walks children only, and a DPP subquery hangs off the scan's expressions.
+        assert(
+          plan.collectWithSubqueries { case p: SubqueryBroadcastExec => p }.nonEmpty,
+          s"test query must produce a DPP subquery:\n$plan")
+      }
+    }
+  }
+
+  // Under AQE the DPP build is planned mid-execution by `PlanAdaptiveDynamicPruningFilters`,
+  // after the outer query was reported, and must still get a report.
+  test("plan-only mode: a DPP subquery planned mid-execution is reported under AQE") {
+    withSQLConf(
+      SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
+      SQLConf.DYNAMIC_PARTITION_PRUNING_ENABLED.key -> "true",
+      CometConf.COMET_EXPLAIN_PLAN_ONLY_ENABLED.key -> "true") {
+      withDppTables {
+        val reports = capturePlanOnlyReports(sql(dppQuery).collect())
+        assert(
+          reports.size == 2,
+          "expected a report for the outer query and one for the DPP build plan, got " +
+            s"${reports.size}:\n${reports.mkString("\n\n")}")
+        assert(
+          reports.count(_.contains("BroadcastHashJoin")) == 1,
+          s"exactly one report should describe the outer query:\n${reports.mkString("\n\n")}")
+      }
+    }
+  }
+
+  // Per-stage and per-re-optimization applications must not add reports.
+  test("plan-only mode: one report for a multi-stage query under AQE") {
+    withSQLConf(SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
+      withPlanOnlyTable() {
+        val query = "SELECT a._2, count(*) FROM tbl a JOIN tbl b ON a._1 = b._2 " +
+          "GROUP BY a._2 ORDER BY 1"
+        val reports = capturePlanOnlyReports(sql(query).collect())
+        assert(
+          reports.size == 1,
+          s"expected one report, got ${reports.size}:\n${reports.mkString("\n\n")}")
+      }
+    }
+  }
+
+  test("scan conversion must run before operator conversion") {
+    withTempPath { path =>
+      createTestDataFrame.write.parquet(path.toString)
+      withTempView("test_data") {
+        spark.read.parquet(path.toString).createOrReplaceTempView("test_data")
+        val query = "SELECT id, id * 2 as doubled FROM test_data WHERE id % 2 == 0"
+
+        // One plan per rule application. Fallback reasons are recorded as tags on the Spark
+        // nodes, and CometNativeScan.isSupported declines a scan already carrying one, so
+        // reusing the plan the exec rule just refused would hold the second case down.
+        val forExecRule = stripAQEPlan(createSparkPlan(spark, query))
+        val forCometRule = stripAQEPlan(createSparkPlan(spark, query))
+        assert(countOperators(forExecRule, classOf[FileSourceScanExec]) == 1)
+        assert(countOperators(forCometRule, classOf[FileSourceScanExec]) == 1)
+
+        withSQLConf(
+          CometConf.COMET_ENABLED.key -> "true",
+          CometConf.COMET_EXEC_ENABLED.key -> "true",
+          // Off by default, but pinned here: with it on, CometExecRule bridges the unconverted
+          // scan with a CometSparkToColumnarExec and converts the operators above it, which is a
+          // different path from the one under test.
+          CometConf.COMET_CONVERT_FROM_PARQUET_ENABLED.key -> "false") {
+          // CometExecRule builds its native plan up from the nodes CometScanRule produces, so on
+          // its own it leaves the scan on Spark's reader.
+          assert(
+            countOperators(
+              CometExecRule(spark).apply(forExecRule),
+              classOf[FileSourceScanExec]) == 1)
+          // CometRule runs both phases, in that order. This fails if the scan phase is ever
+          // reordered or dropped.
+          assert(
+            countOperators(
+              CometRule(spark).apply(forCometRule),
+              classOf[CometNativeScanExec]) == 1)
+        }
       }
     }
   }
