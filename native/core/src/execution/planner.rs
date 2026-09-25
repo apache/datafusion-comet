@@ -163,8 +163,9 @@ use std::{collections::HashMap, sync::Arc};
 
 // For clippy error on type_complexity.
 type PhyAggResult = Result<Vec<AggregateFunctionExpr>, ExecutionError>;
-type PhyExprResult = Result<Vec<(Arc<dyn PhysicalExpr>, String)>, ExecutionError>;
 type PartitionPhyExprResult = Result<Vec<Arc<dyn PhysicalExpr>>, ExecutionError>;
+type PromotedAggInputResult =
+    Result<(Arc<dyn ExecutionPlan>, Vec<Option<DataType>>), ExecutionError>;
 pub type PlanCreationResult =
     Result<(Vec<ScanExec>, Vec<ShuffleScanExec>, Arc<SparkPlan>), ExecutionError>;
 
@@ -273,6 +274,91 @@ fn strip_timestamp_tz(
         ))),
         _ => Ok(expr),
     }
+}
+
+/// Promote a Utf8/Binary group-by expression to its Large* variant.
+///
+/// Gated by `spark.comet.exec.aggregation.useLargeDataTypes`. The promotion is an
+/// offset-width-only cast (i32 → i64) that makes DataFusion's HashAggregate
+/// dispatch to `ByteGroupValueBuilder::<i64>`, removing the per-task `i32::MAX`
+/// (2 GiB) cap on the group-key byte buffer. Returns the wrapped expression
+/// together with the original DataType, so the caller can build a matching
+/// cast-back projection above the aggregate; returns `None` when the input
+/// is not Utf8/Binary (no promotion needed).
+///
+/// Only valid for aggregates that DataFusion runs in `Partial` mode, which derive their state
+/// schema from the group-by expressions. `Final` aggregates use [`promote_final_group_keys`].
+fn promote_byte_group_key(
+    expr: Arc<dyn PhysicalExpr>,
+    schema: &Schema,
+) -> Result<(Arc<dyn PhysicalExpr>, Option<DataType>), ExecutionError> {
+    let data_type = expr.data_type(schema)?;
+    match large_byte_type(&data_type) {
+        Some(large) => Ok((Arc::new(CastExpr::new(expr, large, None)), Some(data_type))),
+        None => Ok((expr, None)),
+    }
+}
+
+/// The LargeUtf8/LargeBinary counterpart of a Utf8/Binary type, `None` for any other type.
+fn large_byte_type(data_type: &DataType) -> Option<DataType> {
+    match data_type {
+        DataType::Utf8 => Some(DataType::LargeUtf8),
+        DataType::Binary => Some(DataType::LargeBinary),
+        _ => None,
+    }
+}
+
+/// Promote the Utf8/Binary group keys of an aggregate that DataFusion runs in `Final` mode.
+///
+/// DataFusion's final hash aggregation builds the batches it spills against its input schema
+/// (`AggregateHashTable<FinalMarker>::new` takes `agg.input().schema()`), so it assumes every
+/// group-by expression is an input column of the same type. A key cast inside the group-by
+/// expression, as [`promote_byte_group_key`] does, breaks that on the first spill: the LargeBinary
+/// group values are stamped with the Binary input field and the task fails with `column types must
+/// match schema types, expected Binary but found LargeBinary`. Casting the key columns in a
+/// pass-through projection below the aggregate keeps its input, its group values and its spill
+/// files on one type.
+///
+/// Returns the aggregate input and, per group-by expression, the original type of a promoted key.
+/// Spark binds a final aggregate's grouping expressions to the partial aggregate's output, so each
+/// one is expected to be a plain column. If one is not, no key is promoted.
+fn promote_final_group_keys(
+    input: &Arc<dyn ExecutionPlan>,
+    group_exprs: &[Arc<dyn PhysicalExpr>],
+) -> PromotedAggInputResult {
+    let schema = input.schema();
+    let mut promoted: Vec<Option<DataType>> = vec![None; schema.fields().len()];
+    let mut reverts = Vec::with_capacity(group_exprs.len());
+    for expr in group_exprs {
+        let Some(column) = expr.downcast_ref::<Column>() else {
+            return Ok((Arc::clone(input), vec![None; group_exprs.len()]));
+        };
+        let data_type = schema.field(column.index()).data_type();
+        let large = large_byte_type(data_type);
+        reverts.push(large.as_ref().map(|_| data_type.clone()));
+        if large.is_some() {
+            promoted[column.index()] = large;
+        }
+    }
+    if promoted.iter().all(Option::is_none) {
+        return Ok((Arc::clone(input), reverts));
+    }
+    let exprs: Vec<(Arc<dyn PhysicalExpr>, String)> = schema
+        .fields()
+        .iter()
+        .zip(promoted)
+        .enumerate()
+        .map(|(idx, (field, large))| {
+            let column: Arc<dyn PhysicalExpr> = Arc::new(Column::new(field.name(), idx));
+            let expr: Arc<dyn PhysicalExpr> = match large {
+                Some(large) => Arc::new(CastExpr::new(column, large, None)),
+                None => column,
+            };
+            (expr, field.name().to_string())
+        })
+        .collect();
+    let projection = ProjectionExec::try_new(exprs, Arc::clone(input))?;
+    Ok((Arc::new(projection), reverts))
 }
 
 #[derive(Default)]
@@ -1338,18 +1424,6 @@ impl PhysicalPlanner {
                 let (scans, shuffle_scans, child) =
                     self.create_plan(&children[0], inputs, partition_count)?;
 
-                let group_exprs: PhyExprResult = agg
-                    .grouping_exprs
-                    .iter()
-                    .enumerate()
-                    .map(|(idx, expr)| {
-                        self.create_expr(expr, child.schema())
-                            .map(|r| (r, format!("col_{idx}")))
-                    })
-                    .collect();
-                let group_by = PhysicalGroupBy::new_single(group_exprs?);
-                let schema = child.schema();
-
                 let proto_mode = ProtoAggregateMode::try_from(agg.mode).map_err(|_| {
                     ExecutionError::GeneralError(format!(
                         "Unsupported aggregate mode: {}",
@@ -1362,6 +1436,52 @@ impl PhysicalPlanner {
                     // PartialMerge: Partial + MergeAsPartial
                     ProtoAggregateMode::PartialMerge => DFAggregateMode::Partial,
                 };
+
+                // When `spark.comet.exec.aggregation.useLargeDataTypes` is on, promote Utf8/Binary
+                // group keys to LargeUtf8/LargeBinary so DataFusion dispatches
+                // to ByteGroupValueBuilder::<i64> and the per-task group-key byte buffer
+                // is no longer capped at i32::MAX (2 GiB). A `Final` aggregate casts the key
+                // columns of its input, every other mode casts the group-by expressions (see
+                // `promote_final_group_keys`). The promotion is reverted at the aggregate's
+                // output below, so LargeUtf8/LargeBinary never leaves this operator -- keeps the
+                // FFI, JVM shuffle, and Spark consumer paths untouched.
+                let use_large = agg.use_large_data_types;
+                let child_schema_ref = child.schema();
+                let raw_group_exprs = agg
+                    .grouping_exprs
+                    .iter()
+                    .map(|expr| self.create_expr(expr, Arc::clone(&child_schema_ref)))
+                    .collect::<Result<Vec<_>, _>>()?;
+                // Per group column: `Some(original_dt)` when the column was promoted to a
+                // Large* variant, `None` when it was passed through as-is. Consumed below to
+                // build the revert.
+                let (agg_input, group_exprs, group_reverts) = if !use_large {
+                    let reverts = vec![None; raw_group_exprs.len()];
+                    (Arc::clone(&child.native_plan), raw_group_exprs, reverts)
+                } else if mode == DFAggregateMode::Final {
+                    let (input, reverts) =
+                        promote_final_group_keys(&child.native_plan, &raw_group_exprs)?;
+                    (input, raw_group_exprs, reverts)
+                } else {
+                    let (exprs, reverts): (Vec<_>, Vec<_>) = raw_group_exprs
+                        .into_iter()
+                        .map(|expr| promote_byte_group_key(expr, child_schema_ref.as_ref()))
+                        .collect::<Result<Vec<_>, _>>()?
+                        .into_iter()
+                        .unzip();
+                    (Arc::clone(&child.native_plan), exprs, reverts)
+                };
+                let group_by = PhysicalGroupBy::new_single(
+                    group_exprs
+                        .into_iter()
+                        .enumerate()
+                        .map(|(idx, expr)| (expr, format!("col_{idx}")))
+                        .collect(),
+                );
+                // Aggregate expressions stay bound to the child's schema even when a `Final`
+                // aggregate reads the promoted projection: they merge the state columns, which the
+                // projection passes through unchanged.
+                let schema = Arc::clone(&child_schema_ref);
 
                 // Check if any expression uses PartialMerge mode. When present,
                 // those expressions are wrapped with MergeAsPartial to get merge
@@ -1459,10 +1579,40 @@ impl PhysicalPlanner {
                         group_by,
                         aggr_expr,
                         filter_exprs?,
-                        Arc::clone(&child.native_plan),
+                        agg_input,
                         Arc::clone(&schema),
                     )?,
                 );
+
+                // Cast promoted group columns back to their original Utf8/Binary type
+                // so LargeUtf8/LargeBinary never crosses the FFI boundary, JVM columnar
+                // shuffle, or the Spark consumer path (all of which reject Large*).
+                // Uses `SchemaAlignExec` (not a plain `ProjectionExec` + `CastExpr`)
+                // because arrow's cast kernel rejects any single Large* array whose
+                // value bytes exceed `i32::MAX` -- which is precisely the regime this
+                // flag is used in. `SchemaAlignExec` splits each batch by row ranges
+                // so every emitted small-offset chunk fits under 2 GiB.
+                let aggregate = if use_large && group_reverts.iter().any(Option::is_some) {
+                    let agg_schema = aggregate.schema();
+                    let target_fields: Vec<Field> = agg_schema
+                        .fields()
+                        .iter()
+                        .enumerate()
+                        .map(|(idx, f)| {
+                            let target_dt = group_reverts
+                                .get(idx)
+                                .and_then(|r| r.clone())
+                                .unwrap_or_else(|| f.data_type().clone());
+                            Field::new(f.name(), target_dt, f.is_nullable())
+                                .with_metadata(f.metadata().clone())
+                        })
+                        .collect();
+                    let target_schema: SchemaRef = Arc::new(Schema::new(target_fields));
+                    SchemaAlignExec::try_new_or_passthrough(aggregate, &target_schema)
+                        .map_err(|e| ExecutionError::DataFusionError(e.to_string()))?
+                } else {
+                    aggregate
+                };
 
                 Ok((
                     scans,
@@ -6267,6 +6417,7 @@ mod tests {
                 mode: spark_operator::AggregateMode::Partial as i32,
                 expr_modes: vec![],
                 initial_input_buffer_offset: 0,
+                use_large_data_types: false,
             })),
         };
         let projection = Operator {
@@ -6290,6 +6441,141 @@ mod tests {
         );
         assert_eq!(1, projection_exec.children.len());
         assert_eq!("ScanExec", projection_exec.children[0].native_plan.name());
+    }
+
+    /// A `Final` HashAggregate grouping a Binary scan column, with useLargeDataTypes on.
+    fn create_final_binary_group_by() -> Operator {
+        let binary = spark_expression::DataType {
+            type_id: 8, // Bytes
+            type_info: None,
+        };
+        let scan = Operator {
+            plan_id: 0,
+            sql_text_pool: vec![],
+            children: vec![],
+            op_struct: Some(OpStruct::Scan(spark_operator::Scan {
+                fields: vec![binary.clone()],
+                source: "".to_string(),
+            })),
+        };
+        Operator {
+            plan_id: 1,
+            sql_text_pool: vec![],
+            children: vec![scan],
+            op_struct: Some(OpStruct::HashAgg(spark_operator::HashAggregate {
+                grouping_exprs: vec![Expr {
+                    expr_struct: Some(Bound(spark_expression::BoundReference {
+                        index: 0,
+                        datatype: Some(binary),
+                    })),
+                    query_context: None,
+                    expr_id: None,
+                }],
+                agg_exprs: vec![],
+                mode: spark_operator::AggregateMode::Final as i32,
+                expr_modes: vec![],
+                initial_input_buffer_offset: 0,
+                use_large_data_types: true,
+            })),
+        }
+    }
+
+    /// DataFusion's final hash aggregation spills against its input schema, so a promoted key has
+    /// to reach it as an input column of the promoted type, not as a cast group-by expression.
+    #[test]
+    fn final_aggregate_promotes_group_keys_at_its_input() {
+        use datafusion::physical_plan::aggregates::AggregateExec;
+        use datafusion::physical_plan::projection::ProjectionExec;
+
+        let (_scans, _shuffle_scans, plan) = PhysicalPlanner::default()
+            .create_plan(&create_final_binary_group_by(), &mut vec![], 1)
+            .unwrap();
+
+        // The key leaves the operator as Binary again.
+        assert_eq!(
+            plan.native_plan.schema().field(0).data_type(),
+            &DataType::Binary
+        );
+        let children = plan.native_plan.children();
+        let aggregate = children[0]
+            .downcast_ref::<AggregateExec>()
+            .expect("the revert should wrap the AggregateExec");
+        assert!(aggregate.input().is::<ProjectionExec>());
+        assert_eq!(
+            aggregate.schema().field(0).data_type(),
+            &DataType::LargeBinary
+        );
+        assert_eq!(
+            aggregate.input().schema().field(0).data_type(),
+            &DataType::LargeBinary
+        );
+    }
+
+    /// Before the keys were promoted at the input, the first spill of this aggregate failed with
+    /// `column types must match schema types, expected Binary but found LargeBinary at column
+    /// index 0`.
+    #[tokio::test]
+    async fn final_aggregate_with_large_group_keys_survives_spill() {
+        use arrow::array::BinaryArray;
+        use datafusion::execution::runtime_env::RuntimeEnvBuilder;
+        use datafusion::physical_plan::aggregates::AggregateExec;
+
+        const NUM_KEYS: usize = 50_000;
+        const INPUT_BATCH_ROWS: usize = 512;
+
+        // The pool is small enough that the aggregate spills several times. DataFusion does not
+        // reserve the sorted chunks it writes while spilling, so the session batch size, which
+        // sets the chunk size, stays small to fit in the headroom left when a spill starts.
+        let runtime = RuntimeEnvBuilder::new()
+            .with_memory_limit(1024 * 1024, 1.0)
+            .build_arc()
+            .unwrap();
+        let session =
+            SessionContext::new_with_config_rt(SessionConfig::new().with_batch_size(16), runtime);
+        let task_ctx = session.task_ctx();
+        let planner = PhysicalPlanner::new(Arc::new(session), 0);
+        let (mut scans, _shuffle_scans, plan) = planner
+            .create_plan(&create_final_binary_group_by(), &mut vec![], 1)
+            .unwrap();
+
+        let mut inputs = (0..NUM_KEYS)
+            .step_by(INPUT_BATCH_ROWS)
+            .map(|start| {
+                let end = (start + INPUT_BATCH_ROWS).min(NUM_KEYS);
+                let keys = BinaryArray::from_iter_values(
+                    (start..end).map(|i| format!("key-{i:059}").into_bytes()),
+                );
+                InputBatch::Batch(vec![Arc::new(keys) as ArrayRef], end - start)
+            })
+            .chain(std::iter::once(InputBatch::EOF));
+
+        let mut stream = plan.native_plan.execute(0, task_ctx).unwrap();
+        let mut output_rows = 0;
+        while let Some(batch) = futures::future::poll_fn(|cx| {
+            let result = stream.poll_next_unpin(cx);
+            if result.is_pending() && scans[0].batch.try_lock().unwrap().is_none() {
+                if let Some(batch) = inputs.next() {
+                    scans[0].set_input_batch(batch);
+                    cx.waker().wake_by_ref();
+                }
+            }
+            result
+        })
+        .await
+        {
+            let batch = batch.unwrap();
+            assert_eq!(batch.column(0).data_type(), &DataType::Binary);
+            output_rows += batch.num_rows();
+        }
+        assert_eq!(output_rows, NUM_KEYS);
+
+        let children = plan.native_plan.children();
+        let aggregate = children[0].downcast_ref::<AggregateExec>().unwrap();
+        let spill_count = aggregate
+            .metrics()
+            .and_then(|metrics| metrics.spill_count())
+            .unwrap_or_default();
+        assert!(spill_count > 0, "the final aggregate should have spilled");
     }
 
     fn create_bound_reference(index: i32) -> Expr {
