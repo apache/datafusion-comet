@@ -447,6 +447,17 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(false)
 
+  val COMET_EXEC_TOPK_FUSION_ENABLED: ConfigEntry[Boolean] =
+    conf(s"$COMET_EXEC_CONFIG_PREFIX.topK.fusion.enabled")
+      .category(CATEGORY_EXEC)
+      .doc(
+        "Experimental opt-in: run an eligible local TopK in the same native execution as its " +
+          "Parquet scan. Supports one direct signed integer sort key. This changes the local " +
+          "execution pipeline and can reduce scan/TopK overlap, so it may be slower for some " +
+          "workloads.")
+      .booleanConf
+      .createWithDefault(false)
+
   val COMET_SCALA_UDF_CODEGEN_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.exec.scalaUDF.codegen.enabled")
       .category(CATEGORY_EXEC)
