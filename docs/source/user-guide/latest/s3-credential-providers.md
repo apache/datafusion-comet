@@ -100,6 +100,40 @@ Without the config set, no credential-related log lines appear at startup; nativ
 
 **Credentials silently going stale during long-running jobs.** When a vendor returns `expirationEpochMillis=0`, the bridge substitutes a 5-minute expiry before handing the credential to `opendal`, so `opendal`'s cache cannot hold a stale credential indefinitely. Returning a real expiry is preferred; the 5-minute fallback is a safety net, not a knob.
 
+## EKS / IRSA: STS throttling protection (native Iceberg reads and writes)
+
+This is automatic; there is nothing to configure to get the protection, and it does not involve a bridge class. It applies to native Iceberg **reads and writes** (both build their `FileIO` through the same path). The raw-Parquet path is unaffected: it uses the AWS SDK default chain, which already retries and stops on a provider error rather than downgrading.
+
+On EKS with [IAM Roles for Service Accounts (IRSA)](https://docs.aws.amazon.com/eks/latest/userguide/iam-roles-for-service-accounts.html), executors assume the application role by calling STS `AssumeRoleWithWebIdentity`. Under a large concurrent startup burst (many executors times many cores, all fetching credentials at once), STS can throttle that call. On the Iceberg path, opendal's default credential chain does not retry the throttle and falls through to the EKS node instance role, which usually lacks bucket access, so every native read then fails with a hard `403 AccessDenied` even though the throttle was transient.
+
+When Comet detects IRSA (both `AWS_WEB_IDENTITY_TOKEN_FILE` and `AWS_ROLE_ARN` are set), a region is set, and the catalog configures no explicit credentials, the native Iceberg reader resolves web-identity credentials itself instead of using opendal's default chain. It builds the STS client from the AWS SDK's fully-resolved config, so region, `AWS_USE_FIPS_ENDPOINT`, `AWS_USE_DUALSTACK_ENDPOINT`, and any profile/custom STS endpoint are honored. The provider:
+
+- retries the throttled `AssumeRoleWithWebIdentity` call with the AWS SDK's exponential backoff and jitter (a throttle that outlasts the retries becomes an error that Spark's task retry then picks up),
+- never falls back to the node instance role, and
+- caches one assumed-role credential per executor process, shared across all reader threads and scans, so a startup burst makes one STS call per executor rather than one per thread. If a refresh is throttled while the current credential is still valid, it keeps serving that credential.
+
+**STS endpoint selection** uses the global `sts.amazonaws.com` endpoint only in the plain commercial case, and leaves everything else to the AWS SDK. The global endpoint is used when your region is in the standard commercial partition, FIPS and dual-stack are both off, no custom STS endpoint is set, and `AWS_STS_REGIONAL_ENDPOINTS` is `legacy` or unset. That matches the previous behavior, so a network that only reaches the global endpoint keeps working. In every other case the SDK's own regional endpoint is used: FIPS (`AWS_USE_FIPS_ENDPOINT`) always uses the regional FIPS endpoint since there is no global FIPS STS endpoint (an accompanying `AWS_STS_REGIONAL_ENDPOINTS=legacy` is ignored and a warning is logged), dual-stack (`AWS_USE_DUALSTACK_ENDPOINT`) uses the dual-stack regional endpoint, a custom STS endpoint (`AWS_ENDPOINT_URL_STS` or a profile) is honored, `AWS_STS_REGIONAL_ENDPOINTS=regional` stays regional, and the China, GovCloud, ISO and EUSC regions use their own regional endpoints.
+
+It stands aside whenever a higher-precedence credential source is configured -- a Comet bridge class or catalog static keys / `client.assume-role.arn`, static credentials in the environment (`AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY`), or a configured profile (`AWS_PROFILE`, or a shared credentials / config file such as `~/.aws/credentials` or `~/.aws/config`) -- and when no region is set (`AWS_REGION` / `AWS_DEFAULT_REGION`). These all rank ahead of web-identity in opendal's default chain or need its no-region fallback, so the take-over only changes the otherwise-default behavior and never switches away from an identity -- or a profile-configured STS endpoint -- you set explicitly. On an EKS/IRSA pod none of these apply, so the take-over still engages there.
+
+Tuning is rarely needed. Set these as catalog properties under the `s3.` prefix (the same namespace as the credential-provider SPI key):
+
+| Property (per Iceberg catalog)                         | Default | Meaning                                                                               |
+| ------------------------------------------------------ | ------- | ------------------------------------------------------------------------------------- |
+| `s3.comet.credential.webIdentity.enabled`              | `true`  | Set `false` to opt out and use opendal's default chain.                               |
+| `s3.comet.credential.webIdentity.maxAttempts`          | `5`     | STS attempts before the assume-role call is treated as failed.                        |
+| `s3.comet.credential.webIdentity.minTtlSeconds`        | `300`   | Refresh this many seconds before expiry (floored to 120s).                            |
+| `s3.comet.credential.webIdentity.refreshJitterSeconds` | `60`    | Random slack added on top of `minTtlSeconds` so executors do not all refresh at once. |
+
+For example, to opt out of the take-over or raise the retry count for one catalog:
+
+```
+spark.sql.catalog.<catalog>.s3.comet.credential.webIdentity.enabled=false
+spark.sql.catalog.<catalog>.s3.comet.credential.webIdentity.maxAttempts=8
+```
+
+Use the `s3.` prefix. Comet forwards the unfiltered catalog property bag, so a bare, unprefixed key does technically reach the native reader, but the settings are looked up under `s3.` (matching the credential-provider SPI key), so only the prefixed spelling takes effect.
+
 ## Iceberg: explicit S3 region required
 
 `iceberg-storage-opendal` does not auto-detect a bucket's region, with or without the bridge. When neither the catalog (`s3.region` or `client.region`) nor the executor environment (`AWS_REGION` / `AWS_DEFAULT_REGION`) supplies a region, Comet uses `us-east-1`. That suits most non-AWS S3-compatible services but fails for AWS buckets in other regions, so set the region (and the endpoint for non-AWS) explicitly on the Spark catalog:
