@@ -104,10 +104,6 @@ pub struct SparkParquetOptions {
     /// (mirrors Spark's `spark.sql.parquet.fieldId.read.enabled`). Only takes effect
     /// when both physical and logical fields actually carry IDs.
     pub use_field_id: bool,
-    /// When false (Spark's default), reading a file that has no field ids while the
-    /// requested schema does carry ids raises a runtime error rather than silently
-    /// producing nulls (mirrors `spark.sql.parquet.fieldId.read.ignoreMissing`).
-    pub ignore_missing_field_id: bool,
     /// Whether type promotion (schema evolution) is allowed, e.g. INT32 -> INT64,
     /// FLOAT -> DOUBLE. Mirrors spark.comet.schemaEvolution.enabled.
     pub allow_type_promotion: bool,
@@ -135,7 +131,6 @@ impl SparkParquetOptions {
             case_sensitive: false,
             return_null_struct_if_all_fields_missing: true,
             use_field_id: false,
-            ignore_missing_field_id: false,
             allow_type_promotion: false,
             allow_timestamp_ltz_to_ntz: false,
             checked_timestamp_overflow: true,
@@ -152,7 +147,6 @@ impl SparkParquetOptions {
             case_sensitive: false,
             return_null_struct_if_all_fields_missing: true,
             use_field_id: false,
-            ignore_missing_field_id: false,
             allow_type_promotion: false,
             allow_timestamp_ltz_to_ntz: false,
             checked_timestamp_overflow: true,
