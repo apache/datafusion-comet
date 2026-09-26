@@ -69,7 +69,7 @@ under the License.
     <link rel="index" title="Index" href="../../genindex.html" />
     <link rel="search" title="Search" href="../../search.html" />
     <link rel="next" title="Iceberg Writes: Comet’s Split-Operator Plan (Experimental)" href="iceberg-writes.html" />
-    <link rel="prev" title="PyArrow UDF Acceleration" href="pyarrow-udfs.html" />
+    <link rel="prev" title="Reducing Row/Columnar Conversion Overhead" href="tuning/transitions.html" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
@@ -571,10 +571,19 @@ under the License.
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Operating Comet</span></p>
 <ul>
 <li class="toctree-l2"><a class="reference internal" href="understanding-comet-plans.html">Understanding Comet Plans</a></li>
-<li class="toctree-l2"><a class="reference internal" href="tuning.html">Tuning Guide</a></li>
 <li class="toctree-l2"><a class="reference internal" href="metrics.html">Metrics Guide</a></li>
 <li class="toctree-l2"><a class="reference internal" href="in-memory-cache.html">In-Memory Cache</a></li>
 <li class="toctree-l2"><a class="reference internal" href="pyarrow-udfs.html">PyArrow UDF Acceleration</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Tuning</span></p>
+<ul>
+<li class="toctree-l2"><a class="reference internal" href="tuning.html">Overview</a></li>
+<li class="toctree-l2"><a class="reference internal" href="tuning/memory.html">Memory</a></li>
+<li class="toctree-l2"><a class="reference internal" href="tuning/shuffle.html">Shuffle</a></li>
+<li class="toctree-l2"><a class="reference internal" href="tuning/celeborn.html">Celeborn Shuffle</a></li>
+<li class="toctree-l2"><a class="reference internal" href="tuning/scans.html">Scans</a></li>
+<li class="toctree-l2"><a class="reference internal" href="tuning/operators.html">Operators</a></li>
+<li class="toctree-l2"><a class="reference internal" href="tuning/transitions.html">Row/Columnar Transitions</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Integrations</span></p>
 <ul class="current">
@@ -1010,12 +1019,12 @@ the expression fall back to Spark.</p>
                   
 <div class="prev-next-area">
     <a class="left-prev"
-       href="pyarrow-udfs.html"
+       href="tuning/transitions.html"
        title="previous page">
       <i class="fa-solid fa-angle-left"></i>
       <div class="prev-next-info">
         <p class="prev-next-subtitle">previous</p>
-        <p class="prev-next-title">PyArrow UDF Acceleration</p>
+        <p class="prev-next-title">Reducing Row/Columnar Conversion Overhead</p>
       </div>
     </a>
     <a class="right-next"

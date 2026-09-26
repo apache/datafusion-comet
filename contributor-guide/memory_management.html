@@ -552,7 +552,7 @@ under the License.
 <p>This page describes how memory is budgeted, accounted, and enforced across the JVM/native
 boundary. It is aimed at contributors working on memory pools, operators that reserve memory, or
 anyone debugging an out-of-memory report. For user-facing tuning advice, see the
-<a class="reference internal" href="../user-guide/latest/tuning.html"><span class="std std-doc">Tuning Guide</span></a>.</p>
+<a class="reference internal" href="../user-guide/latest/tuning/memory.html"><span class="std std-doc">Memory Tuning</span></a> guide.</p>
 <p>This page covers off-heap mode (<code class="docutils literal notranslate"><span class="pre">spark.memory.offHeap.enabled=true</span></code>) only. Comet also has an
 on-heap mode, but it exists so that the Spark SQL test suite can run against Comet without changing
 Spark’s memory configuration. Comet performs no memory accounting in it: the native side gets
@@ -602,7 +602,7 @@ exceeded; the exit code does.</p>
 and no JVM metric measures them, yet they land squarely in container RSS. Comet therefore maintains
 its own budget that is meant to shadow the physical one, and declares it to Spark so that the two
 compete for a single number. The accuracy of that shadow is the central problem this page is about.</p>
-<p>The picture the <a class="reference internal" href="../user-guide/latest/tuning.html#memory-tuning"><span class="std std-ref">Tuning Guide</span></a> gives users is
+<p>The picture the <a class="reference internal" href="../user-guide/latest/tuning/memory.html"><span class="std std-doc">Memory Tuning</span></a> guide gives users is
 deliberately simple:</p>
 <p><img alt="Spark and Comet both use the JVM heap and share the off-heap memory pool, and the rest of Comet's native memory has to fit in the executor's memory overhead" src="../_images/comet-executor-memory.svg" /></p>
 <p>Most of this page is about the line between Comet’s share of the off-heap pool and its share of the
@@ -988,7 +988,7 @@ gap is workload-dependent. The margin that covers it has to come from
 one; see <a class="reference internal" href="#where-comet-s-budget-comes-from">Where Comet’s budget comes from</a>.</p>
 <p>To measure the gap on a real workload, read the executor’s periodic memory usage log, which
 reports the bytes Rust’s allocator has handed out next to the pools’ reservations; see
-<a class="reference internal" href="../user-guide/latest/tuning.html#sizing-the-overhead-from-the-memory-usage-log"><span class="std std-ref">Sizing the Overhead from the Memory Usage Log</span></a>. For a view per event rather
+<a class="reference internal" href="../user-guide/latest/tuning/memory.html#sizing-the-overhead-from-the-memory-usage-log"><span class="std std-ref">Sizing the Overhead from the Memory Usage Log</span></a>. For a view per event rather
 than per interval, enable tracing and compare <code class="docutils literal notranslate"><span class="pre">native_allocated</span></code> against
 <code class="docutils literal notranslate"><span class="pre">comet_memory_reserved_total</span></code>; see <a class="reference internal" href="tracing.html#analyzing-memory-usage"><span class="std std-ref">Tracing</span></a>.</p>
 </section>
@@ -1092,7 +1092,7 @@ reservations are released only when a native operator decides to spill on its ow
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.explain.native.enabled=true</span></code></p></td>
 <td><p>Native plan with per-operator metrics, including spill counts</p></td>
 </tr>
-<tr class="row-even"><td><p><a class="reference internal" href="../user-guide/latest/tuning.html#sizing-the-overhead-from-the-memory-usage-log"><span class="std std-ref">Memory usage log</span></a></p></td>
+<tr class="row-even"><td><p><a class="reference internal" href="../user-guide/latest/tuning/memory.html#sizing-the-overhead-from-the-memory-usage-log"><span class="std std-ref">Memory usage log</span></a></p></td>
 <td><p>Executor-wide native allocation vs pool reservations, logged every 10 seconds by default</p></td>
 </tr>
 <tr class="row-odd"><td><p><a class="reference internal" href="tracing.html#analyzing-memory-usage"><span class="std std-ref">Tracing</span></a></p></td>

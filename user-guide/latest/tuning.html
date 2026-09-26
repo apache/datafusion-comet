@@ -68,8 +68,8 @@ under the License.
     <script src="../../_static/comet-ux.js?v=97577a30"></script>
     <link rel="index" title="Index" href="../../genindex.html" />
     <link rel="search" title="Search" href="../../search.html" />
-    <link rel="next" title="Comet Metrics" href="metrics.html" />
-    <link rel="prev" title="Understanding Comet Plans" href="understanding-comet-plans.html" />
+    <link rel="next" title="Memory Tuning" href="tuning/memory.html" />
+    <link rel="prev" title="PyArrow UDF Acceleration" href="pyarrow-udfs.html" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
@@ -569,12 +569,21 @@ under the License.
 <li class="toctree-l2"><a class="reference internal" href="compatibility/spark-versions.html">Spark Version Compatibility</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Operating Comet</span></p>
-<ul class="current">
+<ul>
 <li class="toctree-l2"><a class="reference internal" href="understanding-comet-plans.html">Understanding Comet Plans</a></li>
-<li class="toctree-l2 current"><a class="current reference internal" href="#">Tuning Guide</a></li>
 <li class="toctree-l2"><a class="reference internal" href="metrics.html">Metrics Guide</a></li>
 <li class="toctree-l2"><a class="reference internal" href="in-memory-cache.html">In-Memory Cache</a></li>
 <li class="toctree-l2"><a class="reference internal" href="pyarrow-udfs.html">PyArrow UDF Acceleration</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Tuning</span></p>
+<ul class="current">
+<li class="toctree-l2 current"><a class="current reference internal" href="#">Overview</a></li>
+<li class="toctree-l2"><a class="reference internal" href="tuning/memory.html">Memory</a></li>
+<li class="toctree-l2"><a class="reference internal" href="tuning/shuffle.html">Shuffle</a></li>
+<li class="toctree-l2"><a class="reference internal" href="tuning/celeborn.html">Celeborn Shuffle</a></li>
+<li class="toctree-l2"><a class="reference internal" href="tuning/scans.html">Scans</a></li>
+<li class="toctree-l2"><a class="reference internal" href="tuning/operators.html">Operators</a></li>
+<li class="toctree-l2"><a class="reference internal" href="tuning/transitions.html">Row/Columnar Transitions</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Integrations</span></p>
 <ul>
@@ -777,7 +786,23 @@ under the License.
 -->
 <section id="comet-tuning-guide">
 <h1>Comet Tuning Guide<a class="headerlink" href="#comet-tuning-guide" title="Link to this heading">#</a></h1>
-<p>Comet provides some tuning options to help you get the best performance from your queries.</p>
+<p>Comet provides some tuning options to help you get the best performance from your queries. Every
+deployment needs to configure how much memory Comet can use, so start with memory tuning. The
+guide is split into the following pages:</p>
+<ul class="simple">
+<li><p><a class="reference internal" href="tuning/memory.html"><span class="std std-doc">Memory Tuning</span></a>: configuring Comet’s off-heap memory pool and the executor
+memory overhead, choosing a memory pool, batch size, and limiting spill disk usage.</p></li>
+<li><p><a class="reference internal" href="tuning/shuffle.html"><span class="std std-doc">Shuffle Tuning</span></a>: enabling Comet shuffle, the native and columnar shuffle
+implementations, and shuffle compression.</p></li>
+<li><p><a class="reference internal" href="tuning/celeborn.html"><span class="std std-doc">Remote Shuffle with Celeborn</span></a>: using Comet native shuffle with Apache
+Celeborn.</p></li>
+<li><p><a class="reference internal" href="tuning/scans.html"><span class="std std-doc">Scan Tuning</span></a>: Parquet filter pushdown, Parquet split sizing, and Iceberg data
+file concurrency.</p></li>
+<li><p><a class="reference internal" href="tuning/operators.html"><span class="std std-doc">Operator Tuning</span></a>: joins, adaptive partial aggregation, and sorting on
+floating-point values.</p></li>
+<li><p><a class="reference internal" href="tuning/transitions.html"><span class="std std-doc">Reducing Row/Columnar Conversion Overhead</span></a>: stages in which many
+operators fall back to Spark.</p></li>
+</ul>
 <section id="configuring-tokio-runtime">
 <h2>Configuring Tokio Runtime<a class="headerlink" href="#configuring-tokio-runtime" title="Link to this heading">#</a></h2>
 <p>Comet uses a global tokio runtime per executor process. By default it starts one worker thread per executor core
@@ -785,489 +810,6 @@ under the License.
 threads, which is tokio’s default. If <code class="docutils literal notranslate"><span class="pre">spark.executor.cores</span></code> is not set outside local mode, Comet starts a single
 worker thread. These values can be overridden using the environment variables <code class="docutils literal notranslate"><span class="pre">COMET_WORKER_THREADS</span></code> and
 <code class="docutils literal notranslate"><span class="pre">COMET_MAX_BLOCKING_THREADS</span></code>.</p>
-</section>
-<section id="adaptive-partial-aggregation">
-<h2>Adaptive Partial Aggregation<a class="headerlink" href="#adaptive-partial-aggregation" title="Link to this heading">#</a></h2>
-<p>For high-cardinality grouping, Comet can bypass partial hash aggregation when it is not
-reducing the number of rows enough. This currently applies only to fused native shuffle-writer
-plans whose partial aggregates are grouping-only or single-argument <code class="docutils literal notranslate"><span class="pre">COUNT</span></code>. Low-cardinality
-inputs continue to aggregate normally. The SQL metric <code class="docutils literal notranslate"><span class="pre">rows</span> <span class="pre">bypassing</span> <span class="pre">partial</span> <span class="pre">aggregation</span></code>
-shows whether skipping occurred.</p>
-<p>Eligibility is conservative for the whole fused native plan: any unsupported partial accumulator,
-Spark <code class="docutils literal notranslate"><span class="pre">PartialMerge</span></code>, or mixed-mode aggregate disables skipping in that plan. Multi-argument
-<code class="docutils literal notranslate"><span class="pre">COUNT</span></code> and other accumulators are not admitted. Distribution-required grouping-only stages
-still fully deduplicate, and non-native-shuffle plans retain ordinary aggregation.
-The DataFusion testing configuration override does not bypass these safety checks.</p>
-<p>DataFusion 55 defaults to probing after 100,000 input rows per partial aggregation
-partition and skipping when the number of groups divided by input rows exceeds <code class="docutils literal notranslate"><span class="pre">0.8</span></code>.
-To experiment with these thresholds, enable <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.respectDataFusionConfigs</span></code>,
-a development and testing option that defaults to <code class="docutils literal notranslate"><span class="pre">false</span></code>. For example, the following
-SQL settings pass through the default threshold values, which you can adjust:</p>
-<div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="k">SET</span><span class="w"> </span><span class="n">spark</span><span class="p">.</span><span class="n">comet</span><span class="p">.</span><span class="k">exec</span><span class="p">.</span><span class="n">respectDataFusionConfigs</span><span class="o">=</span><span class="k">true</span><span class="p">;</span>
-<span class="k">SET</span><span class="w"> </span><span class="n">spark</span><span class="p">.</span><span class="n">comet</span><span class="p">.</span><span class="n">datafusion</span><span class="p">.</span><span class="n">execution</span><span class="p">.</span><span class="n">skip_partial_aggregation_probe_rows_threshold</span><span class="o">=</span><span class="mi">100000</span><span class="p">;</span>
-<span class="k">SET</span><span class="w"> </span><span class="n">spark</span><span class="p">.</span><span class="n">comet</span><span class="p">.</span><span class="n">datafusion</span><span class="p">.</span><span class="n">execution</span><span class="p">.</span><span class="n">skip_partial_aggregation_probe_ratio_threshold</span><span class="o">=</span><span class="mi">0</span><span class="p">.</span><span class="mi">8</span><span class="p">;</span>
-</pre></div>
-</div>
-<p>A lower row threshold allows an earlier decision; a lower ratio threshold makes
-skipping more likely. Skipping can increase the number of partial states emitted
-and the amount of shuffle data, so measure the effect on your workload.</p>
-<p>To disable skipping, keep <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.respectDataFusionConfigs=true</span></code> and set
-the ratio threshold above the maximum possible groups/input-rows ratio:</p>
-<div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="k">SET</span><span class="w"> </span><span class="n">spark</span><span class="p">.</span><span class="n">comet</span><span class="p">.</span><span class="n">datafusion</span><span class="p">.</span><span class="n">execution</span><span class="p">.</span><span class="n">skip_partial_aggregation_probe_ratio_threshold</span><span class="o">=</span><span class="mi">1</span><span class="p">.</span><span class="mi">1</span><span class="p">;</span>
-</pre></div>
-</div>
-<p>These settings only tune eligible plans. Unsupported accumulators and modes remain
-disabled even when configuration overrides are enabled.</p>
-</section>
-<section id="memory-tuning">
-<h2>Memory Tuning<a class="headerlink" href="#memory-tuning" title="Link to this heading">#</a></h2>
-<p>It is necessary to specify how much memory Comet can use in addition to memory already allocated to Spark. In some
-cases, it may be possible to reduce the amount of memory allocated to Spark so that overall memory allocation is
-the same or lower than the original configuration. In other cases, enabling Comet may require allocating more memory
-than before. See the <a class="reference internal" href="#determining-how-much-memory-to-allocate">Determining How Much Memory to Allocate</a> section for more details.</p>
-<p>Comet needs two things configured: an off-heap pool for it to draw its reservations from, and enough executor memory
-overhead to cover the part of its footprint that no pool tracks. See <a class="reference internal" href="#configuring-comet-memory">Configuring Comet Memory</a> and
-<a class="reference internal" href="#configuring-executor-memory-overhead">Configuring Executor Memory Overhead</a>.</p>
-<p><img alt="Spark and Comet both use the JVM heap and share the off-heap memory pool, and the rest of Comet's native memory has to fit in the executor's memory overhead" src="../../_images/comet-executor-memory.svg" /></p>
-<section id="configuring-comet-memory">
-<h3>Configuring Comet Memory<a class="headerlink" href="#configuring-comet-memory" title="Link to this heading">#</a></h3>
-<p>Comet shares an off-heap memory pool with Spark. The size of the pool is
-specified by <code class="docutils literal notranslate"><span class="pre">spark.memory.offHeap.size</span></code>. The pool is a shared <em>budget</em> rather than a shared
-allocator: Comet’s native operators allocate from the Rust heap rather than from JVM off-heap
-memory, but every reservation they make is charged against this same pool, so Comet and Spark’s own
-off-heap consumers draw down one number.</p>
-<p>Comet’s memory pool only tracks memory that an operator explicitly reserves, which in practice means the batches
-an operator deliberately accumulates: the sort buffer, the build side of a hash join, hash aggregation state, and the
-shuffle writer’s buffered partitions. Memory that is not reserved is invisible to the pool no matter how much of it
-there is. That includes:</p>
-<ul class="simple">
-<li><p>per-batch working memory in expression kernels and Arrow array builders,</p></li>
-<li><p>decompression buffers and Parquet reader structures,</p></li>
-<li><p>object store request buffers and the async runtime’s own machinery,</p></li>
-<li><p>Arrow buffers allocated on the JVM side, which no budget covers at all,</p></li>
-<li><p>allocator overhead: buffer padding, size-class rounding, fragmentation, and pages the allocator retains after a
-free rather than returning to the operating system.</p></li>
-</ul>
-<p>Reserved memory is therefore a lower bound on what Comet really uses, and how far below it sits depends on the
-workload. This is why Comet can stay within the pool’s limit and still push the executor past its container limit.
-The part that is not counted has to fit in <code class="docutils literal notranslate"><span class="pre">spark.executor.memoryOverhead</span></code>, and each executor logs how large it is
-while Comet runs; see <a class="reference internal" href="#sizing-the-overhead-from-the-memory-usage-log">Sizing the Overhead from the Memory Usage Log</a>.</p>
-<p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.memoryPool.fraction</span></code> is deprecated and does not leave room for it. Spark hands out all of
-<code class="docutils literal notranslate"><span class="pre">spark.memory.offHeap.size</span></code> to the tasks that ask for it, whatever the fraction. The <code class="docutils literal notranslate"><span class="pre">fair_unified</span></code> pool applies the
-fraction to each task separately, where Spark’s own limit of an even share of the pool per running task is tighter
-whenever more than one task is running, and the <code class="docutils literal notranslate"><span class="pre">greedy_unified</span></code> pool ignores it.</p>
-<p>For more details about Spark off-heap memory mode, please refer to <a class="reference external" href="https://spark.apache.org/docs/latest/configuration.html">Spark documentation</a>.</p>
-<p>Comet implements multiple memory pool implementations. The type of pool can be specified with <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.memoryPool</span></code>.</p>
-<p>The valid pool types are:</p>
-<ul class="simple">
-<li><p><code class="docutils literal notranslate"><span class="pre">fair_unified</span></code> (default when <code class="docutils literal notranslate"><span class="pre">spark.memory.offHeap.enabled=true</span></code> is set)</p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">greedy_unified</span></code></p></li>
-</ul>
-<p>Both pool types are shared by all the native plans in the same Spark task. A task can run more than
-one native plan at a time, for example the native operators on either side of a union or a
-coalesce. The shared pool ensures that their combined memory usage stays within the per-task limit.</p>
-<p>The <code class="docutils literal notranslate"><span class="pre">fair_unified</span></code> pool prevents operators from using more than an even fraction of the available memory
-(i.e. <code class="docutils literal notranslate"><span class="pre">pool_size</span> <span class="pre">/</span> <span class="pre">num_consumers</span></code>, where <code class="docutils literal notranslate"><span class="pre">num_consumers</span></code> counts the memory consumers registered by all of the task’s
-native plans). This pool works best when you know beforehand
-the query has multiple operators that will likely all need to spill. Sometimes it will cause spills even
-when there is sufficient memory in order to leave enough memory for other operators.</p>
-<p>Comet 0.15.0 through 1.0.0 capped the memory of all of a task’s operators combined at one operator’s share, because of a
-bug (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/5961">#5961</a>). Tasks with several operators can now reserve more
-memory before they spill than they could in those releases. The difference is largest on executors that run few tasks
-at once, where Spark’s own limit on each task is loosest. If you sized executor memory against one of those releases,
-check that executors still have enough headroom; see <a class="reference internal" href="#sizing-the-overhead-from-the-memory-usage-log">Sizing the Overhead from the Memory Usage Log</a>.</p>
-<p>The <code class="docutils literal notranslate"><span class="pre">greedy_unified</span></code> pool type implements a greedy first-come first-serve limit. This pool works well for queries that do not
-need to spill or have a single spillable operator.</p>
-</section>
-<section id="configuring-executor-memory-overhead">
-<h3>Configuring Executor Memory Overhead<a class="headerlink" href="#configuring-executor-memory-overhead" title="Link to this heading">#</a></h3>
-<p>Enabling off-heap memory is not sufficient on its own. Comet also needs room in
-<code class="docutils literal notranslate"><span class="pre">spark.executor.memoryOverhead</span></code>.</p>
-<p><code class="docutils literal notranslate"><span class="pre">spark.memory.offHeap.size</span></code> is a budget, and the cluster manager already sizes the executor
-container to include it, so the memory that Comet’s operators explicitly reserve has room. What does
-not have room is everything Comet allocates without reserving it — the untracked categories listed
-under <a class="reference internal" href="#configuring-comet-memory">Configuring Comet Memory</a>. Those allocations are made by the Rust global allocator and live
-in the native heap, outside the JVM heap and outside Spark’s off-heap allocations, and nothing in
-the container sizing accounts for them. The same applies to Comet’s JVM-side Arrow buffers.</p>
-<p><code class="docutils literal notranslate"><span class="pre">spark.executor.memoryOverhead</span></code> is the only slack the container has for this, and the JVM’s own
-non-heap usage — metaspace, code cache, thread stacks, GC structures — is already drawing on it.</p>
-<p>Work out what the executor already gets before choosing a value. When
-<code class="docutils literal notranslate"><span class="pre">spark.executor.memoryOverhead</span></code> is unset, Spark derives the overhead as
-<code class="docutils literal notranslate"><span class="pre">max(spark.executor.memoryOverheadFactor</span> <span class="pre">*</span> <span class="pre">spark.executor.memory,</span> <span class="pre">384</span> <span class="pre">MiB)</span></code>. The factor defaults to
-<code class="docutils literal notranslate"><span class="pre">0.1</span></code>, except for PySpark and SparkR applications submitted to Kubernetes in cluster mode, where it
-defaults to <code class="docutils literal notranslate"><span class="pre">0.4</span></code>. On Spark 4.0 and later the floor is configurable through
-<code class="docutils literal notranslate"><span class="pre">spark.executor.minMemoryOverhead</span></code>. Setting <code class="docutils literal notranslate"><span class="pre">spark.executor.memoryOverhead</span></code> <strong>replaces</strong> the derived
-value rather than adding to it, so a value below what is derived today shrinks the container instead
-of growing it.</p>
-<p>For a small executor, <code class="docutils literal notranslate"><span class="pre">2g</span></code> is a reasonable starting point. A 4 GiB executor derives only 409 MiB, so
-this is a real increase:</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">spark</span><span class="o">.</span><span class="n">executor</span><span class="o">.</span><span class="n">memoryOverhead</span><span class="o">=</span><span class="mi">2</span><span class="n">g</span>
-</pre></div>
-</div>
-<p>A 32 GiB executor, on the other hand, already derives 3276 MiB, and the same setting would take away
-1228 MiB. For executors that large, either pick an absolute value above what is derived today, or
-raise <code class="docutils literal notranslate"><span class="pre">spark.executor.memoryOverheadFactor</span></code> instead so that the overhead keeps scaling with executor
-size:</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">spark</span><span class="o">.</span><span class="n">executor</span><span class="o">.</span><span class="n">memoryOverheadFactor</span><span class="o">=</span><span class="mf">0.2</span>
-</pre></div>
-</div>
-<p>Raise the value further if executors are killed by the cluster manager (on Kubernetes,
-<code class="docutils literal notranslate"><span class="pre">ExecutorLostFailure</span></code> with exit code 137) rather than failing with a task-level out-of-memory error.
-To measure how much Comet needs rather than guessing, see <a class="reference internal" href="#sizing-the-overhead-from-the-memory-usage-log">Sizing the Overhead from the Memory Usage Log</a>.</p>
-<p>Note that on Kubernetes and YARN the overhead is added to the container size, so raising it reduces
-how many executors fit on a node.</p>
-</section>
-<section id="sizing-the-overhead-from-the-memory-usage-log">
-<h3>Sizing the Overhead from the Memory Usage Log<a class="headerlink" href="#sizing-the-overhead-from-the-memory-usage-log" title="Link to this heading">#</a></h3>
-<p>While Comet native plans are running, each executor logs its native memory usage at INFO level,
-one line every 10 seconds for the whole executor:</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">Comet</span> <span class="n">native</span> <span class="n">memory</span> <span class="n">usage</span><span class="p">:</span> <span class="n">allocated</span> <span class="mf">5412.3</span> <span class="n">MiB</span><span class="p">,</span> <span class="n">reserved</span> <span class="mf">3890.0</span> <span class="n">MiB</span> <span class="p">(</span><span class="mi">16</span> <span class="n">native</span> <span class="n">plans</span><span class="p">,</span> <span class="mi">8</span> <span class="n">memory</span> <span class="n">pools</span><span class="p">)</span>
-</pre></div>
-</div>
-<ul class="simple">
-<li><p><code class="docutils literal notranslate"><span class="pre">allocated</span></code> is the memory that Comet’s native code has allocated and not yet freed, whether or not
-a pool tracks it.</p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">reserved</span></code> is the part that Comet’s memory pools track. It is charged against
-<code class="docutils literal notranslate"><span class="pre">spark.memory.offHeap.size</span></code>, so the container already has room for it.</p></li>
-</ul>
-<p>The difference between the two, <code class="docutils literal notranslate"><span class="pre">allocated</span> <span class="pre">-</span> <span class="pre">reserved</span></code>, is Comet’s untracked native memory. It is
-the part of Comet’s footprint that has to fit in <code class="docutils literal notranslate"><span class="pre">spark.executor.memoryOverhead</span></code>, alongside the
-JVM’s own non-heap memory. To size the overhead from it:</p>
-<ol class="arabic simple">
-<li><p>Run a representative workload and find the line with the largest difference in each executor’s
-log. Take both figures from the same line: they are sampled together, and figures from different
-lines describe different moments. Setting <code class="docutils literal notranslate"><span class="pre">spark.comet.memory.logInterval=1s</span></code> for this run makes a
-short-lived peak less likely to fall between samples.</p></li>
-<li><p>Start from the overhead the executors had before Comet was enabled, which covers the JVM’s own
-non-heap memory, and add the largest difference seen on any executor.</p></li>
-<li><p>Add a margin on top. The log can miss the true peak between samples, and neither figure includes
-the allocator’s fragmentation and retained pages, memory allocated by native C libraries such as
-zstd, or Comet’s Arrow buffers on the JVM side.</p></li>
-</ol>
-<p>For example, a 16 GiB executor derives an overhead of 1638 MiB. If the largest difference in its
-log is the 1522.3 MiB in the line above, the overhead needs to be at least 1638 + 1523 = 3161 MiB
-before any margin, so <code class="docutils literal notranslate"><span class="pre">spark.executor.memoryOverhead=4g</span></code> would be a reasonable setting.</p>
-<p>The executor also logs a warning when its native memory looks larger than its container allows:
-when the difference, plus everything in use in Spark’s off-heap memory pool (which includes Comet’s
-reservations), exceeds <code class="docutils literal notranslate"><span class="pre">spark.memory.offHeap.size</span></code> plus the memory overhead. This counts the part of
-the off-heap pool that nothing has acquired at that moment, which untracked memory can occupy until
-Spark hands it out, so a quiet log is not a sign that the overhead is large enough: size it from the
-largest difference as described above. The overhead also has to hold the JVM’s own non-heap memory,
-so by the time the warning appears the executor has likely outgrown its container. It warns the first time this
-happens, and again each time it happens after dropping back below. The overhead it uses is
-<code class="docutils literal notranslate"><span class="pre">spark.executor.memoryOverhead</span></code> if set, otherwise <code class="docutils literal notranslate"><span class="pre">spark.executor.memoryOverheadFactor</span></code> of
-<code class="docutils literal notranslate"><span class="pre">spark.executor.memory</span></code> with a minimum of <code class="docutils literal notranslate"><span class="pre">spark.executor.minMemoryOverhead</span></code>, as Spark sizes the
-default container. There is no warning in local mode.</p>
-<p>Look more closely before raising the overhead if the difference keeps growing through a run rather
-than levelling off: native memory that is not being released will exhaust any overhead eventually.
-The executor logs one more line after its last native plan finishes, and an <code class="docutils literal notranslate"><span class="pre">allocated</span></code> figure there
-that grows from one query to the next points the same way.</p>
-<p><code class="docutils literal notranslate"><span class="pre">spark.comet.memory.logInterval</span></code> is read when an executor starts its first Comet native plan, so set
-it when the application is submitted. Set it to <code class="docutils literal notranslate"><span class="pre">0</span></code> to turn the log off.</p>
-</section>
-<section id="determining-how-much-memory-to-allocate">
-<h3>Determining How Much Memory to Allocate<a class="headerlink" href="#determining-how-much-memory-to-allocate" title="Link to this heading">#</a></h3>
-<p>Generally, increasing the amount of memory allocated to Comet will improve query performance by reducing the
-amount of time spent spilling to disk, especially for aggregate, join, and shuffle operations. Allocating insufficient
-memory can result in out-of-memory errors. This is no different from allocating memory in Spark and the amount of
-memory will vary for different workloads, so some experimentation will be required.</p>
-<p>Here is a real-world example, based on running benchmarks derived from TPC-H, running on a single executor against
-local Parquet files using the 100 GB data set.</p>
-<p>Baseline Spark Performance</p>
-<ul class="simple">
-<li><p>Spark completes the benchmark in 632 seconds with 8 cores and 8 GB RAM</p></li>
-<li><p>With less than 8 GB RAM, performance degrades due to spilling</p></li>
-<li><p>Spark can complete the benchmark with as little as 3 GB of RAM, but with worse performance (744 seconds)</p></li>
-</ul>
-<p>Comet Performance</p>
-<ul class="simple">
-<li><p>Comet requires at least 5 GB of RAM, but performance at this level
-is around 340 seconds, which is significantly faster than Spark with any amount of RAM</p></li>
-<li><p>Comet running in off-heap with 8 cores completes the benchmark in 295 seconds, more than 2x faster than Spark</p></li>
-<li><p>It is worth noting that running Comet with only 4 cores and 4 GB RAM completes the benchmark in 520 seconds,
-providing better performance than Spark for half the resource</p></li>
-</ul>
-<p>It may be possible to reduce Comet’s memory overhead by reducing batch sizes or increasing number of partitions.</p>
-</section>
-<section id="batch-size">
-<h3>Batch Size<a class="headerlink" href="#batch-size" title="Link to this heading">#</a></h3>
-<p>Comet processes data in columnar batches. The batch size is controlled by <code class="docutils literal notranslate"><span class="pre">spark.comet.batchSize</span></code> (default
-<code class="docutils literal notranslate"><span class="pre">8192</span></code> rows). Larger batches generally improve throughput by amortizing per-batch overhead, but they also
-increase peak memory usage — a batch holds all projected columns in Arrow format at once. Reduce this value
-if you see frequent spilling or out-of-memory errors on wide tables; increase it (for example to <code class="docutils literal notranslate"><span class="pre">16384</span></code>) on
-narrow tables when memory is plentiful.</p>
-<p><code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.jvm.batchSize</span></code> controls the batch size used when the JVM columnar shuffle writer
-flushes sorted spill files. It must not exceed <code class="docutils literal notranslate"><span class="pre">spark.comet.batchSize</span></code>.</p>
-</section>
-<section id="limiting-spill-disk-usage">
-<h3>Limiting Spill Disk Usage<a class="headerlink" href="#limiting-spill-disk-usage" title="Link to this heading">#</a></h3>
-<p>Native operators that spill to disk (aggregate, sort, shuffle) are bounded by
-<code class="docutils literal notranslate"><span class="pre">spark.comet.maxTempDirectorySize</span></code> (default 100 GB). The operators of one Comet native plan share
-the limit. A Spark task can run more than one native plan at a time, for example the native
-operators on either side of a union or a coalesce, so an executor running <code class="docutils literal notranslate"><span class="pre">N</span></code> concurrent tasks may
-use more than <code class="docutils literal notranslate"><span class="pre">N</span></code> times this value on shared local disks. If the limit is reached, further spills
-fail and the query errors out. Raise this on workloads with large sort/aggregate/shuffle spills, or
-lower it to protect executors on shared disks, remembering that the total across an executor is a
-multiple of this value.</p>
-</section>
-</section>
-<section id="parquet-reader-tuning">
-<h2>Parquet Reader Tuning<a class="headerlink" href="#parquet-reader-tuning" title="Link to this heading">#</a></h2>
-<section id="filter-pushdown-late-materialization">
-<h3>Filter Pushdown / Late Materialization<a class="headerlink" href="#filter-pushdown-late-materialization" title="Link to this heading">#</a></h3>
-<p>Setting <code class="docutils literal notranslate"><span class="pre">spark.comet.parquet.rowFilterPushdown.enabled=true</span></code> pushes filter evaluation into the Parquet
-decode step and lazily materializes projected columns for surviving rows. This can significantly reduce
-CPU and memory when the filter is highly selective on a small subset of columns. It is disabled by default
-because it can hurt when the filter is not selective or when most columns must be read anyway. Row-group,
-page-index, and bloom-filter pruning happen regardless of this flag whenever Spark’s
-<code class="docutils literal notranslate"><span class="pre">spark.sql.parquet.filterPushdown</span></code> is on.</p>
-</section>
-<section id="parquet-native-scans">
-<h3>Parquet Native Scans<a class="headerlink" href="#parquet-native-scans" title="Link to this heading">#</a></h3>
-<p>Spark and DataFusion’s native Parquet scans use different rules to decide which row groups belong to a
-given scan range (split). Spark assigns a row group to a split if the row group’s start offset falls
-within <code class="docutils literal notranslate"><span class="pre">[split.start,</span> <span class="pre">split.start</span> <span class="pre">+</span> <span class="pre">split.length)</span></code>, guaranteeing that every task Spark plans reads at
-least one row group when the file layout permits. DataFusion’s <code class="docutils literal notranslate"><span class="pre">prune_by_range</span></code> also checks whether a
-row group’s start offset falls within the split’s byte range, but because row group sizes are not aligned
-with Spark’s split boundaries, the two systems can disagree on which split “owns” a given row group.</p>
-<p>When a file contains row groups whose sizes are close to <code class="docutils literal notranslate"><span class="pre">spark.sql.files.maxPartitionBytes</span></code>, this
-mismatch can leave some Comet scan tasks with no row groups to read. Those tasks still load Parquet
-metadata but return zero rows, while neighboring tasks end up reading more row groups than Spark
-intended. The overall effect is that Comet uses only a fraction of the parallelism that Spark planned
-for the scan stage, and end-to-end scan latency increases even though the total amount of data read
-is unchanged.</p>
-<p>Symptoms to look for:</p>
-<ul class="simple">
-<li><p>A subset of scan tasks completes almost immediately and reports 0 input rows, while the remaining
-tasks read noticeably more rows than the equivalent Spark tasks would.</p></li>
-<li><p>The Comet scan stage has the same number of planned tasks as Spark but a much lower count of tasks
-that actually do work.</p></li>
-</ul>
-<p>Workaround: lower <code class="docutils literal notranslate"><span class="pre">spark.sql.files.maxPartitionBytes</span></code> so that each split is smaller than a single row
-group. For example, if the file’s row groups are around 120 MB and <code class="docutils literal notranslate"><span class="pre">spark.sql.files.maxPartitionBytes</span></code>
-is left at the 128 MB default, most splits will contain at most one row group boundary and the
-mismatch is amplified; setting <code class="docutils literal notranslate"><span class="pre">spark.sql.files.maxPartitionBytes</span></code> below 120 MB (for example, 64 MB)
-distributes row groups across more splits and reduces the number of idle tasks. Smaller values produce
-more splits overall, so some idle tasks may remain — tune the value against your file layout.</p>
-<p>See <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/3817#issuecomment-4193279630">#3817</a> for a
-worked example and further discussion.</p>
-</section>
-</section>
-<section id="iceberg-scan-tuning">
-<h2>Iceberg Scan Tuning<a class="headerlink" href="#iceberg-scan-tuning" title="Link to this heading">#</a></h2>
-<p>Comet’s native Iceberg scan (<code class="docutils literal notranslate"><span class="pre">spark.comet.scan.icebergNative.enabled</span></code>, enabled by default) reads each
-task’s data files one at a time by default. For tables with many small files or high-latency storage,
-increase <code class="docutils literal notranslate"><span class="pre">spark.comet.scan.icebergNative.dataFileConcurrencyLimit</span></code> (default <code class="docutils literal notranslate"><span class="pre">1</span></code>; values of 2–8 are
-suggested) to overlap I/O across files at the cost of extra memory.</p>
-</section>
-<section id="optimizing-sorting-on-floating-point-values">
-<h2>Optimizing Sorting on Floating-Point Values<a class="headerlink" href="#optimizing-sorting-on-floating-point-values" title="Link to this heading">#</a></h2>
-<p>Comet normalizes NaN payloads and signed zeros in scalar <code class="docutils literal notranslate"><span class="pre">FLOAT</span></code> and <code class="docutils literal notranslate"><span class="pre">DOUBLE</span></code> ordering keys, so <code class="docutils literal notranslate"><span class="pre">ORDER</span> <span class="pre">BY</span></code>, window
-ordering and range partitioning on them match Spark and stay native even with
-<code class="docutils literal notranslate"><span class="pre">spark.comet.exec.strictFloatingPoint=true</span></code>. Only the comparison key is normalized; returned values keep their original
-NaN representation and zero sign.</p>
-<p>Floating-point values nested in arrays, structs, or maps are compared with Arrow’s raw total ordering instead, which can
-differ from Spark when the data contains both zero and negative zero, or more than one NaN representation. This is likely
-an edge case that is not of concern for many users. Setting <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.strictFloatingPoint=true</span></code> makes those
-nested cases fall back to Spark, and they can be forced back onto the native path with
-<code class="docutils literal notranslate"><span class="pre">spark.comet.expression.SortOrder.allowIncompatible=true</span></code>.</p>
-<p><code class="docutils literal notranslate"><span class="pre">sort_array</span></code> is separate. It sorts array elements rather than ordering rows, and its elements are compared with Arrow’s
-raw total ordering, so <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.strictFloatingPoint=true</span></code> makes it fall back even for a scalar floating-point
-element type. Use <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.SortArray.allowIncompatible=true</span></code> to keep it native.</p>
-</section>
-<section id="optimizing-joins">
-<h2>Optimizing Joins<a class="headerlink" href="#optimizing-joins" title="Link to this heading">#</a></h2>
-<p>Spark often chooses <code class="docutils literal notranslate"><span class="pre">SortMergeJoin</span></code> over <code class="docutils literal notranslate"><span class="pre">ShuffledHashJoin</span></code> for stability reasons. If the build-side of a
-<code class="docutils literal notranslate"><span class="pre">ShuffledHashJoin</span></code> is very large then it could lead to OOM in Spark.</p>
-<p>Vectorized query engines tend to perform better with <code class="docutils literal notranslate"><span class="pre">ShuffledHashJoin</span></code>, so for best performance it is often preferable
-to configure Comet to convert <code class="docutils literal notranslate"><span class="pre">SortMergeJoin</span></code> to <code class="docutils literal notranslate"><span class="pre">ShuffledHashJoin</span></code>. Comet does not yet provide spill-to-disk for
-<code class="docutils literal notranslate"><span class="pre">ShuffledHashJoin</span></code> so this could result in OOM. Also, <code class="docutils literal notranslate"><span class="pre">SortMergeJoin</span></code> may still be faster in some cases. It is best
-to test with both for your specific workloads.</p>
-<p>To configure Comet to convert <code class="docutils literal notranslate"><span class="pre">SortMergeJoin</span></code> to <code class="docutils literal notranslate"><span class="pre">ShuffledHashJoin</span></code>, set <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.forceShuffledHashJoin=true</span></code>.</p>
-<section id="join-runtime-filters">
-<h3>Join Runtime Filters<a class="headerlink" href="#join-runtime-filters" title="Link to this heading">#</a></h3>
-<p>Set <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.join.dynamicFilter.enabled=true</span></code> to try experimental native hash join runtime
-filtering. It is disabled by default. Eligible joins are inner joins with one direct signed integer
-key (<code class="docutils literal notranslate"><span class="pre">TINYINT</span></code>, <code class="docutils literal notranslate"><span class="pre">SMALLINT</span></code>, <code class="docutils literal notranslate"><span class="pre">INT</span></code>, or <code class="docutils literal notranslate"><span class="pre">BIGINT</span></code>) and one native partition per input within each task.
-Both broadcast and shuffled hash joins support either Spark build side. Unsupported joins keep
-their existing execution path.</p>
-<p>Once the build completes, its key domain filters probe batches before the hash probe. Eligible
-native Parquet readers also use the domain to prune row groups. Reader attachment can pass through
-direct-column <code class="docutils literal notranslate"><span class="pre">IS</span> <span class="pre">NOT</span> <span class="pre">NULL</span></code> checks, including conjunctions, and remaps columns when the scan itself
-projects the file schema. The original null checks and residual runtime filter remain in place.
-The original join still verifies matches, including any hash collisions admitted by the filter.
-Standalone projections, other filter expressions, and limits prevent reader attachment.</p>
-<p>To preserve schema-conversion and timestamp-overflow errors, runtime reader pruning is disabled for
-each file whose projected or statically filtered columns require schema adaptations beyond direct
-column mappings or literal values. This conservative check also disables reader pruning for allowed
-<code class="docutils literal notranslate"><span class="pre">INT32</span></code> to <code class="docutils literal notranslate"><span class="pre">BIGINT</span></code> promotion and for projecting a subset of a struct’s fields, even when those
-adaptations cannot fail. Nested column pruning still reads only the requested struct fields. Scans
-with supplied file statistics also skip reader attachment. These cases still use runtime filtering
-on decoded batches.</p>
-<p>Filters stay within the task’s native plan and do not propagate across Spark exchanges or JVM/Arrow
-boundaries. A shuffled hash join can still filter probe batches after shuffle, but it cannot send
-its filter back to an earlier scan stage. Compare the <a class="reference internal" href="metrics.html#hash-joins"><span class="std std-ref">runtime-filter and scan metrics</span></a>
-with the setting disabled to distinguish reduced hash-probe work from reader I/O savings.</p>
-</section>
-</section>
-<section id="shuffle">
-<h2>Shuffle<a class="headerlink" href="#shuffle" title="Link to this heading">#</a></h2>
-<p>Comet provides accelerated shuffle implementations that can be used to improve the performance of your queries.</p>
-<p>To enable Comet shuffle, set the following configuration in your Spark configuration:</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">spark</span><span class="o">.</span><span class="n">shuffle</span><span class="o">.</span><span class="n">manager</span><span class="o">=</span><span class="n">org</span><span class="o">.</span><span class="n">apache</span><span class="o">.</span><span class="n">spark</span><span class="o">.</span><span class="n">sql</span><span class="o">.</span><span class="n">comet</span><span class="o">.</span><span class="n">execution</span><span class="o">.</span><span class="n">shuffle</span><span class="o">.</span><span class="n">CometShuffleManager</span>
-<span class="n">spark</span><span class="o">.</span><span class="n">comet</span><span class="o">.</span><span class="n">shuffle</span><span class="o">.</span><span class="n">enabled</span><span class="o">=</span><span class="n">true</span>
-</pre></div>
-</div>
-<p><code class="docutils literal notranslate"><span class="pre">spark.shuffle.manager</span></code> is a Spark static configuration which cannot be changed at runtime.
-It must be set before the Spark context is created. You can enable or disable Comet shuffle
-at runtime by setting <code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.enabled</span></code> to <code class="docutils literal notranslate"><span class="pre">true</span></code> or <code class="docutils literal notranslate"><span class="pre">false</span></code>.
-Once it is disabled, the configured shuffle manager handles ordinary Spark shuffle dependencies
-without Comet’s shuffle implementation.</p>
-<section id="shuffle-implementations">
-<h3>Shuffle Implementations<a class="headerlink" href="#shuffle-implementations" title="Link to this heading">#</a></h3>
-<p>Comet provides two shuffle implementations: Native Shuffle and Columnar Shuffle. Comet will first try to use Native
-Shuffle and if that is not possible it will try to use Columnar Shuffle. If neither can be applied, it will fall
-back to Spark for shuffle operations.</p>
-<section id="native-shuffle">
-<h4>Native Shuffle<a class="headerlink" href="#native-shuffle" title="Link to this heading">#</a></h4>
-<p>Comet provides a fully native shuffle implementation, which generally provides the best performance. Native shuffle
-supports <code class="docutils literal notranslate"><span class="pre">HashPartitioning</span></code>, <code class="docutils literal notranslate"><span class="pre">RangePartitioning</span></code>, and <code class="docutils literal notranslate"><span class="pre">SinglePartition</span></code>, plus <code class="docutils literal notranslate"><span class="pre">RoundRobinPartitioning</span></code> when enabled
-(see <a class="reference internal" href="compatibility/operators.html#round-robin-partitioning"><span class="std std-ref">Round-Robin Partitioning</span></a>). Range partitioning keys must be
-scalar types. Hash partitioning keys must be scalar types unless
-<code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.native.partitioning.hash.nested.enabled=true</span></code>, which also admits struct, array, and (Spark 4.0
-and later) map keys. That setting is disabled by default until the performance of the nested hashing paths has been
-measured. Columns that are not partitioning keys may contain complex types like maps, structs, and arrays.</p>
-</section>
-<section id="columnar-jvm-shuffle">
-<h4>Columnar (JVM) Shuffle<a class="headerlink" href="#columnar-jvm-shuffle" title="Link to this heading">#</a></h4>
-<p>Comet Columnar shuffle is JVM-based and supports <code class="docutils literal notranslate"><span class="pre">HashPartitioning</span></code>, <code class="docutils literal notranslate"><span class="pre">RoundRobinPartitioning</span></code>, <code class="docutils literal notranslate"><span class="pre">RangePartitioning</span></code>, and
-<code class="docutils literal notranslate"><span class="pre">SinglePartition</span></code>. This shuffle implementation supports complex data types as partitioning keys.</p>
-<p>By default, Comet will convert a Spark <code class="docutils literal notranslate"><span class="pre">ShuffleExchangeExec</span></code> to columnar shuffle even when the shuffle’s child is a
-non-Comet (Spark) plan. The benefit is that the next query stage can start as native Comet execution, since the
-shuffle output is already in Arrow format. The cost is a row to columnar conversion at the shuffle boundary on the
-write side. To restrict columnar shuffle to cases where the child is already a Comet plan, set
-<code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.convertFromSparkPlan.enabled=false</span></code>. Shuffles whose child is a Spark plan will then be left
-as native Spark shuffles, which avoids the row to columnar conversion but means the downstream stage will also start
-on Spark.</p>
-</section>
-<section id="automatic-revert-to-spark-shuffle">
-<h4>Automatic Revert to Spark Shuffle<a class="headerlink" href="#automatic-revert-to-spark-shuffle" title="Link to this heading">#</a></h4>
-<p>When a Comet columnar shuffle ends up between a partial and a final aggregate that Comet could not convert (both
-remain Spark <code class="docutils literal notranslate"><span class="pre">HashAggregateExec</span></code> or <code class="docutils literal notranslate"><span class="pre">ObjectHashAggregateExec</span></code> operators), Comet reverts it to Spark’s built-in shuffle.
-Keeping columnar shuffle between the two row-based aggregates would add <code class="docutils literal notranslate"><span class="pre">row</span> <span class="pre">-&gt;</span> <span class="pre">Arrow</span> <span class="pre">-&gt;</span> <span class="pre">shuffle</span> <span class="pre">-&gt;</span> <span class="pre">Arrow</span> <span class="pre">-&gt;</span> <span class="pre">row</span></code>
-conversions with no Comet consumer on either side to benefit from columnar output. Other shuffles between non-Comet
-operators are not reverted.</p>
-<p>This shifts the affected shuffles from Comet’s off-heap memory pool back to the JVM execution memory pool. Clusters
-tuned for a small JVM heap may see <code class="docutils literal notranslate"><span class="pre">ExternalSorter</span></code> spills on queries where this revert fires. Shuffle I/O may also
-grow marginally because Spark’s row-based serializer generally compresses less well than Comet’s Arrow IPC format.</p>
-<p>Each revert is logged at <code class="docutils literal notranslate"><span class="pre">INFO</span></code> level on the driver as <code class="docutils literal notranslate"><span class="pre">Reverting</span> <span class="pre">Comet</span> <span class="pre">columnar</span> <span class="pre">shuffle</span> <span class="pre">to</span> <span class="pre">Spark</span> <span class="pre">shuffle</span> <span class="pre">between</span> <span class="pre">&lt;parent&gt;</span> <span class="pre">and</span> <span class="pre">&lt;child&gt;</span></code>, which lets you correlate any unexpected behavior with this optimization.</p>
-<p>This optimization is enabled by default and can be disabled by setting
-<code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.revertRedundantColumnar.enabled=false</span></code>, in which case Comet will keep the columnar shuffle
-even when both of those aggregates run on Spark.</p>
-</section>
-</section>
-<section id="remote-shuffle-with-celeborn">
-<h3>Remote Shuffle with Celeborn<a class="headerlink" href="#remote-shuffle-with-celeborn" title="Link to this heading">#</a></h3>
-<p>Applications using Apache Celeborn can use Comet’s composite shuffle manager to retain ordinary
-Spark/Celeborn shuffle while accelerating other operators with Comet.</p>
-<p>Native shuffle also requires reliable completion tracking for in-flight payloads. Released Celeborn
-0.6.0 and 0.7.0 clients do not provide the required guarantee, so these versions retain ordinary
-Spark/Celeborn shuffle even when <code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.mode=native</span></code>. Native shuffle support for
-these clients requires a safe Celeborn push-completion API. The following settings request
-native shuffle when the client passes Comet’s compatibility checks:</p>
-<div class="highlight-properties notranslate"><div class="highlight"><pre><span></span><span class="na">spark.shuffle.manager</span><span class="o">=</span><span class="s">org.apache.spark.sql.comet.execution.shuffle.CometCelebornShuffleManager</span>
-<span class="na">spark.comet.exec.enabled</span><span class="o">=</span><span class="s">true</span>
-<span class="na">spark.comet.shuffle.enabled</span><span class="o">=</span><span class="s">true</span>
-<span class="na">spark.comet.shuffle.mode</span><span class="o">=</span><span class="s">native</span>
-<span class="na">spark.celeborn.client.spark.stageRerun.enabled</span><span class="o">=</span><span class="s">true</span>
-</pre></div>
-</div>
-<p>Set the shuffle manager and Celeborn configuration before creating the Spark context. Celeborn is
-an optional application dependency, not bundled with Comet: provide a compatible Celeborn Spark
-client matching the application’s Spark and Scala versions on both the driver and executors,
-alongside the Comet JAR. Keep the application’s existing Celeborn service configuration.</p>
-<p>Native Celeborn shuffle requires explicit <code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.mode=native</span></code>. The default <code class="docutils literal notranslate"><span class="pre">auto</span></code>
-mode and <code class="docutils literal notranslate"><span class="pre">jvm</span></code> mode retain ordinary Spark shuffle through the delegated Celeborn manager; they do
-not select Comet’s JVM columnar shuffle. Comet execution can still accelerate other operators.
-With native mode enabled, exchanges with unsupported children, data types, or partitioning also
-retain the ordinary Spark/Celeborn shuffle path. The local <code class="docutils literal notranslate"><span class="pre">CometShuffleManager</span></code> keeps its existing
-native-to-columnar fallback behavior.</p>
-<p>Stage reruns must remain enabled so failed or ambiguous map attempts can recover through a new
-Celeborn shuffle generation. Native RSS does not support <code class="docutils literal notranslate"><span class="pre">spark.io.encryption.enabled=true</span></code>;
-encrypted applications retain ordinary Spark/Celeborn shuffle instead. Do not disable encryption
-required by the application to enable native RSS. Eligibility uses the manager’s application-time
-configuration, including Celeborn’s effective defaults and legacy aliases, rather than later SQL
-session overrides.</p>
-<p>Celeborn’s fallback policy remains application-owned. An effective
-<code class="docutils literal notranslate"><span class="pre">spark.celeborn.client.spark.shuffle.fallback.policy=ALWAYS</span></code>, or an <code class="docutils literal notranslate"><span class="pre">AUTO</span></code> partition-count
-threshold that the exchange reaches, keeps the exchange on Spark. Worker availability and quota
-can still cause Celeborn to choose local fallback during registration. Once an exchange has been
-planned as native, Comet rejects that local handle and fails the registration: native Arrow frames
-cannot be passed to Spark’s ordinary local shuffle writer. Set
-<code class="docutils literal notranslate"><span class="pre">spark.celeborn.client.spark.shuffle.fallback.policy=NEVER</span></code> only if the application also wants
-Celeborn to prohibit local fallback for ordinary Spark shuffles.</p>
-<p>Native frames retain Comet’s configured compression; the raw Celeborn client path bypasses
-Celeborn’s additional row compression and decompression. Use
-<code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.rss.maxFrameBytes</span></code> and <code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.rss.maxInFlightBytes</span></code> to bound
-encoded frame size and executor-side push admission. The defaults are 64 MiB and 512 MiB,
-respectively. Admission includes Arrow encoding workspace as well as overlapping native, JNI,
-and client frame copies. An uncompressed frame needs roughly seven times its size plus schema
-and codec overhead. Compression reduces the transmitted bytes but still needs uncompressed
-encoding workspace.</p>
-<p>Comet splits large batches between rows. If a single row, its schema, or its encoding workspace
-cannot fit the remote limits, Comet abandons the remote shuffle and materializes a replacement
-using its local shuffle writer before downstream tasks can consume the exchange. The replacement
-has a separate shuffle and scheduling identity, so late remote results cannot overwrite or skip
-local map output, and remote stage failures cannot abort the replacement. Independent exchanges
-can materialize concurrently; readers wait for their storage decisions before execution. Runtime
-output statistics count only the selected destination. All reads and retries for the replacement
-use local files and Spark’s block transfer
-service, including normal recovery after later fetch failures. Native operators and Comet’s
-Arrow shuffle format are preserved, and remote admission limits remain enforced. Once remote
-output has been published, subsequent failures use the existing Spark/Celeborn recovery path;
-Comet does not change that shuffle’s destination. Local fallback uses executor disk. When <code class="docutils literal notranslate"><span class="pre">spark.dynamicAllocation.enabled=true</span></code>, native Celeborn shuffle requires
-<code class="docutils literal notranslate"><span class="pre">spark.shuffle.service.enabled=true</span></code> or <code class="docutils literal notranslate"><span class="pre">spark.dynamicAllocation.shuffleTracking.enabled=true</span></code>
-(the Spark default) so those files remain available. Applications using dynamic allocation with
-both settings disabled retain ordinary Spark/Celeborn shuffle, even if remote reliable storage or
-decommissioning enables dynamic allocation. Executor shutdown preserves fallback files for the
-external shuffle service; explicit shuffle unregister retains the normal local cleanup behavior.
-AQE reducer coalescing and mapper-range reads are supported, but Celeborn physical-skew chunk reads
-are not.</p>
-</section>
-<section id="shuffle-compression">
-<h3>Shuffle Compression<a class="headerlink" href="#shuffle-compression" title="Link to this heading">#</a></h3>
-<p><code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.compression.codec</span></code> controls the codec used to compress shuffle data written by
-both Comet’s native shuffle and the JVM columnar shuffle writer. Supported values are <code class="docutils literal notranslate"><span class="pre">lz4</span></code> (default),
-<code class="docutils literal notranslate"><span class="pre">zstd</span></code>, and <code class="docutils literal notranslate"><span class="pre">snappy</span></code>. LZ4 favors CPU efficiency; ZSTD produces smaller shuffle files at higher CPU cost —
-useful when shuffle I/O or network bandwidth is the bottleneck. When ZSTD is selected, the level is
-controlled by <code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.compression.zstd.level</span></code> (default <code class="docutils literal notranslate"><span class="pre">1</span></code>).</p>
-<p><code class="docutils literal notranslate"><span class="pre">spark.shuffle.compress=false</span></code> disables compression for Comet’s native shuffle only. It has no effect on
-the JVM columnar shuffle writer, which always compresses spill files with the codec above. Disabling
-compression on the native path may result in faster shuffle times in certain environments, such as
-single-node setups with fast NVMe drives, at the expense of increased disk space usage.</p>
-</section>
-</section>
-<section id="reducing-row-columnar-conversion-overhead">
-<h2>Reducing Row/Columnar Conversion Overhead<a class="headerlink" href="#reducing-row-columnar-conversion-overhead" title="Link to this heading">#</a></h2>
-<p>When a query stage contains many operators that fall back to Spark row-based execution, Comet may insert
-repeated columnar-to-row and row-to-columnar conversions that dominate stage runtime. Set
-<code class="docutils literal notranslate"><span class="pre">spark.comet.exec.transitionRevert.enabled=true</span></code> to have Comet revert the entire stage to Spark row execution
-when the number of columnar-to-row transitions exceeds
-<code class="docutils literal notranslate"><span class="pre">spark.comet.exec.transitionRevert.maxTransitions</span></code> (default <code class="docutils literal notranslate"><span class="pre">2</span></code>). This trades native execution of a small
-subset of operators for eliminating conversion overhead across the stage. A stage is not reverted when it holds a
-native aggregate whose intermediate buffer Spark cannot exchange with Comet across a stage boundary, because
-reverting it would split that aggregate between the two engines.</p>
-<section id="wide-or-deeply-nested-schemas">
-<h3>Wide or Deeply Nested Schemas<a class="headerlink" href="#wide-or-deeply-nested-schemas" title="Link to this heading">#</a></h3>
-<p>The cost of each conversion also grows sharply with schema shape: for wide or deeply nested schemas,
-columnar-to-row conversion is especially expensive because the conversion work scales with the number of
-columns and nested fields. If profiling shows these conversions dominating a query over such a schema, set
-<code class="docutils literal notranslate"><span class="pre">spark.comet.exec.transitionRevert.enabled=true</span></code> and lower
-<code class="docutils literal notranslate"><span class="pre">spark.comet.exec.transitionRevert.maxTransitions</span></code> (default <code class="docutils literal notranslate"><span class="pre">2</span></code>) to <code class="docutils literal notranslate"><span class="pre">1</span></code>. Note that this reverts every stage that
-exceeds the threshold to Spark row-based execution — Comet removes the stage’s native operators rather than running a
-mix of native and fallback operators joined by repeated conversions — which can be cheaper than paying the
-expensive conversions again and again.</p>
-</section>
 </section>
 <section id="metrics-overhead">
 <h2>Metrics Overhead<a class="headerlink" href="#metrics-overhead" title="Link to this heading">#</a></h2>
@@ -1295,20 +837,20 @@ fallback to Spark works, see <a class="reference internal" href="understanding-c
                   
 <div class="prev-next-area">
     <a class="left-prev"
-       href="understanding-comet-plans.html"
+       href="pyarrow-udfs.html"
        title="previous page">
       <i class="fa-solid fa-angle-left"></i>
       <div class="prev-next-info">
         <p class="prev-next-subtitle">previous</p>
-        <p class="prev-next-title">Understanding Comet Plans</p>
+        <p class="prev-next-title">PyArrow UDF Acceleration</p>
       </div>
     </a>
     <a class="right-next"
-       href="metrics.html"
+       href="tuning/memory.html"
        title="next page">
       <div class="prev-next-info">
         <p class="prev-next-subtitle">next</p>
-        <p class="prev-next-title">Comet Metrics</p>
+        <p class="prev-next-title">Memory Tuning</p>
       </div>
       <i class="fa-solid fa-angle-right"></i>
     </a>
@@ -1332,42 +874,6 @@ fallback to Spark works, see <a class="reference internal" href="understanding-c
   <nav class="bd-toc-nav page-toc" aria-labelledby="pst-page-navigation-heading-2">
     <ul class="visible nav section-nav flex-column">
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#configuring-tokio-runtime">Configuring Tokio Runtime</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#adaptive-partial-aggregation">Adaptive Partial Aggregation</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#memory-tuning">Memory Tuning</a><ul class="nav section-nav flex-column">
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#configuring-comet-memory">Configuring Comet Memory</a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#configuring-executor-memory-overhead">Configuring Executor Memory Overhead</a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#sizing-the-overhead-from-the-memory-usage-log">Sizing the Overhead from the Memory Usage Log</a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#determining-how-much-memory-to-allocate">Determining How Much Memory to Allocate</a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#batch-size">Batch Size</a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#limiting-spill-disk-usage">Limiting Spill Disk Usage</a></li>
-</ul>
-</li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#parquet-reader-tuning">Parquet Reader Tuning</a><ul class="nav section-nav flex-column">
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#filter-pushdown-late-materialization">Filter Pushdown / Late Materialization</a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#parquet-native-scans">Parquet Native Scans</a></li>
-</ul>
-</li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#iceberg-scan-tuning">Iceberg Scan Tuning</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#optimizing-sorting-on-floating-point-values">Optimizing Sorting on Floating-Point Values</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#optimizing-joins">Optimizing Joins</a><ul class="nav section-nav flex-column">
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#join-runtime-filters">Join Runtime Filters</a></li>
-</ul>
-</li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#shuffle">Shuffle</a><ul class="nav section-nav flex-column">
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#shuffle-implementations">Shuffle Implementations</a><ul class="nav section-nav flex-column">
-<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#native-shuffle">Native Shuffle</a></li>
-<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#columnar-jvm-shuffle">Columnar (JVM) Shuffle</a></li>
-<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#automatic-revert-to-spark-shuffle">Automatic Revert to Spark Shuffle</a></li>
-</ul>
-</li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#remote-shuffle-with-celeborn">Remote Shuffle with Celeborn</a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#shuffle-compression">Shuffle Compression</a></li>
-</ul>
-</li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#reducing-row-columnar-conversion-overhead">Reducing Row/Columnar Conversion Overhead</a><ul class="nav section-nav flex-column">
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#wide-or-deeply-nested-schemas">Wide or Deeply Nested Schemas</a></li>
-</ul>
-</li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#metrics-overhead">Metrics Overhead</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#explain-plan">Explain Plan</a></li>
 </ul>

@@ -557,7 +557,7 @@ directory with the filename <code class="docutils literal notranslate"><span cla
 selected and counts the bytes it has handed out. It counts only what Rust code allocated, so it can be compared against the
 memory pool’s reservations without the allocator’s own caching in the way. The same figure appears in
 the executor’s periodic memory usage log, which does not need tracing; see
-<a class="reference internal" href="../user-guide/latest/tuning.html#sizing-the-overhead-from-the-memory-usage-log"><span class="std std-ref">Sizing the Overhead from the Memory Usage Log</span></a>.</p>
+<a class="reference internal" href="../user-guide/latest/tuning/memory.html#sizing-the-overhead-from-the-memory-usage-log"><span class="std std-ref">Sizing the Overhead from the Memory Usage Log</span></a>.</p>
 <p>Enabling the <code class="docutils literal notranslate"><span class="pre">jemalloc</span></code> feature adds a second measure, <code class="docutils literal notranslate"><span class="pre">jemalloc_allocated</span></code>, which also includes
 jemalloc’s own metadata and fragmentation:</p>
 <div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>make<span class="w"> </span>release<span class="w"> </span><span class="nv">COMET_FEATURES</span><span class="o">=</span><span class="s2">"jemalloc"</span>

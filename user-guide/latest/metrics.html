@@ -69,7 +69,7 @@ under the License.
     <link rel="index" title="Index" href="../../genindex.html" />
     <link rel="search" title="Search" href="../../search.html" />
     <link rel="next" title="In-Memory Cache" href="in-memory-cache.html" />
-    <link rel="prev" title="Comet Tuning Guide" href="tuning.html" />
+    <link rel="prev" title="Understanding Comet Plans" href="understanding-comet-plans.html" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
@@ -571,10 +571,19 @@ under the License.
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Operating Comet</span></p>
 <ul class="current">
 <li class="toctree-l2"><a class="reference internal" href="understanding-comet-plans.html">Understanding Comet Plans</a></li>
-<li class="toctree-l2"><a class="reference internal" href="tuning.html">Tuning Guide</a></li>
 <li class="toctree-l2 current"><a class="current reference internal" href="#">Metrics Guide</a></li>
 <li class="toctree-l2"><a class="reference internal" href="in-memory-cache.html">In-Memory Cache</a></li>
 <li class="toctree-l2"><a class="reference internal" href="pyarrow-udfs.html">PyArrow UDF Acceleration</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Tuning</span></p>
+<ul>
+<li class="toctree-l2"><a class="reference internal" href="tuning.html">Overview</a></li>
+<li class="toctree-l2"><a class="reference internal" href="tuning/memory.html">Memory</a></li>
+<li class="toctree-l2"><a class="reference internal" href="tuning/shuffle.html">Shuffle</a></li>
+<li class="toctree-l2"><a class="reference internal" href="tuning/celeborn.html">Celeborn Shuffle</a></li>
+<li class="toctree-l2"><a class="reference internal" href="tuning/scans.html">Scans</a></li>
+<li class="toctree-l2"><a class="reference internal" href="tuning/operators.html">Operators</a></li>
+<li class="toctree-l2"><a class="reference internal" href="tuning/transitions.html">Row/Columnar Transitions</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Integrations</span></p>
 <ul>
@@ -901,7 +910,7 @@ the value would always be 0.</p>
 </thead>
 <tbody>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">rows</span> <span class="pre">bypassing</span> <span class="pre">partial</span> <span class="pre">aggregation</span></code></p></td>
-<td><p>Input rows passed through without partial aggregation. See <a class="reference internal" href="tuning.html#adaptive-partial-aggregation"><span class="std std-ref">Adaptive Partial Aggregation</span></a>.</p></td>
+<td><p>Input rows passed through without partial aggregation. See <a class="reference internal" href="tuning/operators.html#adaptive-partial-aggregation"><span class="std std-ref">Adaptive Partial Aggregation</span></a>.</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">number</span> <span class="pre">of</span> <span class="pre">spills</span></code></p></td>
 <td><p>Number of times the aggregate spilled to disk.</p></td>
@@ -924,7 +933,7 @@ the value would always be 0.</p>
 <section id="hash-joins">
 <h3>Hash Joins<a class="headerlink" href="#hash-joins" title="Link to this heading">#</a></h3>
 <p>With <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.join.dynamicFilter.enabled=true</span></code>, native broadcast and shuffled hash joins
-report these additional metric keys. See <a class="reference internal" href="tuning.html#join-runtime-filters"><span class="std std-ref">Join Runtime Filters</span></a> for
+report these additional metric keys. See <a class="reference internal" href="tuning/operators.html#join-runtime-filters"><span class="std std-ref">Join Runtime Filters</span></a> for
 eligibility and reader restrictions.</p>
 <div class="pst-scrollable-table-container"><table class="table">
 <thead>
@@ -1177,12 +1186,12 @@ filesystem or network traffic accounting.</p>
                   
 <div class="prev-next-area">
     <a class="left-prev"
-       href="tuning.html"
+       href="understanding-comet-plans.html"
        title="previous page">
       <i class="fa-solid fa-angle-left"></i>
       <div class="prev-next-info">
         <p class="prev-next-subtitle">previous</p>
-        <p class="prev-next-title">Comet Tuning Guide</p>
+        <p class="prev-next-title">Understanding Comet Plans</p>
       </div>
     </a>
     <a class="right-next"

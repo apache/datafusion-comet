@@ -579,7 +579,7 @@ and skips the remaining steps. Otherwise it:</p>
 <code class="docutils literal notranslate"><span class="pre">spark.sql.queryExecutionListeners</span></code> when <code class="docutils literal notranslate"><span class="pre">spark.comet.metrics.enabled=true</span></code>.</p></li>
 <li><p>Logs a warning for settings that are likely to cause problems, such as an unset <code class="docutils literal notranslate"><span class="pre">spark.executor.memoryOverhead</span></code>.</p></li>
 </ul>
-<p>The plugin does not change any executor memory setting. The <a class="reference internal" href="../user-guide/latest/tuning.html"><span class="std std-doc">Tuning Guide</span></a> covers how
+<p>The plugin does not change any executor memory setting. The <a class="reference internal" href="../user-guide/latest/tuning/memory.html"><span class="std std-doc">Memory Tuning</span></a> guide covers how
 to size them.</p>
 <p>When the driver or an executor stops, the plugin shuts down Comet’s native tokio runtime in that JVM.</p>
 <p><code class="docutils literal notranslate"><span class="pre">CometSparkSessionExtensions</span></code> can also be registered without the plugin, through <code class="docutils literal notranslate"><span class="pre">spark.sql.extensions</span></code> or

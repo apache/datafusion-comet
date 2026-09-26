@@ -571,10 +571,19 @@ under the License.
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Operating Comet</span></p>
 <ul>
 <li class="toctree-l2"><a class="reference internal" href="understanding-comet-plans.html">Understanding Comet Plans</a></li>
-<li class="toctree-l2"><a class="reference internal" href="tuning.html">Tuning Guide</a></li>
 <li class="toctree-l2"><a class="reference internal" href="metrics.html">Metrics Guide</a></li>
 <li class="toctree-l2"><a class="reference internal" href="in-memory-cache.html">In-Memory Cache</a></li>
 <li class="toctree-l2"><a class="reference internal" href="pyarrow-udfs.html">PyArrow UDF Acceleration</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Tuning</span></p>
+<ul>
+<li class="toctree-l2"><a class="reference internal" href="tuning.html">Overview</a></li>
+<li class="toctree-l2"><a class="reference internal" href="tuning/memory.html">Memory</a></li>
+<li class="toctree-l2"><a class="reference internal" href="tuning/shuffle.html">Shuffle</a></li>
+<li class="toctree-l2"><a class="reference internal" href="tuning/celeborn.html">Celeborn Shuffle</a></li>
+<li class="toctree-l2"><a class="reference internal" href="tuning/scans.html">Scans</a></li>
+<li class="toctree-l2"><a class="reference internal" href="tuning/operators.html">Operators</a></li>
+<li class="toctree-l2"><a class="reference internal" href="tuning/transitions.html">Row/Columnar Transitions</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Integrations</span></p>
 <ul>
@@ -928,7 +937,7 @@ omitted from the tables below and may be reconsidered based on demand:</p>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">ObjectHashAggregateExec</span></code></p></td>
 <td><p>✅</p></td>
-<td><p>Runs the object-buffer aggregates Comet supports, such as <code class="docutils literal notranslate"><span class="pre">collect_list</span></code>, <code class="docutils literal notranslate"><span class="pre">collect_set</span></code>, <code class="docutils literal notranslate"><span class="pre">percentile</span></code>, <code class="docutils literal notranslate"><span class="pre">approx_percentile</span></code>, <code class="docutils literal notranslate"><span class="pre">mode</span></code>, <code class="docutils literal notranslate"><span class="pre">bloom_filter_agg</span></code>, and (Spark 4.0+) <code class="docutils literal notranslate"><span class="pre">listagg</span></code>. Falls back when Comet shuffle is disabled, which would otherwise split the aggregate across Comet and Spark. See <a class="reference internal" href="tuning.html#shuffle"><span class="std std-ref">Shuffle</span></a>.</p></td>
+<td><p>Runs the object-buffer aggregates Comet supports, such as <code class="docutils literal notranslate"><span class="pre">collect_list</span></code>, <code class="docutils literal notranslate"><span class="pre">collect_set</span></code>, <code class="docutils literal notranslate"><span class="pre">percentile</span></code>, <code class="docutils literal notranslate"><span class="pre">approx_percentile</span></code>, <code class="docutils literal notranslate"><span class="pre">mode</span></code>, <code class="docutils literal notranslate"><span class="pre">bloom_filter_agg</span></code>, and (Spark 4.0+) <code class="docutils literal notranslate"><span class="pre">listagg</span></code>. Falls back when Comet shuffle is disabled, which would otherwise split the aggregate across Comet and Spark. See <a class="reference internal" href="tuning/shuffle.html"><span class="std std-doc">Shuffle</span></a>.</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">SortAggregateExec</span></code></p></td>
 <td><p>🔜</p></td>
