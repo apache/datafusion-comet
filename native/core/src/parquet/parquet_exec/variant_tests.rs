@@ -159,6 +159,7 @@ async fn scan_variant_file(filename: PathBuf) -> VariantArray {
         false,
         false,
         false,
+        false, // binary_as_string
         &session_ctx,
         false,
         false,
@@ -224,6 +225,7 @@ async fn unread_variant_does_not_override_arrow_schema_hint() {
         false,
         false,
         false,
+        false, // binary_as_string
         &session,
         false,
         false,
@@ -254,6 +256,7 @@ fn encrypted_projected_variant_is_rejected_before_reader_creation() {
         false,
         false,
         false,
+        false, // binary_as_string
         &session,
         true,
         false,
