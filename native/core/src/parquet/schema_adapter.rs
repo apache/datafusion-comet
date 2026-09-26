@@ -18,7 +18,8 @@
 use crate::parquet::cast_column::CometCastColumnExpr;
 use crate::parquet::name_fold::{fold_name, fold_names, fold_schema_names};
 use crate::parquet::parquet_support::{
-    duplicate_parquet_field_error, match_struct_fields, spark_parquet_convert, SparkParquetOptions,
+    duplicate_parquet_field_error, field_id, field_names_with_id, match_struct_fields,
+    spark_parquet_convert, SparkParquetOptions,
 };
 use arrow::array::new_empty_array;
 use arrow::compute::can_cast_types;
@@ -36,7 +37,7 @@ use datafusion_physical_expr_adapter::{
     replace_columns_with_literals, DefaultPhysicalExprAdapterFactory, PhysicalExprAdapter,
     PhysicalExprAdapterFactory,
 };
-use parquet::{arrow::PARQUET_FIELD_ID_META_KEY, variant::VariantType};
+use parquet::variant::VariantType;
 use std::collections::{HashMap, HashSet};
 use std::fmt::{self, Display};
 use std::hash::{Hash, Hasher};
@@ -68,18 +69,10 @@ impl SparkPhysicalExprAdapterFactory {
     }
 }
 
-/// Read the Parquet field id stored under arrow-rs's `PARQUET_FIELD_ID_META_KEY`.
-fn parse_field_id(field: &Field) -> Option<i32> {
-    field
-        .metadata()
-        .get(PARQUET_FIELD_ID_META_KEY)
-        .and_then(|v| v.parse::<i32>().ok())
-}
-
 /// True when a root field of `schema` carries a field id. Root only on purpose: it gates the
 /// root name remap, and Spark's `clipParquetGroupFields` decides id matching one level at a time.
 fn any_root_field_has_id(schema: &SchemaRef) -> bool {
-    schema.fields().iter().any(|f| parse_field_id(f).is_some())
+    schema.fields().iter().any(|f| field_id(f).is_some())
 }
 
 /// Returns true when casting `physical_type` to `target_type` is a *pure* structural
@@ -121,9 +114,7 @@ fn is_pure_structural_narrowing(
             // Comet matches by Parquet field id first when the target carries one;
             // DataFusion's generic cast has no field-id concept, so any field-id-bearing
             // target field is a potential divergence.
-            if parquet_options.use_field_id
-                && target_fields.iter().any(|f| parse_field_id(f).is_some())
-            {
+            if parquet_options.use_field_id && target_fields.iter().any(|f| field_id(f).is_some()) {
                 return Ok(false);
             }
             // Fold the source field names once (O(sources), not O(targets x sources)), matching
@@ -214,7 +205,7 @@ fn remap_physical_schema(
     let mut id_to_phys_names: HashMap<i32, Vec<String>> = HashMap::new();
     if should_match_by_id {
         for pf in physical_schema.fields() {
-            if let Some(id) = parse_field_id(pf) {
+            if let Some(id) = field_id(pf) {
                 id_to_phys_names
                     .entry(id)
                     .or_default()
@@ -222,15 +213,14 @@ fn remap_physical_schema(
             }
         }
         for lf in logical_schema.fields() {
-            if let Some(id) = parse_field_id(lf) {
+            if let Some(id) = field_id(lf) {
                 if let Some(matches) = id_to_phys_names.get(&id) {
                     if matches.len() > 1 {
-                        return Err(DataFusionError::External(Box::new(
-                            SparkError::DuplicateFieldByFieldId {
-                                required_id: id,
-                                matched_fields: matches.join(", "),
-                            },
-                        )));
+                        return Err(SparkError::DuplicateFieldByFieldId {
+                            required_id: id,
+                            matched_fields: field_names_with_id(physical_schema.fields(), id),
+                        }
+                        .into());
                     }
                 }
             }
@@ -241,7 +231,7 @@ fn remap_physical_schema(
     let id_to_logical: HashMap<i32, &FieldRef> = if should_match_by_id {
         let mut map = HashMap::new();
         for lf in logical_schema.fields() {
-            if let Some(id) = parse_field_id(lf) {
+            if let Some(id) = field_id(lf) {
                 map.entry(id).or_insert(lf);
             }
         }
@@ -263,7 +253,7 @@ fn remap_physical_schema(
         .fields()
         .iter()
         .zip(&logical_folded)
-        .filter(|(field, _)| should_match_by_id && parse_field_id(field).is_some())
+        .filter(|(field, _)| should_match_by_id && field_id(field).is_some())
         .map(|(_, name)| name)
         .collect();
     let mut occupied_names = HashSet::new();
@@ -277,7 +267,7 @@ fn remap_physical_schema(
         .map(|(phys_idx, field)| {
             // ID match first when the logical schema is ID-bearing.
             if should_match_by_id {
-                if let Some(phys_id) = parse_field_id(field) {
+                if let Some(phys_id) = field_id(field) {
                     if let Some(logical_field) = id_to_logical.get(&phys_id) {
                         if logical_field.name() != field.name() {
                             name_map.insert(logical_field.name().clone(), field.name().clone());
@@ -322,7 +312,7 @@ fn remap_physical_schema(
                     .iter()
                     .enumerate()
                     .find(|(j, lf)| {
-                        let lf_has_id = should_match_by_id && parse_field_id(lf).is_some();
+                        let lf_has_id = should_match_by_id && field_id(lf).is_some();
                         !lf_has_id && logical_folded[*j] == physical_folded[phys_idx]
                     })
                     .map(|(_, lf)| lf);
@@ -947,7 +937,7 @@ impl PhysicalExprAdapterFactory for SparkPhysicalExprAdapterFactory {
                     .fields()
                     .iter()
                     .zip(&logical_folded)
-                    .filter(|(lf, _)| parse_field_id(lf).is_some())
+                    .filter(|(lf, _)| field_id(lf).is_some())
                     .map(|(_, folded)| folded.clone())
                     .collect::<HashSet<String>>(),
             )
@@ -967,14 +957,14 @@ impl PhysicalExprAdapterFactory for SparkPhysicalExprAdapterFactory {
                 .fields()
                 .iter()
                 .filter(|f| duplicate_names.contains(f.name()))
-                .filter_map(|f| parse_field_id(f).map(|id| (id, f.name().clone())))
+                .filter_map(|f| field_id(f).map(|id| (id, f.name().clone())))
                 .collect();
             logical_file_schema
                 .fields()
                 .iter()
                 .zip(&logical_folded)
                 .filter_map(|(field, folded)| {
-                    parse_field_id(field)
+                    field_id(field)
                         .and_then(|id| duplicated_ids.get(&id))
                         .map(|name| (folded.clone(), name.clone()))
                 })
@@ -1042,6 +1032,15 @@ struct SparkPhysicalExprAdapter {
     /// Folded logical name -> byte-identical duplicate physical name. Populated only when
     /// matching by field ID, then checked before the ID-resolved name skip so decoded duplicate
     /// roots still fail.
+    ///
+    /// This rejects a read even when the requested id is unambiguous, say `a (id 1)` from a
+    /// file holding `a (id 1)`, `a (id 2)` and `b (id 3)`, where Spark's `matchIdField` finds
+    /// exactly one field. The rejection protects the decoder rather than diverging from a
+    /// Spark behaviour Comet could match: with this guard removed Comet returns two rows from
+    /// that one-row file for either id, Spark's vectorized reader returns id 1's value for
+    /// both ids, and parquet-mr fails outright, all from the name-based leaf lookup #5964
+    /// describes. `CometNativeReaderSuite` "duplicate Parquet field names - root group and
+    /// unprojected root duplicates" pins the rejection end to end.
     id_duplicate_roots: HashMap<String, String>,
     /// `logical_file_schema` field names pre-folded once (see `fold_names`), parallel to
     /// `logical_file_schema.fields()`. Lets the per-column rewrite fallbacks match by folded name
@@ -1623,7 +1622,7 @@ impl PhysicalExpr for RejectOnNonEmpty {
 }
 
 #[cfg(test)]
-mod test {
+pub(crate) mod test {
     use crate::parquet::cast_column::CometCastColumnExpr;
     use crate::parquet::parquet_support::SparkParquetOptions;
     use crate::parquet::schema_adapter::{
@@ -3822,7 +3821,7 @@ mod test {
         )
     }
 
-    fn struct_type_with_field_id(fields: Vec<(&str, DataType, i32)>) -> DataType {
+    pub(crate) fn struct_type_with_field_id(fields: Vec<(&str, DataType, i32)>) -> DataType {
         DataType::Struct(
             fields
                 .into_iter()
@@ -4161,5 +4160,63 @@ mod test {
         let physical = struct_type(vec![("ID", DataType::Int64)]);
         let target = struct_type(vec![("id", DataType::Int64)]);
         assert!(!is_pure_structural_narrowing(&physical, &target, &opts).unwrap());
+    }
+
+    /// A requested schema that repeats an id is declined at planning time and never reaches
+    /// the native scan, so the duplicate can only sit in the file. The file holds `s` with
+    /// `x` and `y` both carrying id 1 beside `z` with id 2, and the read asks for `x` (id 1),
+    /// `y` (id 3) and `z` (id 2). Read positionally the names line up and all three values
+    /// come back, but Spark's `clipParquetSchema` raises because requested id 1 resolves to
+    /// two file fields. The check runs when the file schema is mapped, before any value is
+    /// handed back.
+    #[tokio::test]
+    async fn parquet_duplicate_file_field_id_rejected_when_requested() {
+        let file_type = struct_type_with_field_id(vec![
+            ("x", DataType::Int64, 1),
+            ("y", DataType::Int64, 1),
+            ("z", DataType::Int64, 2),
+        ]);
+        let requested_type = struct_type_with_field_id(vec![
+            ("x", DataType::Int64, 1),
+            ("y", DataType::Int64, 3),
+            ("z", DataType::Int64, 2),
+        ]);
+        let DataType::Struct(file_fields) = &file_type else {
+            unreachable!()
+        };
+        let file_schema = Arc::new(Schema::new(vec![
+            Field::new("s", file_type.clone(), true).with_metadata(id_meta("10"))
+        ]));
+        let required_schema = Arc::new(Schema::new(vec![
+            Field::new("s", requested_type, true).with_metadata(id_meta("10"))
+        ]));
+        let children: Vec<Arc<dyn arrow::array::Array>> = vec![
+            Arc::new(Int64Array::from(vec![42])),
+            Arc::new(Int64Array::from(vec![43])),
+            Arc::new(Int64Array::from(vec![44])),
+        ];
+        let col = Arc::new(arrow::array::StructArray::new(
+            file_fields.clone(),
+            children,
+            None,
+        )) as Arc<dyn arrow::array::Array>;
+        let batch = RecordBatch::try_new(file_schema, vec![col]).unwrap();
+
+        let mut opts = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
+        opts.use_field_id = true;
+
+        let err = match scan_parquet(&batch, required_schema, opts) {
+            Ok(mut stream) => stream
+                .next()
+                .await
+                .unwrap()
+                .expect_err("requested id 1 matches two file fields and must error"),
+            Err(err) => err,
+        };
+        let msg = err.to_string();
+        assert!(
+            msg.contains("_LEGACY_ERROR_TEMP_2094") && msg.contains("id=1 matches [x, y]"),
+            "expected duplicate field id error, got: {msg}"
+        );
     }
 }

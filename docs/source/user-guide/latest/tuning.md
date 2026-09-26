@@ -23,13 +23,11 @@ Comet provides some tuning options to help you get the best performance from you
 
 ## Configuring Tokio Runtime
 
-Comet uses a global tokio runtime per executor process using tokio's defaults of one worker thread per core and a
-maximum of 512 blocking threads. These values can be overridden using the environment variables `COMET_WORKER_THREADS`
-and `COMET_MAX_BLOCKING_THREADS`.
-
-It is recommended that `COMET_WORKER_THREADS` be set to the number of executor cores. This may not be necessary
-in some environments, such as Kubernetes, where the number of cores allocated to a pod will already be equal to the
-number of executor cores.
+Comet uses a global tokio runtime per executor process. By default it starts one worker thread per executor core
+(`spark.executor.cores`, or the thread count of `local[N]` and `local[*]` masters) and allows up to 512 blocking
+threads, which is tokio's default. If `spark.executor.cores` is not set outside local mode, Comet starts a single
+worker thread. These values can be overridden using the environment variables `COMET_WORKER_THREADS` and
+`COMET_MAX_BLOCKING_THREADS`.
 
 ## Adaptive Partial Aggregation
 
@@ -432,13 +430,17 @@ back to Spark for shuffle operations.
 #### Native Shuffle
 
 Comet provides a fully native shuffle implementation, which generally provides the best performance. Native shuffle
-supports `HashPartitioning`, `RangePartitioning` and `SinglePartitioning` but currently only supports primitive type
-partitioning keys. Columns that are not partitioning keys may contain complex types like maps, structs, and arrays.
+supports `HashPartitioning`, `RangePartitioning`, and `SinglePartition`, plus `RoundRobinPartitioning` when enabled
+(see [Round-Robin Partitioning](compatibility/operators.md#round-robin-partitioning)). Range partitioning keys must be
+scalar types. Hash partitioning keys must be scalar types unless
+`spark.comet.shuffle.native.partitioning.hash.nested.enabled=true`, which also admits struct, array, and (Spark 4.0
+and later) map keys. That setting is disabled by default until the performance of the nested hashing paths has been
+measured. Columns that are not partitioning keys may contain complex types like maps, structs, and arrays.
 
 #### Columnar (JVM) Shuffle
 
 Comet Columnar shuffle is JVM-based and supports `HashPartitioning`, `RoundRobinPartitioning`, `RangePartitioning`, and
-`SinglePartitioning`. This shuffle implementation supports complex data types as partitioning keys.
+`SinglePartition`. This shuffle implementation supports complex data types as partitioning keys.
 
 By default, Comet will convert a Spark `ShuffleExchangeExec` to columnar shuffle even when the shuffle's child is a
 non-Comet (Spark) plan. The benefit is that the next query stage can start as native Comet execution, since the
@@ -450,10 +452,11 @@ on Spark.
 
 #### Automatic Revert to Spark Shuffle
 
-When a Comet columnar shuffle ends up between two non-Comet operators (for example, a partial/final hash aggregate
-pair that Comet could not convert), Comet reverts it to Spark's built-in shuffle. Keeping columnar shuffle between
-two row-based operators would add `row -> Arrow -> shuffle -> Arrow -> row` conversions with no Comet consumer on
-either side to benefit from columnar output.
+When a Comet columnar shuffle ends up between a partial and a final aggregate that Comet could not convert (both
+remain Spark `HashAggregateExec` or `ObjectHashAggregateExec` operators), Comet reverts it to Spark's built-in shuffle.
+Keeping columnar shuffle between the two row-based aggregates would add `row -> Arrow -> shuffle -> Arrow -> row`
+conversions with no Comet consumer on either side to benefit from columnar output. Other shuffles between non-Comet
+operators are not reverted.
 
 This shifts the affected shuffles from Comet's off-heap memory pool back to the JVM execution memory pool. Clusters
 tuned for a small JVM heap may see `ExternalSorter` spills on queries where this revert fires. Shuffle I/O may also
@@ -464,7 +467,7 @@ Each revert is logged at `INFO` level on the driver as `Reverting Comet columnar
 
 This optimization is enabled by default and can be disabled by setting
 `spark.comet.shuffle.revertRedundantColumnar.enabled=false`, in which case Comet will keep the columnar shuffle
-even when both its parent and child are non-Comet operators.
+even when both of those aggregates run on Spark.
 
 ### Remote Shuffle with Celeborn
 
@@ -562,26 +565,28 @@ repeated columnar-to-row and row-to-columnar conversions that dominate stage run
 `spark.comet.exec.transitionRevert.enabled=true` to have Comet revert the entire stage to Spark row execution
 when the number of columnar-to-row transitions exceeds
 `spark.comet.exec.transitionRevert.maxTransitions` (default `2`). This trades native execution of a small
-subset of operators for eliminating conversion overhead across the stage.
+subset of operators for eliminating conversion overhead across the stage. A stage is not reverted when it holds a
+native aggregate whose intermediate buffer Spark cannot exchange with Comet across a stage boundary, because
+reverting it would split that aggregate between the two engines.
 
-### Entire-Plan Fallback for Wide or Deeply Nested Schemas
+### Wide or Deeply Nested Schemas
 
 The cost of each conversion also grows sharply with schema shape: for wide or deeply nested schemas,
 columnar-to-row conversion is especially expensive because the conversion work scales with the number of
 columns and nested fields. If profiling shows these conversions dominating a query over such a schema, set
 `spark.comet.exec.transitionRevert.enabled=true` and lower
-`spark.comet.exec.transitionRevert.maxTransitions` (default `2`) to `1`. Note that this causes the entire
-plan to fall back to Spark row-based execution — Comet removes its native operators rather than running a
+`spark.comet.exec.transitionRevert.maxTransitions` (default `2`) to `1`. Note that this reverts every stage that
+exceeds the threshold to Spark row-based execution — Comet removes the stage's native operators rather than running a
 mix of native and fallback operators joined by repeated conversions — which can be cheaper than paying the
 expensive conversions again and again.
 
 ## Metrics Overhead
 
-Comet exposes rich native operator metrics for observability (see [Metrics](metrics.md)), but they are
-disabled by default because traversing the Spark plan on every task adds measurable overhead, and metrics
-require an external sink (for example Prometheus) to be useful. Enable them with
-`spark.comet.metrics.enabled=true` when you have a metrics sink configured. This setting must be applied
-before the `SparkSession` is created.
+The SQL metrics described in [Metrics](metrics.md) are always collected. Setting `spark.comet.metrics.enabled=true`
+additionally publishes plan-coverage counters (`operators.native`, `operators.spark`, `queries.planned`,
+`transitions`, and `acceleration.ratio`) through Spark's metrics system under the `comet` source. It is disabled by
+default because it walks every executed plan on the driver after each query, and the counters are only useful with an
+external sink (for example Prometheus) configured. This setting must be applied before the `SparkSession` is created.
 
 ## Explain Plan
 
