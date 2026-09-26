@@ -206,10 +206,17 @@ Points where Comet adapts iceberg-rust to match iceberg-java:
 - **Location generation.** `CometLocationGenerator` (`iceberg_partition_path.rs`) replaces
   iceberg-rust's `DefaultLocationGenerator` and renders partition directories the way iceberg-java's
   `PartitionSpec.partitionToPath` does. iceberg-rust's own rendering differs for several types, and
-  panics for pre-1970 `timestamptz`. Float and double values use Comet's Java `Double.toString`
-  renderer (`java_float_string`), shared with `cast(float as string)`. The partition type is
-  resolved once when the generator is built, because `LocationGenerator::generate_location` cannot
-  return an error.
+  panics for pre-1970 `timestamptz` and for dates past `chrono`'s calendar. Float and double values
+  use Comet's Java `Double.toString` renderer (`java_float_string`), shared with
+  `cast(float as string)`. The partition type is resolved once when the generator is built, because
+  `LocationGenerator::generate_location` cannot return an error.
+- **Partition values.** `PartitionValueCalculator` (`iceberg_partition_value.rs`) replaces
+  iceberg-rust's calculator of the same name, and `PartitionSplitter` replaces its
+  `RecordBatchPartitionSplitter`. `year` and `month` go through Comet's `iceberg_years` /
+  `iceberg_months` kernels, the ones the sort in front of a clustered write runs. iceberg-rust
+  computes them with Arrow's `date_part`, which returns NULL past `chrono`'s calendar
+  ([#6145](https://github.com/apache/datafusion-comet/issues/6145)). Every other transform stays on
+  iceberg-rust.
 - **File names.** `file_name_prefix` embeds the partition id, the task attempt id and the operation
   id, so a retried or speculative attempt never reuses another attempt's file names.
 - **Row pacing.** iceberg-java's rolling writer checks the target file size every 1000 rows of the
@@ -320,7 +327,7 @@ the writer: run the write suites and the Iceberg Spark tests. The pin policy is 
 | `CometIcebergSystemFunctionSuite`                                | Native `bucket`, `truncate`, `years`/`months`/`days`/`hours`, which keep a partitioned write's hash distribution and sort native end to end.                                                |
 | `CometIcebergRewriteActionSuite`                                 | Iceberg's `rewrite_data_files` with the split plan and the native writer.                                                                                                                   |
 | `IcebergWriteProtoTranslationSuite`                              | Translation of properties into `IcebergParquetWriteSettings` and the writer mode.                                                                                                           |
-| Rust tests in `iceberg_write.rs` and `iceberg_partition_path.rs` | File rolling on the 1000-row grid, fanout order, clustered input checks, cleanup guard, manifest round trip, partition path rendering.                                                      |
+| Rust tests in `iceberg_write.rs` and in `iceberg_partition_*.rs` | File rolling on the 1000-row grid, fanout order, clustered input checks, cleanup guard, manifest round trip, partition path rendering, partition values past `chrono`'s calendar.           |
 | `CometIcebergWriteBenchmark`                                     | Native versus iceberg-java for unpartitioned, clustered, fanout and copy-on-write delete writes. It checks each arm's plan before timing it.                                                |
 
 The Comet suites run against the Iceberg version each Spark profile pins in `spark/pom.xml`: 1.5.2
@@ -365,6 +372,10 @@ Each of these has caused a bug on this path:
 - **Map iteration order leaks.** It reaches file names, manifest order and read order.
 - **Values that compare equal in Rust may not in Java.** Signed zeros and NaN under `OrderedFloat`,
   and string or float rendering in partition paths.
+- **`chrono` stops at year 262142.** A Spark date reaches year 5881580 and a timestamp year 294247,
+  and iceberg-java handles all of them. Code that goes through `chrono`, including Arrow's
+  `date_part`, panics or returns NULL past that
+  ([#6145](https://github.com/apache/datafusion-comet/issues/6145)).
 - **Partition evolution leaves `void` fields behind.** A v1 spec keeps a dropped partition field as
   a `void` transform, whose source column may later be dropped from the schema. Resolving the spec
   against the schema then fails

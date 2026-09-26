@@ -1262,6 +1262,82 @@ class CometIcebergWriteActionSuite
     }
   }
 
+  // https://github.com/apache/datafusion-comet/issues/6145. iceberg-rust splits the calendar with
+  // `chrono`, which stops at year 262142, while a Spark date reaches year 5881580 and a timestamp
+  // year 294247. Past that, rendering a `days` or identity-date partition directory panicked the
+  // task, and `years` / `months` came back as NULL partition values, committed without an error.
+  // Both writers run in both modes: the fanout writer and the clustered one behind Iceberg's sort.
+  test("native acceleration: partitions past year 262142 match iceberg-java") {
+    assumeNativeAcceleration()
+    withIcebergCatalog { warehouseDir =>
+      // `date_from_unix_date(100000000)` and `timestamp_micros(9000000000000000000)` from the
+      // issue, their negations, and both ends of Spark's date and timestamp domains.
+      val values = Seq(
+        (1, "100000000", "9000000000000000000L"),
+        (2, "-100000000", "-9000000000000000000L"),
+        (3, "2147483647", "9223372036854775807L"),
+        (4, "-2147483647 - 1", "-9223372036854775807L - 1L"))
+        .map { case (id, days, micros) =>
+          val d = s"date_from_unix_date($days)"
+          val ts = s"timestamp_micros($micros)"
+          s"($id, $d, $d, $d, $d, $ts, $ts, $ts, $ts)"
+        }
+        .mkString(", ")
+      Seq("false", "true").foreach { fanout =>
+        val (nativeTable, jvmTable) = (s"far_native_$fanout", s"far_jvm_$fanout")
+        Seq(nativeTable, jvmTable).foreach { table =>
+          // One source column per time transform, which is all Iceberg allows.
+          spark.sql(s"""
+            CREATE TABLE $catalog.$ns.$table (
+              id INT, d_ident DATE, d_day DATE, d_month DATE, d_year DATE,
+              ts_hour TIMESTAMP, ts_day TIMESTAMP, ts_month TIMESTAMP, ts_year TIMESTAMP)
+            USING iceberg
+            PARTITIONED BY (d_ident, days(d_day), months(d_month), years(d_year),
+              hours(ts_hour), days(ts_day), months(ts_month), years(ts_year))
+            TBLPROPERTIES ('write.spark.fanout.enabled'='$fanout')
+          """)
+        }
+        assertNativeWriteEngages(nativeTable, Seq(1, 2, 3, 4)) {
+          spark.sql(s"INSERT INTO $catalog.$ns.$nativeTable VALUES $values")
+        }
+        spark.sql(s"INSERT INTO $catalog.$ns.$jvmTable VALUES $values")
+
+        val nativeDirs = partitionDirs(warehouseDir, nativeTable)
+        assert(nativeDirs == partitionDirs(warehouseDir, jvmTable), s"native: $nativeDirs")
+        assert(
+          nativeDirs.contains(
+            "d_ident=275760-09-13/d_day_day=275760-09-13/d_month_month=275760-09/" +
+              "d_year_year=275760/ts_hour_hour=-202799-02-07-00/ts_day_day=287168-08-24/" +
+              "ts_month_month=287168-08/ts_year_year=287168"),
+          s"native: $nativeDirs")
+
+        // The committed partition values, not just their spelling in the path.
+        def partitionValues(table: String): Seq[String] = spark
+          .sql(s"SELECT CAST(partition AS STRING) FROM $catalog.$ns.$table.files")
+          .collect()
+          .map(_.getString(0))
+          .toSeq
+          .sorted
+        assert(
+          partitionValues(nativeTable) == partitionValues(jvmTable),
+          s"native: ${partitionValues(nativeTable)}")
+        assert(!partitionValues(nativeTable).exists(_.contains("null")))
+
+        // `java.sql.Date` cannot hold these dates (`collect` overflows rebasing them), so read
+        // them back as `LocalDate` and `Instant`.
+        Seq("true", "false").foreach { cometEnabled =>
+          withSQLConf(
+            CometConf.COMET_ENABLED.key -> cometEnabled,
+            SQLConf.DATETIME_JAVA8API_ENABLED.key -> "true") {
+            def rows(table: String): Seq[Row] =
+              spark.sql(s"SELECT * FROM $catalog.$ns.$table ORDER BY id").collect().toSeq
+            assert(rows(nativeTable) == rows(jvmTable), s"comet=$cometEnabled")
+          }
+        }
+      }
+    }
+  }
+
   // iceberg-java's `UpdatePartitionSpec` keeps a dropped partition field in a format-version-1
   // spec as a `void` transform so its field id survives, and `PartitionSpec#isUnpartitioned` is
   // "every field is void", not "no fields". The next write therefore runs through the

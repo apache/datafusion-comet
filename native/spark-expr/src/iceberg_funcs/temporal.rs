@@ -34,7 +34,7 @@
 //! `LocalDate`, which Iceberg uses, covers all of it, so going through `chrono` would turn values
 //! the JVM handles into execution errors.
 
-use super::{apply_unary, unsupported_type};
+use super::{apply_to_array, apply_unary, unsupported_type};
 use arrow::array::{ArrayRef, AsArray, Int32Array};
 use arrow::datatypes::{DataType, Date32Type, Int32Type, TimeUnit, TimestampMicrosecondType};
 use datafusion::common::{utils::take_function_args, Result};
@@ -188,6 +188,13 @@ impl SparkIcebergTemporalTransform {
 
     pub fn hours() -> Self {
         Self::new(TemporalUnit::Hours)
+    }
+
+    /// Applies the transform to a whole column, for callers outside DataFusion's function
+    /// machinery. The native Iceberg writer computes its `year` and `month` partition values with
+    /// it, because iceberg-rust's own transforms return NULL past `chrono`'s range.
+    pub fn transform(&self, array: &ArrayRef) -> Result<ArrayRef> {
+        apply_to_array(array, |array| transform_array(self.unit, array))
     }
 }
 
