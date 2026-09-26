@@ -50,6 +50,11 @@ The status column uses these values:
   - Affected expressions: `date_format`, `from_unixtime`, `unix_timestamp`, `to_unix_timestamp`, `to_timestamp`, `to_timestamp_ntz`, `to_date`, `try_to_date` (Spark 4.1+), `try_to_timestamp` (Spark 3.4+)
   - Spark versions checked: 3.4.3, 3.5.8, 4.0.1, 4.1.2
   - Date: 2026-07-18
+- `spark.sql.parquet.binaryAsString`
+  - Default: `false`
+  - Status: Native (see notes)
+  - Affected operator: native Parquet scan
+  - Date: 2026-09-26
 
 ## Audit Notes
 
@@ -150,3 +155,34 @@ Comet bugs were uncovered by the original audit. The `try_to_timestamp` policy t
 use the default `query` mode to enforce both result correctness and execution within
 the Comet pipeline. Tests for expressions with known fallback paths continue to use
 `query spark_answer_only`.
+
+### `spark.sql.parquet.binaryAsString`
+
+**Source.** When enabled, Spark infers unannotated Parquet `BINARY` columns as
+`StringType`. Parquet files written by Spark carry Spark schema metadata, so this
+configuration does not change the types inferred for those files.
+
+**Comet status.** Comet honors the configuration in the native Parquet scan. When it is
+enabled, unannotated Parquet `BINARY` columns inferred by Spark as `StringType` are read
+as Arrow `Binary` and decoded to valid UTF-8 at the scan boundary using Spark-compatible
+replacement semantics. Keeping the Parquet read type binary avoids rejecting arbitrary
+bytes before they reach that decoder. The default `false` value continues to return
+unannotated `BINARY` columns as `BinaryType`.
+
+**Test coverage.** `ParquetReadV1Suite` writes a raw Parquet file without Spark schema
+metadata and verifies the inferred schema under both configuration values. It also
+asserts that both values use `CometNativeScanExec`, including a row containing invalid
+UTF-8 bytes and a projection that reads only a non-string column.
+
+**Known divergences.** Decoding is not byte-preserving, so the differences described in
+[Strings with non-UTF-8 bytes](../user-guide/latest/compatibility/index.md) apply to any
+malformed value this configuration surfaces: byte-level round trips, `octet_length`,
+hashing, and value identity, where two distinct malformed sequences both become `U+FFFD`.
+This is the same trade-off taken by `CAST(binary AS string)` (#4763) and by the FFI import
+boundary (#5310).
+
+**Known limitation.** Parquet filter pushdown is skipped while this configuration is
+enabled, because filter expressions are built against the output `Utf8` schema and are not
+yet rewritten against the `Binary` read schema. Results stay correct because Spark's
+`Filter` above the scan re-evaluates every data filter, but a scan that would otherwise
+prune row groups does not.

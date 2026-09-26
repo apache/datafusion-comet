@@ -179,6 +179,10 @@ message NativeScanCommon {
   // True when Spark supplied a Parquet data filter, including when Comet could
   // not serialize any of those filters into data_filters.
   bool has_data_filters = 19;
+  // Spark infers unannotated Parquet BINARY columns as StringType when
+  // spark.sql.parquet.binaryAsString is enabled. The native reader keeps those
+  // values as Binary until a Spark-compatible UTF-8 decode at the scan boundary.
+  bool binary_as_string = 20;
 }
 
 message NativeScan {

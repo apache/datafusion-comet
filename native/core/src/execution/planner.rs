@@ -1733,6 +1733,7 @@ impl PhysicalPlanner {
                     common.return_null_struct_if_all_fields_missing,
                     common.allow_type_promotion,
                     common.allow_timestamp_ltz_to_ntz,
+                    common.binary_as_string,
                     self.session_ctx(),
                     common.encryption_enabled,
                     common.use_field_id,
