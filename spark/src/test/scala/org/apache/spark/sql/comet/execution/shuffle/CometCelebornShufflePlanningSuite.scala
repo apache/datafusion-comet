@@ -604,15 +604,14 @@ class CometCelebornShufflePlanningSuite extends CometTestBase {
             val nativeAggregates = collect(executedPlan) {
               case aggregate: CometHashAggregateExec => aggregate
             }
-            if (function == "count") {
-              // COUNT's non-null Long buffer is safe for Spark Final to consume.
+            if (function == "count" || function == "avg") {
+              // COUNT and repaired non-decimal AVG emit Spark-compatible partial buffers.
               assert(nativeAggregates.size == 1, s"$executedPlan")
               assert(nativeAggregates.head.modes == Seq(Partial), s"$executedPlan")
             } else {
               // A Spark final cannot deserialize Comet's ArrayType collect_list/collect_set
-              // state as BinaryType, or safely merge AVG's never-updated (null, 0) buffer.
-              // Both halves must agree when the exchange falls back, not just when an
-              // aggregate operator itself is unsupported.
+              // state as BinaryType. Both halves must agree when the exchange falls back,
+              // not just when an aggregate operator itself is unsupported.
               assert(nativeAggregates.isEmpty, s"$executedPlan")
             }
           }
