@@ -80,6 +80,8 @@ Comet needs two things configured: an off-heap pool for it to draw its reservati
 overhead to cover the part of its footprint that no pool tracks. See [Configuring Comet Memory] and
 [Configuring Executor Memory Overhead].
 
+![Spark and Comet both use the JVM heap and share the off-heap memory pool, and the rest of Comet's native memory has to fit in the executor's memory overhead](../../_static/images/comet-executor-memory.svg)
+
 [Determining How Much Memory to Allocate]: #determining-how-much-memory-to-allocate
 [Configuring Comet Memory]: #configuring-comet-memory
 [Configuring Executor Memory Overhead]: #configuring-executor-memory-overhead
