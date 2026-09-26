@@ -16,6 +16,7 @@
 // under the License.
 
 use std::{
+    collections::HashMap,
     fmt::{Debug, Display, Formatter, Result as FmtResult},
     sync::Arc,
 };
@@ -41,7 +42,21 @@ pub struct CometFairMemoryPool {
 
 struct CometFairPoolState {
     used: usize,
-    num: usize,
+    /// Bytes held by each registered consumer, keyed by [`MemoryConsumer::id`]. The sibling
+    /// reservations that `new_empty()`, `split()` and `take()` create belong to the same consumer,
+    /// so they count against one share. The pool keeps these totals itself because
+    /// `reservation.size()` covers only one reservation, and DataFusion updates it after calling
+    /// `try_grow` but before calling `shrink`.
+    consumers: HashMap<usize, usize>,
+}
+
+impl CometFairPoolState {
+    /// The bytes held by `reservation`'s consumer across all of its reservations.
+    fn consumer_used(&mut self, reservation: &MemoryReservation) -> &mut usize {
+        self.consumers
+            .get_mut(&reservation.consumer().id())
+            .expect("reservation's consumer is not registered with the pool")
+    }
 }
 
 impl Debug for CometFairMemoryPool {
@@ -50,7 +65,7 @@ impl Debug for CometFairMemoryPool {
         f.debug_struct("CometFairMemoryPool")
             .field("pool_size", &self.pool_size)
             .field("used", &state.used)
-            .field("num", &state.num)
+            .field("num", &state.consumers.len())
             .field("overcommit", &self.spark.overcommit())
             .finish()
     }
@@ -72,7 +87,10 @@ impl CometFairMemoryPool {
         Self {
             spark,
             pool_size,
-            state: Mutex::new(CometFairPoolState { used: 0, num: 0 }),
+            state: Mutex::new(CometFairPoolState {
+                used: 0,
+                consumers: HashMap::new(),
+            }),
         }
     }
 }
@@ -85,7 +103,7 @@ impl Display for CometFairMemoryPool {
             "CometFairMemoryPool(pool_size={}, used={}, num={}, overcommit={})",
             self.pool_size,
             state.used,
-            state.num,
+            state.consumers.len(),
             self.spark.overcommit()
         )
     }
@@ -96,72 +114,74 @@ impl MemoryPool for CometFairMemoryPool {
         "CometFairMemoryPool"
     }
 
-    fn register(&self, _: &MemoryConsumer) {
-        let mut state = self.state.lock();
-        state.num = state
-            .num
-            .checked_add(1)
-            .expect("unexpected amount of register happened");
+    fn register(&self, consumer: &MemoryConsumer) {
+        self.state.lock().consumers.insert(consumer.id(), 0);
     }
 
-    fn unregister(&self, _: &MemoryConsumer) {
-        let mut state = self.state.lock();
-        state.num = state
-            .num
-            .checked_sub(1)
-            .expect("unexpected amount of unregister happened");
+    fn unregister(&self, consumer: &MemoryConsumer) {
+        // DataFusion unregisters a consumer after its last reservation has dropped and released
+        // its bytes. If a release panicked, this runs while unwinding, so it must not panic too.
+        self.state.lock().consumers.remove(&consumer.id());
     }
 
-    /// Records memory that already exists, so it must not fail and ignores the fair limit.
+    /// Records memory that already exists, so it must not fail and ignores the fair and pool
+    /// limits.
     /// See [`SparkMemory`].
-    fn grow(&self, _reservation: &MemoryReservation, additional: usize) {
+    fn grow(&self, reservation: &MemoryReservation, additional: usize) {
         if additional == 0 {
             return;
         }
         let mut state = self.state.lock();
         self.spark.acquire(additional);
         state.used = state.used.saturating_add(additional);
+        let consumer_used = state.consumer_used(reservation);
+        *consumer_used = consumer_used.saturating_add(additional);
     }
 
-    fn shrink(&self, _reservation: &MemoryReservation, subtractive: usize) {
+    fn shrink(&self, reservation: &MemoryReservation, subtractive: usize) {
         if subtractive > 0 {
             let mut state = self.state.lock();
-            // We don't use reservation.size() here because DataFusion 53+ decrements
-            // the reservation's atomic size before calling pool.shrink(), so it would
-            // reflect the post-shrink value rather than the pre-shrink value.
-            if state.used < subtractive {
+            let consumer_used = *state.consumer_used(reservation);
+            if consumer_used < subtractive {
                 panic!(
-                    "Failed to release {subtractive} bytes where only {} bytes tracked by pool",
-                    state.used
+                    "Failed to release {subtractive} bytes where only {consumer_used} bytes tracked for the consumer"
                 )
             }
             self.spark
                 .release(subtractive)
                 .unwrap_or_else(|_| panic!("Failed to release {subtractive} bytes"));
             state.used = state.used.checked_sub(subtractive).unwrap();
+            *state.consumer_used(reservation) -= subtractive;
         }
     }
 
     fn try_grow(
         &self,
-        _reservation: &MemoryReservation,
+        reservation: &MemoryReservation,
         additional: usize,
     ) -> Result<(), DataFusionError> {
         if additional > 0 {
             let mut state = self.state.lock();
-            let num = state.num;
+            let num = state.consumers.len();
             let limit = self
                 .pool_size
                 .checked_div(num)
                 .expect("overflow in checked_div");
-            // We use state.used instead of reservation.size() because DataFusion 53+
-            // calls pool.try_grow() before incrementing the reservation's atomic size,
-            // so reservation.size() would not include prior grows.
-            let used = state.used;
-            if limit < used + additional {
+            let consumer_used = *state.consumer_used(reservation);
+            if limit < consumer_used.saturating_add(additional) {
                 return resources_err!(
-                    "Failed to acquire {additional} bytes where {used} bytes already reserved ({} bytes overcommitted) and the fair limit is {limit} bytes, {num} registered",
+                    "Failed to acquire {additional} bytes where this consumer already holds {consumer_used} bytes and the fair limit is {limit} bytes, {num} registered ({} bytes overcommitted)",
                     self.spark.overcommit()
+                );
+            }
+            // The shares alone do not bound the pool's total, because a consumer keeps what it
+            // reserved before another consumer registered.
+            let used = state.used;
+            if self.pool_size < used.saturating_add(additional) {
+                return resources_err!(
+                    "Failed to acquire {additional} bytes where {used} bytes already reserved ({} bytes overcommitted) and the pool limit is {} bytes",
+                    self.spark.overcommit(),
+                    self.pool_size
                 );
             }
 
@@ -179,6 +199,7 @@ impl MemoryPool for CometFairMemoryPool {
                 .used
                 .checked_add(additional)
                 .expect("overflow in checked_add");
+            *state.consumer_used(reservation) += additional;
         }
         Ok(())
     }
@@ -210,5 +231,109 @@ mod tests {
         assert_eq!(pool.reserved(), 0);
         // Spark gets back exactly the 100 bytes it granted.
         assert_eq!(fake.released(), vec![100]);
+    }
+
+    #[test]
+    fn each_consumer_is_limited_to_its_own_share() {
+        // Spark grants everything, so only the pool's own checks refuse.
+        let fake = FakeSpark::with(usize::MAX);
+        let pool: Arc<dyn MemoryPool> =
+            Arc::new(CometFairMemoryPool::with_spark(fake.memory(), 100));
+        let first = MemoryConsumer::new("first").register(&pool);
+        let second = MemoryConsumer::new("second").register(&pool);
+
+        // Each consumer's share is 50 bytes, whatever the other one holds.
+        first.try_grow(40).unwrap();
+        second.try_grow(20).unwrap();
+        first.try_grow(10).unwrap();
+        assert!(first.try_grow(1).is_err());
+        second.try_grow(30).unwrap();
+        assert!(second.try_grow(1).is_err());
+        assert_eq!(pool.reserved(), 100);
+        assert_eq!(fake.held(), 100);
+    }
+
+    #[test]
+    fn a_consumer_registered_late_is_limited_by_the_pool_total() {
+        let fake = FakeSpark::with(usize::MAX);
+        let pool: Arc<dyn MemoryPool> =
+            Arc::new(CometFairMemoryPool::with_spark(fake.memory(), 90));
+        let first = MemoryConsumer::new("first").register(&pool);
+        // Alone, the first consumer's share is the whole pool.
+        first.try_grow(60).unwrap();
+
+        // A second consumer halves both shares, but the first keeps the 60 bytes it holds.
+        let second = MemoryConsumer::new("second").register(&pool);
+        assert!(first.try_grow(1).is_err());
+        second.try_grow(30).unwrap();
+        // The second consumer is 15 bytes under its share, but the pool is full.
+        assert!(second.try_grow(1).is_err());
+        assert_eq!(pool.reserved(), 90);
+
+        // Once the first consumer releases memory, the second can use the rest of its share.
+        first.shrink(30);
+        second.try_grow(15).unwrap();
+        assert!(second.try_grow(1).is_err());
+
+        // Unregistering the second consumer gives the first the whole pool again.
+        drop(second);
+        first.try_grow(60).unwrap();
+        assert_eq!(pool.reserved(), 90);
+        assert_eq!(fake.held(), 90);
+    }
+
+    #[test]
+    fn sibling_reservations_draw_on_one_share() {
+        let fake = FakeSpark::with(usize::MAX);
+        let pool: Arc<dyn MemoryPool> =
+            Arc::new(CometFairMemoryPool::with_spark(fake.memory(), 100));
+        let first = MemoryConsumer::new("first").register(&pool);
+        // Like the reservation that a sort's streaming merge creates for each batch it reads.
+        let sibling = first.new_empty();
+        let second = MemoryConsumer::new("second").register(&pool);
+
+        // Both of the first consumer's reservations draw on its one 50-byte share.
+        first.try_grow(40).unwrap();
+        assert!(sibling.try_grow(40).is_err());
+        sibling.try_grow(10).unwrap();
+        assert!(first.try_grow(1).is_err());
+        assert!(sibling.try_grow(1).is_err());
+
+        // So the second consumer can still reserve its whole share.
+        second.try_grow(50).unwrap();
+        assert_eq!(pool.reserved(), 100);
+
+        // Dropping a reservation returns its bytes to the consumer's share. The consumer stays
+        // registered while its other reservation lives.
+        drop(first);
+        sibling.try_grow(40).unwrap();
+        assert!(sibling.try_grow(1).is_err());
+        assert_eq!(pool.reserved(), 100);
+        assert_eq!(fake.held(), 100);
+    }
+
+    #[test]
+    fn split_and_take_keep_the_bytes_on_their_consumer() {
+        let fake = FakeSpark::with(usize::MAX);
+        let pool: Arc<dyn MemoryPool> =
+            Arc::new(CometFairMemoryPool::with_spark(fake.memory(), 100));
+        let mut first = MemoryConsumer::new("first").register(&pool);
+        let _second = MemoryConsumer::new("second").register(&pool);
+
+        first.try_grow(50).unwrap();
+        let split = first.split(20);
+        let taken = first.take();
+        // The consumer's 50 bytes now sit in split and taken, and the emptied reservation gets no
+        // share of its own.
+        for reservation in [&first, &split, &taken] {
+            assert!(reservation.try_grow(1).is_err());
+        }
+
+        // Shrinking one reservation makes room in the share for another.
+        split.shrink(10);
+        first.try_grow(10).unwrap();
+        assert!(taken.try_grow(1).is_err());
+        assert_eq!(pool.reserved(), 50);
+        assert_eq!(fake.held(), 50);
     }
 }
