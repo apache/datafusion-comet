@@ -24,13 +24,13 @@ format that Comet operators read directly. Without it, a cached table is stored 
 format and every scan of it has to convert each batch before Comet can continue, which shows up in
 the plan as a `CometSparkColumnarToColumnar` above the cache scan.
 
-This feature is **experimental and disabled by default**. Turn it on at startup, alongside the rest
-of Comet's configuration:
+This feature is **experimental and enabled by default**. To turn it off, set the config at startup,
+alongside the rest of Comet's configuration:
 
 ```shell
 $SPARK_HOME/bin/spark-shell \
     ... \
-    --conf spark.comet.exec.inMemoryCache.enabled=true
+    --conf spark.comet.exec.inMemoryCache.enabled=false
 ```
 
 It has to be set before the `SparkContext` starts. Comet's driver plugin chooses
@@ -99,7 +99,7 @@ nowhere to record either that a column is dictionary encoded or the dictionary i
 
 | Config                                                  | Default | Description                                                                                                                                    |
 | ------------------------------------------------------- | ------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
-| `spark.comet.exec.inMemoryCache.enabled`                | `false` | Whether to store and scan Spark's in-memory cache in Comet's format. Read at startup.                                                          |
+| `spark.comet.exec.inMemoryCache.enabled`                | `true`  | Whether to store and scan Spark's in-memory cache in Comet's format. Read at startup.                                                          |
 | `spark.comet.exec.inMemoryCache.compression.codec`      | `zstd`  | Arrow IPC compression codec for cached data: `zstd` or `none`. Affects newly cached data only — a batch records the codec it was written with. |
 | `spark.comet.exec.inMemoryCache.compression.zstd.level` | `1`     | Compression level when the codec is `zstd`. Ignored otherwise.                                                                                 |
 
@@ -187,8 +187,8 @@ format, and the narrower the read, the wider the gap. Measured by the same bench
 | 3 of 6 columns          |                98 ms |               331 ms |     3.4x |
 | 6 of 6 columns          |               410 ms |               623 ms |     1.5x |
 
-This is why the feature is off by default. The cause is not yet established;
-[#5485](https://github.com/apache/datafusion-comet/issues/5485) tracks it.
+This is the main reason the feature is still described as experimental. The cause is not yet
+established; [#5485](https://github.com/apache/datafusion-comet/issues/5485) tracks it.
 
 Comet's serializer exists because Spark's own Arrow cache format
 ([SPARK-57268](https://issues.apache.org/jira/browse/SPARK-57268)) is only available from Spark
