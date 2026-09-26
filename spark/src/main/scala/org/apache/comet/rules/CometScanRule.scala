@@ -46,10 +46,9 @@ import org.apache.spark.sql.types._
 import org.apache.comet.{CometConf, DataTypeSupport, NativeBase}
 import org.apache.comet.CometConf._
 import org.apache.comet.CometSparkSessionExtensions.{isCometLoaded, isSpark35Plus, withFallbackReason, withFallbackReasons}
-import org.apache.comet.DataTypeSupport.isComplexType
 import org.apache.comet.iceberg.{CometIcebergNativeScanMetadata, IcebergReflection}
 import org.apache.comet.objectstore.NativeConfig
-import org.apache.comet.parquet.CometParquetUtils.{encryptionEnabled, isEncryptionConfigSupported}
+import org.apache.comet.parquet.CometParquetUtils.{encryptionEnabled, isEncryptionConfigSupported, readFieldId}
 import org.apache.comet.serde.operator.{CometIcebergNativeScan, CometNativeScan}
 import org.apache.comet.shims.{CometTypeShim, ShimCometStreaming, ShimFileFormat, ShimSubqueryBroadcast}
 
@@ -248,8 +247,9 @@ case class CometScanRule(session: SparkSession)
     //
     // EXCEPT schemes the user routes through libhdfs via `spark.hadoop.fs.comet.libhdfs.schemes`
     // (e.g. `hdfs`, or a test `fake`): those ARE natively readable through the libhdfs object_store
-    // bridge, so they must NOT be declined here (regression guarded by
-    // ParquetReadFromFakeHadoopFsSuite).
+    // bridge, so they must NOT be declined here. The claim decision is guarded in CI by
+    // CometScanSchemeFallbackSuite; end-to-end execution through libhdfs is guarded by
+    // ParquetReadFromFakeHadoopFsSuite, which is a manual suite (see its scaladoc).
     //
     // The default mirrors the native side: when the config is unset, `is_hdfs_scheme`
     // (native/core/src/parquet/parquet_support.rs) treats `hdfs` as natively readable, and
@@ -332,6 +332,14 @@ case class CometScanRule(session: SparkSession)
       withFallbackReason(scanExec, "Native Parquet scan does not support encryption")
       return None
     }
+    // TODO: Remove this fallback once DataFusion can ignore embedded Arrow schema hints and
+    // preserve Spark's ENUM inference without losing Parquet decryption state.
+    // https://github.com/apache/datafusion-comet/issues/5477
+    if (encryptionEnabled(hadoopConf) &&
+      scanExec.requiredSchema.exists(field => isVariantType(field.dataType))) {
+      withFallbackReason(scanExec, "Native Parquet Variant scans do not support encryption")
+      return None
+    }
     // input_file_name, input_file_block_start, and input_file_block_length read from
     // InputFileBlockHolder, a thread-local set by Spark's FileScanRDD. The native DataFusion
     // scan does not use FileScanRDD, so these expressions would return empty/default values.
@@ -346,7 +354,11 @@ case class CometScanRule(session: SparkSession)
           "input_file_block_start, or input_file_block_length")
       return None
     }
-    if (ShimFileFormat.findRowIndexColumnIndexInSchema(scanExec.requiredSchema) >= 0) {
+    // Check the name directly instead of calling findRowIndexColumnIndexInSchema, which validates
+    // the temporary column's type and can throw a raw RuntimeException. Falling back lets Spark's
+    // Parquet reader wrap that validation failure as FAILED_READ_FILE.
+    if (scanExec.requiredSchema.fieldNames.contains(
+        ShimFileFormat.ROW_INDEX_TEMPORARY_COLUMN_NAME)) {
       withFallbackReason(scanExec, "Native Parquet scan does not support row index generation")
       return None
     }
@@ -649,8 +661,8 @@ case class CometScanRule(session: SparkSession)
         // V3 adds column types iceberg-rust cannot read (variant, geometry, geography, unknown)
         // and column default values; those are handled by the allow-list and default-value checks
         // below, which fall back per-table. This gate only bounds the format version. Deletion
-        // vectors (a V3 delete feature) are handled by the delete-file gate, which still falls back
-        // for non-Parquet (Puffin) deletes since native deletion-vector reads are not yet wired.
+        // vectors (a V3 delete feature) are read natively; the delete-file gate accepts their
+        // Puffin format.
         val formatVersion = IcebergReflection.getFormatVersion(metadata.table)
         val formatVersionSupported = formatVersion match {
           case Some(v) =>
@@ -831,59 +843,6 @@ case class CometScanRule(session: SparkSession)
             true
           }
 
-        // Get filter expressions for complex predicates check
-        val filterExpressionsOpt = IcebergReflection.getFilterExpressions(scanExec.scan)
-
-        // IS NULL/NOT NULL on complex types fail because iceberg-rust's accessor creation
-        // only handles primitive fields. Nested field filters work because Iceberg Java
-        // pre-binds them to field IDs. Element/key access filters don't push down to FileScanTasks.
-        val complexTypePredicatesSupported = filterExpressionsOpt
-          .map { filters =>
-            // Empty filters can't trigger accessor issues
-            if (filters.isEmpty) {
-              true
-            } else {
-              val readSchema = scanExec.scan.readSchema()
-
-              // Identify complex type columns that would trigger accessor creation failures
-              val complexColumns = readSchema
-                .filter(field => isComplexType(field.dataType))
-                .map(_.name)
-                .toSet
-
-              // Detect IS NULL/NOT NULL on complex columns (pattern: is_null(ref(name="col")))
-              // Nested field filters use different patterns and don't trigger this issue
-              val hasComplexNullCheck = filters.asScala.exists { expr =>
-                val exprStr = expr.toString
-                val isNullCheck = exprStr.contains("is_null") || exprStr.contains("not_null")
-                if (isNullCheck) {
-                  complexColumns.exists { colName =>
-                    exprStr.contains(s"""ref(name="$colName")""")
-                  }
-                } else {
-                  false
-                }
-              }
-
-              if (hasComplexNullCheck) {
-                fallbackReasons += "IS NULL / IS NOT NULL predicates on complex type columns " +
-                  "(struct/array/map) are not yet supported by iceberg-rust " +
-                  "(nested field filters like address.city = 'NYC' are supported)"
-                false
-              } else {
-                true
-              }
-            }
-          }
-          .getOrElse {
-            // Fall back to Spark if reflection fails - cannot verify safety
-            val msg =
-              "Iceberg reflection failure: Could not check for complex type predicates"
-            logError(msg)
-            fallbackReasons += msg
-            false
-          }
-
         // Check for unsupported transform functions in residual expressions
         // iceberg-rust can only handle identity transforms in residuals; all other transforms
         // (truncate, bucket, year, month, day, hour) must fall back to Spark
@@ -910,15 +869,17 @@ case class CometScanRule(session: SparkSession)
               val deleteFileClass =
                 IcebergReflection.loadClass(IcebergReflection.ClassNames.DELETE_FILE)
               taskValidation.deleteFiles.asScala.foreach { deleteFile =>
-                // iceberg-rust only reads Parquet delete files. Avro/ORC positional or
-                // equality deletes must be applied by Spark.
+                // iceberg-rust reads Parquet delete files (position and equality) and Puffin
+                // deletion vectors. Avro/ORC deletes must be applied by Spark.
                 IcebergReflection.getFileFormat(contentFileClass, deleteFile) match {
-                  case Some(fmt) if fmt.equalsIgnoreCase(IcebergReflection.FileFormats.PARQUET) =>
+                  case Some(fmt)
+                      if fmt.equalsIgnoreCase(IcebergReflection.FileFormats.PARQUET) ||
+                        fmt.equalsIgnoreCase(IcebergReflection.FileFormats.PUFFIN) =>
                   case Some(fmt) =>
                     hasUnsupportedDeletes = true
                     fallbackReasons +=
                       s"Delete file format '$fmt' is not supported by iceberg-rust. " +
-                        "Only Parquet delete files can be applied natively."
+                        "Only Parquet and Puffin delete files can be applied natively."
                   case None =>
                     hasUnsupportedDeletes = true
                     logWarning(
@@ -1023,8 +984,7 @@ case class CometScanRule(session: SparkSession)
           defaultValuesSupported && schemaTypesSupported && encryptionKeyLengthSupported &&
           taskValidation.allParquet && allSupportedFilesystems && allLocationsOpenable &&
           metadataSchemeSupported && partitionTypesSupported && unifiedPartitionTypeSupported &&
-          complexTypePredicatesSupported && transformFunctionsSupported &&
-          deleteFileTypesSupported && dppSubqueriesSupported) {
+          transformFunctionsSupported && deleteFileTypesSupported && dppSubqueriesSupported) {
           CometBatchScanExec(
             scanExec.clone().asInstanceOf[BatchScanExec],
             runtimeFilters = scanExec.runtimeFilters,
@@ -1068,8 +1028,17 @@ case class CometScanRule(session: SparkSession)
   private def isSchemaSupported(scanExec: FileSourceScanExec, r: HadoopFsRelation): Boolean = {
     val fallbackReasons = new ListBuffer[String]()
     val typeChecker = CometScanTypeChecker()
+    // Admit Variant only at a required root in ordinary Parquet. Recursive and Iceberg type
+    // checks continue to use CometScanTypeChecker's stricter support rules.
+    val requiredSchemaChecker = new CometScanTypeChecker {
+      override def isTypeSupported(
+          dt: DataType,
+          name: String,
+          reasons: ListBuffer[String]): Boolean =
+        isVariantType(dt) || typeChecker.isTypeSupported(dt, name, reasons)
+    }
     val schemaSupported =
-      typeChecker.isSchemaSupported(scanExec.requiredSchema, fallbackReasons)
+      requiredSchemaChecker.isSchemaSupported(scanExec.requiredSchema, fallbackReasons)
     if (!schemaSupported) {
       withFallbackReason(
         scanExec,
@@ -1090,6 +1059,22 @@ case class CometScanRule(session: SparkSession)
 }
 
 case class CometScanTypeChecker() extends DataTypeSupport with CometTypeShim {
+
+  /**
+   * `isTypeSupported` only ever sees a field's *data type*, so nothing there can compare two
+   * top-level fields. Spark's field id ambiguity applies at the schema root too, so check it
+   * here.
+   */
+  override def isSchemaSupported(
+      schema: StructType,
+      fallbackReasons: ListBuffer[String]): Boolean = {
+    if (duplicateFieldIds(schema.fields)) {
+      fallbackReasons += "duplicate Parquet field ids among top-level fields"
+      false
+    } else {
+      super.isSchemaSupported(schema, fallbackReasons)
+    }
+  }
 
   override def isTypeSupported(
       dt: DataType,
@@ -1115,10 +1100,20 @@ case class CometScanTypeChecker() extends DataTypeSupport with CometTypeShim {
         false
       case s: StructType if s.fields.isEmpty =>
         false
+      case StructType(fields) if duplicateFieldIds(fields) =>
+        // Under field id matching Spark resolves each requested field to the one Parquet field
+        // carrying its id and raises when more than one answers. Comet reads such a struct
+        // positionally instead, so hand the read back to Spark and let it report the ambiguity.
+        fallbackReasons += s"Unsupported ${name}: struct with duplicate Parquet field ids"
+        false
       case _ =>
         super.isTypeSupported(dt, name, fallbackReasons)
     }
   }
+
+  /** True when the session resolves Parquet fields by id and `fields` repeat one. */
+  private def duplicateFieldIds(fields: Array[StructField]): Boolean =
+    readFieldId(SQLConf.get) && DataTypeSupport.hasDuplicateFieldIds(fields)
 }
 
 object CometScanRule extends Logging {

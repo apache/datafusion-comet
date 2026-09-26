@@ -52,6 +52,7 @@ use crate::parquet::schema_adapter::SparkPhysicalExprAdapterFactory;
 use datafusion_comet_spark_expr::EvalMode;
 use datafusion_physical_expr_adapter::{PhysicalExprAdapter, PhysicalExprAdapterFactory};
 use iceberg::scan::{FileScanTask, FileScanTaskDeleteFile};
+use iceberg::spec::DataFileFormat;
 
 /// A valid Parquet file ends with at least an 8-byte footer (4-byte metadata length + "PAR1").
 /// A delete file that stats below this cannot be read, so we reject it in the fill step. opendal
@@ -272,6 +273,12 @@ impl IcebergScanExec {
                 // trust manifest sizes (pending the unreleased apache/iceberg#12554 fix), skip
                 // already-sized files here instead of asserting.
                 debug_assert_eq!(delete.file_size_in_bytes, 0);
+                // A deletion vector is range-read from content_offset, and iceberg-rust consults
+                // file_size_in_bytes only on the Parquet delete path. Statting the Puffin file
+                // would be one HEAD per file per Spark partition for a value nothing reads.
+                if delete.file_format == DataFileFormat::Puffin {
+                    continue;
+                }
                 needed.insert(delete.file_path.clone());
             }
         }
@@ -428,6 +435,13 @@ where
     type Item = DFResult<RecordBatch>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        // Time the whole poll (driving the inner reader plus schema adaptation) as elapsed_compute.
+        // record_poll only records output rows; without this explicit timer elapsed_compute stays
+        // 0, so the Spark "scan time" metric never moves. Clone the Time metric (Arc-backed) so the
+        // guard does not hold a borrow of self across the inner poll below.
+        let elapsed_compute = self.baseline_metrics.elapsed_compute().clone();
+        let _timer = elapsed_compute.timer();
+
         let poll_result = self.inner.poll_next_unpin(cx);
 
         let result = match poll_result {
@@ -603,6 +617,61 @@ mod tests {
 
     fn fs_file_io() -> FileIO {
         FileIOBuilder::new(Arc::new(OpenDalStorageFactory::Fs)).build()
+    }
+
+    #[test]
+    fn issue_5783_projection_rejects_selected_duplicate_root() {
+        use arrow::array::Int64Array;
+        use arrow::datatypes::{DataType, Field, Schema as ArrowSchema};
+        use datafusion_physical_expr_adapter::PhysicalExprAdapterFactory;
+
+        let physical = Arc::new(ArrowSchema::new(vec![
+            Field::new("a", DataType::Int64, false),
+            Field::new("a", DataType::Int64, false),
+            Field::new("b", DataType::Int64, false),
+        ]));
+        let mut options = super::SparkParquetOptions::new(super::EvalMode::Legacy, "UTC", false);
+        options.case_sensitive = true;
+        let factory = super::SparkPhysicalExprAdapterFactory::new(options, None);
+        for name in ["a", "b"] {
+            let target = Arc::new(ArrowSchema::new(vec![Field::new(
+                name,
+                DataType::Int64,
+                false,
+            )]));
+            let adapter = factory
+                .create(Arc::clone(&target), Arc::clone(&physical))
+                .unwrap();
+            let result = super::build_projection_expressions(&target, &adapter);
+            if name == "a" {
+                let error = result
+                    .expect_err("selected root must be ambiguous")
+                    .to_string();
+                assert!(error.contains("duplicate"), "{error}");
+            } else {
+                let batch = super::RecordBatch::try_new(
+                    Arc::clone(&physical),
+                    vec![
+                        Arc::new(Int64Array::from(vec![1])),
+                        Arc::new(Int64Array::from(vec![2])),
+                        Arc::new(Int64Array::from(vec![3])),
+                    ],
+                )
+                .unwrap();
+                let output =
+                    super::adapt_batch_with_expressions(batch, &target, &result.unwrap()).unwrap();
+                assert_eq!(output.num_rows(), 1);
+                assert_eq!(
+                    output
+                        .column(0)
+                        .as_any()
+                        .downcast_ref::<Int64Array>()
+                        .unwrap()
+                        .value(0),
+                    3
+                );
+            }
+        }
     }
 
     fn task_with_deletes(deletes: Vec<FileScanTaskDeleteFile>) -> FileScanTask {

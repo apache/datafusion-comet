@@ -48,6 +48,8 @@ Comet Plugin Overview <plugin_overview>
 Arrow FFI <ffi>
 JVM Shuffle <jvm_shuffle>
 Native Shuffle <native_shuffle>
+Memory Management <memory_management>
+Iceberg Writes <iceberg-writes>
 ANSI Error Propagation <sql_error_propagation>
 S3 Credential Provider Design <s3-credential-provider-design>
 ```

@@ -40,6 +40,7 @@ import org.apache.spark.sql.types._
 import com.google.protobuf.ByteString
 
 import org.apache.comet.{CometConf, ConfigEntry}
+import org.apache.comet.DataTypeSupport.isComplexType
 import org.apache.comet.iceberg.{CometIcebergNativeScanMetadata, IcebergReflection}
 import org.apache.comet.objectstore.NativeConfig
 import org.apache.comet.serde.{CometOperatorSerde, OperatorOuterClass}
@@ -74,6 +75,9 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
       val AND = "And"
       val OR = "Or"
       val NOT = "Not"
+      // The only UnboundTerm shape this serde converts. The others, UnboundTransform and (on
+      // Iceberg versions that have it) UnboundExtract, are declined; see icebergExprToProto.
+      val NAMED_REFERENCE = "NamedReference"
     }
   }
 
@@ -263,6 +267,22 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
     }
 
   /**
+   * A DeleteFile accessor added by Iceberg's deletion-vector support, or None when there is no
+   * value to forward.
+   *
+   * None covers the two benign cases: the method is absent, on an Iceberg version predating
+   * deletion vectors where no vector can be missed, or it returns null, which is how a delete
+   * file that is not a deletion vector answers. An invocation failure is deliberately left to
+   * propagate, like `keyMetadataBytes` above -- dropping a vector's coordinates would apply none
+   * of its deletes and silently return the deleted rows.
+   */
+  private def deletionVectorField(
+      clazz: Class[_],
+      methodName: String,
+      deleteFile: Any): Option[AnyRef] =
+    IcebergReflection.findMethod(clazz, methodName).flatMap(m => Option(m.invoke(deleteFile)))
+
+  /**
    * Extracts delete files from an Iceberg FileScanTask as a list (for deduplication).
    *
    * Delete-file size is not serialized; the native scan stats each file for it (see
@@ -273,7 +293,8 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
       task: Any,
       contentFileClass: Class[_],
       fileScanTaskClass: Class[_],
-      deleteFileClass: Class[_]): Seq[OperatorOuterClass.IcebergDeleteFile] = {
+      deleteFileClass: Class[_],
+      internPath: String => Int): Seq[OperatorOuterClass.IcebergDeleteFile] = {
     try {
       // keyMetadata() is declared on ContentFile; present across all supported Iceberg versions.
       val keyMetadataMethod = IcebergReflection.getMethod(contentFileClass, "keyMetadata")
@@ -291,7 +312,7 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
                 "ContentFile -- cannot extract delete file path from FileScanTask"))
 
         val deleteBuilder = OperatorOuterClass.IcebergDeleteFile.newBuilder()
-        deleteBuilder.setFilePath(deletePath)
+        deleteBuilder.setFilePathIdx(internPath(deletePath))
 
         val contentType =
           try {
@@ -309,6 +330,17 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
               IcebergReflection.ContentTypes.POSITION_DELETES
           }
         deleteBuilder.setContentType(contentType)
+
+        // "PARQUET", or "PUFFIN" for a V3 deletion vector. iceberg-rust selects its
+        // deletion-vector reader on this, and a wrong value reads a Puffin blob as Parquet, so an
+        // undeterminable format is fatal: by serde time there is no fallback left.
+        val fileFormat = IcebergReflection
+          .getFileFormat(contentFileClass, deleteFile)
+          .getOrElse(
+            throw new RuntimeException(
+              "ContentFile.format() is not declared on this Iceberg version -- cannot tell a " +
+                "deletion vector from a Parquet delete file"))
+        deleteBuilder.setFileFormat(fileFormat)
 
         val specId =
           try {
@@ -329,6 +361,30 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
         } catch {
           case _: Exception =>
         }
+
+        // Gated on the format, not on the accessors returning a value: Iceberg also sets
+        // referencedDataFile on file-scoped Parquet position deletes, where iceberg-rust ignores
+        // it. Forwarding it there would serialize a data-file path per delete file that nothing
+        // reads, and would invite keying deletion-vector detection on the field instead of on
+        // fileFormat, which is the only discriminator.
+        if (fileFormat.equalsIgnoreCase(IcebergReflection.FileFormats.PUFFIN)) {
+          deletionVectorField(deleteFileClass, "referencedDataFile", deleteFile)
+            .foreach(p => deleteBuilder.setReferencedDataFile(p.asInstanceOf[String]))
+          deletionVectorField(deleteFileClass, "contentOffset", deleteFile)
+            .foreach(o => deleteBuilder.setContentOffset(o.asInstanceOf[java.lang.Long]))
+          deletionVectorField(deleteFileClass, "contentSizeInBytes", deleteFile)
+            .foreach(s => deleteBuilder.setContentSizeInBytes(s.asInstanceOf[java.lang.Long]))
+        }
+
+        // recordCount is declared on ContentFile, so it is present on every supported Iceberg
+        // version and a lookup failure is a real defect rather than an old-version absence.
+        // iceberg-rust rejects a deletion vector without it, since it checks the count against
+        // the cardinality it decodes from the blob.
+        deleteBuilder.setRecordCount(
+          IcebergReflection
+            .getMethod(contentFileClass, "recordCount")
+            .invoke(deleteFile)
+            .asInstanceOf[java.lang.Long])
 
         // Encrypted delete files carry a plaintext StandardKeyMetadata blob; forward it verbatim.
         // Unencrypted delete files leave the field unset.
@@ -590,31 +646,48 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
   }
 
   /**
-   * Converts an Iceberg residual Expression into an IcebergPredicate for native row-group
-   * pruning.
+   * Converts an Iceberg residual Expression into an IcebergPredicate for the native scan.
    *
    * Residuals come from Iceberg's ResidualEvaluator (partial evaluation of the scan filter
-   * against each file's partition data). This is only a pruning hint: the CometFilter above the
-   * scan enforces correctness, so any node or literal we cannot represent yields None (no
-   * pushdown). Predicates over `pageIndexUnsupportedColumns` also yield None (iceberg-rust cannot
-   * use those columns in the page index). Uses reflection because Iceberg's expression classes
+   * against each file's partition data). iceberg-rust prunes row groups and pages with the
+   * predicate and also filters rows by it, so what this returns may be weaker than the residual
+   * but never stronger. Iceberg keeps every predicate that can survive into a residual in the
+   * scan's postScanFilters, so the filter above the scan re-applies whatever is not pushed, but
+   * it cannot restore rows the scan dropped. Uses reflection because Iceberg's expression classes
    * are not on Spark's classpath at planning time; residuals are unbound predicates carrying a
    * NamedReference (column name) and a literal.
+   *
+   * Not pushing a residual therefore takes one of two forms, kept deliberately distinct:
+   *
+   *   - `None` is a decision. Every point that returns it has established that this serde does
+   *     not model the node, term shape, operation, column or literal in front of it, so the
+   *     predicate is left to the post-scan filter.
+   *   - An exception means reflection over Iceberg's expression API did something unexpected, so
+   *     no such decision was reached. It propagates instead of folding into `None`, which would
+   *     make the two indistinguishable; see [[serializeResidual]].
    */
   def icebergExprToProto(
       icebergExpr: Any,
       output: Seq[Attribute],
       pageIndexUnsupportedColumns: Set[String]): Option[OperatorOuterClass.IcebergPredicate] = {
-    try {
-      val exprClass = icebergExpr.getClass
-      val attributeMap = output.map(attr => attr.name -> attr).toMap
+    val exprClass = icebergExpr.getClass
+    val attributeMap = output.map(attr => attr.name -> attr).toMap
 
-      if (exprClass.getName.endsWith(Constants.ExpressionTypes.UNBOUND_PREDICATE)) {
-        val operation = IcebergReflection.getMethod(exprClass, "op").invoke(icebergExpr).toString
-        val term = IcebergReflection.getMethod(exprClass, "term").invoke(icebergExpr)
-        val ref = IcebergReflection.getMethod(term.getClass, "ref").invoke(term)
+    if (exprClass.getName.endsWith(Constants.ExpressionTypes.UNBOUND_PREDICATE)) {
+      val operation = IcebergReflection.getMethod(exprClass, "op").invoke(icebergExpr).toString
+      val term = IcebergReflection.getMethod(exprClass, "term").invoke(icebergExpr)
+
+      // Only a bare column reference converts. UnboundTransform (and UnboundExtract, on Iceberg
+      // versions that have it) answers ref() with its *source* column, so reading the name off
+      // it would push `bucket(4, id) = 2` as `id = 2` and drop every matching row whose id is
+      // not 2. CometScanRule declines a non-identity transform at planning time, but only when
+      // the residual is a bare predicate rather than one under AND/OR/NOT, so the term shape is
+      // checked here too rather than assumed.
+      if (!term.getClass.getName.endsWith(Constants.ExpressionTypes.NAMED_REFERENCE)) {
+        None
+      } else {
         val columnName =
-          IcebergReflection.getMethod(ref.getClass, "name").invoke(ref).asInstanceOf[String]
+          IcebergReflection.getMethod(term.getClass, "name").invoke(term).asInstanceOf[String]
 
         // Iceberg names a nested reference by its dotted path ("struct.field"), which never matches
         // a top-level scan output attribute, so a residual on a nested field drops here. That miss
@@ -622,9 +695,11 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
         attributeMap.get(columnName).flatMap { attribute =>
           import Constants.Operations._
           import OperatorOuterClass.IcebergPredicateOperator
-          if (pageIndexUnsupportedColumns.contains(columnName)) {
-            // Any predicate on this column, including a unary IS [NOT] NULL, would reach the page
-            // index and fail, so drop the whole predicate; the post-scan CometFilter enforces it.
+          // iceberg-rust binds accessors only for primitive fields. Containers cannot be partition
+          // columns, so exact partition selection cannot remove their null checks from the
+          // post-scan filter. That filter also enforces predicates unsupported by the page index.
+          if (pageIndexUnsupportedColumns.contains(columnName) ||
+            isComplexType(attribute.dataType)) {
             None
           } else {
             operation match {
@@ -639,54 +714,68 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
             }
           }
         }
-      } else if (exprClass.getName.endsWith(Constants.ExpressionTypes.AND)) {
-        val left = icebergExprToProto(
-          IcebergReflection.getMethod(exprClass, "left").invoke(icebergExpr),
-          output,
-          pageIndexUnsupportedColumns)
-        val right = icebergExprToProto(
-          IcebergReflection.getMethod(exprClass, "right").invoke(icebergExpr),
-          output,
-          pageIndexUnsupportedColumns)
-        (left, right) match {
-          // Push the residual only if it converts whole. Dropping a conjunct is safe in positive
-          // position but strengthens the predicate under a NOT (De Morgan), which would wrongly
-          // prune, and tracking polarity across arbitrary nesting is error prone. So an
-          // unconvertible conjunct elides the whole residual; the post-scan CometFilter is exact.
-          case (Some(l), Some(r)) => Some(logicalPredicate(isAnd = true, l, r))
-          case _ => None
-        }
-      } else if (exprClass.getName.endsWith(Constants.ExpressionTypes.OR)) {
-        val left = icebergExprToProto(
-          IcebergReflection.getMethod(exprClass, "left").invoke(icebergExpr),
-          output,
-          pageIndexUnsupportedColumns)
-        val right = icebergExprToProto(
-          IcebergReflection.getMethod(exprClass, "right").invoke(icebergExpr),
-          output,
-          pageIndexUnsupportedColumns)
-        // Dropping a disjunct would strengthen the predicate and wrongly prune, so require both.
-        (left, right) match {
-          case (Some(l), Some(r)) => Some(logicalPredicate(isAnd = false, l, r))
-          case _ => None
-        }
-      } else if (exprClass.getName.endsWith(Constants.ExpressionTypes.NOT)) {
-        val child = IcebergReflection.getMethod(exprClass, "child").invoke(icebergExpr)
-        icebergExprToProto(child, output, pageIndexUnsupportedColumns).map(notPredicate)
-      } else {
-        None
       }
-    } catch {
-      // Reflection over Iceberg's expression classes can fail on an unexpected shape (e.g. an
-      // Iceberg version change). A residual is only a pruning hint, so skip pushdown rather than
-      // fail the scan, but log it: a persistent warning here signals a real API drift to fix.
-      case e: Exception =>
-        logWarning(
-          "Skipping Iceberg residual pushdown; could not convert expression: " +
-            s"${e.getMessage}")
-        None
+    } else if (exprClass.getName.endsWith(Constants.ExpressionTypes.AND)) {
+      val left = icebergExprToProto(
+        IcebergReflection.getMethod(exprClass, "left").invoke(icebergExpr),
+        output,
+        pageIndexUnsupportedColumns)
+      val right = icebergExprToProto(
+        IcebergReflection.getMethod(exprClass, "right").invoke(icebergExpr),
+        output,
+        pageIndexUnsupportedColumns)
+      (left, right) match {
+        // Push the residual only if it converts whole. Dropping a conjunct is safe in positive
+        // position but strengthens the predicate under a NOT (De Morgan), which would wrongly
+        // prune, and tracking polarity across arbitrary nesting is error prone. So an
+        // unconvertible conjunct elides the whole residual; the post-scan CometFilter is exact.
+        case (Some(l), Some(r)) => Some(logicalPredicate(isAnd = true, l, r))
+        case _ => None
+      }
+    } else if (exprClass.getName.endsWith(Constants.ExpressionTypes.OR)) {
+      val left = icebergExprToProto(
+        IcebergReflection.getMethod(exprClass, "left").invoke(icebergExpr),
+        output,
+        pageIndexUnsupportedColumns)
+      val right = icebergExprToProto(
+        IcebergReflection.getMethod(exprClass, "right").invoke(icebergExpr),
+        output,
+        pageIndexUnsupportedColumns)
+      // Dropping a disjunct would strengthen the predicate and wrongly prune, so require both.
+      (left, right) match {
+        case (Some(l), Some(r)) => Some(logicalPredicate(isAnd = false, l, r))
+        case _ => None
+      }
+    } else if (exprClass.getName.endsWith(Constants.ExpressionTypes.NOT)) {
+      val child = IcebergReflection.getMethod(exprClass, "child").invoke(icebergExpr)
+      icebergExprToProto(child, output, pageIndexUnsupportedColumns).map(notPredicate)
+    } else {
+      // Anything else, such as Expressions.alwaysTrue or alwaysFalse, or a node type a future
+      // Iceberg introduces, carries no pushdown this serde can express.
+      None
     }
   }
+
+  /**
+   * Converts a FileScanTask's residual with [[icebergExprToProto]], failing the query if that
+   * throws. The converter returns None only for a residual it deliberately leaves to the
+   * post-scan filter, so a failure means this serde has misread Iceberg's expression API. Serde
+   * runs after CometScanRule committed the scan to native execution, so there is no fallback to
+   * take.
+   */
+  private[operator] def serializeResidual(
+      residual: Any,
+      output: Seq[Attribute],
+      pageIndexUnsupportedColumns: Set[String]): Option[OperatorOuterClass.IcebergPredicate] =
+    try {
+      icebergExprToProto(residual, output, pageIndexUnsupportedColumns)
+    } catch {
+      case e: Exception =>
+        val msg = "Iceberg reflection failure: Failed to convert residual expression " +
+          s"'$residual' from FileScanTask: ${e.getMessage}"
+        logError(msg)
+        throw new RuntimeException(msg, e)
+    }
 
   private def unaryPredicate(
       column: String,
@@ -882,13 +971,26 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
     val nameMappingToPoolIndex = mutable.HashMap[String, Int]()
     val projectFieldIdsToPoolIndex = mutable.HashMap[Seq[Int], Int]()
     val partitionDataToPoolIndex = mutable.HashMap[String, Int]()
-    // Individual delete files are interned into a flat pool keyed by path (a delete file's path is
-    // its identity); deleteFilesToPoolIndex then dedups the per-task sets as lists of indices into
-    // that pool. One delete file applies to many data files under Iceberg's default partition
-    // delete granularity, so interning avoids re-serializing it once per referencing FileScanTask.
-    val deleteFileToPoolIndex = mutable.HashMap[String, Int]()
+    // Individual delete files are interned into a flat pool; deleteFilesToPoolIndex then dedups
+    // the per-task sets as lists of indices into it, so a delete file that applies to many data
+    // files (Iceberg's default partition delete granularity) is serialized once rather than once
+    // per referencing FileScanTask. Keyed on the whole message rather than the path: V3 deletion
+    // vectors for different data files share one Puffin file and differ only by content offset,
+    // so a path key would collapse them and drop every vector but the first.
+    val deleteFileToPoolIndex = mutable.HashMap[OperatorOuterClass.IcebergDeleteFile, Int]()
     val deleteFilesToPoolIndex =
       mutable.HashMap[Seq[Int], Int]()
+    // Delete-file paths are interned separately from the delete files themselves: every deletion
+    // vector in a commit lives in one Puffin file, so one path is shared by as many pool entries
+    // as there are data files.
+    val deleteFilePathToPoolIndex = mutable.HashMap[String, Int]()
+    def internDeleteFilePath(path: String): Int =
+      deleteFilePathToPoolIndex.getOrElseUpdate(
+        path, {
+          val idx = deleteFilePathToPoolIndex.size
+          commonBuilder.addDeleteFilePathPool(path)
+          idx
+        })
     val residualToPoolIndex = mutable.HashMap[OperatorOuterClass.IcebergPredicate, Int]()
     // Field-id mappings are read out of an Iceberg schema by reflection, one lookup per column, so
     // memoize them. Keyed like schemaToPoolIndex above: a task schema that Iceberg materializes
@@ -1100,13 +1202,14 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
                     task,
                     contentFileClass,
                     fileScanTaskClass,
-                    deleteFileClass)
+                    deleteFileClass,
+                    internDeleteFilePath)
                 if (deleteFilesList.nonEmpty) {
                   // Intern each delete file into the flat pool, then dedup this task's set as the
                   // resulting list of pool indices.
                   val deleteFileIndices = deleteFilesList.map { df =>
                     deleteFileToPoolIndex.getOrElseUpdate(
-                      df.getFilePath, {
+                      df, {
                         val idx = deleteFileToPoolIndex.size
                         commonBuilder.addDeleteFilePool(df)
                         idx
@@ -1124,18 +1227,10 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
                 }
 
                 val residualExprOpt =
-                  try {
-                    icebergExprToProto(
-                      residualMethod.invoke(task),
-                      output,
-                      pageIndexUnsupportedColumns)
-                  } catch {
-                    case e: Exception =>
-                      logWarning(
-                        "Failed to extract residual expression from FileScanTask: " +
-                          s"${e.getMessage}")
-                      None
-                  }
+                  serializeResidual(
+                    residualMethod.invoke(task),
+                    output,
+                    pageIndexUnsupportedColumns)
 
                 residualExprOpt.foreach { residual =>
                   val residualIdx = residualToPoolIndex.getOrElseUpdate(
@@ -1200,6 +1295,7 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
       partitionDataToPoolIndex.size,
       deleteFileToPoolIndex.size,
       deleteFilesToPoolIndex.size,
+      deleteFilePathToPoolIndex.size,
       residualToPoolIndex.size)
 
     val avgDedup = if (totalTasks == 0) {
@@ -1217,7 +1313,7 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
     // Per-pool byte sizes to diagnose an oversized common message. Sizes sum as Long because a
     // single pool at or past protobuf's 2 GiB message limit overflows the int getSerializedSize,
     // and the logging runs before toByteArray so the breakdown survives even if that allocation
-    // fails. String pools carry JSON, whose serialized size is its UTF-8 length.
+    // fails. String pools carry JSON or file paths, whose serialized size is the UTF-8 length.
     def sumSizes(sizes: Iterator[Int]): Long = sizes.map(_.toLong).sum
     def sumStrBytes(strings: mutable.Buffer[String]): Long =
       strings.iterator.map(_.getBytes(UTF_8).length.toLong).sum
@@ -1252,6 +1348,10 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
         "delete_file",
         commonBuilder.getDeleteFilePoolCount,
         sumSizes(commonBuilder.getDeleteFilePoolList.asScala.iterator.map(_.getSerializedSize))),
+      (
+        "delete_file_path",
+        commonBuilder.getDeleteFilePathPoolCount,
+        sumStrBytes(commonBuilder.getDeleteFilePathPoolList.asScala)),
       (
         "delete_files_set",
         commonBuilder.getDeleteFilesPoolCount,

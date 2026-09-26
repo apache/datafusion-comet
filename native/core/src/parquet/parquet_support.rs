@@ -17,7 +17,9 @@
 
 use crate::execution::operators::ExecutionError;
 use crate::parquet::name_fold::fold_names;
-use arrow::array::{FixedSizeBinaryArray, ListArray, MapArray, StringArray};
+use arrow::array::{
+    make_array, FixedSizeBinaryArray, GenericListViewArray, MapArray, OffsetSizeTrait, StringArray,
+};
 use arrow::buffer::NullBuffer;
 use arrow::compute::can_cast_types;
 use arrow::datatypes::{FieldRef, Fields};
@@ -32,7 +34,9 @@ use arrow::{
 };
 use datafusion::common::{Result as DataFusionResult, ScalarValue};
 use datafusion::error::DataFusionError;
-use datafusion::execution::object_store::ObjectStoreUrl;
+use datafusion::execution::object_store::{
+    DefaultObjectStoreRegistry, ObjectStoreRegistry, ObjectStoreUrl,
+};
 use datafusion::execution::runtime_env::RuntimeEnv;
 use datafusion::physical_plan::ColumnarValue;
 use datafusion_comet_common::SparkError;
@@ -44,7 +48,11 @@ use parquet::arrow::PARQUET_FIELD_ID_META_KEY;
 use std::collections::HashMap;
 use std::sync::OnceLock;
 use std::time::Duration;
-use std::{collections::hash_map::DefaultHasher, hash::Hasher, sync::RwLock};
+use std::{
+    collections::hash_map::DefaultHasher,
+    hash::Hasher,
+    sync::{PoisonError, RwLock},
+};
 use std::{fmt::Debug, hash::Hash, sync::Arc};
 use url::Url;
 
@@ -52,6 +60,10 @@ use super::objectstore;
 use super::objectstore::s3_blob_fs_support::{
     normalize_object_store_url, NormalizedObjectStoreUrl,
 };
+
+pub(crate) fn duplicate_parquet_field_error(name: &str) -> DataFusionError {
+    DataFusionError::Execution(format!("Found duplicate Parquet field name '{name}'"))
+}
 
 // This file originates from cast.rs. While developing native scan support and implementing
 // SparkSchemaAdapter we observed that Spark's type conversion logic on Parquet reads does not
@@ -203,8 +215,7 @@ fn parquet_convert_array_impl(
         None
     };
 
-    // Try Comet specific handlers first, then arrow-rs cast if supported,
-    // return uncasted data otherwise
+    // Try Comet specific handlers first, then arrow-rs cast if supported, and fail otherwise.
     match (from_type, to_type) {
         (Struct(_), Struct(_)) => Ok(parquet_convert_struct_to_struct(
             array.as_struct(),
@@ -213,27 +224,43 @@ fn parquet_convert_array_impl(
             parquet_options,
             visible.as_ref(),
         )?),
-        (List(_), List(to_inner_type)) => {
-            let list_arr: &ListArray = array.as_list();
+        (
+            List(_) | LargeList(_) | FixedSizeList(_, _) | ListView(_) | LargeListView(_),
+            List(to_inner_type) | LargeList(to_inner_type) | FixedSizeList(to_inner_type, _)
+                | ListView(to_inner_type) | LargeListView(to_inner_type),
+        ) => {
+            let data = array.to_data();
             let child_visibility = if checked_timestamp_overflow {
-                repeated_visibility(
-                    list_arr.value_offsets(), list_arr.values().len(), visible.as_ref())
+                list_child_visibility(array.as_ref(), visible.as_ref())
             } else {
                 None
             };
             let cast_field = parquet_convert_array_impl(
-                Arc::clone(list_arr.values()),
+                make_array(data.child_data()[0].clone()),
                 to_inner_type.data_type(),
                 parquet_options,
                 child_visibility.as_ref(),
             )?;
-
-            Ok(Arc::new(ListArray::new(
-                Arc::clone(to_inner_type),
-                list_arr.offsets().clone(),
-                cast_field,
-                list_arr.nulls().cloned(),
-            )))
+            // Resolve element fields with Spark's rules before Arrow changes list layout.
+            // Casting the original list directly can match missing struct fields by position.
+            let resolved_type = match from_type {
+                List(_) => List(Arc::clone(to_inner_type)),
+                LargeList(_) => LargeList(Arc::clone(to_inner_type)),
+                FixedSizeList(_, size) => FixedSizeList(Arc::clone(to_inner_type), *size),
+                ListView(_) => ListView(Arc::clone(to_inner_type)),
+                LargeListView(_) => LargeListView(Arc::clone(to_inner_type)),
+                _ => unreachable!(),
+            };
+            // Retain the source offsets, sizes and null buffer while replacing its values.
+            let resolved = make_array(data.into_builder()
+                .data_type(resolved_type)
+                .child_data(vec![cast_field.to_data()])
+                .build()?);
+            if resolved.data_type() == to_type {
+                Ok(resolved)
+            } else {
+                Ok(cast_with_options(&resolved, to_type, &PARQUET_OPTIONS)?)
+            }
         }
         (
             Timestamp(TimeUnit::Millisecond, _),
@@ -295,7 +322,13 @@ fn parquet_convert_array_impl(
         _ if can_cast_types(from_type, to_type) => {
             Ok(cast_with_options(&array, to_type, &PARQUET_OPTIONS)?)
         }
-        _ => Ok(array),
+        // Every pair reaching here should already have passed the schema adapter's
+        // `check_conversion` (Spark's `getUpdater` matrix), so this is a gap in that gate. Fail
+        // instead of handing back an array of the wrong type, which a parent `StructArray` /
+        // `ListArray` constructor would otherwise panic on (#5671).
+        _ => Err(DataFusionError::Execution(format!(
+            "Unsupported Parquet type conversion from {from_type} to {to_type}"
+        ))),
     }
 }
 
@@ -307,37 +340,184 @@ fn has_timestamp_unit(data_type: &DataType, unit: TimeUnit) -> bool {
         DataType::Struct(fields) => fields
             .iter()
             .any(|field| has_timestamp_unit(field.data_type(), unit)),
-        DataType::List(field) | DataType::Map(field, _) => {
-            has_timestamp_unit(field.data_type(), unit)
-        }
+        DataType::List(field)
+        | DataType::LargeList(field)
+        | DataType::FixedSizeList(field, _)
+        | DataType::ListView(field)
+        | DataType::LargeListView(field)
+        | DataType::Map(field, _) => has_timestamp_unit(field.data_type(), unit),
         _ => false,
     }
 }
 
 // List/map values can include entries outside a slice or beneath a null parent.
-fn repeated_visibility(
-    offsets: &[i32],
+fn repeated_visibility<O: OffsetSizeTrait>(
+    offsets: &[O],
     len: usize,
     nulls: Option<&NullBuffer>,
 ) -> Option<NullBuffer> {
-    if nulls.is_none() && offsets[0] == 0 && *offsets.last().unwrap() as usize == len {
+    if nulls.is_none() && offsets[0].as_usize() == 0 && offsets.last().unwrap().as_usize() == len {
         return None;
     }
     let mut valid = vec![false; len];
     for (row, range) in offsets.windows(2).enumerate() {
         if nulls.is_none_or(|nulls| nulls.is_valid(row)) {
-            valid[range[0] as usize..range[1] as usize].fill(true);
+            valid[range[0].as_usize()..range[1].as_usize()].fill(true);
+        }
+    }
+    Some(NullBuffer::from(valid))
+}
+
+fn list_child_visibility(array: &dyn Array, nulls: Option<&NullBuffer>) -> Option<NullBuffer> {
+    match array.data_type() {
+        DataType::List(_) => {
+            let list = array.as_list::<i32>();
+            repeated_visibility(list.value_offsets(), list.values().len(), nulls)
+        }
+        DataType::LargeList(_) => {
+            let list = array.as_list::<i64>();
+            repeated_visibility(list.value_offsets(), list.values().len(), nulls)
+        }
+        DataType::FixedSizeList(_, size) => {
+            // Arrow slices the child values along with a fixed-size list. Expand in those
+            // child coordinates; applying a parent slice offset again would shift the mask.
+            nulls.map(|nulls| nulls.expand(*size as usize))
+        }
+        DataType::ListView(_) => list_view_visibility(array.as_list_view::<i32>(), nulls),
+        DataType::LargeListView(_) => list_view_visibility(array.as_list_view::<i64>(), nulls),
+        _ => unreachable!("only called for list arrays"),
+    }
+}
+
+fn list_view_visibility<O: OffsetSizeTrait>(
+    list: &GenericListViewArray<O>,
+    nulls: Option<&NullBuffer>,
+) -> Option<NullBuffer> {
+    let mut valid = vec![false; list.values().len()];
+    for (row, (offset, size)) in list
+        .value_offsets()
+        .iter()
+        .zip(list.value_sizes())
+        .enumerate()
+    {
+        if nulls.is_none_or(|nulls| nulls.is_valid(row)) {
+            let start = offset.as_usize();
+            // Views can overlap or be out of order. Accumulate the union of visible ranges;
+            // a null parent must never clear values another parent can see.
+            valid[start..start + size.as_usize()].fill(true);
         }
     }
     Some(NullBuffer::from(valid))
 }
 
 /// Read the Parquet field id stored under arrow-rs's `PARQUET_FIELD_ID_META_KEY`.
-fn field_id(field: &arrow::datatypes::Field) -> Option<i32> {
+pub(crate) fn field_id(field: &arrow::datatypes::Field) -> Option<i32> {
     field
         .metadata()
         .get(PARQUET_FIELD_ID_META_KEY)
         .and_then(|v| v.parse::<i32>().ok())
+}
+
+/// Names of the fields carrying `id`, for the duplicate-id error message. Bracketed and
+/// comma-joined the way Spark's `matchIdField` renders the list, so the message reads
+/// `Found duplicate field(s) "1": [x, y] in id mapping mode` on both sides.
+pub(crate) fn field_names_with_id(fields: &[FieldRef], id: i32) -> String {
+    let names = fields
+        .iter()
+        .filter(|f| field_id(f) == Some(id))
+        .map(|f| f.name().as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("[{names}]")
+}
+
+/// Resolve each requested (`to`) struct field to the index of the file (`from`) field it reads
+/// from, or `None` when the file holds no such field. Mirrors Spark's `clipParquetGroupFields`:
+/// when the requested struct carries Parquet field IDs anywhere (and `use_field_id` is set),
+/// ID-bearing requested fields match ONLY by ID (a missing ID is a missing column, never a name
+/// fallback); other fields match by name, folded with the same `toLowerCase(Locale.ROOT)` fold
+/// the top-level schema adapter uses when `case_sensitive` is false. A requested field whose
+/// folded name matches more than one file field is rejected. Case-insensitive matching retains
+/// Spark's `foundDuplicateFieldInCaseInsensitiveModeError`, and a requested ID that more than
+/// one file field carries raises Spark's `_LEGACY_ERROR_TEMP_2094` (`matchIdField`).
+///
+/// Shared by the runtime convert (`parquet_convert_struct_to_struct`) and the plan-time
+/// conversion check in `schema_adapter`, so both resolve nested fields identically.
+pub(crate) fn match_struct_fields(
+    from_fields: &[FieldRef],
+    to_fields: &[FieldRef],
+    parquet_options: &SparkParquetOptions,
+) -> DataFusionResult<Vec<Option<usize>>> {
+    let should_match_by_id =
+        parquet_options.use_field_id && to_fields.iter().any(|f| field_id(f).is_some());
+
+    // `None` marks an id that more than one file field carries.
+    let from_id_to_index: HashMap<i32, Option<usize>> = if should_match_by_id {
+        let mut map = HashMap::new();
+        for (i, field) in from_fields.iter().enumerate() {
+            if let Some(id) = field_id(field) {
+                map.entry(id).and_modify(|m| *m = None).or_insert(Some(i));
+            }
+        }
+        map
+    } else {
+        HashMap::new()
+    };
+
+    // Fold the file (`from`) and requested (`to`) field names once via the JVM's
+    // `toLowerCase(Locale.ROOT)` (the same fold the top-level schema adapter uses), so
+    // nested case-insensitive matching is byte-for-byte consistent with the top level.
+    let mut all_names: Vec<&str> = Vec::with_capacity(from_fields.len() + to_fields.len());
+    all_names.extend(from_fields.iter().map(|f| f.name().as_str()));
+    all_names.extend(to_fields.iter().map(|f| f.name().as_str()));
+    let all_folded = fold_names(&all_names, parquet_options.case_sensitive)?;
+    let (from_folded, to_folded) = all_folded.split_at(from_fields.len());
+
+    // Group file field indices by folded name so a case-insensitive collision is detected
+    // (Spark's `caseInsensitiveParquetFieldMap`) rather than silently overwritten.
+    let mut folded_to_indices: HashMap<&str, Vec<usize>> = HashMap::new();
+    for (i, folded) in from_folded.iter().enumerate() {
+        folded_to_indices
+            .entry(folded.as_str())
+            .or_default()
+            .push(i);
+    }
+
+    to_fields
+        .iter()
+        .enumerate()
+        .map(
+            |(to_pos, to_field)| match (should_match_by_id, field_id(to_field)) {
+                // Spark treats a missing ID match as a missing column rather than
+                // falling back to name match.
+                (true, Some(id)) => match from_id_to_index.get(&id) {
+                    Some(None) => Err(SparkError::DuplicateFieldByFieldId {
+                        required_id: id,
+                        matched_fields: field_names_with_id(from_fields, id),
+                    }
+                    .into()),
+                    index => Ok(index.copied().flatten()),
+                },
+                _ => match folded_to_indices.get(to_folded[to_pos].as_str()) {
+                    // Reject selected ambiguity before a decoder can multiply rows.
+                    Some(indices) if indices.len() > 1 => {
+                        if parquet_options.case_sensitive {
+                            return Err(duplicate_parquet_field_error(to_field.name()));
+                        }
+                        let matched: Vec<&str> = indices
+                            .iter()
+                            .map(|&i| from_fields[i].name().as_str())
+                            .collect();
+                        Err(DataFusionError::External(Box::new(
+                            SparkError::duplicate_field_case_insensitive(to_field.name(), &matched),
+                        )))
+                    }
+                    Some(indices) => Ok(Some(indices[0])),
+                    None => Ok(None),
+                },
+            },
+        )
+        .collect()
 }
 
 /// Cast between struct types based on logic in
@@ -351,77 +531,11 @@ fn parquet_convert_struct_to_struct(
 ) -> DataFusionResult<ArrayRef> {
     match (from_type, to_type) {
         (DataType::Struct(from_fields), DataType::Struct(to_fields)) => {
-            // Match `from` (file) fields to `to` (logical) fields. Mirrors Spark's
-            // `clipParquetGroupFields`: when the logical struct carries Parquet field IDs
-            // anywhere, ID-bearing logical fields match ONLY by ID; non-ID-bearing fields
-            // fall back to name match. When no logical field carries an ID, fall back to
-            // name match across the board.
-            let should_match_by_id =
-                parquet_options.use_field_id && to_fields.iter().any(|f| field_id(f).is_some());
-
-            let from_id_to_index: HashMap<i32, usize> = if should_match_by_id {
-                let mut map = HashMap::new();
-                for (i, field) in from_fields.iter().enumerate() {
-                    if let Some(id) = field_id(field) {
-                        map.entry(id).or_insert(i);
-                    }
-                }
-                map
-            } else {
-                HashMap::new()
-            };
-
-            // Fold the file (`from`) and requested (`to`) field names once via the JVM's
-            // `toLowerCase(Locale.ROOT)` (the same fold the top-level schema adapter uses), so
-            // nested case-insensitive matching is byte-for-byte consistent with the top level.
-            let mut all_names: Vec<&str> = Vec::with_capacity(from_fields.len() + to_fields.len());
-            all_names.extend(from_fields.iter().map(|f| f.name().as_str()));
-            all_names.extend(to_fields.iter().map(|f| f.name().as_str()));
-            let all_folded = fold_names(&all_names, parquet_options.case_sensitive);
-            let (from_folded, to_folded) = all_folded.split_at(from_fields.len());
-
-            // Group file field indices by folded name so a case-insensitive collision is detected
-            // (Spark's `caseInsensitiveParquetFieldMap`) rather than silently overwritten.
-            let mut folded_to_indices: HashMap<&str, Vec<usize>> = HashMap::new();
-            for (i, folded) in from_folded.iter().enumerate() {
-                folded_to_indices
-                    .entry(folded.as_str())
-                    .or_default()
-                    .push(i);
-            }
+            let from_indices = match_struct_fields(from_fields, to_fields, parquet_options)?;
 
             let mut field_overlap = false;
             let mut cast_fields: Vec<ArrayRef> = Vec::with_capacity(to_fields.len());
-            for (to_pos, to_field) in to_fields.iter().enumerate() {
-                let from_index = match (should_match_by_id, field_id(to_field)) {
-                    // Spark treats a missing ID match as a missing column rather than
-                    // falling back to name match.
-                    (true, Some(id)) => from_id_to_index.get(&id).copied(),
-                    _ => match folded_to_indices.get(to_folded[to_pos].as_str()) {
-                        // Mirror Spark's `foundDuplicateFieldInCaseInsensitiveModeError`: a
-                        // requested field matching more than one file field is ambiguous. Gated on
-                        // case-insensitive mode to match the top-level check (which only runs when
-                        // `!case_sensitive`): when case-sensitive the fold is identity, so a
-                        // collision means byte-identical sibling names, and raising an error whose
-                        // message says "in case-insensitive mode" would be wrong. Fall through to
-                        // the first match in that case.
-                        Some(indices) if indices.len() > 1 && !parquet_options.case_sensitive => {
-                            let matched: Vec<&str> = indices
-                                .iter()
-                                .map(|&i| from_fields[i].name().as_str())
-                                .collect();
-                            return Err(DataFusionError::External(Box::new(
-                                SparkError::duplicate_field_case_insensitive(
-                                    to_field.name(),
-                                    &matched,
-                                ),
-                            )));
-                        }
-                        Some(indices) => Some(indices[0]),
-                        None => None,
-                    },
-                };
-
+            for (to_field, from_index) in to_fields.iter().zip(from_indices) {
                 if let Some(from_index) = from_index {
                     cast_fields.push(parquet_convert_array_impl(
                         Arc::clone(array.column(from_index)),
@@ -448,11 +562,11 @@ fn parquet_convert_struct_to_struct(
                     array.nulls().cloned()
                 };
 
-            Ok(Arc::new(StructArray::new(
+            Ok(Arc::new(StructArray::try_new(
                 to_fields.clone(),
                 cast_fields,
                 nulls,
-            )))
+            )?))
         }
         _ => unreachable!(),
     }
@@ -495,17 +609,17 @@ fn parquet_convert_map_to_map(
                 child_visibility.as_ref(),
             )?;
 
-            Ok(Arc::new(MapArray::new(
+            Ok(Arc::new(MapArray::try_new(
                 Arc::<arrow::datatypes::Field>::clone(entries_field),
                 from.offsets().clone(),
-                StructArray::new(
+                StructArray::try_new(
                     Fields::from(vec![key_field, value_field]),
                     vec![key_array, value_array],
                     from.entries().nulls().cloned(),
-                ),
+                )?,
                 from.nulls().cloned(),
                 to_ordered,
-            )))
+            )?))
         }
         dt => Err(DataFusionError::Internal(format!(
             "Expected MapType. Got: {dt}"
@@ -552,6 +666,80 @@ pub fn is_hdfs_scheme(url: &Url, object_store_configs: &HashMap<String, String>)
 /// Check if the scheme is an Azure ABFS URL.
 fn is_azure_scheme(scheme: &str) -> bool {
     matches!(scheme, "abfs" | "abfss")
+}
+
+fn uses_azure_container_key(scheme: &str) -> bool {
+    is_azure_scheme(scheme)
+        || scheme.starts_with("abfs+comet-")
+        || scheme.starts_with("abfss+comet-")
+}
+
+pub(crate) fn object_store_authority(url: &Url) -> &str {
+    let start = if uses_azure_container_key(url.scheme()) {
+        // ABFS URLs encode the container in the userinfo.
+        url::Position::BeforeUsername
+    } else {
+        url::Position::BeforeHost
+    };
+    &url[start..url::Position::AfterPort]
+}
+
+fn object_store_url_key(url: &Url) -> String {
+    format!("{}://{}", url.scheme(), object_store_authority(url))
+}
+
+/// An [`ObjectStoreRegistry`] that preserves the ABFS container in the registry key.
+/// DataFusion's default registry drops URL userinfo; remove this wrapper after
+/// <https://github.com/apache/datafusion/pull/23935> is available in Comet's DataFusion version.
+#[derive(Debug, Default)]
+pub(crate) struct CometObjectStoreRegistry {
+    default: DefaultObjectStoreRegistry,
+    azure_stores: RwLock<HashMap<String, Arc<dyn ObjectStore>>>,
+}
+
+impl ObjectStoreRegistry for CometObjectStoreRegistry {
+    fn register_store(
+        &self,
+        url: &Url,
+        store: Arc<dyn ObjectStore>,
+    ) -> Option<Arc<dyn ObjectStore>> {
+        if uses_azure_container_key(url.scheme()) {
+            self.azure_stores
+                .write()
+                .unwrap_or_else(PoisonError::into_inner)
+                .insert(object_store_url_key(url), store)
+        } else {
+            self.default.register_store(url, store)
+        }
+    }
+
+    fn deregister_store(&self, url: &Url) -> DataFusionResult<Arc<dyn ObjectStore>> {
+        if uses_azure_container_key(url.scheme()) {
+            self.azure_stores
+                .write()
+                .unwrap_or_else(PoisonError::into_inner)
+                .remove(&object_store_url_key(url))
+                .ok_or_else(|| {
+                    DataFusionError::Internal(format!("No suitable object store found for {url}"))
+                })
+        } else {
+            self.default.deregister_store(url)
+        }
+    }
+
+    fn get_store(&self, url: &Url) -> DataFusionResult<Arc<dyn ObjectStore>> {
+        if uses_azure_container_key(url.scheme()) {
+            if let Some(store) = self
+                .azure_stores
+                .read()
+                .unwrap_or_else(PoisonError::into_inner)
+                .get(&object_store_url_key(url))
+            {
+                return Ok(Arc::clone(store));
+            }
+        }
+        self.default.get_store(url)
+    }
 }
 
 // Creates an OpenDAL HDFS Operator from a URL with optional configuration
@@ -609,14 +797,15 @@ fn create_hdfs_object_store(
     })
 }
 
-/// Cache identity: `(scheme://host:port, config_hash, hdfs_backend)`.
+/// Cache identity: `(scheme://[container@]host:port, config_hash, hdfs_backend)`.
 /// Native `s3a` is normalized to `s3`; Hadoop-selected schemes keep their spelling.
 /// The hash covers the object-store configuration. The boolean is `true` for the
 /// Hadoop backend (including custom schemes routed through Hadoop), `false` for native.
 type ObjectStoreCacheKey = (String, u64, bool);
 type ObjectStoreCache = RwLock<HashMap<ObjectStoreCacheKey, Arc<dyn ObjectStore>>>;
 
-/// Process-wide cache keyed by `(physical_scheme://host:port, config_hash, hdfs_backend)`.
+/// Process-wide cache keyed by
+/// `(physical_scheme://[container@]host:port, config_hash, hdfs_backend)`.
 /// Backend identity is separate from the normalized URL: a configuration can route `s3`
 /// through Hadoop while native `s3a` is normalized to the same `s3` scheme.
 ///
@@ -631,15 +820,22 @@ type ObjectStoreCache = RwLock<HashMap<ObjectStoreCacheKey, Arc<dyn ObjectStore>
 /// deployment model each executor process is dedicated to a single Spark application, so
 /// process lifetime and application lifetime are equivalent; the cache is reclaimed when
 /// the executor pod terminates.
+/// Per-container isolation in a shared runtime also depends on `CometObjectStoreRegistry`
+/// using the same ABFS-aware authority.
 ///
 /// ## Unbounded size
 ///
 /// Cache entries include the physical URL, configuration hash and backend. A typical Spark
-/// job accesses a small, fixed set of buckets with a stable configuration, so the number of
-/// distinct keys is O(buckets × credential-configs) and remains small throughout the job.
+/// job accesses a small, fixed set of buckets or containers with a stable configuration, so the
+/// number of distinct keys remains small throughout the job.
 /// Entries are cheap relative to the cost of creating a new object store (new HTTP
 /// connection pool + DNS resolution), and there is no meaningful benefit from eviction, so
 /// no eviction policy is applied.
+///
+/// A provider that implements `CometS3LocationScopedCredentialProvider` gets one entry per
+/// bucket as well: a `LocationScopedObjectStore` that holds an S3 store for each of the
+/// provider's locations that has been read, so it grows with the provider's location list, not
+/// with the number of paths read.
 ///
 /// ## Credential invalidation
 ///
@@ -718,11 +914,7 @@ pub(crate) fn prepare_object_store_with_configs(
     // HDFS routing still wins, including when its configured schemes resemble remote stores.
     let backend = object_store_backend(&url, is_hdfs_scheme)?;
     let scheme = url.scheme();
-    let url_key = format!(
-        "{}://{}",
-        scheme,
-        &url[url::Position::BeforeHost..url::Position::AfterPort],
-    );
+    let url_key = object_store_url_key(&url);
 
     let config_hash = hash_object_store_configs(object_store_configs);
     let cache_key = (url_key.clone(), config_hash, is_hdfs_scheme);
@@ -781,7 +973,7 @@ pub(crate) fn prepare_object_store_with_configs(
         // the complete suffix to recover the physical URI.
         ObjectStoreUrl::parse(format!(
             "{scheme}+comet-{config_hash:016x}-{backend}://{}",
-            &url[url::Position::BeforeHost..url::Position::AfterPort],
+            object_store_authority(&url),
         ))?
     };
     runtime_env.register_object_store(object_store_url.as_ref(), object_store);
@@ -1153,6 +1345,43 @@ mod tests {
         object_store_cache().write().unwrap().remove(&key);
     }
 
+    #[test]
+    fn isolates_azure_containers_in_cache_and_shared_runtime() {
+        use datafusion::execution::runtime_env::RuntimeEnvBuilder;
+
+        let options = HashMap::from([("fs.azure.account.key".into(), "c2VjcmV0".into())]);
+        let runtime = RuntimeEnvBuilder::new()
+            .with_object_store_registry(Arc::new(super::CometObjectStoreRegistry::default()))
+            .build_arc()
+            .unwrap();
+        let register = |container| {
+            let (url, _, _) = prepare_object_store_with_configs(
+                Arc::clone(&runtime),
+                format!("abfss://{container}@account.dfs.core.windows.net/file.parquet"),
+                &options,
+            )
+            .unwrap();
+            (url.clone(), runtime.object_store(&url).unwrap())
+        };
+
+        let (url_a, store_a) = register("container-a");
+        let (same_url_a, same_store_a) = register("container-a");
+        let (url_b, store_b) = register("container-b");
+        assert_eq!(url_a, same_url_a);
+        assert!(Arc::ptr_eq(&store_a, &same_store_a));
+        assert_ne!(url_a, url_b);
+        assert!(!Arc::ptr_eq(&store_a, &store_b));
+        // Later registrations must not replace the store resolved by an earlier URL.
+        assert!(Arc::ptr_eq(
+            &runtime.object_store(&url_a).unwrap(),
+            &store_a
+        ));
+        assert!(Arc::ptr_eq(
+            &runtime.object_store(&url_b).unwrap(),
+            &store_b
+        ));
+    }
+
     /// Parses the url, registers the object store, and returns a tuple of the object store url and object store path
     #[cfg(not(feature = "hdfs-opendal"))]
     pub(crate) fn prepare_object_store(
@@ -1162,6 +1391,81 @@ mod tests {
         use crate::parquet::parquet_support::prepare_object_store_with_configs;
         prepare_object_store_with_configs(runtime_env, url, &HashMap::new())
             .map(|(url, path, _)| (url, path))
+    }
+
+    /// A conversion the schema adapter should have rejected must surface as an error, never
+    /// as a mismatched child array that `StructArray::new` panics on (#5671).
+    #[test]
+    fn convert_list_to_int_inside_struct_errors_instead_of_panicking() {
+        use crate::parquet::parquet_support::{spark_parquet_convert, SparkParquetOptions};
+        use arrow::array::{Array, ListArray, StructArray};
+        use arrow::datatypes::{DataType, Field, Fields, Int32Type};
+        use datafusion::physical_plan::ColumnarValue;
+        use datafusion_comet_spark_expr::EvalMode;
+        use std::sync::Arc;
+
+        let list = ListArray::from_iter_primitive::<Int32Type, _, _>(vec![Some(vec![Some(1)])]);
+        let from_fields = Fields::from(vec![Field::new("x", list.data_type().clone(), true)]);
+        let array = StructArray::new(from_fields, vec![Arc::new(list)], None);
+        let to_type = DataType::Struct(Fields::from(vec![Field::new("x", DataType::Int32, true)]));
+        let err = spark_parquet_convert(
+            ColumnarValue::Array(Arc::new(array)),
+            &to_type,
+            &SparkParquetOptions::new(EvalMode::Legacy, "UTC", false),
+        )
+        .expect_err("array<int> -> int must be an error");
+        assert!(
+            err.to_string()
+                .contains("Unsupported Parquet type conversion"),
+            "unexpected error: {err}"
+        );
+    }
+
+    /// Pins the set of characters the `url` crate rewrites inside a path.
+    ///
+    /// `create_hdfs_object_store` hands `url.path()` to `object_store::path::Path::parse`, so a
+    /// character that the parser escapes - or, for `?` and `#`, treats as a delimiter and
+    /// truncates at - makes the native writer create a different file from the one Spark's commit
+    /// protocol chose and later commits. Job commit still succeeds, so the data simply ends up
+    /// somewhere nobody looks.
+    ///
+    /// `NativeWriteUtils.nativeUrlEscapedAscii` on the JVM side keeps a copy of this set and
+    /// declines such destinations during planning. Nothing else would notice if a `url` upgrade
+    /// moved a character between the two groups and quietly reopened that hole, so assert the set
+    /// here rather than in the Scala test, which can only check the copy against itself.
+    #[test]
+    fn url_path_rewritten_characters() {
+        use url::Url;
+
+        let rewritten: String = (' '..='~')
+            .filter(|c| {
+                let url = Url::parse(&format!("hdfs://ns/pre{c}post/output")).unwrap();
+                url.path() != format!("/pre{c}post/output")
+            })
+            .collect();
+
+        assert_eq!(
+            rewritten, " \"#<>?`{}",
+            "the ASCII characters `url` rewrites inside a path changed; update \
+             NativeWriteUtils.nativeUrlEscapedAscii and its tests to match"
+        );
+
+        // Every non-ASCII byte is percent-encoded regardless of the encode set. This is the half
+        // a `java.net.URI` raw/decoded comparison cannot see, because Java leaves non-ASCII path
+        // characters alone.
+        for name in [
+            "caf\u{e9}",                // precomposed e-acute
+            "cafe\u{301}",              // "e" plus a combining acute accent
+            "\u{65e5}\u{672c}\u{8a9e}", // CJK
+            "\u{1f642}",                // astral plane
+        ] {
+            let url = Url::parse(&format!("hdfs://ns/{name}/output")).unwrap();
+            assert_ne!(
+                url.path(),
+                format!("/{name}/output"),
+                "expected `url` to percent-encode the non-ASCII name {name}"
+            );
+        }
     }
 
     #[cfg(not(feature = "hdfs-opendal"))]
@@ -1512,6 +1816,174 @@ mod tests {
         }
     }
 
+    #[test]
+    fn test_millis_to_micros_list_representations_visibility() {
+        use super::{parquet_convert_array, SparkParquetOptions};
+        use arrow::array::{
+            cast::AsArray, make_array, Array, ArrayRef, ListArray, StructArray,
+            TimestampMillisecondArray,
+        };
+        use arrow::buffer::{NullBuffer, OffsetBuffer};
+        use arrow::datatypes::{DataType, Field, TimeUnit, TimestampMicrosecondType};
+        use datafusion_comet_spark_expr::EvalMode;
+        use std::sync::Arc;
+
+        let options = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
+        for timezone in [None::<Arc<str>>, Some(Arc::from("UTC"))] {
+            for overflow in [i64::MIN, i64::MAX] {
+                let values: ArrayRef = Arc::new(
+                    TimestampMillisecondArray::from(vec![
+                        overflow, overflow, 7, 8, overflow, overflow,
+                    ])
+                    .with_timezone_opt(timezone.clone()),
+                );
+                let field = Arc::new(Field::new("item", values.data_type().clone(), false));
+                let target_field = Arc::new(Field::new(
+                    "item",
+                    DataType::Timestamp(TimeUnit::Microsecond, timezone.clone()),
+                    false,
+                ));
+                let representations = |field: &Arc<Field>| {
+                    [
+                        DataType::List(Arc::clone(field)),
+                        DataType::LargeList(Arc::clone(field)),
+                        DataType::FixedSizeList(Arc::clone(field), 2),
+                        DataType::ListView(Arc::clone(field)),
+                        DataType::LargeListView(Arc::clone(field)),
+                    ]
+                };
+                let list = ListArray::new(
+                    Arc::clone(&field),
+                    OffsetBuffer::new(vec![0, 2, 4, 6].into()),
+                    values,
+                    None,
+                );
+                for (source, target) in representations(&field)
+                    .into_iter()
+                    .zip(representations(&target_field))
+                {
+                    let unmasked = arrow::compute::cast(&list, &source).unwrap();
+                    let validity = NullBuffer::from(vec![false, true, false]);
+                    let masked = make_array(
+                        unmasked
+                            .to_data()
+                            .into_builder()
+                            .nulls(Some(validity.clone()))
+                            .build()
+                            .unwrap(),
+                    );
+                    for input in [
+                        Arc::clone(&masked),
+                        masked.slice(1, 1),
+                        unmasked.slice(1, 1),
+                    ] {
+                        let output = parquet_convert_array(input, &target, &options).unwrap();
+                        let output = arrow::compute::cast(
+                            &output,
+                            &DataType::List(Arc::clone(&target_field)),
+                        )
+                        .unwrap();
+                        let output = output.as_list::<i32>();
+                        let row = if output.len() == 1 { 0 } else { 1 };
+                        if output.len() == 3 {
+                            assert!(output.is_null(0) && output.is_null(2));
+                        }
+                        let values = output.value(row);
+                        let values = values.as_primitive::<TimestampMicrosecondType>();
+                        assert_eq!(values.values().as_ref(), &[7000, 8000], "{source:?}");
+                        assert_eq!(values.null_count(), 0);
+                    }
+                    assert!(
+                        parquet_convert_array(Arc::clone(&unmasked), &target, &options).is_err(),
+                        "{source:?}"
+                    );
+                    parquet_convert_array(unmasked.slice(0, 0), &target, &options).unwrap();
+                    // The list itself is non-null: visibility comes from the enclosing struct.
+                    let outer: ArrayRef = Arc::new(StructArray::new(
+                        vec![Arc::new(Field::new("a", source, false))].into(),
+                        vec![unmasked],
+                        Some(validity),
+                    ));
+                    let outer_target =
+                        DataType::Struct(vec![Arc::new(Field::new("a", target, false))].into());
+                    parquet_convert_array(outer, &outer_target, &options).unwrap();
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_millis_to_micros_overlapping_list_views() {
+        use super::{parquet_convert_array, SparkParquetOptions};
+        use arrow::array::{
+            cast::AsArray, make_array, Array, ArrayRef, LargeListViewArray, ListViewArray,
+            TimestampMillisecondArray,
+        };
+        use arrow::buffer::NullBuffer;
+        use arrow::datatypes::{DataType, Field, TimeUnit, TimestampMicrosecondType};
+        use datafusion_comet_spark_expr::EvalMode;
+        use std::sync::Arc;
+
+        let options = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
+        let values: ArrayRef = Arc::new(TimestampMillisecondArray::from(vec![
+            i64::MAX,
+            7,
+            8,
+            9,
+            i64::MIN,
+        ]));
+        let field = Arc::new(Field::new("item", values.data_type().clone(), false));
+        let target_field = Arc::new(Field::new(
+            "item",
+            DataType::Timestamp(TimeUnit::Microsecond, None),
+            false,
+        ));
+        let nulls = Some(NullBuffer::from(vec![
+            false, true, true, false, false, true,
+        ]));
+        let small: ArrayRef = Arc::new(ListViewArray::new(
+            Arc::clone(&field),
+            vec![0, 2, 1, 3, 0, 4].into(),
+            vec![4, 2, 2, 1, 1, 0].into(),
+            Arc::clone(&values),
+            nulls.clone(),
+        ));
+        let large: ArrayRef = Arc::new(LargeListViewArray::new(
+            field,
+            vec![0, 2, 1, 3, 0, 4].into(),
+            vec![4, 2, 2, 1, 1, 0].into(),
+            values,
+            nulls,
+        ));
+        for (array, target) in [
+            (small, DataType::ListView(Arc::clone(&target_field))),
+            (large, DataType::LargeListView(Arc::clone(&target_field))),
+        ] {
+            // Null views overlap live views both before and after them. Unreferenced prefix
+            // and suffix values overflow, and the final live view is empty.
+            for input in [Arc::clone(&array), array.slice(1, 2)] {
+                let output = parquet_convert_array(input, &target, &options).unwrap();
+                let output =
+                    arrow::compute::cast(&output, &DataType::List(Arc::clone(&target_field)))
+                        .unwrap();
+                let output = output.as_list::<i32>();
+                let first = if output.len() == 2 { 0 } else { 1 };
+                for (row, expected) in [(first, [8000, 9000]), (first + 1, [7000, 8000])] {
+                    let values = output.value(row);
+                    let values = values.as_primitive::<TimestampMicrosecondType>();
+                    assert_eq!(values.values().as_ref(), &expected);
+                    assert_eq!(values.null_count(), 0);
+                }
+                if output.len() == 6 {
+                    assert!(output.is_null(0) && output.is_null(3) && output.is_null(4));
+                    assert!(output.value(5).is_empty());
+                }
+            }
+            let visible = make_array(array.to_data().into_builder().nulls(None).build().unwrap());
+            assert!(parquet_convert_array(visible, &target, &options).is_err());
+        }
+    }
+
     /// Constructs S3 stores using anonymous credentials, without reading remote objects, and
     /// checks that both alias URL forms return the normalized bucket, key, and remote I/O label.
     #[cfg(not(feature = "hdfs-opendal"))]
@@ -1630,5 +2102,85 @@ mod tests {
             err.to_string().contains("Hdfs support is not enabled"),
             "unexpected error: {err}"
         );
+    }
+
+    /// Two file struct fields share field id 1 and the requested struct asks for that id:
+    /// Spark's `matchIdField` raises `foundDuplicateFieldInFieldIdLookupModeError`
+    /// (`_LEGACY_ERROR_TEMP_2094`) rather than silently reading the first match.
+    #[test]
+    fn requested_duplicate_field_id_errors() {
+        use crate::parquet::parquet_support::{parquet_convert_array, SparkParquetOptions};
+        use crate::parquet::schema_adapter::test::struct_type_with_field_id;
+        use arrow::array::{ArrayRef, Int32Array, StructArray};
+        use arrow::datatypes::DataType;
+        use datafusion_comet_spark_expr::EvalMode;
+        use std::sync::Arc;
+
+        let DataType::Struct(from_fields) =
+            struct_type_with_field_id(vec![("x", DataType::Int32, 1), ("y", DataType::Int32, 1)])
+        else {
+            unreachable!()
+        };
+        let from: ArrayRef = Arc::new(StructArray::new(
+            from_fields,
+            vec![
+                Arc::new(Int32Array::from(vec![42])),
+                Arc::new(Int32Array::from(vec![43])),
+            ],
+            None,
+        ));
+        let to_type = struct_type_with_field_id(vec![("f", DataType::Int32, 1)]);
+
+        let mut opts = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
+        opts.use_field_id = true;
+
+        let err = parquet_convert_array(from, &to_type, &opts).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("_LEGACY_ERROR_TEMP_2094") && msg.contains("id=1 matches [x, y]"),
+            "unexpected error: {msg}"
+        );
+    }
+
+    /// Companion to `requested_duplicate_field_id_errors`: a duplicated file id that no
+    /// requested field looks up stays harmless, as Spark only raises inside `matchIdField`.
+    #[test]
+    fn unrequested_duplicate_field_id_reads_fine() {
+        use crate::parquet::parquet_support::{parquet_convert_array, SparkParquetOptions};
+        use crate::parquet::schema_adapter::test::struct_type_with_field_id;
+        use arrow::array::{Array, ArrayRef, Int32Array, StructArray};
+        use arrow::datatypes::DataType;
+        use datafusion_comet_spark_expr::EvalMode;
+        use std::sync::Arc;
+
+        let DataType::Struct(from_fields) = struct_type_with_field_id(vec![
+            ("x", DataType::Int32, 1),
+            ("y", DataType::Int32, 1),
+            ("z", DataType::Int32, 2),
+        ]) else {
+            unreachable!()
+        };
+        let from: ArrayRef = Arc::new(StructArray::new(
+            from_fields,
+            vec![
+                Arc::new(Int32Array::from(vec![42])),
+                Arc::new(Int32Array::from(vec![43])),
+                Arc::new(Int32Array::from(vec![44])),
+            ],
+            None,
+        ));
+        let to_type = struct_type_with_field_id(vec![("f", DataType::Int32, 2)]);
+
+        let mut opts = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
+        opts.use_field_id = true;
+
+        let result = parquet_convert_array(from, &to_type, &opts).unwrap();
+        let result_struct = result.as_any().downcast_ref::<StructArray>().unwrap();
+        let col = result_struct
+            .column(0)
+            .as_any()
+            .downcast_ref::<Int32Array>()
+            .unwrap();
+        assert_eq!(col.value(0), 44);
     }
 }

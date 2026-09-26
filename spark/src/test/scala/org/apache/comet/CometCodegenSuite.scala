@@ -29,6 +29,7 @@ import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.api.java.UDF1
 import org.apache.spark.sql.catalyst.expressions.{Add, Alias, AttributeReference, BoundReference, Cast, CreateArray, CreateMap, CreateNamedStruct, Expression, Hypot, Literal, MapConcat}
 import org.apache.spark.sql.catalyst.expressions.objects.Invoke
+import org.apache.spark.sql.comet.CometProjectExec
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
@@ -38,6 +39,7 @@ import org.apache.comet.CometSparkSessionExtensions.isSpark41Plus
 import org.apache.comet.codegen.CometBatchKernelCodegen
 import org.apache.comet.codegen.CometBatchKernelCodegen.ArrowColumnSpec
 import org.apache.comet.serde.{CometScalaUDF, QueryPlanSerde}
+import org.apache.comet.serde.ExprOuterClass.Expr.ExprStructCase
 import org.apache.comet.udf.codegen.CometScalaUDFCodegen
 import org.apache.comet.vector.CometVector
 
@@ -70,6 +72,128 @@ class CometCodegenSuite
     }
   }
 
+  test("json_array_length routing follows native opt-in and dispatcher settings") {
+    withSubjects("[1,2,3]", "[]", "not an array", null) {
+      for {
+        allowIncompatible <- Seq(false, true)
+        codegenEnabled <- Seq(false, true)
+      } {
+        withSQLConf(
+          "spark.comet.expression.LengthOfJsonArray.allowIncompatible" ->
+            allowIncompatible.toString,
+          CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> codegenEnabled.toString,
+          SQLConf.OPTIMIZER_EXCLUDED_RULES.key ->
+            "org.apache.spark.sql.catalyst.optimizer.ConstantFolding") {
+          val queries = Seq(
+            "SELECT json_array_length(s) FROM t",
+            "SELECT json_array_length('[1,2,3]') FROM t") ++
+            (if (allowIncompatible) Seq.empty
+             else
+               Seq(
+                 """SELECT json_array_length("[{'key':'value'}]") FROM t""",
+                 "SELECT json_array_length('[1,2,3] trailing') FROM t"))
+
+          queries.foreach { query =>
+            withClue(s"allowIncompatible=$allowIncompatible, codegen=$codegenEnabled: $query") {
+              val df = sql(query)
+              if (!allowIncompatible && !codegenEnabled) {
+                checkSparkAnswerAndFallbackReasons(
+                  df,
+                  Set("json_array_length: spark.comet.exec.scalaUDF.codegen.enabled=false"))
+              } else {
+                val (_, cometPlan) = checkSparkAnswerAndOperator(df)
+                // Spark 4 rewrites this expression to StaticInvoke. Inspect the executable
+                // expression because the rewrite does not preserve its implementation tags.
+                val expr = stripAQEPlan(cometPlan)
+                  .collectFirst { case project: CometProjectExec =>
+                    project.nativeOp.getProjection.getProjectList(0)
+                  }
+                  .getOrElse(fail("Expected a Comet projection"))
+                if (allowIncompatible) {
+                  assert(expr.hasScalarFunc)
+                  assert(expr.getScalarFunc.getFunc === "json_array_length")
+                } else {
+                  assert(expr.hasJvmScalarUdf)
+                  assert(
+                    expr.getJvmScalarUdf.getClassName === classOf[CometScalaUDFCodegen].getName)
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  for {
+    (name, configName, nativeKind, expressions) <- Seq(
+      (
+        "from_json",
+        "JsonToStructs",
+        ExprStructCase.FROM_JSON,
+        Seq(
+          "from_json(j, 'a INT, b STRING')" -> true,
+          "from_json(j, 'a INT, arr ARRAY<INT>')" -> false)),
+      (
+        "to_json",
+        "StructsToJson",
+        ExprStructCase.TO_JSON,
+        Seq(
+          "to_json(s)" -> true,
+          "to_json(a)" -> false,
+          "to_json(s, map('ignoreNullFields', 'false'))" -> false)))
+  } {
+    test(s"$name routing follows native opt-in and dispatcher settings") {
+      withTable("json_routing") {
+        sql("""CREATE TABLE json_routing(j STRING, s STRUCT<a: INT, b: STRING>, a ARRAY<INT>)
+              |USING parquet""".stripMargin)
+        sql("""INSERT INTO json_routing VALUES
+              |('{"a":1,"b":"x","arr":[1,null,3]}', named_struct('a', 1, 'b', 'x'), array(1, null, 3)),
+              |('{"a":null,"b":"","arr":[]}', named_struct('a', null, 'b', ''), array()),
+              |('{}', named_struct('a', null, 'b', null), array()),
+              |(NULL, NULL, NULL)""".stripMargin)
+        for {
+          allowIncompatible <- Seq(false, true)
+          codegenEnabled <- Seq(false, true)
+        } {
+          withSQLConf(
+            s"spark.comet.expression.$configName.allowIncompatible" ->
+              allowIncompatible.toString,
+            CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> codegenEnabled.toString) {
+            expressions.foreach { case (expression, nativeSupported) =>
+              withClue(
+                s"allowIncompatible=$allowIncompatible, codegen=$codegenEnabled: $expression") {
+                val query = s"SELECT $expression FROM json_routing"
+                val expectNative = allowIncompatible && nativeSupported
+                if (!expectNative && !codegenEnabled) {
+                  checkSparkAnswerAndFallbackReason(
+                    query,
+                    s"$name: spark.comet.exec.scalaUDF.codegen.enabled=false")
+                } else {
+                  val (_, cometPlan) = checkSparkAnswerAndOperator(sql(query))
+                  // Spark 4 rewrites to_json to Invoke without preserving implementation tags.
+                  // Inspect the executable expression to distinguish native from dispatch.
+                  val expr = stripAQEPlan(cometPlan)
+                    .collectFirst { case project: CometProjectExec =>
+                      project.nativeOp.getProjection.getProjectList(0)
+                    }
+                    .getOrElse(fail("Expected a Comet projection"))
+                  if (expectNative) {
+                    assert(expr.getExprStructCase === nativeKind)
+                  } else {
+                    assert(expr.hasJvmScalarUdf)
+                    assert(
+                      expr.getJvmScalarUdf.getClassName === classOf[CometScalaUDFCodegen].getName)
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
   private def withTwoStringCols(rows: (String, String)*)(f: => Unit): Unit = {
     withTable("t") {
       sql("CREATE TABLE t (c1 STRING, c2 STRING) USING parquet")
@@ -83,6 +207,29 @@ class CometCodegenSuite
       }
       f
     }
+  }
+
+  /**
+   * Whether `replace` was routed through the JVM codegen dispatcher. Inspects the expression
+   * collection rather than formatted explain text: `rollUpInfoMessages` concatenates sibling
+   * names alphabetically (`cast, divide, ..., replace`), so a substring `"JVM codegen dispatcher:
+   * replace"` misses the case where `replace` is not first.
+   */
+  private def replaceIsDispatched(
+      plan: org.apache.spark.sql.execution.SparkPlan): (Seq[String], String) = {
+    val info = new ExtendedExplainInfo()
+    (info.getCodegenDispatchExpressions(plan), info.generateExtendedInfo(plan))
+  }
+
+  private def assertReplaceDispatch(
+      df: org.apache.spark.sql.DataFrame,
+      expectDispatcher: Boolean,
+      clue: String): Unit = {
+    checkSparkAnswerAndOperator(df)
+    val (dispatched, explain) = replaceIsDispatched(df.queryExecution.executedPlan)
+    assert(
+      dispatched.contains("replace") == expectDispatcher,
+      s"$clue, got dispatched expressions: $dispatched\n$explain")
   }
 
   test("codegen kernel round-trips CalendarIntervalType") {
@@ -511,6 +658,101 @@ class CometCodegenSuite
         info
           .generateExtendedInfo(plan)
           .contains("Accelerated expressions: 0 native, 0 codegen dispatch."))
+    }
+  }
+
+  test("replace compatibility boundary cases stay on JVM codegen dispatcher") {
+    withSQLConf(
+      CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "true",
+      CometConf.COMET_EXPLAIN_CODEGEN_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_PROJECT_ENABLED.key -> "true",
+      CometConf.COMET_EXTENDED_EXPLAIN_FORMAT.key ->
+        CometConf.COMET_EXTENDED_EXPLAIN_FORMAT_VERBOSE) {
+
+      // Malformed search: CometLiteral would normalize 0xFF to U+FFFD, incorrectly matching
+      // a well-formed U+FFFD in the source.
+      withTable("t") {
+        sql("CREATE TABLE t (s STRING) USING parquet")
+        sql("INSERT INTO t VALUES ('\uFFFD'), ('ok')")
+        assertReplaceDispatch(
+          sql("SELECT replace(s, CAST(X'FF' AS STRING), 'x') FROM t"),
+          expectDispatcher = true,
+          "expected dispatcher path for malformed search literal")
+      }
+
+      // Malformed replacement has the same serialization hazard.
+      withTable("t") {
+        sql("CREATE TABLE t (s STRING) USING parquet")
+        sql("INSERT INTO t VALUES ('a'), ('b')")
+        assertReplaceDispatch(
+          sql("SELECT replace(s, 'a', CAST(X'FF' AS STRING)) FROM t"),
+          expectDispatcher = true,
+          "expected dispatcher path for malformed replacement literal")
+      }
+
+      // Spark skips replacement evaluation when src is NULL; native evaluates every child.
+      withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
+        withTable("t") {
+          sql("CREATE TABLE t (s STRING, n INT) USING parquet")
+          sql("INSERT INTO t VALUES (NULL, 0), ('a', 1)")
+          assertReplaceDispatch(
+            sql("SELECT replace(s, 'a', CAST(1 / n AS STRING)) FROM t"),
+            expectDispatcher = true,
+            "expected dispatcher path for throwing replacement expression")
+        }
+      }
+
+      // A 256 KiB scalar replacement overflows Arrow Utf8 offsets when broadcast to 8192 rows.
+      withTable("t") {
+        sql("CREATE TABLE t (s STRING) USING parquet")
+        sql("INSERT INTO t VALUES ('hello')")
+        assertReplaceDispatch(
+          sql("SELECT replace(s, 'notfound', repeat('x', 262144)) FROM t"),
+          expectDispatcher = true,
+          "expected dispatcher path for oversized replacement literal")
+      }
+
+      // Source is not on the whitelist: Spark short-circuits inside substring when s is NULL.
+      withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
+        withTable("t") {
+          sql("CREATE TABLE t (s STRING, n INT) USING parquet")
+          sql("INSERT INTO t VALUES (NULL, 0), ('a', 1)")
+          assertReplaceDispatch(
+            sql("SELECT replace(substring(s, 1, CAST(1 / n AS INT)), 'a', 'x') FROM t"),
+            expectDispatcher = true,
+            "expected dispatcher path for throwing expression nested in source")
+        }
+      }
+
+      // Malformed source literal: same CometLiteral byte-normalization as search/replacement.
+      withTable("t") {
+        sql("CREATE TABLE t (r STRING) USING parquet")
+        sql("INSERT INTO t VALUES ('x')")
+        assertReplaceDispatch(
+          sql("SELECT replace(CAST(X'FF' AS STRING), 'a', r) FROM t"),
+          expectDispatcher = true,
+          "expected dispatcher path for malformed source literal")
+      }
+
+      // Malformed literal nested under concat is still in the source tree.
+      withTable("t") {
+        sql("CREATE TABLE t (r STRING) USING parquet")
+        sql("INSERT INTO t VALUES ('x')")
+        assertReplaceDispatch(
+          sql("SELECT replace(concat(CAST(X'FF' AS STRING), r), 'a', 'x') FROM t"),
+          expectDispatcher = true,
+          "expected dispatcher path for malformed literal nested in source")
+      }
+
+      // Oversized source literal has the same broadcast / offset-overflow hazard.
+      withTable("t") {
+        sql("CREATE TABLE t (r STRING) USING parquet")
+        sql("INSERT INTO t VALUES ('x')")
+        assertReplaceDispatch(
+          sql("SELECT replace(repeat('x', 262144), 'notfound', r) FROM t"),
+          expectDispatcher = true,
+          "expected dispatcher path for oversized source literal")
+      }
     }
   }
 
