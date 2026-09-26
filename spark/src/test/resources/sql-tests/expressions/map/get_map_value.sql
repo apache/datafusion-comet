@@ -21,7 +21,7 @@ CREATE TABLE test_map(m map<string, int>) USING parquet
 statement
 INSERT INTO test_map VALUES (map('a', 1, 'b', 2, 'c', 3)), (map('x', 10)), (NULL)
 
-query spark_answer_only
+query expect_native(getmapvalue)
 SELECT m['a'], m['b'], m['c'] FROM test_map
 
 query spark_answer_only
@@ -31,9 +31,9 @@ SELECT m['x'], m['missing'] FROM test_map
 query spark_answer_only
 SELECT map('a', 1, 'b', 2)['a'], map('a', 1, 'b', 2)['missing'], map('a', 1, 'b', 2)[NULL]
 
--- Map key types whose Spark equality Comet's native `map_extract` cannot reproduce fall back to
--- Spark. `x[key]` routes through `GetMapValue` / `CometMapExtract` (the `element_at` form in
--- `element_at_map.sql` exercises the same guard on `CometElementAt`). A `map<double,int>` column
+-- Map key types whose Spark equality Comet's native `map_extract` cannot reproduce dispatch to
+-- Spark's generated code inside Comet. `x[key]` routes through `GetMapValue` / `CometMapExtract`
+-- (`element_at_map.sql` exercises the same guard on `CometElementAt`). A `map<double,int>` column
 -- is used rather than a `map(...)` literal because Spark's `SimplifyExtractValueOps` rewrites
 -- `map(...)[key]` over a literal map into a `CASE` before it can reach the native lookup. Spark
 -- stores a `-0.0` key as `+0.0` and finds it with `nanSafeCompareDoubles`, so it returns `7` for a
@@ -44,5 +44,5 @@ CREATE TABLE test_map_double(m map<double, int>) USING parquet
 statement
 INSERT INTO test_map_double VALUES (map(CAST(0 AS DOUBLE), 7)), (map(CAST(1 AS DOUBLE), 8)), (NULL)
 
-query expect_fallback(Spark normalizes floating-point map keys)
-SELECT m[CAST(-0.0 AS DOUBLE)] FROM test_map_double
+query expect_dispatch(getmapvalue)
+SELECT m[double('-0.0')] FROM test_map_double

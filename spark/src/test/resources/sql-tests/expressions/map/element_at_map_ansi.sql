@@ -34,3 +34,11 @@ INSERT INTO test_element_at_nested_ansi VALUES (1), (2), (3)
 query
 SELECT id, element_at(element_at(map(1, map(0, 7)), id), id % (id - 2)) AS v
 FROM test_element_at_nested_ansi
+
+-- The nullable nondeterministic operand must be evaluated once inside the dispatcher. In
+-- particular, the second lookup must not evaluate its throwing key on the NULL-map row.
+query expect_dispatch(element_at)
+SELECT id,
+       element_at(IF(monotonically_increasing_id() % 2 = 0, CAST(NULL AS MAP<INT, INT>), map(1, 7)), 1) AS v1,
+       element_at(IF(rand(7L) < 2, CAST(NULL AS MAP<INT, INT>), map(1, 7)), id % (id - 2)) AS v2
+FROM test_element_at_nested_ansi
