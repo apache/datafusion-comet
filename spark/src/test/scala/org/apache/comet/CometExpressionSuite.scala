@@ -198,7 +198,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       (3, 0.0f, 0.0d),
       (4, 1.0f, 1.0d))
     val expected = rows.map { case (id, f, d) =>
-      id -> (java.lang.Float.floatToRawIntBits(f), java.lang.Double.doubleToRawLongBits(d))
+      id -> ((java.lang.Float.floatToRawIntBits(f), java.lang.Double.doubleToRawLongBits(d)))
     }.toMap
 
     rows.toDF("id", "f", "d").createOrReplaceTempView("strict_fp_bits")
@@ -1569,7 +1569,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     def makeDecimalRDD(num: Int, decimal: DecimalType, useDictionary: Boolean): DataFrame = {
       val div = if (useDictionary) 5 else num // narrow the space to make it dictionary encoded
       spark
-        .range(num)
+        .range(num.toLong)
         .map(_ % div)
         // Parquet doesn't allow column names with spaces, have to add an alias here.
         // Minus 500 here so that negative decimals are also tested.
@@ -2102,7 +2102,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     // must stay native; interval types are unsupported and fall back to Spark.
     withParquetTable(
       (1 to 5).map(i =>
-        (i.toByte, i.toShort, i, i.toLong, i.toFloat, i.toDouble, BigDecimal(i * 3, 2))),
+        (i.toByte, i.toShort, i, i.toLong, i.toFloat, i.toDouble, BigDecimal((i * 3).toLong, 2))),
       "umt") {
       checkSparkAnswerAndOperator("SELECT -_1, -_2, -_3, -_4, -_5, -_6, -_7 FROM umt")
     }

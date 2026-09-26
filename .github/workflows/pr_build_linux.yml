@@ -240,6 +240,54 @@ jobs:
             /root/.m2/repository
           key: ${{ runner.os }}-java-maven-${{ hashFiles('**/pom.xml') }}-lint
 
+  # Compiles main and test sources with -Pstrict-warnings, which promotes scalac warnings to
+  # errors, so a change that reintroduces a cleared warning (an Int widened into a Long metric,
+  # a discarded builder result) fails here rather than accumulating. Spark 3.5 only: the profile
+  # passes on the Scala 2.12 profiles, and the Scala 2.13 remainder is tracked in
+  # https://github.com/apache/datafusion-comet/issues/5893.
+  strict-scala-warnings:
+    needs: lint
+    name: Strict Scala warnings (Spark 3.5, JDK 17)
+    if: ${{ !inputs.cache-refresh-only && inputs.profiles != 'nightly' }}
+    runs-on: ubuntu-24.04
+    container:
+      image: amd64/rust
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup Rust & Java toolchain
+        uses: ./.github/actions/setup-builder
+        with:
+          rust-version: ${{ env.RUST_VERSION }}
+          jdk-version: 17
+
+      - name: Restore Maven dependencies
+        id: maven-cache
+        uses: actions/cache/restore@v6
+        with:
+          path: |
+            ~/.m2/repository
+            /root/.m2/repository
+          key: ${{ runner.os }}-java-maven-${{ hashFiles('**/pom.xml') }}-strict-warnings
+          restore-keys: |
+            ${{ runner.os }}-java-maven-
+
+      - name: Compile with strict warnings
+        run: ./mvnw -B test-compile -Pspark-3.5 -Pstrict-warnings -DskipTests
+
+      # Saved only on main: an entry written from a pull request or a
+      # `gh-readonly-queue/*` branch cannot be restored by any later run, and
+      # it evicts main's from the shared budget. See "Large caches are written
+      # on main only" in README.md.
+      - name: Save Maven dependencies
+        if: ${{ github.ref == 'refs/heads/main' && steps.maven-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v6
+        with:
+          path: |
+            ~/.m2/repository
+            /root/.m2/repository
+          key: ${{ runner.os }}-java-maven-${{ hashFiles('**/pom.xml') }}-strict-warnings
+
   # Compile-only verification for Spark 4.1. Tests are intentionally skipped: the spark-4.1
   # profile is currently a build target only, and several runtime/test failures are tracked
   # in follow-up PRs. Excluded from lint-java because semanticdb-scalac_2.13.17 is not yet

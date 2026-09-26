@@ -68,7 +68,9 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with CometTypeS
           } else {
             Some(Literal.create(value, field.dataType))
           }
-          expression.flatMap(exprToProto(_, output)).map(_ -> java.lang.Long.valueOf(index))
+          expression
+            .flatMap(exprToProto(_, output))
+            .map(_ -> java.lang.Long.valueOf(index.toLong))
       }
       .toSeq
     // Never drop a value independently of its index: that would shift every later default.

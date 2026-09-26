@@ -110,7 +110,7 @@ case class CometMetricNode(metrics: Map[String, SQLMetric], children: Seq[CometM
    * be called in a TaskCompletionListener after the iterator is fully consumed.
    */
   def reportScanInputMetrics(ctx: TaskContext): Unit = {
-    ctx.addTaskCompletionListener[Unit] { _ =>
+    val _ = ctx.addTaskCompletionListener[Unit] { _ =>
       val scanLeaves = leafNodes.filter(_.metrics.contains("bytes_scanned"))
       if (scanLeaves.nonEmpty) {
         val totalBytes = scanLeaves.map(_.metrics("bytes_scanned").value).sum
@@ -137,7 +137,7 @@ case class CometMetricNode(metrics: Map[String, SQLMetric], children: Seq[CometM
    * before this listener runs.
    */
   def reportNativeWriteOutputMetrics(ctx: TaskContext): Unit = {
-    ctx.addTaskCompletionListener[Unit] { _ =>
+    val _ = ctx.addTaskCompletionListener[Unit] { _ =>
       metrics.get("bytes_written").foreach { m =>
         ctx.taskMetrics().outputMetrics.setBytesWritten(m.value)
       }
@@ -162,7 +162,7 @@ case class CometMetricNode(metrics: Map[String, SQLMetric], children: Seq[CometM
    */
   def reportSpillMetrics(ctx: TaskContext): Unit = {
     val seenMetrics = CometMetricNode.taskSeenSpillMetrics(ctx)
-    ctx.addTaskCompletionListener[Unit] { _ =>
+    val _ = ctx.addTaskCompletionListener[Unit] { _ =>
       val diskBytesSpilled = sumMetricValues("spilled_bytes", seenMetrics.disk)
       if (diskBytesSpilled > 0L) {
         ctx.taskMetrics().incDiskBytesSpilled(diskBytesSpilled)
@@ -244,7 +244,9 @@ object CometMetricNode {
       // The task thread is the only registrant for its attempt id, so there is no put race.
       val created = SeenSpillMetrics(new IdentityHashMap(), new IdentityHashMap())
       seenSpillMetricsByTask.put(attemptId, created)
-      ctx.addTaskCompletionListener[Unit](_ => seenSpillMetricsByTask.remove(attemptId))
+      ctx.addTaskCompletionListener[Unit](_ => {
+        val _ = seenSpillMetricsByTask.remove(attemptId)
+      })
       created
     }
   }

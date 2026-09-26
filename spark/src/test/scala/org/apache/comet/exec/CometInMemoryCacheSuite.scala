@@ -1472,7 +1472,7 @@ class CometInMemoryCacheSuite extends CometTestBase {
 
       spark.catalog.clearCache()
       spark
-        .range(0, projectionCacheRows, 1, 2)
+        .range(0, projectionCacheRows.toLong, 1, 2)
         .selectExpr(columns: _*)
         .createOrReplaceTempView(view)
       spark.catalog.cacheTable(view)

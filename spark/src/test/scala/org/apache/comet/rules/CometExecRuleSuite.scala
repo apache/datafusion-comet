@@ -1577,7 +1577,7 @@ class CometExecRuleSuite extends CometTestBase {
         s"expected one report containing '$marker', got:\n${reports.mkString("\n\n")}")
       assert(
         coverageOf(matching.head) ==
-          (executed.cometOperators, executed.cometOperators + executed.sparkOperators),
+          ((executed.cometOperators, executed.cometOperators + executed.sparkOperators)),
         s"report disagrees with the executed plan ($executed):\n${matching.head}")
     }
     plan

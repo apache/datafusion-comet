@@ -96,7 +96,7 @@ class CometExecIterator(
   private val nativeLib = new Native()
   private val nativeUtil = new NativeUtil()
   private val taskAttemptId = TaskContext.get().taskAttemptId()
-  private val taskCPUs = TaskContext.get().cpus()
+  private val taskCPUs = TaskContext.get().cpus().toLong
   private val cometTaskMemoryManager = new CometTaskMemoryManager(id, taskAttemptId)
 
   private val plan = {
@@ -411,7 +411,7 @@ object CometExecIterator extends Logging {
       if (intervalMs > 0) {
         val nativeLib = new Native()
         val limitBytes = nativeMemoryLimit(conf)
-        Executors
+        val _ = Executors
           .newSingleThreadScheduledExecutor(new ThreadFactory {
             override def newThread(runnable: Runnable): Thread = {
               val thread = new Thread(runnable, "comet-memory-usage-log")

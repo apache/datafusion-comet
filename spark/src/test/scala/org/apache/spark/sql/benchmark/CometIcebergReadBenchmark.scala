@@ -34,7 +34,10 @@ object CometIcebergReadBenchmark extends CometBenchmarkBase {
 
   def icebergScanBenchmark(values: Int, dataType: DataType): Unit = {
     val sqlBenchmark =
-      new Benchmark(s"SQL Single ${dataType.sql} Iceberg Column Scan", values, output = output)
+      new Benchmark(
+        s"SQL Single ${dataType.sql} Iceberg Column Scan",
+        values.toLong,
+        output = output)
 
     withTempPath { dir =>
       withTempTable("icebergTable") {
