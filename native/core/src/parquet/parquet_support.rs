@@ -34,7 +34,9 @@ use arrow::{
 };
 use datafusion::common::{Result as DataFusionResult, ScalarValue};
 use datafusion::error::DataFusionError;
-use datafusion::execution::object_store::ObjectStoreUrl;
+use datafusion::execution::object_store::{
+    DefaultObjectStoreRegistry, ObjectStoreRegistry, ObjectStoreUrl,
+};
 use datafusion::execution::runtime_env::RuntimeEnv;
 use datafusion::physical_plan::ColumnarValue;
 use datafusion_comet_common::SparkError;
@@ -46,7 +48,11 @@ use parquet::arrow::PARQUET_FIELD_ID_META_KEY;
 use std::collections::HashMap;
 use std::sync::OnceLock;
 use std::time::Duration;
-use std::{collections::hash_map::DefaultHasher, hash::Hasher, sync::RwLock};
+use std::{
+    collections::hash_map::DefaultHasher,
+    hash::Hasher,
+    sync::{PoisonError, RwLock},
+};
 use std::{fmt::Debug, hash::Hash, sync::Arc};
 use url::Url;
 
@@ -54,6 +60,10 @@ use super::objectstore;
 use super::objectstore::s3_blob_fs_support::{
     normalize_object_store_url, NormalizedObjectStoreUrl,
 };
+
+pub(crate) fn duplicate_parquet_field_error(name: &str) -> DataFusionError {
+    DataFusionError::Execution(format!("Found duplicate Parquet field name '{name}'"))
+}
 
 // This file originates from cast.rs. While developing native scan support and implementing
 // SparkSchemaAdapter we observed that Spark's type conversion logic on Parquet reads does not
@@ -397,11 +407,24 @@ fn list_view_visibility<O: OffsetSizeTrait>(
 }
 
 /// Read the Parquet field id stored under arrow-rs's `PARQUET_FIELD_ID_META_KEY`.
-fn field_id(field: &arrow::datatypes::Field) -> Option<i32> {
+pub(crate) fn field_id(field: &arrow::datatypes::Field) -> Option<i32> {
     field
         .metadata()
         .get(PARQUET_FIELD_ID_META_KEY)
         .and_then(|v| v.parse::<i32>().ok())
+}
+
+/// Names of the fields carrying `id`, for the duplicate-id error message. Bracketed and
+/// comma-joined the way Spark's `matchIdField` renders the list, so the message reads
+/// `Found duplicate field(s) "1": [x, y] in id mapping mode` on both sides.
+pub(crate) fn field_names_with_id(fields: &[FieldRef], id: i32) -> String {
+    let names = fields
+        .iter()
+        .filter(|f| field_id(f) == Some(id))
+        .map(|f| f.name().as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("[{names}]")
 }
 
 /// Resolve each requested (`to`) struct field to the index of the file (`from`) field it reads
@@ -410,8 +433,9 @@ fn field_id(field: &arrow::datatypes::Field) -> Option<i32> {
 /// ID-bearing requested fields match ONLY by ID (a missing ID is a missing column, never a name
 /// fallback); other fields match by name, folded with the same `toLowerCase(Locale.ROOT)` fold
 /// the top-level schema adapter uses when `case_sensitive` is false. A requested field whose
-/// folded name matches more than one file field in case-insensitive mode raises Spark's
-/// `foundDuplicateFieldInCaseInsensitiveModeError`.
+/// folded name matches more than one file field is rejected. Case-insensitive matching retains
+/// Spark's `foundDuplicateFieldInCaseInsensitiveModeError`, and a requested ID that more than
+/// one file field carries raises Spark's `_LEGACY_ERROR_TEMP_2094` (`matchIdField`).
 ///
 /// Shared by the runtime convert (`parquet_convert_struct_to_struct`) and the plan-time
 /// conversion check in `schema_adapter`, so both resolve nested fields identically.
@@ -423,11 +447,12 @@ pub(crate) fn match_struct_fields(
     let should_match_by_id =
         parquet_options.use_field_id && to_fields.iter().any(|f| field_id(f).is_some());
 
-    let from_id_to_index: HashMap<i32, usize> = if should_match_by_id {
+    // `None` marks an id that more than one file field carries.
+    let from_id_to_index: HashMap<i32, Option<usize>> = if should_match_by_id {
         let mut map = HashMap::new();
         for (i, field) in from_fields.iter().enumerate() {
             if let Some(id) = field_id(field) {
-                map.entry(id).or_insert(i);
+                map.entry(id).and_modify(|m| *m = None).or_insert(Some(i));
             }
         }
         map
@@ -441,7 +466,7 @@ pub(crate) fn match_struct_fields(
     let mut all_names: Vec<&str> = Vec::with_capacity(from_fields.len() + to_fields.len());
     all_names.extend(from_fields.iter().map(|f| f.name().as_str()));
     all_names.extend(to_fields.iter().map(|f| f.name().as_str()));
-    let all_folded = fold_names(&all_names, parquet_options.case_sensitive);
+    let all_folded = fold_names(&all_names, parquet_options.case_sensitive)?;
     let (from_folded, to_folded) = all_folded.split_at(from_fields.len());
 
     // Group file field indices by folded name so a case-insensitive collision is detected
@@ -461,16 +486,20 @@ pub(crate) fn match_struct_fields(
             |(to_pos, to_field)| match (should_match_by_id, field_id(to_field)) {
                 // Spark treats a missing ID match as a missing column rather than
                 // falling back to name match.
-                (true, Some(id)) => Ok(from_id_to_index.get(&id).copied()),
+                (true, Some(id)) => match from_id_to_index.get(&id) {
+                    Some(None) => Err(SparkError::DuplicateFieldByFieldId {
+                        required_id: id,
+                        matched_fields: field_names_with_id(from_fields, id),
+                    }
+                    .into()),
+                    index => Ok(index.copied().flatten()),
+                },
                 _ => match folded_to_indices.get(to_folded[to_pos].as_str()) {
-                    // Mirror Spark's `foundDuplicateFieldInCaseInsensitiveModeError`: a
-                    // requested field matching more than one file field is ambiguous. Gated on
-                    // case-insensitive mode to match the top-level check (which only runs when
-                    // `!case_sensitive`): when case-sensitive the fold is identity, so a
-                    // collision means byte-identical sibling names, and raising an error whose
-                    // message says "in case-insensitive mode" would be wrong. Fall through to
-                    // the first match in that case.
-                    Some(indices) if indices.len() > 1 && !parquet_options.case_sensitive => {
+                    // Reject selected ambiguity before a decoder can multiply rows.
+                    Some(indices) if indices.len() > 1 => {
+                        if parquet_options.case_sensitive {
+                            return Err(duplicate_parquet_field_error(to_field.name()));
+                        }
                         let matched: Vec<&str> = indices
                             .iter()
                             .map(|&i| from_fields[i].name().as_str())
@@ -635,6 +664,80 @@ fn is_azure_scheme(scheme: &str) -> bool {
     matches!(scheme, "abfs" | "abfss")
 }
 
+fn uses_azure_container_key(scheme: &str) -> bool {
+    is_azure_scheme(scheme)
+        || scheme.starts_with("abfs+comet-")
+        || scheme.starts_with("abfss+comet-")
+}
+
+pub(crate) fn object_store_authority(url: &Url) -> &str {
+    let start = if uses_azure_container_key(url.scheme()) {
+        // ABFS URLs encode the container in the userinfo.
+        url::Position::BeforeUsername
+    } else {
+        url::Position::BeforeHost
+    };
+    &url[start..url::Position::AfterPort]
+}
+
+fn object_store_url_key(url: &Url) -> String {
+    format!("{}://{}", url.scheme(), object_store_authority(url))
+}
+
+/// An [`ObjectStoreRegistry`] that preserves the ABFS container in the registry key.
+/// DataFusion's default registry drops URL userinfo; remove this wrapper after
+/// <https://github.com/apache/datafusion/pull/23935> is available in Comet's DataFusion version.
+#[derive(Debug, Default)]
+pub(crate) struct CometObjectStoreRegistry {
+    default: DefaultObjectStoreRegistry,
+    azure_stores: RwLock<HashMap<String, Arc<dyn ObjectStore>>>,
+}
+
+impl ObjectStoreRegistry for CometObjectStoreRegistry {
+    fn register_store(
+        &self,
+        url: &Url,
+        store: Arc<dyn ObjectStore>,
+    ) -> Option<Arc<dyn ObjectStore>> {
+        if uses_azure_container_key(url.scheme()) {
+            self.azure_stores
+                .write()
+                .unwrap_or_else(PoisonError::into_inner)
+                .insert(object_store_url_key(url), store)
+        } else {
+            self.default.register_store(url, store)
+        }
+    }
+
+    fn deregister_store(&self, url: &Url) -> DataFusionResult<Arc<dyn ObjectStore>> {
+        if uses_azure_container_key(url.scheme()) {
+            self.azure_stores
+                .write()
+                .unwrap_or_else(PoisonError::into_inner)
+                .remove(&object_store_url_key(url))
+                .ok_or_else(|| {
+                    DataFusionError::Internal(format!("No suitable object store found for {url}"))
+                })
+        } else {
+            self.default.deregister_store(url)
+        }
+    }
+
+    fn get_store(&self, url: &Url) -> DataFusionResult<Arc<dyn ObjectStore>> {
+        if uses_azure_container_key(url.scheme()) {
+            if let Some(store) = self
+                .azure_stores
+                .read()
+                .unwrap_or_else(PoisonError::into_inner)
+                .get(&object_store_url_key(url))
+            {
+                return Ok(Arc::clone(store));
+            }
+        }
+        self.default.get_store(url)
+    }
+}
+
 // Creates an OpenDAL HDFS Operator from a URL with optional configuration
 #[cfg(feature = "hdfs-opendal")]
 pub(crate) fn create_hdfs_operator(url: &Url) -> Result<opendal::Operator, object_store::Error> {
@@ -690,14 +793,15 @@ fn create_hdfs_object_store(
     })
 }
 
-/// Cache identity: `(scheme://host:port, config_hash, hdfs_backend)`.
+/// Cache identity: `(scheme://[container@]host:port, config_hash, hdfs_backend)`.
 /// Native `s3a` is normalized to `s3`; Hadoop-selected schemes keep their spelling.
 /// The hash covers the object-store configuration. The boolean is `true` for the
 /// Hadoop backend (including custom schemes routed through Hadoop), `false` for native.
 type ObjectStoreCacheKey = (String, u64, bool);
 type ObjectStoreCache = RwLock<HashMap<ObjectStoreCacheKey, Arc<dyn ObjectStore>>>;
 
-/// Process-wide cache keyed by `(physical_scheme://host:port, config_hash, hdfs_backend)`.
+/// Process-wide cache keyed by
+/// `(physical_scheme://[container@]host:port, config_hash, hdfs_backend)`.
 /// Backend identity is separate from the normalized URL: a configuration can route `s3`
 /// through Hadoop while native `s3a` is normalized to the same `s3` scheme.
 ///
@@ -712,15 +816,22 @@ type ObjectStoreCache = RwLock<HashMap<ObjectStoreCacheKey, Arc<dyn ObjectStore>
 /// deployment model each executor process is dedicated to a single Spark application, so
 /// process lifetime and application lifetime are equivalent; the cache is reclaimed when
 /// the executor pod terminates.
+/// Per-container isolation in a shared runtime also depends on `CometObjectStoreRegistry`
+/// using the same ABFS-aware authority.
 ///
 /// ## Unbounded size
 ///
 /// Cache entries include the physical URL, configuration hash and backend. A typical Spark
-/// job accesses a small, fixed set of buckets with a stable configuration, so the number of
-/// distinct keys is O(buckets × credential-configs) and remains small throughout the job.
+/// job accesses a small, fixed set of buckets or containers with a stable configuration, so the
+/// number of distinct keys remains small throughout the job.
 /// Entries are cheap relative to the cost of creating a new object store (new HTTP
 /// connection pool + DNS resolution), and there is no meaningful benefit from eviction, so
 /// no eviction policy is applied.
+///
+/// A provider that implements `CometS3LocationScopedCredentialProvider` gets one entry per
+/// bucket as well: a `LocationScopedObjectStore` that holds an S3 store for each of the
+/// provider's locations that has been read, so it grows with the provider's location list, not
+/// with the number of paths read.
 ///
 /// ## Credential invalidation
 ///
@@ -799,11 +910,7 @@ pub(crate) fn prepare_object_store_with_configs(
     // HDFS routing still wins, including when its configured schemes resemble remote stores.
     let backend = object_store_backend(&url, is_hdfs_scheme)?;
     let scheme = url.scheme();
-    let url_key = format!(
-        "{}://{}",
-        scheme,
-        &url[url::Position::BeforeHost..url::Position::AfterPort],
-    );
+    let url_key = object_store_url_key(&url);
 
     let config_hash = hash_object_store_configs(object_store_configs);
     let cache_key = (url_key.clone(), config_hash, is_hdfs_scheme);
@@ -862,7 +969,7 @@ pub(crate) fn prepare_object_store_with_configs(
         // the complete suffix to recover the physical URI.
         ObjectStoreUrl::parse(format!(
             "{scheme}+comet-{config_hash:016x}-{backend}://{}",
-            &url[url::Position::BeforeHost..url::Position::AfterPort],
+            object_store_authority(&url),
         ))?
     };
     runtime_env.register_object_store(object_store_url.as_ref(), object_store);
@@ -1234,6 +1341,43 @@ mod tests {
         object_store_cache().write().unwrap().remove(&key);
     }
 
+    #[test]
+    fn isolates_azure_containers_in_cache_and_shared_runtime() {
+        use datafusion::execution::runtime_env::RuntimeEnvBuilder;
+
+        let options = HashMap::from([("fs.azure.account.key".into(), "c2VjcmV0".into())]);
+        let runtime = RuntimeEnvBuilder::new()
+            .with_object_store_registry(Arc::new(super::CometObjectStoreRegistry::default()))
+            .build_arc()
+            .unwrap();
+        let register = |container| {
+            let (url, _, _) = prepare_object_store_with_configs(
+                Arc::clone(&runtime),
+                format!("abfss://{container}@account.dfs.core.windows.net/file.parquet"),
+                &options,
+            )
+            .unwrap();
+            (url.clone(), runtime.object_store(&url).unwrap())
+        };
+
+        let (url_a, store_a) = register("container-a");
+        let (same_url_a, same_store_a) = register("container-a");
+        let (url_b, store_b) = register("container-b");
+        assert_eq!(url_a, same_url_a);
+        assert!(Arc::ptr_eq(&store_a, &same_store_a));
+        assert_ne!(url_a, url_b);
+        assert!(!Arc::ptr_eq(&store_a, &store_b));
+        // Later registrations must not replace the store resolved by an earlier URL.
+        assert!(Arc::ptr_eq(
+            &runtime.object_store(&url_a).unwrap(),
+            &store_a
+        ));
+        assert!(Arc::ptr_eq(
+            &runtime.object_store(&url_b).unwrap(),
+            &store_b
+        ));
+    }
+
     /// Parses the url, registers the object store, and returns a tuple of the object store url and object store path
     #[cfg(not(feature = "hdfs-opendal"))]
     pub(crate) fn prepare_object_store(
@@ -1271,6 +1415,53 @@ mod tests {
                 .contains("Unsupported Parquet type conversion"),
             "unexpected error: {err}"
         );
+    }
+
+    /// Pins the set of characters the `url` crate rewrites inside a path.
+    ///
+    /// `create_hdfs_object_store` hands `url.path()` to `object_store::path::Path::parse`, so a
+    /// character that the parser escapes - or, for `?` and `#`, treats as a delimiter and
+    /// truncates at - makes the native writer create a different file from the one Spark's commit
+    /// protocol chose and later commits. Job commit still succeeds, so the data simply ends up
+    /// somewhere nobody looks.
+    ///
+    /// `NativeWriteUtils.nativeUrlEscapedAscii` on the JVM side keeps a copy of this set and
+    /// declines such destinations during planning. Nothing else would notice if a `url` upgrade
+    /// moved a character between the two groups and quietly reopened that hole, so assert the set
+    /// here rather than in the Scala test, which can only check the copy against itself.
+    #[test]
+    fn url_path_rewritten_characters() {
+        use url::Url;
+
+        let rewritten: String = (' '..='~')
+            .filter(|c| {
+                let url = Url::parse(&format!("hdfs://ns/pre{c}post/output")).unwrap();
+                url.path() != format!("/pre{c}post/output")
+            })
+            .collect();
+
+        assert_eq!(
+            rewritten, " \"#<>?`{}",
+            "the ASCII characters `url` rewrites inside a path changed; update \
+             NativeWriteUtils.nativeUrlEscapedAscii and its tests to match"
+        );
+
+        // Every non-ASCII byte is percent-encoded regardless of the encode set. This is the half
+        // a `java.net.URI` raw/decoded comparison cannot see, because Java leaves non-ASCII path
+        // characters alone.
+        for name in [
+            "caf\u{e9}",                // precomposed e-acute
+            "cafe\u{301}",              // "e" plus a combining acute accent
+            "\u{65e5}\u{672c}\u{8a9e}", // CJK
+            "\u{1f642}",                // astral plane
+        ] {
+            let url = Url::parse(&format!("hdfs://ns/{name}/output")).unwrap();
+            assert_ne!(
+                url.path(),
+                format!("/{name}/output"),
+                "expected `url` to percent-encode the non-ASCII name {name}"
+            );
+        }
     }
 
     #[cfg(not(feature = "hdfs-opendal"))]
@@ -1907,5 +2098,85 @@ mod tests {
             err.to_string().contains("Hdfs support is not enabled"),
             "unexpected error: {err}"
         );
+    }
+
+    /// Two file struct fields share field id 1 and the requested struct asks for that id:
+    /// Spark's `matchIdField` raises `foundDuplicateFieldInFieldIdLookupModeError`
+    /// (`_LEGACY_ERROR_TEMP_2094`) rather than silently reading the first match.
+    #[test]
+    fn requested_duplicate_field_id_errors() {
+        use crate::parquet::parquet_support::{parquet_convert_array, SparkParquetOptions};
+        use crate::parquet::schema_adapter::test::struct_type_with_field_id;
+        use arrow::array::{ArrayRef, Int32Array, StructArray};
+        use arrow::datatypes::DataType;
+        use datafusion_comet_spark_expr::EvalMode;
+        use std::sync::Arc;
+
+        let DataType::Struct(from_fields) =
+            struct_type_with_field_id(vec![("x", DataType::Int32, 1), ("y", DataType::Int32, 1)])
+        else {
+            unreachable!()
+        };
+        let from: ArrayRef = Arc::new(StructArray::new(
+            from_fields,
+            vec![
+                Arc::new(Int32Array::from(vec![42])),
+                Arc::new(Int32Array::from(vec![43])),
+            ],
+            None,
+        ));
+        let to_type = struct_type_with_field_id(vec![("f", DataType::Int32, 1)]);
+
+        let mut opts = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
+        opts.use_field_id = true;
+
+        let err = parquet_convert_array(from, &to_type, &opts).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("_LEGACY_ERROR_TEMP_2094") && msg.contains("id=1 matches [x, y]"),
+            "unexpected error: {msg}"
+        );
+    }
+
+    /// Companion to `requested_duplicate_field_id_errors`: a duplicated file id that no
+    /// requested field looks up stays harmless, as Spark only raises inside `matchIdField`.
+    #[test]
+    fn unrequested_duplicate_field_id_reads_fine() {
+        use crate::parquet::parquet_support::{parquet_convert_array, SparkParquetOptions};
+        use crate::parquet::schema_adapter::test::struct_type_with_field_id;
+        use arrow::array::{Array, ArrayRef, Int32Array, StructArray};
+        use arrow::datatypes::DataType;
+        use datafusion_comet_spark_expr::EvalMode;
+        use std::sync::Arc;
+
+        let DataType::Struct(from_fields) = struct_type_with_field_id(vec![
+            ("x", DataType::Int32, 1),
+            ("y", DataType::Int32, 1),
+            ("z", DataType::Int32, 2),
+        ]) else {
+            unreachable!()
+        };
+        let from: ArrayRef = Arc::new(StructArray::new(
+            from_fields,
+            vec![
+                Arc::new(Int32Array::from(vec![42])),
+                Arc::new(Int32Array::from(vec![43])),
+                Arc::new(Int32Array::from(vec![44])),
+            ],
+            None,
+        ));
+        let to_type = struct_type_with_field_id(vec![("f", DataType::Int32, 2)]);
+
+        let mut opts = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
+        opts.use_field_id = true;
+
+        let result = parquet_convert_array(from, &to_type, &opts).unwrap();
+        let result_struct = result.as_any().downcast_ref::<StructArray>().unwrap();
+        let col = result_struct
+            .column(0)
+            .as_any()
+            .downcast_ref::<Int32Array>()
+            .unwrap();
+        assert_eq!(col.value(0), 44);
     }
 }
