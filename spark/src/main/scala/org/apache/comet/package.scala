@@ -32,6 +32,15 @@ package object comet {
    * Until the reference count is zero, the memory will not be released. If the consumer side is
    * finished later than the close of the allocator, the allocator will think the memory is
    * leaked. To avoid this, we use a single allocator for the whole execution process.
+   *
+   * It carries no allocation listener, so neither it nor a child cut with the three-argument
+   * `newChildAllocator` reports anything to Spark's memory manager. That is what buffers
+   * allocated to be handed to native want: a native operator that retains a batch reserves its
+   * buffers through Comet's pool, which charges the same Spark task, so reporting them here as
+   * well would reserve the same memory twice. JVM-owned allocations should go through
+   * `CometTaskArrowAllocator.forCurrentTask()` instead, which cuts a per-task child whose
+   * listener charges what that child owns to Spark and refuses an allocation Spark cannot cover,
+   * and which hands back this allocator when there is no task.
    */
   val CometArrowAllocator = new RootAllocator(Long.MaxValue)
 
@@ -55,6 +64,10 @@ package object comet {
    *
    * So read this and the root's total as allocator charges. Their difference is not a bound on
    * the Arrow memory the JVM allocated itself, and neither is a count of unique physical bytes.
+   *
+   * It must stay without an allocation listener, as the root is. Arrow's `wrapForeignAllocation`
+   * reports an imported buffer to the importing allocator's listener at full capacity, as though
+   * the JVM had allocated it, so a listener here would charge Spark for native memory.
    */
   val CometArrowImportAllocator: BufferAllocator =
     CometArrowAllocator.newChildAllocator("comet-ffi-imports", 0, Long.MaxValue)

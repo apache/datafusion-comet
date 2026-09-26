@@ -135,9 +135,13 @@ a new subclass needs no new case as long as `getValueVector` returns an Arrow ve
 ## 5. Memory Accounting
 
 An FFI change is usually also a memory change, and the two are easy to review separately and miss
-the interaction. Imported JVM buffers come from `CometArrowAllocator`, which is an unbounded
-`RootAllocator(Long.MaxValue)` that no budget sees. Exported native batches are usually no longer
-pool-reserved by the time the JVM receives them, but they stay resident until the JVM closes them.
+the interaction. The JVM buffers native imports belong to a child of `CometArrowAllocator`, an
+unbounded `RootAllocator(Long.MaxValue)` that no budget sees, and a native operator that retains
+them reserves them itself. Batches the JVM owns within a task come from `CometTaskArrowAllocator`,
+whose listener charges them to Spark and refuses what Spark cannot cover, so a new path that exports
+them without going through `CometArrowStream`, which moves the charge off the task, charges them on
+both sides. Exported native batches are usually no longer pool-reserved by the time the JVM receives
+them, but they stay resident until the JVM closes them.
 
 If the PR changes how long either side holds a batch, use `review-comet-memory-pr` as well.
 

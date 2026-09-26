@@ -210,6 +210,9 @@ public class CometUdfBridge {
             });
     assert udf != null : "reflective instantiation returned null for " + udfClassName;
 
+    // Neither allocator reports to Spark, and neither should: the inputs wrap memory native owns,
+    // and the result is exported straight back to native, which accounts for what it retains. See
+    // CometTaskArrowAllocator.
     BufferAllocator allocator = org.apache.comet.package$.MODULE$.CometArrowAllocator();
     // See CometArrowImportAllocator: inputs are imported against that allocator, so that tracing
     // can report the import path's charges apart from the rest of Comet's Arrow memory.

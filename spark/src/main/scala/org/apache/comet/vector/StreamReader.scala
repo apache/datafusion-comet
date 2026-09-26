@@ -26,17 +26,19 @@ import scala.util.control.NonFatal
 import org.apache.arrow.vector.VectorSchemaRoot
 import org.apache.arrow.vector.ipc.{ArrowStreamReader, ReadChannel}
 import org.apache.arrow.vector.ipc.message.MessageChannelReader
+import org.apache.spark.comet.CometTaskArrowAllocator
 import org.apache.spark.sql.vectorized.ColumnarBatch
-
-import org.apache.comet.CometArrowAllocator
 
 /**
  * A reader that consumes Arrow data from an input channel, and produces Comet batches.
  */
 case class StreamReader(channel: ReadableByteChannel, source: String) extends AutoCloseable {
+  // Decoded into JVM-owned buffers, so it is accounted to the task doing the read. Held in a val
+  // because the reader and the channel reader must share one allocator.
+  private val allocator = CometTaskArrowAllocator.forCurrentTask()
   private val channelReader =
-    new MessageChannelReader(new ReadChannel(channel), CometArrowAllocator)
-  private var arrowReader = new ArrowStreamReader(channelReader, CometArrowAllocator)
+    new MessageChannelReader(new ReadChannel(channel), allocator)
+  private var arrowReader = new ArrowStreamReader(channelReader, allocator)
 
   // Reading the schema allocates the root's vectors, so it can fail with buffers already taken.
   // No caller holds this reader until its constructor returns, so close it here or nothing will.

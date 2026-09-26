@@ -34,13 +34,13 @@ import org.apache.arrow.vector.ipc.message.{ArrowFieldNode, ArrowRecordBatch, Me
 import org.apache.arrow.vector.types.pojo.{ArrowType, Field, FieldType}
 import org.apache.spark.{SparkEnv, TaskContext}
 import org.apache.spark.api.python.{BasePythonRunner, PythonRDD, PythonWorker, SpecialLengths}
+import org.apache.spark.comet.CometTaskArrowAllocator
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.execution.metric.SQLMetric
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.StructType
 import org.apache.spark.sql.vectorized.{ColumnarBatch, ColumnVector}
 
-import org.apache.comet.CometArrowAllocator
 import org.apache.comet.vector.{CometDecodedVector, CometDictionaryVector, CometVector, CometVectorUtils}
 
 /**
@@ -124,7 +124,9 @@ private[python] trait CometArrowPythonRunnerBase
     new Writer(env, worker, inputIterator, partitionIndex, context) {
 
       private val allocator =
-        CometArrowAllocator.newChildAllocator(s"stdout writer for $pythonExec", 0, Long.MaxValue)
+        CometTaskArrowAllocator
+          .forCurrentTask()
+          .newChildAllocator(s"stdout writer for $pythonExec", 0, Long.MaxValue)
       private var batches = inputIterator.flatten
       // Upstream owns this batch. Even hasNext may close it and reuse its native buffers, so
       // leave the upstream iterators untouched until all ranges have been serialized.
@@ -264,7 +266,9 @@ private[python] trait CometArrowPythonRunnerBase
     new ReaderIterator(stream, writer, startTime, env, worker, pid, releasedOrClosed, context) {
 
       private val allocator =
-        CometArrowAllocator.newChildAllocator(s"stdin reader for $pythonExec", 0, Long.MaxValue)
+        CometTaskArrowAllocator
+          .forCurrentTask()
+          .newChildAllocator(s"stdin reader for $pythonExec", 0, Long.MaxValue)
       private var reader: ArrowStreamReader = _
       private var root: VectorSchemaRoot = _
       private var batchLoaded = true

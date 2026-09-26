@@ -102,7 +102,7 @@ there is. That includes:
 - per-batch working memory in expression kernels and Arrow array builders,
 - decompression buffers and Parquet reader structures,
 - object store request buffers and the async runtime's own machinery,
-- Arrow buffers allocated on the JVM side, which no budget covers at all,
+- Arrow buffers passed between the JVM and native code, unless a native operator reserves them,
 - allocator overhead: buffer padding, size-class rounding, fragmentation, and pages the allocator retains after a
   free rather than returning to the operating system.
 
@@ -115,6 +115,15 @@ while Comet runs; see [Sizing the Overhead from the Memory Usage Log].
 `spark.memory.offHeap.size` to the tasks that ask for it, whatever the fraction. The `fair_unified` pool applies the
 fraction to each task separately, where Spark's own limit of an even share of the pool per running task is tighter
 whenever more than one task is running, and the `greedy_unified` pool ignores it.
+
+Arrow memory that Comet allocates on the JVM side for a task, for example to read a cached table or to exchange
+batches with a Python worker, is charged to the same pool as a memory consumer of that task. An allocation the pool
+cannot cover fails the task that makes it, the way a Spark operator fails when it cannot acquire memory, and the charge
+leaves Comet's native operators and Spark's own consumers less of the pool, so they can spill sooner. Comet 1.1.0 and
+earlier did not charge this memory to the pool, so if you sized `spark.memory.offHeap.size` against one of those
+releases, check how often queries spill, and raise it if tasks fail with `Unable to reserve ... for a JVM Arrow
+allocation`. Setting `spark.comet.memory.jvmArrowAccounting.enabled=false` stops charging
+it, in which case it has to fit in `spark.executor.memoryOverhead` instead.
 
 For more details about Spark off-heap memory mode, please refer to [Spark documentation].
 
@@ -159,7 +168,8 @@ container to include it, so the memory that Comet's operators explicitly reserve
 not have room is everything Comet allocates without reserving it — the untracked categories listed
 under [Configuring Comet Memory]. Those allocations are made by the Rust global allocator and live
 in the native heap, outside the JVM heap and outside Spark's off-heap allocations, and nothing in
-the container sizing accounts for them. The same applies to Comet's JVM-side Arrow buffers.
+the container sizing accounts for them. The same applies to Comet's JVM-side Arrow buffers on their
+way to or from native code.
 
 `spark.executor.memoryOverhead` is the only slack the container has for this, and the JVM's own
 non-heap usage — metaspace, code cache, thread stacks, GC structures — is already drawing on it.

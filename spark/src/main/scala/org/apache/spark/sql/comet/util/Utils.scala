@@ -340,7 +340,8 @@ object Utils extends CometTypeShim with Logging {
       return (Array.empty, 0L, 0L)
     }
 
-    val allocator = org.apache.comet.CometArrowAllocator
+    val allocator = org.apache.spark.comet.CometTaskArrowAllocator
+      .forCurrentTask()
       .newChildAllocator("broadcast-coalesce", 0, Long.MaxValue)
     try {
       var targetRoot: VectorSchemaRoot = null
@@ -548,7 +549,7 @@ object Utils extends CometTypeShim with Logging {
             cv.dataType(),
             rows,
             s"_const_$index",
-            org.apache.comet.CometArrowAllocator,
+            org.apache.spark.comet.CometTaskArrowAllocator.forCurrentTask(),
             "UTC")
           (materialized, None)
 

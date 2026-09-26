@@ -47,7 +47,9 @@ import org.apache.comet.{CometArrowAllocator, CometArrowImportAllocator}
 class NativeUtil extends AutoCloseable {
   import Utils._
 
-  /** Use the global allocator */
+  // The listener-less root, not the task allocator: what this allocates, the FFI structs and
+  // materialised constant vectors, is handed to native, which accounts for what it retains. See
+  // CometTaskArrowAllocator.
   private val allocator = CometArrowAllocator
 
   /** ArrowImporter does not hold any state and does not need to be closed */

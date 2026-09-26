@@ -87,6 +87,8 @@ private[codegen] object CometBatchKernelCodegenOutput extends CometTypeShim {
    * Closes the vector on any failure so a partially-initialized tree doesn't leak buffers.
    */
   def allocateOutput(field: Field, numRows: Int, estimatedBytes: Int): FieldVector = {
+    // The listener-less root rather than the task allocator: `CometUdfBridge` exports this vector
+    // straight to native, which accounts for what it retains. See `CometTaskArrowAllocator`.
     val vec: FieldVector = field.getType match {
       case _: ArrowType.List | _: ArrowType.LargeList | _: ArrowType.FixedSizeList =>
         val v = new RenamedListVector(field, CometArrowAllocator)

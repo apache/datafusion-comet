@@ -24,6 +24,7 @@ import java.lang.{Boolean => JBoolean, Byte => JByte, Double => JDouble, Float =
 import scala.collection.JavaConverters._
 
 import org.apache.spark.TaskContext
+import org.apache.spark.comet.CometTaskArrowAllocator
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression, GenericInternalRow, IsNotNull, IsNull, StartsWith, UnsafeProjection}
@@ -38,7 +39,7 @@ import org.apache.spark.storage.StorageLevel
 import org.apache.spark.unsafe.types.UTF8String
 import org.apache.spark.util.io.ChunkedByteBuffer
 
-import org.apache.comet.{CometArrowAllocator, CometConf, DataTypeSupport}
+import org.apache.comet.{CometConf, DataTypeSupport}
 import org.apache.comet.vector.NativeUtil
 
 /**
@@ -398,6 +399,9 @@ class ArrowCachedBatchSerializer extends SimpleMetricsCachedBatchSerializer {
     val readerFields = arrowSchema.getFields.asScala.toIndexedSeq
     val codec = CachedBatchIpc.compressionCodec(settings.codecName, settings.zstdLevel)
     val orderings = boundsOrderings(attrs)
+    // Everything allocated here is transient and closed before the next batch, so it is charged to
+    // the task that is writing the cache.
+    val allocator = CometTaskArrowAllocator.forCurrentTask()
 
     batches.map { batch =>
       // Bounds and null counts are read from the input batch before it is serialized, and the row
@@ -413,11 +417,11 @@ class ArrowCachedBatchSerializer extends SimpleMetricsCachedBatchSerializer {
         Utils.isArrowBacked(batch) && CachedBatchIpc.matchesReaderLayout(batch, readerFields)
 
       val (bytes, columnSizes) = if (writeDirectly) {
-        CachedBatchIpc.serialize(batch, codec, CometArrowAllocator, settings.chunkSize)
+        CachedBatchIpc.serialize(batch, codec, allocator, settings.chunkSize)
       } else {
         val arrowBatch =
-          CometArrowConverters.columnarBatchToArrowBatch(batch, arrowSchema, CometArrowAllocator)
-        try CachedBatchIpc.serialize(arrowBatch, codec, CometArrowAllocator, settings.chunkSize)
+          CometArrowConverters.columnarBatchToArrowBatch(batch, arrowSchema, allocator)
+        try CachedBatchIpc.serialize(arrowBatch, codec, allocator, settings.chunkSize)
         finally arrowBatch.close()
       }
 
@@ -605,7 +609,7 @@ class ArrowCachedBatchSerializer extends SimpleMetricsCachedBatchSerializer {
 
     // Decoding happens during construction, so `batches` below can hand out the root directly.
     // `load` releases everything it allocated if it throws, so there is nothing to unwind here.
-    private val root = projection.load(cached.bytes, CometArrowAllocator)
+    private val root = projection.load(cached.bytes, CometTaskArrowAllocator.forCurrentTask())
     private var closed = false
 
     // A cached batch's columns all cover the same rows. Check rather than trust: a mismatch would
@@ -674,7 +678,7 @@ class ArrowCachedBatchSerializer extends SimpleMetricsCachedBatchSerializer {
           // of session timezone, so no values are converted. It also matches Comet's native
           // schema, avoiding a cast at the native boundary.
           CometArrowStream.NATIVE_TIMEZONE,
-          CometArrowAllocator)
+          CometTaskArrowAllocator.forCurrentTask())
 
         encodeBatches(iter, schema, settings)
       }
