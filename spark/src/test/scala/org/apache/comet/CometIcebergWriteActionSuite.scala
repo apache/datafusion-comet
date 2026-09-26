@@ -33,7 +33,7 @@ import scala.jdk.CollectionConverters._
 import org.json4s.{DefaultFormats, Formats}
 import org.json4s.jackson.JsonMethods.parse
 
-import org.apache.spark.{CometListenerBusUtils, SparkConf, SparkException, Success}
+import org.apache.spark.{CometListenerBusUtils, SparkConf, SparkException, SparkThrowable, Success}
 import org.apache.spark.rdd.RDD
 import org.apache.spark.scheduler.{SparkListener, SparkListenerTaskEnd}
 import org.apache.spark.sql.CometTestBase
@@ -1490,6 +1490,62 @@ class CometIcebergWriteActionSuite
         assert(
           nativeMessage.contains("partition 'ts=1969-12-31T23%3A59%3A58.5%2B00%3A00/bin=AAH%2F'"),
           nativeMessage)
+      }
+    }
+  }
+
+  // https://github.com/apache/datafusion-comet/issues/6234. The native writer pulls its input
+  // through an Arrow C stream, and Arrow Java hands native only the text of an exception thrown
+  // while producing a batch, so the user got a CometNativeException instead of Spark's exception.
+  // The first batch is read on the JVM to derive the stream's schema, which is why the overflow
+  // has to land past it: row 90000 of a single 100000-row data file, so one task reads it all.
+  test("native acceleration: an input error past the first batch fails like the JVM writer") {
+    assumeNativeAcceleration()
+    withIcebergCatalog { _ =>
+      withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
+        val (nativeTable, jvmTable) = ("overflow_native", "overflow_jvm")
+        Seq("overflow_src", nativeTable, jvmTable).foreach { table =>
+          spark.sql(s"CREATE TABLE $catalog.$ns.$table (v INT) USING iceberg")
+        }
+        withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+          spark
+            .range(0, 100000, 1, 1)
+            .selectExpr("CAST(id AS INT) AS v")
+            .writeTo(s"$catalog.$ns.overflow_src")
+            .append()
+        }
+        def insert(table: String): Unit =
+          spark.sql(
+            s"INSERT INTO $catalog.$ns.$table " +
+              s"SELECT v + ${Int.MaxValue - 90000} FROM $catalog.$ns.overflow_src")
+
+        var nativeFailure: Throwable = null
+        val nativePlans = withNativeEnabled {
+          capturePlans(spark, includeFailures = true) {
+            nativeFailure = intercept[Exception](insert(nativeTable))
+          }
+        }
+        val jvmFailure = intercept[Exception](insert(jvmTable))
+        assert(
+          nativePlans.exists(p =>
+            collectWithSubqueries(p) { case e: CometIcebergWriteExec => e }.nonEmpty),
+          "expected the failed write to have gone through CometIcebergWriteExec. Plans:\n" +
+            nativePlans.mkString("\n--\n"))
+
+        def overflow(failure: Throwable): (Int, Class[_], String, String) = {
+          val chain = causeChain(failure)
+          val depth = chain.indexWhere(_.isInstanceOf[ArithmeticException])
+          assert(depth >= 0, s"no ArithmeticException in the cause chain of $failure")
+          val error = chain(depth).asInstanceOf[Throwable with SparkThrowable]
+          (depth, error.getClass, error.getErrorClass, error.getSqlState)
+        }
+        assert(overflow(jvmFailure)._3 == "ARITHMETIC_OVERFLOW", s"JVM writer: $jvmFailure")
+        assert(
+          overflow(nativeFailure) == overflow(jvmFailure),
+          s"native writer: $nativeFailure\nJVM writer: $jvmFailure")
+        Seq(nativeTable, jvmTable).foreach { table =>
+          assert(spark.table(s"$catalog.$ns.$table").count() == 0, s"$table committed rows")
+        }
       }
     }
   }
