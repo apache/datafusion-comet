@@ -3792,21 +3792,34 @@ class CometExecSuite extends CometTestBase {
     })
   }
 
-  test("SparkToColumnar admits only binary string arrays through the array gate") {
+  test("SparkToColumnar admits only binary string arrays and maps through the collection gate") {
     for (nullable <- Seq(false, true); containsNull <- Seq(false, true)) {
-      val field = StructField("tags", ArrayType(StringType, containsNull), nullable)
-      Seq(StructType(Seq(field)), StructType(Seq(StructField("nested", StructType(Seq(field))))))
-        .foreach { schema =>
-          assert(CometSparkToColumnarExec.isSchemaSupported(schema, ListBuffer.empty))
-        }
+      for (dataType <- Seq(
+          ArrayType(StringType, containsNull),
+          MapType(StringType, StringType, containsNull))) {
+        val field = StructField("tags", dataType, nullable)
+        Seq(
+          StructType(Seq(field)),
+          StructType(Seq(StructField("nested", StructType(Seq(field))))))
+          .foreach { schema =>
+            assert(CometSparkToColumnarExec.isSchemaSupported(schema, ListBuffer.empty))
+          }
+      }
     }
     val unsupported = Seq(
       ArrayType(IntegerType),
       ArrayType(BinaryType),
       ArrayType(ArrayType(StringType)),
       ArrayType(StructType(Seq(StructField("s", StringType)))),
-      MapType(StringType, StringType)) ++
-      (if (isSpark40Plus) Seq(DataType.fromDDL("ARRAY<STRING COLLATE UTF8_LCASE>"))
+      MapType(StringType, IntegerType),
+      MapType(IntegerType, StringType),
+      MapType(StringType, ArrayType(StringType)),
+      MapType(StringType, StructType(Seq(StructField("s", StringType))))) ++
+      (if (isSpark40Plus)
+         Seq(
+           DataType.fromDDL("ARRAY<STRING COLLATE UTF8_LCASE>"),
+           DataType.fromDDL("MAP<STRING COLLATE UTF8_LCASE,STRING>"),
+           DataType.fromDDL("MAP<STRING,STRING COLLATE UTF8_LCASE>"))
        else Seq.empty)
     unsupported.foreach { dataType =>
       val schema = StructType(Seq(StructField("value", dataType)))
@@ -3876,6 +3889,78 @@ class CometExecSuite extends CometTestBase {
           // Stop before draining the input to exercise normal task-completion cleanup.
           checkSparkAnswer(query.limit(1))
           withSQLConf(convertKey -> "false") {
+            val (_, disabled) = checkSparkAnswer(query)
+            assert(collect(disabled) { case c: CometSparkToColumnarExec => c }.isEmpty)
+          }
+        }
+      }
+    }
+  }
+
+  test("SparkToColumnar string maps cross RDD and Parquet native boundaries") {
+    val schema = new StructType()
+      .add("id", IntegerType)
+      .add("partitionValues", MapType(StringType, StringType))
+      .add("nested", new StructType().add("tags", MapType(StringType, StringType)))
+    val rows = Seq(
+      Row(1, null, null),
+      Row(2, Map.empty[String, String], Row(null)),
+      Row(3, Map("hour" -> null), Row(Map.empty[String, String])),
+      Row(
+        4,
+        Map("hour" -> "2026-09-02T22", "" -> "é", "東京" -> "a\u0000b"),
+        Row(Map("nullable" -> null, "x" -> "value"))),
+      Row(5, Map("hour" -> "2026-09-03T00", "long" -> ("東京" * 32768)), null),
+      Row(6, Map("hour" -> "2026-09-03T01"), Row(Map("x" -> "value"))))
+    for (sourceType <- Seq("rdd", "parquet-row", "parquet-columnar")) {
+      val vectorized = sourceType == "parquet-columnar"
+      withSQLConf(
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+        SQLConf.PARQUET_VECTORIZED_READER_ENABLED.key -> vectorized.toString,
+        "spark.sql.parquet.enableNestedColumnVectorizedReader" -> "true",
+        CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "false",
+        CometConf.COMET_BATCH_SIZE.key -> "2",
+        CometConf.COMET_SHUFFLE_MODE.key -> "native",
+        CometConf.COMET_CONVERT_FROM_PARQUET_ENABLED.key -> "true",
+        CometConf.COMET_SPARK_TO_ARROW_ENABLED.key -> "true",
+        CometConf.COMET_SPARK_TO_ARROW_SUPPORTED_OPERATOR_LIST.key -> "RDDScan") {
+        withTempPath { dir =>
+          def rdd = spark.createDataFrame(spark.sparkContext.parallelize(rows, 1), schema)
+          if (sourceType != "rdd") {
+            withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+              rdd.write.parquet(dir.toString)
+            }
+          }
+          def source =
+            if (sourceType == "rdd") rdd else spark.read.schema(schema).parquet(dir.toString)
+          def query = source
+            .filter("id > 0")
+            .selectExpr("id", "partitionValues", "nested", "partitionValues['hour'] AS hour")
+          val (_, plan) = checkSparkAnswerAndOperator(
+            query,
+            includeClasses = Seq(
+              classOf[CometSparkToColumnarExec],
+              classOf[CometProjectExec],
+              classOf[CometFilterExec]))
+          val conversions = collect(plan) { case c: CometSparkToColumnarExec => c }
+          assert(conversions.size == 1)
+          assert(conversions.head.child.supportsColumnar == vectorized)
+          if (sourceType == "rdd") {
+            assert(conversions.head.child.collect { case scan: RDDScanExec => scan }.nonEmpty)
+          }
+          checkSparkSchema(query)
+          checkSparkAnswerAndOperator(
+            source.filter("partitionValues['hour'] BETWEEN '2026-09-02T22' AND '2026-09-03T00'"),
+            includeClasses = Seq(classOf[CometSparkToColumnarExec], classOf[CometFilterExec]))
+          val (_, shuffled) = checkSparkAnswerAndOperator(
+            query.repartition(2, col("id")),
+            includeClasses = Seq(classOf[CometShuffleExchangeExec]))
+          val exchanges = collect(shuffled) { case s: CometShuffleExchangeExec => s }
+          assert(exchanges.nonEmpty && exchanges.forall(_.shuffleType == CometNativeShuffle))
+          checkSparkAnswer(query.limit(1))
+          withSQLConf(
+            CometConf.COMET_SPARK_TO_ARROW_ENABLED.key -> "false",
+            CometConf.COMET_CONVERT_FROM_PARQUET_ENABLED.key -> "false") {
             val (_, disabled) = checkSparkAnswer(query)
             assert(collect(disabled) { case c: CometSparkToColumnarExec => c }.isEmpty)
           }
