@@ -67,6 +67,37 @@ class CometNativeShuffleInputRDDSuite extends CometTestBase {
     }
   }
 
+  test("positional round robin declares itself indeterminate over a non-determinate parent") {
+    // Spark's own round robin is positional and gets this from the `isOrderSensitive` flag on
+    // `MapPartitionsRDD`; the native path has no such RDD, so the rule is applied here. A
+    // determinate parent keeps the cheap per-task retry, anything else forces the DAGScheduler to
+    // roll the whole stage back rather than re-run one task into a partially consumed output.
+    Seq(
+      DeterministicLevel.DETERMINATE -> DeterministicLevel.DETERMINATE,
+      DeterministicLevel.UNORDERED -> DeterministicLevel.INDETERMINATE,
+      DeterministicLevel.INDETERMINATE -> DeterministicLevel.INDETERMINATE).foreach {
+      case (parentLevel, expected) =>
+        val parent = new RDD[AnyRef](spark.sparkContext, Nil) {
+          override protected def getOutputDeterministicLevel: DeterministicLevel.Value =
+            parentLevel
+          override protected def getPartitions: Array[Partition] = Array.empty
+          override def compute(split: Partition, context: TaskContext): Iterator[AnyRef] =
+            Iterator.empty
+        }
+        val input = new CometNativeShuffleInputRDD(
+          spark.sparkContext,
+          Seq(parent),
+          0,
+          Set.empty,
+          CometMetricNode(Map.empty),
+          positionalRoundRobin = true)
+        assert(input.outputDeterministicLevel == expected, s"parent was $parentLevel")
+        // The flag has to survive the copy, or a local-shuffle fallback silently drops the
+        // declaration and the scheduler goes back to re-running single tasks.
+        assert(input.copyForLocalShuffle().outputDeterministicLevel == expected)
+    }
+  }
+
   test("local shuffle input is an independent sibling with the same partition inputs") {
     val upstream = new RDD[AnyRef](spark.sparkContext, Nil) {
       override protected def getPartitions: Array[Partition] = Array.tabulate(2) { i =>
