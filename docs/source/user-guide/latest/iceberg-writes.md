@@ -64,6 +64,12 @@ the same `TaskCommit` message the JVM writer would have produced. Everything ice
 post-write — snapshot assignment, manifest-list aggregation, commit validation and retries —
 is untouched: `IcebergCommit` performs the normal `BatchWrite.commit`.
 
+Before a task opens a partition's first file, it holds that partition's first
+`write.parquet.page-row-limit` rows in memory, so that it can choose which columns to
+dictionary-encode the way iceberg-java would (see the accepted divergences below). The rows a
+task holds back this way, across all of its partitions, stay within about
+`write.parquet.row-group-size-bytes`.
+
 ## Configuration
 
 Standard Comet + Iceberg setup (see [`iceberg.md`](iceberg.md)) plus the write-side toggle:
@@ -280,14 +286,19 @@ a data file but not what any reader computes from it:
 - Dictionary-encoded pages are labeled `RLE_DICTIONARY` (parquet-mr v1 files: `PLAIN_DICTIONARY`).
 - Fixed-length binary columns (`uuid`, `fixed`, decimals with precision > 18) are not
   dictionary-encoded (parquet-mr dictionary-encodes them).
-- High-cardinality columns keep a dictionary page. parquet-mr abandons dictionary encoding for a
-  column chunk, and writes no dictionary page, when the first check shows the dictionary is not
-  saving space. parquet-rs keeps dictionary encoding until the dictionary reaches
-  `write.parquet.dict-size-bytes` (2 MB by default), then switches to plain encoding for the rest
-  of the chunk and still writes the dictionary page. Results are the same, but a selective read of
-  a native-written file fetches that dictionary page for every column chunk it touches, so it
-  reads more bytes than it would from an iceberg-java file
-  ([#6114](https://github.com/apache/datafusion-comet/issues/6114)).
+- Which columns are dictionary-encoded is decided as parquet-mr decides it: a column whose first
+  data page shows the dictionary saving no space is written plain, with no dictionary page,
+  instead of carrying a dictionary page that every selective read of it would have to fetch
+  ([#6114](https://github.com/apache/datafusion-comet/issues/6114)). The native writer decides
+  once per partition, from that partition's first page of rows in the task, and keeps the
+  decision for every file and row group it writes for the partition; parquet-mr decides again
+  for every row group. Where the page size rather than `write.parquet.page-row-limit` ends a
+  column's first page, the native page ends at the first row past parquet-mr's size threshold,
+  while parquet-mr only ends it at its next periodic size check, so a column close to the
+  cut-off can be decided the other way. Close to the cut-off both encodings take about the same
+  space. A column that keeps its dictionary and later fills it falls back to plain on both
+  writers, but parquet-rs's dictionary page then holds every entry, where parquet-mr's holds
+  only the entries earlier pages used.
 - Row-group boundaries: parquet-mr flushes by byte size at a record-count check cadence,
   parquet-rs buffers by row count. File naming follows the same cadence-style difference
   (iceberg-java names files `<partition>-<task>-<operation>-<count>`; iceberg-rust uses a
