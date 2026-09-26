@@ -1106,6 +1106,10 @@ case class CometScanTypeChecker() extends DataTypeSupport with CometTypeShim {
         // positionally instead, so hand the read back to Spark and let it report the ambiguity.
         fallbackReasons += s"Unsupported ${name}: struct with duplicate Parquet field ids"
         false
+      case _: YearMonthIntervalType | _: DayTimeIntervalType =>
+        // Supported by the native scan but not by the shared default, so this arm must stay
+        // above the super call.
+        true
       case _ =>
         super.isTypeSupported(dt, name, fallbackReasons)
     }
