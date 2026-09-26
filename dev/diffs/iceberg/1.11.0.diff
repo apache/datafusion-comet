@@ -1,12 +1,12 @@
 diff --git a/gradle/libs.versions.toml b/gradle/libs.versions.toml
-index db659dc06b..f45ab41ce2 100644
+index db659dc06b..257c0978ce 100644
 --- a/gradle/libs.versions.toml
 +++ b/gradle/libs.versions.toml
 @@ -40,6 +40,7 @@ bouncycastle = "1.84"
  bson-ver = "4.11.5"
  caffeine = "2.9.3"
  calcite = "1.41.0"
-+comet = "1.1.0-SNAPSHOT"
++comet = "1.1.0"
  datasketches = "6.2.0"
  delta-standalone = "3.3.2"
  delta-spark = "3.3.2"
