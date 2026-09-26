@@ -793,7 +793,10 @@ you are upgrading from and the release you are upgrading to.</p>
 set configuration, produces a different result or a different error than it did in the previous
 release. Comet’s <a class="reference internal" href="../../about/versioning_policy.html"><span class="std std-doc">versioning policy</span></a> permits these in a minor
 release only when a <code class="docutils literal notranslate"><span class="pre">spark.comet.legacy.*</span></code> configuration key restores the previous behavior, so
-every entry below names such a key.</p>
+every behavior change below names such a key.</p>
+<p>A release’s section can also list changes that need no legacy key but can still change what an
+existing deployment does, such as a fix that makes Comet apply a setting as documented, or a setting
+that was deprecated or removed. Each of these entries names the settings involved.</p>
 <p>Two kinds of change are deliberately absent from this guide:</p>
 <ul class="simple">
 <li><p><strong>Correctness fixes.</strong> Comet’s goal is to return the results Apache Spark returns. When Comet
@@ -818,9 +821,72 @@ key is removed.</p>
 </section>
 <section id="upgrading-to-comet-1-1-0">
 <h2>Upgrading to Comet 1.1.0<a class="headerlink" href="#upgrading-to-comet-1-1-0" title="Link to this heading">#</a></h2>
-<p>Comet <code class="docutils literal notranslate"><span class="pre">1.1.0</span></code> makes no behavior changes that need a <code class="docutils literal notranslate"><span class="pre">spark.comet.legacy.*</span></code> key.</p>
+<p>Comet <code class="docutils literal notranslate"><span class="pre">1.1.0</span></code> makes no behavior changes that need a <code class="docutils literal notranslate"><span class="pre">spark.comet.legacy.*</span></code> key. The changes below
+need none either, but check whether any of them applies to your deployment.</p>
 <p>Comet <code class="docutils literal notranslate"><span class="pre">1.1.0</span></code> requires JDK 17 or later. JDK 11 is no longer supported. See
 <a class="reference internal" href="installation.html"><span class="std std-doc">Installing Comet</span></a> for the supported Java, Scala, and Spark versions.</p>
+<section id="settings-that-now-take-effect-as-documented">
+<h3>Settings That Now Take Effect as Documented<a class="headerlink" href="#settings-that-now-take-effect-as-documented" title="Link to this heading">#</a></h3>
+<p>Comet <code class="docutils literal notranslate"><span class="pre">1.0.0</span></code> misread three size settings. Comet <code class="docutils literal notranslate"><span class="pre">1.1.0</span></code> reads each of them as documented, so a job
+that sets one of them can behave differently after the upgrade. In each case, a setting that
+already exists restores the old effect.</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.native.writeBufferSize</span></code> was read in MiB but used as a number of bytes, so
+the native shuffle writer ran with a 1-byte write buffer by default, and a value of <code class="docutils literal notranslate"><span class="pre">64m</span></code> gave it
+64 bytes. The setting is now read in bytes with a default of 1 MiB, and a value with a unit means
+what it says. Each shuffle task holds a few of these buffers in native memory that no memory pool
+tracks, so check any value you set with a unit against <code class="docutils literal notranslate"><span class="pre">spark.executor.memoryOverhead</span></code>. A bare
+number keeps its old meaning, so writing the number without its unit restores the old buffer
+size. Values of 2 GiB or more are now rejected.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">spark.comet.maxTempDirectorySize</span></code> was ignored when it was written with a unit, such as <code class="docutils literal notranslate"><span class="pre">10g</span></code>, and
+the 100 GB default applied instead. It is now enforced, so a query that spills more than that
+amount now fails. Remove the setting to keep the old limit. See
+<a class="reference internal" href="tuning/memory.html#limiting-spill-disk-usage"><span class="std std-ref">Limiting Spill Disk Usage</span></a>.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">spark.memory.offHeap.size</span></code> was read as MiB when it was written as a bare number of bytes. The
+<code class="docutils literal notranslate"><span class="pre">fair_unified</span></code> memory pool’s per-operator shares were therefore about a million times too large,
+and never limited an operator. The shares are now correct, so operators can spill sooner, and an
+operator that cannot spill can fail when it exceeds its share. A size written with a unit, such
+as <code class="docutils literal notranslate"><span class="pre">16g</span></code>, is unaffected. To get the old behavior back, set
+<code class="docutils literal notranslate"><span class="pre">spark.comet.exec.memoryPool=greedy_unified</span></code>, which leaves every limit to Spark. See
+<a class="reference internal" href="tuning/memory.html#configuring-comet-memory"><span class="std std-ref">Configuring Comet Memory</span></a>.</p></li>
+</ul>
+<p>A malformed value of <code class="docutils literal notranslate"><span class="pre">spark.comet.maxTempDirectorySize</span></code> or <code class="docutils literal notranslate"><span class="pre">spark.comet.explain.native.enabled</span></code> now
+fails the query instead of being replaced by the default. <code class="docutils literal notranslate"><span class="pre">spark.comet.debug.enabled</span></code>,
+<code class="docutils literal notranslate"><span class="pre">spark.comet.explain.native.enabled</span></code> and <code class="docutils literal notranslate"><span class="pre">spark.comet.tracing.enabled</span></code> now also take effect in
+Comet’s native code when they are written in upper case, such as <code class="docutils literal notranslate"><span class="pre">TRUE</span></code>.</p>
+</section>
+<section id="conditions-for-enabling-comet">
+<h3>Conditions for Enabling Comet<a class="headerlink" href="#conditions-for-enabling-comet" title="Link to this heading">#</a></h3>
+<p>Comet needs Spark’s off-heap memory to be enabled. <code class="docutils literal notranslate"><span class="pre">CometPlugin</span></code> already disabled Comet when
+off-heap memory was disabled, but an application that registered <code class="docutils literal notranslate"><span class="pre">CometSparkSessionExtensions</span></code>
+directly with <code class="docutils literal notranslate"><span class="pre">spark.sql.extensions</span></code> skipped that check, and Comet ran in on-heap mode, which exists
+only for running tests. Comet <code class="docutils literal notranslate"><span class="pre">1.1.0</span></code> makes the same check on that path, and disables itself with a
+warning when off-heap memory is not enabled. To keep using Comet, set
+<code class="docutils literal notranslate"><span class="pre">spark.memory.offHeap.enabled=true</span></code> and <code class="docutils literal notranslate"><span class="pre">spark.memory.offHeap.size</span></code> when the application starts;
+see <a class="reference internal" href="tuning/memory.html#configuring-comet-memory"><span class="std std-ref">Configuring Comet Memory</span></a>. Both checks read
+<code class="docutils literal notranslate"><span class="pre">spark.memory.offHeap.enabled</span></code> from the SparkContext, so setting it on a <code class="docutils literal notranslate"><span class="pre">SparkSession.builder</span></code>
+after the SparkContext exists has no effect.</p>
+<p>Comet also now checks the shuffle manager that the application is running, rather than the
+session’s <code class="docutils literal notranslate"><span class="pre">spark.shuffle.manager</span></code>. A session that named <code class="docutils literal notranslate"><span class="pre">CometShuffleManager</span></code> after the SparkContext
+had started with a different shuffle manager used to plan Comet shuffles that failed with a
+<code class="docutils literal notranslate"><span class="pre">ClassCastException</span></code>. Such a session now runs without Comet, with a warning.</p>
+</section>
+<section id="deprecated-and-removed-settings">
+<h3>Deprecated and Removed Settings<a class="headerlink" href="#deprecated-and-removed-settings" title="Link to this heading">#</a></h3>
+<p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.memoryPool.fraction</span></code> is deprecated and will be removed in a future major release.
+It was documented as leaving room in <code class="docutils literal notranslate"><span class="pre">spark.memory.offHeap.size</span></code> for the native memory that Comet’s
+memory pools do not track, but it cannot: Spark hands out the whole off-heap pool whatever it is set
+to. It keeps working as before, and the driver now logs a warning when it is set. Size
+<code class="docutils literal notranslate"><span class="pre">spark.executor.memoryOverhead</span></code> for that memory instead; see
+<a class="reference internal" href="tuning/memory.html#configuring-executor-memory-overhead"><span class="std std-ref">Configuring Executor Memory Overhead</span></a>.</p>
+<p>Comet <code class="docutils literal notranslate"><span class="pre">1.1.0</span></code> removes <code class="docutils literal notranslate"><span class="pre">spark.comet.memoryOverhead</span></code>, <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.onHeap.memoryPool</span></code> and
+<code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.jvm.memoryFactor</span></code>, including its older name
+<code class="docutils literal notranslate"><span class="pre">spark.comet.columnar.shuffle.memory.factor</span></code>. They applied only to on-heap mode
+(<code class="docutils literal notranslate"><span class="pre">spark.comet.exec.onHeap.enabled</span></code>), which exists for running Spark’s SQL tests against Comet and no
+longer tracks native memory at all. They were in the testing category, which the
+<a class="reference internal" href="../../about/versioning_policy.html#testing-and-internal-configurations-are-exempt"><span class="std std-ref">versioning policy</span></a>
+exempts, and Comet ignores them if they are still set.</p>
+</section>
 </section>
 <section id="upgrading-to-comet-1-0-0">
 <h2>Upgrading to Comet 1.0.0<a class="headerlink" href="#upgrading-to-comet-1-0-0" title="Link to this heading">#</a></h2>
@@ -880,7 +946,12 @@ release, review the release notes for the versions in between.</p>
   <nav class="bd-toc-nav page-toc" aria-labelledby="pst-page-navigation-heading-2">
     <ul class="visible nav section-nav flex-column">
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#legacy-configuration-keys">Legacy Configuration Keys</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#upgrading-to-comet-1-1-0">Upgrading to Comet 1.1.0</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#upgrading-to-comet-1-1-0">Upgrading to Comet 1.1.0</a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#settings-that-now-take-effect-as-documented">Settings That Now Take Effect as Documented</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#conditions-for-enabling-comet">Conditions for Enabling Comet</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#deprecated-and-removed-settings">Deprecated and Removed Settings</a></li>
+</ul>
+</li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#upgrading-to-comet-1-0-0">Upgrading to Comet 1.0.0</a></li>
 </ul>
   </nav></div>
