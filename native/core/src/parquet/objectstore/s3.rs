@@ -83,10 +83,13 @@ pub fn create_store(
         source: "Missing bucket name in S3 URL".into(),
     })?;
 
-    // Parquet path: catalog_properties is empty; vendors here read from Hadoop conf.
-    let empty_props: HashMap<String, String> = HashMap::new();
     let credentials = match lookup_provider_class(configs, bucket) {
         Some(provider_class) => {
+            // Parquet path: forward the full fs.s3a.* config subset so the SPI provider sees the
+            // same config Spark would (e.g. the built-in adapters read fs.s3a.aws.credentials.provider
+            // and any static keys a chain resolves through). Only built when a bridge is actually
+            // configured. See s3-credential-provider-design.md.
+            let forwarded_props = forward_catalog_properties(configs);
             // Fail rather than fall back to the default chain, which could resolve to the wrong
             // identity for a user who explicitly named a provider.
             let bridge = CometS3CredentialBridge::new(
@@ -95,7 +98,7 @@ pub fn create_store(
                 bucket,
                 url.path(),
                 AccessMode::Read,
-                &empty_props,
+                &forwarded_props,
             )
             .map_err(|e| object_store::Error::Generic {
                 store: "S3",
@@ -442,6 +445,22 @@ fn lookup_provider_class<'a>(
     bucket: &str,
 ) -> Option<&'a str> {
     get_config_trimmed(configs, bucket, PROVIDER_CLASS_PROPERTY).filter(|s| !s.is_empty())
+}
+
+/// Builds the `catalog_properties` map forwarded to the SPI on the Parquet path: the full
+/// `fs.s3a.*` subset. This matches the Iceberg path, which forwards its full property bag, so an
+/// adapter delegating to Hadoop's provider construction sees exactly the config Spark would --
+/// including the static keys a provider chain may resolve through. Stripping them would let a
+/// chain like `SimpleAWSCredentialsProvider,customProvider` silently resolve through a different
+/// entry than Spark, reading data as a different principal. These keys already cross JNI for the
+/// non-adapter path (see `build_credential_provider`). HashMap equality is order-independent, so
+/// the dispatcher instance-cache key stays stable regardless of iteration order.
+fn forward_catalog_properties(configs: &HashMap<String, String>) -> HashMap<String, String> {
+    configs
+        .iter()
+        .filter(|(k, _)| k.starts_with("fs.s3a."))
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect()
 }
 
 // Hadoop S3A credential provider constants
@@ -1151,6 +1170,47 @@ mod tests {
         assert_eq!(secret_key, Some("test_secret_key"));
         let session_token = get_config_trimmed(&configs, "test-bucket-2", "session.token");
         assert_eq!(session_token, Some("test_session_token"));
+    }
+
+    #[test]
+    fn test_forward_catalog_properties_forwards_fs_s3a_subset() {
+        let mut configs: HashMap<String, String> = HashMap::new();
+        configs.insert(
+            "fs.s3a.aws.credentials.provider".to_string(),
+            "com.amazonaws.auth.DefaultAWSCredentialsProviderChain".to_string(),
+        );
+        configs.insert("fs.s3a.endpoint".to_string(), "s3.example.com".to_string());
+        // The activation key itself must survive forwarding.
+        configs.insert(
+            format!("fs.s3a.{PROVIDER_CLASS_PROPERTY}"),
+            "org.apache.comet.cloud.s3.HadoopS3ACredentialProviderAdapter".to_string(),
+        );
+        // Static keys are forwarded too: a Hadoop provider chain may resolve through them, and
+        // stripping them would change which principal wins vs Spark.
+        configs.insert("fs.s3a.access.key".to_string(), "AK".to_string());
+        configs.insert("fs.s3a.secret.key".to_string(), "SK".to_string());
+        configs.insert("fs.s3a.session.token".to_string(), "ST".to_string());
+        configs.insert(
+            "fs.s3a.bucket.b.secret.key".to_string(),
+            "bucket-secret".to_string(),
+        );
+        // A non-fs.s3a key that can actually reach this bag (extractObjectStoreOptions also passes
+        // the fs.comet.* scheme keys) is dropped: the adapters read fs.s3a.* only.
+        configs.insert(
+            "fs.comet.s3Compliant.schemes".to_string(),
+            "blob".to_string(),
+        );
+
+        let forwarded = forward_catalog_properties(&configs);
+
+        assert!(forwarded.contains_key("fs.s3a.aws.credentials.provider"));
+        assert!(forwarded.contains_key("fs.s3a.endpoint"));
+        assert!(forwarded.contains_key(&format!("fs.s3a.{PROVIDER_CLASS_PROPERTY}")));
+        assert!(forwarded.contains_key("fs.s3a.access.key"));
+        assert!(forwarded.contains_key("fs.s3a.secret.key"));
+        assert!(forwarded.contains_key("fs.s3a.session.token"));
+        assert!(forwarded.contains_key("fs.s3a.bucket.b.secret.key"));
+        assert!(!forwarded.contains_key("fs.comet.s3Compliant.schemes"));
     }
 
     #[test]

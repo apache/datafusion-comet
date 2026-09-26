@@ -257,10 +257,12 @@ says, and is covered by [Everything Else Is Internal](#everything-else-is-intern
 These classes are named as _values_ in Spark configuration properties. Users do not compile against
 them; they write the fully qualified name into a config string.
 
-| Class                                  | Named in                             | Purpose                                               |
-| -------------------------------------- | ------------------------------------ | ----------------------------------------------------- |
-| `org.apache.spark.CometPlugin`         | `spark.plugins`                      | Installs Comet.                                       |
-| `org.apache.comet.ExtendedExplainInfo` | `spark.sql.extendedExplainProviders` | Adds Comet fallback explanations to `EXPLAIN` output. |
+| Class                                                          | Named in                                 | Purpose                                                            |
+| -------------------------------------------------------------- | ---------------------------------------- | ------------------------------------------------------------------ |
+| `org.apache.spark.CometPlugin`                                 | `spark.plugins`                          | Installs Comet.                                                    |
+| `org.apache.comet.ExtendedExplainInfo`                         | `spark.sql.extendedExplainProviders`     | Adds Comet fallback explanations to `EXPLAIN` output.              |
+| `org.apache.comet.cloud.s3.HadoopS3ACredentialProviderAdapter` | `fs.s3a.comet.credential.provider.class` | Built-in adapter delegating to Hadoop S3A's provider construction. |
+| `org.apache.comet.cloud.s3.AwsSdkCredentialProviderAdapter`    | `fs.s3a.comet.credential.provider.class` | Built-in adapter wrapping a raw AWS SDK provider.                  |
 
 Renaming or removing one of these class names breaks user configuration in exactly the way renaming
 a `spark.comet.*` key does, so it is treated on the same terms: a deprecation cycle, then removal in
@@ -280,6 +282,14 @@ The SPI consists of:
   differ by location.
 - `CometS3Credentials`, the value a provider returns.
 - `CometS3CredentialContext` and `CometS3AccessMode`, describing the request being served.
+
+Comet also ships two built-in implementations, `HadoopS3ACredentialProviderAdapter` and
+`AwsSdkCredentialProviderAdapter`. Users do not compile against them; they name them in
+`fs.s3a.comet.credential.provider.class`, so they are covered by the config-referenced class-name
+table above (name pinned, internal structure not guaranteed) rather than by the SPI's binary
+compatibility contract. See the
+[S3 Credential Providers](../user-guide/latest/s3-credential-providers.md) guide for how to enable
+them.
 
 Additive changes are allowed in a minor release, for example a new accessor on
 `CometS3CredentialContext`, because a vendor jar compiled against an earlier `1.x` continues to

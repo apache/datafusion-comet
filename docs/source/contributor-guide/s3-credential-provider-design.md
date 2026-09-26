@@ -110,6 +110,19 @@ The full unfiltered FileIO property bag crosses JNI as `catalog_properties`. The
 
 `IcebergScanExec` derives a redacting `Debug` so plan dumps and tracing do not leak the property bag.
 
+## Property-bag handling on the Parquet path
+
+The Parquet path forwards the full `fs.s3a.*` config subset as `catalog_properties`, so an SPI provider sees the same `fs.s3a.*` config Spark would. `forward_catalog_properties` in `native/core/src/parquet/objectstore/s3.rs` keeps every `fs.s3a.*` key, including the static credentials (`*.access.key`, `*.secret.key`, `*.session.token`). Forwarding them is deliberate: `AWSCredentialProviderList` skips a provider that throws `NoAwsCredentialsException` and moves to the next entry, so stripping the static keys would let a chain such as `SimpleAWSCredentialsProvider,customProvider` silently resolve through a different provider than Spark, reading data as a different principal. These keys already cross JNI for the non-adapter native path (`build_credential_provider` reads them), so this matches existing behavior rather than widening exposure. Because `NativeConfig.extractObjectStoreOptions` only collects `fs.s3a.*` (plus the `fs.comet.*` scheme keys), config a provider reads that is not under `fs.s3a.*` -- notably `hadoop.security.credential.provider.path` -- never crosses JNI. `AdapterSupport.toConfiguration` therefore seeds the Hadoop `Configuration` from the executor's own Spark-derived Hadoop conf (`spark.hadoop.*`) and overlays the forwarded `fs.s3a.*` on top, so those keys are present.
+
+## Built-in adapters
+
+Comet ships two reference SPI implementations under `org.apache.comet.cloud.s3`, so standard provider classes that the native Rust list does not match work with a config change instead of bespoke code:
+
+- `HadoopS3ACredentialProviderAdapter` delegates to Hadoop S3A's own provider construction (`S3AUtils.createAWSCredentialProviderSet` on Hadoop 3.3.x, `CredentialProviderListFactory.createAWSCredentialProviderList` on 3.4+).
+- `AwsSdkCredentialProviderAdapter` wraps a raw AWS SDK provider named in `fs.s3a.comet.credential.adapter.class`.
+
+Each has a spark-3.x (SDK v1) and a spark-4.x (SDK v2) body under the same FQCN, selected by the `shims.majorVerSrc` source set, so each Comet build compiles against exactly the one AWS SDK its Hadoop line ships. The SDK and `hadoop-aws` are `provided` scope only (see the `hadoop-aws.version` property in the root `pom.xml`), so Comet does not bundle a second copy.
+
 ## Returns or throws, not a fall-through value
 
 The SPI returns a `CometS3Credentials` or throws. There is no sentinel "I do not know" return. Vendors that are only authoritative for some paths resolve the default AWS chain themselves for the rest and return the result. This matches the contract on every other AWS credential SPI in the JVM ecosystem (AWS SDK v1/v2, Hadoop S3A, Iceberg `VendedCredentialsProvider`).

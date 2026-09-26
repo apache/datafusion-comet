@@ -59,4 +59,20 @@ public final class ClassLoaders {
     return Class.forName(className);
     // scalastyle:on classforname
   }
+
+  /**
+   * Loads a class using an explicitly captured ClassLoader, falling back to {@link
+   * #loadClass(String)} when none was captured. Callers that run on threads without a thread
+   * context ClassLoader (e.g. native worker threads) should capture the loader earlier, on a thread
+   * that has it, and pass it here.
+   */
+  public static Class<?> loadClass(String className, ClassLoader classLoader)
+      throws ClassNotFoundException {
+    if (classLoader == null) {
+      return loadClass(className);
+    }
+    // scalastyle:off classforname
+    return Class.forName(className, true, classLoader);
+    // scalastyle:on classforname
+  }
 }
