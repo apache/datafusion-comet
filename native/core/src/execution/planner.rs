@@ -471,6 +471,11 @@ impl PhysicalPlanner {
             let url = normalize_object_store_url(&file.file_path, object_store_options)?.url;
             let path = Path::from_url_path(url.path()).map_err(|e| GeneralError(e.to_string()))?;
             partitioned_file.object_meta.location = path;
+            partitioned_file
+                .extensions
+                .insert(crate::parquet::file_error_context::SparkFilePath(
+                    Arc::from(file.file_path.as_str()),
+                ));
 
             // Process partition values
             // Create an empty input schema for partition values because they are all literals.

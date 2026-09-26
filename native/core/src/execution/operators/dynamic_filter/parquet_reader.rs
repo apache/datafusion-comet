@@ -21,7 +21,7 @@ use std::sync::Arc;
 
 use datafusion::common::config::ConfigOptions;
 use datafusion::common::Result;
-use datafusion::datasource::physical_plan::{FileSource, ParquetSource};
+use datafusion::datasource::physical_plan::{FileScanConfig, FileSource, ParquetSource};
 use datafusion::datasource::source::DataSourceExec;
 use datafusion::logical_expr::Operator;
 use datafusion::physical_expr::expressions::{
@@ -32,6 +32,7 @@ use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::ExecutionPlan;
 
 use super::super::CometFilterExec;
+use crate::parquet::file_error_context::ParquetErrorContext;
 
 mod schema_adapter;
 
@@ -50,6 +51,19 @@ fn is_direct_column_null_checks(predicate: &Arc<dyn PhysicalExpr>) -> bool {
     predicate
         .downcast_ref::<IsNotNullExpr>()
         .is_some_and(|is_not_null| is_not_null.arg().is::<Column>())
+}
+
+/// The scan's Parquet source, seen through the `ParquetErrorContext` wrapper that native Parquet
+/// scans install to attach the file path to read errors. The wrapper delegates every method used
+/// here, and its filter pushdown returns a wrapped source, so either shape is accepted.
+pub(super) fn parquet_file_source(
+    scan: &DataSourceExec,
+) -> Option<(&FileScanConfig, &dyn FileSource)> {
+    if let Some((config, source)) = scan.downcast_to_file_source::<ParquetSource>() {
+        return Some((config, source as &dyn FileSource));
+    }
+    scan.downcast_to_file_source::<ParquetErrorContext>()
+        .map(|(config, source)| (config, source as &dyn FileSource))
 }
 
 pub(super) fn try_attach_parquet_reader_filter(
@@ -102,7 +116,7 @@ pub(super) fn try_attach_parquet_reader_filter(
         );
         return Ok(None);
     };
-    let Some((file_config, source)) = scan.downcast_to_file_source::<ParquetSource>() else {
+    let Some((file_config, source)) = parquet_file_source(scan) else {
         log::debug!("Join dynamic filter reader pushdown skipped: probe is not Parquet");
         return Ok(None);
     };
@@ -179,7 +193,7 @@ pub(super) fn try_attach_parquet_reader_filter(
         return Ok(None);
     };
     let filtered = scan.clone().with_data_source(data_source);
-    let Some((file_config, _)) = filtered.downcast_to_file_source::<ParquetSource>() else {
+    let Some((file_config, _)) = parquet_file_source(&filtered) else {
         log::debug!(
             "Join dynamic filter reader pushdown skipped: pushed-down scan is no longer Parquet"
         );

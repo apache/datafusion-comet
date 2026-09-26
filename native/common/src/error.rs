@@ -74,6 +74,10 @@ pub enum SparkError {
     #[error("[ARITHMETIC_OVERFLOW] {from_type} overflow. If necessary set \"spark.sql.ansi.enabled\" to \"false\" to bypass this error.")]
     ArithmeticOverflow { from_type: String },
 
+    // Spark's checked date/timestamp conversions throw this even with ANSI disabled.
+    #[error("long overflow")]
+    LongOverflow,
+
     #[error("[ARITHMETIC_OVERFLOW] Overflow in integral divide. Use 'try_divide' to tolerate overflow and return NULL instead. If necessary set \"spark.sql.ansi.enabled\" to \"false\" to bypass this error.")]
     IntegralDivideOverflow,
 
@@ -252,6 +256,11 @@ pub enum SparkError {
         spark_type: String,
     },
 
+    /// Overflow in Parquet's millis-to-micros conversion. The per-file reader fills in the
+    /// original Spark path before the JVM wraps this in cannotReadFilesError.
+    #[error("long overflow")]
+    ParquetTimestampOverflow { file_path: String },
+
     /// A per-file read failure (corrupt footer/page, truncated/empty file, deleted file) raised by
     /// the native parquet reader / object_store. Classified by typed `DataFusionError` variant (no
     /// message matching) and translated by the JVM shim into Spark's `FAILED_READ_FILE`
@@ -314,6 +323,7 @@ impl SparkError {
             SparkError::CastOverFlow { .. } => "CastOverFlow",
             SparkError::CannotParseDecimal => "CannotParseDecimal",
             SparkError::ArithmeticOverflow { .. } => "ArithmeticOverflow",
+            SparkError::LongOverflow => "LongOverflow",
             SparkError::IntegralDivideOverflow => "IntegralDivideOverflow",
             SparkError::DecimalSumOverflow { .. } => "DecimalSumOverflow",
             SparkError::DivideByZero => "DivideByZero",
@@ -355,6 +365,7 @@ impl SparkError {
             SparkError::DuplicateFieldByFieldId { .. } => "DuplicateFieldByFieldId",
             SparkError::ParquetMissingFieldIds => "ParquetMissingFieldIds",
             SparkError::ParquetSchemaConvert { .. } => "ParquetSchemaConvert",
+            SparkError::ParquetTimestampOverflow { .. } => "ParquetTimestampOverflow",
             SparkError::CannotReadFile { .. } => "CannotReadFile",
             SparkError::Arrow(_) => "Arrow",
             SparkError::Internal(_) => "Internal",
@@ -617,6 +628,9 @@ impl SparkError {
                     "sparkType": spark_type,
                 })
             }
+            SparkError::ParquetTimestampOverflow { file_path } => {
+                serde_json::json!({ "filePath": file_path })
+            }
             SparkError::CannotReadFile { file_path, message } => {
                 serde_json::json!({
                     "filePath": file_path,
@@ -641,6 +655,8 @@ impl SparkError {
     /// Returns the appropriate Spark exception class for this error
     pub fn exception_class(&self) -> &'static str {
         match self {
+            SparkError::LongOverflow => "java/lang/ArithmeticException",
+
             // ArithmeticException
             SparkError::DivideByZero
             | SparkError::RemainderByZero
@@ -721,9 +737,10 @@ impl SparkError {
                 "org/apache/spark/sql/execution/datasources/SchemaColumnConvertNotSupportedException"
             }
 
-            // CannotReadFile - converted to a FAILED_READ_FILE SparkException by the shim
-            // (QueryExecutionErrors.cannotReadFilesError).
-            SparkError::CannotReadFile { .. } => "org/apache/spark/SparkException",
+            // File-read failures are wrapped by QueryExecutionErrors.cannotReadFilesError.
+            SparkError::CannotReadFile { .. } | SparkError::ParquetTimestampOverflow { .. } => {
+                "org/apache/spark/SparkException"
+            }
 
             // Generic errors
             SparkError::Arrow(_) | SparkError::Internal(_) => "org/apache/spark/SparkException",
@@ -749,6 +766,7 @@ impl SparkError {
             SparkError::RemainderByZero => Some("REMAINDER_BY_ZERO"),
             SparkError::IntervalDividedByZero => Some("INTERVAL_DIVIDED_BY_ZERO"),
             SparkError::ArithmeticOverflow { .. } => Some("ARITHMETIC_OVERFLOW"),
+            SparkError::LongOverflow => None,
             SparkError::IntegralDivideOverflow => Some("ARITHMETIC_OVERFLOW"),
             SparkError::DecimalSumOverflow { .. } => Some("ARITHMETIC_OVERFLOW"),
             SparkError::BinaryArithmeticOverflow { .. } => Some("BINARY_ARITHMETIC_OVERFLOW"),
@@ -822,9 +840,8 @@ impl SparkError {
             // SparkException error class, so no error class is exposed here.
             SparkError::ParquetSchemaConvert { .. } => None,
 
-            // CannotReadFile — the JVM shim wraps it via cannotReadFilesError, which supplies the
-            // FAILED_READ_FILE error class, so none is exposed here.
-            SparkError::CannotReadFile { .. } => None,
+            // The JVM's cannotReadFilesError supplies the version-appropriate error class.
+            SparkError::CannotReadFile { .. } | SparkError::ParquetTimestampOverflow { .. } => None,
 
             // Generic errors (no error class)
             SparkError::Arrow(_) | SparkError::Internal(_) => None,
@@ -965,6 +982,38 @@ mod tests {
 
         assert!(json.contains("\"errorType\":\"RemainderByZero\""));
         assert!(json.contains("\"errorClass\":\"REMAINDER_BY_ZERO\""));
+    }
+
+    #[test]
+    fn test_long_overflow_json() {
+        for (error, error_type, exception_class, params) in [
+            (
+                SparkError::LongOverflow,
+                "LongOverflow",
+                "java/lang/ArithmeticException",
+                serde_json::json!({}),
+            ),
+            (
+                SparkError::ParquetTimestampOverflow {
+                    file_path: "file:///bad%20timestamp.parquet".to_string(),
+                },
+                "ParquetTimestampOverflow",
+                "org/apache/spark/SparkException",
+                serde_json::json!({ "filePath": "file:///bad%20timestamp.parquet" }),
+            ),
+        ] {
+            let parsed: serde_json::Value = serde_json::from_str(&error.to_json()).unwrap();
+            assert_eq!(
+                parsed,
+                serde_json::json!({
+                    "errorType": error_type,
+                    "errorClass": "",
+                    "params": params,
+                })
+            );
+            assert_eq!(error.exception_class(), exception_class);
+            assert_eq!(error.to_string(), "long overflow");
+        }
     }
 
     #[test]

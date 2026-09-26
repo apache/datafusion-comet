@@ -271,16 +271,14 @@ abstract class ParquetReadSuite extends CometTestBase {
     // https://github.com/apache/spark/blob/v4.2.0/sql/core/src/main/java/org/apache/spark/sql/execution/datasources/parquet/ParquetVectorUpdaterFactory.java#L800-L833
     // Matches Spark's positive and negative overflow cases:
     // https://github.com/apache/spark/blob/v4.2.0/sql/core/src/test/resources/sql-tests/inputs/timestamp.sql#L74-L83
-    def isOverflow(error: Throwable): Boolean =
-      Iterator
-        .iterate(error)(_.getCause)
-        .takeWhile(_ != null)
-        .exists(cause => Option(cause.getMessage).exists(_.toLowerCase.contains("overflow")))
+    val errorClass =
+      if (isSpark40Plus) "FAILED_READ_FILE.NO_HINT" else "_LEGACY_ERROR_TEMP_2064"
 
     Seq(false, true).foreach { dictionaryEnabled =>
       Seq(92233720368547758L, -92233720368547758L).foreach { millis =>
         withTempDir { dir =>
-          val path = new Path(dir.toURI.toString, "part-r-0.parquet")
+          val path = new Path(dir.toURI.toString, "bad timestamp%.parquet")
+          val healthyPath = new Path(dir.toURI.toString, "healthy.parquet")
           val schema = MessageTypeParser.parseMessageType("""
             |message root {
             |  optional int64 ts(TIMESTAMP_MILLIS);
@@ -321,6 +319,13 @@ abstract class ParquetReadSuite extends CometTestBase {
           }
           writer.close()
 
+          val healthyWriter = createParquetWriter(schema, healthyPath, dictionaryEnabled)
+          val healthyRecord = new SimpleGroup(schema)
+          healthyRecord.add(0, 0L)
+          healthyRecord.add(1, 0L)
+          healthyWriter.write(healthyRecord)
+          healthyWriter.close()
+
           val footerReader = org.apache.parquet.hadoop.ParquetFileReader.open(
             org.apache.parquet.hadoop.util.HadoopInputFile
               .fromPath(path, spark.sessionState.newHadoopConf()))
@@ -338,16 +343,27 @@ abstract class ParquetReadSuite extends CometTestBase {
           }
 
           Seq(false, true).foreach { ansiEnabled =>
-            withSQLConf(SQLConf.ANSI_ENABLED.key -> ansiEnabled.toString) {
-              readParquetFile(path.toString) { df =>
-                Seq("ts", "ts_ntz", "s", "s.ts", "s.ts_ntz", "a", "m").foreach { column =>
-                  val selected = df.select(column)
-                  assert(collect(selected.queryExecution.executedPlan) {
-                    case _: CometNativeScanExec => true
-                  }.nonEmpty)
+            withSQLConf(
+              SQLConf.ANSI_ENABLED.key -> ansiEnabled.toString,
+              SQLConf.FILES_MIN_PARTITION_NUM.key -> "1",
+              SQLConf.FILES_MAX_PARTITION_BYTES.key -> "134217728") {
+              readParquetFile(dir.toString) { df =>
+                val queries = Seq("ts", "ts_ntz", "s", "s.ts", "s.ts_ntz", "a", "m")
+                  .map(column => df.select(column)) :+ df.select("ts").repartition(1)
+                queries.foreach { selected =>
+                  val scans = collect(selected.queryExecution.executedPlan) {
+                    case scan: CometNativeScanExec => scan
+                  }
+                  assert(scans.nonEmpty)
+                  scans.foreach { scan =>
+                    assert(scan.perPartitionFilePaths.length == 1)
+                    assert(scan.perPartitionFilePaths.head.size == 2)
+                  }
 
-                  val (sparkError, cometError) = checkSparkAnswerMaybeThrows(selected)
-                  assert(Seq(sparkError, cometError).forall(_.exists(isOverflow)))
+                  val error = checkSparkError(selected, errorClass)
+                  assert(new java.net.URI(error.getMessageParameters.get("path")) == path.toUri)
+                  assert(error.getCause.getClass == classOf[ArithmeticException])
+                  assert(error.getCause.getMessage == "long overflow")
                 }
               }
             }
