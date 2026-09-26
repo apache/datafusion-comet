@@ -23,7 +23,7 @@ import org.apache.spark.internal.Logging
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.expressions.aggregate.{Final, Partial, PartialMerge}
 import org.apache.spark.sql.catalyst.rules.Rule
-import org.apache.spark.sql.comet.{CometColumnarToRowExec, CometExec, CometHashAggregateExec, CometNativeColumnarToRowExec, CometSparkToColumnarExec}
+import org.apache.spark.sql.comet.{CometColumnarToRowExec, CometExec, CometHashAggregateExec, CometNativeColumnarToRowExec, CometNativeScanExec, CometSparkToColumnarExec}
 import org.apache.spark.sql.execution.{ColumnarToRowExec, ColumnarToRowTransition, RowToColumnarExec, SparkPlan}
 import org.apache.spark.sql.execution.adaptive.QueryStageExec
 import org.apache.spark.sql.execution.exchange.{BroadcastExchangeLike, ShuffleExchangeLike}
@@ -194,7 +194,20 @@ case class RevertNativeForTransitionHeavyStages(session: SparkSession, wholePlan
     }
     val reverted = transformStageUp(stripped) { case cometExec: CometExec =>
       if (cometExec.originalPlan.children.size == cometExec.children.size) {
-        cometExec.originalPlan.withNewChildren(cometExec.children)
+        val originalWithCurrentExpressions = cometExec match {
+          case scan: CometNativeScanExec =>
+            // AQE's query-stage optimizer rewrites DPP placeholders in the live Comet scan
+            // before this post-columnar rule runs. The frozen FileSourceScanExec in
+            // originalPlan still contains SubqueryAdaptiveBroadcastExec, which cannot execute.
+            // Preserve the rewritten filters when reverting the scan to Spark.
+            val originalScan = scan.originalPlan.copy(
+              partitionFilters = scan.partitionFilters,
+              dataFilters = scan.dataFilters)
+            scan.originalPlan.logicalLink.foreach(originalScan.setLogicalLink)
+            originalScan
+          case _ => cometExec.originalPlan
+        }
+        originalWithCurrentExpressions.withNewChildren(cometExec.children)
       } else {
         logWarning(
           "Comet plan and original have different child count for " +
