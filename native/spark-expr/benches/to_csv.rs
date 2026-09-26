@@ -86,7 +86,7 @@ fn criterion_benchmark(c: &mut Criterion) {
     let default_null_value = "";
     let default_quote = "\"";
     let default_escape = "\\";
-    let mut cast_options = SparkCastOptions::new(EvalMode::Legacy, timezone, false);
+    let mut cast_options = SparkCastOptions::new(EvalMode::Legacy, timezone);
     cast_options.null_string = default_null_value.to_string();
     let csv_write_options = CsvWriteOptions::new(
         default_delimiter.to_string(),

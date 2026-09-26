@@ -43,7 +43,7 @@ fn cast_to_utf8() -> Cast {
     Cast::new(
         Arc::new(Column::new("a", 0)),
         DataType::Utf8,
-        SparkCastOptions::new_without_timezone(EvalMode::Legacy, false),
+        SparkCastOptions::new_without_timezone(EvalMode::Legacy),
         None,
         None,
     )

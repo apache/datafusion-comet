@@ -69,7 +69,6 @@ trait CometExprGetDateField[T <: GetDateField] {
               .setChild(e)
               .setDatatype(serializeDataType(IntegerType).get)
               .setEvalMode(ExprOuterClass.EvalMode.LEGACY)
-              .setAllowIncompat(false)
               .build())
           .build()
       })
@@ -488,7 +487,6 @@ object CometUnixDate extends CometExpressionSerde[UnixDate] {
             .setChild(child)
             .setDatatype(serializeDataType(IntegerType).get)
             .setEvalMode(ExprOuterClass.EvalMode.LEGACY)
-            .setAllowIncompat(false)
             .build())
         .build()
     }
@@ -851,7 +849,6 @@ object CometDays extends CometExpressionSerde[Days] {
             .setChild(dateExpr)
             .setDatatype(serializeDataType(IntegerType).get)
             .setEvalMode(ExprOuterClass.EvalMode.LEGACY)
-            .setAllowIncompat(false)
             .build())
         .build()
     }

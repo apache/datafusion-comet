@@ -26,7 +26,7 @@ use std::sync::Arc;
 const BATCH_SIZE: usize = 8192;
 
 fn criterion_benchmark(c: &mut Criterion) {
-    let spark_cast_options = SparkCastOptions::new(EvalMode::Legacy, "UTC", false);
+    let spark_cast_options = SparkCastOptions::new(EvalMode::Legacy, "UTC");
     let timestamp_type = DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into()));
 
     let mut group = c.benchmark_group("cast_non_int_numeric_to_timestamp");
