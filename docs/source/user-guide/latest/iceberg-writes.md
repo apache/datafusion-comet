@@ -97,6 +97,12 @@ supports:
   `OverwritePartitionsDynamic`)
 - Copy-on-write `DELETE` / `UPDATE` / `MERGE` (`ReplaceData`)
 
+For an unpartitioned copy-on-write `MERGE`, the native Iceberg writer is reachable on Spark
+3.5.x and 4.0.x only when `spark.comet.exec.mergeRows.enabled=true`. With the flag disabled,
+the JVM `MergeRowsExec` breaks the fully-native child chain required by `CometIcebergWriteExec`.
+Spark 4.1+ keeps `MergeRowsExec` on the JVM even when the flag is set, so this unpartitioned
+shape continues through the JVM writer there.
+
 The mechanism behind row-level DML differs by Spark version: on Spark 4.0+ the analyzer emits
 operation-coded rows that Comet's writer dispatches through `ReplaceData`'s projections, while
 on Spark 3.4/3.5 the rewritten rows are written as a plain row stream. The supported set of
