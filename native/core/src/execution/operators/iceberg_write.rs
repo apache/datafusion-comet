@@ -28,7 +28,9 @@ use std::collections::HashMap;
 use std::fmt;
 use std::sync::{Arc, Mutex};
 
-use arrow::array::{ArrayRef, BinaryArray, RecordBatch, UInt32Array};
+use arrow::array::{
+    Array, ArrayRef, AsArray, BinaryArray, OffsetSizeTrait, RecordBatch, UInt32Array,
+};
 use arrow::datatypes::{DataType, Field, Schema as ArrowSchema, SchemaRef};
 use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::error::{DataFusionError, Result as DFResult};
@@ -939,7 +941,7 @@ impl ClusteredBatchSplitter {
             }
         }
         // A single-run batch (the common case: one partition per task batch) is the whole batch,
-        // which `RowSlicer::slice` hands back as a clone.
+        // which `RowSlicer::slice` hands back as-is unless it arrived sliced.
         runs.into_iter()
             .map(|(value, start, len)| {
                 let part = self.slicer.slice(batch, start, len)?;
@@ -972,6 +974,11 @@ impl ClusteredBatchSplitter {
 /// safe, because `StructArray::slice` slices them, so the only schemas that need the fix are the
 /// ones with a float or double under a list or map; those ranges go through `take`, which gathers
 /// the referenced children into fresh compacted arrays.
+///
+/// A range that covers its whole batch is handed on as-is, which is exact only if the batch itself
+/// spans its children. A batch can arrive already sliced, for example from a `GlobalLimitExec`
+/// whose `OFFSET` hands on `batch.slice(skip, n)`, so a whole-batch range goes through
+/// [`RowSlicer::compact`], which gathers such a batch instead.
 #[derive(Clone, Copy)]
 struct RowSlicer {
     gather: bool,
@@ -989,9 +996,24 @@ impl RowSlicer {
         }
     }
 
+    /// Returns `batch` unchanged unless it is a window onto a larger batch that leaves a float
+    /// under a list or map outside it, in which case the window is gathered into fresh arrays.
+    fn compact(&self, batch: RecordBatch) -> DFResult<RecordBatch> {
+        if self.gather
+            && batch
+                .columns()
+                .iter()
+                .any(|column| floats_outside_window(column.as_ref()))
+        {
+            gather_rows(&batch, 0, batch.num_rows())
+        } else {
+            Ok(batch)
+        }
+    }
+
     fn slice(&self, batch: &RecordBatch, offset: usize, len: usize) -> DFResult<RecordBatch> {
         if offset == 0 && len == batch.num_rows() {
-            return Ok(batch.clone());
+            return self.compact(batch.clone());
         }
         if self.gather {
             gather_rows(batch, offset, len)
@@ -1007,7 +1029,7 @@ impl RowSlicer {
     fn detach(&self, batch: &RecordBatch, offset: usize, len: usize) -> DFResult<RecordBatch> {
         if offset == 0 && len == batch.num_rows() {
             // The range is the whole batch, so it pins nothing beyond the rows it holds.
-            return Ok(batch.clone());
+            return self.compact(batch.clone());
         }
         gather_rows(batch, offset, len)
     }
@@ -1131,6 +1153,44 @@ fn contains_float(data_type: &DataType) -> bool {
         DataType::Struct(fields) => fields.iter().any(|field| contains_float(field.data_type())),
         _ => false,
     }
+}
+
+/// `true` when `array` holds a float or double under a list or map whose child array reaches
+/// past the rows `array` covers. Slicing a list or map narrows only its offsets and leaves the
+/// child whole, and the NaN-count visitor walks the whole child. A struct's children are sliced
+/// with it, so a struct only matters for the lists and maps inside it. A container this does not
+/// inspect is treated as reaching past whenever it holds a float, which errs toward gathering.
+fn floats_outside_window(array: &dyn Array) -> bool {
+    match array.data_type() {
+        DataType::List(field) => {
+            let list = array.as_list::<i32>();
+            contains_float(field.data_type())
+                && reaches_past(list.value_offsets(), list.values().as_ref())
+        }
+        DataType::LargeList(field) => {
+            let list = array.as_list::<i64>();
+            contains_float(field.data_type())
+                && reaches_past(list.value_offsets(), list.values().as_ref())
+        }
+        DataType::Map(entries, _) => {
+            let map = array.as_map();
+            contains_float(entries.data_type()) && reaches_past(map.value_offsets(), map.entries())
+        }
+        DataType::Struct(_) => array
+            .as_struct()
+            .columns()
+            .iter()
+            .any(|column| floats_outside_window(column.as_ref())),
+        other => float_under_list_or_map(other),
+    }
+}
+
+/// `true` when `offsets` leave part of `child` outside them, or when `child` itself holds a float
+/// outside its own rows.
+fn reaches_past<O: OffsetSizeTrait>(offsets: &[O], child: &dyn Array) -> bool {
+    offsets[0].as_usize() != 0
+        || offsets[offsets.len() - 1].as_usize() != child.len()
+        || floats_outside_window(child)
 }
 
 /// Serialise the produced data files as an in-memory Iceberg V2 data manifest, then read the
@@ -1649,6 +1709,67 @@ mod tests {
                 "{label} must be gathered, not sliced"
             );
         }
+    }
+
+    fn doubles(rows: usize) -> arrow::array::ListArray {
+        use arrow::datatypes::Float64Type;
+        arrow::array::ListArray::from_iter_primitive::<Float64Type, _, _>(
+            (0..rows).map(|row| Some(vec![Some(row as f64), Some(f64::NAN)])),
+        )
+    }
+
+    #[test]
+    fn floats_outside_window_finds_a_slice_at_any_depth() {
+        use arrow::array::{ListArray, StructArray};
+        use arrow::buffer::OffsetBuffer;
+        use arrow::datatypes::Int32Type;
+
+        // A list spans its child until it is sliced, from either end.
+        assert!(!floats_outside_window(&doubles(4)));
+        assert!(floats_outside_window(&doubles(4).slice(0, 2)));
+        assert!(floats_outside_window(&doubles(4).slice(2, 2)));
+        // A sliced list with no float under it leaves nothing to miscount.
+        let ints = ListArray::from_iter_primitive::<Int32Type, _, _>(
+            (0..4).map(|row| Some(vec![Some(row)])),
+        );
+        assert!(!floats_outside_window(&ints.slice(0, 2)));
+        // Slicing a struct slices its list child, which then reaches past its rows.
+        let wrapped = StructArray::try_from(vec![("l", Arc::new(doubles(4)) as ArrayRef)]).unwrap();
+        assert!(!floats_outside_window(&wrapped));
+        assert!(floats_outside_window(&wrapped.slice(1, 2)));
+        // An outer list can span its child while an inner list does not span its own.
+        let inner = doubles(4).slice(1, 2);
+        let outer = ListArray::new(
+            Arc::new(Field::new("element", inner.data_type().clone(), true)),
+            OffsetBuffer::from_lengths([2]),
+            Arc::new(inner),
+            None,
+        );
+        assert!(floats_outside_window(&outer));
+    }
+
+    #[test]
+    fn compact_gathers_only_a_batch_that_reaches_past_its_rows() {
+        let batch = RecordBatch::try_from_iter([("l", Arc::new(doubles(4)) as ArrayRef)]).unwrap();
+        let slicer = RowSlicer::for_schema(&batch.schema());
+
+        let whole = slicer.compact(batch.clone()).unwrap();
+        assert!(
+            Arc::ptr_eq(whole.column(0), batch.column(0)),
+            "a batch that spans its children is handed on as-is"
+        );
+
+        let window = batch.slice(1, 2);
+        let compacted = slicer.compact(window.clone()).unwrap();
+        assert_eq!(
+            compacted, window,
+            "gathering keeps the rows and their values"
+        );
+        assert_eq!(
+            compacted.column(0).as_list::<i32>().values().len(),
+            4,
+            "the child holds only the window's elements"
+        );
     }
 
     /// Rows `first..first + rows`, so a sequence of batches carries distinguishable values.
@@ -2571,6 +2692,140 @@ mod tests {
                 "nan counts: {:?}",
                 data_files[0].nan_value_counts()
             );
+        }
+
+        /// A batch can reach the writer already sliced, as a `LIMIT ... OFFSET` hands it on. Its
+        /// list and map children then still hold the rows outside the slice, which are not
+        /// written, so their NaNs must not be counted either -- by any of the three writers, each of
+        /// which can pass a single-partition batch through whole.
+        /// See https://github.com/apache/datafusion-comet/issues/6146.
+        #[tokio::test]
+        async fn nan_counts_ignore_rows_outside_an_already_sliced_batch() {
+            use arrow::array::{Array, Float64Builder, ListArray, MapBuilder, StringBuilder};
+            use arrow::datatypes::Float64Type;
+            use iceberg::spec::{ListType, MapType};
+
+            const ROWS: usize = ROWS_DIVISOR + 100;
+            const NAN_ROWS: [usize; 5] = [3, 50, 60, 90, ROWS_DIVISOR + 70];
+            let value = |row: usize| {
+                if NAN_ROWS.contains(&row) {
+                    f64::NAN
+                } else {
+                    row as f64
+                }
+            };
+
+            let schema = Schema::builder()
+                .with_schema_id(1)
+                .with_fields(vec![
+                    NestedField::required(1, "id", Type::Primitive(PrimitiveType::Int)).into(),
+                    NestedField::required(2, "region", Type::Primitive(PrimitiveType::String))
+                        .into(),
+                    NestedField::optional(
+                        3,
+                        "vals",
+                        Type::List(ListType {
+                            element_field: NestedField::list_element(
+                                4,
+                                Type::Primitive(PrimitiveType::Double),
+                                false,
+                            )
+                            .into(),
+                        }),
+                    )
+                    .into(),
+                    NestedField::optional(
+                        5,
+                        "m",
+                        Type::Map(MapType {
+                            key_field: NestedField::map_key_element(
+                                6,
+                                Type::Primitive(PrimitiveType::String),
+                            )
+                            .into(),
+                            value_field: NestedField::map_value_element(
+                                7,
+                                Type::Primitive(PrimitiveType::Double),
+                                false,
+                            )
+                            .into(),
+                        }),
+                    )
+                    .into(),
+                ])
+                .build()
+                .unwrap();
+
+            let vals = ListArray::from_iter_primitive::<Float64Type, _, _>(
+                (0..ROWS).map(|row| Some(vec![Some(value(row))])),
+            );
+            let mut map = MapBuilder::new(None, StringBuilder::new(), Float64Builder::new());
+            for row in 0..ROWS {
+                map.keys().append_value("k");
+                map.values().append_value(value(row));
+                map.append(true).unwrap();
+            }
+            let map = map.finish();
+            let full = RecordBatch::try_new(
+                Arc::new(ArrowSchema::new(vec![
+                    Field::new("id", DataType::Int32, false),
+                    Field::new("region", DataType::Utf8, false),
+                    Field::new("vals", vals.data_type().clone(), true),
+                    Field::new("m", map.data_type().clone(), true),
+                ])),
+                vec![
+                    Arc::new(Int32Array::from_iter_values(0..ROWS as i32)),
+                    Arc::new(StringArray::from(vec!["us"; ROWS])),
+                    Arc::new(vals),
+                    Arc::new(map),
+                ],
+            )
+            .unwrap();
+
+            let unpartitioned = PartitionSpec::builder(Arc::new(schema.clone()))
+                .build()
+                .unwrap();
+            let by_region = identity_region_spec(&schema);
+            let writers = [
+                (
+                    ProtoIcebergWriterMode::IcebergWriterUnpartitioned,
+                    &unpartitioned,
+                ),
+                (ProtoIcebergWriterMode::IcebergWriterFanout, &by_region),
+                (ProtoIcebergWriterMode::IcebergWriterClustered, &by_region),
+            ];
+            // A limit's leading window, one that leaves rows out at both ends, and one that fills
+            // exactly one unit, which `RowSlicer::slice` rather than `detach` hands on whole.
+            for (offset, len) in [(0, 10), (40, 25), (50, ROWS_DIVISOR)] {
+                let expected = NAN_ROWS
+                    .iter()
+                    .filter(|row| (offset..offset + len).contains(*row))
+                    .count() as u64;
+                for (mode, spec) in writers {
+                    let temp_dir = TempDir::new().unwrap();
+                    let common = common(
+                        format!("file://{}", temp_dir.path().display()),
+                        serde_json::to_string(spec).unwrap(),
+                        serde_json::to_string(&schema).unwrap(),
+                        mode,
+                    );
+                    let data_files = run(
+                        common,
+                        schema.clone(),
+                        spec.clone(),
+                        mode,
+                        vec![full.slice(offset, len)],
+                    )
+                    .await
+                    .unwrap();
+
+                    let what = format!("{mode:?} over rows {offset}..{}", offset + len);
+                    assert_eq!(record_counts(&data_files), vec![len as u64], "{what}");
+                    let nan_counts = data_files[0].nan_value_counts();
+                    assert_eq!(nan_counts.get(&4), Some(&expected), "{what}: list NaNs");
+                    assert_eq!(nan_counts.get(&7), Some(&expected), "{what}: map NaNs");
+                }
+            }
         }
 
         #[tokio::test]

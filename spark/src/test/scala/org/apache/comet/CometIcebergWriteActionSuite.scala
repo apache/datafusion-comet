@@ -1120,6 +1120,70 @@ class CometIcebergWriteActionSuite
     }
   }
 
+  // An OFFSET hands the writer a slice of the scan's batch, and a sliced list or map keeps its
+  // whole child array, including the rows before the slice. iceberg-rust counts NaNs over that
+  // whole child, so the native path counted NaNs from rows it skipped. (A plain LIMIT does not
+  // show it: the JVM hop into the writer cuts the child at the slice's last offset, which drops
+  // the rows after a slice but not the rows before one.) `coalesce(1)` gives the limit a
+  // single-partition child, so no shuffle sits between the cut and the writer to compact the
+  // batch, and one source file keeps the rows in one scan batch.
+  // https://github.com/apache/datafusion-comet/issues/6146
+  test("native acceleration: NaN counts under an OFFSET skip the list and map rows it drops") {
+    assumeNativeAcceleration()
+    withIcebergCatalog { _ =>
+      withTempPath { dir =>
+        spark
+          .range(100)
+          .selectExpr(
+            "CAST(id AS INT) AS id",
+            "IF(id % 3 = 0, CAST('NaN' AS DOUBLE), CAST(id AS DOUBLE)) AS v")
+          .selectExpr("id", "array(v) AS xs", "map('k', v) AS m")
+          .coalesce(1)
+          .write
+          .parquet(dir.getCanonicalPath)
+        Seq("nan_offset_native", "nan_offset_jvm").foreach { t =>
+          spark.sql(s"""
+            CREATE TABLE $catalog.$ns.$t (
+              id INT,
+              xs ARRAY<DOUBLE>,
+              m MAP<STRING, DOUBLE>
+            ) USING iceberg
+          """)
+        }
+        def insert(t: String): Unit =
+          spark.read
+            .parquet(dir.getCanonicalPath)
+            .coalesce(1)
+            .offset(40)
+            .limit(25)
+            .writeTo(s"$catalog.$ns.$t")
+            .append()
+
+        assertNativeWriteEngages("nan_offset_native", 40 until 65)(insert("nan_offset_native"))
+        insert("nan_offset_jvm")
+
+        // Keyed by field id, and both tables get the same ids from the same DDL.
+        def nanCounts(t: String): Map[Int, Long] =
+          spark
+            .sql(s"SELECT nan_value_counts FROM $catalog.$ns.$t.data_files")
+            .collect()
+            .toSeq
+            .flatMap(_.getMap[Int, Long](0).toSeq)
+            .groupBy(_._1)
+            .map { case (id, counts) => id -> counts.map(_._2).sum }
+
+        val native = nanCounts("nan_offset_native")
+        val jvm = nanCounts("nan_offset_jvm")
+        assert(native == jvm, s"native NaN counts $native != JVM NaN counts $jvm")
+        // Iceberg 1.10's `ParquetMetrics` keeps no metrics for a field under a list or map, so
+        // from then on both maps are empty. Before that, the written ids 40 to 64 hold eight
+        // multiples of 3, NaN in the list element and the map value alike.
+        val expected = if (icebergVersionAtLeast(1, 10)) Seq.empty else Seq(8L, 8L)
+        assert(jvm.values.toSeq == expected, s"JVM NaN counts $jvm")
+      }
+    }
+  }
+
   test("native acceleration: CTAS runs its inner append through the native writer") {
     assumeNativeAcceleration()
     assume(isSpark35Plus, "CTAS re-plans its inner append only on Spark 3.5+")
