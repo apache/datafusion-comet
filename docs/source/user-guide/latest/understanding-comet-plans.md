@@ -377,7 +377,7 @@ round-robin partitioning is disabled by default; see
 [Round-Robin Partitioning](compatibility/operators.md#round-robin-partitioning).
 
 The choice between the two is automatic. See the
-[Tuning Guide shuffle section](tuning.md#shuffle) for how to enable Comet
+[shuffle tuning guide](tuning/shuffle.md) for how to enable Comet
 shuffle and choose between the implementations.
 
 ### Columnar/Row Transitions
