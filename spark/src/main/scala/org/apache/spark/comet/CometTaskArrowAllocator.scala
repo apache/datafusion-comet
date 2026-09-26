@@ -82,8 +82,8 @@ object CometTaskArrowAllocator extends Logging {
    */
   private lazy val accountingEnabled: Boolean = Option(SparkEnv.get).forall { env =>
     env.conf.getBoolean(
-      CometConf.COMET_ARROW_ALLOCATOR_ACCOUNTING_ENABLED.key,
-      CometConf.COMET_ARROW_ALLOCATOR_ACCOUNTING_ENABLED.defaultValue.get)
+      CometConf.COMET_MEMORY_JVM_ARROW_ACCOUNTING_ENABLED.key,
+      CometConf.COMET_MEMORY_JVM_ARROW_ACCOUNTING_ENABLED.defaultValue.get)
   }
 
   /**

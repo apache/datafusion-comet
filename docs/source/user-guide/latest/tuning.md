@@ -120,7 +120,7 @@ Arrow memory that Comet allocates on the JVM side for a task, for example to rea
 batches with a Python worker, is charged to the same pool as a memory consumer of that task. Charging it never fails an allocation, but it
 leaves Comet's native operators and Spark's own consumers less of the pool, so they can spill sooner. Comet 1.1.0 and
 earlier did not charge this memory to the pool, so if you sized `spark.memory.offHeap.size` against one of those
-releases, check how often queries spill. Setting `spark.comet.arrowAllocator.accounting.enabled=false` stops charging
+releases, check how often queries spill. Setting `spark.comet.memory.jvmArrowAccounting.enabled=false` stops charging
 it, in which case it has to fit in `spark.executor.memoryOverhead` instead.
 
 For more details about Spark off-heap memory mode, please refer to [Spark documentation].

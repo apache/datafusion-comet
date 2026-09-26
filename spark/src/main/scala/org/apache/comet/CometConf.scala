@@ -374,6 +374,21 @@ object CometConf extends ShimCometConf {
     .checkValue(_ >= 0, "The memory usage log interval must not be negative")
     .createWithDefault(TimeUnit.SECONDS.toMillis(10))
 
+  val COMET_MEMORY_JVM_ARROW_ACCOUNTING_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.memory.jvmArrowAccounting.enabled")
+      .category(CATEGORY_TUNING)
+      .doc(
+        "Whether to charge the Arrow memory that Comet allocates on the JVM side for a task to " +
+          "Spark's off-heap memory pool, as a memory consumer of that task. This never fails an " +
+          "allocation, but it does leave Comet's native operators and Spark's other consumers " +
+          "correspondingly less of the pool, so they may spill sooner. Arrow memory that is " +
+          "handed to Comet's native code, or received from it, is not charged here, because it " +
+          "is native's to account for. This is an executor setting, read when an executor " +
+          "first allocates Arrow memory for a task, so it must be set when the application is " +
+          s"submitted. Set to false to stop charging these allocations. $TUNING_GUIDE.")
+      .booleanConf
+      .createWithDefault(true)
+
   val COMET_SHUFFLE_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.shuffle.enabled")
       .withAlternative(s"$COMET_EXEC_CONFIG_PREFIX.shuffle.enabled")
@@ -925,21 +940,6 @@ object CometConf extends ShimCometConf {
           s"greedy_unified pool ignores it. $TUNING_GUIDE.")
       .doubleConf
       .createWithDefault(1.0)
-
-  val COMET_ARROW_ALLOCATOR_ACCOUNTING_ENABLED: ConfigEntry[Boolean] =
-    conf("spark.comet.arrowAllocator.accounting.enabled")
-      .category(CATEGORY_TUNING)
-      .doc(
-        "Whether to charge the Arrow memory that Comet allocates on the JVM side for a task to " +
-          "Spark's off-heap memory pool, as a memory consumer of that task. This never fails an " +
-          "allocation, but it does leave Comet's native operators and Spark's other consumers " +
-          "correspondingly less of the pool, so they may spill sooner. Arrow memory that is " +
-          "handed to Comet's native code, or received from it, is not charged here, because it " +
-          "is native's to account for. This is an executor setting, read when an executor " +
-          "first allocates Arrow memory for a task, so it must be set when the application is " +
-          s"submitted. Set to false to stop charging these allocations. $TUNING_GUIDE.")
-      .booleanConf
-      .createWithDefault(true)
 
   val COMET_NATIVE_LOAD_REQUIRED: ConfigEntry[Boolean] = conf("spark.comet.nativeLoadRequired")
     .category(CATEGORY_EXEC)

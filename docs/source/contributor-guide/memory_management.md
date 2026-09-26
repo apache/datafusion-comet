@@ -117,7 +117,7 @@ reserves what the child owns from the off-heap execution pool in whole 1 MiB blo
 therefore appear in `showMemoryUsage` and are arbitrated against Spark's other off-heap consumers,
 Comet's native pool among them. The limit is still `Long.MaxValue`, because the listener reports
 without enforcing, so an allocation here cannot fail. Set
-`spark.comet.arrowAllocator.accounting.enabled=false` to stop charging them, in which case
+`spark.comet.memory.jvmArrowAccounting.enabled=false` to stop charging them, in which case
 `forCurrentTask()` returns the root. It also returns the root in on-heap mode, and off a task, as
 for broadcast coalescing on the driver or for a reader built on a native thread that is pulling a
 stream.

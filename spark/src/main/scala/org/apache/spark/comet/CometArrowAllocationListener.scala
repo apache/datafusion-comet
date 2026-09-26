@@ -284,7 +284,7 @@ object CometArrowAllocationListener extends Logging {
       logWarning(
         s"Spark granted $granted of $requested bytes requested for JVM Arrow allocations. " +
           "The allocation proceeds regardless, so this is a reporting gap rather than a failure. " +
-          s"Set ${CometConf.COMET_ARROW_ALLOCATOR_ACCOUNTING_ENABLED.key}=false to stop " +
+          s"Set ${CometConf.COMET_MEMORY_JVM_ARROW_ACCOUNTING_ENABLED.key}=false to stop " +
           "reporting these allocations to Spark.")
     }
   }
@@ -295,7 +295,7 @@ object CometArrowAllocationListener extends Logging {
         "Failed to report a JVM Arrow allocation to Spark's memory manager. The allocation " +
           "itself is unaffected, so this is a reporting gap rather than a failure, but Spark's " +
           "view of these bytes will be short until the task ends. " +
-          s"Set ${CometConf.COMET_ARROW_ALLOCATOR_ACCOUNTING_ENABLED.key}=false to stop " +
+          s"Set ${CometConf.COMET_MEMORY_JVM_ARROW_ACCOUNTING_ENABLED.key}=false to stop " +
           "reporting these allocations to Spark.",
         e)
     }
