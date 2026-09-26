@@ -21,6 +21,7 @@ package org.apache.comet.serde.operator
 
 import org.apache.hadoop.conf.Configuration
 import org.apache.hadoop.fs.Path
+import org.apache.spark.SPARK_VERSION_SHORT
 import org.apache.spark.sql.catalyst.util.CaseInsensitiveMap
 import org.apache.spark.sql.comet.{CometNativeExec, CometWriteFilesExec}
 import org.apache.spark.sql.execution.datasources.WriteFilesExec
@@ -102,6 +103,10 @@ object CometWriteFiles extends CometOperatorSerde[WriteFilesExec] {
       return Unsupported(Some(s"Unsupported compression codec: $codec"))
     }
 
+    NativeWriteUtils
+      .legacyDatetimeRebaseWriteReason(op.child.output)
+      .foreach(reason => return Unsupported(Some(reason)))
+
     Incompatible(Some("Parquet write support is highly experimental"))
   }
 
@@ -135,6 +140,7 @@ object CometWriteFiles extends CometOperatorSerde[WriteFilesExec] {
     val writerOpBuilder = OperatorOuterClass.ParquetWriter
       .newBuilder()
       .setCompression(codec)
+      .setSparkVersion(SPARK_VERSION_SHORT)
 
     // getSupportLevel already declined the write if the tag is absent, so this cannot be empty.
     outputPathOf(op).foreach { outputPath =>
