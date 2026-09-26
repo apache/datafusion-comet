@@ -1572,4 +1572,132 @@ class CometJoinSuite extends CometTestBase {
       }
     }
   }
+
+  test("ExistenceJoin via BroadcastHashJoin (EXISTS combined with OR)") {
+    withSQLConf(
+      CometConf.COMET_EXEC_EXISTENCE_JOIN_ENABLED.key -> "true",
+      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "10MB",
+      SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "10MB") {
+      withParquetTable((0 until 100).map(i => (i, if (i % 3 == 0) "US" else "EU")), "tbl_a") {
+        withParquetTable((0 until 30).map(i => (i, i + 1)), "tbl_b") {
+          val df = sql("SELECT * FROM tbl_a a " +
+            "WHERE a._2 = 'US' OR EXISTS (SELECT /*+ BROADCAST(b) */ 1 FROM tbl_b b WHERE b._1 = a._1)")
+          checkSparkAnswerAndOperator(
+            df,
+            Seq(classOf[CometBroadcastExchangeExec], classOf[CometBroadcastHashJoinExec]))
+        }
+      }
+    }
+  }
+
+  test("ExistenceJoin via ShuffledHashJoin (EXISTS combined with OR)") {
+    withSQLConf(
+      CometConf.COMET_EXEC_EXISTENCE_JOIN_ENABLED.key -> "true",
+      SQLConf.PREFER_SORTMERGEJOIN.key -> "false",
+      "spark.sql.join.forceApplyShuffledHashJoin" -> "true",
+      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+      SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
+      withParquetTable((0 until 100).map(i => (i, if (i % 3 == 0) "US" else "EU")), "tbl_a") {
+        withParquetTable((0 until 30).map(i => (i, i + 1)), "tbl_b") {
+          val df = sql(
+            "SELECT * FROM tbl_a a " +
+              "WHERE a._2 = 'US' OR EXISTS (SELECT 1 FROM tbl_b b WHERE b._1 = a._1)")
+          checkSparkAnswerAndOperator(df, Seq(classOf[CometHashJoinExec]))
+        }
+      }
+    }
+  }
+
+  test("ExistenceJoin via SortMergeJoin falls back to Spark") {
+    // Existence SMJ is not executed natively (DataFusion 55.1.0 BitwiseSortMergeJoin buffers
+    // output before emitting, risking OOM), so it falls back to Spark; verify result parity.
+    withSQLConf(
+      CometConf.COMET_EXEC_EXISTENCE_JOIN_ENABLED.key -> "true",
+      SQLConf.PREFER_SORTMERGEJOIN.key -> "true",
+      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+      SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
+      withParquetTable((0 until 100).map(i => (i, if (i % 3 == 0) "US" else "EU")), "tbl_a") {
+        withParquetTable((0 until 30).map(i => (i, i + 1)), "tbl_b") {
+          val df = sql(
+            "SELECT * FROM tbl_a a " +
+              "WHERE a._2 = 'US' OR EXISTS (SELECT 1 FROM tbl_b b WHERE b._1 = a._1)")
+          checkSparkAnswer(df)
+        }
+      }
+    }
+  }
+
+  test("ExistenceJoin with residual condition falls back to Spark") {
+    // A non-equi residual predicate is evaluated over the whole candidate batch by DataFusion's
+    // LeftMark join (no first-match short-circuit), so Comet keeps it on Spark; verify parity.
+    withSQLConf(
+      CometConf.COMET_EXEC_EXISTENCE_JOIN_ENABLED.key -> "true",
+      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "10MB",
+      SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "10MB") {
+      withParquetTable((0 until 100).map(i => (i, if (i % 3 == 0) "US" else "EU")), "tbl_a") {
+        withParquetTable((0 until 30).map(i => (i, i + 1)), "tbl_b") {
+          val df = sql(
+            "SELECT * FROM tbl_a a WHERE a._2 = 'US' OR EXISTS " +
+              "(SELECT /*+ BROADCAST(b) */ 1 FROM tbl_b b WHERE b._1 = a._1 AND b._2 > a._1)")
+          checkSparkAnswer(df)
+        }
+      }
+    }
+  }
+
+  test("ExistenceJoin with computed join key falls back to Spark") {
+    // A computed join key (not a bare column reference) is evaluated eagerly over the batch by
+    // the native join, so Comet keeps it on Spark; verify parity.
+    withSQLConf(
+      CometConf.COMET_EXEC_EXISTENCE_JOIN_ENABLED.key -> "true",
+      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "10MB",
+      SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "10MB") {
+      withParquetTable((0 until 100).map(i => (i, if (i % 3 == 0) "US" else "EU")), "tbl_a") {
+        withParquetTable((0 until 30).map(i => (i, i + 1)), "tbl_b") {
+          val df = sql(
+            "SELECT * FROM tbl_a a WHERE a._2 = 'US' OR EXISTS " +
+              "(SELECT /*+ BROADCAST(b) */ 1 FROM tbl_b b WHERE b._1 = a._1 + 1)")
+          checkSparkAnswer(df)
+        }
+      }
+    }
+  }
+
+  test("ExistenceJoin with duplicate build keys runs natively (markers not multiplied)") {
+    withSQLConf(
+      CometConf.COMET_EXEC_EXISTENCE_JOIN_ENABLED.key -> "true",
+      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "10MB",
+      SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "10MB") {
+      withParquetTable((0 until 100).map(i => (i, if (i % 3 == 0) "US" else "EU")), "tbl_a") {
+        // Build side repeats keys 0..4 many times; the existence marker must stay "at least one
+        // match" and must not multiply matching probe rows.
+        withParquetTable((0 until 30).map(i => (i % 5, i)), "tbl_b") {
+          val df = sql(
+            "SELECT * FROM tbl_a a WHERE a._2 = 'US' OR EXISTS " +
+              "(SELECT /*+ BROADCAST(b) */ 1 FROM tbl_b b WHERE b._1 = a._1)")
+          checkSparkAnswerAndOperator(
+            df,
+            Seq(classOf[CometBroadcastExchangeExec], classOf[CometBroadcastHashJoinExec]))
+        }
+      }
+    }
+  }
+
+  test("ExistenceJoin with NOT EXISTS combined with OR runs natively") {
+    withSQLConf(
+      CometConf.COMET_EXEC_EXISTENCE_JOIN_ENABLED.key -> "true",
+      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "10MB",
+      SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "10MB") {
+      withParquetTable((0 until 100).map(i => (i, if (i % 3 == 0) "US" else "EU")), "tbl_a") {
+        withParquetTable((0 until 30).map(i => (i, i + 1)), "tbl_b") {
+          val df = sql(
+            "SELECT * FROM tbl_a a WHERE a._2 = 'US' OR NOT EXISTS " +
+              "(SELECT /*+ BROADCAST(b) */ 1 FROM tbl_b b WHERE b._1 = a._1)")
+          checkSparkAnswerAndOperator(
+            df,
+            Seq(classOf[CometBroadcastExchangeExec], classOf[CometBroadcastHashJoinExec]))
+        }
+      }
+    }
+  }
 }

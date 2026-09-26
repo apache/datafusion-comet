@@ -30,7 +30,7 @@ import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.internal.Logging
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
-import org.apache.spark.sql.catalyst.expressions.{Ascending, Attribute, AttributeSeq, AttributeSet, CodegenObjectFactoryMode, Expression, ExpressionSet, Generator, LeafExpression, NamedExpression, SortOrder, XXH64}
+import org.apache.spark.sql.catalyst.expressions.{Ascending, Attribute, AttributeSeq, AttributeSet, CodegenObjectFactoryMode, Expression, ExpressionSet, Generator, LeafExpression, Literal, NamedExpression, SortOrder, XXH64}
 import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, AggregateMode, CollectList, CollectSet, Final, ImperativeAggregate, Mode, Partial, PartialMerge, Percentile, Sum}
 import org.apache.spark.sql.catalyst.expressions.codegen.CodegenFallback
 import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, BuildSide}
@@ -2495,6 +2495,17 @@ trait CometHashJoin {
         case FullOuter => JoinType.FullOuter
         case LeftSemi => JoinType.LeftSemi
         case LeftAnti => JoinType.LeftAnti
+        // Native only for equi-join keys that are bare column refs / literals: Spark short-
+        // circuits on first match and can skip key evaluation, but DF evaluates all keys eagerly
+        // over the batch, so a computed key (e.g. a throwing cast) could error on skipped rows.
+        case ExistenceJoin(_)
+            if CometConf.COMET_EXEC_EXISTENCE_JOIN_ENABLED.get(join.conf) &&
+              join.condition.isEmpty &&
+              (join.leftKeys ++ join.rightKeys).forall {
+                case _: Attribute | _: Literal => true
+                case _ => false
+              } =>
+          JoinType.Existence
         case _ =>
           // Spark doesn't support other join types
           withFallbackReason(join, s"Unsupported join type ${join.joinType}")
@@ -2765,6 +2776,11 @@ case class CometHashJoinExec(
   override def withNewChildrenInternal(newLeft: SparkPlan, newRight: SparkPlan): SparkPlan =
     this.copy(left = newLeft, right = newRight)
 
+  override def producedAttributes: AttributeSet = joinType match {
+    case ExistenceJoin(exists) => AttributeSet(exists)
+    case _ => AttributeSet.empty
+  }
+
   override def stringArgs: Iterator[Any] =
     Iterator(leftKeys, rightKeys, joinType, buildSide, condition, left, right)
 
@@ -2914,6 +2930,11 @@ case class CometBroadcastHashJoinExec(
   override def withNewChildrenInternal(newLeft: SparkPlan, newRight: SparkPlan): SparkPlan =
     this.copy(left = newLeft, right = newRight)
 
+  override def producedAttributes: AttributeSet = joinType match {
+    case ExistenceJoin(exists) => AttributeSet(exists)
+    case _ => AttributeSet.empty
+  }
+
   override def stringArgs: Iterator[Any] =
     Iterator(leftKeys, rightKeys, joinType, condition, buildSide, left, right)
 
@@ -3010,6 +3031,8 @@ object CometSortMergeJoinExec extends CometOperatorSerde[SortMergeJoinExec] {
         case FullOuter => JoinType.FullOuter
         case LeftSemi => JoinType.LeftSemi
         case LeftAnti => JoinType.LeftAnti
+        // Existence SMJ falls back to Spark: DF 55.1.0's BitwiseSortMergeJoin buffers output
+        // before emitting, risking OOM on large equal-key groups.
         case _ =>
           // Spark doesn't support other join types
           withFallbackReason(join, s"Unsupported join type ${join.joinType}")
@@ -3117,6 +3140,11 @@ case class CometSortMergeJoinExec(
 
   override def withNewChildrenInternal(newLeft: SparkPlan, newRight: SparkPlan): SparkPlan =
     this.copy(left = newLeft, right = newRight)
+
+  override def producedAttributes: AttributeSet = joinType match {
+    case ExistenceJoin(exists) => AttributeSet(exists)
+    case _ => AttributeSet.empty
+  }
 
   override def stringArgs: Iterator[Any] =
     Iterator(leftKeys, rightKeys, joinType, condition, left, right)
