@@ -611,6 +611,15 @@ object CometExecIterator extends Logging {
       builder.putEntries(entry.key, entry.get(SQLConf.get).toString)
     }
 
+    // The native map constructors (map_from_arrays, map_from_entries, str_to_map) resolve
+    // duplicate keys with this policy, which the native side reads as
+    // `datafusion.spark.map_key_dedup_policy`. Read here, when the native plan for a task is
+    // built, which is where Spark's `ArrayBasedMapBuilder` reads it for a projection outside
+    // whole-stage codegen. See the note on `map_from_arrays` in the map_funcs expression audit.
+    builder.putEntries(
+      SQLConf.MAP_KEY_DEDUP_POLICY.key,
+      SQLConf.get.getConf(SQLConf.MAP_KEY_DEDUP_POLICY).toString)
+
     builder.build().toByteArray
   }
 
