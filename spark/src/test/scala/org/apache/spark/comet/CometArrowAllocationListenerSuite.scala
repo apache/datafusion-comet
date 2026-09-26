@@ -26,7 +26,7 @@ import java.util.concurrent.atomic.{AtomicLong, AtomicReference}
 import org.scalatest.funsuite.AnyFunSuite
 
 import org.apache.arrow.c.Data
-import org.apache.arrow.memory.BufferAllocator
+import org.apache.arrow.memory.{BufferAllocator, OutOfMemoryException}
 import org.apache.arrow.vector.{FieldVector, IntVector, VectorSchemaRoot}
 import org.apache.spark.{SparkConf, TaskContext, TaskContextImpl}
 import org.apache.spark.executor.TaskMetrics
@@ -35,15 +35,15 @@ import org.apache.spark.sql.comet.execution.arrow.CometArrowStream
 import org.apache.spark.sql.types.{IntegerType, StructField, StructType}
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
-import org.apache.comet.{CometArrowAllocator, CometArrowImportAllocator}
+import org.apache.comet.{CometArrowAllocator, CometArrowImportAllocator, CometConf}
 import org.apache.comet.vector.NativeUtil
 
 /**
- * Tests that JVM Arrow allocations are reported to Spark, that they are reported against the task
- * that made them rather than whichever task happens to be on the releasing thread, that what is
- * charged follows Arrow's ownership as buffers move between allocators, and, just as importantly,
- * that the paths where they cannot be reported fail quietly rather than throwing. Arrow
- * allocation on these paths cannot fail today and this listener must not change that.
+ * Tests that JVM Arrow allocations are charged to Spark, that they are charged to the task that
+ * made them rather than whichever task happens to be on the releasing thread, that what is
+ * charged follows Arrow's ownership as buffers move between allocators, and that an allocation
+ * Spark cannot cover is refused before Arrow makes it, leaving no buffer, reservation or grant
+ * behind.
  */
 class CometArrowAllocationListenerSuite extends AnyFunSuite {
 
@@ -377,63 +377,119 @@ class CometArrowAllocationListenerSuite extends AnyFunSuite {
   }
 
   // ---------------------------------------------------------------------------------------------
-  // Failure containment: Spark's acquisition is fallible, Arrow's callbacks are not allowed to be.
+  // Refusal. An allocation Spark cannot cover is refused in onPreAllocation, before Arrow has made
+  // it, and nothing is left behind: no buffer, no reservation, and no grant charged to the task.
   // ---------------------------------------------------------------------------------------------
+
+  test("an allocation the pool cannot cover is refused, and one that fits still succeeds") {
+    // Two blocks of budget, one of them held by a consumer that cannot give anything back.
+    withTask(pool = blockSize * 2) { task =>
+      val other = new PlainConsumer(task.taskMemoryManager)
+      assert(other.take(blockSize) == blockSize)
+
+      val allocator = CometTaskArrowAllocator.forCurrentTask()
+      val refused = intercept[OutOfMemoryException](allocator.buffer(blockSize * 2))
+      assert(refused.getMessage.contains(CometConf.COMET_MEMORY_JVM_ARROW_ACCOUNTING_ENABLED.key))
+      // Spark granted the block it had before coming up short. That partial grant is handed back
+      // rather than kept, and Arrow never allocated anything.
+      assert(allocator.getAllocatedMemory == 0L)
+      assert(reservedFor(task) == 0L)
+      assert(task.taskMemoryManager.getMemoryConsumptionForThisTask == blockSize)
+
+      val buf = allocator.buffer(blockSize)
+      try {
+        assert(reservedFor(task) == blockSize)
+      } finally {
+        buf.close()
+      }
+    }
+  }
+
+  test("a grant short of a block is accepted when it covers the allocation") {
+    // Reservations are requested in whole blocks to save lock traffic, but a pool with less than a
+    // block left must still admit an allocation that fits in what is left.
+    val left = 64L * 1024
+    withTask(pool = blockSize) { task =>
+      val other = new PlainConsumer(task.taskMemoryManager)
+      assert(other.take(blockSize - left) == blockSize - left)
+
+      val allocator = CometTaskArrowAllocator.forCurrentTask()
+      val buf = allocator.buffer(1024L)
+      try {
+        assert(reservedFor(task) == left)
+        // What does not fit in what is left is still refused.
+        intercept[OutOfMemoryException](allocator.buffer(left))
+        assert(reservedFor(task) == left)
+      } finally {
+        buf.close()
+      }
+      // A reservation that is not a whole block is returned once nothing needs it.
+      assert(reservedFor(task) == 0L)
+    }
+  }
+
+  test("an allocation still in flight counts against the reservation") {
+    withTask(pool = blockSize) { task =>
+      val listener = new CometArrowAllocationListener(task.taskMemoryManager)
+      val owner = new StubOwner(listener)
+
+      // Admitted, but Arrow has not reported it yet...
+      listener.onPreAllocation(blockSize)
+      assert(listener.reservedBytes == blockSize)
+      // ...so a second allocation racing it on another thread cannot be admitted against the same
+      // block.
+      intercept[OutOfMemoryException](listener.onPreAllocation(blockSize))
+      assert(listener.reservedBytes == blockSize)
+
+      owner.made(blockSize)
+      owner.release(blockSize)
+      assert(listener.reservedBytes == 0L)
+      listener.taskCompleted()
+    }
+  }
 
   for ((label, failure) <- Seq(
       "an I/O failure" -> new IOException("spill failed"),
-      "an interrupt" -> new InterruptedIOException("task killed"))) {
-    test(s"$label while spilling does not fail or leak the Arrow allocation") {
-      // Exactly one block of budget, already taken by a consumer that refuses to spill, so the
-      // listener's acquisition has to go through Spark's spill path and comes back throwing.
+      "an interrupted spill" -> new InterruptedIOException("task killed"))) {
+    test(s"$label while acquiring refuses the allocation and leaks nothing") {
+      // Exactly one block of budget, already taken by a consumer whose spill throws, so the
+      // acquisition has to go through Spark's spill path and comes back throwing.
       withTask(pool = blockSize) { task =>
         val hostile = new FailingSpillConsumer(task.taskMemoryManager, failure)
         assert(hostile.take(blockSize) == blockSize)
 
         val allocator = CometTaskArrowAllocator.forCurrentTask()
-        // `BaseAllocator.buffer` marks the allocation successful before calling `onAllocation`, so
-        // throwing from the listener would lose this buffer: Arrow neither returns nor frees it.
-        val buf = allocator.buffer(blockSize)
-        try {
-          assert(allocator.getAllocatedMemory == blockSize)
-          // Nothing was reserved, which is what says the acquisition really did go down the spill
-          // path and throw rather than quietly succeeding and making this test vacuous.
-          assert(reservedFor(task) == 0L)
-        } finally {
-          buf.close()
-        }
-        // Zero here is the leak check: a buffer Arrow created but never handed back would still
-        // be counted.
+        val refused = intercept[OutOfMemoryException](allocator.buffer(blockSize))
+        // The memory manager's failure is the cause, which is what says the acquisition really
+        // went down the spill path rather than being refused for want of memory alone.
+        assert(refused.getCause != null)
         assert(allocator.getAllocatedMemory == 0L)
+        assert(reservedFor(task) == 0L)
+        assert(task.taskMemoryManager.getMemoryConsumptionForThisTask == blockSize)
       }
     }
   }
 
-  test("an interrupt while spilling is re-armed rather than thrown or swallowed") {
+  test("an interrupt while acquiring refuses the allocation and leaves the flag set") {
     // Spark's execution pool parks in `lock.wait()` when a task is below its fair share, so a task
-    // kill raises a plain InterruptedException out of `acquireExecutionMemory`. `NonFatal` excludes
-    // it, so before this it escaped `onAllocation` and Arrow lost the buffer it had just created.
-    // TestMemoryManager never parks, so the interrupt is injected through a failing spill instead.
+    // kill raises a plain InterruptedException out of `acquireExecutionMemory`. TestMemoryManager
+    // never parks, so the interrupt is injected through a failing spill instead.
     withTask(pool = blockSize) { task =>
       val hostile =
         new FailingSpillConsumer(task.taskMemoryManager, new InterruptedException("task killed"))
       assert(hostile.take(blockSize) == blockSize)
 
       val allocator = CometTaskArrowAllocator.forCurrentTask()
-      val buf = allocator.buffer(blockSize)
-      try {
-        assert(allocator.getAllocatedMemory == blockSize)
-        assert(reservedFor(task) == 0L)
-      } finally {
-        buf.close()
-      }
+      val refused = intercept[OutOfMemoryException](allocator.buffer(blockSize))
+      assert(refused.getCause.isInstanceOf[InterruptedException])
       assert(allocator.getAllocatedMemory == 0L)
+      assert(reservedFor(task) == 0L)
       // Cleared here as well as asserted, so the flag does not leak into the next test.
       assert(Thread.interrupted(), "the interrupt was swallowed instead of being re-armed")
     }
   }
 
-  test("a partial grant lost to a failing spill is adopted rather than stranded") {
+  test("a partial grant lost to a failing spill is released rather than stranded") {
     // One block already taken, one still in the pool, and a two-block request: Spark hands over the
     // block it has and only then asks the other consumer to spill, which throws. It never reports
     // the block it already took, so nothing would release it before the task ended.
@@ -443,26 +499,20 @@ class CometArrowAllocationListenerSuite extends AnyFunSuite {
       assert(hostile.take(blockSize) == blockSize)
 
       val allocator = CometTaskArrowAllocator.forCurrentTask()
-      val buf = allocator.buffer(blockSize * 2)
-      try {
-        assert(reservedFor(task) == blockSize)
-        assert(task.taskMemoryManager.getMemoryConsumptionForThisTask == blockSize * 2)
-      } finally {
-        buf.close()
-      }
+      intercept[OutOfMemoryException](allocator.buffer(blockSize * 2))
       assert(reservedFor(task) == 0L)
-      // Only the other consumer's block is left. Without adopting the orphan this would still be
-      // two blocks, with one of them charged to the task and owned by nobody.
+      // Only the other consumer's block is left. Without releasing the orphan this would be two
+      // blocks, one of them charged to the task and owned by nobody.
       assert(task.taskMemoryManager.getMemoryConsumptionForThisTask == blockSize)
     }
   }
 
-  test("a concurrent acquisition is not adopted as this listener's lost grant") {
+  test("a concurrent acquisition is not released as this listener's lost grant") {
     // The orphan is measured as a change in the task's total consumption, which Spark reports per
     // task rather than per consumer. If another consumer could acquire between the snapshot taken
-    // before the acquisition and the acquisition itself, its bytes would be adopted here and handed
-    // back when this listener next shrank, leaving two consumers holding the same bytes between
-    // them. Both snapshots and the call therefore run as one transaction under the
+    // before the acquisition and the acquisition itself, its bytes would be counted as the orphan
+    // and released here, leaving that consumer holding bytes the pool no longer charges for. Both
+    // snapshots and the call therefore run as one transaction under the
     // TaskMemoryManager monitor. This forces the interleaving that transaction exists to exclude.
     val spare = 1024L
     val task = newTask(pool = blockSize * 2 + spare)
@@ -489,22 +539,18 @@ class CometArrowAllocationListenerSuite extends AnyFunSuite {
       })
 
       val allocator = CometTaskArrowAllocator.forCurrentTask()
-      val buf = allocator.buffer(blockSize * 2)
-      try {
-        interloperThread.join(30000L)
-        assert(
-          !interloperThread.isAlive,
-          "the interloper never finished; the transaction deadlocked")
-        // Nothing is claimed twice: what the listener adopted has to fit alongside what the other
-        // two consumers hold. Without the transaction the listener adopts the interloper's bytes on
-        // top of its own grant, and this sum comes out over what the task actually holds.
-        assert(
-          listenerFor(task).reservedBytes + hostile.getUsed + interloper.getUsed ==
-            task.taskMemoryManager.getMemoryConsumptionForThisTask,
-          "the listener adopted bytes belonging to another consumer")
-      } finally {
-        buf.close()
-      }
+      intercept[OutOfMemoryException](allocator.buffer(blockSize * 2))
+      interloperThread.join(30000L)
+      assert(
+        !interloperThread.isAlive,
+        "the interloper never finished; the transaction deadlocked")
+      // Every byte the task is charged for belongs to someone. Without the transaction the
+      // listener counts the interloper's bytes as its own orphan and releases them, and the task
+      // comes out charged for less than the other two consumers hold.
+      assert(
+        listenerFor(task).reservedBytes + hostile.getUsed + interloper.getUsed ==
+          task.taskMemoryManager.getMemoryConsumptionForThisTask,
+        "the listener released bytes belonging to another consumer")
     }
   }
 
@@ -581,7 +627,14 @@ class CometArrowAllocationListenerSuite extends AnyFunSuite {
     private val owned = new AtomicLong(0L)
     listener.bind(() => owned.get)
 
+    /** What `BaseAllocator.buffer` does around a successful allocation. */
     def allocate(bytes: Long): Unit = {
+      listener.onPreAllocation(bytes)
+      made(bytes)
+    }
+
+    /** The second half of an allocation that `onPreAllocation` has already admitted. */
+    def made(bytes: Long): Unit = {
       owned.addAndGet(bytes)
       listener.onAllocation(bytes)
     }

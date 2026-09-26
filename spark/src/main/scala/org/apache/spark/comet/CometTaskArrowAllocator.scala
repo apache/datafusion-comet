@@ -34,13 +34,14 @@ import org.apache.comet.{CometArrowAllocator, CometConf}
  * Hands out the Arrow allocator that JVM-owned allocations should use, one per Spark task.
  *
  * Each task gets a child of `CometArrowAllocator` carrying its own
- * [[CometArrowAllocationListener]], so what that allocator owns is reported to the task's
- * `TaskMemoryManager`. The allocator, not the calling thread, is what identifies the owner:
- * Arrow's `AllocationListener` is given only a size, and a buffer is released on whichever thread
- * drops the last reference, which for anything that reaches native over the C Data Interface is a
- * Comet Tokio worker with no task context installed. Child allocators cut from the returned
- * allocator inherit its listener and roll their bytes up into it, so the paths that make their
- * own children are covered too.
+ * [[CometArrowAllocationListener]], so what that allocator owns is charged to the task's
+ * `TaskMemoryManager`, and an allocation Spark cannot cover fails with an `OutOfMemoryException`
+ * from `buffer`. The allocator, not the calling thread, is what identifies the owner: Arrow's
+ * `AllocationListener` is given only a size, and a buffer is released on whichever thread drops
+ * the last reference, which for anything that reaches native over the C Data Interface is a Comet
+ * Tokio worker with no task context installed. Child allocators cut from the returned allocator
+ * inherit its listener and roll their bytes up into it, so the paths that make their own children
+ * are covered too.
  *
  * '''This is for buffers the JVM owns.''' Buffers allocated to be handed straight to native -- by
  * `NativeUtil`, for the JVM UDF result, and in `CometArrowStream.stream` -- come from the

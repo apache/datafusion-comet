@@ -379,9 +379,10 @@ object CometConf extends ShimCometConf {
       .category(CATEGORY_TUNING)
       .doc(
         "Whether to charge the Arrow memory that Comet allocates on the JVM side for a task to " +
-          "Spark's off-heap memory pool, as a memory consumer of that task. This never fails an " +
-          "allocation, but it does leave Comet's native operators and Spark's other consumers " +
-          "correspondingly less of the pool, so they may spill sooner. Arrow memory that is " +
+          "Spark's off-heap memory pool, as a memory consumer of that task. An allocation the " +
+          "pool cannot cover fails the task that makes it, and the charge leaves Comet's native " +
+          "operators and Spark's other consumers correspondingly less of the pool, so they may " +
+          "spill sooner. Arrow memory that is " +
           "handed to Comet's native code, or received from it, is not charged here, because it " +
           "is native's to account for. This is an executor setting, read when an executor " +
           "first allocates Arrow memory for a task, so it must be set when the application is " +

@@ -168,14 +168,17 @@ Two allocators sit outside Comet's pool entirely, and they are easy to confuse:
   budget: FFI stream export, `NativeUtil`, the JVM UDF result, and the import path's
   `CometArrowImportAllocator`. JVM-owned allocations inside a task go through
   `CometTaskArrowAllocator.forCurrentTask()` instead, a per-task child whose
-  `CometArrowAllocationListener` charges what it owns to that task's `TaskMemoryManager`. A PR that
+  `CometArrowAllocationListener` charges what it owns to that task's `TaskMemoryManager` and refuses
+  an allocation Spark cannot cover, so it fails with Arrow's `OutOfMemoryException`. A PR that
   allocates from the root inside a task, or makes a root-backed allocator hold more, is adding
   uncounted container RSS. Say so even if the volume is small. A PR that allocates something native
   will retain from the task allocator is charging it twice, unless the batch reaches native through
-  `CometArrowStream`, whose reader moves the charge off the task allocator. Check that the listener
-  stays without a lock in `getUsed` and `spill`, and that it sizes the reservation from what the
-  allocator owns rather than from a sum of its callbacks, because an ownership transfer between
-  allocators calls no listener.
+  `CometArrowStream`, whose reader moves the charge off the task allocator. A new call site on the
+  task allocator also has to cope with that refusal: nothing spills these buffers, so it fails the
+  task. Check that the listener stays without a lock in `getUsed` and `spill`, that only
+  `onPreAllocation` throws, and that it sizes the reservation from what the allocator owns rather
+  than from a sum of its callbacks, because an ownership transfer between allocators calls no
+  listener.
 - **JVM shuffle pages** go through `CometShuffleMemoryAllocator.getInstance`, which returns
   `CometUnifiedShuffleMemoryAllocator`, an ordinary Spark `MemoryConsumer` drawing from
   `spark.memory.offHeap.size`. These **are** arbitrated by Spark against its other consumers. Do

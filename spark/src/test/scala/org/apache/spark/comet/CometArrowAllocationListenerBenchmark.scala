@@ -29,7 +29,7 @@ import org.apache.spark.executor.TaskMetrics
 import org.apache.spark.memory.{MemoryConsumer, MemoryManager, MemoryMode, TaskMemoryManager, TestMemoryManager}
 
 /**
- * Measures what reporting JVM Arrow allocations to Spark costs, since it is on by default.
+ * Measures what charging JVM Arrow allocations to Spark costs, since it is on by default.
  *
  * Each case runs the same allocate/release loop twice: once against a plain `RootAllocator`,
  * which is what Comet did before [[CometArrowAllocationListener]] existed and what
@@ -116,23 +116,25 @@ object CometArrowAllocationListenerBenchmark extends BenchmarkBase {
 
     val root = new RootAllocator(Long.MaxValue)
     try {
-      // Two blocks of pool for both arms, with the pressure thread running throughout. In the
-      // unaccounted arm only that thread touches the pool, which is the point: the delta is what
-      // the Arrow side adds once it competes for the same budget.
-      withTaskAllocator(poolBytes = blockSize * 2) { (accounted, memory) =>
-        withNativePressure(memory) {
-          benchmark.addCase("not accounted") { _ =>
-            churn(root, blockSize, buffersPerIteration)
-          }
-          benchmark.addCase("accounted") { _ =>
-            churn(accounted, blockSize, buffersPerIteration)
-          }
-          benchmark.run()
+      // Room for the whole set plus the pressure thread's block, which runs throughout. A smaller
+      // pool would refuse the allocations rather than slow them down, so what this measures is
+      // contention for the pool's lock rather than for its capacity. In the unaccounted arm only
+      // the pressure thread touches the pool: the delta is what the Arrow side adds by competing.
+      withTaskAllocator(poolBytes = blockSize * (buffersPerIteration + 1)) {
+        (accounted, memory) =>
+          withNativePressure(memory) {
+            benchmark.addCase("not accounted") { _ =>
+              churn(root, blockSize, buffersPerIteration)
+            }
+            benchmark.addCase("accounted") { _ =>
+              churn(accounted, blockSize, buffersPerIteration)
+            }
+            benchmark.run()
 
-          memory.reset()
-          churn(accounted, blockSize, buffersPerIteration)
-          writeLine(s"  accounted: ${memory.summary(buffersPerIteration)} per iteration")
-        }
+            memory.reset()
+            churn(accounted, blockSize, buffersPerIteration)
+            writeLine(s"  accounted: ${memory.summary(buffersPerIteration)} per iteration")
+          }
       }
     } finally {
       root.close()

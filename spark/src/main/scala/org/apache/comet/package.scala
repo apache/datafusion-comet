@@ -39,8 +39,8 @@ package object comet {
    * buffers through Comet's pool, which charges the same Spark task, so reporting them here as
    * well would reserve the same memory twice. JVM-owned allocations should go through
    * `CometTaskArrowAllocator.forCurrentTask()` instead, which cuts a per-task child whose
-   * listener reports what that child owns, and which hands back this allocator when there is no
-   * task.
+   * listener charges what that child owns to Spark and refuses an allocation Spark cannot cover,
+   * and which hands back this allocator when there is no task.
    */
   val CometArrowAllocator = new RootAllocator(Long.MaxValue)
 

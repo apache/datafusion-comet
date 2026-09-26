@@ -81,7 +81,7 @@ page:
 | Spark execution + storage (on-heap)      | JVM heap    | `spark.executor.memory` and the unified memory manager        | Yes               |
 | Spark Tungsten (off-heap)                | Off-heap    | `spark.memory.offHeap.size` via `TaskMemoryManager`           | Yes               |
 | Comet native (Rust global allocator)     | Native heap | `memory_limit` (see below), enforced only via the memory pool | Reservations only |
-| Comet JVM Arrow owned by a task          | Off-heap    | **Nothing**, but charged to `TaskMemoryManager`               | Yes               |
+| Comet JVM Arrow owned by a task          | Off-heap    | `spark.memory.offHeap.size` via `TaskMemoryManager`           | Yes               |
 | Comet JVM Arrow passed to or from native | Off-heap    | **Nothing**: a `RootAllocator(Long.MaxValue)`                 | No                |
 | Comet JVM shuffle pages                  | Off-heap    | `spark.memory.offHeap.size` via `TaskMemoryManager`           | Yes               |
 
@@ -108,15 +108,19 @@ pool over JNI. A native allocation therefore consumes the same accounting budget
 while occupying entirely different memory. Raising `spark.memory.offHeap.size` raises the ceiling
 for both at once, and raises the pod's memory request by the same amount.
 
-**Comet's JVM-side Arrow memory is charged to the task that owns it, but it is still unbounded.**
+**Comet's JVM-side Arrow memory is charged to the task that owns it, and bounded by the pool.**
 `CometArrowAllocator` (`spark/src/main/scala/org/apache/comet/package.scala`) is a single
 process-wide `new RootAllocator(Long.MaxValue)` with no allocation listener. JVM-owned allocations
 do not use it directly: `CometTaskArrowAllocator.forCurrentTask()` hands each task a child of it
 carrying its own `CometArrowAllocationListener`, a Spark `MemoryConsumer` for that task, which
 reserves what the child owns from the off-heap execution pool in whole 1 MiB blocks. Those bytes
 therefore appear in `showMemoryUsage` and are arbitrated against Spark's other off-heap consumers,
-Comet's native pool among them. The limit is still `Long.MaxValue`, because the listener reports
-without enforcing, so an allocation here cannot fail. Set
+Comet's native pool among them. The reservation is made before Arrow allocates, in
+`onPreAllocation`, the one `AllocationListener` callback Arrow allows to throw. If Spark cannot
+cover the allocation, any partial grant is handed back and the allocation is refused with Arrow's
+`OutOfMemoryException`. That is `try_grow` rather than `grow`: nothing is allocated that is not
+covered, and there is no overcommit. Nothing can spill these buffers, so a refusal fails the
+allocating task, the way a Spark consumer fails when it cannot acquire memory. Set
 `spark.comet.memory.jvmArrowAccounting.enabled=false` to stop charging them, in which case
 `forCurrentTask()` returns the root. It also returns the root in on-heap mode, and off a task, as
 for broadcast coalescing on the driver or for a reader built on a native thread that is pulling a
@@ -255,9 +259,9 @@ before asking other consumers to spill, so when a spill throws, the task has bee
 the call never returns. Nothing releases them until Spark's final task cleanup, so they are headroom
 nobody can use for the rest of the task. Any caller that swallows the exception has to reconcile
 that grant, and the only figure available for doing so is the task-wide one above.
-`CometArrowAllocationListener` adopts it as the change in that figure across the call, with both
+`CometArrowAllocationListener` measures it as the change in that figure across the call, with both
 reads and the call inside the `TaskMemoryManager` monitor so that no other consumer in the task can
-acquire in between.
+acquire in between, and releases it before refusing the allocation.
 
 **A consumer whose `spill` returns zero takes budget it can never give back.**
 `NativeMemoryConsumer.spill` returns `0`, as does `CometArrowAllocationListener.spill`, so Spark can
@@ -537,7 +541,7 @@ flowchart TB
       TUNG["Spark Tungsten off-heap<br>TaskMemoryManager"]
       SHUFP["Comet JVM shuffle pages<br>CometUnifiedShuffleMemoryAllocator"]
       NATRES["Comet native heap, reserved<br>operators that call try_grow<br>declared to Spark over JNI, never measured"]
-      ARROWT["Comet JVM Arrow owned by a task<br>CometTaskArrowAllocator, unbounded"]
+      ARROWT["Comet JVM Arrow owned by a task<br>CometTaskArrowAllocator, refused when the pool is short"]
     end
     subgraph NONE["accounted by nobody"]
       NATUND["Comet native heap, undeclared<br>kernels, array builders, decompression<br>Parquet metadata, object_store, tokio"]
@@ -549,13 +553,13 @@ flowchart TB
   end
 ```
 
-Spark's accounting covers the first group, though not in the same sense throughout it. The JVM
-heap, Tungsten pages and Comet's shuffle pages are allocated by JVM code that reports what it
-allocated, and a task's Arrow allocator reports what it owns after the fact, without being able to
-refuse an allocation. A native reservation is a number an operator declared before allocating:
-`try_grow` succeeds only once `CometTaskMemoryManager` has charged Spark's off-heap execution pool
-over JNI, so the budget really is spent, but nothing measured the bytes and the reservation is only
-a lower bound on them. The second group is outside every accounting layer.
+Spark's accounting covers the first group, though not in the same sense throughout it. The JVM heap,
+Tungsten pages and Comet's shuffle pages are allocated by JVM code that reports what it allocated,
+and a task's Arrow allocator reserves what an allocation needs before Arrow makes it, refusing the
+allocation when Spark cannot cover it. A native reservation is a number an operator declared before
+allocating: `try_grow` succeeds only once `CometTaskMemoryManager` has charged Spark's off-heap
+execution pool over JNI, so the budget really is spent, but nothing measured the bytes and the
+reservation is only a lower bound on them. The second group is outside every accounting layer.
 
 When the total crosses `memory.max`, the kernel OOM killer kills the process. The failure mode is
 significantly worse than a task-level OOM: every task running on that executor dies, every cached
@@ -589,10 +593,9 @@ much they matter:
   its container is still stopped only by the kill.
 - **The memory overhead is sized by hand.** The gap has to fit in `spark.executor.memoryOverhead`,
   and the memory usage log measures it, but nothing sizes the overhead from it.
-- **`CometArrowAllocator` is unbounded.** What a task's allocator owns is charged to Spark, but
-  nothing caps it: the listener reports without enforcing, and enforcing would mean failing
-  allocations on paths that cannot fail today. Arrow memory passed to or from native, and anything
-  allocated off a task, is not charged on the JVM side at all.
+- **`CometArrowAllocator` is bounded only for what a task owns.** A task's allocator is refused
+  what Spark cannot cover, but Arrow memory passed to or from native, and anything allocated off a
+  task, is charged nowhere on the JVM side, and the root itself has no limit.
 - **Buffer and reservation lifetimes are independent across the FFI boundary.** A batch can be
   resident on either side with no reservation covering it, because reservations are made and
   withdrawn by individual operators while the bytes outlive them.

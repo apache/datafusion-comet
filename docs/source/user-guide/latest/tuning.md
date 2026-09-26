@@ -117,10 +117,12 @@ fraction to each task separately, where Spark's own limit of an even share of th
 whenever more than one task is running, and the `greedy_unified` pool ignores it.
 
 Arrow memory that Comet allocates on the JVM side for a task, for example to read a cached table or to exchange
-batches with a Python worker, is charged to the same pool as a memory consumer of that task. Charging it never fails an allocation, but it
+batches with a Python worker, is charged to the same pool as a memory consumer of that task. An allocation the pool
+cannot cover fails the task that makes it, the way a Spark operator fails when it cannot acquire memory, and the charge
 leaves Comet's native operators and Spark's own consumers less of the pool, so they can spill sooner. Comet 1.1.0 and
 earlier did not charge this memory to the pool, so if you sized `spark.memory.offHeap.size` against one of those
-releases, check how often queries spill. Setting `spark.comet.memory.jvmArrowAccounting.enabled=false` stops charging
+releases, check how often queries spill, and raise it if tasks fail with `Unable to reserve ... for a JVM Arrow
+allocation`. Setting `spark.comet.memory.jvmArrowAccounting.enabled=false` stops charging
 it, in which case it has to fit in `spark.executor.memoryOverhead` instead.
 
 For more details about Spark off-heap memory mode, please refer to [Spark documentation].
