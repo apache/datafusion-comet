@@ -50,6 +50,16 @@ object CometCast
   private[comet] val legacyCastComplexTypesToStringReason: String =
     "spark.sql.legacy.castComplexTypesToString.enabled=true is not supported"
 
+  // The generic `Cast from $fromType to $toType is not supported` template is unhelpful for a
+  // collation rejection. An identity cast prints both sides identically, so it reads like a
+  // nonsensical refusal of a string-to-string cast unless the reader already knows collation is
+  // the cause. Named here, and shared with `CometCastCollatedStringSuite`, so the asserted reason
+  // cannot drift from production. Follows the phrasing the other collation reasons use, e.g.
+  // `CometReverse` in `collectionOperations.scala` and `ComparisonUtils` in `predicates.scala`.
+  private[comet] val nonDefaultCollationReason: String =
+    "Cast involving a non-default string collation is not supported " +
+      "(https://github.com/apache/datafusion-comet/issues/4489)"
+
   private def legacyCastComplexTypesToString: Boolean =
     SQLConf.get
       .getConfString("spark.sql.legacy.castComplexTypesToString.enabled", "false")
@@ -184,6 +194,24 @@ object CometCast
     // `CodegenDispatchFallback` mixin try the dispatcher and then fall back to Spark cleanly.
     if (isVariantType(fromType) || isVariantType(toType)) {
       return unsupported(fromType, toType)
+    }
+
+    // Spark 4.0's collation metadata rides on `StringType`, but `serializeDataType` maps every
+    // `StringType` to the same proto id, so a non-default collation is dropped on the way into
+    // the native plan with no warning. Reject the cast outright rather than relying on the
+    // pattern matching below, which only misses collated types because `DataTypes.StringType` is
+    // the default-collation singleton and Scala pattern equality happens not to match. This runs
+    // above the `fromType == toType` shortcut so that an identity cast on a collated type is
+    // checked too, and `hasNonDefaultStringCollation` walks nested element, key, value, and field
+    // types. The version-shimmed helper returns false on Spark 3.x, where collation does not
+    // exist. See https://github.com/apache/datafusion-comet/issues/4489.
+    //
+    // `Unsupported` here means there is no native path, not that the plan falls back to Spark.
+    // `CodegenDispatchFallback` offers the cast to the JVM codegen dispatcher first, and that
+    // route is result-correct: see the note on `isSupportedDataType` in
+    // `CometBatchKernelCodegen` for why a collated string is safe to admit there.
+    if (hasNonDefaultStringCollation(fromType) || hasNonDefaultStringCollation(toType)) {
+      return Unsupported(Some(nonDefaultCollationReason))
     }
 
     if (fromType == toType) {
