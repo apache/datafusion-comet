@@ -25,18 +25,25 @@ import java.util.concurrent.atomic.{AtomicLong, AtomicReference}
 
 import org.scalatest.funsuite.AnyFunSuite
 
+import org.apache.arrow.c.Data
 import org.apache.arrow.memory.BufferAllocator
+import org.apache.arrow.vector.{FieldVector, IntVector, VectorSchemaRoot}
 import org.apache.spark.{SparkConf, TaskContext, TaskContextImpl}
 import org.apache.spark.executor.TaskMetrics
 import org.apache.spark.memory.{MemoryConsumer, MemoryManager, MemoryMode, SparkOutOfMemoryError, TaskMemoryManager, TestMemoryManager}
+import org.apache.spark.sql.comet.execution.arrow.CometArrowStream
+import org.apache.spark.sql.types.{IntegerType, StructField, StructType}
+import org.apache.spark.sql.vectorized.ColumnarBatch
 
-import org.apache.comet.CometArrowAllocator
+import org.apache.comet.{CometArrowAllocator, CometArrowImportAllocator}
+import org.apache.comet.vector.NativeUtil
 
 /**
  * Tests that JVM Arrow allocations are reported to Spark, that they are reported against the task
- * that made them rather than whichever task happens to be on the releasing thread, and, just as
- * importantly, that the paths where they cannot be reported fail quietly rather than throwing.
- * Arrow allocation on these paths cannot fail today and this listener must not change that.
+ * that made them rather than whichever task happens to be on the releasing thread, that what is
+ * charged follows Arrow's ownership as buffers move between allocators, and, just as importantly,
+ * that the paths where they cannot be reported fail quietly rather than throwing. Arrow
+ * allocation on these paths cannot fail today and this listener must not change that.
  */
 class CometArrowAllocationListenerSuite extends AnyFunSuite {
 
@@ -47,20 +54,22 @@ class CometArrowAllocationListenerSuite extends AnyFunSuite {
   private val nextTaskAttemptId = new AtomicLong(1000L)
 
   // ---------------------------------------------------------------------------------------------
-  // Reservation arithmetic. Driven through the listener directly, since Arrow's rounding policy
-  // would otherwise decide the sizes under test.
+  // Reservation arithmetic. Driven through the listener directly, with a stand-in for the
+  // allocator's accountant, since Arrow's rounding policy would otherwise decide the sizes under
+  // test.
   // ---------------------------------------------------------------------------------------------
 
   test("allocations are charged to the current task in whole blocks") {
     withTask() { task =>
       val listener = new CometArrowAllocationListener(task.taskMemoryManager)
+      val owner = new StubOwner(listener)
 
       // Far smaller than a block, so the reservation should round up to exactly one block.
-      listener.onAllocation(128L)
+      owner.allocate(128L)
       assert(listener.reservedBytes == blockSize)
 
       // Still inside the first block, so Spark is not asked again.
-      listener.onAllocation(1024L)
+      owner.allocate(1024L)
       assert(listener.reservedBytes == blockSize)
 
       listener.taskCompleted()
@@ -70,7 +79,7 @@ class CometArrowAllocationListenerSuite extends AnyFunSuite {
   test("a request larger than a block rounds up to a block multiple") {
     withTask() { task =>
       val listener = new CometArrowAllocationListener(task.taskMemoryManager)
-      listener.onAllocation(blockSize * 3 + 7L)
+      new StubOwner(listener).allocate(blockSize * 3 + 7L)
       // Rounded up rather than sized to the exact deficit, so growth leaves headroom and the next
       // small allocation does not go straight back into Spark.
       assert(listener.reservedBytes == blockSize * 4)
@@ -81,10 +90,11 @@ class CometArrowAllocationListenerSuite extends AnyFunSuite {
   test("releasing returns whole blocks to Spark") {
     withTask() { task =>
       val listener = new CometArrowAllocationListener(task.taskMemoryManager)
-      listener.onAllocation(blockSize * 2)
+      val owner = new StubOwner(listener)
+      owner.allocate(blockSize * 2)
       assert(listener.reservedBytes == blockSize * 2)
 
-      listener.onRelease(blockSize * 2)
+      owner.release(blockSize * 2)
       assert(listener.reservedBytes == 0L)
       listener.taskCompleted()
     }
@@ -129,25 +139,28 @@ class CometArrowAllocationListenerSuite extends AnyFunSuite {
     }
   }
 
-  test("the process-wide root is not accounted, which is what the FFI paths rely on") {
+  test("the allocators on either side of the FFI boundary are not accounted") {
     withTask() { task =>
       // Establish the task allocator first, so this asserts "not charged" rather than "no task".
       CometTaskArrowAllocator.forCurrentTask()
-      // Both directions across the C Data Interface use the listener-less root: imported buffers
-      // wrap memory the native side owns, and buffers allocated for export are reserved again by
-      // whichever native operator retains the batch, through a pool that charges the same task.
-      val buf = CometArrowAllocator.buffer(blockSize)
-      try {
-        assert(reservedFor(task) == 0L)
-      } finally {
-        buf.close()
+      // Buffers allocated for export come from the listener-less root, and imports from a
+      // listener-less child of it, because native accounts for what it retains. Arrow reports an
+      // imported buffer to the importing allocator's listener at full capacity, so giving the
+      // import allocator a listener would charge Spark for native memory.
+      for (allocator <- Seq(CometArrowAllocator, CometArrowImportAllocator)) {
+        val buf = allocator.buffer(blockSize)
+        try {
+          assert(reservedFor(task) == 0L, s"${allocator.getName} was charged to the task")
+        } finally {
+          buf.close()
+        }
       }
     }
   }
 
   test("no active task uses the unaccounted root allocator") {
     TaskContext.unset()
-    // Broadcast coalescing and the cached batch serializer can allocate off a task thread.
+    // Broadcast coalescing on the driver, and native threads pulling a stream, have no task.
     assert(CometTaskArrowAllocator.forCurrentTask() eq CometArrowAllocator)
   }
 
@@ -193,6 +206,125 @@ class CometArrowAllocationListenerSuite extends AnyFunSuite {
         assert(reservedFor(taskB) == blockSize)
         assert(reservedFor(taskA) == 0L)
         bufB.close()
+      }
+    }
+  }
+
+  // ---------------------------------------------------------------------------------------------
+  // What is charged follows ownership. Arrow moves a buffer's charge between allocators with
+  // `transferBalance`, which calls no listener, so a tally of the callbacks drifts from what the
+  // task's allocator actually owns.
+  // ---------------------------------------------------------------------------------------------
+
+  test("a buffer whose ownership moves to another allocator stops being charged to the task") {
+    withTask() { task =>
+      val stream = CometArrowAllocator.newChildAllocator("stream", 0L, Long.MaxValue)
+      try {
+        val allocator = CometTaskArrowAllocator.forCurrentTask()
+        val source = allocator.buffer(blockSize)
+        assert(reservedFor(task) == blockSize)
+
+        // What ColumnarBatchArrowReader does to every batch it streams to native: retain the
+        // buffers into the stream's allocator, then close the source. Arrow makes the stream's
+        // allocator the owner, and neither listener is told.
+        val retained = source.getReferenceManager.retain(source, stream)
+        try {
+          source.close()
+          assert(allocator.getAllocatedMemory == 0L)
+          assert(listenerFor(task).getUsed == 0L)
+        } finally {
+          // Native drops it later, and the release goes to the stream allocator's listener, which
+          // is the root's no-op. Nothing on the task's allocator hears about it.
+          retained.close()
+        }
+
+        // The reservation catches up at the next callback on the task's allocator: one block for
+        // the new buffer, not one on top of a block for a buffer the task no longer owns.
+        val next = allocator.buffer(128L)
+        assert(reservedFor(task) == blockSize)
+        next.close()
+        assert(reservedFor(task) == 0L)
+      } finally {
+        stream.close()
+      }
+    }
+  }
+
+  test("batches streamed to native stop being charged to the task that read them") {
+    withTask() { task =>
+      val allocator = CometTaskArrowAllocator.forCurrentTask()
+      val importer = CometArrowAllocator.newChildAllocator("importer", 0L, Long.MaxValue)
+      val numBatches = 16
+      // Half a block of values per batch, which Arrow allocates as one block-sized buffer.
+      val rowsPerBatch = (blockSize / 2 / IntVector.TYPE_WIDTH).toInt
+      val batches = Iterator.tabulate(numBatches) { b =>
+        val vector = new IntVector("i", allocator)
+        vector.allocateNew(rowsPerBatch)
+        (0 until rowsPerBatch).foreach(i => vector.set(i, b + i))
+        vector.setValueCount(rowsPerBatch)
+        val root = new VectorSchemaRoot(java.util.Arrays.asList[FieldVector](vector))
+        root.setRowCount(rowsPerBatch)
+        NativeUtil.rootAsBatch(root): ColumnarBatch
+      }
+      try {
+        // The same export a native operator's JVM input takes, drained here by a JVM importer
+        // standing in for native's ScanExec.
+        val stream = CometArrowStream.fromColumnarBatchIter(
+          batches,
+          StructType(Seq(StructField("i", IntegerType))),
+          CometArrowStream.NATIVE_TIMEZONE,
+          "listener-suite")
+        val reader = Data.importArrayStream(importer, stream)
+        var imported = 0
+        try {
+          while (reader.loadNextBatch()) {
+            imported += 1
+            // Native holds this batch now, and the task no longer owns any of it, so it should not
+            // be paying for it either. Summing the callbacks would have kept a block for every
+            // batch read so far, and waiting for the task's next allocation would have kept one
+            // for this batch, which for a broadcast coalesced into one batch is all of it.
+            assert(allocator.getAllocatedMemory == 0L)
+            assert(
+              reservedFor(task) == 0L,
+              s"reserved ${reservedFor(task)} bytes after handing over $imported batches")
+          }
+        } finally {
+          reader.close()
+        }
+        assert(imported == numBatches)
+      } finally {
+        importer.close()
+      }
+    }
+  }
+
+  test("a buffer adopted from another allocator is charged while the task owns it") {
+    withTask() { task =>
+      val other = CometArrowAllocator.newChildAllocator("other", 0L, Long.MaxValue)
+      try {
+        val allocator = CometTaskArrowAllocator.forCurrentTask()
+        val foreign = other.buffer(blockSize)
+        // The mirror image: the task allocator takes a reference and the original owner lets go,
+        // so Arrow makes the task allocator the owner without telling either listener.
+        val adopted = foreign.getReferenceManager.retain(foreign, allocator)
+        try {
+          foreign.close()
+          assert(allocator.getAllocatedMemory == blockSize)
+          assert(listenerFor(task).getUsed == blockSize)
+        } finally {
+          // The final release then reaches this task's listener for bytes it never saw allocated.
+          adopted.close()
+        }
+        // That must not leave the task's figure short, so the next allocation is charged in full.
+        val buf = allocator.buffer(blockSize)
+        try {
+          assert(reservedFor(task) == blockSize)
+        } finally {
+          buf.close()
+        }
+        assert(reservedFor(task) == 0L)
+      } finally {
+        other.close()
       }
     }
   }
@@ -441,6 +573,24 @@ class CometArrowAllocationListenerSuite extends AnyFunSuite {
   // ---------------------------------------------------------------------------------------------
   // Fixtures.
   // ---------------------------------------------------------------------------------------------
+
+  /**
+   * Stands in for the task allocator's accountant, and calls the listener the way Arrow would.
+   */
+  private class StubOwner(listener: CometArrowAllocationListener) {
+    private val owned = new AtomicLong(0L)
+    listener.bind(() => owned.get)
+
+    def allocate(bytes: Long): Unit = {
+      owned.addAndGet(bytes)
+      listener.onAllocation(bytes)
+    }
+
+    def release(bytes: Long): Unit = {
+      owned.addAndGet(-bytes)
+      listener.onRelease(bytes)
+    }
+  }
 
   /** Holds memory and refuses to give it back, so `trySpillAndAcquire` throws on its behalf. */
   private class FailingSpillConsumer(tmm: TaskMemoryManager, failure: Exception)

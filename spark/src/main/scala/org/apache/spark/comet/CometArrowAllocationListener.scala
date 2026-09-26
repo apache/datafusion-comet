@@ -19,7 +19,8 @@
 
 package org.apache.spark.comet
 
-import java.util.concurrent.atomic.{AtomicBoolean, AtomicLong}
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.function.LongSupplier
 
 import scala.util.control.NonFatal
 
@@ -40,13 +41,27 @@ import org.apache.comet.CometConf
  * Spark's other off-heap consumers.
  *
  * '''Ownership.''' One instance is created per task and attached to that task's Arrow allocator
- * by [[CometTaskArrowAllocator]]. Arrow reports an allocation and its matching release to the
- * listener of the allocator that '''owns''' the buffer, on whichever thread happens to drop the
- * last reference, and `AllocationListener` is handed nothing but a size. Binding the listener to
- * an allocator is therefore the only way to attribute a release, and reading `TaskContext` inside
- * the callbacks would get it wrong: a shuffle-read batch handed on to a native operator is pinned
- * by native and dropped later from a Tokio worker with no task context installed. That release
- * would be lost, leaving the task charged for memory it had already freed, batch after batch.
+ * by [[CometTaskArrowAllocator]]. Arrow calls `onAllocation` on the listener of the allocator
+ * that made a buffer, and `onRelease` on the listener of the allocator that '''owns''' it once
+ * the last reference drops, on whichever thread that happens to be. `AllocationListener` is
+ * handed nothing but a size, so binding the listener to an allocator is the only way to attribute
+ * a release. Reading `TaskContext` inside the callbacks would get it wrong: a buffer exported
+ * over the C Data Interface is released by whichever native thread drops it last, and that thread
+ * has no task context installed.
+ *
+ * '''What is charged is what the allocator owns, not a running total of the callbacks.''' The two
+ * come apart because ownership moves between allocators without either listener hearing about it.
+ * When two allocators hold references to one buffer and the owner lets go first, Arrow hands the
+ * charge to the other through `transferBalance`, which calls no listener, and the final
+ * `onRelease` goes to the new owner. That is the everyday path rather than a corner:
+ * `ColumnarBatchArrowReader` retains every batch it streams to native into its own allocator, a
+ * child of the unaccounted root, and then closes the source. Summing the callbacks would charge
+ * the task for each such batch until the task ended. So the callbacks only say when to look, and
+ * the size comes from the task allocator's accountant, which Arrow keeps right across transfers.
+ * `ColumnarBatchArrowReader` calls [[reconcile]] as soon as it closes a source, so a task stops
+ * paying for a batch once native has it. Any other transfer is reflected at the next allocation
+ * or release on the task's allocator, and whatever is still reserved when the task ends goes back
+ * to Spark then.
  *
  * '''Reporting only.''' A short grant is logged and the allocation proceeds, because Arrow
  * allocation on these paths cannot fail today and making it fail is a behavioural change that
@@ -82,11 +97,12 @@ private[comet] class CometArrowAllocationListener(taskMemoryManager: TaskMemoryM
   import CometArrowAllocationListener._
 
   /**
-   * Bytes Arrow currently holds on this task's behalf. An atomic rather than a guarded field so
-   * that [[getUsed]] can read it without taking this listener's monitor; see the lock order note
-   * above.
+   * Bytes the task's allocator currently owns, read from Arrow's own accountant, which is an
+   * atomic, so [[getUsed]] can read it without taking this listener's monitor; see the lock order
+   * note above. Set by [[bind]], because the allocator is built with this listener and so cannot
+   * exist before it.
    */
-  private val live = new AtomicLong(0L)
+  @volatile private var owned: LongSupplier = NothingOwned
 
   /** Bytes currently reserved with Spark. Guarded by this listener's monitor. */
   private var reserved = 0L
@@ -94,26 +110,26 @@ private[comet] class CometArrowAllocationListener(taskMemoryManager: TaskMemoryM
   /** Set once the owning task has finished. Volatile so [[getUsed]] can read it lock-free. */
   @volatile private var completed = false
 
-  override def onAllocation(size: Long): Unit = {
-    live.addAndGet(size)
-    adjustQuietly()
-  }
+  /** Attaches the listener to what it accounts for. Called once, before the allocator is used. */
+  private[comet] def bind(owned: LongSupplier): Unit = this.owned = owned
 
-  override def onRelease(size: Long): Unit = {
-    live.addAndGet(-size)
-    adjustQuietly()
-  }
+  override def onAllocation(size: Long): Unit = adjustQuietly()
+
+  override def onRelease(size: Long): Unit = adjustQuietly()
+
+  /** Brings the reservation up to date after buffers moved out without a callback. */
+  private[comet] def reconcile(): Unit = adjustQuietly()
 
   /**
-   * Reports our own tally. Spark reads this for spill-victim ordering, `showMemoryUsage` and
-   * end-of-task leak reporting. The inherited `used` counter stays at zero because this consumer
-   * never calls `acquireMemory` or `allocatePage`; Arrow has already obtained the memory and we
-   * are only accounting for it.
+   * Reports what the task's allocator owns. Spark reads this for spill-victim ordering,
+   * `showMemoryUsage` and end-of-task leak reporting. The inherited `used` counter stays at zero
+   * because this consumer never calls `acquireMemory` or `allocatePage`; Arrow has already
+   * obtained the memory and we are only accounting for it.
    *
    * Reports zero once the task has finished, so that buffers deliberately allowed to outlive
    * their task are not reported by `cleanUpAllAllocatedMemory` as a Spark memory leak.
    */
-  override def getUsed: Long = if (completed) 0L else math.max(0L, live.get())
+  override def getUsed: Long = if (completed) 0L else owned.getAsLong
 
   /** Comet's native operators cannot be made to spill from here. See issue #5997. */
   override def spill(size: Long, trigger: MemoryConsumer): Long = 0L
@@ -141,9 +157,6 @@ private[comet] class CometArrowAllocationListener(taskMemoryManager: TaskMemoryM
     }
   }
 
-  /** Bytes Arrow currently holds on this task's behalf. Visible for testing. */
-  private[comet] def liveBytes: Long = live.get()
-
   /** Bytes currently reserved with Spark on this task's behalf. Visible for testing. */
   private[comet] def reservedBytes: Long = synchronized(reserved)
 
@@ -165,12 +178,12 @@ private[comet] class CometArrowAllocationListener(taskMemoryManager: TaskMemoryM
 
   private def adjust(): Unit = synchronized {
     if (!completed) {
-      val liveBytes = math.max(0L, live.get())
-      if (reserved < liveBytes) {
+      val ownedBytes = owned.getAsLong
+      if (reserved < ownedBytes) {
         // Round up so `reserved` stays a block multiple and growth always leaves headroom.
-        // Requesting the bare deficit would land exactly on `liveBytes` for any buffer at or above
-        // the block size, sending the very next allocation straight back into Spark's lock.
-        val request = roundUpToBlock(liveBytes - reserved)
+        // Requesting the bare deficit would land exactly on `ownedBytes` for any buffer at or
+        // above the block size, sending the very next allocation straight back into Spark's lock.
+        val request = roundUpToBlock(ownedBytes - reserved)
         val granted = acquire(request)
         reserved += granted
         if (granted < request) {
@@ -179,7 +192,7 @@ private[comet] class CometArrowAllocationListener(taskMemoryManager: TaskMemoryM
       } else {
         // Returned in one call rather than one per block: `releaseExecutionMemory` synchronizes on
         // the executor-wide pool, so a per-block loop would take that lock once per megabyte freed.
-        val excess = ((reserved - liveBytes) / BLOCK_SIZE) * BLOCK_SIZE
+        val excess = ((reserved - ownedBytes) / BLOCK_SIZE) * BLOCK_SIZE
         if (excess > 0L) {
           taskMemoryManager.releaseExecutionMemory(excess, this)
           reserved -= excess
@@ -257,6 +270,8 @@ object CometArrowAllocationListener extends Logging {
    * it trades lock chatter against reservation slack and has no plausible per-workload tuning.
    */
   private[comet] val BLOCK_SIZE = 1024L * 1024L
+
+  private val NothingOwned: LongSupplier = () => 0L
 
   private val shortGrantLogged = new AtomicBoolean(false)
   private val memoryManagerFailureLogged = new AtomicBoolean(false)

@@ -34,28 +34,26 @@ import org.apache.comet.{CometArrowAllocator, CometConf}
  * Hands out the Arrow allocator that JVM-owned allocations should use, one per Spark task.
  *
  * Each task gets a child of `CometArrowAllocator` carrying its own
- * [[CometArrowAllocationListener]], so the bytes it hands out are reported to that task's
+ * [[CometArrowAllocationListener]], so what that allocator owns is reported to the task's
  * `TaskMemoryManager`. The allocator, not the calling thread, is what identifies the owner:
  * Arrow's `AllocationListener` is given only a size, and a buffer is released on whichever thread
  * drops the last reference, which for anything that reaches native over the C Data Interface is a
  * Comet Tokio worker with no task context installed. Child allocators cut from the returned
- * allocator inherit its listener, so the paths that make their own children are covered too.
+ * allocator inherit its listener and roll their bytes up into it, so the paths that make their
+ * own children are covered too.
  *
- * '''This is for buffers the JVM owns.''' Anything allocated to be handed straight to native --
- * `NativeUtil`, the JVM UDF result, `CometNativeArrowSource.stream` -- uses the unaccounted root
- * instead, and so does anything imported from native. Native's pool is the authority for bytes
- * native holds: whichever DataFusion operator retains the batch reserves those buffers through
- * Comet's unified pool, which charges the same Spark task, so reporting them here as well would
- * reserve the same memory twice and could reject an allocation that fits. The same fallback
- * covers callers with no task to charge -- the driver, broadcast coalescing, the cached batch
- * serializer
- * -- and Comet's on-heap mode, where charging an off-heap consumer would be wrong.
- *
- * What this does not fix is a buffer that is used in the JVM and only later handed to native, a
- * shuffle-read batch feeding a native operator being the common shape. Its allocation site cannot
- * know, so it stays charged here while native may also reserve it. Coordinating reservation
- * ownership across the FFI boundary needs changes on both sides; see
- * [[https://github.com/apache/datafusion-comet/issues/5997]].
+ * '''This is for buffers the JVM owns.''' Buffers allocated to be handed straight to native -- by
+ * `NativeUtil`, for the JVM UDF result, and in `CometArrowStream.stream` -- come from the
+ * listener-less root instead, and imports from native come from `CometArrowImportAllocator`, a
+ * listener-less child of it. Native memory is native's to account for: a native operator that
+ * retains a batch reserves its buffers through Comet's pool, which charges the same Spark task,
+ * so charging them here as well would reserve the same memory twice. A batch the JVM read into
+ * this allocator and then streams to native is covered by the same rule without its allocation
+ * site having to know: the stream's reader retains each batch into its own root-backed allocator
+ * and closes the source, which moves the charge off this one, and then calls [[reconcile]] so
+ * that the reservation follows straight away. The root is also what callers with no task get,
+ * such as broadcast coalescing on the driver or a reader built while native pulls a stream, and
+ * what Comet's on-heap mode gets, where charging an off-heap consumer would be wrong.
  *
  * '''Lifetime.''' The task allocator cannot simply be closed when the task ends. The process-wide
  * allocator exists precisely because Arrow buffers can outlive the task that created them, and
@@ -93,8 +91,8 @@ object CometTaskArrowAllocator extends Logging {
    * an allocator belonging to a task other than the current one.
    */
   def forCurrentTask(): BufferAllocator = {
-    // Cheapest check first, and the one that eliminates the most callers: the driver, broadcast
-    // coalescing and the cached batch serializer all allocate with no task in scope.
+    // Cheapest check first, and the one that eliminates the most callers: the driver, and native
+    // threads pulling a stream, allocate with no task in scope.
     val taskContext = TaskContext.get()
     if (taskContext == null) {
       CometArrowAllocator
@@ -106,10 +104,9 @@ object CometTaskArrowAllocator extends Logging {
 
   private def create(taskContext: TaskContext): BufferAllocator = {
     val taskMemoryManager = taskContext.taskMemoryManager()
-    // Comet's on-heap mode exists so the Spark SQL suite can run without off-heap memory
-    // configured, and charging an off-heap consumer there would be wrong. Note this differs from
-    // CometUnifiedShuffleMemoryAllocator, which throws in that situation; throwing here would
-    // break those tests.
+    // Comet's on-heap mode accounts for nothing and exists so the Spark SQL suite can run without
+    // off-heap memory configured, so it gets the root: the same switch that
+    // `CometShuffleMemoryAllocator.getInstance` makes for shuffle pages.
     if (!accountingEnabled || taskMemoryManager == null ||
       taskMemoryManager.getTungstenMemoryMode != MemoryMode.OFF_HEAP) {
       return CometArrowAllocator
@@ -120,6 +117,7 @@ object CometTaskArrowAllocator extends Logging {
     val listener = new CometArrowAllocationListener(taskMemoryManager)
     val allocator = CometArrowAllocator
       .newChildAllocator(s"comet-task-$taskAttemptId", listener, 0L, Long.MaxValue)
+    listener.bind(() => allocator.getAllocatedMemory)
     val created = new TaskAllocator(allocator, listener)
     val previous = perTask.putIfAbsent(taskAttemptId, created)
     if (previous != null) {
@@ -183,6 +181,18 @@ object CometTaskArrowAllocator extends Logging {
         // released, so a failure here must not propagate into a task completion listener.
         logWarning(s"Failed to close Arrow allocator ${allocator.getName}", e)
     }
+  }
+
+  /**
+   * Brings a task allocator's reservation up to date with what it owns, if `allocator` is a task
+   * allocator or a child of one, and does nothing otherwise. For a caller that has just moved
+   * buffers out of it by retaining them in another allocator and closing the source, which Arrow
+   * does without calling any listener, so that the task stops paying for them now rather than at
+   * its next allocation.
+   */
+  private[spark] def reconcile(allocator: BufferAllocator): Unit = allocator.getListener match {
+    case listener: CometArrowAllocationListener => listener.reconcile()
+    case _ =>
   }
 
   /** Number of tasks currently holding an accounted allocator. Visible for testing. */
