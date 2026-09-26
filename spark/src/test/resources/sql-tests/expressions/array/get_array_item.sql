@@ -30,3 +30,18 @@ SELECT arr[idx] FROM test_get_array_item
 -- literal arguments
 query
 SELECT array(10, 20, 30)[0], array(10, 20, 30)[2], array()[0]
+
+statement
+CREATE TABLE test_get_array_item_complex(nested array<array<int>>, structs array<struct<a: int, b: string>>, idx int) USING parquet
+
+statement
+INSERT INTO test_get_array_item_complex VALUES
+  (array(array(1, 2), array(3, 4)), array(named_struct('a', 1, 'b', 'a'), named_struct('a', 2, 'b', 'b')), 1),
+  (NULL, NULL, 0),
+  (array(array(5, 6)), array(named_struct('a', 3, 'b', 'c')), NULL)
+
+query
+SELECT nested[idx] FROM test_get_array_item_complex
+
+query
+SELECT structs[idx] FROM test_get_array_item_complex

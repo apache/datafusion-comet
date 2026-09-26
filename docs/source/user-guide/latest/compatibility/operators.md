@@ -32,6 +32,18 @@ operator restrictions and aggregate buffer compatibility checks still apply.
 Parquet writes whose input plans contain an empty relation use Spark's writer to preserve
 readable empty output files and their schema metadata.
 
+## In-Memory Cache
+
+Comet can store cached relations (`df.cache()`, `CACHE TABLE`) in Arrow format and scan them
+natively. This is experimental and disabled by default; see [In-Memory Cache](../in-memory-cache.md)
+for how to enable it. Comet does not replace a `spark.sql.cache.serializer` that the application
+has already set. Relations whose schema Comet's Arrow writer does not support are cached in
+Spark's default format, and their scans fall back to Spark. Reads that feed Spark operators rather
+than Comet operators can be slower than Spark's cache.
+
+With Kryo and `spark.kryo.registrationRequired=true`, Comet needs its Kryo registrator whether or
+not the cache is enabled; see [Kryo serialization](../installation.md#kryo-serialization).
+
 ## Sampling
 
 Comet runs `SampleExec` natively when sampling is performed without replacement, which covers
@@ -95,8 +107,11 @@ runs natively; it is controlled by `spark.comet.exec.windowGroupLimit.enabled` (
 
 **Known incompatibilities:**
 
-- Signed-zero ordering (`-0.0` vs `+0.0`) diverges from Spark's `RankLimitIterator`; see
-  [floating-point ordering](./floating-point.md#ordering-signed-zero-00-vs-00).
+- Floating-point values nested in array or struct `ORDER BY` keys are compared with Arrow's raw
+  total ordering, so ranks can differ from Spark when the data mixes `-0.0` and `+0.0` or more
+  than one NaN representation ([#5507](https://github.com/apache/datafusion-comet/issues/5507)).
+  Scalar `FLOAT` and `DOUBLE` keys are normalized and match Spark; see
+  [floating-point ordering](./floating-point.md).
 
 ## Round-Robin Partitioning
 
