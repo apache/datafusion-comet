@@ -33,21 +33,17 @@ Spark 3.4.3 is supported with Java 17 and Scala 2.12/2.13.
 ```{warning}
 Spark 3.4 support is deprecated as of the 1.0.0 release and will be removed in a future release.
 Comet continues to build and publish Spark 3.4 binaries in the meantime, but Apache Spark's own
-SQL test suite is no longer run against Spark 3.4 on every change: it runs only when a contributor
+SQL test suite no longer runs against Spark 3.4 automatically: it runs only when a contributor
 opts a pull request into it. Regressions specific to Spark 3.4 are therefore more likely to reach a
 release than on the other supported versions. We recommend moving to Spark 3.5 or later.
 ```
 
 ### Known Limitations
 
-- **Reading `TimestampLTZ` as `TimestampNTZ`**: Spark 3.4 raises an error for this operation
-  (SPARK-36182), but Comet's Parquet scan silently returns the raw UTC value instead.
-  See [Parquet Compatibility](scans.md#parquet-scan-limitations) for details.
-
-- **Unsupported Parquet type conversions**: Spark 3.4 raises schema incompatibility errors for
-  certain type mismatches (e.g., reading INT32 as BIGINT, decimal precision changes), but Comet's
-  Comet's Parquet scan may not detect these and could return unexpected values.
-  See [Parquet Compatibility](scans.md#parquet-scan-limitations) for details.
+- **Extra `SparkException` layer in Parquet schema mismatch errors**: when a Parquet read is
+  rejected because a file's type cannot be converted to the requested type, the error's cause chain
+  has one more `SparkException` layer than Spark's own reader produces.
+  See [Parquet Compatibility](scans.md#schema-mismatch-handling) for details.
 
 ## Spark 3.5
 
@@ -55,18 +51,14 @@ Spark 3.5.9 is supported with Java 17 and Scala 2.12/2.13.
 
 ### Known Limitations
 
-- **Reading `TimestampLTZ` as `TimestampNTZ`**: Spark 3.5 raises an error for this operation
-  (SPARK-36182), but Comet's Parquet scan silently returns the raw UTC value instead.
-  See [Parquet Compatibility](scans.md#parquet-scan-limitations) for details.
-
-- **Unsupported Parquet type conversions**: Spark 3.5 raises schema incompatibility errors for
-  certain type mismatches (e.g., reading INT32 as BIGINT, decimal precision changes), but Comet's
-  Comet's Parquet scan may not detect these and could return unexpected values.
-  See [Parquet Compatibility](scans.md#parquet-scan-limitations) for details.
+- **Extra `SparkException` layer in Parquet schema mismatch errors**: when a Parquet read is
+  rejected because a file's type cannot be converted to the requested type, the error's cause chain
+  has one more `SparkException` layer than Spark's own reader produces.
+  See [Parquet Compatibility](scans.md#schema-mismatch-handling) for details.
 
 ## Spark 4.0
 
-Spark 4.0.4 is supported with Java 17 and Scala 2.13.
+Spark 4.0.4 is supported with Java 17/21 and Scala 2.13.
 
 ### Known Limitations
 
@@ -93,6 +85,7 @@ Spark 4.1.3 is supported with Java 17/21 and Scala 2.13.
 Spark 4.2.0 is provided as experimental support with Java 17 and Scala 2.13.
 
 ```{warning}
-Spark 4.2 support is experimental. Comet tests run in CI for this version, but the Spark SQL tests
-do not yet. It is intended for early evaluation only and should not be used in production.
+Spark 4.2 support is experimental. Comet's own test suites run nightly for this version, but
+Apache Spark's SQL test suite does not run against it yet. It is intended for early evaluation only
+and should not be used in production.
 ```

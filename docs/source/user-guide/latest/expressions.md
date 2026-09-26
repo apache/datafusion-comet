@@ -30,9 +30,9 @@ Some ✅ Supported expressions have specific incompatible cases that are not run
 Those cases must be opted into per expression with
 `spark.comet.expression.EXPRNAME.allowIncompatible=true` (where `EXPRNAME` is the Spark
 expression class name, for example `Cast`). There is no global opt-in. By default such a case
-either falls back to Spark (for example `cast`) or, when the expression has a Spark-compatible
-codegen-dispatch implementation, runs through that instead (for example the regex and JSON
-families). See [Native and codegen-dispatch implementations](compatibility/index.md#native-and-codegen-dispatch-implementations)
+either falls back to Spark (for example the `mode` aggregate) or, when the expression has a
+Spark-compatible codegen-dispatch implementation, runs through that instead (for example `cast`
+and the regex and JSON families). See [Native and codegen-dispatch implementations](compatibility/index.md#native-and-codegen-dispatch-implementations)
 for how Comet chooses.
 
 Most expressions can also be disabled with `spark.comet.expression.EXPRNAME.enabled=false`, where
@@ -62,18 +62,18 @@ The Implementation column is auto-generated from the serde definitions in `Query
 ## Not currently planned
 
 Comet focuses acceleration on mainstream relational, string, datetime, math, and collection
-expressions. The following function families are **not currently planned** for native acceleration (they are not on the 1.0 roadmap): specialized functionality with narrow real-world analytics use and high implementation cost. They fall back to Spark and may be reconsidered based on demand:
+expressions. The following function families are **not currently planned** for native acceleration (they are not on the current roadmap): specialized functionality with narrow real-world analytics use and high implementation cost. They fall back to Spark and may be reconsidered based on demand:
 
 - **Probabilistic sketches and approximate top-k** (`kll_sketch_*`, `hll_*`, `theta_*`, `count_min_sketch`, `bitmap_*`, `approx_top_k*`): specialized data structures with exact-correctness traps.
 - **Geospatial** (`st_*`): brand-new Spark 4.1 functionality, specialized.
 - **Avro / Protobuf codecs** (`from_avro`, `to_avro`, `from_protobuf`, `to_protobuf`, `schema_of_avro`): format conversion belongs at the IO layer, not expression evaluation.
-- **JVM reflection** (`java_method`, `reflect`): niche, and they invoke arbitrary JVM methods (a security concern).
+- **JVM reflection** (`java_method`, `reflect`, `try_reflect`): niche, and they invoke arbitrary JVM methods (a security concern).
 - **UTF-8 validation** (`is_valid_utf8`, `make_valid_utf8`, `validate_utf8`, `try_validate_utf8`): niche Spark 4.x string-validation helpers.
 - **Miscellaneous niche** (`histogram_numeric`, `version`, `sentences`, `quote`): low-value or specialized functions with little benefit from native acceleration.
 
 The file-metadata functions `input_file_name`, `input_file_block_start`, and `input_file_block_length` depend on scan-internal per-row file information rather than the expression layer; their support status is covered in the [scan compatibility guide](compatibility/scans.md).
 
-Note that `median` and `mode` are planned: they are mainstream exact aggregates. `approx_count_distinct` is supported because Comet ports Spark's `HyperLogLogPlusPlus` exactly, so its result is bit-identical to Spark.
+Note that `median` and `mode` are supported: they are mainstream exact aggregates. `mode` runs natively only with `spark.comet.expression.Mode.allowIncompatible=true`. `approx_count_distinct` is supported because Comet ports Spark's `HyperLogLogPlusPlus` exactly, so its result is bit-identical to Spark.
 
 The tables below list every Spark built-in expression with its current status.
 
@@ -107,15 +107,16 @@ The tables below list every Spark built-in expression with its current status.
 | `kurtosis` | 🔜 | — | Not yet implemented natively |
 | `last` | ✅ | Native |  |
 | `last_value` | ✅ | Native |  |
-| `listagg` | 🔜 | — | String aggregation |
+| `listagg` | ✅ | Native | Spark 4.0+. `StringType` input with a literal delimiter; `WITHIN GROUP (ORDER BY ...)` and `BinaryType` inputs fall back to Spark. Without `WITHIN GROUP`, concatenation order is the (non-deterministic) group arrival order, matching Spark. |
 | `max` | ✅ | Native |  |
 | `max_by` | ✅ | Native | Value and ordering must be fixed-length types |
 | `mean` | ✅ | Native |  |
 | `median` | ✅ | — | Rewrites to `percentile(col, 0.5)` and runs natively for supported percentile inputs |
 | `min` | ✅ | Native |  |
 | `min_by` | ✅ | Native | Value and ordering must be fixed-length types |
-| `mode` | ✅ | Native | `mode(col)` only; Spark breaks ties non-deterministically, so Comet returns the smallest tied value and falls back by default, opt-in via allowIncompatible ([#3970](https://github.com/apache/datafusion-comet/issues/3970)) |
+| `mode` | ✅ | Native | `mode(col)` only; Spark breaks ties non-deterministically, so Comet returns the smallest tied value and falls back by default, opt-in via allowIncompatible |
 | `percentile` | ✅ | Native | Single literal percentage on numeric input runs natively; array of percentages and a frequency argument fall back to Spark |
+| `percentile_approx` | ✅ | Native | Alias of `approx_percentile`; same restrictions apply |
 | `percentile_cont` | ✅ | — | Spark 4.0+ `WITHIN GROUP (ORDER BY ...)`; ascending only runs natively, `DESC` falls back to Spark |
 | `percentile_disc` | 🔜 | — | Percentile aggregate |
 | `regr_avgx` | ✅ | — | Native: Spark rewrites to `Average` (tests in [#4551](https://github.com/apache/datafusion-comet/pull/4551)) |
@@ -133,7 +134,7 @@ The tables below list every Spark built-in expression with its current status.
 | `stddev` | ✅ | Native |  |
 | `stddev_pop` | ✅ | Native |  |
 | `stddev_samp` | ✅ | Native |  |
-| `string_agg` | 🔜 | — | String aggregation (alias of `listagg`) |
+| `string_agg` | ✅ | Native | Alias of `listagg`; same restrictions apply. |
 | `sum` | ✅ | Native |  |
 | `try_avg` | ✅ | — | Interval types fall back |
 | `try_sum` | ✅ | — |  |
@@ -150,14 +151,14 @@ The tables below list every Spark built-in expression with its current status.
 | `array` | ✅ | Native |  |
 | `array_append` | ✅ | Native |  |
 | `array_compact` | ✅ | — |  |
-| `array_contains` | ✅ | Native | NaN/signed-zero handling may differ ([details](compatibility/floating-point.md)) |
+| `array_contains` | ✅ | Native | Float/double element arrays route through the JVM codegen dispatcher by default; the native path is opt-in via allowIncompatible |
 | `array_distinct` | ✅ | Native | NaN/signed-zero handling may differ ([details](compatibility/floating-point.md)) |
 | `array_except` | ✅ | Hybrid | Routes through the JVM codegen dispatcher by default; the incompatible native path is opt-in via allowIncompatible ([details](compatibility/expressions/array.md)) |
 | `array_insert` | ✅ | Native |  |
 | `array_intersect` | ✅ | Hybrid | Routes through the JVM codegen dispatcher by default; the incompatible native path is opt-in via allowIncompatible ([details](compatibility/expressions/array.md)) |
 | `array_join` | ✅ | Hybrid | Native for literal or column delimiter and null replacement; other cases and non-UTF8_BINARY collations use the JVM codegen dispatcher ([details](compatibility/expressions/array.md)) |
 | `array_max` | ✅ | Native | NaN ordering may differ ([details](compatibility/floating-point.md)) |
-| `array_min` | ✅ | Native | NaN ordering may differ ([details](compatibility/floating-point.md)) |
+| `array_min` | ✅ | Native | May return `-0.0` where Spark returns `0.0` when both zeros are present |
 | `array_position` | ✅ | Native | Binary/struct/map/null elements fall back |
 | `array_prepend` | ✅ | — |  |
 | `array_remove` | ✅ | Native |  |
@@ -171,7 +172,7 @@ The tables below list every Spark built-in expression with its current status.
 | `sequence` | ✅ | Hybrid | Integral types run natively; date/timestamp sequences use codegen dispatch |
 | `shuffle` | ✅ | Native | Binary/struct/map elements fall back |
 | `slice` | ✅ | Native | Native ([#4149](https://github.com/apache/datafusion-comet/pull/4149)) |
-| `sort_array` | ✅ | Hybrid | Nested struct/null arrays fall back |
+| `sort_array` | ✅ | Hybrid | Struct, nested-array, and null elements run natively; other element types (for example intervals), and floating-point elements when `spark.comet.exec.strictFloatingPoint=true`, route through the JVM codegen dispatcher |
 
 ---
 
@@ -200,8 +201,8 @@ The tables below list every Spark built-in expression with its current status.
 | --- | --- | --- | --- |
 | `array_size` | ✅ | — |  |
 | `cardinality` | ✅ | Native |  |
-| `concat` | ✅ | Hybrid | Binary/array children fall back |
-| `reverse` | ✅ | Hybrid | Binary-element arrays fall back (Incompatible) ([details](compatibility/expressions/array.md)) |
+| `concat` | ✅ | Hybrid | Binary/array children and non-UTF8_BINARY collations route through the JVM codegen dispatcher |
+| `reverse` | ✅ | Hybrid | Arrays with binary, struct, or map elements, and collated strings, route through the JVM codegen dispatcher ([details](compatibility/expressions/array.md)) |
 | `size` | ✅ | Native |  |
 
 ---
@@ -229,7 +230,7 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 
 | Function | Status | Implementation | Notes |
 | --- | --- | --- | --- |
-| `cast` | ✅ | Native | Some casts fall back; float-to-decimal is opt-in ([details](compatibility/expressions/cast.md)) |
+| `cast` | ✅ | Native | Casts without a native path (for example boolean to decimal) route through the JVM codegen dispatcher ([details](compatibility/expressions/cast.md)) |
 
 ---
 
@@ -278,7 +279,7 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | `make_date` | ✅ | Native |  |
 | `make_dt_interval` | ✅ | Codegen dispatch |  |
 | `make_interval` | ✅ | Hybrid | Routes through the JVM codegen dispatcher by default; intervals outside Arrow's nanosecond range are tracked by [#5279](https://github.com/apache/datafusion-comet/issues/5279); the native path is opt-in via allowIncompatible ([details](compatibility/expressions/datetime.md)) |
-| `make_time` | 🔜 | — | Spark 4.1 TIME type; tracked by [#4288](https://github.com/apache/datafusion-comet/issues/4288) |
+| `make_time` | ✅ | — | Spark 4.1+; requires `spark.sql.timeType.enabled=true`, which Spark leaves off by default. Runs natively; remaining TIME type work is tracked by [#4288](https://github.com/apache/datafusion-comet/issues/4288) |
 | `make_timestamp` | ✅ | Hybrid |  |
 | `make_timestamp_ltz` | ✅ | — | 2-arg TIME form falls back |
 | `make_timestamp_ntz` | ✅ | — | 2-arg TIME form falls back |
@@ -301,7 +302,7 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | `timestampadd` | ✅ | — | Reached through the grammar rather than the function registry; runs through codegen dispatch |
 | `timestampdiff` | ✅ | — | Reached through the grammar rather than the function registry; runs through codegen dispatch |
 | `to_date` | ✅ | — | Rewrites to `Cast` (or `Cast(GetTimestamp)` with a format) before Comet sees the plan |
-| `to_time` | 🔜 | — | Spark 4.1 TIME type; tracked by [#4288](https://github.com/apache/datafusion-comet/issues/4288) |
+| `to_time` | ✅ | — | Spark 4.1+; requires `spark.sql.timeType.enabled=true`, which Spark leaves off by default. The one-argument form runs natively |
 | `to_timestamp` | ✅ | — | Rewrites to `Cast` (or `GetTimestamp` with a format) before Comet sees the plan |
 | `to_timestamp_ltz` | ✅ | — | Rewrites to `to_timestamp` (`TimestampType`) |
 | `to_timestamp_ntz` | ✅ | — | Rewrites to `to_timestamp` (`TimestampNTZType`) |
@@ -310,8 +311,10 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | `trunc` | ✅ | Hybrid |  |
 | `try_make_interval` | ✅ | — | Rewrites to `MakeInterval`; same support as `make_interval` (Spark 4.0+) |
 | `try_make_timestamp` | ✅ | — |  |
+| `try_make_timestamp_ltz` | ✅ | — | Same support as `try_make_timestamp` (Spark 4.0+) |
+| `try_make_timestamp_ntz` | ✅ | — | Same support as `try_make_timestamp` (Spark 4.0+) |
 | `try_to_date` | ✅ | — | Rewrites to `Cast`/`GetTimestamp` before Comet sees the plan; same support as `to_date` |
-| `try_to_time` | 🔜 | — | Spark 4.1 TIME type; tracked by [#4288](https://github.com/apache/datafusion-comet/issues/4288) |
+| `try_to_time` | ✅ | — | Same support as `to_time` |
 | `try_to_timestamp` | ✅ | — | Rewrites to `Cast`/`GetTimestamp` before Comet sees the plan; same support as `to_timestamp` |
 | `unix_date` | ✅ | Native |  |
 | `unix_micros` | ✅ | Codegen dispatch |  |
@@ -329,7 +332,8 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 ## generator_funcs
 
 `explode`, `explode_outer`, `posexplode`, and `posexplode_outer` are supported via
-`CometExplodeExec` (operator-level, not expression-level). Enabled by default via
+`CometExplodeExec` (operator-level, not expression-level) for array input; map input falls back
+to Spark ([#2837](https://github.com/apache/datafusion-comet/issues/2837)). Enabled by default via
 `spark.comet.exec.explode.enabled`.
 
 | Function | Status | Implementation | Notes |
@@ -362,13 +366,13 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 
 | Function | Status | Implementation | Notes |
 | --- | --- | --- | --- |
-| `from_json` | ✅ | Hybrid | Falls back by default; opt-in via allowIncompatible ([audit](../../contributor-guide/expression-audits/json_funcs.md#from_json)) |
-| `get_json_object` | ✅ | Hybrid | Some inputs need allowIncompatible ([audit](../../contributor-guide/expression-audits/json_funcs.md#get_json_object)) |
-| `json_array_length` | ✅ | Hybrid | Single-quoted/trailing JSON needs allowIncompatible ([audit](../../contributor-guide/expression-audits/json_funcs.md#json_array_length)) |
+| `from_json` | ✅ | Hybrid | Routes through the JVM codegen dispatcher by default; the native path (supported schemas only) is opt-in via allowIncompatible ([audit](../../contributor-guide/expression-audits/json_funcs.md#from_json)) |
+| `get_json_object` | ✅ | Hybrid | Routes through the JVM codegen dispatcher by default; the native path is opt-in via allowIncompatible ([audit](../../contributor-guide/expression-audits/json_funcs.md#get_json_object)) |
+| `json_array_length` | ✅ | Hybrid | Routes through the JVM codegen dispatcher by default; the native path, which differs for single-quoted JSON, unescaped control characters, and trailing content, is opt-in via allowIncompatible ([audit](../../contributor-guide/expression-audits/json_funcs.md#json_array_length)) |
 | `json_object_keys` | ✅ | Codegen dispatch |  |
 | `json_tuple` | 🔜 | — | [#3160](https://github.com/apache/datafusion-comet/issues/3160) |
 | `schema_of_json` | ✅ | Codegen dispatch |  |
-| `to_json` | ✅ | Hybrid | Options and map/array inputs fall back ([audit](../../contributor-guide/expression-audits/json_funcs.md#to_json)) |
+| `to_json` | ✅ | Hybrid | Routes through the JVM codegen dispatcher by default, including options and map/array inputs; the native path is opt-in via allowIncompatible ([audit](../../contributor-guide/expression-audits/json_funcs.md#to_json)) |
 
 ---
 
@@ -401,7 +405,7 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | `map_contains_key` | ✅ | — |  |
 | `map_entries` | ✅ | Native |  |
 | `map_from_arrays` | ✅ | Native |  |
-| `map_from_entries` | ✅ | Hybrid | BinaryType key/value falls back (Incompatible) ([details](compatibility/expressions/map.md)) |
+| `map_from_entries` | ✅ | Hybrid | BinaryType keys/values and `spark.sql.mapKeyDedupPolicy=LAST_WIN` route through the JVM codegen dispatcher ([details](compatibility/expressions/map.md)) |
 | `map_keys` | ✅ | Native |  |
 | `map_values` | ✅ | Native |  |
 | `str_to_map` | ✅ | Hybrid |  |
@@ -462,7 +466,7 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | `radians` | ✅ | Native |  |
 | `rand` | ✅ | Native |  |
 | `randn` | ✅ | Native |  |
-| `random` | ✅ | Native | Alias for `rand` (Spark 4.0+); seed must be a literal |
+| `random` | ✅ | Native | Alias for `rand`; seed must be a literal |
 | `randstr` | ✅ | Native | Random string (Spark 4.0+); length and seed must be literals |
 | `rint` | ✅ | Native |  |
 | `round` | ✅ | Hybrid | Float/double inputs route through the JVM codegen dispatcher; other types run natively |
@@ -541,9 +545,9 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | `like` | ✅ | Hybrid |  |
 | `not` | ✅ | Native |  |
 | `or` | ✅ | Native |  |
-| `regexp` | ✅ | Hybrid | In-subset literals run natively; others fall back by default ([details](compatibility/regex.md)) |
-| `regexp_like` | ✅ | Hybrid | In-subset literals run natively; others fall back by default ([details](compatibility/regex.md)) |
-| `rlike` | ✅ | Hybrid | In-subset literals run natively; others fall back by default ([details](compatibility/regex.md)) |
+| `regexp` | ✅ | Hybrid | In-subset literal patterns run natively; other patterns route through the JVM codegen dispatcher ([details](compatibility/regex.md)) |
+| `regexp_like` | ✅ | Hybrid | In-subset literal patterns run natively; other patterns route through the JVM codegen dispatcher ([details](compatibility/regex.md)) |
+| `rlike` | ✅ | Hybrid | In-subset literal patterns run natively; other patterns route through the JVM codegen dispatcher ([details](compatibility/regex.md)) |
 
 ---
 
@@ -587,12 +591,12 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | `overlay` | ✅ | Codegen dispatch |  |
 | `position` | ✅ | Codegen dispatch |  |
 | `printf` | ✅ | Codegen dispatch |  |
-| `regexp_count` | ✅ | — | Runs natively (rewrites to `size(regexp_extract_all(...))`) |
+| `regexp_count` | ✅ | — | Rewrites to `size(regexp_extract_all(...))`; `regexp_extract_all` routes through the JVM codegen dispatcher by default |
 | `regexp_extract` | ✅ | Native |  |
 | `regexp_extract_all` | ✅ | Native |  |
 | `regexp_instr` | ✅ | Codegen dispatch | Routed through the JVM codegen dispatcher |
 | `regexp_replace` | ✅ | Hybrid |  |
-| `regexp_substr` | ✅ | — | Runs natively (rewrites to `nullif(regexp_extract(...), '')`) |
+| `regexp_substr` | ✅ | — | Rewrites to `nullif(regexp_extract(...), '')`; `regexp_extract` routes through the JVM codegen dispatcher by default |
 | `repeat` | ✅ | Native |  |
 | `replace` | ✅ | Hybrid |  |
 | `right` | ✅ | Native |  |
@@ -606,16 +610,16 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | `substr` | ✅ | Native |  |
 | `substring` | ✅ | Native |  |
 | `substring_index` | ✅ | Native |  |
-| `to_binary` | ✅ | — | Hex and base64 forms accelerated natively; the `utf-8` form rewrites to `encode` and runs via codegen dispatch on Spark 4.0+ |
+| `to_binary` | ✅ | — | The hex form runs natively; the base64 and `utf-8` forms route through the JVM codegen dispatcher |
 | `to_char` | ✅ | Codegen dispatch |  |
 | `to_number` | ✅ | Codegen dispatch |  |
 | `to_varchar` | ✅ | Codegen dispatch |  |
 | `translate` | ✅ | Hybrid | Codegen dispatch by default: DataFusion's `translate` iterates over Unicode graphemes (Spark uses code points) and substitutes U+0000 instead of treating it as a deletion sentinel, so the native path is opt-in via allowIncompatible |
 | `trim` | ✅ | Native |  |
-| `try_to_binary` | ✅ | — | Runs natively (rewrites to `try_eval(to_binary(...))`) |
+| `try_to_binary` | ✅ | — | Rewrites to `try_eval(to_binary(...))`, which routes through the JVM codegen dispatcher |
 | `try_to_number` | ✅ | Codegen dispatch | Routed through the JVM codegen dispatcher |
 | `ucase` | ✅ | Hybrid |  |
-| `unbase64` | ✅ | Codegen dispatch |  |
+| `unbase64` | ✅ | Codegen dispatch | Column or literal input runs natively; other child expressions, and the strict form used by `to_binary(str, 'base64')`, route through the JVM codegen dispatcher |
 | `upper` | ✅ | Hybrid |  |
 
 ---
@@ -634,6 +638,7 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | Function | Status | Implementation | Notes |
 | --- | --- | --- | --- |
 | `parse_url` | ✅ | Native |  |
+| `try_parse_url` | ✅ | — | Spark 4.0+; runs natively and returns NULL for an invalid URL |
 | `try_url_decode` | ✅ | — |  |
 | `url_decode` | ✅ | — |  |
 | `url_encode` | ✅ | — |  |
@@ -694,6 +699,8 @@ Comet also accelerates a number of Catalyst expressions that have no Spark SQL f
 - **Accessor expressions (subscript and field access, not functions):** struct field access (`col.field`), array element access (`arr[i]`), and map value access (`map[key]`).
 - **Internal decimal arithmetic:** `CheckOverflow`, `MakeDecimal`, and `UnscaledValue`, which the analyzer inserts around decimal operations.
 - **User-defined functions:** Scala UDFs registered through the DataFrame or SQL API.
+- **DataSource V2 catalog functions:** Iceberg's system functions `bucket`, `truncate`, `years`, `months`, `days`, and `hours` (for example `system.bucket(16, id)`) run natively; see [Iceberg system functions](iceberg.md#iceberg-system-functions).
+- **Lowered built-ins:** Spark lowers some built-in functions to `StaticInvoke` or `Invoke` calls. Those without a native mapping run through the JVM codegen dispatcher when their input and output types are supported.
 - **Structural expressions:** aliases, attribute references, literals, sort orders, and `CASE WHEN`.
 
 This list is illustrative, not exhaustive: the per-function tables are not the complete set of expressions Comet can accelerate.
