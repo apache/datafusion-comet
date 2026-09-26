@@ -30,5 +30,6 @@ spark/src/test/resources/tpch-query-results/*.out
 spark/src/test/resources/tpch-extended/q*.sql
 spark/src/test/resources/test-data/*.csv
 spark/src/test/resources/test-data/*.ndjson
+spark/src/test/resources/regex/*.json
 spark/inspections/CometTPC*results.txt
 benchmarks/tpc/queries/**/*.sql

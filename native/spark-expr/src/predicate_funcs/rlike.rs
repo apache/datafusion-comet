@@ -183,6 +183,76 @@ mod tests {
     use arrow::datatypes::{Field, Int32Type, Int8Type, UInt64Type};
     use datafusion::physical_expr::expressions::{Column, Literal};
 
+    #[test]
+    fn test_rlike_java_fixtures() {
+        #[derive(serde::Deserialize)]
+        struct Fixture {
+            category: String,
+            pattern: String,
+            subject: String,
+            expected: bool,
+        }
+        #[derive(serde::Deserialize)]
+        struct Fixtures {
+            cases: Vec<Fixture>,
+        }
+        let fixtures: Fixtures = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../spark/src/test/resources/regex/rlike-java-fixtures.json"
+        )))
+        .expect("valid Java regex fixtures");
+        assert!(!fixtures.cases.is_empty());
+        for fixture in fixtures.cases {
+            let context = format!(
+                "category={}, pattern={:?}, subject={:?}, expected={}",
+                fixture.category, fixture.pattern, fixture.subject, fixture.expected
+            );
+            let scalar = RLike::try_new(
+                Arc::new(Literal::new(ScalarValue::Utf8(Some(
+                    fixture.subject.clone(),
+                )))),
+                &fixture.pattern,
+            )
+            .unwrap_or_else(|error| panic!("{context}, actual=compile error: {error}"));
+            let result = scalar
+                .evaluate(&RecordBatch::new_empty(Arc::new(Schema::empty())))
+                .unwrap_or_else(|error| panic!("{context}, actual=evaluation error: {error}"));
+            match result {
+                ColumnarValue::Scalar(actual) => assert_eq!(
+                    actual,
+                    ScalarValue::Boolean(Some(fixture.expected)),
+                    "scalar: {context}, actual={actual:?}"
+                ),
+                actual => panic!("scalar: {context}, actual={actual:?}"),
+            }
+            let schema = Arc::new(Schema::new(vec![Field::new("s", DataType::Utf8, false)]));
+            let batch = RecordBatch::try_new(
+                schema,
+                vec![Arc::new(StringArray::from(vec![fixture.subject.as_str()]))],
+            )
+            .unwrap();
+            let array = RLike::try_new(Arc::new(Column::new("s", 0)), &fixture.pattern)
+                .unwrap_or_else(|error| panic!("{context}, actual=compile error: {error}"));
+            let result = array
+                .evaluate(&batch)
+                .unwrap_or_else(|error| panic!("{context}, actual=evaluation error: {error}"));
+            match result {
+                ColumnarValue::Array(actual) => {
+                    let bools = actual.as_boolean();
+                    assert_eq!(bools.len(), 1, "array: {context}, actual={actual:?}");
+                    assert!(!bools.is_null(0), "array: {context}, actual=NULL");
+                    assert_eq!(
+                        bools.value(0),
+                        fixture.expected,
+                        "array: {context}, actual={:?}",
+                        bools.value(0)
+                    );
+                }
+                actual => panic!("array: {context}, actual={actual:?}"),
+            }
+        }
+    }
+
     fn assert_bool_results(result: ColumnarValue, expected: &[Option<bool>]) {
         let ColumnarValue::Array(arr) = result else {
             panic!("expected array result");

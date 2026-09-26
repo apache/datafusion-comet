@@ -19,11 +19,40 @@
 
 package org.apache.comet.expressions
 
+import java.util.regex.Pattern
+
 import org.scalatest.funsuite.AnyFunSuite
+
+import com.fasterxml.jackson.databind.ObjectMapper
 
 import org.apache.comet.serde.{Compatible, Incompatible}
 
 class CometRegexSuite extends AnyFunSuite {
+
+  test("Java regex fixtures remain admitted and match the Java oracle") {
+    val stream = getClass.getResourceAsStream("/regex/rlike-java-fixtures.json")
+    assert(stream != null, "missing Java regex fixtures")
+    val root =
+      try {
+        new ObjectMapper().readTree(stream)
+      } finally {
+        stream.close()
+      }
+    val cases = root.get("cases")
+    assert(cases != null && cases.isArray && cases.size() > 0)
+    val entries = cases.elements()
+    while (entries.hasNext) {
+      val fixture = entries.next()
+      val pattern = fixture.get("pattern").asText()
+      val subject = fixture.get("subject").asText()
+      val expected = fixture.get("expected").booleanValue()
+      withClue(s"fixture=$fixture: ") {
+        assertCompatible(pattern)
+        val actual = Pattern.compile(pattern).matcher(subject).find()
+        assert(actual == expected, s"expected=$expected, actual=$actual")
+      }
+    }
+  }
 
   private def assertCompatible(pattern: String): Unit = {
     val level = CometRegex.supportLevel(pattern, RegexFlavor.RLike)
@@ -187,6 +216,19 @@ class CometRegexSuite extends AnyFunSuite {
 
     val q = nestedStars(30)
     assertIncompatible(s"(($q){255}){16}b")
+  }
+
+  test("nested quantifier limit applies to every admitted quantifier and group kind") {
+    for {
+      group <- Seq("(", "(?:")
+      quantifier <- Seq("*", "+", "?", "{0}", "{1}", "{2}", "{0,}", "{1,}", "{1,2}")
+    } {
+      def nested(depth: Int): String =
+        group * depth + "a" + (s")$quantifier" * depth)
+
+      assertCompatible(nested(CometRegex.MaxQuantifierNesting))
+      assertIncompatible(nested(CometRegex.MaxQuantifierNesting + 1))
+    }
   }
 
   test("rejects capturing groups duplicated by counted repetition past the compile budget") {

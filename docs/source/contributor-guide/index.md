@@ -70,6 +70,7 @@ Adding a New Spark Version <adding_a_new_spark_version>
 :hidden:
 
 Comet SQL Tests <sql-file-tests.md>
+Java Regex Fixtures <regex-fixtures.md>
 Spark SQL Tests <spark-sql-tests.md>
 Iceberg Spark Tests <iceberg-spark-tests.md>
 Continuous Integration <ci>
