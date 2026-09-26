@@ -24,12 +24,16 @@ import java.lang.ref.WeakReference
 import java.util.Properties
 import java.util.concurrent.atomic.AtomicBoolean
 
+import scala.reflect.ClassTag
+
 import org.apache.spark.executor.TaskMetrics
 import org.apache.spark.memory.{TaskMemoryManager, TestMemoryManager}
+import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.catalyst.expressions.PrettyAttribute
-import org.apache.spark.sql.comet.{CometExec, CometExecUtils, CometMetricNode}
+import org.apache.spark.sql.comet.{CometExec, CometExecUtils, CometMetricNode, CometNativeScanExec, CometProjectExec, CometSortExec}
 import org.apache.spark.sql.comet.execution.arrow.CometArrowStream
+import org.apache.spark.sql.functions.{col, udf}
 import org.apache.spark.sql.types.{LongType, StructField, StructType}
 
 import org.apache.comet.{CometConf, CometExecIterator, CometShuffleBlockIterator, Native}
@@ -220,6 +224,96 @@ class CometExecIteratorLifecycleSuite extends CometTestBase {
     }
   }
 
+  test("a plan fed only by native scans returns its memory when its consumer stops early") {
+    // See issue #2453. The sort keeps its sorted runs in memory, and the merge that reads them
+    // spawns a Tokio task for each run.
+    assertMemoryReturnedWhenTheConsumerStopsEarly(expectSpill = false)
+  }
+
+  test("a plan fed only by native scans returns its memory when it spilled and stops early") {
+    // With a tiny pool the sort spills, and the merge that reads the spill files back holds its
+    // memory in the plan's own stream.
+    withSQLConf(
+      CometConf.COMET_OFFHEAP_MEMORY_POOL_FRACTION.key -> "0.002",
+      CometConf.COMET_RESPECT_DATAFUSION_CONFIGS.key -> "true",
+      "spark.comet.datafusion.execution.sort_spill_reservation_bytes" -> "65536") {
+      assertMemoryReturnedWhenTheConsumerStopsEarly(expectSpill = true)
+    }
+  }
+
+  /**
+   * Sorts one file natively, reads a single row of the result and stops, as a JVM limit does, and
+   * checks that the task holds no memory once the native plan has been closed.
+   *
+   * Spark frees whatever a task still holds when the task ends, and can hand it to another task
+   * at once. Memory the native plan returns after that is memory it was still using while Spark
+   * counted it as free, and Spark logs "release called on N bytes but task only has 0 bytes" when
+   * it arrives.
+   */
+  private def assertMemoryReturnedWhenTheConsumerStopsEarly(expectSpill: Boolean): Unit = {
+    withTempPath { path =>
+      // One file keeps every row in one task, so the sort still holds most of them when the
+      // consumer stops.
+      spark
+        .range(0, 100000, 1, 1)
+        .selectExpr("id", "CAST(id AS STRING) AS s")
+        .write
+        .parquet(path.getAbsolutePath)
+      withParquetTable(path.getAbsolutePath, "tbl") {
+        withSQLConf(CometConf.COMET_BATCH_SIZE.key -> "1024") {
+          // Stalls on one row of the sort's second batch, so the plan is still producing that
+          // batch when the consumer stops after the first. The native projection calls it on the
+          // thread running the plan.
+          val stallInSecondBatch = udf { (id: Long) =>
+            if (id == 98000L) Thread.sleep(500)
+            id
+          }
+          val sorted = sql("SELECT * FROM tbl SORT BY id DESC")
+            .select(stallInSecondBatch(col("id")).as("id"), col("s"))
+          val plan = sorted.queryExecution.executedPlan
+          // With no JVM input, the plan runs on a Tokio task rather than the Spark task thread.
+          val sorts = plan.collect { case sort: CometSortExec => sort }
+          assert(sorts.nonEmpty, s"Expected a native sort:\n$plan")
+          assert(
+            plan.find(_.isInstanceOf[CometProjectExec]).isDefined,
+            s"Expected the UDF in a native projection:\n$plan")
+          assert(
+            plan.find(_.isInstanceOf[CometNativeScanExec]).isDefined,
+            s"Expected a native scan:\n$plan")
+
+          val heldWhileReading = spark.sparkContext.longAccumulator
+          val heldOnceClosed = spark.sparkContext.longAccumulator
+          val rowsRead = new RunAfterParentTaskCompletion(
+            sorted.queryExecution.toRdd,
+            context =>
+              heldOnceClosed.add(context.taskMemoryManager().getMemoryConsumptionForThisTask))
+            .mapPartitions { rows =>
+              val read = if (rows.hasNext) {
+                rows.next()
+                1L
+              } else {
+                0L
+              }
+              heldWhileReading.add(
+                TaskContext.get().taskMemoryManager().getMemoryConsumptionForThisTask)
+              Iterator.single(read)
+            }
+            .collect()
+            .sum
+
+          assert(rowsRead == 1)
+          val spilled = sorts.map(_.metrics("spilled_bytes").value).sum
+          assert((spilled > 0) == expectSpill, s"The sort spilled $spilled bytes")
+          // Guards against a vacuous pass: the sort must hold memory when the consumer stops.
+          assert(heldWhileReading.value > 0, "The native sort held no memory while it was read")
+          assert(
+            heldOnceClosed.value == 0,
+            s"The task still held ${heldOnceClosed.value} bytes after its native plan was closed")
+        }
+      }
+    }
+  }
+
   test("getMemoryUsage counts live plans and reports native allocation") {
     val nativeLib = new Native()
     // Other suites' plans can still be live, so the plan count is compared as a delta.
@@ -350,5 +444,23 @@ class CometExecIteratorLifecycleSuite extends CometTestBase {
     assert(memoryUsageLogInterval(Some("-5s")) == 0L)
     assert(memoryUsageLogInterval(Some("false")) == 0L)
     assert(memoryUsageLogInterval(Some("10 seconds please")) == 0L)
+  }
+}
+
+/**
+ * Adds `onTaskEnd` as a task completion listener before it computes `prev`. Spark runs completion
+ * listeners in the reverse order they were added, so `onTaskEnd` runs after every listener that
+ * computing `prev` adds, such as the one that closes a native plan.
+ */
+private class RunAfterParentTaskCompletion[T: ClassTag](
+    prev: RDD[T],
+    onTaskEnd: TaskContext => Unit)
+    extends RDD[T](prev) {
+
+  override protected def getPartitions: Array[Partition] = firstParent[T].partitions
+
+  override def compute(split: Partition, context: TaskContext): Iterator[T] = {
+    context.addTaskCompletionListener[Unit](onTaskEnd)
+    firstParent[T].iterator(split, context)
   }
 }

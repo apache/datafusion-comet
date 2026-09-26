@@ -57,6 +57,14 @@ On the async I/O path, DataFusion operators execute on **tokio worker threads**.
 source path, `block_on()` polls them on the Spark executor task thread, and any tasks they spawn
 run on the shared runtime. All Spark tasks on an executor share one tokio runtime.
 
+When Spark closes a plan, `releasePlan` stops the task that runs it on the async I/O path and
+waits for that task to finish, then drops the plan and waits until every memory reservation the
+plan made has been returned. Tasks that operators spawn, such as the ones a sort's merge reads its
+sorted runs through, are only aborted when the plan is dropped, and they return what they hold the
+next time they yield. The waits matter because Spark frees whatever a task still holds when the
+task ends and can hand that memory to another task, so memory a plan returns later was still in
+use while Spark counted it as free.
+
 ### Rules for native code
 
 **Do not use `thread_local!` or assume thread identity.** Tokio may run your operator's `poll`
