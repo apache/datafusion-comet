@@ -818,6 +818,82 @@ class CometIcebergWriteActionSuite
     }
   }
 
+  test("native acceleration: a driver commit failure aborts all completed task files") {
+    assumeNativeAcceleration()
+    withIcebergCatalog { warehouseDir =>
+      val table = "native_commit_failure"
+      createTable(warehouseDir, table, partitionSpec = "")
+      // Native writes stay off for the seed. The second append is a committed change after
+      // `validateFrom`, so the overwrite below asks Iceberg for serializable validation from
+      // that older snapshot. The check runs inside BatchWrite.commit, after the native tasks
+      // have already written their data files, and the stale snapshot makes it fail every time.
+      coalesceInsert(table, Seq((1, "us-east", 10.0)))
+      val validateFrom = spark
+        .sql(s"SELECT snapshot_id FROM $catalog.$ns.$table.snapshots")
+        .first()
+        .getLong(0)
+      coalesceInsert(table, Seq((2, "us-west", 20.0)))
+
+      val before = countSnapshots(table)
+      val root = dataDir(table).toPath.toAbsolutePath
+
+      def relativePath(location: String): String = {
+        val uri = new java.net.URI(location)
+        val file = if (uri.getScheme == null) new File(location) else new File(uri)
+        root.relativize(file.toPath.toAbsolutePath).toString
+      }
+
+      def metadataFiles: Set[String] = spark
+        .sql(s"SELECT file_path FROM $catalog.$ns.$table.files")
+        .collect()
+        .map(row => relativePath(row.getString(0)))
+        .toSet
+
+      val committedBefore = metadataFiles
+      val physicalBefore = parquetFiles(root.toFile)
+      assert(committedBefore.nonEmpty, "seed writes did not create a data file")
+      assert(physicalBefore == committedBefore)
+
+      val session = spark
+      import session.implicits._
+      val overwrite = Seq((2, "us-west", 99.0)).toDF("id", "region", "amount")
+      val (failedPlans, error) = withNativeEnabled {
+        captureFailedPlans(spark) {
+          overwrite
+            .coalesce(1)
+            .writeTo(s"$catalog.$ns.$table")
+            .option("isolation-level", "serializable")
+            .option("validate-from-snapshot-id", validateFrom.toString)
+            .overwrite($"id" === 2)
+        }
+      }
+
+      assert(
+        error.toSeq
+          .flatMap(exceptionChain)
+          .exists(t => Option(t.getMessage).exists(_.toLowerCase.contains("conflict"))),
+        s"expected Iceberg commit-time conflict, got $error")
+      val nativeWrites =
+        failedPlans.flatMap(p => collectWithSubqueries(p) { case w: CometIcebergWriteExec => w })
+      val commits =
+        failedPlans.flatMap(p => collectWithSubqueries(p) { case c: IcebergCommitExec => c })
+      assert(
+        nativeWrites.nonEmpty && commits.nonEmpty,
+        "failed overwrite did not use the native writer and Iceberg committer:\n" +
+          failedPlans.mkString("\n--\n"))
+
+      assert(countSnapshots(table) == before, "failed commit must not create a snapshot")
+      assertRows(table, expectedIds = Seq(1, 2))
+      val physical = parquetFiles(root.toFile)
+      val referenced = metadataFiles
+      assert(
+        physical == physicalBefore,
+        "commit failure changed data files: " +
+          s"left ${physical -- physicalBefore}, missing ${physicalBefore -- physical}")
+      assert(physical == referenced, s"orphan files: ${physical -- referenced}")
+    }
+  }
+
   // https://github.com/apache/datafusion-comet/issues/5689: the Iceberg CoW rewrite plan mixes a
   // Spark-columnar `BatchScan` with row-based joins/filters underneath the write, so the write's
   // subtree needs Spark to insert columnar-to-row transitions inside it. With AQE on those
