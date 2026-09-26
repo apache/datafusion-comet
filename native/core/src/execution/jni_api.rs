@@ -425,6 +425,7 @@ pub fn get_runtime() -> Handle {
 /// Must not be called from within the runtime's own worker threads, otherwise the shutdown
 /// would deadlock/panic.
 pub fn release_runtime() {
+    crate::execution::operators::clear_file_io_cache();
     let runtime = TOKIO_RUNTIME.lock().take();
     if let Some(runtime) = runtime {
         runtime.shutdown_timeout(Duration::from_secs(3));

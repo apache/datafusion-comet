@@ -45,8 +45,8 @@ use std::time::Duration;
 /// executor from holding a stale credential for the entire job lifetime.
 const DEFAULT_EXPIRY_WHEN_UNKNOWN: Duration = Duration::from_secs(300);
 
-/// Once-per-process latch for the "missing expiry" warning. Bridges are per-scan, so a per-bridge
-/// latch would re-log on every scan.
+/// Once-per-process latch for the "missing expiry" warning. Bridges live as long as their entry in
+/// the executor's FileIO cache, so a per-bridge latch would re-log for every new configuration.
 static WARNED_MISSING_EXPIRY: OnceCell<()> = OnceCell::new();
 
 /// Access intent forwarded to the Java SPI. Ordinal must match the JVM `CometS3AccessMode` enum.
