@@ -222,6 +222,12 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
   // custom TableOperations can return a LocationProvider directly, while the native writer always
   // generates `<data location>/<partition path>/<file>`. Admit only Iceberg's default provider;
   // object-storage layout is already declined by the preceding property rule.
+  //
+  // Before Iceberg 1.11, iceberg-java does not preserve that TableOperations-supplied provider on
+  // executors: it reconstructs the provider from the table location and properties, so those
+  // writes use the default layout anyway. From 1.11 on, iceberg-java keeps and uses the custom
+  // provider. This gate stays unconditional and fail-closed on every Iceberg version Comet pins,
+  // so a non-default provider always falls back.
   private val requireDefaultLocationProvider: TriggerRule = ctx =>
     IcebergReflection.getLocationProvider(ctx.table) match {
       case None =>

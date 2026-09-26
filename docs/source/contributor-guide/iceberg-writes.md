@@ -134,7 +134,8 @@ The gate has these properties, and a new rule has to keep them:
   and `spark.sql.iceberg.*` session overrides. Reading table properties alone misses those.
 - **It checks instantiated state as well as properties.** A catalog or a custom `TableOperations`
   can install a `LocationProvider`, `FileIO`, or `EncryptionManager` without any property changing,
-  so the corresponding rules inspect `table.locationProvider()`, `table.io()`, and
+  so `requireDefaultLocationProvider`, `requireRecognizedTableFileIO`, and
+  `requirePlaintextEncryptionManager` inspect `table.locationProvider()`, `table.io()`, and
   `table.encryption()` themselves.
 - **It fails closed.** A reflection lookup that cannot answer returns a reason, not `None`, and
   `getSupportLevel` turns any non-fatal exception into `Unsupported`. `convert` does the same for
