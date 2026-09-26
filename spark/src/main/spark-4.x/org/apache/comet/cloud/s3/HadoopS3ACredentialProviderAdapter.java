@@ -27,14 +27,19 @@ import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.s3a.S3AUtils;
 import org.apache.hadoop.fs.s3a.auth.CredentialProviderListFactory;
 
-import org.apache.comet.util.ClassLoaders;
-
 import software.amazon.awssdk.auth.credentials.AwsCredentialsProvider;
 
 /**
  * Delegates credential resolution to Hadoop S3A's own provider construction, so it accepts
  * everything the {@code fs.s3a.aws.credentials.provider} chain accepts. This is the spark-4.x (AWS
  * SDK v2) body; it calls {@link CredentialProviderListFactory} and returns v2 credentials.
+ *
+ * <p>On Hadoop 3.4 the factory loads each named provider through {@code
+ * S3AUtils.getInstanceFromReflection}, which uses hadoop-aws's own class loader and ignores the
+ * Configuration's loader. So a provider named in {@code fs.s3a.aws.credentials.provider} must be
+ * visible to the loader that loaded hadoop-aws (the same requirement as plain Spark on 3.4); Comet
+ * cannot redirect it to the user-jar loader here. (The spark-3.x body can, because Hadoop 3.3.4
+ * loads through {@code conf.getClasses}.)
  *
  * <p>Enable it (leaving {@code fs.s3a.aws.credentials.provider} untouched) with:
  *
@@ -45,10 +50,6 @@ import software.amazon.awssdk.auth.credentials.AwsCredentialsProvider;
 public class HadoopS3ACredentialProviderAdapter implements CometS3CredentialProvider {
 
   private Map<String, String> properties;
-  // Captured on the thread that runs initialize() (the dispatcher calls it during planning, which
-  // has Spark's user-jar loader); native worker threads have a null context loader. Handed to the
-  // Configuration so S3A's factory loads the named provider classes from the right loader.
-  private volatile ClassLoader classLoader;
   // One delegate per bucket: on the Iceberg path the dispatch key is the catalog, so a single
   // instance can serve multiple buckets; the Parquet path is per-bucket and uses a single entry.
   private final ConcurrentHashMap<String, AwsCredentialsProvider> delegates =
@@ -57,7 +58,6 @@ public class HadoopS3ACredentialProviderAdapter implements CometS3CredentialProv
   @Override
   public void initialize(Map<String, String> catalogProperties) {
     this.properties = catalogProperties;
-    this.classLoader = ClassLoaders.contextOrDefault(getClass().getClassLoader());
   }
 
   @Override
@@ -85,11 +85,6 @@ public class HadoopS3ACredentialProviderAdapter implements CometS3CredentialProv
   private AwsCredentialsProvider buildDelegate(String bucket) throws Exception {
     Configuration conf =
         S3AUtils.propagateBucketOptions(AdapterSupport.toConfiguration(properties), bucket);
-    if (classLoader != null) {
-      // So S3AUtils' factory loads the named provider classes from Spark's user-jar loader, not the
-      // (possibly null) context loader of the native worker thread.
-      conf.setClassLoader(classLoader);
-    }
     AdapterSupport.patchSecurityCredentialProviders(conf);
     AdapterSupport.checkNoDelegationTokenBinding(conf);
     URI uri = new URI("s3a://" + bucket + "/");

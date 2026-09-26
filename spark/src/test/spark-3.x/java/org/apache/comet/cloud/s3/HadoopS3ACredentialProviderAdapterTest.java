@@ -151,4 +151,39 @@ public class HadoopS3ACredentialProviderAdapterTest {
         assertThrows(IllegalStateException.class, () -> resolve(props, "my-bucket"));
     assertTrue(e.getMessage().contains("fs.s3a.delegation.token.binding"));
   }
+
+  @Test
+  public void usesLoaderCapturedAtInitializeOnNullContextThread() throws Exception {
+    // On Hadoop 3.3.4 the adapter sets the captured loader on the Configuration and S3AUtils loads
+    // the named provider through conf.getClasses, which honors it. Capturing at initialize() and
+    // fetching on a null-context thread must still resolve via that loader.
+    String target = "org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider";
+    CapturingClassLoaderSupport.RecordingClassLoader recording =
+        new CapturingClassLoaderSupport.RecordingClassLoader(target, getClass().getClassLoader());
+    HadoopS3ACredentialProviderAdapter adapter = new HadoopS3ACredentialProviderAdapter();
+    Map<String, String> props = new HashMap<>();
+    props.put("fs.s3a.aws.credentials.provider", target);
+    props.put("fs.s3a.access.key", "AKGLOBAL");
+    props.put("fs.s3a.secret.key", "SKGLOBAL");
+    try {
+      CapturingClassLoaderSupport.onThread(
+          recording,
+          () -> {
+            adapter.initialize(props);
+            return null;
+          });
+      CometS3Credentials creds =
+          CapturingClassLoaderSupport.onThread(
+              null,
+              () ->
+                  adapter.getCredentialsForPath(
+                      new CometS3CredentialContext("my-bucket", "/obj", CometS3AccessMode.READ)));
+      assertEquals("AKGLOBAL", creds.getAccessKeyId());
+      assertTrue(
+          "the captured loader should have loaded the named provider",
+          recording.loaded.contains(target));
+    } finally {
+      adapter.close();
+    }
+  }
 }

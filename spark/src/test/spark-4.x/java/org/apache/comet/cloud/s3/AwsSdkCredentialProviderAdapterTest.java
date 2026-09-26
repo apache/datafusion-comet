@@ -106,4 +106,35 @@ public class AwsSdkCredentialProviderAdapterTest {
     IllegalStateException e = assertThrows(IllegalStateException.class, () -> resolve(props));
     assertTrue(e.getMessage().contains("does not implement"));
   }
+
+  @Test
+  public void usesLoaderCapturedAtInitializeOnNullContextThread() throws Exception {
+    // initialize() captures the context loader; a later fetch on a null-context thread (as native
+    // worker threads are) must load the delegate with that captured loader, not the current TCCL.
+    String target = V2NoArgProvider.class.getName();
+    CapturingClassLoaderSupport.RecordingClassLoader recording =
+        new CapturingClassLoaderSupport.RecordingClassLoader(target, getClass().getClassLoader());
+    AwsSdkCredentialProviderAdapter adapter = new AwsSdkCredentialProviderAdapter();
+    Map<String, String> props = new HashMap<>();
+    props.put(KEY, target);
+    try {
+      CapturingClassLoaderSupport.onThread(
+          recording,
+          () -> {
+            adapter.initialize(props);
+            return null;
+          });
+      CometS3Credentials creds =
+          CapturingClassLoaderSupport.onThread(
+              null,
+              () ->
+                  adapter.getCredentialsForPath(
+                      new CometS3CredentialContext("bkt", "/obj", CometS3AccessMode.READ)));
+      assertEquals("noarg-ak", creds.getAccessKeyId());
+      assertTrue(
+          "the captured loader should have loaded the delegate", recording.loaded.contains(target));
+    } finally {
+      adapter.close();
+    }
+  }
 }

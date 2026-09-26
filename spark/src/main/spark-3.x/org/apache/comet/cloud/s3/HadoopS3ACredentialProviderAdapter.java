@@ -46,8 +46,9 @@ public class HadoopS3ACredentialProviderAdapter implements CometS3CredentialProv
 
   private Map<String, String> properties;
   // Captured on the thread that runs initialize() (the dispatcher calls it during planning, which
-  // has Spark's user-jar loader); native worker threads have a null context loader. Handed to the
-  // Configuration so S3A's factory loads the named provider classes from the right loader.
+  // has Spark's user-jar loader); native worker threads have a null context loader. Set on the
+  // Configuration so S3A's factory loads the named provider classes from it. This works on Hadoop
+  // 3.3.4 because it loads them through conf.getClasses, which honors the conf's loader.
   private volatile ClassLoader classLoader;
   // One delegate per bucket: on the Iceberg path the dispatch key is the catalog, so a single
   // instance can serve multiple buckets; the Parquet path is per-bucket and uses a single entry.
@@ -86,8 +87,9 @@ public class HadoopS3ACredentialProviderAdapter implements CometS3CredentialProv
     Configuration conf =
         S3AUtils.propagateBucketOptions(AdapterSupport.toConfiguration(properties), bucket);
     if (classLoader != null) {
-      // So S3AUtils' factory loads the named provider classes from Spark's user-jar loader, not the
-      // (possibly null) context loader of the native worker thread.
+      // Hadoop 3.3.4's factory loads named providers through conf.getClasses, which honors this
+      // loader, so a provider on the user-jar loader resolves even from a null-context worker
+      // thread.
       conf.setClassLoader(classLoader);
     }
     AdapterSupport.patchSecurityCredentialProviders(conf);
