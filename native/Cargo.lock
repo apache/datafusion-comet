@@ -3324,8 +3324,9 @@ dependencies = [
 
 [[package]]
 name = "hdfs-sys"
-version = "0.3.0"
-source = "git+https://github.com/peterxcli/hdfs-sys?rev=0615a3948307757c8a75f1ca6a318df7ddaa17fd#0615a3948307757c8a75f1ca6a318df7ddaa17fd"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "18138c3dacdf0e95f834369f996b21d2b6fa99e71787ef45e2ece09b37bd1dd1"
 dependencies = [
  "cc",
  "java-locator",
