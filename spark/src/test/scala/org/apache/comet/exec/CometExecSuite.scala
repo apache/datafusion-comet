@@ -51,7 +51,7 @@ import org.apache.spark.sql.internal.SQLConf.SESSION_LOCAL_TIMEZONE
 import org.apache.spark.sql.types._
 import org.apache.spark.unsafe.types.UTF8String
 
-import org.apache.comet.{CometConf, CometExecIterator, ExtendedExplainInfo}
+import org.apache.comet.{CometConf, CometExecIterator, CometNativeException, ExtendedExplainInfo}
 import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus, isSpark41Plus, isSpark42Plus}
 import org.apache.comet.serde.Config.ConfigMap
 import org.apache.comet.testing.{DataGenOptions, ParquetGenerator, SchemaGenOptions}
@@ -3727,6 +3727,55 @@ class CometExecSuite extends CometTestBase {
           checkSparkAnswerAndOperator(df)
         }
       })
+  }
+
+  // https://github.com/apache/datafusion-comet/issues/6234. The final TopK reads its child's
+  // batches through an Arrow C stream, and Arrow Java hands native only the text of an exception
+  // thrown while producing one. The first batch is read on the JVM to derive the stream's schema,
+  // so the overflow has to land past it: row 90000 of a single file, read by one task.
+  test("TakeOrderedAndProjectExec: an input error past the first batch keeps Spark's exception") {
+    withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
+      withTempPath { dir =>
+        spark
+          .range(0, 100000, 1, 1)
+          .selectExpr("CAST(id AS INT) AS id")
+          .write
+          .parquet(dir.getCanonicalPath)
+        spark.read.parquet(dir.getCanonicalPath).createOrReplaceTempView("overflow_src")
+        val df =
+          sql(s"SELECT id + ${Int.MaxValue - 90000} AS v FROM overflow_src ORDER BY v LIMIT 5")
+        checkSparkError(df, "ARITHMETIC_OVERFLOW")
+      }
+    }
+  }
+
+  // https://github.com/apache/datafusion-comet/issues/6234. CometSparkToColumnarExec exports its
+  // rows to native without reading a batch on the JVM first, so even an exception thrown for the
+  // first batch reached the user only as the text inside a CometNativeException.
+  test("SparkToColumnar keeps the exception its row input throws") {
+    val rows = spark.sparkContext.parallelize(1 to 10, 1).map { i =>
+      if (i == 5) throw new IllegalStateException("injected row input failure")
+      Row(i)
+    }
+    val df = spark
+      .createDataFrame(rows, StructType(Seq(StructField("a", IntegerType))))
+      .groupBy()
+      .sum("a")
+    assert(
+      collect(df.queryExecution.executedPlan) { case c: CometSparkToColumnarExec => c }.nonEmpty,
+      s"expected the rows to reach native through CometSparkToColumnarExec:\n" +
+        df.queryExecution.executedPlan)
+
+    val (sparkError, cometError) = checkSparkAnswerMaybeThrows(df)
+    def injected(error: Option[Throwable], engine: String): (Class[_], Int) = {
+      val chain = causeChain(error.getOrElse(fail(s"$engine did not fail")))
+      assert(!chain.exists(_.isInstanceOf[CometNativeException]), s"$engine: ${chain.head}")
+      val depth = chain.indexWhere(t =>
+        t.isInstanceOf[IllegalStateException] && t.getMessage == "injected row input failure")
+      assert(depth >= 0, s"$engine did not surface the injected failure: ${chain.head}")
+      (chain.head.getClass, depth)
+    }
+    assert(injected(cometError, "Comet") == injected(sparkError, "Spark"))
   }
 
   test("collect limit") {

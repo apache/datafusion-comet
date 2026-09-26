@@ -24,6 +24,7 @@ import java.lang.ref.WeakReference
 import java.util.Properties
 import java.util.concurrent.atomic.AtomicBoolean
 
+import org.apache.arrow.vector.BigIntVector
 import org.apache.spark.executor.TaskMetrics
 import org.apache.spark.memory.{TaskMemoryManager, TestMemoryManager}
 import org.apache.spark.sql.CometTestBase
@@ -31,10 +32,12 @@ import org.apache.spark.sql.catalyst.expressions.PrettyAttribute
 import org.apache.spark.sql.comet.{CometExec, CometExecUtils, CometMetricNode}
 import org.apache.spark.sql.comet.execution.arrow.CometArrowStream
 import org.apache.spark.sql.types.{LongType, StructField, StructType}
+import org.apache.spark.sql.vectorized.{ColumnarBatch, ColumnVector}
 
-import org.apache.comet.{CometConf, CometExecIterator, CometShuffleBlockIterator, Native}
+import org.apache.comet.{CometArrowAllocator, CometConf, CometExecIterator, CometShuffleBlockIterator, Native}
 import org.apache.comet.serde.Config.ConfigMap
 import org.apache.comet.serde.OperatorOuterClass
+import org.apache.comet.vector.CometPlainVector
 
 /**
  * Regression tests for the native plan lifecycle: every `createPlan` must be balanced by exactly
@@ -217,6 +220,56 @@ class CometExecIteratorLifecycleSuite extends CometTestBase {
         // second close() must be a no-op instead of calling releasePlan again.
         iter.close()
       }
+    }
+  }
+
+  test("an input that throws after its first batch fails the plan with its own exception") {
+    val allocator = CometArrowAllocator.newChildAllocator("input-failure", 0, Long.MaxValue)
+    try {
+      withTaskContext(4600000L) {
+        val vector = new BigIntVector("test", allocator)
+        vector.allocateNew(2)
+        vector.set(0, 1L)
+        vector.set(1, 2L)
+        vector.setValueCount(2)
+        val first = new ColumnarBatch(Array[ColumnVector](new CometPlainVector(vector)), 2)
+        val boom = new IllegalStateException("injected input failure")
+        // The stream's schema is derived from the first batch on the JVM, so a failure there
+        // propagates unchanged. Native pulls every later batch through the exported stream, and
+        // Arrow Java hands native only the text of what that pull threw.
+        val input = Iterator.single(first) ++ new Iterator[ColumnarBatch] {
+          override def hasNext: Boolean = throw boom
+          override def next(): ColumnarBatch = throw boom
+        }
+        val schema = StructType(Seq(StructField("test", LongType, nullable = false)))
+        val stream = CometArrowStream.fromColumnarBatchIter(
+          input,
+          schema,
+          CometArrowStream.NATIVE_TIMEZONE,
+          "input-failure")
+        val limitOp =
+          CometExecUtils.getLimitNativePlan(Seq(PrettyAttribute("test", LongType)), 100).get
+        val iter = CometExec.getCometIterator(
+          Array(stream.asInstanceOf[Object]),
+          1,
+          limitOp,
+          CometMetricNode(Map.empty),
+          1,
+          0,
+          None,
+          Seq.empty)
+
+        assert(iter.hasNext && iter.next().numRows() == 2)
+        val thrown = intercept[Throwable](iter.hasNext)
+        assert(thrown eq boom, s"expected the input's own exception, got: $thrown")
+
+        TaskContext.get().asInstanceOf[TaskContextImpl].markTaskCompleted(None)
+        assert(
+          CometArrowStream.inputFailure(stream).isEmpty,
+          "a completed task must not keep its input streams' failures")
+      }
+    } finally {
+      allocator.close()
     }
   }
 

@@ -112,6 +112,16 @@ On the native side, `planner.rs` reads each stream's `memoryAddress` and takes o
 `AlignedArrowStreamReader::from_raw`, importing the schema once. `ScanExec::get_next_batch` then pulls each batch
 through the stream's `get_next` callback. There is no per-batch JNI call and no per-column FFI export.
 
+### Errors from the JVM Producer
+
+Arrow Java's exported stream catches whatever the reader throws in `get_next` and hands native only its text, so
+native fails the plan with a `CometNativeException` built from that text. `CometArrowStream.stream` wraps every
+reader to keep the throwable itself until the task completes, and `CometExecIterator` rethrows it in place of the
+native error. The task then fails with the exception Spark would have thrown, such as a `SparkArithmeticException`
+from an upstream plan. For an input of Arrow-backed `ColumnarBatch`es, the first batch never takes this path: schema
+reconciliation reads it on the JVM before the stream is exported, so what it throws propagates directly. A test of
+this path therefore has to fail a later batch.
+
 ### Buffer Alignment (AlignedArrowStreamReader)
 
 `AlignedArrowStreamReader` (in `execution/operators/aligned_stream_reader.rs`) wraps the imported stream and calls
