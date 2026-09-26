@@ -572,7 +572,9 @@ write, commit, and row-level-operation tests.</p></li>
 <code class="docutils literal notranslate"><span class="pre">LocalTableScanExec</span></code>, the conversion is declined, and the write silently runs on the JVM writer. Many Iceberg
 suites seed their data that way, so leaving it off hides the native writer from most of the write surface.</p></li>
 <li><p>Enable fallback logging (<code class="docutils literal notranslate"><span class="pre">spark.comet.explainFallback.enabled</span></code>) so that every operator Comet declines is
-reported in the test output together with the reason it was declined.</p></li>
+reported in the test output together with the reason it was declined. The output goes to the JUnit XML
+reports rather than the CI job log; see <a class="reference internal" href="#which-writer-ran-each-iceberg-write">Which writer ran each Iceberg write</a>
+for how CI reports native write coverage.</p></li>
 </ul>
 <p><code class="docutils literal notranslate"><span class="pre">dev/local-ci.sh</span></code> runs all of the steps below the way CI runs them:</p>
 <div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>dev/local-ci.sh<span class="w"> </span>iceberg<span class="w">              </span><span class="c1"># every target the workflow runs</span>
@@ -680,6 +682,31 @@ path, reflection code (<code class="docutils literal notranslate"><span class="p
 can differ across Iceberg versions. The Comet test suites in the Linux build do not exercise Iceberg’s
 own Spark tests, so without the label the first Iceberg 1.11 verdict is the merge queue’s, and the
 first verdict on the older Iceberg versions is the nightly run’s, after the change has landed.</p>
+<section id="which-writer-ran-each-iceberg-write">
+<h3>Which writer ran each Iceberg write<a class="headerlink" href="#which-writer-ran-each-iceberg-write" title="Link to this heading">#</a></h3>
+<p>A passing Iceberg job does not show that Comet’s native writer ran. <code class="docutils literal notranslate"><span class="pre">CometIcebergNativeWrite</span></code> falls back
+to Iceberg’s JVM writer without failing the write, no upstream test asserts which writer ran, and Gradle
+does not copy the fallback warnings into the job log. So the core and extensions jobs set
+<code class="docutils literal notranslate"><span class="pre">COMET_ICEBERG_WRITE_REPORT_DIR</span></code>, the environment variable behind the test-only config
+<code class="docutils literal notranslate"><span class="pre">spark.comet.testing.icebergWriteReport.dir</span></code>. When it is set, the Comet driver plugin registers
+<code class="docutils literal notranslate"><span class="pre">IcebergWriteReportListener</span></code>, which writes one JSON line for each Iceberg write the tests run. Each line
+records one of three writers:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">native</span></code>: Comet’s native writer (<code class="docutils literal notranslate"><span class="pre">CometIcebergWriteExec</span></code>).</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">jvm</span></code>: Comet’s split operator planned the write but kept Iceberg’s JVM writer (<code class="docutils literal notranslate"><span class="pre">IcebergWriteExec</span></code>).
+The line includes the reasons Comet recorded for not converting it.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">spark</span></code>: Spark’s own V2 write operator ran the write, so Comet’s split operator never saw it. Examples
+are <code class="docutils literal notranslate"><span class="pre">WriteDelta</span></code> for merge-on-read, <code class="docutils literal notranslate"><span class="pre">WriteToDataSourceV2</span></code> for a streaming micro-batch, and on Spark
+3.4 the CTAS and RTAS execs, which write the table themselves.</p></li>
+</ul>
+<p><code class="docutils literal notranslate"><span class="pre">dev/ci/summarize-iceberg-writes.py</span></code> turns these records into a table on the job’s summary page. It
+shows the count and share of each writer, the most common fallback reasons, and the Spark write
+operators. Each shard and the extensions job gets its own table. The shard coverage job adds one for
+all shards together, counting only the latest attempt of each shard. A shard whose latest attempt
+recorded no writes is named above the table rather than counted from an earlier attempt. The raw
+records are uploaded with the job’s other reports. The summary never fails a job.
+<code class="docutils literal notranslate"><span class="pre">dev/local-ci.sh</span> <span class="pre">iceberg</span></code> prints the same summary after each shard and after the extensions target.</p>
+</section>
 </section>
 </section>
 
@@ -734,7 +761,10 @@ first verdict on the older Iceberg versions is the nightly run’s, after the ch
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#clone-iceberg-and-apply-diff">2. Clone Iceberg and Apply Diff</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#run-iceberg-spark-tests">3. Run Iceberg Spark Tests</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#updating-diffs">Updating Diffs</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#running-tests-in-ci">Running Tests in CI</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#running-tests-in-ci">Running Tests in CI</a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#which-writer-ran-each-iceberg-write">Which writer ran each Iceberg write</a></li>
+</ul>
+</li>
 </ul>
   </nav></div>
 
