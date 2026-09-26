@@ -230,6 +230,24 @@ class IcebergReflectionSuite extends AnyFunSuite {
     assert(IcebergReflection.getEncryptionManager(new NoEncryptionMethodTable).isEmpty)
   }
 
+  class CustomLocationProviderTable {
+    def locationProvider(): AnyRef = new Object
+  }
+
+  class NoLocationProviderTable
+
+  test("getLocationProvider resolves the provider the table actually installed") {
+    val custom = IcebergReflection.getLocationProvider(new CustomLocationProviderTable)
+    assert(custom.isDefined)
+    assert(custom.get.getClass.getName != IcebergReflection.ClassNames.DEFAULT_LOCATION_PROVIDER)
+  }
+
+  test("getLocationProvider returns None when locationProvider() cannot be resolved") {
+    // The write gate treats None as fail-closed, so a table type without the accessor (or a
+    // future rename) declines the native write rather than assuming DefaultLocationProvider.
+    assert(IcebergReflection.getLocationProvider(new NoLocationProviderTable).isEmpty)
+  }
+
   test("executor-side reflection surface resolves against the linked Iceberg") {
     // The eligibility gate declines a native write when any class, method, or constructor used
     // by the executor-side commit-message assembly fails to resolve (it would otherwise be a
