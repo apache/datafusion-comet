@@ -30,6 +30,13 @@ pub(super) trait SparkMemoryManager: Send + Sync {
     /// Asks Spark for `size` bytes and returns how many it granted.
     fn acquire(&self, size: usize) -> CometResult<i64>;
     fn release(&self, size: usize) -> CometResult<()>;
+    /// Like [`Self::acquire`], for a pool's anchor. The JVM counts the anchor toward the task's
+    /// balance but not toward the usage it checks for leaked reservations when a plan closes.
+    fn acquire_anchor(&self, size: usize) -> CometResult<i64>;
+    fn release_anchor(&self, size: usize) -> CometResult<()>;
+    /// Like [`Self::release`], except that one of the `size` bytes stays with Spark as the
+    /// pool's anchor, to be handed back later through [`Self::release_anchor`].
+    fn release_keeping_anchor(&self, size: usize) -> CometResult<()>;
 }
 
 /// Calls [`crate::jvm_bridge::CometTaskMemoryManager`] over JNI.
@@ -48,6 +55,29 @@ impl SparkMemoryManager for JniMemoryManager {
         let handle = self.0.as_obj();
         JVMClasses::with_env(|env| unsafe {
             jni_call!(env, comet_task_memory_manager(handle).release_memory(size as i64) -> ())
+        })
+    }
+
+    fn acquire_anchor(&self, size: usize) -> CometResult<i64> {
+        let handle = self.0.as_obj();
+        JVMClasses::with_env(|env| unsafe {
+            jni_call!(env,
+              comet_task_memory_manager(handle).acquire_anchor(size as i64) -> i64)
+        })
+    }
+
+    fn release_anchor(&self, size: usize) -> CometResult<()> {
+        let handle = self.0.as_obj();
+        JVMClasses::with_env(|env| unsafe {
+            jni_call!(env, comet_task_memory_manager(handle).release_anchor(size as i64) -> ())
+        })
+    }
+
+    fn release_keeping_anchor(&self, size: usize) -> CometResult<()> {
+        let handle = self.0.as_obj();
+        JVMClasses::with_env(|env| unsafe {
+            jni_call!(env,
+              comet_task_memory_manager(handle).release_keeping_anchor(size as i64) -> ())
         })
     }
 }
@@ -106,16 +136,36 @@ impl SparkMemory {
         self.task_attempt_id
     }
 
+    /// The Spark calls themselves, without the overcommit ledger, for bytes a pool never
+    /// records, such as the fair pool's anchor byte and a short grant it hands back itself.
+    pub(super) fn manager(&self) -> &dyn SparkMemoryManager {
+        self.manager.as_ref()
+    }
+
     /// Acquires `size` bytes plus any outstanding overcommit, or nothing. A full grant repays the
     /// overcommit; a partial one is handed back and reported as a [`Refusal`].
     pub(super) fn try_acquire(&self, size: usize) -> CometResult<Result<(), Refusal>> {
+        let refusal = match self.try_acquire_leaving_a_short_grant(size)? {
+            Ok(()) => return Ok(Ok(())),
+            Err(refusal) => refusal,
+        };
+        if refusal.granted > 0 {
+            self.manager.release(refusal.granted)?;
+        }
+        Ok(Err(refusal))
+    }
+
+    /// Like [`Self::try_acquire`], except that a short grant stays with Spark, recorded nowhere,
+    /// so the caller can keep charging those bytes until it hands them back through
+    /// [`Self::manager`].
+    pub(super) fn try_acquire_leaving_a_short_grant(
+        &self,
+        size: usize,
+    ) -> CometResult<Result<(), Refusal>> {
         let debt = self.overcommit.load(Relaxed);
         let request = size.saturating_add(debt);
         let granted = granted(request, self.manager.acquire(request)?);
         if granted < request {
-            if granted > 0 {
-                self.manager.release(granted)?;
-            }
             return Ok(Err(Refusal {
                 overcommit: debt,
                 granted,
@@ -152,9 +202,19 @@ impl SparkMemory {
 
     /// Frees `size` bytes, repaying overcommit before releasing the rest to Spark.
     pub(super) fn release(&self, size: usize) -> CometResult<()> {
+        self.release_through(size, |to_release| self.manager.release(to_release))
+    }
+
+    /// Like [`Self::release`], with `hand_back` making the call that returns what is left once
+    /// the overcommit is repaid. It is not called when nothing is left.
+    pub(super) fn release_through(
+        &self,
+        size: usize,
+        hand_back: impl FnOnce(usize) -> CometResult<()>,
+    ) -> CometResult<()> {
         let to_release = size - self.repay(size);
         if to_release > 0 {
-            self.manager.release(to_release)?;
+            hand_back(to_release)?;
         }
         Ok(())
     }
@@ -264,6 +324,19 @@ pub(super) mod fake {
             *held -= size;
             self.released.lock().push(size);
             Ok(())
+        }
+
+        /// The fake keeps one balance, so the anchor shows in `held` like any other grant.
+        fn acquire_anchor(&self, size: usize) -> CometResult<i64> {
+            self.acquire(size)
+        }
+
+        fn release_anchor(&self, size: usize) -> CometResult<()> {
+            self.release(size)
+        }
+
+        fn release_keeping_anchor(&self, size: usize) -> CometResult<()> {
+            self.release(size - 1)
         }
     }
 }

@@ -44,7 +44,16 @@ public class CometTaskMemoryManager {
 
   public final TaskMemoryManager internal;
   private final NativeMemoryConsumer nativeMemoryConsumer;
+
+  /** Bytes Comet's memory pools hold from Spark through this manager, see {@link #getUsed}. */
   private final AtomicLong used = new AtomicLong();
+
+  /**
+   * Bytes held as a memory pool's anchor, see {@link #acquireAnchor}. Counted apart from {@link
+   * #used}, which is what {@code CometExecIterator.close} checks for reservations that were never
+   * released.
+   */
+  private final AtomicLong anchor = new AtomicLong();
 
   public CometTaskMemoryManager(long id, long taskAttemptId) {
     this.id = id;
@@ -72,6 +81,11 @@ public class CometTaskMemoryManager {
     long acquired = internal.acquireExecutionMemory(size, nativeMemoryConsumer);
     long newUsed = used.addAndGet(acquired);
     if (acquired < size) {
+      // This thread holds the short grant until native code hands it back, and another acquire
+      // of this task can be waiting inside Spark for those bytes while it holds the
+      // TaskMemoryManager monitor. So nothing here may take that monitor, which rules out
+      // TaskMemoryManager.showMemoryUsage. getMemoryConsumptionForThisTask takes only the memory
+      // manager's monitor, which a waiting acquire gives up.
       logger.warn(
           "Task {} requested {} bytes but only received {} bytes. Current allocation is {} and "
               + "the total memory consumption is {} bytes.",
@@ -80,8 +94,6 @@ public class CometTaskMemoryManager {
           acquired,
           newUsed,
           internal.getMemoryConsumptionForThisTask());
-      // If memory manager is not able to acquire the requested size, log memory usage
-      internal.showMemoryUsage();
     }
     return acquired;
   }
@@ -102,6 +114,52 @@ public class CometTaskMemoryManager {
     internal.releaseExecutionMemory(size, nativeMemoryConsumer);
   }
 
+  // Called by Comet native through JNI.
+  // Takes the fair memory pool's anchor, which the pool holds for its whole life so that the task
+  // stays in Spark's active set (see the memory management guide). The bytes come out of the
+  // task's balance like any other acquire but are not counted in `used`. The pool is shared by
+  // every native plan of the task and is charged to the first plan's manager, so a plan closing
+  // while another plan still holds the pool would otherwise report the anchor as a leak. Spark
+  // declines the anchor with a zero grant when the task is at its share and the pool retries it
+  // later, so a short grant is not logged here.
+  public long acquireAnchor(long size) {
+    long acquired = internal.acquireExecutionMemory(size, nativeMemoryConsumer);
+    anchor.addAndGet(acquired);
+    return acquired;
+  }
+
+  // Called by Comet native through JNI
+  public void releaseAnchor(long size) {
+    anchor.addAndGet(-size);
+    internal.releaseExecutionMemory(size, nativeMemoryConsumer);
+  }
+
+  // Called by Comet native through JNI.
+  // Hands back `size` bytes of the pool's reservations except for one, which the pool keeps as
+  // its anchor. The pool does this for a release while Spark has declined the anchor, so that the
+  // release cannot zero the task's balance under an acquire parked inside Spark. Spark is called
+  // first and the counters move only once it returns, so a throw leaves both untouched and the
+  // pool stays unanchored. The kept byte moves from `used` to `anchor` and is returned later
+  // through releaseAnchor.
+  public void releaseKeepingAnchor(long size) {
+    if (size > 1) {
+      internal.releaseExecutionMemory(size - 1, nativeMemoryConsumer);
+    }
+    long newUsed = used.addAndGet(-size);
+    anchor.incrementAndGet();
+    if (newUsed < 0) {
+      logger.error(
+          "Task {} used memory is negative ({}) after releasing {} bytes",
+          taskAttemptId,
+          newUsed,
+          size);
+    }
+  }
+
+  /**
+   * Bytes Comet's memory pools hold from Spark through this manager, without any anchor. A non-zero
+   * value once the plan is released is a reservation that was never freed.
+   */
   public long getUsed() {
     return used.get();
   }
@@ -124,8 +182,9 @@ public class CometTaskMemoryManager {
 
     @Override
     public long getUsed() {
-      // Native allocations call TaskMemoryManager directly, bypassing MemoryConsumer.used.
-      return CometTaskMemoryManager.this.used.get();
+      // Native allocations call TaskMemoryManager directly, bypassing MemoryConsumer.used. The
+      // anchor is included so that Spark's view of this consumer matches the task's balance.
+      return CometTaskMemoryManager.this.used.get() + anchor.get();
     }
 
     @Override

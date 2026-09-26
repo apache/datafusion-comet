@@ -96,7 +96,8 @@ impl Drop for TaskSharedMemoryPool {
 
 /// Returns the memory pool shared by every native plan in `task_attempt_id`, creating it with
 /// `create` if no live pool exists for the task. The returned `Arc` is the RAII handle: the pool
-/// stays registered until the last reference to it drops.
+/// stays registered until the last reference to it drops. `create` runs under the shared registry
+/// lock, so it must make no JVM call and must not block.
 pub(crate) fn acquire_task_shared_pool(
     task_attempt_id: i64,
     create: impl FnOnce() -> Arc<dyn MemoryPool>,
