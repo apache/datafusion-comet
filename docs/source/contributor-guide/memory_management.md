@@ -61,6 +61,15 @@ and no JVM metric measures them, yet they land squarely in container RSS. Comet 
 its own budget that is meant to shadow the physical one, and declares it to Spark so that the two
 compete for a single number. The accuracy of that shadow is the central problem this page is about.
 
+The picture the [Tuning Guide](../user-guide/latest/tuning.md#memory-tuning) gives users is
+deliberately simple:
+
+![Spark and Comet both use the JVM heap and share the off-heap memory pool, and the rest of Comet's native memory has to fit in the executor's memory overhead](../_static/images/comet-executor-memory.svg)
+
+Most of this page is about the line between Comet's share of the off-heap pool and its share of the
+memory overhead: which allocations are declared to the pool, and which land in the overhead with
+nothing tracking them.
+
 ## Who allocates what
 
 Enabling Comet does not add one new memory consumer, it adds several, and they are not all
