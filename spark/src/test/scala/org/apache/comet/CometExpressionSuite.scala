@@ -23,7 +23,7 @@ import scala.util.Random
 
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.{Column, CometTestBase, DataFrame, Row}
-import org.apache.spark.sql.catalyst.expressions.{Alias, Cast, FromUnixTime, In, InSet, Literal, StructsToJson, TruncDate, TruncTimestamp}
+import org.apache.spark.sql.catalyst.expressions.{Alias, AtLeastNNonNulls, Cast, FromUnixTime, In, InSet, Literal, StructsToJson, TruncDate, TruncTimestamp}
 import org.apache.spark.sql.catalyst.optimizer.{ConvertToLocalRelation, OptimizeIn, SimplifyExtractValueOps}
 import org.apache.spark.sql.comet.{CometFilterExec, CometProjectExec, CometSortExec, CometTakeOrderedAndProjectExec}
 import org.apache.spark.sql.execution.{LocalTableScanExec, ProjectExec, SparkPlan}
@@ -47,6 +47,76 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     val cometDf = Seq((1, "apple"), (2, "banana"), (3, "cherry")).toDF("id", "fruit")
     val sparkAnswer = Seq(Row(1, "apple"), Row(2, "BANANA"), Row(3, "cherry"))
     checkCometAnswer(cometDf, sparkAnswer)
+  }
+
+  test("AtLeastNNonNulls: na.drop counts non-null and non-NaN values") {
+    val input = sql("""SELECT * FROM VALUES
+      (1, '', cast('NaN' AS FLOAT), 1D),
+      (2, NULL, -0F, cast('NaN' AS DOUBLE)),
+      (3, 'NaN', cast(NULL AS FLOAT), cast('Infinity' AS DOUBLE)),
+      (4, NULL, cast(NULL AS FLOAT), cast(NULL AS DOUBLE)) AS t(id, s, f, d)""")
+    withTempPath { dir =>
+      input.write.parquet(dir.getCanonicalPath)
+      withParquetTable(dir.getCanonicalPath, "nonnulls") {
+        withSQLConf(CometConf.COMET_BATCH_SIZE.key -> "2") {
+          for (n <- Seq(-1, 0, 1, 2, 3, 4)) {
+            checkSparkAnswerAndImpl(
+              spark.table("nonnulls").na.drop(n, Seq("s", "f", "d")),
+              native = Seq("atleastnnonnulls"))
+          }
+          checkSparkAnswerAndImpl(
+            spark.table("nonnulls").na.drop("all", Seq("s", "f", "d")),
+            native = Seq("atleastnnonnulls"))
+          withSQLConf(CometConf.getExprEnabledConfigKey("AtLeastNNonNulls") -> "false") {
+            checkSparkAnswerAndFallbackReason(
+              spark.table("nonnulls").na.drop(2, Seq("s", "f", "d")),
+              "Expression support is disabled. Set spark.comet.expression.AtLeastNNonNulls.enabled=true to enable it.")
+          }
+        }
+      }
+    }
+  }
+
+  test("AtLeastNNonNulls: complex values use only their outer nullability") {
+    val input = sql("""SELECT * FROM VALUES
+      (array(cast(NULL AS INT)), named_struct('a', cast(NULL AS INT)), map(1, cast(NULL AS INT))),
+      (array(), named_struct('a', 1), map()),
+      (NULL, NULL, NULL) AS t(a, s, m)""")
+    withTempPath { dir =>
+      input.write.parquet(dir.getCanonicalPath)
+      withParquetTable(dir.getCanonicalPath, "nonnulls") {
+        for (n <- Seq(1, 2, 3, 4)) {
+          checkSparkAnswerAndImpl(
+            spark.table("nonnulls").na.drop(n),
+            native = Seq("atleastnnonnulls"))
+        }
+      }
+    }
+  }
+
+  test("AtLeastNNonNulls: short-circuit child evaluation") {
+    withParquetTable(Seq((Some(1), "bad"), (None, "7")), "nonnulls") {
+      withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
+        def query(n: Int, prefix: Boolean = false): DataFrame = {
+          val df = spark.table("nonnulls")
+          val children = Seq(df.col("_1").expr, Cast(df.col("_2").expr, IntegerType))
+          val args = if (prefix) Literal(1) +: children else children
+          df.select(getColumnFromExpression(AtLeastNNonNulls(n, args)))
+        }
+        for (n <- Seq(-1, 0, 1)) {
+          checkSparkAnswerAndImpl(query(n), native = Seq("atleastnnonnulls"))
+        }
+        // Reach the threshold on different children for different rows in the counter path.
+        checkSparkAnswerAndImpl(query(2, prefix = true), native = Seq("atleastnnonnulls"))
+        for (n <- Seq(2, 3)) {
+          assertExpressionImpl(
+            query(n).queryExecution.executedPlan,
+            Seq("atleastnnonnulls"),
+            Seq.empty)
+          checkSparkError(query(n), "CAST_INVALID_INPUT")
+        }
+      }
+    }
   }
 
   test("nested floating point membership uses native In and InSet") {

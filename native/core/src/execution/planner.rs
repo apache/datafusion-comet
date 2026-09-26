@@ -147,11 +147,11 @@ use datafusion_comet_proto::{
     spark_partitioning::{partitioning::PartitioningStruct, Partitioning as SparkPartitioning},
 };
 use datafusion_comet_spark_expr::{
-    jvm_udf::JvmScalarUdfExpr, spark_in_list, ApproxPercentile, ArrayInsert, Avg, AvgDecimal, Cast,
-    CheckOverflow, Correlation, Covariance, CreateNamedStruct, DecimalRescaleCheckOverflow,
-    GetArrayStructFields, GetStructField, HllPlusPlus, IfExpr, ListExtract, MaxMinBy, Mode,
-    NormalizeNaNAndZero, Regr, RegrType, SparkCastOptions, Stddev, SumDecimal, ToJson,
-    UnboundColumn, Variance, WideDecimalBinaryExpr, WideDecimalOp,
+    jvm_udf::JvmScalarUdfExpr, spark_in_list, ApproxPercentile, ArrayInsert, AtLeastNNonNulls, Avg,
+    AvgDecimal, Cast, CheckOverflow, Correlation, Covariance, CreateNamedStruct,
+    DecimalRescaleCheckOverflow, GetArrayStructFields, GetStructField, HllPlusPlus, IfExpr,
+    ListExtract, MaxMinBy, Mode, NormalizeNaNAndZero, Regr, RegrType, SparkCastOptions, Stddev,
+    SumDecimal, ToJson, UnboundColumn, Variance, WideDecimalBinaryExpr, WideDecimalOp,
 };
 use itertools::Itertools;
 use jni::objects::{Global, JObject};
@@ -926,6 +926,14 @@ impl PhysicalPlanner {
                     &options.timezone,
                     csv_write_options,
                 )))
+            }
+            ExprStruct::AtLeastNNonNulls(expr) => {
+                let children = expr
+                    .children
+                    .iter()
+                    .map(|child| self.create_expr(child, Arc::clone(&input_schema)))
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(Arc::new(AtLeastNNonNulls::new(expr.n, children)))
             }
             ExprStruct::ArraysZip(expr) => {
                 if expr.values.is_empty() {
@@ -6290,6 +6298,115 @@ mod tests {
         );
         assert_eq!(1, projection_exec.children.len());
         assert_eq!("ScanExec", projection_exec.children[0].native_plan.name());
+    }
+
+    #[tokio::test]
+    async fn projection_prunes_filter_output_and_preserves_metrics() {
+        use crate::execution::metrics::utils::to_native_metric_node;
+        use datafusion::physical_plan::filter::FilterExec;
+
+        // Include an empty projection, reordered/duplicate columns, and a full projection.
+        for (indices, output) in [
+            (vec![], Some(vec![])),
+            (vec![2, 1, 2], None),
+            (vec![0, 1, 2, 3], None),
+        ] {
+            for project_id in [2, 3] {
+                let scan = Operator {
+                    plan_id: 1,
+                    op_struct: Some(OpStruct::Scan(spark_operator::Scan {
+                        fields: vec![create_proto_datatype(); 4],
+                        source: String::new(),
+                    })),
+                    ..Default::default()
+                };
+                let filter = Operator {
+                    plan_id: 2,
+                    ..create_filter(scan, 1)
+                };
+                let project = Operator {
+                    plan_id: project_id,
+                    children: vec![filter],
+                    op_struct: Some(OpStruct::Projection(spark_operator::Projection {
+                        project_list: indices.iter().map(|&i| create_bound_reference(i)).collect(),
+                    })),
+                    ..Default::default()
+                };
+                let planner = PhysicalPlanner::default();
+                let (mut scans, _, planned) =
+                    planner.create_plan(&project, &mut vec![], 1).unwrap();
+                let filter_plan = &planned.native_plan.children()[0];
+                let filter = filter_plan.downcast_ref::<FilterExec>().unwrap();
+                assert_eq!(filter.projection().as_deref(), output.as_deref());
+                assert_eq!(filter.input().schema().fields().len(), 4);
+                for (index, field) in planned.schema().fields().iter().enumerate() {
+                    assert_eq!(field.name(), &format!("col_{index}"));
+                }
+                let columns = vec![
+                    Arc::new(Int32Array::from(vec![1, 0, 1])) as ArrayRef,
+                    Arc::new(Int32Array::from(vec![10, 11, 12])) as ArrayRef,
+                    Arc::new(Int32Array::from(vec![20, 21, 22])) as ArrayRef,
+                    Arc::new(Int32Array::from(vec![30, 31, 32])) as ArrayRef,
+                ];
+                let mut input = vec![
+                    InputBatch::Batch(columns.clone(), 3),
+                    InputBatch::Batch(columns, 3),
+                    InputBatch::EOF,
+                ]
+                .into_iter();
+                let mut stream = planned
+                    .native_plan
+                    .execute(0, SessionContext::new().task_ctx())
+                    .unwrap();
+                let mut rows = 0;
+                while let Some(batch) = futures::future::poll_fn(|cx| {
+                    let result = stream.poll_next_unpin(cx);
+                    if result.is_pending() && scans[0].batch.try_lock().unwrap().is_none() {
+                        if let Some(batch) = input.next() {
+                            scans[0].set_input_batch(batch);
+                            cx.waker().wake_by_ref();
+                        }
+                    }
+                    result
+                })
+                .await
+                {
+                    let batch = batch.unwrap();
+                    assert_eq!(batch.num_columns(), indices.len());
+                    for row in 0..batch.num_rows() {
+                        for (column, &source) in indices.iter().enumerate() {
+                            let values = batch
+                                .column(column)
+                                .as_any()
+                                .downcast_ref::<Int32Array>()
+                                .unwrap();
+                            let expected = if source == 0 {
+                                1
+                            } else {
+                                source * 10 + ((rows + row) % 2) as i32 * 2
+                            };
+                            assert_eq!(values.value(row), expected);
+                        }
+                    }
+                    rows += batch.num_rows();
+                }
+                assert_eq!(rows, 4);
+                let metrics = to_native_metric_node(&planned).unwrap();
+                if project_id == 2 {
+                    assert_eq!(planned.additional_native_plans.len(), 1);
+                    assert!(Arc::ptr_eq(
+                        filter_plan,
+                        &planned.additional_native_plans[0]
+                    ));
+                    // A single Spark node must not count the filter and project rows twice.
+                    assert_eq!(metrics.metrics["output_rows"], 4);
+                } else {
+                    assert_eq!(metrics.metrics["output_rows"], 4);
+                    assert_eq!(metrics.children[0].metrics["output_rows"], 4);
+                    assert!(metrics.children[0].metrics["elapsed_compute"] > 0);
+                }
+            }
+        }
     }
 
     fn create_bound_reference(index: i32) -> Expr {

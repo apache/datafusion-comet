@@ -698,6 +698,7 @@ Comet also accelerates a number of Catalyst expressions that have no Spark SQL f
 - **Operator and optimizer-injected expressions:** runtime bloom-filter join probes (`BloomFilterMightContain`, `BloomFilterAggregate`), optimized `IN` sets (`InSet`), scalar subqueries (`ScalarSubquery`), and floating-point normalization (`KnownFloatingPointNormalized`).
 - **Accessor expressions (subscript and field access, not functions):** struct field access (`col.field`), array element access (`arr[i]`), and map value access (`map[key]`).
 - **Internal decimal arithmetic:** `CheckOverflow`, `MakeDecimal`, and `UnscaledValue`, which the analyzer inserts around decimal operations.
+- **Missing-data predicates:** `AtLeastNNonNulls`, used by `DataFrame.na.drop`, counts non-null and non-NaN values natively.
 - **User-defined functions:** Scala UDFs registered through the DataFrame or SQL API.
 - **DataSource V2 catalog functions:** Iceberg's system functions `bucket`, `truncate`, `years`, `months`, `days`, and `hours` (for example `system.bucket(16, id)`) run natively; see [Iceberg system functions](iceberg.md#iceberg-system-functions).
 - **Lowered built-ins:** Spark lowers some built-in functions to `StaticInvoke` or `Invoke` calls. Those without a native mapping run through the JVM codegen dispatcher when their input and output types are supported.

@@ -345,6 +345,11 @@ match op.op_struct.as_ref() {
 }
 ```
 
+`ProjectionBuilder` embeds an empty projection (such as the input to `count(*)`) into a
+DataFusion filter's output to avoid materializing unused arrays. The predicate still sees its
+original input schema. Both `SparkPlan` nodes remain so each reports its own metrics. Nonempty
+projections are unchanged.
+
 #### Implement the Operator
 
 Create the operator implementation, either in an existing file or a new file in `native/core/src/execution/operators/`:

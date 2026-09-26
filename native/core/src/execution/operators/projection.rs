@@ -19,6 +19,7 @@
 
 use std::sync::Arc;
 
+use datafusion::physical_plan::filter::{FilterExec, FilterExecBuilder};
 use datafusion::physical_plan::projection::ProjectionExec;
 use datafusion_comet_proto::spark_operator::Operator;
 use jni::objects::{Global, JObject};
@@ -46,7 +47,7 @@ impl OperatorBuilder for ProjectionBuilder {
         let children = &spark_plan.children;
 
         assert_eq!(children.len(), 1);
-        let (scans, shuffle_scans, child) =
+        let (scans, shuffle_scans, mut child) =
             planner.create_plan(&children[0], inputs, partition_count)?;
 
         // Create projection expressions
@@ -61,6 +62,16 @@ impl OperatorBuilder for ProjectionBuilder {
             })
             .collect();
 
+        if project.project_list.is_empty() {
+            if let Some(filter) = child.native_plan.downcast_ref::<FilterExec>() {
+                // count(*) needs the filtered row count, but none of the output arrays.
+                // Keep both Spark nodes so their metrics still describe the executed plans.
+                let filter = FilterExecBuilder::from(filter)
+                    .apply_projection(Some(vec![]))?
+                    .build()?;
+                Arc::make_mut(&mut child).native_plan = Arc::new(filter);
+            }
+        }
         let projection = Arc::new(ProjectionExec::try_new(
             exprs?,
             Arc::clone(&child.native_plan),
