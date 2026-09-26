@@ -68,12 +68,17 @@ Native operators reserve through DataFusion's `MemoryConsumer` and `MemoryReserv
 - [ ] **`try_grow` failure turns into spilling, not an error.** For a spillable operator,
       `ResourcesExhausted` is the signal to spill and retry. A new operator that propagates it as a
       query failure has converted a recoverable condition into a lost task.
-- [ ] **`grow` is infallible and panics if the pool refuses.** It is only correct where the caller
-      genuinely cannot spill. A new `grow` call site needs that justification.
+- [ ] **Treat a new `grow` call site as potential unbacked memory.** `grow` cannot fail. When
+      Spark grants less than asked, the Comet pools record the full amount anyway and carry the
+      shortfall as overcommit, which Spark does not know about and can hand to another consumer
+      or task. Nothing caps how far successive `grow` calls overcommit short of the container
+      limit. That is acceptable only for memory that already exists and cannot be spilled, such
+      as a spilled batch read back from disk, so a new call site needs that justification.
+      Memory the caller is about to allocate belongs behind `try_grow`.
 - [ ] **Every `try_grow` has a matching `shrink`, including on the error path.** A reservation
       leaked on an early return is charged for the life of the task.
-- [ ] **A partial grant is released, not kept.** `acquired < additional` must release and report
-      `ResourcesExhausted`.
+- [ ] **In `try_grow`, a partial grant is released, not kept.** `acquired < additional` must
+      release and report `ResourcesExhausted`. Only `grow` keeps a partial grant, as overcommit.
 - [ ] **An operator that buffers without reserving is invisible to the pool.** If the PR adds
       buffering, ask where the reservation is. "It is only a few batches" is how the accounting gap
       grows.
@@ -95,11 +100,17 @@ configuration, from the inside out:
 
 - [ ] A new decorator forwards **every** `MemoryPool` method to its inner pool. A partial
       implementation makes `reserved()` disagree between levels.
-- [ ] **`fair_unified` compares against the shared total, not a per-consumer quota.** It divides
-      `pool_size` by the number of registered consumers and rejects if the pool's total reserved
-      plus the request exceeds that quotient. With two consumers and an 8 GiB pool, once one holds
-      3 GiB a 2 GiB request from the other is refused. If the PR changes this comparison it changes
-      when every query spills, so it needs benchmark evidence, not reasoning.
+- [ ] **`fair_unified` checks the requesting consumer against its share, and the total against
+      the pool.** It divides `pool_size` by the number of registered consumers and rejects if what
+      the consumer holds plus the request exceeds that quotient, or if the pool's total reserved
+      plus the request exceeds `pool_size`. With two consumers and an 8 GiB pool, once one holds
+      3 GiB the other can still reserve up to 4 GiB. The pool keeps a running total for each
+      consumer id, so the sibling reservations that `new_empty()`, `split()` and `take()` create
+      count against one share. A PR that checks `reservation.size()` instead lets an operator with
+      several reservations, such as a sort's streaming merge, take other consumers' shares. It
+      also depends on when DataFusion updates the size, which is after it calls `try_grow` but
+      before it calls `shrink`. If the PR changes either comparison it changes when every query
+      spills, so it needs benchmark evidence, not reasoning.
 - [ ] **`num_consumers` counts every consumer in the task**, across every native plan, because the
       pool is task-shared.
 - [ ] **Task-shared pool lifetime.** `acquire_task_shared_pool` keeps a process-wide
@@ -110,9 +121,11 @@ configuration, from the inside out:
       so it only removes an entry that is still its own, which handles the race where an `acquire`
       observes an expired `Weak` and inserts a replacement first. Do not let that check be
       simplified away.
-- [ ] **Only `fair_unified` and `greedy_unified` are valid in off-heap mode.** Other pool types are
-      on-heap only and belong to `CATEGORY_TESTING`, because on-heap mode exists so the Spark SQL
-      test suite can run against Comet and must not be used in production.
+- [ ] **`fair_unified` and `greedy_unified` are the only pool types.** On-heap mode ignores the
+      pool-type string and always gets `UnboundedMemoryPool`: it exists so the Spark SQL test suite
+      can run against Comet, it accounts for nothing, and it must not be used in production. A PR
+      re-adding a sized on-heap pool is reintroducing a budget that bounds nothing real (see
+      issue #6063).
 
 ## 4. The Spark Bridge
 
@@ -140,8 +153,6 @@ memory_limit = spark.memory.offHeap.size * spark.comet.exec.memoryPool.fraction
       native code.
 - [ ] Changing `memoryPool.fraction` semantics affects every deployment that tuned it as a haircut
       for the accounting gap.
-- [ ] `memory_limit_per_task` is read only by the on-heap pool types. A PR wiring it into an
-      off-heap path is probably confused.
 - [ ] On Kubernetes, `spark.memory.offHeap.size` is **part of** the pod limit, not headroom on top
       of it. A PR whose fix is "raise the off-heap size" is asking for fewer executors per node.
       `spark.executor.memoryOverhead` is the only real slack in the container, and JVM non-heap
@@ -177,7 +188,7 @@ what test was added. Ask for at least one of:
   is recoverable at task level.
 
 `spark/src/test/scala/org/apache/spark/CometTaskMemoryManagerSuite.scala` and
-`CometBoundedShuffleMemoryAllocatorSuite.scala` are the existing JVM-side tests. A change to the
+`CometUnboundedShuffleMemoryAllocatorSuite.scala` are the existing JVM-side tests. A change to the
 bridge or an allocator should extend one of them.
 
 ## 8. Does the PR Make `memory_management.md` Stale?
@@ -189,7 +200,8 @@ will not catch. Check:
 - The **pool stack** diagram, if a decorator is added, removed, or reordered
 - The **pool type** table, if a pool type is added, removed, or changes how it is sized
 - The `memory_limit` formula, if the budget calculation changes
-- The **fair pool** description, which spells out the shared-total comparison and its consequence
+- The **fair pool** description, which spells out the share and pool-total checks and their
+  consequences
 - The **Crossing the FFI boundary** section, which names the operators that reserve for imported
   batches
 - The **Open problems** list. If the PR closes one of these gaps, the entry must be removed or

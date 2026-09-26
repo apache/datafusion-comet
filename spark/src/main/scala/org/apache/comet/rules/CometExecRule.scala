@@ -34,7 +34,7 @@ import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, Comet
 import org.apache.spark.sql.comet.shims.ShimCometEmptyRelation
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.execution._
-import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AQEShuffleReadExec, BroadcastQueryStageExec, QueryStageExec, ShuffleQueryStageExec}
+import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AQEShuffleReadExec, BroadcastQueryStageExec, LogicalQueryStage, QueryStageExec, ShuffleQueryStageExec}
 import org.apache.spark.sql.execution.aggregate.{BaseAggregateExec, HashAggregateExec, ObjectHashAggregateExec}
 import org.apache.spark.sql.execution.columnar.InMemoryTableScanExec
 import org.apache.spark.sql.execution.command.{DataWritingCommandExec, ExecutedCommandExec}
@@ -221,6 +221,16 @@ case class CometExecRule(session: SparkSession)
   private def isCometNative(op: SparkPlan): Boolean = op.isInstanceOf[CometNativeExec]
 
   /**
+   * Restore a Spark Partial while retaining its current children. The tag prevents reconversion
+   * when AQE replans the exchange without its Final, and records why the Partial stays in Spark.
+   */
+  private def restoreSparkPartial(agg: CometHashAggregateExec, reason: String): SparkPlan = {
+    val partial = agg.originalPlan.withNewChildren(agg.children)
+    partial.setTagValue(CometExecRule.COMET_UNSAFE_PARTIAL, reason)
+    withFallbackReason(partial, reason)
+  }
+
+  /**
    * A Celeborn exchange can fall back after its child has been converted, for example because of
    * the partition threshold or an unsupported hash key. Keep incompatible partial aggregate
    * buffers on Spark too: an ordinary shuffle cannot connect a native partial to a native final.
@@ -237,10 +247,8 @@ case class CometExecRule(session: SparkSession)
       case _: QueryStageExec | _: ShuffleExchangeLike | _: BroadcastExchangeLike => plan
       case agg: CometHashAggregateExec
           if agg.modes == Seq(Partial) &&
-            !QueryPlanSerde.allAggsSupportMixedExecution(agg.aggregateExpressions) =>
-        val sparkAggregate = agg.originalPlan.withNewChildren(agg.children)
-        sparkAggregate.setTagValue(CometExecRule.COMET_UNSAFE_PARTIAL, reason)
-        withFallbackReason(sparkAggregate, reason)
+            !QueryPlanSerde.allAggsSupportNativePartialToSparkFinal(agg.aggregateExpressions) =>
+        restoreSparkPartial(agg, reason)
       // Final output is ordinary SQL data; any partial below it belongs to another aggregate.
       case agg: CometHashAggregateExec if agg.modes.contains(Final) => agg
       case agg: BaseAggregateExec if agg.aggregateExpressions.exists(_.mode == Final) => agg
@@ -399,6 +407,16 @@ case class CometExecRule(session: SparkSession)
             scan
           }
         }
+
+      // For AQE table-cache stage (Spark 3.5+) on a Comet cache scan. The operators above it are
+      // planned again once it materializes, and like a Comet shuffle stage it is a native input.
+      case s: QueryStageExec if s.plan.isInstanceOf[CometInMemoryTableScanExec] =>
+        convertToComet(s, CometExchangeSink).getOrElse(s)
+
+      // A CometSparkToColumnarExec from an earlier pass, which AQE reuses over a table-cache stage
+      // because it carries its scan's logical link. Wrap it again so re-planned parents convert.
+      case c: CometSparkToColumnarExec =>
+        convertToComet(c, CometScanWrapper).getOrElse(c)
 
       case op if shouldApplySparkToColumnar(conf, op) =>
         convertToComet(op, CometSparkToColumnarExec).getOrElse(op)
@@ -704,8 +722,8 @@ case class CometExecRule(session: SparkSession)
   private def normalizeNaNAndZero(expr: Expression): Expression = {
     expr match {
       case _: KnownFloatingPointNormalized => expr
-      case FloatLiteral(f) if !f.equals(-0.0f) => expr
-      case DoubleLiteral(d) if !d.equals(-0.0d) => expr
+      case FloatLiteral(f) if !f.isNaN && !f.equals(-0.0f) => expr
+      case DoubleLiteral(d) if !d.isNaN && !d.equals(-0.0d) => expr
       case _ =>
         expr.dataType match {
           case _: FloatType | _: DoubleType =>
@@ -758,7 +776,7 @@ case class CometExecRule(session: SparkSession)
       // during the bottom-up conversion. Tags persist through AQE stage creation.
       tagUnsafePartialAggregates(planWithJoinRewritten)
 
-      var newPlan = transform(planWithJoinRewritten)
+      var newPlan = revertUnsafePartialAggregates(transform(planWithJoinRewritten))
 
       // if the plan cannot be run fully natively then explain why (when appropriate
       // config is enabled)
@@ -788,6 +806,23 @@ case class CometExecRule(session: SparkSession)
 
       // Set up logical links
       newPlan = newPlan.transform {
+        case op: CometExec
+            if op
+              .getTagValue(SparkPlan.LOGICAL_PLAN_TAG)
+              .exists(_.isInstanceOf[LogicalQueryStage]) =>
+          // AQE replanning reuses this physical root and links it to the current logical stage.
+          // originalPlan can still point to a subtree hidden inside that logical leaf, which
+          // AQE cannot replace in the current logical plan. Only preserve a direct stage link,
+          // not a link inherited from an ancestor.
+          // On the ordinary exchange path, the exchange itself is behind a QueryStageExec
+          // leaf and is not visited by this transform.
+          // Spark 4.1.3 returns the existing root in LogicalQueryStageStrategy and then calls
+          // setLogicalLink from SparkStrategies.plan:
+          // scalastyle:off line.size.limit
+          // https://github.com/apache/spark/blob/v4.1.3/sql/core/src/main/scala/org/apache/spark/sql/execution/adaptive/LogicalQueryStageStrategy.scala#L64-L65
+          // https://github.com/apache/spark/blob/v4.1.3/sql/core/src/main/scala/org/apache/spark/sql/execution/SparkStrategies.scala#L78-L87
+          // scalastyle:on line.size.limit
+          op
         case op: CometExec =>
           if (op.originalPlan.logicalLink.isEmpty) {
             op.unsetTagValue(SparkPlan.LOGICAL_PLAN_TAG)
@@ -885,7 +920,8 @@ case class CometExecRule(session: SparkSession)
         case writeFiles: WriteFilesExec => Seq(writeFiles.child)
         case other => Seq(other)
       }
-      if ((op.output ++ dataProducingChildren.flatMap(_.output)).exists(attr =>
+      if (!op.isInstanceOf[CometScanExec] &&
+        (op.output ++ dataProducingChildren.flatMap(_.output)).exists(attr =>
           containsVariantType(attr.dataType))) {
         withFallbackReason(
           op,
@@ -1130,7 +1166,7 @@ case class CometExecRule(session: SparkSession)
         val consumerMode: AggregateMode =
           if (modes.contains(PartialMerge)) PartialMerge else Final
         if (consumesBuffers &&
-          !QueryPlanSerde.allAggsSupportMixedExecution(agg.aggregateExpressions) &&
+          !QueryPlanSerde.allAggsSupportNativePartialToSparkFinal(agg.aggregateExpressions) &&
           !canAggregateBeConverted(agg, consumerMode)) {
           findPartialAggInPlan(agg.child).foreach { partial =>
             // Only tag if the Partial would otherwise have been converted. If the Partial itself
@@ -1174,6 +1210,103 @@ case class CometExecRule(session: SparkSession)
   }
 
   /**
+   * Inspect a failed repair's buffer path without rewriting it or materializing any stage. Report
+   * only a native Partial/PartialMerge whose emitted state is not known to be Spark-compatible.
+   * Spark Partials and completed aggregates establish new buffers, so stop there rather than
+   * finding an unrelated native producer below them. Only known aggregate and exchange wrappers
+   * forward the same buffer path; an arbitrary operator is not evidence of a mixed boundary.
+   */
+  private def hasUnrepairedNativeBuffer(plan: SparkPlan): Boolean = plan match {
+    case agg: CometHashAggregateExec if agg.aggregateExpressions.isEmpty =>
+      hasUnrepairedNativeBuffer(agg.child)
+    case agg: CometHashAggregateExec =>
+      agg.modes.forall(m => m == Partial || m == PartialMerge) &&
+      !QueryPlanSerde.allAggsSupportNativePartialToSparkFinal(agg.aggregateExpressions)
+    case agg: BaseAggregateExec
+        if agg.aggregateExpressions.nonEmpty &&
+          agg.aggregateExpressions.forall(_.mode == Partial) =>
+      false
+    case agg: BaseAggregateExec =>
+      agg.aggregateExpressions.forall(e => e.mode == Partial || e.mode == PartialMerge) &&
+      hasUnrepairedNativeBuffer(agg.child)
+    case placeholder: CometSinkPlaceHolder => hasUnrepairedNativeBuffer(placeholder.child)
+    case read: AQEShuffleReadExec => hasUnrepairedNativeBuffer(read.child)
+    case stage: ShuffleQueryStageExec => hasUnrepairedNativeBuffer(stage.plan)
+    case reused: ReusedExchangeExec => hasUnrepairedNativeBuffer(reused.child)
+    case shuffle: CometShuffleExchangeExec => hasUnrepairedNativeBuffer(shuffle.child)
+    case shuffle: ShuffleExchangeExec => hasUnrepairedNativeBuffer(shuffle.child)
+    case _ => false
+  }
+
+  /**
+   * The early tagging pass cannot know whether a Final's child will become native. Check the
+   * actual conversion result before serialization or AQE stage creation, restoring the feeding
+   * aggregate/exchange chain while keeping native work below its Partial. Return the repaired
+   * plan, or preserve an unrepairable path and record one warning on its Spark Final if an unsafe
+   * native producer remains. Existing stages and their buffers are never rewritten by this pass.
+   */
+  private[rules] def revertUnsafePartialAggregates(plan: SparkPlan): SparkPlan = {
+    def revertChain(node: SparkPlan): Option[SparkPlan] = node match {
+      case agg: CometHashAggregateExec if agg.modes == Seq(Partial) =>
+        Some(
+          restoreSparkPartial(
+            agg,
+            "Partial aggregate disabled: corresponding final aggregate " +
+              "cannot be converted to Comet and intermediate buffer formats are incompatible"))
+
+      case agg: CometHashAggregateExec
+          if agg.modes.forall(m => m == Partial || m == PartialMerge) =>
+        revertChain(agg.child).map(child => agg.originalPlan.withNewChildren(Seq(child)))
+
+      case agg: BaseAggregateExec
+          if agg.aggregateExpressions.nonEmpty &&
+            agg.aggregateExpressions.forall(_.mode == Partial) =>
+        // This producer already emits Spark buffers. Do not reach through it to an unrelated
+        // aggregate below it.
+        None
+
+      case agg: BaseAggregateExec
+          if agg.aggregateExpressions.forall(e => e.mode == Partial || e.mode == PartialMerge) =>
+        revertChain(agg.child).map(child => agg.withNewChildren(Seq(child)))
+
+      case CometSinkPlaceHolder(_, _, shuffle: CometShuffleExchangeExec) =>
+        revertChain(shuffle)
+      case shuffle: CometShuffleExchangeExec =>
+        revertChain(shuffle.child).map(child => shuffle.originalPlan.withNewChildren(Seq(child)))
+      case shuffle: ShuffleExchangeExec =>
+        revertChain(shuffle.child).map(child => shuffle.withNewChildren(Seq(child)))
+
+      // Stop at materialized stages and operators outside the feeding aggregate/exchange chain.
+      case _ => None
+    }
+
+    plan.transformUp {
+      case agg: BaseAggregateExec
+          if agg.aggregateExpressions.map(_.mode).distinct == Seq(Final) &&
+            !QueryPlanSerde.allAggsSupportNativePartialToSparkFinal(agg.aggregateExpressions) =>
+        revertChain(agg.child)
+          // Rebuild native consumers and shuffles from their original Spark operators. Merely
+          // replacing their children would leave a native protobuf reading the old buffers.
+          .map(child => transform(agg.withNewChildren(Seq(child))))
+          .getOrElse {
+            if (hasUnrepairedNativeBuffer(agg.child)) {
+              val reason = "Comet could not restore a native intermediate buffer producer " +
+                "below Spark final aggregate; the remaining buffer may be incompatible"
+              // AQE can revisit the same consumer. Record the explanation and warn once,
+              // regardless of whether general fallback logging is enabled.
+              if (!agg
+                  .getTagValue(CometExplainInfo.FALLBACK_REASONS)
+                  .exists(_.contains(reason))) {
+                if (!CometConf.COMET_EXPLAIN_FALLBACK_LOG_ENABLED.get()) logWarning(reason)
+                withFallbackReason(agg, reason)
+              }
+            }
+            agg
+          }
+    }
+  }
+
+  /**
    * Look for the bottom Partial-mode aggregate that feeds into the given plan (the child of a
    * Final). Walks through exchanges and AQE stages, and continues down through intermediate
    * aggregate stages whose modes are all Partial / PartialMerge - these are the PartialMerge (and
@@ -1202,8 +1335,8 @@ case class CometExecRule(session: SparkSession)
   /**
    * Conservative check for whether an aggregate could be converted to Comet. Checks operator
    * enablement, grouping expressions, aggregate expressions, and result expressions.
-   * Intentionally skips the sparkFinalMode / child-native checks since those depend on
-   * transformation state.
+   * Intentionally skips the child-native checks since those depend on transformation state;
+   * [[revertUnsafePartialAggregates]] checks the actual conversion result before execution.
    *
    * WARNING: this intentionally mirrors the predicate checks in `CometBaseAggregate.doConvert`
    * (operators.scala). Any change to the convertibility rules there must be reflected here or

@@ -23,7 +23,7 @@ use crate::execution::operators::ExecutionError;
 use crate::jvm_bridge::{jni_new_global_ref, jni_static_call, JVMClasses};
 use async_trait::async_trait;
 use iceberg_storage_opendal::AwsCredential as IcebergAwsCredential;
-use jni::objects::{Global, JFieldID, JObject, JString, JValue};
+use jni::objects::{Global, JFieldID, JObject, JObjectArray, JString, JValue};
 use jni::signature::{Primitive, ReturnType};
 use jni::strings::JNIString;
 use jni::sys::jint;
@@ -64,7 +64,9 @@ pub enum AccessMode {
 /// Granularity: although the JVM SPI accepts `(bucket, path)`, neither
 /// `object_store::CredentialProvider::get_credential` nor
 /// `reqsign_core::ProvideCredential::provide_credential` carries a per-request path, so the
-/// effective identity is per-bucket (Parquet) or per-table-location (Iceberg).
+/// effective identity is per-bucket (Parquet) or per-table-location (Iceberg). A Parquet provider
+/// that implements `CometS3LocationScopedCredentialProvider` gets one bridge per policy location
+/// instead; see `parquet::objectstore::location_scoped`.
 pub struct CometS3CredentialBridge {
     provider_class: String,
     dispatch_key: String,
@@ -134,6 +136,31 @@ impl CometS3CredentialBridge {
         })
     }
 
+    /// Returns a bridge to the same provider registration for another path in the bucket. It
+    /// shares this bridge's handle and bucket string and creates only the path string, so it makes
+    /// no `ensureInitialized` call and needs no class loading on the calling thread.
+    pub fn for_path(&self, path: impl Into<String>) -> Result<Self, ExecutionError> {
+        let path = path.into();
+        let path_jstr = JVMClasses::with_env(|env| -> Result<_, ExecutionError> {
+            let p = env
+                .new_string(&path)
+                .map_err(|e| ExecutionError::GeneralError(format!("new_string(path): {e}")))?;
+            Ok(Arc::new(jni_new_global_ref!(env, p).map_err(|e| {
+                ExecutionError::GeneralError(format!("global_ref(path): {e}"))
+            })?))
+        })?;
+        Ok(Self {
+            provider_class: self.provider_class.clone(),
+            dispatch_key: self.dispatch_key.clone(),
+            bucket: self.bucket.clone(),
+            path,
+            mode: self.mode,
+            handle: self.handle,
+            bucket_jstr: Arc::clone(&self.bucket_jstr),
+            path_jstr,
+        })
+    }
+
     fn fetch_raw(&self) -> Result<RawCredentials, ExecutionError> {
         JVMClasses::with_env(|env| -> Result<RawCredentials, ExecutionError> {
             let mode = self.mode as jint;
@@ -181,6 +208,46 @@ impl CometS3CredentialBridge {
                     ExecutionError::GeneralError(format!("read expirationEpochMillis: {e}"))
                 })?,
             })
+        })
+    }
+
+    /// Returns the bucket's policy locations when the provider implements
+    /// `CometS3LocationScopedCredentialProvider`, or `None` for any other provider. The
+    /// dispatcher copies the provider's list into a `String[]`, so provider code, including a lazy
+    /// list, runs inside the checked JNI call and its exceptions come back as errors here.
+    pub fn policy_locations(&self) -> Result<Option<Vec<String>>, ExecutionError> {
+        JVMClasses::with_env(|env| -> Result<Option<Vec<String>>, ExecutionError> {
+            let locations: JObject = unsafe {
+                jni_static_call!(env,
+                    comet_s3_credential_dispatcher.get_policy_locations(
+                        self.handle,
+                        self.bucket_jstr.as_obj()
+                    ) -> JObject
+                )?
+            };
+            if locations.is_null() {
+                return Ok(None);
+            }
+            // SAFETY: `getPolicyLocations` is declared to return `String[]`, and the dispatcher
+            // rejects null elements, so every element is a non-null `java.lang.String`.
+            let locations = unsafe { JObjectArray::<JObject>::from_raw(env, locations.into_raw()) };
+            let len = locations.len(env).map_err(|e| {
+                ExecutionError::GeneralError(format!("policy locations length: {e}"))
+            })?;
+            let mut out = Vec::with_capacity(len);
+            for i in 0..len {
+                let element = locations.get_element(env, i).map_err(|e| {
+                    ExecutionError::GeneralError(format!("policy location {i}: {e}"))
+                })?;
+                let element = unsafe { JString::from_raw(&*env, element.into_raw()) };
+                let location = element.try_to_string(env).map_err(|e| {
+                    ExecutionError::GeneralError(format!("policy location {i}: {e}"))
+                })?;
+                // A bucket can have more locations than the local frame holds, so free each one.
+                env.delete_local_ref(element);
+                out.push(location);
+            }
+            Ok(Some(out))
         })
     }
 }
@@ -272,6 +339,21 @@ struct RawCredentials {
     expiration_epoch_millis: i64,
 }
 
+/// The bridge could not get a credential from the provider, as opposed to S3 rejecting one. It is
+/// the source of the error `get_credential` returns, which `object_store` passes through to the
+/// read unchanged. A `LocationScopedObjectStore` treats it like a 403, because a provider that has
+/// no policy for a location throws, and that can mean the location changed since its snapshot.
+#[derive(Debug)]
+pub(crate) struct CredentialProviderError(pub(crate) String);
+
+impl fmt::Display for CredentialProviderError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for CredentialProviderError {}
+
 #[async_trait]
 impl CredentialProvider for CometS3CredentialBridge {
     type Credential = AwsCredential;
@@ -279,7 +361,7 @@ impl CredentialProvider for CometS3CredentialBridge {
     async fn get_credential(&self) -> object_store::Result<Arc<AwsCredential>> {
         let raw = self.fetch_raw().map_err(|e| object_store::Error::Generic {
             store: "S3",
-            source: e.to_string().into(),
+            source: Box::new(CredentialProviderError(e.to_string())),
         })?;
         Ok(Arc::new(AwsCredential {
             key_id: raw.access_key_id,

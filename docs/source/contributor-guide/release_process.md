@@ -74,8 +74,8 @@ release to check for regressions. See the
 Check that the scheduled CI runs have been healthy over the release window. Most of Comet's coverage of the
 non-default Spark and Iceberg versions runs nightly rather than on pull requests, so a nightly run that has been
 failing — or one that silently stopped firing — means the release is going out with less testing behind it than the
-tier table suggests. A scheduled run has no pull request to turn red, and `miri.yml` and `publish_snapshot.yml` do
-not report their own failures at all, so this has to be looked at deliberately. See
+tier table suggests. A scheduled run has no pull request to turn red, and `publish_snapshot.yml` does
+not report its own failures, so this has to be looked at deliberately. See
 [Checking that the scheduled runs are healthy](ci.md#checking-that-the-scheduled-runs-are-healthy) for the commands
 and for how to tell a genuinely quiet night from a broken one.
 
@@ -287,9 +287,6 @@ git tag 0.13.0-rc1
 git push apache 0.13.0-rc1
 ```
 
-Note that pushing a release candidate tag will trigger a GitHub workflow that will build a Docker image and publish
-it to GitHub Container Registry at https://github.com/apache/datafusion-comet/pkgs/container/datafusion-comet
-
 ### Publishing Documentation
 
 In `docs` directory:
@@ -467,9 +464,6 @@ git checkout 0.13.0-rc1
 git tag 0.13.0
 git push apache 0.13.0
 ```
-
-Note that pushing a release tag will trigger a GitHub workflow that will build a Docker image and publish
-it to GitHub Container Registry at https://github.com/apache/datafusion-comet/pkgs/container/datafusion-comet
 
 Reply to the vote thread to close the vote and announce the release. The announcement email should include:
 
