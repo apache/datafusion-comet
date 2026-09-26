@@ -96,9 +96,9 @@ Things to know before changing this layer:
 ## From `IcebergWrite` to `CometIcebergWrite`
 
 `CometExecRule` converts an `IcebergWriteExec` with the `CometIcebergNativeWrite` operator serde
-when `spark.comet.iceberg.write.enabled` is on. Two arms in `CometExecRule` handle it: one unwraps
-the double conversion AQE can produce when it re-fires write planning over a sub-tree that already
-contains a `CometIcebergWriteExec`, and the other calls `convertToComet`.
+when `spark.comet.iceberg.write.enabled` is on. A single arm in `CometExecRule` handles the
+conversion by calling `convertToComet`. The converted node keeps the `IcebergWriteExec` as its
+`originalPlan`, so AQE re-plans the write from that node.
 
 `CometIcebergNativeWrite.requiresNativeChildren` is `true`. The native writer consumes Arrow
 batches from its child over FFI, so the conversion is declined unless the child is already a Comet
@@ -371,8 +371,11 @@ Each of these has caused a bug on this path:
   ([#5691](https://github.com/apache/datafusion-comet/issues/5691),
   [#5693](https://github.com/apache/datafusion-comet/issues/5693),
   [#6141](https://github.com/apache/datafusion-comet/issues/6141)).
-- **Plan rewrites must keep the write node.** Rules that restore Spark operators from a Comet
-  node's `originalPlan` have to handle the write execs, whose `originalPlan` today is their child
+- **Plan rewrites must keep the write node.** `CometIcebergWriteExec.originalPlan` is the
+  `IcebergWriteExec` it replaced. Restoring Spark execution goes through
+  [`CometExec.sparkFallback`](adding_a_new_operator.md#restoring-the-spark-operator-sparkfallback),
+  which rebuilds that node around the reverted children. Pointing `originalPlan` at the child
+  drops the write, and AQE then treats the write as part of that child's stage
   ([#5719](https://github.com/apache/datafusion-comet/issues/5719)).
 - **The kill switch must still work.** Code that runs for Iceberg writes has to respect
   `spark.comet.enabled`, so that disabling Comet restores Spark's own plan

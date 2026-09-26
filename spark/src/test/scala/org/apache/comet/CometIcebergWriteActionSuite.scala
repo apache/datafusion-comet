@@ -42,6 +42,7 @@ import org.apache.spark.sql.connector.catalog.InMemoryTableCatalog
 import org.apache.spark.sql.connector.write.{BatchWrite, DataWriterFactory, PhysicalWriteInfo, Write, WriterCommitMessage}
 import org.apache.spark.sql.execution.{ColumnarToRowTransition, LeafExecNode, SparkPlan}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
+import org.apache.spark.sql.execution.exchange.ShuffleExchangeLike
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{DoubleType, IntegerType, StringType, StructField, StructType}
 
@@ -717,6 +718,114 @@ class CometIcebergWriteActionSuite
         spark.sql(
           "INSERT INTO cat.db.native_append_values VALUES " +
             "(1, 'us-east', 10.5), (2, 'us-west', 20.3), (3, 'eu', 30.7)")
+      }
+    }
+  }
+
+  for (adaptive <- Seq(false, true)) {
+    test(s"transition-heavy fallback preserves Iceberg writes with AQE=$adaptive") {
+      assumeNativeAcceleration()
+      withIcebergCatalog { warehouseDir =>
+        val suffix = if (adaptive) "aqe" else "no_aqe"
+        val nativeTable = s"transition_native_$suffix"
+        val fallbackTable = s"transition_fallback_$suffix"
+        createTable(warehouseDir, nativeTable, partitionSpec = "")
+        createTable(warehouseDir, fallbackTable, partitionSpec = "")
+        val values = "(1, 'us-east', 10.5), (2, 'us-west', 20.3), (3, 'eu', 30.7)"
+
+        withSQLConf(
+          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString,
+          CometConf.COMET_EXEC_TRANSITION_REVERT_ENABLED.key -> "false") {
+          assertNativeWriteEngages(nativeTable, Seq(1, 2, 3)) {
+            spark.sql(s"INSERT INTO $catalog.$ns.$nativeTable VALUES $values")
+          }
+        }
+
+        withSQLConf(
+          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString,
+          CometConf.COMET_EXEC_TRANSITION_REVERT_ENABLED.key -> "true",
+          CometConf.COMET_EXEC_TRANSITION_REVERT_MAX_TRANSITIONS.key -> "0") {
+          assertNativeWriteDoesNotEngage(fallbackTable, Seq(1, 2, 3)) {
+            spark.sql(s"INSERT INTO $catalog.$ns.$fallbackTable VALUES $values")
+          }
+        }
+      }
+    }
+  }
+
+  // An unpartitioned INSERT never puts an exchange under the write, so it misses #6152: with AQE
+  // off, unwrapping a transition that sits on a shuffle used to keep walking into the map stage.
+  // The IN-subquery on a partitioned copy-on-write DELETE is the plan that does, and the AQE-off
+  // case is the one that fails with `ColumnarBatch cannot be cast to InternalRow`.
+  // `us-west` keeps a row after deleting id 2. An emptied partition makes the rewrite emit
+  // nothing, and AQE then replaces the write input with an empty LocalTableScan, so the executed
+  // plan no longer contains the shuffle this test is checking for.
+  for (adaptive <- Seq(false, true)) {
+    test(s"transition-heavy fallback preserves partitioned CoW deletes with AQE=$adaptive") {
+      assumeNativeAcceleration()
+      withIcebergCatalog { warehouseDir =>
+        val suffix = if (adaptive) "aqe" else "no_aqe"
+        val nativeTable = s"transition_cow_native_$suffix"
+        val fallbackTable = s"transition_cow_fallback_$suffix"
+        val props = Some("'write.delete.mode'='copy-on-write'")
+        val spec = "PARTITIONED BY (region)"
+        createTable(warehouseDir, nativeTable, spec, props)
+        createTable(warehouseDir, fallbackTable, spec, props)
+        val seed =
+          Seq(
+            (1, "us-east", 10.0),
+            (2, "us-west", 20.0),
+            (3, "eu", 30.0),
+            (4, "us-east", 40.0),
+            (5, "us-west", 50.0))
+        withSQLConf(CometConf.COMET_ICEBERG_WRITE_SPLIT_OPERATOR_ENABLED.key -> "false") {
+          coalesceInsert(nativeTable, seed)
+          coalesceInsert(fallbackTable, seed)
+        }
+        def delete(table: String): Unit =
+          spark.sql(
+            s"DELETE FROM $catalog.$ns.$table WHERE id IN " +
+              "(SELECT col1 FROM VALUES (2) AS t(col1))")
+
+        withSQLConf(
+          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString,
+          CometConf.COMET_EXEC_TRANSITION_REVERT_ENABLED.key -> "false") {
+          assertNativeWriteEngages(nativeTable, Seq(1, 3, 4, 5)) {
+            delete(nativeTable)
+          }
+        }
+
+        withSQLConf(
+          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString,
+          CometConf.COMET_EXEC_TRANSITION_REVERT_ENABLED.key -> "true",
+          CometConf.COMET_EXEC_TRANSITION_REVERT_MAX_TRANSITIONS.key -> "0") {
+          val snapshot = withNativeEnabled {
+            captureWrite(fallbackTable)(delete(fallbackTable))
+          }
+          assertExactlyOneCommit(snapshot)
+          val nativeExecs = snapshot.plans.flatMap { plan =>
+            collectWithSubqueries(plan) { case e: CometIcebergWriteExec => e }
+          }
+          assert(
+            nativeExecs.isEmpty,
+            "transition reversion should restore IcebergWriteExec. Plans:\n" +
+              snapshot.plans.mkString("\n--\n"))
+          // AdaptiveSparkPlanExec is a leaf, so only the AQE-aware collect reaches the exchange.
+          val hasExchange = snapshot.plans.exists { plan =>
+            collect(plan) { case _: ShuffleExchangeLike => true }.nonEmpty
+          }
+          assert(
+            hasExchange,
+            "the delete must keep a shuffle under the write. Plans:\n" +
+              snapshot.plans.mkString("\n--\n"))
+          assertRows(fallbackTable, Seq(1, 3, 4, 5))
+        }
+
+        val nativeDirs = partitionDirs(warehouseDir, nativeTable)
+        val fallbackDirs = partitionDirs(warehouseDir, fallbackTable)
+        assert(
+          fallbackDirs == nativeDirs,
+          s"partition layout fallback=$fallbackDirs native=$nativeDirs")
       }
     }
   }

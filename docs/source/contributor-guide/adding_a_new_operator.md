@@ -573,6 +573,27 @@ Use `QueryPlanSerde.exprToProto` to convert Spark expressions to protobuf:
 val protoExpr = exprToProto(sparkExpr, inputSchema)
 ```
 
+### Restoring the Spark operator (`sparkFallback`)
+
+`CometExec.originalPlan` is the Spark operator this node replaced. `CometExecRule` copies
+`originalPlan.logicalLink` onto the Comet node, which is how AQE finds the node again when it
+re-plans a stage. `RevertNativeForTransitionHeavyStages` calls `sparkFallback(newChildren)` to
+rebuild that Spark operator with the children of the reverted stage.
+
+The default implementation is `originalPlan.withNewChildren(newChildren)`. It refuses a null
+`originalPlan`, an `originalPlan` that is one of the node's own children, or a different number of
+children than the Spark operator has.
+
+Override `sparkFallback` when conversion changes the plan shape, so the restored node is not that
+Spark operator with the same children. `CometNativeWriteExec` replaces a `DataWritingCommandExec`
+and drops the `WriteFilesExec` under it; its override puts that wrapper back around the restored
+input. `CometIcebergWriteExec` keeps the same shape as `IcebergWriteExec`, so the default is
+enough.
+
+Do not point `originalPlan` at a child. If that child is a shuffle or query stage, the copied
+logical link puts this node inside the stage's `LogicalQueryStage`. AQE then re-plans a second
+copy of the operator around the one that is already there.
+
 ### Handling Fallback
 
 Use `withInfo` to tag operators with fallback reasons:
