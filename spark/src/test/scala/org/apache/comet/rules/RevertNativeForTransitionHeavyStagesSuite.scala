@@ -44,9 +44,9 @@ class RevertNativeForTransitionHeavyStagesSuite extends CometTestBase {
   }
 
   private def applyFullColumnarPipeline(plan: SparkPlan): SparkPlan = {
-    val cometPlan = CometScanRule(spark).apply(plan)
-    val execPlan = CometExecRule(spark).apply(cometPlan)
-    val withTransitions = ApplyColumnarRulesAndInsertTransitions(Seq.empty, false).apply(execPlan)
+    val cometPlan = CometRule(spark).apply(plan)
+    val withTransitions =
+      ApplyColumnarRulesAndInsertTransitions(Seq.empty, false).apply(cometPlan)
     EliminateRedundantTransitions(spark).apply(withTransitions)
   }
 

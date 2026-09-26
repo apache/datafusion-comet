@@ -43,12 +43,19 @@ onto a tokio worker thread and batches are delivered to the executor thread via 
 The executor thread parks in `blocking_recv()` until the next batch is ready. This avoids
 busy-polling on I/O-bound workloads.
 
-**JVM data source path (ScanExec present):** The executor thread calls `block_on()` and polls the
-DataFusion stream directly, interleaving `pull_input_batches()` calls on `Poll::Pending` to feed
-data from the JVM into ScanExec operators.
+**JVM data source path (ScanExec or ShuffleScanExec present):** The executor thread calls
+`block_on()` and polls the DataFusion stream directly. On `Poll::Pending` it calls
+`pull_input_batches()` to feed data from the JVM into the ScanExec and ShuffleScanExec operators,
+whose streams register the poll's waker and are woken by the refill. The stream is polled with a
+waker that also sets a flag. If the flag is still clear when the pull returns, the stream is
+waiting on native I/O, and the thread parks until a waker fires instead of busy-polling. If it is
+set, the loop polls again. It checks the flag rather than trusting the thread's parker because the
+pull can run another Comet plan on the same thread, and that plan's `block_on()` shares the parker
+and can consume the wake-up meant for the outer loop.
 
-In both cases, DataFusion operators execute on **tokio worker threads**, not on the Spark executor
-task thread. All Spark tasks on an executor share one tokio runtime.
+On the async I/O path, DataFusion operators execute on **tokio worker threads**. On the JVM data
+source path, `block_on()` polls them on the Spark executor task thread, and any tasks they spawn
+run on the shared runtime. All Spark tasks on an executor share one tokio runtime.
 
 ### Rules for native code
 
@@ -566,6 +573,12 @@ Comet is a multi-language project with native code written in Rust and JVM code 
 It is possible to debug both native and JVM code concurrently as described in the [DEBUGGING guide](debugging)
 
 ## Submitting a Pull Request
+
+Use `git push` for normal updates to your PR branch. If you need to force push after a rebase
+or amend, use `git push --force-with-lease` instead of `git push --force` (or `-f`). This reduces
+the risk of accidentally overwriting another maintainer's commits when multiple people push
+to the same PR branch. If the lease check rejects the push, inspect and integrate the remote
+changes before retrying; do not switch to `--force` to bypass the check.
 
 Before submitting a pull request, follow this checklist to ensure your changes are ready:
 

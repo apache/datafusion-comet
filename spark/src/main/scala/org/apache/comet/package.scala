@@ -21,7 +21,7 @@ package org.apache
 
 import java.util.Properties
 
-import org.apache.arrow.memory.RootAllocator
+import org.apache.arrow.memory.{BufferAllocator, RootAllocator}
 import org.apache.spark.internal.Logging
 
 package object comet {
@@ -33,20 +33,44 @@ package object comet {
    * finished later than the close of the allocator, the allocator will think the memory is
    * leaked. To avoid this, we use a single allocator for the whole execution process.
    *
-   * It carries no allocation listener, so allocating from it directly is not reported to Spark's
-   * memory manager. That is what memory on either side of the C Data Interface wants. Imported
-   * buffers wrap memory the native side owns and frees, already charged to Comet's native pool,
-   * and Arrow's `wrapForeignAllocation` would otherwise report the full buffer capacity as though
-   * a JVM-side allocation had happened. Buffers allocated to be exported are the mirror image:
-   * whichever native operator retains the batch reserves them through Comet's unified pool, which
-   * charges the same Spark task, so reporting them here too would reserve the same memory twice.
-   *
-   * Allocations that live and die in the JVM should go through
+   * It carries no allocation listener, so neither it nor a child cut with the three-argument
+   * `newChildAllocator` reports anything to Spark's memory manager. That is what buffers
+   * allocated to be handed to native want: a native operator that retains a batch reserves its
+   * buffers through Comet's pool, which charges the same Spark task, so reporting them here as
+   * well would reserve the same memory twice. JVM-owned allocations should go through
    * `CometTaskArrowAllocator.forCurrentTask()` instead, which cuts a per-task child whose
-   * listener reports the bytes to Spark. Off a task it hands back this allocator, so the
-   * driver-side paths are unchanged.
+   * listener reports what that child owns, and which hands back this allocator when there is no
+   * task.
    */
   val CometArrowAllocator = new RootAllocator(Long.MaxValue)
+
+  /**
+   * The allocator that the Arrow C Data Interface import path allocates from.
+   *
+   * Arrow charges a buffer to whichever allocator owns it, so imports taken directly against
+   * [[CometArrowAllocator]] are indistinguishable from buffers the JVM allocated itself. Giving
+   * the import path its own child keeps the two separable for tracing. The child reserves
+   * nothing, so every byte still escalates to the parent and the root keeps reporting the total.
+   * Like the root, it is never closed: imported buffers are reference counted and routinely
+   * outlive the task that imported them.
+   *
+   * What this counts is what the import path is charged for, not where the bytes were allocated.
+   * Ownership and allocation come apart in both directions. Bytes the JVM allocated land here:
+   * Arrow's importer allocates the owning `ArrowArray` struct from this allocator, and
+   * `BitVectorHelper.loadValidityBuffer` allocates a validity bitmap here when an imported vector
+   * is all-valid or all-null and carries no validity buffer. Imported bytes land elsewhere: an
+   * ownership transfer re-parents a charge without moving the payload, so a vector that shares
+   * buffers with an import can leave the root accountable for memory the producer allocated.
+   *
+   * So read this and the root's total as allocator charges. Their difference is not a bound on
+   * the Arrow memory the JVM allocated itself, and neither is a count of unique physical bytes.
+   *
+   * It must stay without an allocation listener, as the root is. Arrow's `wrapForeignAllocation`
+   * reports an imported buffer to the importing allocator's listener at full capacity, as though
+   * the JVM had allocated it, so a listener here would charge Spark for native memory.
+   */
+  val CometArrowImportAllocator: BufferAllocator =
+    CometArrowAllocator.newChildAllocator("comet-ffi-imports", 0, Long.MaxValue)
 
   /**
    * Provides access to build information about the Comet libraries. This will be used by the

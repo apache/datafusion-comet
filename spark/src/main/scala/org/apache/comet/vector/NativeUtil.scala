@@ -31,7 +31,7 @@ import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.execution.vectorized.ConstantColumnVector
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
-import org.apache.comet.CometArrowAllocator
+import org.apache.comet.{CometArrowAllocator, CometArrowImportAllocator}
 
 /**
  * Provides functionality for importing Arrow vectors from native code and wrapping them as
@@ -47,16 +47,13 @@ import org.apache.comet.CometArrowAllocator
 class NativeUtil extends AutoCloseable {
   import Utils._
 
-  // The unaccounted root, on both sides of the boundary this class straddles. Imported buffers
-  // wrap memory the native side owns and frees, already charged to Comet's native pool. Everything
-  // allocated here goes the other way -- the FFI structs, the materialised constant vectors, the
-  // exported vectors -- and whichever native operator retains a batch reserves those same buffers
-  // in Comet's pool, which charges the same Spark task. Reporting either direction to Spark would
-  // count native memory a second time.
+  // The listener-less root, not the task allocator: what this allocates, the FFI structs and
+  // materialised constant vectors, is handed to native, which accounts for what it retains. See
+  // CometTaskArrowAllocator.
   private val allocator = CometArrowAllocator
 
   /** ArrowImporter does not hold any state and does not need to be closed */
-  private val importer = new ArrowImporter(allocator)
+  private val importer = new ArrowImporter(CometArrowImportAllocator)
 
   /**
    * Dictionary provider to use for the lifetime of this instance of NativeUtil. The dictionary

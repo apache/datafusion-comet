@@ -45,7 +45,9 @@ use datafusion::physical_plan::common::collect;
 use datafusion::physical_plan::metrics::{MetricValue, MetricsSet};
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::{ParquetReadOptions, SessionContext};
-use datafusion_comet_shuffle::{CometPartitioning, CompressionCodec, ShuffleWriterExec};
+use datafusion_comet_shuffle::{
+    CometPartitioning, CompressionCodec, RoundRobinStrategy, ShuffleWriterExec,
+};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -583,7 +585,9 @@ fn build_partitioning(
 ) -> CometPartitioning {
     match scheme {
         "single" => CometPartitioning::SinglePartition,
-        "round-robin" => CometPartitioning::RoundRobin(num_partitions, 0),
+        "round-robin" => {
+            CometPartitioning::RoundRobin(num_partitions, RoundRobinStrategy::default())
+        }
         "hash" => {
             let exprs: Vec<Arc<dyn datafusion::physical_expr::PhysicalExpr>> = hash_col_indices
                 .iter()
