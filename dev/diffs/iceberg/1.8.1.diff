@@ -1,12 +1,12 @@
 diff --git a/gradle/libs.versions.toml b/gradle/libs.versions.toml
-index 04ffa8f4ed..5c0a54a84a 100644
+index 04ffa8f4ed..ba5aac16c5 100644
 --- a/gradle/libs.versions.toml
 +++ b/gradle/libs.versions.toml
 @@ -34,6 +34,7 @@ azuresdk-bom = "1.2.31"
  awssdk-s3accessgrants = "2.3.0"
  caffeine = "2.9.3"
  calcite = "1.10.0"
-+comet = "1.1.0-SNAPSHOT"
++comet = "1.1.0"
  datasketches = "6.2.0"
  delta-standalone = "3.3.0"
  delta-spark = "3.3.0"
