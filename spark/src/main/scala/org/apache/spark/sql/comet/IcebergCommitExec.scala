@@ -19,12 +19,11 @@
 
 package org.apache.spark.sql.comet
 
-import java.util.concurrent.atomic.AtomicReference
-
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.Attribute
 import org.apache.spark.sql.connector.write.{BatchWrite, Write, WriterCommitMessage}
+import org.apache.spark.sql.errors.QueryExecutionErrors
 import org.apache.spark.sql.execution.{SparkPlan, SQLExecution, UnaryExecNode}
 import org.apache.spark.sql.execution.datasources.v2.V2CommandExec
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
@@ -92,39 +91,46 @@ case class IcebergCommitExec(
         // the data files of tasks that completed before the job failed would stay behind even
         // though nothing can reference them (no commit was attempted). Delete them here; the
         // failed task's own files are cleaned up by the task itself.
-        try batchWrite.abort(completed)
-        catch {
-          case abortFailure: Throwable =>
-            cause.addSuppressed(abortFailure)
-        }
+        val failure = abortAfter(completed, cause)
         try deleteCompletedTaskFiles(completed)
         catch {
           case cleanupFailure: Throwable =>
             cause.addSuppressed(cleanupFailure)
         }
-        throw cause
+        throw failure
     }
     longMetric("numCommittedMessages").add(messages.length)
 
     try {
       messages.foreach(batchWrite.onDataWriterCommit)
-      IcebergCommitExec.runPreCommitHook(messages)
       IcebergWriteSummaryShim.commit(batchWrite, messages, child)
       logInfo(s"Iceberg commit succeeded with ${messages.length} task message(s)")
     } catch {
       case cause: Throwable =>
         logError(s"Iceberg commit failed; aborting ${messages.length} task message(s)", cause)
-        try batchWrite.abort(messages)
-        catch {
-          case abortFailure: Throwable =>
-            cause.addSuppressed(abortFailure)
-        }
-        throw cause
+        throw abortAfter(messages, cause)
     }
 
     refreshCache()
     Nil
   }
+
+  /**
+   * Aborts the write after `cause` and returns what the failed write throws, matching Spark's
+   * `V2TableWriteExec.writeWithV2` on every supported Spark version: `cause` itself when the
+   * abort succeeds, or, when the abort also fails, a `SparkException` ("Writing job failed.")
+   * wrapping `cause` with the abort failure attached to it as suppressed.
+   */
+  private def abortAfter(messages: Array[WriterCommitMessage], cause: Throwable): Throwable =
+    try {
+      batchWrite.abort(messages)
+      cause
+    } catch {
+      case abortFailure: Throwable =>
+        logError("Iceberg write abort failed")
+        cause.addSuppressed(abortFailure)
+        QueryExecutionErrors.writingJobFailedError(cause)
+    }
 
   private def deleteCompletedTaskFiles(completed: Array[WriterCommitMessage]): Unit = {
     val locations = completed.toSeq.flatMap(m => IcebergReflection.taskCommitFileLocations(m))
@@ -169,22 +175,4 @@ case class IcebergCommitExec(
 
 object IcebergCommitExec {
   type RefreshCache = () => Unit
-
-  // Driver-local test hook for the boundary after every task commit message has been accepted and
-  // before the table commit starts. It is consumed before invocation so the callback may perform
-  // a nested Iceberg write without recursively invoking itself.
-  private val preCommitHook =
-    new AtomicReference[Array[WriterCommitMessage] => Unit]()
-
-  private[apache] def withPreCommitHook[T](hook: Array[WriterCommitMessage] => Unit)(
-      body: => T): T = {
-    val previous = preCommitHook.getAndSet(hook)
-    try body
-    finally preCommitHook.set(previous)
-  }
-
-  private def runPreCommitHook(messages: Array[WriterCommitMessage]): Unit = {
-    val hook = preCommitHook.getAndSet(null)
-    if (hook != null) hook(messages)
-  }
 }
