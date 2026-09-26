@@ -2172,6 +2172,47 @@ class CometNativeCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("TRY cast of a map key that can fail is Unsupported") {
+    // https://github.com/apache/datafusion-comet/issues/5995
+    val narrowing = (MapType(LongType, IntegerType), MapType(IntegerType, IntegerType))
+    val expected = Unsupported(Some(CometCast.tryCastNullMapKeyReason))
+    assert(CometCast.isSupported(narrowing._1, narrowing._2, None, CometEvalMode.TRY) == expected)
+    // Only TRY nulls a failing key. Legacy wraps and ANSI raises.
+    Seq(CometEvalMode.LEGACY, CometEvalMode.ANSI).foreach { mode =>
+      assert(
+        CometCast.isSupported(narrowing._1, narrowing._2, None, mode).isInstanceOf[Compatible])
+    }
+    // A widening key cast cannot fail.
+    assert(
+      CometCast
+        .isSupported(
+          MapType(IntegerType, IntegerType),
+          MapType(LongType, LongType),
+          None,
+          CometEvalMode.TRY)
+        .isInstanceOf[Compatible])
+    // Date to timestamp is an upcast in Spark, but it overflows for extreme dates.
+    assert(
+      CometCast.isSupported(
+        MapType(DateType, IntegerType),
+        MapType(TimestampType, IntegerType),
+        None,
+        CometEvalMode.TRY) == expected)
+    // A map nested in an array and in a map value is reached through the recursion.
+    assert(
+      CometCast.isSupported(
+        ArrayType(narrowing._1),
+        ArrayType(narrowing._2),
+        None,
+        CometEvalMode.TRY) == expected)
+    assert(
+      CometCast.isSupported(
+        MapType(IntegerType, narrowing._1),
+        MapType(IntegerType, narrowing._2),
+        None,
+        CometEvalMode.TRY) == expected)
+  }
+
   test("cast MapType propagates Incompatible from inner value cast") {
     // Negative-scale Decimal → String is Incompatible when
     // spark.sql.legacy.allowNegativeScaleOfDecimal is disabled (see canCastToString).
