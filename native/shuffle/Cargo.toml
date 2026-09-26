@@ -30,6 +30,7 @@ publish = false
 
 [dependencies]
 arrow = { workspace = true }
+arrow-data = { workspace = true }
 arrow-select = { workspace = true }
 async-trait = { workspace = true }
 bytes = { workspace = true }
@@ -77,4 +78,8 @@ harness = false
 
 [[bench]]
 name = "row_columnar"
+harness = false
+
+[[bench]]
+name = "shuffle_reader"
 harness = false

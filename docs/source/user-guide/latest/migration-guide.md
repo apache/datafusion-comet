@@ -53,6 +53,13 @@ Treat setting one of these keys as a temporary measure. If you find you cannot s
 legacy behavior, please open an issue describing your use case so it can be considered before the
 key is removed.
 
+## Upgrading to Comet 1.1.0
+
+Comet `1.1.0` makes no behavior changes that need a `spark.comet.legacy.*` key.
+
+Comet `1.1.0` requires JDK 17 or later. JDK 11 is no longer supported. See
+[Installing Comet](installation.md) for the supported Java, Scala, and Spark versions.
+
 ## Upgrading to Comet 1.0.0
 
 Comet `1.0.0` is the first release under the stable

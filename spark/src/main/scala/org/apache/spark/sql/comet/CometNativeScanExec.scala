@@ -269,6 +269,7 @@ case class CometNativeScanExec(
       Map(sourceKey -> commonData),
       Map(sourceKey -> perPartitionData),
       serializedPlan,
+      PlanDataInjector.planFingerprint(serializedPlan),
       perPartitionData.length,
       output.length,
       nativeMetrics,
@@ -366,11 +367,17 @@ object CometNativeScanExec {
       scan: CometScanExec): CometNativeScanExec = {
     // Generate unique key for this scan so PlanDataInjector can match common+partition data.
     // Multiple scans of same table with different projections/filters get different keys.
-    // Derived by the injector that will look it up, so the two sides cannot drift apart.
-    val sourceKey = NativeScanPlanDataInjector.sourceKey(nativeOp.getNativeScan.getCommon)
+    // The hash is computed once here and embedded in the NativeScan proto, so executors
+    // (including the native shuffle writer) rebuild the key instead of hashing per task.
+    val common = nativeOp.getNativeScan.getCommon
+    val sourceKeyHash = NativeScanPlanDataInjector.sourceKeyHash(common)
+    val sourceKey = NativeScanPlanDataInjector.sourceKey(common.getSource, sourceKeyHash)
+    val opWithKey = nativeOp.toBuilder
+      .setNativeScan(nativeOp.getNativeScan.toBuilder.setSourceKeyHash(sourceKeyHash))
+      .build()
 
     val batchScanExec = CometNativeScanExec(
-      nativeOp,
+      opWithKey,
       scanExec.relation,
       scanExec.output,
       scanExec.requiredSchema,

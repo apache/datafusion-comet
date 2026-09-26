@@ -43,12 +43,19 @@ onto a tokio worker thread and batches are delivered to the executor thread via 
 The executor thread parks in `blocking_recv()` until the next batch is ready. This avoids
 busy-polling on I/O-bound workloads.
 
-**JVM data source path (ScanExec present):** The executor thread calls `block_on()` and polls the
-DataFusion stream directly, interleaving `pull_input_batches()` calls on `Poll::Pending` to feed
-data from the JVM into ScanExec operators.
+**JVM data source path (ScanExec or ShuffleScanExec present):** The executor thread calls
+`block_on()` and polls the DataFusion stream directly. On `Poll::Pending` it calls
+`pull_input_batches()` to feed data from the JVM into the ScanExec and ShuffleScanExec operators,
+whose streams register the poll's waker and are woken by the refill. The stream is polled with a
+waker that also sets a flag. If the flag is still clear when the pull returns, the stream is
+waiting on native I/O, and the thread parks until a waker fires instead of busy-polling. If it is
+set, the loop polls again. It checks the flag rather than trusting the thread's parker because the
+pull can run another Comet plan on the same thread, and that plan's `block_on()` shares the parker
+and can consume the wake-up meant for the outer loop.
 
-In both cases, DataFusion operators execute on **tokio worker threads**, not on the Spark executor
-task thread. All Spark tasks on an executor share one tokio runtime.
+On the async I/O path, DataFusion operators execute on **tokio worker threads**. On the JVM data
+source path, `block_on()` polls them on the Spark executor task thread, and any tasks they spawn
+run on the shared runtime. All Spark tasks on an executor share one tokio runtime.
 
 ### Rules for native code
 
@@ -407,10 +414,8 @@ from a clean IntelliJ configuration:
    PROFILES="-Pspark-4.0" make release
    ```
 
-   The `spark-4.0` profile sets Scala 2.13 and Java 17 properties. If you need to be explicit, use
-   `PROFILES="-Pspark-4.0 -Pscala-2.13 -Pjdk17" make release`.
-
-   The Maven profile is named `jdk17` in this project.
+   The `spark-4.0` profile sets the Scala 2.13 properties, and every profile targets Java 17. If you
+   need to be explicit, use `PROFILES="-Pspark-4.0 -Pscala-2.13" make release`.
 
    If the native build previously used a different JDK, clear Cargo's cached JNI link path before
    rebuilding:
@@ -569,6 +574,12 @@ It is possible to debug both native and JVM code concurrently as described in th
 
 ## Submitting a Pull Request
 
+Use `git push` for normal updates to your PR branch. If you need to force push after a rebase
+or amend, use `git push --force-with-lease` instead of `git push --force` (or `-f`). This reduces
+the risk of accidentally overwriting another maintainer's commits when multiple people push
+to the same PR branch. If the lease check rejects the push, inspect and integrate the remote
+changes before retrying; do not switch to `--force` to bypass the check.
+
 Before submitting a pull request, follow this checklist to ensure your changes are ready:
 
 ### 1. Format Your Code
@@ -658,9 +669,21 @@ Choose the group that best matches the area your test covers:
 `*Suite.scala` files in the repository and verifies that each one appears in both workflow files.
 If any suite is missing, this check will fail and block the PR.
 
-The macOS suites only run in the merge queue by default. See
-[Continuous Integration](ci.md) for the two tiers and the labels that opt a pull request into a
-queue-only suite.
+A small number of suites are deliberately **not** run in CI, because they need infrastructure CI
+does not have or because running them there is not worth the cost. These are listed in the
+`ignore_list` in `dev/ci/check-suites.py`, and each one documents in its own scaladoc why it is
+excluded and how to run it. Run a manual suite with:
+
+```sh
+./mvnw test -Dtest=none -Dsuites="org.apache.comet.parquet.ParquetReadFromFakeHadoopFsSuite"
+```
+
+Only add a suite to that list with a good reason; the default is that a new suite runs in CI.
+
+On a pull request and in the merge queue the Linux build runs these suites against the default
+Spark profile (4.1) only; the nightly run covers the other Spark profiles, and the macOS suites
+only run in the merge queue by default. See [Continuous Integration](ci.md) for the three tiers
+and the labels that opt a pull request into a queue-only or nightly suite.
 
 ### Pre-PR Summary
 

@@ -1481,6 +1481,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "comet-contrib-lance"
+version = "1.1.0"
+dependencies = [
+ "datafusion",
+ "datafusion-comet-proto",
+]
+
+[[package]]
 name = "comfy-table"
 version = "7.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1966,6 +1974,7 @@ dependencies = [
  "base64 0.23.1",
  "bytes",
  "comet-contrib-delta",
+ "comet-contrib-lance",
  "criterion",
  "datafusion",
  "datafusion-comet-common",
@@ -2022,6 +2031,7 @@ dependencies = [
  "datafusion",
  "serde",
  "serde_json",
+ "simdutf8",
  "thiserror 2.0.20",
 ]
 
@@ -2056,6 +2066,7 @@ name = "datafusion-comet-shuffle"
 version = "1.1.0"
 dependencies = [
  "arrow",
+ "arrow-data",
  "arrow-select",
  "async-trait",
  "bytes",
@@ -3534,7 +3545,7 @@ dependencies = [
 [[package]]
 name = "iceberg"
 version = "0.10.1"
-source = "git+https://github.com/apache/iceberg-rust?rev=665c64e48e8d33797ecb1a421f327edd9b024879#665c64e48e8d33797ecb1a421f327edd9b024879"
+source = "git+https://github.com/apache/iceberg-rust?rev=bb1e4a4861f02377489eff818b75138f414c4cb0#bb1e4a4861f02377489eff818b75138f414c4cb0"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -3593,7 +3604,7 @@ dependencies = [
 [[package]]
 name = "iceberg-property-macro"
 version = "0.10.1"
-source = "git+https://github.com/apache/iceberg-rust?rev=665c64e48e8d33797ecb1a421f327edd9b024879#665c64e48e8d33797ecb1a421f327edd9b024879"
+source = "git+https://github.com/apache/iceberg-rust?rev=bb1e4a4861f02377489eff818b75138f414c4cb0#bb1e4a4861f02377489eff818b75138f414c4cb0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3603,7 +3614,7 @@ dependencies = [
 [[package]]
 name = "iceberg-storage-opendal"
 version = "0.10.1"
-source = "git+https://github.com/apache/iceberg-rust?rev=665c64e48e8d33797ecb1a421f327edd9b024879#665c64e48e8d33797ecb1a421f327edd9b024879"
+source = "git+https://github.com/apache/iceberg-rust?rev=bb1e4a4861f02377489eff818b75138f414c4cb0#bb1e4a4861f02377489eff818b75138f414c4cb0"
 dependencies = [
  "anyhow",
  "async-trait",
