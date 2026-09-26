@@ -227,6 +227,7 @@ jobs:
               org.apache.comet.serde.operator.CometNativeScanSuite
               org.apache.spark.sql.CometToPrettyStringSuite
               org.apache.spark.sql.CometCollationSuite
+              org.apache.spark.sql.CometSortCollationSuite
               org.apache.comet.CometFuzzAggregateSuite
               org.apache.spark.sql.comet.execution.arrow.CometArrowStreamSuite
               org.apache.spark.sql.CometSparkInternalFunctionsSuite
