@@ -27,20 +27,17 @@ directory with the filename `comet-event-trace.json`.
 
 [Trace Event Format]: https://docs.google.com/document/d/1CvAClvFfyA5R-PhYUmn5OOQtYMH4h6I0nSsKchNAySU/preview?tab=t.0#heading=h.yr4qxyxotyw
 
-Additionally, enabling the `jemalloc` feature will enable tracing of native memory allocations.
+Native memory is traced as `native_allocated`. Comet wraps whichever global allocator the build
+selected and counts the bytes it has handed out. It counts only what Rust code allocated, so it can be compared against the
+memory pool's reservations without the allocator's own caching in the way. The same figure appears in
+the executor's periodic memory usage log, which does not need tracing; see
+[Sizing the Overhead from the Memory Usage Log](../user-guide/latest/tuning.md#sizing-the-overhead-from-the-memory-usage-log).
+
+Enabling the `jemalloc` feature adds a second measure, `jemalloc_allocated`, which also includes
+jemalloc's own metadata and fragmentation:
 
 ```shell
 make release COMET_FEATURES="jemalloc"
-```
-
-The `alloc-accounting` feature adds a second, allocator-independent measure of native memory. It
-wraps whichever global allocator the build selected and reports the bytes it has handed out as
-`native_allocated`. Unlike `jemalloc_allocated` it does not require jemalloc, and it counts only
-what Rust code allocated, so it can be compared against the memory pool's reservations without the
-allocator's own caching in the way. The two features are independent and can be combined:
-
-```shell
-make release COMET_FEATURES="jemalloc,alloc-accounting"
 ```
 
 Example output:
@@ -165,7 +162,7 @@ samples: they are not an atomic per-query balance, and neither is a measure of R
 | jemalloc_allocated               | Native memory usage for the executor process (requires `jemalloc` feature)                                                                                                                                                                                     |
 | jvm_arrow_allocated              | Bytes charged to Comet's Arrow allocator tree on the JVM, including buffers imported from native over the Arrow C Data Interface                                                                                                                               |
 | jvm_arrow_imported               | Bytes charged to the Arrow C Data Interface import allocator, a subset of `jvm_arrow_allocated`. An allocator charge, not a measure of where the bytes were allocated; see above.                                                                              |
-| native_allocated                 | Bytes handed out by the Rust global allocator, process-wide (requires `alloc-accounting` feature). Approximate to within 64 KiB of un-flushed delta per live thread.                                                                                           |
+| native_allocated                 | Bytes handed out by the Rust global allocator, process-wide. Approximate to within 64 KiB of un-flushed delta per live thread.                                                                                                                                 |
 | comet_memory_reserved_total      | Total memory reserved across every live Comet memory pool, process-wide, whatever the configured pool type. Counts a pool shared between execution contexts once, so unlike the per-thread counters it can be compared directly against an allocation counter. |
 | thread_NNN_comet_memory_reserved | Memory reserved by Comet's DataFusion memory pool (summed across all contexts on the thread). NNN is the Rust thread ID. Do not sum these across threads: a shared pool reports its full reservation on every thread that references it.                       |
 | thread_NNN_comet_jvm_shuffle     | Off-heap memory allocated by Comet for columnar shuffle. NNN is the Rust thread ID.                                                                                                                                                                            |

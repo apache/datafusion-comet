@@ -29,7 +29,7 @@ import org.apache.spark.sql.catalyst.expressions.{Ascending, Attribute, Attribut
 import org.apache.spark.sql.catalyst.expressions.aggregate.{Final, Partial, PartialMerge}
 import org.apache.spark.sql.catalyst.plans.logical.LocalRelation
 import org.apache.spark.sql.catalyst.plans.physical.{HashPartitioning, RangePartitioning, RoundRobinPartitioning, SinglePartition}
-import org.apache.spark.sql.comet.{CometCollectLimitExec, CometHashAggregateExec, CometLocalTableScanExec, CometNativeExec, CometScanWrapper, CometSortExec, CometSparkToColumnarExec, CometTakeOrderedAndProjectExec}
+import org.apache.spark.sql.comet.{CometCollectLimitExec, CometHashAggregateExec, CometLocalTableScanExec, CometNativeExec, CometNativeScanExec, CometScanWrapper, CometSortExec, CometSparkToColumnarExec, CometTakeOrderedAndProjectExec}
 import org.apache.spark.sql.execution.{CollectLimitExec, ColumnarToRowTransition, LocalTableScanExec, SortExec, SparkPlan, TakeOrderedAndProjectExec}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanExec
 import org.apache.spark.sql.execution.aggregate.BaseAggregateExec
@@ -144,7 +144,7 @@ class CometCelebornShufflePlanningSuite extends CometTestBase {
 
   test("the actual composite manager loads Comet and default auto preserves Spark shuffle") {
     val conf = spark.sessionState.conf
-    assert(isCometShuffleManagerEnabled(conf))
+    assert(isCometShuffleManagerEnabled)
     assertNativeExecutionLoaded()
     assert(CometConf.COMET_SHUFFLE_MODE.get(conf) == "auto")
     assert(!isCometShuffleEnabled(conf))
@@ -187,6 +187,28 @@ class CometCelebornShufflePlanningSuite extends CometTestBase {
         val exchange = ShuffleExchangeExec(partitioning, child)
         assert(CometShuffleExchangeExec.shuffleSupported(exchange).contains(CometNativeShuffle))
         assert(reasons(exchange).isEmpty)
+      }
+    }
+  }
+
+  test("positional round robin stays off under Celeborn") {
+    // Positional placement would be the first path to hand the push writer sliced batches, and
+    // an indeterminate stage's rollback has not been shown to hold for push shuffle, so the
+    // planner keeps content-hash placement even where the plan would otherwise qualify.
+    withTempPath { dir =>
+      spark.range(100).write.parquet(dir.getAbsolutePath)
+      withSQLConf(
+        CometConf.COMET_SHUFFLE_MODE.key -> "native",
+        CometConf.COMET_SHUFFLE_NATIVE_ROUND_ROBIN_PARTITIONING_ENABLED.key -> "true",
+        CometConf.COMET_SHUFFLE_NATIVE_ROUND_ROBIN_PARTITIONING_POSITIONAL_ENABLED.key -> "true",
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
+        val plan =
+          spark.read.parquet(dir.getAbsolutePath).repartition(8).queryExecution.executedPlan
+        val exchanges = cometExchanges(plan)
+        assert(exchanges.size == 1, s"expected one Comet exchange:\n$plan")
+        // A bare native scan, so the shuffle manager is the only thing ruling positional out.
+        assert(exchanges.head.child.isInstanceOf[CometNativeScanExec], s"$plan")
+        assert(!exchanges.head.usesPositionalRoundRobin)
       }
     }
   }

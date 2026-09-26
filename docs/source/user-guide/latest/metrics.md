@@ -23,11 +23,69 @@ under the License.
 
 Comet operators report the following metrics in the Spark SQL UI.
 
-### CometScanExec
+### CometBatchScan
 
-| Metric      | Description                                                                                                                                                                                                                                                                        |
-| ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `scan time` | Total time to scan a Parquet file. This is not comparable to the same metric in Spark because Comet's scan metric is more accurate. Although both Comet and Spark measure the time in nanoseconds, Spark rounds this time to the nearest millisecond per batch and Comet does not. |
+| Metric      | Description                                                                                                                                                           |
+| ----------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `scan time` | Time spent reading batches from the wrapped DataSource V2 reader. Comet measures this time in nanoseconds and does not round it to the nearest millisecond per batch. |
+
+Parquet scans through the DataSource V1 API appear in plans as `CometNativeScan` and report the
+native metrics described under [Native Parquet scans](#native-parquet-scans) rather than `scan time`.
+
+### CometIcebergNativeScan
+
+The native Iceberg scan reports two groups of metrics. The runtime metrics are produced natively
+during execution; the planning metrics are Iceberg's own scan-report counters, computed by
+Iceberg's Java planner on the driver and surfaced here so they show in the UI as they do for a
+plain Spark + Iceberg `BatchScan`.
+
+| Metric                            | Description                                                                                                                                                                                                                                                                                                                                                |
+| --------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `number of output rows`           | Rows produced by the scan.                                                                                                                                                                                                                                                                                                                                 |
+| `number of bytes scanned`         | Bytes read from storage, including data and delete files.                                                                                                                                                                                                                                                                                                  |
+| `number of file splits processed` | File scan tasks (splits) read by this scan.                                                                                                                                                                                                                                                                                                                |
+| `scan time`                       | Time spent in the native scan's record-batch polling, covering the iceberg-rust reader plus Comet's schema adaptation. It excludes time the stream spends waiting between polls, so it is decode/compute time, not end-to-end scan latency. This differs from the `scan time` under `CometBatchScan`, which times batch reads from a DataSource V2 reader. |
+
+The planning metrics below mirror Iceberg's `ScanReport`. They are driver-side values known after
+scan planning and do not change during execution.
+
+| Metric                   | Description                                         |
+| ------------------------ | --------------------------------------------------- |
+| `totalPlanningDuration`  | Time Iceberg spent planning the scan.               |
+| `totalDataManifest`      | Data manifests in the snapshot.                     |
+| `scannedDataManifests`   | Data manifests read during planning.                |
+| `skippedDataManifests`   | Data manifests skipped by partition/stat filtering. |
+| `resultDataFiles`        | Data files selected for the scan.                   |
+| `skippedDataFiles`       | Data files skipped by filtering.                    |
+| `totalDataFileSize`      | Total size of the selected data files.              |
+| `totalDeleteManifests`   | Delete manifests in the snapshot.                   |
+| `scannedDeleteManifests` | Delete manifests read during planning.              |
+| `skippedDeleteManifests` | Delete manifests skipped by filtering.              |
+| `resultDeleteFiles`      | Delete files applied to the scan.                   |
+| `skippedDeleteFiles`     | Delete files skipped by filtering.                  |
+| `totalDeleteFileSize`    | Total size of the applied delete files.             |
+| `equalityDeleteFiles`    | Equality delete files applied.                      |
+| `positionalDeleteFiles`  | Positional delete files applied.                    |
+| `indexedDeleteFiles`     | Delete files served from the delete-file index.     |
+
+Iceberg's `numDeletes` (deletes applied at read time) is not reported: it is a Java-reader runtime
+counter, and Comet reads natively through iceberg-rust, which exposes no deletes-applied count, so
+the value would always be 0.
+
+### CometHashAggregate
+
+Native aggregates with grouping keys report these additional metrics:
+
+| Metric                               | Description                                                                                                                        |
+| ------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------- |
+| `rows bypassing partial aggregation` | Input rows passed through without partial aggregation. See [Adaptive Partial Aggregation](tuning.md#adaptive-partial-aggregation). |
+| `number of spills`                   | Number of times the aggregate spilled to disk.                                                                                     |
+| `total spilled bytes`                | Bytes written to aggregate spill files.                                                                                            |
+| `number of spilled rows`             | Rows written to aggregate spill files.                                                                                             |
+| `peak native aggregate memory`       | Peak memory used by the native aggregate.                                                                                          |
+
+Spill bytes from native sorts, aggregates, and sort-merge joins are also added to Spark's task-level
+`diskBytesSpilled` metric in every stage, not only in shuffle stages.
 
 ### Hash Joins
 
@@ -53,15 +111,20 @@ reader savings. Existing join, scan, and intervening filter metrics retain their
 
 Comet adds some additional metrics:
 
-| Metric                          | Description                                                                 |
-| ------------------------------- | --------------------------------------------------------------------------- |
-| `native shuffle time`           | Total time in native code excluding any child operators.                    |
-| `repartition time`              | Time to repartition batches.                                                |
-| `partition interleaving time`   | Time to interleave partitioned batches before writing them.                 |
-| `memory pool time`              | Time interacting with memory pool.                                          |
-| `encoding and compression time` | Time to encode batches in IPC format and compress using ZSTD.               |
-| `disk spilled bytes`            | Actual bytes written to native shuffle spill files on disk.                 |
-| `memory spilled bytes`          | Uncompressed Arrow backing-buffer and partition-index data before spilling. |
+| Metric                            | Description                                                                                                                                      |
+| --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `native shuffle writer time`      | Total time in the native shuffle writer, excluding any child operators.                                                                          |
+| `repartition time`                | Time to repartition batches.                                                                                                                     |
+| `partition interleaving time`     | Time to interleave partitioned batches before writing them.                                                                                      |
+| `encoding and compression time`   | Time to encode batches in Arrow IPC format and compress them with the configured codec (`spark.comet.shuffle.compression.codec`, default `lz4`). |
+| `decoding and decompression time` | Time to decompress and decode shuffle blocks when they are read.                                                                                 |
+| `number of spills`                | Number of native shuffle spills.                                                                                                                 |
+| `disk spilled bytes`              | Actual bytes written to native shuffle spill files on disk.                                                                                      |
+| `memory spilled bytes`            | Uncompressed Arrow backing-buffer and partition-index data before spilling.                                                                      |
+| `number of input batches`         | Batches received by the native shuffle writer.                                                                                                   |
+
+Comet exchanges also report Spark's standard shuffle read and write metrics, including when native
+operators read shuffle blocks directly.
 
 Disk and memory spilled bytes measure different representations of the same native shuffle spill.
 Disk spill bytes count the actual bytes written to disk: compressed when shuffle compression is
@@ -87,25 +150,24 @@ Here is a guide to some of the native metrics.
 
 ### ScanExec
 
-| Metric            | Description                                                                                         |
-| ----------------- | --------------------------------------------------------------------------------------------------- |
-| `elapsed_compute` | Total time spent in this operator, fetching batches from a JVM iterator.                            |
-| `jvm_fetch_time`  | Time spent in the JVM fetching input batches to be read by this `ScanExec` instance.                |
-| `arrow_ffi_time`  | Time spent using Arrow FFI to create Arrow batches from the memory addresses returned from the JVM. |
+| Metric            | Description                                                              |
+| ----------------- | ------------------------------------------------------------------------ |
+| `elapsed_compute` | Total time spent in this operator, fetching batches from a JVM iterator. |
+| `cast_time`       | Time spent casting columns to the requested data types during the scan.  |
 
 ### ShuffleWriterExec
 
-| Metric                 | Description                                                           |
-| ---------------------- | --------------------------------------------------------------------- |
-| `elapsed_compute`      | Total time excluding any child operators.                             |
-| `repart_time`          | Time to repartition batches.                                          |
-| `interleave_time`      | Time to interleave partitioned batches before writing them.           |
-| `ipc_time`             | Time to encode batches in IPC format and compress using ZSTD.         |
-| `mempool_time`         | Time interacting with memory pool.                                    |
-| `write_time`           | Time spent writing bytes to disk.                                     |
-| `spill_count`          | Number of native shuffle spills.                                      |
-| `spilled_bytes`        | Actual bytes written to native shuffle spill files on disk.           |
-| `memory_spilled_bytes` | Uncompressed Arrow backing-buffer and partition-index memory spilled. |
+| Metric                 | Description                                                                             |
+| ---------------------- | --------------------------------------------------------------------------------------- |
+| `elapsed_compute`      | Total time excluding any child operators.                                               |
+| `repart_time`          | Time to repartition batches.                                                            |
+| `interleave_time`      | Time to gather partitioned rows into output batches before writing.                     |
+| `encode_time`          | Time to encode batches in Arrow IPC format and compress them with the configured codec. |
+| `write_time`           | Time spent writing encoded data to its destination.                                     |
+| `input_batches`        | Number of input batches.                                                                |
+| `spill_count`          | Number of native shuffle spills.                                                        |
+| `spilled_bytes`        | Actual bytes written to native shuffle spill files on disk.                             |
+| `memory_spilled_bytes` | Uncompressed Arrow backing-buffer and partition-index memory spilled.                   |
 
 ### Native Parquet scans
 

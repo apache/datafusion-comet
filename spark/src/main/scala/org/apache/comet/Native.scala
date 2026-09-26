@@ -72,7 +72,6 @@ class Native extends NativeBase {
       offHeapMode: Boolean,
       memoryPoolType: String,
       memoryLimit: Long,
-      memoryLimitPerTask: Long,
       taskAttemptId: Long,
       taskCPUs: Long,
       keyUnwrapper: CometFileKeyUnwrapper,
@@ -264,6 +263,20 @@ class Native extends NativeBase {
    * Returns the Rust thread ID for the current thread.
    */
   @native def getRustThreadId(): Long
+
+  /**
+   * Returns the executor's native memory usage, for the periodic memory usage log. Reads only
+   * process-wide counters, never a plan's execution context, so it is safe to call from any
+   * thread.
+   *
+   * @return
+   *   `[nativeAllocated, poolsReserved, pools, plans]`. `nativeAllocated` is the bytes the native
+   *   allocator has handed out. `poolsReserved` is the bytes reserved across every Comet memory
+   *   pool, counting a pool shared by several plans once. `pools` is the number of live pools,
+   *   which with the default task-shared pool types is one per task running native plans, and
+   *   `plans` is the number of native plans created and not yet released.
+   */
+  @native def getMemoryUsage(): Array[Long]
 
   // Native Columnar to Row conversion methods
 
