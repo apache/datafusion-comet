@@ -464,6 +464,20 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
     }
   }
 
+  test("fall-back: mixed-case data location scheme (native opens the location verbatim)") {
+    // OpenDAL strips the scheme prefix from a path case-sensitively, so `S3://` cannot be opened
+    // natively even though `s3://` can. The gate must match the scheme verbatim and decline it.
+    withDetectionCatalog { dir =>
+      createTable(
+        dir,
+        "mixed_case_scheme",
+        partitionSpec = "",
+        properties =
+          Some("'write.data.path'='S3://nonexistent-bucket/iceberg/db/mixed_case_scheme'"))
+      assertUnsupportedContainsAllowingWriteFailure("mixed_case_scheme", "storage scheme", "S3")
+    }
+  }
+
   test("Compatible when the data location scheme is s3") {
     withDetectionCatalog { dir =>
       createTable(

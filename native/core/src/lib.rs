@@ -31,6 +31,7 @@ extern crate datafusion_comet_jni_bridge;
 
 use jni::{
     objects::{JClass, JString},
+    sys::{jboolean, jstring, JNI_FALSE},
     EnvUnowned,
 };
 use log::info;
@@ -51,6 +52,9 @@ pub mod jvm_bridge {
 }
 
 use errors::{try_unwrap_or_throw, CometError, CometResult};
+
+use crate::cloud::s3::credential_bridge::AccessMode;
+use crate::execution::operators::iceberg_common::builtin_storage_schemes;
 
 pub mod alloc_accounting;
 pub mod cloud;
@@ -223,6 +227,27 @@ pub extern "system" fn Java_org_apache_comet_NativeBase_isObjectStoreSchemeSuppo
             .map(|u| object_store::ObjectStoreScheme::parse(&u).is_ok())
             .unwrap_or(false);
         Ok(supported)
+    })
+}
+
+/// JNI: the comma-joined built-in storage schemes the native Iceberg scan (`for_write` false) or
+/// write (`for_write` true) path admits. This is the source of truth the JVM read and write gates
+/// load. Opt-in S3-compliant alias schemes are not answered here; the JVM adds them from catalog
+/// properties.
+#[no_mangle]
+pub extern "system" fn Java_org_apache_comet_NativeBase_icebergStorageSchemes(
+    env: EnvUnowned,
+    _: JClass,
+    for_write: jboolean,
+) -> jstring {
+    try_unwrap_or_throw(&env, |env| {
+        let access_mode = if for_write != JNI_FALSE {
+            AccessMode::Write
+        } else {
+            AccessMode::Read
+        };
+        let joined = builtin_storage_schemes(access_mode).join(",");
+        Ok(env.new_string(joined)?.into_raw())
     })
 }
 
