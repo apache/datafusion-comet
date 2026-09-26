@@ -41,11 +41,22 @@ class CometS3CredentialBridgeSuite
 
   override protected val testBucketName = "bridge-test-bucket"
 
+  /**
+   * Read through [[MinioLocationScopedCredentialProvider]] by a per-bucket override, so the rest
+   * of the suite keeps exercising the base provider and this bucket's cache entry is its own.
+   */
+  private val scopedBucket = "bridge-scoped-bucket"
+  private val scopedLocations =
+    java.util.List.of("warehouse/sales", "warehouse/sales/eu/", "/warehouse/finance")
+
   override protected def sparkConf: SparkConf = {
     val conf = super.sparkConf
     val providerClassName = classOf[MinioCometS3CredentialProvider].getName
     // Activate the bridge for the Parquet (object_store) path via the Hadoop S3A namespace.
     conf.set("spark.hadoop.fs.s3a.comet.credential.provider.class", providerClassName)
+    conf.set(
+      s"spark.hadoop.fs.s3a.bucket.$scopedBucket.comet.credential.provider.class",
+      classOf[MinioLocationScopedCredentialProvider].getName)
     // Activate the bridge for the Iceberg (opendal) path via the per-catalog s3 namespace.
     conf.set("spark.sql.catalog.s3_catalog", "org.apache.iceberg.spark.SparkCatalog")
     conf.set("spark.sql.catalog.s3_catalog.type", "hadoop")
@@ -59,6 +70,8 @@ class CometS3CredentialBridgeSuite
   override def beforeAll(): Unit = {
     super.beforeAll()
     MinioCometS3CredentialProvider.installCredentials(userName, password)
+    MinioLocationScopedCredentialProvider.installCredentials(userName, password)
+    createBucketIfNotExists(scopedBucket)
   }
 
   private def assertHasCometParquetScan(plan: SparkPlan): Unit =
@@ -86,6 +99,10 @@ class CometS3CredentialBridgeSuite
     assert(
       MinioCometS3CredentialProvider.lastBucket() == testBucketName,
       s"Bridge received unexpected bucket: ${MinioCometS3CredentialProvider.lastBucket()}")
+    // A base provider keeps one credential per bucket, requested with the path of a file it reads.
+    assert(
+      MinioCometS3CredentialProvider.lastPath().startsWith("/data/bridge-parquet.parquet/"),
+      s"Bridge received unexpected path: ${MinioCometS3CredentialProvider.lastPath()}")
   }
 
   test("Iceberg read on S3 routes credentials through CometS3CredentialProvider") {
@@ -228,5 +245,74 @@ class CometS3CredentialBridgeSuite
       spark.sql("DROP TABLE iso_a.db.t")
       spark.sql("DROP TABLE iso_b.db.t")
     }
+  }
+
+  // Minio does not enforce per-prefix policies here, so these tests check the path of each
+  // credential request: a read must request the credential of its longest covering location.
+
+  test("location-scoped provider: one scan requests each file's longest covering location") {
+    MinioLocationScopedCredentialProvider.installLocations(scopedLocations)
+    val files = Seq(
+      "warehouse/sales/a.parquet" -> 10L,
+      "warehouse/sales/eu/b.parquet" -> 20L,
+      // Shares a name prefix with warehouse/sales but not a segment, so the bucket root covers it.
+      // It is the only file under the root, so "/" below shows it was not routed by name prefix.
+      "warehouse/sales_eu/c.parquet" -> 30L,
+      "warehouse/finance/d.parquet" -> 40L)
+    val paths = files.map { case (key, _) => s"s3a://$scopedBucket/$key" }
+    files.zip(paths).foreach { case ((_, rows), path) =>
+      spark.range(0, rows).write.format("parquet").mode(SaveMode.Overwrite).save(path)
+    }
+
+    MinioLocationScopedCredentialProvider.resetCounters()
+    // Pack every file into one partition, so one store serves every location in a single task.
+    withSQLConf(
+      "spark.sql.files.openCostInBytes" -> "1",
+      "spark.sql.files.minPartitionNum" -> "1") {
+      val df = spark.read.format("parquet").load(paths: _*)
+      assert(df.rdd.getNumPartitions == 1)
+      val total = df.agg(sum(col("id")))
+      assertHasCometParquetScan(total.queryExecution.executedPlan)
+      assert(total.first().getLong(0) == files.map { case (_, rows) => (0L until rows).sum }.sum)
+    }
+
+    assert(
+      MinioLocationScopedCredentialProvider.credentialPaths() ==
+        java.util.Set.of("/warehouse/sales", "/warehouse/sales/eu/", "/warehouse/finance", "/"),
+      s"Unexpected credential paths: ${MinioLocationScopedCredentialProvider.credentialPaths()}")
+    // Every location's bridge shares the bucket's provider registration, whatever properties the
+    // bucket's store was created with, so one provider instance serves all four locations.
+    assert(
+      MinioLocationScopedCredentialProvider.initCount() == 1,
+      s"Provider initialized ${MinioLocationScopedCredentialProvider.initCount()} times")
+  }
+
+  test("location-scoped provider: later scans reuse the bucket's locations") {
+    MinioLocationScopedCredentialProvider.installLocations(scopedLocations)
+    val path = s"s3a://$scopedBucket/warehouse/finance/reuse.parquet"
+    spark.range(0, 100).write.format("parquet").mode(SaveMode.Overwrite).save(path)
+    val expectedSum = (0L until 100L).sum
+    // Creates the bucket's store unless an earlier test did. Its tasks can each miss the store
+    // cache at once and fetch the locations, so the count is only checked after this scan.
+    assert(
+      spark.read.format("parquet").load(path).agg(sum(col("id"))).first().getLong(0) ==
+        expectedSum)
+
+    MinioLocationScopedCredentialProvider.resetCounters()
+    for (_ <- 1 to 3) {
+      val df = spark.read.format("parquet").load(path).agg(sum(col("id")))
+      assertHasCometParquetScan(df.queryExecution.executedPlan)
+      assert(df.first().getLong(0) == expectedSum)
+    }
+
+    assert(
+      MinioLocationScopedCredentialProvider.locationCallCount() == 0,
+      s"Locations fetched ${MinioLocationScopedCredentialProvider.locationCallCount()} times")
+    // Collections.singleton, not Set.of: Scala 2.12 cannot choose between Set.of(E) and
+    // Set.of(E...) for a single argument.
+    assert(
+      MinioLocationScopedCredentialProvider.credentialPaths() == java.util.Collections.singleton(
+        "/warehouse/finance"),
+      s"Unexpected credential paths: ${MinioLocationScopedCredentialProvider.credentialPaths()}")
   }
 }

@@ -227,7 +227,7 @@ pub enum SparkError {
     /// Multiple Parquet fields share the same field id when the read schema requested an
     /// id-based lookup. Mirrors Spark's `_LEGACY_ERROR_TEMP_2094`
     /// (`foundDuplicateFieldInFieldIdLookupModeError`).
-    #[error("[_LEGACY_ERROR_TEMP_2094] Found duplicate field(s) by id: id={required_id} matches [{matched_fields}] in id-lookup mode")]
+    #[error("[_LEGACY_ERROR_TEMP_2094] Found duplicate field(s) by id: id={required_id} matches {matched_fields} in id-lookup mode")]
     DuplicateFieldByFieldId {
         required_id: i32,
         matched_fields: String,

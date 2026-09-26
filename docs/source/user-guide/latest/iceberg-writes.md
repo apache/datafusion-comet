@@ -44,7 +44,7 @@ and it is the foundation for the second toggle: when
 `spark.comet.iceberg.write.enabled=true` and the write passes the eligibility check below, the
 `IcebergWrite` operator's per-task Parquet write is delegated to
 [iceberg-rust](https://github.com/apache/iceberg-rust) via Comet's native execution pipeline
-([#5308](https://github.com/apache/datafusion-comet/issues/5308)).
+([#5361](https://github.com/apache/datafusion-comet/pull/5361)).
 
 ## How the native write works
 
@@ -127,7 +127,7 @@ trade-off, only no plan change.
 ## Native Parquet write eligibility
 
 When `spark.comet.iceberg.write.enabled=true`
-([#5308](https://github.com/apache/datafusion-comet/issues/5308)), the `IcebergWrite` operator's
+([#5361](https://github.com/apache/datafusion-comet/pull/5361)), the `IcebergWrite` operator's
 per-task Parquet write is delegated to [iceberg-rust](https://github.com/apache/iceberg-rust).
 The native writer must produce the same outcome as iceberg-java — the same Parquet features,
 statistics, and manifest metadata — so a write is only eligible when every table property it
@@ -136,7 +136,9 @@ feeding the write is fully Comet-native. For a partitioned table that plan inclu
 distribution and local sort Iceberg requests on its partition transforms; those stay native
 because the transforms themselves have native implementations (see
 [Iceberg system functions](iceberg.md)). Ineligible writes run through iceberg-java unchanged,
-with the reason reported as a fall-back reason in Comet's extended EXPLAIN output.
+with the reason reported as a fall-back reason in Comet's extended EXPLAIN output. A write that
+runs natively shows `CometIcebergWrite` under `IcebergCommit` in the physical plan; an ineligible
+write keeps `IcebergWrite`.
 
 The native writer reads its input as Arrow batches from a Comet operator, so the write's input
 must itself run in Comet. A write whose input is a local relation, such as `INSERT ... VALUES` or
@@ -177,7 +179,8 @@ Within the namespaces that shape data-file bytes — `write.parquet.*` and `parq
 everything not listed above must be absent: unvetted `write.parquet.*` keys (e.g.
 `bloom-filter-max-bytes`, `stats-enabled.column.*`, keys added by future Iceberg versions),
 any `parquet.*` table property (including `parquet.enable.dictionary`), and any `parquet.*`
-key in the session Hadoop configuration (with `HadoopFileIO`-backed output those reach
+key in the session Hadoop configuration other than the reader-only
+`parquet.hadoop.vectored.io.enabled` (with `HadoopFileIO`-backed output those reach
 iceberg-java's writer but not the native one). Also gated explicitly: any `encryption.*` key,
 `write.object-storage.enabled=true`, `write.location-provider.impl`, and `io-impl`.
 
