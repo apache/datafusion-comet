@@ -105,6 +105,9 @@ Which tier a job belongs to is the `POLICY` table in `dev/ci/compute-changes.py`
 filters are the `FILTERS` table in the same file, and `dev/ci/check-ci-config.py` holds the test
 cases that pin both down.
 
+A pull request against a release branch runs all three tiers at once; see
+[Release branches](#release-branches).
+
 ## Opting a pull request into a suite the PR tier skips
 
 Each suite outside the PR tier has a label that runs it on a pull request:
@@ -340,6 +343,41 @@ being the suites that belong to the queue tier rather than the nightly one — S
 and Iceberg 1.11. If everything is skipped, open the run's `Detect changes` job: it logs the
 `Nightly base:` commit it diffed against and the list of changed files, which is enough to tell a
 genuinely quiet day from a base that has drifted.
+
+## Release branches
+
+Release branches (`branch-N.M`) start with the workflow files `main` had when they were cut, but have
+no merge queue and no nightly run. The merge queue covers only `main`, `ci.yml` runs on push only for `main`, and GitHub
+fires scheduled workflows only on the default branch, so a release branch gets no scheduled `ci.yml`,
+Miri or CodeQL run, and nothing runs after a pull request merges.
+
+On `main`, the tiers hold the expensive suites back for the queue and the nightly run, which still
+test every change. A release branch has neither, so holding a suite back there would mean never
+running it. A pull request that targets a release branch, such as a backport, therefore runs the PR,
+queue and nightly tiers together. Release branches get few pull requests, so this costs little. The
+path filters still apply, so a documentation-only change runs none of the heavy suites. The Spark
+SQL suite for Spark 3.4 still needs its `run-spark-3.4-tests` label, and the other `run-*` labels
+have nothing to add there.
+
+A release branch runs the workflow files committed on it, so a change to these rules on `main`
+reaches a release branch only if it is backported. `branch-1.0` predates the tiers and follows its
+own, older rules.
+
+Each pull request is tested against the release branch as it was when its run started, and with no
+merge queue, nothing tests the result of merging it. Two backports that pass on their own can still
+break the branch once both have landed. To run every suite against a release branch as it stands,
+dispatch `ci.yml` on it. A dispatch runs every job in that branch's own `ci.yml`, including `docs`,
+which publishes the website. So first check that the `if:` of the branch's `docs` job requires
+`github.ref == 'refs/heads/main'`. A branch without that guard publishes its own docs over the site.
+
+```sh
+git show apache/branch-N.M:.github/workflows/ci.yml | sed -n '/^  docs:/,/uses:/p'
+gh workflow run ci.yml --repo apache/datafusion-comet --ref branch-N.M
+```
+
+The release process does this before tagging each release candidate; see
+[Run the Full CI Suite](release_process.md#run-the-full-ci-suite). A failed dispatched run opens no
+`ci-nightly-failure` issue.
 
 ## Reproducing a suite failure locally
 
