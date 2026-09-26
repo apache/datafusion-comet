@@ -34,12 +34,9 @@
 //! `DictionaryValuesWriter` and `RunLengthBitPackingHybridEncoder` in parquet-column, and the page
 //! boundary follows `ColumnWriteStoreBase.sizeCheck`.
 
-use std::borrow::Cow;
-
 use arrow::array::{downcast_primitive_array, Array, AsArray, OffsetSizeTrait, RecordBatch};
-use arrow::datatypes::{DataType, Schema as ArrowSchema, ToByteSlice};
-use datafusion::common::hash_map::Entry;
-use datafusion::common::HashMap;
+use arrow::datatypes::{DataType, Fields, Schema as ArrowSchema, ToByteSlice};
+use datafusion::common::HashSet;
 use datafusion::error::{DataFusionError, Result as DFResult};
 use parquet::arrow::ArrowSchemaConverter;
 use parquet::basic::Type as PhysicalType;
@@ -68,10 +65,13 @@ const PAGE_SIZE_TOLERANCE_RATIO: f32 = 0.1;
 pub(super) struct DictionaryChooser {
     /// The table's writer properties, which every choice starts from.
     base: WriterProperties,
-    /// One entry per Parquet leaf column, in schema order. `None` for the columns there is nothing
-    /// to decide for: parquet-rs never dictionary-encodes booleans, nor fixed-length byte arrays
-    /// under Parquet format v1, and a column whose dictionary is already off stays off.
-    columns: Vec<Option<Column>>,
+    /// The fields every batch is written with.
+    fields: Fields,
+    /// The leaf columns there is a choice to make for, in Parquet schema order. parquet-rs never
+    /// dictionary-encodes booleans, nor fixed-length byte arrays under Parquet format v1, and a
+    /// column whose dictionary is already off stays off, so none of those is here and their values
+    /// are never read.
+    candidates: Vec<Candidate>,
     /// Rows the first data page of every column holds at most.
     page_rows: usize,
     /// Plain-encoded bytes at which parquet-mr's size check ends a page.
@@ -81,14 +81,37 @@ pub(super) struct DictionaryChooser {
     max_held_bytes: Option<usize>,
 }
 
-struct Column {
+/// A leaf column whose dictionary encoding is up for choosing.
+struct Candidate {
     path: ColumnPath,
+    /// Where the column's values are in a batch.
+    leaf: Leaf,
     /// Plain-encoded width of one value, or `None` for a byte array, which parquet-mr accounts as
     /// a 4-byte length plus the bytes.
     width: Option<u64>,
     /// `write.parquet.dict-size-bytes`. parquet-mr abandons a dictionary as soon as it grows past
     /// this, which on a first page leaves no dictionary page at all.
     dictionary_limit: u64,
+}
+
+/// The way from a batch down to one leaf column: a top-level column, then a step into each nested
+/// level.
+#[derive(Clone)]
+struct Leaf {
+    column: usize,
+    steps: Vec<Step>,
+}
+
+#[derive(Clone, Copy)]
+enum Step {
+    /// Into a struct's field.
+    Field(usize),
+    /// Into a list's elements.
+    Element,
+    /// Into a map's keys.
+    Key,
+    /// Into a map's values.
+    Value,
 }
 
 impl DictionaryChooser {
@@ -99,31 +122,49 @@ impl DictionaryChooser {
             .with_coerce_types(base.coerce_types())
             .convert(schema)
             .map_err(DataFusionError::from)?;
-        let columns = parquet_schema
-            .columns()
-            .iter()
-            .map(|descr| {
-                let path = descr.path();
-                let width = match descr.physical_type() {
-                    PhysicalType::INT32 | PhysicalType::FLOAT => Some(4),
-                    PhysicalType::INT64 | PhysicalType::DOUBLE => Some(8),
-                    PhysicalType::BYTE_ARRAY => None,
-                    // INT96 is not an Iceberg type.
-                    PhysicalType::BOOLEAN
-                    | PhysicalType::FIXED_LEN_BYTE_ARRAY
-                    | PhysicalType::INT96 => return None,
-                };
-                base.dictionary_enabled(path).then(|| Column {
-                    path: path.clone(),
-                    width,
-                    dictionary_limit: base.column_dictionary_page_size_limit(path) as u64,
+        let mut leaves = Vec::new();
+        for (column, field) in schema.fields().iter().enumerate() {
+            let mut leaf = Leaf {
+                column,
+                steps: Vec::new(),
+            };
+            collect_leaves(field.data_type(), &mut leaf, &mut leaves);
+        }
+        // Both lists come from the same depth-first walk of the schema, so they line up one to one.
+        // Should they ever not, there is no telling which values belong to which column, and every
+        // column is left as configured.
+        let candidates = if leaves.len() == parquet_schema.num_columns() {
+            parquet_schema
+                .columns()
+                .iter()
+                .zip(leaves)
+                .filter_map(|(descr, leaf)| {
+                    let path = descr.path();
+                    let width = match descr.physical_type() {
+                        PhysicalType::INT32 | PhysicalType::FLOAT => Some(4),
+                        PhysicalType::INT64 | PhysicalType::DOUBLE => Some(8),
+                        PhysicalType::BYTE_ARRAY => None,
+                        // INT96 is not an Iceberg type.
+                        PhysicalType::BOOLEAN
+                        | PhysicalType::FIXED_LEN_BYTE_ARRAY
+                        | PhysicalType::INT96 => return None,
+                    };
+                    base.dictionary_enabled(path).then(|| Candidate {
+                        path: path.clone(),
+                        leaf,
+                        width,
+                        dictionary_limit: base.column_dictionary_page_size_limit(path) as u64,
+                    })
                 })
-            })
-            .collect();
+                .collect()
+        } else {
+            Vec::new()
+        };
         let page_size = base.data_page_size_limit();
         let tolerance = (page_size as f32 * PAGE_SIZE_TOLERANCE_RATIO) as usize;
         Ok(Self {
-            columns,
+            fields: schema.fields().clone(),
+            candidates,
             page_rows: base
                 .data_page_row_count_limit()
                 .max(FIRST_PAGE_SIZE_CHECK_ROWS),
@@ -141,7 +182,7 @@ impl DictionaryChooser {
     /// Whether a partition that has shown `rows` rows, held in `bytes` of memory, should hold back
     /// more before choosing.
     pub(super) fn wants_more(&self, rows: usize, bytes: usize) -> bool {
-        self.columns.iter().any(Option::is_some) && rows < self.page_rows && self.may_hold(bytes)
+        !self.candidates.is_empty() && rows < self.page_rows && self.may_hold(bytes)
     }
 
     /// Whether rows taking `bytes` of memory may stay held back.
@@ -151,48 +192,38 @@ impl DictionaryChooser {
 
     /// The writer properties for a partition whose rows start with `sample`: the table's, with
     /// dictionary encoding turned off for every column parquet-mr would write plain.
+    ///
+    /// Columns are judged one at a time, and each is read only as far as its first page reaches,
+    /// so what this keeps at any moment is one column's dictionary, which cannot outgrow
+    /// `write.parquet.dict-size-bytes` by more than a value.
     pub(super) fn choose(&self, sample: &[RecordBatch]) -> WriterProperties {
-        let mut pages: Vec<Option<FirstPage>> = self
-            .columns
+        if sample
             .iter()
-            .map(|column| {
-                column
-                    .as_ref()
-                    .map(|column| FirstPage::new(column, self.page_bytes))
-            })
-            .collect();
-        let mut rows_seen = 0;
-        for batch in sample {
-            let rows = batch.num_rows().min(self.page_rows - rows_seen);
-            let slots: Vec<(u32, usize)> = (0..rows).map(|row| (row as u32, row)).collect();
-            let mut walk = LeafWalk {
-                pages: &mut pages,
-                next: 0,
-                rows,
-            };
-            for column in batch.columns() {
-                walk.visit(column.as_ref(), &slots);
+            .any(|batch| batch.schema_ref().fields() != &self.fields)
+        {
+            // There is no telling which values belong to which column.
+            return self.base.clone();
+        }
+        let mut plain = Vec::new();
+        for candidate in &self.candidates {
+            let mut page = FirstPage::new(candidate, self.page_bytes);
+            for batch in sample {
+                if page.is_closed() || page.rows == self.page_rows {
+                    break;
+                }
+                let rows = batch.num_rows().min(self.page_rows - page.rows);
+                let top: Entries = Box::new((0..rows).map(|row| (row as u32, row)));
+                let Some((array, entries)) = candidate.leaf.entries(batch, top) else {
+                    // Cannot happen once the fields match, but a guess is worse than no choice.
+                    return self.base.clone();
+                };
+                page.extend(array, entries, rows);
             }
-            if walk.next != pages.len() {
-                // The batch does not have the leaves the schema promised, so there is no telling
-                // which page a value belongs to. Leave every column as the table configured it.
-                return self.base.clone();
-            }
-            rows_seen += rows;
-            if rows_seen == self.page_rows || pages.iter().flatten().all(FirstPage::is_closed) {
-                break;
+            if page.rows > 0 && !page.keeps_dictionary() {
+                plain.push(&candidate.path);
             }
         }
-        let plain: Vec<&ColumnPath> = self
-            .columns
-            .iter()
-            .zip(&pages)
-            .filter_map(|(column, page)| match (column, page) {
-                (Some(column), Some(page)) if !page.keeps_dictionary() => Some(&column.path),
-                _ => None,
-            })
-            .collect();
-        if rows_seen == 0 || plain.is_empty() {
+        if plain.is_empty() {
             return self.base.clone();
         }
         plain
@@ -204,93 +235,111 @@ impl DictionaryChooser {
     }
 }
 
-/// Hands one batch's values to the first page of the leaf column they belong to, visiting the
-/// leaves in Parquet schema order.
-struct LeafWalk<'p, 'a> {
-    pages: &'p mut [Option<FirstPage<'a>>],
-    /// The leaf the next primitive array belongs to.
-    next: usize,
-    /// Rows of the batch that fall within the first page.
-    rows: usize,
-}
-
-impl<'a> LeafWalk<'_, 'a> {
-    /// `slots` holds a `(row, index)` pair for every entry of `array` whose ancestors are all
-    /// present, in the order the column chunk stores them.
-    fn visit(&mut self, array: &'a dyn Array, slots: &[(u32, usize)]) {
-        match array.data_type() {
-            DataType::Struct(_) => {
-                let slots = present(array, slots);
-                for child in array.as_struct().columns() {
-                    self.visit(child.as_ref(), &slots);
-                }
-            }
-            DataType::List(_) => {
-                let list = array.as_list::<i32>();
-                self.visit(
-                    list.values().as_ref(),
-                    &children(array, list.value_offsets(), slots),
-                );
-            }
-            DataType::LargeList(_) => {
-                let list = array.as_list::<i64>();
-                self.visit(
-                    list.values().as_ref(),
-                    &children(array, list.value_offsets(), slots),
-                );
-            }
-            DataType::FixedSizeList(_, size) => {
-                let size = *size as usize;
-                let slots: Vec<(u32, usize)> = present(array, slots)
-                    .iter()
-                    .flat_map(|&(row, index)| {
-                        (index * size..(index + 1) * size).map(move |i| (row, i))
-                    })
-                    .collect();
-                self.visit(array.as_fixed_size_list().values().as_ref(), &slots);
-            }
-            DataType::Map(_, _) => {
-                let map = array.as_map();
-                let slots = children(array, map.value_offsets(), slots);
-                self.visit(map.keys().as_ref(), &slots);
-                self.visit(map.values().as_ref(), &slots);
-            }
-            _ => {
-                let leaf = self.next;
-                self.next += 1;
-                if let Some(page) = self.pages.get_mut(leaf).and_then(Option::as_mut) {
-                    page.extend(array, slots, self.rows);
-                }
+/// Appends the way to every leaf under a column of `data_type` that `leaf` leads to, in the
+/// depth-first order Parquet numbers leaf columns in.
+fn collect_leaves(data_type: &DataType, leaf: &mut Leaf, leaves: &mut Vec<Leaf>) {
+    match data_type {
+        DataType::Struct(fields) => {
+            for (field, child) in fields.iter().enumerate() {
+                descend(Step::Field(field), child.data_type(), leaf, leaves);
             }
         }
+        DataType::List(element)
+        | DataType::LargeList(element)
+        | DataType::FixedSizeList(element, _) => {
+            descend(Step::Element, element.data_type(), leaf, leaves)
+        }
+        DataType::Map(entries, _) => match entries.data_type() {
+            DataType::Struct(fields) if fields.len() == 2 => {
+                descend(Step::Key, fields[0].data_type(), leaf, leaves);
+                descend(Step::Value, fields[1].data_type(), leaf, leaves);
+            }
+            _ => leaves.push(leaf.clone()),
+        },
+        _ => leaves.push(leaf.clone()),
     }
 }
 
-/// The slots whose entry in `array` is not null.
-fn present<'s>(array: &dyn Array, slots: &'s [(u32, usize)]) -> Cow<'s, [(u32, usize)]> {
+fn descend(step: Step, data_type: &DataType, leaf: &mut Leaf, leaves: &mut Vec<Leaf>) {
+    leaf.steps.push(step);
+    collect_leaves(data_type, leaf, leaves);
+    leaf.steps.pop();
+}
+
+/// `(row, index)` pairs, one per entry of an array that the column chunk stores: its row of the
+/// batch, and its index into the array.
+type Entries<'a> = Box<dyn Iterator<Item = (u32, usize)> + 'a>;
+
+impl Leaf {
+    /// The leaf's array in `batch`, with the entries of it that lie under the rows `top` yields and
+    /// whose ancestors are all present, in the order the column chunk stores them. Nothing is
+    /// expanded ahead: each entry is produced when the page asks for it. `None` when `batch` does
+    /// not have the shape the schema promised.
+    fn entries<'a>(
+        &self,
+        batch: &'a RecordBatch,
+        top: Entries<'a>,
+    ) -> Option<(&'a dyn Array, Entries<'a>)> {
+        let mut array = batch.columns().get(self.column)?.as_ref();
+        let mut entries = top;
+        for step in &self.steps {
+            let present = present(array, entries);
+            (array, entries) = match (step, array.data_type()) {
+                (Step::Field(field), DataType::Struct(_)) => {
+                    (array.as_struct().columns().get(*field)?.as_ref(), present)
+                }
+                (Step::Element, DataType::List(_)) => {
+                    let list = array.as_list::<i32>();
+                    (
+                        list.values().as_ref(),
+                        children(present, list.value_offsets()),
+                    )
+                }
+                (Step::Element, DataType::LargeList(_)) => {
+                    let list = array.as_list::<i64>();
+                    (
+                        list.values().as_ref(),
+                        children(present, list.value_offsets()),
+                    )
+                }
+                (Step::Element, DataType::FixedSizeList(_, size)) => {
+                    let size = *size as usize;
+                    let elements: Entries<'a> = Box::new(present.flat_map(move |(row, index)| {
+                        (index * size..(index + 1) * size).map(move |element| (row, element))
+                    }));
+                    (array.as_fixed_size_list().values().as_ref(), elements)
+                }
+                (Step::Key, DataType::Map(_, _)) => {
+                    let map = array.as_map();
+                    (map.keys().as_ref(), children(present, map.value_offsets()))
+                }
+                (Step::Value, DataType::Map(_, _)) => {
+                    let map = array.as_map();
+                    (
+                        map.values().as_ref(),
+                        children(present, map.value_offsets()),
+                    )
+                }
+                _ => return None,
+            };
+        }
+        Some((array, entries))
+    }
+}
+
+/// The entries whose value in `array` is not null.
+fn present<'a>(array: &'a dyn Array, entries: Entries<'a>) -> Entries<'a> {
     match array.nulls() {
-        Some(nulls) => slots
-            .iter()
-            .copied()
-            .filter(|&(_, index)| nulls.is_valid(index))
-            .collect(),
-        None => Cow::Borrowed(slots),
+        Some(nulls) => Box::new(entries.filter(move |&(_, index)| nulls.is_valid(index))),
+        None => entries,
     }
 }
 
-/// The slots of the child entries of every present list or map entry in `slots`. A null entry
-/// contributes no children, whatever its offsets span.
-fn children<O: OffsetSizeTrait>(
-    array: &dyn Array,
-    offsets: &[O],
-    slots: &[(u32, usize)],
-) -> Vec<(u32, usize)> {
-    present(array, slots)
-        .iter()
-        .flat_map(|&(row, index)| {
-            (offsets[index].as_usize()..offsets[index + 1].as_usize()).map(move |i| (row, i))
-        })
-        .collect()
+/// The entries of the children of every list or map entry in `entries`.
+fn children<'a, O: OffsetSizeTrait>(entries: Entries<'a>, offsets: &'a [O]) -> Entries<'a> {
+    Box::new(entries.flat_map(move |(row, index)| {
+        (offsets[index].as_usize()..offsets[index + 1].as_usize()).map(move |child| (row, child))
+    }))
 }
 
 type ValueBytes<'a> = Box<dyn Fn(usize) -> &'a [u8] + 'a>;
@@ -334,12 +383,15 @@ struct FirstPage<'a> {
     width: Option<u64>,
     dictionary_limit: u64,
     page_bytes: u64,
-    /// Dictionary ids, assigned in order of first appearance.
-    dictionary: HashMap<&'a [u8], u32>,
-    /// The page's values as dictionary ids.
-    ids: Vec<u32>,
+    /// Every value seen so far, once each: the dictionary.
+    dictionary: HashSet<&'a [u8]>,
+    /// The value before the one being added.
+    previous: Option<&'a [u8]>,
+    /// The runs the page's dictionary ids would be encoded in.
+    ids: HybridRuns,
     plain_bytes: u64,
     dictionary_bytes: u64,
+    /// Rows the page has taken so far.
     rows: usize,
     /// The page ended at a size check.
     full: bool,
@@ -350,13 +402,14 @@ struct FirstPage<'a> {
 }
 
 impl<'a> FirstPage<'a> {
-    fn new(column: &Column, page_bytes: u64) -> Self {
+    fn new(candidate: &Candidate, page_bytes: u64) -> Self {
         Self {
-            width: column.width,
-            dictionary_limit: column.dictionary_limit,
+            width: candidate.width,
+            dictionary_limit: candidate.dictionary_limit,
             page_bytes,
-            dictionary: HashMap::new(),
-            ids: Vec::new(),
+            dictionary: HashSet::default(),
+            previous: None,
+            ids: HybridRuns::default(),
             plain_bytes: 0,
             dictionary_bytes: 0,
             rows: 0,
@@ -370,9 +423,14 @@ impl<'a> FirstPage<'a> {
         self.full || self.overflowed || self.unreadable
     }
 
-    /// Adds the values of `rows` rows of one batch, given as the slots of the leaf's entries in
-    /// `array`.
-    fn extend(&mut self, array: &'a dyn Array, slots: &[(u32, usize)], rows: usize) {
+    /// Adds `rows` rows of one batch, given as the entries of the leaf's `array` they hold. Stops
+    /// taking entries as soon as the page ends.
+    fn extend(
+        &mut self,
+        array: &'a dyn Array,
+        entries: impl Iterator<Item = (u32, usize)>,
+        rows: usize,
+    ) {
         if self.is_closed() {
             return;
         }
@@ -381,9 +439,9 @@ impl<'a> FirstPage<'a> {
             return;
         };
         let nulls = array.nulls();
-        let mut slots = slots.iter().peekable();
+        let mut entries = entries.peekable();
         for row in 0..rows as u32 {
-            while let Some(&(_, index)) = slots.next_if(|&&(slot_row, _)| slot_row == row) {
+            while let Some((_, index)) = entries.next_if(|&(entry_row, _)| entry_row == row) {
                 if nulls.is_none_or(|nulls| nulls.is_valid(index)) {
                     self.add(value(index));
                     if self.overflowed {
@@ -403,15 +461,13 @@ impl<'a> FirstPage<'a> {
     fn add(&mut self, value: &'a [u8]) {
         let size = self.width.unwrap_or(4 + value.len() as u64);
         self.plain_bytes += size;
-        let next_id = self.dictionary.len() as u32;
-        let id = match self.dictionary.entry(value) {
-            Entry::Occupied(entry) => *entry.get(),
-            Entry::Vacant(entry) => {
-                self.dictionary_bytes += size;
-                *entry.insert(next_id)
-            }
-        };
-        self.ids.push(id);
+        if self.dictionary.insert(value) {
+            self.dictionary_bytes += size;
+        }
+        // Ids are handed out in order of first appearance, so an id repeats the one before it
+        // exactly when its value does.
+        self.ids.write(self.previous == Some(value));
+        self.previous = Some(value);
         // `DictionaryValuesWriter.shouldFallBack`, checked after every value.
         if self.dictionary_bytes > self.dictionary_limit {
             self.overflowed = true;
@@ -431,39 +487,40 @@ impl<'a> FirstPage<'a> {
         }
         let max_id = self.dictionary.len().saturating_sub(1) as u32;
         let bit_width = u32::BITS - max_id.leading_zeros();
-        1 + hybrid_len(&self.ids, bit_width) + self.dictionary_bytes < self.plain_bytes
+        1 + self.ids.len(bit_width) + self.dictionary_bytes < self.plain_bytes
     }
 }
 
-/// The bytes parquet-mr's `RunLengthBitPackingHybridEncoder` writes for `values` at `bit_width`.
-fn hybrid_len(values: &[u32], bit_width: u32) -> u64 {
-    let mut encoder = HybridLen {
-        bit_width: bit_width as u64,
-        ..HybridLen::default()
-    };
-    for &value in values {
-        encoder.write(value);
-    }
-    encoder.finish()
-}
-
-/// `RunLengthBitPackingHybridEncoder`'s run-splitting state machine, counting bytes instead of
-/// writing them. A value repeated 8 or more times from the start of a group of 8 becomes an RLE
-/// run; everything else is bit-packed 8 values at a time, up to 63 groups per run header.
-#[derive(Default)]
-struct HybridLen {
-    bit_width: u64,
-    len: u64,
-    previous: u32,
+/// `RunLengthBitPackingHybridEncoder`'s run-splitting state machine, counting what it would write
+/// instead of writing it. A value repeated 8 or more times from the start of a group of 8 becomes
+/// an RLE run; everything else is bit-packed 8 values at a time, up to 63 groups per run header.
+///
+/// Where the encoder cuts runs depends only on whether each id repeats the one before it, so that
+/// is all this is told. The bit width, which the dictionary's final size decides, only comes in
+/// when the length is read off.
+#[derive(Clone, Default)]
+struct HybridRuns {
     repeat_count: u64,
     buffered: u32,
+    /// Groups in the bit-packed run that is open.
     groups: u32,
     bit_packed_run_open: bool,
+    /// One header byte each.
+    bit_packed_runs: u64,
+    /// `bit_width` bytes each: eight values of `bit_width` bits.
+    bit_packed_groups: u64,
+    /// The value, padded to whole bytes, each.
+    rle_runs: u64,
+    /// The varint headers of the RLE runs, which hold the run lengths.
+    rle_header_bytes: u64,
 }
 
-impl HybridLen {
-    fn write(&mut self, value: u32) {
-        if value == self.previous {
+impl HybridRuns {
+    /// `writeInt` for an id that does or does not repeat the one before it. The encoder starts from
+    /// a previous value of 0, which is always the first id, and either way a first value starts a
+    /// run of one.
+    fn write(&mut self, repeat: bool) {
+        if repeat {
             self.repeat_count += 1;
             if self.repeat_count >= 8 {
                 return;
@@ -473,7 +530,6 @@ impl HybridLen {
                 self.write_rle_run();
             }
             self.repeat_count = 1;
-            self.previous = value;
         }
         self.buffered += 1;
         if self.buffered == 8 {
@@ -486,12 +542,10 @@ impl HybridLen {
             self.end_bit_packed_run();
         }
         if !self.bit_packed_run_open {
-            // The run's header byte.
-            self.len += 1;
+            self.bit_packed_runs += 1;
             self.bit_packed_run_open = true;
         }
-        // Eight values of `bit_width` bits each.
-        self.len += self.bit_width;
+        self.bit_packed_groups += 1;
         self.buffered = 0;
         self.repeat_count = 0;
         self.groups += 1;
@@ -504,20 +558,26 @@ impl HybridLen {
 
     fn write_rle_run(&mut self) {
         self.end_bit_packed_run();
-        // A varint header holding the run length, then the value padded to whole bytes.
-        self.len += varint_len(self.repeat_count << 1) + self.bit_width.div_ceil(8);
+        self.rle_runs += 1;
+        self.rle_header_bytes += varint_len(self.repeat_count << 1);
         self.repeat_count = 0;
         self.buffered = 0;
     }
 
-    fn finish(mut self) -> u64 {
-        if self.repeat_count >= 8 {
-            self.write_rle_run();
-        } else if self.buffered > 0 {
-            // The last group is padded to 8 values.
-            self.write_bit_packed_group();
+    /// The bytes `toBytes()` would return at `bit_width`, including its flush of what is still
+    /// buffered, whose last group is padded to 8 values.
+    fn len(&self, bit_width: u32) -> u64 {
+        let mut finished = self.clone();
+        if finished.repeat_count >= 8 {
+            finished.write_rle_run();
+        } else if finished.buffered > 0 {
+            finished.write_bit_packed_group();
         }
-        self.len
+        let bit_width = bit_width as u64;
+        finished.bit_packed_runs
+            + finished.bit_packed_groups * bit_width
+            + finished.rle_header_bytes
+            + finished.rle_runs * bit_width.div_ceil(8)
     }
 }
 
@@ -528,6 +588,7 @@ fn varint_len(value: u64) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::Cell;
     use std::sync::Arc;
 
     use arrow::array::builder::{
@@ -1022,9 +1083,16 @@ mod tests {
             ("600 ascending", sequence(600, |i| i as u32), 752),
         ];
         for (name, values, expected) in cases {
+            let mut runs = HybridRuns::default();
+            for (i, value) in values.iter().enumerate() {
+                runs.write(i > 0 && values[i - 1] == *value);
+            }
             let max = values.iter().copied().max().unwrap_or(0);
-            let bit_width = u32::BITS - max.leading_zeros();
-            assert_eq!(hybrid_len(&values, bit_width), expected, "{name}");
+            assert_eq!(
+                runs.len(u32::BITS - max.leading_zeros()),
+                expected,
+                "{name}"
+            );
         }
     }
 
@@ -1078,6 +1146,83 @@ mod tests {
         assert!(!chooser
             .choose(&[batch])
             .dictionary_enabled(&ColumnPath::from("id")));
+    }
+
+    /// Only the columns there is a choice for are read. The boolean lists here, 1000 rows of 8192
+    /// entries each in the batch below, are never walked, and a schema with nothing else holds no
+    /// rows back and chooses without reading anything.
+    #[test]
+    fn columns_with_no_choice_are_never_read() {
+        let flags = || DataType::List(Arc::new(Field::new("element", DataType::Boolean, true)));
+        let schema = ArrowSchema::new(vec![
+            Field::new("flags", flags(), true),
+            Field::new(
+                "s",
+                DataType::Struct(Fields::from(vec![
+                    Field::new("more_flags", flags(), true),
+                    Field::new("n", DataType::Int64, true),
+                ])),
+                true,
+            ),
+            Field::new("id", DataType::Int64, false),
+        ]);
+        let chooser =
+            DictionaryChooser::try_new(properties(20_000, 1024 * 1024, 1024), &schema).unwrap();
+        let read: Vec<String> = chooser
+            .candidates
+            .iter()
+            .map(|candidate| candidate.path.string())
+            .collect();
+        assert_eq!(read, ["s.n", "id"]);
+
+        let list = ListArray::new(
+            Arc::new(Field::new("element", DataType::Boolean, true)),
+            OffsetBuffer::from_lengths(std::iter::repeat_n(8192, 1000)),
+            Arc::new(BooleanArray::from(vec![true; 8192 * 1000])),
+            None,
+        );
+        let batch = RecordBatch::try_from_iter([("flags", Arc::new(list) as ArrayRef)]).unwrap();
+        let chooser =
+            DictionaryChooser::try_new(properties(20_000, 1024 * 1024, 1024), batch.schema_ref())
+                .unwrap();
+        assert!(chooser.candidates.is_empty());
+        assert!(!chooser.wants_more(0, 0));
+        assert!(chooser
+            .choose(&[batch])
+            .dictionary_enabled(&ColumnPath::from("flags")));
+    }
+
+    /// A column is read only as far as its first page reaches, one entry at a time. Each row here
+    /// lists 8192 ints, so the page is full at row 100, parquet-mr's first size check, and the
+    /// entries of the other 300 rows are never produced.
+    #[test]
+    fn a_column_is_read_only_as_far_as_its_first_page() {
+        let rows = 400;
+        let list = ListArray::new(
+            Arc::new(Field::new("element", DataType::Int32, true)),
+            OffsetBuffer::from_lengths(std::iter::repeat_n(8192, rows)),
+            Arc::new(Int32Array::from(vec![0; 8192 * rows])),
+            None,
+        );
+        let batch = RecordBatch::try_from_iter([("l", Arc::new(list) as ArrayRef)]).unwrap();
+        let chooser = DictionaryChooser::try_new(
+            properties(20_000, 1024 * 1024, 2 * 1024 * 1024),
+            batch.schema_ref(),
+        )
+        .unwrap();
+        let candidate = &chooser.candidates[0];
+        let rows_walked = Cell::new(0);
+        let top: Entries = Box::new((0..rows).map(|row| {
+            rows_walked.set(rows_walked.get() + 1);
+            (row as u32, row)
+        }));
+        let (array, entries) = candidate.leaf.entries(&batch, top).unwrap();
+        let mut page = FirstPage::new(candidate, chooser.page_bytes);
+        page.extend(array, entries, rows);
+        assert!(page.full);
+        assert_eq!(page.rows, 100);
+        // The 100 rows the page took, and the next, whose first entry told it row 100 was done.
+        assert_eq!(rows_walked.get(), 101);
     }
 
     /// A null list can still span child values. They are not part of the column chunk, so they
