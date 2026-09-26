@@ -47,6 +47,7 @@ base64 = "0.23.0"
 # float/double to decimal conversion
 ryu = "1.0"
 uuid = "1.23.3"
+datasketches = { workspace = true }
 
 [dev-dependencies]
 arrow = {workspace = true}
