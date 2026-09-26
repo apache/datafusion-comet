@@ -196,6 +196,22 @@ object NativeConfig {
    *
    * The result feeds object_store's parse_url_opts natively.
    */
+  /**
+   * Where the native side finds the credentials file Hadoop's profile provider would read with no
+   * `fs.s3a.auth.profile.file` configured: `AWS_SHARED_CREDENTIALS_FILE`, else the JVM user's
+   * `~/.aws/credentials` (Hadoop resolves the home through `user.home`, not `HOME`). Resolved on
+   * the executor at plan creation, since the executor's home is what its Hadoop provider reads.
+   */
+  val COMET_DEFAULT_PROFILE_FILE_KEY = "fs.s3a.comet.default.profile.file"
+
+  private[comet] def defaultSharedCredentialsFile(
+      env: Map[String, String] = sys.env,
+      userHome: String = System.getProperty("user.home")): String =
+    env
+      .get("AWS_SHARED_CREDENTIALS_FILE")
+      .filter(StringUtils.isNotBlank)
+      .getOrElse(new java.io.File(new java.io.File(userHome, ".aws"), "credentials").getPath)
+
   def extractObjectStoreOptions(hadoopConf: Configuration, uri: URI): Map[String, String] = {
     val scheme = Option(uri.getScheme).map(_.toLowerCase(Locale.ROOT)).getOrElse("file")
 
