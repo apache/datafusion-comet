@@ -249,7 +249,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key -> "true") {
       checkSparkAnswerAndFallbackReason(
         "select * from tbl order by 1, 2",
-        "unsupported range partitioning sort order")
+        "Sorting on floating-point values nested in arrays, structs, or maps")
     }
   }
 
@@ -275,7 +275,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key -> "true") {
       checkSparkAnswerAndFallbackReason(
         "select * from tbl order by 1, 2",
-        "unsupported range partitioning sort order")
+        "Sorting on floating-point values nested in arrays, structs, or maps")
     }
   }
 

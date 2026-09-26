@@ -33,7 +33,7 @@ import org.apache.spark.sql.comet.execution.shuffle.{CometShuffleDependency, Com
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanHelper, AQEShuffleReadExec, ShuffleQueryStageExec}
 import org.apache.spark.sql.execution.exchange.{ReusedExchangeExec, ShuffleExchangeExec}
 import org.apache.spark.sql.execution.joins.SortMergeJoinExec
-import org.apache.spark.sql.functions.col
+import org.apache.spark.sql.functions.{col, spark_partition_id, udf}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
@@ -165,10 +165,11 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
   }
 
   test("columnar shuffle on array/struct map key/value") {
-    // Spark 4.0 normalizes maps used as shuffle keys with mapsort(...). Comet's map_sort
-    // relies on Arrow's sort_to_indices, which only supports scalar key types, so a map
-    // with array or struct keys cannot be sorted natively and the shuffle falls back.
-    val complexKeyShuffles = if (isSpark40Plus) 0 else 1
+    // Spark 4.0 normalizes maps used as shuffle keys with mapsort(...), which Comet cannot
+    // serialize for array or struct map keys. That used to disqualify columnar shuffle, but the
+    // columnar path computes partition ids on the JVM from h.partitionIdExpression, mapsort and
+    // all, so the verdict never applied to it (#5971). Partition assignment is pinned below.
+    val complexKeyShuffles = 1
     Seq("false", "true").foreach { execEnabled =>
       Seq(10, 201).foreach { numPartitions =>
         Seq("1.0", "10.0").foreach { ratio =>
@@ -816,12 +817,9 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
    * exchange operators.
    */
   test("range partitioning on floating-point uses columnar shuffle under strictFloatingPoint") {
-    // The columnar path partitions on the JVM with Spark's own RangePartitioner, but it still
-    // probes whether Comet can serialize the sort order. Before #5506 that probe reported
-    // Incompatible for scalar float and double under strict mode, so this exchange fell back to
-    // Spark's shuffle for no compatibility reason. Consulting a native-serde gate on a path that
-    // never goes native is tracked separately in #5971; this test pins the floating-point half of
-    // it, which #5506 fixed.
+    // Before #5506 the columnar path reported Incompatible for scalar float and double under
+    // strict mode, so this exchange fell back to Spark's shuffle for no compatibility reason.
+    // #5971 removed the native-serde probe that caused it; the nested case is covered below.
     withSQLConf(
       CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key -> "true",
       CometConf.getExprAllowIncompatConfigKey("SortOrder") -> "false") {
@@ -834,6 +832,105 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
           checkShuffleAnswer(df, 1)
         }
       }
+    }
+  }
+
+  // A struct containing a double is orderable by the JVM, but CometSortOrder reports Incompatible
+  // for nested floating point under strict mode. The columnar path never sends the sort order to
+  // native code, so that verdict must not gate it (#5971).
+  test("range partitioning on a nested floating-point key uses columnar shuffle") {
+    withSQLConf(
+      CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key -> "true",
+      CometConf.getExprAllowIncompatConfigKey("SortOrder") -> "false") {
+      withParquetTable((0 until 20).map(i => (i.toDouble, i)), "range_struct_tbl") {
+        val df = sql("SELECT struct(_1 AS a, _2 AS b) AS c FROM range_struct_tbl")
+          .repartitionByRange(4, col("c"))
+        checkShuffleAnswer(df, 1)
+      }
+    }
+  }
+
+  // A Scala UDF has no serde once the codegen dispatcher is off, so exprToProto returns None for
+  // it. The columnar path evaluates partition keys on the JVM through UnsafeProjection, so that
+  // verdict must not gate the exchange (#5971). Turning the dispatcher off is only a cheap and
+  // stable way to obtain an unserializable partition key; any expression without a serde reaches
+  // the same gate, and unlike the strictFloatingPoint cases above nothing here depends on strict
+  // mode.
+  test("range partitioning on an unserializable expression uses columnar shuffle") {
+    withSQLConf(CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "false") {
+      withParquetTable((0 until 20).map(i => (i, i.toString)), "range_udf_tbl") {
+        val bump = udf((x: Int) => x + 1)
+        val df = sql("SELECT _1, _2 FROM range_udf_tbl").repartitionByRange(4, bump(col("_1")))
+        checkShuffleAnswer(df, 1)
+      }
+    }
+  }
+
+  test("hash partitioning on an unserializable expression uses columnar shuffle") {
+    withSQLConf(CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "false") {
+      withParquetTable((0 until 20).map(i => (i, i.toString)), "hash_udf_tbl") {
+        val bump = udf((x: Int) => x + 1)
+        val df = sql("SELECT _1, _2 FROM hash_udf_tbl").repartition(4, bump(col("_1")))
+        checkShuffleAnswer(df, 1)
+      }
+    }
+  }
+
+  test("collation introduced above the scan still falls back to Spark's shuffle") {
+    assume(isSpark40Plus, "string collation requires Spark 4.0+")
+    withParquetTable((0 until 20).map(i => (i, (i % 4).toString)), "coll_above_tbl") {
+      // The stored column is a plain string, so CometScanRule keeps the scan native and the
+      // collation is applied in a Project above it. The shuffle itself would be fine -- the
+      // partition id comes from Spark's collation-aware Murmur3Hash on the JVM -- but declining
+      // the exchange is what keeps the stage, and so CometSort, off the collated key (#1947).
+      val df = sql("SELECT _1, _2 COLLATE UTF8_LCASE AS c FROM coll_above_tbl")
+        .repartition(4, col("c"))
+      checkShuffleAnswer(df, 0)
+    }
+  }
+
+  /**
+   * checkShuffleAnswer only compares the query answer, which is order-insensitive and so would
+   * pass even if Comet routed rows to different partitions than Spark. Compare
+   * spark_partition_id() per row instead, and pin the Comet run to one CometShuffleExchangeExec:
+   * without that, a future fallback would leave both sides on plain Spark and the comparison
+   * would pass while testing nothing.
+   */
+  private def checkPartitionAssignmentMatchesSpark(df: => DataFrame, clue: String): Unit = {
+    checkCometExchange(df, 1, false)
+
+    def pids: Array[(Int, Int)] =
+      df.select(col("_1"), spark_partition_id().as("pid"))
+        .collect()
+        .map(r => (r.getInt(0), r.getInt(1)))
+        .sorted
+
+    val cometRows = pids
+    var sparkRows: Array[(Int, Int)] = Array.empty
+    withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+      sparkRows = pids
+    }
+    assert(sparkRows.nonEmpty, "Spark produced no rows; the comparison would be vacuous")
+    assert(cometRows === sparkRows, s"partition assignment differs from Spark for $clue")
+  }
+
+  test("columnar shuffle partition assignment matches Spark for keys Comet cannot serialize") {
+    withSQLConf(CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "false") {
+      withParquetTable((0 until 100).map(i => (i, i % 7)), "assign_udf_tbl") {
+        val bump = udf((x: Int) => x % 5)
+        checkPartitionAssignmentMatchesSpark(
+          sql("SELECT * FROM assign_udf_tbl").repartition(8, bump(col("_2"))),
+          "a UDF hash key")
+      }
+    }
+  }
+
+  test("columnar shuffle partition assignment matches Spark for an array/struct map key") {
+    assume(isSpark40Plus, "mapsort normalization of map shuffle keys requires Spark 4.0+")
+    withParquetTable((0 until 100).map(i => (Map(Seq(i % 9, i % 4) -> i), i)), "assign_map_tbl") {
+      checkPartitionAssignmentMatchesSpark(
+        sql("SELECT _2 AS _1, _1 AS m FROM assign_map_tbl").repartition(8, col("m")),
+        "an array/struct map hash key")
     }
   }
 

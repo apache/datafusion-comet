@@ -719,11 +719,13 @@ object CometShuffleExchangeExec
     val partitioning = s.outputPartitioning
     partitioning match {
       case HashPartitioning(expressions, _) =>
-        for (expr <- expressions) {
-          if (QueryPlanSerde.exprToProto(expr, inputs).isEmpty) {
-            reasons += s"unsupported hash partitioning expression: $expr"
-          }
-        }
+        // Not a shuffle-correctness check: the partition id here comes from Spark's own
+        // collation-aware Murmur3Hash, evaluated on the JVM. What this rejection does is keep the
+        // whole stage off Comet, and that is what keeps CometSort away from the collated key --
+        // supportedSortType only type-checks single-column sorts, so a multi-column collated sort
+        // otherwise reaches Comet and compares raw bytes (#1947). This covers hash and range
+        // partitioning only -- SinglePartition and round robin have no such check, and the sort
+        // gap itself is tracked in #6158.
         for (dt <- expressions.map(_.dataType).distinct) {
           if (isStringCollationType(dt)) {
             reasons += s"unsupported hash partitioning data type for columnar shuffle: $dt"
@@ -734,11 +736,9 @@ object CometShuffleExchangeExec
       case RoundRobinPartitioning(_) =>
       // we already checked that the input types are supported
       case RangePartitioning(orderings, _) =>
-        for (o <- orderings) {
-          if (QueryPlanSerde.exprToProto(o, inputs).isEmpty) {
-            reasons += s"unsupported range partitioning sort order: $o"
-          }
-        }
+        // Same as the hash branch above: LazilyGeneratedOrdering already orders collated strings
+        // correctly here, and the fallback is what currently keeps CometSort off the collated
+        // key (#6158).
         for (dt <- orderings.map(_.dataType).distinct) {
           if (isStringCollationType(dt)) {
             reasons += s"unsupported range partitioning data type for columnar shuffle: $dt"
