@@ -76,14 +76,14 @@ Enabling Comet does not add one new memory consumer, it adds several, and they a
 accounted by the same party. This inventory is worth internalizing before reading the rest of the
 page:
 
-| Allocator                                 | Lives in    | Bounded by                                                    | Visible to Spark? |
-| ----------------------------------------- | ----------- | ------------------------------------------------------------- | ----------------- |
-| Spark execution + storage (on-heap)       | JVM heap    | `spark.executor.memory` and the unified memory manager        | Yes               |
-| Spark Tungsten (off-heap)                 | Off-heap    | `spark.memory.offHeap.size` via `TaskMemoryManager`           | Yes               |
-| Comet native (Rust global allocator)      | Native heap | `memory_limit` (see below), enforced only via the memory pool | Reservations only |
-| Comet JVM Arrow that stays in the JVM     | Off-heap    | **Nothing**, but reported to `TaskMemoryManager`              | Yes               |
-| Comet JVM Arrow crossing the FFI boundary | Off-heap    | **Nothing**: a `RootAllocator(Long.MaxValue)`                 | No                |
-| Comet JVM shuffle pages                   | Off-heap    | `spark.memory.offHeap.size` via `TaskMemoryManager`           | Yes               |
+| Allocator                                | Lives in    | Bounded by                                                    | Visible to Spark? |
+| ---------------------------------------- | ----------- | ------------------------------------------------------------- | ----------------- |
+| Spark execution + storage (on-heap)      | JVM heap    | `spark.executor.memory` and the unified memory manager        | Yes               |
+| Spark Tungsten (off-heap)                | Off-heap    | `spark.memory.offHeap.size` via `TaskMemoryManager`           | Yes               |
+| Comet native (Rust global allocator)     | Native heap | `memory_limit` (see below), enforced only via the memory pool | Reservations only |
+| Comet JVM Arrow owned by a task          | Off-heap    | **Nothing**, but charged to `TaskMemoryManager`               | Yes               |
+| Comet JVM Arrow passed to or from native | Off-heap    | **Nothing**: a `RootAllocator(Long.MaxValue)`                 | No                |
+| Comet JVM shuffle pages                  | Off-heap    | `spark.memory.offHeap.size` via `TaskMemoryManager`           | Yes               |
 
 Several observations follow.
 
@@ -108,52 +108,64 @@ pool over JNI. A native allocation therefore consumes the same accounting budget
 while occupying entirely different memory. Raising `spark.memory.offHeap.size` raises the ceiling
 for both at once, and raises the pod's memory request by the same amount.
 
-**Comet's JVM-side Arrow allocations inside a task are reported to Spark, but still unbounded.**
+**Comet's JVM-side Arrow memory is charged to the task that owns it, but it is still unbounded.**
 `CometArrowAllocator` (`spark/src/main/scala/org/apache/comet/package.scala`) is a single
-process-wide `new RootAllocator(Long.MaxValue)`. Child allocators are cut from it for FFI stream
-export (`CometNativeArrowSource`), broadcast coalescing, and `CometSparkToColumnarExec`. JVM-owned
-allocations do not use the root directly: `CometTaskArrowAllocator.forCurrentTask()` hands each
-task a child carrying its own `CometArrowAllocationListener`, which charges the bytes to a
-`MemoryConsumer` for that task in whole blocks, so they appear in `showMemoryUsage` and are
-arbitrated against Spark's other off-heap consumers. The limit is still `Long.MaxValue`: the
-listener reports without enforcing, so an allocation here cannot fail, though the bytes do consume
-the off-heap pool and other consumers see correspondingly less headroom. Set
-`spark.comet.arrowAllocator.accounting.enabled=false` to stop reporting them.
+process-wide `new RootAllocator(Long.MaxValue)` with no allocation listener. JVM-owned allocations
+do not use it directly: `CometTaskArrowAllocator.forCurrentTask()` hands each task a child of it
+carrying its own `CometArrowAllocationListener`, a Spark `MemoryConsumer` for that task, which
+reserves what the child owns from the off-heap execution pool in whole 1 MiB blocks. Those bytes
+therefore appear in `showMemoryUsage` and are arbitrated against Spark's other off-heap consumers,
+Comet's native pool among them. The limit is still `Long.MaxValue`, because the listener reports
+without enforcing, so an allocation here cannot fail. Set
+`spark.comet.arrowAllocator.accounting.enabled=false` to stop charging them, in which case
+`forCurrentTask()` returns the root. It also returns the root in on-heap mode, and off a task, as
+for broadcast coalescing on the driver or for a reader built on a native thread that is pulling a
+stream.
 
 **The owner is the allocator, not the calling thread.** Arrow hands `AllocationListener` nothing
 but a size, and it reports a release on whichever thread drops the last reference, which for
 anything exported over the C Data Interface is a Tokio worker with no task context installed.
 Attributing by `TaskContext` would therefore drop those releases and leave a task charged for
 memory it had already freed. Binding one listener to one task's allocator is what makes the release
-land on the task that allocated. Children cut from a task allocator inherit its listener, so the
-paths that make their own children are covered without knowing about any of this.
+land on the task that allocated. Children cut from a task allocator inherit its listener and roll
+their bytes up into it, so the paths that make their own children are covered without knowing
+about any of this.
 
-**Anything crossing the FFI boundary uses a listener-less allocator, and is not accounted.** Both
-directions, for the same reason: native's pool is the authority for bytes native holds. Coming in,
-imports go through `CometArrowImportAllocator`, a listener-less child of the root, because Arrow's
-`wrapForeignAllocation` reports an imported buffer to the allocator's listener at full capacity
-even though no JVM-side allocation happened. Going out, whichever DataFusion operator retains the
-batch reserves those buffers itself -- `ExternalSorter` through `get_reserved_bytes_for_record_batch`,
-the hash join build side through `get_record_batch_memory_size`, both of which read sizes off the
-`ArrayData` and so count imported buffers -- and through a unified pool that charges the same Spark
-task. Reporting either direction on the JVM side would reserve the same memory twice and could
-reject an allocation that fits. So `NativeUtil`, the JVM UDF result in `CometUdfBridge`
-together with the codegen output vector it exports, and `CometNativeArrowSource.stream` all use
-the listener-less root; IPC reads, the cached batch serializer and
-`CometNativeArrowSource.readerBatchIter` use the task allocator. The
-driver, broadcast coalescing and the cached batch serializer also fall back to the root when there
-is no task to charge, as does Comet's on-heap mode.
+**What is charged is what the allocator owns, not a running total of the callbacks.** When two
+allocators hold references to one buffer and the owner releases first, Arrow moves the charge to
+the other with `transferBalance`, which calls no listener, and the final `onRelease` goes to the new
+owner. `ColumnarBatchArrowReader`, which feeds every JVM batch that reaches native through
+`CometArrowStream.wrapColumnarBatchRDD`, does exactly this to each batch: it retains the buffers
+into the stream's allocator and closes the source. A listener that summed its callbacks would
+charge the task for every batch it ever streamed, until the task ended. The listener therefore
+treats a callback only as a prompt to re-read what its allocator owns, from Arrow's own accountant,
+which Arrow keeps correct across transfers. `ColumnarBatchArrowReader` also has the source's task
+allocator reconcile as soon as it closes the source, so the task stops paying for a batch the moment
+native has it, even when that is the last batch the task reads, as it is for a broadcast coalesced
+into one batch. Any other transfer is picked up at the next allocation or release on the task's
+allocator, and whatever is still reserved is returned when the task completes.
 
-**The split is by allocation site, so it is not exact.** A buffer that is used in the JVM and only
-later handed to native -- a shuffle-read batch feeding a native operator is the common shape -- is
-allocated somewhere that cannot know its future, so it stays charged on the JVM side while native
-may also reserve it. Closing that needs reservation ownership to be handed over at the boundary,
-which is a change on both sides of it.
+**Memory passed to or from native is not charged on the JVM side.** Native memory is native's to
+account for: a native operator that retains a batch reserves its buffers through Comet's pool,
+`ExternalSorter` through `get_reserved_bytes_for_record_batch` and the hash join build side through
+`get_record_batch_memory_size`, and both read sizes off the `ArrayData`, so they count imported
+buffers too. Charging those buffers on the JVM side as well would reserve the same memory twice.
+So `NativeUtil`, `CometUdfBridge` together with the codegen output vector it exports, and
+`CometArrowStream.stream` allocate from the root, and imports go through
+`CometArrowImportAllocator`, which must stay listener-less as well, because Arrow's
+`wrapForeignAllocation` reports an imported buffer to the importing allocator's listener at full
+capacity. Allocations that stay in the JVM, which are `StreamReader`, the cached batch serializer,
+`CometArrowStream.readerBatchIter` and the Python runner, use the task allocator. A batch read that
+way and then streamed to native needs no special handling, because the stream's reader moves its
+charge off the task as described above. What remains is a buffer exported column by column with
+`Data.exportVector`, which stays owned by, and charged to, the task allocator while native reads it.
+`NativeColumnarToRowConverter` is the one caller that does this with a batch the JVM may own, and
+native's columnar-to-row conversion reserves nothing, so the bytes are not charged twice.
 
 **A task allocator is closed only once it has been drained.** The process-wide allocator exists
 because Arrow buffers can outlive the task that created them, and Arrow treats closing an allocator
 that still owns bytes as a leak. At task completion the Spark reservation is dropped and the
-allocator is closed if it is empty; otherwise it is parked and closed by a later task once the
+allocator is closed if it is empty. Otherwise it is parked and closed by a later task once the
 stragglers are released, since `BaseAllocator` keeps every child in a map until it closes.
 
 One further child, `CometArrowImportAllocator` (`comet-ffi-imports`), is what the Arrow C Data
@@ -177,36 +189,43 @@ flowchart LR
     NU["NativeUtil<br>FFI structs, imports, exports"]
     UDF["CometUdfBridge<br>JVM UDF inputs and result"]
     CGO["CometBatchKernelCodegenOutput<br>codegen UDF output"]
-    SR["StreamReader<br>shuffle and IPC reads"]
-    NAS["CometNativeArrowSource<br>stream and readerBatchIter"]
+    NASS["CometArrowStream.stream<br>batches exported to native"]
+    BC["Utils broadcast-coalesce<br>on the driver"]
+    SR["StreamReader<br>broadcast and IPC reads"]
+    NASR["CometArrowStream.readerBatchIter<br>batches read in the JVM"]
     CACHE["ArrowCachedBatchSerializer"]
     PY["CometArrowPythonRunnerBase"]
-    BC["Utils broadcast-coalesce"]
   end
 
   ROOT["CometArrowAllocator<br>RootAllocator, no limit<br>no allocation listener"]
-  SHUF["Comet JVM shuffle pages<br>CometUnifiedShuffleMemoryAllocator"]
-  NPOOL["Comet native memory pool<br>declared reservations only"]
+  TASK["CometTaskArrowAllocator<br>a child of the root per task<br>CometArrowAllocationListener"]
+  subgraph OTHER["other consumers of Spark's off-heap pool"]
+    SHUF["Comet JVM shuffle pages<br>CometUnifiedShuffleMemoryAllocator"]
+    NPOOL["Comet native memory pool<br>declared reservations only"]
+  end
   TMM["Spark off-heap execution pool<br>TaskMemoryManager"]
   NOBODY["accounted by nobody"]
 
   NU --> ROOT
   UDF --> ROOT
   CGO --> ROOT
-  SR --> ROOT
-  NAS --> ROOT
-  CACHE --> ROOT
-  PY --> ROOT
+  NASS --> ROOT
   BC --> ROOT
+  SR --> TASK
+  NASR --> TASK
+  CACHE --> TASK
+  PY --> TASK
   ROOT --> NOBODY
+  TASK -->|"what it owns, in 1 MiB blocks"| TMM
   SHUF --> TMM
   NPOOL -->|"CometTaskMemoryManager over JNI"| TMM
 ```
 
 ### Constraints on a Comet memory consumer
 
-`CometTaskMemoryManager` is the one place where Comet code acts as a Spark `MemoryConsumer`, and the
-rules below are why it is written the way it is. Each is easy to break by accident.
+`CometTaskMemoryManager` and `CometArrowAllocationListener` are the two places where Comet code acts
+as a Spark `MemoryConsumer`, and the rules below are why they are written the way they are. Each is
+easy to break by accident.
 
 **`getUsed` and `spill` must stay lock-free.** Spark calls both while already holding the
 `TaskMemoryManager` monitor, which is why `NativeMemoryConsumer.getUsed` reads an `AtomicLong` and
@@ -227,19 +246,24 @@ reaches this method from native over JNI, so whatever escapes crosses the JNI bo
 **Spark exposes no per-consumer usage figure.** `TaskMemoryManager.getMemoryConsumptionForThisTask`
 is task-wide, and a consumer that reaches `acquireExecutionMemory` directly rather than through
 `MemoryConsumer.acquireMemory` keeps an inherited `used` of zero. That is why `NativeMemoryConsumer`
-overrides `getUsed` to report Comet's own tally instead: without it, Spark's spill-victim ordering
-and `showMemoryUsage` would believe the consumer held nothing.
+overrides `getUsed` to report Comet's own tally instead, and `CometArrowAllocationListener` reports
+what its allocator owns: without that, Spark's spill-victim ordering and `showMemoryUsage` would
+believe the consumer held nothing.
 
 **A partial grant can be stranded.** `acquireExecutionMemory` takes its first grant from the pool
 before asking other consumers to spill, so when a spill throws, the task has been charged for bytes
 the call never returns. Nothing releases them until Spark's final task cleanup, so they are headroom
 nobody can use for the rest of the task. Any caller that swallows the exception has to reconcile
 that grant, and the only figure available for doing so is the task-wide one above.
+`CometArrowAllocationListener` adopts it as the change in that figure across the call, with both
+reads and the call inside the `TaskMemoryManager` monitor so that no other consumer in the task can
+acquire in between.
 
 **A consumer whose `spill` returns zero takes budget it can never give back.**
-`NativeMemoryConsumer.spill` returns `0`, so Spark can select it as a spill victim and reclaim
-nothing from it; it is only ever a spill trigger. The bytes it holds are real, so other consumers in
-the same task see correspondingly less headroom and can spill earlier than they otherwise would.
+`NativeMemoryConsumer.spill` returns `0`, as does `CometArrowAllocationListener.spill`, so Spark can
+select either as a spill victim and reclaim nothing from it; it is only ever a spill trigger. The
+bytes it holds are real, so other consumers in the same task see correspondingly less headroom and
+can spill earlier than they otherwise would.
 
 ## Where Comet's budget comes from
 
@@ -397,14 +421,17 @@ accounting (if any) saw the bytes appear. Whether the buffer is _reserved_ in Co
 separate decision, made by whichever operator holds it, and that operator neither knows nor cares
 which side of the boundary the bytes came from.
 
-**JVM → native (`ScanExec`).** The JVM allocates the Arrow buffers from a child of the
-unaccounted root and exports the whole per-partition iterator once as an `ArrowArrayStream`.
+**JVM → native (`ScanExec`).** The JVM exports the whole per-partition iterator once as an
+`ArrowArrayStream`, and every batch it hands over belongs to the stream's allocator, a child of the
+listener-less root. A batch built for the stream, such as a row-to-Arrow conversion, is allocated
+there. A batch the JVM had already read into a task allocator is retained there by
+`ColumnarBatchArrowReader` and its source closed, which moves the charge off the task allocator.
 `ScanExec` imports each batch through `AlignedArrowStreamReader` with `CopyMode::UnpackOrClone`:
 dictionary columns are unpacked into new native arrays, everything else is an `Arc` clone of the
 imported buffers. Those bytes stay where Java Arrow put them and are pinned for as long as any native
-reference survives. They are invisible to Spark's `TaskMemoryManager` at allocation time, deliberately:
-this is the export path, so nobody charged for them yet. Whether they are charged _later_ depends
-on who holds them. DataFusion's `ExternalSorter` reserves `get_reserved_bytes_for_record_batch` for
+reference survives. Spark's `TaskMemoryManager` does not see them on the JVM side, deliberately,
+because native decides whether to charge them. Whether they are charged _later_ depends on who
+holds them. DataFusion's `ExternalSorter` reserves `get_reserved_bytes_for_record_batch` for
 every batch it retains, and the hash join build side reserves `get_record_batch_memory_size` for
 each incoming batch; both read buffer sizes off the `ArrayData` and apply equally to imported
 buffers. So an imported batch that a sort or join has buffered _is_ reserved in Comet's pool, and
@@ -510,10 +537,11 @@ flowchart TB
       TUNG["Spark Tungsten off-heap<br>TaskMemoryManager"]
       SHUFP["Comet JVM shuffle pages<br>CometUnifiedShuffleMemoryAllocator"]
       NATRES["Comet native heap, reserved<br>operators that call try_grow<br>declared to Spark over JNI, never measured"]
+      ARROWT["Comet JVM Arrow owned by a task<br>CometTaskArrowAllocator, unbounded"]
     end
     subgraph NONE["accounted by nobody"]
       NATUND["Comet native heap, undeclared<br>kernels, array builders, decompression<br>Parquet metadata, object_store, tokio"]
-      ARROWR["Comet JVM Arrow<br>CometArrowAllocator, unbounded"]
+      ARROWR["Comet JVM Arrow passed to or from native<br>CometArrowAllocator, unbounded"]
       NONHEAP["JVM non-heap<br>metaspace, code cache, thread stacks<br>GC structures, Netty direct buffers"]
       PAGEC["page cache charged to the cgroup<br>file I/O, including spill files"]
       FRAG["allocator overhead<br>fragmentation, padding<br>jemalloc retained and dirty pages"]
@@ -523,10 +551,11 @@ flowchart TB
 
 Spark's accounting covers the first group, though not in the same sense throughout it. The JVM
 heap, Tungsten pages and Comet's shuffle pages are allocated by JVM code that reports what it
-allocated. A native reservation is a number an operator declared before allocating: `try_grow`
-succeeds only once `CometTaskMemoryManager` has charged Spark's off-heap execution pool over JNI, so
-the budget really is spent, but nothing measured the bytes and the reservation is only a lower bound
-on them. The second group is outside every accounting layer.
+allocated, and a task's Arrow allocator reports what it owns after the fact, without being able to
+refuse an allocation. A native reservation is a number an operator declared before allocating:
+`try_grow` succeeds only once `CometTaskMemoryManager` has charged Spark's off-heap execution pool
+over JNI, so the budget really is spent, but nothing measured the bytes and the reservation is only
+a lower bound on them. The second group is outside every accounting layer.
 
 When the total crosses `memory.max`, the kernel OOM killer kills the process. The failure mode is
 significantly worse than a task-level OOM: every task running on that executor dies, every cached
@@ -560,16 +589,10 @@ much they matter:
   its container is still stopped only by the kill.
 - **The memory overhead is sized by hand.** The gap has to fit in `spark.executor.memoryOverhead`,
   and the memory usage log measures it, but nothing sizes the overhead from it.
-- **`CometArrowAllocator` is unbounded.** Allocations that live and die inside a task are now
-  reported to Spark's memory manager, so they are no longer invisible, but nothing caps them: the
-  listener reports without enforcing, and enforcing would mean failing allocations on paths that
-  cannot fail today. Allocations made off a task, and anything crossing the FFI boundary in either
-  direction, are not reported at all.
-- **Reservation ownership is not handed over at the FFI boundary.** Which side accounts for a
-  buffer is decided by where it was allocated, not by who holds it, so a buffer allocated for JVM
-  use and later handed to native is charged on the JVM side while a native operator that retains it
-  charges the same task again. Buffers allocated for export dodge this only because their
-  allocation site knows where they are going.
+- **`CometArrowAllocator` is unbounded.** What a task's allocator owns is charged to Spark, but
+  nothing caps it: the listener reports without enforcing, and enforcing would mean failing
+  allocations on paths that cannot fail today. Arrow memory passed to or from native, and anything
+  allocated off a task, is not charged on the JVM side at all.
 - **Buffer and reservation lifetimes are independent across the FFI boundary.** A batch can be
   resident on either side with no reservation covering it, because reservations are made and
   withdrawn by individual operators while the bytes outlive them.
