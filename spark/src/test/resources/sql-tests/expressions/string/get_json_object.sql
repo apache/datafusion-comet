@@ -181,3 +181,94 @@ SELECT get_json_object('{"data":"café résumé naïve"}', '$.data')
 -- unicode in wildcard results
 query
 SELECT get_json_object('[{"名":"Alice"},{"名":"太郎"}]', '$[*].名')
+
+-- double wildcard flattens one array level (mirrors Spark's own JSON suite)
+query
+SELECT get_json_object('{"b":[[1,2,{"c":"y"}],[3,4],[5,6]]}', '$.b[*][*]')
+
+-- double wildcard applies the remaining path to the outer elements, not their children
+query
+SELECT get_json_object('{"b":[[1,2,{"c":"y"}],[3,4],[5,6]]}', '$.b[*][*].c')
+
+-- double wildcard over objects in the outer array
+query
+SELECT get_json_object('[{"b":1},{"b":2}]', '$[*][*].b')
+
+-- single match under double wildcard stays wrapped in an array
+query
+SELECT get_json_object('[[5]]', '$[*][*]')
+
+-- double wildcard over an empty inner array matches nothing
+query
+SELECT get_json_object('[[]]', '$[*][*]')
+
+-- duplicate key with double wildcard: the first occurrence misses (its outer
+-- element is an array with no field b) and the second occurrence is null
+query
+SELECT get_json_object('{"a":[[{"b":1}]],"a":null}', '$.a[*][*].b')
+
+-- an index immediately followed by a subscript wildcard switches Spark to its
+-- Quoted write style, so the wildcard keeps its array wrapper even for a
+-- single match
+query
+SELECT get_json_object('[[5]]', '$[0][*]'), get_json_object('[[5,6]]', '$[0][*]')
+
+-- wrapper decisions are made per wildcard level, not once at the top: the
+-- nested wildcard under an index-then-wildcard keeps both dimensions
+query
+SELECT get_json_object('[[[[[[[1]]]]]]]', '$[0][*][0][*][*]')
+
+-- `$.store.basket[0][*].b` from Spark's own JSON suite: a one-element array,
+-- not the bare string
+query
+SELECT get_json_object('{"store":{"basket":[[{"b":"y"},1],[2]]}}', '$.store.basket[0][*].b')
+
+-- wildcards nested below another wildcard run in Quoted style, so each inner
+-- match stays wrapped (matrix output, not flattened)
+query
+SELECT get_json_object('{"a":[{"b":[1,2]},{"b":[3]}]}', '$.a[*].b[*]')
+
+-- triple wildcard: the double wildcard's flatten style flows into the
+-- remaining wildcard, whose lone writer's wrapper is stripped
+query
+SELECT get_json_object('[[[1,2],[]]]', '$[*][*][*]'), get_json_object('[[[1,2]]]', '$[*][*][*]')
+
+-- Spark 3.5+ rejects numbers whose digit count exceeds Jackson's default
+-- 1000-digit limit, including values the path never selects. Spark 3.4's
+-- Jackson version does not impose this limit.
+query
+SELECT get_json_object(concat('[{"a":1,"b":', repeat('9', 1000), '}]'), '$[*].a'),
+       get_json_object(concat('[{"a":1,"b":', repeat('9', 1001), '}]'), '$[*].a'),
+       get_json_object(concat('[{"a":1,"b":-', repeat('9', 1000), '}]'), '$[*].a'),
+       get_json_object(concat('[{"a":1,"b":-', repeat('9', 1001), '}]'), '$[*].a'),
+       get_json_object(concat('[{"a":1,"b":1.', repeat('1', 999), '}]'), '$[*].a'),
+       get_json_object(concat('[{"a":1,"b":1.', repeat('1', 1000), '}]'), '$[*].a'),
+       get_json_object(concat('[{"a":1,"b":0.', repeat('1', 1000), '}]'), '$[*].a'),
+       get_json_object(concat('[{"a":1,"b":1e', repeat('0', 999), '}]'), '$[*].a'),
+       get_json_object(concat('[{"a":1,"b":1e', repeat('0', 1000), '}]'), '$[*].a')
+
+-- Jackson's ReaderBasedJsonParser uses 4000 UTF-16-unit buffers. A float
+-- reaching a buffer edge takes a parser branch that accepts one more digit
+-- when only a fraction or exponent is present.
+query
+SELECT get_json_object(concat('{"a":1,"pad":"', repeat('x', 2977), '","n":1.', repeat('1', 1000), '}'), '$.a'),
+       get_json_object(concat('{"a":1,"pad":"', repeat('x', 2978), '","n":1.', repeat('1', 1000), '}'), '$.a'),
+       get_json_object(concat('{"a":1,"pad":"', repeat('x', 3980), '","n":1.', repeat('1', 1000), '}'), '$.a'),
+       get_json_object(concat('{"a":1,"pad":"', repeat('🎉', 1489), '","n":1.', repeat('1', 1000), '}'), '$.a'),
+       get_json_object(concat('{"a":1,"pad":"', repeat('x', 2978), '","n":1e', repeat('0', 1000), '}'), '$.a')
+
+-- A truncated long string ending in an escape must produce SQL NULL.
+query
+SELECT get_json_object(concat('{"a":1,"b":"', repeat('x', 64), chr(92)), '$.a')
+
+-- `.*` and `['*']` wildcards never match: Spark's parser emits a bare wildcard
+-- instruction that no evaluator dispatch case consumes
+query
+SELECT get_json_object('[1,2]', '$.*'), get_json_object('[1,2]', '$[''*'']'),
+       get_json_object('{"a":{"x":1,"y":2}}', '$.a.*')
+
+-- an unmatched duplicate-key occurrence still writes its wildcard wrapper into
+-- Spark's shared generator, so those bytes remain when a later occurrence
+-- matches
+query
+SELECT get_json_object('{"a":[[{}]],"a":[[{"b":1}]]}', '$.a[0][*].b')

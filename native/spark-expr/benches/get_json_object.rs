@@ -52,6 +52,7 @@ fn criterion_benchmark(c: &mut Criterion) {
         ("top_level_field", "$.name"),
         ("nested_field", "$.address.city"),
         ("array_index", "$.tags[1]"),
+        ("wildcard_strings", "$.tags[*]"),
     ] {
         let path = path(p);
         group.bench_function(name, |b| {
@@ -60,6 +61,44 @@ fn criterion_benchmark(c: &mut Criterion) {
             });
         });
     }
+
+    // A document with a large string field the path never selects. The
+    // numeric-length pre-scan must skip string bodies at memchr speed so
+    // unselected payloads do not dominate the extraction cost.
+    let big_string_docs: ColumnarValue = {
+        let payload = "x".repeat(64 * 1024);
+        let docs: Vec<String> = (0..64)
+            .map(|i| format!(r#"{{"a":{i},"unused":"{payload}"}}"#))
+            .collect();
+        ColumnarValue::Array(Arc::new(StringArray::from(docs)))
+    };
+    let big_string_path = path("$.a");
+    group.bench_function("large_skipped_string", |b| {
+        b.iter(|| {
+            black_box(
+                spark_get_json_object(&[big_string_docs.clone(), big_string_path.clone()]).unwrap(),
+            );
+        });
+    });
+
+    // Many wildcard results exercise per-result allocation and array wrapping.
+    let values = (0..1000)
+        .map(|i| i.to_string())
+        .collect::<Vec<_>>()
+        .join(",");
+    let wildcard_docs = ColumnarValue::Array(Arc::new(StringArray::from(
+        (0..64)
+            .map(|_| format!(r#"{{"a":[{values}]}}"#))
+            .collect::<Vec<_>>(),
+    )));
+    let wildcard_path = path("$.a[*]");
+    group.bench_function("many_number_wildcard", |b| {
+        b.iter(|| {
+            black_box(
+                spark_get_json_object(&[wildcard_docs.clone(), wildcard_path.clone()]).unwrap(),
+            );
+        });
+    });
 
     group.finish();
 }

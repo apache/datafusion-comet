@@ -263,6 +263,10 @@ pub fn create_comet_physical_fun_with_eval_mode(
             let func = Arc::new(crate::string_funcs::spark_get_json_object);
             make_comet_scalar_udf!("get_json_object", func, without data_type)
         }
+        "get_json_object_spark34" => {
+            let func = Arc::new(crate::string_funcs::spark_get_json_object_spark34);
+            make_comet_scalar_udf!("get_json_object_spark34", func, without data_type)
+        }
         "map_sort" => {
             let func = Arc::new(spark_map_sort);
             make_comet_scalar_udf!("spark_map_sort", func, without data_type)
