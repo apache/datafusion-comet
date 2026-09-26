@@ -149,7 +149,7 @@ The tables below list every Spark built-in expression with its current status.
 | Function | Status | Implementation | Notes |
 | --- | --- | --- | --- |
 | `array` | ✅ | Native |  |
-| `array_append` | ✅ | Native |  |
+| `array_append` | ✅ | Hybrid |  |
 | `array_compact` | ✅ | — |  |
 | `array_contains` | ✅ | Native | Float/double element arrays route through the JVM codegen dispatcher by default; the native path is opt-in via allowIncompatible |
 | `array_distinct` | ✅ | Native | NaN/signed-zero handling may differ ([details](compatibility/floating-point.md)) |
@@ -165,8 +165,8 @@ The tables below list every Spark built-in expression with its current status.
 | `array_repeat` | ✅ | Native |  |
 | `array_union` | ✅ | Native | NaN/signed-zero handling may differ ([details](compatibility/floating-point.md)) |
 | `arrays_overlap` | ✅ | Native |  |
-| `arrays_zip` | ✅ | Native |  |
-| `element_at` | ✅ | Native |  |
+| `arrays_zip` | ✅ | Hybrid |  |
+| `element_at` | ✅ | Hybrid |  |
 | `flatten` | ✅ | Native | Binary/struct/map elements fall back |
 | `get` | ✅ | — |  |
 | `sequence` | ✅ | Hybrid | Integral types run natively; date/timestamp sequences use codegen dispatch |
@@ -200,10 +200,10 @@ The tables below list every Spark built-in expression with its current status.
 | Function | Status | Implementation | Notes |
 | --- | --- | --- | --- |
 | `array_size` | ✅ | — |  |
-| `cardinality` | ✅ | Native |  |
+| `cardinality` | ✅ | Hybrid |  |
 | `concat` | ✅ | Hybrid | Binary/array children and non-UTF8_BINARY collations route through the JVM codegen dispatcher |
 | `reverse` | ✅ | Hybrid | Arrays with binary, struct, or map elements, and collated strings, route through the JVM codegen dispatcher ([details](compatibility/expressions/array.md)) |
-| `size` | ✅ | Native |  |
+| `size` | ✅ | Hybrid |  |
 
 ---
 
@@ -399,12 +399,12 @@ to Spark ([#2837](https://github.com/apache/datafusion-comet/issues/2837)). Enab
 
 | Function | Status | Implementation | Notes |
 | --- | --- | --- | --- |
-| `element_at` | ✅ | Native |  |
+| `element_at` | ✅ | Hybrid |  |
 | `map` | ✅ | Codegen dispatch | Routed through the JVM codegen dispatcher |
 | `map_concat` | ✅ | Codegen dispatch |  |
 | `map_contains_key` | ✅ | — |  |
 | `map_entries` | ✅ | Native |  |
-| `map_from_arrays` | ✅ | Native |  |
+| `map_from_arrays` | ✅ | Hybrid |  |
 | `map_from_entries` | ✅ | Hybrid | BinaryType keys/values and `spark.sql.mapKeyDedupPolicy=LAST_WIN` route through the JVM codegen dispatcher ([details](compatibility/expressions/map.md)) |
 | `map_keys` | ✅ | Native |  |
 | `map_values` | ✅ | Native |  |

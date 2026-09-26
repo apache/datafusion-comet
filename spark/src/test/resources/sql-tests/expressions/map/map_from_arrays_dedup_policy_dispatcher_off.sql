@@ -15,15 +15,14 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- Verifies that `map_from_arrays` leaves the native path when `spark.sql.mapKeyDedupPolicy` is
--- set to `LAST_WIN`. Spark's ArrayBasedMapBuilder keeps the last occurrence of each duplicate key
--- and Comet's native `map` scalar has no LAST_WIN path, so `CometMapFromArrays` reports the
--- policy as `Incompatible` and its `CodegenDispatchFallback` routes the call through the JVM
--- codegen dispatcher, which runs Spark's own builder. The dispatcher-off fallback is pinned by
--- `map_from_arrays_dedup_policy_dispatcher_off.sql`; the default `EXCEPTION` mode agrees with
--- Comet and is covered by `map_from_arrays.sql`.
+-- Pins the genuine Spark fallback for `map_from_arrays` under `spark.sql.mapKeyDedupPolicy=LAST_WIN`
+-- when the JVM codegen dispatcher is off. Spark's ArrayBasedMapBuilder keeps the last occurrence
+-- of each duplicate key and Comet's native `map` scalar has no LAST_WIN path, so the serde's
+-- `Incompatible` branch surfaces as a fallback. The dispatched route is covered by
+-- `map_from_arrays_dedup_policy.sql`.
 
 -- Config: spark.sql.mapKeyDedupPolicy=LAST_WIN
+-- Config: spark.comet.exec.scalaUDF.codegen.enabled=false
 
 statement
 CREATE TABLE test_map_from_arrays_dedup(k array<string>, v array<int>) USING parquet
@@ -34,11 +33,11 @@ INSERT INTO test_map_from_arrays_dedup VALUES
   (array('a', 'a', 'b'), array(1, 2, 3)),
   (array('x', 'x'), array(10, 20))
 
--- literal duplicate keys under LAST_WIN: Spark keeps the last value; the dispatcher runs it.
-query expect_dispatch(map_from_arrays)
+-- literal duplicate keys under LAST_WIN: Spark keeps the last value; Comet must fall back.
+query expect_fallback(mapKeyDedupPolicy)
 SELECT map_from_arrays(array('a', 'a', 'b'), array(1, 2, 3))
 
--- column input is dispatched the same way; the incompat branch is triggered by the SQLConf value,
+-- column input falls back the same way; the incompat branch is triggered by the SQLConf value,
 -- not per-row content.
-query expect_dispatch(map_from_arrays)
+query expect_fallback(mapKeyDedupPolicy)
 SELECT map_from_arrays(k, v) FROM test_map_from_arrays_dedup
