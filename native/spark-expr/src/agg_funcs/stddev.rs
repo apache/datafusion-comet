@@ -163,6 +163,11 @@ impl StddevAccumulator {
     pub fn get_m2(&self) -> f64 {
         self.variance.get_m2()
     }
+
+    pub(super) fn with_pearson_update(mut self) -> Self {
+        self.variance = self.variance.with_pearson_update();
+        self
+    }
 }
 
 impl Accumulator for StddevAccumulator {

@@ -29,6 +29,8 @@ use datafusion::physical_expr::expressions::StatsType;
 use std::mem::size_of;
 use std::sync::Arc;
 
+use super::welford::VarianceUpdate;
+
 /// VAR_SAMP and VAR_POP aggregate expression
 /// The implementation mostly is the same as the DataFusion's implementation. The reason
 /// we have our own implementation is that DataFusion has UInt64 for state_field `count`,
@@ -144,6 +146,7 @@ pub struct VarianceAccumulator {
     count: f64,
     stats_type: StatsType,
     null_on_divide_by_zero: bool,
+    update: VarianceUpdate,
 }
 
 impl VarianceAccumulator {
@@ -155,7 +158,13 @@ impl VarianceAccumulator {
             count: 0_f64,
             stats_type: s_type,
             null_on_divide_by_zero,
+            update: VarianceUpdate::CentralMoment,
         })
+    }
+
+    pub(super) fn with_pearson_update(mut self) -> Self {
+        self.update = VarianceUpdate::Pearson;
+        self
     }
 
     pub fn get_count(&self) -> f64 {
@@ -184,7 +193,8 @@ impl Accumulator for VarianceAccumulator {
         let arr = downcast_value!(&values[0], Float64Array).iter().flatten();
 
         for value in arr {
-            let (c, m, m2) = super::welford::variance_update(self.count, self.mean, self.m2, value);
+            let (c, m, m2) =
+                super::welford::variance_update(self.count, self.mean, self.m2, value, self.update);
             self.count = c;
             self.mean = m;
             self.m2 = m2;
@@ -271,6 +281,7 @@ pub(crate) struct VarianceGroupsAccumulator {
     pub(super) m2s: Vec<f64>,
     stats_type: StatsType,
     null_on_divide_by_zero: bool,
+    update: VarianceUpdate,
 }
 
 impl VarianceGroupsAccumulator {
@@ -281,7 +292,13 @@ impl VarianceGroupsAccumulator {
             m2s: Vec::new(),
             stats_type,
             null_on_divide_by_zero,
+            update: VarianceUpdate::CentralMoment,
         }
+    }
+
+    pub(super) fn with_pearson_update(mut self) -> Self {
+        self.update = VarianceUpdate::Pearson;
+        self
     }
 
     fn resize(&mut self, total_num_groups: usize) {
@@ -327,6 +344,7 @@ impl GroupsAccumulator for VarianceGroupsAccumulator {
                 self.means[group_index],
                 self.m2s[group_index],
                 value,
+                self.update,
             );
             self.counts[group_index] = c;
             self.means[group_index] = m;
@@ -419,6 +437,93 @@ mod groups_tests {
             .as_primitive::<Float64Type>()
             .iter()
             .collect()
+    }
+
+    #[test]
+    fn large_offset_variance() {
+        for pair in [[1e16, 1e16 + 2.0], [1e16 + 2.0, 1e16], [-1e16, -1e16 - 2.0]] {
+            for (stats, expected) in [(StatsType::Population, 1.0), (StatsType::Sample, 2.0)] {
+                let values: ArrayRef =
+                    Arc::new(Float64Array::from(vec![Some(pair[0]), None, Some(pair[1])]));
+                for batch_size in [1, 3] {
+                    let mut scalar = VarianceAccumulator::try_new(stats, true).unwrap();
+                    let mut grouped = VarianceGroupsAccumulator::new(stats, true);
+                    for offset in (0..3).step_by(batch_size) {
+                        let batch = [values.slice(offset, batch_size)];
+                        scalar.update_batch(&batch).unwrap();
+                        grouped
+                            .update_batch(&batch, &vec![0; batch_size], None, 2)
+                            .unwrap();
+                    }
+                    assert_eq!(
+                        scalar.evaluate().unwrap(),
+                        ScalarValue::Float64(Some(expected))
+                    );
+                    let states = grouped.state(EmitTo::All).unwrap();
+                    let mut merged = VarianceGroupsAccumulator::new(stats, true);
+                    merged.merge_batch(&states, &[0, 1], 2).unwrap();
+                    assert_eq!(evaluate(&mut merged), vec![Some(expected), None]);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn large_offset_variance_merge() {
+        for (partitions, population, sample) in [
+            (
+                [(1e17 - 32.0, 3), (1e17 - 16.0, 2)],
+                61.44000000000001,
+                76.80000000000001,
+            ),
+            ([(1e17 - 96.0, 3), (1e17 - 32.0, 3)], 1024.0, 1228.8),
+        ] {
+            for sign in [1.0, -1.0] {
+                for reverse in [false, true] {
+                    let mut partitions = partitions;
+                    if reverse {
+                        partitions.reverse();
+                    }
+                    for (stats, expected) in [
+                        (StatsType::Population, population),
+                        (StatsType::Sample, sample),
+                    ] {
+                        let mut scalar = VarianceAccumulator::try_new(stats, true).unwrap();
+                        let mut grouped = VarianceGroupsAccumulator::new(stats, true);
+                        // Include empty partials before and after the nonempty states.
+                        for (value, count) in
+                            [(0.0, 0)].into_iter().chain(partitions).chain([(0.0, 0)])
+                        {
+                            let mut values = vec![Some(sign * value); count];
+                            values.push(None);
+                            let values: ArrayRef = Arc::new(Float64Array::from(values));
+                            let mut partial = VarianceAccumulator::try_new(stats, true).unwrap();
+                            partial.update_batch(&[Arc::clone(&values)]).unwrap();
+                            let state = partial
+                                .state()
+                                .unwrap()
+                                .iter()
+                                .map(|v| v.to_array_of_size(1).unwrap())
+                                .collect::<Vec<_>>();
+                            scalar.merge_batch(&state).unwrap();
+
+                            let mut partial = VarianceGroupsAccumulator::new(stats, true);
+                            partial
+                                .update_batch(&[values], &vec![0; count + 1], None, 2)
+                                .unwrap();
+                            grouped
+                                .merge_batch(&partial.state(EmitTo::All).unwrap(), &[0, 1], 2)
+                                .unwrap();
+                        }
+                        assert_eq!(
+                            scalar.evaluate().unwrap(),
+                            ScalarValue::Float64(Some(expected))
+                        );
+                        assert_eq!(evaluate(&mut grouped), vec![Some(expected), None]);
+                    }
+                }
+            }
+        }
     }
 
     #[test]

@@ -144,8 +144,10 @@ impl CorrelationAccumulator {
     pub fn try_new(null_on_divide_by_zero: bool) -> Result<Self> {
         Ok(Self {
             covar: CovarianceAccumulator::try_new(StatsType::Population, null_on_divide_by_zero)?,
-            stddev1: StddevAccumulator::try_new(StatsType::Population, null_on_divide_by_zero)?,
-            stddev2: StddevAccumulator::try_new(StatsType::Population, null_on_divide_by_zero)?,
+            stddev1: StddevAccumulator::try_new(StatsType::Population, null_on_divide_by_zero)?
+                .with_pearson_update(),
+            stddev2: StddevAccumulator::try_new(StatsType::Population, null_on_divide_by_zero)?
+                .with_pearson_update(),
             null_on_divide_by_zero,
         })
     }
@@ -280,8 +282,10 @@ impl CorrelationGroupsAccumulator {
         // that intent explicit.
         Self {
             covar: CovarianceGroupsAccumulator::new(StatsType::Population, false),
-            var1: VarianceGroupsAccumulator::new(StatsType::Population, false),
-            var2: VarianceGroupsAccumulator::new(StatsType::Population, false),
+            var1: VarianceGroupsAccumulator::new(StatsType::Population, false)
+                .with_pearson_update(),
+            var2: VarianceGroupsAccumulator::new(StatsType::Population, false)
+                .with_pearson_update(),
             null_on_divide_by_zero,
         }
     }
