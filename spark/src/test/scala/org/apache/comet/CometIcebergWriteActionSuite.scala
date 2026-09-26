@@ -1836,6 +1836,74 @@ class CometIcebergWriteActionSuite
     }
   }
 
+  // The native writer reserves what its open files hold from the task's memory pool. A fanout
+  // write keeps a file open for every partition, so over enough partitions it outgrows the pool
+  // and fails its task, which Spark can retry, instead of growing in memory that no budget
+  // accounts for until the executor is killed.
+  test("native acceleration: a fanout write that outgrows the memory pool fails its task") {
+    assumeNativeAcceleration()
+    withIcebergCatalog { _ =>
+      val session = spark
+      import session.implicits._
+      // One task writes 64 partitions of 1000 random 500-byte strings, a run of rows per
+      // partition. Each open file holds about 500 KB, so the pool of about 4 MiB (0.002 of the
+      // suite's 2 GiB off-heap size) is outgrown long before all 64 files are open.
+      val rows = 64000
+      (0 until rows)
+        .map(i => (i, s"r${i / 1000}", new scala.util.Random(i).alphanumeric.take(500).mkString))
+        .toDF("id", "region", "payload")
+        .coalesce(1)
+        .createOrReplaceTempView("fanout_oom_src")
+      Seq("fanout_oom", "fanout_oom_control").foreach { table =>
+        // No distribution, so one task writes every partition.
+        spark.sql(s"""
+          CREATE TABLE $catalog.$ns.$table (id INT, region STRING, payload STRING)
+          USING iceberg
+          PARTITIONED BY (region)
+          TBLPROPERTIES (
+            'write.spark.fanout.enabled'='true',
+            'write.distribution-mode'='none')
+        """)
+      }
+
+      withNativeEnabled {
+        withSQLConf(CometConf.COMET_OFFHEAP_MEMORY_POOL_FRACTION.key -> "0.002") {
+          val (failedPlans, error) = captureFailedPlans(spark) {
+            spark.sql(s"INSERT INTO $catalog.$ns.fanout_oom SELECT * FROM fanout_oom_src")
+          }
+          assert(
+            error.toSeq
+              .flatMap(exceptionChain)
+              .exists(t =>
+                Option(t.getMessage)
+                  .exists(_.contains("Additional allocation failed for IcebergWriteExec"))),
+            s"expected the native writer's out-of-memory error, got $error")
+          assert(
+            failedPlans.exists(p =>
+              collectWithSubqueries(p) { case w: CometIcebergWriteExec => w }.nonEmpty),
+            s"the failed write did not run natively:\n${failedPlans.mkString("\n--\n")}")
+        }
+        assert(countSnapshots("fanout_oom") == 0L, "the failed write must not commit")
+        assert(
+          parquetFiles(dataDir("fanout_oom")).isEmpty,
+          s"the failed task left data files behind: ${parquetFiles(dataDir("fanout_oom"))}")
+
+        // The executor outlived the failure, and with the whole pool the same write succeeds.
+        val controlPlans = capturePlans(spark) {
+          spark.sql(s"INSERT INTO $catalog.$ns.fanout_oom_control SELECT * FROM fanout_oom_src")
+        }
+        assert(
+          controlPlans.exists(p =>
+            collectWithSubqueries(p) { case w: CometIcebergWriteExec => w }.nonEmpty),
+          "the control write did not run natively")
+        assert(
+          spark.sql(s"SELECT count(*) FROM $catalog.$ns.fanout_oom_control").head().getLong(0)
+            == rows)
+        assert(parquetFiles(dataDir("fanout_oom_control")).size == 64)
+      }
+    }
+  }
+
   // A three-task write where one task fails only after the other two have finished: their
   // commit messages reached the driver, so it is the committer's job abort, not task cleanup,
   // that has to remove their data files.

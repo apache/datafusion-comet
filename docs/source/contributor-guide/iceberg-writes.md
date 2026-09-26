@@ -223,6 +223,13 @@ Points where Comet adapts iceberg-rust to match iceberg-java:
   ([#5776](https://github.com/apache/datafusion-comet/issues/5776)). Manifest order becomes the row
   order of an unordered read, so any map iteration that reaches the output needs the same care.
 
+iceberg-rust keeps each open file writer private inside its rolling and partitioning writers, so
+Comet wraps `ParquetWriterBuilder` in `MeteredParquetWriterBuilder`, whose files report what they
+hold in memory. After every batch `run_write_task` resizes the task's reservation to what the open
+files report plus the rows held back for pacing, and a resize the pool refuses fails the task. What
+that figure covers, and what it misses, is described under
+[Native writers](memory_management.md#native-writers).
+
 `FileIO` comes from `load_file_io` in `iceberg_common.rs`, shared with the native scan. It picks
 the storage backend from the data location's scheme and wires in Comet's S3 credential bridge when
 one is configured. For writes the bridge fails closed: if a configured provider cannot initialize,
@@ -313,15 +320,15 @@ the writer: run the write suites and the Iceberg Spark tests. The pin policy is 
 
 ## Testing
 
-| Suite                                                            | What it covers                                                                                                                                                                              |
-| ---------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `CometIcebergWriteActionSuite`                                   | End-to-end writes through the split plan and the native writer: parity with iceberg-java, row-level DML, partition evolution, file order, cleanup on task and job failure, AQE re-planning. |
-| `CometIcebergWriteDetectionSuite`                                | One case per eligibility rule, accepted and declined.                                                                                                                                       |
-| `CometIcebergSystemFunctionSuite`                                | Native `bucket`, `truncate`, `years`/`months`/`days`/`hours`, which keep a partitioned write's hash distribution and sort native end to end.                                                |
-| `CometIcebergRewriteActionSuite`                                 | Iceberg's `rewrite_data_files` with the split plan and the native writer.                                                                                                                   |
-| `IcebergWriteProtoTranslationSuite`                              | Translation of properties into `IcebergParquetWriteSettings` and the writer mode.                                                                                                           |
-| Rust tests in `iceberg_write.rs` and `iceberg_partition_path.rs` | File rolling on the 1000-row grid, fanout order, clustered input checks, cleanup guard, manifest round trip, partition path rendering.                                                      |
-| `CometIcebergWriteBenchmark`                                     | Native versus iceberg-java for unpartitioned, clustered, fanout and copy-on-write delete writes. It checks each arm's plan before timing it.                                                |
+| Suite                                                            | What it covers                                                                                                                                                                                                                         |
+| ---------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `CometIcebergWriteActionSuite`                                   | End-to-end writes through the split plan and the native writer: parity with iceberg-java, row-level DML, partition evolution, file order, cleanup on task and job failure, a fanout write outgrowing the memory pool, AQE re-planning. |
+| `CometIcebergWriteDetectionSuite`                                | One case per eligibility rule, accepted and declined.                                                                                                                                                                                  |
+| `CometIcebergSystemFunctionSuite`                                | Native `bucket`, `truncate`, `years`/`months`/`days`/`hours`, which keep a partitioned write's hash distribution and sort native end to end.                                                                                           |
+| `CometIcebergRewriteActionSuite`                                 | Iceberg's `rewrite_data_files` with the split plan and the native writer.                                                                                                                                                              |
+| `IcebergWriteProtoTranslationSuite`                              | Translation of properties into `IcebergParquetWriteSettings` and the writer mode.                                                                                                                                                      |
+| Rust tests in `iceberg_write.rs` and `iceberg_partition_path.rs` | File rolling on the 1000-row grid, fanout order, clustered input checks, cleanup guard, manifest round trip, memory reservation, partition path rendering.                                                                             |
+| `CometIcebergWriteBenchmark`                                     | Native versus iceberg-java for unpartitioned, clustered, fanout and copy-on-write delete writes. It checks each arm's plan before timing it.                                                                                           |
 
 The Comet suites run against the Iceberg version each Spark profile pins in `spark/pom.xml`: 1.5.2
 for Spark 3.4, 1.8.1 for 3.5, 1.10.0 for 4.0 and 4.2, and 1.11.0 for 4.1. Only the default profile

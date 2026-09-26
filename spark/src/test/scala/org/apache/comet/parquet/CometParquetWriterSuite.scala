@@ -1442,6 +1442,41 @@ class CometParquetWriterSuite extends CometParquetWriterTestBase {
     }
   }
 
+  test("a row group the pool cannot hold fails its task with a native out-of-memory error") {
+    // The native writer reserves its in-progress row group from the task's memory pool, so a row
+    // group that outgrows the pool fails the task, which Spark can retry, instead of growing in
+    // memory that no budget accounts for until the executor is killed.
+    withTempPath { dir =>
+      val outputPath = new File(dir, "output.parquet").getAbsolutePath
+      val sourcePath = new File(dir, "source.parquet").getAbsolutePath
+      withNativeWriter {
+        // One task writes about 10 MB of random strings, which snappy cannot shrink, into a single
+        // row group, against a pool of about 4 MiB: 0.002 of the suite's 2 GiB off-heap size.
+        val rows = 20000
+        val df = materializeAsCometSource(
+          (0 until rows)
+            .map(i => (i, new Random(i).alphanumeric.take(500).mkString))
+            .toDF("id", "payload")
+            .repartition(1),
+          sourcePath)
+        withSQLConf(CometConf.COMET_OFFHEAP_MEMORY_POOL_FRACTION.key -> "0.002") {
+          val e = intercept[Exception] {
+            df.write.parquet(outputPath)
+          }
+          val outOfMemory = causeChain(e)
+            .flatMap(t => Option(t.getMessage))
+            .exists(_.contains("Additional allocation failed for ParquetWriterExec"))
+          assert(outOfMemory, s"Expected the native writer's out-of-memory error, got: $e")
+        }
+
+        // The executor outlived the failure, and with the whole pool the same write succeeds.
+        val plan = captureWritePlan(p => df.write.mode(SaveMode.Overwrite).parquet(p), outputPath)
+        assertHasCometNativeWriteExec(plan)
+        assert(spark.read.parquet(outputPath).count() == rows)
+      }
+    }
+  }
+
   test("the Spark 3.x opt-in key still enables native writes on Spark 4.0+") {
     assume(isSpark40Plus, "Requires the WriteFilesExec seam")
     // The opt-in moved from DataWritingCommandExec to WriteFilesExec with the operator. Jobs that
