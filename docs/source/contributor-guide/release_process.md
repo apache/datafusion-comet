@@ -145,8 +145,9 @@ under `protected_branches` on `main`.
 
 Protection requires a review but not a green CI run, so check that a pull request's run passed before merging it.
 The release branch has no merge queue, no nightly run, and no CI on push, so a pull request targeting it runs every
-suite that the PR, queue, and nightly tiers run on `main`. That includes the documentation, version, and change
-log pull requests below, and every backport. [Release branches](ci.md#release-branches) explains what runs and
+suite that the PR, queue, and nightly tiers run on `main`. That includes the version bump pull request below and
+every backport. The documentation and change log pull requests change only Markdown, so the path filters skip the
+heavy suites for them. [Release branches](ci.md#release-branches) explains what runs and
 why. The [full CI run before tagging](#run-the-full-ci-suite) tests the branch with every change merged.
 
 ### Generate Release Documentation
@@ -232,7 +233,18 @@ change log file into `main`.
 Once the generated docs, version bump, and change log have merged to the release branch, run every CI suite
 against it. Each pull request ran against the branch as it stood when its run started, so nothing has yet tested
 the branch with all of them merged. Pull requests there also skip the Spark SQL suite for Spark 3.4 unless it is
-labeled, and Miri, which runs only on a schedule on `main`. Dispatch both workflows on the release branch:
+labeled, and Miri, which runs only on a schedule on `main`.
+
+A dispatch runs every job in the release branch's own `ci.yml`, including `docs`, which publishes the website. So
+first check that the branch limits that job to `main`: the `if:` this prints must require
+`github.ref == 'refs/heads/main'`. A branch without that guard publishes its own docs over the site.
+
+```shell
+git fetch apache
+git show apache/branch-0.13:.github/workflows/ci.yml | sed -n '/^  docs:/,/uses:/p'
+```
+
+Then dispatch both workflows on the release branch:
 
 ```shell
 gh workflow run ci.yml --repo apache/datafusion-comet --ref branch-0.13
@@ -240,15 +252,17 @@ gh workflow run miri.yml --repo apache/datafusion-comet --ref branch-0.13
 ```
 
 A dispatched `ci.yml` run ignores the tiers and the path filters. It runs every suite in the
-[tier table](ci.md#three-tiers), including the Spark SQL suite for Spark 3.4, which sits outside every tier. It
-does not publish the website, which is deployed only from `main`. `miri.yml` runs the unsafe code checks, which
-are not part of `ci.yml`. Expect the runs to take a few hours.
+[tier table](ci.md#three-tiers), including the Spark SQL suite for Spark 3.4, which sits outside every tier.
+`miri.yml` runs the unsafe code checks, which are not part of `ci.yml`. Expect the runs to take a few hours.
 
-A failed dispatched run does not open a `ci-nightly-failure` issue, so check the result yourself:
+A failed dispatched run does not open a `ci-nightly-failure` issue, so check the result yourself. This prints the
+latest dispatched run of each workflow on the branch:
 
 ```shell
-gh run list --repo apache/datafusion-comet --branch branch-0.13 --event workflow_dispatch --limit 2 \
-  --json workflowName,headSha,status,conclusion,url
+for wf in ci.yml miri.yml; do
+  gh api "repos/apache/datafusion-comet/actions/workflows/$wf/runs?branch=branch-0.13&event=workflow_dispatch&per_page=1" \
+    --jq ".workflow_runs[] | \"$wf\t\(.head_sha)\t\(.status)\t\(.conclusion)\t\(.html_url)\""
+done
 ```
 
 Both runs must be green at the commit you are about to tag. If anything merges to the release branch after the

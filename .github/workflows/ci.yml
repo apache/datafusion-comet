@@ -348,6 +348,7 @@ jobs:
     #
     #   pull request          linux, full            -> profiles: pr
     #   ... with the label    linux, full, all       -> profiles: all
+    #   ... to branch-N.M     linux, full, all       -> profiles: all
     #   `labeled` run         all                    -> profiles: nightly
     #   merge queue           linux, full            -> profiles: pr
     #   nightly               all                    -> profiles: nightly

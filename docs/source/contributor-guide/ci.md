@@ -346,8 +346,8 @@ genuinely quiet day from a base that has drifted.
 
 ## Release branches
 
-Release branches (`branch-N.M`) have the same workflow files as `main`, but no merge queue and no
-nightly run. The merge queue covers only `main`, `ci.yml` runs on push only for `main`, and GitHub
+Release branches (`branch-N.M`) start with the workflow files `main` had when they were cut, but have
+no merge queue and no nightly run. The merge queue covers only `main`, `ci.yml` runs on push only for `main`, and GitHub
 fires scheduled workflows only on the default branch, so a release branch gets no scheduled `ci.yml`,
 Miri or CodeQL run, and nothing runs after a pull request merges.
 
@@ -359,22 +359,25 @@ path filters still apply, so a documentation-only change runs none of the heavy 
 SQL suite for Spark 3.4 still needs its `run-spark-3.4-tests` label, and the other `run-*` labels
 have nothing to add there.
 
-A release branch runs the workflow files committed on it, so each branch keeps the rules it was cut
-with. `branch-1.0` predates the tiers and follows its own, older rules.
+A release branch runs the workflow files committed on it, so a change to these rules on `main`
+reaches a release branch only if it is backported. `branch-1.0` predates the tiers and follows its
+own, older rules.
 
 Each pull request is tested against the release branch as it was when its run started, and with no
 merge queue, nothing tests the result of merging it. Two backports that pass on their own can still
 break the branch once both have landed. To run every suite against a release branch as it stands,
-dispatch `ci.yml` on it:
+dispatch `ci.yml` on it. A dispatch runs every job in that branch's own `ci.yml`, including `docs`,
+which publishes the website. So first check that the `if:` of the branch's `docs` job requires
+`github.ref == 'refs/heads/main'`. A branch without that guard publishes its own docs over the site.
 
 ```sh
+git show apache/branch-N.M:.github/workflows/ci.yml | sed -n '/^  docs:/,/uses:/p'
 gh workflow run ci.yml --repo apache/datafusion-comet --ref branch-N.M
 ```
 
 The release process does this before tagging each release candidate; see
 [Run the Full CI Suite](release_process.md#run-the-full-ci-suite). A failed dispatched run opens no
-`ci-nightly-failure` issue. The `docs` job, which publishes the website, runs only from `main`, so
-a dispatch on a release branch leaves the site alone.
+`ci-nightly-failure` issue.
 
 ## Reproducing a suite failure locally
 

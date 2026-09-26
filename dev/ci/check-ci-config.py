@@ -27,10 +27,13 @@
 #      could not be tested; POLICY_CASES below is the test it never had. The
 #      expected sets are transcribed from the `if:` expressions ci.yml carried
 #      before the policy moved, so a regression here is a behaviour change.
-#      The event reaches the script as environment variables set by ci.yml's
-#      `Detect changes` step, and a variable dropped there reads as an empty
-#      string, which is a valid value (no label, no base branch), so that
-#      wiring is pinned as well.
+#      The event reaches the script as environment variables set by the
+#      `Compute outputs` step of ci.yml's `Detect changes` job, and a variable
+#      dropped there reads as an empty string, which is a valid value (no
+#      label, no base branch), so that wiring is pinned as well. So is the
+#      `refs/heads/main` guard on the `docs` job: a dispatch routes every job,
+#      docs included, and that guard is all that keeps a dispatch on a release
+#      branch from publishing that branch's docs over the site.
 #
 #   3. Required-check coverage. `Required Checks` in ci.yml is the job that
 #      `.asf.yaml` can name in `required_status_checks` for main. A heavy job
@@ -441,6 +444,15 @@ POLICY_CASES = [
     # one stacked on another branch in the repository, keeps the PR tier.
     ({"name": "pull_request", "action": "synchronize", "labels": [], "base": "main"}, PR_TIER),
     ({"name": "pull_request", "action": "synchronize", "labels": [], "base": "pr-5654"}, PR_TIER),
+    (
+        {
+            "name": "pull_request",
+            "action": "synchronize",
+            "labels": [],
+            "base": "branch-1.1-backports",
+        },
+        PR_TIER,
+    ),
 ]
 
 
@@ -807,6 +819,30 @@ def check_event_env():
     for failure in failures:
         print(f"event env: {failure}")
     return not failures
+
+
+# The site deploy's job-level `if:` in ci.yml. It has to be on the job rather
+# than in POLICY, because a dispatch routes every job (see POLICY_CASES).
+DOCS_JOB = "docs"
+DOCS_MAIN_GUARD = re.compile(r"^    if:.*github\.ref\s*==\s*'refs/heads/main'")
+
+
+def check_docs_deploy_guard():
+    """The site deploy runs from main only, whatever the event.
+
+    docs.yaml rsyncs the built site over asf-site with --delete and falls back
+    to `git push --force`, and the release process dispatches ci.yml on the
+    release branch before every release candidate.
+    """
+    _, guarded = guarded_jobs(CI_WORKFLOW, DOCS_MAIN_GUARD)
+    if DOCS_JOB in guarded:
+        return True
+    print(
+        f"docs deploy: the `{DOCS_JOB}` job in {CI_WORKFLOW} must require "
+        f"github.ref == 'refs/heads/main' in its `if:`, or a dispatch on a "
+        f"release branch publishes that branch's docs over the site"
+    )
+    return False
 
 
 def artifact_names(path):
@@ -1399,6 +1435,7 @@ if __name__ == "__main__":
     ok = check_change_filters()
     ok = check_event_policy() and ok
     ok = check_event_env() and ok
+    ok = check_docs_deploy_guard() and ok
     ok = check_spark_sql_modules() and ok
     ok = check_linux_test_profiles() and ok
     ok = check_artifact_names() and ok
