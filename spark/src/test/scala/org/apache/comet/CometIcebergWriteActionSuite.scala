@@ -29,6 +29,9 @@ import scala.concurrent.ExecutionContext.Implicits.global
 import scala.concurrent.duration.DurationInt
 import scala.jdk.CollectionConverters._
 
+import org.apache.hadoop.fs.Path
+import org.apache.parquet.hadoop.ParquetFileReader
+import org.apache.parquet.hadoop.util.HadoopInputFile
 import org.apache.spark.{SparkConf, SparkException, Success}
 import org.apache.spark.rdd.RDD
 import org.apache.spark.scheduler.{SparkListener, SparkListenerTaskEnd}
@@ -1508,6 +1511,170 @@ class CometIcebergWriteActionSuite
         .toSeq
       assert(fileRows == Seq(1000L, 1000L, 1000L, 1000L), s"unexpected file sizes: $fileRows")
     }
+  }
+
+  // https://github.com/apache/datafusion-comet/issues/6114. parquet-mr writes a column chunk
+  // plain, with no dictionary page, when its first page shows the dictionary saving nothing;
+  // parquet-rs on its own keeps a dictionary until it fills. Both writers write the same rows here
+  // and their footers are compared column by column. `near_below` and `near_above` sit either side
+  // of parquet-mr's cut-off for its 20000-row first page: a choice made from a 1000-row sample
+  // would write `near_below` plain, and one made from all 30000 rows would keep a dictionary for
+  // `near_above`.
+  test("native acceleration: data files have dictionary pages exactly where iceberg-java's do") {
+    assumeNativeAcceleration()
+    withIcebergCatalog { warehouseDir =>
+      // A single Parquet file read back as one task: both writers see the same rows in the same
+      // order, and the native write gets a native child.
+      val source = new File(warehouseDir, "dictionary_src").getAbsolutePath
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        spark
+          .range(0, 30000, 1, 1)
+          .selectExpr(
+            "id",
+            "substr(sha2(cast(id AS STRING), 256), 1, 16) AS payload",
+            "concat('c', cast(id % 50 AS STRING)) AS category",
+            "cast(id % 10 AS INT) AS small",
+            "cast(pmod(hash(id), 5000) AS INT) AS medium",
+            "cast(pmod(hash(id), 14000) AS INT) AS near_below",
+            "cast(pmod(hash(id), 17000) AS INT) AS near_above",
+            "timestamp_micros(1700000000000000 + id * 1000003) AS ts",
+            "CASE WHEN id % 2 = 0 THEN id END AS half_null",
+            "CAST(NULL AS INT) AS all_null",
+            "cast(id AS DOUBLE) / 7 AS ratio",
+            "cast(id % 100 AS FLOAT) AS pct",
+            "CAST((id % 1000) / 100 AS DECIMAL(10, 2)) AS amount",
+            "date_add(DATE'2020-01-01', cast(id % 365 AS INT)) AS day",
+            "id % 3 = 0 AS flag",
+            "named_struct('a', id * 7, 'b', cast(id % 7 AS INT)) AS st",
+            "array(cast(id % 5 AS INT), cast(id % 3 AS INT)) AS small_list",
+            "array(id * 3, id * 3 + 1) AS unique_list",
+            "map(concat('k', cast(id % 4 AS STRING)), id) AS attrs",
+            "repeat(sha2(cast(id AS STRING), 256), 3) AS wide_unique",
+            "concat(repeat('x', 200), cast(id % 20 AS STRING)) AS wide_small")
+          .write
+          .parquet(source)
+      }
+      Seq("dict_native", "dict_jvm").foreach { t =>
+        spark.sql(s"""
+          CREATE TABLE $catalog.$ns.$t (
+            id BIGINT, payload STRING, category STRING, small INT, medium INT,
+            near_below INT, near_above INT, ts TIMESTAMP, half_null BIGINT, all_null INT,
+            ratio DOUBLE, pct FLOAT, amount DECIMAL(10, 2), day DATE, flag BOOLEAN,
+            st STRUCT<a: BIGINT, b: INT>, small_list ARRAY<INT>, unique_list ARRAY<BIGINT>,
+            attrs MAP<STRING, BIGINT>, wide_unique STRING, wide_small STRING
+          ) USING iceberg
+        """)
+      }
+      def insert(t: String): Unit =
+        spark.read.parquet(source).coalesce(1).writeTo(s"$catalog.$ns.$t").append()
+
+      val snapshot = withNativeEnabled { captureWrite("dict_native")(insert("dict_native")) }
+      assert(snapshot.snapshotDelta == 1L)
+      val nativeExecs = snapshot.plans.flatMap { p =>
+        collectWithSubqueries(p) { case e: CometIcebergWriteExec => e }
+      }
+      assert(nativeExecs.nonEmpty, "expected the write to engage the native path")
+      insert("dict_jvm")
+
+      def layout(t: String): Map[String, Boolean] = {
+        val files = dataFileDictionaryPages(t)
+        assert(files.size == 1, s"expected one data file for $t, got ${files.keys}")
+        files.values.head
+      }
+      val native = layout("dict_native")
+      val jvm = layout("dict_jvm")
+      assert(native == jvm, s"native $native != iceberg-java $jvm")
+      // Neither side may be degenerate: the table has columns of both kinds.
+      val plain = Set(
+        "id",
+        "payload",
+        "near_above",
+        "ts",
+        "half_null",
+        "all_null",
+        "ratio",
+        "flag",
+        "st.a",
+        "unique_list.list.element",
+        "attrs.key_value.value",
+        "wide_unique")
+      assert(native.collect { case (column, false) => column }.toSet == plain)
+    }
+  }
+
+  test("native acceleration: every partition keeps or drops a dictionary like iceberg-java") {
+    assumeNativeAcceleration()
+    withIcebergCatalog { warehouseDir =>
+      // `x` is unique in partition 0 and takes three values in partition 1, so a choice made once
+      // for the whole write would get one of the two partitions wrong.
+      val source = new File(warehouseDir, "partition_dictionary_src").getAbsolutePath
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        spark
+          .range(0, 20000, 1, 1)
+          .selectExpr(
+            "id",
+            "cast(id % 2 AS INT) AS p",
+            "CASE WHEN id % 2 = 0 THEN id ELSE id % 3 END AS x")
+          .write
+          .parquet(source)
+      }
+      Seq("pdict_native", "pdict_jvm").foreach { t =>
+        spark.sql(s"""
+          CREATE TABLE $catalog.$ns.$t (id BIGINT, p INT, x BIGINT)
+          USING iceberg PARTITIONED BY (p)
+        """)
+      }
+      def insert(t: String): Unit =
+        spark.read.parquet(source).writeTo(s"$catalog.$ns.$t").append()
+
+      val snapshot = withNativeEnabled { captureWrite("pdict_native")(insert("pdict_native")) }
+      assert(snapshot.snapshotDelta == 1L)
+      val nativeExecs = snapshot.plans.flatMap { p =>
+        collectWithSubqueries(p) { case e: CometIcebergWriteExec => e }
+      }
+      assert(nativeExecs.nonEmpty, "expected the write to engage the native path")
+      insert("pdict_jvm")
+
+      def layout(t: String): Map[Boolean, Map[String, Boolean]] =
+        dataFileDictionaryPages(t).map { case (path, columns) =>
+          path.contains("p=1") -> columns
+        }
+      val native = layout("pdict_native")
+      assert(native == layout("pdict_jvm"))
+      assert(native(false)("x") == false, s"partition 0 keeps a dictionary for x: $native")
+      assert(native(true)("x") == true, s"partition 1 drops the dictionary for x: $native")
+    }
+  }
+
+  /**
+   * For every data file of `table`, by path: whether each of its columns has a dictionary page in
+   * any row group, according to the encoding stats in the footer.
+   */
+  private def dataFileDictionaryPages(table: String): Map[String, Map[String, Boolean]] = {
+    val paths = spark
+      .sql(s"SELECT file_path FROM $catalog.$ns.$table.files")
+      .collect()
+      .map(_.getString(0))
+    paths.map { path =>
+      val reader = ParquetFileReader.open(
+        HadoopInputFile.fromPath(new Path(path), spark.sessionState.newHadoopConf()))
+      val columns =
+        try {
+          reader.getFooter.getBlocks.asScala
+            .flatMap(_.getColumns.asScala)
+            .groupBy(_.getPath.toDotString)
+            .map { case (column, chunks) =>
+              column -> chunks.exists { chunk =>
+                val stats = chunk.getEncodingStats
+                assert(stats != null, s"$column in $path has no encoding stats")
+                stats.hasDictionaryPages
+              }
+            }
+        } finally {
+          reader.close()
+        }
+      path -> columns
+    }.toMap
   }
 
   test("native acceleration: empty append commits exactly once with zero data files") {

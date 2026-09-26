@@ -193,12 +193,14 @@ columns.
 ### Native execution
 
 The planner builds `IcebergWriteExec` (`native/core/src/execution/operators/iceberg_write.rs`) over
-the FFI scan of the child's batches. `run_write_task` builds iceberg-rust's writer stack once per
-task:
+the FFI scan of the child's batches. `run_write_task` builds iceberg-rust's partitioning writer once
+per task, and `PartitionWriterBuilder` builds the rest of the stack once per partition, with that
+partition's Parquet writer properties:
 
 ```text
-ParquetWriterBuilder -> RollingFileWriterBuilder -> DataFileWriterBuilder
-  -> UnpartitionedWriter | FanoutWriter | ClusteredWriter
+UnpartitionedWriter | FanoutWriter | ClusteredWriter
+  -> PartitionWriterBuilder, per partition:
+       ParquetWriterBuilder -> RollingFileWriterBuilder -> DataFileWriterBuilder
 ```
 
 Points where Comet adapts iceberg-rust to match iceberg-java:
@@ -215,6 +217,17 @@ Points where Comet adapts iceberg-rust to match iceberg-java:
 - **Row pacing.** iceberg-java's rolling writer checks the target file size every 1000 rows of the
   current file. iceberg-rust checks once per `write` call. `RowPacer` hands the writer rows in
   `ROWS_DIVISOR` (1000) row units per file, so both writers roll on the same grid.
+- **Dictionary choice.** parquet-mr writes a column chunk plain, with no dictionary page, when its
+  first data page shows the dictionary saving no space. parquet-rs has no such check, and fixes a
+  column's encoding when the file opens
+  ([#6114](https://github.com/apache/datafusion-comet/issues/6114)). So each partition's
+  `PartitionFeed` holds back the partition's first page of rows (`write.parquet.page-row-limit`,
+  capped by `write.parquet.row-group-size-bytes`, which the fanout feeds share) before any of them
+  reaches the writer. `DictionaryChooser` (`iceberg_dictionary.rs`) replays parquet-mr's accounting
+  over those rows and turns dictionary encoding off for the columns parquet-mr would write plain.
+  The accounting follows `FallbackValuesWriter`, `DictionaryValuesWriter` and
+  `RunLengthBitPackingHybridEncoder`, and its tests pin answers recorded from parquet-mr itself. The
+  held rows then go through `RowPacer`, so the roll grid does not move.
 - **Field ids and casting.** `decorate_batch_with_field_ids` casts each batch to the
   field-id-annotated Arrow schema derived from the Iceberg schema, with `safe: false`, so a type
   mismatch fails the task instead of writing NULLs.
@@ -321,6 +334,7 @@ the writer: run the write suites and the Iceberg Spark tests. The pin policy is 
 | `CometIcebergRewriteActionSuite`                                 | Iceberg's `rewrite_data_files` with the split plan and the native writer.                                                                                                                   |
 | `IcebergWriteProtoTranslationSuite`                              | Translation of properties into `IcebergParquetWriteSettings` and the writer mode.                                                                                                           |
 | Rust tests in `iceberg_write.rs` and `iceberg_partition_path.rs` | File rolling on the 1000-row grid, fanout order, clustered input checks, cleanup guard, manifest round trip, partition path rendering.                                                      |
+| Rust tests in `iceberg_dictionary.rs`                            | The per-column dictionary choice against answers recorded from parquet-mr, including columns either side of its cut-off.                                                                    |
 | `CometIcebergWriteBenchmark`                                     | Native versus iceberg-java for unpartitioned, clustered, fanout and copy-on-write delete writes. It checks each arm's plan before timing it.                                                |
 
 The Comet suites run against the Iceberg version each Spark profile pins in `spark/pom.xml`: 1.5.2
