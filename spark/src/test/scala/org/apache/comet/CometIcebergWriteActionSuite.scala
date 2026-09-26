@@ -23,6 +23,7 @@ import java.io.File
 import java.nio.file.Files
 import java.sql.Timestamp
 import java.util.concurrent.{CountDownLatch, TimeUnit}
+import java.util.concurrent.atomic.AtomicReference
 
 import scala.collection.mutable
 import scala.concurrent.{Await, Future}
@@ -33,7 +34,7 @@ import scala.jdk.CollectionConverters._
 import org.json4s.{DefaultFormats, Formats}
 import org.json4s.jackson.JsonMethods.parse
 
-import org.apache.spark.{CometListenerBusUtils, SparkConf, SparkException, Success}
+import org.apache.spark.{CometListenerBusUtils, SparkConf, SparkException, Success, TaskContext}
 import org.apache.spark.rdd.RDD
 import org.apache.spark.scheduler.{SparkListener, SparkListenerTaskEnd}
 import org.apache.spark.sql.CometTestBase
@@ -1833,6 +1834,86 @@ class CometIcebergWriteActionSuite
           s"the failed task left data files behind: ${remaining -- committed}")
         assertRows("cleanup_target", expectedIds = Seq(0))
       })
+    }
+  }
+
+  test("native acceleration: a post-native handoff failure cleans up task files") {
+    assumeNativeAcceleration()
+    withIcebergCatalog { warehouseDir =>
+      createTable(warehouseDir, "handoff_target", partitionSpec = "")
+      coalesceInsert("handoff_target", Seq((0, "seed", 0.0)))
+      val before = countSnapshots("handoff_target")
+      val root = dataDir("handoff_target").toPath.toAbsolutePath
+
+      def relativePath(location: String): String = {
+        val uri = new java.net.URI(location)
+        val file = if (uri.getScheme == null) new File(location) else new File(uri)
+        root.relativize(file.toPath.toAbsolutePath).toString
+      }
+
+      def metadataFiles: Set[String] = spark
+        .sql(s"SELECT file_path FROM $catalog.$ns.handoff_target.files")
+        .collect()
+        .map(row => relativePath(row.getString(0)))
+        .toSet
+
+      val committed = metadataFiles
+      assert(committed.nonEmpty, "seed write did not create a data file")
+      assert(parquetFiles(root.toFile) == committed)
+
+      val session = spark
+      import session.implicits._
+      (1 to 1000)
+        .map(i => (i, s"r$i", i.toDouble))
+        .toDF("id", "region", "amount")
+        .coalesce(1)
+        .createOrReplaceTempView("handoff_src")
+
+      val attempts = new AtomicReference[Vector[(Int, Int, Vector[String])]](Vector.empty)
+      val (failedPlans, error) = withNativeEnabled {
+        CometIcebergWriteExec.withPostNativeHandoffFailpoint { locations =>
+          val tc = TaskContext.get()
+          attempts.getAndUpdate(_ :+ ((tc.partitionId(), tc.attemptNumber(), locations.toVector)))
+          throw new RuntimeException("post-native handoff injected failure")
+        } {
+          captureFailedPlans(spark) {
+            spark.sql(s"INSERT INTO $catalog.$ns.handoff_target " +
+              "SELECT id, region, amount FROM handoff_src")
+          }
+        }
+      }
+      assert(
+        error.toSeq
+          .flatMap(exceptionChain)
+          .exists(t =>
+            Option(t.getMessage).exists(_.contains("post-native handoff injected failure"))),
+        s"expected the handoff failure to reach Spark, got $error")
+      assert(
+        failedPlans.exists(p =>
+          collectWithSubqueries(p) { case w: CometIcebergWriteExec => w }.nonEmpty),
+        s"failed write did not run natively:\n${failedPlans.mkString("\n--\n")}")
+      val handoffs = attempts.get()
+      assert(handoffs.forall(_._1 == 0), s"expected only partition 0: $handoffs")
+      assert(
+        handoffs.map(_._2) == handoffs.indices.toVector,
+        s"expected consecutive attempts: $handoffs")
+      assert(
+        handoffs.forall(_._3.nonEmpty),
+        s"native payload reported no written files: $handoffs")
+      val failedPaths = handoffs.flatMap(_._3).map(relativePath).toSet
+
+      assert(countSnapshots("handoff_target") == before, "failed write must not commit")
+      assertRows("handoff_target", expectedIds = Seq(0))
+      val physical = parquetFiles(root.toFile)
+      val referenced = metadataFiles
+      assert(physical == referenced, s"orphan files: ${physical -- referenced}")
+      assert(referenced == committed, s"failed write changed the table files: $referenced")
+      assert(
+        (failedPaths intersect physical).isEmpty,
+        s"failed task files survived: $failedPaths")
+      assert(
+        (failedPaths intersect referenced).isEmpty,
+        s"failed task files were committed: $failedPaths")
     }
   }
 
