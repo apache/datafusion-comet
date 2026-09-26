@@ -303,6 +303,7 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with CometTypeS
 
       commonBuilder.setAllowTypePromotion(CometConf.COMET_SCHEMA_EVOLUTION_ENABLED)
       commonBuilder.setAllowTimestampLtzToNtz(CometConf.COMET_ALLOW_TIMESTAMP_LTZ_AS_NTZ)
+      commonBuilder.setBinaryAsString(scan.conf.getConf(SQLConf.PARQUET_BINARY_AS_STRING))
 
       // Collect S3/cloud storage configurations
       val hadoopConf = scan.relation.sparkSession.sessionState

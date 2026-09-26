@@ -215,6 +215,55 @@ abstract class ParquetReadSuite extends CometTestBase {
     }
   }
 
+  test("spark.sql.parquet.binaryAsString uses native scan") {
+    withTempDir { dir =>
+      val path = new Path(dir.toURI.toString, "part-r-0.parquet")
+      val schema = MessageTypeParser.parseMessageType("""
+          |message root {
+          |  optional binary value;
+          |  optional int32 id;
+          |}
+          |""".stripMargin)
+      val writer = createParquetWriter(schema, path)
+      Seq(Binary.fromString("one"), Binary.fromConstantByteArray(Array(0xff.toByte))).zipWithIndex
+        .foreach { case (value, id) =>
+          val record = new SimpleGroup(schema)
+          record.add(0, value)
+          record.add(1, id)
+          writer.write(record)
+        }
+      writer.close()
+
+      withSQLConf(SQLConf.PARQUET_BINARY_AS_STRING.key -> "false") {
+        val df = spark.read.parquet(path.toString)
+        assert(
+          df.schema === StructType(
+            Seq(StructField("value", BinaryType, true), StructField("id", IntegerType, true))))
+        val (_, cometPlan) = checkSparkAnswer(df)
+        assert(
+          collect(cometPlan) { case _: CometNativeScanExec => true }.nonEmpty,
+          s"Expected native scan with binaryAsString disabled:\n${cometPlan.treeString}")
+      }
+
+      withSQLConf(SQLConf.PARQUET_BINARY_AS_STRING.key -> "true") {
+        val df = spark.read.parquet(path.toString)
+        assert(
+          df.schema === StructType(
+            Seq(StructField("value", StringType, true), StructField("id", IntegerType, true))))
+        val (_, cometPlan) = checkSparkAnswer(df)
+        assert(
+          collect(cometPlan) { case _: CometNativeScanExec => true }.nonEmpty,
+          s"Expected native scan with binaryAsString enabled:\n${cometPlan.treeString}")
+
+        val projected = spark.read.parquet(path.toString).select("id")
+        val (_, projectedCometPlan) = checkSparkAnswer(projected)
+        assert(
+          collect(projectedCometPlan) { case _: CometNativeScanExec => true }.nonEmpty,
+          s"Expected native scan when no string columns are read:\n${projectedCometPlan.treeString}")
+      }
+    }
+  }
+
   test("string") {
     val data = (1 to 4).map(i => Tuple1(i.toString))
     // Property spark.sql.parquet.binaryAsString shouldn't affect Parquet files written by Spark SQL

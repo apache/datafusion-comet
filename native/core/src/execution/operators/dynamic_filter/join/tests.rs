@@ -666,6 +666,7 @@ fn parquet_probe(
         false,
         false,
         false,
+        false, // binary_as_string
         session,
         false,
         false,
@@ -771,6 +772,7 @@ async fn reader_filter_crosses_null_check_conjunction_and_retains_residual() {
             false,
             false,
             false,
+            false, // binary_as_string
             &session,
             false,
             false,
