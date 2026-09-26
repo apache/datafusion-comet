@@ -29,8 +29,7 @@ use std::fmt;
 use std::sync::{Arc, Mutex};
 
 use arrow::array::{
-    Array, ArrayRef, AsArray, BinaryArray, GenericListArray, OffsetSizeTrait, RecordBatch,
-    UInt32Array,
+    Array, ArrayRef, AsArray, BinaryArray, OffsetSizeTrait, RecordBatch, UInt32Array,
 };
 use arrow::datatypes::{DataType, Field, Schema as ArrowSchema, SchemaRef};
 use datafusion::common::tree_node::TreeNodeRecursion;
@@ -568,8 +567,7 @@ async fn run_write_task(
 
     let outcome = async move {
         while let Some(batch) = input.try_next().await? {
-            let decorated =
-                slicer.compact(decorate_batch_with_field_ids(batch, &target_schema)?)?;
+            let decorated = decorate_batch_with_field_ids(batch, &target_schema)?;
             let _timer = write_time.timer();
             writer
                 .write(
@@ -943,7 +941,7 @@ impl ClusteredBatchSplitter {
             }
         }
         // A single-run batch (the common case: one partition per task batch) is the whole batch,
-        // which `RowSlicer::slice` hands back as a clone.
+        // which `RowSlicer::slice` hands back as-is unless it arrived sliced.
         runs.into_iter()
             .map(|(value, start, len)| {
                 let part = self.slicer.slice(batch, start, len)?;
@@ -977,9 +975,10 @@ impl ClusteredBatchSplitter {
 /// ones with a float or double under a list or map; those ranges go through `take`, which gathers
 /// the referenced children into fresh compacted arrays.
 ///
-/// A batch can also arrive already sliced, for example from a `GlobalLimitExec` whose `OFFSET`
-/// hands on `batch.slice(skip, n)`. [`RowSlicer::compact`] gathers such a batch once, as it enters
-/// the writer, so the cuts above can hand a whole batch on as-is.
+/// A range that covers its whole batch is handed on as-is, which is exact only if the batch itself
+/// spans its children. A batch can arrive already sliced, for example from a `GlobalLimitExec`
+/// whose `OFFSET` hands on `batch.slice(skip, n)`, so a whole-batch range goes through
+/// [`RowSlicer::compact`], which gathers such a batch instead.
 #[derive(Clone, Copy)]
 struct RowSlicer {
     gather: bool,
@@ -1014,7 +1013,7 @@ impl RowSlicer {
 
     fn slice(&self, batch: &RecordBatch, offset: usize, len: usize) -> DFResult<RecordBatch> {
         if offset == 0 && len == batch.num_rows() {
-            return Ok(batch.clone());
+            return self.compact(batch.clone());
         }
         if self.gather {
             gather_rows(batch, offset, len)
@@ -1030,7 +1029,7 @@ impl RowSlicer {
     fn detach(&self, batch: &RecordBatch, offset: usize, len: usize) -> DFResult<RecordBatch> {
         if offset == 0 && len == batch.num_rows() {
             // The range is the whole batch, so it pins nothing beyond the rows it holds.
-            return Ok(batch.clone());
+            return self.compact(batch.clone());
         }
         gather_rows(batch, offset, len)
     }
@@ -1164,16 +1163,18 @@ fn contains_float(data_type: &DataType) -> bool {
 fn floats_outside_window(array: &dyn Array) -> bool {
     match array.data_type() {
         DataType::List(field) => {
-            contains_float(field.data_type()) && list_reaches_past(array.as_list::<i32>())
+            let list = array.as_list::<i32>();
+            contains_float(field.data_type())
+                && reaches_past(list.value_offsets(), list.values().as_ref())
         }
         DataType::LargeList(field) => {
-            contains_float(field.data_type()) && list_reaches_past(array.as_list::<i64>())
+            let list = array.as_list::<i64>();
+            contains_float(field.data_type())
+                && reaches_past(list.value_offsets(), list.values().as_ref())
         }
         DataType::Map(entries, _) => {
             let map = array.as_map();
-            contains_float(entries.data_type())
-                && (spans_part_of(map.value_offsets(), map.entries().len())
-                    || floats_outside_window(map.entries()))
+            contains_float(entries.data_type()) && reaches_past(map.value_offsets(), map.entries())
         }
         DataType::Struct(_) => array
             .as_struct()
@@ -1184,14 +1185,12 @@ fn floats_outside_window(array: &dyn Array) -> bool {
     }
 }
 
-fn list_reaches_past<O: OffsetSizeTrait>(list: &GenericListArray<O>) -> bool {
-    spans_part_of(list.value_offsets(), list.values().len())
-        || floats_outside_window(list.values().as_ref())
-}
-
-/// `true` unless `offsets` run from the first to the last element of a `child_len`-long child.
-fn spans_part_of<O: OffsetSizeTrait>(offsets: &[O], child_len: usize) -> bool {
-    offsets[0].as_usize() != 0 || offsets[offsets.len() - 1].as_usize() != child_len
+/// `true` when `offsets` leave part of `child` outside them, or when `child` itself holds a float
+/// outside its own rows.
+fn reaches_past<O: OffsetSizeTrait>(offsets: &[O], child: &dyn Array) -> bool {
+    offsets[0].as_usize() != 0
+        || offsets[offsets.len() - 1].as_usize() != child.len()
+        || floats_outside_window(child)
 }
 
 /// Serialise the produced data files as an in-memory Iceberg V2 data manifest, then read the
@@ -1735,10 +1734,7 @@ mod tests {
         );
         assert!(!floats_outside_window(&ints.slice(0, 2)));
         // Slicing a struct slices its list child, which then reaches past its rows.
-        let wrapped = StructArray::from(vec![(
-            Arc::new(Field::new("l", doubles(4).data_type().clone(), true)),
-            Arc::new(doubles(4)) as ArrayRef,
-        )]);
+        let wrapped = StructArray::try_from(vec![("l", Arc::new(doubles(4)) as ArrayRef)]).unwrap();
         assert!(!floats_outside_window(&wrapped));
         assert!(floats_outside_window(&wrapped.slice(1, 2)));
         // An outer list can span its child while an inner list does not span its own.
@@ -1754,17 +1750,8 @@ mod tests {
 
     #[test]
     fn compact_gathers_only_a_batch_that_reaches_past_its_rows() {
-        let column = doubles(4);
-        let slicer = slicer_for(vec![("l", column.data_type().clone())]);
-        let batch = RecordBatch::try_new(
-            Arc::new(ArrowSchema::new(vec![Field::new(
-                "l",
-                column.data_type().clone(),
-                true,
-            )])),
-            vec![Arc::new(column)],
-        )
-        .unwrap();
+        let batch = RecordBatch::try_from_iter([("l", Arc::new(doubles(4)) as ArrayRef)]).unwrap();
+        let slicer = RowSlicer::for_schema(&batch.schema());
 
         let whole = slicer.compact(batch.clone()).unwrap();
         assert!(
@@ -1778,8 +1765,11 @@ mod tests {
             compacted, window,
             "gathering keeps the rows and their values"
         );
-        assert!(!floats_outside_window(compacted.column(0).as_ref()));
-        assert_eq!(compacted.column(0).as_list::<i32>().values().len(), 4);
+        assert_eq!(
+            compacted.column(0).as_list::<i32>().values().len(),
+            4,
+            "the child holds only the window's elements"
+        );
     }
 
     /// Rows `first..first + rows`, so a sequence of batches carries distinguishable values.
@@ -2715,8 +2705,8 @@ mod tests {
             use arrow::datatypes::Float64Type;
             use iceberg::spec::{ListType, MapType};
 
-            const ROWS: usize = 100;
-            const NAN_ROWS: [usize; 4] = [3, 50, 60, 90];
+            const ROWS: usize = ROWS_DIVISOR + 100;
+            const NAN_ROWS: [usize; 5] = [3, 50, 60, 90, ROWS_DIVISOR + 70];
             let value = |row: usize| {
                 if NAN_ROWS.contains(&row) {
                     f64::NAN
@@ -2804,9 +2794,9 @@ mod tests {
                 (ProtoIcebergWriterMode::IcebergWriterFanout, &by_region),
                 (ProtoIcebergWriterMode::IcebergWriterClustered, &by_region),
             ];
-            // A limit's leading window, and one that leaves rows out at both ends.
-            let mut wrong = Vec::new();
-            for (offset, len) in [(0, 10), (40, 25)] {
+            // A limit's leading window, one that leaves rows out at both ends, and one that fills
+            // exactly one unit, which `RowSlicer::slice` rather than `detach` hands on whole.
+            for (offset, len) in [(0, 10), (40, 25), (50, ROWS_DIVISOR)] {
                 let expected = NAN_ROWS
                     .iter()
                     .filter(|row| (offset..offset + len).contains(*row))
@@ -2829,20 +2819,13 @@ mod tests {
                     .await
                     .unwrap();
 
-                    let rows = record_counts(&data_files);
+                    let what = format!("{mode:?} over rows {offset}..{}", offset + len);
+                    assert_eq!(record_counts(&data_files), vec![len as u64], "{what}");
                     let nan_counts = data_files[0].nan_value_counts();
-                    // (list element, map value)
-                    let nans = (nan_counts.get(&4).copied(), nan_counts.get(&7).copied());
-                    if rows != vec![len as u64] || nans != (Some(expected), Some(expected)) {
-                        wrong.push(format!(
-                            "{mode:?} over rows {offset}..{}: {rows:?} rows, {nans:?} NaNs, \
-                             expected {expected}",
-                            offset + len
-                        ));
-                    }
+                    assert_eq!(nan_counts.get(&4), Some(&expected), "{what}: list NaNs");
+                    assert_eq!(nan_counts.get(&7), Some(&expected), "{what}: map NaNs");
                 }
             }
-            assert!(wrong.is_empty(), "{}", wrong.join("\n"));
         }
 
         #[tokio::test]

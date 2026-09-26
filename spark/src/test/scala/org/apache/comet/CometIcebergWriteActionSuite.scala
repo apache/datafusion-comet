@@ -1148,14 +1148,7 @@ class CometIcebergWriteActionSuite
             .writeTo(s"$catalog.$ns.$t")
             .append()
 
-        val snapshot = withNativeEnabled {
-          captureWrite("nan_offset_native")(insert("nan_offset_native"))
-        }
-        assert(snapshot.snapshotDelta == 1L)
-        val nativeExecs = snapshot.plans.flatMap { p =>
-          collectWithSubqueries(p) { case e: CometIcebergWriteExec => e }
-        }
-        assert(nativeExecs.nonEmpty, "expected the OFFSET write to engage the native path")
+        assertNativeWriteEngages("nan_offset_native", 40 until 65)(insert("nan_offset_native"))
         insert("nan_offset_jvm")
 
         // Keyed by field id, and both tables get the same ids from the same DDL.
