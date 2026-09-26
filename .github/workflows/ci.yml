@@ -189,6 +189,11 @@ jobs:
       - name: Check Iceberg write report summary
         run: python3 dev/ci/test-summarize-iceberg-writes.py
 
+      - name: Check native caching
+        run: |
+          python3 dev/ci/test-native-cache-key.py
+          python3 dev/ci/test-native-cache-workflow.py
+
       - name: Check CI config invariants
         run: python3 dev/ci/check-ci-config.py
 

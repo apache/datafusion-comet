@@ -38,6 +38,23 @@ import re
 import sys
 from pathlib import Path
 
+# Shared cache recipes affect every native producer. Their tests run in
+# Preflight and retain the existing dev/ci/** routes, without adding consumers.
+NATIVE_CACHE_RECIPES = (
+    ".github/actions/build-native-ci/**",
+    "dev/ci/native-cache-key.py", "dev/ci/compute-changes.py",
+)
+
+# Cargo validates optional contrib manifests against native/Cargo.lock even
+# with their features disabled. Their Rust sources and standalone lockfiles
+# do not enter the default CI/debug builds.
+NATIVE_BUILD_INPUTS = (
+    "native/**", "contrib/*/native/Cargo.toml", ".cargo/**",
+    ".github/actions/setup-builder/**", *NATIVE_CACHE_RECIPES,
+    "rust-toolchain", "rust-toolchain.toml", "!**.md",
+)
+NATIVE_LIBRARY_INPUTS = (*NATIVE_BUILD_INPUTS, "!**/benches/**")
+
 FILTERS = {
     "build_linux": [
         "native/**",
@@ -54,6 +71,7 @@ FILTERS = {
         ".github/workflows/ci.yml",
         ".github/workflows/pr_build_linux.yml",
         ".github/actions/setup-builder/**",
+        ".github/actions/build-native-ci/**",
         ".github/actions/java-test/**",
         ".github/actions/maven-bootstrap/**",
         ".github/actions/rust-test/**",
@@ -403,6 +421,14 @@ FILTERS = {
         "mvnw",
     ],
 }
+# Spark and Iceberg producers share these recipes. Linux routes the action
+# above and already covers the Python helpers through dev/ci/**.
+for _native_consumer in (
+    "spark_3_4", "spark_3_5", "spark_4_0", "spark_4_1",
+    "iceberg_1_8", "iceberg_1_9", "iceberg_1_10", "iceberg_1_11",
+):
+    FILTERS[_native_consumer].extend(NATIVE_CACHE_RECIPES)
+
 FILTERS["spark_4_1_hive"] = FILTERS["spark_4_1"]
 FILTERS["build_linux_full"] = FILTERS["build_linux"]
 FILTERS["build_linux_all_profiles"] = FILTERS["build_linux"]
@@ -561,11 +587,17 @@ def event_allows(job, event):
 
 
 def compute(files, event):
-    """Return {job: bool}, folding the path filter and the event policy."""
-    return {
+    """Return job flags, including main's warmer for shared native cache inputs."""
+    selected = {
         name: event_allows(name, event) and matches(patterns, files)
         for name, patterns in FILTERS.items()
     }
+    # Use the fingerprint's exact patterns and matcher for main's producer,
+    # including inputs owned by other workflows, without broadening PR jobs.
+    if (event.get("name") == "push" and event_allows("build_linux", event)
+            and matches(NATIVE_LIBRARY_INPUTS, files)):
+        selected["build_linux"] = True
+    return selected
 
 
 def event_from_env():
