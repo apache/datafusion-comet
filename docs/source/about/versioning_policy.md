@@ -276,13 +276,17 @@ here, because a vendor jar built against one Comet release is loaded by another.
 The SPI consists of:
 
 - `CometS3CredentialProvider`, the interface a vendor implements.
+- `CometS3LocationScopedCredentialProvider`, an optional extension of it for buckets whose credentials
+  differ by location.
 - `CometS3Credentials`, the value a provider returns.
 - `CometS3CredentialContext` and `CometS3AccessMode`, describing the request being served.
 
 Additive changes are allowed in a minor release, for example a new accessor on
 `CometS3CredentialContext`, because a vendor jar compiled against an earlier `1.x` continues to
 load and run. Any change that would break such a jar, including adding an abstract method to
-`CometS3CredentialProvider` without a default implementation, requires a major release.
+`CometS3CredentialProvider` or `CometS3LocationScopedCredentialProvider` without a default
+implementation, requires a major release. The same holds for changing the meaning of an existing
+method, such as how `CometS3LocationScopedCredentialProvider` matches a path to a location.
 
 `CometS3CredentialDispatcher` is the JNI entry point Comet uses to reach a provider. It is internal
 despite living in the same package, and vendors must not call it.
