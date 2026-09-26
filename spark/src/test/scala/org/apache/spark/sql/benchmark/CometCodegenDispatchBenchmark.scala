@@ -388,12 +388,6 @@ object CometCodegenDispatchBenchmark extends CometBenchmarkBase {
     s"SELECT ${columns.map { case (name, expr) => s"$expr AS $name" }.mkString(", ")} FROM $tbl"
   }
 
-  /** Writes a warning to the results file as well as the console, ordered against the table. */
-  private def warn(benchmark: Benchmark, message: String): Unit = {
-    val border = "=" * 80
-    benchmark.out.println(s"\n$border\n$message\n$border")
-  }
-
   /** [[Benchmark]] tees console and results file; this benchmark's own tables need the same. */
   private def emit(line: String): Unit = {
     // scalastyle:off println

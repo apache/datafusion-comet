@@ -114,12 +114,6 @@ jemalloc = ["tikv-jemallocator", "tikv-jemalloc-ctl"]
 # Default builds carry zero Delta surface.
 contrib-delta = ["dep:comet-contrib-delta"]
 
-# Observability for real native memory usage. Wraps the global allocator to track the bytes it
-# hands out, and reports the total as the `native_allocated` tracing metric so it can be compared
-# against the memory pool's reservations. Never rejects an allocation. Off by default; a build
-# without it has no wrapper and no per-allocation work.
-alloc-accounting = []
-
 # exclude optional packages from cargo machete verifications
 [package.metadata.cargo-machete]
 ignored = ["hdfs-sys", "paste"]
