@@ -421,7 +421,7 @@ to Spark ([#2837](https://github.com/apache/datafusion-comet/issues/2837)). Enab
 | `*` | ✅ | Native | DayTime interval multiplication routes through the JVM codegen dispatcher; YearMonth and Calendar interval multiplication fall back |
 | `+` | ✅ | Native |  |
 | `-` | ✅ | Native |  |
-| `/` | ✅ | Native |  |
+| `/` | ✅ | Native | DayTime interval division routes through the JVM codegen dispatcher; YearMonth and Calendar interval division fall back |
 | `abs` | ✅ | Hybrid | Interval types route through the JVM codegen dispatcher; numeric types run natively |
 | `acos` | ✅ | Native |  |
 | `acosh` | ✅ | Native |  |
