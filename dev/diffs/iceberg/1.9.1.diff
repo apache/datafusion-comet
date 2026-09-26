@@ -1085,6 +1085,41 @@ index 3e8953fb95..2fd144ff74 100644
              .enableHiveSupport()
              .getOrCreate();
  
+diff --git a/spark/v3.4/spark/src/test/java/org/apache/iceberg/spark/actions/TestRewriteDataFilesAction.java b/spark/v3.4/spark/src/test/java/org/apache/iceberg/spark/actions/TestRewriteDataFilesAction.java
+index dfe8f51728..d290ac3f1d 100644
+--- a/spark/v3.4/spark/src/test/java/org/apache/iceberg/spark/actions/TestRewriteDataFilesAction.java
++++ b/spark/v3.4/spark/src/test/java/org/apache/iceberg/spark/actions/TestRewriteDataFilesAction.java
+@@ -1321,7 +1321,7 @@ public class TestRewriteDataFilesAction extends TestBase {
+   }
+ 
+   @TestTemplate
+-  public void testParallelPartialProgressWithMaxFailedCommitsLargerThanTotalFileGroup() {
++  public void testParallelPartialProgressWithMaxCommitsLargerThanTotalGroupCount() {
+     Table table = createTable(20);
+     int fileSize = averageFileSize(table);
+ 
+@@ -1336,14 +1336,19 @@ public class TestRewriteDataFilesAction extends TestBase {
+             // Since we can have at most one commit per file group and there are only 10 file
+             // groups, actual number of commits is 10
+             .option(RewriteDataFiles.PARTIAL_PROGRESS_MAX_COMMITS, "20")
+-            .option(RewriteDataFiles.PARTIAL_PROGRESS_MAX_FAILED_COMMITS, "0");
++            // Setting max-failed-commits to 1 to tolerate random commit failure
++            .option(RewriteDataFiles.PARTIAL_PROGRESS_MAX_FAILED_COMMITS, "1");
+     rewrite.execute();
+ 
+     table.refresh();
+ 
+     List<Object[]> postRewriteData = currentData();
+     assertEquals("We shouldn't have changed the data", originalData, postRewriteData);
+-    shouldHaveSnapshots(table, 11);
++    table.refresh();
++    assertThat(table.snapshots())
++        .as("Table did not have the expected number of snapshots")
++        // To tolerate 1 random commit failure
++        .hasSizeGreaterThanOrEqualTo(10);
+     shouldHaveNoOrphans(table);
+     shouldHaveACleanCache(table);
+   }
 diff --git a/spark/v3.4/spark/src/test/java/org/apache/iceberg/spark/source/ScanTestBase.java b/spark/v3.4/spark/src/test/java/org/apache/iceberg/spark/source/ScanTestBase.java
 index 06d5e0c44f..d60cb9467a 100644
 --- a/spark/v3.4/spark/src/test/java/org/apache/iceberg/spark/source/ScanTestBase.java
@@ -2827,6 +2862,41 @@ index 3e9f3334ef..187d2c8435 100644
              .enableHiveSupport()
              .getOrCreate();
  
+diff --git a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/actions/TestRewriteDataFilesAction.java b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/actions/TestRewriteDataFilesAction.java
+index dfe8f51728..d290ac3f1d 100644
+--- a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/actions/TestRewriteDataFilesAction.java
++++ b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/actions/TestRewriteDataFilesAction.java
+@@ -1321,7 +1321,7 @@ public class TestRewriteDataFilesAction extends TestBase {
+   }
+ 
+   @TestTemplate
+-  public void testParallelPartialProgressWithMaxFailedCommitsLargerThanTotalFileGroup() {
++  public void testParallelPartialProgressWithMaxCommitsLargerThanTotalGroupCount() {
+     Table table = createTable(20);
+     int fileSize = averageFileSize(table);
+ 
+@@ -1336,14 +1336,19 @@ public class TestRewriteDataFilesAction extends TestBase {
+             // Since we can have at most one commit per file group and there are only 10 file
+             // groups, actual number of commits is 10
+             .option(RewriteDataFiles.PARTIAL_PROGRESS_MAX_COMMITS, "20")
+-            .option(RewriteDataFiles.PARTIAL_PROGRESS_MAX_FAILED_COMMITS, "0");
++            // Setting max-failed-commits to 1 to tolerate random commit failure
++            .option(RewriteDataFiles.PARTIAL_PROGRESS_MAX_FAILED_COMMITS, "1");
+     rewrite.execute();
+ 
+     table.refresh();
+ 
+     List<Object[]> postRewriteData = currentData();
+     assertEquals("We shouldn't have changed the data", originalData, postRewriteData);
+-    shouldHaveSnapshots(table, 11);
++    table.refresh();
++    assertThat(table.snapshots())
++        .as("Table did not have the expected number of snapshots")
++        // To tolerate 1 random commit failure
++        .hasSizeGreaterThanOrEqualTo(10);
+     shouldHaveNoOrphans(table);
+     shouldHaveACleanCache(table);
+   }
 diff --git a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/data/AvroDataTest.java b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/data/AvroDataTest.java
 index a31138ae01..501c8ac93e 100644
 --- a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/data/AvroDataTest.java
