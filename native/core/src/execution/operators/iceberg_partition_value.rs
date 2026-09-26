@@ -29,7 +29,7 @@ use arrow::datatypes::{DataType, Fields};
 use datafusion_comet_spark_expr::SparkIcebergTemporalTransform;
 use iceberg::arrow::record_batch_projector::RecordBatchProjector;
 use iceberg::arrow::type_to_arrow_type;
-use iceberg::spec::{PartitionSpec, PrimitiveType, SchemaRef, Transform, Type};
+use iceberg::spec::{PartitionSpec, PrimitiveType, SchemaRef, StructType, Transform, Type};
 use iceberg::transform::{create_transform_function, BoxedTransformFunction};
 use iceberg::{Error, ErrorKind, Result};
 
@@ -52,6 +52,8 @@ use iceberg::{Error, ErrorKind, Result};
 pub(crate) struct PartitionValueCalculator {
     projector: RecordBatchProjector,
     transforms: Vec<FieldTransform>,
+    partition_type: StructType,
+    /// `partition_type` as Arrow fields, which every batch's partition struct is built from.
     fields: Fields,
 }
 
@@ -73,8 +75,9 @@ impl PartitionValueCalculator {
             .map(|field| field.source_id)
             .collect();
         let projector = RecordBatchProjector::from_iceberg_schema(Arc::clone(schema), &source_ids)?;
-        let partition_type = Type::Struct(partition_spec.partition_type(schema)?);
-        let DataType::Struct(fields) = type_to_arrow_type(&partition_type)? else {
+        let partition_type = partition_spec.partition_type(schema)?;
+        let DataType::Struct(fields) = type_to_arrow_type(&Type::Struct(partition_type.clone()))?
+        else {
             return Err(Error::new(
                 ErrorKind::DataInvalid,
                 "Expected partition type must be a struct",
@@ -83,8 +86,14 @@ impl PartitionValueCalculator {
         Ok(Self {
             projector,
             transforms,
+            partition_type,
             fields,
         })
+    }
+
+    /// The spec's partition type, resolved against the schema.
+    pub(crate) fn partition_type(&self) -> &StructType {
+        &self.partition_type
     }
 
     /// The partition values of `batch`, as a `StructArray` of the spec's partition type.
@@ -155,6 +164,7 @@ mod tests {
         TimestampMicrosecondArray, TimestampNanosecondArray,
     };
     use arrow::datatypes::Date32Type;
+    use iceberg::arrow::arrow_type_to_type;
     use iceberg::spec::{NestedField, Schema};
 
     use super::*;
@@ -166,6 +176,18 @@ mod tests {
     /// The first and last microseconds of those two days.
     const CHRONO_MIN_MICROS: i64 = -8_334_601_228_800_000_000;
     const CHRONO_MAX_MICROS: i64 = 8_210_266_876_799_999_999;
+
+    /// One step outside `chrono`'s calendar on either side, the
+    /// `timestamp_micros(9000000000000000000)` of the issue, and both ends of Spark's timestamp
+    /// domain.
+    const INSTANTS_PAST_CHRONO: [Option<i64>; 6] = [
+        Some(CHRONO_MIN_MICROS - 1),
+        Some(CHRONO_MAX_MICROS + 1),
+        Some(9_000_000_000_000_000_000),
+        Some(i64::MAX),
+        Some(i64::MIN),
+        None,
+    ];
 
     #[test]
     fn chrono_bounds_are_where_chrono_stops() {
@@ -179,21 +201,22 @@ mod tests {
         assert!(timestamp_us_to_datetime(CHRONO_MAX_MICROS + 1).is_none());
     }
 
-    /// One source column per partition field, `c0`, `c1`, ..., with field ids from 1: a spec takes
-    /// at most one time transform per source column, which iceberg-java enforces too.
-    fn one_column_per_field(
-        fields: &[(PrimitiveType, Transform)],
-        columns: Vec<ArrayRef>,
-    ) -> (PartitionSpec, SchemaRef, RecordBatch) {
+    /// Comet's and iceberg-rust's calculators for a spec with one partition field per
+    /// `(transform, column)`, and the batch of those columns. Each field gets a source column of
+    /// its own, typed after the column's Arrow type: a spec takes at most one time transform per
+    /// source column, which iceberg-java enforces too.
+    fn calculators(
+        fields: &[(Transform, ArrayRef)],
+    ) -> (
+        PartitionValueCalculator,
+        iceberg::arrow::PartitionValueCalculator,
+        RecordBatch,
+    ) {
         let schema = Arc::new(
             Schema::builder()
-                .with_fields(fields.iter().enumerate().map(|(i, (source_type, _))| {
-                    NestedField::optional(
-                        i as i32 + 1,
-                        format!("c{i}"),
-                        Type::Primitive(source_type.clone()),
-                    )
-                    .into()
+                .with_fields(fields.iter().enumerate().map(|(i, (_, column))| {
+                    let source_type = arrow_type_to_type(column.data_type()).unwrap();
+                    NestedField::optional(i as i32 + 1, format!("c{i}"), source_type).into()
                 }))
                 .build()
                 .unwrap(),
@@ -203,7 +226,7 @@ mod tests {
             .enumerate()
             .fold(
                 PartitionSpec::builder(Arc::clone(&schema)),
-                |builder, (i, (_, transform))| {
+                |builder, (i, (transform, _))| {
                     builder
                         .add_partition_field(format!("c{i}"), format!("p{i}"), *transform)
                         .unwrap()
@@ -212,35 +235,22 @@ mod tests {
             .build()
             .unwrap();
         let batch = RecordBatch::try_from_iter(
-            columns
-                .into_iter()
+            fields
+                .iter()
                 .enumerate()
-                .map(|(i, column)| (format!("c{i}"), column)),
+                .map(|(i, (_, column))| (format!("c{i}"), Arc::clone(column))),
         )
         .unwrap();
-        (spec, schema, batch)
+        (
+            PartitionValueCalculator::try_new(&spec, &schema).unwrap(),
+            iceberg::arrow::PartitionValueCalculator::try_new(&spec, &schema).unwrap(),
+            batch,
+        )
     }
 
-    /// Comet's partition values for `batch`, one column per partition field.
-    fn comet(spec: &PartitionSpec, schema: &SchemaRef, batch: &RecordBatch) -> Vec<ArrayRef> {
-        let values = PartitionValueCalculator::try_new(spec, schema)
-            .unwrap()
-            .calculate(batch)
-            .unwrap();
-        values.as_struct().columns().to_vec()
-    }
-
-    /// iceberg-rust's partition values for `batch`, one column per partition field.
-    fn iceberg_rust(
-        spec: &PartitionSpec,
-        schema: &SchemaRef,
-        batch: &RecordBatch,
-    ) -> Vec<ArrayRef> {
-        let values = iceberg::arrow::PartitionValueCalculator::try_new(spec, schema)
-            .unwrap()
-            .calculate(batch)
-            .unwrap();
-        values.as_struct().columns().to_vec()
+    /// A calculator's output, one column per partition field.
+    fn columns(partition_values: ArrayRef) -> Vec<ArrayRef> {
+        partition_values.as_struct().columns().to_vec()
     }
 
     fn dates(values: &[Option<i32>]) -> ArrayRef {
@@ -265,70 +275,56 @@ mod tests {
     // supports: `DateTimeUtil` has converted through `LocalDate` since before 1.5.
     #[test]
     fn years_and_months_past_chronos_calendar_match_iceberg_java() {
-        let fields = [
-            (PrimitiveType::Date, Transform::Year),
-            (PrimitiveType::Date, Transform::Month),
-            (PrimitiveType::Timestamptz, Transform::Year),
-            (PrimitiveType::Timestamptz, Transform::Month),
-            (PrimitiveType::Timestamp, Transform::Year),
-            (PrimitiveType::Timestamp, Transform::Month),
-        ];
         // One step outside `chrono`'s calendar on either side, the `date_from_unix_date(100000000)`
         // of the issue, and both ends of Spark's date domain.
-        let days = [
+        let days = dates(&[
             Some(CHRONO_MIN_DAY - 1),
             Some(CHRONO_MAX_DAY + 1),
             Some(100_000_000),
             Some(i32::MAX),
             Some(i32::MIN),
             None,
-        ];
-        // The same for timestamps, with the `timestamp_micros(9000000000000000000)` of the issue.
-        let instants = [
-            Some(CHRONO_MIN_MICROS - 1),
-            Some(CHRONO_MAX_MICROS + 1),
-            Some(9_000_000_000_000_000_000),
-            Some(i64::MAX),
-            Some(i64::MIN),
-            None,
-        ];
-        let (spec, schema, batch) = one_column_per_field(
-            &fields,
-            vec![
-                dates(&days),
-                dates(&days),
-                micros_utc(&instants),
-                micros_utc(&instants),
-                micros(&instants),
-                micros(&instants),
-            ],
-        );
-
+        ]);
+        let instants = micros(&INSTANTS_PAST_CHRONO);
+        let instants_utc = micros_utc(&INSTANTS_PAST_CHRONO);
         let date_years = ints(&[-264_114, 260_173, 273_790, 5_879_610, -5_879_611]);
         let date_months = ints(&[-3_169_357, 3_122_076, 3_285_488, 70_555_326, -70_555_327]);
         let instant_years = ints(&[-264_114, 260_173, 285_198, 292_277, -292_278]);
         let instant_months = ints(&[-3_169_357, 3_122_076, 3_422_383, 3_507_324, -3_507_325]);
-        let expected = [
-            &date_years,
-            &date_months,
-            &instant_years,
-            &instant_months,
-            &instant_years,
-            &instant_months,
+        let cases = [
+            (Transform::Year, &days, &date_years),
+            (Transform::Month, &days, &date_months),
+            (Transform::Year, &instants_utc, &instant_years),
+            (Transform::Month, &instants_utc, &instant_months),
+            (Transform::Year, &instants, &instant_years),
+            (Transform::Month, &instants, &instant_months),
         ];
-        for ((column, expected), field) in comet(&spec, &schema, &batch)
-            .iter()
-            .zip(expected)
-            .zip(&fields)
-        {
-            assert_eq!(column.as_primitive(), expected, "{field:?}");
-        }
+        let (comet, iceberg_rust, batch) =
+            calculators(&cases.map(|(transform, source, _)| (transform, Arc::clone(source))));
 
+        for (column, (transform, source, expected)) in
+            columns(comet.calculate(&batch).unwrap()).iter().zip(&cases)
+        {
+            assert_eq!(
+                column.as_primitive(),
+                *expected,
+                "{transform} of {}",
+                source.data_type()
+            );
+        }
         // The reason Comet computes these two: iceberg-rust's transforms turn every value above
         // into a NULL partition value. If this starts failing, iceberg-rust has learned the whole
         // domain and delegating becomes an option again.
-        for (column, field) in iceberg_rust(&spec, &schema, &batch).iter().zip(&fields) {
-            assert_eq!(column.null_count(), column.len(), "{field:?}");
+        for (column, (transform, source, _)) in columns(iceberg_rust.calculate(&batch).unwrap())
+            .iter()
+            .zip(&cases)
+        {
+            assert_eq!(
+                column.null_count(),
+                column.len(),
+                "{transform} of {}",
+                source.data_type()
+            );
         }
     }
 
@@ -336,22 +332,12 @@ mod tests {
     // run as above). `day` of a date is the date itself, so only timestamps are interesting.
     #[test]
     fn days_and_hours_past_chronos_calendar_already_match_iceberg_java() {
-        let instants = [
-            Some(CHRONO_MIN_MICROS - 1),
-            Some(CHRONO_MAX_MICROS + 1),
-            Some(9_000_000_000_000_000_000),
-            Some(i64::MAX),
-            Some(i64::MIN),
-            None,
-        ];
-        let (spec, schema, batch) = one_column_per_field(
-            &[
-                (PrimitiveType::Timestamptz, Transform::Day),
-                (PrimitiveType::Timestamptz, Transform::Hour),
-            ],
-            vec![micros_utc(&instants), micros_utc(&instants)],
-        );
-        let values = comet(&spec, &schema, &batch);
+        let instants = micros_utc(&INSTANTS_PAST_CHRONO);
+        let (comet, _, batch) = calculators(&[
+            (Transform::Day, Arc::clone(&instants)),
+            (Transform::Hour, instants),
+        ]);
+        let values = columns(comet.calculate(&batch).unwrap());
         assert_eq!(
             values[0].as_primitive::<Date32Type>(),
             &Date32Array::from(vec![
@@ -381,7 +367,7 @@ mod tests {
     /// it put there before.
     #[test]
     fn agrees_with_iceberg_rust_wherever_chrono_can_represent_the_date() {
-        let days = [
+        let days = dates(&[
             Some(CHRONO_MIN_DAY),
             Some(-719_529), // -0001-12-31
             Some(-366),
@@ -394,8 +380,8 @@ mod tests {
             Some(2_932_897), // +10000-01-01
             Some(CHRONO_MAX_DAY),
             None,
-        ];
-        let instants = [
+        ]);
+        let instant_values = [
             Some(CHRONO_MIN_MICROS),
             Some(-719_529 * 86_400_000_000),
             Some(-86_400_000_001),
@@ -409,62 +395,52 @@ mod tests {
             None,
             None,
         ];
-        let rows = days.len();
+        let instants = micros(&instant_values);
+        let instants_utc = micros_utc(&instant_values);
+        let rows = days.len() as i64;
         let longs: ArrayRef = Arc::new(Int64Array::from_iter(
-            (0..rows as i64).map(|i| Some(i * 1_000_003 - 5_000_000)),
+            (0..rows).map(|i| Some(i * 1_000_003 - 5_000_000)),
         ));
         let strings: ArrayRef = Arc::new(StringArray::from_iter(
             (0..rows).map(|i| Some(format!("s{i}"))),
         ));
         let fields = [
-            (PrimitiveType::Date, Transform::Year),
-            (PrimitiveType::Date, Transform::Month),
-            (PrimitiveType::Timestamptz, Transform::Year),
-            (PrimitiveType::Timestamp, Transform::Month),
-            (PrimitiveType::Date, Transform::Day),
-            (PrimitiveType::Date, Transform::Identity),
-            (PrimitiveType::Timestamptz, Transform::Day),
-            (PrimitiveType::Timestamp, Transform::Hour),
-            (PrimitiveType::Timestamptz, Transform::Identity),
-            (PrimitiveType::Long, Transform::Bucket(16)),
-            (PrimitiveType::Long, Transform::Truncate(10)),
-            (PrimitiveType::String, Transform::Truncate(2)),
-            (PrimitiveType::Long, Transform::Void),
+            (Transform::Year, Arc::clone(&days)),
+            (Transform::Month, Arc::clone(&days)),
+            (Transform::Year, Arc::clone(&instants_utc)),
+            (Transform::Month, Arc::clone(&instants)),
+            (Transform::Day, Arc::clone(&days)),
+            (Transform::Identity, days),
+            (Transform::Day, Arc::clone(&instants_utc)),
+            (Transform::Hour, instants),
+            (Transform::Identity, instants_utc),
+            (Transform::Bucket(16), Arc::clone(&longs)),
+            (Transform::Truncate(10), Arc::clone(&longs)),
+            (Transform::Truncate(2), strings),
+            (Transform::Void, longs),
         ];
-        let (spec, schema, batch) = one_column_per_field(
-            &fields,
-            vec![
-                dates(&days),
-                dates(&days),
-                micros_utc(&instants),
-                micros(&instants),
-                dates(&days),
-                dates(&days),
-                micros_utc(&instants),
-                micros(&instants),
-                micros_utc(&instants),
-                Arc::clone(&longs),
-                Arc::clone(&longs),
-                strings,
-                longs,
-            ],
-        );
+        let (comet, iceberg_rust, batch) = calculators(&fields);
 
-        let calculator = PartitionValueCalculator::try_new(&spec, &schema).unwrap();
         // The first four really do run through Comet's kernels, and nothing else does.
-        let comet_fields = calculator
+        let on_comet = comet
             .transforms
             .iter()
             .map(|transform| matches!(transform, FieldTransform::Comet(_)))
             .collect::<Vec<_>>();
-        assert_eq!(comet_fields, [[true; 4].as_slice(), &[false; 9]].concat());
+        assert_eq!(on_comet, [[true; 4].as_slice(), &[false; 9]].concat());
 
-        for ((comet, iceberg_rust), field) in comet(&spec, &schema, &batch)
-            .iter()
-            .zip(iceberg_rust(&spec, &schema, &batch))
-            .zip(&fields)
+        for ((comet, iceberg_rust), (transform, source)) in
+            columns(comet.calculate(&batch).unwrap())
+                .iter()
+                .zip(columns(iceberg_rust.calculate(&batch).unwrap()))
+                .zip(&fields)
         {
-            assert_eq!(comet, &iceberg_rust, "{field:?}");
+            assert_eq!(
+                comet,
+                &iceberg_rust,
+                "{transform} of {}",
+                source.data_type()
+            );
         }
     }
 
@@ -480,19 +456,16 @@ mod tests {
             Some(i64::MAX),
             None,
         ]));
-        let (spec, schema, batch) = one_column_per_field(
-            &[
-                (PrimitiveType::TimestampNs, Transform::Year),
-                (PrimitiveType::TimestampNs, Transform::Month),
-            ],
-            vec![Arc::clone(&nanos), nanos],
-        );
-        let calculator = PartitionValueCalculator::try_new(&spec, &schema).unwrap();
-        assert!(calculator
+        let (comet, _, batch) = calculators(&[
+            (Transform::Year, Arc::clone(&nanos)),
+            (Transform::Month, nanos),
+        ]);
+        assert!(comet
             .transforms
             .iter()
             .all(|transform| matches!(transform, FieldTransform::IcebergRust(_))));
-        let values = comet(&spec, &schema, &batch);
+        // 1677-09-21 and 2262-04-11: the calendar split is still real, not a NULL.
+        let values = columns(comet.calculate(&batch).unwrap());
         assert_eq!(values[0].as_primitive(), &ints(&[-293, -1, 0, 292]));
         assert_eq!(values[1].as_primitive(), &ints(&[-3_508, -1, 0, 3_507]));
     }
