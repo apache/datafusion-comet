@@ -62,17 +62,20 @@ Suite by suite:
 | macOS build and Comet test suites                 | with label   | yes         | no      |
 | Benchmark compile and lint check                  | with label   | yes         | no      |
 | Delta contrib build gate                          | with label   | yes         | no      |
+| Delta contrib tests, Spark 3.5                    | with label   | yes         | no      |
 | PyArrow UDF tests, Spark 4.0 / 4.1 / 4.2          | with label   | yes         | no      |
 | Comet test suites, Spark 3.4 / 3.5 / 4.0 / 4.2    | with label   | no          | yes     |
 | Spark SQL tests, Spark 3.5 / 4.0                  | with label   | no          | yes     |
 | Iceberg Spark SQL tests, Iceberg 1.8 / 1.9 / 1.10 | with label   | no          | yes     |
+| Delta contrib tests, Spark 4.0 / 4.1              | with label   | no          | yes     |
 | Spark SQL tests, Spark 3.4                        | with label   | no          | no      |
 
 The **PR tier** is the fast feedback loop while a change is being iterated on. The **queue
 tier** is the authoritative gate: everything the PR tier runs plus the suites that must pass before
 a change lands, evaluated against the merge result rather than the pull request head. The queue
-runs one Spark version and one Iceberg version, the ones the default build profile targets. The
-**nightly tier** runs the other Spark and Iceberg versions once a day against `main` as it stands;
+runs one Spark version and one Iceberg version, the ones the default build profile targets, and the
+Delta contrib suites against Spark 3.5 alone. The **nightly tier** runs the other Spark, Iceberg and
+Delta versions once a day against `main` as it stands;
 see [Nightly runs](#nightly-runs) below. Nothing in the queue tier runs again
 on push to `main`, because the queue already tested the exact tree that landed. The one exception
 is the Linux build, which also runs on push so that the dependency caches on `main` stay fresh: a
@@ -116,6 +119,7 @@ Each suite outside the PR tier has a label that runs it on a pull request:
 | `run-benchmark-check`      | Benchmark compile and lint check                      |
 | `run-delta-build-gate`     | Delta contrib build gate                              |
 | `run-pyarrow-udf-tests`    | PyArrow UDF tests against Spark 4.0/4.1/4.2           |
+| `run-delta-tests`          | Delta contrib tests against Spark 3.5, 4.0 and 4.1    |
 | `run-spark-4.1-tests`      | Spark SQL tests against Spark 4.1, every module       |
 | `run-spark-4.1-hive-tests` | Spark SQL tests against Spark 4.1, sql_hive only      |
 | `run-spark-3.4-tests`      | Spark SQL tests against Spark 3.4                     |
@@ -240,8 +244,9 @@ re-armed automatically.
 
 `ci.yml` also runs on a schedule, at 06:00 UTC every day, against what landed on `main` since the
 last successful scheduled run. That run executes only the nightly tier: the Comet test suites against the Spark
-profiles other than 4.1, the Spark SQL suites for Spark 3.5 and 4.0, and the Iceberg suites for
-1.8, 1.9 and 1.10, each only when the day's changes touched files it covers. The queue already ran
+profiles other than 4.1, the Spark SQL suites for Spark 3.5 and 4.0, the Iceberg suites for
+1.8, 1.9 and 1.10, and the Delta contrib suites for Spark 4.0 and 4.1, each only when the day's
+changes touched files it covers. The queue already ran
 everything else against the same tree, so nothing in the queue tier is repeated. A day with no
 merges, or with only documentation changes, runs nothing.
 

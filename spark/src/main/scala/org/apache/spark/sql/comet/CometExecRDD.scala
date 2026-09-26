@@ -67,7 +67,14 @@ private[spark] class CometExecRDD(
     broadcastedHadoopConfForEncryption: Option[Broadcast[SerializableConfiguration]] = None,
     encryptedFilePaths: Seq[String] = Seq.empty,
     shuffleScanIndices: Set[Int] = Set.empty,
-    @transient perPartitionFilePaths: Array[Seq[String]] = Array.empty)
+    @transient perPartitionFilePaths: Array[Seq[String]] = Array.empty,
+    // Set by leaf scans (e.g. `CometNativeScanExec`, the Delta contrib's
+    // `CometDeltaNativeScanExec`) that build this RDD directly, bypassing
+    // `CometNativeExec.executeColumnarWithContext`'s own `ctx.hasScanInput` check. Centralizing
+    // the registration here means every bare-RDD leaf-scan `doExecuteColumnar` override gets the
+    // same task-input-metrics reporting by passing this flag instead of hand-writing an
+    // anonymous `compute` override -- future contrib scans inherit it for free.
+    reportScanInputMetrics: Boolean = false)
     extends RDD[ColumnarBatch](sc, inputRDDs.map(rdd => new OneToOneDependency(rdd))) {
 
   // Determine partition count: from inputs if available, otherwise from parameter
@@ -145,6 +152,10 @@ private[spark] class CometExecRDD(
       ctx.addTaskCompletionListener[Unit] { _ =>
         subqueries.foreach(sub => CometScalarSubquery.removeSubquery(it.id, sub))
       }
+    }
+
+    if (reportScanInputMetrics) {
+      Option(context).foreach(nativeMetrics.reportScanInputMetrics)
     }
 
     it
@@ -229,7 +240,8 @@ object CometExecRDD {
       broadcastedHadoopConfForEncryption: Option[Broadcast[SerializableConfiguration]] = None,
       encryptedFilePaths: Seq[String] = Seq.empty,
       shuffleScanIndices: Set[Int] = Set.empty,
-      perPartitionFilePaths: Array[Seq[String]] = Array.empty): CometExecRDD = {
+      perPartitionFilePaths: Array[Seq[String]] = Array.empty,
+      reportScanInputMetrics: Boolean = false): CometExecRDD = {
     // scalastyle:on
 
     new CometExecRDD(
@@ -246,6 +258,7 @@ object CometExecRDD {
       broadcastedHadoopConfForEncryption,
       encryptedFilePaths,
       shuffleScanIndices,
-      perPartitionFilePaths)
+      perPartitionFilePaths,
+      reportScanInputMetrics)
   }
 }

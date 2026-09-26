@@ -45,16 +45,33 @@
 //!
 //! Filed upstream as apache/datafusion#23978. Revert this once the opener merges its deferred
 //! page-index load back into `FileMetadataCache` instead of bypassing it.
+//!
+//! Optionally (`with_int96_leaf_stamp`, enabled by rebase-aware scans), the factory also
+//! stamps each unencrypted file's INT96 leaf ordinals into the in-memory copy of its footer
+//! key-value metadata -- `datetime_rebase::stamp_int96_leaves`, derived from the footer's own
+//! `SchemaDescriptor` -- and caches the stamped copy in place of the plain one. parquet-rs
+//! copies every key-value pair into the arrow schema it derives from the metadata, which is
+//! the only per-file channel DataFusion's opener gives the expression adapter; the stamp is
+//! how the adapter tells INT96 timestamp columns from INT64 ones after both were coerced to
+//! the same arrow type. The rebuild happens once per file per cache lifetime (later opens
+//! find the stamp already present); encrypted opens are left untouched because the parquet
+//! API cannot carry a file decryptor across the rebuild. `FileMetadataCache` is keyed by
+//! object path and shared by every scan of one `RuntimeEnv`, so a plain (non-stamping) scan
+//! of the same file in the same plan sees the stamped copy too; nothing outside the rebase
+//! path reads the key, and the copy is otherwise identical.
 
+use crate::parquet::datetime_rebase::stamp_int96_leaves;
 use arrow::datatypes::{DataType, FieldRef, Schema};
 use async_trait::async_trait;
 use bytes::Bytes;
 use datafusion::common::Result as DFResult;
-use datafusion::datasource::physical_plan::parquet::metadata::DFParquetMetadata;
+use datafusion::datasource::physical_plan::parquet::metadata::{
+    CachedParquetMetaData, DFParquetMetadata,
+};
 use datafusion::datasource::physical_plan::parquet::{
     ParquetFileMetrics, ParquetFileReaderFactory,
 };
-use datafusion::execution::cache::cache_manager::FileMetadataCache;
+use datafusion::execution::cache::cache_manager::{CachedFileMetadataEntry, FileMetadataCache};
 use datafusion::physical_plan::metrics::{
     Count, ExecutionPlanMetricsSet, MetricBuilder, MetricCategory, MetricType,
 };
@@ -163,6 +180,7 @@ pub struct EagerPageIndexReaderFactory {
     // Enable the footer workaround only for scans that project Variant.
     // https://github.com/apache/datafusion-comet/issues/5477
     spark_variant_schema: bool,
+    stamp_int96_leaves: bool,
 }
 
 impl EagerPageIndexReaderFactory {
@@ -191,11 +209,19 @@ impl EagerPageIndexReaderFactory {
             metadata_cache,
             scan_io_metrics,
             spark_variant_schema: false,
+            stamp_int96_leaves: false,
         }
     }
 
     pub fn with_spark_variant_schema(mut self, enabled: bool) -> Self {
         self.spark_variant_schema = enabled;
+        self
+    }
+
+    /// Whether readers stamp each unencrypted file's INT96 leaf ordinals into its metadata
+    /// (see the module docs). Off by default.
+    pub fn with_int96_leaf_stamp(mut self, enabled: bool) -> Self {
+        self.stamp_int96_leaves = enabled;
         self
     }
 }
@@ -225,6 +251,7 @@ impl ParquetFileReaderFactory for EagerPageIndexReaderFactory {
             metadata_cache: Arc::clone(&self.metadata_cache),
             metadata_size_hint,
             spark_variant_schema: self.spark_variant_schema,
+            stamp_int96_leaves: self.stamp_int96_leaves,
         }))
     }
 }
@@ -240,6 +267,7 @@ struct EagerPageIndexReader {
     metadata_cache: Arc<FileMetadataCache>,
     metadata_size_hint: Option<usize>,
     spark_variant_schema: bool,
+    stamp_int96_leaves: bool,
 }
 
 // Arrow infers ENUM as Binary, losing the distinction from raw binary that Spark needs.
@@ -439,6 +467,7 @@ impl AsyncFileReader for EagerPageIndexReader {
         let metadata_size_hint = self.metadata_size_hint;
         let scan_io_metrics = Arc::clone(&self.scan_io_metrics);
         let spark_variant_schema = self.spark_variant_schema;
+        let stamp_enabled = self.stamp_int96_leaves;
         async move {
             let file_decryption_properties = options
                 .and_then(|o| o.file_decryption_properties())
@@ -471,7 +500,7 @@ impl AsyncFileReader for EagerPageIndexReader {
 
             let metadata = DFParquetMetadata::new(&metadata_store, &object_meta)
                 .with_decryption_properties(file_decryption_properties)
-                .with_file_metadata_cache(Some(metadata_cache))
+                .with_file_metadata_cache(Some(Arc::clone(&metadata_cache)))
                 .with_metadata_size_hint(metadata_size_hint)
                 .with_page_index_policy(page_index_policy)
                 .fetch_metadata()
@@ -498,6 +527,32 @@ impl AsyncFileReader for EagerPageIndexReader {
             }
 
             let metadata = metadata?;
+            // Stamp before the Variant rewrite so the shared cache keeps the footer as read
+            // plus the stamp, which the rewrite leaves in place; the rewrite is per open and
+            // never written back. Encrypted opens (`!cache_enabled`) are never stamped:
+            // nothing is cached for them and the rebuild cannot carry a file decryptor.
+            let metadata = if stamp_enabled && cache_enabled {
+                // First open of this file since the cache last held it: rebuild once with the
+                // stamp and replace the cached plain copy so later opens skip the rebuild.
+                // Same entry shape `DFParquetMetadata::cache_metadata` stores, so cache
+                // validation and page-index reuse behave identically.
+                match stamp_int96_leaves(&metadata) {
+                    None => metadata,
+                    Some(stamped) => {
+                        let stamped = Arc::new(stamped);
+                        metadata_cache.put(
+                            &object_meta.location,
+                            CachedFileMetadataEntry::new(
+                                object_meta.clone(),
+                                Arc::new(CachedParquetMetaData::new(Arc::clone(&stamped))),
+                            ),
+                        );
+                        stamped
+                    }
+                }
+            } else {
+                metadata
+            };
             if spark_variant_schema {
                 with_spark_arrow_schema(metadata)
             } else {

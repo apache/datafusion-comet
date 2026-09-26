@@ -25,10 +25,14 @@ import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import java.util.ServiceLoader
 
+import scala.collection.mutable.ArrayBuffer
 import scala.jdk.CollectionConverters._
 
 import org.scalatest.funsuite.AnyFunSuite
 
+import org.apache.logging.log4j.LogManager
+import org.apache.logging.log4j.core.LogEvent
+import org.apache.logging.log4j.core.appender.AbstractAppender
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.InternalRow
@@ -37,6 +41,7 @@ import org.apache.spark.sql.execution.{FileSourceScanExec, LeafExecNode, SparkPl
 import org.apache.spark.sql.execution.datasources.HadoopFsRelation
 import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
 
+import org.apache.comet.ContribServices
 import org.apache.comet.util.ClassLoaders
 
 /**
@@ -105,6 +110,35 @@ class CometScanContribSuite extends AnyFunSuite {
     // nulls are safe here -- and is the property that makes the hook free on a default build.
     assert(CometScanContrib.tryTransformV1(null, null, null, null).isEmpty)
     assert(CometScanContrib.tryTransformV2(null).isEmpty)
+  }
+
+  test("a provider whose class cannot link is skipped by discovery and the rest still load") {
+    // ServiceLoader raises NoClassDefFoundError straight out of Class.forName when a listed
+    // provider's superclass or interface is missing, the version-skewed-jar case. Discovery
+    // must log and skip it so the remaining providers are found and no scan throws.
+    val skewed = "org.apache.comet.rules.SkewedProvider"
+    withServiceFile(Seq(skewed, classOf[ClaimingScanContrib].getName)) { fileLoader =>
+      val loader = new ClassLoader(fileLoader) {
+        override def loadClass(name: String, resolve: Boolean): Class[_] = {
+          if (name == skewed) {
+            throw new NoClassDefFoundError("org/apache/comet/rules/MissingContribInterface")
+          }
+          super.loadClass(name, resolve)
+        }
+      }
+      val events = withCapturedLogEvents(ContribServices.getClass.getName.stripSuffix("$")) {
+        val discovered = CometScanContrib.loadContribs(loader)
+        assert(
+          discovered.exists(_.isInstanceOf[ClaimingScanContrib]),
+          "the linkable provider should still be discovered, got: " +
+            discovered.map(_.getClass.getName))
+        assert(!discovered.exists(_.getClass.getName == skewed))
+      }
+      val messages = events.map(_.getMessage.getFormattedMessage)
+      assert(
+        messages.exists(m => m.contains(classOf[NoClassDefFoundError].getName)),
+        s"expected a warning naming the LinkageError subtype, got: $messages")
+    }
   }
 
   test("a contrib registered via META-INF/services is discovered and its claim is returned") {
@@ -244,10 +278,63 @@ class CometScanContribSuite extends AnyFunSuite {
   }
 
   test("a fatal error from a contrib is not swallowed") {
-    // NonFatal deliberately lets LinkageError/OOM-class failures through: those signal a broken
-    // JVM or a mis-built jar, not a scan this contrib cannot plan.
+    // OutOfMemoryError is neither NonFatal nor a LinkageError: it signals real JVM-level
+    // exhaustion, not a version-skewed contrib jar, and must always propagate uncontained.
     val contribs = Seq(new FatalScanContrib)
-    intercept[LinkageError](offerV1(contribs))
+    intercept[OutOfMemoryError](offerV1(contribs))
+  }
+
+  test(
+    "a LinkageError from a contrib is contained, logged by name, and the next contrib still " +
+      "gets a look") {
+    // A version-skewed contrib jar (compiled against a Comet internal that has since moved or
+    // been removed) throws NoSuchMethodError/NoClassDefFoundError -- a LinkageError, which
+    // NonFatal does not match. It must be contained the same way a NonFatal decline is: logged,
+    // treated as "does not claim this scan", and the next contrib still consulted.
+    val contribs = Seq(new VersionSkewedScanContrib, new ClaimingScanContrib)
+    val events = withCapturedLogEvents(classOf[CometScanContrib].getName) {
+      assert(offerV1(contribs).contains(ContribStubs.ClaimedByV1))
+      assert(offerV2(contribs).contains(ContribStubs.ClaimedByV2))
+    }
+    val messages = events.map(_.getMessage.getFormattedMessage)
+    assert(
+      messages.count(m =>
+        m.contains(classOf[VersionSkewedScanContrib].getName) &&
+          m.contains(classOf[NoSuchMethodError].getName)) == 2,
+      "expected one warning per hook naming both the contrib class and the LinkageError " +
+        s"subtype, got: $messages")
+  }
+
+  test("a LinkageError with nothing behind it declines rather than failing the query") {
+    val contribs = Seq(new VersionSkewedScanContrib)
+    assert(offerV1(contribs).isEmpty, "the scan must fall through to Comet's built-in handling")
+    assert(offerV2(contribs).isEmpty)
+  }
+
+  /**
+   * Attaches a minimal Log4j2 appender directly to the logger named `loggerName` for the duration
+   * of `f`, returning every event it captured. `CometScanContrib`'s `logWarning` calls go through
+   * Spark's `Logging` trait to a logger named after the emitting class, so this lets a test
+   * assert a specific warning was actually emitted -- not merely that the surrounding code path
+   * didn't throw. Restores the logger's prior appenders/level afterward so this cannot leak into
+   * other tests in the same JVM.
+   */
+  private def withCapturedLogEvents(loggerName: String)(f: => Unit): Seq[LogEvent] = {
+    val logger =
+      LogManager.getLogger(loggerName).asInstanceOf[org.apache.logging.log4j.core.Logger]
+    val appender = new CapturingAppender(s"CometScanContribSuite-${System.nanoTime()}")
+    appender.start()
+    val originalLevel = logger.getLevel
+    logger.addAppender(appender)
+    logger.setLevel(org.apache.logging.log4j.Level.WARN)
+    try {
+      f
+      appender.events.toSeq
+    } finally {
+      logger.removeAppender(appender)
+      logger.setLevel(originalLevel)
+      appender.stop()
+    }
   }
 
   /**
@@ -354,12 +441,44 @@ class ThrowingScanContrib extends CometScanContrib {
     throw new IllegalStateException("contrib blew up while planning a V2 scan")
 }
 
-/** Fails in a way that must NOT be caught. */
+/** Fails in a way that must NOT be caught: neither `NonFatal` nor a `LinkageError`. */
 class FatalScanContrib extends CometScanContrib {
   override def tryTransformV1(
       plan: SparkPlan,
       session: SparkSession,
       scanExec: FileSourceScanExec,
       relation: HadoopFsRelation): Option[SparkPlan] =
-    throw new NoClassDefFoundError("mis-built contrib jar")
+    throw new OutOfMemoryError("simulated JVM-level exhaustion, not a version-skewed contrib jar")
+}
+
+/**
+ * Simulates a contrib jar built against a Comet internal (a method signature, a class) that has
+ * since moved, been renamed, or been removed -- the exact failure mode a stale `--jars` contrib
+ * hits against a newer Comet on the driver's classpath. Must be contained the same way a
+ * `NonFatal` decline is, unlike [[FatalScanContrib]]'s genuinely fatal error.
+ */
+class VersionSkewedScanContrib extends CometScanContrib {
+  override def tryTransformV1(
+      plan: SparkPlan,
+      session: SparkSession,
+      scanExec: FileSourceScanExec,
+      relation: HadoopFsRelation): Option[SparkPlan] =
+    throw new NoSuchMethodError(
+      "org.apache.comet.rules.CometScanContribSuite$InternalApi.movedMethod()V")
+
+  override def tryTransformV2(scanExec: BatchScanExec): Option[SparkPlan] =
+    throw new NoSuchMethodError(
+      "org.apache.comet.rules.CometScanContribSuite$InternalApi.movedMethod()V")
+}
+
+/**
+ * Minimal Log4j2 appender that records every event it receives, verbatim, for
+ * [[CometScanContribSuite.withCapturedLogEvents]] to inspect after the fact.
+ */
+private class CapturingAppender(name: String) extends AbstractAppender(name, null, null, false) {
+  val events: ArrayBuffer[LogEvent] = ArrayBuffer.empty
+
+  override def append(event: LogEvent): Unit = events.synchronized {
+    events += event.toImmutable
+  }
 }

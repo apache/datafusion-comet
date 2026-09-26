@@ -1,0 +1,270 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+name: Delta Contrib Tests
+
+# Reusable: invoked by ci.yml once per Spark profile. Triggering, path
+# filters, and concurrency live in the umbrella workflow.
+on:
+  workflow_call:
+    inputs:
+      spark:
+        description: 'Spark minor version, e.g. 3.5'
+        required: true
+        type: string
+      java:
+        description: 'JDK major version, e.g. 17'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  RUST_VERSION: stable
+  RUST_BACKTRACE: 1
+  # Force GNU ld on Linux: rust-lld cannot resolve -ljvm against the Zulu JDK
+  # layout installed by setup-java (same rationale as pr_build_linux.yml).
+  RUSTFLAGS: "-Clink-arg=-fuse-ld=bfd"
+  # The container's default locale is POSIX, which makes the JVM's file-path encoder
+  # reject non-ASCII partition directory names the suites create.
+  LANG: "C.UTF-8"
+  LC_ALL: "C.UTF-8"
+
+jobs:
+
+  contrib-delta:
+    name: Delta contrib (Spark ${{ inputs.spark }})
+    runs-on: ubuntu-24.04
+    container:
+      image: amd64/rust
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup Rust & Java toolchain
+        uses: ./.github/actions/setup-builder
+        with:
+          rust-version: ${{ env.RUST_VERSION }}
+          jdk-version: ${{ inputs.java }}
+
+      - name: Restore Maven dependencies
+        id: maven-cache
+        uses: actions/cache/restore@v6
+        with:
+          path: |
+            ~/.m2/repository
+            /root/.m2/repository
+          key: ${{ runner.os }}-java-maven-${{ hashFiles('**/pom.xml') }}-delta-${{ inputs.spark }}
+          restore-keys: |
+            ${{ runner.os }}-java-maven-
+
+      - name: Restore Cargo cache
+        uses: actions/cache/restore@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            native/target
+          key: ${{ runner.os }}-cargo-ci-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}-${{ hashFiles('native/**/*.rs') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-ci-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}-
+
+      - name: Build native library (CI profile)
+        run: |
+          cd native
+          # `delta` is in the default feature set, so no feature flag is needed.
+          cargo build --profile ci
+        env:
+          # Must match the flags spark_sql_test_reusable.yml builds with:
+          # cargo folds RUSTFLAGS into its fingerprints, so any divergence
+          # would make the shared cargo cache restore without ever hitting.
+          RUSTFLAGS: "-Ctarget-cpu=x86-64-v3 -Clink-arg=-fuse-ld=bfd"
+
+      # No cache save: this workflow never runs on a push to main, so the restore above
+      # falls back to the cache build_linux saves there.
+
+      - name: Stage native library at release path
+        run: |
+          # Maven's -Prelease profile (activated below) expects libcomet.so
+          # under native/target/release/; --profile ci builds it under
+          # native/target/ci/ instead (same as the other native-building
+          # workflows), so copy it into place.
+          mkdir -p native/target/release
+          cp native/target/ci/libcomet.so native/target/release/libcomet.so
+
+      - name: Install Comet core jars
+        run: |
+          # The delta profile is what produces the spark test-jar the contrib suites depend on.
+          ./mvnw -B -q -Prelease -Pspark-${{ inputs.spark }},delta install -pl common,spark -DskipTests -Dspotless.check.skip=true
+
+      - name: Run Delta contrib test suites
+        run: |
+          SPARK_HOME=$(pwd) COMET_CONF_DIR=$(pwd)/conf ./mvnw -B -Prelease -Pspark-${{ inputs.spark }},delta test -pl contrib/delta-spark
+
+      # Saved only on main: an entry written from a pull request or a
+      # `gh-readonly-queue/*` branch cannot be restored by any later run, and
+      # it evicts main's from the shared budget. See "Large caches are written
+      # on main only" in README.md.
+      - name: Save Maven dependencies
+        if: ${{ github.ref == 'refs/heads/main' && steps.maven-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v6
+        with:
+          path: |
+            ~/.m2/repository
+            /root/.m2/repository
+          key: ${{ runner.os }}-java-maven-${{ hashFiles('**/pom.xml') }}-delta-${{ inputs.spark }}
+
+  # The container job above has no Docker socket, so CometDeltaS3Suite cancels itself
+  # there. This job runs it on the plain runner, where Testcontainers can start MinIO.
+  contrib-delta-s3:
+    name: Delta contrib S3 suite (Spark 3.5, MinIO)
+    # Pinned to Spark 3.5, so only that caller runs it: once per ci.yml run.
+    if: inputs.spark == '3.5'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      # setup-builder runs apt-get as root inside the container jobs; the hosted runner needs
+      # sudo for that, so the same steps are spelled out here.
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler clang
+
+      - name: Install JDK 17
+        uses: actions/setup-java@v6
+        with:
+          distribution: 'zulu'
+          java-version: "17"
+
+      - name: Setup Rust toolchain
+        run: |
+          rustup toolchain install ${{ env.RUST_VERSION }}
+          rustup default ${{ env.RUST_VERSION }}
+          rustup component add rustfmt clippy
+
+      - name: Restore Maven dependencies
+        id: maven-cache
+        uses: actions/cache/restore@v6
+        with:
+          path: |
+            ~/.m2/repository
+          key: ${{ runner.os }}-java-maven-${{ hashFiles('**/pom.xml') }}-delta-3.5
+          restore-keys: |
+            ${{ runner.os }}-java-maven-
+
+      - name: Restore Cargo cache
+        uses: actions/cache/restore@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            native/target
+          key: ${{ runner.os }}-cargo-ci-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}-${{ hashFiles('native/**/*.rs') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-ci-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}-
+
+      - name: Build native library (CI profile)
+        run: |
+          cd native
+          cargo build --profile ci
+        env:
+          RUSTFLAGS: "-Ctarget-cpu=x86-64-v3 -Clink-arg=-fuse-ld=bfd"
+
+      - name: Stage native library at release path
+        run: |
+          mkdir -p native/target/release
+          cp native/target/ci/libcomet.so native/target/release/libcomet.so
+
+      - name: Install Comet core jars
+        run: |
+          ./mvnw -B -q -Prelease -Pspark-3.5,delta install -pl common,spark -DskipTests -Dspotless.check.skip=true
+
+      - name: Run the MinIO-backed S3 suite
+        run: |
+          docker info > /dev/null
+          SPARK_HOME=$(pwd) COMET_CONF_DIR=$(pwd)/conf ./mvnw -B -Prelease -Pspark-3.5,delta test -pl contrib/delta-spark -DwildcardSuites=org.apache.comet.contrib.delta.CometDeltaS3Suite
+        env:
+          # This job exists only to run the suite, so a Docker or MinIO failure must fail
+          # it instead of cancelling every test, which the container job above relies on.
+          COMET_DELTA_S3_REQUIRED: "1"
+
+      # Saved only on main, for the same reason as the container job above.
+      - name: Save Maven dependencies
+        if: ${{ github.ref == 'refs/heads/main' && steps.maven-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v6
+        with:
+          path: |
+            ~/.m2/repository
+          key: ${{ runner.os }}-java-maven-${{ hashFiles('**/pom.xml') }}-delta-3.5
+
+  # `delta` is in the default feature set, so no regular job builds without it;
+  # this keeps the feature-off build and its "built without the delta feature"
+  # error arm (planner.rs cfg(not(feature = "delta"))) from becoming dead code.
+  feature-off-build:
+    name: Feature-off native build
+    # Spark-independent, so only the 3.5 caller runs it: once per ci.yml run.
+    if: inputs.spark == '3.5'
+    runs-on: ubuntu-24.04
+    container:
+      image: amd64/rust
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup Rust & Java toolchain
+        uses: ./.github/actions/setup-builder
+        with:
+          rust-version: ${{ env.RUST_VERSION }}
+          jdk-version: "17"
+
+      - name: Restore Cargo cache
+        uses: actions/cache/restore@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            native/target
+          key: ${{ runner.os }}-cargo-ci-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}-${{ hashFiles('native/**/*.rs') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-ci-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}-
+
+      - name: Test the delta-off error path
+        run: |
+          cd native
+          # The test binary links JNI; libjvm.so must be resolvable at load
+          # time (same as .github/actions/rust-test).
+          export LD_LIBRARY_PATH=${JAVA_HOME}/lib/server:${LD_LIBRARY_PATH}
+          cargo test -p datafusion-comet --no-default-features --features hdfs-opendal delta_scan
+
+  # The contrib's dev tooling (benchmark and regression-harness scripts) is
+  # Python; keep it import-clean on one supported interpreter.
+  dev-scripts-python:
+    name: Delta dev scripts (Python)
+    # Spark-independent, so only the 3.5 caller runs it: once per ci.yml run.
+    if: inputs.spark == '3.5'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Byte-compile contrib dev scripts
+        run: |
+          python -m compileall -q contrib/delta-spark/dev
