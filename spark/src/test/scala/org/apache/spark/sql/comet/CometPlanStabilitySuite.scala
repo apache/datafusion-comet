@@ -318,7 +318,6 @@ trait CometPlanStabilitySuite extends DisableAdaptiveExecutionSuite with TPCDSBa
     conf.set(MEMORY_OFFHEAP_SIZE.key, "2g")
     conf.set(CometConf.COMET_ENABLED.key, "true")
     conf.set(CometConf.COMET_EXEC_ENABLED.key, "true")
-    conf.set(CometConf.COMET_ONHEAP_MEMORY_OVERHEAD.key, "1g")
     conf.set(CometConf.COMET_SHUFFLE_ENABLED.key, "true")
     conf.set(CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key, "true")
 

@@ -20,8 +20,9 @@ use crate::parquet::eager_page_index_reader_factory::{EagerPageIndexReaderFactor
 use crate::parquet::encryption_support::{CometEncryptionConfig, ENCRYPTION_FACTORY_ID};
 use crate::parquet::file_error_context::ParquetErrorContext;
 use crate::parquet::name_fold::fold_schema_names;
-use crate::parquet::parquet_support::ObjectStoreBackend;
-use crate::parquet::parquet_support::SparkParquetOptions;
+use crate::parquet::parquet_support::{
+    object_store_authority, ObjectStoreBackend, SparkParquetOptions,
+};
 use crate::parquet::schema_adapter::SparkPhysicalExprAdapterFactory;
 use arrow::datatypes::{Field, FieldRef, SchemaRef};
 use datafusion::config::{ParquetOptions, TableParquetOptions};
@@ -177,7 +178,7 @@ pub(crate) fn init_datasource_exec(
     // `store_sales`), the page index is re-fetched, uncached, on every open (comet#3978).
     // `EagerPageIndexReaderFactory` forces the page index to load on the first fetch and be
     // cached with the footer, at the cost of losing the skip's benefit when it would have
-    // applied. Filed upstream as apache/datafusion#23978; revert this once that's fixed.
+    // applied. Filed upstream as apache/datafusion#23978.
     //
     // Preserve bytes_scanned's existing requested data/Bloom-filter range accounting. Footer
     // and page-index reads through get_metadata bypass it, and coalescing may fetch extra bytes.
@@ -346,7 +347,7 @@ fn get_options(
                 uri_base: format!(
                     "{}://{}/",
                     physical_object_store_scheme(object_store_url),
-                    &store_url[url::Position::BeforeHost..url::Position::AfterPort],
+                    object_store_authority(store_url),
                 ),
             },
         );
@@ -517,6 +518,12 @@ mod tests {
         assert_eq!(
             encryption_uri("file+comet-0123456789abcdef-hdfs:///"),
             "file:///"
+        );
+        assert_eq!(
+            encryption_uri(
+                "abfss+comet-0123456789abcdef-native://container@account.dfs.core.windows.net/"
+            ),
+            "abfss://container@account.dfs.core.windows.net/"
         );
         // A physical custom scheme containing a similar, incomplete suffix is not
         // itself a synthetic registration URL.
