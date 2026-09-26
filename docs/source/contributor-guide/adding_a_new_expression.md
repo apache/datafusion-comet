@@ -30,6 +30,33 @@ You may have a specific expression in mind that you'd like to add, but if not, y
 When you add or change an expression, update its status in
 [Supported Spark Expressions](../user-guide/latest/expressions.md).
 
+### Auditing coverage with `CometExpressionCoverageSuite`
+
+`CometExpressionCoverageSuite` is a runtime audit that finds Spark scalar expressions Comet does
+not accelerate. For every function in Spark's registry it runs the function's own documented
+example over a Comet-scanned table and inspects the physical plan, so it accounts for every way
+Comet handles an expression (serde maps, the `StaticInvoke` map, `RuntimeReplaceable` rewrites, and
+the Spark 4.x shims). This is more reliable than searching the source, and it doubles as a
+per-version coverage report.
+
+```sh
+./mvnw test -Dsuites="org.apache.comet.CometExpressionCoverageSuite" -Dtest=none
+```
+
+The suite writes `spark/target/expression-coverage-report-spark-<version>.md` and prints a summary.
+Each probed function is classified as:
+
+- `NATIVE` — Comet accelerates it.
+- `INCOMPATIBLE` — supported, but incompatible by default (opt-in via `allowIncompatible`).
+- `LITERAL_PROBE` — supported; the all-literal example tripped a guard that would not fire for
+  column inputs (not a real gap).
+- `GAP` — a genuine fallback. A `Project` fallback is an actionable scalar-expression gap; other
+  operators (Generate, Aggregate, Window, ...) are non-scalar.
+- `SKIP` / `ERROR` — no self-contained example, or the example failed to run.
+
+Run it under each Spark profile (`-Pspark-3.4`, `-Pspark-3.5`, `-Pspark-4.0`, `-Pspark-4.1`) to
+compare coverage across versions. The `GAP` list is a good source of candidates to implement.
+
 ## Implementing the Expression
 
 Once you have the expression you'd like to add, you should take inventory of the following:
