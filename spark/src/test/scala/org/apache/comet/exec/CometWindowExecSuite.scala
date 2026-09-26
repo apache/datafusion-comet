@@ -31,7 +31,7 @@ import org.apache.spark.sql.comet.{CometSortExec, CometWindowExec, CometWindowGr
 import org.apache.spark.sql.execution.SparkPlan
 import org.apache.spark.sql.execution.window.{WindowExec => SparkWindowExec}
 import org.apache.spark.sql.expressions.Window
-import org.apache.spark.sql.functions.{count, lead, sum}
+import org.apache.spark.sql.functions.{count, expr, lead, sum}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.DecimalType
 
@@ -62,6 +62,16 @@ class CometWindowExecSuite extends CometTestBase {
       w
     }
     assert(cometWindowExecs.nonEmpty)
+  }
+
+  private def checkSlidingIntegralSum(df: DataFrame): Unit = {
+    if (SQLConf.get.ansiEnabled) {
+      checkSparkAnswerAndFallbackReason(
+        df,
+        "ANSI/TRY SUM on integral types with a sliding window frame is not supported")
+    } else {
+      checkSparkAnswerAndOperator(df)
+    }
   }
 
   private def sparkWindowExpressions(plan: SparkPlan): Seq[Expression] = {
@@ -526,8 +536,12 @@ class CometWindowExecSuite extends CometTestBase {
   }
 
   test("Windows support") {
-    Seq("true", "false").foreach(aqeEnabled =>
+    for {
+      aqeEnabled <- Seq("true", "false")
+      ansiEnabled <- Seq("true", "false")
+    } {
       withSQLConf(
+        SQLConf.ANSI_ENABLED.key -> ansiEnabled,
         CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
         SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqeEnabled) {
         withParquetTable((0 until 10).map(i => (i, 10 - i)), "t1") { // TODO: test nulls
@@ -545,17 +559,83 @@ class CometWindowExecSuite extends CometTestBase {
               s"SELECT $function OVER() FROM t1",
               s"SELECT $function OVER(order by _2) FROM t1",
               s"SELECT $function OVER(order by _2 desc) FROM t1",
-              s"SELECT $function OVER(partition by _2 order by _2) FROM t1",
+              s"SELECT $function OVER(partition by _2 order by _2) FROM t1")
+            queries.foreach { query =>
+              checkSparkAnswerAndOperator(query)
+            }
+
+            val slidingQueries = Seq(
               s"SELECT $function OVER(rows between 1 preceding and 1 following) FROM t1",
               s"SELECT $function OVER(order by _2 rows between 1 preceding and current row) FROM t1",
               s"SELECT $function OVER(order by _2 rows between current row and 1 following) FROM t1")
 
-            queries.foreach { query =>
-              checkSparkAnswerAndOperator(query)
+            slidingQueries.foreach { query =>
+              if (function == "SUM(_1)") {
+                checkSlidingIntegralSum(sql(query))
+              } else {
+                checkSparkAnswerAndOperator(query)
+              }
             }
           }
         }
-      })
+      }
+    }
+  }
+
+  for (ansiEnabled <- Seq("true", "false")) {
+    test(s"sliding integral ROWS sums (ANSI=$ansiEnabled)") {
+      withSQLConf(
+        SQLConf.ANSI_ENABLED.key -> ansiEnabled,
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+        SQLConf.OPTIMIZER_EXCLUDED_RULES.key ->
+          "org.apache.spark.sql.catalyst.optimizer.ConstantFolding") {
+        val values = Seq(
+          (1, 1, Some(Long.MaxValue)),
+          (1, 2, Some(1L)),
+          (1, 3, Some(-1L)),
+          (1, 4, None),
+          (1, 5, None),
+          (2, 1, Some(Long.MinValue)),
+          (2, 2, Some(-1L)),
+          (2, 3, Some(1L)),
+          (2, 4, None),
+          (2, 5, None),
+          (3, 1, None),
+          (3, 2, None),
+          (3, 3, None))
+        withParquetTable(values, "sliding_rows_sum") {
+          val df = spark.table("sliding_rows_sum").toDF("g", "id", "v")
+          // DataFrame bounds are literals, so PRECEDING needs no constant folding.
+          val frame = Window.partitionBy("g").orderBy("id").rowsBetween(-1, Window.currentRow)
+          checkSparkAnswerAndFallbackReason(
+            df.select($"g", $"id", expr("try_sum(v)").over(frame)),
+            "ANSI/TRY SUM on integral types with a sliding window frame is not supported")
+
+          // ANSI admission does not depend on whether the data actually overflows.
+          val sumInput = if (SQLConf.get.ansiEnabled) df.where($"id" > 1) else df
+          checkSlidingIntegralSum(sumInput.select($"g", $"id", sum("v").over(frame)))
+          for (dataType <- Seq("tinyint", "smallint", "int")) {
+            checkSlidingIntegralSum(df.select(sum($"id".cast(dataType)).over(frame)))
+          }
+
+          if (SQLConf.get.ansiEnabled) {
+            for (group <- Seq(1, 2)) {
+              val (sparkError, cometError) =
+                checkSparkAnswerMaybeThrows(df.where($"g" === group).select(sum("v").over(frame)))
+              assert(sparkError.exists(_.getMessage.contains("ARITHMETIC_OVERFLOW")))
+              assert(cometError.exists(_.getMessage.contains("ARITHMETIC_OVERFLOW")))
+            }
+          }
+
+          // Floating-point sums remain native in both modes.
+          checkSparkAnswerAndOperator(
+            df.where($"id" > 1)
+              .select(
+                sum($"v".cast("double")).over(frame),
+                expr("try_sum(CAST(v AS DOUBLE))").over(frame)))
+        }
+      }
+    }
   }
 
   test("window: simple COUNT(*) without frame") {
@@ -835,7 +915,7 @@ class CometWindowExecSuite extends CometTestBase {
           SUM(c) OVER (PARTITION BY a ORDER BY b, c ROWS BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING) as sum_c
         FROM window_test
       """)
-      checkSparkAnswerAndOperator(df)
+      checkSlidingIntegralSum(df)
     }
   }
 
@@ -875,7 +955,7 @@ class CometWindowExecSuite extends CometTestBase {
           SUM(c) OVER (PARTITION BY a ORDER BY b, c ROWS BETWEEN 2 PRECEDING AND CURRENT ROW) as sum_c
         FROM window_test
       """)
-      checkSparkAnswerAndOperator(df)
+      checkSlidingIntegralSum(df)
     }
   }
 
@@ -1346,7 +1426,7 @@ class CometWindowExecSuite extends CometTestBase {
           SUM(c) OVER (PARTITION BY a ORDER BY b RANGE BETWEEN 2 PRECEDING AND 2 FOLLOWING) as sum_c
         FROM window_test
       """)
-      checkSparkAnswerAndOperator(df)
+      checkSlidingIntegralSum(df)
     }
   }
 
