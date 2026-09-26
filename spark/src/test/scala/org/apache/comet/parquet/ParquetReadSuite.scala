@@ -1502,20 +1502,98 @@ abstract class ParquetReadSuite extends CometTestBase {
         // CAST('1.2' AS BINARY) writes BYTE_ARRAY with no decimal annotation.
         sql("SELECT CAST('1.2' AS BINARY) c").write.parquet(path)
         Seq("DECIMAL(3, 2)", "DECIMAL(18, 1)", "DECIMAL(37, 1)").foreach { schema =>
-          val outer = intercept[SparkException] {
-            spark.read.schema(s"c $schema").parquet(path).collect()
+          val expected = intercept[SparkException] {
+            withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+              spark.read.schema(s"c $schema").parquet(path).collect()
+            }
           }
-          // Walk the cause chain: Comet's shim adds an extra SparkException
-          // wrap on Spark 3.x compared to vanilla Spark.
-          val chain = causeChain(outer)
-          assert(
-            chain.exists(_.isInstanceOf[
-              org.apache.spark.sql.execution.datasources.SchemaColumnConvertNotSupportedException]),
-            s"expected SchemaColumnConvertNotSupportedException for $schema; chain was:\n" +
-              chain.map(t => s"  ${t.getClass.getName}: ${t.getMessage}").mkString("\n"))
+          val df = spark.read.schema(s"c $schema").parquet(path)
+          assert(collect(df.queryExecution.executedPlan) { case scan: CometNativeScanExec =>
+            scan
+          }.nonEmpty)
+          val actual = intercept[SparkException](df.collect())
+          // Spark 3.x adds a driver-side SparkException; Spark 4+ passes the structured
+          // file error through. Compare the entire chain rather than searching for a leaf.
+          assert(causeChain(actual).map(_.getClass) == causeChain(expected).map(_.getClass))
+          assert(causeChain(actual).last.getMessage == causeChain(expected).last.getMessage)
         }
       }
     }
+  }
+
+  Seq(
+    ("decimal(2,1)", "decimal(3,2)"),
+    ("decimal(17,2)", "decimal(18,3)"),
+    ("decimal(36,2)", "decimal(37,3)"),
+    ("decimal(5,2)", "decimal(9,2)"),
+    ("decimal(10,2)", "decimal(10,1)"),
+    ("int", "bigint")).foreach { case (writeType, readType) =>
+    test(s"Parquet schema conversion matches Spark: $writeType -> $readType") {
+      withSQLConf(
+        SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
+        SQLConf.PARQUET_VECTORIZED_READER_ENABLED.key -> "true") {
+        withClue(s"$writeType -> $readType: ") {
+          withTempPath { dir =>
+            val path = dir.getCanonicalPath
+            withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+              spark.sql(s"SELECT CAST(1 AS $writeType) c").write.parquet(path)
+            }
+            var expected: Either[SparkException, Seq[Row]] = Right(Seq.empty)
+            withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+              try {
+                expected = Right(spark.read.schema(s"c $readType").parquet(path).collect().toSeq)
+              } catch {
+                case e: SparkException => expected = Left(e)
+              }
+            }
+            val df = spark.read.schema(s"c $readType").parquet(path)
+            assert(collect(df.queryExecution.executedPlan) { case scan: CometNativeScanExec =>
+              scan
+            }.nonEmpty)
+            expected match {
+              case Right(rows) => checkAnswer(df, rows)
+              case Left(error) =>
+                val actual = intercept[SparkException](df.collect())
+                assert(causeChain(actual).map(_.getClass) == causeChain(error).map(_.getClass))
+                assert(causeChain(actual).last.getMessage == causeChain(error).last.getMessage)
+            }
+          }
+        }
+      }
+    }
+  }
+
+  Seq(false, true).foreach { pushdown =>
+    test(s"Parquet schema conversion with a row-group predicate, pushdown=$pushdown") {
+      withSQLConf(
+        SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
+        SQLConf.PARQUET_VECTORIZED_READER_ENABLED.key -> "true",
+        CometConf.COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED.key -> pushdown.toString) {
+        withTempPath { dir =>
+          val path = dir.getCanonicalPath
+          withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+            Seq(0).toDF("c").write.parquet(path)
+          }
+          def read(): DataFrame =
+            spark.read.schema("c BIGINT").parquet(path).where(s"c < ${Long.MaxValue}")
+          val df = read()
+          assert(collect(df.queryExecution.executedPlan) { case scan: CometNativeScanExec =>
+            scan
+          }.nonEmpty)
+          if (isSpark40Plus) {
+            checkAnswer(df, Seq(Row(0L)))
+          } else {
+            val expected = intercept[SparkException] {
+              withSQLConf(CometConf.COMET_ENABLED.key -> "false") { read().collect() }
+            }
+            val actual = intercept[SparkException](df.collect())
+            assert(causeChain(actual).map(_.getClass) == causeChain(expected).map(_.getClass))
+            assert(causeChain(actual).last.getMessage == causeChain(expected).last.getMessage)
+          }
+        }
+      }
+    }
+
   }
 
   test("native scan rejects incompatible decimal precision/scale") {

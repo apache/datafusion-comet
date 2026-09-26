@@ -505,6 +505,13 @@ fn throw_exception(env: &mut Env, error: &CometError, backtrace: Option<String>)
             );
             return;
         }
+        if let Some(json_message) = spark_error_json(error) {
+            let _ = env.throw_new(
+                jni::jni_str!("org/apache/comet/exceptions/CometQueryExecutionException"),
+                JNIString::new(json_message),
+            );
+            return;
+        }
         // ... then throw new exception
         // Note: in jni 0.22.x, throw/throw_new return Err(JavaException) on success
         // (to signal the pending exception to Rust callers via `?`). We discard the
@@ -597,6 +604,24 @@ fn typed_jvm_exception(error: &(dyn std::error::Error + 'static)) -> Option<Exce
             error.downcast_ref::<CometError>()
         {
             return Some(typed.to_exception());
+        }
+        cause = error.source();
+    }
+    None
+}
+
+/// Recover structured Spark errors through DataFusion, Arrow and Parquet wrappers.
+/// Inspect outer errors first so a SparkErrorWithContext retains its query context.
+/// In particular, DataFusion's Parquet row filter preserves predicate failures as
+/// Arrow ExternalError -> DataFusion Context -> the original error (DF #24638).
+fn spark_error_json(error: &(dyn std::error::Error + 'static)) -> Option<String> {
+    let mut cause = Some(error);
+    while let Some(error) = cause {
+        if let Some(error) = error.downcast_ref::<SparkErrorWithContext>() {
+            return Some(error.to_json());
+        }
+        if let Some(error) = error.downcast_ref::<SparkError>() {
+            return Some(error.to_json());
         }
         cause = error.source();
     }
@@ -915,6 +940,29 @@ mod tests {
     };
 
     use assertables::assert_starts_with;
+
+    #[test]
+    fn spark_error_survives_parquet_predicate_wrappers() {
+        let error = SparkError::ParquetSchemaConvert {
+            file_path: String::new(),
+            column: "[c]".to_string(),
+            physical_type: "INT32".to_string(),
+            spark_type: "bigint".to_string(),
+        };
+        let expected = error.to_json();
+        let predicate =
+            DataFusionError::External(Box::new(error)).context("Error evaluating filter predicate");
+        let arrow = arrow::error::ArrowError::ExternalError(Box::new(predicate));
+        let parquet = parquet::errors::ParquetError::External(Box::new(arrow));
+        let error = CometError::from(DataFusionError::ParquetError(Box::new(parquet)));
+        assert_eq!(spark_error_json(&error), Some(expected));
+    }
+
+    #[test]
+    fn spark_error_extraction_does_not_classify_message_text() {
+        let error = DataFusionError::Execution("ParquetSchemaConvert: INT32 -> bigint".into());
+        assert!(spark_error_json(&error).is_none());
+    }
 
     pub fn jvm() -> &'static Arc<JavaVM> {
         static mut JVM: Option<Arc<JavaVM>> = None;
