@@ -26,7 +26,7 @@ import scala.collection.mutable
 import org.apache.spark.sql.ExtendedExplainGenerator
 import org.apache.spark.sql.catalyst.expressions.{Attribute, BoundReference, Expression, Literal, ScalaUDF}
 import org.apache.spark.sql.catalyst.trees.{TreeNode, TreeNodeTag}
-import org.apache.spark.sql.comet.{CometColumnarToRowExec, CometNativeColumnarToRowExec, CometPlan, CometSparkToColumnarExec}
+import org.apache.spark.sql.comet.{CometColumnarToRowExec, CometEmptyRelationExec, CometNativeColumnarToRowExec, CometPlan, CometSparkToColumnarExec}
 import org.apache.spark.sql.execution.{ColumnarToRowExec, InputAdapter, ReusedSubqueryExec, RowToColumnarExec, SparkPlan, WholeStageCodegenExec}
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AQEShuffleReadExec, QueryStageExec}
 import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
@@ -42,16 +42,22 @@ class ExtendedExplainInfo extends ExtendedExplainGenerator {
   def generateExtendedInfo(plan: SparkPlan): String = {
     CometConf.COMET_EXTENDED_EXPLAIN_FORMAT.get() match {
       case CometConf.COMET_EXTENDED_EXPLAIN_FORMAT_VERBOSE =>
-        // Generates the extended info in a verbose manner, printing each node along with the
-        // extended information in a tree display.
-        val planStats = new CometCoverageStats()
-        val outString = new StringBuilder()
-        generateTreeString(getActualPlan(plan), 0, Seq(), 0, outString, planStats)
-        s"${outString.toString()}\n$planStats"
+        generateVerboseInfo(plan)
       case CometConf.COMET_EXTENDED_EXPLAIN_FORMAT_FALLBACK =>
         // Generates the extended info as a list of fallback reasons
         getFallbackReasons(plan).mkString("\n").trim
     }
+  }
+
+  /**
+   * The `verbose` format regardless of `spark.comet.explain.format`: each node along with its
+   * extended information in a tree display, followed by the coverage summary.
+   */
+  def generateVerboseInfo(plan: SparkPlan): String = {
+    val planStats = new CometCoverageStats()
+    val outString = new StringBuilder()
+    generateTreeString(getActualPlan(plan), 0, Seq(), 0, outString, planStats)
+    s"${outString.toString()}\n$planStats"
   }
 
   def getFallbackReasons(plan: SparkPlan): Seq[String] = {
@@ -99,6 +105,13 @@ class ExtendedExplainInfo extends ExtendedExplainGenerator {
     info.toSet
   }
 
+  private def executionInnerChildren(node: TreeNode[_]): Seq[TreeNode[_]] = node match {
+    // Spark's treeString displays the eliminated plan, but it does not execute and must not
+    // contribute Spark operators, fallback reasons, or expressions to Comet's reporting.
+    case _: CometEmptyRelationExec => Seq.empty
+    case _ => node.innerChildren
+  }
+
   // get all plan nodes, breadth first traversal, then returned the reversed list so
   // leaf nodes are first
   private def sortup(node: TreeNode[_]): mutable.Queue[TreeNode[_]] = {
@@ -107,8 +120,9 @@ class ExtendedExplainInfo extends ExtendedExplainGenerator {
     while (traversed.nonEmpty) {
       val s = traversed.dequeue()
       ordered += s
-      if (s.innerChildren.nonEmpty) {
-        s.innerChildren.foreach {
+      val innerChildrenLocal = executionInnerChildren(s)
+      if (innerChildrenLocal.nonEmpty) {
+        innerChildrenLocal.foreach {
           case c @ (_: TreeNode[_]) => traversed.enqueue(getActualPlan(c))
           case _ =>
         }
@@ -174,7 +188,7 @@ class ExtendedExplainInfo extends ExtendedExplainGenerator {
     outString.append(str)
     outString.append("\n")
 
-    val innerChildrenLocal = node.innerChildren
+    val innerChildrenLocal = executionInnerChildren(node)
     if (innerChildrenLocal.nonEmpty) {
       innerChildrenLocal.init.foreach {
         case c @ (_: TreeNode[_]) =>

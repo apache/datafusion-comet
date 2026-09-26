@@ -35,10 +35,30 @@ Here is an overview of the changes that the diffs make to Iceberg:
   native scan in every Comet-configured session. The flag is off by default for users, so Iceberg's own suites
   are the only place the split plan (`IcebergCommit -> IcebergWrite`) is exercised against Iceberg's write,
   commit, and row-level-operation tests. See [#5259]
+- Enable Comet's native (iceberg-rust) Parquet writer (`spark.comet.iceberg.write.enabled`) in the same sessions.
+  The native writer is experimental and off by default for users, so this is where it runs against Iceberg's
+  write, commit, and row-level-operation tests.
+- Enable `spark.comet.exec.localTableScan.enabled` in the same sessions. `CometIcebergNativeWrite` sets
+  `requiresNativeChildren`, so without this flag a write fed by an inline `VALUES` list keeps Spark's row-based
+  `LocalTableScanExec`, the conversion is declined, and the write silently runs on the JVM writer. Many Iceberg
+  suites seed their data that way, so leaving it off hides the native writer from most of the write surface.
+- Enable fallback logging (`spark.comet.explainFallback.enabled`) so that every operator Comet declines is
+  reported in the test output together with the reason it was declined.
 
 [#3739]: https://github.com/apache/datafusion-comet/pull/3739
 [#5259]: https://github.com/apache/datafusion-comet/issues/5259
 [apache/iceberg#15674]: https://github.com/apache/iceberg/pull/15674
+
+`dev/local-ci.sh` runs all of the steps below the way CI runs them:
+
+```shell
+dev/local-ci.sh iceberg              # every target the workflow runs
+dev/local-ci.sh iceberg shard-2      # one shard of the core test job
+dev/local-ci.sh iceberg 1.9 shard-2  # a non-default Iceberg version
+```
+
+See [Continuous Integration](ci.md#reproducing-a-suite-failure-locally). The manual steps below
+are still the reference, and are what you want when updating a diff.
 
 ## 1. Install Comet
 

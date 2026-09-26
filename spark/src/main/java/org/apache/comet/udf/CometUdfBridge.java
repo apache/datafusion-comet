@@ -243,20 +243,29 @@ public class CometUdfBridge {
     assert udf != null : "reflective instantiation returned null for " + udfClassName;
 
     BufferAllocator outputAllocator = state == null ? ROOT_ALLOCATOR : state.allocator();
+    // See CometArrowImportAllocator: inputs are imported against that allocator, so that tracing
+    // can report the import path's charges apart from the rest of Comet's Arrow memory.
+    BufferAllocator importAllocator = org.apache.comet.package$.MODULE$.CometArrowImportAllocator();
 
     ValueVector[] inputs = new ValueVector[inputArrayPtrs.length];
     ValueVector result = null;
+    // Whether the UDF handed back one of the vectors it was given. Such a result is closed by the
+    // input loop below, so the result branch there must leave it alone.
+    boolean resultIsInput = false;
     FieldVector transferred = null;
     try {
       for (int i = 0; i < inputArrayPtrs.length; i++) {
         ArrowArray inArr = ArrowArray.wrap(inputArrayPtrs[i]);
         ArrowSchema inSch = ArrowSchema.wrap(inputSchemaPtrs[i]);
-        // Imported native buffers are already owned/accounted by native execution. Keep them on
-        // the root allocator so the output listener does not charge them a second time.
-        inputs[i] = Data.importVector(ROOT_ALLOCATOR, inArr, inSch, null);
+        // Imported native buffers are already owned/accounted by native execution. The import
+        // allocator is a child of the root with no task listener, so the output listener does not
+        // charge them a second time.
+        inputs[i] = Data.importVector(importAllocator, inArr, inSch, null);
       }
 
       result = udf.evaluate(outputAllocator, inputs, numRows);
+      // Recorded before the checks below, so the invariant holds however this exits.
+      resultIsInput = isOneOf(result, inputs);
       if (!(result instanceof FieldVector)) {
         throw new RuntimeException(
             "CometUDF.evaluate() must return a FieldVector, got: " + result.getClass().getName());
@@ -270,7 +279,13 @@ public class CometUdfBridge {
       }
       ArrowArray outArr = ArrowArray.wrap(outArrayPtr);
       ArrowSchema outSch = ArrowSchema.wrap(outSchemaPtr);
-      if (state != null) {
+      if (resultIsInput) {
+        // Those buffers were imported, so the import allocator is the right place for them, and
+        // transferring would move a foreign charge onto the root. The check is reference
+        // identity, so a result that merely shares buffers with an input (a slice, say) still
+        // takes one of the transferring branches below; see CometArrowImportAllocator.
+        Data.exportVector(ROOT_ALLOCATOR, (FieldVector) result, null, outArr, outSch);
+      } else if (state != null) {
         // Accounting ownership follows the FFI boundary, mirroring the input import above: once
         // the result is handed to native execution, native operators that retain its buffers
         // (hash join builds, shuffle buffers) take their own Spark reservations, so keeping the
@@ -281,6 +296,18 @@ public class CometUdfBridge {
         // child names from its runtime data vectors, which Arrow hardcodes to "$data$", losing
         // names like "item" that native execution expects. The C array carries no names, so it
         // can come from the transferred vector whose buffers the root allocator now owns.
+        Data.exportField(ROOT_ALLOCATOR, resultField, null, outSch);
+        Data.exportVector(ROOT_ALLOCATOR, transferred, null, outArr);
+      } else if (result.getAllocator() != ROOT_ALLOCATOR) {
+        // Without a task the UDF was handed the root, but it may still allocate its result from
+        // the allocator it found on its inputs, which is the import allocator. Data.exportVector
+        // does not re-own the buffers, so the result would stay charged there for as long as the
+        // export holds it and be reported as imported memory. TransferPair moves ownership
+        // without copying the payload; the schema is exported from the original Field as above.
+        Field resultField = ((FieldVector) result).getField();
+        TransferPair transferPair = result.getTransferPair(resultField, ROOT_ALLOCATOR);
+        transferPair.transfer();
+        transferred = (FieldVector) transferPair.getTo();
         Data.exportField(ROOT_ALLOCATOR, resultField, null, outSch);
         Data.exportVector(ROOT_ALLOCATOR, transferred, null, outArr);
       } else {
@@ -296,7 +323,7 @@ public class CometUdfBridge {
           }
         }
       }
-      if (result != null) {
+      if (result != null && !resultIsInput) {
         try {
           result.close();
         } catch (RuntimeException ignored) {
@@ -311,6 +338,16 @@ public class CometUdfBridge {
         }
       }
     }
+  }
+
+  /** Whether the UDF handed back one of the vectors it was given, rather than a new one. */
+  private static boolean isOneOf(ValueVector result, ValueVector[] inputs) {
+    for (ValueVector input : inputs) {
+      if (result == input) {
+        return true;
+      }
+    }
+    return false;
   }
 
   /**
