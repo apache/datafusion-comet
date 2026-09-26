@@ -336,7 +336,7 @@ object CometConf extends ShimCometConf {
     conf("spark.comet.exec.sortMergeJoinWithJoinFilter.enabled")
       .category(CATEGORY_ENABLE_EXEC)
       .doc("Support for Sort Merge Join with filter. " +
-        "Deprecated: this config will be removed in a future release.")
+        "Deprecated: this config will be removed in a future major release.")
       .booleanConf
       .createWithDefault(true)
 
@@ -916,12 +916,12 @@ object CometConf extends ShimCometConf {
     conf("spark.comet.exec.memoryPool.fraction")
       .category(CATEGORY_TUNING)
       .doc(
-        "Deprecated: this config will be removed in a future release. It does not leave room " +
-          "in spark.memory.offHeap.size for native memory that Comet's memory pools do not " +
-          "track, because Spark hands out the whole off-heap pool whatever this is set to. Size " +
-          "spark.executor.memoryOverhead for that memory instead. Only applies to off-heap " +
-          "mode, where the fair_unified pool limits each memory consumer in a task to this " +
-          "fraction of the off-heap size divided by the task's consumers, and the " +
+        "Deprecated: this config will be removed in a future major release. It does not " +
+          "leave room in spark.memory.offHeap.size for native memory that Comet's memory " +
+          "pools do not track, because Spark hands out the whole off-heap pool whatever this " +
+          "is set to. Size spark.executor.memoryOverhead for that memory instead. Only applies " +
+          "to off-heap mode, where the fair_unified pool limits each memory consumer in a task " +
+          "to this fraction of the off-heap size divided by the task's consumers, and the " +
           s"greedy_unified pool ignores it. $TUNING_GUIDE.")
       .doubleConf
       .createWithDefault(1.0)
