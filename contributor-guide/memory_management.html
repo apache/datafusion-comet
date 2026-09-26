@@ -602,6 +602,12 @@ exceeded; the exit code does.</p>
 and no JVM metric measures them, yet they land squarely in container RSS. Comet therefore maintains
 its own budget that is meant to shadow the physical one, and declares it to Spark so that the two
 compete for a single number. The accuracy of that shadow is the central problem this page is about.</p>
+<p>The picture the <a class="reference internal" href="../user-guide/latest/tuning.html#memory-tuning"><span class="std std-ref">Tuning Guide</span></a> gives users is
+deliberately simple:</p>
+<p><img alt="Spark and Comet both use the JVM heap and share the off-heap memory pool, and the rest of Comet's native memory has to fit in the executor's memory overhead" src="../_images/comet-executor-memory.svg" /></p>
+<p>Most of this page is about the line between Comet’s share of the off-heap pool and its share of the
+memory overhead: which allocations are declared to the pool, and which land in the overhead with
+nothing tracking them.</p>
 </section>
 <section id="who-allocates-what">
 <h2>Who allocates what<a class="headerlink" href="#who-allocates-what" title="Link to this heading">#</a></h2>

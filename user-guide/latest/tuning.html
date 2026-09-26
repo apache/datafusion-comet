@@ -828,6 +828,7 @@ than before. See the <a class="reference internal" href="#determining-how-much-m
 <p>Comet needs two things configured: an off-heap pool for it to draw its reservations from, and enough executor memory
 overhead to cover the part of its footprint that no pool tracks. See <a class="reference internal" href="#configuring-comet-memory">Configuring Comet Memory</a> and
 <a class="reference internal" href="#configuring-executor-memory-overhead">Configuring Executor Memory Overhead</a>.</p>
+<p><img alt="Spark and Comet both use the JVM heap and share the off-heap memory pool, and the rest of Comet's native memory has to fit in the executor's memory overhead" src="../../_images/comet-executor-memory.svg" /></p>
 <section id="configuring-comet-memory">
 <h3>Configuring Comet Memory<a class="headerlink" href="#configuring-comet-memory" title="Link to this heading">#</a></h3>
 <p>Comet shares an off-heap memory pool with Spark. The size of the pool is
