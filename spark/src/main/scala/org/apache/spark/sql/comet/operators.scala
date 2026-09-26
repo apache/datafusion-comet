@@ -1941,11 +1941,6 @@ trait CometBaseAggregate {
     val resultExpressions = aggregate.resultExpressions
     val child = aggregate.child
 
-    if (groupingExpressions.isEmpty && aggregateExpressions.isEmpty) {
-      withFallbackReason(aggregate, "No group by or aggregation")
-      return None
-    }
-
     if (groupingExpressions.exists(expr =>
         SupportLevel.containsType(expr.dataType, classOf[MapType]))) {
       withFallbackReason(aggregate, "Grouping on map-containing types is not supported")
@@ -1990,6 +1985,13 @@ trait CometBaseAggregate {
     //              +- FileScan parquet spark_catalog.default.test[col1#6, col2#7] ......
     // If the aggregateExpressions is empty, we only want to build groupingExpressions,
     // and skip processing of aggregateExpressions.
+    //
+    // The groupingExpressions can be empty here too. Spark plans a global aggregate with neither
+    // keys nor functions whenever its output goes unused, e.g. `SELECT 1 FROM (SELECT count(*)
+    // FROM t)` or `df.agg(sum($"a")).count()`, where ColumnPruning strips it to
+    // `Aggregate(Nil, Nil, child)`. That operator emits one row with no columns regardless of
+    // input cardinality, including an empty input, and the native planner recognizes the
+    // keyless-and-functionless shape and plans it directly. See issue #6001.
     if (aggregateExpressions.isEmpty) {
       val hashAggBuilder = OperatorOuterClass.HashAggregate.newBuilder()
       hashAggBuilder.addAllGroupingExprs(groupingExprs.map(_.get).asJava)
