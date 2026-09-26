@@ -28,7 +28,7 @@ import org.apache.spark.sql.types._
 
 import org.apache.comet.codegen.CometBatchKernelCodegen.{ArrayColumnSpec, ArrowColumnSpec, MapColumnSpec, ScalarColumnSpec, StructColumnSpec}
 import org.apache.comet.shims.CometTypeShim
-import org.apache.comet.vector.CometPlainVector
+import org.apache.comet.vector.{CometPlainVector, CometStructVector}
 
 /**
  * Input-side emitters for the codegen kernel: typed field declarations, per-batch input casts,
@@ -69,6 +69,7 @@ private[codegen] object CometBatchKernelCodegenInput extends CometTypeShim {
     classOf[IntervalYearVector],
     classOf[IntervalMonthDayNanoVector])
   private val cometPlainVectorName: String = classOf[CometPlainVector].getName
+  private val cometStructVectorName: String = classOf[CometStructVector].getName
 
   /** Emit kernel typed-vector field declarations for every level of every input column. */
   def emitInputFieldDecls(inputSchema: Seq[ArrowColumnSpec]): String = {
@@ -109,11 +110,7 @@ private[codegen] object CometBatchKernelCodegenInput extends CometTypeShim {
       if (!spec.nullable) {
         s"      case $ord: return false;"
       } else {
-        // CometPlainVector exposes `isNullAt`; Arrow-typed fields expose `isNull`. Same semantics.
-        val method = spec.vectorClass match {
-          case cls if wrapsInCometPlainVector(cls) => "isNullAt"
-          case _ => "isNull"
-        }
+        val method = nullCheckMethod(spec)
         s"      case $ord: return this.col$ord.$method(this.rowIdx);"
       }
     }
@@ -146,7 +143,8 @@ private[codegen] object CometBatchKernelCodegenInput extends CometTypeShim {
         s"      case $ord: return this.col$ord.getLong(this.rowIdx);"
     }
     val intervalCases = withOrd.collect {
-      case (ArrowColumnSpec(cls, _), ord) if cls == classOf[IntervalMonthDayNanoVector] =>
+      case (ArrowColumnSpec(cls, _), ord)
+          if cls == classOf[IntervalMonthDayNanoVector] || cls == classOf[StructVector] =>
         s"      case $ord: return this.col$ord.getInterval(this.rowIdx);"
     }
     val floatCases = withOrd.collect {
@@ -425,6 +423,7 @@ private[codegen] object CometBatchKernelCodegenInput extends CometTypeShim {
    */
   def nullCheckMethod(spec: ArrowColumnSpec): String = spec match {
     case sc: ScalarColumnSpec if wrapsInCometPlainVector(sc.vectorClass) => "isNullAt"
+    case sc: ScalarColumnSpec if sc.vectorClass == classOf[StructVector] => "isNullAt"
     case _ => "isNull"
   }
 
@@ -436,9 +435,13 @@ private[codegen] object CometBatchKernelCodegenInput extends CometTypeShim {
       // Primitive scalars wrap in CometPlainVector for JIT-inlined Platform.get* against a
       // cached buffer address. Decimal/VarChar/VarBinary stay on the Arrow typed field with
       // cached data- (and offset-) buffer addresses for inline unsafe reads.
-      val fieldClass =
-        if (wrapsInCometPlainVector(sc.vectorClass)) cometPlainVectorName
-        else sc.vectorClass.getName
+      val fieldClass = if (wrapsInCometPlainVector(sc.vectorClass)) {
+        cometPlainVectorName
+      } else if (sc.vectorClass == classOf[StructVector]) {
+        cometStructVectorName
+      } else {
+        sc.vectorClass.getName
+      }
       out += s"private $fieldClass $path;"
       if (needsValueAddrField(sc.vectorClass)) {
         out += s"private long ${path}_valueAddr;"
@@ -471,6 +474,8 @@ private[codegen] object CometBatchKernelCodegenInput extends CometTypeShim {
     case sc: ScalarColumnSpec =>
       if (wrapsInCometPlainVector(sc.vectorClass)) {
         out += s"this.$path = new $cometPlainVectorName($source);"
+      } else if (sc.vectorClass == classOf[StructVector]) {
+        out += s"this.$path = new $cometStructVectorName($source, null);"
       } else {
         out += s"this.$path = (${sc.vectorClass.getName}) $source;"
       }
