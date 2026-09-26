@@ -90,6 +90,13 @@ class CometSparkSessionExtensions
     with Logging
     with ShimCometSparkSessionExtensions {
   override def apply(extensions: SparkSessionExtensions): Unit = {
+    // A session can be handed this extension more than once, for example through both
+    // spark.sql.extensions and SparkSession.Builder.withExtensions. Injecting twice would run
+    // every Comet rule twice per plan.
+    if (!CometSparkSessionExtensions.markConfigured(extensions)) {
+      logDebug("Comet extension already applied to these session extensions; skipping")
+      return
+    }
     extensions.injectColumnar { session => CometColumnar(session) }
     // Pre-3.5 only: tag AQE DPP regions so the conversion rules below leave them Spark-native.
     // Registered before CometRule so tags are in place when conversion runs.
@@ -116,6 +123,15 @@ class CometSparkSessionExtensions
 object CometSparkSessionExtensions extends Logging {
   lazy val isBigEndian: Boolean = ByteOrder.nativeOrder().equals(ByteOrder.BIG_ENDIAN)
   private val SHUFFLE_MANAGER_KEY = "spark.shuffle.manager"
+
+  /** Session extensions Comet has already been injected into. Weak so sessions can be GC'd. */
+  private val configuredExtensions =
+    java.util.Collections.synchronizedMap(
+      new java.util.WeakHashMap[SparkSessionExtensions, java.lang.Boolean]())
+
+  /** Records that Comet is being injected into `extensions`; false if it already was. */
+  private def markConfigured(extensions: SparkSessionExtensions): Boolean =
+    configuredExtensions.put(extensions, java.lang.Boolean.TRUE) == null
 
   /**
    * Checks whether Comet extension should be loaded for Spark.

@@ -49,29 +49,31 @@ Comet requires JDK 17 or later. JDK 11 is no longer supported as of the 1.1.0 re
 
 ```{warning}
 Spark 3.4 support is deprecated as of the 1.0.0 release and will be removed in a future release.
-Apache Spark's own SQL test suite is no longer run against Spark 3.4 on every change; it runs only
-on demand. We recommend moving to Spark 3.5 or later.
+Apache Spark's own SQL test suite no longer runs against Spark 3.4 automatically; it runs only on
+demand. We recommend moving to Spark 3.5 or later.
 ```
 
 | Spark Version | Java Version | Scala Version | Comet Tests in CI | Spark SQL Tests in CI |
 | ------------- | ------------ | ------------- | ----------------- | --------------------- |
-| 3.4.3         | 17           | 2.12/2.13     | Yes               | On demand             |
-| 3.5.9         | 17           | 2.12/2.13     | Yes               | Yes                   |
-| 4.0.4         | 17/21        | 2.13          | Yes               | Yes                   |
-| 4.1.3         | 17/21        | 2.13          | Yes               | Yes                   |
+| 3.4.3         | 17           | 2.12/2.13     | Nightly           | On demand             |
+| 3.5.9         | 17           | 2.12/2.13     | Nightly           | Nightly               |
+| 4.0.4         | 17/21        | 2.13          | Nightly           | Nightly               |
+| 4.1.3         | 17/21        | 2.13          | Before merge      | Before merge          |
 
 Note that we do not test the full matrix of supported Java and Scala versions in CI for every Spark version.
 
-"On demand" in the table above means the suite is not run automatically before a change is merged.
-A contributor can still run it against an individual pull request, but Spark 3.4 is no longer
-covered by default.
+"Before merge" in the table above means the suite must pass before a change is merged. "Nightly" means
+the suite runs once a day against the `main` branch, so a regression it finds is caught after the change
+has been merged rather than before. "On demand" means the suite does not run automatically at all. A
+contributor can still run it against an individual pull request, but Spark 3.4 is no longer covered by
+default.
 
 Experimental support is provided for the following versions of Apache Spark and is intended for development/testing
 use only and should not be used in production yet.
 
 | Spark Version | Java Version | Scala Version | Comet Tests in CI | Spark SQL Tests in CI |
 | ------------- | ------------ | ------------- | ----------------- | --------------------- |
-| 4.2.0         | 17           | 2.13          | Yes               | No                    |
+| 4.2.0         | 17           | 2.13          | Nightly           | No                    |
 
 Note that Comet may not fully work with proprietary forks of Apache Spark such as the Spark versions offered by
 Cloud Service Providers.
@@ -259,3 +261,20 @@ Some cluster managers may require additional configuration, see <https://spark.a
 
 In addition to Apache Spark memory configuration parameters, Comet introduces additional parameters to configure memory
 allocation for native execution. See [Comet Memory Tuning](./tuning.md) for details.
+
+### Kryo serialization
+
+If the application uses Kryo (`spark.serializer=org.apache.spark.serializer.KryoSerializer`) with
+`spark.kryo.registrationRequired=true`, also register Comet's classes with Kryo:
+
+```shell
+--conf spark.kryo.registrator=org.apache.comet.CometKryoRegistrator
+```
+
+Without it, any query that uses Comet's native broadcast exchange, which is enabled by default,
+fails with Kryo's "Class is not registered" error, for example on the first broadcast hash join.
+The [in-memory cache](in-memory-cache.md#kryo) needs the same registrator. Set it before the
+`SparkContext` is created: `KryoSerializer` reads it before Comet's plugin runs, so Comet cannot
+add it for you. `spark.kryo.registrator` accepts a comma-separated list, so an application with
+its own registrator can list both. Comet logs a warning at startup when Kryo requires registration
+and this registrator is missing.
