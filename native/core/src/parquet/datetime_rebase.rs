@@ -89,7 +89,7 @@ use parquet::file::metadata::{FileMetaData, KeyValue, ParquetMetaData};
 use parquet::schema::types::SchemaDescriptor;
 
 use super::name_fold::fold_names;
-use super::schema_adapter::parse_field_id;
+use super::parquet_support::field_id;
 
 /// Footer key naming the Spark release that wrote the file; absent for non-Spark writers.
 const SPARK_VERSION_METADATA_KEY: &str = "org.apache.spark.version";
@@ -530,13 +530,13 @@ fn push_unrequested_leaves(
             let (physical_folded, requested_folded) = folded.split_at(physical_fields.len());
             for (i, child) in physical_fields.iter().enumerate() {
                 let child_id = if matching.use_field_id {
-                    parse_field_id(child)
+                    field_id(child)
                 } else {
                     None
                 };
                 let mut selectors = requested_fields.iter().enumerate().filter(|(j, r)| {
                     requested_folded[*j] == physical_folded[i]
-                        || (child_id.is_some() && parse_field_id(r) == child_id)
+                        || (child_id.is_some() && field_id(r) == child_id)
                 });
                 match (selectors.next(), selectors.next()) {
                     (None, _) => {

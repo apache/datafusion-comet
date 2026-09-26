@@ -433,11 +433,24 @@ fn list_view_visibility<O: OffsetSizeTrait>(
 }
 
 /// Read the Parquet field id stored under arrow-rs's `PARQUET_FIELD_ID_META_KEY`.
-fn field_id(field: &arrow::datatypes::Field) -> Option<i32> {
+pub(crate) fn field_id(field: &arrow::datatypes::Field) -> Option<i32> {
     field
         .metadata()
         .get(PARQUET_FIELD_ID_META_KEY)
         .and_then(|v| v.parse::<i32>().ok())
+}
+
+/// Names of the fields carrying `id`, for the duplicate-id error message. Bracketed and
+/// comma-joined the way Spark's `matchIdField` renders the list, so the message reads
+/// `Found duplicate field(s) "1": [x, y] in id mapping mode` on both sides.
+pub(crate) fn field_names_with_id(fields: &[FieldRef], id: i32) -> String {
+    let names = fields
+        .iter()
+        .filter(|f| field_id(f) == Some(id))
+        .map(|f| f.name().as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("[{names}]")
 }
 
 /// Resolve each requested (`to`) struct field to the index of the file (`from`) field it reads
@@ -447,7 +460,8 @@ fn field_id(field: &arrow::datatypes::Field) -> Option<i32> {
 /// fallback); other fields match by name, folded with the same `toLowerCase(Locale.ROOT)` fold
 /// the top-level schema adapter uses when `case_sensitive` is false. A requested field whose
 /// folded name matches more than one file field is rejected. Case-insensitive matching retains
-/// Spark's `foundDuplicateFieldInCaseInsensitiveModeError`.
+/// Spark's `foundDuplicateFieldInCaseInsensitiveModeError`, and a requested ID that more than
+/// one file field carries raises Spark's `_LEGACY_ERROR_TEMP_2094` (`matchIdField`).
 ///
 /// Shared by the runtime convert (`parquet_convert_struct_to_struct`) and the plan-time
 /// conversion check in `schema_adapter`, so both resolve nested fields identically.
@@ -459,11 +473,12 @@ pub(crate) fn match_struct_fields(
     let should_match_by_id =
         parquet_options.use_field_id && to_fields.iter().any(|f| field_id(f).is_some());
 
-    let from_id_to_index: HashMap<i32, usize> = if should_match_by_id {
+    // `None` marks an id that more than one file field carries.
+    let from_id_to_index: HashMap<i32, Option<usize>> = if should_match_by_id {
         let mut map = HashMap::new();
         for (i, field) in from_fields.iter().enumerate() {
             if let Some(id) = field_id(field) {
-                map.entry(id).or_insert(i);
+                map.entry(id).and_modify(|m| *m = None).or_insert(Some(i));
             }
         }
         map
@@ -497,7 +512,14 @@ pub(crate) fn match_struct_fields(
             |(to_pos, to_field)| match (should_match_by_id, field_id(to_field)) {
                 // Spark treats a missing ID match as a missing column rather than
                 // falling back to name match.
-                (true, Some(id)) => Ok(from_id_to_index.get(&id).copied()),
+                (true, Some(id)) => match from_id_to_index.get(&id) {
+                    Some(None) => Err(SparkError::DuplicateFieldByFieldId {
+                        required_id: id,
+                        matched_fields: field_names_with_id(from_fields, id),
+                    }
+                    .into()),
+                    index => Ok(index.copied().flatten()),
+                },
                 _ => match folded_to_indices.get(to_folded[to_pos].as_str()) {
                     // Reject selected ambiguity before a decoder can multiply rows.
                     Some(indices) if indices.len() > 1 => {
@@ -831,6 +853,11 @@ type ObjectStoreCache = RwLock<HashMap<ObjectStoreCacheKey, Arc<dyn ObjectStore>
 /// Entries are cheap relative to the cost of creating a new object store (new HTTP
 /// connection pool + DNS resolution), and there is no meaningful benefit from eviction, so
 /// no eviction policy is applied.
+///
+/// A provider that implements `CometS3LocationScopedCredentialProvider` gets one entry per
+/// bucket as well: a `LocationScopedObjectStore` that holds an S3 store for each of the
+/// provider's locations that has been read, so it grows with the provider's location list, not
+/// with the number of paths read.
 ///
 /// ## Credential invalidation
 ///
@@ -2194,5 +2221,85 @@ mod tests {
             err.to_string().contains("Hdfs support is not enabled"),
             "unexpected error: {err}"
         );
+    }
+
+    /// Two file struct fields share field id 1 and the requested struct asks for that id:
+    /// Spark's `matchIdField` raises `foundDuplicateFieldInFieldIdLookupModeError`
+    /// (`_LEGACY_ERROR_TEMP_2094`) rather than silently reading the first match.
+    #[test]
+    fn requested_duplicate_field_id_errors() {
+        use crate::parquet::parquet_support::{parquet_convert_array, SparkParquetOptions};
+        use crate::parquet::schema_adapter::test::struct_type_with_field_id;
+        use arrow::array::{ArrayRef, Int32Array, StructArray};
+        use arrow::datatypes::DataType;
+        use datafusion_comet_spark_expr::EvalMode;
+        use std::sync::Arc;
+
+        let DataType::Struct(from_fields) =
+            struct_type_with_field_id(vec![("x", DataType::Int32, 1), ("y", DataType::Int32, 1)])
+        else {
+            unreachable!()
+        };
+        let from: ArrayRef = Arc::new(StructArray::new(
+            from_fields,
+            vec![
+                Arc::new(Int32Array::from(vec![42])),
+                Arc::new(Int32Array::from(vec![43])),
+            ],
+            None,
+        ));
+        let to_type = struct_type_with_field_id(vec![("f", DataType::Int32, 1)]);
+
+        let mut opts = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
+        opts.use_field_id = true;
+
+        let err = parquet_convert_array(from, &to_type, &opts).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("_LEGACY_ERROR_TEMP_2094") && msg.contains("id=1 matches [x, y]"),
+            "unexpected error: {msg}"
+        );
+    }
+
+    /// Companion to `requested_duplicate_field_id_errors`: a duplicated file id that no
+    /// requested field looks up stays harmless, as Spark only raises inside `matchIdField`.
+    #[test]
+    fn unrequested_duplicate_field_id_reads_fine() {
+        use crate::parquet::parquet_support::{parquet_convert_array, SparkParquetOptions};
+        use crate::parquet::schema_adapter::test::struct_type_with_field_id;
+        use arrow::array::{Array, ArrayRef, Int32Array, StructArray};
+        use arrow::datatypes::DataType;
+        use datafusion_comet_spark_expr::EvalMode;
+        use std::sync::Arc;
+
+        let DataType::Struct(from_fields) = struct_type_with_field_id(vec![
+            ("x", DataType::Int32, 1),
+            ("y", DataType::Int32, 1),
+            ("z", DataType::Int32, 2),
+        ]) else {
+            unreachable!()
+        };
+        let from: ArrayRef = Arc::new(StructArray::new(
+            from_fields,
+            vec![
+                Arc::new(Int32Array::from(vec![42])),
+                Arc::new(Int32Array::from(vec![43])),
+                Arc::new(Int32Array::from(vec![44])),
+            ],
+            None,
+        ));
+        let to_type = struct_type_with_field_id(vec![("f", DataType::Int32, 2)]);
+
+        let mut opts = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
+        opts.use_field_id = true;
+
+        let result = parquet_convert_array(from, &to_type, &opts).unwrap();
+        let result_struct = result.as_any().downcast_ref::<StructArray>().unwrap();
+        let col = result_struct
+            .column(0)
+            .as_any()
+            .downcast_ref::<Int32Array>()
+            .unwrap();
+        assert_eq!(col.value(0), 44);
     }
 }
