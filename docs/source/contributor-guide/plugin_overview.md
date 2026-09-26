@@ -52,7 +52,7 @@ and skips the remaining steps. Otherwise it:
   `spark.sql.queryExecutionListeners` when `spark.comet.metrics.enabled=true`.
 - Logs a warning for settings that are likely to cause problems, such as an unset `spark.executor.memoryOverhead`.
 
-The plugin does not change any executor memory setting. The [Tuning Guide](../user-guide/latest/tuning.md) covers how
+The plugin does not change any executor memory setting. The [Memory Tuning](../user-guide/latest/tuning/memory.md) guide covers how
 to size them.
 
 When the driver or an executor stops, the plugin shuts down Comet's native tokio runtime in that JVM.
