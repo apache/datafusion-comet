@@ -1080,16 +1080,13 @@ class CometParquetWriterSuite extends CometParquetWriterTestBase {
   }
 
   // ---------------------------------------------------------------------------------------------
-  // Spark 4.0+ only. These cover behavior that comes from leaving Spark's write framework in
-  // place, which is only possible where `V1WritesUtils.getWriteFilesOpt` matches the
-  // `WriteFilesExecBase` trait. See CometWriteFilesExec.
+  // Commit-protocol checks run on both writers. Tests requiring the surrounding Spark write
+  // command are gated to Spark 4.0+, where Comet replaces only WriteFilesExec.
   // ---------------------------------------------------------------------------------------------
 
   test("write creates a _SUCCESS marker") {
-    assume(isSpark40Plus, "Requires the WriteFilesExec seam")
     // https://github.com/apache/datafusion-comet/issues/2985 - the marker comes from
-    // HadoopMapReduceCommitProtocol.commitJob, which only runs because Comet leaves
-    // InsertIntoHadoopFsRelationCommand in the plan.
+    // HadoopMapReduceCommitProtocol.commitJob on both native writer paths.
     withTempPath { dir =>
       val outputPath = new File(dir, "output.parquet").getAbsolutePath
       withTempPath { srcDir =>
@@ -1109,7 +1106,6 @@ class CometParquetWriterSuite extends CometParquetWriterTestBase {
   }
 
   test("written file names follow Spark's naming convention") {
-    assume(isSpark40Plus, "Requires the WriteFilesExec seam")
     // The file name comes from FileCommitProtocol.newTaskTempFile and must be used verbatim:
     // part-<partition>-<uuid>-c<counter>.<codec>.parquet. Committers that track individual files
     // and tools that parse these names depend on it.
@@ -1254,12 +1250,12 @@ class CometParquetWriterSuite extends CometParquetWriterTestBase {
   }
 
   test("empty input still writes a schema-only file (SPARK-23271)") {
-    assume(isSpark40Plus, "Requires the WriteFilesExec seam")
     // An empty input must still leave a schema behind for downstream readers: `spark.read.parquet`
     // of the output must see the write's schema, not fail. Comet reaches this in two ways - if the
-    // native child has one partition producing no batches, the partition-0 branch of executeTask
-    // writes a metadata-only file; if it produces zero partitions, doExecuteWrite swaps in a dummy
-    // single-partition RDD to get to the same branch. This test exercises the first; the
+    // native child has one partition producing no batches, the partition-0 branch of the write
+    // task writes a metadata-only file; if it produces zero partitions, the writer swaps in a
+    // dummy single-partition RDD to get to the same branch. Both CometWriteFilesExec (Spark 4.0+)
+    // and CometNativeWriteExec (Spark 3.x) do this. This test exercises the first; the
     // zero-partition swap is reached by an AQE-collapsed empty relation and is covered by
     // CometEmptyRelationParquetWriterSuite.
     withTempPath { dir =>
@@ -1330,8 +1326,7 @@ class CometParquetWriterSuite extends CometParquetWriterTestBase {
   }
 
   test("an empty partition writes no file and still commits") {
-    assume(isSpark40Plus, "Requires the WriteFilesExec seam")
-    // executeTask's `sparkPartitionId != 0 && !batches.hasNext` branch must skip newTaskTempFile
+    // The write task's `partitionId != 0 && !batches.hasNext` branch must skip newTaskTempFile
     // altogether and still commit the task, matching FileFormatWriter's EmptyDirectoryDataWriter.
     // Hash-partitioning into eight and keeping a single id leaves at most one partition with
     // rows, so at most two files can appear: that one, plus partition 0's schema-only file when
@@ -1390,8 +1385,7 @@ class CometParquetWriterSuite extends CometParquetWriterTestBase {
   }
 
   test("a failing task aborts and cleans up its staging file") {
-    assume(isSpark40Plus, "Requires the WriteFilesExec seam")
-    // CometWriteFilesExec.executeTask must call committer.abortTask and rethrow. Injecting the
+    // Both native writers must call committer.abortTask and rethrow. Injecting the
     // failure through the commit protocol rather than the data lets the write get as far as
     // creating a staging file, so the cleanup is actually observable.
     //
