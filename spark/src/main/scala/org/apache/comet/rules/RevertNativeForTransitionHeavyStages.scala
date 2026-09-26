@@ -161,12 +161,18 @@ case class RevertNativeForTransitionHeavyStages(session: SparkSession, wholePlan
    * children are visited. Spark's `transformDown` does not do this; leaving the inner C2R in
    * place later calls `CometNativeColumnarToRowExec.withNewChildren` with a reverted row-based
    * child, which asserts `child.supportsColumnar`.
+   *
+   * A rewrite can itself be the stage boundary. Unwrapping a transition that sits directly on a
+   * shuffle yields that shuffle, and descending into it strips transitions in the next stage.
+   * `transformStageUp` and `insertTransitions` do not cross the exchange, so those transitions
+   * would not be restored (#6152). Return the boundary unchanged.
    */
   private def transformStageDown(plan: SparkPlan)(
       rule: PartialFunction[SparkPlan, SparkPlan]): SparkPlan = {
     val transformed = rule.applyOrElse(plan, identity[SparkPlan])
     if (transformed ne plan) {
-      transformStageDown(transformed)(rule)
+      if (isStageBoundary(transformed)) transformed
+      else transformStageDown(transformed)(rule)
     } else {
       val newChildren = transformed.children.map { child =>
         if (isStageBoundary(child)) child else transformStageDown(child)(rule)

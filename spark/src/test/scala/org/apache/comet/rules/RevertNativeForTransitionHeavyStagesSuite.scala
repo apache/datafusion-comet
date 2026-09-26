@@ -550,6 +550,44 @@ class RevertNativeForTransitionHeavyStagesSuite extends CometTestBase {
     }
   }
 
+  test("revertToSpark leaves transitions below a shuffle that a stripped transition sat on") {
+    withSQLConf("spark.sql.adaptive.enabled" -> "false") {
+      withParquetTable((0 until 100).map(i => (i, i % 10)), "tbl") {
+        val df = sql("SELECT _2, count(*) FROM tbl GROUP BY _2")
+        df.collect()
+        val cometPlan = stripAQEPlan(df.queryExecution.executedPlan)
+        val shuffle = cometPlan
+          .collectFirst { case s: CometShuffleExchangeExec => s }
+          .getOrElse(fail(s"test requires a native shuffle:\n$cometPlan"))
+        // The transition that must survive lives in the map stage, under the exchange.
+        val preserved =
+          if (shuffle.child.supportsColumnar) CometNativeColumnarToRowExec(shuffle.child)
+          else CometSparkToColumnarExec(shuffle.child)
+        val shuffleWithTransition = shuffle.withNewChildren(Seq(preserved))
+        // Stacked transitions sit directly on the shuffle, the shape #6152 strips through.
+        val onExchange =
+          CometSparkToColumnarExec(CometNativeColumnarToRowExec(shuffleWithTransition))
+        val write = cometIcebergWrite(onExchange)
+
+        val reverted = RevertNativeForTransitionHeavyStages(spark).revertToSpark(write)
+        val restoredWrite = reverted match {
+          case node: IcebergWriteExec => node
+          case other => fail(s"expected IcebergWriteExec, got:\n$other")
+        }
+        val restoredShuffle = restoredWrite.child match {
+          case ColumnarToRowExec(exchange: CometShuffleExchangeExec) => exchange
+          case exchange: CometShuffleExchangeExec => exchange
+          case other =>
+            fail(s"expected the shuffle under the restored write, got:\n$other")
+        }
+        assert(
+          restoredShuffle.child eq preserved,
+          "unwrapping the transition on the shuffle must not strip the stage below it:\n" +
+            reverted.treeString)
+      }
+    }
+  }
+
   test("non-AQE apply must not produce an invalid plan when the result stage reverts") {
     withSQLConf(
       CometConf.COMET_EXEC_TRANSITION_REVERT_ENABLED.key -> "true",

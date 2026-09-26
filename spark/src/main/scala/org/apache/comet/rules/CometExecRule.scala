@@ -441,23 +441,15 @@ case class CometExecRule(session: SparkSession)
       // DataWritingCommandExec and re-implement the write framework inside CometNativeWriteExec.
       // This path is retained only for 3.4/3.5 and goes away with them.
       //
-      // AQE reoptimization looks for `DataWritingCommandExec` or `WriteFilesExec`
-      // if there is none it would reinsert write nodes, and since Comet remap those nodes
-      // to Comet counterparties the write nodes are twice to the plan.
-      // Checking if AQE inserted another write Command on top of existing write command
-      case _ @DataWritingCommandExec(_, w: WriteFilesExec)
-          if !isSpark40Plus && w.child.isInstanceOf[CometNativeWriteExec] =>
-        w.child
-
+      // `originalPlan` is that command. This rule copies `originalPlan.logicalLink` onto the
+      // Comet node, so AQE re-plans the write with the command rather than with whatever child
+      // happened to sit under it. No second DataWritingCommandExec is inserted on top.
       case op: DataWritingCommandExec if !isSpark40Plus =>
         convertToComet(op, CometDataWritingCommand).getOrElse(op)
 
-      // AQE re-fires the Iceberg write planning on every stage materialisation, so a
-      // partitioned write's physical sub-tree may already contain a `CometIcebergWriteExec`.
-      // Unwrap to avoid a double conversion.
-      case op: IcebergWriteExec if op.child.isInstanceOf[CometIcebergWriteExec] =>
-        op.child
-
+      // `originalPlan` is this IcebergWriteExec, so AQE re-plans the write as this node.
+      // A shuffle directly under the native write stays in the child stage and is not wrapped
+      // again.
       case op: IcebergWriteExec if CometConf.COMET_ICEBERG_NATIVE_WRITE_ENABLED.get(op.conf) =>
         convertToComet(op, CometIcebergNativeWrite).getOrElse(op)
 
