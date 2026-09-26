@@ -40,7 +40,8 @@ object CometRule {
   def postColumnarRules(session: SparkSession, wholePlan: Boolean = false): Seq[Rule[SparkPlan]] =
     Seq(
       RevertNativeForTransitionHeavyStages(session, wholePlan),
-      EliminateRedundantTransitions(session))
+      EliminateRedundantTransitions(session),
+      CometCacheColumnarRule)
 
   /**
    * Canonical hashes of the subquery plans reported for the query this thread is preparing. Spark

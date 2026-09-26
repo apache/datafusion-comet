@@ -26,7 +26,7 @@ import scala.collection.JavaConverters._
 import org.apache.spark.TaskContext
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
-import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression, GenericInternalRow, IsNotNull, IsNull, StartsWith, UnsafeProjection}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression, GenericInternalRow, IsNotNull, IsNull, StartsWith}
 import org.apache.spark.sql.catalyst.util.TypeUtils
 import org.apache.spark.sql.columnar.{CachedBatch, SimpleMetricsCachedBatch, SimpleMetricsCachedBatchSerializer}
 import org.apache.spark.sql.comet.util.Utils
@@ -696,11 +696,7 @@ class ArrowCachedBatchSerializer extends SimpleMetricsCachedBatchSerializer {
 
     convertCachedBatchToColumnarBatch(input, cacheAttributes, selectedAttributes, conf)
       .mapPartitions { batches =>
-        val toUnsafe = UnsafeProjection.create(selectedAttributes, selectedAttributes)
-
-        batches.flatMap { batch =>
-          batch.rowIterator().asScala.map(row => toUnsafe(row).copy())
-        }
+        new CachedBatchRowIterator(selectedAttributes).createObject(batches)
       }
   }
 }
