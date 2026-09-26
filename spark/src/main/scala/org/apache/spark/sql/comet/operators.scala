@@ -30,8 +30,9 @@ import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.internal.Logging
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
-import org.apache.spark.sql.catalyst.expressions.{Ascending, Attribute, AttributeSeq, AttributeSet, Expression, ExpressionSet, Generator, NamedExpression, SortOrder}
-import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, AggregateMode, CollectList, CollectSet, Final, Mode, Partial, PartialMerge, Percentile}
+import org.apache.spark.sql.catalyst.expressions.{Ascending, Attribute, AttributeSeq, AttributeSet, CodegenObjectFactoryMode, Expression, ExpressionSet, Generator, LeafExpression, NamedExpression, SortOrder, XXH64}
+import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, AggregateMode, CollectList, CollectSet, Final, ImperativeAggregate, Mode, Partial, PartialMerge, Percentile, Sum}
+import org.apache.spark.sql.catalyst.expressions.codegen.CodegenFallback
 import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, BuildSide}
 import org.apache.spark.sql.catalyst.plans._
 import org.apache.spark.sql.catalyst.plans.physical._
@@ -44,8 +45,10 @@ import org.apache.spark.sql.execution.aggregate.{BaseAggregateExec, HashAggregat
 import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
 import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, BroadcastNestedLoopJoinExec, HashJoin, ShuffledHashJoinExec, SortMergeJoinExec}
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
-import org.apache.spark.sql.types.{ArrayType, BooleanType, ByteType, DataType, DateType, DecimalType, DoubleType, FloatType, IntegerType, LongType, MapType, ShortType, StringType, StructField, StructType, TimestampNTZType, TimestampType}
+import org.apache.spark.sql.internal.SQLConf
+import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, ByteType, DataType, DateType, DecimalType, DoubleType, FloatType, IntegerType, LongType, MapType, ShortType, StringType, StructField, StructType, TimestampNTZType, TimestampType}
 import org.apache.spark.sql.vectorized.ColumnarBatch
+import org.apache.spark.unsafe.Platform
 import org.apache.spark.util.SerializableConfiguration
 import org.apache.spark.util.io.ChunkedByteBuffer
 
@@ -53,7 +56,7 @@ import com.google.common.base.Objects
 import com.google.protobuf.CodedOutputStream
 
 import org.apache.comet.{CometConf, CometExecIterator, CometRuntimeException, ConfigEntry, ContribServices}
-import org.apache.comet.CometSparkSessionExtensions.{isCometShuffleEnabled, withFallbackReason}
+import org.apache.comet.CometSparkSessionExtensions.{isCometShuffleEnabled, isSpark35Plus, withFallbackReason}
 import org.apache.comet.parquet.CometParquetUtils
 import org.apache.comet.rules.CometExecRule
 import org.apache.comet.serde.{CometOperatorSerde, Compatible, OperatorOuterClass, QueryContextInterner, SupportLevel, Unsupported}
@@ -82,19 +85,134 @@ private[comet] trait PlanDataInjector {
   def getKey(op: Operator): Option[String]
 
   /**
-   * Inject common + partition data into the operator node.
+   * What [[prepareCommon]] produces and [[inject]] consumes. Naming it lets the compiler check
+   * that an injector's two halves agree instead of relying on a cast inside `inject`.
+   */
+  type Prepared <: AnyRef
+
+  /**
+   * Parse the partition-invariant common bytes into whatever form [[inject]] consumes.
+   * `injectPlanData` memoizes the result per plan entry or per shuffle, so a wide schema's common
+   * is prepared once per stage rather than once per task.
+   */
+  def prepareCommon(commonBytes: Array[Byte]): Prepared
+
+  /**
+   * Inject common + partition data into the operator node. `preparedCommon` is what
+   * [[prepareCommon]] returned for this scan's common bytes.
    *
    * Implementations must return the node with its child list unchanged -- `injectPlanData` walks
    * the returned node's children, and relies on child reference identity to decide which
    * operators need rebuilding.
    */
-  def inject(op: Operator, commonBytes: Array[Byte], partitionBytes: Array[Byte]): Operator
+  def inject(op: Operator, preparedCommon: Prepared, partitionBytes: Array[Byte]): Operator
 }
 
 /**
  * Registry and utilities for injecting per-partition planning data into operator trees.
  */
 private[comet] object PlanDataInjector extends Logging {
+  import java.util.{LinkedHashMap, Map => JMap}
+  import java.util.concurrent.ConcurrentHashMap
+
+  private[comet] final val maxCachedBasePlans = 16
+  private[comet] final val maxCachedShuffles = 16
+
+  /**
+   * Content key for the base plan cache. The hash is the driver-computed [[planFingerprint]]
+   * shipped with the plan bytes, so no task rescans the bytes to probe the cache; equality still
+   * compares the bytes so a fingerprint collision cannot serve another plan.
+   */
+  private[comet] final class PlanKey(val bytes: Array[Byte], val fingerprint: Long) {
+    override def hashCode: Int = (fingerprint ^ (fingerprint >>> 32)).toInt
+    override def equals(other: Any): Boolean = other match {
+      case that: PlanKey => java.util.Arrays.equals(bytes, that.bytes)
+      case _ => false
+    }
+  }
+
+  /**
+   * 64-bit content fingerprint of a serialized plan, computed once on the driver and carried by
+   * CometExecRDD so every task's cache probe reuses it. XXH64 is the same hash Spark uses for
+   * xxhash64 and runs at memory speed over the byte array.
+   */
+  def planFingerprint(planBytes: Array[Byte]): Long =
+    XXH64.hashUnsafeBytes(planBytes, Platform.BYTE_ARRAY_OFFSET, planBytes.length, 42L)
+
+  /**
+   * A prepared common message together with the exact finalized bytes it was prepared from.
+   * Retaining the bytes costs one extra copy per scan entry; it is what makes the staleness check
+   * in prepareShared possible.
+   */
+  private[comet] final class PreparedCommon(val bytes: Array[Byte], val message: AnyRef)
+
+  /**
+   * A cached parsed base plan plus the per-scan data prepared for it. Prepared commons live
+   * inside their plan's cache entry, so the plan is the single eviction unit: a plan with any
+   * number of scans keeps them all while it stays cached, and can never churn another plan's
+   * scans out of a shared LRU.
+   */
+  private[comet] final class CachedPlanData(val plan: Operator) {
+    // Keyed by preparedKey (injector class plus the scan's driver-computed source key). Entries
+    // pin the finalized common bytes they were prepared from: scalar-subquery data filters are
+    // appended after planning (see CometNativeScanExec.serializedPartitionData), so a
+    // byte-identical base plan can ship different finalized commons under the same key across
+    // executions.
+    private[comet] val preparedCommons = new ConcurrentHashMap[String, PreparedCommon]()
+  }
+
+  // Every task of a stage deserializes its own byte-identical copy of the base plan, so
+  // without a cache an executor re-parses the same operator tree once per task. Parsed
+  // Operators are immutable, so one instance is safely shared across concurrent tasks.
+  // Keyed by content (PlanKey hashes/compares the bytes) since the arrays are distinct.
+  //
+  // Entries are whole parsed plan trees, so the entry count is what bounds executor memory:
+  // at most 16 recent stages' plans stay live, LRU-evicted as stages turn over. A stage
+  // rerun that misses after eviction simply re-parses.
+  private val basePlanCache = java.util.Collections.synchronizedMap(
+    new LinkedHashMap[PlanKey, CachedPlanData](4, 0.75f, true) {
+      override def removeEldestEntry(eldest: JMap.Entry[PlanKey, CachedPlanData]): Boolean = {
+        size() > maxCachedBasePlans
+      }
+    })
+
+  /**
+   * Look up `key`, computing and inserting the value on a miss. The computation runs outside any
+   * lock so unrelated misses never serialize behind each other; when two threads race the same
+   * cold key, the first insert wins and the loser adopts it, so all tasks of a stage share one
+   * plan entry (and with it one set of prepared per-scan commons).
+   *
+   * `cache` must be a `Collections.synchronizedMap` view: the check-then-put below locks the map
+   * object, which is that wrapper's own mutex, so it is atomic against the wrapper's get and put
+   * and against the LinkedHashMap's access-order bookkeeping. A ConcurrentHashMap would compile
+   * here but its operations ignore that monitor.
+   */
+  private[comet] def cachedOrCompute[K, V](cache: JMap[K, V], key: K)(compute: => V): V = {
+    val cached = cache.get(key)
+    if (cached != null) {
+      cached
+    } else {
+      val computed = compute
+      cache.synchronized {
+        val winner = cache.get(key)
+        if (winner != null) {
+          winner
+        } else {
+          cache.put(key, computed)
+          computed
+        }
+      }
+    }
+  }
+
+  /**
+   * Parse a stage's base plan bytes, sharing the parsed tree and its prepared per-scan data
+   * across the executor's tasks. `fingerprint` is [[planFingerprint]] of `bytes`, computed on the
+   * driver. Falls back to a plain parse on eviction, so a stage rerun is always correct.
+   */
+  def parseBasePlan(bytes: Array[Byte], fingerprint: Long): CachedPlanData =
+    cachedOrCompute(basePlanCache, new PlanKey(bytes, fingerprint))(
+      new CachedPlanData(Operator.parseFrom(bytes)))
 
   // Registry of injectors for different operator types. The built-in injectors live in core.
   // Out-of-tree contribs (e.g. contrib-delta's `DeltaPlanDataInjector`) are discovered via the
@@ -126,8 +244,9 @@ private[comet] object PlanDataInjector extends Logging {
     injectors.groupBy(_.opStructCase)
 
   /**
-   * Injects planning data into an Operator tree by finding nodes that need injection and applying
-   * the appropriate injector.
+   * Injects planning data into a cached base plan by finding the scans that need it and applying
+   * the matching injector. Each scan's prepared common is memoized inside the plan's own cache
+   * entry, so it is prepared once per stage rather than once per task.
    *
    * Supports joins over multiple tables by matching each operator with its corresponding data
    * based on a key (e.g., metadata_location for Iceberg).
@@ -136,9 +255,80 @@ private[comet] object PlanDataInjector extends Logging {
    * reference rather than rebuilt; only the root-to-scan paths are rebuilt.
    */
   def injectPlanData(
+      cachedPlan: CachedPlanData,
+      commonByKey: Map[String, Array[Byte]],
+      partitionByKey: Map[String, Array[Byte]]): Operator =
+    injectPlanData(cachedPlan.plan, commonByKey, partitionByKey, cachedPlan.preparedCommons)
+
+  // The native shuffle writer's unified plan differs per task (output paths), so those plans
+  // never pass through parseBasePlan. Prepared commons for that path are scoped to the
+  // shuffleId instead: one shuffle stage's scans still share a single eviction unit.
+  private val shufflePreparedCommons = java.util.Collections.synchronizedMap(
+    new LinkedHashMap[Integer, ConcurrentHashMap[String, PreparedCommon]](4, 0.75f, true) {
+      override def removeEldestEntry(
+          eldest: JMap.Entry[Integer, ConcurrentHashMap[String, PreparedCommon]]): Boolean = {
+        size() > maxCachedShuffles
+      }
+    })
+
+  /**
+   * Injects planning data into the native shuffle writer's per-task plan, sharing each scan's
+   * prepared common across the shuffle's map tasks. A shuffleId never spans executions, so the
+   * finalized common bytes under a key cannot change within one entry's lifetime.
+   */
+  def injectPlanDataForShuffle(
+      shuffleId: Int,
       op: Operator,
       commonByKey: Map[String, Array[Byte]],
       partitionByKey: Map[String, Array[Byte]]): Operator = {
+    val prepared = cachedOrCompute(shufflePreparedCommons, Integer.valueOf(shuffleId))(
+      new ConcurrentHashMap[String, PreparedCommon]())
+    injectPlanData(op, commonByKey, partitionByKey, prepared)
+  }
+
+  // A shuffle's prepared data dies with the shuffle, and shuffle ids restart at zero for every
+  // SparkContext in the JVM, so a recreated context would otherwise keep stacking new scan keys
+  // under ids the last context already used. The shuffle managers call this from
+  // unregisterShuffle.
+  private[comet] def releasePreparedShuffle(shuffleId: Int): Unit =
+    shufflePreparedCommons.remove(Integer.valueOf(shuffleId))
+
+  // Both stores are JVM-wide statics that assume one active SparkContext per JVM, so the shuffle
+  // managers drop them together from stop, before the next context can fill them.
+  private[comet] def releaseAll(): Unit = {
+    shufflePreparedCommons.clear()
+    basePlanCache.clear()
+  }
+
+  /** Test-only view: each cached shuffle id with the memo keys prepared under it. */
+  private[comet] def preparedShuffleSnapshot: Map[Int, Set[String]] =
+    shufflePreparedCommons.synchronized {
+      shufflePreparedCommons.asScala.map { case (id, prepared) =>
+        id.intValue() -> prepared.keySet().asScala.toSet
+      }.toMap
+    }
+
+  /** Test-only view: each cached plan's fingerprint with the memo keys prepared under it. */
+  private[comet] def basePlanSnapshot: Map[Long, Set[String]] =
+    basePlanCache.synchronized {
+      basePlanCache.asScala.map { case (key, cached) =>
+        key.fingerprint -> cached.preparedCommons.keySet().asScala.toSet
+      }.toMap
+    }
+
+  /**
+   * Memo key for one injector's prepared common. Every contrib scan arrives as the same
+   * CONTRIB_SCAN envelope, so two injectors can agree on a scan key; the class prefix keeps their
+   * prepared objects apart. It assumes one classloader per injector class.
+   */
+  private[comet] def preparedKey(injector: PlanDataInjector, key: String): String =
+    s"${injector.getClass.getName}:$key"
+
+  private def injectPlanData(
+      op: Operator,
+      commonByKey: Map[String, Array[Byte]],
+      partitionByKey: Map[String, Array[Byte]],
+      preparedCommons: ConcurrentHashMap[String, PreparedCommon]): Operator = {
 
     // O(1) by op kind, then a canInject confirm (which may inspect detail fields like `hasCommon`
     // / `!hasFilePartition`). Most operators in any tree are non-scan and skip the lookup body.
@@ -149,7 +339,8 @@ private[comet] object PlanDataInjector extends Logging {
             case Some(key) =>
               (commonByKey.get(key), partitionByKey.get(key)) match {
                 case (Some(commonBytes), Some(partitionBytes)) =>
-                  injector.inject(op, commonBytes, partitionBytes)
+                  val prepared = prepareShared(injector, key, commonBytes, preparedCommons)
+                  injector.inject(op, prepared, partitionBytes)
                 case _ =>
                   throw new CometRuntimeException(s"Missing planning data for key: $key")
               }
@@ -167,7 +358,7 @@ private[comet] object PlanDataInjector extends Logging {
     var i = 0
     while (i < numChildren) {
       val child = children.get(i)
-      val injectedChild = injectPlanData(child, commonByKey, partitionByKey)
+      val injectedChild = injectPlanData(child, commonByKey, partitionByKey, preparedCommons)
       if (injectedChild ne child) {
         if (builder == null) {
           builder = injectedOp.toBuilder
@@ -177,6 +368,39 @@ private[comet] object PlanDataInjector extends Logging {
       i += 1
     }
     if (builder == null) injectedOp else builder.build()
+  }
+
+  /**
+   * Prepared-common lookup scoped to the caller's memo. The byte comparison guards against a
+   * finalized common that changed under the same key -- scalar-subquery data filters resolve per
+   * execution -- so a stale entry is replaced, never served. Two overlapping executions
+   * alternating different finalized bytes under one key just alternate the slot: correct, only
+   * losing reuse for the overlap. A miss prepares outside the map's lock, and tasks racing the
+   * same cold key all adopt whichever equal-bytes entry lands first, so a stage shares one
+   * prepared instance per scan on this path exactly as it shares one parsed plan.
+   */
+  private[comet] def prepareShared(
+      injector: PlanDataInjector,
+      key: String,
+      commonBytes: Array[Byte],
+      preparedCommons: ConcurrentHashMap[String, PreparedCommon]): injector.Prepared = {
+    val memoKey = preparedKey(injector, key)
+    val hit = preparedCommons.get(memoKey)
+    val winner =
+      if (hit != null && java.util.Arrays.equals(hit.bytes, commonBytes)) {
+        hit
+      } else {
+        val fresh = new PreparedCommon(commonBytes, injector.prepareCommon(commonBytes))
+        // merge is atomic per key: keep an equal-bytes entry that landed meanwhile and discard
+        // the fresh one, otherwise install fresh over the stale or absent slot.
+        preparedCommons.merge(
+          memoKey,
+          fresh,
+          (current: PreparedCommon, _: PreparedCommon) =>
+            if (java.util.Arrays.equals(current.bytes, commonBytes)) current else fresh)
+      }
+    // The memo key carries the injector class, so this slot only ever holds its own type.
+    winner.message.asInstanceOf[injector.Prepared]
   }
 
   def serializeOperator(op: Operator): Array[Byte] = {
@@ -213,6 +437,12 @@ private[comet] object PlanDataInjector extends Logging {
         // executeQuery, leaving DPP unresolved and forcing a sync-on-this await inside
         // the serializedPartitionData lazy val initializer (a known deadlock surface).
         iceberg.ensureSubqueriesResolved()
+        // Post the Iceberg planning metrics to the SQL UI here rather than only from the scan's
+        // doExecuteColumnar: when the scan is fused under a parent native operator, its own
+        // doExecuteColumnar never runs, so this walk is the only execution-time hook that reaches
+        // it. sendDriverMetrics guards on the execution id, so the standalone-scan path (which
+        // posts from doExecuteColumnar) and this fused path never double-post.
+        iceberg.sendDriverMetrics()
         if (iceberg.commonData.nonEmpty && iceberg.perPartitionData.nonEmpty) {
           // A self-join/self-merge can put two scans of the same table (same metadata_location)
           // in one native plan. Computing the key via IcebergPlanDataInjector.getKey, the same
@@ -238,6 +468,7 @@ private[comet] object PlanDataInjector extends Logging {
       // directly -- there is no silent "not a leaf" skip.
       case s: CometLeafExec with CometScanWithPlanData =>
         s.ensureSubqueriesResolved()
+        s.sendDriverMetrics()
         if (s.commonData.nonEmpty && s.perPartitionData.nonEmpty) {
           (Map(s.sourceKey -> s.commonData), Map(s.sourceKey -> s.perPartitionData))
         } else {
@@ -268,23 +499,8 @@ private[comet] object PlanDataInjector extends Logging {
  * Injector for Iceberg scan operators.
  */
 private[comet] object IcebergPlanDataInjector extends PlanDataInjector {
-  import java.nio.ByteBuffer
-  import java.util.{LinkedHashMap, Map => JMap}
 
-  private final val maxCacheEntries = 16
-
-  // Cache parsed IcebergScanCommon to avoid reparsing for Iceberg tables with large numbers of
-  // partitions (thousands or more) that may repeatedly parse the same commonBytes.
-  // IcebergPlanDataInjector is a singleton, so we use an LRU cache to eventually evict old
-  // IcebergScanCommon objects. 16 seems like a reasonable starting point since these objects
-  // are not large. Thread-safe LinkedHashMap with accessOrder=true provides LRU ordering.
-  private val commonCache = java.util.Collections.synchronizedMap(
-    new LinkedHashMap[ByteBuffer, OperatorOuterClass.IcebergScanCommon](4, 0.75f, true) {
-      override def removeEldestEntry(
-          eldest: JMap.Entry[ByteBuffer, OperatorOuterClass.IcebergScanCommon]): Boolean = {
-        size() > maxCacheEntries
-      }
-    })
+  override type Prepared = OperatorOuterClass.IcebergScanCommon
 
   override val opStructCase: Operator.OpStructCase = Operator.OpStructCase.ICEBERG_SCAN
 
@@ -298,21 +514,12 @@ private[comet] object IcebergPlanDataInjector extends PlanDataInjector {
     Some(s"${common.getMetadataLocation}_${common.getScanHashCode}")
   }
 
-  override def inject(
-      op: Operator,
-      commonBytes: Array[Byte],
-      partitionBytes: Array[Byte]): Operator = {
-    val scan = op.getIcebergScan
+  // Parsed once per stage or shuffle by injectPlanData's memo, never per partition.
+  override def prepareCommon(commonBytes: Array[Byte]): Prepared =
+    OperatorOuterClass.IcebergScanCommon.parseFrom(commonBytes)
 
-    // Cache the parsed common data to avoid deserializing on every partition
-    val cacheKey = ByteBuffer.wrap(commonBytes)
-    val common = commonCache.synchronized {
-      Option(commonCache.get(cacheKey)).getOrElse {
-        val parsed = OperatorOuterClass.IcebergScanCommon.parseFrom(commonBytes)
-        commonCache.put(cacheKey, parsed)
-        parsed
-      }
-    }
+  override def inject(op: Operator, common: Prepared, partitionBytes: Array[Byte]): Operator = {
+    val scan = op.getIcebergScan
 
     val tasksOnly = OperatorOuterClass.IcebergScan.parseFrom(partitionBytes)
 
@@ -329,6 +536,8 @@ private[comet] object IcebergPlanDataInjector extends PlanDataInjector {
  */
 private[comet] object NativeScanPlanDataInjector extends PlanDataInjector {
 
+  override type Prepared = OperatorOuterClass.NativeScanCommon
+
   override val opStructCase: Operator.OpStructCase = Operator.OpStructCase.NATIVE_SCAN
 
   override def canInject(op: Operator): Boolean =
@@ -336,20 +545,35 @@ private[comet] object NativeScanPlanDataInjector extends PlanDataInjector {
       op.getNativeScan.hasCommon &&
       !op.getNativeScan.hasFilePartition
 
-  override def getKey(op: Operator): Option[String] = Some(sourceKey(op.getNativeScan.getCommon))
+  override def getKey(op: Operator): Option[String] = {
+    val scan = op.getNativeScan
+    // The driver hashes the common once and ships the hash inside the plan
+    // (CometNativeScanExec.apply), so no per-task hashing happens here; deriving from the
+    // common is only a fallback for plans built without one.
+    Some(
+      if (scan.hasSourceKeyHash) sourceKey(scan.getCommon.getSource, scan.getSourceKeyHash)
+      else sourceKey(scan.getCommon))
+  }
 
   /**
-   * The key under which a native scan's planning data is stored and looked up. Called on the
-   * driver by `CometNativeScanExec.apply` to store, and on the executor by [[getKey]] to look up
-   * \- both must derive the identical string from the same scan, so this is the single definition
-   * rather than two mirrored copies.
-   *
-   * Data filters are stripped of their `QueryContext` before hashing: the executor reads them
-   * back out of the interned plan (see `QueryContextInterner`) while the driver holds the
-   * un-interned form, so including the context encoding would make the two sides disagree. Only
-   * data filters can carry a context, so the other components are hashed as-is.
+   * The key under which a native scan's planning data is stored and looked up: the scan's source
+   * plus [[sourceKeyHash]]. `CometNativeScanExec.apply` computes the hash once on the driver and
+   * embeds it in the NativeScan proto, so [[getKey]] rebuilds the identical string from the
+   * source already carried by the common.
    */
-  private[comet] def sourceKey(common: OperatorOuterClass.NativeScanCommon): String = {
+  private[comet] def sourceKey(common: OperatorOuterClass.NativeScanCommon): String =
+    sourceKey(common.getSource, sourceKeyHash(common))
+
+  private[comet] def sourceKey(source: String, hash: Int): String = s"${source}_$hash"
+
+  /**
+   * Hash of the parts of a common that distinguish two scans of the same source: schema, data
+   * filters, projection and fields. Data filters are stripped of their `QueryContext` before
+   * hashing so the hash is stable across interning (see `QueryContextInterner`): the
+   * executor-side fallback derivation sees the interned plan while the driver holds the
+   * un-interned form. Only data filters can carry a context, so the rest is hashed as-is.
+   */
+  private[comet] def sourceKeyHash(common: OperatorOuterClass.NativeScanCommon): Int = {
     val dataFilters = common.getDataFiltersList.asScala
       .map(QueryContextInterner.stripQueryContexts(_).toString)
     val keyComponents = Seq(
@@ -357,15 +581,15 @@ private[comet] object NativeScanPlanDataInjector extends PlanDataInjector {
       dataFilters.mkString("[", ", ", "]"),
       common.getProjectionVectorList.toString,
       common.getFieldsList.toString)
-    s"${common.getSource}_${keyComponents.mkString("|").hashCode}"
+    keyComponents.mkString("|").hashCode
   }
 
-  override def inject(
-      op: Operator,
-      commonBytes: Array[Byte],
-      partitionBytes: Array[Byte]): Operator = {
+  // Parsing wide-schema commons dominates inject(); injectPlanData memoizes the result in the
+  // base plan's cache entry so it runs once per stage on that path.
+  override def prepareCommon(commonBytes: Array[Byte]): Prepared =
+    OperatorOuterClass.NativeScanCommon.parseFrom(commonBytes)
 
-    val common = OperatorOuterClass.NativeScanCommon.parseFrom(commonBytes)
+  override def inject(op: Operator, common: Prepared, partitionBytes: Array[Byte]): Operator = {
     val partitionOnly = OperatorOuterClass.NativeScan.parseFrom(partitionBytes)
 
     // Build complete NativeScan with common fields + this partition's file list
@@ -618,6 +842,7 @@ abstract class CometNativeExec extends CometExec {
       ctx.commonByKey,
       ctx.perPartitionByKey,
       serializedPlan,
+      PlanDataInjector.planFingerprint(serializedPlan),
       ctx.numPartitions,
       output.length,
       nativeMetrics,
@@ -825,7 +1050,14 @@ abstract class CometNativeExec extends CometExec {
       commonByKey = commonByKey,
       perPartitionByKey = perPartitionByKey,
       shuffleScanIndices = shuffleScanIndices,
-      hasScanInput = sparkPlans.exists(_.isInstanceOf[CometNativeScanExec]))
+      // A leaf Comet scan (`CometNativeScanExec`, `CometIcebergNativeScanExec`) can
+      // contribute `bytes_scanned` / `output_rows` to Spark's task-level input metrics,
+      // which drive the Input column on the UI's Stages and Executors tabs.
+      // Matching on `CometLeafExec` rather than `CometNativeScanExec` keeps every scan
+      // reported once the scan is fused into a larger native block, where only the block
+      // root's `compute` runs. `reportScanInputMetrics` self-filters on the `bytes_scanned`
+      // metric, so leaves that don't track it are a no-op.
+      hasScanInput = sparkPlans.exists(_.isInstanceOf[CometLeafExec]))
   }
 
   /**
@@ -861,8 +1093,7 @@ abstract class CometNativeExec extends CometExec {
       case _: CometScanExec | _: CometBatchScanExec | _: QueryStageExec | _: AQEShuffleReadExec |
           _: CometShuffleExchangeExec | _: CometUnionExec | _: CometTakeOrderedAndProjectExec |
           _: CometCoalesceExec | _: ReusedExchangeExec | _: CometBroadcastExchangeExec |
-          _: CometSparkToColumnarExec | _: CometLocalTableScanExec |
-          _: CometInMemoryTableScanExec =>
+          _: CometNativeArrowSource | _: CometInMemoryTableScanExec =>
         func(plan)
       case _: CometPlan =>
         // Other Comet operators, continue to traverse the tree.
@@ -979,6 +1210,15 @@ abstract class CometLeafExec extends CometNativeExec with LeafExecNode {
     prepare()
     waitForSubqueries()
   }
+
+  /**
+   * Posts any driver-side SQL metrics this leaf scan computes (e.g. Iceberg planning metrics) to
+   * the SQL UI. Like [[ensureSubqueriesResolved]], it is called from
+   * [[PlanDataInjector.findAllPlanData]] at execution time, which is the only hook that reaches a
+   * leaf scan fused under a parent `CometNativeExec` (its own `doExecuteColumnar` never runs).
+   * Default is a no-op; leaf scans with driver-computed metrics override it.
+   */
+  def sendDriverMetrics(): Unit = {}
 }
 
 /**
@@ -1501,6 +1741,7 @@ object CometExplodeExec extends CometOperatorSerde[GenerateExec] {
       op.output,
       op.generator,
       op.generatorOutput,
+      op.outer,
       op.child,
       SerializedPlan(None))
   }
@@ -1512,6 +1753,7 @@ case class CometExplodeExec(
     override val output: Seq[Attribute],
     generator: Generator,
     generatorOutput: Seq[Attribute],
+    outer: Boolean,
     child: SparkPlan,
     override val serializedPlanOpt: SerializedPlan)
     extends CometUnaryExec {
@@ -1522,7 +1764,8 @@ case class CometExplodeExec(
   override protected def withNewChildInternal(newChild: SparkPlan): SparkPlan =
     this.copy(child = newChild)
 
-  override def stringArgs: Iterator[Any] = Iterator(generator, generatorOutput, output, child)
+  override def stringArgs: Iterator[Any] =
+    Iterator(generator, generatorOutput, outer, output, child)
 
   override def equals(obj: Any): Boolean = {
     obj match {
@@ -1530,6 +1773,7 @@ case class CometExplodeExec(
         this.output == other.output &&
         this.generator == other.generator &&
         this.generatorOutput == other.generatorOutput &&
+        this.outer == other.outer &&
         this.child == other.child &&
         this.serializedPlanOpt == other.serializedPlanOpt
       case _ =>
@@ -1537,7 +1781,8 @@ case class CometExplodeExec(
     }
   }
 
-  override def hashCode(): Int = Objects.hashCode(output, generator, generatorOutput, child)
+  override def hashCode(): Int =
+    Objects.hashCode(output, generator, generatorOutput, outer: java.lang.Boolean, child)
 
   override lazy val metrics: Map[String, SQLMetric] =
     CometMetricNode.baselineMetrics(sparkContext) ++
@@ -1627,6 +1872,20 @@ case class CometUnionExec(
 
 trait CometBaseAggregate {
 
+  /**
+   * Whether a decimal SUM's result precision is DecimalType.MAX_PRECISION, the only case with no
+   * headroom above the input where an intermediate overflow can change the answer.
+   */
+  protected def hasMaxPrecisionDecimalSum(op: BaseAggregateExec): Boolean =
+    op.aggregateExpressions.exists(_.aggregateFunction match {
+      case sum: Sum =>
+        sum.dataType match {
+          case decimal: DecimalType => decimal.precision == DecimalType.MAX_PRECISION
+          case _ => false
+        }
+      case _ => false
+    })
+
   def doConvert(
       aggregate: BaseAggregateExec,
       builder: Operator.Builder,
@@ -1657,7 +1916,7 @@ trait CometBaseAggregate {
 
     if (sparkFinalMode) {
       val incompatibleAggs =
-        QueryPlanSerde.aggsNotSupportingMixedExecution(aggregate.aggregateExpressions)
+        QueryPlanSerde.aggsNotSupportingSparkPartialToNativeFinal(aggregate.aggregateExpressions)
       if (incompatibleAggs.nonEmpty) {
         val names = incompatibleAggs.map(_.prettyName).distinct.sorted.mkString(", ")
         withFallbackReason(
@@ -1672,7 +1931,7 @@ trait CometBaseAggregate {
     if (sparkPartialMergeMode) {
       val hasUnsupportedAgg = aggregate.aggregateExpressions.exists { aggExpr =>
         aggExpr.mode == PartialMerge &&
-        !QueryPlanSerde.allAggsSupportMixedExecution(Seq(aggExpr)) &&
+        QueryPlanSerde.aggsNotSupportingSparkPartialToNativeFinal(Seq(aggExpr)).nonEmpty &&
         !aggExpr.aggregateFunction.isInstanceOf[CollectList] &&
         !aggExpr.aggregateFunction.isInstanceOf[CollectSet]
       }
@@ -1751,6 +2010,15 @@ trait CometBaseAggregate {
     if (aggregateExpressions.isEmpty) {
       val hashAggBuilder = OperatorOuterClass.HashAggregate.newBuilder()
       hashAggBuilder.addAllGroupingExprs(groupingExprs.map(_.get).asJava)
+      // Spark has no expression mode to serialize here. An empty aggregate with a required child
+      // distribution must fully deduplicate its keys (Final, or a pre-distinct PartialMerge), so
+      // use native Final to keep skip-partial disabled.
+      val mode = if (aggregate.requiredChildDistributionExpressions.isDefined) {
+        CometAggregateMode.Final
+      } else {
+        CometAggregateMode.Partial
+      }
+      hashAggBuilder.setModeValue(mode.getNumber)
       buildAggOp(
         builder,
         hashAggBuilder,
@@ -1987,6 +2255,26 @@ object CometHashAggregateExec
       op.aggregateExpressions.exists(_.mode == Final)) {
       return Unsupported(Some("Final aggregates disabled via test config"))
     }
+    // Without codegen Spark buffers an ungrouped aggregate in an UnsafeRow, which latches a
+    // decimal sum that leaves the precision, while the native accumulator keeps it unbounded.
+    // Spark turns codegen off by config, for an imperative aggregate, for a non-leaf
+    // CodegenFallback expression, or when the output or an input exceeds its field limit. The
+    // NO_CODEGEN factory mode turns whole-stage codegen off only from Spark 3.5 (SPARK-44236).
+    val codegenOff = !op.conf.wholeStageEnabled ||
+      (isSpark35Plus && op.conf
+        .getConfString(SQLConf.CODEGEN_FACTORY_MODE.key)
+        .equalsIgnoreCase(CodegenObjectFactoryMode.NO_CODEGEN.toString)) ||
+      op.aggregateExpressions.exists(_.aggregateFunction.isInstanceOf[ImperativeAggregate]) ||
+      WholeStageCodegenExec.isTooManyFields(op.conf, op.schema) ||
+      op.children.exists(child => WholeStageCodegenExec.isTooManyFields(op.conf, child.schema)) ||
+      op.expressions.exists(_.exists(e =>
+        e.isInstanceOf[CodegenFallback] && !e.isInstanceOf[LeafExpression]))
+    if (op.groupingExpressions.isEmpty && codegenOff && hasMaxPrecisionDecimalSum(op)) {
+      return Unsupported(
+        Some(
+          "Ungrouped decimal SUM at maximum precision without codegen cannot match Spark's " +
+            "latching UnsafeRow buffer"))
+    }
     Compatible()
   }
 
@@ -2030,6 +2318,31 @@ object CometObjectHashAggregateExec
       op.aggregateExpressions.exists(_.mode == Final)) {
       return Unsupported(Some("Final aggregates disabled via test config"))
     }
+    // When Comet shuffle is disabled we do not want to transform the ObjectHashAggregate to
+    // CometHashAggregate, because we would probably get partial Comet aggregation and final
+    // Spark aggregation. The reason text stays mode-neutral because `getSupportLevel` runs for
+    // every stage, so the Final node receives it too and must not be told it is the partial.
+    // Declining here rather than in `convert` is what lets CometExecRule
+    // record the reason centrally, so the fallback is explained rather than silent - see
+    // https://github.com/apache/datafusion-comet/issues/5500. The message deliberately does not
+    // name a config key: `isCometShuffleEnabled` is a conjunction of the shuffle config, the
+    // configured shuffle manager and the Celeborn compatibility check, so naming one of them
+    // would misdirect when another is the cause.
+    if (!isCometShuffleEnabled(op.conf)) {
+      return Unsupported(
+        Some(
+          "Comet shuffle is not enabled, so converting ObjectHashAggregate would split the " +
+            "aggregate across Comet and Spark"))
+    }
+    // Spark's object aggregation buffers the intermediate decimal sum unbounded, while Comet's
+    // grouped accumulator latches to null once a running sum leaves the precision, so the
+    // grouped case declines. Decimal AVG has the same gap and is tracked separately.
+    if (op.groupingExpressions.nonEmpty && hasMaxPrecisionDecimalSum(op)) {
+      return Unsupported(
+        Some(
+          "Grouped decimal SUM at maximum precision cannot match Spark's unbounded object " +
+            "aggregation buffer"))
+    }
     Compatible()
   }
 
@@ -2037,14 +2350,6 @@ object CometObjectHashAggregateExec
       aggregate: ObjectHashAggregateExec,
       builder: Operator.Builder,
       childOp: OperatorOuterClass.Operator*): Option[OperatorOuterClass.Operator] = {
-
-    if (!isCometShuffleEnabled(aggregate.conf)) {
-      // When Comet shuffle is disabled, we don't want to transform the HashAggregate
-      // to CometHashAggregate. Otherwise, we probably get partial Comet aggregation
-      // and final Spark aggregation.
-      return None
-    }
-
     doConvert(aggregate, builder, childOp: _*)
   }
 
@@ -2191,6 +2496,12 @@ case class CometHashAggregateExec(
 
 trait CometHashJoin {
 
+  // Only BroadcastHashJoinExec can be null-aware (NOT IN subqueries).
+  protected def isNullAware(join: HashJoin): Boolean = join match {
+    case bhj: BroadcastHashJoinExec => bhj.isNullAwareAntiJoin
+    case _ => false
+  }
+
   def doConvert(
       join: HashJoin,
       builder: Operator.Builder,
@@ -2205,11 +2516,7 @@ trait CometHashJoin {
       return None
     }
 
-    // Only BroadcastHashJoinExec can be null-aware (NOT IN subqueries).
-    val isNullAwareAntiJoin = join match {
-      case bhj: BroadcastHashJoinExec => bhj.isNullAwareAntiJoin
-      case _ => false
-    }
+    val isNullAwareAntiJoin = isNullAware(join)
 
     val joinKeys = join.leftKeys ++ join.rightKeys
     if (joinKeys.exists(key => isStringCollationType(key.dataType))) {
@@ -2453,6 +2760,7 @@ object CometBroadcastHashJoinExec extends CometOperatorSerde[HashJoin] with Come
       op.joinType,
       op.condition,
       op.buildSide,
+      isNullAware(op),
       op.left,
       op.right,
       SerializedPlan(None))
@@ -2525,6 +2833,7 @@ case class CometHashJoinExec(
         this.output == other.output &&
         this.leftKeys == other.leftKeys &&
         this.rightKeys == other.rightKeys &&
+        this.joinType == other.joinType &&
         this.condition == other.condition &&
         this.buildSide == other.buildSide &&
         this.left == other.left &&
@@ -2536,7 +2845,7 @@ case class CometHashJoinExec(
   }
 
   override def hashCode(): Int =
-    Objects.hashCode(output, leftKeys, rightKeys, condition, buildSide, left, right)
+    Objects.hashCode(output, leftKeys, rightKeys, joinType, condition, buildSide, left, right)
 
   override lazy val metrics: Map[String, SQLMetric] = {
     val joinMetrics = CometMetricNode.joinMetrics(sparkContext)
@@ -2558,6 +2867,7 @@ case class CometBroadcastHashJoinExec(
     joinType: JoinType,
     condition: Option[Expression],
     buildSide: BuildSide,
+    isNullAwareAntiJoin: Boolean,
     override val left: SparkPlan,
     override val right: SparkPlan,
     override val serializedPlanOpt: SerializedPlan)
@@ -2672,8 +2982,10 @@ case class CometBroadcastHashJoinExec(
         this.output == other.output &&
         this.leftKeys == other.leftKeys &&
         this.rightKeys == other.rightKeys &&
+        this.joinType == other.joinType &&
         this.condition == other.condition &&
         this.buildSide == other.buildSide &&
+        this.isNullAwareAntiJoin == other.isNullAwareAntiJoin &&
         this.left == other.left &&
         this.right == other.right &&
         this.serializedPlanOpt == other.serializedPlanOpt
@@ -2683,7 +2995,16 @@ case class CometBroadcastHashJoinExec(
   }
 
   override def hashCode(): Int =
-    Objects.hashCode(output, leftKeys, rightKeys, condition, buildSide, left, right)
+    Objects.hashCode(
+      output,
+      leftKeys,
+      rightKeys,
+      joinType,
+      condition,
+      buildSide,
+      isNullAwareAntiJoin: java.lang.Boolean,
+      left,
+      right)
 
   override lazy val metrics: Map[String, SQLMetric] = {
     val joinMetrics = CometMetricNode.joinMetrics(sparkContext)
@@ -2819,7 +3140,8 @@ object CometSortMergeJoinExec extends CometOperatorSerde[SortMergeJoinExec] {
   private def supportedSortMergeJoinEqualType(dataType: DataType): Boolean = dataType match {
     case st: StringType if isStringCollationType(st) => false
     case _: ByteType | _: ShortType | _: IntegerType | _: LongType | _: FloatType |
-        _: DoubleType | _: StringType | _: DateType | _: DecimalType | _: BooleanType =>
+        _: DoubleType | _: StringType | _: BinaryType | _: DateType | _: DecimalType |
+        _: BooleanType =>
       true
     case TimestampNTZType | _: TimestampType => true
     case _ => false
@@ -2864,6 +3186,7 @@ case class CometSortMergeJoinExec(
         this.output == other.output &&
         this.leftKeys == other.leftKeys &&
         this.rightKeys == other.rightKeys &&
+        this.joinType == other.joinType &&
         this.condition == other.condition &&
         this.left == other.left &&
         this.right == other.right &&
@@ -2874,7 +3197,7 @@ case class CometSortMergeJoinExec(
   }
 
   override def hashCode(): Int =
-    Objects.hashCode(output, leftKeys, rightKeys, condition, left, right)
+    Objects.hashCode(output, leftKeys, rightKeys, joinType, condition, left, right)
 
   override lazy val metrics: Map[String, SQLMetric] =
     CometMetricNode.sortMergeJoinMetrics(sparkContext)

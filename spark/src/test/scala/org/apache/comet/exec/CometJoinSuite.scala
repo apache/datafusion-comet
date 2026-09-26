@@ -25,14 +25,17 @@ import org.scalatest.Tag
 import org.apache.hadoop.fs.Path
 import org.apache.parquet.hadoop.ParquetFileReader
 import org.apache.parquet.hadoop.util.HadoopInputFile
-import org.apache.spark.sql.{CometTestBase, Row}
+import org.apache.spark.SparkException
+import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.catalyst.TableIdentifier
 import org.apache.spark.sql.catalyst.analysis.UnresolvedRelation
 import org.apache.spark.sql.catalyst.expressions.{And, AttributeReference, IsNotNull}
 import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight}
 import org.apache.spark.sql.comet.{CometBroadcastExchangeExec, CometBroadcastHashJoinExec, CometBroadcastNestedLoopJoinExec, CometFilterExec, CometHashJoinExec, CometNativeScanExec, CometSortMergeJoinExec, CometUnionExec}
-import org.apache.spark.sql.execution.SparkPlan
-import org.apache.spark.sql.execution.adaptive.AQEShuffleReadExec
+import org.apache.spark.sql.execution.{LocalTableScanExec, SparkPlan}
+import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AQEShuffleReadExec}
+import org.apache.spark.sql.execution.datasources.SchemaColumnConvertNotSupportedException
+import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{ArrayType, IntegerType, MetadataBuilder, StructField, StructType}
 
@@ -47,6 +50,97 @@ class CometJoinSuite extends CometTestBase {
     super.test(testName, testTags: _*) {
       withSQLConf(CometConf.COMET_SHUFFLE_ENABLED.key -> "true") {
         testFun
+      }
+    }
+  }
+
+  for ((hint, joinClass) <- Seq(
+      "SHUFFLE_HASH" -> classOf[CometHashJoinExec],
+      "MERGE" -> classOf[CometSortMergeJoinExec],
+      "BROADCAST" -> classOf[CometBroadcastHashJoinExec]);
+    adaptive <- Seq(false, true)) {
+    test(s"join identity preserves exchange reuse: $hint, AQE=$adaptive") {
+      withSQLConf(
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString,
+        SQLConf.EXCHANGE_REUSE_ENABLED.key -> "true",
+        SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+        SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+        SQLConf.SHUFFLE_PARTITIONS.key -> "2",
+        CometConf.COMET_EXEC_SORT_MERGE_JOIN_ENABLED.key -> "true",
+        CometConf.COMET_SHUFFLE_MODE.key -> "native") {
+        withParquetTable(Seq((0, 10), (1, 11), (2, 12)), "l") {
+          withParquetTable(Seq((0, 100), (1, 101)), "r") {
+            def branch(joinType: String): DataFrame =
+              sql(s"""SELECT /*+ $hint(r) */ l._1, l._2 FROM l
+                     |$joinType JOIN r ON l._1 = r._1
+                     |WHERE l._1 IS NOT NULL""".stripMargin)
+                .repartition(2, $"_2")
+
+            def nativeJoin(df: DataFrame): SparkPlan =
+              collectFirst(df.queryExecution.executedPlan) {
+                case join if joinClass.isInstance(join) => join
+              }.getOrElse(fail(s"Expected native $hint join"))
+
+            val semi = branch("LEFT SEMI")
+            val anti = branch("LEFT ANTI")
+            // The explicit null check defeats InferFiltersFromConstraints masking this bug.
+            // Shuffle on the payload: a join-key shuffle can be optimized away.
+            checkSparkAnswerAndOperator(semi.unionAll(anti), classOf[ReusedExchangeExec])
+            checkAnswer(semi.unionAll(anti), Seq(Row(0, 10), Row(1, 11), Row(2, 12)))
+            assert(!nativeJoin(semi).sameResult(nativeJoin(anti)))
+
+            val same = branch("LEFT SEMI")
+            assert(nativeJoin(semi).sameResult(nativeJoin(same)))
+            assert(nativeJoin(semi).semanticHash() == nativeJoin(same).semanticHash())
+            val (_, reusedPlan) =
+              checkSparkAnswerAndOperator(semi.unionAll(same), classOf[ReusedExchangeExec])
+            if (adaptive) {
+              assert(reusedPlan.isInstanceOf[AdaptiveSparkPlanExec])
+            }
+            assertExchangeReuseOver(reusedPlan, "Expected equivalent post-join exchange reuse") {
+              case join if joinClass.isInstance(join) => join
+            }
+          }
+        }
+      }
+    }
+  }
+
+  for (adaptive <- Seq(false, true)) {
+    test(s"null-aware anti join identity preserves exchange reuse: AQE=$adaptive") {
+      withSQLConf(
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString,
+        SQLConf.EXCHANGE_REUSE_ENABLED.key -> "true",
+        SQLConf.SHUFFLE_PARTITIONS.key -> "2",
+        CometConf.COMET_SHUFFLE_MODE.key -> "native") {
+        withParquetTable(Seq((Some(0), 10), (Some(1), 11), (None, 12)), "l") {
+          withParquetTable(Seq(Tuple1(0)), "r") {
+            def branch(predicate: String): DataFrame =
+              sql(s"SELECT l._1, l._2 FROM l WHERE $predicate").repartition(2, $"_2")
+            val anti = branch(
+              "NOT EXISTS (SELECT /*+ BROADCAST(r) */ 1 FROM r " +
+                "WHERE r._1 = l._1 AND r._1 IS NOT NULL)")
+            val nullAware = branch("l._1 NOT IN (SELECT r._1 FROM r WHERE r._1 IS NOT NULL)")
+            checkSparkAnswerAndOperator(anti.unionAll(nullAware), classOf[ReusedExchangeExec])
+            checkAnswer(anti.unionAll(nullAware), Seq(Row(1, 11), Row(1, 11), Row(null, 12)))
+            def nativeJoin(df: DataFrame): CometBroadcastHashJoinExec =
+              collectFirst(df.queryExecution.executedPlan) {
+                case join: CometBroadcastHashJoinExec => join
+              }.getOrElse(fail("Expected native broadcast hash join"))
+            assert(!nativeJoin(anti).sameResult(nativeJoin(nullAware)))
+            val same = branch("l._1 NOT IN (SELECT r._1 FROM r WHERE r._1 IS NOT NULL)")
+            assert(nativeJoin(nullAware).sameResult(nativeJoin(same)))
+            assert(nativeJoin(nullAware).semanticHash() == nativeJoin(same).semanticHash())
+            val (_, reusedPlan) =
+              checkSparkAnswerAndOperator(nullAware.unionAll(same), classOf[ReusedExchangeExec])
+            if (adaptive) {
+              assert(reusedPlan.isInstanceOf[AdaptiveSparkPlanExec])
+            }
+            assertExchangeReuseOver(reusedPlan, "Expected equivalent null-aware join reuse") {
+              case join: CometBroadcastHashJoinExec => join
+            }
+          }
+        }
       }
     }
   }
@@ -84,6 +178,48 @@ class CometJoinSuite extends CometTestBase {
         checkSparkAnswerAndOperator(
           sql("SELECT * FROM t1 JOIN t2 ON t1.time = t2.time"),
           Seq(classOf[CometSortMergeJoinExec]))
+      }
+    }
+  }
+
+  test("SortMergeJoin with floating-point key runs natively under strict floating point") {
+    // CometSortOrder is the admission gate for the sort orders this join synthesizes, so
+    // narrowing it for scalar floats (#5506) admits FP-keyed sort-merge joins under strict mode
+    // too. Comet does not normalize the join keys itself: it compares `join_on`, and correctness
+    // rests on Catalyst's NormalizeFloatingNumbers having already wrapped both sides. This test
+    // pins that, so a future change to that rule fails here rather than silently.
+    //
+    // The fixtures are local relations rather than Parquet tables because a Parquet round trip
+    // canonicalizes every NaN payload, which would collapse the two NaN cases into one.
+    val left = Seq(
+      (1, -0.0d),
+      (2, 0.0d),
+      (3, 1.0d),
+      (4, java.lang.Double.longBitsToDouble(0x7ff8000000000002L)),
+      (5, java.lang.Double.longBitsToDouble(0xfff8000000000002L)))
+    val right = Seq(
+      (10, 0.0d),
+      (20, -0.0d),
+      (30, 1.0d),
+      (40, java.lang.Double.longBitsToDouble(0xfff8000000000002L)),
+      (50, Double.NaN))
+
+    withSQLConf(
+      CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key -> "true",
+      CometConf.getExprAllowIncompatConfigKey("SortOrder") -> "false",
+      SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+      SQLConf.PREFER_SORTMERGEJOIN.key -> "true") {
+      withTempView("fp_left", "fp_right") {
+        left.toDF("lid", "k").createOrReplaceTempView("fp_left")
+        right.toDF("rid", "k").createOrReplaceTempView("fp_right")
+
+        // LocalTableScanExec has no native counterpart enabled by default and is only the source
+        // of the unmodified key bits here.
+        checkSparkAnswerAndOperator(
+          sql("SELECT l.lid, r.rid FROM fp_left l JOIN fp_right r ON l.k = r.k"),
+          Seq(classOf[CometSortMergeJoinExec]),
+          classOf[LocalTableScanExec])
       }
     }
   }
@@ -274,16 +410,16 @@ class CometJoinSuite extends CometTestBase {
                 assert(join.metrics("output_rows").value == 4L)
                 val probeRows = join.metrics("input_rows").value
                 if (enabled) {
-                  val evaluated = join.metrics("dynamic_filter_rows_evaluated").value
-                  val pruned = join.metrics("dynamic_filter_rows_pruned").value
-                  val bypassed = join.metrics("dynamic_filter_rows_bypassed").value
+                  val evaluated = join.metrics("dynamic_filter_join_rows_evaluated").value
+                  val pruned = join.metrics("dynamic_filter_join_rows_pruned").value
+                  val bypassed = join.metrics("dynamic_filter_join_rows_bypassed").value
                   assert(evaluated > 0L && pruned > 0L)
                   assert(probeRows + pruned == evaluated + bypassed)
                   assert(probeRows < unfilteredProbeRows)
                   assert(evaluated + bypassed <= unfilteredProbeRows)
-                  assert(join.metrics("dynamic_filter_eval_time").value > 0L)
+                  assert(join.metrics("dynamic_filter_join_eval_time").value > 0L)
                 } else {
-                  assert(!join.metrics.contains("dynamic_filter_rows_pruned"))
+                  assert(!join.metrics.contains("dynamic_filter_join_rows_pruned"))
                   unfilteredProbeRows = probeRows
                 }
               }
@@ -364,10 +500,8 @@ class CometJoinSuite extends CometTestBase {
                   val bytes = scanMetrics("bytes_scanned").value
                   assert(joins.head.metrics("output_rows").value == 1L)
                   if (enabled) {
-                    assert(
-                      joins.head.metrics("dynamic_filter_reader_filters_attached").value > 0L)
-                    assert(
-                      joins.head.metrics("dynamic_filter_reader_filters_skipped").value == 0L)
+                    assert(joins.head.metrics("dynamic_filter_join_filters_attached").value > 0L)
+                    assert(joins.head.metrics("dynamic_filter_join_filters_skipped").value == 0L)
                     assert(
                       probeFilters.head.metrics("output_rows").value > 0L,
                       "Execution-local reader attachment must preserve probe filter metrics")
@@ -379,6 +513,62 @@ class CometJoinSuite extends CometTestBase {
                   } else {
                     unfilteredBytes = bytes
                   }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  test("join dynamic filter preserves Parquet schema conversion errors") {
+    withTempPath { probePath =>
+      withSQLConf(
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+        SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+        SQLConf.LEAF_NODE_DEFAULT_PARALLELISM.key -> "1",
+        SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
+        SQLConf.PARQUET_VECTORIZED_READER_ENABLED.key -> "true") {
+        spark
+          .range(100, 104, 1, 1)
+          .selectExpr("CAST(id AS INT) AS probe_key", "id AS payload")
+          .write
+          .parquet(probePath.getCanonicalPath)
+        withTempView("dynamic_schema_probe") {
+          // INT64 -> INT32 is invalid even when the stored values fit. Keep the
+          // payload projected so discarding the nonmatching keys cannot hide it.
+          spark.read
+            .schema("probe_key INT, payload INT")
+            .parquet(probePath.getCanonicalPath)
+            .createOrReplaceTempView("dynamic_schema_probe")
+          withParquetTable(Seq(Tuple1(0)), "dynamic_schema_build") {
+            for ((comet, dynamicFilter) <- Seq((false, false), (true, false), (true, true))) {
+              withSQLConf(
+                CometConf.COMET_ENABLED.key -> comet.toString,
+                CometConf.COMET_EXEC_JOIN_DYNAMIC_FILTER_ENABLED.key -> dynamicFilter.toString) {
+                val df = sql(
+                  "SELECT /*+ BROADCAST(b) */ p.probe_key, p.payload " +
+                    "FROM dynamic_schema_probe p JOIN dynamic_schema_build b " +
+                    "ON p.probe_key = b._1")
+                val plan = df.queryExecution.executedPlan
+                if (comet) {
+                  val joins = collect(plan) { case join: CometBroadcastHashJoinExec => join }
+                  assert(joins.size == 1, s"Expected one native broadcast hash join:\n$plan")
+                  assert(joins.head.buildSide == BuildRight)
+                  assert(joins.head.nativeOp.getHashJoin.getDynamicFilterEnabled == dynamicFilter)
+                  val probes = collect(plan) {
+                    case scan: CometNativeScanExec if scan.output.exists(_.name == "payload") =>
+                      scan
+                  }
+                  assert(probes.size == 1, s"Expected one native probe scan:\n$plan")
+                }
+                withClue(s"comet=$comet, dynamicFilter=$dynamicFilter: ") {
+                  val error = intercept[SparkException](df.collect())
+                  val chain = causeChain(error)
+                  assert(
+                    chain.exists(_.isInstanceOf[SchemaColumnConvertNotSupportedException]),
+                    s"Expected a Parquet schema conversion error, found $chain")
                 }
               }
             }
@@ -453,10 +643,10 @@ class CometJoinSuite extends CometTestBase {
                 assert(probeScans.head.metrics("row_groups_pruned_statistics").value == 0L)
 
                 if (enabled) {
-                  assert(joins.head.metrics("dynamic_filter_reader_filters_attached").value == 0L)
-                  assert(joins.head.metrics("dynamic_filter_reader_filters_skipped").value == 1L)
-                  assert(joins.head.metrics("dynamic_filter_rows_evaluated").value == 1L)
-                  assert(joins.head.metrics("dynamic_filter_rows_pruned").value == 0L)
+                  assert(joins.head.metrics("dynamic_filter_join_filters_attached").value == 0L)
+                  assert(joins.head.metrics("dynamic_filter_join_filters_skipped").value == 1L)
+                  assert(joins.head.metrics("dynamic_filter_join_rows_evaluated").value == 1L)
+                  assert(joins.head.metrics("dynamic_filter_join_rows_pruned").value == 0L)
                 }
               }
             }
@@ -487,8 +677,8 @@ class CometJoinSuite extends CometTestBase {
             val joins = nativeHashJoins(plan)
             assert(joins.size == 1, s"Expected native hash join:\n$plan")
             if (build.size == 100) {
-              assert(joins.head.metrics("dynamic_filter_rows_evaluated").value > 0L)
-              assert(joins.head.metrics("dynamic_filter_rows_pruned").value == 0L)
+              assert(joins.head.metrics("dynamic_filter_join_rows_evaluated").value > 0L)
+              assert(joins.head.metrics("dynamic_filter_join_rows_pruned").value == 0L)
             }
           }
         }
@@ -520,8 +710,8 @@ class CometJoinSuite extends CometTestBase {
             val (_, plan) = checkSparkAnswerAndOperator(sql(query))
             val native = nativeHashJoins(plan)
             assert(native.size == 1, s"Expected native hash join:\n$plan")
-            assert(native.head.metrics("dynamic_filter_rows_evaluated").value == 0L)
-            assert(native.head.metrics("dynamic_filter_rows_pruned").value == 0L)
+            assert(native.head.metrics("dynamic_filter_join_rows_evaluated").value == 0L)
+            assert(native.head.metrics("dynamic_filter_join_rows_pruned").value == 0L)
           }
           // NOT IN must still observe build-side NULLs; never attach a filter here.
           withSQLConf(
@@ -533,7 +723,7 @@ class CometJoinSuite extends CometTestBase {
             val native = collect(plan) { case join: CometBroadcastHashJoinExec => join }
             assert(native.size == 1, s"Expected native null-aware anti join:\n$plan")
             assert(native.head.nativeOp.getHashJoin.getNullAwareAntiJoin)
-            assert(native.head.metrics("dynamic_filter_rows_evaluated").value == 0L)
+            assert(native.head.metrics("dynamic_filter_join_rows_evaluated").value == 0L)
           }
         }
       }
@@ -558,14 +748,14 @@ class CometJoinSuite extends CometTestBase {
           assert(join.buildSide == BuildRight)
           assert(join.nativeOp.getHashJoin.getDynamicFilterEnabled)
           assert(join.metrics("output_rows").value == 65536L)
-          assert(join.metrics("dynamic_filter_rows_evaluated").value > 0L)
-          assert(join.metrics("dynamic_filter_reader_filters_attached").value > 0L)
+          assert(join.metrics("dynamic_filter_join_rows_evaluated").value > 0L)
+          assert(join.metrics("dynamic_filter_join_filters_attached").value > 0L)
           val probeScans = collect(plan) {
             case scan: CometNativeScanExec if scan.output.size == 1 => scan
           }
           assert(probeScans.size == 1, s"Expected one native byte probe scan:\n$plan")
           val probeRows = probeScans.head.metrics("output_rows").value
-          val residualPruned = join.metrics("dynamic_filter_rows_pruned").value
+          val residualPruned = join.metrics("dynamic_filter_join_rows_pruned").value
           assert(
             probeRows < 2L || residualPruned > 0L,
             "Expected the reader or residual filter to prune probe key 2, " +

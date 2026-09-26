@@ -33,6 +33,36 @@ import org.apache.spark.sql.functions.{col, sum}
 import org.apache.comet.CometConf
 import org.apache.comet.hadoop.fs.FakeHDFSFileSystem
 
+/**
+ * End-to-end coverage of a native Parquet scan routed through libhdfs, using a fake Hadoop
+ * FileSystem instead of a live namenode.
+ *
+ * '''This suite is excluded from CI and must be run manually''' (it is in the ignore list in
+ * `dev/ci/check-suites.py`, so it is not listed in either `pr_build_*.yml` workflow):
+ *
+ * {{{
+ * ./mvnw test -Dtest=none \
+ *   -Dsuites="org.apache.comet.parquet.ParquetReadFromFakeHadoopFsSuite"
+ * }}}
+ *
+ * It is the only suite that actually loads libhdfs, and libhdfs registers a pthread thread-local
+ * destructor (`hdfsThreadDestructor`) that detaches the current thread from the JVM regardless of
+ * who attached it. Comet attaches its own Tokio workers, so once one of them has touched libhdfs
+ * the destructor dereferences a `JNIEnv` that Comet has already freed and the JVM dies with
+ * `SIGSEGV at pc=0x0`. That is [[https://issues.apache.org/jira/browse/HDFS-16021 HDFS-16021]],
+ * still open upstream. The crash lands on whichever suite happens to be running when the worker
+ * exits -- usually minutes later, in a different suite -- so it reads as a random `[scans]` flake
+ * rather than an HDFS failure. See
+ * [[https://github.com/apache/datafusion-comet/issues/5023 #5023]].
+ *
+ * Comet's HDFS support is experimental (see the
+ * [[https://datafusion.apache.org/comet/user-guide/latest/datasources.html#hdfs data sources guide]]),
+ * and working around the upstream bug would mean carrying a patched copy of libhdfs in this repo,
+ * so we run this suite by hand instead of paying for the flake on every pull request. The
+ * planner-side half of the coverage -- that a `hdfs://` scan is still claimed natively rather
+ * than silently falling back -- does run in CI, in `CometScanSchemeFallbackSuite`, because it
+ * never executes the scan and so never loads libhdfs.
+ */
 class ParquetReadFromFakeHadoopFsSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   private var fake_root_dir: File = _

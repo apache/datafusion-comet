@@ -43,7 +43,7 @@ under the License.
   <properties>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
-    <java.version>11</java.version>
+    <java.version>17</java.version>
     <!--
       Default Delta dep version (only consumed when `-Pcontrib-delta` is also
       active). Spark profiles override this: spark-3.5 -> 3.3.2, spark-4.1 ->
@@ -89,7 +89,6 @@ under the License.
     <arrow.version>18.3.0</arrow.version>
     <codehaus.jackson.version>1.9.13</codehaus.jackson.version>
     <spotless.version>2.43.0</spotless.version>
-    <jacoco.version>0.8.11</jacoco.version>
     <semanticdb.version>4.13.6</semanticdb.version>
     <slf4j.version>2.0.17</slf4j.version>
     <guava.version>33.2.1-jre</guava.version>
@@ -226,6 +225,32 @@ under the License.
         <groupId>org.apache.arrow</groupId>
         <artifactId>arrow-c-data</artifactId>
         <version>${arrow.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.apache.arrow</groupId>
+        <artifactId>arrow-compression</artifactId>
+        <version>${arrow.version}</version>
+        <!-- Arrow's per-buffer IPC compression codecs. Their backing libraries ship with Spark,
+             so take them from there rather than bundling a second copy: commons-compress (LZ4
+             frame) and zstd-jni are both on every Spark version Comet supports. -->
+        <exclusions>
+          <exclusion>
+            <groupId>org.apache.commons</groupId>
+            <artifactId>commons-compress</artifactId>
+          </exclusion>
+          <exclusion>
+            <groupId>com.github.luben</groupId>
+            <artifactId>zstd-jni</artifactId>
+          </exclusion>
+          <exclusion>
+            <groupId>io.netty</groupId>
+            <artifactId>netty-common</artifactId>
+          </exclusion>
+          <exclusion>
+            <groupId>com.google.code.findbugs</groupId>
+            <artifactId>jsr305</artifactId>
+          </exclusion>
+        </exclusions>
       </dependency>
 
       <!-- Parquet dependencies -->
@@ -674,7 +699,7 @@ under the License.
         <shims.majorVerSrc>spark-3.x</shims.majorVerSrc>
         <shims.minorVerSrc>spark-3.4</shims.minorVerSrc>
         <shims.minorPlusVerSrc>spark-none</shims.minorPlusVerSrc>
-        <java.version>11</java.version>
+        <java.version>17</java.version>
         <maven.compiler.source>${java.version}</maven.compiler.source>
         <maven.compiler.target>${java.version}</maven.compiler.target>
       </properties>
@@ -693,7 +718,7 @@ under the License.
         <shims.majorVerSrc>spark-3.x</shims.majorVerSrc>
         <shims.minorVerSrc>spark-3.5</shims.minorVerSrc>
         <shims.minorPlusVerSrc>spark-none</shims.minorPlusVerSrc>
-        <java.version>11</java.version>
+        <java.version>17</java.version>
         <maven.compiler.source>${java.version}</maven.compiler.source>
         <maven.compiler.target>${java.version}</maven.compiler.target>
       </properties>
@@ -777,34 +802,6 @@ under the License.
         <scala.version>2.13.16</scala.version>
         <scala.binary.version>2.13</scala.binary.version>
         <semanticdb.version>4.13.6</semanticdb.version>
-      </properties>
-    </profile>
-
-    <profile>
-      <id>jdk11</id>
-      <activation>
-        <jdk>11</jdk>
-      </activation>
-      <properties>
-        <java.version>11</java.version>
-        <maven.compiler.source>${java.version}</maven.compiler.source>
-        <maven.compiler.target>${java.version}</maven.compiler.target>
-      </properties>
-    </profile>
-
-    <profile>
-      <id>jdk17</id>
-      <activation>
-        <!-- A range, not an exact match. `<jdk>17</jdk>` is a prefix match, so it
-             activates for 17.x but not for 21 or later, leaving java.version at the
-             default of 11 and compiling the Spark 4.x sources against the Java 11 API
-             ("Class java.lang.Record not found"). -->
-        <jdk>[17,)</jdk>
-      </activation>
-      <properties>
-        <java.version>17</java.version>
-        <maven.compiler.source>${java.version}</maven.compiler.source>
-        <maven.compiler.target>${java.version}</maven.compiler.target>
       </properties>
     </profile>
 
@@ -1070,11 +1067,6 @@ under the License.
           <version>${flatten-maven-plugin.version}</version>
         </plugin>
         <plugin>
-          <groupId>org.jacoco</groupId>
-          <artifactId>jacoco-maven-plugin</artifactId>
-          <version>${jacoco.version}</version>
-        </plugin>
-        <plugin>
           <groupId>org.codehaus.mojo</groupId>
           <artifactId>build-helper-maven-plugin</artifactId>
           <version>${build-helper-maven-plugin.version}</version>
@@ -1184,6 +1176,8 @@ under the License.
             <exclude>tpcds-sf-1/**</exclude>
             <exclude>tpch/**</exclude>
             <exclude>docs/*.txt</exclude>
+            <!-- JSON has no comment syntax, so no license header can go in it. -->
+            <exclude>docs/puppeteer-config.json</exclude>
             <exclude>docs/logos/*.png</exclude>
             <exclude>docs/logos/*.svg</exclude>
             <exclude>docs/source/_static/images/**</exclude>
@@ -1210,6 +1204,20 @@ under the License.
         <artifactId>maven-enforcer-plugin</artifactId>
         <version>${maven-enforcer-plugin.version}</version>
         <executions>
+          <execution>
+            <id>require-java-17</id>
+            <goals>
+              <goal>enforce</goal>
+            </goals>
+            <configuration>
+              <rules>
+                <requireJavaVersion>
+                  <version>[17,)</version>
+                  <message>Comet requires JDK 17 or later to build.</message>
+                </requireJavaVersion>
+              </rules>
+            </configuration>
+          </execution>
           <execution>
             <id>no-duplicate-declared-dependencies</id>
             <goals>
@@ -1312,25 +1320,6 @@ under the License.
             <phase>clean</phase>
             <goals>
               <goal>clean</goal>
-            </goals>
-          </execution>
-        </executions>
-      </plugin>
-      <plugin>
-        <groupId>org.jacoco</groupId>
-        <artifactId>jacoco-maven-plugin</artifactId>
-        <executions>
-          <execution>
-            <id>default-prepare-agent</id>
-            <goals>
-              <goal>prepare-agent</goal>
-            </goals>
-          </execution>
-          <execution>
-            <id>report</id>
-            <phase>test</phase>
-            <goals>
-              <goal>report</goal>
             </goals>
           </execution>
         </executions>
