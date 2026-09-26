@@ -24,7 +24,7 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
 import org.apache.comet.DataTypeSupport.isComplexType
-import org.apache.comet.serde.QueryPlanSerde.{createBinaryExpr, exprToProtoInternal, hasNonDefaultStringCollation, scalarFunctionExprToProto}
+import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, hasNonDefaultStringCollation, scalarFunctionExprToProto}
 import org.apache.comet.shims.CometTypeShim
 
 /**
@@ -177,14 +177,23 @@ object CometMapFromArrays extends CometExpressionSerde[MapFromArrays] {
     val valueType = expr.right.dataType.asInstanceOf[ArrayType].elementType
     val returnType = MapType(keyType = keyType, valueType = valueType)
     for {
-      andBinaryExprProto <- createAndBinaryExpr(expr, inputs, binding)
+      keysNotNullExprProto <- exprToProtoInternal(IsNotNull(expr.left), inputs, binding)
+      valuesNotNullExprProto <- exprToProtoInternal(IsNotNull(expr.right), inputs, binding)
       mapFromArraysExprProto <- scalarFunctionExprToProto("map", keysExpr, valuesExpr)
       nullLiteralExprProto <- exprToProtoInternal(Literal(null, returnType), inputs, binding)
     } yield {
+      // Spark skips the values expression when keys are null. Nested CASE guards preserve
+      // this evaluation order; a native AND may evaluate both operands for the whole batch.
+      val valuesCaseWhenExprProto = ExprOuterClass.CaseWhen
+        .newBuilder()
+        .addWhen(valuesNotNullExprProto)
+        .addThen(mapFromArraysExprProto)
+        .setElseExpr(nullLiteralExprProto)
+        .build()
       val caseWhenExprProto = ExprOuterClass.CaseWhen
         .newBuilder()
-        .addWhen(andBinaryExprProto)
-        .addThen(mapFromArraysExprProto)
+        .addWhen(keysNotNullExprProto)
+        .addThen(ExprOuterClass.Expr.newBuilder().setCaseWhen(valuesCaseWhenExprProto).build())
         .setElseExpr(nullLiteralExprProto)
         .build()
       ExprOuterClass.Expr
@@ -194,18 +203,6 @@ object CometMapFromArrays extends CometExpressionSerde[MapFromArrays] {
     }
   }
 
-  private def createAndBinaryExpr(
-      expr: MapFromArrays,
-      inputs: Seq[Attribute],
-      binding: Boolean): Option[ExprOuterClass.Expr] = {
-    createBinaryExpr(
-      expr,
-      IsNotNull(expr.left),
-      IsNotNull(expr.right),
-      inputs,
-      binding,
-      (builder, binaryExpr) => builder.setAnd(binaryExpr))
-  }
 }
 
 object CometMapFromEntries
