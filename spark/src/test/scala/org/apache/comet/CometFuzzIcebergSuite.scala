@@ -237,6 +237,40 @@ class CometFuzzIcebergSuite extends CometFuzzIcebergBase {
     }
   }
 
+  test("filter pushdown - IS NULL/IS NOT NULL on nested fuzz columns stays native") {
+    val df = spark.table(icebergTableName)
+    val complexColumns = df.schema.fields.filter(f => isComplexType(f.dataType)).map(_.name)
+    assert(complexColumns.nonEmpty, "expected complex columns in the fuzz schema")
+
+    for (name <- complexColumns; predicate <- Seq(col(name).isNull, col(name).isNotNull)) {
+      withClue(predicate.toString) {
+        val (_, cometPlan) = checkSparkAnswer(df.where(predicate))
+        val scans = collectIcebergNativeScans(cometPlan)
+        assert(scans.length == 1, s"$cometPlan")
+        // Older Iceberg leaks manifest streams when commonData forces planning.
+        if (!isIcebergVersionLessThan("1.8.0")) {
+          val common = OperatorOuterClass.IcebergScanCommon.parseFrom(scans.head.commonData)
+          assert(common.getResidualPoolCount == 0, s"unexpected residual for $name: $predicate")
+        }
+      }
+    }
+  }
+
+  test("filter pushdown - generators over a nested fuzz column stay native") {
+    val df = spark.table(icebergTableName)
+    val arrayColumn = df.schema.fields
+      .collectFirst { case f if f.dataType.isInstanceOf[ArrayType] => f.name }
+      .getOrElse(fail("expected an array column in the fuzz schema"))
+    // Spark infers IS NOT NULL below ordinary generators, but not outer generators.
+    for (generator <- Seq("explode", "explode_outer")) {
+      val query = s"SELECT $generator($arrayColumn) FROM $icebergTableName"
+      withClue(query) {
+        val (_, cometPlan) = checkSparkAnswer(query)
+        assert(collectIcebergNativeScans(cometPlan).length == 1, s"$cometPlan")
+      }
+    }
+  }
+
   def collectCometShuffleExchanges(plan: org.apache.spark.sql.execution.SparkPlan)
       : Seq[org.apache.spark.sql.execution.SparkPlan] = {
     collect(plan) {
