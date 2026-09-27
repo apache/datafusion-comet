@@ -26,7 +26,7 @@ import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
 import org.apache.spark.sql.execution.SparkPlan
 import org.apache.spark.sql.execution.adaptive.ShuffleQueryStageExec
 import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
-import org.apache.spark.sql.types.{ArrayType, DataType, DayTimeIntervalType, MapType, StructType, YearMonthIntervalType}
+import org.apache.spark.sql.types.DataType
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
@@ -43,16 +43,6 @@ abstract class CometSink[T <: SparkPlan] extends CometOperatorSerde[T] {
 
   override def enabledConfig: Option[ConfigEntry[Boolean]] = None
 
-  protected final def supportedSinkDataType(dt: DataType): Boolean = dt match {
-    case _: YearMonthIntervalType | _: DayTimeIntervalType => true
-    case StructType(fields) =>
-      fields.nonEmpty && fields.forall(f => supportedSinkDataType(f.dataType))
-    case ArrayType(elementType, _) => supportedSinkDataType(elementType)
-    case MapType(keyType, valueType, _) =>
-      supportedSinkDataType(keyType) && supportedSinkDataType(valueType)
-    case _ => supportedDataType(dt)
-  }
-
   /**
    * The data type to declare for a scan output field. Overridden by sinks whose source carries
    * non-null nested child fields that must be widened to match the planned kernel output types
@@ -64,7 +54,8 @@ abstract class CometSink[T <: SparkPlan] extends CometOperatorSerde[T] {
       op: T,
       builder: Operator.Builder,
       childOp: OperatorOuterClass.Operator*): Option[OperatorOuterClass.Operator] = {
-    val supportedTypes = op.output.forall(a => supportedSinkDataType(a.dataType))
+    val supportedTypes = op.output.forall(a =>
+      supportedDataType(a.dataType, allowComplex = true, allowIntervals = true))
 
     if (!supportedTypes) {
       withFallbackReason(op, "Unsupported data type")
@@ -132,7 +123,8 @@ object CometExchangeSink extends CometSink[SparkPlan] {
   private def convertToShuffleScan(
       op: SparkPlan,
       builder: Operator.Builder): Option[OperatorOuterClass.Operator] = {
-    val supportedTypes = op.output.forall(a => supportedSinkDataType(a.dataType))
+    val supportedTypes = op.output.forall(a =>
+      supportedDataType(a.dataType, allowComplex = true, allowIntervals = true))
 
     if (!supportedTypes) {
       withFallbackReason(op, "Unsupported data type for shuffle direct read")

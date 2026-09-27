@@ -109,7 +109,6 @@ class CometExecIteratorLifecycleSuite extends CometTestBase {
             true,
             "fair_unified",
             64L << 20,
-            64L << 20,
             taskAttemptId,
             1L,
             null,
@@ -219,5 +218,137 @@ class CometExecIteratorLifecycleSuite extends CometTestBase {
         iter.close()
       }
     }
+  }
+
+  test("getMemoryUsage counts live plans and reports native allocation") {
+    val nativeLib = new Native()
+    // Other suites' plans can still be live, so the plan count is compared as a delta.
+    val plansBefore = nativeLib.getMemoryUsage()(3)
+    withTaskContext(4500000L) {
+      val limitOp =
+        CometExecUtils.getLimitNativePlan(Seq(PrettyAttribute("test", LongType)), 100).get
+      val iter = new CometExecIterator(
+        id = 4500001L,
+        inputObjects = Array.empty[Object],
+        numOutputCols = 1,
+        protobufQueryPlan = limitOp.toByteArray,
+        nativeMetrics = CometMetricNode(Map.empty),
+        numParts = 1,
+        partitionIndex = 0)
+      try {
+        val usage = nativeLib.getMemoryUsage()
+        assert(usage(3) == plansBefore + 1, "a created plan must be counted until it is released")
+        assert(usage(2) >= 1, "a live plan must have a memory pool")
+        assert(usage(1) >= 0)
+        // The native library always installs the accounting allocator, so a zero allocation
+        // means it or its wiring was lost.
+        assert(usage(0) > 0, s"native allocation was reported as ${usage(0)}")
+      } finally {
+        iter.close()
+      }
+    }
+    assert(nativeLib.getMemoryUsage()(3) == plansBefore, "a released plan must not be counted")
+  }
+
+  test("the memory usage log reports while plans run and once after the last one finishes") {
+    val mib = 1024L * 1024
+    val busy = Array(300 * mib, 100 * mib, 2L, 3L)
+    assert(
+      CometExecIterator
+        .memoryUsageMessage(busy, plansAtLastLog = 0)
+        .contains("Comet native memory usage: allocated 300.0 MiB, reserved 100.0 MiB " +
+          "(3 native plans, 2 memory pools)"))
+
+    // The line after the last plan finishes shows the allocation the plans left behind.
+    val idle = Array(20 * mib, 0L, 0L, 0L)
+    assert(
+      CometExecIterator
+        .memoryUsageMessage(idle, plansAtLastLog = 3)
+        .exists(_.contains("allocated 20.0 MiB, reserved 0.0 MiB (0 native plans")))
+    assert(CometExecIterator.memoryUsageMessage(idle, plansAtLastLog = 0).isEmpty)
+  }
+
+  test("the memory usage log warns when the native footprint exceeds the container") {
+    import CometExecIterator.nativeMemoryLimitWarning
+    val mib = 1024L * 1024
+    // A 4 GiB off-heap pool with a 1 GiB overhead, and a pool running at 0.8 of the off-heap size.
+    val limit = 5120 * mib
+    val reserved = 3000 * mib
+    // 1500 MiB untracked is more than the overhead, but fits in what the pool left free, since
+    // Spark's off-heap pool holds only the reservation.
+    assert(nativeMemoryLimitWarning(Array(4500 * mib, reserved, 1L, 1L), reserved, limit).isEmpty)
+    // 2500 MiB untracked does not fit: 2500 + 3000 = 5500 MiB.
+    val warning = nativeMemoryLimitWarning(Array(5500 * mib, reserved, 1L, 1L), reserved, limit)
+    assert(warning.exists(_.contains("(2500.0 MiB) plus Spark's off-heap memory in use (3000.0")))
+    assert(warning.exists(_.contains("is 5500.0 MiB, more than the 5120.0 MiB")))
+    // Spark's own off-heap use counts against the same limit.
+    assert(
+      nativeMemoryLimitWarning(Array(4500 * mib, reserved, 1L, 1L), 4000 * mib, limit).isDefined)
+    // Reservations can exceed the allocation, since operators reserve before they allocate.
+    assert(nativeMemoryLimitWarning(Array(100 * mib, reserved, 1L, 1L), reserved, limit).isEmpty)
+  }
+
+  test("the memory pool limit reads a bare off-heap size as bytes, as Spark does") {
+    import CometExecIterator.getMemoryConfig
+    val fourGiB = 4L * 1024 * 1024 * 1024
+    val offHeap = new SparkConf(false)
+      .set("spark.master", "local[4]")
+      .set("spark.memory.offHeap.enabled", "true")
+    assert(
+      getMemoryConfig(offHeap.clone.set("spark.memory.offHeap.size", "4294967296")).memoryLimit
+        == fourGiB)
+    assert(
+      getMemoryConfig(offHeap.clone.set("spark.memory.offHeap.size", "4g")).memoryLimit
+        == fourGiB)
+  }
+
+  test("the native memory limit is the off-heap size plus the memory overhead") {
+    import CometExecIterator.nativeMemoryLimit
+    val mib = 1024L * 1024
+    val offHeap = new SparkConf(false)
+      .set("spark.master", "yarn")
+      .set("spark.executor.memory", "16g")
+      .set("spark.memory.offHeap.enabled", "true")
+      .set("spark.memory.offHeap.size", "4g")
+    assert(nativeMemoryLimit(offHeap) == Some((4096 + 1638) * mib))
+    assert(nativeMemoryLimit(offHeap.clone.set("spark.memory.offHeap.enabled", "false")).isEmpty)
+    assert(nativeMemoryLimit(offHeap.clone.set("spark.master", "local[*]")).isEmpty)
+  }
+
+  test("the executor memory overhead is sized as Spark sizes the container") {
+    import CometExecIterator.executorMemoryOverhead
+    val mib = 1024L * 1024
+    def conf(settings: (String, String)*): SparkConf =
+      new SparkConf(false).set("spark.master", "yarn").setAll(settings)
+
+    assert(
+      executorMemoryOverhead(conf("spark.executor.memoryOverhead" -> "3g")) == Some(3072 * mib))
+    // A bare number is in MiB, as Spark reads it.
+    assert(
+      executorMemoryOverhead(conf("spark.executor.memoryOverhead" -> "500")) == Some(500 * mib))
+    assert(executorMemoryOverhead(conf("spark.executor.memory" -> "16g")) == Some(1638 * mib))
+    // The 1g default executor would get 102 MiB from the factor, so the minimum applies.
+    assert(executorMemoryOverhead(conf()) == Some(384 * mib))
+    assert(
+      executorMemoryOverhead(
+        conf(
+          "spark.executor.memory" -> "10g",
+          "spark.executor.memoryOverheadFactor" -> "0.25")) == Some(2560 * mib))
+    assert(executorMemoryOverhead(conf("spark.executor.memoryOverhead" -> "lots")).isEmpty)
+    assert(executorMemoryOverhead(new SparkConf(false).set("spark.master", "local[4]")).isEmpty)
+  }
+
+  test("the memory usage log interval disables the log on a value it cannot use") {
+    import CometExecIterator.memoryUsageLogInterval
+    assert(memoryUsageLogInterval(None) == 10000L)
+    assert(memoryUsageLogInterval(Some("1s")) == 1000L)
+    assert(memoryUsageLogInterval(Some("250ms")) == 250L)
+    // A bare number is in milliseconds, the unit the setting is declared with.
+    assert(memoryUsageLogInterval(Some("500")) == 500L)
+    assert(memoryUsageLogInterval(Some("0")) == 0L)
+    // Values that would otherwise throw from the plan that starts the log, failing its task.
+    assert(memoryUsageLogInterval(Some("-5s")) == 0L)
+    assert(memoryUsageLogInterval(Some("false")) == 0L)
+    assert(memoryUsageLogInterval(Some("10 seconds please")) == 0L)
   }
 }

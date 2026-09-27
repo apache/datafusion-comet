@@ -135,9 +135,10 @@ gh pr edit <number> --add-label run-spark-3.5-tests
 ```
 
 Applying a label starts a new run immediately at the pull request's current commit. That run
-executes only the suite the label gates; the PR tier already ran at that commit and is not
-repeated. Its aggregate verdict is published as `Required Checks (label run)` rather than
-`Required Checks`, so it can be read alongside the commit run without replacing it.
+belongs to the separate `Comet CI (label run)` workflow and executes only the suite the label
+gates; the PR tier already ran at that commit and is not repeated. Its aggregate verdict is
+published as `Label run / Required Checks (label run)` rather than `Required Checks`, so it can be
+read alongside the commit run without replacing it.
 
 For a queue-tier suite, that separate name costs nothing: the merge queue runs the suite again
 before the change lands, so a failure a label run surfaced still blocks the merge later. A
@@ -264,16 +265,40 @@ stays in one place. When you pick up a nightly failure:
 Dispatching `ci.yml` from the Actions page with **Run workflow** runs every tier, including the
 nightly suites, if you need a result before the next scheduled run.
 
+## Miri safety checks
+
+`miri.yml` runs nightly and supports manual dispatch. It runs the shuffle crate's
+`spark_unsafe::` tests and the expression crate's `hash_funcs::` tests in separate jobs,
+so a failure in one does not cancel the other. These cover Comet's unsafe row decoding
+and hash kernels. The job also fails if its filter selects no passing tests. A failed
+scheduled run opens or updates the same `ci-nightly-failure` issue used by nightly CI.
+
+Run either suite locally after installing nightly Rust with the Miri component:
+
+```sh
+cd native
+cargo +nightly miri setup
+MIRIFLAGS="-Zmiri-disable-isolation" cargo +nightly miri test --locked \
+  -p datafusion-comet-shuffle --lib 'spark_unsafe::'
+MIRIFLAGS="-Zmiri-disable-isolation" cargo +nightly miri test --locked \
+  -p datafusion-comet-spark-expr --lib 'hash_funcs::'
+```
+
+Miri cannot execute the JVM, cloud clients, or compression libraries through FFI.
+Running the whole workspace reaches those dependencies or dependency errors in
+platform synchronization before completing the safety checks. Regular Rust CI still runs the
+full tests. When adding unsafe code, add suitable tests to the Miri matrix as well;
+these focused suites do not cover every unsafe operation in Comet.
+
 ## Checking that the scheduled runs are healthy
 
-A scheduled run has no pull request to turn red, so when one breaks, nothing puts it in front of
-anyone. Comet has three daily schedules plus a weekly one, and two of the daily ones report nothing
-when they fail:
+A scheduled run has no pull request to turn red, so check both whether it ran and whether it
+reported a failure. Comet has three daily schedules plus a weekly one:
 
 | Workflow               | Cron (UTC)   | Reports a failure?                    |
 | ---------------------- | ------------ | ------------------------------------- |
 | `publish_snapshot.yml` | `0 3 * * *`  | no                                    |
-| `miri.yml`             | `0 4 * * *`  | no                                    |
+| `miri.yml`             | `0 4 * * *`  | yes                                   |
 | `ci.yml` nightly tier  | `0 6 * * *`  | yes, a `ci-nightly-failure` issue     |
 | `codeql.yml`           | `16 4 * * 1` | yes, to the repository's Security tab |
 
@@ -293,9 +318,9 @@ Read the output for two different things:
   with no activity for 60 days, and it does not announce either. Confirm the workflow is still
   enabled with `gh api repos/apache/datafusion-comet/actions/workflows --jq '.workflows[] | "\(.state)\t\(.path)"'`,
   and re-enable it from the Actions page if it is `disabled_inactivity`.
-- **A run of failures.** One red night is a flake or a real regression, and for `ci.yml` there is an
-  issue open about it. Several consecutive red nights on `miri.yml` or `publish_snapshot.yml` means
-  nobody has looked; treat the streak, not the newest run, as the thing to explain.
+- **A run of failures.** One red night is a flake or a real regression. `ci.yml` and `miri.yml`
+  open or update a failure issue; `publish_snapshot.yml` does not. Investigate repeated failures
+  even when a report already exists; treat the streak, not the newest run, as the thing to explain.
 
 For the `ci.yml` nightly, green on its own does not mean the suites ran. Path filters and the diff
 base are both allowed to select nothing — a documentation-only day legitimately runs no suite at
