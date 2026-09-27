@@ -32,7 +32,7 @@ import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.internal.Logging
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
-import org.apache.spark.sql.catalyst.expressions.{Ascending, Attribute, AttributeSet, Expression, ExpressionSet, Generator, NamedExpression, SortOrder}
+import org.apache.spark.sql.catalyst.expressions.{Ascending, Attribute, AttributeSeq, AttributeSet, Expression, ExpressionSet, Generator, NamedExpression, SortOrder}
 import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, AggregateMode, CollectList, CollectSet, Final, First, Last, Partial, PartialMerge, Percentile}
 import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, BuildSide}
 import org.apache.spark.sql.catalyst.plans._
@@ -2011,6 +2011,7 @@ object CometHashAggregateExec
       op.output,
       op.groupingExpressions,
       op.aggregateExpressions,
+      op.aggregateAttributes,
       op.resultExpressions,
       op.child.output,
       op.child,
@@ -2061,6 +2062,7 @@ object CometObjectHashAggregateExec
       adjustOutputForNativeState(op),
       op.groupingExpressions,
       op.aggregateExpressions,
+      op.aggregateAttributes,
       op.resultExpressions,
       op.child.output,
       op.child,
@@ -2074,6 +2076,7 @@ case class CometHashAggregateExec(
     override val output: Seq[Attribute],
     groupingExpressions: Seq[NamedExpression],
     aggregateExpressions: Seq[AggregateExpression],
+    aggregateAttributes: Seq[Attribute],
     resultExpressions: Seq[NamedExpression],
     input: Seq[Attribute],
     child: SparkPlan,
@@ -2086,7 +2089,15 @@ case class CometHashAggregateExec(
   // modes is empty too.
   val modes: Seq[AggregateMode] = aggregateExpressions.map(_.mode).distinct
 
-  override def producedAttributes: AttributeSet = outputSet ++ AttributeSet(resultExpressions)
+  // Match Spark's aggregate canonicalization, including the original result attributes that
+  // rewritten DISTINCT aggregate expressions do not necessarily retain in their resultIds.
+  override lazy val allAttributes: AttributeSeq =
+    child.output ++ aggregateExpressions.flatMap(_.aggregateFunction.aggBufferAttributes) ++
+      aggregateAttributes ++
+      aggregateExpressions.flatMap(_.aggregateFunction.inputAggBufferAttributes)
+
+  override def producedAttributes: AttributeSet =
+    outputSet ++ AttributeSet(resultExpressions) ++ AttributeSet(aggregateAttributes)
 
   override protected def withNewChildInternal(newChild: SparkPlan): SparkPlan =
     this.copy(child = newChild)
@@ -2109,6 +2120,8 @@ case class CometHashAggregateExec(
         this.output == other.output &&
         this.groupingExpressions == other.groupingExpressions &&
         this.aggregateExpressions == other.aggregateExpressions &&
+        this.aggregateAttributes == other.aggregateAttributes &&
+        this.resultExpressions == other.resultExpressions &&
         this.input == other.input &&
         this.modes == other.modes &&
         this.child == other.child &&
@@ -2119,7 +2132,15 @@ case class CometHashAggregateExec(
   }
 
   override def hashCode(): Int =
-    Objects.hashCode(output, groupingExpressions, aggregateExpressions, input, modes, child)
+    Objects.hashCode(
+      output,
+      groupingExpressions,
+      aggregateExpressions,
+      aggregateAttributes,
+      resultExpressions,
+      input,
+      modes,
+      child)
 
   override protected def outputExpressions: Seq[NamedExpression] = resultExpressions
 }
