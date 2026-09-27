@@ -344,6 +344,34 @@ Native operators reserve through DataFusion's `MemoryConsumer` / `MemoryReservat
 
 An operator that never calls `try_grow` is invisible to the pool no matter how much memory it uses.
 
+### Native writers
+
+Both native writers reserve what they hold between batches through a single consumer per task,
+`ParquetWriterExec[N]` or `IcebergWriteExec[N]`, resized after every batch. Neither can spill, so
+when the pool refuses a resize the task fails with a `CometNativeException` whose message starts
+`Additional allocation failed for` and names the consumer. That is a task failure Spark can retry.
+Unreserved, the same memory would count only toward the container limit, where exceeding it kills
+the executor.
+
+- `ParquetWriterExec` writes one file per task and reserves parquet-rs's estimate of the file's
+  in-progress row group (`ArrowWriter::memory_size`). The estimate counts encoded pages, encoder
+  buffers, dictionaries and Bloom filters. The writer keeps parquet-rs's default row-group limit of
+  1Mi rows and sets no byte limit, so a wide schema can hold a large row group
+  ([#5304](https://github.com/apache/datafusion-comet/issues/5304)).
+- The Iceberg writer keeps one file open per partition in a fanout write, so its reservation grows
+  with the number of partitions a task writes. iceberg-rust's `ParquetWriter` does not expose
+  parquet-rs's `memory_size`, only the bytes written so far plus the in-progress row group's
+  encoded size, so each open file reports that figure capped at the row-group size
+  (`write.parquet.row-group-size-bytes`). The reservation also covers the rows each partition holds
+  back until they fill the 1000-row unit the rolling writer is fed in. It does not cover what
+  parquet-rs holds beyond the encoded size: dictionary hash tables, unencoded dictionary indices
+  and buffer capacity. Native writes decline Bloom filters today, and neither figure would include
+  them.
+
+The writers register one consumer per task rather than one per open file because every consumer
+registered with `fair_unified` lowers the share of every other consumer in the task. A consumer per
+partition would shrink the task's other operators' shares as a fanout write widened.
+
 ## Crossing the FFI boundary
 
 Batches move between the JVM and native over the Arrow C Data and C Stream interfaces, which are
@@ -394,7 +422,8 @@ The pool tracks _declared reservations_. Container RSS counts _pages the process
 diverge for several structural reasons:
 
 - **Undeclared allocations.** Arrow array builders, expression kernels producing intermediate
-  arrays, decompression buffers, Parquet metadata structures, `object_store` request buffers, and
+  arrays, decompression buffers, Parquet metadata structures, the part of a native writer's buffers
+  its estimate misses (see [Native writers](#native-writers)), `object_store` request buffers, and
   tokio's own machinery all allocate without reserving. Only operators that were explicitly written
   to reserve show up in the pool.
 - **Rounding and padding.** Arrow buffers are padded to 64-byte boundaries and builders grow by

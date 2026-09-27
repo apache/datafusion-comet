@@ -20,6 +20,8 @@ mod fair_pool;
 pub mod logging_pool;
 mod spark_memory;
 mod task_shared;
+#[cfg(test)]
+pub(crate) mod testing;
 mod unified_pool;
 
 use datafusion::execution::memory_pool::{MemoryPool, TrackConsumersPool, UnboundedMemoryPool};
