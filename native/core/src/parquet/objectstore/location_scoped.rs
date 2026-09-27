@@ -27,9 +27,11 @@
 //! kept for the life of this store.
 //!
 //! The locations are a snapshot, so a 403 can mean a location was added or removed after it was
-//! taken. A read (`get_opts` or `get_ranges`) that gets a 403 fetches the locations again, unless
-//! another read already tried since this one was routed, and retries once if its path now routes to
-//! a different location; otherwise the 403 is returned. A failed fetch fails every read that shared
+//! taken. So can a failure to get a location's credential from the provider, because a provider
+//! with no policy for a path throws rather than returning a credential S3 would reject. A read
+//! (`get_opts` or `get_ranges`) that gets either error fetches the locations again, unless another
+//! read already tried since this one was routed, and retries once if its path now routes to a
+//! different location; otherwise the error is returned. A failed fetch fails every read that shared
 //! it. Other operations route by path without retrying, because Comet only reads through this store.
 
 use std::collections::HashMap;
@@ -47,6 +49,8 @@ use object_store::{
     RenameOptions, Result,
 };
 use tokio::sync::Mutex;
+
+use crate::cloud::s3::credential_bridge::CredentialProviderError;
 
 const STORE: &str = "LocationScopedS3";
 
@@ -127,8 +131,21 @@ fn credential_path(location: &str) -> String {
     }
 }
 
-fn is_forbidden(err: &Error) -> bool {
-    matches!(err, Error::PermissionDenied { .. })
+/// Whether `err` can mean the locations changed since the snapshot: S3 denied the request, or the
+/// provider could not produce the credential of the location the request was routed to.
+fn may_mean_stale_locations(err: &Error) -> bool {
+    matches!(err, Error::PermissionDenied { .. }) || is_credential_failure(err)
+}
+
+fn is_credential_failure(err: &Error) -> bool {
+    let mut source = std::error::Error::source(err);
+    while let Some(e) = source {
+        if e.is::<CredentialProviderError>() {
+            return true;
+        }
+        source = e.source();
+    }
+    false
 }
 
 /// The store chosen for one request, and the snapshot it was chosen from.
@@ -143,7 +160,7 @@ struct Inner {
     source: LocationSource,
     factory: LocationStoreFactory,
     index: RwLock<Arc<LocationIndex>>,
-    /// Serializes refreshes, so the 403s from one snapshot share one attempt.
+    /// Serializes refreshes, so the failed reads from one snapshot share one attempt.
     refresh_lock: Mutex<()>,
     /// Location stores by credential path.
     stores: RwLock<HashMap<String, Arc<dyn ObjectStore>>>,
@@ -183,8 +200,8 @@ impl Inner {
         ))
     }
 
-    /// Returns the route to retry on after `failed` returned the 403 `err` for `path`, or the error
-    /// the request should return.
+    /// Returns the route to retry on after `failed` returned `err` for `path`, or the error the
+    /// request should return. `err` is a 403 or a failure to get the location's credential.
     async fn retry_route(&self, path: &Path, failed: &Route, err: Error) -> Result<Route> {
         if let Err(refresh) = self.refresh(failed).await {
             return Err(Error::Generic {
@@ -236,8 +253,8 @@ pub struct LocationScopedObjectStore {
 
 impl LocationScopedObjectStore {
     /// `locations` is the provider's first answer for `bucket`; `source` fetches it again after a
-    /// 403, and `factory` builds a location's store on first use. Fails if a location is not a
-    /// valid path.
+    /// 403 or a credential failure, and `factory` builds a location's store on first use. Fails if
+    /// a location is not a valid path.
     pub(crate) fn new(
         bucket: String,
         locations: Vec<String>,
@@ -297,7 +314,7 @@ impl ObjectStore for LocationScopedObjectStore {
     async fn get_opts(&self, location: &Path, options: GetOptions) -> Result<GetResult> {
         let route = self.inner.route(location)?;
         match route.store.get_opts(location, options.clone()).await {
-            Err(e) if is_forbidden(&e) => {
+            Err(e) if may_mean_stale_locations(&e) => {
                 let retry = self.inner.retry_route(location, &route, e).await?;
                 retry.store.get_opts(location, options).await
             }
@@ -308,7 +325,7 @@ impl ObjectStore for LocationScopedObjectStore {
     async fn get_ranges(&self, location: &Path, ranges: &[Range<u64>]) -> Result<Vec<Bytes>> {
         let route = self.inner.route(location)?;
         match route.store.get_ranges(location, ranges).await {
-            Err(e) if is_forbidden(&e) => {
+            Err(e) if may_mean_stale_locations(&e) => {
                 let retry = self.inner.retry_route(location, &route, e).await?;
                 retry.store.get_ranges(location, ranges).await
             }
@@ -374,13 +391,24 @@ mod tests {
     use std::time::Duration;
     use tokio::sync::Barrier;
 
+    /// How every read through one credential fails, set by credential path.
+    #[derive(Clone, Copy, Debug)]
+    enum Failure {
+        /// The provider throws, as it does for a path it has no policy for.
+        NoCredential,
+        /// Something unrelated to the credential fails, such as the connection.
+        Unreachable,
+    }
+
     /// What S3 allows for one credential: reads under `allowed` succeed and every other read gets a
     /// 403. A success is reported as `NotFound` carrying the credential path, which shows which
-    /// location served the request without producing data.
+    /// location served the request without producing data. A credential path in `failures` fails
+    /// every read instead, checked on each read because the bridge asks the provider on each one.
     #[derive(Debug)]
     struct CredentialView {
         credential_path: String,
         allowed: Vec<Path>,
+        failures: Arc<StdMutex<HashMap<String, Failure>>>,
         gets: AtomicUsize,
         /// When set, each read waits here first, so a test can hold requests in flight together.
         gate: Option<Arc<Barrier>>,
@@ -415,6 +443,31 @@ mod tests {
             self.gets.fetch_add(1, Ordering::SeqCst);
             if let Some(gate) = &self.gate {
                 gate.wait().await;
+            }
+            let failure = self
+                .failures
+                .lock()
+                .unwrap()
+                .get(&self.credential_path)
+                .copied();
+            match failure {
+                // What `CometS3CredentialBridge::get_credential` returns when the provider throws.
+                Some(Failure::NoCredential) => {
+                    return Err(Error::Generic {
+                        store: "S3",
+                        source: Box::new(CredentialProviderError(format!(
+                            "no policy for {}",
+                            self.credential_path
+                        ))),
+                    })
+                }
+                Some(Failure::Unreachable) => {
+                    return Err(Error::Generic {
+                        store: "S3",
+                        source: "connection refused".into(),
+                    })
+                }
+                None => {}
             }
             let source = self.credential_path.clone().into();
             let path = location.to_string();
@@ -458,6 +511,8 @@ mod tests {
         gate: Option<(String, Arc<Barrier>)>,
         /// Credential path whose store cannot be built.
         fail_build: Option<String>,
+        /// How reads through a credential fail, shared with every store built.
+        failures: Arc<StdMutex<HashMap<String, Failure>>>,
         views: StdMutex<HashMap<String, Arc<CredentialView>>>,
         builds: AtomicUsize,
     }
@@ -478,6 +533,7 @@ mod tests {
                 refreshes: AtomicUsize::new(0),
                 gate: None,
                 fail_build: None,
+                failures: Arc::new(StdMutex::new(HashMap::new())),
                 views: StdMutex::new(HashMap::new()),
                 builds: AtomicUsize::new(0),
             }
@@ -500,6 +556,14 @@ mod tests {
 
         fn set_locations(&self, locations: &[&str]) {
             *self.locations.lock().unwrap() = locations.iter().map(|l| l.to_string()).collect();
+        }
+
+        /// Makes every later read through `credential_path` fail with `failure`.
+        fn fail(&self, credential_path: &str, failure: Failure) {
+            self.failures
+                .lock()
+                .unwrap()
+                .insert(credential_path.to_string(), failure);
         }
 
         fn store(self: &Arc<Self>) -> LocationScopedObjectStore {
@@ -538,6 +602,7 @@ mod tests {
                         .get(credential_path)
                         .cloned()
                         .unwrap_or_default(),
+                    failures: Arc::clone(&provider.failures),
                     gets: AtomicUsize::new(0),
                     gate,
                 });
@@ -875,5 +940,96 @@ mod tests {
             .to_string();
         assert!(message.contains("bridge init failed"), "{message}");
         assert!(!message.contains("policy locations"), "{message}");
+    }
+
+    /// A provider with no bucket-wide policy throws when asked for the bucket root's credential. A
+    /// location added after the snapshot routes to the root until the locations are fetched again,
+    /// so that failure has to refresh them the way a 403 does.
+    async fn picks_up_a_location_when_the_root_credential_fails(use_ranges: bool) {
+        let provider = Arc::new(Provider::new(
+            &["warehouse/sales"],
+            &[
+                ("/warehouse/sales", &["warehouse/sales"]),
+                ("/warehouse/finance", &["warehouse/finance"]),
+            ],
+        ));
+        provider.fail("/", Failure::NoCredential);
+        let store = provider.store();
+        provider.set_locations(&["warehouse/sales", "warehouse/finance"]);
+
+        for path in ["warehouse/finance/1", "warehouse/finance/2"] {
+            let served = if use_ranges {
+                served_by(get_ranges(&store, path).await)
+            } else {
+                served_by(get(&store, path).await)
+            };
+            assert_eq!(served, "/warehouse/finance");
+        }
+        assert_eq!(provider.refreshes.load(Ordering::SeqCst), 1);
+        assert_eq!(provider.gets("/"), 1);
+    }
+
+    #[tokio::test]
+    async fn get_opts_picks_up_a_location_when_the_root_credential_fails() {
+        picks_up_a_location_when_the_root_credential_fails(false).await;
+    }
+
+    #[tokio::test]
+    async fn get_ranges_picks_up_a_location_when_the_root_credential_fails() {
+        picks_up_a_location_when_the_root_credential_fails(true).await;
+    }
+
+    /// A provider that folds a location into its parent stops vending the old location and throws
+    /// when asked for it. That failure refreshes the locations, and the parent serves the read.
+    #[tokio::test]
+    async fn moves_off_a_dropped_location_whose_credential_fails() {
+        let provider = Arc::new(Provider::new(
+            &["warehouse", "warehouse/finance"],
+            &[
+                ("/warehouse", &["warehouse"]),
+                ("/warehouse/finance", &["warehouse/finance"]),
+            ],
+        ));
+        let store = provider.store();
+        assert_eq!(
+            served_by(get(&store, "warehouse/finance/1").await),
+            "/warehouse/finance"
+        );
+
+        provider.set_locations(&["warehouse"]);
+        provider.fail("/warehouse/finance", Failure::NoCredential);
+        assert_eq!(
+            served_by(get(&store, "warehouse/finance/2").await),
+            "/warehouse"
+        );
+        assert_eq!(provider.refreshes.load(Ordering::SeqCst), 1);
+    }
+
+    /// A credential failure on a location the refreshed list still routes to is returned as it is,
+    /// the same as a 403 would be.
+    #[tokio::test]
+    async fn returns_a_credential_failure_when_the_locations_are_unchanged() {
+        let provider = Arc::new(Provider::new(&["a"], &[("/a", &["a"])]));
+        provider.fail("/a", Failure::NoCredential);
+        let store = provider.store();
+
+        let err = get(&store, "a/1").await.unwrap_err();
+        assert!(is_credential_failure(&err), "got {err}");
+        assert!(err.to_string().contains("no policy for /a"), "got {err}");
+        assert_eq!(provider.refreshes.load(Ordering::SeqCst), 1);
+        assert_eq!(provider.gets("/a"), 1, "not retried on the same location");
+    }
+
+    /// Only a 403 or a credential failure can mean the locations changed, so any other error is
+    /// returned without fetching them again.
+    #[tokio::test]
+    async fn does_not_refresh_on_other_errors() {
+        let provider = Arc::new(Provider::new(&["a"], &[("/a", &["a"])]));
+        provider.fail("/a", Failure::Unreachable);
+        let store = provider.store();
+
+        let err = get(&store, "a/1").await.unwrap_err();
+        assert!(err.to_string().contains("connection refused"), "got {err}");
+        assert_eq!(provider.refreshes.load(Ordering::SeqCst), 0);
     }
 }
