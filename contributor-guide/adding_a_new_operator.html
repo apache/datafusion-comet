@@ -594,6 +594,20 @@ map in <code class="docutils literal notranslate"><span class="pre">CometExecRul
 in <code class="docutils literal notranslate"><span class="pre">CometExecRule</span></code> rather than using <code class="docutils literal notranslate"><span class="pre">CometOperatorSerde</span></code>, because they don’t need protobuf serialization.</p>
 <p>Examples: <code class="docutils literal notranslate"><span class="pre">CometBroadcastExchangeExec</span></code>, <code class="docutils literal notranslate"><span class="pre">CometShuffleExchangeExec</span></code></p>
 </section>
+<section id="local-topk-inside-a-sink">
+<h4>Local TopK inside a sink<a class="headerlink" href="#local-topk-inside-a-sink" title="Link to this heading">#</a></h4>
+<p><code class="docutils literal notranslate"><span class="pre">CometTakeOrderedAndProjectExec</span></code> owns local candidate selection, the optional shuffle, and final
+selection with offset and projection. When <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.topK.fusion.enabled</span></code> is enabled for an
+eligible native Parquet scan, its conversion inserts <code class="docutils literal notranslate"><span class="pre">CometLocalTopKExec</span></code> before native blocks are
+serialized. The local node extends <code class="docutils literal notranslate"><span class="pre">CometUnaryExec</span></code> and serializes a bounded sort above the native
+scan, so they execute in one block. It preserves the scan’s output and partitioning and advertises
+the local sort order.</p>
+<p>The inserted node keeps the original Spark TopK for plan bookkeeping, but only the outer TopK owns
+Spark’s offset and projection. Both transition reversion and aggregate-buffer restoration therefore
+remove the inserted local node when restoring Spark execution. Restoring its <code class="docutils literal notranslate"><span class="pre">originalPlan</span></code> would
+apply the global TopK twice. A single input partition uses a final native limit and projection;
+multiple input partitions still require a final TopK after the shuffle.</p>
+</section>
 </section>
 <section id="choosing-the-right-operator-type">
 <h3>Choosing the Right Operator Type<a class="headerlink" href="#choosing-the-right-operator-type" title="Link to this heading">#</a></h3>
@@ -1165,6 +1179,7 @@ manages the boundary between JVM and native execution.</p>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#native-operators-nativeexecs-map">1. Native Operators (<code class="docutils literal notranslate"><span class="pre">nativeExecs</span></code> map)</a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#sink-operators-sinks-map">2. Sink Operators (<code class="docutils literal notranslate"><span class="pre">sinks</span></code> map)</a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#comet-jvm-operators">3. Comet JVM Operators</a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#local-topk-inside-a-sink">Local TopK inside a sink</a></li>
 </ul>
 </li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#choosing-the-right-operator-type">Choosing the Right Operator Type</a></li>

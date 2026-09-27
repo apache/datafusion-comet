@@ -854,6 +854,22 @@ the ratio threshold above the maximum possible groups/input-rows ratio:</p>
 <p>These settings only tune eligible plans. Unsupported accumulators and modes remain
 disabled even when configuration overrides are enabled.</p>
 </section>
+<section id="local-topk-fusion">
+<h2>Local TopK Fusion<a class="headerlink" href="#local-topk-fusion" title="Link to this heading">#</a></h2>
+<p>Set <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.topK.fusion.enabled=true</span></code> to run an eligible local TopK in the same native
+execution as its Parquet scan. This experimental optimization is disabled by default. It currently
+supports a direct native Parquet scan ordered by one signed integer column (<code class="docutils literal notranslate"><span class="pre">TINYINT</span></code>, <code class="docutils literal notranslate"><span class="pre">SMALLINT</span></code>,
+<code class="docutils literal notranslate"><span class="pre">INT</span></code>, or <code class="docutils literal notranslate"><span class="pre">BIGINT</span></code>). Both sort directions and null orderings are supported. Other inputs use the
+existing TopK execution path.</p>
+<p>Each scan partition keeps enough candidates for both <code class="docutils literal notranslate"><span class="pre">LIMIT</span></code> and <code class="docutils literal notranslate"><span class="pre">OFFSET</span></code>. With multiple partitions,
+Comet shuffles those candidates and performs the final TopK. With one partition, it reuses the local
+ordering without building a second heap. The final stage applies the offset and output projection.</p>
+<p>Fusion reduces the work of passing scan batches between native execution blocks. It still reads all
+input rows and does not enable TopK reader pruning. It can also reduce overlap between scan decoding
+and TopK processing, so some workloads may run slower. Compare enabled and disabled runs with your
+data layout, payload width, limit, and partition count before enabling it. The
+<code class="docutils literal notranslate"><span class="pre">CometTopKBenchmark</span></code> microbenchmark covers these cases with ascending, descending, and random layouts.</p>
+</section>
 <section id="optimizing-sorting-on-floating-point-values">
 <h2>Optimizing Sorting on Floating-Point Values<a class="headerlink" href="#optimizing-sorting-on-floating-point-values" title="Link to this heading">#</a></h2>
 <p>Comet normalizes NaN payloads and signed zeros in scalar <code class="docutils literal notranslate"><span class="pre">FLOAT</span></code> and <code class="docutils literal notranslate"><span class="pre">DOUBLE</span></code> ordering keys, so <code class="docutils literal notranslate"><span class="pre">ORDER</span> <span class="pre">BY</span></code>, window
@@ -923,6 +939,7 @@ element type. Use <code class="docutils literal notranslate"><span class="pre">s
 </ul>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#adaptive-partial-aggregation">Adaptive Partial Aggregation</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#local-topk-fusion">Local TopK Fusion</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#optimizing-sorting-on-floating-point-values">Optimizing Sorting on Floating-Point Values</a></li>
 </ul>
   </nav></div>
