@@ -107,6 +107,30 @@ by the reader. An attached filter does not guarantee that any row groups are pru
 probe scan's `bytes_scanned` and `row_groups_pruned_statistics` with filtering disabled to assess
 reader savings. Existing join, scan, and intervening filter metrics retain their own meanings.
 
+### Local TopK
+
+With `spark.comet.exec.topK.dynamicFilter.enabled=true`, eligible fused local TopK operators report
+these counters. See [TopK Reader Pruning](tuning/operators.md#topk-reader-pruning) for the required
+fusion option and reader restrictions.
+
+| Metric                                 | Description                                                                  |
+| -------------------------------------- | ---------------------------------------------------------------------------- |
+| `dynamic_filter_topk_filters_attached` | Executions that attach their live TopK threshold to a native Parquet reader. |
+| `dynamic_filter_topk_filters_skipped`  | Eligible TopK executions whose input cannot accept reader attachment.        |
+
+These counters belong to the local TopK. An attached predicate may prune nothing, and a file's
+schema adaptation can disable it to preserve conversion errors. Reader work remains on the scan:
+`output_rows` counts rows emitted by the scan, `bytes_scanned` measures requested data/Bloom-filter
+ranges (excluding footer and page-index reads), and page and decoder filtering use the existing
+`page_index_rows_pruned` and `pushdown_rows_pruned` counters.
+
+Row groups skipped by runtime pruning within a file increment `row_groups_pruned_dynamic_filter`.
+When later files open, the reader can prune using the TopK threshold already available; those groups
+increment `row_groups_pruned_statistics`. With one row group per file, the dynamic counter can remain
+zero even when TopK skips most later groups. The statistics counter also includes pruning by other
+predicates, so compare both counters and `bytes_scanned` with filtering disabled to assess TopK savings.
+This feature adds no separate decoded-batch filter or evaluated/pruned row counters to the TopK.
+
 ### Exchange
 
 Comet adds some additional metrics:
@@ -185,6 +209,7 @@ execution metrics. Counters accumulate per scan operator; they do not instrument
 | `scan_io_object_store_response_bytes_read` | Response bytes actually consumed at that API, including bytes fetched between coalesced ranges. Not HTTP wire bytes.                                                                                                         |
 | `scan_io_metadata_cache_hits`              | Successful, cache-eligible metadata opens requiring no storage reads.                                                                                                                                                        |
 | `scan_io_metadata_cache_misses`            | Successful, cache-eligible metadata opens requiring storage reads. Failed opens and encrypted opens, which bypass this shared cache, increment neither cache counter.                                                        |
+| `row_groups_pruned_dynamic_filter`         | Row groups skipped by a runtime predicate whose value changes during execution, such as a local TopK threshold.                                                                                                              |
 
 Reader-level and object-store bytes are two views of the same reads; do not add them together.
 Likewise, footer bytes are a subset of metadata bytes, not a third reader-level category. A warm

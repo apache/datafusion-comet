@@ -85,6 +85,14 @@ remove the inserted local node when restoring Spark execution. Restoring its `or
 apply the global TopK twice. A single input partition uses a final native limit and projection;
 multiple input partitions still require a final TopK after the shuffle.
 
+With `spark.comet.exec.topK.dynamicFilter.enabled`, only the local sort sets the protobuf
+`Sort.dynamic_filter_enabled` flag. The native planner wraps an eligible sort in
+`TopKReaderFilterExec`. Its permanent plan contains an unexecuted sort template; each execution
+creates a fresh sort and live predicate, then attaches that predicate to the Parquet reader when
+eligible. The stream owns the heap and predicate until completion, error, or cancellation. The
+final TopK after an exchange does not share this state. Reader work stays on scan metrics while
+attachment counters belong to the local TopK.
+
 ### Choosing the Right Operator Type
 
 When adding a new operator, choose based on these criteria:
