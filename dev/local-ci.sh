@@ -389,16 +389,25 @@ run_iceberg() {
         gradlew ":iceberg-spark:iceberg-spark-runtime-${SPARK}_${SCALA}:integrationTest"
         ;;
     esac
+    case "$target" in
+      shard-* | extensions)
+        python3 "$REPO/dev/ci/summarize-iceberg-writes.py" --title "$target" \
+          "$dest/build/comet-iceberg-writes/$target"
+        ;;
+    esac
     ok "$target took $(hms $((SECONDS - started)))"
   done
 }
 
-# Reads $dest, $spark and $SCALA from run_iceberg.
+# Reads $dest, $spark, $SCALA and $target from run_iceberg.
 gradlew() {
   (
     cd "$dest"
     # shellcheck disable=SC2031
     export SPARK_LOCAL_IP=localhost ENABLE_COMET=true ENABLE_COMET_ONHEAP=true
+    # One directory per target, emptied first, so a rerun reports only its own writes.
+    export COMET_ICEBERG_WRITE_REPORT_DIR="$dest/build/comet-iceberg-writes/$target"
+    rm -rf "$COMET_ICEBERG_WRITE_REPORT_DIR"
     ./gradlew "-DsparkVersions=$SPARK" "-DscalaVersion=$SCALA" \
       -DflinkVersions= -DkafkaVersions= "$@" -Pquick=true -x javadoc
   )
