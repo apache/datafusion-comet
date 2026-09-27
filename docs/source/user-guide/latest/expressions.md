@@ -298,7 +298,7 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | `timediff` | ✅ | — | Spark 4.0+ grammar alias that parses to `timestampdiff`; runs through codegen dispatch |
 | `timestamp_micros` | ✅ | Codegen dispatch |  |
 | `timestamp_millis` | ✅ | Codegen dispatch |  |
-| `timestamp_seconds` | ✅ | Native |  |
+| `timestamp_seconds` | ✅ | Hybrid | Integer, long, float and double inputs run natively; decimal, byte and short inputs route through the JVM codegen dispatcher |
 | `timestampadd` | ✅ | — | Reached through the grammar rather than the function registry; runs through codegen dispatch |
 | `timestampdiff` | ✅ | — | Reached through the grammar rather than the function registry; runs through codegen dispatch |
 | `to_date` | ✅ | — | Rewrites to `Cast` (or `Cast(GetTimestamp)` with a format) before Comet sees the plan |
