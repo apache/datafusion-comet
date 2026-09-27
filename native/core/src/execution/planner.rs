@@ -1745,7 +1745,7 @@ impl PhysicalPlanner {
                     self.session_ctx(),
                     common.encryption_enabled,
                     common.use_field_id,
-                    common.ignore_missing_field_id,
+                    common.require_field_ids,
                 )?;
                 Ok((
                     vec![],

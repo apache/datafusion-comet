@@ -215,10 +215,10 @@ object CometDriverPlugin extends Logging {
     val key = CometConf.COMET_OFFHEAP_MEMORY_POOL_FRACTION.key
     conf.getOption(key).foreach { value =>
       logWarning(
-        s"$key=$value is deprecated and will be removed in a future release. It does not leave " +
-          "room in spark.memory.offHeap.size for native memory that Comet's memory pools do " +
-          "not track, because Spark hands out the whole off-heap pool whatever it is set to. " +
-          s"Size ${EXECUTOR_MEMORY_OVERHEAD.key} for that memory instead. " +
+        s"$key=$value is deprecated and will be removed in a future major release. It does " +
+          "not leave room in spark.memory.offHeap.size for native memory that Comet's memory " +
+          "pools do not track, because Spark hands out the whole off-heap pool whatever it is " +
+          s"set to. Size ${EXECUTOR_MEMORY_OVERHEAD.key} for that memory instead. " +
           s"${CometConf.TUNING_GUIDE}.")
     }
   }
