@@ -48,7 +48,14 @@ interface that vendors implement. It is small on purpose, and everything outside
 The following are covered by this versioning policy:
 
 - **Configuration keys under `spark.comet.*`**: their names, types, accepted values, default
-  values, and semantics.
+  values, and semantics. Two classes of key are excluded — those in the `testing` category, and
+  those marked internal; see
+  [Testing and Internal Configurations Are Exempt](#testing-and-internal-configurations-are-exempt).
+  Every other key is covered wherever Comet documents it, including keys the
+  [configuration reference](../user-guide/latest/configs.md) does not list in its own right: the
+  per-expression `spark.comet.expression.<Name>.allowIncompatible` opt-ins, which the
+  [compatibility guide](../user-guide/latest/compatibility/index.md) documents, and the deprecated
+  alias a rename leaves behind.
 - **A small, enumerated public Java and Scala API**: the class names users write into Spark config
   properties, and the S3 credential provider SPI that vendors implement. The full list is in
   [Public Scala and Java API](#public-scala-and-java-api).
@@ -59,6 +66,9 @@ The following are covered by this versioning policy:
 The following are internal implementation details. They are not covered by this policy and may
 change in any release:
 
+- Configuration keys in the `testing` category, and keys marked internal. They exist to let Comet's
+  own suites and maintainers reach internal behavior, and they expose that behavior directly. See
+  [Testing and Internal Configurations Are Exempt](#testing-and-internal-configurations-are-exempt).
 - The protobuf format used to serialize query plans between the JVM and the native library. The
   JVM jar and the native library ship together and are versioned together; see
   [Native Library Coupling](#native-library-coupling).
@@ -70,6 +80,52 @@ change in any release:
 - Performance characteristics, including which expressions and operators run natively and which
   fall back to Spark. An expression that ran natively in one release may fall back in the next,
   and vice versa. The results stay the same; only the speed changes.
+
+### Testing and Internal Configurations Are Exempt
+
+Two kinds of configuration key sit outside this policy, and what puts a key outside is an explicit
+mark on its declaration in `CometConf.scala`: **a key is exempt only if it is in the `testing`
+category or is marked `internal()`.** Every other `spark.comet.*` key is covered.
+
+Absence from the [configuration reference](../user-guide/latest/configs.md) is not the test,
+because that page is not an exhaustive list of covered keys. The per-expression
+`spark.comet.expression.<Name>.allowIncompatible` opt-ins are read as plain strings with no
+`ConfigEntry` behind them, so no generated table ever lists them; the
+[compatibility guide](../user-guide/latest/compatibility/index.md) is where they are documented
+instead. A deprecated alias left behind by a rename has no row of its own either. Both are fully
+covered.
+
+The two mechanisms that do exempt a key are set independently of each other:
+
+- **The `testing` category.** Every key declares a category, and `testing` routes it into the
+  Development & Testing Settings table rather than in with the production settings. These keys
+  exist so that Comet's own suites, and contributors chasing a bug, can reach a state the rest of
+  the code is not built to support: disabling native scans to isolate a planner problem, running
+  Comet in on-heap mode, making a declined operator throw instead of quietly reporting itself, or
+  running a partial aggregate without its final counterpart. Setting one is a debugging step, not a
+  deployment choice.
+- **`internal()`.** A key marked internal is left out of the configuration reference entirely, so
+  Comet never publishes its name, its default, or what it does. A user has no supported way to
+  learn that it exists, which is the point: these are escape hatches a maintainer reaches for while
+  working on Comet itself.
+
+For a key caught by either mechanism, the name, type, accepted values, default value, and semantics
+may change in any release, including a patch release, and the key may be removed outright. None of
+the machinery the rest of this policy requires applies: no `spark.comet.legacy.*` escape hatch for a
+behavior change, no deprecated alias for a rename, no deprecation cycle before removal, and no
+upgrade guide entry.
+
+The exemption exists because these keys point at Comet's internals by construction. Guaranteeing
+them across releases would pin the implementation details they expose, which is the thing the rest
+of this section deliberately leaves free to change.
+
+The corollary binds contributors: **neither mechanism may be the only way to reach a behavior that
+production users need.** If a knob turns out to be one that deployments legitimately set, it belongs
+in a non-`testing` category and must not be marked internal, and the guarantees come with it.
+Choosing a category, and deciding whether to mark a key internal, are therefore policy decisions
+rather than routing details; see
+[Categories and Visibility](../contributor-guide/config_conventions.md#categories-and-visibility)
+in the contributor guide.
 
 ## What Each Version Component Means
 
@@ -99,8 +155,11 @@ A minor release may:
 ### Patch Releases
 
 A patch release contains bug fixes only. It adds no configuration keys and makes no behavior
-changes, with one exception: correctness fixes, which are covered in
-[Correctness Fixes Are Not Breaking Changes](#correctness-fixes-are-not-breaking-changes).
+changes, with two exceptions: correctness fixes, which are covered in
+[Correctness Fixes Are Not Breaking Changes](#correctness-fixes-are-not-breaking-changes), and
+configuration keys in the `testing` category or marked internal, which are outside the policy
+altogether and may be added, changed, or removed in any release. See
+[Testing and Internal Configurations Are Exempt](#testing-and-internal-configurations-are-exempt).
 
 ## Behavior Changes and Legacy Configurations
 
@@ -125,6 +184,10 @@ Behavior changes that require this treatment include changing the default value 
 configuration key, changing what an existing key's values mean, and changing the semantics of an
 `Incompatible` expression or operator whose divergence from Spark users may have come to depend on.
 
+Changing a `testing` or internal key is not a behavior change for this purpose, and needs no escape
+hatch. See
+[Testing and Internal Configurations Are Exempt](#testing-and-internal-configurations-are-exempt).
+
 ### Lifetime of a Legacy Configuration
 
 A `spark.comet.legacy.*` key is deprecated from the moment it is added. Its purpose is to buy users
@@ -146,6 +209,10 @@ The alias may only be dropped in a major release.
 
 Removing a configuration key outright requires a deprecation cycle: the key must remain available,
 with a deprecation warning, for at least one minor release before it is removed in a major release.
+
+Neither rule applies to a `testing` or internal key, which may be renamed without an alias and
+removed in any release. See
+[Testing and Internal Configurations Are Exempt](#testing-and-internal-configurations-are-exempt).
 
 ## Correctness Fixes Are Not Breaking Changes
 
@@ -209,13 +276,17 @@ here, because a vendor jar built against one Comet release is loaded by another.
 The SPI consists of:
 
 - `CometS3CredentialProvider`, the interface a vendor implements.
+- `CometS3LocationScopedCredentialProvider`, an optional extension of it for buckets whose credentials
+  differ by location.
 - `CometS3Credentials`, the value a provider returns.
 - `CometS3CredentialContext` and `CometS3AccessMode`, describing the request being served.
 
 Additive changes are allowed in a minor release, for example a new accessor on
 `CometS3CredentialContext`, because a vendor jar compiled against an earlier `1.x` continues to
 load and run. Any change that would break such a jar, including adding an abstract method to
-`CometS3CredentialProvider` without a default implementation, requires a major release.
+`CometS3CredentialProvider` or `CometS3LocationScopedCredentialProvider` without a default
+implementation, requires a major release. The same holds for changing the meaning of an existing
+method, such as how `CometS3LocationScopedCredentialProvider` matches a path to a location.
 
 `CometS3CredentialDispatcher` is the JNI entry point Comet uses to reach a provider. It is internal
 despite living in the same package, and vendors must not call it.

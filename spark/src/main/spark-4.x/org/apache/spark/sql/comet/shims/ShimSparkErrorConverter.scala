@@ -288,6 +288,9 @@ trait ShimSparkErrorConverter {
       case "CannotParseDecimal" =>
         Some(QueryExecutionErrors.cannotParseDecimalError())
 
+      case "MalformedVariant" =>
+        Some(QueryExecutionErrors.malformedVariant())
+
       case "InvalidUtf8String" =>
         val hexStr = UTF8String.fromString(params("hexString").toString)
         Some(QueryExecutionErrors.invalidUTF8StringError(hexStr))

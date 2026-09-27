@@ -25,6 +25,7 @@ import org.scalatest.Tag
 import org.apache.hadoop.fs.Path
 import org.apache.parquet.hadoop.ParquetFileReader
 import org.apache.parquet.hadoop.util.HadoopInputFile
+import org.apache.spark.SparkException
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.catalyst.TableIdentifier
 import org.apache.spark.sql.catalyst.analysis.UnresolvedRelation
@@ -33,6 +34,7 @@ import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight}
 import org.apache.spark.sql.comet.{CometBroadcastExchangeExec, CometBroadcastHashJoinExec, CometBroadcastNestedLoopJoinExec, CometFilterExec, CometHashJoinExec, CometNativeScanExec, CometSortMergeJoinExec, CometUnionExec}
 import org.apache.spark.sql.execution.{LocalTableScanExec, SparkPlan}
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AQEShuffleReadExec}
+import org.apache.spark.sql.execution.datasources.SchemaColumnConvertNotSupportedException
 import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{ArrayType, IntegerType, MetadataBuilder, StructField, StructType}
@@ -511,6 +513,62 @@ class CometJoinSuite extends CometTestBase {
                   } else {
                     unfilteredBytes = bytes
                   }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  test("join dynamic filter preserves Parquet schema conversion errors") {
+    withTempPath { probePath =>
+      withSQLConf(
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+        SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+        SQLConf.LEAF_NODE_DEFAULT_PARALLELISM.key -> "1",
+        SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
+        SQLConf.PARQUET_VECTORIZED_READER_ENABLED.key -> "true") {
+        spark
+          .range(100, 104, 1, 1)
+          .selectExpr("CAST(id AS INT) AS probe_key", "id AS payload")
+          .write
+          .parquet(probePath.getCanonicalPath)
+        withTempView("dynamic_schema_probe") {
+          // INT64 -> INT32 is invalid even when the stored values fit. Keep the
+          // payload projected so discarding the nonmatching keys cannot hide it.
+          spark.read
+            .schema("probe_key INT, payload INT")
+            .parquet(probePath.getCanonicalPath)
+            .createOrReplaceTempView("dynamic_schema_probe")
+          withParquetTable(Seq(Tuple1(0)), "dynamic_schema_build") {
+            for ((comet, dynamicFilter) <- Seq((false, false), (true, false), (true, true))) {
+              withSQLConf(
+                CometConf.COMET_ENABLED.key -> comet.toString,
+                CometConf.COMET_EXEC_JOIN_DYNAMIC_FILTER_ENABLED.key -> dynamicFilter.toString) {
+                val df = sql(
+                  "SELECT /*+ BROADCAST(b) */ p.probe_key, p.payload " +
+                    "FROM dynamic_schema_probe p JOIN dynamic_schema_build b " +
+                    "ON p.probe_key = b._1")
+                val plan = df.queryExecution.executedPlan
+                if (comet) {
+                  val joins = collect(plan) { case join: CometBroadcastHashJoinExec => join }
+                  assert(joins.size == 1, s"Expected one native broadcast hash join:\n$plan")
+                  assert(joins.head.buildSide == BuildRight)
+                  assert(joins.head.nativeOp.getHashJoin.getDynamicFilterEnabled == dynamicFilter)
+                  val probes = collect(plan) {
+                    case scan: CometNativeScanExec if scan.output.exists(_.name == "payload") =>
+                      scan
+                  }
+                  assert(probes.size == 1, s"Expected one native probe scan:\n$plan")
+                }
+                withClue(s"comet=$comet, dynamicFilter=$dynamicFilter: ") {
+                  val error = intercept[SparkException](df.collect())
+                  val chain = causeChain(error)
+                  assert(
+                    chain.exists(_.isInstanceOf[SchemaColumnConvertNotSupportedException]),
+                    s"Expected a Parquet schema conversion error, found $chain")
                 }
               }
             }

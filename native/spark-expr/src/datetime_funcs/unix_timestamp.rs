@@ -23,7 +23,6 @@ use datafusion::common::{internal_datafusion_err, DataFusionError};
 use datafusion::logical_expr::{
     ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl, Signature, Volatility,
 };
-use num::integer::div_floor;
 use std::{fmt::Debug, sync::Arc};
 
 const MICROS_PER_SECOND: i64 = 1_000_000;
@@ -84,12 +83,12 @@ impl ScalarUDFImpl for SparkUnixTimestamp {
                         timestamp_array
                             .values()
                             .iter()
-                            .map(|&micros| div_floor(micros, MICROS_PER_SECOND))
+                            .map(|&micros| micros / MICROS_PER_SECOND)
                             .collect()
                     } else {
                         timestamp_array
                             .iter()
-                            .map(|v| v.map(|micros| div_floor(micros, MICROS_PER_SECOND)))
+                            .map(|v| v.map(|micros| micros / MICROS_PER_SECOND))
                             .collect()
                     };
 
@@ -116,12 +115,12 @@ impl ScalarUDFImpl for SparkUnixTimestamp {
                         timestamp_array
                             .values()
                             .iter()
-                            .map(|&micros| div_floor(micros, MICROS_PER_SECOND))
+                            .map(|&micros| micros / MICROS_PER_SECOND)
                             .collect()
                     } else {
                         timestamp_array
                             .iter()
-                            .map(|v| v.map(|micros| div_floor(micros, MICROS_PER_SECOND)))
+                            .map(|v| v.map(|micros| micros / MICROS_PER_SECOND))
                             .collect()
                     };
 
@@ -153,7 +152,7 @@ impl ScalarUDFImpl for SparkUnixTimestamp {
                     } else {
                         timestamp_array
                             .iter()
-                            .map(|v| v.map(|micros| div_floor(micros, MICROS_PER_SECOND)))
+                            .map(|v| v.map(|micros| micros / MICROS_PER_SECOND))
                             .collect()
                     };
 
@@ -205,6 +204,57 @@ mod tests {
             assert_eq!(int64_array.value(0), 1577836800);
         } else {
             panic!("Expected array result");
+        }
+    }
+
+    #[test]
+    fn test_unix_timestamp_truncates_fractional_seconds_toward_zero() {
+        for timezone in [None, Some("UTC")] {
+            for with_null in [false, true] {
+                let mut values = vec![
+                    Some(-1_500_000),
+                    Some(-1_000_000),
+                    Some(-999_999),
+                    Some(-1),
+                    Some(0),
+                    Some(1),
+                    Some(999_999),
+                    Some(1_000_000),
+                    Some(1_500_000),
+                ];
+                let mut expected = vec![
+                    Some(-1),
+                    Some(-1),
+                    Some(0),
+                    Some(0),
+                    Some(0),
+                    Some(0),
+                    Some(0),
+                    Some(1),
+                    Some(1),
+                ];
+                if with_null {
+                    values.push(None);
+                    expected.push(None);
+                }
+                let input = TimestampMicrosecondArray::from(values).with_timezone_opt(timezone);
+                let number_rows = input.len();
+                let udf = SparkUnixTimestamp::new("UTC".to_string());
+                let result = udf
+                    .invoke_with_args(ScalarFunctionArgs {
+                        args: vec![ColumnarValue::Array(Arc::new(input))],
+                        number_rows,
+                        return_field: Arc::new(Field::new("unix_timestamp", DataType::Int64, true)),
+                        config_options: Arc::new(ConfigOptions::default()),
+                        arg_fields: vec![],
+                    })
+                    .unwrap();
+                let ColumnarValue::Array(result) = result else {
+                    panic!("Expected array result");
+                };
+                let actual = result.as_primitive::<Int64Type>();
+                assert_eq!(actual.iter().collect::<Vec<_>>(), expected);
+            }
         }
     }
 

@@ -171,13 +171,26 @@ safe to make a required check.
 
 ### Label events
 
-`ci.yml` also fires on `pull_request.types: [labeled]`, so applying
-`run-spark-3.4-tests`, `run-spark-4.0-tests` or `run-iceberg-tests` starts the
-job that label gates without needing a new push. GitHub cannot filter a
-`pull_request` trigger by label name, so **every** label added to a PR starts a
-run, including labels that gate nothing.
+`ci_label.yml` fires on `pull_request.types: [labeled]` and calls `ci.yml`
+through `workflow_call`, so applying `run-spark-3.4-tests`,
+`run-spark-4.0-tests` or `run-iceberg-tests` starts the job that label gates
+without needing a new push. GitHub cannot filter a `pull_request` trigger by
+label name, so **every** label added to a PR starts a run, including labels
+that gate nothing. A called workflow sees its caller's event context, so
+`POLICY` still reads the `labeled` action and the label name.
 
-Two rules keep those runs from corrupting the PR's status:
+These rules keep those runs from corrupting the PR's status:
+
+- Label runs come from their own workflow, not from a `labeled` type on
+  `ci.yml`'s trigger. When one workflow runs twice at the same commit, GitHub
+  evaluates the PR's required checks against only one of the two runs. A PR
+  opened with a label already applied fires `opened` and `labeled` together,
+  and when GitHub picked the label run, `Required Checks` showed as "Expected"
+  forever and the merge queue never accepted the PR, see
+  [#6159](https://github.com/apache/datafusion-comet/issues/6159). A run of
+  `ci_label.yml` has its own check suite, and every check it publishes is
+  nested under its `Label run` job, so it cannot hide or replace a commit
+  run's check.
 
 - `preflight` and `changes` carry no event guard and run every time. A job held
   back by `if:` still publishes a check run under its own name with conclusion

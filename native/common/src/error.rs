@@ -21,6 +21,11 @@ use std::sync::Arc;
 
 #[derive(thiserror::Error, Debug, Clone)]
 pub enum SparkError {
+    #[error(
+        "[MALFORMED_VARIANT] Variant binary is malformed. Please check the data source is valid."
+    )]
+    MalformedVariant,
+
     // This list was generated from the Spark code. Many of the exceptions are not yet used by Comet
     #[error("[CAST_INVALID_INPUT] The value '{value}' of the type \"{from_type}\" cannot be cast to \"{to_type}\" \
         because it is malformed. Correct the value as per the syntax, or change its target type. \
@@ -222,17 +227,18 @@ pub enum SparkError {
     /// Multiple Parquet fields share the same field id when the read schema requested an
     /// id-based lookup. Mirrors Spark's `_LEGACY_ERROR_TEMP_2094`
     /// (`foundDuplicateFieldInFieldIdLookupModeError`).
-    #[error("[_LEGACY_ERROR_TEMP_2094] Found duplicate field(s) by id: id={required_id} matches [{matched_fields}] in id-lookup mode")]
+    #[error("[_LEGACY_ERROR_TEMP_2094] Found duplicate field(s) by id: id={required_id} matches {matched_fields} in id-lookup mode")]
     DuplicateFieldByFieldId {
         required_id: i32,
         matched_fields: String,
     },
 
-    /// The read schema requests Parquet field-id matching but the file carries no field ids.
-    /// Mirrors the runtime error raised in Spark's `ParquetReadSupport` when
-    /// `spark.sql.parquet.fieldId.read.ignoreMissing` is false.
+    /// The read schema carries Parquet field ids but the file carries none. Mirrors the runtime
+    /// error raised in Spark's `ParquetReadSupport` when
+    /// `spark.sql.parquet.fieldId.read.ignoreMissing` is false. Spark's message names no file,
+    /// so `file_path` travels as a parameter for the 4.x shim's `FAILED_READ_FILE` wrapper.
     #[error("Spark read schema expects field Ids, but Parquet file schema doesn't contain any field Ids. Please remove the field ids from Spark schema or ignore missing ids by setting `spark.sql.parquet.fieldId.read.ignoreMissing = true`")]
-    ParquetMissingFieldIds,
+    ParquetMissingFieldIds { file_path: String },
 
     /// Schema mismatch when reading a Parquet column under a requested schema
     /// that's incompatible with the physical column type. Translated by the JVM
@@ -301,6 +307,7 @@ impl SparkError {
     /// Get the error type name for JSON serialization
     pub(crate) fn error_type_name(&self) -> &'static str {
         match self {
+            SparkError::MalformedVariant => "MalformedVariant",
             SparkError::CastInvalidValue { .. } => "CastInvalidValue",
             SparkError::InvalidInputInCastToDatetime { .. } => "InvalidInputInCastToDatetime",
             SparkError::NumericValueOutOfRange { .. } => "NumericValueOutOfRange",
@@ -347,7 +354,7 @@ impl SparkError {
             SparkError::FileNotFound { .. } => "FileNotFound",
             SparkError::DuplicateFieldCaseInsensitive { .. } => "DuplicateFieldCaseInsensitive",
             SparkError::DuplicateFieldByFieldId { .. } => "DuplicateFieldByFieldId",
-            SparkError::ParquetMissingFieldIds => "ParquetMissingFieldIds",
+            SparkError::ParquetMissingFieldIds { .. } => "ParquetMissingFieldIds",
             SparkError::ParquetSchemaConvert { .. } => "ParquetSchemaConvert",
             SparkError::CannotReadFile { .. } => "CannotReadFile",
             SparkError::Arrow(_) => "Arrow",
@@ -598,6 +605,11 @@ impl SparkError {
                     "matchedFields": matched_fields,
                 })
             }
+            SparkError::ParquetMissingFieldIds { file_path } => {
+                serde_json::json!({
+                    "filePath": file_path,
+                })
+            }
             SparkError::ParquetSchemaConvert {
                 file_path,
                 column,
@@ -662,7 +674,8 @@ impl SparkError {
             | SparkError::InvalidIndexOfZero => "org/apache/spark/SparkArrayIndexOutOfBoundsException",
 
             // RuntimeException
-            SparkError::CannotParseDecimal
+            SparkError::MalformedVariant
+            | SparkError::CannotParseDecimal
             | SparkError::DuplicatedMapKey { .. }
             | SparkError::NullMapKey
             | SparkError::MapKeyValueDiffSizes
@@ -704,10 +717,11 @@ impl SparkError {
             // (Spark's `foundDuplicateFieldInFieldIdLookupModeError` returns SparkRuntimeException)
             SparkError::DuplicateFieldByFieldId { .. } => "org/apache/spark/SparkRuntimeException",
 
-            // ParquetMissingFieldIds - converted to a plain RuntimeException by the shim,
-            // matching the `RuntimeException` Spark's ParquetReadSupport throws when the
-            // file lacks field ids and `spark.sql.parquet.fieldId.read.ignoreMissing=false`.
-            SparkError::ParquetMissingFieldIds => "java/lang/RuntimeException",
+            // ParquetMissingFieldIds - converted to the plain RuntimeException Spark's
+            // ParquetReadSupport throws when the file lacks field ids and
+            // `spark.sql.parquet.fieldId.read.ignoreMissing=false`. The 4.x shim wraps it in
+            // the FAILED_READ_FILE SparkException Spark 4 raises at the task boundary.
+            SparkError::ParquetMissingFieldIds { .. } => "java/lang/RuntimeException",
 
             // ParquetSchemaConvert - converted to SchemaColumnConvertNotSupportedException by the shim
             SparkError::ParquetSchemaConvert { .. } => {
@@ -726,6 +740,7 @@ impl SparkError {
     /// Returns the Spark error class code for this error
     pub(crate) fn error_class(&self) -> Option<&'static str> {
         match self {
+            SparkError::MalformedVariant => Some("MALFORMED_VARIANT"),
             // Cast errors
             SparkError::CastInvalidValue { .. } => Some("CAST_INVALID_INPUT"),
             SparkError::InvalidInputInCastToDatetime { .. } => Some("CAST_INVALID_INPUT"),
@@ -806,8 +821,9 @@ impl SparkError {
             // Duplicate field id in id-lookup mode
             SparkError::DuplicateFieldByFieldId { .. } => Some("_LEGACY_ERROR_TEMP_2094"),
 
-            // ParquetMissingFieldIds is a plain RuntimeException with no error class.
-            SparkError::ParquetMissingFieldIds => None,
+            // ParquetMissingFieldIds is a plain RuntimeException with no error class. The 4.x
+            // shim supplies FAILED_READ_FILE itself, so none is exposed here.
+            SparkError::ParquetMissingFieldIds { .. } => None,
 
             // Parquet schema mismatch — translated to SchemaColumnConvertNotSupportedException
             // by the JVM shim. The shim wraps it in the version-appropriate

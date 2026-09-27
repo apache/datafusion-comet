@@ -21,12 +21,6 @@ use crate::errors::{CometError, CometResult};
 pub(crate) enum MemoryPoolType {
     GreedyUnified,
     FairUnified,
-    Greedy,
-    FairSpill,
-    GreedyTaskShared,
-    FairSpillTaskShared,
-    GreedyGlobal,
-    FairSpillGlobal,
     Unbounded,
 }
 
@@ -48,47 +42,30 @@ pub(crate) fn parse_memory_pool_config(
     off_heap_mode: bool,
     memory_pool_type: String,
     memory_limit: i64,
-    memory_limit_per_task: i64,
 ) -> CometResult<MemoryPoolConfig> {
+    if !off_heap_mode {
+        // On-heap mode exists so that the Spark SQL tests can run against Comet without changing
+        // Spark's memory configuration. Comet's native allocations are not on the JVM heap, so
+        // there is no Spark pool they can honestly be charged to, and the fixed-size pool that
+        // used to stand in for one bounded nothing the container cares about. It is not a
+        // production configuration, so it accounts for nothing.
+        return Ok(MemoryPoolConfig::new(MemoryPoolType::Unbounded, 0));
+    }
+
     let pool_size = memory_limit as usize;
-    let memory_pool_config = if off_heap_mode {
-        match memory_pool_type.as_str() {
-            "fair_unified" => MemoryPoolConfig::new(MemoryPoolType::FairUnified, pool_size),
-            "greedy_unified" => {
-                // the `unified` memory pool interacts with Spark's memory pool to allocate
-                // memory therefore does not need a size to be explicitly set. The pool size
-                // shared with Spark is set by `spark.memory.offHeap.size`.
-                MemoryPoolConfig::new(MemoryPoolType::GreedyUnified, 0)
-            }
-            _ => {
-                return Err(CometError::Config(format!(
-                    "Unsupported memory pool type for off-heap mode: {memory_pool_type}"
-                )))
-            }
+    match memory_pool_type.as_str() {
+        "fair_unified" => Ok(MemoryPoolConfig::new(
+            MemoryPoolType::FairUnified,
+            pool_size,
+        )),
+        "greedy_unified" => {
+            // the `unified` memory pool interacts with Spark's memory pool to allocate
+            // memory therefore does not need a size to be explicitly set. The pool size
+            // shared with Spark is set by `spark.memory.offHeap.size`.
+            Ok(MemoryPoolConfig::new(MemoryPoolType::GreedyUnified, 0))
         }
-    } else {
-        // Use the memory pool from DF
-        let pool_size_per_task = memory_limit_per_task as usize;
-        match memory_pool_type.as_str() {
-            "fair_spill_task_shared" => {
-                MemoryPoolConfig::new(MemoryPoolType::FairSpillTaskShared, pool_size_per_task)
-            }
-            "greedy_task_shared" => {
-                MemoryPoolConfig::new(MemoryPoolType::GreedyTaskShared, pool_size_per_task)
-            }
-            "fair_spill_global" => {
-                MemoryPoolConfig::new(MemoryPoolType::FairSpillGlobal, pool_size)
-            }
-            "greedy_global" => MemoryPoolConfig::new(MemoryPoolType::GreedyGlobal, pool_size),
-            "fair_spill" => MemoryPoolConfig::new(MemoryPoolType::FairSpill, pool_size_per_task),
-            "greedy" => MemoryPoolConfig::new(MemoryPoolType::Greedy, pool_size_per_task),
-            "unbounded" => MemoryPoolConfig::new(MemoryPoolType::Unbounded, 0),
-            _ => {
-                return Err(CometError::Config(format!(
-                    "Unsupported memory pool type for on-heap mode: {memory_pool_type}"
-                )))
-            }
-        }
-    };
-    Ok(memory_pool_config)
+        _ => Err(CometError::Config(format!(
+            "Unsupported memory pool type: {memory_pool_type}"
+        ))),
+    }
 }

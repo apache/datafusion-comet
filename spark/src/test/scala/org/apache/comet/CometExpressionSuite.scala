@@ -23,9 +23,9 @@ import scala.util.Random
 
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.{Column, CometTestBase, DataFrame, Row}
-import org.apache.spark.sql.catalyst.expressions.{Alias, Cast, FromUnixTime, InSet, Literal, StructsToJson, TruncDate, TruncTimestamp}
+import org.apache.spark.sql.catalyst.expressions.{Alias, Cast, FromUnixTime, In, InSet, Literal, StructsToJson, TruncDate, TruncTimestamp}
 import org.apache.spark.sql.catalyst.optimizer.{ConvertToLocalRelation, OptimizeIn, SimplifyExtractValueOps}
-import org.apache.spark.sql.comet.{CometProjectExec, CometSortExec, CometTakeOrderedAndProjectExec}
+import org.apache.spark.sql.comet.{CometFilterExec, CometProjectExec, CometSortExec, CometTakeOrderedAndProjectExec}
 import org.apache.spark.sql.execution.{LocalTableScanExec, ProjectExec, SparkPlan}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions._
@@ -47,6 +47,38 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     val cometDf = Seq((1, "apple"), (2, "banana"), (3, "cherry")).toDF("id", "fruit")
     val sparkAnswer = Seq(Row(1, "apple"), Row(2, "BANANA"), Row(3, "cherry"))
     checkCometAnswer(cometDf, sparkAnswer)
+  }
+
+  test("nested floating point membership uses native In and InSet") {
+    withTable("nested_in_plan") {
+      sql("CREATE TABLE nested_in_plan (a ARRAY<DOUBLE>) USING parquet")
+      sql("""INSERT INTO nested_in_plan VALUES
+        |(array(CAST('-0.0' AS DOUBLE))), (array(CAST('0.0' AS DOUBLE))),
+        |(array(CAST('NaN' AS DOUBLE))), (array(CAST('1.0' AS DOUBLE))),
+        |(array(CAST(NULL AS DOUBLE))), (array()), (NULL)""".stripMargin)
+      withSQLConf(SQLConf.OPTIMIZER_EXCLUDED_RULES.key -> "") {
+        for (size <- Seq(1, 2)) {
+          val candidates = Seq.fill(size)("array(CAST('0.0' AS DOUBLE))").mkString(", ")
+          val df = sql(s"SELECT a IN ($candidates), a NOT IN ($candidates) FROM nested_in_plan")
+          val expressions = df.queryExecution.optimizedPlan.flatMap(_.expressions)
+          assert(!expressions.exists(_.exists(_.isInstanceOf[In])))
+          checkSparkAnswerAndImpl(df, native = Seq("equalto"))
+        }
+      }
+      for (threshold <- Seq(100, 0)) {
+        withSQLConf("spark.sql.optimizer.inSetConversionThreshold" -> threshold.toString) {
+          val df = sql("""SELECT a IN (array(CAST('0.0' AS DOUBLE)),
+            |array(CAST('2.0' AS DOUBLE))) FROM nested_in_plan""".stripMargin)
+          val expressions = df.queryExecution.optimizedPlan.flatMap(_.expressions)
+          if (threshold == 0) {
+            assert(expressions.exists(_.exists(_.isInstanceOf[InSet])))
+          } else {
+            assert(expressions.exists(_.exists(_.isInstanceOf[In])))
+          }
+          checkSparkAnswerAndImpl(df, native = Seq(if (threshold == 0) "inset" else "in"))
+        }
+      }
+    }
   }
 
   test("sort floating point with negative zero") {
@@ -292,6 +324,155 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           checkSparkAnswerAndOperator(
             s"SELECT col1, negative(col2), cast(col1 as float), col1 = negative(col2) FROM $table")
         }
+      }
+    }
+  }
+
+  Seq(
+    (
+      "float",
+      "_1",
+      Seq[Any](
+        java.lang.Float.intBitsToFloat(0x7fc00001),
+        java.lang.Float.intBitsToFloat(0xffc00002))),
+    (
+      "double",
+      "_2",
+      Seq[Any](
+        java.lang.Double.longBitsToDouble(0x7ff8000000000001L),
+        java.lang.Double.longBitsToDouble(0xfff8000000000002L)))).foreach {
+    case (dataType, column, nanLiterals) =>
+      test(s"compare $dataType columns with noncanonical NaN literals") {
+        withSQLConf(SQLConf.PARQUET_FILTER_PUSHDOWN_ENABLED.key -> "false") {
+          val rows = Seq(
+            (Some(Float.NaN), Some(Double.NaN)),
+            (Some(-0.0f), Some(-0.0d)),
+            (Some(0.0f), Some(0.0d)),
+            (Some(-1.0f), Some(-1.0d)),
+            (Some(1.0f), Some(1.0d)),
+            (Some(Float.NegativeInfinity), Some(Double.NegativeInfinity)),
+            (Some(Float.PositiveInfinity), Some(Double.PositiveInfinity)),
+            (None, None))
+          val identifiedRows = rows.zipWithIndex.map { case ((f, d), id) => (f, d, id) }
+          withParquetDataFrame(identifiedRows, withDictionary = false) { df =>
+            // Parquet canonicalizes stored NaNs, so construct the signed/payload literals here.
+            // Compare Boolean results so Spark's NaN-aware answer checker cannot hide a mismatch.
+            val value = df(column)
+            nanLiterals.foreach { nan =>
+              val literal = lit(nan)
+              Seq((value, literal), (literal, value)).foreach { case (left, right) =>
+                val comparisons = Seq(
+                  left === right,
+                  left =!= right,
+                  left.eqNullSafe(right),
+                  left < right,
+                  left <= right,
+                  left > right,
+                  left >= right)
+                checkSparkAnswerAndOperator(
+                  df.select(comparisons: _*),
+                  Seq(classOf[CometProjectExec]))
+                comparisons.foreach { comparison =>
+                  // Compare surviving identities, not just NaN-aware row values. Keep Parquet
+                  // pushdown disabled so every ordering predicate executes in CometFilterExec.
+                  checkSparkAnswerAndOperator(
+                    df.filter(comparison).select("_3"),
+                    Seq(classOf[CometFilterExec]))
+                }
+              }
+            }
+          }
+        }
+      }
+  }
+
+  for ((name, threshold) <- Seq(("In", 10), ("InSet", 1))) {
+    test(s"floating $name and NOT $name normalize NaNs and signed zeros") {
+      withSQLConf(
+        SQLConf.PARQUET_FILTER_PUSHDOWN_ENABLED.key -> "false",
+        "spark.sql.optimizer.inSetConversionThreshold" -> threshold.toString) {
+        val rows = Seq(
+          (0, Some(Float.NaN), Some(Double.NaN)),
+          (1, Some(0.0f), Some(0.0d)),
+          (2, Some(-0.0f), Some(-0.0d)),
+          (3, Some(13.0f), Some(13.0d)),
+          (4, Some(1.0f), Some(1.0d)),
+          (5, None, None),
+          (6, Some(Float.PositiveInfinity), Some(Double.PositiveInfinity)),
+          (7, Some(Float.NegativeInfinity), Some(Double.NegativeInfinity)))
+        withParquetDataFrame(rows, withDictionary = false) { df =>
+          val cases = Seq(
+            (
+              java.lang.Float.intBitsToFloat(0x7fc00001),
+              java.lang.Double.longBitsToDouble(0x7ff8000000000001L)),
+            (
+              java.lang.Float.intBitsToFloat(0xffc00002),
+              java.lang.Double.longBitsToDouble(0xfff8000000000002L)),
+            (0.0f, 0.0d),
+            (-0.0f, -0.0d),
+            (Float.PositiveInfinity, Double.PositiveInfinity),
+            (Float.NegativeInfinity, Double.NegativeInfinity))
+          for ((f, d) <- cases; includeNull <- Seq(false, true)) {
+            val floatCandidates: Seq[Any] = Seq(f, 13.0f) ++ (if (includeNull) Seq(null) else Nil)
+            val doubleCandidates: Seq[Any] =
+              Seq(d, 13.0d) ++ (if (includeNull) Seq(null) else Nil)
+            // Negation creates negative NaNs after the Parquet scan, so the membership value
+            // must be normalized as well as the programmatically constructed list literals.
+            val predicates = Seq(df("_2"), -df("_2")).map(_.isin(floatCandidates: _*)) ++
+              Seq(df("_3"), -df("_3")).map(_.isin(doubleCandidates: _*))
+            val projected = df.select(df("_1") +: predicates.flatMap(p => Seq(p, !p)): _*)
+            val optimized = projected.queryExecution.optimizedPlan
+            val membership = optimized.expressions.flatMap(_.collect {
+              case _: org.apache.spark.sql.catalyst.expressions.In => "In"
+              case _: org.apache.spark.sql.catalyst.expressions.InSet => "InSet"
+            })
+            // A singleton IN is rewritten to equality and would not exercise the faulty kernel.
+            assert(membership.nonEmpty && membership.forall(_ == name), optimized.toString)
+            checkSparkAnswerAndOperator(projected, Seq(classOf[CometProjectExec]))
+            for (p <- predicates; negate <- Seq(false, true)) {
+              val filtered = df.filter(if (negate) !p else p).select("_1")
+              if (includeNull && negate) {
+                // NOT IN with a null candidate can never be true. Spark legitimately replaces
+                // this filter with an empty LocalRelation before physical planning.
+                checkSparkAnswer(filtered)
+              } else {
+                checkSparkAnswerAndOperator(filtered, Seq(classOf[CometFilterExec]))
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  test("floating IN with a column candidate normalizes signed zeros") {
+    withSQLConf(
+      SQLConf.PARQUET_FILTER_PUSHDOWN_ENABLED.key -> "false",
+      "spark.sql.optimizer.inSetConversionThreshold" -> "10") {
+      val rows = Seq(
+        (0, Some(-0.0d), Some(0.0d)),
+        (1, Some(0.0d), Some(-0.0d)),
+        (2, Some(1.0d), Some(2.0d)),
+        (3, None, Some(0.0d)))
+      withParquetDataFrame(rows, withDictionary = false) { df =>
+        // The first candidate is another column, so DataFusion evaluates dynamic equality rather
+        // than a static literal filter. The second candidate keeps Spark from rewriting a
+        // singleton IN to ordinary equality before Comet serializes it.
+        val predicate = df("_2").isin(df("_3"), lit(13.0d))
+        val projected = df.select(df("_1"), predicate)
+        val optimized = projected.queryExecution.optimizedPlan
+        val membership = optimized.expressions.flatMap(_.collect {
+          case in: org.apache.spark.sql.catalyst.expressions.In => in
+        })
+        assert(
+          membership.size == 1 &&
+            membership.forall(_.list.exists(candidate => !candidate.isInstanceOf[Literal])),
+          optimized.toString)
+
+        checkSparkAnswerAndOperator(projected, Seq(classOf[CometProjectExec]))
+        checkSparkAnswerAndOperator(
+          df.filter(predicate).select("_1"),
+          Seq(classOf[CometFilterExec]))
       }
     }
   }

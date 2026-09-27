@@ -79,6 +79,26 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
     }
   }
 
+  test("plan-only mode leaves the write with Spark") {
+    withDetectionCatalog { dir =>
+      createTable(dir, "plan_only", partitionSpec = "")
+      // IcebergWriteStrategy runs before CometRule, so it needs its own plan-only guard.
+      // withSQLConf returns Unit on Spark 3.4/3.5, hence the var.
+      var plan: SparkPlan = null
+      withSQLConf(CometConf.COMET_EXPLAIN_PLAN_ONLY_ENABLED.key -> "true") {
+        plan = captureWritePlan("plan_only", allowWriteFailure = false) {
+          spark.sql(s"INSERT INTO $catalog.$ns.plan_only VALUES (1, 'us', 1.0)")
+        }
+      }
+      assert(
+        findWriteExec(plan).isEmpty,
+        s"plan-only mode must not split the write into Comet's two-operator shape:\n$plan")
+      assert(
+        !containsCometWriteExec(plan),
+        s"plan-only mode must not offload the write to Comet:\n$plan")
+    }
+  }
+
   test("SparkWrite reflection helpers all resolve on the current Iceberg runtime") {
     withDetectionCatalog { dir =>
       createTable(dir, "refl_probe", partitionSpec = "")
