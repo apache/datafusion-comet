@@ -24,6 +24,7 @@ use arrow::compute::{cast, SortOptions};
 use arrow::datatypes::{Field, Schema};
 use arrow::record_batch::RecordBatch;
 use datafusion::datasource::listing::PartitionedFile;
+use datafusion::datasource::memory::MemorySourceConfig;
 use datafusion::datasource::source::DataSourceExec;
 use datafusion::execution::object_store::ObjectStoreUrl;
 use datafusion::physical_expr::{LexOrdering, PhysicalSortExpr};
@@ -33,9 +34,12 @@ use parquet::arrow::ArrowWriter;
 use parquet::file::properties::{EnabledStatistics, WriterProperties};
 
 mod correctness;
+mod eligibility;
+mod lifecycle;
 mod reader;
 mod schema;
 mod statistics;
+mod timestamp;
 
 fn session(batch_size: usize) -> Arc<SessionContext> {
     let mut config = SessionConfig::new()
@@ -45,6 +49,28 @@ fn session(batch_size: usize) -> Arc<SessionContext> {
     // Isolate dynamic row-group pruning from row filters and page indexes.
     config.options_mut().execution.parquet.pushdown_filters = false;
     Arc::new(SessionContext::new_with_config(config))
+}
+
+fn batch(values: Vec<Option<i32>>, key_type: &DataType) -> RecordBatch {
+    let schema = Arc::new(Schema::new(vec![Field::new("key", key_type.clone(), true)]));
+    RecordBatch::try_new(
+        schema,
+        vec![cast(&Int32Array::from(values), key_type).unwrap()],
+    )
+    .unwrap()
+}
+
+fn memory_input(values: Vec<Option<i32>>, key_type: &DataType) -> Arc<dyn ExecutionPlan> {
+    let batch = batch(values, key_type);
+    let batches = if batch.num_rows() == 0 {
+        vec![batch.clone()]
+    } else {
+        (0..batch.num_rows())
+            .step_by(2)
+            .map(|offset| batch.slice(offset, 2.min(batch.num_rows() - offset)))
+            .collect()
+    };
+    MemorySourceConfig::try_new_exec(&[batches], batch.schema(), None).unwrap()
 }
 
 fn sort(input: Arc<dyn ExecutionPlan>, k: usize, options: SortOptions) -> SortExec {

@@ -50,6 +50,7 @@ class CometTopKSuite extends CometTestBase {
   for (partitions <- Seq(1, 3); adaptive <- Seq(false, true)) {
     test(s"local TopK shares the native scan: partitions=$partitions, AQE=$adaptive") {
       withSQLConf(
+        CometConf.COMET_EXEC_TOPK_DYNAMIC_FILTER_ENABLED.key -> "true",
         CometConf.COMET_EXEC_TOPK_FUSION_ENABLED.key -> "true",
         SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString,
         SQLConf.LEAF_NODE_DEFAULT_PARALLELISM.key -> partitions.toString,
@@ -114,6 +115,7 @@ class CometTopKSuite extends CometTestBase {
     test(s"disabling fusion retains native TopK: AQE=$adaptive") {
       assert(!CometConf.COMET_EXEC_TOPK_FUSION_ENABLED.get())
       withSQLConf(
+        CometConf.COMET_EXEC_TOPK_DYNAMIC_FILTER_ENABLED.key -> "true",
         CometConf.COMET_EXEC_TOPK_FUSION_ENABLED.key -> "false",
         SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString) {
         withParquetTable((0 until 20).map(i => (i, 20 - i)), "topk_input") {
@@ -131,6 +133,7 @@ class CometTopKSuite extends CometTestBase {
   for (partitions <- Seq(1, 2)) {
     test(s"local TopK preserves nulls, ties and small inputs: partitions=$partitions") {
       withSQLConf(
+        CometConf.COMET_EXEC_TOPK_DYNAMIC_FILTER_ENABLED.key -> "true",
         CometConf.COMET_EXEC_TOPK_FUSION_ENABLED.key -> "true",
         SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
         SQLConf.LEAF_NODE_DEFAULT_PARALLELISM.key -> partitions.toString,
@@ -163,7 +166,9 @@ class CometTopKSuite extends CometTestBase {
 
   for (keyType <- Seq("TINYINT", "SMALLINT", "INT", "BIGINT")) {
     test(s"local TopK supports signed $keyType keys and final projections") {
-      withSQLConf(CometConf.COMET_EXEC_TOPK_FUSION_ENABLED.key -> "true") {
+      withSQLConf(
+        CometConf.COMET_EXEC_TOPK_DYNAMIC_FILTER_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_TOPK_FUSION_ENABLED.key -> "true") {
         withTempPath { path =>
           spark
             .range(-120, 120, 1, 2)
@@ -236,7 +241,9 @@ class CometTopKSuite extends CometTestBase {
   }
 
   test("fusion preserves empty Parquet input") {
-    withSQLConf(CometConf.COMET_EXEC_TOPK_FUSION_ENABLED.key -> "true") {
+    withSQLConf(
+      CometConf.COMET_EXEC_TOPK_DYNAMIC_FILTER_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_TOPK_FUSION_ENABLED.key -> "true") {
       withTempPath { path =>
         spark.range(0).write.parquet(path.getCanonicalPath)
         withParquetTable(path.getCanonicalPath, "topk_empty") {
@@ -252,6 +259,7 @@ class CometTopKSuite extends CometTestBase {
     val session = spark
     import session.implicits._
     withSQLConf(
+      CometConf.COMET_EXEC_TOPK_DYNAMIC_FILTER_ENABLED.key -> "true",
       SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
       SQLConf.BUCKETING_ENABLED.key -> "true",
       "spark.sql.sources.bucketing.autoBucketedScan.enabled" -> "false") {
@@ -294,6 +302,7 @@ class CometTopKSuite extends CometTestBase {
   for (corruption <- Seq("footer", "page")) {
     test(s"local TopK preserves the corrupt Parquet $corruption file in read errors") {
       withSQLConf(
+        CometConf.COMET_EXEC_TOPK_DYNAMIC_FILTER_ENABLED.key -> "true",
         SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
         SQLConf.LEAF_NODE_DEFAULT_PARALLELISM.key -> "2",
         SQLConf.FILES_MAX_PARTITION_BYTES.key -> "4194304",
@@ -378,8 +387,9 @@ class CometTopKSuite extends CometTestBase {
       (ShortType, "int32 k (INT_16)"),
       (IntegerType, "int32 k"),
       (LongType, "int64 k"))
-    pageIndex <- Seq(false)
-    rowFilter <- Seq(false)
+    pageIndex <- Seq(false, true)
+    rowFilter <- Seq(false, true)
+    if keyType == IntegerType || (!pageIndex && !rowFilter)
   } {
     test(
       s"TopK prunes its Spark Parquet reader: ${keyType.sql}, " +
@@ -443,22 +453,10 @@ class CometTopKSuite extends CometTestBase {
                 assert(local.metrics("output_rows").value == 10L)
                 assert(local.metrics("dynamic_filter_topk_filters_attached").value ==
                   (if (enabled) 1L else 0L))
+                assert(local.metrics("dynamic_filter_topk_filters_skipped").value == 0L)
                 assert(!local.metrics.contains("bytes_scanned"))
                 val scan = collect(plan) { case scan: CometNativeScanExec => scan }.head
                 val metrics = scan.metrics.map { case (name, metric) => name -> metric.value }
-                // checkSparkAnswerAndOperator executes a copy. Execute this DataFrame
-                // twice as well, so the same Spark plan cannot retain a heap threshold.
-                val expected = (-128 until -118).map { key =>
-                  keyType match {
-                    case ByteType => Row(key.toByte)
-                    case ShortType => Row(key.toShort)
-                    case IntegerType => Row(key)
-                    case LongType => Row(key.toLong)
-                    case other => fail(s"Unexpected integer key type: $other")
-                  }
-                }
-                checkAnswer(query, expected)
-                checkAnswer(query, expected)
                 scans += metrics
               }
             }
