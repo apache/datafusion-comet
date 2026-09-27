@@ -17,12 +17,18 @@
  * under the License.
  */
 
-package org.apache.spark.comet.shims
+package org.apache.comet.iceberg
 
-import org.apache.spark.SparkConf
-import org.apache.spark.internal.config.EXECUTOR_MIN_MEMORY_OVERHEAD
+import org.apache.spark.sql.connector.catalog.TableCatalog
+import org.apache.spark.sql.execution.SparkPlan
 
-trait ShimCometDriverPlugin {
-  protected def getMemoryOverheadMinMib(sparkConf: SparkConf): Long =
-    sparkConf.get(EXECUTOR_MIN_MEMORY_OVERHEAD)
+/**
+ * Spark 3.5+: CTAS and RTAS run their write as a nested `AppendData` or `OverwriteByExpression`
+ * query, which is planned and reported like any other write, so no create or replace exec writes
+ * a table itself.
+ */
+private[iceberg] object IcebergTableAsSelectShim {
+
+  /** The catalog `plan` writes through, when `plan` is a CTAS or RTAS exec. */
+  def writeCatalog(plan: SparkPlan): Option[TableCatalog] = None
 }

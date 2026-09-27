@@ -68,7 +68,8 @@ which document their per-expression configs and the specific differences to expe
 
 This is distinct from expressions that have **no** codegen-dispatch path: there, the
 incompatible cases fall back to Spark by default, and `allowIncompatible=true` runs the native
-(incompatible) path instead. `cast` is the main example; see the
+(incompatible) path instead. Aggregate functions such as `mode` are the main example, because the
+codegen dispatcher covers only scalar expressions; see the
 [expression reference](../expressions.md) for which expressions have incompatible cases.
 
 ## Strings with non-UTF-8 bytes
@@ -111,12 +112,10 @@ Code that catches `SparkException` and only asserts on message substrings is una
 inspects the exception class, `getCondition()`, or the parameterised error class will observe
 divergence:
 
-- Byte / Short `Add`, `Subtract`, and `Multiply` overflow raises `ARITHMETIC_OVERFLOW` where Spark
-  4.1 raises `BINARY_ARITHMETIC_OVERFLOW`, and Long overflow surfaces as `"integer overflow"`
-  rather than `"long overflow"`. `Abs` uses Rust type names (`Int8`, `Int64`, ...) in the message
-  instead of Spark's SQL type names, and the scalar path of `UnaryMinus` on Byte / Short emits a
-  malformed message. The `try_` suggestion is omitted from all of these
-  ([#5071](https://github.com/apache/datafusion-comet/issues/5071)).
+- Byte / Short `Add`, `Subtract`, and `Multiply` overflow raises `ARITHMETIC_OVERFLOW` (for
+  example `byte overflow`) where Spark raises `BINARY_ARITHMETIC_OVERFLOW`, and integral
+  `ARITHMETIC_OVERFLOW` messages omit Spark's `try_` suggestion
+  ([#6217](https://github.com/apache/datafusion-comet/issues/6217)).
 - Wide-decimal arithmetic overflow, decimal divide-by-zero, and decimal-to-decimal cast overflow
   raise raw Arrow errors that bypass `SparkErrorConverter` and surface as `CometNativeException`
   rather than `SparkArithmeticException` with the proper error class and query context
@@ -130,28 +129,22 @@ The following native paths silently return values that differ from Spark for edg
 Most also have entries in the per-category expression pages linked above; they are collected here
 so users hunting an unexpected value have a single place to check:
 
-- `CAST(boolean AS DECIMAL(p, s))` where `10^s` exceeds the target precision (e.g.
-  `DECIMAL(1, 1)`) throws `NUMERIC_VALUE_OUT_OF_RANGE` regardless of the eval mode. Spark returns
-  `NULL` under legacy and try mode, and only throws under ANSI
-  ([#5068](https://github.com/apache/datafusion-comet/issues/5068)).
 - `CAST(string AS timestamp)` and `CAST(string AS timestamp_ntz)` trim Unicode whitespace.
   Spark trims only the bytes `0x00`-`0x20` and `0x7F`, so a value padded with an ASCII control byte
   parses in Spark and returns `NULL` in Comet, while a value padded with non-ASCII whitespace such
   as `U+3000` returns `NULL` in Spark and parses in Comet
   ([#5149](https://github.com/apache/datafusion-comet/issues/5149)).
-- **Explicit positive timestamp years:** Spark accepts strings such as `+7528` as the start
-  of that year, while Comet's native string-to-timestamp cast returns NULL in non-ANSI mode
-  ([#5716](https://github.com/apache/datafusion-comet/issues/5716)).
 - Native `RANGE` window frames with an explicit `PRECEDING` / `FOLLOWING` offset diverge from
   Spark when the boundary arithmetic overflows for `DATE` or `DECIMAL` `ORDER BY` columns
   ([#5022](https://github.com/apache/datafusion-comet/issues/5022)).
-
-## Object store cache
-
-When Comet's native scan reads Parquet files, it caches one object store instance per
-`(scheme + host + port, hadoop-config-hash)` key. For `abfss://container@account.dfs.core.windows.net/...`
-URLs, the container lives in the URL userinfo, not the host, so two containers in one storage
-account currently collide on the same cache entry. Within a single executor process, reading from
-a second container after a first can be served by the first container's store instance and return
-its data. S3, GCS, and HDFS are unaffected because their bucket / host lives in the URL host
-component. Tracked by [#4993](https://github.com/apache/datafusion-comet/issues/4993).
+- Ungrouped decimal `SUM` keeps an unbounded intermediate and checks the result precision only
+  when a partial is written out or the sum is evaluated, which matches Spark's whole-stage codegen
+  path. Without codegen Spark buffers the aggregate in an `UnsafeRow` and latches as soon as a
+  running sum leaves the precision. Comet falls back at precision 38 when codegen is disabled by
+  `spark.sql.codegen.wholeStage`, by `spark.sql.codegen.factoryMode=NO_CODEGEN` on Spark 3.5+,
+  by an imperative sibling aggregate, by an expression Spark cannot compile such as a lambda function,
+  or by the `spark.sql.codegen.maxFields` limit on the aggregate's own output and inputs, but not
+  when Spark abandons codegen at runtime, after a compile failure under
+  `spark.sql.codegen.fallback` or when the generated code exceeds
+  `spark.sql.codegen.hugeMethodLimit`, where an intermediate overflow that later cancels out
+  returns `NULL` (or raises under ANSI) in Spark but the recovered value in Comet.

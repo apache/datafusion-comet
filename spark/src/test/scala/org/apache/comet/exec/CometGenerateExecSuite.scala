@@ -463,9 +463,9 @@ class CometGenerateExecSuite extends CometTestBase {
   }
 
   test("explode_outer across batch boundary with mixed empty/null rows") {
-    // Mix null, empty, and non-empty rows and force multiple small batches so that
-    // `ListEmptyToNullExpr` runs on each batch and its fast/slow path split is exercised
-    // more than once with different offset patterns.
+    // Mix null, empty, and non-empty rows and force multiple small batches so that the
+    // per-row output lengths are recomputed on each batch with a different offset pattern,
+    // and so that some chunk boundaries fall on a substituted row.
     withSQLConf(
       CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true",
       CometConf.COMET_EXEC_EXPLODE_ENABLED.key -> "true",
@@ -487,8 +487,8 @@ class CometGenerateExecSuite extends CometTestBase {
 
   test("posexplode_outer across batch boundary with mixed empty/null rows") {
     // Same shape as the explode_outer counterpart but exercises the parallel positions
-    // branch. With the pre-projection introduced for outer, `ListEmptyToNullExpr` runs once
-    // per batch and both branches share the same materialized array.
+    // branch, where the `pos` and `value` arrays are unnested together and must be padded
+    // to the same per-row length.
     withSQLConf(
       CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true",
       CometConf.COMET_EXEC_EXPLODE_ENABLED.key -> "true",
@@ -578,9 +578,8 @@ class CometGenerateExecSuite extends CometTestBase {
   }
 
   test("explode_outer over limit with offset") {
-    // Exercises `ListEmptyToNullExpr` on a sliced input with a non-zero offset base. The
-    // helper preserves the base offset and passes it through unchanged, so the fix in
-    // `ListPositionsExpr` is what actually keeps the parallel `pos` branch safe. This test
+    // Exercises the outer path on a sliced input with a non-zero offset base, which is what
+    // the fix in `ListPositionsExpr` keeps the parallel `pos` branch safe against. This test
     // covers the `explode_outer` shape without the `pos` branch.
     withSQLConf(
       "spark.sql.adaptive.enabled" -> "false",

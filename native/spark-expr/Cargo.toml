@@ -96,6 +96,10 @@ name = "aggregate"
 harness = false
 
 [[bench]]
+name = "approx_percentile"
+harness = false
+
+[[bench]]
 name = "date_diff"
 harness = false
 
@@ -429,4 +433,8 @@ harness = false
 
 [[bench]]
 name = "utf8_decode"
+harness = false
+
+[[bench]]
+name = "nested_comparison"
 harness = false

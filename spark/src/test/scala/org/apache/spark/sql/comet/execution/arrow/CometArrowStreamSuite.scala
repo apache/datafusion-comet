@@ -872,4 +872,60 @@ class CometArrowStreamSuite extends AnyFunSuite with Matchers {
       allocator.close()
     }
   }
+
+  test("columnar writes are driven by the schema, not by the input batch width") {
+    val allocator = new RootAllocator(Long.MaxValue)
+    val numRows = 3
+    val schema = StructType(Seq(StructField("name", StringType)))
+    val arrowSchema = Utils.toArrowSchema(schema, "UTC")
+    // A connector may hand over a batch wider than the schema it is read under. Iceberg's
+    // vectorized reader is the case that found this: it reads with the schema its delete filter
+    // required, which carries `_pos` after the projected columns when a data file has position
+    // deletes, and only trims the extras back when the file also has equality deletes. The
+    // trailing columns are the extras, so the schema's fields line up with the leading ones.
+    val names = new OnHeapColumnVector(numRows, StringType)
+    val positions = new OnHeapColumnVector(numRows, LongType)
+    val input = new ColumnarBatch(Array[ColumnVector](names, positions), numRows)
+    try {
+      (0 until numRows).foreach { i =>
+        names.putByteArray(i, s"n$i".getBytes(StandardCharsets.UTF_8))
+        positions.putLong(i, i.toLong)
+      }
+      val batch = CometArrowConverters.columnarBatchToArrowBatch(input, arrowSchema, allocator)
+      try {
+        batch.numCols() shouldBe 1
+        batch.numRows() shouldBe numRows
+        (0 until numRows).foreach { i =>
+          batch.column(0).getUTF8String(i).toString shouldBe s"n$i"
+        }
+      } finally batch.close()
+    } finally {
+      input.close()
+      allocator.close()
+    }
+  }
+
+  test("a batch narrower than the schema is refused rather than written short") {
+    val allocator = new RootAllocator(Long.MaxValue)
+    val numRows = 2
+    val schema =
+      StructType(Seq(StructField("name", StringType), StructField("id", LongType)))
+    val arrowSchema = Utils.toArrowSchema(schema, "UTC")
+    val names = new OnHeapColumnVector(numRows, StringType)
+    val input = new ColumnarBatch(Array[ColumnVector](names), numRows)
+    try {
+      (0 until numRows).foreach { i =>
+        names.putByteArray(i, s"n$i".getBytes(StandardCharsets.UTF_8))
+      }
+      val failure = intercept[IllegalArgumentException] {
+        CometArrowConverters.columnarBatchToArrowBatch(input, arrowSchema, allocator)
+      }
+      failure.getMessage should include("1 column")
+      failure.getMessage should include("2")
+      allocator.getAllocatedMemory shouldBe 0L
+    } finally {
+      input.close()
+      allocator.close()
+    }
+  }
 }

@@ -34,14 +34,14 @@ import org.apache.spark.sql.catalyst.expressions.{Attribute, BoundReference, Exp
 import org.apache.spark.sql.catalyst.expressions.codegen.LazilyGeneratedOrdering
 import org.apache.spark.sql.catalyst.plans.logical.Statistics
 import org.apache.spark.sql.catalyst.plans.physical._
-import org.apache.spark.sql.comet.{CometMetricNode, CometNativeExec, CometPlan, CometSinkPlaceHolder, NativeExecContext}
+import org.apache.spark.sql.comet.{CometFilterExec, CometMetricNode, CometNativeExec, CometNativeScanExec, CometPlan, CometProjectExec, CometSinkPlaceHolder, NativeExecContext}
 import org.apache.spark.sql.comet.execution.arrow.CometArrowStream
 import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.adaptive.ShuffleQueryStageExec
 import org.apache.spark.sql.execution.exchange.{ENSURE_REQUIREMENTS, ShuffleExchangeExec, ShuffleExchangeLike, ShuffleOrigin}
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics, SQLShuffleReadMetricsReporter, SQLShuffleWriteMetricsReporter}
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, ByteType, CalendarIntervalType, DataType, DateType, DayTimeIntervalType, DecimalType, DoubleType, FloatType, IntegerType, LongType, MapType, NullType, ShortType, StringType, StructField, StructType, TimestampNTZType, TimestampType, YearMonthIntervalType}
+import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, ByteType, DataType, DateType, DecimalType, DoubleType, FloatType, IntegerType, LongType, MapType, ShortType, StringType, StructField, StructType, TimestampNTZType, TimestampType}
 import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.spark.util.MutablePair
 import org.apache.spark.util.collection.unsafe.sort.{PrefixComparators, RecordComparator}
@@ -49,7 +49,7 @@ import org.apache.spark.util.random.XORShiftRandom
 
 import com.google.common.base.Objects
 
-import org.apache.comet.{CometConf, CometExplainInfo, DataTypeSupport}
+import org.apache.comet.{CometConf, CometExplainInfo}
 import org.apache.comet.CometConf.{COMET_SHUFFLE_ENABLED, COMET_SHUFFLE_MODE}
 import org.apache.comet.CometSparkSessionExtensions.{cometCelebornShuffleFallbackReason, hasFallbackReason, isCometCelebornShuffleManagerEnabled, isCometShuffleManagerEnabled, isSpark40Plus, withFallbackReasons}
 import org.apache.comet.serde.{Compatible, OperatorOuterClass, QueryPlanSerde, SupportLevel, Unsupported}
@@ -115,6 +115,20 @@ case class CometShuffleExchangeExec(
     case _ => None
   }
 
+  /**
+   * Positional round-robin decision, computed once so that the RDD's determinism level and the
+   * writer's placement cannot disagree. Only the native writer places positionally.
+   */
+  @transient private[shuffle] lazy val positionalRoundRobin: Option[PositionalRoundRobin] =
+    if (shuffleType == CometNativeShuffle) {
+      CometShuffleExchangeExec.positionalRoundRobinSpec(outputPartitioning, child)
+    } else {
+      None
+    }
+
+  /** Whether this exchange's writer places rows positionally rather than by content. */
+  private[shuffle] def usesPositionalRoundRobin: Boolean = positionalRoundRobin.isDefined
+
   @transient private lazy val nativeChildMetricNode: CometMetricNode =
     CometMetricNode.fromCometPlan(child)
 
@@ -127,7 +141,8 @@ case class CometShuffleExchangeExec(
           ctx.numPartitions,
           ctx.shuffleScanIndices,
           CometMetricNode(metrics, Seq(nativeChildMetricNode)),
-          ctx.perPartitionByKey)
+          ctx.perPartitionByKey,
+          positionalRoundRobin.isDefined)
       case None =>
         // Non-native child (e.g. CometSparkToColumnarExec): no subtree to inline. The dep gets
         // built via the convenience overload below; we just need a real RDD of batches.
@@ -206,7 +221,11 @@ case class CometShuffleExchangeExec(
             outputPartitioning,
             serializer,
             metrics,
-            NativeShuffleSpec(nativeChild.nativeOp, nativeChildMetricNode, ctx))
+            NativeShuffleSpec(
+              nativeChild.nativeOp,
+              nativeChildMetricNode,
+              ctx,
+              positionalRoundRobin))
         case None =>
           CometShuffleExchangeExec.prepareShuffleDependency(
             inputRDD.asInstanceOf[RDD[ColumnarBatch]],
@@ -296,6 +315,108 @@ object CometShuffleExchangeExec
 
   override def getSupportLevel(op: ShuffleExchangeExec): SupportLevel = {
     if (shuffleSupported(op).isDefined) Compatible() else Unsupported()
+  }
+
+  /**
+   * Whether a round-robin exchange over `child` places rows positionally
+   * (`RoundRobinStrategy::RowGroups` in `PhysicalPlanner::create_partitioning`), and with what
+   * group size. Read once on the driver and frozen with the shuffle dependency, so that the RDD's
+   * determinism level, the writer's placement and the group size cannot disagree, and so that a
+   * map task re-executed after the session's batch size changed still uses the group size, and so
+   * the placement, of the attempt it replaces. On an executor `CometConf.get()` resolves against
+   * a `SQLConf` rebuilt from the task's local properties, which returned the default group size
+   * rather than the session's.
+   *
+   * Only where [[replaysRowsInOrder]] holds, and not under Celeborn, whose push path has not been
+   * shown to handle sliced batches or an indeterminate stage's rollback. The `numPartitions > 1`
+   * guard mirrors `isRoundRobin` in `prepareJVMShuffleDependency`: with one output partition
+   * there is no placement to get wrong.
+   */
+  def positionalRoundRobinSpec(
+      outputPartitioning: Partitioning,
+      child: SparkPlan): Option[PositionalRoundRobin] = {
+    val eligible = outputPartitioning.isInstanceOf[RoundRobinPartitioning] &&
+      outputPartitioning.numPartitions > 1 &&
+      CometConf.COMET_SHUFFLE_NATIVE_ROUND_ROBIN_PARTITIONING_POSITIONAL_ENABLED.get() &&
+      !isCometCelebornShuffleManagerEnabled(conf) &&
+      replaysRowsInOrder(child)
+    if (eligible) {
+      Some(
+        PositionalRoundRobin(
+          resolvePositionalGroupRows(
+            CometConf.COMET_SHUFFLE_NATIVE_ROUND_ROBIN_PARTITIONING_POSITIONAL_GROUP_ROWS.get(),
+            CometConf.COMET_BATCH_SIZE.get(),
+            outputPartitioning.numPartitions)))
+    } else {
+      None
+    }
+  }
+
+  /**
+   * Smallest derived group, which caps how finely a batch is cut: with far more output partitions
+   * than `batchSize / 64`, `batchSize / numPartitions` would round down towards one row and turn
+   * the flush back into the per-row gather positional placement exists to avoid. Not an alignment
+   * guarantee: after a filter a batch starts at an arbitrary row ordinal, so its runs start off a
+   * byte boundary whatever the group size.
+   */
+  private val MinDerivedGroupRows = 64
+
+  /**
+   * The group size positional placement uses. An explicit `configured` value is taken as given;
+   * `0` derives `batchSize / numPartitions`, floored at [[MinDerivedGroupRows]] and capped at a
+   * batch, so that each task wraps around the output partitions about once per batch.
+   */
+  private[shuffle] def resolvePositionalGroupRows(
+      configured: Int,
+      batchSize: Int,
+      numPartitions: Int): Int = {
+    if (configured > 0) {
+      configured
+    } else {
+      val batch = math.max(batchSize, 1)
+      val derived = batch / math.max(numPartitions, 1)
+      math.min(math.max(derived, math.min(MinDerivedGroupRows, batch)), batch)
+    }
+  }
+
+  /**
+   * Output partition that map task `mapPartitionId` places its first group in. This is Spark's
+   * own round-robin start, scrambled through `XORShiftRandom` because adjacent starts leave the
+   * tail of the partition space empty (SPARK-21782), and a pure function of the map partition so
+   * that a re-executed task reproduces its placement. The `+ 1` is Spark's pre-increment. See
+   * `native_shuffle.md` for why the starts must be decorrelated rather than merely distinct.
+   */
+  def positionalStartPartition(mapPartitionId: Int, numPartitions: Int): Int =
+    new XORShiftRandom(mapPartitionId).nextInt(math.max(numPartitions, 1)) + 1
+
+  /**
+   * Whether re-executing this subtree yields the same rows in the same order.
+   *
+   * Positional placement is a function of row order, so this is the only thing standing between
+   * it and SPARK-23207, and it asks more than Spark's own round robin does: by default Spark
+   * sorts each map partition before assigning positions
+   * (`spark.sql.execution.sortBeforeRepartition`), so a retry only has to produce the same rows.
+   * `CometNativeShuffleInputRDD` mirrors Spark's `isOrderSensitive` rule for the RDD graph, but
+   * under this allowlist the only leaf is a native scan, which contributes no RDD input, so that
+   * check cannot fire. Widening this is what would make it live.
+   *
+   * Deliberately a short allowlist rather than a denylist, because being wrong costs silent data
+   * loss rather than a failure: a re-executed task that orders its rows differently writes a
+   * different partitioning of them, and once any reducer has fetched from the attempt it
+   * replaces, some rows arrive twice and others not at all. A native scan replays its partition
+   * because its file splits are fixed on the driver, and deterministic projections and filters
+   * are row-wise. A nondeterministic expression is out even though it is evaluated per row, since
+   * nothing bounds what it does between attempts: a nondeterministic UDF can drop, keep or
+   * reorder rows differently on a retry. Anything that spills is out, since it emits rows in an
+   * order that depends on how often it spilled. Other leaf scans plausibly qualify, but each
+   * needs that argument made for it.
+   */
+  private def replaysRowsInOrder(plan: SparkPlan): Boolean = plan match {
+    case _: CometNativeScanExec => true
+    case p: CometProjectExec =>
+      p.projectList.forall(_.deterministic) && replaysRowsInOrder(p.child)
+    case f: CometFilterExec => f.condition.deterministic && replaysRowsInOrder(f.child)
+    case _ => false
   }
 
   override def createExec(
@@ -462,33 +583,6 @@ object CometShuffleExchangeExec
         false
     }
 
-    /**
-     * Determine which data types are supported as data columns in native shuffle.
-     *
-     * Native shuffle relies on the Arrow IPC writer to serialize batches to disk, so it should
-     * support all types that Comet supports.
-     */
-    def supportedSerializableDataType(dt: DataType): Boolean = dt match {
-      case _: BooleanType | _: ByteType | _: ShortType | _: IntegerType | _: LongType |
-          _: FloatType | _: DoubleType | _: StringType | _: BinaryType | _: TimestampType |
-          _: TimestampNTZType | _: DecimalType | _: DateType | _: NullType |
-          _: YearMonthIntervalType | _: DayTimeIntervalType | CalendarIntervalType =>
-        true
-      case dt if isTimeType(dt) =>
-        true
-      case StructType(fields) =>
-        fields.nonEmpty && fields.forall(f => supportedSerializableDataType(f.dataType)) &&
-        // Java Arrow keys struct children by name, so the FFI import of a decoded batch
-        // fails on duplicate field names
-        !DataTypeSupport.hasDuplicateFieldNames(fields)
-      case ArrayType(elementType, _) =>
-        supportedSerializableDataType(elementType)
-      case MapType(keyType, valueType, _) =>
-        supportedSerializableDataType(keyType) && supportedSerializableDataType(valueType)
-      case _ =>
-        false
-    }
-
     val reasons = scala.collection.mutable.ListBuffer.empty[String]
 
     if (!isCometNativeShuffleMode(s.conf)) {
@@ -499,7 +593,13 @@ object CometShuffleExchangeExec
     val inputs = s.child.output
 
     for (input <- inputs) {
-      if (!supportedSerializableDataType(input.dataType)) {
+      if (!QueryPlanSerde.supportedDataType(
+          input.dataType,
+          allowComplex = true,
+          allowIntervals = true,
+          // Java Arrow keys struct children by name, so the FFI import of a decoded batch
+          // fails on duplicate field names.
+          allowDuplicateStructFieldNames = false)) {
         reasons += s"unsupported shuffle data type ${input.dataType} for input $input"
         return reasons.toSeq
       }
@@ -583,31 +683,6 @@ object CometShuffleExchangeExec
    */
   private def columnarShuffleFailureReasons(s: ShuffleExchangeExec): Seq[String] = {
 
-    /**
-     * Determine which data types are supported as data columns in columnar shuffle.
-     *
-     * Comet columnar shuffle used native code to convert Spark unsafe rows to Arrow batches, see
-     * shuffle/row.rs
-     */
-    def supportedSerializableDataType(dt: DataType): Boolean = dt match {
-      case _: BooleanType | _: ByteType | _: ShortType | _: IntegerType | _: LongType |
-          _: FloatType | _: DoubleType | _: StringType | _: BinaryType | _: TimestampType |
-          _: TimestampNTZType | _: DecimalType | _: DateType | _: NullType =>
-        true
-      case dt if isTimeType(dt) =>
-        true
-      case StructType(fields) =>
-        fields.nonEmpty && fields.forall(f => supportedSerializableDataType(f.dataType)) &&
-        // Java Arrow stream reader cannot work on duplicate field name
-        !DataTypeSupport.hasDuplicateFieldNames(fields)
-      case ArrayType(elementType, _) =>
-        supportedSerializableDataType(elementType)
-      case MapType(keyType, valueType, _) =>
-        supportedSerializableDataType(keyType) && supportedSerializableDataType(valueType)
-      case _ =>
-        false
-    }
-
     val reasons = scala.collection.mutable.ListBuffer.empty[String]
 
     if (!isCometJVMShuffleMode(s.conf)) {
@@ -628,7 +703,14 @@ object CometShuffleExchangeExec
     val inputs = s.child.output
 
     for (input <- inputs) {
-      if (!supportedSerializableDataType(input.dataType)) {
+      if (!QueryPlanSerde.supportedDataType(
+          input.dataType,
+          allowComplex = true,
+          // The native row-to-Arrow converter (spark_unsafe/row.rs) has no CalendarInterval
+          // support, so calendar intervals must fall back to Spark shuffle.
+          allowCalendarInterval = false,
+          // Java Arrow stream reader cannot work on duplicate field names.
+          allowDuplicateStructFieldNames = false)) {
         reasons += s"unsupported shuffle data type ${input.dataType} for input $input"
         return reasons.toSeq
       }
@@ -722,7 +804,7 @@ object CometShuffleExchangeExec
   private def isCometShuffleEnabledReason(op: SparkPlan): Option[String] = {
     if (!COMET_SHUFFLE_ENABLED.get(op.conf)) {
       Some(s"Comet shuffle is not enabled: ${COMET_SHUFFLE_ENABLED.key} is not enabled")
-    } else if (!isCometShuffleManagerEnabled(op.conf)) {
+    } else if (!isCometShuffleManagerEnabled) {
       Some(
         s"spark.shuffle.manager is not set to ${classOf[CometShuffleManager].getName} or " +
           classOf[CometCelebornShuffleManager].getName)
