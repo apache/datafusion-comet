@@ -1568,6 +1568,117 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
+  // Tables for the #6264 tests. The fact table has 10 store partitions. Dimension group 'a' keeps
+  // store 1 and group 'b' keeps stores 2 to 4, so the two DPP scans prune to 1 and 3 partitions.
+  private def withDppBranchTables(f: => Unit): Unit = {
+    withTempDir { dir =>
+      val path = dir.getAbsolutePath
+      spark
+        .range(1000)
+        .selectExpr(
+          "cast(id % 10 as int) as store_id",
+          "cast(id % 13 as int) as item",
+          "cast(id as int) as amount")
+        .write
+        .partitionBy("store_id")
+        .parquet(s"$path/fact")
+      spark
+        .range(10)
+        .selectExpr(
+          "cast(id as int) as store_id",
+          "case when id = 1 then 'a' when id in (2, 3, 4) then 'b' else 'c' end as grp")
+        .write
+        .parquet(s"$path/dim")
+      spark
+        .range(13)
+        .selectExpr("cast(id as int) as item", "cast(id * 10 as int) as w")
+        .write
+        .parquet(s"$path/other")
+      withTempView("dpp_branch_fact", "dpp_branch_dim", "dpp_branch_other") {
+        spark.read.parquet(s"$path/fact").createOrReplaceTempView("dpp_branch_fact")
+        spark.read.parquet(s"$path/dim").createOrReplaceTempView("dpp_branch_dim")
+        spark.read.parquet(s"$path/other").createOrReplaceTempView("dpp_branch_other")
+        f
+      }
+    }
+  }
+
+  // Runs a UNION ALL of one CTE joined to dimension group 'a' and to group 'b'. Coalescing is off:
+  // a coalesced shuffle read carries per-partition sizes that would keep the two branches' parent
+  // exchanges apart and hide a wrong reuse.
+  private def checkDppBranchesKeepTheirRows(query: String): Unit = {
+    withSQLConf(
+      SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
+      SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "true",
+      SQLConf.COALESCE_PARTITIONS_ENABLED.key -> "false") {
+      if (isSpark35Plus) {
+        val (_, cometPlan) = checkSparkAnswerAndOperator(sql(query))
+        def dppScans(plan: SparkPlan): Seq[CometNativeScanExec] = collect(plan) {
+          case s: CometNativeScanExec
+              if s.partitionFilters.exists(_.isInstanceOf[DynamicPruningExpression]) =>
+            s
+        }
+        assert(
+          dppScans(cometPlan).map(_.metrics("numPartitions").value).sorted == Seq(1L, 3L),
+          "Expected one DPP scan per branch, pruned to 1 and 3 partitions:\n" +
+            cometPlan.treeString)
+        val reusedDpp = collect(cometPlan) {
+          case r: ReusedExchangeExec if dppScans(r.child).nonEmpty => r
+        }
+        assert(
+          reusedDpp.isEmpty,
+          s"An exchange over a DPP scan was reused by the other branch:\n${cometPlan.treeString}")
+      } else {
+        // On 3.4, AQE DPP falls back to Spark.
+        checkSparkAnswer(sql(query))
+      }
+    }
+  }
+
+  // TPC-DS q64 shape: a broadcast of (fact SMJ other), with the dimension join above it. The two
+  // broadcasts differ only in the DPP filter of the fact scan inside a child shuffle stage.
+  test("AQE DPP: broadcast over a join of DPP scans is not reused across branches (#6264)") {
+    withDppBranchTables {
+      checkDppBranchesKeepTheirRows("""WITH x AS (
+          |  SELECT /*+ MERGE(f, o) */ f.store_id, f.item, f.amount, o.w
+          |  FROM dpp_branch_fact f JOIN dpp_branch_other o ON f.item = o.item)
+          |SELECT /*+ BROADCAST(x) */ o2.item, x.store_id, x.amount, x.w
+          |FROM dpp_branch_other o2 JOIN x ON o2.item = x.item
+          |JOIN dpp_branch_dim d ON x.store_id = d.store_id WHERE d.grp = 'a'
+          |UNION ALL
+          |SELECT /*+ BROADCAST(x) */ o2.item, x.store_id, x.amount, x.w
+          |FROM dpp_branch_other o2 JOIN x ON o2.item = x.item
+          |JOIN dpp_branch_dim d ON x.store_id = d.store_id WHERE d.grp = 'b'""".stripMargin)
+    }
+  }
+
+  test("AQE DPP: shuffle over a DPP scan stage is not reused across branches (#6264)") {
+    withDppBranchTables {
+      checkDppBranchesKeepTheirRows("""WITH x AS (
+          |  SELECT store_id, item, sum(amount) AS s FROM dpp_branch_fact GROUP BY store_id, item),
+          |y AS (SELECT store_id, s % 7 AS b, count(*) AS c FROM x GROUP BY store_id, s % 7)
+          |SELECT y.store_id, y.b, y.c FROM y JOIN dpp_branch_dim d ON y.store_id = d.store_id
+          |WHERE d.grp = 'a'
+          |UNION ALL
+          |SELECT y.store_id, y.b, y.c FROM y JOIN dpp_branch_dim d ON y.store_id = d.store_id
+          |WHERE d.grp = 'b'""".stripMargin)
+    }
+  }
+
+  // Guards the scan-stage path, which passes without keeping the DPP placeholder in the canonical
+  // form: the dimension join sits in the scan's own stage, and AQE keys each scan stage after its
+  // DPP filter is converted.
+  test("AQE DPP: DPP join in the scan's own stage keeps both branches (#6264)") {
+    withDppBranchTables {
+      checkDppBranchesKeepTheirRows("""SELECT f.store_id, f.item, f.amount FROM dpp_branch_fact f
+          |JOIN dpp_branch_dim d ON f.store_id = d.store_id WHERE d.grp = 'a'
+          |UNION ALL
+          |SELECT f.store_id, f.item, f.amount FROM dpp_branch_fact f
+          |JOIN dpp_branch_dim d ON f.store_id = d.store_id WHERE d.grp = 'b'""".stripMargin)
+    }
+  }
+
   // SPARK-34637: previously IgnoreComet(#4045). DPP side broadcast query stage
   // should be created before the main join's broadcast stage.
   test("AQE DPP: broadcast query stage creation order (SPARK-34637)") {

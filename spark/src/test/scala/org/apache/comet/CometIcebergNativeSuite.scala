@@ -5244,6 +5244,91 @@ class CometIcebergNativeSuite
     }
   }
 
+  // TPC-DS q64 shape (#6264): a broadcast of (fact SMJ other) per UNION ALL branch, with the
+  // dimension join above it. The two broadcasts differ only in the DPP filter of the fact scan
+  // inside a child shuffle stage, so they must not be reused for each other.
+  test("AQE DPP - broadcast over a join of DPP scans is not reused across branches (#6264)") {
+    assume(icebergAvailable, "Iceberg not available")
+    withTempIcebergDir { warehouseDir =>
+      val dimDir = new File(warehouseDir, "dim_parquet")
+      val otherDir = new File(warehouseDir, "other_parquet")
+      withSQLConf(
+        "spark.sql.catalog.aqe_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.aqe_cat.type" -> "hadoop",
+        "spark.sql.catalog.aqe_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
+        SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "true",
+        // A coalesced shuffle read carries per-partition sizes that keep the two broadcasts apart.
+        SQLConf.COALESCE_PARTITIONS_ENABLED.key -> "false",
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        spark.sql("""
+          CREATE TABLE aqe_cat.db.branch_fact (
+            store_id INT, item INT, amount INT
+          ) USING iceberg PARTITIONED BY (store_id)
+        """)
+        spark
+          .range(1000)
+          .selectExpr(
+            "cast(id % 10 as int) as store_id",
+            "cast(id % 13 as int) as item",
+            "cast(id as int) as amount")
+          .write
+          .format("iceberg")
+          .mode("append")
+          .saveAsTable("aqe_cat.db.branch_fact")
+        // Group 'a' keeps store 1 and group 'b' keeps stores 2 to 4.
+        spark
+          .range(10)
+          .selectExpr(
+            "cast(id as int) as store_id",
+            "case when id = 1 then 'a' when id in (2, 3, 4) then 'b' else 'c' end as grp")
+          .write
+          .parquet(dimDir.getAbsolutePath)
+        spark.read.parquet(dimDir.getAbsolutePath).createOrReplaceTempView("branch_dim")
+        spark
+          .range(13)
+          .selectExpr("cast(id as int) as item", "cast(id * 10 as int) as w")
+          .write
+          .parquet(otherDir.getAbsolutePath)
+        spark.read.parquet(otherDir.getAbsolutePath).createOrReplaceTempView("branch_other")
+
+        val query =
+          """WITH x AS (
+            |  SELECT /*+ MERGE(f, o) */ f.store_id, f.item, f.amount, o.w
+            |  FROM aqe_cat.db.branch_fact f JOIN branch_other o ON f.item = o.item)
+            |SELECT /*+ BROADCAST(x) */ o2.item, x.store_id, x.amount, x.w
+            |FROM branch_other o2 JOIN x ON o2.item = x.item
+            |JOIN branch_dim d ON x.store_id = d.store_id WHERE d.grp = 'a'
+            |UNION ALL
+            |SELECT /*+ BROADCAST(x) */ o2.item, x.store_id, x.amount, x.w
+            |FROM branch_other o2 JOIN x ON o2.item = x.item
+            |JOIN branch_dim d ON x.store_id = d.store_id WHERE d.grp = 'b'""".stripMargin
+        val (_, cometPlan) = checkSparkAnswer(query)
+        assertIcebergNativeScanPresent(cometPlan)
+        assertNoLeftoverCSAB(cometPlan)
+
+        // Also checked on 3.4: the Iceberg scan stays in Comet there and Spark's own DPP rule
+        // plans its filter.
+        def dppScans(plan: SparkPlan): Seq[CometIcebergNativeScanExec] =
+          collectIcebergNativeScans(plan).filter(_.runtimeFilters.nonEmpty)
+        assert(
+          dppScans(cometPlan).size == 2,
+          s"Expected one DPP scan per branch:\n${cometPlan.treeString}")
+        val reusedDpp = collect(cometPlan) {
+          case r: ReusedExchangeExec if dppScans(r.child).nonEmpty => r
+        }
+        assert(
+          reusedDpp.isEmpty,
+          s"An exchange over a DPP scan was reused by the other branch:\n${cometPlan.treeString}")
+
+        spark.sql("DROP TABLE aqe_cat.db.branch_fact")
+      }
+    }
+  }
+
   // Multi-key BHJ where SAB build keys must keep their position so the index lookup
   // selects the right DPP value. A bug in convertSAB key handling would either pick
   // the wrong column or produce SubqueryExec instead of broadcast reuse.
