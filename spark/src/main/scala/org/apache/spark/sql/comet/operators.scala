@@ -1008,11 +1008,13 @@ abstract class CometNativeExec extends CometExec {
     // broadcast plan.
     val (firstNonBroadcastPlanRDD, firstNonBroadcastPlanNumPartitions) =
       firstNonBroadcastPlan.get._1 match {
-        // Every plan-data scan is sized from perPartitionData, which findAllPlanData above has
-        // resolved. A bucketed scan has one entry per bucket, after any bucket coalescing, so the
-        // count still matches its HashPartitioning.
+        // Plan-data scans, Iceberg included, are sized from perPartitionData, which
+        // findAllPlanData above has resolved. A bucketed scan has one entry per bucket, after any
+        // bucket coalescing, so the count still matches its HashPartitioning.
         case scan: CometScanWithPlanData =>
           (null.asInstanceOf[RDD[Any]], scan.perPartitionData.length)
+        case scan: CometIcebergNativeScanExec =>
+          (null.asInstanceOf[RDD[Any]], scan.numPartitions)
         case plan: CometNativeExec =>
           (null.asInstanceOf[RDD[Any]], plan.outputPartitioning.numPartitions)
         case plan =>
