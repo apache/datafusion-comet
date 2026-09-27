@@ -693,6 +693,7 @@ object CometConf extends ShimCometConf {
         "this should not be larger than batch size (i.e., `spark.comet.batchSize`). Otherwise " +
         "it will produce larger batches than expected in the native operator after shuffle.")
       .intConf
+      .checkValue(v => v > 0, "Batch size must be positive")
       .checkValue(
         v => v <= COMET_BATCH_SIZE.get(),
         "Should not be larger than batch size `spark.comet.batchSize`")
@@ -921,6 +922,8 @@ object CometConf extends ShimCometConf {
           "off-heap mode. Available pool types are `greedy_unified` and `fair_unified`. " +
           s"$TUNING_GUIDE.")
       .stringConf
+      .transform(_.toLowerCase(Locale.ROOT))
+      .checkValues(Set("fair_unified", "greedy_unified"))
       .createWithDefault("fair_unified")
 
   val COMET_OFFHEAP_MEMORY_POOL_FRACTION: ConfigEntry[Double] =

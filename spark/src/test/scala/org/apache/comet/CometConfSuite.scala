@@ -192,6 +192,35 @@ class CometConfSuite extends AnyFunSuite {
     assert(entry.get(conf) == 76)
   }
 
+  test("JVM shuffle batch size must be positive") {
+    val conf = new SQLConf
+    val entry = CometConf.COMET_SHUFFLE_JVM_BATCH_SIZE
+
+    // A batch size of 0 never advances the native loop that writes sorted spill files.
+    Seq("0", "-1").foreach { v =>
+      conf.setConfString(entry.key, v)
+      assertThrows[IllegalArgumentException](entry.get(conf))
+    }
+
+    conf.setConfString(entry.key, "1")
+    assert(entry.get(conf) == 1)
+  }
+
+  test("memory pool type is accepted in any case and lowercased") {
+    val conf = new SQLConf
+    val entry = CometConf.COMET_OFFHEAP_MEMORY_POOL_TYPE
+
+    conf.setConfString(entry.key, "Greedy_Unified")
+    assert(entry.get(conf) == "greedy_unified")
+
+    conf.setConfString(entry.key, "FAIR_UNIFIED")
+    assert(entry.get(conf) == "fair_unified")
+
+    conf.setConfString(entry.key, "fair")
+    val e = intercept[IllegalArgumentException](entry.get(conf))
+    assert(e.getMessage.contains("fair_unified, greedy_unified"))
+  }
+
   test(
     "COMET_EXPLAIN_FALLBACK_LOG_ENABLED reads deprecated logFallbackReasons.enabled as alias") {
     val conf = new SQLConf
