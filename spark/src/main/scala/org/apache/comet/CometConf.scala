@@ -336,7 +336,7 @@ object CometConf extends ShimCometConf {
     conf("spark.comet.exec.sortMergeJoinWithJoinFilter.enabled")
       .category(CATEGORY_ENABLE_EXEC)
       .doc("Support for Sort Merge Join with filter. " +
-        "Deprecated: this config will be removed in a future release.")
+        "Deprecated: this config will be removed in a future major release.")
       .booleanConf
       .createWithDefault(true)
 
@@ -444,6 +444,17 @@ object CometConf extends ShimCometConf {
           "per input, including both Spark build sides. The probe filter remains active " +
           "when reader pruning is unavailable. Unsupported joins retain their existing " +
           "execution path. Filters do not cross Spark exchanges or JVM/Arrow boundaries.")
+      .booleanConf
+      .createWithDefault(false)
+
+  val COMET_EXEC_TOPK_FUSION_ENABLED: ConfigEntry[Boolean] =
+    conf(s"$COMET_EXEC_CONFIG_PREFIX.topK.fusion.enabled")
+      .category(CATEGORY_EXEC)
+      .doc(
+        "Experimental opt-in: run an eligible local TopK in the same native execution as its " +
+          "Parquet scan. Supports one direct signed integer sort key. This changes the local " +
+          "execution pipeline and can reduce scan/TopK overlap, so it may be slower for some " +
+          "workloads.")
       .booleanConf
       .createWithDefault(false)
 
@@ -916,12 +927,12 @@ object CometConf extends ShimCometConf {
     conf("spark.comet.exec.memoryPool.fraction")
       .category(CATEGORY_TUNING)
       .doc(
-        "Deprecated: this config will be removed in a future release. It does not leave room " +
-          "in spark.memory.offHeap.size for native memory that Comet's memory pools do not " +
-          "track, because Spark hands out the whole off-heap pool whatever this is set to. Size " +
-          "spark.executor.memoryOverhead for that memory instead. Only applies to off-heap " +
-          "mode, where the fair_unified pool limits each memory consumer in a task to this " +
-          "fraction of the off-heap size divided by the task's consumers, and the " +
+        "Deprecated: this config will be removed in a future major release. It does not " +
+          "leave room in spark.memory.offHeap.size for native memory that Comet's memory " +
+          "pools do not track, because Spark hands out the whole off-heap pool whatever this " +
+          "is set to. Size spark.executor.memoryOverhead for that memory instead. Only applies " +
+          "to off-heap mode, where the fair_unified pool limits each memory consumer in a task " +
+          "to this fraction of the off-heap size divided by the task's consumers, and the " +
           s"greedy_unified pool ignores it. $TUNING_GUIDE.")
       .doubleConf
       .createWithDefault(1.0)
@@ -950,6 +961,19 @@ object CometConf extends ShimCometConf {
       .doc("This setting is used in unit tests")
       .booleanConf
       .createWithDefault(true)
+
+  val COMET_ICEBERG_WRITE_REPORT_DIR: ConfigEntry[String] =
+    conf("spark.comet.testing.icebergWriteReport.dir")
+      .internal()
+      .category(CATEGORY_TESTING)
+      .doc("Test-only. When set, the Comet driver plugin registers a query listener that " +
+        "records every Iceberg write the application runs, the writer that ran it (Comet's " +
+        "native writer, the JVM writer behind Comet's split operator, or Spark's own V2 write) " +
+        "and the reasons Comet recorded for not writing natively, as JSON lines in this " +
+        "directory. `dev/ci/summarize-iceberg-writes.py` summarizes them. The Iceberg Spark " +
+        "test jobs set it through the environment variable so the Iceberg diffs need no change.")
+      .stringConf
+      .createWithEnvVarOrDefault("COMET_ICEBERG_WRITE_REPORT_DIR", "")
 
   val COMET_SPARK_TO_ARROW_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.sparkToColumnar.enabled")

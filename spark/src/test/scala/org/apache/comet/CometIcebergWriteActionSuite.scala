@@ -20,6 +20,7 @@
 package org.apache.comet
 
 import java.io.File
+import java.nio.file.Files
 import java.sql.Timestamp
 import java.util.concurrent.{CountDownLatch, TimeUnit}
 
@@ -29,7 +30,10 @@ import scala.concurrent.ExecutionContext.Implicits.global
 import scala.concurrent.duration.DurationInt
 import scala.jdk.CollectionConverters._
 
-import org.apache.spark.{SparkConf, SparkException, Success}
+import org.json4s.{DefaultFormats, Formats}
+import org.json4s.jackson.JsonMethods.parse
+
+import org.apache.spark.{CometListenerBusUtils, SparkConf, SparkException, Success}
 import org.apache.spark.rdd.RDD
 import org.apache.spark.scheduler.{SparkListener, SparkListenerTaskEnd}
 import org.apache.spark.sql.CometTestBase
@@ -43,12 +47,19 @@ import org.apache.spark.sql.connector.write.{BatchWrite, DataWriterFactory, Phys
 import org.apache.spark.sql.execution.{ColumnarToRowTransition, LeafExecNode, SparkPlan}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.internal.SQLConf
+import org.apache.spark.sql.streaming.Trigger
 import org.apache.spark.sql.types.{DoubleType, IntegerType, StringType, StructField, StructType}
 
 import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark41Plus}
-import org.apache.comet.iceberg.IcebergReflection
+import org.apache.comet.iceberg.{IcebergReflection, IcebergWriteReportListener}
 
 private case class WriteSnapshot(snapshotDelta: Long, plans: Seq[SparkPlan])
+
+private case class ReportedWrite(
+    writer: String,
+    node: String,
+    reasons: Seq[String],
+    failed: Boolean)
 
 class CometIcebergWriteActionSuite
     extends CometTestBase
@@ -2627,6 +2638,128 @@ class CometIcebergWriteActionSuite
       val ids = spark.sql(s"SELECT id FROM $catalog.$ns.fanout_order").collect().toSeq
       assert(ids.map(_.getInt(0)) == (0 until 8), s"unordered read: ${ids.mkString(", ")}")
     }
+  }
+
+  test("write report records which writer ran each Iceberg write") {
+    assumeNativeAcceleration()
+    withIcebergCatalog { warehouseDir =>
+      createTable(warehouseDir, "report_parquet", partitionSpec = "PARTITIONED BY (region)")
+      createTable(
+        warehouseDir,
+        "report_orc",
+        partitionSpec = "",
+        properties = Some("'write.format.default'='orc'"))
+
+      val writes = reportedWrites {
+        withNativeEnabled {
+          // Collecting the result runs a second query over the command's result; the write
+          // must still be reported once.
+          spark
+            .sql(s"INSERT INTO $catalog.$ns.report_parquet VALUES (1, 'us-east', 1.5)")
+            .collect()
+          spark.sql(s"INSERT INTO $catalog.$ns.report_orc VALUES (2, 'eu', 2.5)")
+        }
+        withSQLConf(CometConf.COMET_ICEBERG_WRITE_SPLIT_OPERATOR_ENABLED.key -> "false") {
+          spark.sql(s"INSERT INTO $catalog.$ns.report_parquet VALUES (3, 'eu', 3.5)")
+        }
+      }
+      assert(writes.map(_.writer) == Seq("native", "jvm", "spark"), writes.mkString("\n"))
+      assert(writes(1).reasons.exists(_.contains("only parquet")))
+      assert(writes(2).node == "AppendData")
+      assert(writes.forall(!_.failed))
+    }
+  }
+
+  test("write report records a CTAS and an RTAS once each") {
+    assumeNativeAcceleration()
+    withIcebergCatalog { _ =>
+      val writes = reportedWrites {
+        withNativeEnabled {
+          spark.sql(s"""
+            CREATE TABLE $catalog.$ns.report_ctas USING iceberg AS
+            SELECT * FROM VALUES (1, 'us', 1.0), (2, 'eu', 2.0) AS t(id, region, amount)
+          """)
+          spark.sql(s"""
+            REPLACE TABLE $catalog.$ns.report_ctas USING iceberg AS
+            SELECT * FROM VALUES (3, 'us', 3.0) AS t(id, region, amount)
+          """)
+        }
+      }
+      // Spark 3.5+ runs each write as a nested append or overwrite, which Comet's split operator
+      // plans. Spark 3.4 writes from the create and replace execs, which it never sees.
+      val expected =
+        if (isSpark35Plus) Seq("native" -> "CometIcebergWrite", "native" -> "CometIcebergWrite")
+        else Seq("spark" -> "AtomicCreateTableAsSelect", "spark" -> "AtomicReplaceTableAsSelect")
+      assert(writes.map(w => w.writer -> w.node) == expected, writes.mkString("\n"))
+      assert(writes.forall(!_.failed))
+      assertRows("report_ctas", Seq(3))
+    }
+  }
+
+  test("write report records a streaming micro-batch write") {
+    assumeNativeAcceleration()
+    withIcebergCatalog { warehouseDir =>
+      createTable(warehouseDir, "report_stream", partitionSpec = "")
+      withTempIcebergDir { dir =>
+        val source = new File(dir, "source").getAbsolutePath
+        val session = spark
+        import session.implicits._
+        Seq((1, "us", 1.0), (2, "eu", 2.0)).toDF("id", "region", "amount").write.parquet(source)
+        val schema = spark.table(s"$catalog.$ns.report_stream").schema
+
+        val writes = reportedWrites {
+          withNativeEnabled {
+            spark.readStream
+              .schema(schema)
+              .parquet(source)
+              .writeStream
+              .format("iceberg")
+              .outputMode("append")
+              .trigger(Trigger.AvailableNow())
+              .option("checkpointLocation", new File(dir, "checkpoint").getAbsolutePath)
+              .toTable(s"$catalog.$ns.report_stream")
+              .awaitTermination()
+          }
+        }
+        assert(
+          writes.map(w => w.writer -> w.node) == Seq("spark" -> "WriteToDataSourceV2"),
+          writes.mkString("\n"))
+        assert(writes.forall(!_.failed))
+        assertRows("report_stream", Seq(1, 2))
+      }
+    }
+  }
+
+  /** The Iceberg writes `IcebergWriteReportListener` records while `action` runs, in order. */
+  private def reportedWrites(action: => Unit): Seq[ReportedWrite] = {
+    var writes = Seq.empty[ReportedWrite]
+    withTempIcebergDir { reportDir =>
+      val listener = new IcebergWriteReportListener(
+        new SparkConf()
+          .set(CometConf.COMET_ICEBERG_WRITE_REPORT_DIR.key, reportDir.getAbsolutePath))
+      spark.listenerManager.register(listener)
+      try {
+        action
+        CometListenerBusUtils.waitUntilEmpty(spark.sparkContext)
+      } finally {
+        spark.listenerManager.unregister(listener)
+      }
+
+      implicit val formats: Formats = DefaultFormats
+      writes = reportDir
+        .listFiles()
+        .toSeq
+        .flatMap(f => Files.readAllLines(f.toPath).asScala)
+        .map { line =>
+          val w = parse(line)
+          ReportedWrite(
+            (w \ "writer").extract[String],
+            (w \ "node").extract[String],
+            (w \ "reasons").extract[Seq[String]],
+            (w \ "failed").extract[Boolean])
+        }
+    }
+    writes
   }
 
   private def assertNativeWriteEngages(tableName: String, expectedIds: Seq[Int])(
