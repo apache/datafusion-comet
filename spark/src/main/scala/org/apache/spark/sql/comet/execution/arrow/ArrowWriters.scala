@@ -487,13 +487,7 @@ private[arrow] class StringWriter(val valueVector: VarCharVector) extends ArrowF
     val utf8 = input.getUTF8String(ordinal)
     if (utf8.getBaseObject == null) {
       val length = utf8.numBytes()
-      // Null entries may not have offsets yet. Match Arrow's append position before reserving.
-      val start =
-        if (valueVector.getLastSet < 0) 0L
-        else valueVector.getStartOffset(valueVector.getLastSet + 1).toLong
-      require(
-        length >= 0 && start >= 0 && start + length <= Int.MaxValue,
-        "String column exceeds the 32-bit Arrow offset range")
+      require(length >= 0, "String length must be non-negative")
       valueVector.setValueLengthSafe(count, length)
 
       // Reservation can replace the buffer. Copy into its current address while Spark still owns

@@ -30,6 +30,7 @@ import org.scalatest.matchers.should.Matchers
 import org.apache.arrow.c.{ArrowArray, Data}
 import org.apache.arrow.memory.{ArrowBuf, OutOfMemoryException, RootAllocator}
 import org.apache.arrow.vector.{VarCharVector, VectorSchemaRoot}
+import org.apache.arrow.vector.util.OversizedAllocationException
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.GenericInternalRow
 import org.apache.spark.sql.comet.util.Utils
@@ -235,33 +236,67 @@ class CometStringWriterSuite extends AnyFunSuite with Matchers {
     }
   }
 
-  Seq("offset overflow" -> (Int.MaxValue - 1, 4), "negative length" -> (1, -1)).foreach {
-    case (description, (start, length)) =>
-      test(s"off-heap string $description is rejected before reserving or copying") {
+  Seq("off-heap", "heap array", "heap slice").foreach { storage =>
+    test(s"$storage string offset overflow throws Arrow's oversized allocation exception") {
+      Seq(false, true).foreach { growOffsets =>
         Using.resource(new RootAllocator(1024 * 1024)) { allocator =>
           Using.Manager { use =>
-            val source = use(allocator.buffer(8))
+            val source = use(allocator.buffer(sourceOffset + 4))
             val vector = use(new VarCharVector("text", allocator))
             vector.allocateNew(8, 4)
             vector.setSafe(0, Array[Byte](42))
             // Simulate a nearly full 32-bit offset range without allocating gigabytes.
+            val start = Int.MaxValue - 1
             vector.getOffsetBuffer.setInt(4L, start)
             val writer = new StringWriter(vector)
-            writer.count = 1
-            val allocated = allocator.getAllocatedMemory
-            val value = UTF8String.fromAddress(null, source.memoryAddress(), length)
-            intercept[IllegalArgumentException] {
+            val index = if (growOffsets) vector.getValueCapacity else 1
+            writer.count = index
+            val payload = Array[Byte](1, 2, 3, 4)
+            val value = storage match {
+              case "off-heap" => offHeapString(source, payload)
+              case "heap array" => UTF8String.fromBytes(payload)
+              case "heap slice" =>
+                val backing = Array.fill[Byte](sourceOffset)(-1) ++ payload ++ Array[Byte](-1)
+                UTF8String.fromBytes(backing, sourceOffset, payload.length)
+            }
+            intercept[OversizedAllocationException] {
               writer.write(row(value), 0)
-            }.getMessage should include("32-bit Arrow offset range")
-            allocator.getAllocatedMemory shouldBe allocated
-            writer.count shouldBe 1
+            }
+            // Arrow may grow metadata before rejecting the data size, but must not commit a row.
+            writer.count shouldBe index
             vector.getLastSet shouldBe 0
             vector.getOffsetBuffer.getInt(4L) shouldBe start
             vector.getDataBuffer.getByte(0L) shouldBe 42.toByte
-            vector.isNull(1) shouldBe true
+            if (index < vector.getValueCapacity) vector.isNull(index) shouldBe true
           }.get
           allocator.getAllocatedMemory shouldBe 0L
         }
       }
+    }
+  }
+
+  test("off-heap negative string length is rejected before reserving or copying") {
+    Using.resource(new RootAllocator(1024 * 1024)) { allocator =>
+      Using.Manager { use =>
+        val source = use(allocator.buffer(8))
+        val vector = use(new VarCharVector("text", allocator))
+        vector.allocateNew(8, 4)
+        vector.setSafe(0, Array[Byte](42))
+        val writer = new StringWriter(vector)
+        writer.count = 1
+        val allocated = allocator.getAllocatedMemory
+        val value = UTF8String.fromAddress(null, source.memoryAddress(), -1)
+        intercept[IllegalArgumentException] {
+          writer.write(row(value), 0)
+        }.getMessage should include("String length must be non-negative")
+        allocator.getAllocatedMemory shouldBe allocated
+        writer.count shouldBe 1
+        vector.getLastSet shouldBe 0
+        vector.getOffsetBuffer.getInt(4L) shouldBe 1
+        vector.getDataBuffer.getByte(0L) shouldBe 42.toByte
+        vector.isNull(1) shouldBe true
+      }.get
+      allocator.getAllocatedMemory shouldBe 0L
+    }
   }
 }
