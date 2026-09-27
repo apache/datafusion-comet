@@ -146,6 +146,7 @@ jobs:
           rm -rf /root/.m2/repository/org/apache/parquet # somehow parquet cache requires cleanups
           ENABLE_COMET=true ENABLE_COMET_ONHEAP=true ./gradlew -DsparkVersions=${{ inputs.spark-short }} -DscalaVersion=${{ inputs.scala }} -DflinkVersions= -DkafkaVersions= \
             :iceberg-spark:iceberg-spark-${{ inputs.spark-short }}_${{ inputs.scala }}:test \
+            --init-script ../dev/ci/iceberg-local-comet.gradle \
             -Pquick=true -x javadoc
 
   iceberg-spark-extensions:
@@ -181,6 +182,7 @@ jobs:
           rm -rf /root/.m2/repository/org/apache/parquet # somehow parquet cache requires cleanups
           ENABLE_COMET=true ENABLE_COMET_ONHEAP=true ./gradlew -DsparkVersions=${{ inputs.spark-short }} -DscalaVersion=${{ inputs.scala }} -DflinkVersions= -DkafkaVersions= \
             :iceberg-spark:iceberg-spark-extensions-${{ inputs.spark-short }}_${{ inputs.scala }}:test \
+            --init-script ../dev/ci/iceberg-local-comet.gradle \
             -Pquick=true -x javadoc
 
   iceberg-spark-runtime:
@@ -216,4 +218,5 @@ jobs:
           rm -rf /root/.m2/repository/org/apache/parquet # somehow parquet cache requires cleanups
           ENABLE_COMET=true ENABLE_COMET_ONHEAP=true ./gradlew -DsparkVersions=${{ inputs.spark-short }} -DscalaVersion=${{ inputs.scala }} -DflinkVersions= -DkafkaVersions= \
             :iceberg-spark:iceberg-spark-runtime-${{ inputs.spark-short }}_${{ inputs.scala }}:integrationTest \
+            --init-script ../dev/ci/iceberg-local-comet.gradle \
             -Pquick=true -x javadoc
