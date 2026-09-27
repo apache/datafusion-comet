@@ -27,7 +27,7 @@ import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeReference, ExprId, PythonUDF}
 import org.apache.spark.sql.execution.{ColumnarToRowExec, LeafExecNode}
 import org.apache.spark.sql.execution.python.MapInArrowExec
-import org.apache.spark.sql.types.{LongType, StructField, StructType}
+import org.apache.spark.sql.types.{LongType, StructField, StructType, VariantType}
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
 import org.apache.comet.{CometConf, ExtendedExplainInfo}
@@ -102,6 +102,31 @@ class CometMapInBatchSuite extends CometTestBase {
       assert(
         !rewritten.exists(_.isInstanceOf[CometMapInBatchExec]),
         s"unexpected CometMapInBatchExec when disabled:\n$rewritten")
+    }
+  }
+
+  test("Variant inputs and outputs keep Python operators on Spark") {
+    val plain = Seq(AttributeReference("id", LongType)())
+    val variant = Seq(AttributeReference("v", VariantType)())
+    withSQLConf(CometConf.COMET_PYARROW_UDF_ENABLED.key -> "true") {
+      for ((input, output) <- Seq(variant -> plain, plain -> variant)) {
+        val udf = stubPythonUDF.copy(
+          children = input,
+          dataType = StructType(output.map(attr => StructField(attr.name, attr.dataType))))
+        val plan = MapInArrowExec(
+          udf,
+          output,
+          ColumnarToRowExec(StubCometLeaf(input)),
+          isBarrier = false,
+          profile = None)
+        val rewritten = EliminateRedundantTransitions(spark).apply(plan)
+        assert(rewritten.isInstanceOf[MapInArrowExec])
+        assert(!rewritten.exists(_.isInstanceOf[CometMapInBatchExec]))
+        assert(
+          new ExtendedExplainInfo()
+            .getFallbackReasons(rewritten)
+            .exists(_.contains("Comet Python operators do not support type VariantType")))
+      }
     }
   }
 

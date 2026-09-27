@@ -31,7 +31,7 @@ import org.apache.arrow.vector.compression.{CompressionCodec, CompressionUtil, N
 import org.apache.arrow.vector.types.pojo.ArrowType
 import org.apache.spark.CometDriverPlugin
 import org.apache.spark.SparkConf
-import org.apache.spark.sql.{CometTestBase, Row}
+import org.apache.spark.sql.{CometTestBase, QueryTest, Row}
 import org.apache.spark.sql.catalyst.expressions.{And, Attribute, AttributeReference, Expression, GreaterThanOrEqual, LessThan, Literal}
 import org.apache.spark.sql.columnar.{CachedBatch, SimpleMetricsCachedBatch}
 import org.apache.spark.sql.comet.{CometBroadcastHashJoinExec, CometInMemoryTableScanExec, CometSortExec, CometSortMergeJoinExec}
@@ -39,7 +39,7 @@ import org.apache.spark.sql.comet.execution.arrow.{ArrowCachedBatchSerializer, C
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.execution.SortExec
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AQEShuffleReadExec, QueryStageExec, ShuffleQueryStageExec}
-import org.apache.spark.sql.execution.columnar.{CometInMemoryRelationHelper, InMemoryRelation}
+import org.apache.spark.sql.execution.columnar.{CometInMemoryRelationHelper, InMemoryRelation, InMemoryTableScanExec}
 import org.apache.spark.sql.execution.exchange.{Exchange, ReusedExchangeExec, ShuffleExchangeLike}
 import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, SortMergeJoinExec}
 import org.apache.spark.sql.functions.max
@@ -166,10 +166,7 @@ class CometInMemoryCacheSuite extends CometTestBase {
         checkAnswer(df, Seq(Row(1, 1), Row(2, 2)))
         val plan = df.queryExecution.executedPlan
         assert(plan.asInstanceOf[AdaptiveSparkPlanExec].isFinalPlan)
-        // Match by name because this suite must also compile on Spark 3.4.
-        assert(collect(plan) {
-          case s: QueryStageExec if s.getClass.getSimpleName == "TableCacheQueryStageExec" => s
-        }.size == 1)
+        assert(collect(plan) { case s: QueryStageExec if isTableCacheStage(s) => s }.size == 1)
         assert(collect(plan) { case s: CometInMemoryTableScanExec => s }.size == 1)
         assert(collect(plan) { case s: ShuffleQueryStageExec => s }.size == 1)
         assert(collect(plan) { case s: AQEShuffleReadExec => s }.isEmpty)
@@ -225,6 +222,56 @@ class CometInMemoryCacheSuite extends CometTestBase {
           assert(stats.rowCount.contains(BigInt(60000)))
           assert(stats.sizeInBytes == batches.map(_.sizeInBytes).sum)
           assert(stats.sizeInBytes > 1024L)
+        }
+      }
+    }
+  }
+
+  // https://github.com/apache/datafusion-comet/issues/6202
+  test("AQE keeps the operators above a table cache stage native once the stage materializes") {
+    assume(isSpark35Plus, "Table-cache query stages require Spark 3.5+")
+    // `t` holds 1000 ids for each k, and the ids for a given k sum to 1000 * k + 4995000.
+    val queries = Seq(
+      "SELECT k, count(*) FROM t GROUP BY k" -> (0L until 10L).map(k => Row(k, 1000L)),
+      "SELECT name, sum(id) FROM t JOIN d ON k = k2 GROUP BY name" ->
+        (0L until 10L).map(k => Row(s"n$k", 1000L * k + 4995000L)),
+      "SELECT sum(id) FROM t WHERE k = 3" -> Seq(Row(4998000L)))
+    withTempView("t", "d") {
+      spark
+        .range(0, 10000, 1, 4)
+        .selectExpr("id", "id % 10 AS k")
+        .createOrReplaceTempView("t")
+      spark
+        .range(10)
+        .selectExpr("id AS k2", "concat('n', id) AS name")
+        .createOrReplaceTempView("d")
+      for {
+        nativeCache <- Seq(true, false)
+        (query, expected) <- queries
+      } {
+        withAQECache {
+          withSQLConf(CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> nativeCache.toString) {
+            spark.catalog.cacheTable("t")
+            spark.catalog.cacheTable("d")
+            val scanClass: Class[_] =
+              if (nativeCache) classOf[CometInMemoryTableScanExec]
+              else classOf[InMemoryTableScanExec]
+            // The first run materializes the cache through the stage and the second reads it warm.
+            // checkToRDD = false keeps checkAnswer from warming the cache with a run of its own.
+            Seq("cold", "warm").foreach { cache =>
+              val df = sql(query)
+              QueryTest.checkAnswer(df, expected, checkToRDD = false)
+              val plan = df.queryExecution.executedPlan
+              withClue(s"nativeCache=$nativeCache, $cache cache: $query\n$plan\n") {
+                val cacheScans = collect(plan) {
+                  case s: QueryStageExec if isTableCacheStage(s) => s.plan
+                }
+                assert(cacheScans.nonEmpty)
+                assert(cacheScans.forall(scanClass.isInstance))
+                checkCometOperatorsInFinalPlan(plan, classOf[InMemoryTableScanExec])
+              }
+            }
+          }
         }
       }
     }

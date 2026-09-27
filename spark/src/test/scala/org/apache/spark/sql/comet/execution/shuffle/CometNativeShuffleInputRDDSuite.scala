@@ -228,7 +228,10 @@ class CometNativeShuffleInputRDDSuite extends CometTestBase {
         commonByKey = Map.empty,
         perPartitionByKey = perPartitionByKey,
         shuffleScanIndices = Set.empty,
-        hasScanInput = false)
+        hasScanInput = false,
+        perPartitionFilePaths = Array.tabulate(numPartitions) { idx =>
+          Seq(s"file:/tmp/part-$idx.parquet")
+        })
       val spec = NativeShuffleSpec(Operator.getDefaultInstance, childMetricNode, execContext)
       val dep = new CometShuffleDependency[Int, ColumnarBatch, ColumnarBatch](
         _rdd = rdd,
@@ -241,6 +244,7 @@ class CometNativeShuffleInputRDDSuite extends CometTestBase {
 
     // Pre-fix this pair grew from ~13KB to ~10MB between 10 and 10000 partitions. With the map held
     // @transient on both the RDD and the NativeExecContext, the pair stays roughly constant.
+    // The diagnostic file paths must also stay on the driver, rather than travel with every task.
     val (_, smallDep) = build(10)
     val (largeRdd, largeDep) = build(10000)
     val smallPair = ser.serialize((smallDep.rdd, smallDep)).limit()
@@ -248,7 +252,7 @@ class CometNativeShuffleInputRDDSuite extends CometTestBase {
     assert(
       math.abs(largePair - smallPair) < 100 * 1024,
       s"serialized (rdd, dep) grew with partition count (small=$smallPair, large=$largePair); " +
-        "the per-partition plan-data map is leaking into the broadcast task binary")
+        "per-partition plan data or file paths are leaking into the broadcast task binary")
 
     // Each task's Partition object still carries its own slice so the writer can inject plan data.
     val part = largeRdd.partitions(7).asInstanceOf[CometNativeShuffleInputPartition]
