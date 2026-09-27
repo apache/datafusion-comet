@@ -1008,6 +1008,11 @@ abstract class CometNativeExec extends CometExec {
     // broadcast plan.
     val (firstNonBroadcastPlanRDD, firstNonBroadcastPlanNumPartitions) =
       firstNonBroadcastPlan.get._1 match {
+        // Every plan-data scan is sized from perPartitionData, which findAllPlanData above has
+        // resolved. A bucketed scan has one entry per bucket, after any bucket coalescing, so the
+        // count still matches its HashPartitioning.
+        case scan: CometScanWithPlanData =>
+          (null.asInstanceOf[RDD[Any]], scan.perPartitionData.length)
         case plan: CometNativeExec =>
           (null.asInstanceOf[RDD[Any]], plan.outputPartitioning.numPartitions)
         case plan =>
@@ -1251,6 +1256,9 @@ abstract class CometLeafExec extends CometNativeExec with LeafExecNode {
  * it, [[PlanDataInjector.findAllPlanData]] cannot collect the per-partition tasks and the
  * parent's native execution receives an empty input. (`CometIcebergNativeScanExec` does NOT use
  * this trait; it has a dedicated `findAllPlanData` case.)
+ *
+ * `perPartitionData.length` is the partition count the native block runs with, and the count in
+ * `outputPartitioning` is not used for that.
  *
  * Each implementation also resolves its own DPP subqueries via `ensureSubqueriesResolved` before
  * `commonData`/`perPartitionData` are read. That method lives on [[CometLeafExec]], so the `self:

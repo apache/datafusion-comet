@@ -38,10 +38,10 @@ import org.apache.spark.sql.comet._
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometNativeShuffle, CometShuffleExchangeExec}
 import org.apache.spark.sql.connector.catalog.InMemoryTableCatalog
 import org.apache.spark.sql.execution._
-import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, BroadcastQueryStageExec, LogicalQueryStage}
+import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AQEShuffleReadExec, BroadcastQueryStageExec, LogicalQueryStage}
 import org.apache.spark.sql.execution.columnar.{CometInMemoryRelationHelper, InMemoryTableScanExec}
 import org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormat
-import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, BroadcastExchangeLike, ReusedExchangeExec, ShuffleExchangeExec}
+import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, BroadcastExchangeLike, ReusedExchangeExec, ShuffleExchangeExec, ShuffleExchangeLike}
 import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, BroadcastNestedLoopJoinExec, CartesianProductExec, SortMergeJoinExec}
 import org.apache.spark.sql.execution.reuse.ReuseExchangeAndSubquery
 import org.apache.spark.sql.execution.window.WindowExec
@@ -1226,6 +1226,153 @@ class CometExecSuite extends CometTestBase {
           assert(
             cometSubqueries.nonEmpty,
             "Expected CometSubqueryBroadcastExec (DPP should be active, not TrueLiteral)")
+        }
+      }
+    }
+  }
+
+  // AQE runs CoalesceShufflePartitions before CometPlanAdaptiveDynamicPruningFilters. When that
+  // rule changes a stage, AQE validates the stage by reading outputPartitioning on every node in
+  // it. With Spark's UnionExec, the aggregate's shuffle read shares the final stage with the DPP
+  // scan and gets coalesced, so the scan is asked for its partitioning while its DPP subquery is
+  // still the adaptive placeholder. Answering must not run that subquery.
+  test("AQE DPP: shuffle coalescing in the scan's stage keeps DPP working") {
+    withTempDir { dir =>
+      val path = dir.getAbsolutePath
+      withSQLConf(CometConf.COMET_EXEC_ENABLED.key -> "false") {
+        spark
+          .range(100)
+          .selectExpr("cast(id % 10 as int) as store_id", "cast(id as int) as amount")
+          .write
+          .partitionBy("store_id")
+          .parquet(s"$path/fact")
+        spark
+          .range(10)
+          .selectExpr("cast(id as int) as store_id", "cast(id as string) as country")
+          .write
+          .parquet(s"$path/dim")
+        spark
+          .range(100)
+          .selectExpr("cast(id % 7 as int) as k", "cast(id as int) as v")
+          .write
+          .parquet(s"$path/other")
+      }
+
+      withSQLConf(
+        SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
+        SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "true",
+        SQLConf.COALESCE_PARTITIONS_ENABLED.key -> "true",
+        SQLConf.COALESCE_PARTITIONS_PARALLELISM_FIRST.key -> "false",
+        CometConf.COMET_EXEC_UNION_ENABLED.key -> "false") {
+        spark.read.parquet(s"$path/fact").createOrReplaceTempView("dpp_coalesce_fact")
+        spark.read.parquet(s"$path/dim").createOrReplaceTempView("dpp_coalesce_dim")
+        spark.read.parquet(s"$path/other").createOrReplaceTempView("dpp_coalesce_other")
+
+        val df = spark.sql("""SELECT f.amount AS a, f.store_id AS b
+            |FROM dpp_coalesce_fact f JOIN dpp_coalesce_dim d ON f.store_id = d.store_id
+            |WHERE d.country = '3'
+            |UNION ALL
+            |SELECT k AS a, CAST(count(*) AS INT) AS b
+            |FROM dpp_coalesce_other GROUP BY k""".stripMargin)
+        val (_, cometPlan) = checkSparkAnswer(df)
+
+        if (isSpark35Plus) {
+          val dppScans = collect(cometPlan) {
+            case s: CometNativeScanExec
+                if s.partitionFilters.exists(_.isInstanceOf[DynamicPruningExpression]) =>
+              s
+          }
+          assert(dppScans.size == 1, s"Expected one DPP native scan:\n${cometPlan.treeString}")
+          // The test only covers the bug if coalescing changed the stage holding the DPP scan.
+          // That is the final stage, and TreeNode.collect stops at its query stage leaves.
+          val finalStage = stripAQEPlan(cometPlan)
+          assert(
+            finalStage.find(_ eq dppScans.head).nonEmpty &&
+              finalStage.collect {
+                case r: AQEShuffleReadExec if r.isCoalescedRead => r
+              }.nonEmpty,
+            "Expected the DPP scan and a coalesced shuffle read in the final stage:\n" +
+              cometPlan.treeString)
+          assertAqeDppShape(cometPlan, expectedCometSubqueryBroadcasts = Some(1))
+          // The dimension filter keeps store 3 only, so DPP reads 1 of the 10 partitions.
+          assert(
+            dppScans.head.metrics("numPartitions").value == 1,
+            s"Expected DPP to prune to 1 partition:\n${cometPlan.treeString}")
+        }
+      }
+    }
+  }
+
+  // A bucketed scan reports its bucket layout, which DPP does not change. The sort-merge join on
+  // the bucket column keeps relying on it, so neither join side is shuffled, while DPP from the
+  // broadcast dimension join still prunes the fact table's partitions.
+  test("AQE DPP: bucketed scan keeps its partitioning for a sort-merge join") {
+    withTable("dpp_bucket_fact", "dpp_bucket_dim", "dpp_bucket_other") {
+      withSQLConf(CometConf.COMET_EXEC_ENABLED.key -> "false") {
+        spark
+          .range(100)
+          .selectExpr(
+            "cast(id % 10 as int) as store_id",
+            "cast(id % 7 as int) as k",
+            "cast(id as int) as amount")
+          .write
+          .partitionBy("store_id")
+          .bucketBy(4, "k")
+          .format("parquet")
+          .saveAsTable("dpp_bucket_fact")
+        spark
+          .range(10)
+          .selectExpr("cast(id as int) as store_id", "cast(id as string) as country")
+          .write
+          .format("parquet")
+          .saveAsTable("dpp_bucket_dim")
+        spark
+          .range(50)
+          .selectExpr("cast(id % 7 as int) as k", "cast(id as int) as v")
+          .write
+          .bucketBy(4, "k")
+          .format("parquet")
+          .saveAsTable("dpp_bucket_other")
+      }
+
+      withSQLConf(
+        SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
+        SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "true",
+        SQLConf.BUCKETING_ENABLED.key -> "true") {
+        val df = sql("""SELECT /*+ BROADCAST(d), MERGE(o) */ f.amount, f.store_id, o.v
+            |FROM dpp_bucket_fact f
+            |JOIN dpp_bucket_dim d ON f.store_id = d.store_id
+            |JOIN dpp_bucket_other o ON f.k = o.k
+            |WHERE d.country = '3'""".stripMargin)
+        val (_, cometPlan) = checkSparkAnswer(df)
+
+        val smjs = collect(cometPlan) {
+          case j: SortMergeJoinExec => j
+          case j: CometSortMergeJoinExec => j
+        }
+        assert(smjs.size == 1, s"Expected one sort-merge join:\n${cometPlan.treeString}")
+        val shuffles = collect(cometPlan) { case s: ShuffleExchangeLike => s }
+        assert(
+          shuffles.isEmpty,
+          s"Expected no shuffle around the bucketed join:\n${cometPlan.treeString}")
+
+        if (isSpark35Plus) {
+          val dppScans = collect(cometPlan) {
+            case s: CometNativeScanExec
+                if s.partitionFilters.exists(_.isInstanceOf[DynamicPruningExpression]) =>
+              s
+          }
+          assert(dppScans.size == 1, s"Expected one DPP native scan:\n${cometPlan.treeString}")
+          assert(
+            dppScans.head.bucketedScan,
+            s"Expected a bucketed scan:\n${cometPlan.treeString}")
+          assertAqeDppShape(cometPlan, expectedCometSubqueryBroadcasts = Some(1))
+          // The dimension filter keeps store 3 only, so DPP reads 1 of the 10 partitions.
+          assert(
+            dppScans.head.metrics("numPartitions").value == 1,
+            s"Expected DPP to prune to 1 partition:\n${cometPlan.treeString}")
         }
       }
     }
