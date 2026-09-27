@@ -1530,38 +1530,35 @@ class CometWindowExecSuite extends CometTestBase {
           .mode("overwrite")
           .parquet(dir.toString)
 
-        spark.read.parquet(dir.toString).createOrReplaceTempView("window_test")
-        // NTILE orders by the unique `id` too, so that peers cannot swap buckets.
-        checkSparkAnswerAndOperator(sql("""
-          SELECT id, k, o, v,
-            PERCENT_RANK() OVER (PARTITION BY k ORDER BY o) AS pct_rnk,
-            CUME_DIST() OVER (PARTITION BY k ORDER BY o) AS cume_dist,
-            NTILE(4) OVER (PARTITION BY k ORDER BY o, id) AS ntile_4,
-            SUM(v) OVER (PARTITION BY k) AS total,
-            COUNT(v) OVER (PARTITION BY k ORDER BY o
-                           RANGE BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING) AS remaining
-          FROM window_test
-        """))
-        checkSparkAnswerAndOperator(sql("""
-          SELECT id, k, o, v,
-            PERCENT_RANK() OVER (ORDER BY o) AS pct_rnk,
-            SUM(v) OVER () AS total
-          FROM window_test
-        """))
+        withParquetTable(dir.toString, "window_test") {
+          // NTILE orders by the unique `id` too, so that peers cannot swap buckets.
+          checkSparkAnswerAndOperator(sql("""
+            SELECT id, k, o, v,
+              PERCENT_RANK() OVER (PARTITION BY k ORDER BY o) AS pct_rnk,
+              CUME_DIST() OVER (PARTITION BY k ORDER BY o) AS cume_dist,
+              NTILE(4) OVER (PARTITION BY k ORDER BY o, id) AS ntile_4,
+              SUM(v) OVER (PARTITION BY k) AS total,
+              COUNT(v) OVER (PARTITION BY k ORDER BY o
+                             RANGE BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING) AS remaining
+            FROM window_test
+          """))
+          checkSparkAnswerAndOperator(sql("""
+            SELECT id, k, o, v,
+              PERCENT_RANK() OVER (ORDER BY o) AS pct_rnk,
+              SUM(v) OVER () AS total
+            FROM window_test
+          """))
+        }
       }
     }
   }
 
-  // A native memory pool of about 4 MB for the single task that runs the window, with a sort
-  // below it that can spill within that.
-  private val tinyNativeMemoryPool = Seq(
-    CometConf.COMET_OFFHEAP_MEMORY_POOL_FRACTION.key -> "0.002",
-    CometConf.COMET_RESPECT_DATAFUSION_CONFIGS.key -> "true",
-    "spark.comet.datafusion.execution.sort_spill_reservation_bytes" -> "65536",
-    SQLConf.SHUFFLE_PARTITIONS.key -> "1")
-
-  /** 200,000 rows, about 3.4 MB as Arrow, with window partition key `keyExpr`. */
-  private def withWindowInput(keyExpr: String)(f: => Unit): Unit = {
+  /**
+   * Runs `f` on `SUM(v) OVER (PARTITION BY k)` over 200,000 rows, about 3.4 MB as Arrow, with
+   * window partition key `keyExpr`. The query runs in one task with a native memory pool of about
+   * 4 MB, and the sort below the window can spill within it.
+   */
+  private def withWholePartitionSum(keyExpr: String)(f: DataFrame => Unit): Unit = {
     withTempDir { dir =>
       spark
         .range(200000)
@@ -1569,33 +1566,35 @@ class CometWindowExecSuite extends CometTestBase {
         .write
         .mode("overwrite")
         .parquet(dir.toString)
-      spark.read.parquet(dir.toString).createOrReplaceTempView("window_input")
-      f
+      withParquetTable(dir.toString, "window_input") {
+        withSQLConf(
+          // The fraction sizes the pool only in fair_unified.
+          CometConf.COMET_OFFHEAP_MEMORY_POOL_TYPE.key -> "fair_unified",
+          CometConf.COMET_OFFHEAP_MEMORY_POOL_FRACTION.key -> "0.002",
+          CometConf.COMET_RESPECT_DATAFUSION_CONFIGS.key -> "true",
+          "spark.comet.datafusion.execution.sort_spill_reservation_bytes" -> "65536",
+          SQLConf.SHUFFLE_PARTITIONS.key -> "1") {
+          f(sql("SELECT k, o, v, SUM(v) OVER (PARTITION BY k) AS total FROM window_input"))
+        }
+      }
     }
   }
 
   test("window: whole-partition window buffers one window partition at a time") {
     // Buffering every row of the task, as DataFusion's WindowAggExec does, would not fit.
-    withWindowInput("id DIV 5") {
-      withSQLConf(tinyNativeMemoryPool: _*) {
-        checkSparkAnswerAndOperator(
-          sql("SELECT k, o, v, SUM(v) OVER (PARTITION BY k) AS total FROM window_input"))
-      }
+    withWholePartitionSum("id DIV 5") { df =>
+      checkSparkAnswerAndOperator(df)
     }
   }
 
   test("window: a window partition that does not fit in memory fails the task") {
     // The native window cannot spill, so it fails the task rather than grow past its pool.
-    withWindowInput("0") {
-      withSQLConf(tinyNativeMemoryPool: _*) {
-        val df = sql("SELECT k, o, v, SUM(v) OVER (PARTITION BY k) AS total FROM window_input")
-        val messages = causeChain(intercept[Exception](df.collect())).map(_.getMessage)
-        assert(
-          messages.exists(message =>
-            message != null &&
-              message.contains("Additional allocation failed for CometWindowAggExec")),
-          messages.mkString("\n"))
-      }
+    withWholePartitionSum("0") { df =>
+      val messages =
+        causeChain(intercept[Exception](df.collect())).flatMap(e => Option(e.getMessage))
+      assert(
+        messages.exists(_.contains("Additional allocation failed for CometWindowAggExec")),
+        messages.mkString("\n"))
     }
   }
 }

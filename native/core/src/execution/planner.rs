@@ -2443,9 +2443,7 @@ impl PhysicalPlanner {
                 // retract-capable built-ins for sliding aggregate frames,
                 // ever-expanding aggregate frames (all that route to
                 // `BoundedWindowAggExec` as `PlainAggregateWindowExpr`) never
-                // trigger a retract call. `CometWindowAggExec` evaluates like
-                // DataFusion's `WindowAggExec`, but buffers one window partition
-                // at a time instead of the whole input, and reserves it.
+                // trigger a retract call.
                 let window_expr = window_expr?;
                 let all_bounded = window_expr.iter().all(|e| e.uses_bounded_memory());
                 let window_agg: Arc<dyn ExecutionPlan> = if all_bounded {
