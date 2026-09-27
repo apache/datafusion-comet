@@ -406,9 +406,7 @@ from a clean IntelliJ configuration:
    ```
 
    The `spark-4.0` profile sets Scala 2.13 and Java 17 properties. If you need to be explicit, use
-   `PROFILES="-Pspark-4.0 -Pscala-2.13 -Pjdk17" make release`.
-
-   The Maven profile is named `jdk17` in this project.
+   `PROFILES="-Pspark-4.0 -Pscala-2.13" make release`.
 
    If the native build previously used a different JDK, clear Cargo's cached JNI link path before
    rebuilding:
