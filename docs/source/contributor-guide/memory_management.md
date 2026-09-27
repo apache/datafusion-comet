@@ -22,7 +22,7 @@ under the License.
 This page describes how memory is budgeted, accounted, and enforced across the JVM/native
 boundary. It is aimed at contributors working on memory pools, operators that reserve memory, or
 anyone debugging an out-of-memory report. For user-facing tuning advice, see the
-[Tuning Guide](../user-guide/latest/tuning.md).
+[Memory Tuning](../user-guide/latest/tuning/memory.md) guide.
 
 This page covers off-heap mode (`spark.memory.offHeap.enabled=true`) only. Comet also has an
 on-heap mode, but it exists so that the Spark SQL test suite can run against Comet without changing
@@ -60,6 +60,15 @@ Comet's difficulty is that its allocations are made by Rust code, so no JVM allo
 and no JVM metric measures them, yet they land squarely in container RSS. Comet therefore maintains
 its own budget that is meant to shadow the physical one, and declares it to Spark so that the two
 compete for a single number. The accuracy of that shadow is the central problem this page is about.
+
+The picture the [Memory Tuning](../user-guide/latest/tuning/memory.md) guide gives users is
+deliberately simple:
+
+![Spark and Comet both use the JVM heap and share the off-heap memory pool, and the rest of Comet's native memory has to fit in the executor's memory overhead](../_static/images/comet-executor-memory.svg)
+
+Most of this page is about the line between Comet's share of the off-heap pool and its share of the
+memory overhead: which allocations are declared to the pool, and which land in the overhead with
+nothing tracking them.
 
 ## Who allocates what
 
@@ -426,7 +435,7 @@ reports the bytes Rust's allocator has handed out next to the pools' reservation
 than per interval, enable tracing and compare `native_allocated` against
 `comet_memory_reserved_total`; see [Tracing](tracing.md#analyzing-memory-usage).
 
-[memory-usage-log]: ../user-guide/latest/tuning.md#sizing-the-overhead-from-the-memory-usage-log
+[memory-usage-log]: ../user-guide/latest/tuning/memory.md#sizing-the-overhead-from-the-memory-usage-log
 
 ## What the container sees
 
@@ -522,14 +531,14 @@ much they matter:
 
 ## Debugging memory issues
 
-| Tool                                                                                             | What it gives you                                                                           |
-| ------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------- |
-| `spark.comet.debug.memory=true`                                                                  | `LoggingMemoryPool` logs every register/grow/shrink with the consumer name                  |
-| `spark.comet.explain.native.enabled=true`                                                        | Native plan with per-operator metrics, including spill counts                               |
-| [Memory usage log](../user-guide/latest/tuning.md#sizing-the-overhead-from-the-memory-usage-log) | Executor-wide native allocation vs pool reservations, logged every 10 seconds by default    |
-| [Tracing](tracing.md#analyzing-memory-usage)                                                     | `native_allocated` vs `comet_memory_reserved_total` per event; the accounting gap over time |
-| `TrackConsumersPool`                                                                             | Names the top 10 consumers in `ResourcesExhausted` messages (always on)                     |
-| [`thresher`](https://github.com/cetra3/thresher)                                                 | Third-party crate that dumps a jemalloc heap profile at a threshold                         |
+| Tool                                                                                                    | What it gives you                                                                           |
+| ------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| `spark.comet.debug.memory=true`                                                                         | `LoggingMemoryPool` logs every register/grow/shrink with the consumer name                  |
+| `spark.comet.explain.native.enabled=true`                                                               | Native plan with per-operator metrics, including spill counts                               |
+| [Memory usage log](../user-guide/latest/tuning/memory.md#sizing-the-overhead-from-the-memory-usage-log) | Executor-wide native allocation vs pool reservations, logged every 10 seconds by default    |
+| [Tracing](tracing.md#analyzing-memory-usage)                                                            | `native_allocated` vs `comet_memory_reserved_total` per event; the accounting gap over time |
+| `TrackConsumersPool`                                                                                    | Names the top 10 consumers in `ResourcesExhausted` messages (always on)                     |
+| [`thresher`](https://github.com/cetra3/thresher)                                                        | Third-party crate that dumps a jemalloc heap profile at a threshold                         |
 
 A checklist for triaging an executor OOM kill:
 
