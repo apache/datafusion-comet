@@ -46,7 +46,7 @@ import com.sun.management.ThreadMXBean
  */
 object CometStringWriterBenchmark extends BenchmarkBase {
 
-  // Read after each measured batch so its output remains observable without allocating arrays.
+  // Accumulate results after each measured batch without allocating arrays in the measured region.
   @volatile private var consumed: Long = 0L
 
   private class ByteBufferStringWriter(vector: VarCharVector) extends StringWriter(vector) {
@@ -139,7 +139,7 @@ object CometStringWriterBenchmark extends BenchmarkBase {
   }
 
   private def consume(vector: VarCharVector, input: Input): Unit = {
-    consumed = vector.getValueCount.toLong + vector.getDataBuffer.getByte(input.bytes - 1)
+    consumed += vector.getValueCount.toLong + vector.getDataBuffer.getByte(input.bytes - 1)
   }
 
   override def runBenchmarkSuite(args: Array[String]): Unit = {
