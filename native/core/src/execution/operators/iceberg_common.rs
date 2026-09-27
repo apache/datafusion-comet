@@ -18,6 +18,7 @@
 //! Helpers shared between the Iceberg scan and Iceberg write operators.
 
 use std::collections::{HashMap, VecDeque};
+use std::fmt;
 use std::sync::{Arc, LazyLock};
 
 use datafusion::common::DataFusionError;
@@ -102,13 +103,23 @@ pub(crate) fn storage_factory_for(
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, PartialEq, Eq, Hash)]
 struct FileIoCacheKey {
     access_mode: u8,
     catalog_name: String,
     /// The full path: the S3 access bridge is scoped to the exact path it was built for.
     reference_path: String,
     properties: Vec<(String, String)>,
+}
+
+impl fmt::Debug for FileIoCacheKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("FileIoCacheKey")
+            .field("access_mode", &self.access_mode)
+            .field("catalog_name", &self.catalog_name)
+            .field("reference_path", &self.reference_path)
+            .finish()
+    }
 }
 
 impl FileIoCacheKey {
@@ -417,6 +428,32 @@ mod tests {
         );
         assert!(
             FileIoCacheKey::new(&HashMap::new(), "memory:///", "", AccessMode::Write).is_none()
+        );
+    }
+
+    #[test]
+    fn cache_key_debug_does_not_leak_properties() {
+        let props = HashMap::from([
+            (
+                "s3.secret-access-key".to_string(),
+                "super-secret-key".to_string(),
+            ),
+            (
+                "s3.session-token".to_string(),
+                "super-secret-token".to_string(),
+            ),
+        ]);
+        let key = FileIoCacheKey::new(
+            &props,
+            "s3://bucket/warehouse/db/t",
+            "prod_catalog",
+            AccessMode::Write,
+        )
+        .unwrap();
+        assert_eq!(
+            format!("{key:?}"),
+            "FileIoCacheKey { access_mode: 1, catalog_name: \"prod_catalog\", \
+             reference_path: \"s3://bucket/warehouse/db/t\" }"
         );
     }
 

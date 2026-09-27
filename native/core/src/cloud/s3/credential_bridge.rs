@@ -56,8 +56,9 @@ pub enum AccessMode {
     Write = 1,
 }
 
-/// Per-scan credential provider that delegates to the JVM SPI via JNI. `handle` is the JVM-side
-/// identity for the `(provider_class, dispatch_key, catalog_properties)` triple returned by
+/// Credential provider that delegates to the JVM SPI via JNI. Instances live in the executor's
+/// FileIO and object store caches, so one serves many tasks. `handle` is the JVM-side identity
+/// for the `(provider_class, dispatch_key, catalog_properties)` triple returned by
 /// `ensureInitialized`. `bucket_jstr` / `path_jstr` are interned once at construction to avoid
 /// per-call `new_string` allocations on the hot path.
 ///
