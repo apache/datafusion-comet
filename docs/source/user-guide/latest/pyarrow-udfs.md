@@ -30,7 +30,7 @@ using the Arrow IPC format.
 
 Without Comet, the execution path for these UDFs involves unnecessary data conversions:
 
-1. Comet reads data in Arrow columnar format (via CometScan)
+1. Comet reads data in Arrow columnar format (via `CometNativeScan`)
 2. Spark inserts a ColumnarToRow transition (converts Arrow to UnsafeRow)
 3. The Python runner converts those rows back to Arrow to send to Python
 4. Python executes the UDF on Arrow batches
@@ -40,8 +40,8 @@ Steps 2 and 3 are redundant since the data starts and ends in Arrow format.
 
 ## How Comet Optimizes This
 
-When enabled, Comet detects `PythonMapInArrowExec` / `MapInArrowExec` and `MapInPandasExec`
-operators in the physical plan and replaces them with `CometMapInBatchExec`, which:
+When enabled, Comet detects `MapInArrowExec` and `MapInPandasExec` operators in the physical plan
+and replaces them with `CometMapInBatchExec` (shown as `CometMapInBatch` in plans), which:
 
 - Reads Arrow columnar batches directly from the upstream Comet operator
 - Feeds them to the Python runner without the expensive UnsafeProjection copy
@@ -58,18 +58,16 @@ copies that remain.
 Without Comet's optimization:
 
 ```
-PythonMapInArrow / MapInArrow / MapInPandas
-+- ColumnarToRow         <- Arrow -> Row copy
-   +- CometNativeExec    <- Arrow batch
-      +- CometScan
+MapInArrow / MapInPandas
++- CometColumnarToRow    <- Arrow -> Row copy
+   +- CometNativeScan    <- Arrow batch
 ```
 
 With the optimization enabled:
 
 ```
 CometMapInBatch          <- Arrow batch in/out, Python runner attached
-+- CometNativeExec
-   +- CometScan
++- CometNativeScan
 ```
 
 ## Configuration
@@ -95,7 +93,7 @@ worker. Both confs can be set independently.
 
 | PySpark API                      | Spark Plan Node             | Supported |
 | -------------------------------- | --------------------------- | --------- |
-| `df.mapInArrow(func, schema)`    | `PythonMapInArrowExec`      | Yes       |
+| `df.mapInArrow(func, schema)`    | `MapInArrowExec`            | Yes       |
 | `df.mapInPandas(func, schema)`   | `MapInPandasExec`           | Yes       |
 | `@pandas_udf` (scalar)           | `ArrowEvalPythonExec`       | Not yet   |
 | `df.applyInPandas(func, schema)` | `FlatMapGroupsInPandasExec` | Not yet   |
@@ -144,17 +142,15 @@ You should see:
 
 ```
 CometMapInBatch ...
-+- CometNativeExec ...
-   +- CometScan ...
++- CometNativeScan parquet ...
 ```
 
 Instead of the unoptimized plan:
 
 ```
-PythonMapInArrow ...
-+- ColumnarToRow
-   +- CometNativeExec ...
-      +- CometScan ...
+MapInArrow ...
++- CometColumnarToRow
+   +- CometNativeScan parquet ...
 ```
 
 When AQE is enabled (the Spark default) and the query contains a shuffle, the
@@ -163,7 +159,7 @@ running an action will show the unoptimized plan:
 
 ```
 AdaptiveSparkPlan isFinalPlan=false
-+- PythonMapInArrow ...
++- MapInArrow ...
    +- CometExchange ...
 ```
 

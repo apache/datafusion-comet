@@ -73,6 +73,23 @@ Comet's bridge does not maintain a TTL cache, schedule refresh, or broadcast cat
 
 A Comet-side cache would have to either expose a tuning knob (TTL, max size, eviction policy) and grow over time, or be hardcoded and surprise vendors whose policies disagree. The bridge intentionally has neither and forwards every call.
 
+## Location-scoped credentials on the Parquet path
+
+`object_store::CredentialProvider::get_credential` receives no request path, so one `AmazonS3` store presents one credential, and the process-wide `object_store` cache holds one store per `(scheme://bucket, config_hash, hdfs_backend)`. A base provider therefore gets one credential per bucket, requested with the path of the first file Comet reads. A bucket whose policies differ by location (one for `warehouse/sales`, another for `warehouse/finance`) needs a store per location and something that picks among them for each request.
+
+`CometS3LocationScopedCredentialProvider` supplies that. `getPolicyLocations(bucket)` returns every location in the bucket that has its own policy, and `create_store` returns a `LocationScopedObjectStore` for the bucket instead of a plain store:
+
+- It is cached and registered like any other S3 store, one per key, so later scans on the bucket share it and the cache and registry keep one store per identity. As for any store, scans that miss the cache at the same moment each build one, and the last one cached wins.
+- Each request is served by the store of the longest location covering its path, matched one segment at a time after percent-decoding, with the bucket root as an implicit location. Routing is per request, so a partition whose files span several locations reads each file with its own location's credential.
+- A location's store is an `AmazonS3` whose bridge is bound to the location itself, so the vendor sees one stable path per location. The bridge is derived from the bucket's bridge, sharing its provider registration, so creating it calls no `ensureInitialized` and loads no classes on the Tokio worker that usually creates it. It is built on first use, usually inside an async read, from an `S3StoreTemplate` that resolved the region when the bucket's store was created, so building never blocks on the Tokio runtime.
+- The locations are a snapshot. A 403 is either a real denial or a location added or removed since the snapshot, and so is a failure to get a location's credential, because a provider with no policy for a path throws rather than vending a credential S3 would reject. On either, the store fetches the locations again and retries the request once if its path now routes elsewhere. The bridge gives its failures a `CredentialProviderError` source, which `object_store` passes through to the read unchanged, so the store can tell them from other errors. Every attempt, successful or not, starts a new snapshot generation, so requests routed from the same generation share one attempt and a failed attempt fails them all instead of each calling the provider in turn. The retry budget is per request, with no state that outlives it.
+
+The locations come from asking for the bucket's whole list rather than which prefixes one session covers. Asking per session leaves Comet to discover the other scopes from 403s, which needs mutable per-store state and cannot route a partition that spans scopes. With the whole list up front, routing is a function of the path.
+
+This is consistent with [Why no Comet-side cache](#why-no-comet-side-cache): the store caches no credentials, and every request still calls `getCredentialsForPath`. What it keeps is the provider's location list and a store for each location that has been read, so it grows with the vendor's policy list, not with the paths read. The list is only fetched again after a 403 or a credential failure, so a change that causes neither is not seen until the executor builds a new store.
+
+The dispatcher returns `null` for a provider that does not implement the interface without calling it, and Comet builds the same plain store as before. The Iceberg path does not use locations. Operations other than reads route by path without the retry, since Comet only reads through these stores.
+
 ## Path-specific behavior
 
 `object_store::CredentialProvider` and `reqsign_core::ProvideCredential` differ in what they consume:

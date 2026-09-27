@@ -38,7 +38,7 @@ use datafusion::{
     physical_plan::{ExecutionPlan, *},
 };
 use datafusion_comet_common::cast_and_stamp_schema;
-use futures::Stream;
+use futures::{task::AtomicWaker, Stream};
 use jni::objects::{Global, JByteBuffer, JObject};
 use std::{
     pin::Pin,
@@ -63,6 +63,8 @@ pub struct ShuffleScanExec {
     pub schema: SchemaRef,
     /// The current input batch, populated by get_next_batch() before poll_next().
     pub batch: Arc<Mutex<Option<InputBatch>>>,
+    /// Woken when `batch` is refilled, so a poll that found it empty is repeated.
+    waker: Arc<AtomicWaker>,
     /// Cache of plan properties.
     cache: Arc<PlanProperties>,
     /// Metrics collector.
@@ -109,6 +111,7 @@ impl ShuffleScanExec {
             input_source,
             data_types,
             batch: Arc::new(Mutex::new(None)),
+            waker: Arc::new(AtomicWaker::new()),
             cache,
             metrics: metrics_set,
             baseline_metrics,
@@ -121,30 +124,35 @@ impl ShuffleScanExec {
     /// Feeds input batch into this scan. Only used in unit tests.
     pub fn set_input_batch(&mut self, input: InputBatch) {
         *self.batch.try_lock().unwrap() = Some(input);
+        self.waker.wake();
     }
 
-    /// Pull next input batch from JVM. Called externally before poll_next()
-    /// because JNI calls cannot happen from within poll_next on tokio threads.
+    /// Pulls the next input batch from the JVM unless one is already buffered, then wakes the
+    /// stream waiting for it. Called externally before poll_next() because JNI calls cannot
+    /// happen from within poll_next on tokio threads.
     pub fn get_next_batch(&mut self) -> Result<(), CometError> {
         if self.input_source.is_none() {
             // Unit test mode - no JNI calls needed.
             return Ok(());
         }
-        let mut timer = self.baseline_metrics.elapsed_compute().timer();
 
         let mut current_batch = self.batch.try_lock().unwrap();
-        if current_batch.is_none() {
-            let next_batch = Self::get_next(
-                self.exec_context_id,
-                self.input_source.as_ref().unwrap().as_obj(),
-                &self.data_types,
-                &self.decode_time,
-                self.requires_validation,
-            )?;
-            *current_batch = Some(next_batch);
+        if current_batch.is_some() {
+            return Ok(());
         }
 
+        let mut timer = self.baseline_metrics.elapsed_compute().timer();
+        let next_batch = Self::get_next(
+            self.exec_context_id,
+            self.input_source.as_ref().unwrap().as_obj(),
+            &self.data_types,
+            &self.decode_time,
+            self.requires_validation,
+        )?;
+        *current_batch = Some(next_batch);
         timer.stop();
+        drop(current_batch);
+        self.waker.wake();
 
         Ok(())
     }
@@ -362,21 +370,19 @@ impl ShuffleScanStream {
 impl Stream for ShuffleScanStream {
     type Item = DataFusionResult<arrow::array::RecordBatch>;
 
-    fn poll_next(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let mut timer = self.baseline_metrics.elapsed_compute().timer();
         let mut scan_batch = self.shuffle_scan.batch.try_lock().unwrap();
 
-        let input_batch = &*scan_batch;
-        let input_batch = if let Some(batch) = input_batch {
-            batch
-        } else {
-            timer.stop();
-            return Poll::Pending;
-        };
-
-        let result = match input_batch {
-            InputBatch::EOF => Poll::Ready(None),
-            InputBatch::Batch(columns, num_rows) => {
+        let result = match &*scan_batch {
+            None => {
+                self.shuffle_scan.waker.register(cx.waker());
+                Poll::Pending
+            }
+            // EOF stays buffered: a re-poll ends the stream again and `get_next_batch` has
+            // nothing to pull.
+            Some(InputBatch::EOF) => Poll::Ready(None),
+            Some(InputBatch::Batch(columns, num_rows)) => {
                 self.baseline_metrics.record_output(*num_rows);
                 // Reconcile the decoded block with the catalyst-declared schema rather than
                 // stamping it on, so that nested field nullability drift is absorbed here the way
@@ -391,8 +397,9 @@ impl Stream for ShuffleScanStream {
                 Poll::Ready(Some(maybe_batch))
             }
         };
-
-        *scan_batch = None;
+        if matches!(result, Poll::Ready(Some(_))) {
+            *scan_batch = None;
+        }
 
         timer.stop();
 
@@ -756,5 +763,41 @@ mod tests {
             assert!(err.contains("col[0]"), "{err}");
             assert!(err.contains("col_0: expected Struct"), "{err}");
         });
+    }
+
+    #[test]
+    fn refill_wakes_the_pending_poll_and_eof_stays_buffered() {
+        use super::*;
+        use crate::execution::planner::TEST_EXEC_CONTEXT_ID;
+        use datafusion::physical_plan::ExecutionPlan;
+        use futures::task::{waker, ArcWake};
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        struct Woken(AtomicBool);
+        impl ArcWake for Woken {
+            fn wake_by_ref(arc_self: &Arc<Self>) {
+                arc_self.0.store(true, Ordering::SeqCst);
+            }
+        }
+        let woken = Arc::new(Woken(AtomicBool::new(false)));
+        let waker = waker(Arc::clone(&woken));
+        let mut cx = Context::from_waker(&waker);
+
+        let mut scan =
+            ShuffleScanExec::new(TEST_EXEC_CONTEXT_ID, None, vec![DataType::Int32]).unwrap();
+        let mut stream = scan.execute(0, Arc::new(TaskContext::default())).unwrap();
+
+        assert!(stream.as_mut().poll_next(&mut cx).is_pending());
+        assert!(!woken.0.load(Ordering::SeqCst));
+        scan.set_input_batch(InputBatch::EOF);
+        assert!(woken.0.load(Ordering::SeqCst));
+        assert!(matches!(
+            stream.as_mut().poll_next(&mut cx),
+            Poll::Ready(None)
+        ));
+        assert!(matches!(
+            stream.as_mut().poll_next(&mut cx),
+            Poll::Ready(None)
+        ));
     }
 }

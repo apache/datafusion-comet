@@ -39,6 +39,7 @@ import org.apache.comet.CometSparkSessionExtensions.isSpark41Plus
 import org.apache.comet.codegen.CometBatchKernelCodegen
 import org.apache.comet.codegen.CometBatchKernelCodegen.ArrowColumnSpec
 import org.apache.comet.serde.{CometScalaUDF, QueryPlanSerde}
+import org.apache.comet.serde.ExprOuterClass.Expr.ExprStructCase
 import org.apache.comet.udf.codegen.CometScalaUDFCodegen
 import org.apache.comet.vector.CometVector
 
@@ -115,6 +116,75 @@ class CometCodegenSuite
                   assert(expr.hasJvmScalarUdf)
                   assert(
                     expr.getJvmScalarUdf.getClassName === classOf[CometScalaUDFCodegen].getName)
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  for {
+    (name, configName, nativeKind, expressions) <- Seq(
+      (
+        "from_json",
+        "JsonToStructs",
+        ExprStructCase.FROM_JSON,
+        Seq(
+          "from_json(j, 'a INT, b STRING')" -> true,
+          "from_json(j, 'a INT, arr ARRAY<INT>')" -> false)),
+      (
+        "to_json",
+        "StructsToJson",
+        ExprStructCase.TO_JSON,
+        Seq(
+          "to_json(s)" -> true,
+          "to_json(a)" -> false,
+          "to_json(s, map('ignoreNullFields', 'false'))" -> false)))
+  } {
+    test(s"$name routing follows native opt-in and dispatcher settings") {
+      withTable("json_routing") {
+        sql("""CREATE TABLE json_routing(j STRING, s STRUCT<a: INT, b: STRING>, a ARRAY<INT>)
+              |USING parquet""".stripMargin)
+        sql("""INSERT INTO json_routing VALUES
+              |('{"a":1,"b":"x","arr":[1,null,3]}', named_struct('a', 1, 'b', 'x'), array(1, null, 3)),
+              |('{"a":null,"b":"","arr":[]}', named_struct('a', null, 'b', ''), array()),
+              |('{}', named_struct('a', null, 'b', null), array()),
+              |(NULL, NULL, NULL)""".stripMargin)
+        for {
+          allowIncompatible <- Seq(false, true)
+          codegenEnabled <- Seq(false, true)
+        } {
+          withSQLConf(
+            s"spark.comet.expression.$configName.allowIncompatible" ->
+              allowIncompatible.toString,
+            CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> codegenEnabled.toString) {
+            expressions.foreach { case (expression, nativeSupported) =>
+              withClue(
+                s"allowIncompatible=$allowIncompatible, codegen=$codegenEnabled: $expression") {
+                val query = s"SELECT $expression FROM json_routing"
+                val expectNative = allowIncompatible && nativeSupported
+                if (!expectNative && !codegenEnabled) {
+                  checkSparkAnswerAndFallbackReason(
+                    query,
+                    s"$name: spark.comet.exec.scalaUDF.codegen.enabled=false")
+                } else {
+                  val (_, cometPlan) = checkSparkAnswerAndOperator(sql(query))
+                  // Spark 4 rewrites to_json to Invoke without preserving implementation tags.
+                  // Inspect the executable expression to distinguish native from dispatch.
+                  val expr = stripAQEPlan(cometPlan)
+                    .collectFirst { case project: CometProjectExec =>
+                      project.nativeOp.getProjection.getProjectList(0)
+                    }
+                    .getOrElse(fail("Expected a Comet projection"))
+                  if (expectNative) {
+                    assert(expr.getExprStructCase === nativeKind)
+                  } else {
+                    assert(expr.hasJvmScalarUdf)
+                    assert(
+                      expr.getJvmScalarUdf.getClassName === classOf[CometScalaUDFCodegen].getName)
+                  }
                 }
               }
             }

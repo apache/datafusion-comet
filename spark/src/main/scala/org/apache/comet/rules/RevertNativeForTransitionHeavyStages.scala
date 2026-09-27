@@ -23,7 +23,7 @@ import org.apache.spark.internal.Logging
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.expressions.aggregate.{Final, Partial, PartialMerge}
 import org.apache.spark.sql.catalyst.rules.Rule
-import org.apache.spark.sql.comet.{CometColumnarToRowExec, CometExec, CometHashAggregateExec, CometNativeColumnarToRowExec, CometNativeScanExec, CometSparkToColumnarExec}
+import org.apache.spark.sql.comet.{CometColumnarToRowExec, CometExec, CometHashAggregateExec, CometLocalTopKExec, CometNativeColumnarToRowExec, CometNativeScanExec, CometSparkToColumnarExec}
 import org.apache.spark.sql.execution.{ColumnarToRowExec, ColumnarToRowTransition, RowToColumnarExec, SparkPlan}
 import org.apache.spark.sql.execution.adaptive.QueryStageExec
 import org.apache.spark.sql.execution.exchange.{BroadcastExchangeLike, ShuffleExchangeLike}
@@ -36,8 +36,12 @@ import org.apache.comet.serde.QueryPlanSerde
  * Reverts a query stage to Spark row-based execution when it has too many columnar-to-row (C2R)
  * transitions. Each C2R indicates Comet could not keep execution columnar and had to fall back.
  * With columnar shuffle enabled, each C2R implies a corresponding R2C round-trip.
+ *
+ * @param wholePlan
+ *   visit every stage even under AQE, where Spark normally hands this rule one stage at a time.
+ *   Set by the plan-only preview, which holds the whole plan.
  */
-case class RevertNativeForTransitionHeavyStages(session: SparkSession)
+case class RevertNativeForTransitionHeavyStages(session: SparkSession, wholePlan: Boolean = false)
     extends Rule[SparkPlan]
     with Logging {
 
@@ -47,7 +51,7 @@ case class RevertNativeForTransitionHeavyStages(session: SparkSession)
   override def apply(plan: SparkPlan): SparkPlan = {
     if (!enabled) return plan
 
-    if (session.sessionState.conf.adaptiveExecutionEnabled) {
+    if (session.sessionState.conf.adaptiveExecutionEnabled && !wholePlan) {
       applyForAQE(plan)
     } else {
       applyForNonAQE(plan)
@@ -188,28 +192,32 @@ case class RevertNativeForTransitionHeavyStages(session: SparkSession)
       case sparkToColumnar: CometSparkToColumnarExec => sparkToColumnar.child
       case RowToColumnarExec(child) => child
     }
-    val reverted = transformStageUp(stripped) { case cometExec: CometExec =>
-      if (cometExec.originalPlan.children.size == cometExec.children.size) {
-        val originalWithCurrentExpressions = cometExec match {
-          case scan: CometNativeScanExec =>
-            // AQE's query-stage optimizer rewrites DPP placeholders in the live Comet scan
-            // before this post-columnar rule runs. The frozen FileSourceScanExec in
-            // originalPlan still contains SubqueryAdaptiveBroadcastExec, which cannot execute.
-            // Preserve the rewritten filters when reverting the scan to Spark.
-            val originalScan = scan.originalPlan.copy(
-              partitionFilters = scan.partitionFilters,
-              dataFilters = scan.dataFilters)
-            scan.originalPlan.logicalLink.foreach(originalScan.setLogicalLink)
-            originalScan
-          case _ => cometExec.originalPlan
+    val reverted = transformStageUp(stripped) {
+      // Local candidate selection was inserted by Comet. Only the outer TopK owns
+      // the original Spark operator's offset and projection.
+      case local: CometLocalTopKExec => local.child
+      case cometExec: CometExec =>
+        if (cometExec.originalPlan.children.size == cometExec.children.size) {
+          val originalWithCurrentExpressions = cometExec match {
+            case scan: CometNativeScanExec =>
+              // AQE's query-stage optimizer rewrites DPP placeholders in the live Comet scan
+              // before this post-columnar rule runs. The frozen FileSourceScanExec in
+              // originalPlan still contains SubqueryAdaptiveBroadcastExec, which cannot execute.
+              // Preserve the rewritten filters when reverting the scan to Spark.
+              val originalScan = scan.originalPlan.copy(
+                partitionFilters = scan.partitionFilters,
+                dataFilters = scan.dataFilters)
+              scan.originalPlan.logicalLink.foreach(originalScan.setLogicalLink)
+              originalScan
+            case _ => cometExec.originalPlan
+          }
+          originalWithCurrentExpressions.withNewChildren(cometExec.children)
+        } else {
+          logWarning(
+            "Comet plan and original have different child count for " +
+              s"${cometExec.getClass.getSimpleName}, using originalPlan as-is.")
+          cometExec.originalPlan
         }
-        originalWithCurrentExpressions.withNewChildren(cometExec.children)
-      } else {
-        logWarning(
-          "Comet plan and original have different child count for " +
-            s"${cometExec.getClass.getSimpleName}, using originalPlan as-is.")
-        cometExec.originalPlan
-      }
     }
     insertTransitions(reverted)
   }
