@@ -82,6 +82,7 @@ fn scan(
         false,
         allow_type_promotion,
         false,
+        false, // binary_as_string
         session,
         false,
         false,
