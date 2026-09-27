@@ -73,6 +73,9 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
       val AND = "And"
       val OR = "Or"
       val NOT = "Not"
+      // The only UnboundTerm shape this serde converts. The others, UnboundTransform and (on
+      // Iceberg versions that have it) UnboundExtract, are declined; see icebergExprToProto.
+      val NAMED_REFERENCE = "NamedReference"
     }
   }
 
@@ -610,16 +613,18 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
   }
 
   /**
-   * Converts an Iceberg residual Expression into an IcebergPredicate for native row-group
-   * pruning.
+   * Converts an Iceberg residual Expression into an IcebergPredicate for the native scan.
    *
    * Residuals come from Iceberg's ResidualEvaluator (partial evaluation of the scan filter
-   * against each file's partition data). This is only a pruning hint: the CometFilter above the
-   * scan enforces correctness, so any node or literal we cannot represent yields None (no
-   * pushdown). Predicates over `pageIndexUnsupportedColumns` also yield None (iceberg-rust cannot
-   * use those columns in the page index). Uses reflection because Iceberg's expression classes
-   * are not on Spark's classpath at planning time; residuals are unbound predicates carrying a
-   * NamedReference (column name) and a literal.
+   * against each file's partition data). iceberg-rust prunes row groups and pages with the
+   * predicate and also filters rows by it, so what this returns may be weaker than the residual
+   * but never stronger. Iceberg keeps every predicate that can survive into a residual in the
+   * scan's postScanFilters, so the filter above the scan re-applies whatever is not pushed, but
+   * it cannot restore rows the scan dropped. Any node or literal we cannot represent yields None
+   * (no pushdown). Predicates over `pageIndexUnsupportedColumns` also yield None (iceberg-rust
+   * cannot use those columns in the page index). Uses reflection because Iceberg's expression
+   * classes are not on Spark's classpath at planning time; residuals are unbound predicates
+   * carrying a NamedReference (column name) and a literal.
    */
   def icebergExprToProto(
       icebergExpr: Any,
@@ -632,29 +637,40 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
       if (exprClass.getName.endsWith(Constants.ExpressionTypes.UNBOUND_PREDICATE)) {
         val operation = exprClass.getMethod("op").invoke(icebergExpr).toString
         val term = exprClass.getMethod("term").invoke(icebergExpr)
-        val ref = term.getClass.getMethod("ref").invoke(term)
-        val columnName = ref.getClass.getMethod("name").invoke(ref).asInstanceOf[String]
 
-        // Iceberg names a nested reference by its dotted path ("struct.field"), which never matches
-        // a top-level scan output attribute, so a residual on a nested field drops here. That miss
-        // is also why the top-level-only pageIndexUnsupportedColumns gate below stays sound.
-        attributeMap.get(columnName).flatMap { attribute =>
-          import Constants.Operations._
-          import OperatorOuterClass.IcebergPredicateOperator
-          if (pageIndexUnsupportedColumns.contains(columnName)) {
-            // Any predicate on this column, including a unary IS [NOT] NULL, would reach the page
-            // index and fail, so drop the whole predicate; the post-scan CometFilter enforces it.
-            None
-          } else {
-            operation match {
-              case IS_NULL => Some(unaryPredicate(columnName, IcebergPredicateOperator.IsNull))
-              case IS_NOT_NULL | NOT_NULL =>
-                Some(unaryPredicate(columnName, IcebergPredicateOperator.NotNull))
-              case op if binaryOps.contains(op) =>
-                binaryPredicate(exprClass, icebergExpr, columnName, attribute, binaryOps(op))
-              case IN => setPredicate(exprClass, icebergExpr, columnName, attribute)
-              // NOT_IN is inherently unprunable from column stats, so it is not pushed.
-              case _ => None
+        // Only a bare column reference converts. UnboundTransform (and UnboundExtract, on Iceberg
+        // versions that have it) answers ref() with its *source* column, so reading the name off
+        // it would push `bucket(4, id) = 2` as `id = 2` and drop every matching row whose id is
+        // not 2. CometScanRule declines a non-identity transform at planning time, but only when
+        // the residual is a bare predicate rather than one under AND/OR/NOT, so the term shape is
+        // checked here too rather than assumed.
+        if (!term.getClass.getName.endsWith(Constants.ExpressionTypes.NAMED_REFERENCE)) {
+          None
+        } else {
+          val columnName = term.getClass.getMethod("name").invoke(term).asInstanceOf[String]
+
+          // Iceberg names a nested reference by its dotted path ("struct.field"), which never
+          // matches a top-level scan output attribute, so a residual on a nested field drops here.
+          // That miss is also why the top-level-only pageIndexUnsupportedColumns gate below stays
+          // sound.
+          attributeMap.get(columnName).flatMap { attribute =>
+            import Constants.Operations._
+            import OperatorOuterClass.IcebergPredicateOperator
+            if (pageIndexUnsupportedColumns.contains(columnName)) {
+              // Any predicate on this column, including a unary IS [NOT] NULL, would reach the page
+              // index and fail, so drop the whole predicate; the post-scan CometFilter enforces it.
+              None
+            } else {
+              operation match {
+                case IS_NULL => Some(unaryPredicate(columnName, IcebergPredicateOperator.IsNull))
+                case IS_NOT_NULL | NOT_NULL =>
+                  Some(unaryPredicate(columnName, IcebergPredicateOperator.NotNull))
+                case op if binaryOps.contains(op) =>
+                  binaryPredicate(exprClass, icebergExpr, columnName, attribute, binaryOps(op))
+                case IN => setPredicate(exprClass, icebergExpr, columnName, attribute)
+                // NOT_IN is inherently unprunable from column stats, so it is not pushed.
+                case _ => None
+              }
             }
           }
         }
@@ -697,7 +713,7 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
       }
     } catch {
       // Reflection over Iceberg's expression classes can fail on an unexpected shape (e.g. an
-      // Iceberg version change). A residual is only a pruning hint, so skip pushdown rather than
+      // Iceberg version change). Pushing nothing is always safe, so skip pushdown rather than
       // fail the scan, but log it: a persistent warning here signals a real API drift to fix.
       case e: Exception =>
         logWarning(
