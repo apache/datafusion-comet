@@ -34,6 +34,9 @@ pub(crate) fn update_comet_metric(
     metric_node: &JObject,
     spark_plan: &Arc<SparkPlan>,
     attempt: Option<&AttemptState>,
+    registry_hit: bool,
+    session_setup_time: std::time::Duration,
+    physical_plan_time: std::time::Duration,
 ) -> Result<(), CometError> {
     if metric_node.is_null() {
         return Ok(());
@@ -47,6 +50,18 @@ pub(crate) fn update_comet_metric(
     if attempt.is_some() {
         mark_shared_plan_tasks(&mut native_metric);
     }
+    // Setup happens once per native block, so report only on the block root.
+    native_metric
+        .metrics
+        .insert("shared_plan_hits".into(), i64::from(registry_hit));
+    native_metric.metrics.insert(
+        "session_setup_time".into(),
+        session_setup_time.as_nanos() as i64,
+    );
+    native_metric.metrics.insert(
+        "physical_plan_time".into(),
+        physical_plan_time.as_nanos() as i64,
+    );
     let jbytes = env.byte_array_from_slice(&native_metric.encode_to_vec())?;
 
     unsafe { jni_call!(env, comet_metric_node(metric_node).set_all_from_bytes(&jbytes) -> ()) }

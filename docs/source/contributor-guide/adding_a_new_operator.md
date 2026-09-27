@@ -601,3 +601,60 @@ if (childOp.isEmpty) {
 2. **Check fallback reasons**: Set `spark.comet.explain.fallback.log.enabled=true` to log why operators fall back to Spark
 3. **Verify protobuf**: Add debug prints in Rust to inspect deserialized operators
 4. **Use EXPLAIN**: Run `EXPLAIN EXTENDED` on queries to see the physical plan
+
+
+## Shared native plans
+
+The internal `spark.comet.exec.sharedPlan.enabled` option defaults to `false`.
+Admission is defined recursively by `supports`, `supports_expr`, and `supports_aggregate`
+in `native/core/src/execution/shared_pipeline.rs`. An unsupported subtree makes the
+entire native block use private planning. Currently admitted operators are JVM-input
+scans, projection, filter, COUNT/SUM/MIN/MAX/AVG aggregation, partitioned hash join
+without dynamic filters or null-aware anti join, and full sort without fetch or offset.
+Expressions are limited to references, literals, arithmetic add/subtract/multiply,
+comparisons, boolean operations and null checks. Native file scans, native shuffle,
+Top-K, subqueries, UDFs and unreviewed scalar functions are excluded. Spark lowers
+DISTINCT before serialization; the aggregate allowlist still applies to the resulting
+expressions and every aggregate mode.
+
+### Execution-state checklist
+
+Audit these assumptions when widening admission or upgrading DataFusion:
+
+- Sharing is limited to one executor, native block, stage ID and stage attempt.
+  Keys also include the serialized plan and planning configuration. Retry attempts
+  use private plans. Each partition is claimed once per tree, including failed or
+  cancelled executions; a rejected claim falls back to a private tree.
+- Every admitted operator must support independent `execute(partition, context)` calls
+  for different partitions. Projection/filter expressions must not retain task-specific
+  state. Aggregate accumulators and sort buffers/reservations must be created per stream.
+  HashJoin must use `PartitionMode::Partitioned` with independent build state per partition;
+  a shared collect/build-once future is not interchangeable with Spark partition inputs.
+- `AggregateMode::Final` becomes `FinalPartitioned`; Spark supplies the required shuffle
+  distribution, including a single partition for global final aggregation. Full sorts
+  preserve the input partition count. Recompute parent properties after replacing inputs.
+  No admitted execution may require unassigned partitions on this executor to run.
+- Placeholder scans supply immutable schema/properties only. Binding attaches each task's
+  actual scan through its `TaskContext`, in the planner's left-to-right input order.
+  No tree may retain JNI task inputs, a task memory pool, or a task session.
+- Registry entries hold weak references; task bindings own the tree. Idle gaps end reuse.
+  Construction currently runs under the registry mutex. Failed keys use tombstones under
+  the same 64-entry/8-MiB key limits, evicted under pressure; warnings occur once per
+  resident failed key. Oversized keys or a registry full of live keys are not retained.
+  Only construction failures can fall back: never retry after binding consumes inputs.
+- DataFusion metrics register per partition and remain until the tree drops. Reporting
+  must select only this task's partition, plus its bound scan metrics. Audit both lookup
+  cost and retained metric memory as stage size increases. The current upstream API
+  snapshots all metrics before filtering; partition-indexed retrieval is still required.
+  Explain logs explicitly label shared-tree totals as cumulative and omit task-local scans.
+
+Keep the native tests for node identity, concurrent execution, unused partitions,
+cancellation, retries, aggregate modes, partition metrics and final-owner cleanup passing.
+Run Spark SQL validation as described in the CI guide. Result equivalence alone is not
+proof of reuse: `shared_plan_tasks` counts binds, whereas `shared_plan_hits` counts tasks
+that successfully bind to a tree retrieved from the registry. Hits and setup times are
+reported once at the native block root. `session_setup_time` measures session construction
+including UDF registration; `physical_plan_time` measures deferred planning, including
+registry lookup, shared construction/binding or private planning. Both are elapsed times,
+not CPU times, and do not include execution. They are components of `plan_creation_time`,
+which additionally includes deserialization and other JNI context setup.

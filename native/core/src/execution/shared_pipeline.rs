@@ -55,29 +55,67 @@ static PHYSICAL_PLANS: LazyLock<ScopedPlans> = LazyLock::new(ScopedPlans::defaul
 
 #[derive(Default)]
 struct ScopedPlans {
-    entries: Mutex<HashMap<Vec<u8>, Weak<SharedPipeline>>>,
+    entries: Mutex<HashMap<Vec<u8>, RegistryEntry>>,
+}
+
+enum RegistryEntry {
+    Live(Weak<SharedPipeline>),
+    Failed,
 }
 
 impl ScopedPlans {
     fn get_or_build(
         &self,
         key: &[u8],
+        reused: &mut bool,
         build: impl FnOnce() -> std::result::Result<Arc<SharedPipeline>, ExecutionError>,
     ) -> std::result::Result<Arc<SharedPipeline>, ExecutionError> {
+        *reused = false;
         let mut entries = self.entries.lock();
-        entries.retain(|_, plan| plan.strong_count() != 0);
-        if let Some(plan) = entries.get(key).and_then(Weak::upgrade) {
-            return Ok(plan);
+        entries.retain(|_, entry| match entry {
+            RegistryEntry::Live(plan) => plan.strong_count() != 0,
+            RegistryEntry::Failed => true,
+        });
+        match entries.get(key) {
+            Some(RegistryEntry::Failed) => {
+                return Err(ExecutionError::GeneralError(
+                    "Shared construction previously failed for this key".into(),
+                ));
+            }
+            Some(RegistryEntry::Live(plan)) => {
+                if let Some(plan) = plan.upgrade() {
+                    *reused = true;
+                    return Ok(plan);
+                }
+            }
+            None => {}
         }
-        // First construction is serialized; failures never become resident entries.
-        let plan = build()?;
-        if entries.len() < 64
-            && key.len() <= 8 * 1024 * 1024
-            && entries.keys().map(Vec::len).sum::<usize>() + key.len() <= 8 * 1024 * 1024
-        {
-            entries.insert(key.to_vec(), Arc::downgrade(&plan));
+        // Failed keys share the same bounds as live keys. Evict tombstones under pressure,
+        // so failed stages cannot permanently prevent new stages from sharing. A failure is
+        // logged once while its tombstone is resident, and can be retried after eviction.
+        const MAX_BYTES: usize = 8 * 1024 * 1024;
+        let mut bytes = entries.keys().map(Vec::len).sum::<usize>();
+        while entries.len() >= 64 || bytes.saturating_add(key.len()) > MAX_BYTES {
+            let failed = entries.iter().find_map(|(key, entry)| {
+                matches!(entry, RegistryEntry::Failed).then(|| key.clone())
+            });
+            let Some(failed) = failed else { break };
+            bytes -= failed.len();
+            entries.remove(&failed);
         }
-        Ok(plan)
+        // First construction remains serialized. No task inputs are imported here.
+        let result = build();
+        if let Err(error) = &result {
+            log::warn!("Cannot construct shared native plan; using a private plan: {error}");
+        }
+        if entries.len() < 64 && bytes.saturating_add(key.len()) <= MAX_BYTES {
+            let entry = match &result {
+                Ok(plan) => RegistryEntry::Live(Arc::downgrade(plan)),
+                Err(_) => RegistryEntry::Failed,
+            };
+            entries.insert(key.to_vec(), entry);
+        }
+        result
     }
 }
 
@@ -123,28 +161,11 @@ pub(super) fn cache_key(
     key
 }
 
-/// Only shared construction is recoverable: it has not imported task-owned input streams.
-/// Binding or execution errors must propagate rather than retrying consumed resources.
-pub(super) fn try_build<T>(
-    build: impl FnOnce() -> std::result::Result<T, ExecutionError>,
-) -> Option<T> {
-    match build() {
-        Ok(plan) => Some(plan),
-        Err(error) => {
-            log::warn!("Cannot construct shared native plan; using a private plan: {error}");
-            None
-        }
-    }
-}
-
 // Preserve the planner's input_plan push order: children are planned left-to-right, including
 // parse_join_parameters. HashJoin may swap physical children afterwards; convert_tree maps each
 // original input Arc to this pre-swap slot, so binding must keep the protobuf child order.
 fn input_definitions<'a>(plan: &'a Operator, result: &mut Vec<&'a Operator>) {
-    if matches!(
-        plan.op_struct,
-        Some(OpStruct::Scan(_) | OpStruct::NativeScan(_))
-    ) {
+    if matches!(plan.op_struct, Some(OpStruct::Scan(_))) {
         result.push(plan);
     } else {
         for child in &plan.children {
@@ -155,11 +176,12 @@ fn input_definitions<'a>(plan: &'a Operator, result: &mut Vec<&'a Operator>) {
 
 pub(super) fn get_or_build(
     key: &[u8],
+    reused: &mut bool,
     plan: &Operator,
     session: &Arc<SessionContext>,
     partition_count: usize,
 ) -> std::result::Result<Arc<SharedPipeline>, ExecutionError> {
-    PHYSICAL_PLANS.get_or_build(key, || {
+    PHYSICAL_PLANS.get_or_build(key, reused, || {
         SharedPipeline::build_partitions(plan, session, partition_count)
     })
 }
@@ -292,7 +314,7 @@ impl SharedPipeline {
                 "Unsupported shared native pipeline".into(),
             ));
         }
-        // TEST_EXEC_CONTEXT_ID is the planner's default. No task inputs/context are imported.
+        // Explicitly request placeholder scans; no task inputs/context are imported.
         let input_plans = Arc::new(Mutex::new(Vec::new()));
         let planner = PhysicalPlanner::new(Arc::clone(session), 0)
             .with_sql_text_pool(plan)
@@ -310,16 +332,7 @@ impl SharedPipeline {
         let root = convert_spark_tree(&original, &mapping)?;
         let mut definitions = Vec::new();
         input_definitions(plan, &mut definitions);
-        let scan_definitions = definitions
-            .into_iter()
-            .map(|p| {
-                let mut p = p.clone();
-                if let Some(OpStruct::NativeScan(scan)) = p.op_struct.as_mut() {
-                    scan.file_partition = None;
-                }
-                p
-            })
-            .collect();
+        let scan_definitions = definitions.into_iter().cloned().collect();
         Ok(Arc::new(Self {
             root,
             scan_definitions,
@@ -740,18 +753,24 @@ mod tests {
             None,
         ));
         let registry = ScopedPlans::default();
-        let shared = try_build(|| {
-            registry.get_or_build(b"failed", || {
-                let error = convert_tree(&wrapped, &Arc::new(()), &inputs.lock(), &mut vec![], 2)
-                    .unwrap_err();
-                assert!(error
-                    .to_string()
-                    .contains("Unexpected operator in shared tree"));
-                Err(error.into())
-            })
-        });
+        let shared = {
+            registry
+                .get_or_build(b"failed", &mut false, || {
+                    let error =
+                        convert_tree(&wrapped, &Arc::new(()), &inputs.lock(), &mut vec![], 2)
+                            .unwrap_err();
+                    assert!(error
+                        .to_string()
+                        .contains("Unexpected operator in shared tree"));
+                    Err(error.into())
+                })
+                .ok()
+        };
         assert!(shared.is_none());
-        assert!(registry.entries.lock().is_empty());
+        assert!(matches!(
+            registry.entries.lock().get(b"failed".as_slice()),
+            Some(RegistryEntry::Failed)
+        ));
         let (mut scans, _, private) = planner.create_plan(&definition, &mut vec![], 1).unwrap();
         feed(&mut scans[0], vec![Some(-1), Some(1), Some(2)]);
         let stream = private.native_plan.execute(0, session.task_ctx()).unwrap();
@@ -770,11 +789,69 @@ mod tests {
             })
             .collect();
         assert_eq!(values, vec![11, 12]);
-        // The error was not cached; another construction of this key can succeed.
-        assert!(try_build(|| registry.get_or_build(b"failed", || {
-            SharedPipeline::build(&definition, &session)
-        }))
-        .is_some());
+        // The deterministic failure is remembered; later tasks go directly to private planning.
+        assert!(registry
+            .get_or_build(b"failed", &mut false, || {
+                panic!("failed key must not rebuild")
+            })
+            .is_err());
+    }
+
+    #[test]
+    fn registry_hits_and_failed_keys_are_bounded() {
+        let registry = ScopedPlans::default();
+        let session = Arc::new(SessionContext::new());
+        let mut reused = true;
+        let plan = registry
+            .get_or_build(b"live", &mut reused, || {
+                SharedPipeline::build(&pipeline(), &session)
+            })
+            .unwrap();
+        assert!(!reused);
+        let same = registry
+            .get_or_build(b"live", &mut reused, || panic!("hit"))
+            .unwrap();
+        assert!(reused);
+        assert!(Arc::ptr_eq(&plan, &same));
+        for n in 0u32..100 {
+            assert!(registry
+                .get_or_build(&n.to_le_bytes(), &mut reused, || {
+                    Err(ExecutionError::GeneralError("injected failure".into()))
+                })
+                .is_err());
+            assert!(!reused);
+            assert!(registry.entries.lock().len() <= 64);
+            assert!(registry
+                .get_or_build(&n.to_le_bytes(), &mut reused, || {
+                    panic!("resident failure must not rebuild")
+                })
+                .is_err());
+        }
+        assert!(registry
+            .get_or_build(b"live", &mut reused, || panic!("live entry evicted"))
+            .is_ok());
+        assert!(reused);
+        // Byte limits apply to failures too, without evicting an active tree.
+        let large = vec![0; 8 * 1024 * 1024 + 1];
+        assert!(registry
+            .get_or_build(&large, &mut reused, || {
+                Err(ExecutionError::GeneralError("oversized failure".into()))
+            })
+            .is_err());
+        assert!(!registry.entries.lock().contains_key(&large));
+        assert!(registry.entries.lock().keys().map(Vec::len).sum::<usize>() <= 8 * 1024 * 1024);
+    }
+
+    #[test]
+    fn placeholder_scans_do_not_depend_on_test_execution_id() {
+        let session = Arc::new(SessionContext::new());
+        let inputs = Arc::new(Mutex::new(Vec::new()));
+        let planner = PhysicalPlanner::new(session, 0)
+            .with_exec_id(123)
+            .with_input_plans(Arc::clone(&inputs));
+        let (scans, _, _) = planner.create_plan(&pipeline(), &mut vec![], 1).unwrap();
+        assert_eq!(scans.len(), 1);
+        assert_eq!(inputs.lock().len(), 1);
     }
 
     #[test]
@@ -794,7 +871,7 @@ mod tests {
                     let weak = Arc::downgrade(&session);
                     barrier.wait();
                     let shared = cache
-                        .get_or_build(b"same", || {
+                        .get_or_build(b"same", &mut false, || {
                             builds.fetch_add(1, Ordering::SeqCst);
                             SharedPipeline::build(&pipeline(), &session)
                         })
@@ -972,9 +1049,9 @@ mod tests {
         let session = Arc::new(SessionContext::new());
         let build = || SharedPipeline::build_partitions(&pipeline(), &session, 4);
         let key = scoped_key(b"block-a:stage-1:attempt-0", b"plan");
-        let first = cache.get_or_build(&key, build).unwrap();
+        let first = cache.get_or_build(&key, &mut false, build).unwrap();
         let same = cache
-            .get_or_build(&key, || panic!("same active scope"))
+            .get_or_build(&key, &mut false, || panic!("same active scope"))
             .unwrap();
         assert!(Arc::ptr_eq(&first, &same));
         assert!(first.try_claim_partition(0));
@@ -987,7 +1064,7 @@ mod tests {
             b"block-a:stage-2:attempt-0",
         ] {
             let other = cache
-                .get_or_build(&scoped_key(scope, b"plan"), build)
+                .get_or_build(&scoped_key(scope, b"plan"), &mut false, build)
                 .unwrap();
             assert!(!Arc::ptr_eq(&first, &other));
             assert!(other.try_claim_partition(0));
@@ -1163,68 +1240,59 @@ mod tests {
 
     #[tokio::test]
     async fn full_sort_and_cancellation_have_private_state() {
-        for (fetch, skip) in [(None, None)] {
-            let session = Arc::new(SessionContext::new());
-            let shared = SharedPipeline::build(&sort_plan(fetch, skip), &session).unwrap();
-            let planner = PhysicalPlanner::new(Arc::clone(&session), 7);
-            // Cancel with input buffered, before EOF. A later attempt must not inherit TopK's
-            // threshold, memory reservations, completion state or metrics.
-            let (mut scans, cancelled) = shared.bind(&planner, &mut vec![]).unwrap();
-            feed(&mut scans[0], vec![Some(-100), Some(-200)]);
-            let mut stream = shared
+        let session = Arc::new(SessionContext::new());
+        let shared = SharedPipeline::build(&sort_plan(None, None), &session).unwrap();
+        let planner = PhysicalPlanner::new(Arc::clone(&session), 7);
+        // Cancel with input buffered, before EOF. A later tree must not inherit
+        // memory reservations, completion state or metrics.
+        let (mut scans, cancelled) = shared.bind(&planner, &mut vec![]).unwrap();
+        feed(&mut scans[0], vec![Some(-100), Some(-200)]);
+        let mut stream = shared
+            .root
+            .native_plan
+            .execute(0, cancelled.task_context(&session))
+            .unwrap();
+        assert!(stream.next().now_or_never().is_none());
+        let weak = Arc::downgrade(&cancelled);
+        drop(stream);
+        drop(cancelled);
+        drop(scans);
+        assert!(weak.upgrade().is_none());
+        assert_eq!(session.runtime_env().memory_pool.reserved(), 0);
+        for values in [
+            vec![Some(9), Some(3), Some(7), None],
+            vec![Some(100), Some(200)],
+        ] {
+            let shared = SharedPipeline::build(&sort_plan(None, None), &session).unwrap();
+            let (mut scans, attempt) = shared.bind(&planner, &mut vec![]).unwrap();
+            feed(&mut scans[0], values.clone());
+            let stream = shared
                 .root
                 .native_plan
-                .execute(0, cancelled.task_context(&session))
+                .execute(0, attempt.task_context(&session))
                 .unwrap();
-            assert!(stream.next().now_or_never().is_none());
-            let weak = Arc::downgrade(&cancelled);
-            drop(stream);
-            drop(cancelled);
-            drop(scans);
-            assert!(weak.upgrade().is_none());
-            assert_eq!(session.runtime_env().memory_pool.reserved(), 0);
-            for values in [
-                vec![Some(9), Some(3), Some(7), None],
-                vec![Some(100), Some(200)],
-            ] {
-                let shared = SharedPipeline::build(&sort_plan(fetch, skip), &session).unwrap();
-                let (mut scans, attempt) = shared.bind(&planner, &mut vec![]).unwrap();
-                feed(&mut scans[0], values.clone());
-                let stream = shared
-                    .root
-                    .native_plan
-                    .execute(0, attempt.task_context(&session))
-                    .unwrap();
-                let batches = drain_inputs(scans, stream).await;
-                let mut expected = values;
-                expected.sort_by_key(|v| (v.is_none(), *v));
-                if let Some(fetch) = fetch {
-                    expected.truncate(fetch as usize);
-                }
-                let expected: Vec<_> = expected
-                    .into_iter()
-                    .skip(skip.unwrap_or(0) as usize)
-                    .collect();
-                let actual: Vec<_> = batches
-                    .iter()
-                    .flat_map(|b| {
-                        b.column(0)
-                            .as_any()
-                            .downcast_ref::<Int64Array>()
-                            .unwrap()
-                            .iter()
-                    })
-                    .collect();
-                assert_eq!(actual, expected);
-                assert_eq!(
-                    attempt
-                        .metrics_for(&shared.root.native_plan)
+            let batches = drain_inputs(scans, stream).await;
+            let mut expected = values;
+            expected.sort_by_key(|v| (v.is_none(), *v));
+            let actual: Vec<_> = batches
+                .iter()
+                .flat_map(|b| {
+                    b.column(0)
+                        .as_any()
+                        .downcast_ref::<Int64Array>()
                         .unwrap()
-                        .output_rows(),
-                    Some(actual.len())
-                );
-                assert_eq!(session.runtime_env().memory_pool.reserved(), 0);
-            }
+                        .iter()
+                })
+                .collect();
+            assert_eq!(actual, expected);
+            assert_eq!(
+                attempt
+                    .metrics_for(&shared.root.native_plan)
+                    .unwrap()
+                    .output_rows(),
+                Some(actual.len())
+            );
+            assert_eq!(session.runtime_env().memory_pool.reserved(), 0);
         }
     }
 
@@ -1904,7 +1972,7 @@ mod tests {
         let session = Arc::new(SessionContext::new());
         for value in 0..2000 {
             let shared = cache
-                .get_or_build(b"scope", || {
+                .get_or_build(b"scope", &mut false, || {
                     SharedPipeline::build(&aggregate_plan(), &session)
                 })
                 .unwrap();

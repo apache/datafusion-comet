@@ -334,8 +334,8 @@ impl PhysicalPlanner {
         }
     }
 
-    /// Record task-input boundaries while compiling a shared template. Kept only by the
-    /// builder; cached nodes copy immutable properties and never retain these input plans.
+    /// Build placeholder scans and record their boundaries for shared-tree conversion.
+    /// This mode never imports task inputs and does not rely on the unit-test execution ID.
     pub(super) fn with_input_plans(mut self, inputs: InputPlans) -> Self {
         self.input_plans = Some(inputs);
         self
@@ -1642,11 +1642,7 @@ impl PhysicalPlanner {
                     return Ok((
                         vec![],
                         vec![],
-                        Arc::new(SparkPlan::new(
-                            spark_plan.plan_id,
-                            self.input_plan(empty_exec),
-                            vec![],
-                        )),
+                        Arc::new(SparkPlan::new(spark_plan.plan_id, empty_exec, vec![])),
                     ));
                 }
 
@@ -1764,11 +1760,7 @@ impl PhysicalPlanner {
                 Ok((
                     vec![],
                     vec![],
-                    Arc::new(SparkPlan::new(
-                        spark_plan.plan_id,
-                        self.input_plan(scan),
-                        vec![],
-                    )),
+                    Arc::new(SparkPlan::new(spark_plan.plan_id, scan, vec![])),
                 ))
             }
             OpStruct::CsvScan(scan) => {
@@ -1815,19 +1807,19 @@ impl PhysicalPlanner {
             OpStruct::Scan(scan) => {
                 let data_types = scan.fields.iter().map(to_arrow_datatype).collect_vec();
 
-                // If it is not test execution context for unit test, we should have at least one
-                // input source
-                if self.exec_context_id != TEST_EXEC_CONTEXT_ID && inputs.is_empty() {
+                let placeholder = self.input_plans.is_some();
+                if !placeholder && self.exec_context_id != TEST_EXEC_CONTEXT_ID && inputs.is_empty()
+                {
                     return Err(GeneralError("No input for scan".to_string()));
                 }
 
                 // Consumes the first input source for the scan. The Java side passes an
                 // `org.apache.arrow.c.ArrowArrayStream` whose `memoryAddress` points at the C
                 // struct; native takes ownership via `AlignedArrowStreamReader::from_raw`.
-                let input_source = if self.exec_context_id == TEST_EXEC_CONTEXT_ID
-                    && inputs.is_empty()
+                let input_source = if placeholder
+                    || (self.exec_context_id == TEST_EXEC_CONTEXT_ID && inputs.is_empty())
                 {
-                    // For unit test, we will set input batch to scan directly by `set_input_batch`.
+                    // Shared builders use schema-only placeholders; unit tests feed batches directly.
                     None
                 } else {
                     let java_stream = inputs.remove(0);

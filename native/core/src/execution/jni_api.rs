@@ -395,8 +395,8 @@ fn collect_op_names<'a>(op: &'a Operator, names: &mut std::collections::BTreeSet
 struct ExecutionContext {
     /// The id of the execution context.
     pub id: i64,
-    /// Immutable plan definition; may be shared across task attempts. Execution state stays local.
-    pub spark_plan: Arc<Operator>,
+    /// Task-local deserialized plan definition.
+    pub spark_plan: Operator,
     shared_plan_key: Option<Vec<u8>>,
     shared_attempt: Option<Arc<super::shared_pipeline::AttemptState>>,
     /// The number of partitions
@@ -423,6 +423,9 @@ struct ExecutionContext {
     pub poll_count_since_metrics_check: u32,
     /// The time it took to create the native plan and configure the context
     pub plan_creation_time: Duration,
+    pub session_setup_time: Duration,
+    pub physical_plan_time: Duration,
+    pub shared_plan_hit: bool,
     /// DataFusion SessionContext
     pub session_ctx: Arc<SessionContext>,
     /// Whether to enable additional debugging checks & messages
@@ -511,7 +514,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
 
             // Deserialize query plan
             let bytes = env.convert_byte_array(serialized_query)?;
-            let spark_plan = Arc::new(serde::deserialize_op(bytes.as_slice())?);
+            let spark_plan = serde::deserialize_op(bytes.as_slice())?;
 
             let shared_plan_scope = shared_plan_scope.try_to_string(env)?;
             let shared_plan_key = (!shared_plan_scope.is_empty()
@@ -581,6 +584,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
             // We need to keep the session context alive. Some session state like temporary
             // dictionaries are stored in session context. If it is dropped, the temporary
             // dictionaries will be dropped as well.
+            let session_start = Instant::now();
             let session = prepare_datafusion_session_context(
                 batch_size as usize,
                 memory_pool,
@@ -591,6 +595,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
                 &spark_plan,
             )?;
 
+            let session_setup_time = session_start.elapsed();
             let plan_creation_time = start.elapsed();
 
             let metrics_update_interval = if metrics_update_interval > 0 {
@@ -650,6 +655,9 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
                 metrics_last_update_time: Instant::now(),
                 poll_count_since_metrics_check: 0,
                 plan_creation_time,
+                session_setup_time,
+                physical_plan_time: Duration::ZERO,
+                shared_plan_hit: false,
                 session_ctx: session,
                 debug_native,
                 explain_native,
@@ -990,15 +998,17 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
                         .with_shuffle_partition_pusher(
                             exec_context.shuffle_partition_pusher.clone(),
                         );
+                let mut reused = false;
                 let shared = exec_context.shared_plan_key.as_ref().and_then(|key| {
-                    super::shared_pipeline::try_build(|| {
-                        super::shared_pipeline::get_or_build(
-                            key,
-                            &exec_context.spark_plan,
-                            &exec_context.session_ctx,
-                            exec_context.partition_count,
-                        )
-                    })
+                    // Only construction can fall back: binding/execution may consume task inputs.
+                    super::shared_pipeline::get_or_build(
+                        key,
+                        &mut reused,
+                        &exec_context.spark_plan,
+                        &exec_context.session_ctx,
+                        exec_context.partition_count,
+                    )
+                    .ok()
                 });
                 let binding = shared
                     .as_ref()
@@ -1012,6 +1022,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
                     .transpose()?
                     .flatten();
                 let (scans, shuffle_scans, root_op) = if let Some((scans, attempt)) = binding {
+                    exec_context.shared_plan_hit = reused;
                     exec_context.shared_attempt = Some(attempt);
                     (scans, vec![], Arc::clone(&shared.as_ref().unwrap().root))
                 } else {
@@ -1023,6 +1034,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
                 };
                 let physical_plan_time = start.elapsed();
 
+                exec_context.physical_plan_time = physical_plan_time;
                 exec_context.plan_creation_time += physical_plan_time;
                 exec_context.scans = scans;
                 exec_context.shuffle_scans = shuffle_scans;
@@ -1223,6 +1235,9 @@ fn update_metrics(env: &mut Env, exec_context: &mut ExecutionContext) -> CometRe
             metrics,
             native_query,
             exec_context.shared_attempt.as_deref(),
+            exec_context.shared_plan_hit,
+            exec_context.session_setup_time,
+            exec_context.physical_plan_time,
         )
     } else {
         Ok(())
@@ -1234,8 +1249,13 @@ fn log_plan_metrics(exec_context: &ExecutionContext, stage_id: jint, partition: 
         if let Some(plan) = &exec_context.root_op {
             let formatted_plan_str =
                 DisplayableExecutionPlan::with_metrics(plan.native_plan.as_ref()).indent(true);
+            let scope = if exec_context.shared_attempt.is_some() {
+                "cumulative across shared-tree partitions; task-local scan metrics omitted"
+            } else {
+                "task-local"
+            };
             info!(
-                "Comet native query plan with metrics (Plan #{} Stage {} Partition {}):\
+                "Comet native query plan with metrics [{scope}] (Plan #{} Stage {} Partition {}):\
                 \n plan creation took {:?}:\
                 \n{formatted_plan_str:}",
                 plan.plan_id, stage_id, partition, exec_context.plan_creation_time

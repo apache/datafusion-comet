@@ -108,6 +108,11 @@ class CometExecSuite extends CometTestBase {
           assert(
             projects.head.metrics("shared_plan_tasks").value ==
               (if (enabled == "true") 16L else 0L))
+          val hits = projects.head.metrics("shared_plan_hits").value
+          assert(hits >= 0L && hits < 16L)
+          if (enabled == "false") assert(hits == 0L)
+          assert(projects.head.metrics("session_setup_time").value > 0L)
+          assert(projects.head.metrics("physical_plan_time").value > 0L)
         }
         val empty = spark.range(0, 100, 1, 16).where("id < 0").selectExpr("id + 10 AS value")
         checkSparkAnswerAndOperator(empty, Seq(classOf[CometProjectExec]))
