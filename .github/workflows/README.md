@@ -159,7 +159,7 @@ tiers partition the list and that the `pr` tier is exactly the default profile.
 | `delta_3_5`          | merge group, **or** PR with `run-delta-tests`                                                                                                                                                                                                          | Delta contrib and native sources    |
 | `delta_4_0`          | nightly, **or** PR with `run-delta-tests`                                                                                                                                                                                                              | Delta contrib and native sources    |
 | `delta_4_1`          | nightly, **or** PR with `run-delta-tests`                                                                                                                                                                                                              | Delta contrib and native sources    |
-| `docs`               | push to main, paths matched                                                                                                                                                                                                                            | `.asf.yaml`, `docs/**`, `docs.yaml` |
+| `docs`               | push to main, paths matched, **or** dispatch on `main`                                                                                                                                                                                                 | `.asf.yaml`, `docs/**`, `docs.yaml` |
 | `spark_3_5`          | nightly, **or** PR with `run-spark-3.5-tests`                                                                                                                                                                                                          | Spark 3.5 sources                   |
 | `spark_4_1`          | merge group, **or** PR with `run-spark-4.1-tests`; the `sql_hive` shards alone with `run-spark-4.1-hive-tests`                                                                                                                                         | Spark 4.1 sources                   |
 | `spark_3_4`          | PR with `run-spark-3.4-tests`, or dispatch                                                                                                                                                                                                             | Spark 3.4 sources                   |
@@ -175,6 +175,15 @@ A heavy job appears in the PR's checks list as a `skipped` entry whenever
 its path filter or event criteria don't match. Skipped checks count as
 passing for branch protection, so a name that can report `skipped` is not
 safe to make a required check.
+
+A pull request whose base is a release branch (`branch-N.M`) is the one
+exception to the table: it runs every job the table puts in the PR, merge
+group or nightly tier, because a release branch has no merge queue and no
+nightly to run the last two later. `docs` stays push-only and `spark_3_4`
+still needs its label, so a `labeled` run there adds `spark_3_4` or nothing.
+`changes` hands the base branch to `compute-changes.py` as `PR_BASE_REF`.
+`check-ci-config.py` pins that wiring, because a dropped variable reads as an
+empty string and would route the pull request as if it targeted `main`.
 
 ### Label events
 

@@ -68,12 +68,9 @@ private[spark] class CometExecRDD(
     encryptedFilePaths: Seq[String] = Seq.empty,
     shuffleScanIndices: Set[Int] = Set.empty,
     @transient perPartitionFilePaths: Array[Seq[String]] = Array.empty,
-    // Set by leaf scans (e.g. `CometNativeScanExec`, the Delta contrib's
-    // `CometDeltaNativeScanExec`) that build this RDD directly, bypassing
-    // `CometNativeExec.executeColumnarWithContext`'s own `ctx.hasScanInput` check. Centralizing
-    // the registration here means every bare-RDD leaf-scan `doExecuteColumnar` override gets the
-    // same task-input-metrics reporting by passing this flag instead of hand-writing an
-    // anonymous `compute` override -- future contrib scans inherit it for free.
+    // Set by a contrib leaf scan (e.g. the Delta contrib's `CometDeltaNativeScanExec`) that
+    // builds this RDD directly, bypassing `CometNativeExec.executeColumnarWithContext`'s own
+    // `ctx.hasScanInput` check, so it reports task input metrics without subclassing this RDD.
     reportScanInputMetrics: Boolean = false)
     extends RDD[ColumnarBatch](sc, inputRDDs.map(rdd => new OneToOneDependency(rdd))) {
 
@@ -109,6 +106,11 @@ private[spark] class CometExecRDD(
     // reverse registration order, so registering first means this listener runs last, after
     // nested native blocks and the iterator have published their final metric values.
     Option(context).foreach(nativeMetrics.reportSpillMetrics)
+    // Registered here for the same reason: it has to run after the iterator's close has
+    // published the final scan metrics.
+    if (reportScanInputMetrics) {
+      Option(context).foreach(nativeMetrics.reportScanInputMetrics)
+    }
 
     val partition = split.asInstanceOf[CometExecPartition]
 
@@ -152,10 +154,6 @@ private[spark] class CometExecRDD(
       ctx.addTaskCompletionListener[Unit] { _ =>
         subqueries.foreach(sub => CometScalarSubquery.removeSubquery(it.id, sub))
       }
-    }
-
-    if (reportScanInputMetrics) {
-      Option(context).foreach(nativeMetrics.reportScanInputMetrics)
     }
 
     it
