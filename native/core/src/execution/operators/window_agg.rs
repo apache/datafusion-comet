@@ -328,20 +328,20 @@ impl CometWindowAggStream {
         }
         let _timer = self.baseline_metrics.elapsed_compute().timer();
 
-        // Concatenating a single batch is zero-copy. Otherwise reserve the copy before making
-        // it, while `batches` are still reserved.
+        let batch = concat_batches(&self.input.schema(), &batches)?;
+        // Concatenating a single batch is zero-copy. Otherwise reserve the buffers of the copy
+        // that it does not share with `batches`, which are still reserved. Counting them after
+        // the fact is exact, where estimating them from each batch would charge every batch
+        // sliced from one list array for all of its values.
         if batches.len() > 1 {
-            let mut copy_size = 0;
-            for batch in &batches {
-                for column in batch.columns() {
-                    copy_size += column.to_data().get_slice_memory_size()?;
-                }
+            let mut counter = RecordBatchMemoryCounter::new();
+            for input in &batches {
+                counter.count_batch(input);
             }
             self.reservation
-                .try_grow(copy_size)
+                .try_grow(counter.count_batch(&batch))
                 .map_err(with_oom_context)?;
         }
-        let batch = concat_batches(&self.input.schema(), &batches)?;
         drop(batches);
 
         let mut partition_results = vec![];
@@ -438,7 +438,8 @@ fn with_oom_context(error: DataFusionError) -> DataFusionError {
 mod tests {
     use super::*;
 
-    use arrow::array::{Int32Array, Int64Array, UInt32Array};
+    use arrow::array::{Int32Array, Int64Array, ListArray, UInt32Array};
+    use arrow::buffer::OffsetBuffer;
     use arrow::compute::take_record_batch;
     use arrow::datatypes::{DataType, Field, Schema};
     use datafusion::common::ScalarValue;
@@ -634,11 +635,10 @@ mod tests {
         batches.iter().map(RecordBatch::num_rows).collect()
     }
 
-    /// Runs the window with a `limit`-byte pool. On success, also returns the peak the window
+    /// Runs `plan` with a `limit`-byte pool. On success, also returns the peak the window
     /// reserved, after checking that it released everything.
     async fn run_with_limit(
-        batches: Vec<RecordBatch>,
-        partitioned: bool,
+        plan: Arc<dyn ExecutionPlan>,
         limit: usize,
     ) -> Result<(Vec<RecordBatch>, usize)> {
         let runtime = RuntimeEnvBuilder::new()
@@ -647,7 +647,7 @@ mod tests {
         let context =
             SessionContext::new_with_config_rt(SessionConfig::new(), Arc::clone(&runtime))
                 .task_ctx();
-        let mut stream = comet_window(batches, partitioned).execute(0, context)?;
+        let mut stream = plan.execute(0, context)?;
         let mut output = vec![];
         while let Some(batch) = stream.next().await {
             output.push(batch?);
@@ -744,13 +744,75 @@ mod tests {
         let batches = chunks(&sorted_rows(&[50; 1000], &mut rng), 64);
         let limit = 8 * memory_size(&batches[..1]);
         assert!(memory_size(&batches) > 50 * limit);
-        let (output, peak) = run_with_limit(batches.clone(), true, limit).await.unwrap();
+        let (output, peak) = run_with_limit(comet_window(batches.clone(), true), limit)
+            .await
+            .unwrap();
         assert!(peak > 0);
         assert_matches_window_agg_exec(&output, batches, true).await;
 
         // The same number of rows in one window partition does not fit.
         let batches = chunks(&sorted_rows(&[50_000], &mut rng), 64);
-        assert_refused(run_with_limit(batches, true, limit).await.unwrap_err());
+        assert_refused(
+            run_with_limit(comet_window(batches, true), limit)
+                .await
+                .unwrap_err(),
+        );
+    }
+
+    #[tokio::test]
+    async fn batches_sliced_from_one_list_array_are_charged_once() {
+        // Ten batches sliced from one batch share its list values. Estimating each batch's
+        // share of the copy from its slice would charge every batch for all of them.
+        let item = Arc::new(Field::new_list_field(DataType::Int64, false));
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("k", DataType::Int64, false),
+            Field::new("a", DataType::List(Arc::clone(&item)), false),
+        ]));
+        let list = ListArray::new(
+            item,
+            OffsetBuffer::from_lengths([64; 10_000]),
+            Arc::new(Int64Array::from_iter_values(0..640_000)),
+            None,
+        );
+        let rows = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![
+                Arc::new(Int64Array::from_iter_values(0..10_000)),
+                Arc::new(list),
+            ],
+        )
+        .unwrap();
+        let batches = (0..10).map(|i| rows.slice(i * 1_000, 1_000)).collect();
+        // COUNT(k) OVER (), so all the rows are one window partition.
+        let count = create_window_expr(
+            &WindowFunctionDefinition::AggregateUDF(
+                SessionContext::new().state().udaf("count").unwrap(),
+            ),
+            "count".to_string(),
+            &[col("k", &schema).unwrap()],
+            &[],
+            &[],
+            Arc::new(WindowFrame::new(None)),
+            Arc::clone(&schema),
+            false,
+            false,
+            None,
+        )
+        .unwrap();
+        let input = MemorySourceConfig::try_new_exec(&[batches], schema, None).unwrap();
+        let plan = Arc::new(CometWindowAggExec::try_new(vec![count], input, false).unwrap());
+
+        // The rows fit together with their copy.
+        let (output, _) = run_with_limit(plan, 3 * memory_size(&[rows]))
+            .await
+            .unwrap();
+        assert_eq!(row_counts(&output), [10_000]);
+        let counts = output[0]
+            .column(2)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        assert!(counts.iter().all(|count| count == Some(10_000)));
     }
 
     #[tokio::test]
@@ -762,13 +824,14 @@ mod tests {
         for partitioned in [true, false] {
             // The batches fit, but not together with the copy made to evaluate them.
             assert_refused(
-                run_with_limit(batches.clone(), partitioned, inputs * 3 / 2)
+                run_with_limit(comet_window(batches.clone(), partitioned), inputs * 3 / 2)
                     .await
                     .unwrap_err(),
             );
-            let (output, peak) = run_with_limit(batches.clone(), partitioned, inputs * 3)
-                .await
-                .unwrap();
+            let (output, peak) =
+                run_with_limit(comet_window(batches.clone(), partitioned), inputs * 3)
+                    .await
+                    .unwrap();
             assert!(peak > inputs * 3 / 2, "peak={peak}, inputs={inputs}");
             assert_eq!(row_counts(&output), [640]);
         }
