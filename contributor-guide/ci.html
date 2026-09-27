@@ -686,6 +686,8 @@ pass. A job that fails or is cancelled turns <code class="docutils literal notra
 <p>Which tier a job belongs to is the <code class="docutils literal notranslate"><span class="pre">POLICY</span></code> table in <code class="docutils literal notranslate"><span class="pre">dev/ci/compute-changes.py</span></code>. Each job’s path
 filters are the <code class="docutils literal notranslate"><span class="pre">FILTERS</span></code> table in the same file, and <code class="docutils literal notranslate"><span class="pre">dev/ci/check-ci-config.py</span></code> holds the test
 cases that pin both down.</p>
+<p>A pull request against a release branch runs all three tiers at once; see
+<a class="reference internal" href="#release-branches">Release branches</a>.</p>
 </section>
 <section id="opting-a-pull-request-into-a-suite-the-pr-tier-skips">
 <h2>Opting a pull request into a suite the PR tier skips<a class="headerlink" href="#opting-a-pull-request-into-a-suite-the-pr-tier-skips" title="Link to this heading">#</a></h2>
@@ -946,6 +948,36 @@ and Iceberg 1.11. If everything is skipped, open the run’s <code class="docuti
 <code class="docutils literal notranslate"><span class="pre">Nightly</span> <span class="pre">base:</span></code> commit it diffed against and the list of changed files, which is enough to tell a
 genuinely quiet day from a base that has drifted.</p>
 </section>
+<section id="release-branches">
+<h2>Release branches<a class="headerlink" href="#release-branches" title="Link to this heading">#</a></h2>
+<p>Release branches (<code class="docutils literal notranslate"><span class="pre">branch-N.M</span></code>) start with the workflow files <code class="docutils literal notranslate"><span class="pre">main</span></code> had when they were cut, but have
+no merge queue and no nightly run. The merge queue covers only <code class="docutils literal notranslate"><span class="pre">main</span></code>, <code class="docutils literal notranslate"><span class="pre">ci.yml</span></code> runs on push only for <code class="docutils literal notranslate"><span class="pre">main</span></code>, and GitHub
+fires scheduled workflows only on the default branch, so a release branch gets no scheduled <code class="docutils literal notranslate"><span class="pre">ci.yml</span></code>,
+Miri or CodeQL run, and nothing runs after a pull request merges.</p>
+<p>On <code class="docutils literal notranslate"><span class="pre">main</span></code>, the tiers hold the expensive suites back for the queue and the nightly run, which still
+test every change. A release branch has neither, so holding a suite back there would mean never
+running it. A pull request that targets a release branch, such as a backport, therefore runs the PR,
+queue and nightly tiers together. Release branches get few pull requests, so this costs little. The
+path filters still apply, so a documentation-only change runs none of the heavy suites. The Spark
+SQL suite for Spark 3.4 still needs its <code class="docutils literal notranslate"><span class="pre">run-spark-3.4-tests</span></code> label, and the other <code class="docutils literal notranslate"><span class="pre">run-*</span></code> labels
+have nothing to add there.</p>
+<p>A release branch runs the workflow files committed on it, so a change to these rules on <code class="docutils literal notranslate"><span class="pre">main</span></code>
+reaches a release branch only if it is backported. <code class="docutils literal notranslate"><span class="pre">branch-1.0</span></code> predates the tiers and follows its
+own, older rules.</p>
+<p>Each pull request is tested against the release branch as it was when its run started, and with no
+merge queue, nothing tests the result of merging it. Two backports that pass on their own can still
+break the branch once both have landed. To run every suite against a release branch as it stands,
+dispatch <code class="docutils literal notranslate"><span class="pre">ci.yml</span></code> on it. A dispatch runs every job in that branch’s own <code class="docutils literal notranslate"><span class="pre">ci.yml</span></code>, including <code class="docutils literal notranslate"><span class="pre">docs</span></code>,
+which publishes the website. So first check that the <code class="docutils literal notranslate"><span class="pre">if:</span></code> of the branch’s <code class="docutils literal notranslate"><span class="pre">docs</span></code> job requires
+<code class="docutils literal notranslate"><span class="pre">github.ref</span> <span class="pre">==</span> <span class="pre">'refs/heads/main'</span></code>. A branch without that guard publishes its own docs over the site.</p>
+<div class="highlight-sh notranslate"><div class="highlight"><pre><span></span>git<span class="w"> </span>show<span class="w"> </span>apache/branch-N.M:.github/workflows/ci.yml<span class="w"> </span><span class="p">|</span><span class="w"> </span>sed<span class="w"> </span>-n<span class="w"> </span><span class="s1">'/^  docs:/,/uses:/p'</span>
+gh<span class="w"> </span>workflow<span class="w"> </span>run<span class="w"> </span>ci.yml<span class="w"> </span>--repo<span class="w"> </span>apache/datafusion-comet<span class="w"> </span>--ref<span class="w"> </span>branch-N.M
+</pre></div>
+</div>
+<p>The release process does this before tagging each release candidate; see
+<a class="reference internal" href="release_process.html#run-the-full-ci-suite"><span class="std std-ref">Run the Full CI Suite</span></a>. A failed dispatched run opens no
+<code class="docutils literal notranslate"><span class="pre">ci-nightly-failure</span></code> issue.</p>
+</section>
 <section id="reproducing-a-suite-failure-locally">
 <h2>Reproducing a suite failure locally<a class="headerlink" href="#reproducing-a-suite-failure-locally" title="Link to this heading">#</a></h2>
 <p><code class="docutils literal notranslate"><span class="pre">dev/local-ci.sh</span></code> builds the same sandbox a runner builds and runs the Spark SQL or Iceberg
@@ -1071,6 +1103,7 @@ list first.</p>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#nightly-runs">Nightly runs</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#miri-safety-checks">Miri safety checks</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#checking-that-the-scheduled-runs-are-healthy">Checking that the scheduled runs are healthy</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#release-branches">Release branches</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#reproducing-a-suite-failure-locally">Reproducing a suite failure locally</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#changing-ci-itself">Changing CI itself</a></li>
 </ul>

@@ -565,6 +565,7 @@ instructions on each step.</p>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> Update Maven version in release branch</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> Update version in main for next development cycle</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> Generate the change log and PR it against the release branch</p></li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> Run the full CI suite on the release branch</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> Build the jars</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> Tag the release candidate</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> Update documentation for the new release</p></li>
@@ -657,6 +658,18 @@ to the release branch (documentation, version bump, changelog) go through pull r
 </pre></div>
 </div>
 <p>All release branches stay protected, including older ones, so released code cannot be pushed to directly.</p>
+<p>Once the pull request merges, check that the protection took effect:</p>
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>gh<span class="w"> </span>api<span class="w"> </span>repos/apache/datafusion-comet/branches/branch-0.13<span class="w"> </span>--jq<span class="w"> </span>.protected
+</pre></div>
+</div>
+<p>This prints <code class="docutils literal notranslate"><span class="pre">true</span></code> once ASF has applied the change. If it still prints <code class="docutils literal notranslate"><span class="pre">false</span></code>, check that the branch is listed
+under <code class="docutils literal notranslate"><span class="pre">protected_branches</span></code> on <code class="docutils literal notranslate"><span class="pre">main</span></code>.</p>
+<p>Protection requires a review but not a green CI run, so check that a pull request’s run passed before merging it.
+The release branch has no merge queue, no nightly run, and no CI on push, so a pull request targeting it runs every
+suite that the PR, queue, and nightly tiers run on <code class="docutils literal notranslate"><span class="pre">main</span></code>. That includes the version bump pull request below and
+every backport. The documentation and change log pull requests change only Markdown, so the path filters skip the
+heavy suites for them. <a class="reference internal" href="ci.html#release-branches"><span class="std std-ref">Release branches</span></a> explains what runs and
+why. The <a class="reference internal" href="#run-the-full-ci-suite">full CI run before tagging</a> tests the branch with every change merged.</p>
 </section>
 <section id="generate-release-documentation">
 <h3>Generate Release Documentation<a class="headerlink" href="#generate-release-documentation" title="Link to this heading">#</a></h3>
@@ -690,8 +703,10 @@ catalog entry (<code class="docutils literal notranslate"><span class="pre">come
 <code class="docutils literal notranslate"><span class="pre">-SNAPSHOT</span></code> qualifier changes the built artifact file names, so anything that locates the jar by glob must
 match a bare version too. Prefer patterns such as <code class="docutils literal notranslate"><span class="pre">comet-spark-spark3.5_2.12-*.jar</span></code> over
 <code class="docutils literal notranslate"><span class="pre">comet-spark-spark3.5_2.12-*-SNAPSHOT.jar</span></code>, and prefer resolving the jar by glob over hardcoding a version.
-The release branch runs the same CI workflows as <code class="docutils literal notranslate"><span class="pre">main</span></code>, including the PyArrow UDF tests, so a
-<code class="docutils literal notranslate"><span class="pre">-SNAPSHOT</span></code>-only glob in a test harness or script fails only after the release branch is cut.</p>
+The release branch has the same CI workflows as <code class="docutils literal notranslate"><span class="pre">main</span></code>, so a <code class="docutils literal notranslate"><span class="pre">-SNAPSHOT</span></code>-only glob in a test harness or script
+fails only after the release branch is cut. The version bump pull request is where it shows up. It changes the
+<code class="docutils literal notranslate"><span class="pre">pom.xml</span></code> files, so it runs the suites that find the jar by file name or version, such as the PyArrow UDF tests and
+the Spark SQL and Iceberg suites. The Spark SQL suite for Spark 3.4 runs only with the <code class="docutils literal notranslate"><span class="pre">run-spark-3.4-tests</span></code> label.</p>
 </section>
 <section id="update-version-in-main">
 <h3>Update Version in main<a class="headerlink" href="#update-version-in-main" title="Link to this heading">#</a></h3>
@@ -724,6 +739,38 @@ python3<span class="w"> </span>generate-changelog.py<span class="w"> </span><spa
 branch are complete; if more changes land on the release branch before the release candidate is tagged,
 regenerate it and update the PR. After the release is approved and tagged, open a separate PR to bring the same
 change log file into <code class="docutils literal notranslate"><span class="pre">main</span></code>.</p>
+</section>
+<section id="run-the-full-ci-suite">
+<h3>Run the Full CI Suite<a class="headerlink" href="#run-the-full-ci-suite" title="Link to this heading">#</a></h3>
+<p>Once the generated docs, version bump, and change log have merged to the release branch, run every CI suite
+against it. Each pull request ran against the branch as it stood when its run started, so nothing has yet tested
+the branch with all of them merged. Pull requests there also skip the Spark SQL suite for Spark 3.4 unless it is
+labeled, and Miri, which runs only on a schedule on <code class="docutils literal notranslate"><span class="pre">main</span></code>.</p>
+<p>A dispatch runs every job in the release branch’s own <code class="docutils literal notranslate"><span class="pre">ci.yml</span></code>, including <code class="docutils literal notranslate"><span class="pre">docs</span></code>, which publishes the website. So
+first check that the branch limits that job to <code class="docutils literal notranslate"><span class="pre">main</span></code>: the <code class="docutils literal notranslate"><span class="pre">if:</span></code> this prints must require
+<code class="docutils literal notranslate"><span class="pre">github.ref</span> <span class="pre">==</span> <span class="pre">'refs/heads/main'</span></code>. A branch without that guard publishes its own docs over the site.</p>
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>git<span class="w"> </span>fetch<span class="w"> </span>apache
+git<span class="w"> </span>show<span class="w"> </span>apache/branch-0.13:.github/workflows/ci.yml<span class="w"> </span><span class="p">|</span><span class="w"> </span>sed<span class="w"> </span>-n<span class="w"> </span><span class="s1">'/^  docs:/,/uses:/p'</span>
+</pre></div>
+</div>
+<p>Then dispatch both workflows on the release branch:</p>
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>gh<span class="w"> </span>workflow<span class="w"> </span>run<span class="w"> </span>ci.yml<span class="w"> </span>--repo<span class="w"> </span>apache/datafusion-comet<span class="w"> </span>--ref<span class="w"> </span>branch-0.13
+gh<span class="w"> </span>workflow<span class="w"> </span>run<span class="w"> </span>miri.yml<span class="w"> </span>--repo<span class="w"> </span>apache/datafusion-comet<span class="w"> </span>--ref<span class="w"> </span>branch-0.13
+</pre></div>
+</div>
+<p>A dispatched <code class="docutils literal notranslate"><span class="pre">ci.yml</span></code> run ignores the tiers and the path filters. It runs every suite in the
+<a class="reference internal" href="ci.html#three-tiers"><span class="std std-ref">tier table</span></a>, including the Spark SQL suite for Spark 3.4, which sits outside every tier.
+<code class="docutils literal notranslate"><span class="pre">miri.yml</span></code> runs the unsafe code checks, which are not part of <code class="docutils literal notranslate"><span class="pre">ci.yml</span></code>. Expect the runs to take a few hours.</p>
+<p>A failed dispatched run does not open a <code class="docutils literal notranslate"><span class="pre">ci-nightly-failure</span></code> issue, so check the result yourself. This prints the
+latest dispatched run of each workflow on the branch:</p>
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span><span class="k">for</span><span class="w"> </span>wf<span class="w"> </span><span class="k">in</span><span class="w"> </span>ci.yml<span class="w"> </span>miri.yml<span class="p">;</span><span class="w"> </span><span class="k">do</span>
+<span class="w">  </span>gh<span class="w"> </span>api<span class="w"> </span><span class="s2">"repos/apache/datafusion-comet/actions/workflows/</span><span class="nv">$wf</span><span class="s2">/runs?branch=branch-0.13&amp;event=workflow_dispatch&amp;per_page=1"</span><span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--jq<span class="w"> </span><span class="s2">".workflow_runs[] | \"</span><span class="nv">$wf</span><span class="s2">\t\(.head_sha)\t\(.status)\t\(.conclusion)\t\(.html_url)\""</span>
+<span class="k">done</span>
+</pre></div>
+</div>
+<p>Both runs must be green at the commit you are about to tag. If anything merges to the release branch after the
+runs start, run them again. Repeat this for every release candidate.</p>
 </section>
 <section id="build-the-jars">
 <h3>Build the jars<a class="headerlink" href="#build-the-jars" title="Link to this heading">#</a></h3>
@@ -787,7 +834,8 @@ repository</p>
 </section>
 <section id="tag-the-release-candidate">
 <h3>Tag the Release Candidate<a class="headerlink" href="#tag-the-release-candidate" title="Link to this heading">#</a></h3>
-<p>Ensure that the Maven version update and change log have been merged to the release branch before tagging.</p>
+<p>Ensure that the Maven version update and change log have been merged to the release branch, and that the
+<a class="reference internal" href="#run-the-full-ci-suite">full CI run</a> is green at the commit you are tagging, before tagging.</p>
 <p>Tag the release branch with <code class="docutils literal notranslate"><span class="pre">0.13.0-rc1</span></code> and push to the <code class="docutils literal notranslate"><span class="pre">apache</span></code> repo</p>
 <div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>git<span class="w"> </span>fetch<span class="w"> </span>apache
 git<span class="w"> </span>checkout<span class="w"> </span>branch-0.13
@@ -1068,6 +1116,7 @@ contributor can drive this process.</p>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#update-maven-version">Update Maven Version</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#update-version-in-main">Update Version in main</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#generate-the-change-log">Generate the Change Log</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#run-the-full-ci-suite">Run the Full CI Suite</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#build-the-jars">Build the jars</a><ul class="nav section-nav flex-column">
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#a-note-on-workspace-cleanliness">A note on workspace cleanliness</a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#setup-to-do-the-build">Setup to do the build</a></li>
