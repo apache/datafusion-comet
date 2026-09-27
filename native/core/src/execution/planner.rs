@@ -42,8 +42,8 @@ use crate::execution::{
     expressions::list_positions::ListPositionsExpr,
     expressions::subquery::Subquery,
     operators::{
-        CometFilterExec, ExecutionError, ExpandExec, ExplodeExec, ParquetCompression,
-        ParquetWriterExec, SampleExec, ScanExec, ShuffleScanExec,
+        CometFilterExec, CometWindowAggExec, ExecutionError, ExpandExec, ExplodeExec,
+        ParquetCompression, ParquetWriterExec, SampleExec, ScanExec, ShuffleScanExec,
     },
     planner::expression_registry::ExpressionRegistry,
     planner::operator_registry::OperatorRegistry,
@@ -62,7 +62,7 @@ use datafusion::functions_aggregate::min_max::max_udaf;
 use datafusion::functions_aggregate::min_max::min_udaf;
 use datafusion::functions_aggregate::sum::sum_udaf;
 use datafusion::physical_expr::aggregate::{AggregateExprBuilder, AggregateFunctionExpr};
-use datafusion::physical_plan::windows::{BoundedWindowAggExec, WindowAggExec};
+use datafusion::physical_plan::windows::BoundedWindowAggExec;
 use datafusion::physical_plan::InputOrderMode;
 use datafusion::{
     arrow::{compute::SortOptions, datatypes::SchemaRef},
@@ -2429,11 +2429,11 @@ impl PhysicalPlanner {
                 // run with bounded memory. This uses DataFusion's
                 // `evaluate_stateful` / row-by-row `evaluate` path, which is the
                 // correct implementation for `LEAD` / `LAG` with `IGNORE NULLS`
-                // (`WindowAggExec` calls `evaluate_all`, whose
+                // (`CometWindowAggExec`, like `WindowAggExec`, calls `evaluate_all`, whose
                 // `evaluate_all_with_ignore_null` has a sign-wrap bug for `LEAD`
                 // that produces all-NULL output).
                 //
-                // Fall back to `WindowAggExec` otherwise. That covers
+                // Use `CometWindowAggExec` otherwise. That covers
                 // `PERCENT_RANK` / `CUME_DIST` / `NTILE`
                 // (`!uses_bounded_memory()` — "Can not execute X in a streaming
                 // fashion") and keeps the Spark-compatible Comet UDAFs
@@ -2443,7 +2443,9 @@ impl PhysicalPlanner {
                 // retract-capable built-ins for sliding aggregate frames,
                 // ever-expanding aggregate frames (all that route to
                 // `BoundedWindowAggExec` as `PlainAggregateWindowExpr`) never
-                // trigger a retract call.
+                // trigger a retract call. `CometWindowAggExec` evaluates like
+                // DataFusion's `WindowAggExec`, but buffers one window partition
+                // at a time instead of the whole input, and reserves it.
                 let window_expr = window_expr?;
                 let all_bounded = window_expr.iter().all(|e| e.uses_bounded_memory());
                 let window_agg: Arc<dyn ExecutionPlan> = if all_bounded {
@@ -2454,7 +2456,7 @@ impl PhysicalPlanner {
                         !partition_exprs.is_empty(),
                     )?)
                 } else {
-                    Arc::new(WindowAggExec::try_new(
+                    Arc::new(CometWindowAggExec::try_new(
                         window_expr,
                         Arc::clone(&child.native_plan),
                         !partition_exprs.is_empty(),

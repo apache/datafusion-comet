@@ -59,6 +59,16 @@ boundaries. A shuffled hash join can still filter probe batches after shuffle, b
 its filter back to an earlier scan stage. Compare the [runtime-filter and scan metrics](../metrics.md#hash-joins)
 with the setting disabled to distinguish reduced hash-probe work from reader I/O savings.
 
+## Window Functions
+
+`PERCENT_RANK`, `CUME_DIST`, `NTILE`, and aggregates whose frame ends at `UNBOUNDED FOLLOWING`, which includes an
+aggregate over `PARTITION BY` with no `ORDER BY` such as `sum(x) OVER (PARTITION BY k)`, need a whole window partition
+before they return anything. Comet buffers one window partition at a time for them and reserves it from its native
+memory pool, but it does not yet provide spill-to-disk for them. A window partition that does not fit, for example
+because of a heavily skewed key or a window without `PARTITION BY`, fails the task with a memory error where Spark
+would spill. Increase `spark.memory.offHeap.size`, or set `spark.comet.exec.window.enabled=false` to run window
+functions in Spark.
+
 ## Adaptive Partial Aggregation
 
 For high-cardinality grouping, Comet can bypass partial hash aggregation when it is not
