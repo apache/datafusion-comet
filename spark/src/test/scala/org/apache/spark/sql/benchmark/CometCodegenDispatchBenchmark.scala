@@ -113,6 +113,14 @@ object CometCodegenDispatchBenchmark extends CometBenchmarkBase {
       "select to_time(c_time, 'HH:mm:ss') from parquetV1Table",
       isSpark41Plus,
       Seq("spark.sql.timeType.enabled" -> "true")),
+    // `timestamp_seconds` lowers to a native kernel for int, long, float and double input, but
+    // decimal, byte and short input have no native implementation and are dispatched instead.
+    DispatchCase(
+      "timestamp_seconds(decimal)",
+      "select timestamp_seconds(c_dec) from parquetV1Table"),
+    DispatchCase(
+      "timestamp_seconds(tinyint)",
+      "select timestamp_seconds(c_byte) from parquetV1Table"),
     // The case the catch-all is really about: one unhandled expression used to cost the whole
     // projection, including the three expressions next to it that do have native kernels.
     DispatchCase(
@@ -382,6 +390,13 @@ object CometCodegenDispatchBenchmark extends CometBenchmarkBase {
       // Short, so `lpad` / `rpad` have padding to do on most rows.
       "c_pad" -> "CAST(CAST(PMOD(id, 100) AS STRING) AS BINARY)",
       "c_long" -> "id",
+      // `timestamp_seconds` has no native path for decimal, byte or short input, so these are
+      // dispatched. The scale stops at microseconds because Spark's decimal branch is
+      // `longValueExact`, which raises on a nonzero digit past the sixth. The cast is applied to
+      // the sum so that the column is exactly `DECIMAL(20, 6)`: casting each operand instead
+      // would leave `Add.resultDecimalType` to widen the result to `DECIMAL(21, 6)`.
+      "c_dec" -> "CAST(id + 0.123456 AS DECIMAL(20, 6))",
+      "c_byte" -> "CAST(PMOD(id, 100) AS TINYINT)",
       "c_time" -> ("CONCAT(LPAD(CAST(PMOD(id, 24) AS STRING), 2, '0'), ':', " +
         "LPAD(CAST(PMOD(id, 60) AS STRING), 2, '0'), ':', " +
         "LPAD(CAST(PMOD(id * 7, 60) AS STRING), 2, '0'))"))
