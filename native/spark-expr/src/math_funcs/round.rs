@@ -19,12 +19,9 @@ use crate::arithmetic_overflow_error;
 use crate::math_funcs::utils::{get_precision_scale, make_decimal_array, make_decimal_scalar};
 use arrow::array::{Array, ArrowNativeTypeOp};
 use arrow::array::{Int16Array, Int32Array, Int64Array, Int8Array};
-use arrow::datatypes::{DataType, Field};
+use arrow::datatypes::DataType;
 use arrow::error::ArrowError;
-use datafusion::common::config::ConfigOptions;
 use datafusion::common::{exec_err, internal_err, DataFusionError, ScalarValue};
-use datafusion::functions::math::round::RoundFunc;
-use datafusion::logical_expr::{ScalarFunctionArgs, ScalarUDFImpl};
 use datafusion::physical_plan::ColumnarValue;
 use std::{cmp::min, sync::Arc};
 
@@ -156,6 +153,11 @@ macro_rules! round_integer_scalar {
 }
 
 /// `round` function that simulates Spark `round` expression
+///
+/// Float and double are deliberately absent: Spark rounds them through a `BigDecimal` built from
+/// `java.lang.Double.toString()`, which no native kernel reproduces, so `CometRound` reports those
+/// inputs as `Unsupported` and routes them to the JVM codegen dispatcher instead. They never reach
+/// this function, and fall through to the catch-all error below if they somehow do.
 pub fn spark_round(
     args: &[ColumnarValue],
     data_type: &DataType,
@@ -166,8 +168,6 @@ pub fn spark_round(
     let ColumnarValue::Scalar(ScalarValue::Int64(Some(point))) = point else {
         return internal_err!("Invalid point argument for Round(): {:#?}", point);
     };
-    // DataFusion's RoundFunc expects Int32 for decimal_places
-    let point_i32 = ColumnarValue::Scalar(ScalarValue::Int32(Some(*point as i32)));
     match value {
         ColumnarValue::Array(array) => match array.data_type() {
             DataType::Int64 if *point < 0 => {
@@ -186,18 +186,6 @@ pub fn spark_round(
                 let f = decimal_round_f(scale, point);
                 let (precision, scale) = get_precision_scale(data_type);
                 make_decimal_array(array, precision, scale, &f)
-            }
-            DataType::Float32 | DataType::Float64 => {
-                let round_udf = RoundFunc::new();
-                let return_field = Arc::new(Field::new("round", array.data_type().clone(), true));
-                let args_for_round = ScalarFunctionArgs {
-                    args: vec![ColumnarValue::Array(Arc::clone(array)), point_i32.clone()],
-                    number_rows: array.len(),
-                    return_field,
-                    arg_fields: vec![],
-                    config_options: Arc::new(ConfigOptions::default()),
-                };
-                round_udf.invoke_with_args(args_for_round)
             }
             dt => exec_err!("Not supported datatype for ROUND: {dt}"),
         },
@@ -218,19 +206,6 @@ pub fn spark_round(
                 let f = decimal_round_f(scale, point);
                 let (precision, scale) = get_precision_scale(data_type);
                 make_decimal_scalar(a, precision, scale, &f)
-            }
-            ScalarValue::Float32(_) | ScalarValue::Float64(_) => {
-                let round_udf = RoundFunc::new();
-                let data_type = a.data_type();
-                let return_field = Arc::new(Field::new("round", data_type, true));
-                let args_for_round = ScalarFunctionArgs {
-                    args: vec![ColumnarValue::Scalar(a.clone()), point_i32.clone()],
-                    number_rows: 1,
-                    return_field,
-                    arg_fields: vec![],
-                    config_options: Arc::new(ConfigOptions::default()),
-                };
-                round_udf.invoke_with_args(args_for_round)
             }
             dt => exec_err!("Not supported datatype for ROUND: {dt}"),
         },
@@ -263,79 +238,11 @@ mod test {
 
     use crate::spark_round;
 
-    use arrow::array::{Float32Array, Float64Array, Int64Array};
+    use arrow::array::Int64Array;
     use arrow::datatypes::DataType;
-    use datafusion::common::cast::{as_float32_array, as_float64_array, as_int64_array};
+    use datafusion::common::cast::as_int64_array;
     use datafusion::common::{Result, ScalarValue};
     use datafusion::physical_plan::ColumnarValue;
-
-    #[test]
-    #[cfg_attr(miri, ignore)] // rounding does not work when miri enabled
-    fn test_round_f32_array() -> Result<()> {
-        let args = vec![
-            ColumnarValue::Array(Arc::new(Float32Array::from(vec![
-                125.2345, 15.3455, 0.1234, 0.125, 0.785, 123.123,
-            ]))),
-            ColumnarValue::Scalar(ScalarValue::Int64(Some(2))),
-        ];
-        let ColumnarValue::Array(result) = spark_round(&args, &DataType::Float32, false)? else {
-            unreachable!()
-        };
-        let floats = as_float32_array(&result)?;
-        let expected = Float32Array::from(vec![125.23, 15.35, 0.12, 0.13, 0.79, 123.12]);
-        assert_eq!(floats, &expected);
-        Ok(())
-    }
-
-    #[test]
-    #[cfg_attr(miri, ignore)] // rounding does not work when miri enabled
-    fn test_round_f64_array() -> Result<()> {
-        let args = vec![
-            ColumnarValue::Array(Arc::new(Float64Array::from(vec![
-                125.2345, 15.3455, 0.1234, 0.125, 0.785, 123.123,
-            ]))),
-            ColumnarValue::Scalar(ScalarValue::Int64(Some(2))),
-        ];
-        let ColumnarValue::Array(result) = spark_round(&args, &DataType::Float64, false)? else {
-            unreachable!()
-        };
-        let floats = as_float64_array(&result)?;
-        let expected = Float64Array::from(vec![125.23, 15.35, 0.12, 0.13, 0.79, 123.12]);
-        assert_eq!(floats, &expected);
-        Ok(())
-    }
-
-    #[test]
-    #[cfg_attr(miri, ignore)] // rounding does not work when miri enabled
-    fn test_round_f32_scalar() -> Result<()> {
-        let args = vec![
-            ColumnarValue::Scalar(ScalarValue::Float32(Some(125.2345))),
-            ColumnarValue::Scalar(ScalarValue::Int64(Some(2))),
-        ];
-        let ColumnarValue::Scalar(ScalarValue::Float32(Some(result))) =
-            spark_round(&args, &DataType::Float32, false)?
-        else {
-            unreachable!()
-        };
-        assert_eq!(result, 125.23);
-        Ok(())
-    }
-
-    #[test]
-    #[cfg_attr(miri, ignore)] // rounding does not work when miri enabled
-    fn test_round_f64_scalar() -> Result<()> {
-        let args = vec![
-            ColumnarValue::Scalar(ScalarValue::Float64(Some(125.2345))),
-            ColumnarValue::Scalar(ScalarValue::Int64(Some(2))),
-        ];
-        let ColumnarValue::Scalar(ScalarValue::Float64(Some(result))) =
-            spark_round(&args, &DataType::Float64, false)?
-        else {
-            unreachable!()
-        };
-        assert_eq!(result, 125.23);
-        Ok(())
-    }
 
     // Regression tests for https://github.com/apache/datafusion-comet/issues/5070:
     // round(Int64, scale) where `10^(-scale)` does not fit in i64. For scale=-19,

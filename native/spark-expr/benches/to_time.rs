@@ -15,9 +15,11 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use arrow::array::StringArray;
+use arrow::array::{Decimal128Array, StringArray, Time64NanosecondArray};
 use criterion::{criterion_group, criterion_main, Criterion};
+use datafusion::common::ScalarValue;
 use datafusion::physical_plan::ColumnarValue;
+use datafusion_comet_spark_expr::spark_seconds_of_time;
 use datafusion_comet_spark_expr::spark_to_time;
 use std::sync::Arc;
 
@@ -57,6 +59,42 @@ fn criterion_benchmark(c: &mut Criterion) {
         b.iter(|| spark_to_time(std::slice::from_ref(&am_pm), true).unwrap());
     });
 
+    group.finish();
+
+    let mut group = c.benchmark_group("seconds_of_time");
+    for precision in [0_u32, 3, 6] {
+        for nulls in [false, true] {
+            let divisor = 10_i64.pow(9 - precision);
+            let values = Time64NanosecondArray::from_iter((0..10000_i64).map(|i| {
+                if nulls && i % 4 == 0 {
+                    None
+                } else {
+                    Some(
+                        (45_240_000_000_000
+                            + (i % 60) * 1_000_000_000
+                            + (i * 7919 % 1_000_000) * 1000)
+                            / divisor
+                            * divisor,
+                    )
+                }
+            }));
+            let args = [
+                ColumnarValue::Array(Arc::new(values)),
+                ColumnarValue::Scalar(ScalarValue::Int32(Some(precision as i32))),
+            ];
+            group.bench_function(format!("p={precision},nulls={nulls}"), |b| {
+                b.iter(|| {
+                    let ColumnarValue::Array(result) =
+                        spark_seconds_of_time(std::hint::black_box(&args)).unwrap()
+                    else {
+                        unreachable!()
+                    };
+                    let result = result.as_any().downcast_ref::<Decimal128Array>().unwrap();
+                    std::hint::black_box(result.iter().flatten().sum::<i128>());
+                });
+            });
+        }
+    }
     group.finish();
 }
 

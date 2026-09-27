@@ -16,13 +16,18 @@
 // under the License.
 
 use crate::utils::array_with_timezone;
+use arrow::array::{Array, ArrayRef, Decimal128Array, Int32Array, TimestampMicrosecondArray};
 use arrow::compute::{date_part, DatePart};
-use arrow::datatypes::{DataType, TimeUnit::Microsecond};
-use datafusion::common::{internal_datafusion_err, DataFusionError};
+use arrow::datatypes::{DataType, Int32Type, TimeUnit::Microsecond};
+use datafusion::common::cast::as_time64_nanosecond_array;
+use datafusion::common::{
+    internal_datafusion_err, utils::take_function_args, DataFusionError, Result, ScalarValue,
+};
 use datafusion::logical_expr::{
     ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl, Signature, Volatility,
 };
 use std::fmt::Debug;
+use std::sync::Arc;
 
 /// Returns true when the type is a timestamp without a timezone (Spark's TimestampNTZType),
 /// including when wrapped in a dictionary. Such values store local wall-clock time and must not
@@ -35,8 +40,58 @@ fn is_timestamp_ntz(data_type: &DataType) -> bool {
     }
 }
 
+const MICROS_PER_DAY: i64 = 86_400_000_000;
+const MICROS_PER_HOUR: i64 = 3_600_000_000;
+const MICROS_PER_MINUTE: i64 = 60_000_000;
+const MICROS_PER_SECOND: i64 = 1_000_000;
+
+/// Session timezones whose UTC offset is zero at every instant, so a clock field read from the
+/// stored UTC instant needs no shift. The list is deliberately conservative: a name that is not
+/// listed simply takes the general timezone-aware path, which is always correct.
+fn is_utc_timezone(timezone: &str) -> bool {
+    matches!(
+        timezone,
+        "UTC" | "Etc/UTC" | "Etc/GMT" | "GMT" | "Z" | "+00:00" | "-00:00" | "00:00"
+    )
+}
+
+/// Returns the microsecond values when the clock field is a pure function of them, i.e. when no
+/// timezone offset applies. That is the case for `TimestampNTZ` (already local wall-clock) and
+/// for a timezone-aware timestamp read in a UTC session -- `array_with_timezone` only re-tags
+/// such an array, so the stored value is the UTC instant either way.
+///
+/// Dictionaries and non-microsecond units return `None` and keep the general path.
+fn micros_without_offset<'a>(
+    array: &'a ArrayRef,
+    timezone: &str,
+) -> Option<&'a TimestampMicrosecondArray> {
+    match array.data_type() {
+        DataType::Timestamp(Microsecond, None) => {}
+        DataType::Timestamp(Microsecond, Some(_)) if is_utc_timezone(timezone) => {}
+        _ => return None,
+    }
+    array.as_any().downcast_ref::<TimestampMicrosecondArray>()
+}
+
+/// Euclidean division is required: at UTC, `-1` microsecond is `1969-12-31 23:59:59.999999`, so
+/// truncation toward zero would give the wrong field for pre-epoch instants.
+#[inline]
+fn hour_of_day(micros: i64) -> i32 {
+    (micros.rem_euclid(MICROS_PER_DAY) / MICROS_PER_HOUR) as i32
+}
+
+#[inline]
+fn minute_of_hour(micros: i64) -> i32 {
+    micros.div_euclid(MICROS_PER_MINUTE).rem_euclid(60) as i32
+}
+
+#[inline]
+fn second_of_minute(micros: i64) -> i32 {
+    micros.div_euclid(MICROS_PER_SECOND).rem_euclid(60) as i32
+}
+
 macro_rules! extract_date_part {
-    ($struct_name:ident, $fn_name:expr, $date_part_variant:ident) => {
+    ($struct_name:ident, $fn_name:expr, $date_part_variant:ident, $kernel:ident) => {
         #[derive(Debug, PartialEq, Eq, Hash)]
         pub struct $struct_name {
             signature: Signature,
@@ -82,6 +137,24 @@ macro_rules! extract_date_part {
 
                 match args {
                     [ColumnarValue::Array(array)] => {
+                        // Fast path: when no offset applies the field is arithmetic on the stored
+                        // microseconds, so no calendar datetime is built per row. `unary` carries
+                        // the null buffer over untouched.
+                        if let Some(micros) = micros_without_offset(&array, &self.timezone) {
+                            // `unary` evaluates every slot and vectorizes; `unary_opt` visits
+                            // only valid indices but costs more per element. The `date_part`
+                            // path this replaces uses `unary_opt`, so an almost entirely null
+                            // batch was nearly free there. Skipping only pays off once most of
+                            // the batch is null, so switch on density rather than on the mere
+                            // presence of a null.
+                            let result: Int32Array = if micros.null_count() * 2 <= micros.len() {
+                                micros.unary::<_, Int32Type>($kernel)
+                            } else {
+                                micros.unary_opt::<_, Int32Type>(|v| Some($kernel(v)))
+                            };
+                            return Ok(ColumnarValue::Array(Arc::new(result)));
+                        }
+
                         // TimestampNTZ values are stored as local wall-clock time, so the date
                         // part is extracted directly. Timezone-aware timestamps are stored in UTC
                         // and must be shifted to the session timezone first.
@@ -113,9 +186,41 @@ macro_rules! extract_date_part {
     };
 }
 
-extract_date_part!(SparkHour, "hour", Hour);
-extract_date_part!(SparkMinute, "minute", Minute);
-extract_date_part!(SparkSecond, "second", Second);
+extract_date_part!(SparkHour, "hour", Hour, hour_of_day);
+extract_date_part!(SparkMinute, "minute", Minute, minute_of_hour);
+extract_date_part!(SparkSecond, "second", Second, second_of_minute);
+
+/// Spark 4.1 EXTRACT(SECOND FROM TIME): truncate to the input precision and return
+/// Decimal(8,6). The precision is a literal supplied by Spark's TimeType lowering.
+pub fn spark_seconds_of_time(args: &[ColumnarValue]) -> Result<ColumnarValue> {
+    let [time, precision] = take_function_args("seconds_of_time", args)?;
+    let precision = match precision {
+        ColumnarValue::Scalar(ScalarValue::Int32(Some(p))) if (0..=6).contains(p) => *p as u32,
+        _ => {
+            return Err(internal_datafusion_err!(
+                "seconds_of_time requires a literal precision from 0 to 6"
+            ))
+        }
+    };
+    let divisor = 10_i64.pow(9 - precision);
+    let multiplier = 10_i128.pow(6 - precision);
+    let extract = |nanos: i64| i128::from((nanos % 60_000_000_000) / divisor) * multiplier;
+    match time {
+        ColumnarValue::Array(array) => {
+            let times = as_time64_nanosecond_array(array.as_ref())?;
+            let seconds: Decimal128Array = times.iter().map(|nanos| nanos.map(extract)).collect();
+            Ok(ColumnarValue::Array(Arc::new(
+                seconds.with_precision_and_scale(8, 6)?,
+            )))
+        }
+        ColumnarValue::Scalar(ScalarValue::Time64Nanosecond(nanos)) => Ok(ColumnarValue::Scalar(
+            ScalarValue::Decimal128(nanos.map(extract), 8, 6),
+        )),
+        _ => Err(internal_datafusion_err!(
+            "seconds_of_time requires Time64(Nanosecond)"
+        )),
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -124,6 +229,69 @@ mod tests {
     use arrow::datatypes::{Field, TimeUnit};
     use datafusion::config::ConfigOptions;
     use std::sync::Arc;
+
+    #[test]
+    fn seconds_of_time_truncates_to_input_precision() {
+        for (precision, expected) in [
+            45_000_000, 45_100_000, 45_120_000, 45_123_000, 45_123_400, 45_123_450, 45_123_456,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let precision = ColumnarValue::Scalar(ScalarValue::Int32(Some(precision as i32)));
+            for nanos in [Some(45_045_123_456_789), None] {
+                let args = [
+                    ColumnarValue::Scalar(ScalarValue::Time64Nanosecond(nanos)),
+                    precision.clone(),
+                ];
+                let ColumnarValue::Scalar(result) = spark_seconds_of_time(&args).unwrap() else {
+                    panic!("expected scalar")
+                };
+                assert_eq!(
+                    result,
+                    ScalarValue::Decimal128(nanos.map(|_| expected), 8, 6)
+                );
+            }
+            let times =
+                arrow::array::Time64NanosecondArray::from(vec![Some(45_045_123_456_789), None]);
+            let args = [ColumnarValue::Array(Arc::new(times)), precision];
+            let ColumnarValue::Array(result) = spark_seconds_of_time(&args).unwrap() else {
+                panic!("expected array")
+            };
+            let expected = Decimal128Array::from(vec![Some(expected), None])
+                .with_precision_and_scale(8, 6)
+                .unwrap();
+            assert_eq!(result.as_ref(), &expected);
+        }
+    }
+
+    #[test]
+    fn seconds_of_time_boundaries() {
+        for (nanos, expected) in [
+            (0, 0),
+            (999, 0),
+            (1_000, 1),
+            (59_999_999_999, 59_999_999),
+            (60_000_000_000, 0),
+            (86_399_999_999_999, 59_999_999),
+        ] {
+            let args = [
+                ColumnarValue::Scalar(ScalarValue::Time64Nanosecond(Some(nanos))),
+                ColumnarValue::Scalar(ScalarValue::Int32(Some(6))),
+            ];
+            let ColumnarValue::Scalar(result) = spark_seconds_of_time(&args).unwrap() else {
+                panic!("expected scalar")
+            };
+            assert_eq!(result, ScalarValue::Decimal128(Some(expected), 8, 6));
+        }
+        for precision in [-1, 7, i32::MAX] {
+            assert!(spark_seconds_of_time(&[
+                ColumnarValue::Scalar(ScalarValue::Time64Nanosecond(Some(0))),
+                ColumnarValue::Scalar(ScalarValue::Int32(Some(precision)))
+            ])
+            .is_err());
+        }
+    }
 
     // 2024-01-15 18:30:45 UTC, in microseconds since the epoch.
     const MICROS: i64 = 1_705_343_445_000_000;
@@ -148,6 +316,100 @@ mod tests {
 
     fn ntz_array() -> ArrayRef {
         Arc::new(TimestampMicrosecondArray::from(vec![Some(MICROS)]))
+    }
+
+    /// Invokes a UDF over a whole array and returns every extracted value.
+    fn invoke_all<U: ScalarUDFImpl + ?Sized>(udf: &U, array: ArrayRef) -> Int32Array {
+        let rows = array.len();
+        let return_field = Arc::new(Field::new("v", DataType::Int32, true));
+        let args = ScalarFunctionArgs {
+            args: vec![ColumnarValue::Array(array)],
+            number_rows: rows,
+            return_field,
+            config_options: Arc::new(ConfigOptions::default()),
+            arg_fields: vec![],
+        };
+        match udf.invoke_with_args(args).unwrap() {
+            ColumnarValue::Array(arr) => arr.as_any().downcast_ref::<Int32Array>().unwrap().clone(),
+            _ => panic!("Expected array"),
+        }
+    }
+
+    /// The UTC fast path must agree with the general timezone-aware path. Both are exercised
+    /// here on the same instant: a UTC session takes the fast path, `Etc/GMT+0` is not in the
+    /// allowlist and takes the general path, and both describe the same zero offset.
+    #[test]
+    fn utc_fast_path_matches_general_path() {
+        let array = TimestampMicrosecondArray::from(vec![Some(MICROS)]).with_timezone("UTC");
+        let fast = SparkHour::new("UTC".to_string());
+        let general = SparkHour::new("Etc/GMT+0".to_string());
+        assert!(is_utc_timezone("UTC") && !is_utc_timezone("Etc/GMT+0"));
+        assert_eq!(
+            invoke(&fast, Arc::new(array.clone())),
+            invoke(&general, Arc::new(array))
+        );
+    }
+
+    /// Pre-epoch instants are where truncation toward zero would diverge from Spark: -1 us is
+    /// 1969-12-31 23:59:59.999999, not 1970-01-01 00:00:00.
+    #[test]
+    fn pre_epoch_instants_use_euclidean_division() {
+        let values = vec![Some(-1i64), Some(-MICROS_PER_DAY), Some(-MICROS_PER_SECOND)];
+        for (udf, expected) in [
+            (
+                Box::new(SparkHour::new("UTC".to_string())) as Box<dyn ScalarUDFImpl>,
+                vec![23, 0, 23],
+            ),
+            (
+                Box::new(SparkMinute::new("UTC".to_string())),
+                vec![59, 0, 59],
+            ),
+            (
+                Box::new(SparkSecond::new("UTC".to_string())),
+                vec![59, 0, 59],
+            ),
+        ] {
+            // Both the NTZ shape and the UTC-tagged shape take the fast path.
+            let ntz: ArrayRef = Arc::new(TimestampMicrosecondArray::from(values.clone()));
+            let tagged: ArrayRef =
+                Arc::new(TimestampMicrosecondArray::from(values.clone()).with_timezone("UTC"));
+            for array in [ntz, tagged] {
+                assert_eq!(
+                    invoke_all(udf.as_ref(), array).values(),
+                    &expected[..],
+                    "{} mismatch",
+                    udf.name()
+                );
+            }
+        }
+    }
+
+    /// The fast path must carry the null buffer over unchanged, and the value stored under a
+    /// null slot must not influence the result.
+    #[test]
+    fn fast_path_preserves_nulls() {
+        let array: ArrayRef = Arc::new(TimestampMicrosecondArray::from(vec![
+            Some(MICROS),
+            None,
+            Some(-1),
+        ]));
+        let out = invoke_all(&SparkHour::new("UTC".to_string()), array);
+        assert_eq!(out.null_count(), 1);
+        assert!(out.is_null(1));
+        assert_eq!(out.value(0), 18);
+        assert_eq!(out.value(2), 23);
+    }
+
+    /// A session timezone with a real offset must not be routed through the fast path.
+    #[test]
+    fn non_utc_session_is_not_accelerated() {
+        for tz in ["America/Los_Angeles", "Asia/Tokyo", "+05:30"] {
+            assert!(!is_utc_timezone(tz), "{tz} must not be treated as UTC");
+        }
+        let array: ArrayRef =
+            Arc::new(TimestampMicrosecondArray::from(vec![Some(MICROS)]).with_timezone("UTC"));
+        // 18:30 UTC is 03:30 the next day in Tokyo (UTC+9).
+        assert_eq!(invoke(&SparkHour::new("Asia/Tokyo".to_string()), array), 3);
     }
 
     #[test]

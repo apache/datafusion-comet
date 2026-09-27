@@ -23,20 +23,42 @@ Spark normalizes NaN and zero for floating point numbers for several cases. See 
 However, one exception is comparison. Spark does not normalize NaN and zero when comparing values
 because they are handled well in Spark (e.g., `SQLOrderingUtil.compareFloats`). But the comparison
 functions of arrow-rs used by DataFusion do not normalize NaN and zero (e.g., [arrow::compute::kernels::cmp::eq](https://docs.rs/arrow/latest/arrow/compute/kernels/cmp/fn.eq.html#)).
-So Comet adds additional normalization expression of NaN and zero for comparisons, and may still have differences
-to Spark in some cases, especially when the data contains both positive and negative zero. This is likely an edge
-case that is not of concern for many users. If it is a concern, setting `spark.comet.exec.strictFloatingPoint=true`
-will make relevant operations fall back to Spark.
+For top-level `FLOAT` and `DOUBLE` comparisons, Comet normalizes both operands before native
+execution, including noncanonical NaN literals. Top-level `IN`, `InSet`, and `NOT IN` membership
+also normalize dynamic candidates and lists containing NaN. When every candidate is a non-NaN
+literal, Comet keeps DataFusion's static filter and pruning path, enumerating both signed-zero
+forms when a list contains zero.
 
-## Ordering: signed zero (`-0.0` vs `+0.0`)
+This scalar membership handling does not yet recurse into floating-point leaves nested in arrays
+or structs; see [#6019](https://github.com/apache/datafusion-comet/issues/6019).
+
+## Nested equality and membership
+
+For arrays and structs containing `FLOAT` or `DOUBLE`, native `=`, `<>`, `IN`, and `NOT IN`
+compare signed zeros as equal and all NaN representations as equal, matching Spark. This also
+covers single-candidate membership that Spark rewrites into equality.
+
+Equality and dynamic membership compare nested elements directly and stop at the first mismatch.
+Constant membership sets use normalized comparison values for static lookup. These operations
+preserve SQL null semantics and do not change the values returned by projections.
+
+## Ordering: NaN and signed zero (`-0.0` vs `+0.0`)
 
 Spark's `ORDER BY`, `RANK`, `DENSE_RANK`, and window frame comparisons route through
-`SQLOrderingUtil.compareDoubles` / `compareFloats`, which explicitly define `-0.0 == 0.0`. Comet's
-native sort and `WindowGroupLimitExec` use the `arrow-row` row-format encoder for `ORDER BY` keys,
-which applies Rust's total-ordering transform to the raw IEEE-754 bits. Under that encoding `-0.0`
-sorts strictly less than `+0.0`, so a partition that mixes the two zeros can produce a rank
-distribution that differs from Spark. For example, `RANK() OVER (ORDER BY v ASC)` over
-`[-0.0, 0.0, 1.0]` filtered to `rk <= 1` returns two rows in Spark (both zeros tied at rank 1) but
-one row in Comet (`-0.0` at rank 1, `+0.0` at rank 2). If your workload materially mixes `-0.0`
-and `+0.0` in a ranked column, prefer Spark for that stage or normalize the column to `+0.0`
-upstream.
+`SQLOrderingUtil.compareDoubles` / `compareFloats`, which equate all NaN representations and
+define `-0.0 == 0.0`. NaN sorts above every non-NaN value.
+
+For scalar `FLOAT` and `DOUBLE` keys, Comet normalizes NaNs and signed zeros before native
+sorting, window peer comparisons, and `WindowGroupLimitExec` rank comparisons. Native range
+partitioning normalizes its keys and sampled boundaries in the same way. Only comparison keys
+are normalized; returned values retain their original NaN representations and zero signs.
+
+Native sorting of floating-point values nested in arrays or structs still uses Arrow's raw total
+ordering. Nested keys can therefore produce different ordering or rank results from Spark; see
+[#5507](https://github.com/apache/datafusion-comet/issues/5507).
+
+Because those scalar comparison keys match Spark, `spark.comet.exec.strictFloatingPoint=true` no
+longer forces a fallback for them: scalar `FLOAT` and `DOUBLE` sort keys, window and rank order
+keys, and range partitioning keys all stay native under strict mode. Floating-point values nested
+in arrays, structs, or maps still fall back under strict mode, because their ordering is the raw
+total ordering described above.

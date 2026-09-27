@@ -19,14 +19,97 @@
 
 package org.apache.comet.exec
 
-import org.apache.spark.sql.CometTestBase
+import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
+import org.apache.spark.sql.comet.CometExplodeExec
+import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanExec
+import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
 import org.apache.spark.sql.functions.col
+import org.apache.spark.sql.internal.SQLConf
 
 import org.apache.comet.CometConf
 
 class CometGenerateExecSuite extends CometTestBase {
 
   import testImplicits._
+
+  for (generator <- Seq("explode", "posexplode");
+    input <- Seq("s.arr", "slice(s.arr, 1, 10)");
+    adaptive <- Seq(false, true)) {
+    test(s"generator identity preserves exchange reuse: $generator($input), AQE=$adaptive") {
+      withSQLConf(
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString,
+        SQLConf.EXCHANGE_REUSE_ENABLED.key -> "true",
+        SQLConf.SHUFFLE_PARTITIONS.key -> "2",
+        CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
+        CometConf.COMET_SHUFFLE_MODE.key -> "native",
+        CometConf.COMET_EXEC_EXPLODE_ENABLED.key -> "true") {
+        val rows = Seq(
+          (1, Array[Integer](10, 20)),
+          (2, Array.empty[Integer]),
+          (3, null.asInstanceOf[Array[Integer]]),
+          (4, Array[Integer](null)))
+        val data = rows.toDF("k", "arr").selectExpr("k", "named_struct('arr', arr) AS s")
+        withTempPath { path =>
+          data.write.parquet(path.getAbsolutePath)
+          withParquetTable(path.getAbsolutePath, "t") {
+            val outputs = if (generator == "posexplode") "(pos, v)" else "v"
+            def branch(outer: Boolean): DataFrame = {
+              val function = if (outer) s"${generator}_outer" else generator
+              sql(s"SELECT k, $function($input) AS $outputs FROM t").repartition(2, col("k"))
+            }
+            def nativeGenerator(df: DataFrame): CometExplodeExec =
+              collectFirst(df.queryExecution.executedPlan) { case generate: CometExplodeExec =>
+                generate
+              }.getOrElse(fail("Expected native generator"))
+
+            val ordinary = branch(false)
+            val outer = branch(true)
+            // Computed inputs avoid InferFiltersFromGenerate masking unequal semantics.
+            checkSparkAnswerAndOperator(ordinary.unionAll(outer), classOf[ReusedExchangeExec])
+            val populated = if (generator == "posexplode") {
+              Seq(Row(1, 0, 10), Row(1, 1, 20), Row(4, 0, null))
+            } else {
+              Seq(Row(1, 10), Row(1, 20), Row(4, null))
+            }
+            val padded = if (generator == "posexplode") {
+              Seq(Row(2, null, null), Row(3, null, null))
+            } else {
+              Seq(Row(2, null), Row(3, null))
+            }
+            checkAnswer(ordinary.unionAll(outer), populated ++ populated ++ padded)
+            assert(!nativeGenerator(ordinary).sameResult(nativeGenerator(outer)))
+
+            val same = branch(false)
+            assert(nativeGenerator(ordinary).sameResult(nativeGenerator(same)))
+            assert(
+              nativeGenerator(ordinary).semanticHash() == nativeGenerator(same).semanticHash())
+            val (_, reusedPlan) =
+              checkSparkAnswerAndOperator(ordinary.unionAll(same), classOf[ReusedExchangeExec])
+            if (adaptive) {
+              assert(reusedPlan.isInstanceOf[AdaptiveSparkPlanExec])
+            }
+            assertExchangeReuseOver(reusedPlan, "Expected equivalent post-generator reuse") {
+              case generate: CometExplodeExec => generate
+            }
+          }
+        }
+      }
+    }
+  }
+
+  test("posexplode with a computed array from Parquet") {
+    withSQLConf(CometConf.COMET_EXEC_EXPLODE_ENABLED.key -> "true") {
+      val input = Seq((1, "axb"), (2, ""), (3, null), (4, "xxc"))
+      withParquetDataFrame(input) { parquet =>
+        withParquetTable(parquet.toDF("id", "s"), "t") {
+          for (generator <- Seq("posexplode", "posexplode_outer")) {
+            val df = sql(s"SELECT id, $generator(split(s, 'x')) AS (pos, value) FROM t")
+            checkSparkAnswerAndOperator(df)
+          }
+        }
+      }
+    }
+  }
 
   test("explode with simple array") {
     withSQLConf(
@@ -380,9 +463,9 @@ class CometGenerateExecSuite extends CometTestBase {
   }
 
   test("explode_outer across batch boundary with mixed empty/null rows") {
-    // Mix null, empty, and non-empty rows and force multiple small batches so that
-    // `ListEmptyToNullExpr` runs on each batch and its fast/slow path split is exercised
-    // more than once with different offset patterns.
+    // Mix null, empty, and non-empty rows and force multiple small batches so that the
+    // per-row output lengths are recomputed on each batch with a different offset pattern,
+    // and so that some chunk boundaries fall on a substituted row.
     withSQLConf(
       CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true",
       CometConf.COMET_EXEC_EXPLODE_ENABLED.key -> "true",
@@ -404,8 +487,8 @@ class CometGenerateExecSuite extends CometTestBase {
 
   test("posexplode_outer across batch boundary with mixed empty/null rows") {
     // Same shape as the explode_outer counterpart but exercises the parallel positions
-    // branch. With the pre-projection introduced for outer, `ListEmptyToNullExpr` runs once
-    // per batch and both branches share the same materialized array.
+    // branch, where the `pos` and `value` arrays are unnested together and must be padded
+    // to the same per-row length.
     withSQLConf(
       CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true",
       CometConf.COMET_EXEC_EXPLODE_ENABLED.key -> "true",
@@ -495,9 +578,8 @@ class CometGenerateExecSuite extends CometTestBase {
   }
 
   test("explode_outer over limit with offset") {
-    // Exercises `ListEmptyToNullExpr` on a sliced input with a non-zero offset base. The
-    // helper preserves the base offset and passes it through unchanged, so the fix in
-    // `ListPositionsExpr` is what actually keeps the parallel `pos` branch safe. This test
+    // Exercises the outer path on a sliced input with a non-zero offset base, which is what
+    // the fix in `ListPositionsExpr` keeps the parallel `pos` branch safe against. This test
     // covers the `explode_outer` shape without the `pos` branch.
     withSQLConf(
       "spark.sql.adaptive.enabled" -> "false",

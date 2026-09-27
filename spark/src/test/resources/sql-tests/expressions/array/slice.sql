@@ -259,3 +259,21 @@ INSERT INTO test_slice_nested_str VALUES
 
 query
 SELECT slice(arr, -2, 2) FROM test_slice_nested_str
+
+-- Arrays of maps and structs. `CometCreateArray` widens every child to a deeply-nullable element
+-- type, so the declared result type must come from the native input field, not `Slice.dataType`.
+query
+SELECT slice(array(map(1, 2), map(3, 4), map(5, 6)), 2, 2),
+       slice(array(map('x', 1), map('y', 2)), -1, 1),
+       slice(array(map(1, array(2)), map(3, array(4))), 1, 1),
+       slice(array(named_struct('a', 1, 'b', 'x'), named_struct('a', 2, 'b', 'y')), 2, 1)
+
+-- Column-based array of maps.
+statement
+CREATE TABLE test_slice_map(k int, v int) USING parquet
+
+statement
+INSERT INTO test_slice_map VALUES (1, 10), (2, NULL), (3, 30)
+
+query
+SELECT slice(array(map(k, v), map(k + 1, v)), 1, 1) FROM test_slice_map

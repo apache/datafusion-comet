@@ -24,6 +24,7 @@ import org.apache.spark.sql.catalyst.util.DateTimeTestUtils.{withDefaultTimeZone
 import org.apache.spark.sql.internal.SQLConf
 
 import org.apache.comet.CometConf
+import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
 
 // spotless:off
 /**
@@ -182,6 +183,43 @@ object CometDatetimeExpressionBenchmark extends CometBenchmarkBase {
     }
   }
 
+  /**
+   * `next_day` over a default-collation and, on Spark 4.0+, a collated `dayOfWeek`. The native
+   * kernel reads the argument as raw bytes, so CometNextDay reports a collated argument as
+   * Incompatible and CodegenDispatchFallback runs it through the JVM codegen dispatcher. The
+   * collated case therefore measures the dispatcher rather than the native kernel. See
+   * https://github.com/apache/datafusion-comet/issues/5591.
+   */
+  def nextDayExprBenchmark(values: Int): Unit = {
+    withTempPath { dir =>
+      withTempTable("parquetV1Table") {
+        prepareTable(
+          dir,
+          spark.sql(s"""
+            SELECT
+              date_from_unix_date(CAST(PMOD(value, 3650) AS INT)) AS dt,
+              CASE CAST(PMOD(value, 7) AS INT)
+                WHEN 0 THEN 'MON'
+                WHEN 1 THEN 'TUE'
+                WHEN 2 THEN 'WED'
+                WHEN 3 THEN 'THU'
+                WHEN 4 THEN 'FRI'
+                WHEN 5 THEN 'SAT'
+                ELSE 'SUN'
+              END AS dow
+            FROM $tbl
+          """))
+        runExpressionBenchmark("NextDay", values, "select next_day(dt, dow) from parquetV1Table")
+        if (isSpark40Plus) {
+          runExpressionBenchmark(
+            "NextDay - collated dayOfWeek",
+            values,
+            "select next_day(dt, dow collate utf8_lcase) from parquetV1Table")
+        }
+      }
+    }
+  }
+
   override def runCometBenchmark(mainArgs: Array[String]): Unit = {
     val values = 1024 * 1024;
 
@@ -221,6 +259,10 @@ object CometDatetimeExpressionBenchmark extends CometBenchmarkBase {
 
     runBenchmarkWithTable("MakeInterval", values) { v =>
       makeIntervalBenchmark(v)
+    }
+
+    runBenchmarkWithTable("NextDay", values) { v =>
+      nextDayExprBenchmark(v)
     }
   }
 

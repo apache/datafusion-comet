@@ -70,5 +70,6 @@
 - Spark 3.5.8 (audited 2026-05-27): baseline. `XxHash64(children, seed) extends HashExpression[Long]`; produces an xxHash64 hash with a configurable Long seed and `LongType` result. Comet routes via `CometXxHash64` to the native `xxhash64` UDF.
 - Spark 4.0.1 (audited 2026-05-27): semantics unchanged.
 - Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.
+- Upstream (2026-09-15): Comet's native `xxhash64` UDF delegates compatible arguments at Spark's default seed (`42`) to `datafusion-spark::SparkXxhash64`. Differential tests in `native/spark-expr/src/hash_funcs/xxhash64_diff.rs` compare Comet's kernel against `SparkXxhash64` for primitives, both Decimal128 widths, dictionaries, lists, maps, and nested combinations. The Comet kernel is retained for a non-default seed (`SparkXxhash64` hardcodes 42), `Struct` (upstream does not push a parent null mask into children; see #5753), a `Dictionary` nested in a list/map (upstream restarts those hashes from 42), and `Time64`. `murmur3` is unchanged; `create_xxhash64_hashes` remains for `approx_count_distinct` and the fallback path.
 
 [Spark Expression Support]: ../../user-guide/latest/expressions.md

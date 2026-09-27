@@ -161,7 +161,7 @@ class CometConfSuite extends AnyFunSuite {
     val conf = new SQLConf
 
     assert(CometConf.COMET_SHUFFLE_RSS_MAX_FRAME_BYTES.get(conf) == 64L * 1024 * 1024)
-    assert(CometConf.COMET_SHUFFLE_RSS_MAX_IN_FLIGHT_BYTES.get(conf) == 256L * 1024 * 1024)
+    assert(CometConf.COMET_SHUFFLE_RSS_MAX_IN_FLIGHT_BYTES.get(conf) == 512L * 1024 * 1024)
   }
 
   test("remote shuffle frame limit rejects incomplete frames and oversized JVM requests") {

@@ -36,7 +36,7 @@ cargo install tpchgen-cli
 mkdir benchmark_data
 cd benchmark_data
 tpchgen-cli -s 100 --format=parquet
-export $BENCH_DATA=`pwd`
+export BENCH_DATA=`pwd`
 ```
 
 Create a temp folder for spark events emitted during benchmarking
@@ -112,7 +112,7 @@ $SPARK_HOME/bin/spark-submit \
     --conf spark.eventLog.enabled=true \
     $DF_BENCH/runners/datafusion-comet/tpcbench.py \
     --benchmark tpch \
-    --data $BENCH_DATA/tpch-data/ \
+    --data $BENCH_DATA/ \
     --queries $DF_BENCH/tpch/queries \
     --output . \
     --iterations 1
@@ -156,7 +156,7 @@ $SPARK_HOME/bin/spark-submit \
     --conf spark.comet.exec.forceShuffledHashJoin=true \
     $DF_BENCH/runners/datafusion-comet/tpcbench.py \
     --benchmark tpch \
-    --data $BENCH_DATA/tpch-data/ \
+    --data $BENCH_DATA/ \
     --queries $DF_BENCH/tpch/queries \
     --output . \
     --iterations 1

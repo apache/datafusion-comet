@@ -28,6 +28,8 @@ import org.testcontainers.utility.DockerImageName
 
 import org.apache.spark.SparkConf
 import org.apache.spark.sql.CometTestBase
+import org.apache.spark.sql.comet.{CometNativeScanExec, CometScanExec}
+import org.apache.spark.sql.execution.SparkPlan
 
 import org.apache.comet.CometSparkSessionExtensions.isSpark42Plus
 
@@ -91,6 +93,26 @@ trait CometS3TestBase extends CometTestBase {
     conf.set(s"spark.sql.catalog.$catalogName.s3.endpoint", minioContainer.getS3URL)
     conf.set(s"spark.sql.catalog.$catalogName.s3.region", "us-east-1")
     conf.set(s"spark.sql.catalog.$catalogName.s3.path-style-access", "true")
+  }
+
+  /**
+   * Wire the `blob://` opt-in S3-compliant alias for `bucket`: register the alias scheme and bind
+   * it to an S3A-derived FileSystem so Spark reads/writes blob://<bucket>/... against the same
+   * MinIO. The vendor-style per-authority keys are translated to fs.s3a.bucket.<bucket>.* for the
+   * native read by NativeConfig.translateVendorKeys, and an endpoint also defaults path-style on.
+   */
+  protected def applyBlobSchemeProps(conf: SparkConf, bucket: String): Unit = {
+    conf.set(CometConf.COMET_S3_COMPLIANT_SCHEMES.key, "blob")
+    conf.set("spark.hadoop.fs.blob.impl", "org.apache.comet.hadoop.fs.BlobSchemeFileSystem")
+    conf.set(s"spark.hadoop.fs.blob.$bucket.endpoint", minioContainer.getS3URL)
+    conf.set(s"spark.hadoop.fs.blob.$bucket.awsAccessKeyId", userName)
+    conf.set(s"spark.hadoop.fs.blob.$bucket.awsSecretAccessKey", password)
+  }
+
+  /** The Comet Parquet scans in `plan`, native or JVM-side. */
+  protected def cometScans(plan: SparkPlan): Seq[SparkPlan] = collect(plan) {
+    case p: CometScanExec => p
+    case p: CometNativeScanExec => p
   }
 
   protected def createBucketIfNotExists(bucketName: String): Unit = {

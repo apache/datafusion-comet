@@ -38,6 +38,7 @@ macro_rules! legacy_compute_op {
     }};
 }
 
+/// `$FROM_TYPE` is the Spark SQL type name carried in the `ArithmeticOverflow` payload.
 macro_rules! ansi_compute_op {
     ($ARRAY:expr, $FUNC:ident, $TYPE:ident, $RESULT:ident, $NATIVE:ident, $FROM_TYPE:expr) => {{
         let n = $ARRAY.as_any().downcast_ref::<$TYPE>();
@@ -95,7 +96,7 @@ pub fn abs(args: &[ColumnarValue]) -> Result<ColumnarValue, DataFusionError> {
                     let result = legacy_compute_op!(array, wrapping_abs, Int8Array, Int8Array);
                     Ok(ColumnarValue::Array(Arc::new(result?)))
                 } else {
-                    ansi_compute_op!(array, abs, Int8Array, Int8Type, i8, "Int8")
+                    ansi_compute_op!(array, abs, Int8Array, Int8Type, i8, "byte")
                 }
             }
             DataType::Int16 => {
@@ -103,7 +104,7 @@ pub fn abs(args: &[ColumnarValue]) -> Result<ColumnarValue, DataFusionError> {
                     let result = legacy_compute_op!(array, wrapping_abs, Int16Array, Int16Array);
                     Ok(ColumnarValue::Array(Arc::new(result?)))
                 } else {
-                    ansi_compute_op!(array, abs, Int16Array, Int16Type, i16, "Int16")
+                    ansi_compute_op!(array, abs, Int16Array, Int16Type, i16, "short")
                 }
             }
             DataType::Int32 => {
@@ -111,7 +112,7 @@ pub fn abs(args: &[ColumnarValue]) -> Result<ColumnarValue, DataFusionError> {
                     let result = legacy_compute_op!(array, wrapping_abs, Int32Array, Int32Array);
                     Ok(ColumnarValue::Array(Arc::new(result?)))
                 } else {
-                    ansi_compute_op!(array, abs, Int32Array, Int32Type, i32, "Int32")
+                    ansi_compute_op!(array, abs, Int32Array, Int32Type, i32, "integer")
                 }
             }
             DataType::Int64 => {
@@ -119,7 +120,7 @@ pub fn abs(args: &[ColumnarValue]) -> Result<ColumnarValue, DataFusionError> {
                     let result = legacy_compute_op!(array, wrapping_abs, Int64Array, Int64Array);
                     Ok(ColumnarValue::Array(Arc::new(result?)))
                 } else {
-                    ansi_compute_op!(array, abs, Int64Array, Int64Type, i64, "Int64")
+                    ansi_compute_op!(array, abs, Int64Array, Int64Type, i64, "long")
                 }
             }
             DataType::Float32 => {
@@ -207,7 +208,7 @@ pub fn abs(args: &[ColumnarValue]) -> Result<ColumnarValue, DataFusionError> {
                             // return the original value
                             Ok(ColumnarValue::Scalar(ScalarValue::Int8(Some(*v))))
                         } else {
-                            Err(arithmetic_overflow_error("Int8").into())
+                            Err(arithmetic_overflow_error("byte").into())
                         }
                     }
                 },
@@ -221,7 +222,7 @@ pub fn abs(args: &[ColumnarValue]) -> Result<ColumnarValue, DataFusionError> {
                             // return the original value
                             Ok(ColumnarValue::Scalar(ScalarValue::Int16(Some(*v))))
                         } else {
-                            Err(arithmetic_overflow_error("Int16").into())
+                            Err(arithmetic_overflow_error("short").into())
                         }
                     }
                 },
@@ -235,7 +236,7 @@ pub fn abs(args: &[ColumnarValue]) -> Result<ColumnarValue, DataFusionError> {
                             // return the original value
                             Ok(ColumnarValue::Scalar(ScalarValue::Int32(Some(*v))))
                         } else {
-                            Err(arithmetic_overflow_error("Int32").into())
+                            Err(arithmetic_overflow_error("integer").into())
                         }
                     }
                 },
@@ -249,7 +250,7 @@ pub fn abs(args: &[ColumnarValue]) -> Result<ColumnarValue, DataFusionError> {
                             // return the original value
                             Ok(ColumnarValue::Scalar(ScalarValue::Int64(Some(*v))))
                         } else {
-                            Err(arithmetic_overflow_error("Int64").into())
+                            Err(arithmetic_overflow_error("long").into())
                         }
                     }
                 },
@@ -312,6 +313,7 @@ pub fn abs(args: &[ColumnarValue]) -> Result<ColumnarValue, DataFusionError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::SparkError;
     use datafusion::common::cast::{
         as_decimal128_array, as_decimal256_array, as_float32_array, as_float64_array,
         as_int16_array, as_int32_array, as_int64_array, as_int8_array, as_uint64_array,
@@ -320,6 +322,87 @@ mod tests {
     fn with_fail_on_error<F: Fn(bool) -> Result<()>>(test_fn: F) {
         for fail_on_error in [true, false] {
             test_fn(fail_on_error).expect("test should pass on error successfully");
+        }
+    }
+
+    fn assert_spark_overflow(err: DataFusionError, expected_from_type: &str) {
+        if let DataFusionError::External(ref e) = err {
+            if let Some(SparkError::ArithmeticOverflow { from_type }) =
+                e.downcast_ref::<SparkError>()
+            {
+                assert_eq!(from_type, expected_from_type);
+                return;
+            }
+        }
+        panic!(
+            "Expected SparkError::ArithmeticOverflow {{ from_type: {expected_from_type:?} }}, got: {err:?}"
+        );
+    }
+
+    fn abs_ansi(value: ColumnarValue) -> Result<ColumnarValue> {
+        abs(&[
+            value,
+            ColumnarValue::Scalar(ScalarValue::Boolean(Some(true))),
+        ])
+    }
+
+    /// `abs(MIN)` under ANSI must name the Spark type, so the shims render `"long overflow"`
+    /// rather than `"Int64 overflow"`.
+    #[test]
+    fn test_ansi_abs_min_uses_spark_type_names() {
+        let arrays: Vec<(ArrayRef, &str)> = vec![
+            (Arc::new(Int8Array::from(vec![i8::MIN])), "byte"),
+            (Arc::new(Int16Array::from(vec![i16::MIN])), "short"),
+            (Arc::new(Int32Array::from(vec![i32::MIN])), "integer"),
+            (Arc::new(Int64Array::from(vec![i64::MIN])), "long"),
+        ];
+        for (array, from_type) in arrays {
+            assert_spark_overflow(
+                abs_ansi(ColumnarValue::Array(array)).unwrap_err(),
+                from_type,
+            );
+        }
+
+        for (scalar, from_type) in [
+            (ScalarValue::Int8(Some(i8::MIN)), "byte"),
+            (ScalarValue::Int16(Some(i16::MIN)), "short"),
+            (ScalarValue::Int32(Some(i32::MIN)), "integer"),
+            (ScalarValue::Int64(Some(i64::MIN)), "long"),
+        ] {
+            assert_spark_overflow(
+                abs_ansi(ColumnarValue::Scalar(scalar)).unwrap_err(),
+                from_type,
+            );
+        }
+    }
+
+    /// The nearest valid input to each overflow boundary still succeeds, so the guard above is
+    /// not over-broad.
+    #[test]
+    fn test_ansi_abs_just_inside_boundary_succeeds() {
+        for (scalar, expected) in [
+            (
+                ScalarValue::Int8(Some(i8::MIN + 1)),
+                ScalarValue::Int8(Some(i8::MAX)),
+            ),
+            (
+                ScalarValue::Int16(Some(i16::MIN + 1)),
+                ScalarValue::Int16(Some(i16::MAX)),
+            ),
+            (
+                ScalarValue::Int32(Some(i32::MIN + 1)),
+                ScalarValue::Int32(Some(i32::MAX)),
+            ),
+            (
+                ScalarValue::Int64(Some(i64::MIN + 1)),
+                ScalarValue::Int64(Some(i64::MAX)),
+            ),
+        ] {
+            let ColumnarValue::Scalar(result) = abs_ansi(ColumnarValue::Scalar(scalar)).unwrap()
+            else {
+                panic!("expected scalar result")
+            };
+            assert_eq!(result, expected);
         }
     }
 

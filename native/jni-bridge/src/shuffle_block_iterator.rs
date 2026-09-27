@@ -34,6 +34,12 @@ pub struct CometShuffleBlockIterator<'a> {
     pub method_get_buffer_ret: ReturnType,
     pub method_get_current_block_length: JMethodID,
     pub method_get_current_block_length_ret: ReturnType,
+    pub method_on_decode_failure: JMethodID,
+    pub method_on_decode_failure_ret: ReturnType,
+    pub method_requires_validation: JMethodID,
+    pub method_requires_validation_ret: ReturnType,
+    pub method_inc_records_read: JMethodID,
+    pub method_inc_records_read_ret: ReturnType,
 }
 
 impl<'a> CometShuffleBlockIterator<'a> {
@@ -62,6 +68,24 @@ impl<'a> CometShuffleBlockIterator<'a> {
                 jni::jni_sig!("()I"),
             )?,
             method_get_current_block_length_ret: ReturnType::Primitive(Primitive::Int),
+            method_on_decode_failure: env.get_method_id(
+                JNIString::new(Self::JVM_CLASS),
+                jni::jni_str!("onDecodeFailure"),
+                jni::jni_sig!("(Ljava/lang/String;)V"),
+            )?,
+            method_on_decode_failure_ret: ReturnType::Primitive(Primitive::Void),
+            method_requires_validation: env.get_method_id(
+                JNIString::new(Self::JVM_CLASS),
+                jni::jni_str!("requiresValidation"),
+                jni::jni_sig!("()Z"),
+            )?,
+            method_requires_validation_ret: ReturnType::Primitive(Primitive::Boolean),
+            method_inc_records_read: env.get_method_id(
+                JNIString::new(Self::JVM_CLASS),
+                jni::jni_str!("incRecordsRead"),
+                jni::jni_sig!("(J)V"),
+            )?,
+            method_inc_records_read_ret: ReturnType::Primitive(Primitive::Void),
         })
     }
 }

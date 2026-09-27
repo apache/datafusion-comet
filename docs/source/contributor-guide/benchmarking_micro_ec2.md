@@ -163,9 +163,8 @@ java -version
 javac -version
 ```
 
-JDK 17 or later is required. Comet targets Java 17 bytecode whenever the JDK in use is 17 or
-newer, through the `jdk17` profile in the pom, so no profile needs to be passed by hand. `run.py`
-detects `JAVA_HOME` when it is not set, preferring the newest JDK under `/usr/lib/jvm`, and refuses
+JDK 17 or later is required. Comet targets Java 17 bytecode, so no JDK profile needs to be passed
+by hand. `run.py` detects `JAVA_HOME` when it is not set, preferring the newest JDK under `/usr/lib/jvm`, and refuses
 to run with anything older than 17.
 
 ### Maven
@@ -352,20 +351,14 @@ sudo dnf install -y gcc gcc-c++ make
 **`JAVA_HOME could not be determined`.** Install a JDK and export `JAVA_HOME`, or pass a checkout
 that has one configured.
 
-**`Class java.lang.Record not found - continuing with a stub`.** The Scala compiler is targeting the
-Java 11 API, which has no `Record`, while the Spark 4.x sources need Java 17. This happens on a JDK
-older than 17, where the `jdk17` profile does not activate and `java.version` stays at its default
-of 11. Use JDK 17 or later:
+**`Comet requires JDK 17 or later to build`.** The Maven enforcer plugin rejects JDKs older than 17.
+Point `JAVA_HOME` at JDK 17 or later and rerun the build:
 
 ```shell
 export JAVA_HOME=/usr/lib/jvm/java-17-amazon-corretto
 export PATH=$JAVA_HOME/bin:$PATH
-./mvnw clean
 make release
 ```
-
-Run `./mvnw clean` first: classes compiled against the wrong API stay in `target/` and break the
-next build.
 
 **`cargo: command not found` after `setup`.** `rustup` installs into `~/.cargo/bin`. Run
 `source "$HOME/.cargo/env"`, or start a new shell.

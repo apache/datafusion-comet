@@ -18,15 +18,13 @@
 mod config;
 mod fair_pool;
 pub mod logging_pool;
+mod spark_memory;
 mod task_shared;
 mod unified_pool;
 
-use datafusion::execution::memory_pool::{
-    FairSpillPool, GreedyMemoryPool, MemoryPool, TrackConsumersPool, UnboundedMemoryPool,
-};
+use datafusion::execution::memory_pool::{MemoryPool, TrackConsumersPool, UnboundedMemoryPool};
 use fair_pool::CometFairMemoryPool;
 use jni::objects::{Global, JObject};
-use once_cell::sync::OnceCell;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 use unified_pool::CometUnifiedMemoryPool;
@@ -34,94 +32,41 @@ use unified_pool::CometUnifiedMemoryPool;
 pub(crate) use config::*;
 pub(crate) use task_shared::*;
 
+/// Creates the memory pool for a native plan.
+///
+/// Task-shared pools use their returned `Arc` as the RAII handle, so they remain registered for as
+/// long as the plan or any of its reservations retain the pool.
 pub(crate) fn create_memory_pool(
     memory_pool_config: &MemoryPoolConfig,
     comet_task_memory_manager: Arc<Global<JObject<'static>>>,
     task_attempt_id: i64,
 ) -> Arc<dyn MemoryPool> {
     const NUM_TRACKED_CONSUMERS: usize = 10;
-    match memory_pool_config.pool_type {
-        MemoryPoolType::GreedyUnified => {
-            let mut memory_pool_map = TASK_SHARED_MEMORY_POOLS.lock().unwrap();
-            let per_task_memory_pool =
-                memory_pool_map.entry(task_attempt_id).or_insert_with(|| {
-                    let pool: Arc<dyn MemoryPool> = Arc::new(TrackConsumersPool::new(
-                        CometUnifiedMemoryPool::new(
-                            Arc::clone(&comet_task_memory_manager),
-                            task_attempt_id,
-                        ),
-                        NonZeroUsize::new(NUM_TRACKED_CONSUMERS).unwrap(),
-                    ));
-                    PerTaskMemoryPool::new(pool)
-                });
-            per_task_memory_pool.num_plans += 1;
-            Arc::clone(&per_task_memory_pool.memory_pool)
-        }
-        MemoryPoolType::FairUnified => {
-            let mut memory_pool_map = TASK_SHARED_MEMORY_POOLS.lock().unwrap();
-            let per_task_memory_pool =
-                memory_pool_map.entry(task_attempt_id).or_insert_with(|| {
-                    let pool: Arc<dyn MemoryPool> = Arc::new(TrackConsumersPool::new(
-                        CometFairMemoryPool::new(
-                            Arc::clone(&comet_task_memory_manager),
-                            memory_pool_config.pool_size,
-                        ),
-                        NonZeroUsize::new(NUM_TRACKED_CONSUMERS).unwrap(),
-                    ));
-                    PerTaskMemoryPool::new(pool)
-                });
-            per_task_memory_pool.num_plans += 1;
-            Arc::clone(&per_task_memory_pool.memory_pool)
-        }
-        MemoryPoolType::Greedy => Arc::new(TrackConsumersPool::new(
-            GreedyMemoryPool::new(memory_pool_config.pool_size),
+
+    fn tracked(pool: impl MemoryPool + 'static) -> Arc<dyn MemoryPool> {
+        Arc::new(TrackConsumersPool::new(
+            pool,
             NonZeroUsize::new(NUM_TRACKED_CONSUMERS).unwrap(),
-        )),
-        MemoryPoolType::FairSpill => Arc::new(TrackConsumersPool::new(
-            FairSpillPool::new(memory_pool_config.pool_size),
-            NonZeroUsize::new(NUM_TRACKED_CONSUMERS).unwrap(),
-        )),
-        MemoryPoolType::GreedyGlobal => {
-            static GLOBAL_MEMORY_POOL_GREEDY: OnceCell<Arc<dyn MemoryPool>> = OnceCell::new();
-            let memory_pool = GLOBAL_MEMORY_POOL_GREEDY.get_or_init(|| {
-                Arc::new(TrackConsumersPool::new(
-                    GreedyMemoryPool::new(memory_pool_config.pool_size),
-                    NonZeroUsize::new(NUM_TRACKED_CONSUMERS).unwrap(),
-                ))
-            });
-            Arc::clone(memory_pool)
-        }
-        MemoryPoolType::FairSpillGlobal => {
-            static GLOBAL_MEMORY_POOL_FAIR: OnceCell<Arc<dyn MemoryPool>> = OnceCell::new();
-            let memory_pool = GLOBAL_MEMORY_POOL_FAIR.get_or_init(|| {
-                Arc::new(TrackConsumersPool::new(
-                    FairSpillPool::new(memory_pool_config.pool_size),
-                    NonZeroUsize::new(NUM_TRACKED_CONSUMERS).unwrap(),
-                ))
-            });
-            Arc::clone(memory_pool)
-        }
-        MemoryPoolType::GreedyTaskShared | MemoryPoolType::FairSpillTaskShared => {
-            let mut memory_pool_map = TASK_SHARED_MEMORY_POOLS.lock().unwrap();
-            let per_task_memory_pool =
-                memory_pool_map.entry(task_attempt_id).or_insert_with(|| {
-                    let pool: Arc<dyn MemoryPool> =
-                        if memory_pool_config.pool_type == MemoryPoolType::GreedyTaskShared {
-                            Arc::new(TrackConsumersPool::new(
-                                GreedyMemoryPool::new(memory_pool_config.pool_size),
-                                NonZeroUsize::new(NUM_TRACKED_CONSUMERS).unwrap(),
-                            ))
-                        } else {
-                            Arc::new(TrackConsumersPool::new(
-                                FairSpillPool::new(memory_pool_config.pool_size),
-                                NonZeroUsize::new(NUM_TRACKED_CONSUMERS).unwrap(),
-                            ))
-                        };
-                    PerTaskMemoryPool::new(pool)
-                });
-            per_task_memory_pool.num_plans += 1;
-            Arc::clone(&per_task_memory_pool.memory_pool)
-        }
+        ))
+    }
+
+    let pool_type = memory_pool_config.pool_type;
+    let pool_size = memory_pool_config.pool_size;
+
+    match pool_type {
+        MemoryPoolType::GreedyUnified => acquire_task_shared_pool(task_attempt_id, || {
+            tracked(CometUnifiedMemoryPool::new(
+                comet_task_memory_manager,
+                task_attempt_id,
+            ))
+        }),
+        MemoryPoolType::FairUnified => acquire_task_shared_pool(task_attempt_id, || {
+            tracked(CometFairMemoryPool::new(
+                comet_task_memory_manager,
+                pool_size,
+                task_attempt_id,
+            ))
+        }),
         MemoryPoolType::Unbounded => Arc::new(UnboundedMemoryPool::default()),
     }
 }

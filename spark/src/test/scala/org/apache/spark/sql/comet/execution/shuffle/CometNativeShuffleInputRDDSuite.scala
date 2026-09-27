@@ -20,7 +20,7 @@
 package org.apache.spark.sql.comet.execution.shuffle
 
 import org.apache.spark.{HashPartitioner, Partition, TaskContext}
-import org.apache.spark.rdd.RDD
+import org.apache.spark.rdd.{DeterministicLevel, RDD}
 import org.apache.spark.serializer.JavaSerializer
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.comet.{CometMetricNode, NativeExecContext}
@@ -44,6 +44,104 @@ import org.apache.comet.serde.OperatorOuterClass.Operator
  * [[CometNativeShuffleInputRDD]] and the `private[comet]` [[NativeExecContext]] directly.
  */
 class CometNativeShuffleInputRDDSuite extends CometTestBase {
+
+  test("native shuffle input preserves its parents' determinism") {
+    Seq(
+      DeterministicLevel.DETERMINATE,
+      DeterministicLevel.UNORDERED,
+      DeterministicLevel.INDETERMINATE).foreach { level =>
+      val parent = new RDD[AnyRef](spark.sparkContext, Nil) {
+        override protected def getOutputDeterministicLevel: DeterministicLevel.Value = level
+        override protected def getPartitions: Array[Partition] = Array.empty
+        override def compute(split: Partition, context: TaskContext): Iterator[AnyRef] =
+          Iterator.empty
+      }
+      val input = new CometNativeShuffleInputRDD(
+        spark.sparkContext,
+        Seq(parent),
+        0,
+        Set.empty,
+        CometMetricNode(Map.empty))
+      assert(input.outputDeterministicLevel == level)
+      assert(input.copyForLocalShuffle().outputDeterministicLevel == level)
+    }
+  }
+
+  test("positional round robin declares itself indeterminate over a non-determinate parent") {
+    // Spark's own round robin is positional and gets this from the `isOrderSensitive` flag on
+    // `MapPartitionsRDD`; the native path has no such RDD, so the rule is applied here. A
+    // determinate parent keeps the cheap per-task retry, anything else forces the DAGScheduler to
+    // roll the whole stage back rather than re-run one task into a partially consumed output.
+    Seq(
+      DeterministicLevel.DETERMINATE -> DeterministicLevel.DETERMINATE,
+      DeterministicLevel.UNORDERED -> DeterministicLevel.INDETERMINATE,
+      DeterministicLevel.INDETERMINATE -> DeterministicLevel.INDETERMINATE).foreach {
+      case (parentLevel, expected) =>
+        val parent = new RDD[AnyRef](spark.sparkContext, Nil) {
+          override protected def getOutputDeterministicLevel: DeterministicLevel.Value =
+            parentLevel
+          override protected def getPartitions: Array[Partition] = Array.empty
+          override def compute(split: Partition, context: TaskContext): Iterator[AnyRef] =
+            Iterator.empty
+        }
+        val input = new CometNativeShuffleInputRDD(
+          spark.sparkContext,
+          Seq(parent),
+          0,
+          Set.empty,
+          CometMetricNode(Map.empty),
+          positionalRoundRobin = true)
+        assert(input.outputDeterministicLevel == expected, s"parent was $parentLevel")
+        // The flag has to survive the copy, or a local-shuffle fallback silently drops the
+        // declaration and the scheduler goes back to re-running single tasks.
+        assert(input.copyForLocalShuffle().outputDeterministicLevel == expected)
+    }
+  }
+
+  test("local shuffle input is an independent sibling with the same partition inputs") {
+    val upstream = new RDD[AnyRef](spark.sparkContext, Nil) {
+      override protected def getPartitions: Array[Partition] = Array.tabulate(2) { i =>
+        new Partition {
+          override def index: Int = i
+        }
+      }
+
+      override def compute(split: Partition, context: TaskContext): Iterator[AnyRef] =
+        Iterator.single(null)
+
+      override def getPreferredLocations(split: Partition): Seq[String] =
+        Seq(s"host-${split.index}")
+    }
+    val planData = Map("scan-0" -> Array(Array[Byte](1), Array[Byte](2)))
+    val remote = new CometNativeShuffleInputRDD(
+      spark.sparkContext,
+      Seq(upstream),
+      2,
+      Set.empty,
+      CometMetricNode(Map.empty),
+      planData)
+    val local = remote.copyForLocalShuffle()
+
+    assert(local.id != remote.id)
+    assert(local.dependencies.map(_.rdd) == Seq(upstream))
+    assert(local.getNumPartitions == remote.getNumPartitions)
+    local.partitions.foreach { part =>
+      val input = part.asInstanceOf[CometNativeShuffleInputPartition]
+      assert(input.inputPartitions.toSeq == Seq(upstream.partitions(part.index)))
+      assert(input.planDataByKey("scan-0").sameElements(planData("scan-0")(part.index)))
+      assert(local.preferredLocations(part) == Seq(s"host-${part.index}"))
+
+      val context = TaskContext.empty()
+      try {
+        val iterator = local.iterator(part, context).asInstanceOf[CometNativeShuffleInputIterator]
+        assert(iterator.partitionIndex == part.index)
+        assert(iterator.inputObjects.toSeq == Seq(null))
+        assert(iterator.planDataByKey("scan-0").sameElements(planData("scan-0")(part.index)))
+      } finally {
+        context.markTaskCompleted(None)
+      }
+    }
+  }
 
   test("spill reporting is registered before native shuffle input producers") {
     Seq(None, Some(new IllegalStateException("failed native shuffle"))).foreach { failure =>
@@ -130,7 +228,10 @@ class CometNativeShuffleInputRDDSuite extends CometTestBase {
         commonByKey = Map.empty,
         perPartitionByKey = perPartitionByKey,
         shuffleScanIndices = Set.empty,
-        hasScanInput = false)
+        hasScanInput = false,
+        perPartitionFilePaths = Array.tabulate(numPartitions) { idx =>
+          Seq(s"file:/tmp/part-$idx.parquet")
+        })
       val spec = NativeShuffleSpec(Operator.getDefaultInstance, childMetricNode, execContext)
       val dep = new CometShuffleDependency[Int, ColumnarBatch, ColumnarBatch](
         _rdd = rdd,
@@ -143,6 +244,7 @@ class CometNativeShuffleInputRDDSuite extends CometTestBase {
 
     // Pre-fix this pair grew from ~13KB to ~10MB between 10 and 10000 partitions. With the map held
     // @transient on both the RDD and the NativeExecContext, the pair stays roughly constant.
+    // The diagnostic file paths must also stay on the driver, rather than travel with every task.
     val (_, smallDep) = build(10)
     val (largeRdd, largeDep) = build(10000)
     val smallPair = ser.serialize((smallDep.rdd, smallDep)).limit()
@@ -150,7 +252,7 @@ class CometNativeShuffleInputRDDSuite extends CometTestBase {
     assert(
       math.abs(largePair - smallPair) < 100 * 1024,
       s"serialized (rdd, dep) grew with partition count (small=$smallPair, large=$largePair); " +
-        "the per-partition plan-data map is leaking into the broadcast task binary")
+        "per-partition plan data or file paths are leaking into the broadcast task binary")
 
     // Each task's Partition object still carries its own slice so the writer can inject plan data.
     val part = largeRdd.partitions(7).asInstanceOf[CometNativeShuffleInputPartition]

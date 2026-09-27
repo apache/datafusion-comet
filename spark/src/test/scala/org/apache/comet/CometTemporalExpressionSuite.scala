@@ -31,6 +31,7 @@ import org.apache.spark.sql.functions.col
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{DataTypes, StructField, StructType}
 
+import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
 import org.apache.comet.serde.{CometDateFormat, CometTruncDate, CometTruncTimestamp}
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator}
 
@@ -175,8 +176,10 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
         SQLConf.SESSION_LOCAL_TIMEZONE.key -> tz,
         CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "true") {
         for (format <- CometTruncTimestamp.supportedFormats) {
-          checkSparkAnswerAndOperator(
-            s"SELECT c0, date_trunc('$format', c0) from tbl order by c0")
+          checkSparkAnswerAndImpl(
+            s"SELECT c0, date_trunc('$format', c0) from tbl order by c0",
+            native = Seq.empty,
+            dispatched = Seq("date_trunc"))
         }
       }
     }
@@ -212,10 +215,13 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
     for (tz <- nonUtcTimezones) {
       withSQLConf(
         SQLConf.SESSION_LOCAL_TIMEZONE.key -> tz,
-        "spark.comet.expression.TruncTimestamp.allowIncompatible" -> "true") {
+        "spark.comet.expression.TruncTimestamp.allowIncompatible" -> "true",
+        CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "false") {
         for (format <- CometTruncTimestamp.supportedFormats) {
-          checkSparkAnswerAndOperator(
-            s"SELECT c0, date_trunc('$format', c0) from tbl order by c0")
+          checkSparkAnswerAndImpl(
+            s"SELECT c0, date_trunc('$format', c0) from tbl order by c0",
+            native = Seq("date_trunc"),
+            dispatched = Seq.empty)
         }
       }
     }
@@ -380,7 +386,7 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
     }
   }
 
-  test("unix_timestamp - string input falls back to Spark") {
+  test("unix_timestamp - string input uses codegen dispatch") {
     withTempView("string_tbl") {
       // Create test data with timestamp strings
       val schema = StructType(Seq(StructField("ts_str", DataTypes.StringType, true)))
@@ -393,15 +399,77 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
         .createDataFrame(spark.sparkContext.parallelize(data), schema)
         .createOrReplaceTempView("string_tbl")
 
-      // String input should fall back to Spark
-      checkSparkAnswerAndFallbackReason(
-        "SELECT ts_str, unix_timestamp(ts_str) from string_tbl order by ts_str",
-        "unix_timestamp does not support input type: StringType")
+      withSQLConf(
+        SQLConf.OPTIMIZER_EXCLUDED_RULES.key ->
+          "org.apache.spark.sql.catalyst.optimizer.ConstantFolding") {
+        for (allowIncompatible <- Seq("false", "true")) {
+          withSQLConf(
+            CometConf.getExprAllowIncompatConfigKey("UnixTimestamp") -> allowIncompatible) {
+            for (query <- Seq(
+                "SELECT unix_timestamp(ts_str) FROM string_tbl",
+                "SELECT unix_timestamp(ts_str, 'yyyy-MM-dd HH:mm:ss') FROM string_tbl",
+                "SELECT unix_timestamp('2024-06-15', 'yyyy-MM-dd') FROM string_tbl")) {
+              checkSparkAnswerAndImpl(
+                query,
+                native = Seq.empty,
+                dispatched = Seq("unix_timestamp"))
+            }
+          }
+        }
+      }
+    }
+  }
 
-      // String input with custom format should also fall back
-      checkSparkAnswerAndFallbackReason(
-        "SELECT ts_str, unix_timestamp(ts_str, 'yyyy-MM-dd HH:mm:ss') from string_tbl",
-        "unix_timestamp does not support input type: StringType")
+  test("unix_timestamp - collated strings use codegen even when native is opted into") {
+    assume(isSpark40Plus, "string collation requires Spark 4.0+")
+    withTempView("string_tbl") {
+      val schema = StructType(Seq(StructField("ts_str", DataTypes.StringType, true)))
+      val data = Seq(Row("2020-01-01 00:00:00"), Row("2021-06-15 12:30:45"), Row(null))
+      spark
+        .createDataFrame(spark.sparkContext.parallelize(data), schema)
+        .createOrReplaceTempView("string_tbl")
+
+      // Strings have no native path, even when incompatible expressions are allowed.
+      for (allowIncompatible <- Seq("false", "true")) {
+        withSQLConf(
+          CometConf.getExprAllowIncompatConfigKey("UnixTimestamp") -> allowIncompatible) {
+          for (query <- Seq(
+              "SELECT unix_timestamp(ts_str, 'yyyy-MM-dd HH:mm:ss' COLLATE UTF8_LCASE) " +
+                "FROM string_tbl",
+              "SELECT unix_timestamp(ts_str COLLATE UTF8_LCASE) FROM string_tbl")) {
+            checkSparkAnswerAndImpl(query, native = Seq.empty, dispatched = Seq("unix_timestamp"))
+          }
+        }
+      }
+    }
+  }
+
+  test("unix_timestamp - date and timestamp inputs ignore collated formats and stay native") {
+    assume(isSpark40Plus, "string collation requires Spark 4.0+")
+    val data = Seq(
+      (
+        java.sql.Date.valueOf("2024-06-15"),
+        java.sql.Timestamp.valueOf("2024-06-15 10:30:45"),
+        java.time.LocalDateTime.parse("2024-06-15T10:30:45")),
+      (
+        java.sql.Date.valueOf("1969-12-31"),
+        java.sql.Timestamp.valueOf("1969-12-31 23:59:59.500000"),
+        java.time.LocalDateTime.parse("1969-12-31T23:59:59.500000")),
+      (null, null, null))
+    withParquetTable(data, "tbl") {
+      for {
+        column <- Seq("_1", "_2", "_3")
+        format <- Seq("'unused'", "CAST(NULL AS STRING)")
+        allowIncompatible <- Seq("false", "true")
+      } {
+        withSQLConf(
+          CometConf.getExprAllowIncompatConfigKey("UnixTimestamp") -> allowIncompatible) {
+          checkSparkAnswerAndImpl(
+            s"SELECT unix_timestamp($column, $format COLLATE UTF8_LCASE) FROM tbl",
+            native = Seq("unix_timestamp"),
+            dispatched = Seq.empty)
+        }
+      }
     }
   }
 
@@ -579,8 +647,10 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
     withSQLConf(
       SQLConf.SESSION_LOCAL_TIMEZONE.key -> "UTC",
       CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "true") {
-      checkSparkAnswerAndOperator(
-        "SELECT c0, date_format(c0, 'yyyy-MM-dd EEEE') from tbl order by c0")
+      checkSparkAnswerAndImpl(
+        "SELECT c0, date_format(c0, 'yyyy-MM-dd EEEE') from tbl order by c0",
+        native = Seq.empty,
+        dispatched = Seq("date_format"))
     }
   }
 
@@ -606,8 +676,10 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
       withSQLConf(
         SQLConf.SESSION_LOCAL_TIMEZONE.key -> tz,
         CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "true") {
-        checkSparkAnswerAndOperator(
-          "SELECT c0, date_format(c0, 'yyyy-MM-dd HH:mm:ss') from tbl order by c0")
+        checkSparkAnswerAndImpl(
+          "SELECT c0, date_format(c0, 'yyyy-MM-dd HH:mm:ss') from tbl order by c0",
+          native = Seq.empty,
+          dispatched = Seq("date_format"))
       }
     }
   }
@@ -636,13 +708,15 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
     for (tz <- nonUtcTimezones) {
       withSQLConf(
         SQLConf.SESSION_LOCAL_TIMEZONE.key -> tz,
-        "spark.comet.expression.DateFormatClass.allowIncompatible" -> "true") {
+        "spark.comet.expression.DateFormatClass.allowIncompatible" -> "true",
+        CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "false") {
         // Native to_char results may diverge from Spark for non-UTC timezones (the reason the
         // JVM UDF is the default), so we only check that execution stays inside Comet. ORDER BY
         // is omitted to keep the plan free of AQEShuffleRead.
         val df = sql("SELECT c0, date_format(c0, 'yyyy-MM-dd') from tbl")
         df.collect()
         checkCometOperators(stripAQEPlan(df.queryExecution.executedPlan))
+        assertExpressionImpl(df.queryExecution.executedPlan, Seq("date_format"), Seq.empty)
       }
     }
   }

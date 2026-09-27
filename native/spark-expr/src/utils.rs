@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use arrow::datatypes::{DataType, TimeUnit, DECIMAL128_MAX_PRECISION};
+use arrow::datatypes::{DataType, TimeUnit};
 use arrow::{
     array::{
         cast::as_primitive_array,
@@ -29,8 +29,6 @@ use std::sync::Arc;
 
 use arrow::array::timezone::Tz;
 use arrow::array::types::TimestampMillisecondType;
-use arrow::array::TimestampMicrosecondArray;
-use arrow::datatypes::{MAX_DECIMAL128_FOR_EACH_PRECISION, MIN_DECIMAL128_FOR_EACH_PRECISION};
 use arrow::error::ArrowError;
 use arrow::{
     array::{as_dictionary_array, Array, ArrayRef, PrimitiveArray},
@@ -80,13 +78,6 @@ pub fn array_with_timezone(
                     // Interpret NTZ as local time in session TZ; annotate output with target TZ
                     // so the result has the exact annotation the caller expects.
                     timestamp_ntz_to_timestamp(array, timezone.as_str(), Some(target_tz.as_ref()))
-                }
-                Some(DataType::Timestamp(TimeUnit::Microsecond, None)) => {
-                    // Convert from Timestamp(Millisecond, None) to Timestamp(Microsecond, None)
-                    let millis_array = as_primitive_array::<TimestampMillisecondType>(&array);
-                    let micros_array: TimestampMicrosecondArray =
-                        arrow::compute::kernels::arity::unary(millis_array, |v| v * 1000);
-                    Ok(Arc::new(micros_array))
                 }
                 _ => {
                     // Not supported
@@ -323,18 +314,6 @@ fn pre_timestamp_cast(array: ArrayRef, timezone: String) -> Result<ArrayRef, Arr
     }
 }
 
-/// Adapted from arrow-rs `validate_decimal_precision` but returns bool
-/// instead of Err to avoid the cost of formatting the error strings and is
-/// optimized to remove a memcpy that exists in the original function
-/// we can remove this code once we upgrade to a version of arrow-rs that
-/// includes https://github.com/apache/arrow-rs/pull/6419
-#[inline]
-pub fn is_valid_decimal_precision(value: i128, precision: u8) -> bool {
-    precision <= DECIMAL128_MAX_PRECISION
-        && value >= MIN_DECIMAL128_FOR_EACH_PRECISION[precision as usize]
-        && value <= MAX_DECIMAL128_FOR_EACH_PRECISION[precision as usize]
-}
-
 /// Build a boolean buffer from the state and reset the state, based on the emit_to
 /// strategy.
 pub fn build_bool_state(state: &mut BooleanBufferBuilder, emit_to: &EmitTo) -> BooleanBuffer {
@@ -376,6 +355,7 @@ pub fn unlikely(b: bool) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use arrow::array::TimestampMicrosecondArray;
 
     fn array_containing(local_datetime: &str) -> ArrayRef {
         let dt = NaiveDateTime::parse_from_str(local_datetime, "%Y-%m-%d %H:%M:%S").unwrap();

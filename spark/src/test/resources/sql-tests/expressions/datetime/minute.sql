@@ -15,11 +15,17 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
+-- hour/minute/second dispatch on the session timezone: with a zero-offset session the value is
+-- read straight from the stored microseconds, and otherwise it is shifted to the session zone
+-- first. Pinning both zones exercises both branches rather than leaving the choice to the
+-- ambient JVM zone of whichever runner executes this.
+-- ConfigMatrix: spark.sql.session.timeZone=UTC,America/Los_Angeles
+
 statement
 CREATE TABLE test_minute(ts timestamp) USING parquet
 
 statement
-INSERT INTO test_minute VALUES (timestamp('2024-01-15 10:00:00')), (timestamp('2024-01-15 10:30:00')), (timestamp('2024-01-15 10:59:59')), (NULL)
+INSERT INTO test_minute VALUES (timestamp('2024-01-15 10:00:00')), (timestamp('2024-01-15 10:30:00')), (timestamp('2024-01-15 10:59:59')), (timestamp('1969-12-31 23:59:59')), (NULL)
 
 query
 SELECT minute(ts) FROM test_minute
@@ -34,7 +40,7 @@ statement
 CREATE TABLE test_minute_ntz(ts timestamp_ntz) USING parquet
 
 statement
-INSERT INTO test_minute_ntz VALUES (cast('2024-01-15 00:00:00' as timestamp_ntz)), (cast('2024-01-15 12:30:45' as timestamp_ntz)), (cast('2024-01-15 23:59:59' as timestamp_ntz)), (NULL)
+INSERT INTO test_minute_ntz VALUES (cast('2024-01-15 00:00:00' as timestamp_ntz)), (cast('2024-01-15 12:30:45' as timestamp_ntz)), (cast('2024-01-15 23:59:59' as timestamp_ntz)), (cast('1969-12-31 23:59:59' as timestamp_ntz)), (NULL)
 
 query
 SELECT minute(ts) FROM test_minute_ntz
