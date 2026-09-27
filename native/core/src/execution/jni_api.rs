@@ -104,7 +104,7 @@ use std::{
 use tokio::runtime::{Handle, Runtime};
 use tokio::sync::mpsc;
 
-use crate::execution::memory_pools::{create_memory_pool, parse_memory_pool_config};
+use crate::execution::memory_pools::{create_memory_pool, overcommit, parse_memory_pool_config};
 use crate::execution::operators::{ScanExec, ShuffleScanExec};
 use crate::execution::shuffle::{
     decode_remote_shuffle_batch, read_ipc_compressed, CompressionCodec, ShuffleWriterExec,
@@ -260,6 +260,17 @@ fn sum_reserved(pools: &[Arc<dyn MemoryPool>]) -> usize {
     pools.iter().map(|pool| pool.reserved()).sum()
 }
 
+/// Bytes reserved across `pools`, less the part that Spark has not granted them; see
+/// [`MemoryUsage::pools_reserved`].
+fn sum_reserved_less_overcommit(pools: &[Arc<dyn MemoryPool>]) -> usize {
+    pools
+        .iter()
+        // The two figures are read at different moments, so a `grow` in between can leave the
+        // overcommit larger than the reservation read before it.
+        .map(|pool| pool.reserved().saturating_sub(overcommit(pool)))
+        .sum()
+}
+
 fn total_reserved_for_thread(thread_id: u64) -> usize {
     sum_reserved(&snapshot_registry(Some(thread_id)).thread_pools)
 }
@@ -307,7 +318,9 @@ struct MemoryUsage {
     /// Bytes handed out by the Rust global allocator, process-wide.
     native_allocated: usize,
     /// Bytes reserved across every live Comet memory pool, counting each pool once however many
-    /// plans share it.
+    /// plans share it, less any the pools recorded beyond what Spark granted them; see
+    /// [`overcommit`]. Spark's off-heap pool does not account for those bytes, so the log counts
+    /// them with the native memory that no pool tracks.
     pools_reserved: usize,
     /// Live memory pools. With the task-shared pool types, which include both defaults, that is one
     /// per task running native plans.
@@ -324,7 +337,7 @@ fn memory_usage() -> MemoryUsage {
     let snapshot = snapshot_registry(None);
     MemoryUsage {
         native_allocated: crate::alloc_accounting::current_balance(),
-        pools_reserved: sum_reserved(&snapshot.all_pools),
+        pools_reserved: sum_reserved_less_overcommit(&snapshot.all_pools),
         pools: snapshot.all_pools.len(),
         plans: snapshot.plans,
     }
@@ -2230,6 +2243,37 @@ mod tests {
 
         drop(shared_reservation);
         drop(own_reservation);
+    }
+
+    /// The memory usage log leaves overcommit out of the reservations it reports, because Spark's
+    /// off-heap pool does not account for it, so the log counts it with the native memory that no
+    /// pool tracks. Tracing's process total still reports everything the pools recorded.
+    #[test]
+    fn memory_usage_leaves_out_what_spark_did_not_grant() {
+        use crate::execution::memory_pools::{
+            create_memory_pool_with_fake_spark, MemoryPoolConfig, MemoryPoolType,
+        };
+
+        let _guard = serial();
+        let before = memory_usage();
+        let traced_before = total_reserved_across_threads();
+        // A task's pool as `greedy_unified` creates it, where Spark grants at most 4096 bytes.
+        let config = MemoryPoolConfig::new(MemoryPoolType::GreedyUnified, 0);
+        let pool = create_memory_pool_with_fake_spark(&config, -6101, 4096);
+        let _registration = ThreadMemoryPoolRegistration::new(21, -6101, Arc::clone(&pool));
+        let reservation = MemoryConsumer::new("spill reader").register(&pool);
+
+        // A spilled batch read back from disk is recorded in full, although Spark grants only 4096
+        // of its 6144 bytes.
+        reservation.grow(6144);
+        assert_eq!(total_reserved_across_threads() - traced_before, 6144);
+        assert_eq!(memory_usage().pools_reserved - before.pools_reserved, 4096);
+
+        // Freeing memory repays the overcommit before anything goes back to Spark.
+        reservation.shrink(2048);
+        assert_eq!(memory_usage().pools_reserved - before.pools_reserved, 4096);
+        reservation.shrink(1024);
+        assert_eq!(memory_usage().pools_reserved - before.pools_reserved, 3072);
     }
 
     /// Stands in for a `CometFairMemoryPool` whose lock is held across a Spark acquire: it counts

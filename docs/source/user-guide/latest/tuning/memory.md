@@ -154,8 +154,11 @@ Comet native memory usage: allocated 5412.3 MiB, reserved 3890.0 MiB (16 native 
 
 - `allocated` is the memory that Comet's native code has allocated and not yet freed, whether or not
   a pool tracks it.
-- `reserved` is the part that Comet's memory pools track. It is charged against
-  `spark.memory.offHeap.size`, so the container already has room for it.
+- `reserved` is the part that Comet's memory pools have reserved from Spark's off-heap memory. It is
+  charged against `spark.memory.offHeap.size`, so the container already has room for it. A pool
+  sometimes has to track memory that Spark could not grant, such as a spilled batch read back from
+  disk while the off-heap memory is full. `reserved` leaves that memory out, since nothing charges it
+  against `spark.memory.offHeap.size`.
 
 The difference between the two, `allocated - reserved`, is Comet's untracked native memory. It is
 the part of Comet's footprint that has to fit in `spark.executor.memoryOverhead`, alongside the
