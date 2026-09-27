@@ -59,14 +59,14 @@ run on the shared runtime. All Spark tasks on an executor share one tokio runtim
 
 When Spark closes a plan, `releasePlan` drops the plan's stream on the executor task thread on
 both paths. On the async I/O path it takes the stream from the task polling it, which waits only
-for a poll already in progress. Waiting for that task to be cancelled instead would need a free
-worker, and every worker can be blocked in Spark's `acquireMemory` waiting for the memory the
-stream holds. `releasePlan` then drops the plan and waits, for up to a second, until every memory
-reservation the plan made has been returned. Tasks that operators spawn, such as the ones a sort's
-merge reads its sorted runs through, are only aborted when the plan is dropped, and they return
-what they hold the next time they yield. This matters because Spark frees whatever a task still
-holds when the task ends and can hand that memory to another task, so memory a plan returns later
-was still in use while Spark counted it as free.
+for a poll already in progress. Waiting for that task to be cancelled instead would wait for a
+free worker, and every worker can be tied up, for instance waiting in Spark's `acquireMemory` for
+the memory the stream holds. `releasePlan` then drops the plan and waits, for up to a second,
+until every memory reservation the plan made has been returned. Tasks that operators spawn, such as
+the ones a sort's merge reads its sorted runs through, are only aborted when the plan is dropped,
+and they return what they hold the next time they yield. This matters because Spark frees whatever
+a task still holds when the task ends and can hand that memory to another task, so memory a plan
+returns later was still in use while Spark counted it as free.
 
 ### Rules for native code
 
@@ -94,7 +94,10 @@ thereafter.
 call `acquireMemory()` / `releaseMemory()` via JNI whenever DataFusion operators grow or shrink
 memory reservations. This happens on whatever thread the operator is executing on. These calls
 are thread-safe (they use stored `GlobalRef`s, not thread-locals), but they do trigger
-`AttachCurrentThread`.
+`AttachCurrentThread`. Spark blocks `acquireMemory()` when the task has to wait for other tasks to
+release memory, so `SparkMemory` makes the call inside `tokio::task::block_in_place`. A worker
+blocked there hands its other tasks to another thread, and they keep running, including any that
+would release the memory.
 
 **Scalar subqueries call into the JVM.** `Subquery::evaluate()` calls static methods on
 `CometScalarSubquery` via JNI. These use a static `HashMap`, not thread-locals, so they are

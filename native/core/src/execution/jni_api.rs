@@ -1150,9 +1150,9 @@ impl BatchProducer {
 
     /// Stops the task and drops the plan's stream on the calling thread.
     ///
-    /// The stream is dropped here rather than by cancelling the task, because running a
-    /// cancellation needs a free Tokio worker, and every worker can be blocked in Spark's
-    /// `acquireMemory` waiting for the memory this stream holds. Taking the stream waits only for
+    /// The stream is dropped here rather than by cancelling the task, because a cancellation only
+    /// runs once a Tokio worker is free, and every worker can be tied up, for instance waiting in
+    /// Spark's `acquireMemory` for the memory this stream holds. Taking the stream waits only for
     /// a poll the task is already in, so at most for the work the stream does between two await
     /// points.
     fn stop(self) -> CometResult<()> {
@@ -2726,9 +2726,9 @@ mod tests {
         );
     }
 
-    /// Spark's `acquireMemory` blocks the calling thread until other tasks release memory, and it
-    /// is called on Tokio workers. When every worker is waiting on memory the stopped plan holds,
-    /// stopping the producer must not need a free worker, or neither task ever finishes.
+    /// Every Tokio worker can be tied up, for instance in Spark's `acquireMemory` waiting for
+    /// memory the stopped plan holds. Stopping the producer must not need a free worker then, or
+    /// neither task ever finishes.
     #[test]
     fn stopping_a_batch_producer_does_not_need_a_free_worker() {
         let runtime = single_worker_runtime();
