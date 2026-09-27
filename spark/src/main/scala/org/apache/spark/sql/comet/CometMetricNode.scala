@@ -254,6 +254,12 @@ object CometMetricNode {
    */
   def baselineMetrics(sc: SparkContext): Map[String, SQLMetric] = {
     Map(
+      "shared_plan_tasks" -> SQLMetrics.createMetric(sc, "tasks using a shared native plan"),
+      "shared_plan_hits" -> SQLMetrics.createMetric(sc, "tasks reusing an existing native plan"),
+      "session_setup_time" -> SQLMetrics.createNanoTimingMetric(sc, "native session setup time"),
+      "physical_plan_time" -> SQLMetrics.createNanoTimingMetric(
+        sc,
+        "native physical planning time"),
       "output_rows" -> SQLMetrics.createMetric(sc, "number of output rows"),
       "elapsed_compute" -> SQLMetrics.createNanoTimingMetric(
         sc,
@@ -315,6 +321,12 @@ object CometMetricNode {
    */
   def nativeScanMetrics(sc: SparkContext): Map[String, SQLMetric] = {
     Map(
+      "shared_plan_tasks" -> SQLMetrics.createMetric(sc, "tasks using a shared native plan"),
+      "shared_plan_hits" -> SQLMetrics.createMetric(sc, "tasks reusing an existing native plan"),
+      "session_setup_time" -> SQLMetrics.createNanoTimingMetric(sc, "native session setup time"),
+      "physical_plan_time" -> SQLMetrics.createNanoTimingMetric(
+        sc,
+        "native physical planning time"),
       "output_rows" -> SQLMetrics.createMetric(sc, "number of output rows"),
       "time_elapsed_opening" ->
         SQLMetrics.createNanoTimingMetric(sc, "Wall clock time elapsed for file opening"),
@@ -438,6 +450,12 @@ object CometMetricNode {
    */
   def joinMetrics(sc: SparkContext): Map[String, SQLMetric] = {
     Map(
+      "shared_plan_tasks" -> SQLMetrics.createMetric(sc, "tasks using a shared native plan"),
+      "shared_plan_hits" -> SQLMetrics.createMetric(sc, "tasks reusing an existing native plan"),
+      "session_setup_time" -> SQLMetrics.createNanoTimingMetric(sc, "native session setup time"),
+      "physical_plan_time" -> SQLMetrics.createNanoTimingMetric(
+        sc,
+        "native physical planning time"),
       "build_time" ->
         SQLMetrics.createNanoTimingMetric(sc, "Total time for collecting build-side of join"),
       "build_input_batches" ->

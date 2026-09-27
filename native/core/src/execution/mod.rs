@@ -24,6 +24,7 @@ pub(crate) mod metrics;
 pub mod operators;
 pub(crate) mod planner;
 pub mod serde;
+mod shared_pipeline;
 pub use datafusion_comet_shuffle as shuffle;
 mod memory_pools;
 pub(crate) mod sort;

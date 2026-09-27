@@ -34,7 +34,7 @@ import org.apache.arrow.memory.ArrowBuf
 import org.apache.arrow.vector.ipc.ArrowReader
 import org.apache.arrow.vector.types.pojo.{Field, Schema}
 import org.apache.hadoop.fs.Path
-import org.apache.spark.SparkEnv
+import org.apache.spark.{SparkEnv, TaskContext}
 import org.apache.spark.sql.{CometTestBase, DataFrame, Dataset, Row}
 import org.apache.spark.sql.catalyst.expressions.AttributeReference
 import org.apache.spark.sql.catalyst.plans.logical.LocalRelation
@@ -104,9 +104,11 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
       .toByteArray
   }
 
-  test("native shuffle callback registration preserves the existing createPlan JNI signature") {
+  test("native plan and shuffle callback JNI signatures include task context and sharing scope") {
     val createPlan = classOf[Native].getDeclaredMethods.find(_.getName == "createPlan").get
-    assert(createPlan.getParameterTypes.last == classOf[ClassLoader])
+    assert(
+      createPlan.getParameterTypes.takeRight(3).toSeq ==
+        Seq(classOf[TaskContext], classOf[ClassLoader], classOf[String]))
 
     val registration = classOf[Native]
       .getDeclaredMethod(

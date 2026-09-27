@@ -70,6 +70,9 @@ private[spark] class CometExecRDD(
     @transient perPartitionFilePaths: Array[Seq[String]] = Array.empty)
     extends RDD[ColumnarBatch](sc, inputRDDs.map(rdd => new OneToOneDependency(rdd))) {
 
+  // Generated on the driver and serialized unchanged to every task for this native block.
+  private val sharedPlanBlockId = java.util.UUID.randomUUID().toString
+
   // Determine partition count: from inputs if available, otherwise from parameter
   private val numPartitions: Int = if (inputRDDs.nonEmpty) {
     inputRDDs.head.partitions.length
@@ -136,7 +139,8 @@ private[spark] class CometExecRDD(
       broadcastedHadoopConfForEncryption,
       encryptedFilePaths,
       shuffleBlockIters,
-      taskFilePaths = partition.filePaths)
+      taskFilePaths = partition.filePaths,
+      sharedPlanBlockId = Some(sharedPlanBlockId))
 
     // Register ScalarSubqueries so native code can look them up
     subqueries.foreach(sub => CometScalarSubquery.setSubquery(it.id, sub))

@@ -285,8 +285,12 @@ pub struct BinaryExprOptions {
 
 pub const TEST_EXEC_CONTEXT_ID: i64 = -1;
 
+/// Input boundaries collected only while building a shared template.
+pub(super) type InputPlans = Arc<parking_lot::Mutex<Vec<Arc<dyn ExecutionPlan>>>>;
+
 /// The query planner for converting Spark query plans to DataFusion query plans.
 pub struct PhysicalPlanner {
+    input_plans: Option<InputPlans>,
     // The execution context id of this planner.
     exec_context_id: i64,
     partition: i32,
@@ -319,6 +323,7 @@ impl PhysicalPlanner {
     pub fn new(session_ctx: Arc<SessionContext>, partition: i32) -> Self {
         Self {
             exec_context_id: TEST_EXEC_CONTEXT_ID,
+            input_plans: None,
             session_ctx,
             partition,
             query_context_registry: datafusion_comet_spark_expr::create_query_context_map(),
@@ -327,6 +332,20 @@ impl PhysicalPlanner {
             class_loader: None,
             shuffle_partition_pusher: None,
         }
+    }
+
+    /// Build placeholder scans and record their boundaries for shared-tree conversion.
+    /// This mode never imports task inputs and does not rely on the unit-test execution ID.
+    pub(super) fn with_input_plans(mut self, inputs: InputPlans) -> Self {
+        self.input_plans = Some(inputs);
+        self
+    }
+
+    fn input_plan(&self, plan: Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> {
+        if let Some(inputs) = &self.input_plans {
+            inputs.lock().push(Arc::clone(&plan));
+        }
+        plan
     }
 
     /// Load the SQL text pool from the root operator of the plan about to be planned. Must be
@@ -1811,19 +1830,19 @@ impl PhysicalPlanner {
             OpStruct::Scan(scan) => {
                 let data_types = scan.fields.iter().map(to_arrow_datatype).collect_vec();
 
-                // If it is not test execution context for unit test, we should have at least one
-                // input source
-                if self.exec_context_id != TEST_EXEC_CONTEXT_ID && inputs.is_empty() {
+                let placeholder = self.input_plans.is_some();
+                if !placeholder && self.exec_context_id != TEST_EXEC_CONTEXT_ID && inputs.is_empty()
+                {
                     return Err(GeneralError("No input for scan".to_string()));
                 }
 
                 // Consumes the first input source for the scan. The Java side passes an
                 // `org.apache.arrow.c.ArrowArrayStream` whose `memoryAddress` points at the C
                 // struct; native takes ownership via `AlignedArrowStreamReader::from_raw`.
-                let input_source = if self.exec_context_id == TEST_EXEC_CONTEXT_ID
-                    && inputs.is_empty()
+                let input_source = if placeholder
+                    || (self.exec_context_id == TEST_EXEC_CONTEXT_ID && inputs.is_empty())
                 {
-                    // For unit test, we will set input batch to scan directly by `set_input_batch`.
+                    // Shared builders use schema-only placeholders; unit tests feed batches directly.
                     None
                 } else {
                     let java_stream = inputs.remove(0);
@@ -1846,7 +1865,11 @@ impl PhysicalPlanner {
                 Ok((
                     vec![scan.clone()],
                     vec![],
-                    Arc::new(SparkPlan::new(spark_plan.plan_id, Arc::new(scan), vec![])),
+                    Arc::new(SparkPlan::new(
+                        spark_plan.plan_id,
+                        self.input_plan(Arc::new(scan)),
+                        vec![],
+                    )),
                 ))
             }
             OpStruct::IcebergScan(scan) => {
