@@ -23,7 +23,7 @@ import org.apache.spark.internal.Logging
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.expressions.aggregate.{Final, Partial, PartialMerge}
 import org.apache.spark.sql.catalyst.rules.Rule
-import org.apache.spark.sql.comet.{CometColumnarToRowExec, CometExec, CometHashAggregateExec, CometNativeColumnarToRowExec, CometSparkToColumnarExec}
+import org.apache.spark.sql.comet.{CometColumnarToRowExec, CometExec, CometHashAggregateExec, CometLocalTopKExec, CometNativeColumnarToRowExec, CometSparkToColumnarExec}
 import org.apache.spark.sql.execution.{ColumnarToRowExec, ColumnarToRowTransition, RowToColumnarExec, SparkPlan}
 import org.apache.spark.sql.execution.adaptive.QueryStageExec
 import org.apache.spark.sql.execution.exchange.{BroadcastExchangeLike, ShuffleExchangeLike}
@@ -236,8 +236,12 @@ case class RevertNativeForTransitionHeavyStages(session: SparkSession, wholePlan
       case sparkToColumnar: CometSparkToColumnarExec => sparkToColumnar.child
       case RowToColumnarExec(child) => child
     }
-    val reverted = transformStageUp(stripped) { case cometExec: CometExec =>
-      cometExec.sparkFallback(cometExec.children)
+    val reverted = transformStageUp(stripped) {
+      // Local candidate selection was inserted by Comet. Only the outer TopK owns
+      // the original Spark operator's offset and projection.
+      case local: CometLocalTopKExec => local.child
+      case cometExec: CometExec =>
+        cometExec.sparkFallback(cometExec.children)
     }
     insertTransitions(reverted)
   }

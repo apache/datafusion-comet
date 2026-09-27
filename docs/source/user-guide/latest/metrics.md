@@ -76,13 +76,13 @@ the value would always be 0.
 
 Native aggregates with grouping keys report these additional metrics:
 
-| Metric                               | Description                                                                                                                        |
-| ------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------- |
-| `rows bypassing partial aggregation` | Input rows passed through without partial aggregation. See [Adaptive Partial Aggregation](tuning.md#adaptive-partial-aggregation). |
-| `number of spills`                   | Number of times the aggregate spilled to disk.                                                                                     |
-| `total spilled bytes`                | Bytes written to aggregate spill files.                                                                                            |
-| `number of spilled rows`             | Rows written to aggregate spill files.                                                                                             |
-| `peak native aggregate memory`       | Peak memory used by the native aggregate.                                                                                          |
+| Metric                               | Description                                                                                                                                  |
+| ------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| `rows bypassing partial aggregation` | Input rows passed through without partial aggregation. See [Adaptive Partial Aggregation](tuning/operators.md#adaptive-partial-aggregation). |
+| `number of spills`                   | Number of times the aggregate spilled to disk.                                                                                               |
+| `total spilled bytes`                | Bytes written to aggregate spill files.                                                                                                      |
+| `number of spilled rows`             | Rows written to aggregate spill files.                                                                                                       |
+| `peak native aggregate memory`       | Peak memory used by the native aggregate.                                                                                                    |
 
 Spill bytes from native sorts, aggregates, and sort-merge joins are also added to Spark's task-level
 `diskBytesSpilled` metric in every stage, not only in shuffle stages.
@@ -90,7 +90,7 @@ Spill bytes from native sorts, aggregates, and sort-merge joins are also added t
 ### Hash Joins
 
 With `spark.comet.exec.join.dynamicFilter.enabled=true`, native broadcast and shuffled hash joins
-report these additional metric keys. See [Join Runtime Filters](tuning.md#join-runtime-filters) for
+report these additional metric keys. See [Join Runtime Filters](tuning/operators.md#join-runtime-filters) for
 eligibility and reader restrictions.
 
 | Metric                                 | Description                                                       |
