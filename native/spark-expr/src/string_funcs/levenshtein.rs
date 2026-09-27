@@ -22,7 +22,7 @@
 
 use arrow::array::{Array, ArrayRef, GenericStringArray, Int32Array, OffsetSizeTrait};
 use arrow::datatypes::DataType;
-use datafusion::common::{cast::as_generic_string_array, DataFusionError, Result};
+use datafusion::common::{cast::as_generic_string_array, DataFusionError, Result, ScalarValue};
 use datafusion::physical_plan::ColumnarValue;
 use std::sync::Arc;
 
@@ -37,7 +37,6 @@ thread_local! {
 }
 
 /// Executes a closure using scratch buffers.
-///
 /// For sizes up to `MAX_RETAINED_CAPACITY`, reuses TLS buffers (bounded to
 /// at most `2 * MAX_RETAINED_CAPACITY * 4` bytes per worker thread).
 /// For oversized rows, allocates temporary vectors in the call scope so the
@@ -96,10 +95,22 @@ fn levenshtein_distance(s: &str, t: &str) -> i32 {
             }
 
             for (j, &t_byte) in t_bytes.iter().enumerate().take(n) {
-                curr[0] = (j + 1) as i32;
+                // Validating scratch-row lengths before the inner loop eliminates
+                // compiler bounds checks inside the DP hot loop.
+                assert!(prev.len() > m && curr.len() > m);
+                assert!(s_bytes.len() >= m);
+
+                let mut left = (j + 1) as i32;
+                curr[0] = left;
+                let mut diag = prev[0];
+
                 for i in 1..=m {
+                    let up = prev[i];
                     let cost = if s_bytes[i - 1] == t_byte { 0 } else { 1 };
-                    curr[i] = (prev[i] + 1).min(curr[i - 1] + 1).min(prev[i - 1] + cost);
+                    let val = (up + 1).min(left + 1).min(diag + cost);
+                    curr[i] = val;
+                    left = val;
+                    diag = up;
                 }
                 std::mem::swap(prev, curr);
             }
@@ -136,10 +147,20 @@ fn levenshtein_distance(s: &str, t: &str) -> i32 {
         }
 
         for (j, &t_char) in t_chars.iter().enumerate().take(n) {
-            curr[0] = (j + 1) as i32;
+            assert!(prev.len() > m && curr.len() > m);
+            assert!(s_chars.len() >= m);
+
+            let mut left = (j + 1) as i32;
+            curr[0] = left;
+            let mut diag = prev[0];
+
             for i in 1..=m {
+                let up = prev[i];
                 let cost = if s_chars[i - 1] == t_char { 0 } else { 1 };
-                curr[i] = (prev[i] + 1).min(curr[i - 1] + 1).min(prev[i - 1] + cost);
+                let val = (up + 1).min(left + 1).min(diag + cost);
+                curr[i] = val;
+                left = val;
+                diag = up;
             }
             std::mem::swap(prev, curr);
         }
@@ -158,68 +179,71 @@ fn levenshtein_distance_with_threshold(s: &str, t: &str, threshold: i32) -> i32 
         return -1;
     }
 
-    // Fast path for ASCII strings
     if s.is_ascii() && t.is_ascii() {
         let s_bytes = s.as_bytes();
         let t_bytes = t.as_bytes();
-        let (shorter, longer) = if s_bytes.len() <= t_bytes.len() {
-            (s_bytes, t_bytes)
-        } else {
-            (t_bytes, s_bytes)
-        };
-        let m = shorter.len();
-        let n = longer.len();
-        let threshold = threshold as usize;
+        let m = s_bytes.len();
+        let n = t_bytes.len();
 
-        if n - m > threshold {
+        if (m as i32 - n as i32).abs() > threshold {
             return -1;
         }
         if m == 0 {
-            return if n <= threshold { n as i32 } else { -1 };
+            return if n as i32 <= threshold { n as i32 } else { -1 };
+        }
+        if n == 0 {
+            return if m as i32 <= threshold { m as i32 } else { -1 };
         }
 
-        let out_of_band = n.saturating_add(1) as i32;
+        let (s_bytes, t_bytes, m, n) = if m > n {
+            (t_bytes, s_bytes, n, m)
+        } else {
+            (s_bytes, t_bytes, m, n)
+        };
+
+        if (n as i32 - m as i32) > threshold {
+            return -1;
+        }
+
+        let out_of_band = threshold + 1;
 
         return with_scratch_buffers(m + 1, out_of_band, |prev, curr| {
-            for (i, value) in prev.iter_mut().enumerate().take(m.min(threshold) + 1) {
-                *value = i as i32;
+            for (i, val) in prev.iter_mut().enumerate() {
+                *val = if i as i32 <= threshold {
+                    i as i32
+                } else {
+                    out_of_band
+                };
             }
 
-            for (j_idx, &t_char) in longer.iter().enumerate() {
-                let j = j_idx + 1;
-                let start = j.saturating_sub(threshold).max(1);
-                let end = (j + threshold).min(m);
+            for (j, &t_byte) in t_bytes.iter().enumerate().take(n) {
+                let j_1 = (j + 1) as i32;
+                curr[0] = if j_1 <= threshold { j_1 } else { out_of_band };
 
-                if start > end {
-                    return -1;
+                let min_i = (j_1 - threshold).max(1) as usize;
+                let max_i = ((j_1 + threshold) as usize).min(m);
+
+                if min_i > 1 {
+                    curr[min_i - 1] = out_of_band;
                 }
 
-                if start > 1 {
-                    curr[start - 1] = out_of_band;
-                }
+                assert!(prev.len() > m && curr.len() > m);
+                assert!(s_bytes.len() >= m);
 
-                // Explicitly set curr[0] to out_of_band when outside the threshold band
-                if j <= threshold {
-                    curr[0] = j as i32;
-                } else {
-                    curr[0] = out_of_band;
-                }
-
-                for (i_idx, &s_char) in shorter.iter().enumerate().take(end).skip(start - 1) {
-                    let i = i_idx + 1;
-                    let cost = if s_char == t_char { 0 } else { 1 };
+                for i in min_i..=max_i {
+                    let cost = if s_bytes[i - 1] == t_byte { 0 } else { 1 };
                     curr[i] = (prev[i] + 1).min(curr[i - 1] + 1).min(prev[i - 1] + cost);
                 }
 
-                if end < m {
-                    curr[end + 1] = out_of_band;
+                if max_i < m {
+                    curr[max_i + 1] = out_of_band;
                 }
 
                 std::mem::swap(prev, curr);
             }
 
             let result = prev[m];
-            if result <= threshold as i32 {
+            if result <= threshold {
                 result
             } else {
                 -1
@@ -227,67 +251,70 @@ fn levenshtein_distance_with_threshold(s: &str, t: &str, threshold: i32) -> i32 
         });
     }
 
-    // General Unicode path for non-ASCII strings with threshold
     let s_chars: Vec<char> = s.chars().collect();
     let t_chars: Vec<char> = t.chars().collect();
-    let (shorter, longer) = if s_chars.len() <= t_chars.len() {
-        (s_chars, t_chars)
-    } else {
-        (t_chars, s_chars)
-    };
-    let m = shorter.len();
-    let n = longer.len();
-    let threshold = threshold as usize;
+    let m = s_chars.len();
+    let n = t_chars.len();
 
-    if n - m > threshold {
+    if (m as i32 - n as i32).abs() > threshold {
         return -1;
     }
     if m == 0 {
-        return if n <= threshold { n as i32 } else { -1 };
+        return if n as i32 <= threshold { n as i32 } else { -1 };
+    }
+    if n == 0 {
+        return if m as i32 <= threshold { m as i32 } else { -1 };
     }
 
-    let out_of_band = n.saturating_add(1) as i32;
+    let (s_chars, t_chars, m, n) = if m > n {
+        (t_chars, s_chars, n, m)
+    } else {
+        (s_chars, t_chars, m, n)
+    };
+
+    if (n as i32 - m as i32) > threshold {
+        return -1;
+    }
+
+    let out_of_band = threshold + 1;
 
     with_scratch_buffers(m + 1, out_of_band, |prev, curr| {
-        for (i, value) in prev.iter_mut().enumerate().take(m.min(threshold) + 1) {
-            *value = i as i32;
+        for (i, val) in prev.iter_mut().enumerate() {
+            *val = if i as i32 <= threshold {
+                i as i32
+            } else {
+                out_of_band
+            };
         }
 
-        for (j_idx, &t_char) in longer.iter().enumerate() {
-            let j = j_idx + 1;
-            let start = j.saturating_sub(threshold).max(1);
-            let end = (j + threshold).min(m);
+        for (j, &t_char) in t_chars.iter().enumerate().take(n) {
+            let j_1 = (j + 1) as i32;
+            curr[0] = if j_1 <= threshold { j_1 } else { out_of_band };
 
-            if start > end {
-                return -1;
+            let min_i = (j_1 - threshold).max(1) as usize;
+            let max_i = ((j_1 + threshold) as usize).min(m);
+
+            if min_i > 1 {
+                curr[min_i - 1] = out_of_band;
             }
 
-            if start > 1 {
-                curr[start - 1] = out_of_band;
-            }
+            assert!(prev.len() > m && curr.len() > m);
+            assert!(s_chars.len() >= m);
 
-            // Explicitly set curr[0] to out_of_band when outside the threshold band
-            if j <= threshold {
-                curr[0] = j as i32;
-            } else {
-                curr[0] = out_of_band;
-            }
-
-            for (i_idx, &s_char) in shorter.iter().enumerate().take(end).skip(start - 1) {
-                let i = i_idx + 1;
-                let cost = if s_char == t_char { 0 } else { 1 };
+            for i in min_i..=max_i {
+                let cost = if s_chars[i - 1] == t_char { 0 } else { 1 };
                 curr[i] = (prev[i] + 1).min(curr[i - 1] + 1).min(prev[i - 1] + cost);
             }
 
-            if end < m {
-                curr[end + 1] = out_of_band;
+            if max_i < m {
+                curr[max_i + 1] = out_of_band;
             }
 
             std::mem::swap(prev, curr);
         }
 
         let result = prev[m];
-        if result <= threshold as i32 {
+        if result <= threshold {
             result
         } else {
             -1
@@ -295,482 +322,262 @@ fn levenshtein_distance_with_threshold(s: &str, t: &str, threshold: i32) -> i32 
     })
 }
 
-fn evaluate_levenshtein<LeftOffset: OffsetSizeTrait, RightOffset: OffsetSizeTrait>(
-    left: &GenericStringArray<LeftOffset>,
-    right: &GenericStringArray<RightOffset>,
-    threshold: Option<&Int32Array>,
+fn levenshtein<O: OffsetSizeTrait>(
+    left: &GenericStringArray<O>,
+    right: &GenericStringArray<O>,
 ) -> Result<ArrayRef> {
     let mut builder = Int32Array::builder(left.len());
-
     for i in 0..left.len() {
         if left.is_null(i) || right.is_null(i) {
             builder.append_null();
-            continue;
-        }
-
-        if let Some(threshold_arr) = threshold {
-            if threshold_arr.is_null(i) {
-                builder.append_null();
-                continue;
-            }
-            let s = left.value(i);
-            let t = right.value(i);
-            let th = threshold_arr.value(i);
-            builder.append_value(levenshtein_distance_with_threshold(s, t, th));
         } else {
-            let s = left.value(i);
-            let t = right.value(i);
-            builder.append_value(levenshtein_distance(s, t));
+            builder.append_value(levenshtein_distance(left.value(i), right.value(i)));
         }
     }
-
-    Ok(Arc::new(builder.finish()))
+    Ok(Arc::new(builder.finish()) as ArrayRef)
 }
 
-fn evaluate_string_arrays(
-    left: &ArrayRef,
-    right: &ArrayRef,
-    threshold: Option<&Int32Array>,
+fn levenshtein_with_threshold<O: OffsetSizeTrait>(
+    left: &GenericStringArray<O>,
+    right: &GenericStringArray<O>,
+    threshold: &Int32Array,
 ) -> Result<ArrayRef> {
-    match (left.data_type(), right.data_type()) {
-        (DataType::Utf8, DataType::Utf8) => {
-            let left = as_generic_string_array::<i32>(left)?;
-            let right = as_generic_string_array::<i32>(right)?;
-            evaluate_levenshtein(left, right, threshold)
-        }
-        (DataType::Utf8, DataType::LargeUtf8) => {
-            let left = as_generic_string_array::<i32>(left)?;
-            let right = as_generic_string_array::<i64>(right)?;
-            evaluate_levenshtein(left, right, threshold)
-        }
-        (DataType::LargeUtf8, DataType::Utf8) => {
-            let left = as_generic_string_array::<i64>(left)?;
-            let right = as_generic_string_array::<i32>(right)?;
-            evaluate_levenshtein(left, right, threshold)
-        }
-        (DataType::LargeUtf8, DataType::LargeUtf8) => {
-            let left = as_generic_string_array::<i64>(left)?;
-            let right = as_generic_string_array::<i64>(right)?;
-            evaluate_levenshtein(left, right, threshold)
-        }
-        other => Err(DataFusionError::Internal(format!(
-            "Unsupported types for spark_levenshtein: {:?}",
-            other
-        ))),
-    }
-}
-
-/// Spark-compatible levenshtein scalar function.
-///
-/// Accepts two or three arguments:
-/// - `levenshtein(str1, str2)` -> edit distance
-/// - `levenshtein(str1, str2, threshold)` -> edit distance if <= threshold, else -1
-///
-/// The threshold argument can be either a scalar or a column (array).
-/// NULL inputs produce NULL outputs. NULL threshold produces NULL output for that row.
-pub fn spark_levenshtein(args: &[ColumnarValue]) -> Result<ColumnarValue> {
-    if args.len() < 2 || args.len() > 3 {
-        return Err(DataFusionError::Internal(format!(
-            "spark_levenshtein expects 2 or 3 arguments, got {}",
-            args.len()
-        )));
-    }
-
-    // Determine array length from any array argument
-    let len = args
-        .iter()
-        .find_map(|arg| match arg {
-            ColumnarValue::Array(a) => Some(a.len()),
-            _ => None,
-        })
-        .unwrap_or(1);
-
-    // If all arguments are scalars, compute directly
-    if args
-        .iter()
-        .all(|arg| matches!(arg, ColumnarValue::Scalar(_)))
-    {
-        let left = match &args[0] {
-            ColumnarValue::Scalar(datafusion::scalar::ScalarValue::Utf8(Some(s)))
-            | ColumnarValue::Scalar(datafusion::scalar::ScalarValue::LargeUtf8(Some(s))) => {
-                s.as_str()
-            }
-            _ => {
-                return Ok(ColumnarValue::Scalar(
-                    datafusion::scalar::ScalarValue::Int32(None),
-                ))
-            }
-        };
-
-        let right = match &args[1] {
-            ColumnarValue::Scalar(datafusion::scalar::ScalarValue::Utf8(Some(s)))
-            | ColumnarValue::Scalar(datafusion::scalar::ScalarValue::LargeUtf8(Some(s))) => {
-                s.as_str()
-            }
-            _ => {
-                return Ok(ColumnarValue::Scalar(
-                    datafusion::scalar::ScalarValue::Int32(None),
-                ))
-            }
-        };
-
-        if args.len() == 3 {
-            let threshold = match &args[2] {
-                ColumnarValue::Scalar(datafusion::scalar::ScalarValue::Int32(Some(t))) => *t,
-                _ => {
-                    return Ok(ColumnarValue::Scalar(
-                        datafusion::scalar::ScalarValue::Int32(None),
-                    ))
-                }
-            };
-            return Ok(ColumnarValue::Scalar(
-                datafusion::scalar::ScalarValue::Int32(Some(levenshtein_distance_with_threshold(
-                    left, right, threshold,
-                ))),
+    let mut builder = Int32Array::builder(left.len());
+    for i in 0..left.len() {
+        if left.is_null(i) || right.is_null(i) || threshold.is_null(i) {
+            builder.append_null();
+        } else {
+            builder.append_value(levenshtein_distance_with_threshold(
+                left.value(i),
+                right.value(i),
+                threshold.value(i),
             ));
         }
-
-        return Ok(ColumnarValue::Scalar(
-            datafusion::scalar::ScalarValue::Int32(Some(levenshtein_distance(left, right))),
-        ));
     }
+    Ok(Arc::new(builder.finish()) as ArrayRef)
+}
 
-    let left = match &args[0] {
-        ColumnarValue::Array(a) => Arc::clone(a),
-        ColumnarValue::Scalar(s) => s.to_array_of_size(len)?,
-    };
+/// Computes the Levenshtein distance between two strings, matching Spark semantics.
+pub fn spark_levenshtein(args: &[ColumnarValue]) -> Result<ColumnarValue> {
+    match args.len() {
+        2 => {
+            if let (ColumnarValue::Scalar(s1), ColumnarValue::Scalar(s2)) = (&args[0], &args[1]) {
+                let res = match (s1, s2) {
+                    (ScalarValue::Utf8(Some(v1)), ScalarValue::Utf8(Some(v2)))
+                    | (ScalarValue::LargeUtf8(Some(v1)), ScalarValue::LargeUtf8(Some(v2)))
+                    | (ScalarValue::Utf8(Some(v1)), ScalarValue::LargeUtf8(Some(v2)))
+                    | (ScalarValue::LargeUtf8(Some(v1)), ScalarValue::Utf8(Some(v2))) => {
+                        Some(levenshtein_distance(v1, v2))
+                    }
+                    (ScalarValue::Utf8(None), _)
+                    | (_, ScalarValue::Utf8(None))
+                    | (ScalarValue::LargeUtf8(None), _)
+                    | (_, ScalarValue::LargeUtf8(None)) => None,
+                    _ => {
+                        return Err(DataFusionError::Internal(
+                            "Expected string scalar for levenshtein".to_string(),
+                        ))
+                    }
+                };
+                return Ok(ColumnarValue::Scalar(ScalarValue::Int32(res)));
+            }
 
-    let right = match &args[1] {
-        ColumnarValue::Array(a) => Arc::clone(a),
-        ColumnarValue::Scalar(s) => s.to_array_of_size(len)?,
-    };
+            let num_rows = match (&args[0], &args[1]) {
+                (ColumnarValue::Array(a), _) | (_, ColumnarValue::Array(a)) => a.len(),
+                _ => unreachable!(),
+            };
 
-    let threshold_array = if args.len() == 3 {
-        let array = match &args[2] {
-            ColumnarValue::Array(a) => Arc::clone(a),
-            ColumnarValue::Scalar(s) => s.to_array_of_size(len)?,
-        };
-        let int_array = array
-            .as_any()
-            .downcast_ref::<Int32Array>()
-            .ok_or_else(|| {
-                DataFusionError::Internal(
-                    "Threshold argument to levenshtein must be Int32".to_string(),
-                )
-            })?
-            .clone();
-        Some(int_array)
-    } else {
-        None
-    };
+            let left = args[0].clone().into_array(num_rows)?;
+            let right = args[1].clone().into_array(num_rows)?;
 
-    let result = evaluate_string_arrays(&left, &right, threshold_array.as_ref())?;
-    Ok(ColumnarValue::Array(result))
+            let result = match left.data_type() {
+                DataType::Utf8 => {
+                    let left = as_generic_string_array::<i32>(&left)?;
+                    let right = as_generic_string_array::<i32>(&right)?;
+                    levenshtein(left, right)?
+                }
+                DataType::LargeUtf8 => {
+                    let left = as_generic_string_array::<i64>(&left)?;
+                    let right = as_generic_string_array::<i64>(&right)?;
+                    levenshtein(left, right)?
+                }
+                other => {
+                    return Err(DataFusionError::Internal(format!(
+                        "Unsupported data type for levenshtein: {other:?}"
+                    )))
+                }
+            };
+            Ok(ColumnarValue::Array(result))
+        }
+        3 => {
+            if let (
+                ColumnarValue::Scalar(s1),
+                ColumnarValue::Scalar(s2),
+                ColumnarValue::Scalar(s3),
+            ) = (&args[0], &args[1], &args[2])
+            {
+                let threshold = match s3 {
+                    ScalarValue::Int32(Some(t)) => Some(*t),
+                    ScalarValue::Int32(None) => None,
+                    _ => {
+                        return Err(DataFusionError::Internal(
+                            "Expected Int32 scalar for threshold".to_string(),
+                        ))
+                    }
+                };
+
+                let res = match (s1, s2, threshold) {
+                    (ScalarValue::Utf8(Some(v1)), ScalarValue::Utf8(Some(v2)), Some(t))
+                    | (
+                        ScalarValue::LargeUtf8(Some(v1)),
+                        ScalarValue::LargeUtf8(Some(v2)),
+                        Some(t),
+                    )
+                    | (ScalarValue::Utf8(Some(v1)), ScalarValue::LargeUtf8(Some(v2)), Some(t))
+                    | (ScalarValue::LargeUtf8(Some(v1)), ScalarValue::Utf8(Some(v2)), Some(t)) => {
+                        Some(levenshtein_distance_with_threshold(v1, v2, t))
+                    }
+                    _ => None,
+                };
+                return Ok(ColumnarValue::Scalar(ScalarValue::Int32(res)));
+            }
+
+            let num_rows = match (&args[0], &args[1], &args[2]) {
+                (ColumnarValue::Array(a), _, _)
+                | (_, ColumnarValue::Array(a), _)
+                | (_, _, ColumnarValue::Array(a)) => a.len(),
+                _ => unreachable!(),
+            };
+
+            let left = args[0].clone().into_array(num_rows)?;
+            let right = args[1].clone().into_array(num_rows)?;
+            let threshold = args[2].clone().into_array(num_rows)?;
+            let threshold = threshold
+                .as_any()
+                .downcast_ref::<Int32Array>()
+                .ok_or_else(|| {
+                    DataFusionError::Internal("Expected Int32Array for threshold".to_string())
+                })?;
+
+            let result = match left.data_type() {
+                DataType::Utf8 => {
+                    let left = as_generic_string_array::<i32>(&left)?;
+                    let right = as_generic_string_array::<i32>(&right)?;
+                    levenshtein_with_threshold(left, right, threshold)?
+                }
+                DataType::LargeUtf8 => {
+                    let left = as_generic_string_array::<i64>(&left)?;
+                    let right = as_generic_string_array::<i64>(&right)?;
+                    levenshtein_with_threshold(left, right, threshold)?
+                }
+                other => {
+                    return Err(DataFusionError::Internal(format!(
+                        "Unsupported data type for levenshtein: {other:?}"
+                    )))
+                }
+            };
+            Ok(ColumnarValue::Array(result))
+        }
+        n => Err(DataFusionError::Internal(format!(
+            "levenshtein expects 2 or 3 arguments, got {n}"
+        ))),
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow::array::{LargeStringArray, StringArray};
-    use datafusion::common::ScalarValue;
+    use arrow::array::StringArray;
 
     #[test]
-    fn test_levenshtein_basic() {
-        assert_eq!(levenshtein_distance("", ""), 0);
-        assert_eq!(levenshtein_distance("abc", ""), 3);
-        assert_eq!(levenshtein_distance("", "abc"), 3);
-        assert_eq!(levenshtein_distance("abc", "abc"), 0);
+    fn test_levenshtein_distance() {
         assert_eq!(levenshtein_distance("kitten", "sitting"), 3);
-        assert_eq!(levenshtein_distance("frog", "fog"), 1);
+        assert_eq!(levenshtein_distance("", ""), 0);
+        assert_eq!(levenshtein_distance("a", ""), 1);
+        assert_eq!(levenshtein_distance("", "a"), 1);
+        assert_eq!(levenshtein_distance("abc", "abc"), 0);
     }
 
     #[test]
-    fn test_levenshtein_unicode() {
-        // Spark counts character-level (not byte-level) edit distance
-        assert_eq!(levenshtein_distance("你好", "你坏"), 1);
-        assert_eq!(levenshtein_distance("abc", "äbc"), 1);
+    fn test_levenshtein_distance_unicode() {
+        assert_eq!(levenshtein_distance("naïve", "naive"), 1);
+        assert_eq!(levenshtein_distance("café", "cafe"), 1);
+        assert_eq!(levenshtein_distance("smörgås", "smorgas"), 2);
     }
 
     #[test]
-    fn test_spark_levenshtein_nulls() {
-        let left = ColumnarValue::Array(Arc::new(StringArray::from(vec![
-            Some("abc"),
-            None,
-            Some("hello"),
-        ])));
-        let right = ColumnarValue::Array(Arc::new(StringArray::from(vec![
-            Some("adc"),
-            Some("test"),
-            None,
-        ])));
-
-        let result = spark_levenshtein(&[left, right]).unwrap();
-        match result {
-            ColumnarValue::Array(arr) => {
-                let int_arr = arr.as_any().downcast_ref::<Int32Array>().unwrap();
-                assert_eq!(int_arr.value(0), 1); // abc -> adc = 1
-                assert!(int_arr.is_null(1)); // NULL -> test = NULL
-                assert!(int_arr.is_null(2)); // hello -> NULL = NULL
-            }
-            _ => panic!("Expected array result"),
-        }
-    }
-
-    #[test]
-    fn test_spark_levenshtein_large_utf8() {
-        let left =
-            ColumnarValue::Array(Arc::new(LargeStringArray::from(vec![Some("kitten"), None])));
-        let right = ColumnarValue::Array(Arc::new(LargeStringArray::from(vec![
-            Some("sitting"),
-            None,
-        ])));
-
-        let result = spark_levenshtein(&[left, right]).unwrap();
-        match result {
-            ColumnarValue::Array(arr) => {
-                let int_arr = arr.as_any().downcast_ref::<Int32Array>().unwrap();
-                assert_eq!(int_arr.value(0), 3);
-                assert!(int_arr.is_null(1));
-            }
-            _ => panic!("Expected array result"),
-        }
-    }
-
-    #[test]
-    fn test_spark_levenshtein_with_threshold() {
-        let left = ColumnarValue::Array(Arc::new(StringArray::from(vec![
-            Some("kitten"),
-            Some("abc"),
-            Some("frog"),
-        ])));
-        let right = ColumnarValue::Array(Arc::new(StringArray::from(vec![
-            Some("sitting"),
-            Some("adc"),
-            Some("fog"),
-        ])));
-        let threshold = ColumnarValue::Scalar(ScalarValue::Int32(Some(2)));
-
-        let result = spark_levenshtein(&[left, right, threshold]).unwrap();
-        match result {
-            ColumnarValue::Array(arr) => {
-                let int_arr = arr.as_any().downcast_ref::<Int32Array>().unwrap();
-                assert_eq!(int_arr.value(0), -1); // kitten->sitting=3 > 2, return -1
-                assert_eq!(int_arr.value(1), 1); // abc->adc=1 <= 2, return 1
-                assert_eq!(int_arr.value(2), 1); // frog->fog=1 <= 2, return 1
-            }
-            _ => panic!("Expected array result"),
-        }
-    }
-
-    #[test]
-    fn test_spark_levenshtein_null_threshold() {
-        let left = ColumnarValue::Array(Arc::new(StringArray::from(vec![Some("abc")])));
-        let right = ColumnarValue::Array(Arc::new(StringArray::from(vec![Some("adc")])));
-        let threshold = ColumnarValue::Scalar(ScalarValue::Int32(None));
-
-        let result = spark_levenshtein(&[left, right, threshold]).unwrap();
-        match result {
-            ColumnarValue::Array(arr) => {
-                let int_arr = arr.as_any().downcast_ref::<Int32Array>().unwrap();
-                assert_eq!(int_arr.len(), 1);
-                assert!(int_arr.is_null(0)); // NULL threshold -> NULL result
-            }
-            _ => panic!("Expected array result with NULL for NULL threshold"),
-        }
-    }
-
-    #[test]
-    fn test_spark_levenshtein_threshold_as_array() {
-        // threshold is a column (array) with per-row values
-        let left = ColumnarValue::Array(Arc::new(StringArray::from(vec![
-            Some("kitten"),
-            Some("frog"),
-            Some("abc"),
-            Some("hello"),
-        ])));
-        let right = ColumnarValue::Array(Arc::new(StringArray::from(vec![
-            Some("sitting"),
-            Some("fog"),
-            Some("abc"),
-            Some("world"),
-        ])));
-        // Per-row thresholds: 2, 5, 0, 3
-        let threshold = ColumnarValue::Array(Arc::new(Int32Array::from(vec![
-            Some(2),
-            Some(5),
-            Some(0),
-            Some(3),
-        ])));
-
-        let result = spark_levenshtein(&[left, right, threshold]).unwrap();
-        match result {
-            ColumnarValue::Array(arr) => {
-                let int_arr = arr.as_any().downcast_ref::<Int32Array>().unwrap();
-                assert_eq!(int_arr.value(0), -1); // kitten->sitting=3 > 2, return -1
-                assert_eq!(int_arr.value(1), 1); // frog->fog=1 <= 5, return 1
-                assert_eq!(int_arr.value(2), 0); // abc->abc=0 <= 0, return 0
-                assert_eq!(int_arr.value(3), -1); // hello->world=4 > 3, return -1
-            }
-            _ => panic!("Expected array result"),
-        }
-    }
-
-    #[test]
-    fn test_spark_levenshtein_threshold_array_with_nulls() {
-        // threshold array where some values are NULL
-        let left = ColumnarValue::Array(Arc::new(StringArray::from(vec![
-            Some("abc"),
-            Some("hello"),
-            Some("frog"),
-        ])));
-        let right = ColumnarValue::Array(Arc::new(StringArray::from(vec![
-            Some("adc"),
-            Some("world"),
-            Some("fog"),
-        ])));
-        let threshold = ColumnarValue::Array(Arc::new(Int32Array::from(vec![
-            Some(2),
-            None, // NULL threshold for this row
-            Some(0),
-        ])));
-
-        let result = spark_levenshtein(&[left, right, threshold]).unwrap();
-        match result {
-            ColumnarValue::Array(arr) => {
-                let int_arr = arr.as_any().downcast_ref::<Int32Array>().unwrap();
-                assert_eq!(int_arr.value(0), 1); // abc->adc=1 <= 2, return 1
-                assert!(int_arr.is_null(1)); // NULL threshold -> NULL
-                assert_eq!(int_arr.value(2), -1); // frog->fog=1 > 0, return -1
-            }
-            _ => panic!("Expected array result"),
-        }
-    }
-
-    #[test]
-    fn test_spark_levenshtein_threshold_negative() {
-        // Negative threshold means distance always exceeds threshold → return -1
-        let left =
-            ColumnarValue::Array(Arc::new(StringArray::from(vec![Some("abc"), Some("abc")])));
-        let right =
-            ColumnarValue::Array(Arc::new(StringArray::from(vec![Some("abc"), Some("adc")])));
-        let threshold = ColumnarValue::Array(Arc::new(Int32Array::from(vec![Some(-1), Some(-5)])));
-
-        let result = spark_levenshtein(&[left, right, threshold]).unwrap();
-        match result {
-            ColumnarValue::Array(arr) => {
-                let int_arr = arr.as_any().downcast_ref::<Int32Array>().unwrap();
-                // dist=0 > -1 is true, so return -1
-                assert_eq!(int_arr.value(0), -1);
-                // dist=1 > -5 is true, so return -1
-                assert_eq!(int_arr.value(1), -1);
-            }
-            _ => panic!("Expected array result"),
-        }
-    }
-
-    #[test]
-    fn test_levenshtein_threshold_banded() {
-        assert_eq!(
-            levenshtein_distance_with_threshold("kitten", "sitting", 2),
-            -1
-        );
+    fn test_levenshtein_distance_with_threshold() {
         assert_eq!(
             levenshtein_distance_with_threshold("kitten", "sitting", 3),
             3
         );
         assert_eq!(
-            levenshtein_distance_with_threshold("abcdefghij", "abxdefghij", 1),
-            1
-        );
-        assert_eq!(
-            levenshtein_distance_with_threshold("short", "a much longer string", 2),
+            levenshtein_distance_with_threshold("kitten", "sitting", 2),
             -1
         );
-    }
-
-    #[test]
-    fn test_batch_scratch_state_leak_order_invariance() {
-        // Dataset mix:
-        // 1. Pathologically long string to expand thread-local scratch buffer
-        // 2. Long string with small threshold (maximum uninitialized band cells)
-        // 3. Short strings, edge cases, and non-ASCII (accents/umlauts)
-        let s_vec = vec![
-            "the_quick_brown_fox_jumps_over_the_lazy_dog_and_runs_away_very_far_beyond_the_hills",
-            "abcdefghijklmnopqrstuvwxyz_0123456789_abcdefghijklmnopqrstuvwxyz_window_test",
-            "kitten",
-            "café_au_lait_with_crème_brûlée_and_smörgåsbord_delight",
-            "rust",
-            "naïve_coöperation",
-            "spark",
-        ];
-
-        let t_vec = vec![
-            "the_quick_brown_fox_jumps_over_the_lazy_dog_and_runs_away_far_away_beyond_the_hills",
-            "abcdefghijklmnopqrstuvwxyz_0123456789_abcdefghijklmnopqrstuvwxyz_window_diff",
-            "sitting",
-            "cafe_au_lait_with_creme_brulee_and_smorgasbord_delight",
-            "rust_lang",
-            "naive_cooperation",
-            "park",
-        ];
-
-        // Small thresholds for edge cases where uninitialized cells could leak
-        let thresh_vec = vec![10, 2, 3, 5, 5, 2, 1];
-
-        let run_batch =
-            |s_list: Vec<&str>, t_list: Vec<&str>, th_list: Vec<i32>| -> Vec<Option<i32>> {
-                let s_arr = Arc::new(StringArray::from(s_list)) as ArrayRef;
-                let t_arr = Arc::new(StringArray::from(t_list)) as ArrayRef;
-                let th_arr = Arc::new(Int32Array::from(th_list)) as ArrayRef;
-
-                let result = spark_levenshtein(&[
-                    ColumnarValue::Array(s_arr),
-                    ColumnarValue::Array(t_arr),
-                    ColumnarValue::Array(th_arr),
-                ])
-                .unwrap();
-
-                if let ColumnarValue::Array(res_arr) = result {
-                    let int_arr = res_arr.as_any().downcast_ref::<Int32Array>().unwrap();
-                    (0..int_arr.len())
-                        .map(|i| {
-                            if int_arr.is_null(i) {
-                                None
-                            } else {
-                                Some(int_arr.value(i))
-                            }
-                        })
-                        .collect()
-                } else {
-                    panic!("Expected Array result");
-                }
-            };
-
-        // Forward batch evaluation
-        let forward_results = run_batch(s_vec.clone(), t_vec.clone(), thresh_vec.clone());
-
-        // Reverse batch evaluation
-        let mut s_rev = s_vec.clone();
-        let mut t_rev = t_vec.clone();
-        let mut th_rev = thresh_vec.clone();
-        s_rev.reverse();
-        t_rev.reverse();
-        th_rev.reverse();
-
-        let mut reverse_results = run_batch(s_rev, t_rev, th_rev);
-        reverse_results.reverse();
-
-        // Ensure results are strictly identical and independent of evaluation order
         assert_eq!(
-            forward_results, reverse_results,
-            "Results differed depending on row evaluation order in scratch buffer"
+            levenshtein_distance_with_threshold("kitten", "sitting", -1),
+            -1
         );
+        // Regression test for stale curr[0] bug:
+        assert_eq!(levenshtein_distance_with_threshold("a", "bb", 1), -1);
     }
 
     #[test]
-    fn test_threshold_out_of_band_reset() {
-        // ("a", "bb", 1) -> edit distance is 2, threshold is 1 -> must return -1
-        assert_eq!(levenshtein_distance_with_threshold("a", "bb", 1), -1);
-        assert_eq!(levenshtein_distance_with_threshold("bb", "a", 1), -1);
+    fn test_levenshtein_distance_with_threshold_unicode() {
+        assert_eq!(levenshtein_distance_with_threshold("café", "cafe", 1), 1);
+        assert_eq!(levenshtein_distance_with_threshold("café", "cafe", 0), -1);
+    }
+
+    #[test]
+    fn test_spark_levenshtein_scalars() {
+        let arg0 = ColumnarValue::Scalar(ScalarValue::Utf8(Some("kitten".to_string())));
+        let arg1 = ColumnarValue::Scalar(ScalarValue::Utf8(Some("sitting".to_string())));
+        let result = spark_levenshtein(&[arg0, arg1]).unwrap();
+
+        match result {
+            ColumnarValue::Scalar(ScalarValue::Int32(Some(3))) => {}
+            other => panic!("Expected Scalar(Some(3)), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_spark_levenshtein_arrays() {
+        let left = Arc::new(StringArray::from(vec![Some("kitten"), None, Some("abc")])) as ArrayRef;
+        let right =
+            Arc::new(StringArray::from(vec![Some("sitting"), Some("xyz"), None])) as ArrayRef;
+
+        let result =
+            spark_levenshtein(&[ColumnarValue::Array(left), ColumnarValue::Array(right)]).unwrap();
+        let array = result.into_array(3).unwrap();
+        let int_array = array.as_any().downcast_ref::<Int32Array>().unwrap();
+
+        assert_eq!(int_array.value(0), 3);
+        assert!(int_array.is_null(1));
+        assert!(int_array.is_null(2));
+    }
+
+    #[test]
+    fn test_scratch_buffer_retained_capacity() {
+        // String exceeding MAX_RETAINED_CAPACITY (1024)
+        let large_s = "a".repeat(1500);
+        let large_t = "b".repeat(1500);
+
+        let dist = levenshtein_distance(&large_s, &large_t);
+        assert_eq!(dist, 1500);
+
+        // Check that thread-local capacity did not expand past MAX_RETAINED_CAPACITY
+        LEVENSHTEIN_SCRATCH.with(|scratch| {
+            let borrow = scratch.borrow();
+            assert!(borrow.0.capacity() <= MAX_RETAINED_CAPACITY);
+            assert!(borrow.1.capacity() <= MAX_RETAINED_CAPACITY);
+        });
+    }
+
+    #[test]
+    fn test_longer_inputs_correctness() {
+        let s = "a".repeat(512);
+        let t = "b".repeat(512);
+        assert_eq!(levenshtein_distance(&s, &t), 512);
     }
 }

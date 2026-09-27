@@ -31,6 +31,7 @@ struct Dataset {
     label: &'static str,
     right: fn(usize) -> String,
     left: fn(usize) -> String,
+    row_counts: &'static [usize],
 }
 
 /// ASCII: both operands are ASCII, so `is_ascii() && is_ascii()` enables the
@@ -39,6 +40,7 @@ const ASCII: Dataset = Dataset {
     label: "ascii",
     right: |_| "sitting".to_string(),
     left: |_| "kitten".to_string(),
+    row_counts: &ROW_COUNTS,
 };
 
 /// Non-ASCII: both operands are non-ASCII, so the fast path is skipped and the
@@ -47,6 +49,7 @@ const NON_ASCII: Dataset = Dataset {
     label: "non-ascii",
     right: |_| "smörgås".to_string(),
     left: |_| "naïve".to_string(),
+    row_counts: &ROW_COUNTS,
 };
 
 /// Mixed: right is non-ASCII, left is ASCII. `s.is_ascii() && t.is_ascii()`
@@ -55,14 +58,37 @@ const MIXED: Dataset = Dataset {
     label: "mixed",
     right: |_| "café".to_string(),
     left: |_| "cafe".to_string(),
+    row_counts: &ROW_COUNTS,
 };
 
-const DATASETS: [Dataset; 3] = [ASCII, NON_ASCII, MIXED];
+/// Batch size for longer inputs: 128 rows prevents astronomical runtimes
+/// (e.g. 524k rows of 512x512 DP would take several minutes per sample).
+const LONG_ROW_COUNTS: [usize; 1] = [128];
+
+/// Long ASCII (128 chars): tests longer string inputs where the bounds checks
+/// overhead inside the DP matrix inner loop is prominent.
+const ASCII_128: Dataset = Dataset {
+    label: "ascii-128",
+    right: |_| "b".repeat(128),
+    left: |_| "a".repeat(128),
+    row_counts: &LONG_ROW_COUNTS,
+};
+
+/// Long ASCII (512 chars): matches the exact reviewer reproduction shape
+/// (128 rows x 512 chars) to ensure no regressions against base.
+const ASCII_512: Dataset = Dataset {
+    label: "ascii-512",
+    right: |_| "b".repeat(512),
+    left: |_| "a".repeat(512),
+    row_counts: &LONG_ROW_COUNTS,
+};
+
+const DATASETS: [Dataset; 5] = [ASCII, NON_ASCII, MIXED, ASCII_128, ASCII_512];
 
 fn criterion_benchmark(c: &mut Criterion) {
     for dataset in &DATASETS {
         let mut group = c.benchmark_group(format!("spark_levenshtein/{}", dataset.label));
-        for rows in ROW_COUNTS {
+        for &rows in dataset.row_counts {
             let right = string_array(rows, 0.0, |_| (dataset.right)(0));
             for (null_ratio, tag) in NULL_RATIOS {
                 let left = string_array(rows, null_ratio, |_| (dataset.left)(0));
