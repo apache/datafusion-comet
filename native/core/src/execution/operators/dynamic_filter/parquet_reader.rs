@@ -41,7 +41,7 @@ use schema_adapter::RuntimeFilterSchemaAdapterFactory;
 /// or changing the predicate. Every accepted leaf is deterministic, infallible,
 /// and only discards rows, so reader pruning cannot suppress expression errors
 /// or alter stateful evaluation. All other expressions remain a boundary.
-fn is_direct_column_null_checks(predicate: &Arc<dyn PhysicalExpr>) -> bool {
+pub(super) fn is_direct_column_null_checks(predicate: &Arc<dyn PhysicalExpr>) -> bool {
     if let Some(binary) = predicate.downcast_ref::<BinaryExpr>() {
         return binary.op() == &Operator::And
             && is_direct_column_null_checks(binary.left())

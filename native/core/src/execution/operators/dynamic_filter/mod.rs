@@ -19,8 +19,10 @@
 
 mod join;
 mod parquet_reader;
+mod topk;
 
 pub(crate) use join::DynamicFilterJoinExec;
+pub(crate) use topk::TopKReaderFilterExec;
 
 use std::fmt::Formatter;
 use std::sync::Arc;
