@@ -19,13 +19,15 @@
 
 package org.apache.comet.rules
 
+import scala.collection.mutable.ListBuffer
 import scala.util.Random
 
 import org.apache.spark.sql._
 import org.apache.spark.sql.comet._
 import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.adaptive.QueryStageExec
-import org.apache.spark.sql.types.{DataTypes, StructField, StructType}
+import org.apache.spark.sql.internal.SQLConf
+import org.apache.spark.sql.types._
 
 import org.apache.comet.CometConf
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator}
@@ -178,6 +180,62 @@ class CometScanRuleSuite extends CometTestBase {
         // Spark rewrites `_metadata.row_index` into a `_tmp_metadata_row_index` scan column, so
         // that -- not `row_index` -- is the attribute the guard sees and names.
         "Metadata column(s) _tmp_metadata_row_index is not supported")
+    }
+  }
+
+  test("CometScanTypeChecker declines a schema that repeats a Parquet field id") {
+    // Spark resolves a requested field to the one Parquet field carrying its id and raises
+    // FOUND_DUPLICATE_FIELD_IN_FIELD_ID_LOOKUP_MODE when more than one answers, so Comet must not
+    // read such a schema natively. See https://github.com/apache/datafusion-comet/issues/5801.
+    def withId(name: String, id: Int): StructField =
+      StructField(
+        name,
+        LongType,
+        nullable = true,
+        new MetadataBuilder().putLong("parquet.field.id", id.toLong).build())
+
+    val duplicate = StructType(Array(withId("x", 1), withId("y", 1)))
+    // The root case needs its own coverage: `isTypeSupported` only sees field data types, so the
+    // nested case goes through a different override.
+    val declined = Seq[(String, StructType)](
+      "root" -> duplicate,
+      "nested struct" -> StructType(Array(StructField("col", duplicate))),
+      "map value" -> StructType(Array(StructField("col", MapType(StringType, duplicate)))))
+
+    for ((label, schema) <- declined) {
+      withSQLConf(SQLConf.PARQUET_FIELD_ID_READ_ENABLED.key -> "true") {
+        val reasons = ListBuffer.empty[String]
+        assert(!CometScanTypeChecker().isSchemaSupported(schema, reasons), s"$label: accepted")
+        assert(reasons.exists(_.contains("duplicate Parquet field ids")), s"$label: $reasons")
+      }
+      // With field id matching off the two fields are told apart by name, so the read is
+      // unambiguous and the schema stays supported.
+      withSQLConf(SQLConf.PARQUET_FIELD_ID_READ_ENABLED.key -> "false") {
+        assert(
+          CometScanTypeChecker().isSchemaSupported(schema, ListBuffer.empty),
+          s"$label: declined with field id matching off")
+      }
+    }
+
+    withSQLConf(SQLConf.PARQUET_FIELD_ID_READ_ENABLED.key -> "true") {
+      val accepted = Seq[(String, StructType)](
+        "distinct ids" -> StructType(Array(withId("x", 1), withId("y", 2))),
+        // Only one side carries an id, so nothing can collide.
+        "one id absent" -> StructType(Array(withId("x", 1), StructField("y", LongType))),
+        // getFieldId raises on a non-integral id; reporting it as a duplicate would be the wrong
+        // error, so the predicate treats it as absent.
+        "malformed id" -> {
+          val bad = new MetadataBuilder().putString("parquet.field.id", "nope").build()
+          StructType(
+            Array(
+              StructField("x", LongType, nullable = true, bad),
+              StructField("y", LongType, nullable = true, bad)))
+        })
+      for ((label, schema) <- accepted) {
+        assert(
+          CometScanTypeChecker().isSchemaSupported(schema, ListBuffer.empty),
+          s"$label: declined")
+      }
     }
   }
 

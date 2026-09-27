@@ -17,12 +17,12 @@
  * under the License.
  */
 
-package org.apache.spark.comet.shims
+package org.apache.spark.sql.comet.shims
 
-import org.apache.spark.SparkConf
-import org.apache.spark.internal.config.EXECUTOR_MIN_MEMORY_OVERHEAD
+import org.apache.spark.sql.execution.{EmptyRelationExec, SparkPlan}
 
-trait ShimCometDriverPlugin {
-  protected def getMemoryOverheadMinMib(sparkConf: SparkConf): Long =
-    sparkConf.get(EXECUTOR_MIN_MEMORY_OVERHEAD)
+/** EmptyRelationExec is available starting in Spark 4.0. */
+object ShimCometEmptyRelation {
+
+  def emptyRelationClass: Option[Class[_ <: SparkPlan]] = Some(classOf[EmptyRelationExec])
 }

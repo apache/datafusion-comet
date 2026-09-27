@@ -350,18 +350,15 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
     assert(results.sameElements(Array((true, true, true, true))))
   }
 
-  test("native shuffle plan preserves local partition writer and legacy output paths") {
+  test("native shuffle plan preserves local partition writer and legacy output path") {
     val dataFile = "/tmp/comet-shuffle.data"
-    val indexFile = "/tmp/comet-shuffle.index"
     val localWriter = OperatorOuterClass.LocalPartitionWriter
       .newBuilder()
       .setOutputDataFile(dataFile)
-      .setOutputIndexFile(indexFile)
       .build()
     val writer = OperatorOuterClass.ShuffleWriter
       .newBuilder()
       .setOutputDataFile(dataFile)
-      .setOutputIndexFile(indexFile)
       .setPartitionWriter(
         OperatorOuterClass.PartitionWriter.newBuilder().setLocal(localWriter).build())
       .build()
@@ -372,16 +369,13 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
     assert(decoded.getPartitionWriter.hasLocal)
     assert(!decoded.getPartitionWriter.hasRss)
     assert(decoded.getPartitionWriter.getLocal.getOutputDataFile == dataFile)
-    assert(decoded.getPartitionWriter.getLocal.getOutputIndexFile == indexFile)
     assert(decoded.getOutputDataFile == dataFile)
-    assert(decoded.getOutputIndexFile == indexFile)
   }
 
   test("native shuffle plan preserves RSS partition writer and excludes local destination") {
     val localWriter = OperatorOuterClass.LocalPartitionWriter
       .newBuilder()
       .setOutputDataFile("/tmp/comet-shuffle.data")
-      .setOutputIndexFile("/tmp/comet-shuffle.index")
       .build()
     val partitionWriter = OperatorOuterClass.PartitionWriter
       .newBuilder()
@@ -399,23 +393,19 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
     assert(decoded.getPartitionWriter.hasRss)
     assert(!decoded.getPartitionWriter.hasLocal)
     assert(decoded.getOutputDataFile.isEmpty)
-    assert(decoded.getOutputIndexFile.isEmpty)
   }
 
   test("legacy native shuffle plans remain valid without a partition writer") {
     val dataFile = "/tmp/legacy-shuffle.data"
-    val indexFile = "/tmp/legacy-shuffle.index"
     val writer = OperatorOuterClass.ShuffleWriter
       .newBuilder()
       .setOutputDataFile(dataFile)
-      .setOutputIndexFile(indexFile)
       .build()
 
     val decoded = OperatorOuterClass.ShuffleWriter.parseFrom(writer.toByteArray)
 
     assert(!decoded.hasPartitionWriter)
     assert(decoded.getOutputDataFile == dataFile)
-    assert(decoded.getOutputIndexFile == indexFile)
   }
 
   // TODO: this test takes a long time to run, we should reduce the test time.
@@ -1153,38 +1143,24 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
     (doubleValue, i)
   }
 
-  test("range partitioning on floating-point falls back when strictFloatingPoint=true") {
-    withSQLConf(
-      CometConf.COMET_SHUFFLE_NATIVE_RANGE_PARTITIONING_ENABLED.key -> "true",
-      CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key -> "true",
-      // Bypass the CometSortOrder-level Incompatible check so that only
-      // supportedRangePartitioningDataType is exercised as the guard.
-      CometConf.getExprAllowIncompatConfigKey("SortOrder") -> "true") {
-      withParquetTable(floatingPointRangePartitionData, "tbl") {
-        Seq(("FLOAT", "FloatType"), ("DOUBLE", "DoubleType")).foreach {
-          case (sqlType, sparkType) =>
+  // The native range partitioner normalizes its comparison keys and its sampled boundary rows the
+  // same way the native sort does, so scalar floating-point keys match Spark's ordering whether or
+  // not strict floating point is on. Neither gate needs the allowIncompatible escape hatch.
+  Seq("true", "false").foreach { strict =>
+    test(
+      "range partitioning on floating-point uses native shuffle when " +
+        s"strictFloatingPoint=$strict") {
+      withSQLConf(
+        CometConf.COMET_SHUFFLE_NATIVE_RANGE_PARTITIONING_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key -> strict,
+        CometConf.getExprAllowIncompatConfigKey("SortOrder") -> "false") {
+        withParquetTable(floatingPointRangePartitionData, "tbl") {
+          Seq("FLOAT", "DOUBLE").foreach { sqlType =>
             val df = sql(s"SELECT CAST(_1 AS $sqlType) AS c, _2 FROM tbl")
               .repartitionByRange(4, $"c")
 
-            checkSparkAnswerAndFallbackReason(
-              df,
-              s"Range partitioning on $sparkType is not 100% compatible with Spark")
-        }
-      }
-    }
-  }
-
-  test(
-    "range partitioning on floating-point uses native shuffle when strictFloatingPoint=false") {
-    withSQLConf(
-      CometConf.COMET_SHUFFLE_NATIVE_RANGE_PARTITIONING_ENABLED.key -> "true",
-      CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key -> "false") {
-      withParquetTable(floatingPointRangePartitionData, "tbl") {
-        Seq("FLOAT", "DOUBLE").foreach { sqlType =>
-          val df = sql(s"SELECT CAST(_1 AS $sqlType) AS c, _2 FROM tbl")
-            .repartitionByRange(4, $"c")
-
-          checkShuffleAnswer(df, 1)
+            checkShuffleAnswer(df, 1)
+          }
         }
       }
     }

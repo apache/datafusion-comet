@@ -53,6 +53,16 @@ public class CometTaskMemoryManager {
     this.nativeMemoryConsumer = new NativeMemoryConsumer();
   }
 
+  /**
+   * Bytes of the executor's off-heap memory pool in use, for execution and storage. In off-heap
+   * mode this includes every reservation Comet's memory pools have acquired from Spark. Spark's
+   * memory manager is private to Spark, which is why this lives here.
+   */
+  public static long sparkOffHeapUsed() {
+    org.apache.spark.memory.MemoryManager memoryManager = SparkEnv.get().memoryManager();
+    return memoryManager.offHeapExecutionMemoryUsed() + memoryManager.offHeapStorageMemoryUsed();
+  }
+
   // Called by Comet native through JNI.
   // Returns the actual amount of memory (in bytes) granted.
   public long acquireMemory(long size) {

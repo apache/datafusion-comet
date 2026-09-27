@@ -30,7 +30,7 @@ import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator, ParquetGener
 import org.apache.comet.udf.codegen.CometScalaUDFCodegen
 
 /**
- * Test suite for Spark hash function compatibility between Spark and Comet.
+ * Test suite for Spark `hash` (murmur3) and `xxhash64` compatibility between Spark and Comet.
  *
  * Native kernels are asserted for supported input shapes. Cases the native path declines
  * (`DecimalType` precision > 18, including nested, and `sha2` with a non-foldable `numBits`) must
@@ -46,7 +46,7 @@ class CometHashExpressionSuite
     withTable("t") {
       sql("CREATE TABLE t(c BOOLEAN) USING parquet")
       sql("INSERT INTO t VALUES (true), (false), (null)")
-      checkSparkAnswerAndOperator("SELECT c, hash(c) FROM t ORDER BY c")
+      checkSparkAnswerAndOperator("SELECT c, hash(c), xxhash64(c) FROM t ORDER BY c")
     }
   }
 
@@ -54,7 +54,7 @@ class CometHashExpressionSuite
     withTable("t") {
       sql("CREATE TABLE t(c TINYINT) USING parquet")
       sql("INSERT INTO t VALUES (1), (0), (-1), (127), (-128), (null)")
-      checkSparkAnswerAndOperator("SELECT c, hash(c) FROM t ORDER BY c")
+      checkSparkAnswerAndOperator("SELECT c, hash(c), xxhash64(c) FROM t ORDER BY c")
     }
   }
 
@@ -62,7 +62,7 @@ class CometHashExpressionSuite
     withTable("t") {
       sql("CREATE TABLE t(c SMALLINT) USING parquet")
       sql("INSERT INTO t VALUES (1), (0), (-1), (32767), (-32768), (null)")
-      checkSparkAnswerAndOperator("SELECT c, hash(c) FROM t ORDER BY c")
+      checkSparkAnswerAndOperator("SELECT c, hash(c), xxhash64(c) FROM t ORDER BY c")
     }
   }
 
@@ -70,7 +70,7 @@ class CometHashExpressionSuite
     withTable("t") {
       sql("CREATE TABLE t(c INT) USING parquet")
       sql("INSERT INTO t VALUES (1), (0), (-1), (2147483647), (-2147483648), (null)")
-      checkSparkAnswerAndOperator("SELECT c, hash(c) FROM t ORDER BY c")
+      checkSparkAnswerAndOperator("SELECT c, hash(c), xxhash64(c) FROM t ORDER BY c")
     }
   }
 
@@ -79,7 +79,7 @@ class CometHashExpressionSuite
       sql("CREATE TABLE t(c BIGINT) USING parquet")
       sql(
         "INSERT INTO t VALUES (1), (0), (-1), (9223372036854775807), (-9223372036854775808), (null)")
-      checkSparkAnswerAndOperator("SELECT c, hash(c) FROM t ORDER BY c")
+      checkSparkAnswerAndOperator("SELECT c, hash(c), xxhash64(c) FROM t ORDER BY c")
     }
   }
 
@@ -87,7 +87,7 @@ class CometHashExpressionSuite
     withTable("t") {
       sql("CREATE TABLE t(c FLOAT) USING parquet")
       sql("INSERT INTO t VALUES (1.0), (0.0), (-0.0), (-1.0), (3.14159), (null)")
-      checkSparkAnswerAndOperator("SELECT c, hash(c) FROM t ORDER BY c")
+      checkSparkAnswerAndOperator("SELECT c, hash(c), xxhash64(c) FROM t ORDER BY c")
     }
   }
 
@@ -95,7 +95,7 @@ class CometHashExpressionSuite
     withTable("t") {
       sql("CREATE TABLE t(c DOUBLE) USING parquet")
       sql("INSERT INTO t VALUES (1.0), (0.0), (-0.0), (-1.0), (3.14159265358979), (null)")
-      checkSparkAnswerAndOperator("SELECT c, hash(c) FROM t ORDER BY c")
+      checkSparkAnswerAndOperator("SELECT c, hash(c), xxhash64(c) FROM t ORDER BY c")
     }
   }
 
@@ -103,7 +103,7 @@ class CometHashExpressionSuite
     withTable("t") {
       sql("CREATE TABLE t(c STRING) USING parquet")
       sql("INSERT INTO t VALUES ('hello'), (''), ('Spark SQL'), ('苹果手机'), (null)")
-      checkSparkAnswerAndOperator("SELECT c, hash(c) FROM t ORDER BY c")
+      checkSparkAnswerAndOperator("SELECT c, hash(c), xxhash64(c) FROM t ORDER BY c")
     }
   }
 
@@ -111,7 +111,7 @@ class CometHashExpressionSuite
     withTable("t") {
       sql("CREATE TABLE t(c BINARY) USING parquet")
       sql("INSERT INTO t VALUES (X''), (X'00'), (X'0102030405'), (null)")
-      checkSparkAnswerAndOperator("SELECT c, hash(c) FROM t ORDER BY c")
+      checkSparkAnswerAndOperator("SELECT c, hash(c), xxhash64(c) FROM t ORDER BY c")
     }
   }
 
@@ -120,7 +120,7 @@ class CometHashExpressionSuite
       sql("CREATE TABLE t(c DATE) USING parquet")
       sql(
         "INSERT INTO t VALUES (DATE '2023-01-01'), (DATE '1970-01-01'), (DATE '2000-12-31'), (null)")
-      checkSparkAnswerAndOperator("SELECT c, hash(c) FROM t ORDER BY c")
+      checkSparkAnswerAndOperator("SELECT c, hash(c), xxhash64(c) FROM t ORDER BY c")
     }
   }
 
@@ -132,7 +132,7 @@ class CometHashExpressionSuite
             (TIMESTAMP '1970-01-01 00:00:00'),
             (TIMESTAMP '2000-12-31 23:59:59'),
             (null)""")
-      checkSparkAnswerAndOperator("SELECT c, hash(c) FROM t ORDER BY c")
+      checkSparkAnswerAndOperator("SELECT c, hash(c), xxhash64(c) FROM t ORDER BY c")
     }
   }
 
@@ -315,7 +315,7 @@ class CometHashExpressionSuite
             (null),
             (array(null)),
             (array(1, null, 3))""")
-      checkSparkAnswerAndOperator("SELECT c, hash(c) FROM t")
+      checkSparkAnswerAndOperator("SELECT c, hash(c), xxhash64(c) FROM t")
     }
   }
 
@@ -330,7 +330,7 @@ class CometHashExpressionSuite
             (null),
             (array(null)),
             (array('a', null, 'b'))""")
-      checkSparkAnswerAndOperator("SELECT c, hash(c) FROM t")
+      checkSparkAnswerAndOperator("SELECT c, hash(c), xxhash64(c) FROM t")
     }
   }
 
@@ -342,7 +342,7 @@ class CometHashExpressionSuite
             (array(-1.0, 0.0, 1.0)),
             (array()),
             (null)""")
-      checkSparkAnswerAndOperator("SELECT c, hash(c) FROM t")
+      checkSparkAnswerAndOperator("SELECT c, hash(c), xxhash64(c) FROM t")
     }
   }
 
@@ -354,7 +354,7 @@ class CometHashExpressionSuite
             (array(array(), array(1))),
             (array()),
             (null)""")
-      checkSparkAnswerAndOperator("SELECT c, hash(c) FROM t")
+      checkSparkAnswerAndOperator("SELECT c, hash(c), xxhash64(c) FROM t")
     }
   }
 
@@ -367,7 +367,7 @@ class CometHashExpressionSuite
             (named_struct('a', null, 'b', 'test')),
             (named_struct('a', 42, 'b', null)),
             (null)""")
-      checkSparkAnswerAndOperator("SELECT c, hash(c) FROM t")
+      checkSparkAnswerAndOperator("SELECT c, hash(c), xxhash64(c) FROM t")
     }
   }
 
@@ -379,7 +379,7 @@ class CometHashExpressionSuite
             (named_struct('a', 2, 'b', named_struct('x', '', 'y', 0.0))),
             (named_struct('a', 3, 'b', null)),
             (null)""")
-      checkSparkAnswerAndOperator("SELECT c, hash(c) FROM t")
+      checkSparkAnswerAndOperator("SELECT c, hash(c), xxhash64(c) FROM t")
     }
   }
 
@@ -485,7 +485,7 @@ class CometHashExpressionSuite
             (named_struct('a', 2, 'b', array())),
             (named_struct('a', 3, 'b', null)),
             (null)""")
-      checkSparkAnswerAndOperator("SELECT c, hash(c) FROM t")
+      checkSparkAnswerAndOperator("SELECT c, hash(c), xxhash64(c) FROM t")
     }
   }
 
@@ -497,7 +497,7 @@ class CometHashExpressionSuite
             (array(named_struct('a', 3, 'b', ''))),
             (array()),
             (null)""")
-      checkSparkAnswerAndOperator("SELECT c, hash(c) FROM t")
+      checkSparkAnswerAndOperator("SELECT c, hash(c), xxhash64(c) FROM t")
     }
   }
 
@@ -511,7 +511,7 @@ class CometHashExpressionSuite
               (map('x', -1)),
               (map()),
               (null)""")
-        checkSparkAnswerAndOperator("SELECT c, hash(c) FROM t")
+        checkSparkAnswerAndOperator("SELECT c, hash(c), xxhash64(c) FROM t")
       }
     }
   }
@@ -526,7 +526,7 @@ class CometHashExpressionSuite
               (map('x', array())),
               (map()),
               (null)""")
-        checkSparkAnswerAndOperator("SELECT c, hash(c) FROM t")
+        checkSparkAnswerAndOperator("SELECT c, hash(c), xxhash64(c) FROM t")
       }
     }
   }
@@ -540,7 +540,7 @@ class CometHashExpressionSuite
             (null, null, null),
             (-1, 'test', -1.5)""")
       checkSparkAnswerAndOperator(
-        "SELECT hash(a, b, c), hash(c, b, a), hash(a), hash(b), hash(c) FROM t")
+        "SELECT hash(a, b, c), xxhash64(a, b, c), hash(c, b, a), xxhash64(c, b, a), hash(a), xxhash64(a), hash(b), xxhash64(b), hash(c), xxhash64(c) FROM t")
     }
   }
 
@@ -552,7 +552,8 @@ class CometHashExpressionSuite
             (2, array(), ''),
             (null, null, null),
             (3, array(-1, 0, 1), 'test')""")
-      checkSparkAnswerAndOperator("SELECT hash(a, b, c), hash(b), hash(a, c) FROM t")
+      checkSparkAnswerAndOperator(
+        "SELECT hash(a, b, c), xxhash64(a, b, c), hash(b), xxhash64(b), hash(a, c), xxhash64(a, c) FROM t")
     }
   }
 
@@ -564,7 +565,8 @@ class CometHashExpressionSuite
             (2, named_struct('x', 20, 'y', '')),
             (null, null),
             (3, named_struct('x', null, 'y', 'test'))""")
-      checkSparkAnswerAndOperator("SELECT hash(a, b), hash(b, a), hash(b) FROM t")
+      checkSparkAnswerAndOperator(
+        "SELECT hash(a, b), xxhash64(a, b), hash(b, a), xxhash64(b, a), hash(b), xxhash64(b) FROM t")
     }
   }
 
@@ -572,7 +574,8 @@ class CometHashExpressionSuite
     withTable("t") {
       sql("CREATE TABLE t(s STRING, a ARRAY<INT>) USING parquet")
       sql("INSERT INTO t VALUES ('', array()), ('a', array(1))")
-      checkSparkAnswerAndOperator("SELECT hash(s), hash(a), hash(s, a) FROM t")
+      checkSparkAnswerAndOperator(
+        "SELECT hash(s), xxhash64(s), hash(a), xxhash64(a), hash(s, a), xxhash64(s, a) FROM t")
     }
   }
 
@@ -580,7 +583,8 @@ class CometHashExpressionSuite
     withTable("t") {
       sql("CREATE TABLE t(a INT, b STRING, c ARRAY<INT>) USING parquet")
       sql("INSERT INTO t VALUES (null, null, null)")
-      checkSparkAnswerAndOperator("SELECT hash(a), hash(b), hash(c), hash(a, b, c) FROM t")
+      checkSparkAnswerAndOperator(
+        "SELECT hash(a), xxhash64(a), hash(b), xxhash64(b), hash(c), xxhash64(c), hash(a, b, c), xxhash64(a, b, c) FROM t")
     }
   }
 
@@ -588,9 +592,9 @@ class CometHashExpressionSuite
     withTable("t") {
       sql("CREATE TABLE t(c INT) USING parquet")
       sql("INSERT INTO t VALUES (1), (2), (3), (null)")
-      // hash() with seed 42 (default) and seed 0
+      // Extra integer arguments are hashed as additional children, not as the Spark seed.
       checkSparkAnswerAndOperator(
-        "SELECT hash(c), hash(c, 0), hash(c, 42), hash(c, -1) FROM t ORDER BY c")
+        "SELECT hash(c), xxhash64(c), hash(c, 0), xxhash64(c, 0), hash(c, 42), xxhash64(c, 42), hash(c, -1), xxhash64(c, -1) FROM t ORDER BY c")
     }
   }
 
@@ -600,7 +604,7 @@ class CometHashExpressionSuite
       // Create an array with 1000 elements
       val largeArray = (1 to 1000).mkString("array(", ", ", ")")
       sql(s"INSERT INTO t VALUES ($largeArray)")
-      checkSparkAnswerAndOperator("SELECT hash(c) FROM t")
+      checkSparkAnswerAndOperator("SELECT hash(c), xxhash64(c) FROM t")
     }
   }
 
@@ -617,7 +621,7 @@ class CometHashExpressionSuite
             (named_struct('a', 1, 'b', named_struct('x', 'hello', 'y',
               array(named_struct('p', 10, 'q', 'foo'), named_struct('p', 20, 'q', 'bar'))))),
             (null)""")
-      checkSparkAnswerAndOperator("SELECT c, hash(c) FROM t")
+      checkSparkAnswerAndOperator("SELECT c, hash(c), xxhash64(c) FROM t")
     }
   }
 
@@ -628,7 +632,7 @@ class CometHashExpressionSuite
           sql("CREATE TABLE t(c STRING) USING parquet")
           // Repeated values to trigger dictionary encoding
           sql("INSERT INTO t VALUES ('a'), ('b'), ('a'), ('b'), ('a'), ('c'), (null)")
-          checkSparkAnswerAndOperator("SELECT c, hash(c) FROM t ORDER BY c")
+          checkSparkAnswerAndOperator("SELECT c, hash(c), xxhash64(c) FROM t ORDER BY c")
         }
       }
     }
@@ -644,7 +648,7 @@ class CometHashExpressionSuite
                 (array('a', 'b')),
                 (array('c')),
                 (null)""")
-          checkSparkAnswerAndOperator("SELECT c, hash(c) FROM t")
+          checkSparkAnswerAndOperator("SELECT c, hash(c), xxhash64(c) FROM t")
         }
       }
     }
@@ -690,7 +694,7 @@ class CometHashExpressionSuite
             (3, array(named_struct('l', cast(null as array<int>))), null),
             (4, null, array(named_struct('a', 3, 'b', 'z')))""")
       checkSparkAnswerAndOperator(
-        "SELECT id, hash(nested), xxhash64(nested), hash(plain, nested) FROM t ORDER BY id")
+        "SELECT id, hash(nested), xxhash64(nested), hash(plain, nested), xxhash64(plain, nested) FROM t ORDER BY id")
     }
   }
 
@@ -709,7 +713,7 @@ class CometHashExpressionSuite
       spark.read.parquet(filename.toString).createOrReplaceTempView("t1")
       for (col <- schema.fields) {
         val name = col.name
-        checkSparkAnswer(s"select $name, hash($name) from t1 order by $name")
+        checkSparkAnswer(s"select $name, hash($name), xxhash64($name) from t1 order by $name")
       }
     }
   }

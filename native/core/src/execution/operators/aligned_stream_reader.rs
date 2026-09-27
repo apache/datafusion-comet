@@ -91,7 +91,10 @@ impl Iterator for AlignedArrowStreamReader {
 /// JVM producer's 8-byte-aligned `Decimal128` buffer reaches us under-aligned and would panic in
 /// `ScalarBuffer::<i128>::from` once `StructArray::from` materializes the typed column. See
 /// apache/arrow-rs#10028; the arrow 59 fix (apache/arrow-rs#10030) folds this `align_buffers` call
-/// into `from_ffi_and_data_type` itself.
+/// into `from_ffi_and_data_type` itself. This reader is currently consumed only by `ScanExec`;
+/// after this function materializes the batch, `ScanExec::pull_next` passes every column through
+/// `import_column`, which validates and decodes string data before native execution can read it.
+/// Any future consumer must preserve that validation step.
 fn batch_from_ffi(array: FFI_ArrowArray, schema: &SchemaRef) -> Result<RecordBatch, ArrowError> {
     let dt = DataType::Struct(schema.fields().clone());
     // SAFETY: the caller transfers ownership of a valid FFI array whose layout matches `schema`.

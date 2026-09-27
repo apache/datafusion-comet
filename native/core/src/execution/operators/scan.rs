@@ -31,7 +31,8 @@ use datafusion::{
     physical_expr::*,
     physical_plan::{ExecutionPlan, *},
 };
-use futures::Stream;
+use datafusion_comet_common::decode_string_arrays;
+use futures::{task::AtomicWaker, Stream};
 use itertools::Itertools;
 use std::{
     pin::Pin,
@@ -56,6 +57,8 @@ pub struct ScanExec {
     /// Used in unit tests to mock the input batch; otherwise written by `pull_next` on each
     /// poll.
     pub batch: Arc<Mutex<Option<InputBatch>>>,
+    /// Woken when `batch` is refilled, so a poll that found it empty is repeated.
+    waker: Arc<AtomicWaker>,
     cache: Arc<PlanProperties>,
     metrics: ExecutionPlanMetricsSet,
     baseline_metrics: BaselineMetrics,
@@ -89,6 +92,7 @@ impl ScanExec {
             input_source_description: input_source_description.to_string(),
             data_types,
             batch: Arc::new(Mutex::new(None)),
+            waker: Arc::new(AtomicWaker::new()),
             cache,
             metrics: metrics_set,
             baseline_metrics,
@@ -109,9 +113,11 @@ impl ScanExec {
     /// Feeds input batch into this `Scan`. Only used in unit test.
     pub fn set_input_batch(&mut self, input: InputBatch) {
         *self.batch.try_lock().unwrap() = Some(input);
+        self.waker.wake();
     }
 
-    /// Pull next input batch from the upstream `ArrowArrayStreamReader`.
+    /// Pulls the next input batch from the upstream `ArrowArrayStreamReader` unless one is
+    /// already buffered, then wakes the stream waiting for it.
     pub fn get_next_batch(&mut self) -> Result<(), CometError> {
         if self.input_source.is_none() {
             // This is a unit test. Input batches are seeded via `set_input_batch`.
@@ -119,13 +125,17 @@ impl ScanExec {
         }
 
         let mut current_batch = self.batch.try_lock().unwrap();
-        if current_batch.is_none() {
-            let mut timer = self.baseline_metrics.elapsed_compute().timer();
-            let next_batch =
-                ScanExec::pull_next(self.exec_context_id, self.input_source.as_ref().unwrap())?;
-            *current_batch = Some(next_batch);
-            timer.stop();
+        if current_batch.is_some() {
+            return Ok(());
         }
+
+        let mut timer = self.baseline_metrics.elapsed_compute().timer();
+        let next_batch =
+            ScanExec::pull_next(self.exec_context_id, self.input_source.as_ref().unwrap())?;
+        *current_batch = Some(next_batch);
+        timer.stop();
+        drop(current_batch);
+        self.waker.wake();
 
         Ok(())
     }
@@ -157,12 +167,21 @@ impl ScanExec {
                 let columns = record_batch.columns();
                 let mut inputs: Vec<ArrayRef> = Vec::with_capacity(columns.len());
                 for col in columns {
-                    inputs.push(copy_or_unpack_array(col, &CopyMode::UnpackOrClone)?);
+                    inputs.push(import_column(col)?);
                 }
                 Ok(InputBatch::new(inputs, Some(num_rows)))
             }
         }
     }
+}
+
+/// Transform one FFI-imported column for native execution: first decode any invalid UTF-8 to the
+/// Spark-rendered form (arrow's `from_ffi` imports string buffers unchecked), then copy/unpack.
+/// Decoding runs before unpacking so a `Dictionary(_, Utf8)` decodes its compact values, not the
+/// expanded ones.
+fn import_column(col: &ArrayRef) -> Result<ArrayRef, CometError> {
+    let decoded = decode_string_arrays(col)?;
+    Ok(copy_or_unpack_array(&decoded, &CopyMode::UnpackOrClone)?)
 }
 
 fn schema_from_data_types(data_types: &[DataType]) -> SchemaRef {
@@ -313,28 +332,27 @@ impl ScanStream<'_> {
 impl Stream for ScanStream<'_> {
     type Item = DataFusionResult<RecordBatch>;
 
-    fn poll_next(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let mut timer = self.baseline_metrics.elapsed_compute().timer();
         let mut scan_batch = self.scan.batch.try_lock().unwrap();
 
-        let input_batch = &*scan_batch;
-        let input_batch = if let Some(batch) = input_batch {
-            batch
-        } else {
-            timer.stop();
-            return Poll::Pending;
-        };
-
-        let result = match input_batch {
-            InputBatch::EOF => Poll::Ready(None),
-            InputBatch::Batch(columns, num_rows) => {
+        let result = match &*scan_batch {
+            None => {
+                self.scan.waker.register(cx.waker());
+                Poll::Pending
+            }
+            // EOF stays buffered: a re-poll ends the stream again and `get_next_batch` has
+            // nothing to pull.
+            Some(InputBatch::EOF) => Poll::Ready(None),
+            Some(InputBatch::Batch(columns, num_rows)) => {
                 self.baseline_metrics.record_output(*num_rows);
                 let maybe_batch = self.build_record_batch(columns, *num_rows);
                 Poll::Ready(Some(maybe_batch))
             }
         };
-
-        *scan_batch = None;
+        if matches!(result, Poll::Ready(Some(_))) {
+            *scan_batch = None;
+        }
 
         timer.stop();
 
@@ -378,5 +396,30 @@ impl InputBatch {
         });
 
         InputBatch::Batch(columns, num_rows)
+    }
+}
+
+#[cfg(test)]
+mod import_tests {
+    use super::*;
+    use arrow::array::{make_array, Array, ArrayData, ArrayRef, StringArray};
+    use arrow::buffer::Buffer;
+    use arrow::datatypes::DataType;
+
+    #[test]
+    fn import_decodes_invalid_utf8_column() {
+        // An FFI-imported Utf8 column with invalid bytes [0xFF] -> must be decoded, not passed
+        // through, so downstream `value()` is sound.
+        let data = unsafe {
+            ArrayData::builder(DataType::Utf8)
+                .len(1)
+                .add_buffer(Buffer::from_slice_ref([0i32, 1]))
+                .add_buffer(Buffer::from(vec![0xFFu8]))
+                .build_unchecked()
+        };
+        let col: ArrayRef = make_array(data);
+        let out = import_column(&col).unwrap();
+        let s = out.as_any().downcast_ref::<StringArray>().unwrap();
+        assert_eq!(s.value(0), "\u{FFFD}");
     }
 }

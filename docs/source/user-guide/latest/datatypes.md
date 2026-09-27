@@ -71,12 +71,12 @@ the tables below and may be reconsidered based on demand:
 
 ## Datetime
 
-| Type               | Status | Notes                                                                                                                                                                             |
-| ------------------ | ------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `DateType`         | ✅     |                                                                                                                                                                                   |
-| `TimestampType`    | ✅     |                                                                                                                                                                                   |
-| `TimestampNTZType` | ✅     |                                                                                                                                                                                   |
-| `TimeType`         | ⚠️     | Spark 4.1+. Native serialization is in place; some operators (sort, shuffle, min/max) are still being wired up ([#4288](https://github.com/apache/datafusion-comet/issues/4288)). |
+| Type               | Status | Notes                                                                                                                                                                    |
+| ------------------ | ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `DateType`         | ✅     |                                                                                                                                                                          |
+| `TimestampType`    | ✅     |                                                                                                                                                                          |
+| `TimestampNTZType` | ✅     |                                                                                                                                                                          |
+| `TimeType`         | ⚠️     | Spark 4.1+. Native serialization is in place; some operators (sort, min/max) are still being wired up ([#4288](https://github.com/apache/datafusion-comet/issues/4288)). |
 
 ## Interval
 
@@ -84,28 +84,43 @@ All three interval types are mapped to Arrow and flow through serde, native shuf
 codegen dispatcher, so interval columns and the interval-producing expressions run natively.
 Several operators still gate on the type and fall back: Parquet scans of ANSI interval columns,
 single-column sorts, hash aggregates (`min` / `max` / `sum` / `avg`), `GROUP BY`, window
-functions, and hashing a `CalendarInterval`. Remaining work is tracked by
+functions. Remaining work is tracked by
 [#5061](https://github.com/apache/datafusion-comet/issues/5061).
 
-| Type                    | Status | Notes                                                                                      |
-| ----------------------- | ------ | ------------------------------------------------------------------------------------------ |
-| `YearMonthIntervalType` | ⚠️     | Parquet scan, single-column sort, aggregate, `GROUP BY`, and window operators fall back.   |
-| `DayTimeIntervalType`   | ⚠️     | Parquet scan, single-column sort, aggregate, `GROUP BY`, and window operators fall back.   |
-| `CalendarIntervalType`  | ⚠️     | As above, plus `hash` / `xxhash64` of a `CalendarInterval` fails rather than falling back. |
+| Type                    | Status | Notes                                                                                    |
+| ----------------------- | ------ | ---------------------------------------------------------------------------------------- |
+| `YearMonthIntervalType` | ⚠️     | Parquet scan, single-column sort, aggregate, `GROUP BY`, and window operators fall back. |
+| `DayTimeIntervalType`   | ⚠️     | Parquet scan, single-column sort, aggregate, `GROUP BY`, and window operators fall back. |
+| `CalendarIntervalType`  | ⚠️     | Parquet scan, single-column sort, aggregate, `GROUP BY`, and window operators fall back. |
 
 ## Complex
 
 | Type         | Status | Notes                                                                                                                                                                                    |
 | ------------ | ------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `StructType` | ✅     | Empty structs (no fields) fall back.                                                                                                                                                     |
+| `StructType` | ✅     | Empty structs (no fields) and structs with duplicate field names fall back.                                                                                                              |
 | `ArrayType`  | ✅     |                                                                                                                                                                                          |
 | `MapType`    | ✅     | Hash aggregate group keys cannot contain a `MapType` (transitively): Arrow's row format used by DataFusion's grouped hash aggregate does not support `Map`, so such groupings fall back. |
 
 ## Variant
 
-| Type          | Status | Notes                                                                                                                                                                                                          |
-| ------------- | ------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `VariantType` | 🔜     | Spark 4.0+. Native scan support is tracked by [#4295](https://github.com/apache/datafusion-comet/issues/4295); shredded Parquet read/write by [#3983](https://github.com/apache/datafusion-comet/issues/3983). |
+| Type          | Status | Notes                                                                                                                           |
+| ------------- | ------ | ------------------------------------------------------------------------------------------------------------------------------- |
+| `VariantType` | ⚠️     | Spark 4.0+. Native Parquet scans support direct projection of top-level Variant columns. Non-null existence defaults fall back. |
+
+Direct projection requires explicit configuration on every supported Spark version:
+`spark.sql.variant.allowReadingShredded=true` (defaults to false in Spark 4.0) and
+`spark.sql.variant.pushVariantIntoScan=false` (defaults to true in Spark 4.1+), with the default
+Parquet timestamp inference settings. Support for Spark's whole-value pushdown rewrite is tracked
+by [#5519](https://github.com/apache/datafusion-comet/issues/5519). Nested Variant columns, pushed-down
+Variant field extraction, expressions, writes, shuffle and spill, Python operators, encrypted
+files, and Iceberg scans that read a Variant column fall back to Spark. Iceberg scans of tables
+whose Variant columns the query does not read run natively. Spark also handles columnar-to-row
+conversion of the native scan output and strict reads with `allowReadingShredded=false`. Broader
+support is tracked by [#4295](https://github.com/apache/datafusion-comet/issues/4295) and
+[#3983](https://github.com/apache/datafusion-comet/issues/3983).
+
+Shredded reconstruction can be slower than Spark's reader; see the
+[focused scan and allocation measurements in PR #5868](https://github.com/apache/datafusion-comet/pull/5868).
 
 ## Other
 

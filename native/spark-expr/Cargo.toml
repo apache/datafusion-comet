@@ -96,6 +96,10 @@ name = "aggregate"
 harness = false
 
 [[bench]]
+name = "approx_percentile"
+harness = false
+
+[[bench]]
 name = "date_diff"
 harness = false
 
@@ -404,7 +408,19 @@ name = "iceberg_transforms"
 harness = false
 
 [[bench]]
+name = "spark_pow"
+harness = false
+
+[[bench]]
+name = "cast_decimal_to_boolean"
+harness = false
+
+[[bench]]
 name = "dayofweek_weekday"
+harness = false
+
+[[bench]]
+name = "aggregate_stats"
 harness = false
 
 [[bench]]
@@ -413,4 +429,12 @@ harness = false
 
 [[bench]]
 name = "json_array_length"
+harness = false
+
+[[bench]]
+name = "utf8_decode"
+harness = false
+
+[[bench]]
+name = "nested_comparison"
 harness = false

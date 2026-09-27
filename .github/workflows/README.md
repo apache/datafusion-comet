@@ -171,13 +171,26 @@ safe to make a required check.
 
 ### Label events
 
-`ci.yml` also fires on `pull_request.types: [labeled]`, so applying
-`run-spark-3.4-tests`, `run-spark-4.0-tests` or `run-iceberg-tests` starts the
-job that label gates without needing a new push. GitHub cannot filter a
-`pull_request` trigger by label name, so **every** label added to a PR starts a
-run, including labels that gate nothing.
+`ci_label.yml` fires on `pull_request.types: [labeled]` and calls `ci.yml`
+through `workflow_call`, so applying `run-spark-3.4-tests`,
+`run-spark-4.0-tests` or `run-iceberg-tests` starts the job that label gates
+without needing a new push. GitHub cannot filter a `pull_request` trigger by
+label name, so **every** label added to a PR starts a run, including labels
+that gate nothing. A called workflow sees its caller's event context, so
+`POLICY` still reads the `labeled` action and the label name.
 
-Two rules keep those runs from corrupting the PR's status:
+These rules keep those runs from corrupting the PR's status:
+
+- Label runs come from their own workflow, not from a `labeled` type on
+  `ci.yml`'s trigger. When one workflow runs twice at the same commit, GitHub
+  evaluates the PR's required checks against only one of the two runs. A PR
+  opened with a label already applied fires `opened` and `labeled` together,
+  and when GitHub picked the label run, `Required Checks` showed as "Expected"
+  forever and the merge queue never accepted the PR, see
+  [#6159](https://github.com/apache/datafusion-comet/issues/6159). A run of
+  `ci_label.yml` has its own check suite, and every check it publishes is
+  nested under its `Label run` job, so it cannot hide or replace a commit
+  run's check.
 
 - `preflight` and `changes` carry no event guard and run every time. A job held
   back by `if:` still publishes a check run under its own name with conclusion
@@ -431,11 +444,11 @@ built-in step retry. Use `./.github/actions/upload-artifact-retry` instead for
 any artifact a later job consumes: same inputs and outputs, three attempts,
 15s then 45s backoff. Attempts 2 and 3 force `overwrite: true`, so the name
 must belong to exactly one producer in the run (see above). The uploads inside
-`./.github/actions/java-test` stay on the plain action, since a local action
-calling another local action is untested here. Its two failure-only uploads run
-on jobs that are already red. Its test-report upload also runs on green jobs
-and is `continue-on-error: true`: nothing downstream consumes the reports, and
-a `FinalizeArtifact` 403 must not turn a passing test run into a red check.
+`./.github/actions/java-test` stay on the plain action. Its two failure-only
+uploads run on jobs that are already red. Its test-report upload also runs on
+green jobs and is `continue-on-error: true`: nothing downstream consumes the
+reports, and a `FinalizeArtifact` 403 must not turn a passing test run into a
+red check.
 
 **Artifact download.** `actions/download-artifact` has the same narrow retry
 list, so a `ListArtifacts` answered `(403) Forbidden: Error from intermediary`
@@ -466,15 +479,18 @@ the whole pipeline by hand.
 **Maven wrapper bootstrap.** `./mvnw` downloads the Maven distribution itself on
 a cold runner, and a blip from `repo.maven.apache.org` fails the job before
 anything is compiled. `./.github/actions/maven-bootstrap` caches that
-distribution under `~/.m2/wrapper/dists` (keyed on
+distribution under the wrapper's `.m2/wrapper/dists` (keyed on
 `.mvn/wrapper/maven-wrapper.properties`, not `pom.xml`) and retries
 `./mvnw --version` four times with exponential backoff. It retries only the
 bootstrap, never compilation or test execution.
 
-Any job whose first Maven use is a bare `./mvnw` needs this step before it.
-`./.github/actions/java-test` carries its own inline copy rather than calling
-the composite, because a local action invoking another local action is
-deliberately avoided here (see the artifact-upload note above).
+`./.github/actions/setup-builder` and `./.github/actions/setup-macos-builder`
+run it as their last step, once the JDK is on PATH, so every job that goes
+through either of them is covered without a step of its own; that includes
+the `java-test`, `rust-test` and `setup-spark-builder` callers. `preflight` in
+`ci.yml` uses no setup action and calls it directly before the RAT check. A
+new job that runs `./mvnw` without going through a setup action needs the
+step before its first Maven use.
 
 ## Merge queue
 

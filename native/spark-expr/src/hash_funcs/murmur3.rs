@@ -833,7 +833,7 @@ mod tests {
         use arrow::array::builder::{Int32Builder, ListBuilder, StringBuilder, StructBuilder};
         use arrow::datatypes::{DataType, Field, Fields};
 
-        fn build(payload_len: usize) -> ArrayRef {
+        fn build(data_capacity: usize) -> ArrayRef {
             let fields: Fields = vec![
                 Arc::new(Field::new("a", DataType::Int32, true)),
                 Arc::new(Field::new("b", DataType::Utf8, true)),
@@ -843,11 +843,10 @@ mod tests {
                 fields,
                 vec![
                     Box::new(Int32Builder::new()),
-                    Box::new(StringBuilder::new()),
+                    Box::new(StringBuilder::with_capacity(10, data_capacity)),
                 ],
             ));
             // Uneven lengths with an empty row and a null row, so rows drop out on different passes.
-            let payload = "x".repeat(payload_len);
             for (row, len) in [3usize, 0, 4, 1, 2].iter().enumerate() {
                 for i in 0..*len {
                     let sb = lb.values();
@@ -856,7 +855,7 @@ mod tests {
                         .append_value((row * 10 + i) as i32);
                     sb.field_builder::<StringBuilder>(1)
                         .unwrap()
-                        .append_value(&payload);
+                        .append_value("xxxx");
                     sb.append(i % 3 != 2);
                 }
                 lb.append(row != 1);
@@ -875,7 +874,8 @@ mod tests {
             "a small flat struct should be batched"
         );
 
-        // One wide value pushes the retained child past the limit, so the same shape is sliced.
+        // Retained capacity pushes the child past the limit without making Miri hash megabytes
+        // of padding. Both arrays contain the same values but take different paths.
         let big = build(GATHER_ELIGIBLE_CHILD_BYTES);
         let big_elements = big
             .as_any()
