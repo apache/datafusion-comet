@@ -367,11 +367,13 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with CometTypeS
     // Field-ID matching: only ask the native side to do extra work when the conf is on AND
     // the requested schema actually carries IDs. Spark's ParquetReadSupport applies the same
     // gate before invoking matchIdField.
-    val useFieldId =
-      conf.getConf(SQLConf.PARQUET_FIELD_ID_READ_ENABLED) &&
-        ParquetUtils.hasFieldIds(requiredSchema)
+    val hasFieldIds = ParquetUtils.hasFieldIds(requiredSchema)
+    val useFieldId = conf.getConf(SQLConf.PARQUET_FIELD_ID_READ_ENABLED) && hasFieldIds
     commonBuilder.setUseFieldId(useFieldId)
-    commonBuilder.setIgnoreMissingFieldId(conf.getConf(SQLConf.IGNORE_MISSING_PARQUET_FIELD_ID))
+    // Spark's ParquetReadSupport refuses a file without field ids whenever the requested
+    // schema carries one, whatever the read flag says, unless ignoreMissing is set.
+    commonBuilder.setRequireFieldIds(
+      hasFieldIds && !conf.getConf(SQLConf.IGNORE_MISSING_PARQUET_FIELD_ID))
 
     commonBuilder.setAllowTypePromotion(CometConf.COMET_SCHEMA_EVOLUTION_ENABLED)
     commonBuilder.setAllowTimestampLtzToNtz(CometConf.COMET_ALLOW_TIMESTAMP_LTZ_AS_NTZ)

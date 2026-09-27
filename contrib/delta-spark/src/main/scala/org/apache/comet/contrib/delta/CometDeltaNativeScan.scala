@@ -447,7 +447,8 @@ object CometDeltaNativeScan
 
     // Protos carry physical names (column mapping); index math below stays logical.
     val partitionSchemaProto = schema2Proto(partitionSchemaFields)
-    val requiredSchemaProto = schema2Proto(toPhysical(scanExec, strippedRequired))
+    val physicalRequired = toPhysical(scanExec, strippedRequired)
+    val requiredSchemaProto = schema2Proto(physicalRequired)
     val dataSchemaProto = schema2Proto(physicalDataSchema)
 
     // Projection: data columns from the (stripped) read schema; internal columns from their
@@ -476,9 +477,11 @@ object CometDeltaNativeScan
     commonBuilder.addAllRequiredSchema(requiredSchemaProto.asJava)
     commonBuilder.addAllPartitionSchema(partitionSchemaProto.asJava)
 
+    // The physical schema, as in the plain shape: it is what DeltaParquetFileFormat hands
+    // Spark's ParquetReadSupport, so the field id flags match the ids Spark checks.
     CometNativeScan.populateScanConfFlags(
       commonBuilder,
-      strippedRequired,
+      physicalRequired,
       firstFileUri,
       hadoopConf,
       scanExec.conf)

@@ -543,7 +543,7 @@ impl PhysicalPlanner {
             self.session_ctx(),
             common.encryption_enabled,
             common.use_field_id,
-            common.ignore_missing_field_id,
+            common.require_field_ids,
             rebase_from_file_metadata,
             datetime_rebase_mode_in_read,
             int96_rebase_mode_in_read,

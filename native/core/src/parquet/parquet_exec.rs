@@ -88,7 +88,7 @@ pub(crate) fn init_datasource_exec(
     session_ctx: &Arc<SessionContext>,
     encryption_enabled: bool,
     use_field_id: bool,
-    ignore_missing_field_id: bool,
+    require_field_ids: bool,
     rebase_from_file_metadata: bool,
     datetime_rebase_mode_in_read: &str,
     int96_rebase_mode_in_read: &str,
@@ -109,7 +109,6 @@ pub(crate) fn init_datasource_exec(
         &session_config.options().execution.parquet,
     );
     spark_parquet_options.use_field_id = use_field_id;
-    spark_parquet_options.ignore_missing_field_id = ignore_missing_field_id;
     // Spark can discard filtered-out values before timestamp conversion using statistics,
     // dictionary, and row-level filters. Comet cannot mirror every pruning path, so applying
     // checked conversion in a filtered scan can fail on values Spark never reads. Preserve the
@@ -240,6 +239,7 @@ pub(crate) fn init_datasource_exec(
             parquet_source.metrics(),
         )
         .with_spark_variant_schema(projects_variant)
+        .with_require_field_ids(require_field_ids)
         .with_int96_leaf_stamp(rebase_from_file_metadata),
     );
     parquet_source = parquet_source.with_parquet_file_reader_factory(reader_factory);
