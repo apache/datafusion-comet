@@ -114,9 +114,9 @@ The following cases are not supported by Comet and always fall back to Spark, re
 
 ## SecondsToTimestamp
 
-The following cases are not supported by Comet and always fall back to Spark, regardless of any `allowIncompatible` setting:
+The following cases have no native implementation and always run in the JVM using Spark's code-generated implementation (inside the Comet pipeline):
 
-- Only `IntegerType`, `LongType`, `FloatType`, and `DoubleType` inputs are supported. `DecimalType`, `ByteType`, and `ShortType` fall back to Spark.
+- `DecimalType`, `ByteType`, and `ShortType` inputs
 
 ## ToUTCTimestamp
 
