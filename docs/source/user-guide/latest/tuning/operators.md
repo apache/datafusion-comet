@@ -99,6 +99,24 @@ SET spark.comet.datafusion.execution.skip_partial_aggregation_probe_ratio_thresh
 These settings only tune eligible plans. Unsupported accumulators and modes remain
 disabled even when configuration overrides are enabled.
 
+## Local TopK Fusion
+
+Set `spark.comet.exec.topK.fusion.enabled=true` to run an eligible local TopK in the same native
+execution as its Parquet scan. This experimental optimization is disabled by default. It currently
+supports a direct native Parquet scan ordered by one signed integer column (`TINYINT`, `SMALLINT`,
+`INT`, or `BIGINT`). Both sort directions and null orderings are supported. Other inputs use the
+existing TopK execution path.
+
+Each scan partition keeps enough candidates for both `LIMIT` and `OFFSET`. With multiple partitions,
+Comet shuffles those candidates and performs the final TopK. With one partition, it reuses the local
+ordering without building a second heap. The final stage applies the offset and output projection.
+
+Fusion reduces the work of passing scan batches between native execution blocks. It still reads all
+input rows and does not enable TopK reader pruning. It can also reduce overlap between scan decoding
+and TopK processing, so some workloads may run slower. Compare enabled and disabled runs with your
+data layout, payload width, limit, and partition count before enabling it. The
+`CometTopKBenchmark` microbenchmark covers these cases with ascending, descending, and random layouts.
+
 ## Optimizing Sorting on Floating-Point Values
 
 Comet normalizes NaN payloads and signed zeros in scalar `FLOAT` and `DOUBLE` ordering keys, so `ORDER BY`, window
