@@ -62,18 +62,30 @@ name: Comet CI
 
 # A `labeled` event (e.g. the run-spark-*-tests gates, or dependabot's automatic
 # `dependencies` label added ~1s after open) fires at the same commit as the
-# opened/synchronize run. Keying the group on the label name keeps labeled runs
-# in their own subgroup so they never cancel the real commit run. Every other
-# run is keyed on its event name: opened, synchronize and reopened all map to
-# `pull_request`, so a new push still supersedes its predecessor, while a
-# scheduled run at the tip of main never cancels that commit's push run.
+# opened/synchronize run. Label runs reach this file through ci_label.yml, so
+# `github.workflow` already separates them from the commit run; keying the
+# group on the label name as well keeps two different labels from cancelling
+# each other. Every other run is keyed on its event name: opened, synchronize
+# and reopened all map to `pull_request`, so a new push still supersedes its
+# predecessor, while a scheduled run at the tip of main never cancels that
+# commit's push run.
 concurrency:
   group: ${{ github.repository }}-${{ github.head_ref || github.sha }}-${{ github.workflow }}-${{ github.event.action == 'labeled' && github.event.label.name || github.event_name }}
   cancel-in-progress: true
 
+# No `labeled` here: ci_label.yml handles that event and calls this file
+# through `workflow_call`. When one workflow runs twice at the same commit,
+# GitHub evaluates the pull request's required checks against only one of the
+# two runs. A PR opened with a label already applied gets both an `opened` and
+# a `labeled` run, and when the label run was the one GitHub picked, the
+# `Required Checks` context showed as "Expected" forever and the merge queue
+# never took the PR (issue #6159). A separate workflow gets its own check
+# suite, so a label run can never hide the commit run's verdict.
+# dev/ci/check-ci-config.py enforces this.
 on:
   pull_request:
-    types: [opened, synchronize, reopened, labeled]
+    types: [opened, synchronize, reopened]
+  workflow_call:
   merge_group:
   push:
     branches:
@@ -173,6 +185,9 @@ jobs:
 
       - name: Check Iceberg shard inventory validation
         run: python3 dev/ci/test-iceberg-shards.py
+
+      - name: Check Iceberg write report summary
+        run: python3 dev/ci/test-summarize-iceberg-writes.py
 
       - name: Check CI config invariants
         run: python3 dev/ci/check-ci-config.py
@@ -530,15 +545,16 @@ jobs:
   # `if: always()` is what makes this work: without it the job inherits the
   # default `success()` and is itself skipped the moment any dependency fails.
   #
-  # The name is an expression because `ci.yml` also fires on `labeled`, and on
-  # that event POLICY deliberately skips the PR tier (it already ran at this
-  # commit). A label run's verdict therefore says nothing about the commit's
-  # applicable suites, yet GitHub keeps only the most recent check run per name
-  # per commit, so publishing it as `Required Checks` would let a `dependencies`
-  # label turn a still-running or red commit run green (issue #5007). Label
-  # runs publish under a name nothing requires instead. Skipping the job here
-  # would not help: a skipped check run still carries the name and still counts
-  # as passing. dev/ci/check-ci-config.py enforces both halves of this.
+  # The name is an expression because ci_label.yml runs this file on `labeled`
+  # too, and on that event POLICY deliberately skips the PR tier (it already
+  # ran at this commit). A label run's verdict therefore says nothing about the
+  # commit's applicable suites, so publishing it as `Required Checks` could let
+  # a `dependencies` label turn a still-running or red commit run green (issue
+  # #5007). Label runs publish under a name nothing requires instead. Skipping
+  # the job here would not help: a skipped check run still carries the name and
+  # still counts as passing. Running label runs as a separate workflow (issue
+  # #6159) is the other half: it stops a label run from hiding this job's
+  # verdict from the merge box. dev/ci/check-ci-config.py enforces all of it.
   # ---------------------------------------------------------------------------
   required_checks:
     name: ${{ github.event.action == 'labeled' && 'Required Checks (label run)' || 'Required Checks' }}

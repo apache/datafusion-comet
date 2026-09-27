@@ -43,7 +43,7 @@ import org.apache.spark.sql.types.{ArrayType, DataTypes, StructField, StructType
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometConf.COMET_EXEC_STRICT_FLOATING_POINT
-import org.apache.comet.CometSparkSessionExtensions.{isSpark40Plus, isSpark41Plus}
+import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus, isSpark41Plus}
 import org.apache.comet.rules.CometExecRule
 import org.apache.comet.serde.RegrSparkVersions
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator, ParquetGenerator, SchemaGenOptions}
@@ -1963,11 +1963,18 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
               Row(null))
           }
           withSQLConf(SQLConf.CODEGEN_FACTORY_MODE.key -> "NO_CODEGEN") {
-            assertDecimalSumFallsBackLikeSpark(
-              sql("SELECT SUM(v) FROM dec_no_codegen"),
-              reason,
-              ansiEnabled,
-              Row(null))
+            val df = sql("SELECT SUM(v) FROM dec_no_codegen")
+            if (isSpark35Plus) {
+              assertDecimalSumFallsBackLikeSpark(df, reason, ansiEnabled, Row(null))
+            } else {
+              // Before SPARK-44236 (3.5) the factory mode leaves whole-stage codegen on, so
+              // Spark recovers the sum and the aggregate stays native.
+              checkSparkAnswerAndOperator(df)
+              val answer = df.collect().toSeq
+              assert(
+                answer == Seq(Row(recoveredSum.bigDecimal.setScale(38))),
+                s"NO_CODEGEN on Spark 3.4 returned $answer, expected $recoveredSum")
+            }
           }
         }
       }

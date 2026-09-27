@@ -287,9 +287,6 @@ git tag 0.13.0-rc1
 git push apache 0.13.0-rc1
 ```
 
-Note that pushing a release candidate tag will trigger a GitHub workflow that will build a Docker image and publish
-it to GitHub Container Registry at https://github.com/apache/datafusion-comet/pkgs/container/datafusion-comet
-
 ### Publishing Documentation
 
 In `docs` directory:
@@ -467,9 +464,6 @@ git checkout 0.13.0-rc1
 git tag 0.13.0
 git push apache 0.13.0
 ```
-
-Note that pushing a release tag will trigger a GitHub workflow that will build a Docker image and publish
-it to GitHub Container Registry at https://github.com/apache/datafusion-comet/pkgs/container/datafusion-comet
 
 Reply to the vote thread to close the vote and announce the release. The announcement email should include:
 
