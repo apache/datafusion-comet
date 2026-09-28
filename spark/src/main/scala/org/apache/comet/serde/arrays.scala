@@ -862,6 +862,10 @@ object CometArraysZip extends CometExpressionSerde[ArraysZip] {
   }
 
   override def getSupportLevel(expr: ArraysZip): SupportLevel = {
+    val names = expr.names.map(_.eval(EmptyRow))
+    if (names.length != names.distinct.length) {
+      return Unsupported(Some("`arrays_zip` with duplicate field names is not supported"))
+    }
     val inputTypes = expr.children.map(_.dataType).toSet
     for (dt <- inputTypes) {
       if (!isTypeSupported(dt)) {

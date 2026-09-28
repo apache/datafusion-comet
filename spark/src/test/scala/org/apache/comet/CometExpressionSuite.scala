@@ -3924,4 +3924,17 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("arrays_zip with duplicate field names falls back to Spark") {
+    withTable("t_arrays_zip") {
+      spark.sql("create table t_arrays_zip(id int, a array<string>, b array<int>) using parquet")
+      spark.sql("insert into t_arrays_zip values (1, array('x'), array(1, 2))")
+
+      val df1 = spark.sql("select arrays_zip(a, a) from t_arrays_zip")
+      checkSparkAnswer(df1)
+
+      val df2 = spark.sql("select arrays_zip(b, b) from t_arrays_zip")
+      checkSparkAnswer(df2)
+    }
+  }
+
 }
