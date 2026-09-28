@@ -256,6 +256,18 @@ pub extern "system" fn Java_..._exportVector(
 }
 ```
 
+### Array Offsets
+
+Arrow Java's C Data import ignores `ArrowArray.offset` at every level
+([apache/arrow-java#88](https://github.com/apache/arrow-java/issues/88)) and reads each buffer from its start. arrow-rs
+folds a slice into the buffers for almost every type, but a sliced `BooleanArray` keeps its bit offset, and a struct
+exports offset 0 even when its children are sliced. So every array native exports to the JVM first goes through
+`zero_offsets` (in `native/common/src/ffi_offsets.rs`), which re-slices boolean bitmaps to start at bit 0 at every
+level and shares every other buffer. `move_to_spark` applies it to executed batches and decoded shuffle blocks, and
+`JvmScalarUdfExpr` applies it to the inputs of the JVM UDF bridge. A new native to JVM export path has to call it too,
+or sliced booleans reach the JVM misaligned
+([#6288](https://github.com/apache/datafusion-comet/issues/6288)).
+
 ### Wrapper Object Lifecycle (Native → JVM)
 
 ```
