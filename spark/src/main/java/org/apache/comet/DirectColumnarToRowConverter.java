@@ -308,7 +308,9 @@ public final class DirectColumnarToRowConverter {
     // Matches UnsafeRowWriter.write(ordinal, Decimal, precision, scale) for precision > 18:
     // 16 bytes are always reserved (and consumed) in the variable-length region, the minimal
     // big-endian two's-complement bytes are written at the cursor, and for null values the null
-    // bit is set while the offset is still recorded with size 0.
+    // bit is set while the offset is still recorded with size 0. As in compactDecimalValue, the
+    // changePrecision check that would write NULL is skipped: Comet vectors already hold values at
+    // the declared precision and scale.
     ensureCapacity((long) cursor + 16);
     Platform.putLong(buffer, Platform.BYTE_ARRAY_OFFSET + cursor, 0L);
     Platform.putLong(buffer, Platform.BYTE_ARRAY_OFFSET + cursor + 8, 0L);
@@ -489,6 +491,12 @@ public final class DirectColumnarToRowConverter {
   /**
    * Reads a compact decimal's unscaled long. Comet vectors expose it allocation-free; other vector
    * types (e.g. ConstantColumnVector) go through the allocating accessor.
+   *
+   * <p>Unlike {@code UnsafeRowWriter.write(ordinal, Decimal, precision, scale)}, this writes the
+   * value without calling {@code changePrecision}, which there turns an unrepresentable value into
+   * NULL. That is safe because Comet vectors already hold values at the column's declared precision
+   * and scale after schema adaptation; this is the one place the two writers could otherwise
+   * disagree.
    */
   private long compactDecimalValue(ColumnVector col, int rowId, int ordinal) {
     if (col instanceof CometVector) {

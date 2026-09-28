@@ -19,8 +19,14 @@
 
 package org.apache.comet
 
+import scala.collection.mutable.ArrayBuffer
+
 import org.scalatest.funsuite.AnyFunSuite
 
+import org.apache.arrow.vector.{DecimalVector, FieldVector, IntVector}
+import org.apache.arrow.vector.dictionary.Dictionary
+import org.apache.arrow.vector.dictionary.DictionaryProvider.MapDictionaryProvider
+import org.apache.arrow.vector.types.pojo.{ArrowType, DictionaryEncoding, FieldType}
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{GenericInternalRow, UnsafeProjection, UnsafeRow}
 import org.apache.spark.sql.comet.execution.arrow.CometArrowConverters
@@ -28,6 +34,8 @@ import org.apache.spark.sql.execution.vectorized.ConstantColumnVector
 import org.apache.spark.sql.types._
 import org.apache.spark.sql.vectorized.{ColumnarBatch, ColumnVector}
 import org.apache.spark.unsafe.types.UTF8String
+
+import org.apache.comet.vector.{CometDictionary, CometDictionaryVector, CometPlainVector}
 
 /**
  * Verifies that [[DirectColumnarToRowConverter]] produces rows byte-identical to
@@ -225,6 +233,88 @@ class DirectColumnarToRowConverterSuite extends AnyFunSuite {
       assert(error.getMessage.contains("Batch too large"))
     } finally {
       batch.close()
+    }
+  }
+
+  test("dictionary-encoded compact and wide decimals match UnsafeProjection bytes") {
+    // The native scan hands this converter plain vectors, so build dictionary vectors directly to
+    // reach the non-CometPlainVector branches of compactDecimalValue and writeWideDecimal.
+    val compactType = DecimalType(18, 2)
+    val wideType = DecimalType(38, 10)
+    val compactDictionary =
+      Seq("123.45", "-9999999999999999.99", "0.01").map(new java.math.BigDecimal(_))
+    val wideDictionary = Seq(
+      "12345678901234567890.1234567890",
+      "-999999999999999999999999999.9999999999",
+      "0.0000000000").map(new java.math.BigDecimal(_))
+    val compactIndices = Seq(Some(0), Some(1), None, Some(2), Some(1))
+    val wideIndices = Seq(Some(2), None, Some(0), Some(1), Some(0))
+    val numRows = compactIndices.size
+
+    val allocator = CometArrowAllocator.newChildAllocator("dictionary-decimals", 0, Long.MaxValue)
+    val provider = new MapDictionaryProvider()
+    val vectors = ArrayBuffer.empty[FieldVector]
+    val indexType = new ArrowType.Int(32, true)
+    def dictionaryColumn(
+        name: String,
+        id: Long,
+        dataType: DecimalType,
+        dictionary: Seq[java.math.BigDecimal],
+        indices: Seq[Option[Int]]): CometDictionaryVector = {
+      val values =
+        new DecimalVector(s"${name}_values", allocator, dataType.precision, dataType.scale)
+      vectors += values
+      values.allocateNew(dictionary.size)
+      dictionary.zipWithIndex.foreach { case (v, i) => values.setSafe(i, v) }
+      values.setValueCount(dictionary.size)
+      val encoding = new DictionaryEncoding(id, false, indexType)
+      provider.put(new Dictionary(values, encoding))
+      val ids = new IntVector(name, new FieldType(true, indexType, encoding), allocator)
+      vectors += ids
+      ids.allocateNew(indices.size)
+      indices.zipWithIndex.foreach {
+        case (Some(v), i) => ids.set(i, v)
+        case (None, i) => ids.setNull(i)
+      }
+      ids.setValueCount(indices.size)
+      new CometDictionaryVector(
+        new CometPlainVector(ids),
+        new CometDictionary(new CometPlainVector(values)),
+        provider)
+    }
+
+    try {
+      val compact =
+        dictionaryColumn("compact", 1L, compactType, compactDictionary, compactIndices)
+      val wide = dictionaryColumn("wide", 2L, wideType, wideDictionary, wideIndices)
+      def decimal(dictionary: Seq[java.math.BigDecimal], index: Option[Int], dt: DecimalType) =
+        index.map(i => Decimal(dictionary(i), dt.precision, dt.scale)).orNull
+
+      // Compact-only schemas take the fixed-width path; adding the wide column takes the general
+      // one. Both must write the same bytes as Spark's projection over the decoded values.
+      Seq(
+        (new StructType().add("compact", compactType), Array[ColumnVector](compact)),
+        (
+          new StructType().add("compact", compactType).add("wide", wideType),
+          Array[ColumnVector](compact, wide))).foreach { case (schema, columns) =>
+        val proj = UnsafeProjection.create(schema.fields.map(_.dataType))
+        val converter = new DirectColumnarToRowConverter(schema)
+        converter.setBatch(new ColumnarBatch(columns, numRows))
+        (0 until numRows).foreach { i =>
+          val values = Seq(decimal(compactDictionary, compactIndices(i), compactType)) ++
+            (if (columns.length > 1) Seq(decimal(wideDictionary, wideIndices(i), wideType))
+             else Seq.empty)
+          val expected = proj(new GenericInternalRow(values.toArray[Any]))
+          val actual = converter.convertRow(i)
+          assert(
+            expected.getBytes.toSeq == actual.getBytes.toSeq,
+            s"${schema.simpleString} row $i differs:\n expected ${expected.getBytes.toSeq}\n " +
+              s"actual   ${actual.getBytes.toSeq}")
+        }
+      }
+    } finally {
+      vectors.foreach(_.close())
+      allocator.close()
     }
   }
 }

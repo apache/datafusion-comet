@@ -34,7 +34,7 @@ guide is split into the following pages:
 - [Operator Tuning](tuning/operators.md): joins, adaptive partial aggregation, and sorting on
   floating-point values.
 - [Reducing Row/Columnar Conversion Overhead](tuning/transitions.md): stages in which many
-  operators fall back to Spark.
+  operators fall back to Spark, and the experimental direct columnar-to-row converter.
 
 ## Configuring Tokio Runtime
 
@@ -43,21 +43,6 @@ Comet uses a global tokio runtime per executor process. By default it starts one
 threads, which is tokio's default. If `spark.executor.cores` is not set outside local mode, Comet starts a single
 worker thread. These values can be overridden using the environment variables `COMET_WORKER_THREADS` and
 `COMET_MAX_BLOCKING_THREADS`.
-
-### Experimental: Direct Columnar-to-Row Conversion
-
-When the JVM columnar-to-row operator is in use (`spark.comet.exec.columnarToRow.native.enabled=false`),
-setting `spark.comet.exec.columnarToRow.direct.enabled=true` enables an experimental converter that writes
-values straight from Arrow buffers into Spark's row format without allocating an object per value. This is
-most beneficial for decimal-heavy schemas, where the default conversion allocates a `Decimal` object per
-value (and considerably more for decimals with precision above 18); microbenchmarks show up to 2x faster
-conversion and a large reduction in garbage creation for such schemas. Schemas containing data types the
-converter does not support fall back to the default conversion automatically.
-
-Batches with fewer rows than `spark.comet.exec.columnarToRow.direct.minBatchSize` (default `128`) also fall
-back to the default conversion, since the direct converter's per-batch setup does not pay off on very small
-batches. This optimization is experimental: it only affects the operator's non-codegen paths (including
-broadcast relation builds), and the default conversion remains enabled unless explicitly opted in.
 
 ## Metrics Overhead
 
