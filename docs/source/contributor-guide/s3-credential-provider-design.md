@@ -106,9 +106,15 @@ The 5-minute fallback is a safety net so a vendor that omits expiry cannot leave
 
 ## Property-bag handling on the Iceberg path
 
-The full unfiltered FileIO property bag crosses JNI as `catalog_properties`. The storage-prefix filter (`s3.`/`gcs.`/`adls.`/`client.`) is applied native-side in `iceberg_scan.rs::load_file_io` immediately before `FileIOBuilder.with_prop`. This means the bridge sees `credentials.uri`, OAuth tokens, and any vendor-custom keys with no parallel field on the operator and no driver-side broadcast. Vendors set their own keys on the catalog config and read them back inside `initialize(Map)`.
+The full unfiltered FileIO property bag crosses JNI as `catalog_properties`. The storage-prefix filter (`s3.`/`gcs.`/`adls.`/`client.`) is applied native-side in `iceberg_common.rs::build_file_io` immediately before `FileIOBuilder.with_prop`. This means the bridge sees `credentials.uri`, OAuth tokens, and any vendor-custom keys with no parallel field on the operator and no driver-side broadcast. Vendors set their own keys on the catalog config and read them back inside `initialize(Map)`.
 
-`IcebergScanExec` derives a redacting `Debug` so plan dumps and tracing do not leak the property bag.
+`IcebergScanExec` derives a redacting `Debug`, and the `FileIO` cache key's `Debug` omits the property bag, so plan dumps and tracing do not leak it.
+
+## Executor `FileIO` cache on the Iceberg path
+
+`load_file_io` in `iceberg_common.rs` serves clones from a per-executor cache instead of building a `FileIO` per task. An entry is keyed by access mode, catalog name, the full reference path and the whole catalog property bag, and it holds the `FileIO` together with the bridge it was built with, so a bridge and its dispatcher handle live as long as the entry. The cache holds 64 entries, evicts the least recently used one, and is drained with the Tokio runtime. The reference path has to stay in the key: the bridge is constructed with the bucket and `url.path()` of that location and the JVM provider is called with exactly that pair, so dropping the path from the key would hand one table's bridge to another table in the same bucket. Two builds are never cached: `memory:///`, whose namespace the write path uses per task, and a read whose configured provider failed to initialise and fell back to the default chain, so the next task retries the provider instead of inheriting the fallback.
+
+This is consistent with [Why no Comet-side cache](#why-no-comet-side-cache): the cache holds the `FileIO` and its bridge, not credentials. `provide_credential` still reaches the vendor whenever `opendal`'s cached credential expires.
 
 ## Returns or throws, not a fall-through value
 
