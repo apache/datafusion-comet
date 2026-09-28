@@ -83,7 +83,7 @@ pub(crate) fn init_datasource_exec(
     session_ctx: &Arc<SessionContext>,
     encryption_enabled: bool,
     use_field_id: bool,
-    ignore_missing_field_id: bool,
+    require_field_ids: bool,
 ) -> Result<Arc<DataSourceExec>, ExecutionError> {
     // Computed once and reused below for `try_pushdown_filters`. `copied_config()` clones only
     // `SessionConfig` (an `Arc<ConfigOptions>` plus a small extensions map); `SessionContext::
@@ -101,7 +101,6 @@ pub(crate) fn init_datasource_exec(
         &session_config.options().execution.parquet,
     );
     spark_parquet_options.use_field_id = use_field_id;
-    spark_parquet_options.ignore_missing_field_id = ignore_missing_field_id;
     // Spark can discard filtered-out values before timestamp conversion using statistics,
     // dictionary, and row-level filters. Comet cannot mirror every pruning path, so applying
     // checked conversion in a filtered scan can fail on values Spark never reads. Preserve the
@@ -177,7 +176,7 @@ pub(crate) fn init_datasource_exec(
     // `store_sales`), the page index is re-fetched, uncached, on every open (comet#3978).
     // `EagerPageIndexReaderFactory` forces the page index to load on the first fetch and be
     // cached with the footer, at the cost of losing the skip's benefit when it would have
-    // applied. Filed upstream as apache/datafusion#23978; revert this once that's fixed.
+    // applied. Filed upstream as apache/datafusion#23978.
     //
     // Preserve bytes_scanned's existing requested data/Bloom-filter range accounting. Footer
     // and page-index reads through get_metadata bypass it, and coalescing may fetch extra bytes.
@@ -194,7 +193,8 @@ pub(crate) fn init_datasource_exec(
             scan_io_source,
             parquet_source.metrics(),
         )
-        .with_spark_variant_schema(projects_variant),
+        .with_spark_variant_schema(projects_variant)
+        .with_require_field_ids(require_field_ids),
     );
     parquet_source = parquet_source.with_parquet_file_reader_factory(reader_factory);
 

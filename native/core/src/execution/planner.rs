@@ -39,7 +39,6 @@ use crate::execution::operators::IcebergScanExec;
 use crate::execution::operators::IcebergWriteExec;
 use crate::execution::operators::{PartitionedRankLimitExec, WindowFnKind};
 use crate::execution::{
-    expressions::list_empty_to_null::ListEmptyToNullExpr,
     expressions::list_positions::ListPositionsExpr,
     expressions::subquery::Subquery,
     operators::{
@@ -74,8 +73,7 @@ use datafusion::{
     logical_expr::Operator as DataFusionOperator,
     physical_expr::{
         expressions::{
-            in_list, BinaryExpr, CaseExpr, CastExpr, Column, IsNullExpr,
-            Literal as DataFusionLiteral,
+            BinaryExpr, CaseExpr, CastExpr, Column, IsNullExpr, Literal as DataFusionLiteral,
         },
         PhysicalExpr, PhysicalSortExpr, ScalarFunctionExpr,
     },
@@ -93,12 +91,14 @@ use datafusion::{
 use datafusion_comet_spark_expr::{
     create_comet_physical_fun, create_comet_physical_fun_with_eval_mode, BinaryOutputStyle,
     BloomFilterAgg, BloomFilterMightContain, CometCollectList, CometCollectSet, CsvWriteOptions,
-    EvalMode, SparkArraysZipFunc, SparkBloomFilterVersion, SparkPercentile, SumInteger, ToCsv,
+    EvalMode, SparkArraysZipFunc, SparkBloomFilterVersion, SparkListAgg, SparkPercentile,
+    SumInteger, ToCsv,
 };
+use datafusion_datasource::TableSchema;
 use iceberg::expr::Bind;
 
 use crate::execution::operators::ExecutionError::GeneralError;
-use crate::execution::shuffle::{CometPartitioning, CompressionCodec};
+use crate::execution::shuffle::{CometPartitioning, CompressionCodec, RoundRobinStrategy};
 use crate::execution::spark_plan::SparkPlan;
 use crate::parquet::objectstore::s3_blob_fs_support::normalize_object_store_url;
 use crate::parquet::parquet_support::prepare_object_store_with_configs;
@@ -127,7 +127,7 @@ use arrow::array::{
 use arrow::buffer::{BooleanBuffer, NullBuffer, OffsetBuffer};
 use arrow::row::{OwnedRow, RowConverter, SortField};
 use datafusion::common::utils::SingleRowListArrayBuilder;
-use datafusion::common::UnnestOptions;
+use datafusion::common::{NullHandling, UnnestOptions};
 use datafusion::physical_plan::filter::FilterExec;
 use datafusion::physical_plan::joins::NestedLoopJoinExec;
 use datafusion::physical_plan::limit::GlobalLimitExec;
@@ -148,11 +148,11 @@ use datafusion_comet_proto::{
     spark_partitioning::{partitioning::PartitioningStruct, Partitioning as SparkPartitioning},
 };
 use datafusion_comet_spark_expr::{
-    jvm_udf::JvmScalarUdfExpr, ApproxPercentile, ArrayInsert, Avg, AvgDecimal, Cast, CheckOverflow,
-    Correlation, Covariance, CreateNamedStruct, DecimalRescaleCheckOverflow, GetArrayStructFields,
-    GetStructField, HllPlusPlus, IfExpr, ListExtract, MaxMinBy, Mode, NormalizeNaNAndZero, Regr,
-    RegrType, SparkCastOptions, Stddev, SumDecimal, ToJson, UnboundColumn, Variance,
-    WideDecimalBinaryExpr, WideDecimalOp,
+    jvm_udf::JvmScalarUdfExpr, spark_in_list, ApproxPercentile, ArrayInsert, Avg, AvgDecimal, Cast,
+    CheckOverflow, Correlation, Covariance, CreateNamedStruct, DecimalRescaleCheckOverflow,
+    GetArrayStructFields, GetStructField, HllPlusPlus, IfExpr, ListExtract, MaxMinBy, Mode,
+    NormalizeNaNAndZero, Regr, RegrType, SparkCastOptions, Stddev, SumDecimal, ToJson,
+    UnboundColumn, Variance, WideDecimalBinaryExpr, WideDecimalOp,
 };
 use itertools::Itertools;
 use jni::objects::{Global, JObject};
@@ -561,6 +561,9 @@ impl PhysicalPlanner {
                         DataType::Duration(TimeUnit::Microsecond) => {
                             ScalarValue::DurationMicrosecond(None)
                         }
+                        DataType::Interval(arrow::datatypes::IntervalUnit::MonthDayNano) => {
+                            ScalarValue::IntervalMonthDayNano(None)
+                        }
                         dt => {
                             return Err(GeneralError(format!("{dt:?} is not supported in Comet")))
                         }
@@ -762,7 +765,8 @@ impl PhysicalPlanner {
                     .map(|x| self.create_expr(x, Arc::clone(&input_schema)))
                     .collect::<Result<Vec<_>, _>>()?;
 
-                in_list(value, list, &expr.negated, input_schema.as_ref()).map_err(|e| e.into())
+                spark_in_list(value, list, expr.negated, input_schema.as_ref())
+                    .map_err(|e| e.into())
             }
             ExprStruct::If(expr) => {
                 let if_expr =
@@ -992,6 +996,19 @@ impl PhysicalPlanner {
         } else {
             Ok(child)
         }
+    }
+
+    /// Only constant literals are supported as scan defaults.
+    fn create_default_value(
+        &self,
+        spark_expr: &Expr,
+        input_schema: SchemaRef,
+    ) -> Result<ScalarValue, ExecutionError> {
+        let expr = self.create_expr(spark_expr, Arc::clone(&input_schema))?;
+        if let Some(literal) = expr.downcast_ref::<DataFusionLiteral>() {
+            return Ok(literal.value().clone());
+        }
+        Err(GeneralError("Expected a literal scan default".to_string()))
     }
 
     /// Create a DataFusion physical sort expression from Spark physical expression
@@ -1619,7 +1636,22 @@ impl PhysicalPlanner {
 
                 // Check if this partition has any files (bucketed scan with bucket pruning may have empty partitions)
                 if partition_files.partitioned_file.is_empty() {
-                    let empty_exec = Arc::new(EmptyExec::new(required_schema));
+                    // Match the nonempty scan's projected table schema, including partition
+                    // and constant metadata columns. Fused operators bind against this schema
+                    // even when the bucket has no rows.
+                    let partition_fields: Vec<FieldRef> = partition_schema
+                        .fields()
+                        .iter()
+                        .map(|f| {
+                            Arc::new(Field::new(f.name(), f.data_type().clone(), f.is_nullable()))
+                        })
+                        .collect();
+                    let table_schema = TableSchema::builder(data_schema)
+                        .with_table_partition_cols(partition_fields)
+                        .build();
+                    let output_schema =
+                        Arc::new(table_schema.table_schema().project(&projection_vector)?);
+                    let empty_exec = Arc::new(EmptyExec::new(output_schema));
                     return Ok((
                         vec![],
                         vec![],
@@ -1652,43 +1684,34 @@ impl PhysicalPlanner {
                             .collect()
                     };
 
-                let default_values: Option<HashMap<Column, ScalarValue>> = if !common
-                    .default_values
-                    .is_empty()
-                {
-                    // We have default values. Extract the two lists (same length) of values and
-                    // indexes in the schema, and then create a HashMap to use in the SchemaMapper.
-                    let default_values: Result<Vec<ScalarValue>, DataFusionError> = common
-                        .default_values
-                        .iter()
-                        .map(|expr| {
-                            let literal = self.create_expr(expr, Arc::clone(&required_schema))?;
-                            let df_literal =
-                                literal.downcast_ref::<DataFusionLiteral>().ok_or_else(|| {
-                                    GeneralError("Expected literal of default value.".to_string())
-                                })?;
-                            Ok(df_literal.value().clone())
-                        })
-                        .collect();
-                    let default_values = default_values?;
-                    let default_values_indexes: Vec<usize> = common
-                        .default_values_indexes
-                        .iter()
-                        .map(|offset| *offset as usize)
-                        .collect();
-                    Some(
-                        default_values_indexes
-                            .into_iter()
-                            .zip(default_values)
-                            .map(|(idx, scalar_value)| {
-                                let field = required_schema.field(idx);
-                                let column = Column::new(field.name().as_str(), idx);
-                                (column, scalar_value)
-                            })
-                            .collect(),
-                    )
-                } else {
+                if common.default_values.len() != common.default_values_indexes.len() {
+                    return Err(GeneralError(
+                        "Scan default values and indexes have different lengths".to_string(),
+                    ));
+                }
+                let default_values = if common.default_values.is_empty() {
                     None
+                } else {
+                    Some(
+                        common
+                            .default_values
+                            .iter()
+                            .zip(&common.default_values_indexes)
+                            .map(|(expr, offset)| {
+                                let idx = usize::try_from(*offset).map_err(|_| {
+                                    GeneralError(format!("Invalid scan default index {offset}"))
+                                })?;
+                                let field = required_schema.fields().get(idx).ok_or_else(|| {
+                                    GeneralError(format!(
+                                        "Scan default index {idx} is outside schema"
+                                    ))
+                                })?;
+                                let value =
+                                    self.create_default_value(expr, Arc::clone(&required_schema))?;
+                                Ok((Column::new(field.name(), idx), value))
+                            })
+                            .collect::<Result<HashMap<_, _>, ExecutionError>>()?,
+                    )
                 };
 
                 // Get one file from this partition (we know it's not empty due to early return above)
@@ -1736,7 +1759,7 @@ impl PhysicalPlanner {
                     self.session_ctx(),
                     common.encryption_enabled,
                     common.use_field_id,
-                    common.ignore_missing_field_id,
+                    common.require_field_ids,
                 )?;
                 Ok((
                     vec![],
@@ -2054,7 +2077,7 @@ impl PhysicalPlanner {
                     self.create_plan(&children[0], inputs, partition_count)?;
 
                 // Create the expression for the array to explode
-                let raw_child_expr = if let Some(child_expr) = &explode.child {
+                let child_expr = if let Some(child_expr) = &explode.child {
                     self.create_expr(child_expr, child.schema())?
                 } else {
                     return Err(ExecutionError::GeneralError(
@@ -2063,26 +2086,11 @@ impl PhysicalPlanner {
                 };
 
                 let child_schema = child.schema();
-                let child_field_name = raw_child_expr
+                let child_field_name = child_expr
                     .return_field(&child_schema)
                     .expect("Failed to get field from child expression")
                     .name()
                     .to_string();
-
-                // Bridge Spark's outer semantics: DataFusion's `UnnestExec` with
-                // `preserve_nulls = true` emits one null row for a NULL list but drops rows
-                // whose list is empty. Spark's `explode_outer`/`posexplode_outer` must emit
-                // exactly one null row in both cases, so we mark empty rows as null before
-                // unnesting. See https://github.com/apache/datafusion/issues/19053. Once
-                // Comet moves to a DataFusion release carrying
-                // https://github.com/apache/datafusion/pull/22100, `ListEmptyToNullExpr`
-                // can be removed in favor of `NullHandling::PreserveAndExpandEmpty`. See
-                // https://github.com/apache/datafusion-comet/issues/5210.
-                let child_expr: Arc<dyn PhysicalExpr> = if explode.outer {
-                    Arc::new(ListEmptyToNullExpr::new(raw_child_expr))
-                } else {
-                    raw_child_expr
-                };
 
                 // Both posexplode variants reference the array twice: once for positions
                 // and once for values. Materialize computed arrays so both references
@@ -2198,9 +2206,17 @@ impl PhysicalPlanner {
                     depth: 1,
                 });
 
-                let unnest_options = UnnestOptions::new().with_preserve_nulls(explode.outer);
+                // Spark's `explode_outer`/`posexplode_outer` emit exactly one null row for both
+                // a NULL array and an empty one, which is `PreserveAndExpandEmpty`. Plain
+                // `explode` drops both.
+                let null_handling = if explode.outer {
+                    NullHandling::PreserveAndExpandEmpty
+                } else {
+                    NullHandling::Drop
+                };
+                let unnest_options = UnnestOptions::new().with_null_handling(null_handling);
 
-                // Comet's batch-size-respecting fork of `UnnestExec`; see `operators::explode`.
+                // Comet's specialized fork of `UnnestExec`; see `operators::explode`.
                 let unnest_exec = Arc::new(ExplodeExec::new(
                     project_exec,
                     list_unnests,
@@ -3181,6 +3197,13 @@ impl PhysicalPlanner {
                 let func = AggregateUDF::new_from_impl(HllPlusPlus::new(expr.precision));
                 Self::create_aggr_func_expr("approx_count_distinct", schema, vec![child], func)
             }
+            AggExprStruct::ListAgg(expr) => {
+                let child = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&schema))?;
+                let delimiter =
+                    self.create_expr(expr.delimiter.as_ref().unwrap(), Arc::clone(&schema))?;
+                let func = AggregateUDF::new_from_impl(SparkListAgg::new());
+                Self::create_aggr_func_expr("listagg", schema, vec![child, delimiter], func)
+            }
             AggExprStruct::MaxBy(expr) => {
                 let value = self.create_expr(expr.value.as_ref().unwrap(), Arc::clone(&schema))?;
                 let ordering =
@@ -3652,15 +3675,33 @@ impl PhysicalPlanner {
             }
             PartitioningStruct::SinglePartition(_) => Ok(CometPartitioning::SinglePartition),
             PartitioningStruct::RoundRobinPartition(rr_partition) => {
-                // Treat negative max_hash_columns as 0 (no limit)
-                let max_hash_columns = if rr_partition.max_hash_columns <= 0 {
-                    0
+                // Treat negative max_hash_columns as 0 (no limit).
+                let max_hash_columns = rr_partition.max_hash_columns.max(0) as usize;
+                let strategy = if rr_partition.positional {
+                    // Resolved on the driver and frozen with the shuffle dependency. Deriving it
+                    // here from the executor's batch size would let a retried task use a
+                    // different group size, and so a different placement, than the attempt it
+                    // replaces.
+                    if rr_partition.positional_group_rows <= 0 {
+                        return Err(GeneralError(format!(
+                            "Positional round robin needs a positive group size, got {}",
+                            rr_partition.positional_group_rows
+                        )));
+                    }
+                    RoundRobinStrategy::RowGroups {
+                        // Computed per task on the JVM, where the Spark map partition id is in
+                        // scope. See `CometShuffleExchangeExec.positionalStartPartition`.
+                        start_partition: rr_partition.positional_start_partition.max(0) as usize,
+                        group_rows: rr_partition.positional_group_rows as usize,
+                        // Kept for the case where the schema rules positional placement out.
+                        max_hash_columns,
+                    }
                 } else {
-                    rr_partition.max_hash_columns as usize
+                    RoundRobinStrategy::HashAll { max_hash_columns }
                 };
                 Ok(CometPartitioning::RoundRobin(
                     rr_partition.num_partitions as usize,
-                    max_hash_columns,
+                    strategy,
                 ))
             }
         }
@@ -5076,6 +5117,8 @@ fn needs_fields_coercion(sig: &TypeSignature) -> bool {
 
 #[cfg(test)]
 mod tests {
+    mod empty_native_scan;
+
     use futures::{poll, StreamExt};
     use std::{
         sync::{
@@ -5160,6 +5203,39 @@ mod tests {
 
     struct BoundedShufflePartitionPusher {
         max_frame_size: usize,
+    }
+
+    #[test]
+    fn scan_default_rejects_struct_expressions() {
+        let planner = PhysicalPlanner::new(Arc::new(SessionContext::new()), 0);
+        let storage = DataType::Struct(Fields::from(vec![
+            Field::new("value", DataType::Binary, false),
+            Field::new("metadata", DataType::Binary, false),
+        ]));
+        let field = Field::new("v", storage.clone(), true).with_extension_type(VariantType);
+        let schema = Arc::new(Schema::new(vec![field.clone()]));
+        let bytes = |value| Expr {
+            expr_struct: Some(ExprStruct::Literal(spark_expression::Literal {
+                value: Some(literal::Value::BytesVal(value)),
+                datatype: Some(spark_expression::DataType {
+                    type_id: spark_expression::data_type::DataTypeId::Bytes as i32,
+                    type_info: None,
+                }),
+                is_null: false,
+            })),
+            ..Default::default()
+        };
+        let value = spark_expression::CreateNamedStruct {
+            names: vec!["value".to_string(), "metadata".to_string()],
+            values: vec![bytes(vec![0]), bytes(vec![1, 0, 0])],
+        };
+        let default_expr = |value| Expr {
+            expr_struct: Some(ExprStruct::CreateNamedStruct(value)),
+            ..Default::default()
+        };
+        assert!(planner
+            .create_default_value(&default_expr(value), schema)
+            .is_err());
     }
 
     #[test]
@@ -6374,9 +6450,13 @@ mod tests {
                         if computed { 2 } else { 0 },
                         "{context}"
                     );
+                    // The array is pre-projected only to share one evaluation between the
+                    // `pos` and `value` references, so only a computed child needs it. `outer`
+                    // does not, since it is now a `UnnestOptions` mode rather than a wrapper
+                    // expression around the child.
                     assert_eq!(
                         projections,
-                        1 + usize::from(position && (outer || computed)),
+                        1 + usize::from(position && computed),
                         "{context}"
                     );
                     let expected_values = if outer {
@@ -7356,6 +7436,75 @@ mod tests {
             PhysicalPlanner::coerce_collect_child_nullability(Arc::clone(&raw), &plan_schema)
                 .unwrap();
         assert!(Arc::ptr_eq(&raw, &coerced));
+    }
+
+    /// Normalizing an already-matching typed-null scalar or array must preserve its shared
+    /// storage, and both scalar collect accumulators must discard the null and return an empty
+    /// list. Duplicate field names with different types detect accidental name-based struct
+    /// conversion; matching runtime types must take DataFusion's identity cast path instead.
+    #[test]
+    fn test_collect_agg_preserves_matching_nested_nulls() {
+        use datafusion::logical_expr::ColumnarValue;
+        use datafusion::physical_expr::expressions::Literal;
+
+        let struct_type = DataType::Struct(Fields::from(vec![
+            Field::new("a", DataType::Int32, true),
+            Field::new(
+                "a",
+                DataType::Struct(Fields::from(vec![Field::new("x", DataType::Int32, true)])),
+                true,
+            ),
+        ]));
+        let null_list = Arc::new(ListArray::new_null(
+            Arc::new(Field::new("item", struct_type, true)),
+            1,
+        ));
+        let null_array = Arc::clone(&null_list) as ArrayRef;
+        let schema = collect_agg_schema(null_array.data_type().clone());
+        let batch =
+            RecordBatch::try_new(Arc::clone(&schema), vec![Arc::clone(&null_array)]).unwrap();
+
+        for raw in [
+            Arc::new(Literal::new(ScalarValue::List(Arc::clone(&null_list))))
+                as Arc<dyn PhysicalExpr>,
+            Arc::new(Column::new("s", 0)) as Arc<dyn PhysicalExpr>,
+        ] {
+            let child = PhysicalPlanner::coerce_collect_child_nullability(raw, &schema).unwrap();
+            let value = child.evaluate(&batch).unwrap();
+            match &value {
+                ColumnarValue::Scalar(ScalarValue::List(list)) => {
+                    assert!(Arc::ptr_eq(list, &null_list));
+                }
+                ColumnarValue::Array(array) => assert!(Arc::ptr_eq(array, &null_array)),
+                other => panic!("expected a list scalar or array, got {other:?}"),
+            }
+            let arg = value.into_array(batch.num_rows()).unwrap();
+
+            for func in [
+                AggregateUDF::new_from_impl(CometCollectList::new()),
+                AggregateUDF::new_from_impl(CometCollectSet::new()),
+            ] {
+                let agg = PhysicalPlanner::create_aggr_func_expr(
+                    "collect",
+                    Arc::clone(&schema),
+                    vec![Arc::clone(&child)],
+                    func,
+                )
+                .unwrap();
+                let mut acc = agg.create_accumulator().unwrap();
+                acc.update_batch(&[Arc::clone(&arg)]).unwrap();
+                assert_eq!(
+                    acc.state().unwrap()[0].data_type(),
+                    *agg.state_fields().unwrap()[0].data_type()
+                );
+                let ScalarValue::List(result) = acc.evaluate().unwrap() else {
+                    panic!("expected a list result");
+                };
+                assert_eq!(result.len(), 1);
+                assert!(!result.is_null(0));
+                assert!(result.value(0).is_empty());
+            }
+        }
     }
 
     #[test]

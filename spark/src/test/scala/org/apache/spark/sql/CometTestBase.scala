@@ -42,7 +42,7 @@ import org.apache.spark.sql.catalyst.util.sideBySide
 import org.apache.spark.sql.comet.CometPlanChecker
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometNativeShuffle, CometShuffleExchangeExec}
 import org.apache.spark.sql.execution._
-import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
+import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AdaptiveSparkPlanHelper, AQEShuffleReadExec, QueryStageExec}
 import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
 import org.apache.spark.sql.internal._
 import org.apache.spark.sql.test._
@@ -94,7 +94,6 @@ abstract class CometTestBase
     conf.set(CometConf.COMET_NATIVE_SCAN_ENABLED.key, "true")
     conf.set(CometConf.COMET_PARQUET_UNSIGNED_SMALL_INT_CHECK.key, "false")
     conf.set(CometConf.COMET_SCAN_ALLOW_DISABLED_PARQUET_VECTORIZED_READER.key, "true")
-    conf.set(CometConf.COMET_ONHEAP_MEMORY_OVERHEAD.key, "2g")
     conf.set(CometConf.COMET_EXEC_SORT_MERGE_JOIN_WITH_JOIN_FILTER_ENABLED.key, "true")
     // Fail loudly if a serde declines an operator without stating why, rather than letting the
     // generic "<operator> is not supported" message mask the missing reason.
@@ -628,6 +627,25 @@ abstract class CometTestBase
 
     checkPlanNotMissingInput(plan)
   }
+
+  /**
+   * [[checkCometOperators]] for an adaptive query that has run. `checkSparkAnswerAndOperator`
+   * inspects a DataFrame that has not run, which for an adaptive query is its initial plan, and
+   * `checkCometOperators` treats query stages as leaves, so this checks the final plan and the
+   * plan inside each of its stages.
+   */
+  protected def checkCometOperatorsInFinalPlan(
+      plan: SparkPlan,
+      excludedClasses: Class[_]*): Unit = {
+    assert(plan.asInstanceOf[AdaptiveSparkPlanExec].isFinalPlan, s"The query has not run:\n$plan")
+    val stagePlans = collect(plan) { case s: QueryStageExec => s.plan }
+    val excluded = excludedClasses :+ classOf[QueryStageExec] :+ classOf[AQEShuffleReadExec]
+    (stripAQEPlan(plan) +: stagePlans).foreach(checkCometOperators(_, excluded: _*))
+  }
+
+  // Matched by name because Spark 3.4 has no TableCacheQueryStageExec.
+  protected def isTableCacheStage(plan: SparkPlan): Boolean =
+    plan.getClass.getSimpleName == "TableCacheQueryStageExec"
 
   // checks the plan node has no missing inputs
   // such nodes represented in plan with exclamation mark !

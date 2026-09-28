@@ -152,7 +152,7 @@ tiers partition the list and that the `pr` tier is exactly the default profile.
 | `pr_benchmark_check` | merge group, **or** PR with `run-benchmark-check`                                                                                                                                                                                                      | benchmark sources only              |
 | `delta_build_gate`   | merge group, **or** PR with `run-delta-build-gate`                                                                                                                                                                                                     | main sources, poms, `contrib/delta` |
 | `pyarrow_udf_test`   | merge group, **or** PR with `run-pyarrow-udf-tests`                                                                                                                                                                                                    | map-in-batch and Python runner code |
-| `docs`               | push to main, paths matched                                                                                                                                                                                                                            | `.asf.yaml`, `docs/**`, `docs.yaml` |
+| `docs`               | push to main, paths matched, **or** dispatch on `main`                                                                                                                                                                                                 | `.asf.yaml`, `docs/**`, `docs.yaml` |
 | `spark_3_5`          | nightly, **or** PR with `run-spark-3.5-tests`                                                                                                                                                                                                          | Spark 3.5 sources                   |
 | `spark_4_1`          | merge group, **or** PR with `run-spark-4.1-tests`; the `sql_hive` shards alone with `run-spark-4.1-hive-tests`                                                                                                                                         | Spark 4.1 sources                   |
 | `spark_3_4`          | PR with `run-spark-3.4-tests`, or dispatch                                                                                                                                                                                                             | Spark 3.4 sources                   |
@@ -169,15 +169,37 @@ its path filter or event criteria don't match. Skipped checks count as
 passing for branch protection, so a name that can report `skipped` is not
 safe to make a required check.
 
+A pull request whose base is a release branch (`branch-N.M`) is the one
+exception to the table: it runs every job the table puts in the PR, merge
+group or nightly tier, because a release branch has no merge queue and no
+nightly to run the last two later. `docs` stays push-only and `spark_3_4`
+still needs its label, so a `labeled` run there adds `spark_3_4` or nothing.
+`changes` hands the base branch to `compute-changes.py` as `PR_BASE_REF`.
+`check-ci-config.py` pins that wiring, because a dropped variable reads as an
+empty string and would route the pull request as if it targeted `main`.
+
 ### Label events
 
-`ci.yml` also fires on `pull_request.types: [labeled]`, so applying
-`run-spark-3.4-tests`, `run-spark-4.0-tests` or `run-iceberg-tests` starts the
-job that label gates without needing a new push. GitHub cannot filter a
-`pull_request` trigger by label name, so **every** label added to a PR starts a
-run, including labels that gate nothing.
+`ci_label.yml` fires on `pull_request.types: [labeled]` and calls `ci.yml`
+through `workflow_call`, so applying `run-spark-3.4-tests`,
+`run-spark-4.0-tests` or `run-iceberg-tests` starts the job that label gates
+without needing a new push. GitHub cannot filter a `pull_request` trigger by
+label name, so **every** label added to a PR starts a run, including labels
+that gate nothing. A called workflow sees its caller's event context, so
+`POLICY` still reads the `labeled` action and the label name.
 
-Two rules keep those runs from corrupting the PR's status:
+These rules keep those runs from corrupting the PR's status:
+
+- Label runs come from their own workflow, not from a `labeled` type on
+  `ci.yml`'s trigger. When one workflow runs twice at the same commit, GitHub
+  evaluates the PR's required checks against only one of the two runs. A PR
+  opened with a label already applied fires `opened` and `labeled` together,
+  and when GitHub picked the label run, `Required Checks` showed as "Expected"
+  forever and the merge queue never accepted the PR, see
+  [#6159](https://github.com/apache/datafusion-comet/issues/6159). A run of
+  `ci_label.yml` has its own check suite, and every check it publishes is
+  nested under its `Label run` job, so it cannot hide or replace a commit
+  run's check.
 
 - `preflight` and `changes` carry no event guard and run every time. A job held
   back by `if:` still publishes a check run under its own name with conclusion
