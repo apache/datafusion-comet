@@ -26,6 +26,6 @@ import org.apache.comet.annotation.Public;
 public enum CometS3AccessMode {
   /** GET / HEAD / LIST. All Comet native scan paths request this today. */
   READ,
-  /** PUT / POST / DELETE / multipart. Reserved for future native write paths. */
+  /** PUT / POST / DELETE / multipart. Comet's native Iceberg and Parquet writers request this. */
   WRITE
 }

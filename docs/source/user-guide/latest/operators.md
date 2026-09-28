@@ -139,6 +139,13 @@ natively on `BroadcastHashJoinExec` and `ShuffledHashJoinExec`. Existence sort-m
 | Iceberg writes: `AppendDataExec`, `OverwriteByExpressionExec`, `OverwritePartitionsDynamicExec`, `ReplaceDataExec` | ⚠️     | Experimental, disabled by default. `spark.comet.write.iceberg.splitOperator.enabled=true` plans the write as `IcebergWrite` and `IcebergCommit`, and Iceberg's Java writer still writes the data files. `spark.comet.write.iceberg.enabled=true` then writes eligible data files natively (`CometIcebergWrite`). Covers `INSERT INTO`, `INSERT OVERWRITE`, and copy-on-write `DELETE` / `UPDATE` / `MERGE`. Merge-on-read writes (`WriteDeltaExec`) fall back. See [Iceberg Writes](iceberg-writes.md). |
 | `MergeRowsExec`                                                                                                    | ⚠️     | Spark 3.5+. Experimental, disabled by default (`spark.comet.exec.mergeRows.enabled`). On Spark 4.1+, stock V2 writers retain Spark MergeRowsExec; Comet's split Iceberg path can run it natively while preserving MergeSummary. See [MERGE INTO](compatibility/operators.md#merge-into-mergerowsexec).                                                                                                                                                                                                  |
 
+Native Parquet writes (`WriteFilesExec` and `DataWritingCommandExec`) support local, HDFS and S3
+destinations. S3 means `s3a://`, or `s3://` when `fs.s3.impl` is S3A, and the native writer reads
+the same `fs.s3a.*` endpoint, region and credential settings as the native Parquet scan. A write to
+S3 falls back to Spark when the S3A magic committer is configured, when S3A is configured to
+encrypt the objects it creates or to set their ACL, storage class, content encoding or headers, or
+when the output path or `mapreduce.output.basename` contains `%`, `?`, `#` or a control character.
+
 ## Python and UDF
 
 | Operator                                           | Status | Notes                                                                                                                                                                                                    |

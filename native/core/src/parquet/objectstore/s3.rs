@@ -59,6 +59,8 @@ use std::{
 /// * `url` - The URL of the S3 object to access.
 /// * `configs` - The Hadoop S3A configurations to use for building the object store.
 /// * `min_ttl` - Time buffer before credential expiry when refresh should be triggered.
+/// * `access_mode` - The access intent a configured `CometS3CredentialProvider` is asked for, so
+///   a provider can grant read-only credentials to scans and write credentials to writers.
 ///
 /// # Returns
 ///
@@ -68,6 +70,7 @@ pub fn create_store(
     url: &Url,
     configs: &HashMap<String, String>,
     min_ttl: Duration,
+    access_mode: AccessMode,
 ) -> Result<(Box<dyn ObjectStore>, Path), object_store::Error> {
     let (scheme, path) = ObjectStoreScheme::parse(url)?;
     if scheme != ObjectStoreScheme::AmazonS3 {
@@ -97,7 +100,7 @@ pub fn create_store(
                 bucket,
                 bucket,
                 url.path(),
-                AccessMode::Read,
+                access_mode,
                 &forwarded_props,
             )
             .map_err(|e| object_store::Error::Generic {
@@ -1117,7 +1120,8 @@ mod tests {
             .with_credential_provider(HADOOP_ANONYMOUS)
             .with_region("us-east-1")
             .build();
-        let (_object_store, path) = create_store(&url, &configs, Duration::from_secs(300)).unwrap();
+        let (_object_store, path) =
+            create_store(&url, &configs, Duration::from_secs(300), AccessMode::Read).unwrap();
         assert_eq!(
             path,
             Path::from("/comet/spark-warehouse/part-00000.snappy.parquet")

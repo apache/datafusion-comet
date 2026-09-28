@@ -21,6 +21,7 @@ package org.apache.comet.cloud.s3;
 
 import java.util.Collections;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
@@ -49,6 +50,9 @@ public final class MinioCometS3CredentialProvider implements CometS3CredentialPr
   private static final AtomicReference<String> LAST_PATH = new AtomicReference<>();
   private static final AtomicReference<Map<String, String>> LAST_INIT_PROPS =
       new AtomicReference<>();
+
+  /** Every access mode credentials were requested for since the last reset. */
+  private static final Set<CometS3AccessMode> ACCESS_MODES = ConcurrentHashMap.newKeySet();
 
   /**
    * Captures one entry per `initialize(Map)` invocation, keyed by the value of {@link
@@ -94,6 +98,10 @@ public final class MinioCometS3CredentialProvider implements CometS3CredentialPr
     return INIT_BY_TAG.get(tag);
   }
 
+  public static Set<CometS3AccessMode> accessModes() {
+    return Collections.unmodifiableSet(ACCESS_MODES);
+  }
+
   public static void resetCounters() {
     CALL_COUNT.set(0);
     INIT_COUNT.set(0);
@@ -101,6 +109,7 @@ public final class MinioCometS3CredentialProvider implements CometS3CredentialPr
     LAST_PATH.set(null);
     LAST_INIT_PROPS.set(null);
     INIT_BY_TAG.clear();
+    ACCESS_MODES.clear();
   }
 
   @Override
@@ -120,6 +129,7 @@ public final class MinioCometS3CredentialProvider implements CometS3CredentialPr
     CALL_COUNT.incrementAndGet();
     LAST_BUCKET.set(context.getBucket());
     LAST_PATH.set(context.getPath());
+    ACCESS_MODES.add(context.getMode());
     Credentials c = CREDS.get();
     if (c == null) {
       throw new IllegalStateException(
