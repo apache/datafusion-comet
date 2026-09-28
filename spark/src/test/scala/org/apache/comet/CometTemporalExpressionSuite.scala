@@ -108,6 +108,13 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
     checkSparkAnswerAndOperator("SELECT c0, trunc(c0, c1) from tbl order by c0, c1")
   }
 
+  test("native tzdata version is reported") {
+    assert(NativeBase.getTzdataVersion.matches("[0-9]{4}[a-z]"), NativeBase.getTzdataVersion)
+    assert(NativeBase.tzdataMismatchWarning("2025b", "2025b") == null)
+    val warning = NativeBase.tzdataMismatchWarning("2025b", "2023c")
+    assert(warning.contains("2025b") && warning.contains("2023c"), warning)
+  }
+
   test("date_trunc (TruncTimestamp) - reading from DataFrame") {
     val supportedFormats = CometTruncTimestamp.supportedFormats
     val unsupportedFormats = Seq("invalid")
