@@ -21,6 +21,7 @@ use crate::writers::BufBatchWriter;
 use crate::ShuffleBlockWriter;
 use arrow::record_batch::RecordBatch;
 use datafusion::common::DataFusionError;
+use datafusion::execution::memory_pool::MemoryReservation;
 use datafusion::execution::runtime_env::RuntimeEnv;
 use datafusion::execution::SpillFile as DfSpillFile;
 use datafusion::execution::SpillWriter as DfSpillWriter;
@@ -87,7 +88,8 @@ impl PartitionedSpill {
     }
 
     /// Appends partition `pid`'s batches to the spill file. `recycled_buffer` is left drained,
-    /// including on error.
+    /// including on error. The spill file's write buffer is charged to `buffers` when given.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn write<I: Iterator<Item = datafusion::common::Result<RecordBatch>>>(
         &mut self,
         pid: usize,
@@ -96,12 +98,13 @@ impl PartitionedSpill {
         runtime: &RuntimeEnv,
         metrics: &ShufflePartitionerMetrics,
         recycled_buffer: &mut Vec<u8>,
+        buffers: Option<&MemoryReservation>,
     ) -> datafusion::common::Result<()> {
         self.check_usable()?;
         let Some(batch) = iter.next() else {
             return Ok(());
         };
-        self.ensure_spill_file_created(runtime)?;
+        self.ensure_spill_file_created(runtime, buffers)?;
 
         let result = (|| {
             let mut buf_batch_writer = BufBatchWriter::new(
@@ -214,15 +217,28 @@ impl PartitionedSpill {
     fn ensure_spill_file_created(
         &mut self,
         runtime: &RuntimeEnv,
+        buffers: Option<&MemoryReservation>,
     ) -> datafusion::common::Result<()> {
         if self.spill_file.is_none() {
             let temp_file = runtime
                 .disk_manager
                 .create_tmp_file("shuffle writer spill")?;
-            let writer = BufWriter::with_capacity(self.write_buffer_size, temp_file.open_writer()?);
+            // Open before charging, so a failed open leaves nothing on the reservation.
+            let file = temp_file.open_writer()?;
+            let capacity = buffers.map_or(self.write_buffer_size, |reservation| {
+                super::reserve_buffer(reservation, self.write_buffer_size)
+            });
+            let writer = BufWriter::with_capacity(capacity, file);
             self.spill_file = Some(ActiveSpillFile { temp_file, writer });
         }
         Ok(())
+    }
+
+    /// Capacity of the spill file's write buffer, zero before the first spill.
+    pub(crate) fn buffer_capacity(&self) -> usize {
+        self.spill_file
+            .as_ref()
+            .map_or(0, |spill_file| spill_file.writer.capacity())
     }
 
     #[cfg(test)]
@@ -355,7 +371,8 @@ mod tests {
                 &mut ShuffleCodecContext::default(),
                 &RuntimeEnv::default(),
                 &metrics(),
-                recycled
+                recycled,
+                None
             )
             .is_err());
     }
@@ -386,6 +403,7 @@ mod tests {
                 &RuntimeEnv::default(),
                 &metrics(),
                 &mut recycled,
+                None,
             )
             .expect_err("write after a failed write");
         assert!(
@@ -410,6 +428,7 @@ mod tests {
                     &runtime,
                     &metrics(),
                     &mut recycled,
+                    None,
                 )
                 .unwrap();
         }
@@ -438,6 +457,7 @@ mod tests {
                     &runtime,
                     &metrics(),
                     &mut recycled,
+                    None,
                 )
                 .unwrap();
         }
@@ -460,6 +480,7 @@ mod tests {
                 &RuntimeEnv::default(),
                 &metrics(),
                 &mut Vec::new(),
+                None,
             )
             .unwrap();
         assert!(!spill.has_spill_file());
@@ -484,6 +505,7 @@ mod tests {
                 &pathless_backend::runtime(),
                 &metrics(),
                 &mut Vec::new(),
+                None,
             )
             .unwrap();
         assert!(spill.has_spill_file());

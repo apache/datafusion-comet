@@ -456,6 +456,17 @@ The `MultiPartitionShuffleRepartitioner` holds:
 - `max_buffer_bytes`, the optional fixed spill threshold described above. `None` leaves pool
   pressure as the only trigger.
 - `scratch`, reusable buffers for partition ID computation.
+- Through the writer, a second reservation for the local writer's own buffers: the data file
+  and spill file write buffers, the spill copy buffer, the encode scratch and the cached zstd
+  context. `try_new` hands `LocalPartitionWriter` a `reservation.new_empty()` sibling, so the
+  bytes land on the same consumer without a new one, and the writer keeps it equal to what
+  those buffers hold. A spill frees `reservation` but not this one, and it counts toward
+  neither `memory_spilled_bytes` nor `spark.comet.shuffle.native.maxBufferBytes`. The three
+  file and copy buffers ask the pool for their full size, and when it refuses the writer
+  uses an 8 KiB buffer instead and charges that; the data file buffer, built before the
+  writer has a reservation, is rebuilt at that size while still empty. The scratch and the
+  zstd context already exist when they are charged, so the writer records them without
+  asking.
 
 The spill file is owned by `PartitionedSpill` in `writers/local/spill.rs`. It holds one DataFusion
 `SpillFile`, created lazily on the first spill and shared by every output partition, and tracks per

@@ -44,10 +44,15 @@ off-heap consumers draw down one number.
 
 Comet's memory pool only tracks memory that an operator explicitly reserves, which in practice means the batches
 an operator deliberately accumulates: the sort buffer, the build side of a hash join, hash aggregation state, and the
-shuffle writer's buffered partitions. Memory that is not reserved is invisible to the pool no matter how much of it
-there is. That includes:
+shuffle writer's buffered partitions, along with the write buffers, encode scratch and zstd context of the native
+shuffle writer when it writes to more than one local partition (the scratch is charged as each write ends, so its
+transient peak within a write, the write buffer size plus one block, is not). Memory that is not reserved is
+invisible to the pool no matter how much of it there is. That includes:
 
 - per-batch working memory in expression kernels and Arrow array builders,
+- the write buffers and encode scratch of the single-partition, empty-schema and remote shuffle writers
+  (`spark.comet.shuffle.native.writeBufferSize` sizes the local ones), and the zstd context they keep while
+  encoding when `spark.comet.shuffle.compression.codec` is `zstd`,
 - decompression buffers and Parquet reader structures,
 - object store request buffers and the async runtime's own machinery,
 - Arrow buffers allocated on the JVM side, which no budget covers at all,

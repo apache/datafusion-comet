@@ -180,7 +180,7 @@ impl<T: PartitionWriter> MultiPartitionShuffleRepartitioner<T> {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn try_new(
         partition: usize,
-        partition_writer: T,
+        mut partition_writer: T,
         partitioning: CometPartitioning,
         metrics: ShufflePartitionerMetrics,
         runtime: Arc<RuntimeEnv>,
@@ -235,6 +235,9 @@ impl<T: PartitionWriter> MultiPartitionShuffleRepartitioner<T> {
         let reservation = MemoryConsumer::new(format!("ShuffleRepartitioner[{partition}]"))
             .with_can_spill(true)
             .register(&runtime.memory_pool);
+        // The writer's buffers share the consumer but not the reservation: `spill` frees this
+        // one and reports it as spilled memory, and the buffer limit is checked against it.
+        partition_writer.attach_buffer_reservation(reservation.new_empty())?;
 
         Ok(Self {
             buffered_batches: vec![],
@@ -736,7 +739,11 @@ impl<T: PartitionWriter> Debug for MultiPartitionShuffleRepartitioner<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::writers::LocalPartitionWriter;
+    use crate::{CompressionCodec, PartitionOffsets, ShuffleBlockWriter};
     use arrow::array::Int64Array;
+    use datafusion::execution::runtime_env::RuntimeEnvBuilder;
+    use datafusion::physical_expr::expressions::Column;
     use datafusion::physical_plan::metrics::ExecutionPlanMetricsSet;
 
     #[derive(Default)]
@@ -999,8 +1006,6 @@ mod tests {
 
     #[tokio::test]
     async fn rejected_growth_counts_existing_reservation_and_unreserved_input() {
-        use datafusion::execution::runtime_env::RuntimeEnvBuilder;
-
         for share_buffer in [false, true] {
             for (fail, consume_before_failure) in [(false, false), (true, false), (true, true)] {
                 let batch = RecordBatch::try_from_iter([(
@@ -1065,8 +1070,6 @@ mod tests {
     async fn heterogeneous_spill_metrics_do_not_depend_on_input_batching() {
         use arrow::array::{DictionaryArray, Int32Array, ListArray, StringArray, StringViewArray};
         use arrow::datatypes::{Int32Type, Int64Type};
-        use datafusion::physical_expr::expressions::Column;
-
         let num_rows = 64usize;
         let batch_size = 4usize;
         let strings = (0..num_rows)
@@ -1357,8 +1360,6 @@ mod tests {
     /// each partition still in input order.
     #[tokio::test]
     async fn positional_placement_survives_spilling() {
-        use datafusion::execution::runtime_env::RuntimeEnvBuilder;
-
         // Ragged, so that groups and slices straddle batch and spill boundaries.
         let framing = [300, 17, 683, 64, 1, 191];
         let (num_partitions, group_rows, start_partition, batch_size) = (8, 48, 3, 256);
@@ -1435,6 +1436,234 @@ mod tests {
         assert!(
             spread <= group_rows,
             "partition sizes {sizes:?} spread by {spread}, more than one group of {group_rows}"
+        );
+    }
+
+    /// A `GreedyMemoryPool` of `limit` bytes.
+    fn runtime_with_pool(limit: usize) -> Arc<RuntimeEnv> {
+        Arc::new(
+            RuntimeEnvBuilder::new()
+                .with_memory_limit(limit, 1.0)
+                .build()
+                .unwrap(),
+        )
+    }
+
+    fn local_writer(
+        dir: &tempfile::TempDir,
+        num_partitions: usize,
+        write_buffer_size: usize,
+        runtime: Arc<RuntimeEnv>,
+    ) -> LocalPartitionWriter {
+        let block_writer = ShuffleBlockWriter::try_new(
+            int64_batch(0..1).schema().as_ref(),
+            CompressionCodec::Lz4Frame,
+        )
+        .unwrap();
+        LocalPartitionWriter::try_new(
+            dir.path().join("data.out").to_str().unwrap().to_string(),
+            Arc::new(PartitionOffsets::default()),
+            block_writer,
+            num_partitions,
+            1024,
+            write_buffer_size,
+            runtime,
+        )
+        .unwrap()
+    }
+
+    /// A hash repartitioner over `int64_batch` rows with `batch_size` 1024.
+    fn hash_repartitioner<W: PartitionWriter>(
+        writer: W,
+        num_partitions: usize,
+        runtime: Arc<RuntimeEnv>,
+        max_buffer_bytes: Option<usize>,
+    ) -> MultiPartitionShuffleRepartitioner<W> {
+        MultiPartitionShuffleRepartitioner::try_new(
+            0,
+            writer,
+            CometPartitioning::Hash(vec![Arc::new(Column::new("v", 0))], num_partitions),
+            ShufflePartitionerMetrics::new(&ExecutionPlanMetricsSet::new(), 0),
+            runtime,
+            1024,
+            false,
+            max_buffer_bytes,
+        )
+        .unwrap()
+    }
+
+    /// Pool usage is the batches plus the writer's buffers, and the buffer reservation is
+    /// exactly what the buffers hold.
+    fn assert_local_buffers_charged(
+        repartitioner: &MultiPartitionShuffleRepartitioner<LocalPartitionWriter>,
+        runtime: &RuntimeEnv,
+    ) -> usize {
+        let writer = repartitioner.partition_writer();
+        let charged = writer.buffer_reservation_size();
+        assert_eq!(
+            charged,
+            writer.buffer_bytes_held(),
+            "reservation must equal the bytes held"
+        );
+        assert_eq!(
+            runtime.memory_pool.reserved(),
+            repartitioner.reservation.size() + charged
+        );
+        charged
+    }
+
+    /// The local writer's buffers are charged to the pool from creation, through a spill and
+    /// the final write, and released when the writer is dropped.
+    #[tokio::test]
+    async fn local_writer_buffers_are_charged_and_released() {
+        let write_buffer_size = 1 << 20;
+        let dir = tempfile::tempdir().unwrap();
+        let runtime = runtime_with_pool(1 << 30);
+        let mut repartitioner = hash_repartitioner(
+            local_writer(&dir, 2, write_buffer_size, Arc::clone(&runtime)),
+            2,
+            Arc::clone(&runtime),
+            None,
+        );
+        assert_eq!(
+            assert_local_buffers_charged(&repartitioner, &runtime),
+            write_buffer_size,
+            "the data file buffer is charged when the writer attaches"
+        );
+
+        repartitioner
+            .insert_batch(int64_batch(0..4096))
+            .await
+            .unwrap();
+        repartitioner.spill(0).unwrap();
+        assert_eq!(repartitioner.reservation.size(), 0);
+        assert!(
+            assert_local_buffers_charged(&repartitioner, &runtime) >= 2 * write_buffer_size,
+            "the spill file buffer is charged after a spill"
+        );
+
+        repartitioner
+            .insert_batch(int64_batch(4096..8192))
+            .await
+            .unwrap();
+        repartitioner.shuffle_write().unwrap();
+        assert!(
+            assert_local_buffers_charged(&repartitioner, &runtime) >= 3 * write_buffer_size,
+            "the spill copy buffer is charged after the write"
+        );
+
+        drop(repartitioner);
+        assert_eq!(runtime.memory_pool.reserved(), 0);
+    }
+
+    /// Spills every chunk through a local writer and returns the output file's bytes.
+    async fn spill_every_chunk(
+        dir: &tempfile::TempDir,
+        runtime: Arc<RuntimeEnv>,
+        write_buffer_size: usize,
+    ) -> (Vec<u8>, (usize, usize, usize)) {
+        let mut repartitioner = hash_repartitioner(
+            local_writer(dir, 2, write_buffer_size, Arc::clone(&runtime)),
+            2,
+            Arc::clone(&runtime),
+            Some(1),
+        );
+        assert_local_buffers_charged(&repartitioner, &runtime);
+        for start in (0..8192i64).step_by(4096) {
+            repartitioner
+                .insert_batch(int64_batch(start..start + 4096))
+                .await
+                .unwrap();
+            assert_local_buffers_charged(&repartitioner, &runtime);
+        }
+        repartitioner.shuffle_write().unwrap();
+        assert_local_buffers_charged(&repartitioner, &runtime);
+        let capacities = repartitioner.partition_writer().buffer_capacities();
+        (
+            std::fs::read(dir.path().join("data.out")).unwrap(),
+            capacities,
+        )
+    }
+
+    /// When the pool refuses a buffer, the writer takes a small one and charges that, so the
+    /// reservation still matches what is held, and the output is unchanged.
+    #[tokio::test]
+    async fn refused_buffers_fall_back_to_small_buffers() {
+        let write_buffer_size = 1 << 20;
+        let fallback = 8 * 1024;
+        let dir = tempfile::tempdir().unwrap();
+        let (baseline, capacities) =
+            spill_every_chunk(&dir, runtime_with_pool(1 << 30), write_buffer_size).await;
+        assert_eq!(
+            capacities,
+            (write_buffer_size, write_buffer_size, write_buffer_size)
+        );
+
+        for (limit, expected) in [
+            // room for the data file buffer; the batches then hold the rest, so the spill
+            // buffer and the copy buffer are refused
+            (
+                write_buffer_size + 512 * 1024,
+                (write_buffer_size, fallback, fallback),
+            ),
+            // too small for any of them
+            (512 * 1024, (fallback, fallback, fallback)),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let (output, capacities) =
+                spill_every_chunk(&dir, runtime_with_pool(limit), write_buffer_size).await;
+            assert_eq!(capacities, expected, "pool limit {limit}");
+            assert_eq!(output, baseline, "pool limit {limit} changed the output");
+        }
+    }
+
+    /// Runs eight chunks through `writer` with a limit that spills every one of them.
+    async fn spill_metrics_with_buffer_limit<W: PartitionWriter>(
+        writer: W,
+        runtime: Arc<RuntimeEnv>,
+    ) -> MultiPartitionShuffleRepartitioner<W> {
+        let mut repartitioner = hash_repartitioner(writer, 2, runtime, Some(8 * 1024));
+        for start in (0..8192i64).step_by(1024) {
+            repartitioner
+                .insert_batch(int64_batch(start..start + 1024))
+                .await
+                .unwrap();
+        }
+        repartitioner.shuffle_write().unwrap();
+        repartitioner
+    }
+
+    /// The buffer reservation is separate from the batch reservation: spills neither release
+    /// it nor report it as spilled memory, and the fixed buffer limit does not see it.
+    #[tokio::test]
+    async fn buffer_charges_do_not_count_as_spilled_memory() {
+        let baseline = spill_metrics_with_buffer_limit(
+            FailingPartitionWriter::default(),
+            runtime_with_pool(1 << 30),
+        )
+        .await;
+        assert!(baseline.spill_count() > 0);
+
+        let dir = tempfile::tempdir().unwrap();
+        let runtime = runtime_with_pool(1 << 30);
+        let local = spill_metrics_with_buffer_limit(
+            local_writer(&dir, 2, 1 << 20, Arc::clone(&runtime)),
+            runtime,
+        )
+        .await;
+        assert!(
+            local.partition_writer().buffer_reservation_size() >= 1 << 20,
+            "the local writer must be charging its buffers for this to mean anything"
+        );
+        assert_eq!(
+            (
+                local.spill_count(),
+                local.metrics.memory_spilled_bytes.value()
+            ),
+            (
+                baseline.spill_count(),
+                baseline.metrics.memory_spilled_bytes.value()
+            )
         );
     }
 
