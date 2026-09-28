@@ -39,6 +39,7 @@ import org.apache.spark.sql.types._
 import org.apache.comet.CometConf
 import org.apache.comet.CometExplainInfo
 import org.apache.comet.CometSparkSessionExtensions.{appendTagValues, withFallbackReason, withFallbackReasons, withInfo, withNativeExpr}
+import org.apache.comet.DataTypeSupport
 import org.apache.comet.expressions._
 import org.apache.comet.parquet.CometParquetUtils
 import org.apache.comet.serde.ExprOuterClass.{AggExpr, Expr, ScalarFunc}
@@ -577,23 +578,33 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
   }
 
   /**
-   * Returns whether `dt` is supported at a caller's data-type boundary. All options apply
-   * recursively. Defaults preserve existing expression-serde behavior: complex and ANSI interval
-   * types are rejected, while calendar intervals, time types and all string variants are
-   * accepted. Callers must additionally check restrictions specific to their value-transfer path.
+   * Returns whether `dt` is supported at a caller's data-type boundary.
    *
+   * The defaults preserve expression-serde behavior: primitive types, `CalendarIntervalType`,
+   * `TimeType`, and all `StringType` variants are accepted, while complex and ANSI interval types
+   * are rejected. Sinks and native shuffle enable complex and ANSI interval types because their
+   * Arrow IPC paths support them. Local scans additionally reject `TimeType` and non-default
+   * strings, while JVM columnar shuffle rejects ANSI intervals, calendar intervals, and duplicate
+   * struct field names because its unsafe-row-to-Arrow path cannot handle them.
+   *
+   * Note that the option polarity is mixed: `allowComplex` and `allowIntervals` are restrictive
+   * by default; the other four options are permissive by default.
+   *
+   * @param dt
+   *   data type to check
    * @param allowComplex
-   *   allow non-empty structs, arrays, and maps
+   *   recursively allow non-empty structs, arrays, and maps
    * @param allowIntervals
-   *   allow year-month and day-time intervals
+   *   allow year-month and day-time interval types
    * @param allowCalendarInterval
-   *   allow calendar intervals
+   *   allow calendar interval types
    * @param allowTimeType
    *   allow Spark `TimeType`
    * @param allowAnyStringType
-   *   allow non-default string variants such as collated strings
+   *   allow non-default `StringType` variants such as collated strings; when false, only the
+   *   default `StringType` is accepted
    * @param allowDuplicateStructFieldNames
-   *   allow duplicate field names in structs
+   *   allow duplicate field names in nested structs
    */
   def supportedDataType(
       dt: DataType,
@@ -618,8 +629,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
         true
       case s: StructType if allowComplex =>
         s.fields.nonEmpty &&
-        (allowDuplicateStructFieldNames ||
-          s.fields.map(_.name).distinct.length == s.fields.length) &&
+        (allowDuplicateStructFieldNames || !DataTypeSupport.hasDuplicateFieldNames(s.fields)) &&
         s.fields.forall(f => supported(f.dataType))
       case a: ArrayType if allowComplex =>
         supported(a.elementType)

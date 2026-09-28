@@ -449,12 +449,22 @@ object CometMakeDate extends CometExpressionSerde[MakeDate] {
   }
 }
 
+/**
+ * `timestamp_seconds` lowers to the native `seconds_to_timestamp` kernel for integer, long, float
+ * and double inputs. Decimal, byte and short inputs have no native implementation, so
+ * `CodegenDispatchFallback` keeps them in the Comet pipeline by running Spark's own
+ * `SecondsToTimestamp.doGenCode` in the JVM codegen dispatcher, which matches Spark exactly.
+ *
+ * Decimal input is not a plain multiply: Spark computes `longValueExact()` on the scaled value,
+ * which raises rather than rounds when a nonzero digit remains past microsecond precision, and
+ * raises when the result overflows a long.
+ */
 object CometSecondsToTimestamp
-    extends CometScalarFunction[SecondsToTimestamp]("seconds_to_timestamp") {
+    extends CometScalarFunction[SecondsToTimestamp]("seconds_to_timestamp")
+    with CodegenDispatchFallback {
 
   override def getUnsupportedReasons(): Seq[String] = Seq(
-    "Only `IntegerType`, `LongType`, `FloatType`, and `DoubleType` inputs are supported." +
-      " `DecimalType`, `ByteType`, and `ShortType` fall back to Spark.")
+    "`DecimalType`, `ByteType`, and `ShortType` inputs")
 
   override def getSupportLevel(expr: SecondsToTimestamp): SupportLevel =
     expr.child.dataType match {
@@ -864,23 +874,7 @@ object CometAddMonths extends CometCodegenDispatch[AddMonths]
 
 object CometMonthsBetween extends CometCodegenDispatch[MonthsBetween]
 
-object CometMakeTimestamp
-    extends CometCodegenDispatch[MakeTimestamp]
-    with CodegenDispatchFallback {
-
-  private val collationReason = DatetimeCollation.reason("make_timestamp")
-
-  override def getIncompatibleReasons(): Seq[String] =
-    DatetimeCollation.incompatibleReasons("make_timestamp")
-
-  override def getSupportLevel(expr: MakeTimestamp): SupportLevel = {
-    if (DatetimeCollation.hasNonDefaultCollation(expr)) {
-      Incompatible(Some(collationReason))
-    } else {
-      Compatible()
-    }
-  }
-}
+object CometMakeTimestamp extends CometCodegenDispatch[MakeTimestamp]
 
 object CometMicrosToTimestamp extends CometCodegenDispatch[MicrosToTimestamp]
 
@@ -892,23 +886,7 @@ object CometUnixMillis extends CometCodegenDispatch[UnixMillis]
 
 object CometUnixMicros extends CometCodegenDispatch[UnixMicros]
 
-object CometToUnixTimestamp
-    extends CometCodegenDispatch[ToUnixTimestamp]
-    with CodegenDispatchFallback {
-
-  private val collationReason = DatetimeCollation.reason("to_unix_timestamp")
-
-  override def getIncompatibleReasons(): Seq[String] =
-    DatetimeCollation.incompatibleReasons("to_unix_timestamp")
-
-  override def getSupportLevel(expr: ToUnixTimestamp): SupportLevel = {
-    if (DatetimeCollation.hasNonDefaultCollation(expr)) {
-      Incompatible(Some(collationReason))
-    } else {
-      Compatible()
-    }
-  }
-}
+object CometToUnixTimestamp extends CometCodegenDispatch[ToUnixTimestamp]
 
 object CometGetTimestamp extends CometCodegenDispatch[GetTimestamp]
 

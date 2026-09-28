@@ -17,7 +17,7 @@
 
 use arrow::array::{ArrayRef, RecordBatch};
 use arrow::buffer::{Buffer, MutableBuffer};
-use arrow::datatypes::SchemaRef;
+use arrow::datatypes::{Schema, SchemaRef};
 use arrow::ipc::convert::fb_to_schema;
 use arrow::ipc::reader::{read_dictionary_impl, RecordBatchDecoder};
 use arrow::ipc::{root_as_message, Message, MessageHeader};
@@ -46,11 +46,26 @@ const CONTINUATION_MARKER: [u8; 4] = [0xff; 4];
 /// from several shuffles, and a single entry would thrash.
 const SCHEMA_CACHE_CAPACITY: usize = 4;
 
+/// Maximum estimated serialized-plus-parsed size of all cached schemas on a thread, excluding
+/// allocator overhead. A shared 16 MiB budget lets all four slots hold wide schemas from
+/// interleaved shuffles: 8,000 short-named Int32 fields need about 1.4 MiB with Arrow 59 on a
+/// 64-bit target. This leaves headroom for wider schemas and names/metadata while bounding
+/// estimated cache retention per decoding thread.
+const SCHEMA_CACHE_RETAIN_LIMIT: usize = 16 << 20;
+
 /// Metadata scratch larger than this is released after the block rather than kept for the thread.
-/// Real metadata is a few KiB even for wide schemas; only a corrupt length gets anywhere near.
+/// This buffer-capacity limit is independent of the serialized-plus-parsed schema cache budget.
 const SCRATCH_RETAIN_LIMIT: usize = 1 << 20;
 
-/// Per-thread decoder state.
+struct CachedSchema {
+    message: Box<[u8]>,
+    schema: SchemaRef,
+    /// Computed once on admission; cache hits and eviction do not walk the schema again.
+    retained_size: usize,
+}
+
+/// Per-thread memoization of immutable schema metadata, not operator state. Moving execution to
+/// another thread only loses cache hits. Dictionaries and batch data remain local to each call.
 ///
 /// Every block is a complete IPC stream that opens with a schema message. `ShuffleBlockWriter`
 /// encodes that message once and writes it verbatim into every block, so consecutive blocks carry
@@ -59,7 +74,7 @@ const SCRATCH_RETAIN_LIMIT: usize = 1 << 20;
 #[derive(Default)]
 struct DecoderState {
     /// Parsed schemas keyed on the raw schema message, most recently used first.
-    schemas: Vec<(Box<[u8]>, SchemaRef)>,
+    schemas: Vec<CachedSchema>,
     /// Message metadata read from a decompressor lands here, so it is not reallocated per block.
     scratch: Vec<u8>,
     #[cfg(test)]
@@ -101,29 +116,63 @@ fn scratch_capacity() -> usize {
     STATE.with_borrow(|state| state.scratch.capacity())
 }
 
-fn cached_schema(
-    schemas: &mut [(Box<[u8]>, SchemaRef)],
-    schema_message: &[u8],
-) -> Option<SchemaRef> {
+fn cached_schema(schemas: &mut [CachedSchema], schema_message: &[u8]) -> Option<SchemaRef> {
     let hit = schemas
         .iter()
-        .position(|(message, _)| message.as_ref() == schema_message)?;
-    // most recently used first, so an alternating pair stays resident
+        .position(|entry| entry.message.as_ref() == schema_message)?;
+    // Promote the hit without changing the relative recency of the other entries.
     if hit != 0 {
-        schemas.swap(0, hit);
+        schemas[..=hit].rotate_right(1);
     }
-    Some(Arc::clone(&schemas[0].1))
+    Some(Arc::clone(&schemas[0].schema))
 }
 
-fn cache_schema(
-    schemas: &mut Vec<(Box<[u8]>, SchemaRef)>,
-    schema_message: &[u8],
-    schema: SchemaRef,
-) {
-    if schemas.len() == SCHEMA_CACHE_CAPACITY {
-        schemas.pop();
+fn estimated_retained_size(schema_message: &[u8], schema: &Schema) -> usize {
+    let mut retained_size = schema_message
+        .len()
+        .saturating_add(std::mem::size_of_val(schema))
+        .saturating_add(schema.fields().size())
+        .saturating_add(
+            schema
+                .metadata()
+                .capacity()
+                .saturating_mul(std::mem::size_of::<(String, String)>()),
+        );
+    for (key, value) in schema.metadata() {
+        retained_size = retained_size
+            .saturating_add(key.capacity())
+            .saturating_add(value.capacity());
     }
-    schemas.insert(0, (schema_message.into(), schema));
+    retained_size
+}
+
+fn cache_schema(schemas: &mut Vec<CachedSchema>, schema_message: &[u8], schema: SchemaRef) {
+    // Reject entries larger than the whole budget before evicting or copying the key. Check the
+    // serialized size first to avoid walking a schema that cannot fit even without its parsed copy.
+    // Admission only affects reuse: oversized valid schemas still decode successfully.
+    if schema_message.len() > SCHEMA_CACHE_RETAIN_LIMIT {
+        return;
+    }
+    let retained_size = estimated_retained_size(schema_message, &schema);
+    if retained_size > SCHEMA_CACHE_RETAIN_LIMIT {
+        return;
+    }
+    // At most four stored estimates are summed on a miss. Keeping no separate total also means
+    // clearing the cache cannot leave stale byte accounting behind.
+    let mut cached_size: usize = schemas.iter().map(|entry| entry.retained_size).sum();
+    while schemas.len() == SCHEMA_CACHE_CAPACITY
+        || cached_size > SCHEMA_CACHE_RETAIN_LIMIT - retained_size
+    {
+        cached_size -= schemas.pop().unwrap().retained_size;
+    }
+    schemas.insert(
+        0,
+        CachedSchema {
+            message: schema_message.into(),
+            schema,
+            retained_size,
+        },
+    );
 }
 
 fn decode_error(what: &str) -> DataFusionError {
@@ -492,13 +541,14 @@ mod tests {
     use super::{
         read_ipc_compressed, read_ipc_compressed_validated, reset_schema_cache, schema_cache_stats,
         scratch_capacity, RequireLz4EndMark, SchemaCacheStats, SCHEMA_CACHE_CAPACITY,
-        SCRATCH_RETAIN_LIMIT,
+        SCHEMA_CACHE_RETAIN_LIMIT, SCRATCH_RETAIN_LIMIT,
     };
     use crate::writers::rss::tests::allocations;
     use arrow::array::{Array, DictionaryArray, Int32Array, RecordBatch, StringArray};
     use arrow::datatypes::{DataType, Field, Int32Type, Schema};
     use arrow::ipc::reader::StreamReader;
     use arrow::ipc::writer::StreamWriter;
+    use std::collections::HashMap;
     use std::io::{Cursor, Read, Write};
     use std::sync::Arc;
 
@@ -693,6 +743,319 @@ mod tests {
         assert_eq!(schema_cache_stats(), stats(4, 6), "evicted");
         decode(&blocks[SCHEMA_CACHE_CAPACITY]);
         assert_eq!(schema_cache_stats(), stats(5, 6), "most recent stays");
+    }
+
+    #[test]
+    fn promoting_a_schema_preserves_eviction_order() {
+        let blocks: Vec<_> = (1..=5)
+            .map(|columns| block_for(&n_column_batch(columns), b"NONE"))
+            .collect();
+        reset_schema_cache();
+        // A B C D A E D: promoting A must keep D newer than B and C, so E evicts B.
+        for index in [0, 1, 2, 3, 0, 4, 3] {
+            assert_eq!(
+                read_ipc_compressed(&blocks[index]).unwrap(),
+                n_column_batch(index + 1)
+            );
+        }
+        assert_eq!(schema_cache_stats(), stats(2, 5));
+        read_ipc_compressed(&blocks[1]).unwrap();
+        assert_eq!(schema_cache_stats(), stats(2, 6));
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)] // Miri cannot call Zstd's C FFI.
+    fn oversized_schemas_decode_without_retention_or_eviction() {
+        let normal_blocks: Vec<_> = (1..=SCHEMA_CACHE_CAPACITY)
+            .map(|columns| block_for(&n_column_batch(columns), b"NONE"))
+            .collect();
+        let schemas = [
+            (
+                "oversized serialized schema",
+                false,
+                Schema::new(vec![Field::new(
+                    "x".repeat(SCHEMA_CACHE_RETAIN_LIMIT + 1),
+                    DataType::Int32,
+                    false,
+                )]),
+            ),
+            // These wire messages fit the budget, but their parsed copies push retention over it.
+            (
+                "oversized parsed field name",
+                true,
+                Schema::new(vec![Field::new(
+                    "x".repeat(SCHEMA_CACHE_RETAIN_LIMIT / 2),
+                    DataType::Int32,
+                    false,
+                )]),
+            ),
+            (
+                "oversized parsed schema metadata",
+                true,
+                Schema::new(vec![Field::new("c", DataType::Int32, false)]).with_metadata(
+                    HashMap::from([("key".into(), "x".repeat(SCHEMA_CACHE_RETAIN_LIMIT / 2))]),
+                ),
+            ),
+        ];
+        for (case, wire_fits, schema) in schemas {
+            let batch = RecordBatch::try_new(
+                Arc::new(schema),
+                vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
+            )
+            .unwrap_or_else(|error| panic!("{case}: {error}"));
+            let ipc = ipc_bytes(&batch);
+            assert_eq!(
+                ipc.len() < SCHEMA_CACHE_RETAIN_LIMIT,
+                wire_fits,
+                "{case}: IPC length {}",
+                ipc.len()
+            );
+            for codec in CODECS {
+                let codec_name = std::str::from_utf8(codec).expect("codecs are ASCII");
+                let context = format!("{case}, codec {codec_name}");
+                reset_schema_cache();
+                for (index, block) in normal_blocks.iter().enumerate() {
+                    read_ipc_compressed(block).unwrap_or_else(|error| {
+                        panic!("{context}: cache prefill schema {index}: {error}")
+                    });
+                }
+                let block = encode(codec, &ipc);
+                for validate in [false, true] {
+                    let context = format!("{context}, validate {validate}");
+                    let decoded = if validate {
+                        read_ipc_compressed_validated(&block)
+                    } else {
+                        read_ipc_compressed(&block)
+                    }
+                    .unwrap_or_else(|error| panic!("{context}: {error}"));
+                    assert_eq!(decoded, batch, "{context}");
+                    let schema_ref = Arc::downgrade(&decoded.schema());
+                    drop(decoded);
+                    assert!(schema_ref.upgrade().is_none(), "{context}: schema retained");
+                }
+                assert_eq!(
+                    schema_cache_stats(),
+                    stats(0, SCHEMA_CACHE_CAPACITY + 2),
+                    "{context}: oversized schemas must miss"
+                );
+                for (index, block) in normal_blocks.iter().enumerate() {
+                    read_ipc_compressed(block).unwrap_or_else(|error| {
+                        panic!("{context}: cached schema {index}: {error}")
+                    });
+                }
+                assert_eq!(
+                    schema_cache_stats(),
+                    stats(SCHEMA_CACHE_CAPACITY, SCHEMA_CACHE_CAPACITY + 2),
+                    "{context}: normal schemas must stay cached"
+                );
+                assert!(
+                    scratch_capacity() <= SCRATCH_RETAIN_LIMIT,
+                    "{context}: scratch retained {} bytes",
+                    scratch_capacity()
+                );
+            }
+        }
+    }
+
+    /// Realistic wide schemas still benefit from repeated decode, and reset releases the
+    /// parsed schema once no decoded batch owns it.
+    #[test]
+    #[cfg_attr(miri, ignore)] // Miri cannot call Zstd's C FFI.
+    fn wide_schemas_hit_the_cache_and_reset_releases_them() {
+        let batch = n_column_batch(8_000);
+        let ipc = ipc_bytes(&batch);
+        for codec in CODECS {
+            let block = encode(codec, &ipc);
+            for validate in [false, true] {
+                let decode = |block: &[u8]| {
+                    if validate {
+                        read_ipc_compressed_validated(block)
+                    } else {
+                        read_ipc_compressed(block)
+                    }
+                };
+                reset_schema_cache();
+                let cold = decode(&block).unwrap_or_else(|error| {
+                    panic!("cold codec {codec:?}, validate {validate}: {error}")
+                });
+                let schema = Arc::downgrade(cold.schema_ref());
+                let warm = decode(&block).unwrap_or_else(|error| {
+                    panic!("warm codec {codec:?}, validate {validate}: {error}")
+                });
+                assert_eq!(cold, batch, "codec {codec:?}, validate {validate}");
+                assert_eq!(warm, batch, "codec {codec:?}, validate {validate}");
+                assert_eq!(
+                    schema_cache_stats(),
+                    stats(1, 1),
+                    "codec {codec:?}, validate {validate}"
+                );
+                drop(cold);
+                drop(warm);
+                assert!(
+                    schema.upgrade().is_some(),
+                    "codec {codec:?}, validate {validate}: schema remains cached"
+                );
+                reset_schema_cache();
+                assert!(
+                    schema.upgrade().is_none(),
+                    "codec {codec:?}, validate {validate}: reset releases cached schemas"
+                );
+                assert_eq!(schema_cache_stats(), stats(0, 0));
+            }
+        }
+    }
+
+    /// Interleaved shuffles must retain all four wide schemas after the first decode round.
+    #[test]
+    #[cfg_attr(miri, ignore)] // Miri cannot call Zstd's C FFI.
+    fn interleaved_wide_schemas_hit_the_cache_after_the_first_round() {
+        let batch = n_column_batch(8_000);
+        let batches: Vec<_> = (0..4)
+            .map(|schema_id| {
+                let schema = batch
+                    .schema_ref()
+                    .as_ref()
+                    .clone()
+                    .with_metadata(HashMap::from([("shuffle".into(), schema_id.to_string())]));
+                RecordBatch::try_new(Arc::new(schema), batch.columns().to_vec()).unwrap()
+            })
+            .collect();
+        for codec in CODECS {
+            let codec_name = std::str::from_utf8(codec).expect("codecs are ASCII");
+            let blocks: Vec<_> = batches
+                .iter()
+                .map(|batch| block_for(batch, codec))
+                .collect();
+            for validate in [false, true] {
+                reset_schema_cache();
+                for round in 0..10 {
+                    let context = format!(
+                        "round {}, codec {codec_name}, validate {validate}",
+                        round + 1
+                    );
+                    for (schema_id, (block, batch)) in blocks.iter().zip(&batches).enumerate() {
+                        let decoded = if validate {
+                            read_ipc_compressed_validated(block)
+                        } else {
+                            read_ipc_compressed(block)
+                        }
+                        .unwrap_or_else(|error| panic!("{context}, schema {schema_id}: {error}"));
+                        assert_eq!(&decoded, batch, "{context}, schema {schema_id}");
+                    }
+                    assert_eq!(schema_cache_stats(), stats(round * 4, 4), "{context}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn retained_size_counts_nested_and_schema_metadata_capacity() {
+        let metadata = || {
+            let mut value = String::with_capacity(SCHEMA_CACHE_RETAIN_LIMIT);
+            value.push('x');
+            HashMap::from([("key".into(), value)])
+        };
+        let nested = Schema::new(vec![Field::new(
+            "outer",
+            DataType::Struct(
+                vec![Field::new("inner", DataType::Int32, false).with_metadata(metadata())].into(),
+            ),
+            false,
+        )]);
+        for (case, schema) in [
+            ("nested field metadata", nested),
+            ("schema metadata", Schema::empty().with_metadata(metadata())),
+        ] {
+            // The strings contain one byte but retain an allocation as large as the budget.
+            // This also verifies that field sizing recurses through a struct's children.
+            assert!(
+                super::estimated_retained_size(&[], &schema) > SCHEMA_CACHE_RETAIN_LIMIT,
+                "{case} capacity must count toward retention"
+            );
+        }
+    }
+
+    /// A byte-budget eviction can remove multiple entries even before the entry-count cap
+    /// is reached. A promoted entry must outlive both less-recent entries.
+    #[test]
+    fn byte_budget_evicts_multiple_least_recent_schemas() {
+        // This helper exercises admission directly; the messages need only be distinct
+        // cache keys because IPC validation happens before cache_schema is called.
+        fn insert(
+            schemas: &mut Vec<super::CachedSchema>,
+            key: u8,
+            retained_size: usize,
+        ) -> (Vec<u8>, std::sync::Weak<Schema>) {
+            let schema = Arc::new(Schema::empty());
+            let parsed_size = super::estimated_retained_size(&[], schema.as_ref());
+            let message = vec![key; retained_size - parsed_size];
+            assert_eq!(
+                super::estimated_retained_size(&message, schema.as_ref()),
+                retained_size
+            );
+            let weak = Arc::downgrade(&schema);
+            super::cache_schema(schemas, &message, schema);
+            (message, weak)
+        }
+
+        let budget = super::SCHEMA_CACHE_RETAIN_LIMIT;
+        let mut schemas = Vec::new();
+        let (a, a_schema) = insert(&mut schemas, 1, budget / 4);
+        let (b, b_schema) = insert(&mut schemas, 2, budget / 4);
+        let (c, c_schema) = insert(&mut schemas, 3, budget / 4);
+        assert_eq!(schemas.len(), 3);
+        assert!(super::cached_schema(&mut schemas, &a).is_some());
+
+        let (d, d_schema) = insert(&mut schemas, 4, budget * 5 / 8);
+        assert_eq!(schemas.len(), 2);
+        assert_eq!(schemas[0].message.as_ref(), d);
+        assert_eq!(schemas[1].message.as_ref(), a);
+        assert!(
+            schemas
+                .iter()
+                .map(|entry| entry.retained_size)
+                .sum::<usize>()
+                <= budget
+        );
+        assert!(super::cached_schema(&mut schemas, &b).is_none());
+        assert!(super::cached_schema(&mut schemas, &c).is_none());
+        assert!(b_schema.upgrade().is_none(), "oldest schema was released");
+        assert!(
+            c_schema.upgrade().is_none(),
+            "next-oldest schema was released"
+        );
+        assert!(
+            a_schema.upgrade().is_some(),
+            "promoted schema remains cached"
+        );
+        assert!(d_schema.upgrade().is_some(), "new schema remains cached");
+    }
+
+    #[test]
+    fn exact_budget_schema_is_cached_and_oversized_schema_does_not_evict_it() {
+        let budget = super::SCHEMA_CACHE_RETAIN_LIMIT;
+        let mut schemas = Vec::new();
+        let schema = Arc::new(Schema::empty());
+        let parsed_size = super::estimated_retained_size(&[], schema.as_ref());
+        let message = vec![1; budget - parsed_size];
+        let cached = Arc::downgrade(&schema);
+        super::cache_schema(&mut schemas, &message, schema);
+        assert_eq!(schemas.len(), 1);
+        assert_eq!(schemas[0].retained_size, budget);
+        assert!(super::cached_schema(&mut schemas, &message).is_some());
+
+        let schema = Arc::new(Schema::empty());
+        let oversized = Arc::downgrade(&schema);
+        let too_large = vec![2; budget + 1 - parsed_size];
+        super::cache_schema(&mut schemas, &too_large, schema);
+        assert_eq!(schemas.len(), 1);
+        assert!(super::cached_schema(&mut schemas, &message).is_some());
+        assert!(super::cached_schema(&mut schemas, &too_large).is_none());
+        assert!(cached.upgrade().is_some(), "existing schema remains cached");
+        assert!(
+            oversized.upgrade().is_none(),
+            "oversized schema was released"
+        );
     }
 
     /// An `Int32` and a `Utf8` column, `num_rows` long.

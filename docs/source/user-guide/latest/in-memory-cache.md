@@ -159,7 +159,7 @@ Spark serializes a cached batch with `spark.serializer` whenever the block leave
 `_SER` storage levels, replication, cross-executor fetches, and the disk half of the default
 `MEMORY_AND_DISK`. So an ordinary `df.cache()` that spills is enough to reach it.
 
-If you run with `spark.kryo.registrationRequired=true`, register Comet's classes:
+If you run Kryo with `spark.kryo.registrationRequired=true`, register Comet's classes:
 
 ```
 spark.serializer=org.apache.spark.serializer.KryoSerializer
@@ -171,7 +171,8 @@ Comet cannot set `spark.kryo.registrator` for you the way it sets `spark.sql.cac
 `KryoSerializer` reads it when `SparkEnv` builds the serializer, which happens before any plugin
 runs. Without it, caching fails with a "Class is not registered" error that does not name this
 feature. Comet's driver plugin warns at startup when it sees Kryo, `registrationRequired`, and no
-registrator.
+registrator. Native broadcast needs the same registrator even when the cache is disabled; see
+[Kryo serialization](installation.md#kryo-serialization).
 
 ## Limitations
 

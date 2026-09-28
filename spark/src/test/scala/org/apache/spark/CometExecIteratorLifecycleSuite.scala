@@ -109,7 +109,6 @@ class CometExecIteratorLifecycleSuite extends CometTestBase {
             true,
             "fair_unified",
             64L << 20,
-            64L << 20,
             taskAttemptId,
             1L,
             null,
@@ -287,6 +286,20 @@ class CometExecIteratorLifecycleSuite extends CometTestBase {
       nativeMemoryLimitWarning(Array(4500 * mib, reserved, 1L, 1L), 4000 * mib, limit).isDefined)
     // Reservations can exceed the allocation, since operators reserve before they allocate.
     assert(nativeMemoryLimitWarning(Array(100 * mib, reserved, 1L, 1L), reserved, limit).isEmpty)
+  }
+
+  test("the memory pool limit reads a bare off-heap size as bytes, as Spark does") {
+    import CometExecIterator.getMemoryConfig
+    val fourGiB = 4L * 1024 * 1024 * 1024
+    val offHeap = new SparkConf(false)
+      .set("spark.master", "local[4]")
+      .set("spark.memory.offHeap.enabled", "true")
+    assert(
+      getMemoryConfig(offHeap.clone.set("spark.memory.offHeap.size", "4294967296")).memoryLimit
+        == fourGiB)
+    assert(
+      getMemoryConfig(offHeap.clone.set("spark.memory.offHeap.size", "4g")).memoryLimit
+        == fourGiB)
   }
 
   test("the native memory limit is the off-heap size plus the memory overhead") {

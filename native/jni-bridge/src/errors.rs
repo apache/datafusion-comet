@@ -573,7 +573,9 @@ fn throw_exception(env: &mut Env, error: &CometError, backtrace: Option<String>)
             // FAILED_READ_FILE / FileNotFound via the structured SparkError channel. Anything else
             // falls back to generic handling.
             CometError::DataFusion { msg: _, source } => {
-                if let Some(spark_error) = try_classify_file_read_error(source) {
+                if let Some(spark_error) = parquet_external_spark_error(source) {
+                    throw_spark_error_as_json(env, spark_error)
+                } else if let Some(spark_error) = try_classify_file_read_error(source) {
                     throw_spark_error_as_json(env, &spark_error)
                 } else {
                     throw_generic_exception(env, error, backtrace)
@@ -644,6 +646,23 @@ fn throw_spark_error_as_json(env: &mut Env, spark_error: &SparkError) -> jni::er
         jni::jni_str!("org/apache/comet/exceptions/CometQueryExecutionException"),
         JNIString::new(json_message),
     )
+}
+
+/// A `SparkError` the Parquet reader raised on open arrives as
+/// `DataFusionError::ParquetError(ParquetError::External(spark_error))`. Unwrap it so the error
+/// keeps its own JVM exception class instead of being classified as a file read failure.
+/// `Context` and `Shared` wrappers are looked through, as `try_classify_file_read_error` does.
+fn parquet_external_spark_error(error: &DataFusionError) -> Option<&SparkError> {
+    use datafusion::common::DataFusionError as DFE;
+    match error {
+        DFE::ParquetError(pe) => match pe.as_ref() {
+            ParquetError::External(inner) => inner.downcast_ref::<SparkError>(),
+            _ => None,
+        },
+        DFE::Context(_, inner) => parquet_external_spark_error(inner),
+        DFE::Shared(inner) => parquet_external_spark_error(inner),
+        _ => None,
+    }
 }
 
 /// Classify a `DataFusionError` as a per-file read failure by TYPED variant (not message text),
@@ -1368,6 +1387,36 @@ mod tests {
             SparkError::CannotReadFile { file_path, .. } => file_path,
             other => panic!("expected CannotReadFile, got {other:?}"),
         }
+    }
+
+    /// A `SparkError` the Parquet reader raised on open stays typed through the `ParquetError`
+    /// wrapper and through `Context` and `Shared` wrappers, while an ordinary reader error does
+    /// not match.
+    #[test]
+    fn parquet_external_spark_error_keeps_its_type() {
+        let raised = DataFusionError::ParquetError(Box::new(ParquetError::External(Box::new(
+            SparkError::ParquetMissingFieldIds {
+                file_path: "a.parquet".to_string(),
+            },
+        ))));
+        assert!(matches!(
+            parquet_external_spark_error(&raised),
+            Some(SparkError::ParquetMissingFieldIds { file_path }) if file_path == "a.parquet"
+        ));
+        let wrapped = DataFusionError::Context("open".to_string(), Box::new(raised));
+        assert!(matches!(
+            parquet_external_spark_error(&wrapped),
+            Some(SparkError::ParquetMissingFieldIds { .. })
+        ));
+        let shared = DataFusionError::Shared(Arc::new(wrapped));
+        assert!(matches!(
+            parquet_external_spark_error(&shared),
+            Some(SparkError::ParquetMissingFieldIds { .. })
+        ));
+        let corrupt = DataFusionError::ParquetError(Box::new(ParquetError::General(
+            "corrupt footer".to_string(),
+        )));
+        assert!(parquet_external_spark_error(&corrupt).is_none());
     }
 
     #[test]

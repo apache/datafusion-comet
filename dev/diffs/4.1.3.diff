@@ -1232,6 +1232,20 @@ index e4b5e10f7c3..c6efde09c8a 100644
  
    protected val baseResourcePath = {
      // use the same way as `SQLQueryTestSuite` to get the resource path
+diff --git a/sql/core/src/test/scala/org/apache/spark/sql/ResolveDefaultColumnsSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/ResolveDefaultColumnsSuite.scala
+index cb9d0909554..084d6515e8b 100644
+--- a/sql/core/src/test/scala/org/apache/spark/sql/ResolveDefaultColumnsSuite.scala
++++ b/sql/core/src/test/scala/org/apache/spark/sql/ResolveDefaultColumnsSuite.scala
+@@ -284,7 +284,8 @@ class ResolveDefaultColumnsSuite extends QueryTest with SharedSparkSession {
+     withTable("t") {
+       sql("CREATE TABLE t(v VARIANT DEFAULT parse_json('1')) USING PARQUET")
+       sql("INSERT INTO t VALUES(DEFAULT)")
+-      checkAnswer(sql("select v from t"), sql("select parse_json('1')").collect())
++      // Native unshredding may use a different integer width for the same Variant value.
++      assert(sql("select v from t").collect().map(_.get(0).toString).toSeq == Seq("1"))
+     }
+   }
+ 
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/SQLQuerySuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/SQLQuerySuite.scala
 index 74cdee49e55..f7452c9abb7 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/SQLQuerySuite.scala
@@ -3196,7 +3210,7 @@ index 30503af0fab..1491f4bc2d5 100644
  
    import testImplicits._
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetRowIndexSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetRowIndexSuite.scala
-index 08fd8a9ecb5..06967aec8e1 100644
+index 08fd8a9ecb5..e0b8cada307 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetRowIndexSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetRowIndexSuite.scala
 @@ -27,6 +27,7 @@ import org.apache.parquet.hadoop.ParquetWriter.DEFAULT_BLOCK_SIZE
@@ -4141,10 +4155,10 @@ index f0f3f94b811..b7d18771314 100644
  
      spark.internalCreateDataFrame(withoutFilters.execute(), schema)
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/test/SharedSparkSession.scala b/sql/core/src/test/scala/org/apache/spark/sql/test/SharedSparkSession.scala
-index 720b13b812e..93221ef4cf5 100644
+index 720b13b812e..e3ac2cebc6e 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/test/SharedSparkSession.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/test/SharedSparkSession.scala
-@@ -98,6 +98,21 @@ trait SharedSparkSessionBase
+@@ -98,6 +98,20 @@ trait SharedSparkSessionBase
        // this rule may potentially block testing of other optimization rules such as
        // ConstantPropagation etc.
        .set(SQLConf.OPTIMIZER_EXCLUDED_RULES.key, ConvertToLocalRelation.ruleName)
@@ -4160,7 +4174,6 @@ index 720b13b812e..93221ef4cf5 100644
 +        .set("spark.shuffle.manager",
 +          "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
 +        .set("spark.comet.shuffle.enabled", "true")
-+        .set("spark.comet.memoryOverhead", "2g")
 +
 +    }
      conf.set(
