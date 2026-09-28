@@ -508,7 +508,7 @@ independently compressed, allowing parallel decompression during reads.
 | Input format        | Columnar (direct from Comet operators) | Row-based (via ColumnarToRowExec) |
 | Partitioning logic  | Rust implementation                    | Spark's partitioner               |
 | Supported schemes   | Hash, Range, Single, RoundRobin        | Hash, Range, Single, RoundRobin   |
-| Partition key types | See the hash and range rules above    | Any type                          |
+| Partition key types | See the hash and range rules above     | Any type                          |
 | Performance         | Higher (no format conversion)          | Lower (columnar→row→columnar)     |
 | Writer variants     | Single path                            | Bypass (hash) and sort-based      |
 
