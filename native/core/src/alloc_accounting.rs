@@ -19,7 +19,7 @@
 //!
 //! [`AccountingAllocator`] wraps the selected global allocator and maintains a single signed
 //! process-wide byte balance, which [`current_balance`] exposes so it can be compared against the
-//! memory pool's reservations in tracing output. This is observability only: it never rejects an
+//! memory pool's reservations in the executor's memory usage log and in tracing output. This is observability only: it never rejects an
 //! allocation, never panics, and never gates the memory pool.
 //!
 //! The balance counts `Layout` bytes, not resident pages: it excludes allocator fragmentation,
@@ -43,15 +43,9 @@ const SETTLE_THRESHOLD: isize = 64 * 1024;
 static BALANCE: AtomicIsize = AtomicIsize::new(0);
 
 thread_local! {
-    /// Set while this thread is inside [`track`], so an allocation made *by* `track` settles
-    /// directly instead of recursing. The only such allocation today is the one some platforms
-    /// make when registering `LOCAL_DRIFT`'s destructor on first touch.
-    ///
-    /// Const-initialized and destructor-free, so reading it never allocates and never fails,
-    /// which is what makes it safe to consult before touching `LOCAL_DRIFT`.
-    static IN_TRACK: Cell<bool> = const { Cell::new(false) };
-
-    /// This thread's un-flushed delta.
+    /// This thread's un-flushed delta, and the only thread-local [`track`] touches. `libcomet` is
+    /// loaded with `dlopen`, so each thread-local an allocation touches costs a call into the
+    /// dynamic loader.
     static LOCAL_DRIFT: ThreadDrift = const { ThreadDrift(Cell::new(0)) };
 }
 
@@ -71,7 +65,7 @@ impl Drop for ThreadDrift {
 
 /// Bytes currently handed out by the Rust global allocator, process-wide.
 ///
-/// Returns 0 when the [`AccountingAllocator`] is not installed. Never reported negative: the
+/// Never reported negative: the
 /// balance can dip below zero transiently while per-thread deltas settle out of order.
 ///
 /// The value is approximate. Each live thread holds up to [`SETTLE_THRESHOLD`] bytes of
@@ -100,13 +94,9 @@ fn track(delta: isize) {
         return;
     }
 
-    // A re-entrant call is one made by `track` itself; the outer frame owns the flag and will
-    // clear it, so this frame must only settle and return.
-    if IN_TRACK.with(|in_track| in_track.replace(true)) {
-        BALANCE.fetch_add(delta, Ordering::Relaxed);
-        return;
-    }
-
+    // `thread_local!` never allocates through the global allocator (a `GlobalAlloc` guarantee
+    // since Rust 1.93), so first touching `LOCAL_DRIFT` cannot re-enter `track`.
+    //
     // `try_with` rather than `with`: during thread teardown `LOCAL_DRIFT`'s destructor has already
     // run, and any allocation after that point must not panic inside the allocator.
     if LOCAL_DRIFT
@@ -115,8 +105,6 @@ fn track(delta: isize) {
     {
         BALANCE.fetch_add(delta, Ordering::Relaxed);
     }
-
-    IN_TRACK.with(|in_track| in_track.set(false));
 }
 
 /// Wraps a global allocator, accounting the `Layout` bytes it hands out.
@@ -135,7 +123,7 @@ impl<A: GlobalAlloc> AccountingAllocator<A> {
 }
 
 // SAFETY: every method delegates to `inner`, which upholds the `GlobalAlloc` contract. The
-// accounting is pure bookkeeping over an `AtomicIsize` and thread-local `Cell`s: it does not
+// accounting is pure bookkeeping over an `AtomicIsize` and a thread-local `Cell`: it does not
 // inspect, retain, or alter any pointer, and it cannot unwind.
 unsafe impl<A: GlobalAlloc> GlobalAlloc for AccountingAllocator<A> {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
@@ -263,10 +251,9 @@ mod tests {
     }
 
     /// A real allocation must move the reported balance. This is the one test that checks the
-    /// wrapper is actually installed as the global allocator for the current feature set. The
-    /// block is zeroed and never touched, so it costs address space rather than resident memory.
+    /// wrapper is actually installed as the global allocator. The block is zeroed and never
+    /// touched, so it costs address space rather than resident memory.
     #[test]
-    #[cfg(feature = "alloc-accounting")]
     fn a_real_allocation_raises_the_balance() {
         use std::hint::black_box;
 
@@ -280,7 +267,7 @@ mod tests {
         assert!(
             during >= before + SIZE / 2,
             "a {SIZE} byte allocation should raise the balance (before={before}, during={during}); \
-             is the accounting wrapper installed for this feature set?"
+             is the accounting wrapper installed as the global allocator?"
         );
         drop(held);
     }
@@ -359,35 +346,29 @@ mod tests {
         unsafe { allocator.dealloc(ptr, Layout::from_size_align(SHRUNK, 8).unwrap()) };
     }
 
-    /// Threads must settle their remaining drift on exit.
+    /// A thread's remaining drift must reach the shared balance when the thread exits.
     ///
-    /// The worker writes a drift straight into its `LOCAL_DRIFT` cell and exits, so the only path
-    /// by which that value can reach the shared balance is `ThreadDrift::drop`. That holds only
-    /// while the wrapper is not installed: with it, thread teardown's own allocations call `track`
-    /// and flush the oversized drift before the destructor runs, and the test would pass without
-    /// one. So the test is confined to the default build, which is the one CI runs. The injected
-    /// amount is far larger than any real allocation, and is taken back out afterwards.
+    /// This drops a `ThreadDrift` holding a drift directly, rather than injecting one into a real
+    /// thread's `LOCAL_DRIFT` and letting the thread exit. With the wrapper installed, the thread's
+    /// teardown allocates, and those allocations flush an oversized drift through `track` before
+    /// the destructor runs, so a thread-exit test would pass without the destructor. That the
+    /// destructor runs when a thread exits is the `thread_local!` guarantee; what needs testing is
+    /// that it settles the drift. The injected amount is far larger than any real allocation, and
+    /// is taken back out afterwards.
     #[test]
-    #[cfg(not(feature = "alloc-accounting"))]
-    fn thread_exit_settles_remaining_drift() {
-        use std::thread;
-
+    fn dropping_a_thread_drift_settles_it() {
         const INJECTED: isize = 1 << 40;
         let _guard = serial();
 
         let before = BALANCE.load(Ordering::Relaxed);
-        thread::spawn(|| {
-            LOCAL_DRIFT.with(|drift| drift.0.set(drift.0.get() + INJECTED));
-        })
-        .join()
-        .unwrap();
+        drop(ThreadDrift(Cell::new(INJECTED)));
         let moved = BALANCE.load(Ordering::Relaxed) - before;
         BALANCE.fetch_sub(INJECTED, Ordering::Relaxed);
 
         assert!(
             moved >= INJECTED / 2,
-            "drift from an exited thread never reached the shared balance: \
-             balance moved {moved} bytes, expected at least {}",
+            "a dropped thread drift never reached the shared balance: balance moved {moved} \
+             bytes, expected at least {}",
             INJECTED / 2
         );
     }

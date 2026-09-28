@@ -32,6 +32,26 @@ preflight checks first (license headers, Markdown formatting, workflow linting, 
 checks), computes which heavy jobs the changed files are relevant to, and fans out to those jobs.
 Which jobs run also depends on the event:
 
+```mermaid
+flowchart LR
+  PR([pull request]) --> PRTIER
+  PR -. with label .-> QUEUE
+  PR -. with label .-> NIGHTLY
+  PR -. with label .-> S34
+  MQ([merge queue]) --> PRTIER
+  MQ --> QUEUE
+  CRON([schedule<br>06:00 UTC]) --> NIGHTLY
+  PUSH([push to main]) --> CACHE
+
+  PRTIER["PR tier<br>Linux build, lint, Rust tests<br>TPC-H / TPC-DS<br>Comet suites, Spark 4.1"]
+  QUEUE["Queue tier, on top of the PR tier<br>Spark SQL, Spark 4.1<br>Iceberg 1.11<br>macOS build and Comet suites<br>Benchmark check, Delta gate<br>PyArrow UDF, Spark 4.0 / 4.1 / 4.2"]
+  NIGHTLY["Nightly tier<br>Comet suites, Spark 3.4 / 3.5 / 4.0 / 4.2<br>Spark SQL, Spark 3.5 / 4.0<br>Iceberg 1.8 / 1.9 / 1.10"]
+  S34["Neither tier<br>Spark SQL, Spark 3.4"]
+  CACHE["Cache-refresh-only mode<br>the four cache-writing jobs, plus Lint"]
+```
+
+Suite by suite:
+
 | Suite                                             | Pull request | Merge queue | Nightly |
 | ------------------------------------------------- | ------------ | ----------- | ------- |
 | Linux build, lint, Rust tests, TPC-H/TPC-DS       | yes          | yes         | no      |
@@ -85,6 +105,9 @@ Which tier a job belongs to is the `POLICY` table in `dev/ci/compute-changes.py`
 filters are the `FILTERS` table in the same file, and `dev/ci/check-ci-config.py` holds the test
 cases that pin both down.
 
+A pull request against a release branch runs all three tiers at once; see
+[Release branches](#release-branches).
+
 ## Opting a pull request into a suite the PR tier skips
 
 Each suite outside the PR tier has a label that runs it on a pull request:
@@ -115,9 +138,10 @@ gh pr edit <number> --add-label run-spark-3.5-tests
 ```
 
 Applying a label starts a new run immediately at the pull request's current commit. That run
-executes only the suite the label gates; the PR tier already ran at that commit and is not
-repeated. Its aggregate verdict is published as `Required Checks (label run)` rather than
-`Required Checks`, so it can be read alongside the commit run without replacing it.
+belongs to the separate `Comet CI (label run)` workflow and executes only the suite the label
+gates; the PR tier already ran at that commit and is not repeated. Its aggregate verdict is
+published as `Label run / Required Checks (label run)` rather than `Required Checks`, so it can be
+read alongside the commit run without replacing it.
 
 For a queue-tier suite, that separate name costs nothing: the merge queue runs the suite again
 before the change lands, so a failure a label run surfaced still blocks the merge later. A
@@ -244,13 +268,170 @@ stays in one place. When you pick up a nightly failure:
 Dispatching `ci.yml` from the Actions page with **Run workflow** runs every tier, including the
 nightly suites, if you need a result before the next scheduled run.
 
+## Miri safety checks
+
+`miri.yml` runs nightly and supports manual dispatch. It runs the shuffle crate's
+`spark_unsafe::` tests and the expression crate's `hash_funcs::` tests in separate jobs,
+so a failure in one does not cancel the other. These cover Comet's unsafe row decoding
+and hash kernels. The job also fails if its filter selects no passing tests. A failed
+scheduled run opens or updates the same `ci-nightly-failure` issue used by nightly CI.
+
+Run either suite locally after installing nightly Rust with the Miri component:
+
+```sh
+cd native
+cargo +nightly miri setup
+MIRIFLAGS="-Zmiri-disable-isolation" cargo +nightly miri test --locked \
+  -p datafusion-comet-shuffle --lib 'spark_unsafe::'
+MIRIFLAGS="-Zmiri-disable-isolation" cargo +nightly miri test --locked \
+  -p datafusion-comet-spark-expr --lib 'hash_funcs::'
+```
+
+Miri cannot execute the JVM, cloud clients, or compression libraries through FFI.
+Running the whole workspace reaches those dependencies or dependency errors in
+platform synchronization before completing the safety checks. Regular Rust CI still runs the
+full tests. When adding unsafe code, add suitable tests to the Miri matrix as well;
+these focused suites do not cover every unsafe operation in Comet.
+
+## Checking that the scheduled runs are healthy
+
+A scheduled run has no pull request to turn red, so check both whether it ran and whether it
+reported a failure. Comet has three daily schedules plus a weekly one:
+
+| Workflow               | Cron (UTC)   | Reports a failure?                    |
+| ---------------------- | ------------ | ------------------------------------- |
+| `publish_snapshot.yml` | `0 3 * * *`  | no                                    |
+| `miri.yml`             | `0 4 * * *`  | yes                                   |
+| `ci.yml` nightly tier  | `0 6 * * *`  | yes, a `ci-nightly-failure` issue     |
+| `codeql.yml`           | `16 4 * * 1` | yes, to the repository's Security tab |
+
+So the two without a reporting step have to be looked at deliberately. Check all of them at once:
+
+```sh
+for wf in ci.yml miri.yml publish_snapshot.yml; do
+  gh api "repos/apache/datafusion-comet/actions/workflows/$wf/runs?event=schedule&per_page=5" \
+    --jq ".workflow_runs[] | \"$wf\t\(.created_at[0:10])\t\(.conclusion)\t\(.html_url)\""
+done
+```
+
+Read the output for two different things:
+
+- **A missing row.** If the most recent run is not from the last day or two, the schedule itself
+  stopped firing. GitHub drops scheduled runs under load and disables them entirely in a repository
+  with no activity for 60 days, and it does not announce either. Confirm the workflow is still
+  enabled with `gh api repos/apache/datafusion-comet/actions/workflows --jq '.workflows[] | "\(.state)\t\(.path)"'`,
+  and re-enable it from the Actions page if it is `disabled_inactivity`.
+- **A run of failures.** One red night is a flake or a real regression. `ci.yml` and `miri.yml`
+  open or update a failure issue; `publish_snapshot.yml` does not. Investigate repeated failures
+  even when a report already exists; treat the streak, not the newest run, as the thing to explain.
+
+For the `ci.yml` nightly, green on its own does not mean the suites ran. Path filters and the diff
+base are both allowed to select nothing — a documentation-only day legitimately runs no suite at
+all — and a run that tested nothing reports exactly the same green `Required Checks` as a run that
+tested everything. Confirm the suites actually ran:
+
+```sh
+run=$(gh api "repos/apache/datafusion-comet/actions/workflows/ci.yml/runs?event=schedule&per_page=1" \
+        --jq '.workflow_runs[0].id')
+gh run view "$run" --repo apache/datafusion-comet --json jobs \
+  --jq '[.jobs[] | select(.name | test("^(Spark SQL|Iceberg Spark SQL) Tests"))]
+        | group_by(.conclusion)[] | "\(length)\t\(.[0].conclusion)"'
+```
+
+A healthy run over a day of normal merges reports about 40 successes, with the handful of skips
+being the suites that belong to the queue tier rather than the nightly one — Spark 3.4, Spark 4.1
+and Iceberg 1.11. If everything is skipped, open the run's `Detect changes` job: it logs the
+`Nightly base:` commit it diffed against and the list of changed files, which is enough to tell a
+genuinely quiet day from a base that has drifted.
+
+## Release branches
+
+Release branches (`branch-N.M`) start with the workflow files `main` had when they were cut, but have
+no merge queue and no nightly run. The merge queue covers only `main`, `ci.yml` runs on push only for `main`, and GitHub
+fires scheduled workflows only on the default branch, so a release branch gets no scheduled `ci.yml`,
+Miri or CodeQL run, and nothing runs after a pull request merges.
+
+On `main`, the tiers hold the expensive suites back for the queue and the nightly run, which still
+test every change. A release branch has neither, so holding a suite back there would mean never
+running it. A pull request that targets a release branch, such as a backport, therefore runs the PR,
+queue and nightly tiers together. Release branches get few pull requests, so this costs little. The
+path filters still apply, so a documentation-only change runs none of the heavy suites. The Spark
+SQL suite for Spark 3.4 still needs its `run-spark-3.4-tests` label, and the other `run-*` labels
+have nothing to add there.
+
+A release branch runs the workflow files committed on it, so a change to these rules on `main`
+reaches a release branch only if it is backported. `branch-1.0` predates the tiers and follows its
+own, older rules.
+
+Each pull request is tested against the release branch as it was when its run started, and with no
+merge queue, nothing tests the result of merging it. Two backports that pass on their own can still
+break the branch once both have landed. To run every suite against a release branch as it stands,
+dispatch `ci.yml` on it. A dispatch runs every job in that branch's own `ci.yml`, including `docs`,
+which publishes the website. So first check that the `if:` of the branch's `docs` job requires
+`github.ref == 'refs/heads/main'`. A branch without that guard publishes its own docs over the site.
+
+```sh
+git show apache/branch-N.M:.github/workflows/ci.yml | sed -n '/^  docs:/,/uses:/p'
+gh workflow run ci.yml --repo apache/datafusion-comet --ref branch-N.M
+```
+
+The release process does this before tagging each release candidate; see
+[Run the Full CI Suite](release_process.md#run-the-full-ci-suite). A failed dispatched run opens no
+`ci-nightly-failure` issue.
+
 ## Reproducing a suite failure locally
 
-The Spark SQL suites outside the PR tier run Spark's own test suite against Comet, with the
-version's diff from `dev/diffs/` applied. See [Spark SQL Tests](spark-sql-tests.md) for how to run
-one locally, and [Iceberg Spark Tests](iceberg-spark-tests.md) for the Iceberg equivalents. For the
-Comet test suites that run on macOS, `make test-jvm` on a Mac runs the same suites the workflow
-does; the macOS job differs from Linux only in the platform.
+`dev/local-ci.sh` builds the same sandbox a runner builds and runs the Spark SQL or Iceberg
+workflow:
+
+```sh
+dev/local-ci.sh spark                # everything the Spark job runs
+dev/local-ci.sh spark sql_core-1     # just the shard that failed
+dev/local-ci.sh iceberg              # everything the Iceberg job runs
+dev/local-ci.sh iceberg shard-2
+dev/local-ci.sh spark 3.5 sql_core-1 # a nightly-tier version, named explicitly
+dev/local-ci.sh --print-config       # what it read from ci.yml and dev/ci
+```
+
+The version defaults to the one the merge queue gates on. That, the matrix rows and the shard count
+are read from the workflow files and from `dev/ci/`, so a local shard runs what the CI shard of the
+same name runs. It prepares first (native build, Comet install, patched Spark or Iceberg source
+under `$COMET_LOCAL_CI_HOME`, default `/tmp/comet-local-ci`), then runs the tests, compiling only
+the sbt projects the selected rows need.
+
+`SKIP_PREPARE=1` runs the tests only. It skips the **Comet install** too, so do not use it after
+changing Comet or the run tests the previously installed JAR and goes green regardless.
+
+When more than one Spark row is selected they all run **at once**, each in its own copy of the
+prepared tree, which is what CI does: seven matrix rows, seven runners, seven extracted trees.
+Because each row owns a tree there is no shared sbt server, `target/` or metastore tmpdir, so the
+per-row settings stay identical to CI's. On APFS and btrfs the copies are copy-on-write, so a 4 GB
+tree costs kilobytes until the rows write their own reports.
+
+Seven concurrent sbt processes would interleave unreadably, so each row logs to
+`$COMET_LOCAL_CI_HOME/logs-spark-<version>/<row>.log`, named on the line that reports the row
+starting. Each row then reports again when it finishes, with its elapsed time, and a failing row
+prints the last 20 lines of its log. Follow a row live with `tail -f`. The trees persist so the
+reports stay readable. A single row runs in the prepared tree with no copy. Iceberg targets still run
+one after another.
+
+Four caveats:
+
+- The sandbox lives under `/tmp`, so a reboot or a tmp reaper means downloading and compiling again.
+  Point `COMET_LOCAL_CI_HOME` somewhere durable to keep it.
+- Running every row at once wants the memory and disk for it: seven sbt processes each forking a
+  test JVM, and seven trees diverging from their copy-on-write base. Select fewer rows, or one, on a
+  smaller machine.
+- Preparing deletes `org/apache/parquet` from your local Maven repository as the workflows do, and
+  additionally sweeps the **whole** repository for POMs with no sibling JAR. That is a shared cache,
+  so other projects will re-download. `--print-config` touches nothing.
+- CI is x86_64 Linux built with `-Ctarget-cpu=x86-64-v3`, so a pass elsewhere covers Scala, serde
+  and planner behavior but not x86-specific native codegen.
+
+The underlying steps are documented in [Spark SQL Tests](spark-sql-tests.md) and
+[Iceberg Spark Tests](iceberg-spark-tests.md), which are also where the diff-regeneration workflow
+lives. For the Comet test suites that run on macOS, `make test-jvm` on a Mac runs the same suites
+the workflow does. The macOS job differs from Linux only in the platform.
 
 ## Changing CI itself
 

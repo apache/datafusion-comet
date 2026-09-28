@@ -57,6 +57,10 @@ object IcebergReflection extends Logging {
     val SPARK_STAGED_SCAN = "org.apache.iceberg.spark.source.SparkStagedScan"
     val SPARK_SCHEMA_UTIL = "org.apache.iceberg.spark.SparkSchemaUtil"
     val TABLE = "org.apache.iceberg.Table"
+    val DEFAULT_LOCATION_PROVIDER =
+      "org.apache.iceberg.LocationProviders$DefaultLocationProvider"
+    val RESOLVING_FILE_IO = "org.apache.iceberg.io.ResolvingFileIO"
+    val GCS_FILE_IO = "org.apache.iceberg.gcp.gcs.GCSFileIO"
     val PARTITIONING = "org.apache.iceberg.Partitioning"
     val SPARK_WRITE = "org.apache.iceberg.spark.source.SparkWrite"
     val TABLE_PROPERTIES = "org.apache.iceberg.TableProperties"
@@ -310,8 +314,11 @@ object IcebergReflection extends Logging {
     method
   }
 
-  private def declaredMethod(clazz: Class[_], methodName: String): Option[Method] =
-    try Some(makeAccessible(clazz.getDeclaredMethod(methodName)))
+  private def declaredMethod(
+      clazz: Class[_],
+      methodName: String,
+      paramTypes: Class[_]*): Option[Method] =
+    try Some(makeAccessible(clazz.getDeclaredMethod(methodName, paramTypes: _*)))
     catch { case _: NoSuchMethodException => None }
 
   /**
@@ -343,12 +350,15 @@ object IcebergReflection extends Logging {
   /**
    * Searches through class hierarchy to find a method (including protected methods).
    */
-  def findMethodInHierarchy(clazz: Class[_], methodName: String): Option[Method] =
-    cachedLookup(clazz, "hierarchy:" + methodName) {
+  def findMethodInHierarchy(
+      clazz: Class[_],
+      methodName: String,
+      paramTypes: Class[_]*): Option[Method] =
+    cachedLookup(clazz, "hierarchy:" + lookupKey(methodName, paramTypes)) {
       var current: Class[_] = clazz
       var found: Option[Method] = None
       while (found.isEmpty && current != null) {
-        found = declaredMethod(current, methodName)
+        found = declaredMethod(current, methodName, paramTypes: _*)
         if (found.isEmpty) current = current.getSuperclass
       }
       found
@@ -484,31 +494,6 @@ object IcebergReflection extends Logging {
     }
 
   /**
-   * Gets the filter expressions from a SparkScan.
-   *
-   * `filterExpressions()` is declared on SparkPartitioningAwareScan but absent from plain
-   * SparkScan. SparkStagedScan (used by RewriteDataFiles) extends SparkScan directly and never
-   * pushes filters, so we short-circuit with an empty list rather than reflectively probing for a
-   * method we know isn't there.
-   */
-  def getFilterExpressions(scan: Any): Option[java.util.List[_]] =
-    if (isStagedScan(scan)) {
-      Some(java.util.Collections.emptyList[AnyRef]())
-    } else {
-      // Iceberg 1.11 renamed SparkScan.filterExpressions() to filters(); 1.8-1.10 use the old name.
-      findMethodInHierarchy(scan.getClass, "filters")
-        .orElse(findMethodInHierarchy(scan.getClass, "filterExpressions")) match {
-        case Some(method) =>
-          Some(method.invoke(scan).asInstanceOf[java.util.List[_]])
-        case None =>
-          logError(
-            "Iceberg reflection failure: Failed to get filter expressions from SparkScan: " +
-              s"filters()/filterExpressions() not found on ${scan.getClass.getName}")
-          None
-      }
-    }
-
-  /**
    * Gets the Iceberg table format version.
    *
    * Tries to get formatVersion() directly from table, falling back to
@@ -559,6 +544,40 @@ object IcebergReflection extends Logging {
         None
     }
   }
+
+  /**
+   * The FileIO class that actually opens `location`: for a `ResolvingFileIO`, the delegate it
+   * instantiates for the location (`io(location)`, which falls back to HadoopFileIO when the
+   * scheme's FileIO cannot be loaded or initialized -- `ioClass(location)` only maps the scheme
+   * to a class and misses that fallback), or the FileIO's own class otherwise. The delegate is
+   * cached by the ResolvingFileIO, so this is the instance the JVM writer would use. `None` on
+   * reflection failure; callers must fail closed.
+   */
+  def resolveFileIOClass(fileIO: Any, location: String): Option[Class[_]] =
+    if (!classNameInHierarchy(fileIO.getClass, Set(ClassNames.RESOLVING_FILE_IO))) {
+      Some(fileIO.getClass)
+    } else {
+      try {
+        findMethodInHierarchy(fileIO.getClass, "io", classOf[String]) match {
+          case Some(ioMethod) => Option(ioMethod.invoke(fileIO, location)).map(_.getClass)
+          case None =>
+            logError(
+              s"Iceberg reflection failure: ${fileIO.getClass.getName} has no io(String) method")
+            None
+        }
+      } catch {
+        case e: Exception =>
+          // Method.invoke wraps whatever io(location) throws; report that, not the wrapper.
+          val cause = e match {
+            case ite: java.lang.reflect.InvocationTargetException => ite.getCause
+            case other => other
+          }
+          logError(
+            "Iceberg reflection failure: Failed to resolve the FileIO delegate for " +
+              s"$location: $cause")
+          None
+      }
+    }
 
   /**
    * The table's `EncryptionManager` (`table.encryption()`). Unlike the `encryption.*` property
@@ -1354,21 +1373,39 @@ object IcebergReflection extends Logging {
     }
   }
 
-  def getDataLocation(table: Any): Option[String] =
+  /**
+   * The table's resolved `LocationProvider` (`table.locationProvider()`). Inspecting the
+   * instantiated provider catches custom `TableOperations` that supply one without setting
+   * `write.location-provider.impl`. Returns `None` on reflection failure so callers fail closed.
+   */
+  def getLocationProvider(table: Any): Option[AnyRef] =
     try {
       val locationProviderMethod =
         findMethodInHierarchy(table.getClass, "locationProvider").getOrElse(
           throw new NoSuchMethodException(
             s"locationProvider() not found on ${table.getClass.getName}"))
-      val provider = locationProviderMethod.invoke(table)
-      val newDataLocMethod = provider.getClass.getMethod("newDataLocation", classOf[String])
-      newDataLocMethod.setAccessible(true)
-      val location = newDataLocMethod.invoke(provider, "").asInstanceOf[String]
-      Some(location.stripSuffix("/"))
+      Option(locationProviderMethod.invoke(table).asInstanceOf[AnyRef])
     } catch {
       case e: Exception =>
-        logError(s"Iceberg reflection failure: Failed to get data location: ${e.getMessage}", e)
+        logError(
+          "Iceberg reflection failure: Failed to get LocationProvider from table: " +
+            s"${e.getMessage}",
+          e)
         None
+    }
+
+  def getDataLocation(table: Any): Option[String] =
+    getLocationProvider(table).flatMap { provider =>
+      try {
+        val newDataLocMethod = provider.getClass.getMethod("newDataLocation", classOf[String])
+        newDataLocMethod.setAccessible(true)
+        val location = newDataLocMethod.invoke(provider, "").asInstanceOf[String]
+        Some(location.stripSuffix("/"))
+      } catch {
+        case e: Exception =>
+          logError(s"Iceberg reflection failure: Failed to get data location: ${e.getMessage}", e)
+          None
+      }
     }
 
   /**

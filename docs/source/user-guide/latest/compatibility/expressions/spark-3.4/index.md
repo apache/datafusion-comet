@@ -27,6 +27,9 @@ expression class name, to run Comet's native implementation despite its differen
 from Spark. See the [Comet Supported Expressions Guide](../../../expressions.md)
 for more information on this configuration setting.
 
+Spark 3.4 support is deprecated and will be removed in a future release; see
+[Spark Version Compatibility](../../spark-versions.md#spark-34).
+
 ```{toctree}
 :maxdepth: 1
 

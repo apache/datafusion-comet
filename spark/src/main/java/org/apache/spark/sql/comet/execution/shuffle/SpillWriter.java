@@ -169,9 +169,7 @@ public abstract class SpillWriter {
   public void initialCurrentPage(int required) {
     assert (currentPage == null);
     try {
-      // This writer has already spilled its own data, so on a shared pool it may wait for other
-      // tasks to free memory instead of failing right away.
-      currentPage = allocator.allocateBlocking(required);
+      currentPage = allocator.allocate(required);
     } catch (SparkOutOfMemoryError e) {
       logger.error("Unable to acquire {} bytes of memory", required);
       throw e;

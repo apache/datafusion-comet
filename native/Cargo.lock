@@ -1971,6 +1971,9 @@ dependencies = [
  "async-trait",
  "aws-config",
  "aws-credential-types",
+ "aws-sdk-sts",
+ "aws-smithy-runtime-api",
+ "aws-smithy-types",
  "base64 0.23.1",
  "bytes",
  "comet-contrib-delta",
@@ -1990,6 +1993,7 @@ dependencies = [
  "hdfs-sys",
  "hdrs",
  "hex",
+ "http 1.5.0",
  "iceberg",
  "iceberg-storage-opendal",
  "itertools 0.15.0",
@@ -2010,6 +2014,7 @@ dependencies = [
  "procfs",
  "prost",
  "rand 0.10.2",
+ "reqsign-aws-v4",
  "reqsign-core",
  "reqwest 0.12.28",
  "serde",
@@ -2031,6 +2036,7 @@ dependencies = [
  "datafusion",
  "serde",
  "serde_json",
+ "simdutf8",
  "thiserror 2.0.20",
 ]
 
@@ -2065,6 +2071,7 @@ name = "datafusion-comet-shuffle"
 version = "1.1.0"
 dependencies = [
  "arrow",
+ "arrow-data",
  "arrow-select",
  "async-trait",
  "bytes",
@@ -3543,7 +3550,7 @@ dependencies = [
 [[package]]
 name = "iceberg"
 version = "0.10.1"
-source = "git+https://github.com/apache/iceberg-rust?rev=665c64e48e8d33797ecb1a421f327edd9b024879#665c64e48e8d33797ecb1a421f327edd9b024879"
+source = "git+https://github.com/apache/iceberg-rust?rev=bb1e4a4861f02377489eff818b75138f414c4cb0#bb1e4a4861f02377489eff818b75138f414c4cb0"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -3602,7 +3609,7 @@ dependencies = [
 [[package]]
 name = "iceberg-property-macro"
 version = "0.10.1"
-source = "git+https://github.com/apache/iceberg-rust?rev=665c64e48e8d33797ecb1a421f327edd9b024879#665c64e48e8d33797ecb1a421f327edd9b024879"
+source = "git+https://github.com/apache/iceberg-rust?rev=bb1e4a4861f02377489eff818b75138f414c4cb0#bb1e4a4861f02377489eff818b75138f414c4cb0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3612,7 +3619,7 @@ dependencies = [
 [[package]]
 name = "iceberg-storage-opendal"
 version = "0.10.1"
-source = "git+https://github.com/apache/iceberg-rust?rev=665c64e48e8d33797ecb1a421f327edd9b024879#665c64e48e8d33797ecb1a421f327edd9b024879"
+source = "git+https://github.com/apache/iceberg-rust?rev=bb1e4a4861f02377489eff818b75138f414c4cb0#bb1e4a4861f02377489eff818b75138f414c4cb0"
 dependencies = [
  "anyhow",
  "async-trait",

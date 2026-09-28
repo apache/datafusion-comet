@@ -19,8 +19,9 @@ use crate::execution::operators::ExecutionError;
 use crate::parquet::eager_page_index_reader_factory::{EagerPageIndexReaderFactory, ScanIoSource};
 use crate::parquet::encryption_support::{CometEncryptionConfig, ENCRYPTION_FACTORY_ID};
 use crate::parquet::name_fold::fold_schema_names;
-use crate::parquet::parquet_support::ObjectStoreBackend;
-use crate::parquet::parquet_support::SparkParquetOptions;
+use crate::parquet::parquet_support::{
+    object_store_authority, ObjectStoreBackend, SparkParquetOptions,
+};
 use crate::parquet::schema_adapter::SparkPhysicalExprAdapterFactory;
 use arrow::datatypes::{Field, FieldRef, SchemaRef};
 use datafusion::config::{ParquetOptions, TableParquetOptions};
@@ -82,7 +83,7 @@ pub(crate) fn init_datasource_exec(
     session_ctx: &Arc<SessionContext>,
     encryption_enabled: bool,
     use_field_id: bool,
-    ignore_missing_field_id: bool,
+    require_field_ids: bool,
 ) -> Result<Arc<DataSourceExec>, ExecutionError> {
     // Computed once and reused below for `try_pushdown_filters`. `copied_config()` clones only
     // `SessionConfig` (an `Arc<ConfigOptions>` plus a small extensions map); `SessionContext::
@@ -100,7 +101,6 @@ pub(crate) fn init_datasource_exec(
         &session_config.options().execution.parquet,
     );
     spark_parquet_options.use_field_id = use_field_id;
-    spark_parquet_options.ignore_missing_field_id = ignore_missing_field_id;
     // Spark can discard filtered-out values before timestamp conversion using statistics,
     // dictionary, and row-level filters. Comet cannot mirror every pruning path, so applying
     // checked conversion in a filtered scan can fail on values Spark never reads. Preserve the
@@ -176,7 +176,7 @@ pub(crate) fn init_datasource_exec(
     // `store_sales`), the page index is re-fetched, uncached, on every open (comet#3978).
     // `EagerPageIndexReaderFactory` forces the page index to load on the first fetch and be
     // cached with the footer, at the cost of losing the skip's benefit when it would have
-    // applied. Filed upstream as apache/datafusion#23978; revert this once that's fixed.
+    // applied. Filed upstream as apache/datafusion#23978.
     //
     // Preserve bytes_scanned's existing requested data/Bloom-filter range accounting. Footer
     // and page-index reads through get_metadata bypass it, and coalescing may fetch extra bytes.
@@ -193,7 +193,8 @@ pub(crate) fn init_datasource_exec(
             scan_io_source,
             parquet_source.metrics(),
         )
-        .with_spark_variant_schema(projects_variant),
+        .with_spark_variant_schema(projects_variant)
+        .with_require_field_ids(require_field_ids),
     );
     parquet_source = parquet_source.with_parquet_file_reader_factory(reader_factory);
 
@@ -340,7 +341,7 @@ fn get_options(
                 uri_base: format!(
                     "{}://{}/",
                     physical_object_store_scheme(object_store_url),
-                    &store_url[url::Position::BeforeHost..url::Position::AfterPort],
+                    object_store_authority(store_url),
                 ),
             },
         );
@@ -511,6 +512,12 @@ mod tests {
         assert_eq!(
             encryption_uri("file+comet-0123456789abcdef-hdfs:///"),
             "file:///"
+        );
+        assert_eq!(
+            encryption_uri(
+                "abfss+comet-0123456789abcdef-native://container@account.dfs.core.windows.net/"
+            ),
+            "abfss://container@account.dfs.core.windows.net/"
         );
         // A physical custom scheme containing a similar, incomplete suffix is not
         // itself a synthetic registration URL.

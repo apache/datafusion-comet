@@ -89,12 +89,21 @@ under the License.
     <arrow.version>18.3.0</arrow.version>
     <codehaus.jackson.version>1.9.13</codehaus.jackson.version>
     <spotless.version>2.43.0</spotless.version>
-    <jacoco.version>0.8.11</jacoco.version>
     <semanticdb.version>4.13.6</semanticdb.version>
     <slf4j.version>2.0.17</slf4j.version>
     <guava.version>33.2.1-jre</guava.version>
     <testcontainers.version>1.21.4</testcontainers.version>
     <amazon-awssdk-v2.version>2.31.51</amazon-awssdk-v2.version>
+    <!-- AWS SDK v1, present at runtime on Hadoop 3.3.x (spark-3.x profiles). Used at provided
+         scope (the aws-java-sdk-s3 module) to compile the built-in S3 credential adapters and to
+         satisfy hadoop-aws 3.3.4's S3AUtils API during incremental compilation. Matches the
+         version hadoop-aws 3.3.4 bundles. -->
+    <aws-java-sdk-v1.version>1.12.262</aws-java-sdk-v1.version>
+    <!-- hadoop-aws, provided scope, to compile the built-in S3 credential adapters against the S3A
+         provider factory. Default tracks the default shim source set (spark-4.x -> SDK v2, needs
+         Hadoop 3.4.x's CredentialProviderListFactory); the spark-3.4 / spark-3.5 profiles override
+         it down to 3.3.x (SDK v1). hadoop.version itself (hadoop-client) is not changed. -->
+    <hadoop-aws.version>3.4.1</hadoop-aws.version>
     <jni.dir>${project.basedir}/../native/target/debug</jni.dir>
     <platform>darwin</platform>
     <arch>x86_64</arch>
@@ -226,6 +235,32 @@ under the License.
         <groupId>org.apache.arrow</groupId>
         <artifactId>arrow-c-data</artifactId>
         <version>${arrow.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.apache.arrow</groupId>
+        <artifactId>arrow-compression</artifactId>
+        <version>${arrow.version}</version>
+        <!-- Arrow's per-buffer IPC compression codecs. Their backing libraries ship with Spark,
+             so take them from there rather than bundling a second copy: commons-compress (LZ4
+             frame) and zstd-jni are both on every Spark version Comet supports. -->
+        <exclusions>
+          <exclusion>
+            <groupId>org.apache.commons</groupId>
+            <artifactId>commons-compress</artifactId>
+          </exclusion>
+          <exclusion>
+            <groupId>com.github.luben</groupId>
+            <artifactId>zstd-jni</artifactId>
+          </exclusion>
+          <exclusion>
+            <groupId>io.netty</groupId>
+            <artifactId>netty-common</artifactId>
+          </exclusion>
+          <exclusion>
+            <groupId>com.google.code.findbugs</groupId>
+            <artifactId>jsr305</artifactId>
+          </exclusion>
+        </exclusions>
       </dependency>
 
       <!-- Parquet dependencies -->
@@ -668,6 +703,7 @@ under the License.
         <scala.binary.version>2.12</scala.binary.version>
         <spark.version>3.4.3</spark.version>
         <spark.version.short>3.4</spark.version.short>
+        <hadoop-aws.version>3.3.4</hadoop-aws.version>
         <parquet.version>1.13.1</parquet.version>
         <semanticdb.version>4.8.8</semanticdb.version>
         <slf4j.version>2.0.6</slf4j.version>
@@ -687,6 +723,7 @@ under the License.
         <scala.binary.version>2.12</scala.binary.version>
         <spark.version>3.5.9</spark.version>
         <spark.version.short>3.5</spark.version.short>
+        <hadoop-aws.version>3.3.4</hadoop-aws.version>
         <parquet.version>1.13.1</parquet.version>
         <semanticdb.version>4.8.8</semanticdb.version>
         <slf4j.version>2.0.7</slf4j.version>
@@ -1006,6 +1043,14 @@ under the License.
           <version>${spotless.version}</version>
           <configuration>
             <java>
+              <includes>
+                <include>src/main/java/**/*.java</include>
+                <include>src/test/java/**/*.java</include>
+                <!-- Include spark shim sources; spotless's Java default only covers
+                     src/main/java and src/test/java, so build-helper-added dirs are missed. -->
+                <include>src/main/spark-*/**/*.java</include>
+                <include>src/test/spark-*/**/*.java</include>
+              </includes>
               <toggleOffOn />
               <googleJavaFormat />
               <removeUnusedImports />
@@ -1040,11 +1085,6 @@ under the License.
           <groupId>org.codehaus.mojo</groupId>
           <artifactId>flatten-maven-plugin</artifactId>
           <version>${flatten-maven-plugin.version}</version>
-        </plugin>
-        <plugin>
-          <groupId>org.jacoco</groupId>
-          <artifactId>jacoco-maven-plugin</artifactId>
-          <version>${jacoco.version}</version>
         </plugin>
         <plugin>
           <groupId>org.codehaus.mojo</groupId>
@@ -1156,6 +1196,8 @@ under the License.
             <exclude>tpcds-sf-1/**</exclude>
             <exclude>tpch/**</exclude>
             <exclude>docs/*.txt</exclude>
+            <!-- JSON has no comment syntax, so no license header can go in it. -->
+            <exclude>docs/puppeteer-config.json</exclude>
             <exclude>docs/logos/*.png</exclude>
             <exclude>docs/logos/*.svg</exclude>
             <exclude>docs/source/_static/images/**</exclude>
@@ -1298,25 +1340,6 @@ under the License.
             <phase>clean</phase>
             <goals>
               <goal>clean</goal>
-            </goals>
-          </execution>
-        </executions>
-      </plugin>
-      <plugin>
-        <groupId>org.jacoco</groupId>
-        <artifactId>jacoco-maven-plugin</artifactId>
-        <executions>
-          <execution>
-            <id>default-prepare-agent</id>
-            <goals>
-              <goal>prepare-agent</goal>
-            </goals>
-          </execution>
-          <execution>
-            <id>report</id>
-            <phase>test</phase>
-            <goals>
-              <goal>report</goal>
             </goals>
           </execution>
         </executions>

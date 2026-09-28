@@ -72,10 +72,20 @@ INSERT INTO test_except_float VALUES
 query
 SELECT a, b, array_except(a, b) FROM test_except_float
 
+-- negative zero (literal). Same signed-zero divergence as the column-sourced
+-- cases below: NormalizeFloatingNumbers does not rewrite array-function inputs,
+-- so a plain SELECT keeps the -0.0 literal intact. Spark keeps -0.0 distinct
+-- from 0.0 while Comet (DataFusion) collapses them. Skip until Spark normalizes
+-- these zeros (Spark 4.2+, SPARK-54918).
+query ignore(https://issues.apache.org/jira/browse/SPARK-54918)
+SELECT array_except(array(0.0, double('-0.0'), 1.0), array(0.0)),
+       array_except(array(0.0, 1.0), array(double('-0.0')))
+
 -- negative zero (column-sourced). Spark keeps -0.0 distinct from 0.0 while Comet
 -- (DataFusion) collapses them, so array_except([0.0, -0.0, 1.0], [0.0]) is [-0.0, 1.0]
--- in Spark but [1.0] in Comet. NormalizeFloatingNumbers only rewrites literals, not
--- parquet columns. Skip until Spark normalizes these zeros (Spark 4.2+, SPARK-54918).
+-- in Spark but [1.0] in Comet. The divergence is not limited to parquet columns;
+-- the literal case above is skipped for the same reason. Skip until Spark
+-- normalizes these zeros (Spark 4.2+, SPARK-54918).
 statement
 CREATE TABLE test_except_dbl_negzero(a array<double>, b array<double>) USING parquet
 

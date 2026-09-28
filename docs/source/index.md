@@ -38,7 +38,8 @@ Runs your existing Spark queries on the Apache DataFusion native engine, no code
 <span class="term-line term-indent">--conf spark.plugins=org.apache.spark.CometPlugin \</span>
 <span class="term-line term-indent">--conf spark.shuffle.manager=org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager \</span>
 <span class="term-line term-indent">--conf spark.memory.offHeap.enabled=true \</span>
-<span class="term-line term-indent">--conf spark.memory.offHeap.size=4g</span>
+<span class="term-line term-indent">--conf spark.memory.offHeap.size=4g \</span>
+<span class="term-line term-indent">--conf spark.executor.memoryOverhead=2g</span>
 <span class="term-line term-spacer"></span>
 <span class="term-line term-comment">// Your existing queries now run on the DataFusion native engine</span>
 <span class="term-line"><span class="term-prompt">scala&gt;</span> spark.sql(<span class="term-str">"SELECT category, COUNT(*) FROM events GROUP BY category"</span>).show()</span>

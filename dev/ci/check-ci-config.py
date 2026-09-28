@@ -27,6 +27,13 @@
 #      could not be tested; POLICY_CASES below is the test it never had. The
 #      expected sets are transcribed from the `if:` expressions ci.yml carried
 #      before the policy moved, so a regression here is a behaviour change.
+#      The event reaches the script as environment variables set by the
+#      `Compute outputs` step of ci.yml's `Detect changes` job, and a variable
+#      dropped there reads as an empty string, which is a valid value (no
+#      label, no base branch), so that wiring is pinned as well. So is the
+#      `refs/heads/main` guard on the `docs` job: a dispatch routes every job,
+#      docs included, and that guard is all that keeps a dispatch on a release
+#      branch from publishing that branch's docs over the site.
 #
 #   3. Required-check coverage. `Required Checks` in ci.yml is the job that
 #      `.asf.yaml` can name in `required_status_checks` for main. A heavy job
@@ -34,9 +41,12 @@
 #      rename on either side of the ci.yml/.asf.yaml pair turns the required
 #      context into one that never reports, which blocks *every* merge to main
 #      until INFRA removes it by hand. The job's name must also route `labeled`
-#      runs, which skip the PR tier by design, to a name nothing requires:
-#      GitHub keeps the most recent check run per name per commit, so a label
-#      run publishing the required name would overwrite the real verdict.
+#      runs, which skip the PR tier by design, to a name nothing requires, so
+#      a label run cannot stand in for the real verdict. And `labeled` runs
+#      must come from a separate workflow (ci_label.yml) rather than ci.yml's
+#      own trigger: with two ci.yml runs at one commit, GitHub evaluates the
+#      required checks against only one of them, and when that is the label
+#      run the required context never reports (issue #6159).
 #
 #   4. Artifact-name uniqueness. Artifact names are scoped to the *run*, not
 #      to the calling workflow, and ci.yml calls the Spark SQL and Iceberg
@@ -67,11 +77,13 @@
 
 import importlib.util
 import re
+import subprocess
 import sys
 from pathlib import Path
 
 WORKFLOWS = Path(".github/workflows")
 ASF_YAML = Path(".asf.yaml")
+LOCAL_CI = Path("dev/local-ci.sh")
 
 # The ci.yml job that aggregates every other job's result.
 AGGREGATOR_JOB = "required_checks"
@@ -124,14 +136,26 @@ ROUTING_CASES = [
     # to nothing at all and merges having been exercised by no consumer.
     ([".github/actions/upload-artifact-retry/action.yaml"], BUILD_JOBS),
     ([".github/actions/download-artifact-retry/action.yaml"], BUILD_JOBS),
-    # The Maven bootstrap composite is called only from pr_build_linux.yml.
-    (
-        [".github/actions/maven-bootstrap/action.yaml"],
-        {"build_linux", "build_linux_full", "build_linux_all_profiles"},
-    ),
+    # Maven bootstrap runs inside setup-builder and setup-macos-builder, so it
+    # reaches every job that runs ./mvnw, the Delta gate and PyArrow suite
+    # included.
+    ([".github/actions/maven-bootstrap/action.yaml"], MVN_JOBS),
     # Spot checks that the additions above did not widen unrelated routes.
     (["docs/source/user-guide/overview.md"], {"docs"}),
     (["native/core/benches/parquet_read.rs"], {"benchmark"}),
+    # The mermaid guard is run by preflight, which is unconditional, and again
+    # by the docs deploy, which is not, so the deploy has to be routed. The
+    # build jobs come along because `dev/ci/**` already feeds them.
+    (
+        ["dev/ci/check-mermaid.py"],
+        {
+            "docs",
+            "build_linux",
+            "build_linux_full",
+            "build_linux_all_profiles",
+            "build_macos",
+        },
+    ),
     # The Delta gate script is read by nothing else; the contrib crate feeds
     # only the gate. The PyArrow pytest lives under spark/, so the Linux and
     # macOS builds see it too, but no Spark SQL or Iceberg suite does, and
@@ -373,6 +397,62 @@ POLICY_CASES = [
         },
         set(),
     ),
+    # A pull request against a release branch runs the queue and nightly tiers
+    # as well, because a release branch has no queue and no nightly to run them
+    # later. The site deploy still never runs from a pull request, and the
+    # deprecated Spark 3.4 suite still waits for its label.
+    (
+        {"name": "pull_request", "action": "opened", "labels": [], "base": "branch-1.1"},
+        QUEUE_TIER | NIGHTLY_TIER,
+    ),
+    (
+        {"name": "pull_request", "action": "synchronize", "labels": [], "base": "branch-2.0"},
+        QUEUE_TIER | NIGHTLY_TIER,
+    ),
+    (
+        {
+            "name": "pull_request",
+            "action": "synchronize",
+            "labels": ["run-spark-3.4-tests"],
+            "base": "branch-1.1",
+        },
+        QUEUE_TIER | NIGHTLY_TIER | SPARK_DEPRECATED,
+    ),
+    # There the commit run already covered everything a label gates except
+    # Spark 3.4, so a `labeled` run adds Spark 3.4 or nothing.
+    (
+        {
+            "name": "pull_request",
+            "action": "labeled",
+            "label": "run-spark-3.4-tests",
+            "labels": ["run-spark-3.4-tests"],
+            "base": "branch-1.1",
+        },
+        SPARK_DEPRECATED,
+    ),
+    (
+        {
+            "name": "pull_request",
+            "action": "labeled",
+            "label": "run-iceberg-tests",
+            "labels": ["run-iceberg-tests"],
+            "base": "branch-1.1",
+        },
+        set(),
+    ),
+    # Only `branch-N.M` is a release branch. A pull request against main, or
+    # one stacked on another branch in the repository, keeps the PR tier.
+    ({"name": "pull_request", "action": "synchronize", "labels": [], "base": "main"}, PR_TIER),
+    ({"name": "pull_request", "action": "synchronize", "labels": [], "base": "pr-5654"}, PR_TIER),
+    (
+        {
+            "name": "pull_request",
+            "action": "synchronize",
+            "labels": [],
+            "base": "branch-1.1-backports",
+        },
+        PR_TIER,
+    ),
 ]
 
 
@@ -483,6 +563,61 @@ def load_filters():
     return module
 
 
+def load_ci_module(name, filename):
+    """Import one of the hyphenated dev/ci scripts as a module."""
+    spec = importlib.util.spec_from_file_location(name, f"dev/ci/{filename}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def check_local_ci_config():
+    """dev/local-ci.sh reads ci.yml and dev/ci; make that drift fail here.
+
+    The values live in dev/ci/local-ci-config.py, the single parser, which
+    validates each one against a version shape. Importing it here is what turns
+    a requoted `spark-full`, a reindented `with:` block or a renamed job into a
+    preflight failure rather than a surprise the next time somebody needs the
+    script. `bash -n` covers the shell, since actionlint runs with
+    --shellcheck=off and looks only at workflow files.
+    """
+    if not LOCAL_CI.exists():
+        return True
+    failures = []
+
+    syntax = subprocess.run(
+        ["bash", "-n", str(LOCAL_CI)], capture_output=True, text=True, check=False
+    )
+    if syntax.returncode != 0:
+        failures.append(f"{LOCAL_CI} is not valid bash: {syntax.stderr.strip()}")
+
+    try:
+        config = load_ci_module("local_ci_config", "local-ci-config.py").config()
+        # Each default must name a job ci.yml actually defines, or the script
+        # defaults to a version it then cannot look up.
+        for suite in ("spark", "iceberg"):
+            if not config[suite]:
+                failures.append(f"local-ci-config.py found no {suite}_* jobs in ci.yml")
+            elif config[f"{suite}_default"] not in config[suite]:
+                failures.append(
+                    f"local-ci-config.py defaults {suite} to "
+                    f"{config[f'{suite}_default']}, which ci.yml has no job for"
+                )
+        if config["dedicated_gate_version"] not in config["spark"]:
+            failures.append(
+                "the DEDICATED_JVM_SBT_TESTS gate names Spark "
+                f"{config['dedicated_gate_version']}, which ci.yml has no job for"
+            )
+        if not config["rows"]:
+            failures.append("local-ci-config.py found no Spark SQL matrix rows")
+    except Exception as err:  # noqa: BLE001 - any parse failure is the finding
+        failures.append(f"dev/ci/local-ci-config.py could not read the CI config: {err}")
+
+    for failure in failures:
+        print(f"local-ci: {failure}")
+    return not failures
+
+
 def check_spark_sql_modules():
     """`--modules core` and `--modules hive` must partition `--modules all`.
 
@@ -582,6 +717,8 @@ def check_event_policy():
                 label += f"/{event['action']}"
             if event.get("label"):
                 label += f" +{event['label']}"
+            if event.get("base"):
+                label += f" base={event['base']}"
             failures.append(
                 f"{label} labels={event.get('labels', [])}: "
                 f"unexpectedly allowed {sorted(actual - expected) or 'nothing'}, "
@@ -614,6 +751,98 @@ def check_event_policy():
     for failure in failures:
         print(f"event policy: {failure}")
     return not failures
+
+
+# The environment variables `event_from_env` in compute-changes.py reads, and
+# the `github` context expression ci.yml's `Compute outputs` step must set each
+# one from. A typo in an expression is as silent as a missing variable: both
+# arrive as an empty string.
+EVENT_ENV_SOURCES = {
+    "EVENT_NAME": "github.event_name",
+    "EVENT_ACTION": "github.event.action",
+    "LABEL_NAME": "github.event.label.name",
+    "PR_LABELS": "toJSON(github.event.pull_request.labels.*.name)",
+    "PR_BASE_REF": "github.event.pull_request.base.ref",
+}
+ENV_READ = re.compile(r'os\.environ\.get\("([A-Z_]+)"')
+ENV_SET = re.compile(r"^\s+([A-Z_]+):\s+\$\{\{\s*(.+?)\s*\}\}\s*$")
+
+
+def compute_step_env():
+    """{variable: expression} from the `env:` of ci.yml's `Compute outputs` step."""
+    env, in_step, in_env = {}, False, False
+    for line in CI_WORKFLOW.read_text(encoding="utf-8").splitlines():
+        if re.match(r"^\s+- name: Compute outputs\s*$", line):
+            in_step = True
+        elif in_step and not in_env:
+            if re.match(r"^\s+- ", line):
+                break  # the next step; this one has no `env:`
+            in_env = bool(re.match(r"^\s+env:\s*$", line))
+        elif in_env:
+            match = ENV_SET.match(line)
+            if not match:
+                break
+            env[match.group(1)] = match.group(2)
+    return env
+
+
+def check_event_env():
+    """Every variable POLICY reads is set by `Detect changes`, from the right context.
+
+    Without PR_BASE_REF, for instance, every pull request against a release
+    branch would quietly fall back to the PR tier and every check would pass.
+    """
+    failures = []
+    source = Path("dev/ci/compute-changes.py").read_text(encoding="utf-8")
+    body = source.split("\ndef event_from_env", 1)[1].split("\ndef ", 1)[0]
+    read = set(ENV_READ.findall(body))
+    env = compute_step_env()
+    for name in sorted(read - set(EVENT_ENV_SOURCES)):
+        failures.append(
+            f"event_from_env reads {name}, which EVENT_ENV_SOURCES does not "
+            f"list; add the `github` context expression it comes from"
+        )
+    for name in sorted(set(EVENT_ENV_SOURCES) - read):
+        failures.append(f"EVENT_ENV_SOURCES lists {name}, which event_from_env no longer reads")
+    for name in sorted(read & set(EVENT_ENV_SOURCES)):
+        expected = EVENT_ENV_SOURCES[name]
+        if name not in env:
+            failures.append(
+                f"{CI_WORKFLOW}: the `Compute outputs` step does not set {name}, "
+                f"so compute-changes.py reads it as empty"
+            )
+        elif env[name] != expected:
+            failures.append(
+                f"{CI_WORKFLOW}: the `Compute outputs` step sets {name} from "
+                f"`{env[name]}`, not `{expected}`"
+            )
+    for failure in failures:
+        print(f"event env: {failure}")
+    return not failures
+
+
+# The site deploy's job-level `if:` in ci.yml. It has to be on the job rather
+# than in POLICY, because a dispatch routes every job (see POLICY_CASES).
+DOCS_JOB = "docs"
+DOCS_MAIN_GUARD = re.compile(r"^    if:.*github\.ref\s*==\s*'refs/heads/main'")
+
+
+def check_docs_deploy_guard():
+    """The site deploy runs from main only, whatever the event.
+
+    docs.yaml rsyncs the built site over asf-site with --delete and falls back
+    to `git push --force`, and the release process dispatches ci.yml on the
+    release branch before every release candidate.
+    """
+    _, guarded = guarded_jobs(CI_WORKFLOW, DOCS_MAIN_GUARD)
+    if DOCS_JOB in guarded:
+        return True
+    print(
+        f"docs deploy: the `{DOCS_JOB}` job in {CI_WORKFLOW} must require "
+        f"github.ref == 'refs/heads/main' in its `if:`, or a dispatch on a "
+        f"release branch publishes that branch's docs over the site"
+    )
+    return False
 
 
 def artifact_names(path):
@@ -871,6 +1100,77 @@ def check_required_checks():
 
     for failure in failures:
         print(f"required checks: {failure}")
+    return not failures
+
+
+def ci_triggers():
+    """Return {event: its `types:` list, or None} from ci.yml's top-level `on:`."""
+    lines = (WORKFLOWS / "ci.yml").read_text(encoding="utf-8").splitlines()
+    event_key = re.compile(r"^  ([a-z_]+):\s*$")
+    types_key = re.compile(r"^    types:\s*\[(.*)\]\s*$")
+    triggers = {}
+    in_on = False
+    current = None
+    for line in lines:
+        if line.startswith("on:"):
+            in_on = True
+            continue
+        if not in_on:
+            continue
+        if line and not line.startswith((" ", "#")):
+            break
+        match = event_key.match(line)
+        if match:
+            current = match.group(1)
+            triggers[current] = None
+            continue
+        match = types_key.match(line)
+        if match and current:
+            triggers[current] = [t.strip() for t in match.group(1).split(",")]
+    return triggers
+
+
+def check_label_runs_separate():
+    """`labeled` runs come from ci_label.yml, never from ci.yml's own trigger.
+
+    When one workflow runs twice at the same commit, GitHub evaluates the pull
+    request's required checks against only one of the two runs. A pull request
+    opened with a label already applied fires `opened` and `labeled` together;
+    if ci.yml took both, the label run could be the one GitHub picked, and it
+    publishes `Required Checks (label run)`, so `Required Checks` showed as
+    "Expected" forever and the merge queue never took the pull request (issue
+    #6159). A separate calling workflow gets its own check suite.
+    """
+    failures = []
+    triggers = ci_triggers()
+    pull_request_types = triggers.get("pull_request") or []
+    if "labeled" in pull_request_types:
+        failures.append(
+            "ci.yml triggers on `pull_request: labeled`. Two ci.yml runs at one "
+            "commit let the label run hide `Required Checks` from the merge box; "
+            "leave `labeled` to ci_label.yml"
+        )
+    if "workflow_call" not in triggers:
+        failures.append(
+            "ci.yml has no `workflow_call` trigger, so ci_label.yml cannot call it "
+            "and applying a `run-*` label no longer runs anything"
+        )
+
+    label_workflow = WORKFLOWS / "ci_label.yml"
+    if not label_workflow.exists():
+        failures.append(f"{label_workflow} is missing; nothing runs on `labeled`")
+    else:
+        body = label_workflow.read_text(encoding="utf-8")
+        if not re.search(r"^\s+uses:\s*\./\.github/workflows/ci\.yml\s*$", body, re.M):
+            failures.append(f"{label_workflow} does not call ./.github/workflows/ci.yml")
+        if not re.search(r"^\s+types:\s*\[\s*labeled\s*\]\s*$", body, re.M):
+            failures.append(
+                f"{label_workflow} must trigger on `pull_request: types: [labeled]` "
+                f"and nothing else; any other type would run ci.yml twice per push"
+            )
+
+    for failure in failures:
+        print(f"label runs: {failure}")
     return not failures
 
 
@@ -1134,15 +1434,19 @@ def check_cache_save_scope():
 if __name__ == "__main__":
     ok = check_change_filters()
     ok = check_event_policy() and ok
+    ok = check_event_env() and ok
+    ok = check_docs_deploy_guard() and ok
     ok = check_spark_sql_modules() and ok
     ok = check_linux_test_profiles() and ok
     ok = check_artifact_names() and ok
     ok = check_local_actions_have_checkout() and ok
     ok = check_required_checks() and ok
+    ok = check_label_runs_separate() and ok
     ok = check_cache_refresh_scope() and ok
     ok = check_nightly_scope() and ok
     ok = check_nightly_base_fallback() and ok
     ok = check_cache_save_scope() and ok
+    ok = check_local_ci_config() and ok
     if not ok:
         sys.exit(1)
     print("CI config checks passed")

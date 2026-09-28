@@ -21,16 +21,21 @@ use std::sync::Arc;
 
 use datafusion::common::config::ConfigOptions;
 use datafusion::common::Result;
-use datafusion::datasource::physical_plan::ParquetSource;
+use datafusion::datasource::physical_plan::{FileSource, ParquetSource};
 use datafusion::datasource::source::DataSourceExec;
 use datafusion::logical_expr::Operator;
 use datafusion::physical_expr::expressions::{
     BinaryExpr, Column, DynamicFilterPhysicalExpr, IsNotNullExpr,
 };
+use datafusion::physical_expr::utils::collect_columns;
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::ExecutionPlan;
 
 use super::super::CometFilterExec;
+
+mod schema_adapter;
+
+use schema_adapter::RuntimeFilterSchemaAdapterFactory;
 
 /// Recognize only direct-column null checks joined by AND, without evaluating
 /// or changing the predicate. Every accepted leaf is deterministic, infallible,
@@ -97,10 +102,64 @@ pub(super) fn try_attach_parquet_reader_filter(
         );
         return Ok(None);
     };
-    if scan.downcast_to_file_source::<ParquetSource>().is_none() {
+    let Some((file_config, source)) = scan.downcast_to_file_source::<ParquetSource>() else {
         log::debug!("Join dynamic filter reader pushdown skipped: probe is not Parquet");
         return Ok(None);
+    };
+    // File statistics can discard a file before its schema adapter is created.
+    // Retain the decoded-batch filter when per-file checks cannot guard pruning.
+    if file_config
+        .file_groups
+        .iter()
+        .flat_map(|group| group.files())
+        .any(|file| file.statistics.is_some())
+    {
+        log::debug!("Join dynamic filter reader pushdown skipped: supplied file statistics");
+        return Ok(None);
     }
+    let Some(adapter_factory) = &file_config.expr_adapter_factory else {
+        log::debug!("Join dynamic filter reader pushdown skipped: missing schema adapter factory");
+        return Ok(None);
+    };
+    let table_schema = source.table_schema();
+    let file_column_count = table_schema.file_schema().fields().len();
+    let projection = source
+        .projection()
+        .map(|projection| projection.column_indices())
+        .unwrap_or_else(|| (0..file_column_count).collect());
+    let mut read_columns = Vec::new();
+    for index in projection {
+        let Some(field) = table_schema.table_schema().fields().get(index) else {
+            log::debug!(
+                "Join dynamic filter reader pushdown skipped: projected column index {index} is outside the table schema"
+            );
+            return Ok(None);
+        };
+        // Partition columns become literals before the per-file adapter is created.
+        if index < file_column_count {
+            read_columns.push(Column::new(field.name(), index));
+        }
+    }
+    if let Some(filter) = source.filter() {
+        // Adapters resolve predicate columns by name and can repair stale indices.
+        // Keep that identity, including when excluding partition-column literals.
+        read_columns.extend(collect_columns(&filter).into_iter().filter(|column| {
+            !table_schema
+                .table_partition_cols()
+                .iter()
+                .any(|field| field.name() == column.name())
+        }));
+    }
+    read_columns.sort_unstable_by(|a, b| {
+        a.index()
+            .cmp(&b.index())
+            .then_with(|| a.name().cmp(b.name()))
+    });
+    read_columns.dedup();
+    let adapter_factory = Arc::new(RuntimeFilterSchemaAdapterFactory::new(
+        Arc::clone(adapter_factory),
+        read_columns,
+    ));
 
     let predicate: Arc<dyn PhysicalExpr> = predicate;
     let propagation = match scan
@@ -119,7 +178,18 @@ pub(super) fn try_attach_parquet_reader_filter(
         log::debug!("Join dynamic filter reader pushdown skipped: Parquet declined the predicate");
         return Ok(None);
     };
-    Ok(Some(Arc::new(scan.clone().with_data_source(data_source))))
+    let filtered = scan.clone().with_data_source(data_source);
+    let Some((file_config, _)) = filtered.downcast_to_file_source::<ParquetSource>() else {
+        log::debug!(
+            "Join dynamic filter reader pushdown skipped: pushed-down scan is no longer Parquet"
+        );
+        return Ok(None);
+    };
+    let mut file_config = file_config.clone();
+    file_config.expr_adapter_factory = Some(adapter_factory);
+    Ok(Some(Arc::new(
+        filtered.with_data_source(Arc::new(file_config)),
+    )))
 }
 
 #[cfg(test)]

@@ -93,6 +93,7 @@ FILTERS = {
         ".github/actions/java-test/**",
         ".github/actions/upload-artifact-retry/**",
         ".github/actions/download-artifact-retry/**",
+        ".github/actions/maven-bootstrap/**",
         "!**.md",
         "!native/core/benches/**",
         "!native/spark-expr/benches/**",
@@ -123,6 +124,7 @@ FILTERS = {
         ".github/workflows/ci.yml",
         ".github/workflows/delta_build_gate.yml",
         ".github/actions/setup-builder/**",
+        ".github/actions/maven-bootstrap/**",
         "!**.md",
         "!native/core/benches/**",
         "!native/spark-expr/benches/**",
@@ -164,11 +166,16 @@ FILTERS = {
         ".github/workflows/ci.yml",
         ".github/workflows/pyarrow_udf_test.yml",
         ".github/actions/setup-builder/**",
+        ".github/actions/maven-bootstrap/**",
     ],
     "docs": [
         ".asf.yaml",
         ".github/workflows/docs.yaml",
         "docs/**",
+        # The docs deploy renders and then verifies the site's mermaid diagrams with this
+        # script, so a change to it has to be exercised by a real build, not just by the
+        # preflight run that renders the fences.
+        "dev/ci/check-mermaid.py",
         # Generated docs (configs.md, per-version expression compatibility pages) are
         # built from these Scala sources by GenerateDocs, so changes to them must
         # republish the site even when no docs/ file is touched.
@@ -202,6 +209,7 @@ FILTERS = {
         ".github/actions/setup-spark-builder/**",
         ".github/actions/upload-artifact-retry/**",
         ".github/actions/download-artifact-retry/**",
+        ".github/actions/maven-bootstrap/**",
         ".mvn/**",
         "mvnw",
     ],
@@ -229,6 +237,7 @@ FILTERS = {
         ".github/actions/setup-spark-builder/**",
         ".github/actions/upload-artifact-retry/**",
         ".github/actions/download-artifact-retry/**",
+        ".github/actions/maven-bootstrap/**",
         ".mvn/**",
         "mvnw",
     ],
@@ -256,6 +265,7 @@ FILTERS = {
         ".github/actions/setup-spark-builder/**",
         ".github/actions/upload-artifact-retry/**",
         ".github/actions/download-artifact-retry/**",
+        ".github/actions/maven-bootstrap/**",
         ".mvn/**",
         "mvnw",
     ],
@@ -283,6 +293,7 @@ FILTERS = {
         ".github/actions/setup-spark-builder/**",
         ".github/actions/upload-artifact-retry/**",
         ".github/actions/download-artifact-retry/**",
+        ".github/actions/maven-bootstrap/**",
         ".mvn/**",
         "mvnw",
     ],
@@ -312,6 +323,7 @@ FILTERS = {
         "dev/ci/test-iceberg-shards.py",
         ".github/actions/upload-artifact-retry/**",
         ".github/actions/download-artifact-retry/**",
+        ".github/actions/maven-bootstrap/**",
         ".mvn/**",
         "mvnw",
     ],
@@ -336,6 +348,7 @@ FILTERS = {
         "dev/ci/test-iceberg-shards.py",
         ".github/actions/upload-artifact-retry/**",
         ".github/actions/download-artifact-retry/**",
+        ".github/actions/maven-bootstrap/**",
         ".mvn/**",
         "mvnw",
     ],
@@ -360,6 +373,7 @@ FILTERS = {
         "dev/ci/test-iceberg-shards.py",
         ".github/actions/upload-artifact-retry/**",
         ".github/actions/download-artifact-retry/**",
+        ".github/actions/maven-bootstrap/**",
         ".mvn/**",
         "mvnw",
     ],
@@ -384,6 +398,7 @@ FILTERS = {
         "dev/ci/test-iceberg-shards.py",
         ".github/actions/upload-artifact-retry/**",
         ".github/actions/download-artifact-retry/**",
+        ".github/actions/maven-bootstrap/**",
         ".mvn/**",
         "mvnw",
     ],
@@ -420,6 +435,17 @@ FILTERS["build_linux_all_profiles"] = FILTERS["build_linux"]
 # Adding "push" back to a test job would make every merge run it twice, once
 # in the queue and once after, which is the thing the queue was adopted to
 # avoid.
+#
+# A pull request that targets a release branch (`branch-N.M`) is the one
+# exception: it runs every "pr", "queue" and "nightly" job. On main the tiers
+# spread the suites over three events, and every change still meets all of
+# them. A release branch has only the pull request: the merge queue covers the
+# default branch alone, ci.yml runs on push only for main, and GitHub fires
+# `schedule` only on the default branch. A tier there would not defer a suite,
+# it would drop it. And the tiers exist because of main's volume, which a
+# release branch does not have: branch-1.0 took 28 pull requests in its first
+# two months. "push" jobs (the site deploy) and label-only jobs (Spark 3.4)
+# keep their rules on a release branch.
 POLICY = {
     # The one test job that also runs on push to main, and only because of
     # actions/cache scoping: a pull request can restore caches saved on its
@@ -503,6 +529,13 @@ POLICY = {
 }
 
 
+# Release branches are named `branch-<major>.<minor>`, as in branch-0.17 and
+# branch-1.0. A pull request against one runs these tiers; see the end of the
+# comment above POLICY.
+RELEASE_BRANCH = re.compile(r"branch-\d+\.\d+")
+RELEASE_BRANCH_TIERS = ("pr", "queue", "nightly")
+
+
 def gating_labels(job):
     return [t[len("label:"):] for t in POLICY[job] if t.startswith("label:")]
 
@@ -510,9 +543,9 @@ def gating_labels(job):
 def event_allows(job, event):
     """Does `event` permit `job` to run, ignoring which files changed?
 
-    `event` is {"name", "action", "label", "labels"}: the workflow event name,
-    the pull_request action, the label just added on a `labeled` event, and the
-    labels currently on the pull request.
+    `event` is {"name", "action", "label", "labels", "base"}: the workflow event
+    name, the pull_request action, the label just added on a `labeled` event,
+    the labels currently on the pull request, and the branch it targets.
     """
     tiers = POLICY[job]
     name = event.get("name")
@@ -527,6 +560,8 @@ def event_allows(job, event):
         return "nightly" in tiers
     if name != "pull_request":
         return False
+    if RELEASE_BRANCH.fullmatch(event.get("base", "")):
+        return release_branch_allows(job, event)
 
     gates = gating_labels(job)
     if gates:
@@ -545,6 +580,19 @@ def event_allows(job, event):
     return True
 
 
+def release_branch_allows(job, event):
+    """event_allows for a pull request that targets a release branch."""
+    tiers = POLICY[job]
+    gates = gating_labels(job)
+    automatic = any(tier in tiers for tier in RELEASE_BRANCH_TIERS)
+    # The opened/synchronize run already ran every automatic job at this
+    # commit, so a `labeled` run adds only a job that nothing else runs there,
+    # which leaves the label-only Spark 3.4 suite.
+    if event.get("action") == "labeled":
+        return not automatic and event.get("label") in gates
+    return automatic or any(label in event.get("labels", []) for label in gates)
+
+
 def compute(files, event):
     """Return {job: bool}, folding the path filter and the event policy."""
     return {
@@ -560,6 +608,7 @@ def event_from_env():
         "action": os.environ.get("EVENT_ACTION", ""),
         "label": os.environ.get("LABEL_NAME", ""),
         "labels": json.loads(labels) if labels.strip() else [],
+        "base": os.environ.get("PR_BASE_REF", ""),
     }
 
 
