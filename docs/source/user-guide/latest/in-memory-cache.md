@@ -35,7 +35,10 @@ $SPARK_HOME/bin/spark-shell \
 
 It has to be set before the `SparkContext` starts. Comet's driver plugin chooses
 `spark.sql.cache.serializer` once, while the context is initializing, so a session that started
-with the default goes on using Spark's cache format however the config is set afterwards.
+with the default goes on using Spark's cache format however the config is set afterwards. The
+plugin installs Comet's serializer only if `spark.comet.enabled` and `spark.comet.exec.enabled`
+are enabled at that point too, because an application that starts without native execution could
+not scan Comet's format natively.
 
 ## What changes when it is enabled
 

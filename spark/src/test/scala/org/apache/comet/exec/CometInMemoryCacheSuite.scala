@@ -984,6 +984,37 @@ class CometInMemoryCacheSuite extends CometTestBase {
     assert(!userExtraConfs.containsKey(serializerKey))
   }
 
+  test("Comet plugin installs its cache serializer only if Comet can scan the cache natively") {
+    val serializerKey = StaticSQLConf.SPARK_CACHE_SERIALIZER.key
+
+    def installed(settings: (String, String)*): Boolean = {
+      val conf = new SparkConf().setAll(settings)
+      val extraConfs = new ju.HashMap[String, String]()
+      CometDriverPlugin.maybeSetCacheSerializer(conf, extraConfs)
+      assert(conf.contains(serializerKey) == extraConfs.containsKey(serializerKey))
+      extraConfs.containsKey(serializerKey)
+    }
+
+    val cometOn = CometConf.COMET_ENABLED.key -> "true"
+    val execOn = CometConf.COMET_EXEC_ENABLED.key -> "true"
+    val cacheOn = CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> "true"
+
+    assert(installed(cometOn, execOn, cacheOn))
+    // An application that starts with Comet or its native execution off can never plan
+    // CometInMemoryTableScan, and spark.sql.cache.serializer is static, so its caches keep
+    // Spark's format.
+    assert(!installed(CometConf.COMET_ENABLED.key -> "false", execOn, cacheOn))
+    assert(!installed(cometOn, CometConf.COMET_EXEC_ENABLED.key -> "false", cacheOn))
+    // Unset keys take their defaults rather than values of the plugin's own.
+    assert(
+      installed(cometOn, execOn) ==
+        CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.defaultValue.get)
+    assert(
+      installed(cacheOn) ==
+        (CometConf.COMET_ENABLED.defaultValue.get &&
+          CometConf.COMET_EXEC_ENABLED.defaultValue.get))
+  }
+
   test("Comet in-memory cache supports empty projection scan") {
     withSQLConf(
       SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
