@@ -27,6 +27,7 @@ import org.apache.spark.sql.execution.{PartitioningPreservingUnaryExecNode, Spar
 import org.apache.spark.sql.execution.python.ArrowEvalPythonExec
 import org.apache.spark.sql.types.{BinaryType, BooleanType, ByteType, DataType, DateType, DecimalType, DoubleType, FloatType, IntegerType, LongType, ShortType, StringType, TimestampNTZType}
 
+import com.google.common.base.Objects
 import com.google.protobuf.ByteString
 
 import org.apache.comet.{CometConf, ConfigEntry, NativeBase}
@@ -160,6 +161,23 @@ case class CometArrowEvalPythonExec(
     with PartitioningPreservingUnaryExecNode {
 
   override def producedAttributes: AttributeSet = AttributeSet(resultAttrs)
+
+  // Never render nativeOp: it contains the pickled Python command and can also
+  // contain scan credentials in its child operators.
+  override def stringArgs: Iterator[Any] = Iterator(output, resultAttrs, child)
+
+  override def equals(obj: Any): Boolean = obj match {
+    case other: CometArrowEvalPythonExec =>
+      output == other.output &&
+      resultAttrs == other.resultAttrs &&
+      child == other.child &&
+      nativeOp.getArrowPythonUdf == other.nativeOp.getArrowPythonUdf &&
+      serializedPlanOpt == other.serializedPlanOpt
+    case _ => false
+  }
+
+  override def hashCode(): Int =
+    Objects.hashCode(output, resultAttrs, child, nativeOp.getArrowPythonUdf, serializedPlanOpt)
 
   override protected def outputExpressions: Seq[NamedExpression] = output
 

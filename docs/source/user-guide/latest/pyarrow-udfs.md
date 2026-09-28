@@ -150,8 +150,10 @@ lock, so multiple partitions may be slower than Spark's separate Python workers;
 that release the lock can still run concurrently. Python execution stays synchronous on JVM input
 paths and hands off other async tasks when it runs on a Tokio worker. `pyspark.TaskContext.get()`
 returns `None` inside a native UDF. A native extension crash or `os._exit` terminates the executor
-process. PyArrow allocations made in Python are outside Comet's memory pool and are not limited by
-`spark.executor.pyspark.memory`.
+process. The embedded Python interpreter and PyArrow allocate outside Comet's memory pool. Those
+allocations are also absent from the executor's `Comet native memory usage: allocated` figure and
+are not limited by `spark.executor.pyspark.memory`. Budget them in executor memory overhead in
+addition to the [`allocated - reserved` estimate](tuning.md#sizing-the-overhead-from-the-memory-usage-log).
 
 ### Relationship to Spark's PySpark Arrow conversion conf
 

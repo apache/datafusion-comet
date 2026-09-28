@@ -203,6 +203,39 @@ def test_scalar_arrow_udf_respects_spark_byte_batch_limit(spark):
         spark.conf.unset("spark.sql.adaptive.enabled")
 
 
+def test_scalar_arrow_udf_skips_empty_input_batches(spark):
+    from pyspark.sql.pandas import functions as pandas_functions
+
+    if not hasattr(pandas_functions, "arrow_udf"):
+        pytest.skip("scalar arrow_udf requires Spark 4.1 or later")
+
+    @pandas_functions.arrow_udf("long")
+    def reject_empty(values):
+        if len(values) == 0:
+            raise ValueError("scalar Arrow UDF received an empty batch")
+        return values
+
+    previous_comet_enabled = spark.conf.get("spark.comet.enabled")
+    spark.conf.set("spark.sql.adaptive.enabled", "false")
+    spark.conf.set("spark.comet.sparkToColumnar.enabled", "true")
+    try:
+        spark.conf.set("spark.comet.enabled", "false")
+        spark_reference = spark.range(1, 5, 1, 1).sample(False, 0.01, 42)
+        assert spark_reference.select(reject_empty("id")).collect() == []
+
+        spark.conf.set("spark.comet.enabled", "true")
+        spark.conf.set("spark.comet.exec.nativeArrowPythonUDF.enabled", "true")
+        native_source = spark.range(1, 5, 1, 1).sample(False, 0.01, 42)
+        native_result = native_source.select(reject_empty("id"))
+        assert "CometArrowEvalPython" in _executed_plan(native_result)
+        assert native_result.collect() == []
+    finally:
+        spark.conf.set("spark.comet.exec.nativeArrowPythonUDF.enabled", "false")
+        spark.conf.set("spark.comet.enabled", previous_comet_enabled)
+        spark.conf.unset("spark.comet.sparkToColumnar.enabled")
+        spark.conf.unset("spark.sql.adaptive.enabled")
+
+
 def test_map_in_arrow_doubles_value(spark, tmp_path, accelerated):
     data = [(i, float(i * 1.5), f"name_{i}") for i in range(100)]
     src = str(tmp_path / "src.parquet")

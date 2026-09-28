@@ -366,11 +366,14 @@ diverge for several structural reasons:
   allocation counters (`native_allocated`, `jemalloc_allocated`) see it. In a default build the C
   dependencies are libzstd (`zstd-sys`, behind the Parquet `zstd` codec), libhdfs (`hdfs-sys`,
   pulled in by the default `hdfs-opendal` feature), and the TLS stack used for cloud object stores
-  (`aws-lc-sys`). Building with the `jemalloc` or `mimalloc` feature adds the allocator itself
-  (`tikv-jemalloc-sys`, `libmimalloc-sys`). It is worth knowing which dependencies are _not_ C,
-  because several names suggest otherwise: the other Parquet codecs are pure Rust in this build,
-  `snap` for Snappy, `lz4_flex` for LZ4 and `zlib-rs` for gzip, as is `libbz2-rs-sys` despite its
-  name, so those allocations do pass through `GlobalAlloc` and are counted.
+  (`aws-lc-sys`). With the `python-udf` feature, the embedded Python interpreter and PyArrow also
+  allocate outside `GlobalAlloc`; their memory is absent from the executor's native `allocated`
+  figure, and Python working allocations are not reserved in Comet's pool. Building with the
+  `jemalloc` or `mimalloc` feature adds the allocator itself (`tikv-jemalloc-sys`,
+  `libmimalloc-sys`). It is worth knowing which dependencies are _not_ C, because several names
+  suggest otherwise: the other Parquet codecs are pure Rust in this build, `snap` for Snappy,
+  `lz4_flex` for LZ4 and `zlib-rs` for gzip, as is `libbz2-rs-sys` despite its name, so those
+  allocations do pass through `GlobalAlloc` and are counted.
 - **Batches in flight across the FFI boundary.** Reservations stop at the operator that made them.
   Imported JVM batches are reserved only while a reserving operator holds them, and exported native
   batches have usually been released by the time the JVM receives them yet stay resident until the

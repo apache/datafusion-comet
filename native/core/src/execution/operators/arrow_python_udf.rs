@@ -309,6 +309,10 @@ impl ExecutionPlan for ArrowPythonUdfExec {
             let specs = Arc::clone(&specs);
             let schema = Arc::clone(&schema);
             let (batch, args, mut error) = match batch {
+                // Spark's Arrow writer does not invoke a scalar UDF for an empty input
+                // batch. Native scans may still emit one, so skip it before evaluating
+                // arguments or entering Python.
+                Ok(batch) if batch.num_rows() == 0 => (None, None, None),
                 Ok(batch) => {
                     match tokio::task::block_in_place(|| Self::evaluate_args(&specs, &batch)) {
                         Ok(args) => (Some(batch), Some(args), None),
@@ -318,7 +322,6 @@ impl ExecutionPlan for ArrowPythonUdfExec {
                 Err(error) => (None, None, Some(error)),
             };
             let mut offset = 0;
-            let mut emitted_empty_batch = false;
             let mut failed = false;
             // RecordBatch::slice shares Arrow buffers. Produce one result per poll
             // so the remaining slices do not pin a second set of output batches.
@@ -331,7 +334,7 @@ impl ExecutionPlan for ArrowPythonUdfExec {
                 }
                 let batch = batch.as_ref()?;
                 let args = args.as_ref()?;
-                if offset == batch.num_rows() && (offset != 0 || emitted_empty_batch) {
+                if offset == batch.num_rows() {
                     return None;
                 }
                 let length = match Self::next_batch_length(
@@ -361,9 +364,6 @@ impl ExecutionPlan for ArrowPythonUdfExec {
                     )
                 });
                 offset += length;
-                if length == 0 {
-                    emitted_empty_batch = true;
-                }
                 Some(result)
             }))
         });

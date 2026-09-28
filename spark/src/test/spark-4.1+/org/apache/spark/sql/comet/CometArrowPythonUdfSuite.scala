@@ -30,6 +30,8 @@ import org.apache.spark.sql.functions.{array, lit, map, struct, when}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, ByteType, CalendarIntervalType, DataType, DateType, DecimalType, DoubleType, FloatType, IntegerType, LongType, MapType, ShortType, StringType, StructField, StructType, TimestampNTZType, TimestampType, TimeType, VariantType, YearMonthIntervalType}
 
+import com.google.protobuf.ByteString
+
 import org.apache.comet.{CometConf, NativeBase}
 
 class CometArrowPythonUdfSuite extends CometTestBase {
@@ -116,6 +118,51 @@ class CometArrowPythonUdfSuite extends CometTestBase {
       val source = spark.range(1, 2)
       val plan = source.select(udf(source.col("id"))).queryExecution.executedPlan
       assert(plan.collect { case _: CometArrowEvalPythonExec => true }.isEmpty)
+    }
+  }
+
+  test("native Arrow UDF plan hides commands and compares UDF identity without plan IDs") {
+    assume(NativeBase.supportsPythonUdf(), "native library was built without python-udf")
+
+    val secret = "private_arrow_udf_command"
+    val function = SimplePythonFunction(
+      secret.getBytes(java.nio.charset.StandardCharsets.UTF_8),
+      Collections.emptyMap[String, String](),
+      Collections.emptyList[String](),
+      "python3",
+      "3.13",
+      Collections.emptyList(),
+      null)
+    val udf = UserDefinedPythonFunction(
+      "secret_arrow",
+      function,
+      LongType,
+      PythonEvalType.SQL_SCALAR_ARROW_UDF,
+      udfDeterministic = true)
+
+    withSQLConf(
+      CometConf.COMET_NATIVE_ARROW_PYTHON_UDF_ENABLED.key -> "true",
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
+      val source = spark.range(1, 2)
+      val plan = source.select(udf(source.col("id"))).queryExecution.executedPlan
+      val native = plan.collectFirst { case op: CometArrowEvalPythonExec => op }.get
+      assert(!plan.treeString.contains(secret))
+      assert(!native.toString.contains(secret))
+
+      val differentPlanId = native.copy(nativeOp =
+        native.nativeOp.toBuilder.setPlanId(native.nativeOp.getPlanId + 1).build())
+      assert(native == differentPlanId)
+      assert(native.hashCode() == differentPlanId.hashCode())
+
+      val differentFunction = native.nativeOp.getArrowPythonUdf
+        .getFunctions(0)
+        .toBuilder
+        .setCommand(ByteString.copyFromUtf8("different_arrow_udf_command"))
+        .build()
+      val differentOpBuilder = native.nativeOp.toBuilder
+      differentOpBuilder.getArrowPythonUdfBuilder.setFunctions(0, differentFunction)
+      val differentUdf = native.copy(nativeOp = differentOpBuilder.build())
+      assert(native != differentUdf)
     }
   }
 
