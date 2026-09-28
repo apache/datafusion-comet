@@ -68,7 +68,10 @@ fn criterion_benchmark(c: &mut Criterion) {
                                     number_rows: rows,
                                     return_field: Arc::new(Field::new(
                                         "result",
-                                        DataType::Timestamp(TimeUnit::Microsecond, None),
+                                        DataType::Timestamp(
+                                            TimeUnit::Microsecond,
+                                            Some("UTC".into()),
+                                        ),
                                         true,
                                     )),
                                     config_options: Arc::new(ConfigOptions::default()),

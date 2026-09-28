@@ -28,6 +28,11 @@ use std::sync::Arc;
 
 const MICROS_PER_SECOND: i64 = 1_000_000;
 
+/// The result is Spark's `TimestampType`, which is `Timestamp(Microsecond, "UTC")` everywhere in a
+/// native plan. Without the label, downstream kernels would read the result as `TimestampNTZType`
+/// wall-clock time, and Arrow would reject comparing it with other timestamps.
+const TIMEZONE: &str = "UTC";
+
 /// Spark-compatible seconds_to_timestamp (timestamp_seconds) function.
 /// Converts seconds since Unix epoch to a timestamp.
 #[derive(Debug, PartialEq, Eq, Hash)]
@@ -69,7 +74,10 @@ impl ScalarUDFImpl for SparkSecondsToTimestamp {
     }
 
     fn return_type(&self, _: &[DataType]) -> Result<DataType> {
-        Ok(DataType::Timestamp(TimeUnit::Microsecond, None))
+        Ok(DataType::Timestamp(
+            TimeUnit::Microsecond,
+            Some(TIMEZONE.into()),
+        ))
     }
 
     fn invoke_with_args(&self, args: ScalarFunctionArgs) -> Result<ColumnarValue> {
@@ -81,7 +89,9 @@ impl ScalarUDFImpl for SparkSecondsToTimestamp {
                 if let Some(int_array) = arr.as_any().downcast_ref::<Int32Array>() {
                     let result: TimestampMicrosecondArray =
                         try_unary(int_array, |s| Ok((s as i64) * MICROS_PER_SECOND))?;
-                    return Ok(ColumnarValue::Array(Arc::new(result)));
+                    return Ok(ColumnarValue::Array(Arc::new(
+                        result.with_timezone(TIMEZONE),
+                    )));
                 }
 
                 // Handle Int64 input — error on overflow to match Spark's Math.multiplyExact
@@ -91,7 +101,9 @@ impl ScalarUDFImpl for SparkSecondsToTimestamp {
                             arrow::error::ArrowError::ComputeError("long overflow".to_string())
                         })
                     })?;
-                    return Ok(ColumnarValue::Array(Arc::new(result)));
+                    return Ok(ColumnarValue::Array(Arc::new(
+                        result.with_timezone(TIMEZONE),
+                    )));
                 }
 
                 // Handle Float32 input — cast to f64 and use Float64 path
@@ -109,7 +121,9 @@ impl ScalarUDFImpl for SparkSecondsToTimestamp {
                             })
                         })
                         .collect();
-                    return Ok(ColumnarValue::Array(Arc::new(result)));
+                    return Ok(ColumnarValue::Array(Arc::new(
+                        result.with_timezone(TIMEZONE),
+                    )));
                 }
 
                 // Handle Float64 input — NaN and Infinity return null per Spark behavior
@@ -126,7 +140,9 @@ impl ScalarUDFImpl for SparkSecondsToTimestamp {
                             })
                         })
                         .collect();
-                    return Ok(ColumnarValue::Array(Arc::new(result)));
+                    return Ok(ColumnarValue::Array(Arc::new(
+                        result.with_timezone(TIMEZONE),
+                    )));
                 }
 
                 Err(DataFusionError::Execution(format!(
@@ -175,7 +191,8 @@ impl ScalarUDFImpl for SparkSecondsToTimestamp {
                     }
                 };
                 Ok(ColumnarValue::Scalar(ScalarValue::TimestampMicrosecond(
-                    ts_micros, None,
+                    ts_micros,
+                    Some(TIMEZONE.into()),
                 )))
             }
         }
@@ -183,5 +200,84 @@ impl ScalarUDFImpl for SparkSecondsToTimestamp {
 
     fn aliases(&self) -> &[String] {
         &self.aliases
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use arrow::array::{ArrayRef, AsArray};
+    use arrow::datatypes::{Field, TimestampMicrosecondType};
+    use datafusion::config::ConfigOptions;
+
+    fn utc_timestamp() -> DataType {
+        DataType::Timestamp(TimeUnit::Microsecond, Some(TIMEZONE.into()))
+    }
+
+    fn invoke(arg: ColumnarValue, number_rows: usize) -> ColumnarValue {
+        let udf = SparkSecondsToTimestamp::new();
+        udf.invoke_with_args(ScalarFunctionArgs {
+            args: vec![arg],
+            arg_fields: vec![],
+            number_rows,
+            return_field: Arc::new(Field::new("result", utc_timestamp(), true)),
+            config_options: Arc::new(ConfigOptions::default()),
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn return_type_is_timestamp_ltz() {
+        let udf = SparkSecondsToTimestamp::new();
+        for input in [
+            DataType::Int32,
+            DataType::Int64,
+            DataType::Float32,
+            DataType::Float64,
+        ] {
+            assert_eq!(udf.return_type(&[input]).unwrap(), utc_timestamp());
+        }
+    }
+
+    /// Every input type yields the Arrow type `return_type` declares. An unlabelled result reads
+    /// as TIMESTAMP_NTZ downstream, where it loses the session timezone.
+    #[test]
+    fn arrays_are_labelled_utc() {
+        let inputs: Vec<ArrayRef> = vec![
+            Arc::new(Int32Array::from(vec![Some(1800), None])),
+            Arc::new(Int64Array::from(vec![Some(1800), None])),
+            Arc::new(Float32Array::from(vec![Some(1800.0), None])),
+            Arc::new(Float64Array::from(vec![Some(1800.0), None])),
+        ];
+        for input in inputs {
+            let input_type = input.data_type().clone();
+            let ColumnarValue::Array(result) = invoke(ColumnarValue::Array(input), 2) else {
+                panic!("expected an array for {input_type}");
+            };
+            assert_eq!(result.data_type(), &utc_timestamp(), "{input_type}");
+            let result = result.as_primitive::<TimestampMicrosecondType>();
+            assert_eq!(result.value(0), 1_800_000_000, "{input_type}");
+            assert!(result.is_null(1), "{input_type}");
+        }
+    }
+
+    #[test]
+    fn scalars_are_labelled_utc() {
+        for (input, expected) in [
+            (ScalarValue::Int32(Some(1800)), Some(1_800_000_000)),
+            (ScalarValue::Int64(Some(1800)), Some(1_800_000_000)),
+            (ScalarValue::Float64(Some(1800.5)), Some(1_800_500_000)),
+            (ScalarValue::Int64(None), None),
+        ] {
+            let ColumnarValue::Scalar(result) = invoke(ColumnarValue::Scalar(input.clone()), 1)
+            else {
+                panic!("expected a scalar for {input:?}");
+            };
+            assert_eq!(
+                result,
+                ScalarValue::TimestampMicrosecond(expected, Some(TIMEZONE.into())),
+                "{input:?}"
+            );
+        }
     }
 }
