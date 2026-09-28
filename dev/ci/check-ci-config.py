@@ -15,7 +15,7 @@
 # specific language governing permissions and limitations
 # under the License.
 
-# Guards seven CI invariants that are silent when broken:
+# Guards CI invariants that are silent when broken:
 #
 #   1. Change-filter routing. dev/ci/compute-changes.py decides which heavy
 #      jobs run. A file that a job depends on but that no filter lists makes
@@ -73,6 +73,10 @@
 #      which is how every native build in the queue came to miss its cargo
 #      cache and pay a cold ~26 minute compile.
 #
+#   8. Native library consumers share main's builder and declare only known
+#      environment overrides. Caller workflows are not cache-key inputs, so
+#      an untracked override must fail preflight rather than reuse a library.
+#
 # Run from the repository root: python3 dev/ci/check-ci-config.py
 
 import importlib.util
@@ -123,6 +127,7 @@ BUILD_JOBS = {
 
 # The two contrib/UDF gates also run ./mvnw, but consume no shared artifact.
 MVN_JOBS = BUILD_JOBS | {"delta_gate", "pyarrow_udf"}
+LINUX_JOBS = {"build_linux", "build_linux_full", "build_linux_all_profiles"}
 
 ROUTING_CASES = [
     # The Maven wrapper and its config feed every job that runs ./mvnw: the
@@ -140,9 +145,21 @@ ROUTING_CASES = [
     # reaches every job that runs ./mvnw, the Delta gate and PyArrow suite
     # included.
     ([".github/actions/maven-bootstrap/action.yaml"], MVN_JOBS),
+    # Linux's compact native cache is shared by every Spark/Iceberg producer.
+    # Helper edits also match macOS's broad dev/ci filter, as before.
+    ([".github/actions/build-native-ci/action.yaml"], BUILD_JOBS - {"build_macos"}),
+    (["dev/ci/native-cache-key.py"], BUILD_JOBS),
+    # Cargo validates disabled contrib manifests with native/Cargo.lock too.
+    (["contrib/lance/native/Cargo.toml"], LINUX_JOBS),
+    (["contrib/delta/native/Cargo.toml"], LINUX_JOBS | {"delta_gate"}),
+    ([".cargo/config.toml"], LINUX_JOBS),
+    (["rust-toolchain"], LINUX_JOBS),
+    (["dev/ci/test-native-cache-key.py"], LINUX_JOBS | {"build_macos"}),
+    (["dev/ci/compute-changes.py"], LINUX_JOBS | {"build_macos"}),
     # Spot checks that the additions above did not widen unrelated routes.
     (["docs/source/user-guide/overview.md"], {"docs"}),
     (["native/core/benches/parquet_read.rs"], {"benchmark"}),
+    (["native/shuffle/benches/shuffle.rs"], LINUX_JOBS | {"build_macos", "delta_gate"}),
     # The mermaid guard is run by preflight, which is unconditional, and again
     # by the docs deploy, which is not, so the deploy has to be routed. The
     # build jobs come along because `dev/ci/**` already feeds them.
@@ -479,7 +496,7 @@ CHECKOUT_USES = re.compile(r"uses:\s*actions/checkout@")
 CACHE_REFRESH_WORKFLOW = WORKFLOWS / "pr_build_linux.yml"
 CACHE_REFRESH_JOBS = {
     "lint": "gates build-native and linux-test-rust, and costs 40 seconds",
-    "build-native": "writes the cargo-ci cache (native/target, CI profile)",
+    "build-native": "writes the compact native library and cargo-ci caches",
     "linux-test-rust": "writes the cargo-debug cache (native/target, debug)",
     "verify-benchmark-results-tpch": "writes the TPC-H SF=1 dataset and java-maven caches",
     "verify-benchmark-results-tpcds": "writes the TPC-DS SF=1 dataset and java-maven caches",
@@ -1431,6 +1448,153 @@ def check_cache_save_scope():
     return not failures
 
 
+NATIVE_ACTION = "./.github/actions/build-native-ci"
+NATIVE_ENV = {
+    "RUST_VERSION": "stable",
+    "RUST_BACKTRACE": "1",
+    "RUSTFLAGS": "-Clink-arg=-fuse-ld=bfd",
+}
+
+
+def _native_scalar(value):
+    value = value.split(" #", 1)[0].strip()
+    return value[1:-1] if len(value) > 1 and value[0] == value[-1] and value[0] in "\"'" else value
+
+
+def _native_map(source, key, indent):
+    """Read the flat, block-style maps used by the official native callers.
+
+    Like the other guards, require the supported shape instead of adding a
+    YAML dependency to preflight. A new shape needs an explicit contract edit.
+    """
+    found = re.search(rf"(?m)^{' ' * indent}{key}:([^\n]*)$", source)
+    if not found:
+        return {}
+    if _native_scalar(found[1]):
+        raise ValueError(f"{key} must be a block mapping")
+    result = {}
+    for line in source[found.end():].splitlines():
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        if len(line) - len(line.lstrip()) <= indent:
+            break
+        entry = re.fullmatch(rf"{' ' * (indent + 2)}([\w-]+):\s*(.+)", line)
+        if not entry or entry[1] in result:
+            raise ValueError(f"unsupported or duplicate {key} entry: {line.strip()}")
+        result[entry[1]] = _native_scalar(entry[2])
+    return result
+
+
+def _native_jobs(source):
+    parts = re.split(r"(?m)^  ([\w-]+):\s*$", source.partition("\njobs:\n")[2])
+    return dict(zip(parts[1::2], parts[2::2]))
+
+
+def native_ci_failures(sources):
+    """Check only setup through the native action; later JVM env is unrelated."""
+    failures, producers = [], set()
+    for filename, source in sources.items():
+        found_calls = 0
+        for job, body in _native_jobs(source).items():
+            action_calls = re.finditer(r"(?m)^\s+(?:- )?uses:\s*(.+)$", body)
+            if not any(_native_scalar(use[1]) == NATIVE_ACTION for use in action_calls):
+                continue
+            found_calls += 1
+            where = f"{filename}/{job}"
+            producers.add((filename, job))
+            try:
+                header, separator, steps_text = body.partition("    steps:\n")
+                if not separator:
+                    raise ValueError("native producer must use block-style steps")
+                steps = ["      - " + step for step in re.split(r"(?m)^      - ", steps_text)[1:]]
+                uses = [re.search(r"(?m)^\s+(?:- )?uses:\s*(\S+)", step) for step in steps]
+                native = [index for index, use in enumerate(uses) if use and use[1] == NATIVE_ACTION]
+                if len(native) != 1:
+                    raise ValueError("expected one build-native-ci action")
+                before = steps[:native[0] + 1]
+                prefix = header + "".join(before)
+                runner = re.search(r"(?m)^    runs-on:\s*(.+)$", header)
+                if not runner or _native_scalar(runner[1]) != "ubuntu-24.04":
+                    raise ValueError("native runner must match main's ubuntu-24.04")
+                if _native_map(header, "container", 4) != {"image": "amd64/rust"}:
+                    raise ValueError("native container must match main's amd64/rust")
+                if _native_map(source.partition("\njobs:\n")[0], "env", 0) != NATIVE_ENV:
+                    raise ValueError(f"workflow env must match the known native environment {NATIVE_ENV}")
+                if re.search(r"(?m)^\s+(?:- )?['\"]env['\"]\s*:", prefix):
+                    raise ValueError("native env mappings must use the existing unquoted env key")
+                for match in re.finditer(r"(?m)^( +)env:", prefix):
+                    declared = _native_map(prefix[match.start():], "env", len(match[1]))
+                    if any(NATIVE_ENV.get(key) != value for key, value in declared.items()):
+                        raise ValueError("unknown native env override; update the fingerprint contract first")
+                if re.search(r"(?m)^\s+- env:", prefix):
+                    raise ValueError("put native step env after its name or uses key")
+                if re.search(r"GITHUB_(?:ENV|PATH)", prefix):
+                    raise ValueError("caller must not write GITHUB_ENV/GITHUB_PATH before native reuse")
+                setup, checkouts = [], []
+                for index, (step, use) in enumerate(zip(before, uses)):
+                    if not use:
+                        continue
+                    if use[1].startswith("actions/checkout@"):
+                        checkouts.append((index, step))
+                    elif use[1] == "./.github/actions/setup-builder":
+                        setup.append((index, step))
+                    elif use[1] != NATIVE_ACTION:
+                        raise ValueError(f"unsupported action before native reuse: {use[1]}")
+                if len(checkouts) != 1 or len(setup) != 1:
+                    raise ValueError("native reuse requires one checkout and one setup-builder")
+                required_steps = checkouts[0][1] + setup[0][1] + before[-1]
+                if checkouts[0][0] >= setup[0][0] or re.search(r"(?m)^\s+(?:- )?if:", required_steps):
+                    raise ValueError("checkout, setup-builder and native reuse must run unconditionally in that order")
+                if _native_map(checkouts[0][1], "with", 8).get("path", ".") != ".":
+                    raise ValueError("native checkout must use the default workspace path")
+                settings = _native_map(setup[0][1], "with", 8)
+                java = settings.pop("jdk-version", None)
+                if settings != {"rust-version": "${{ env.RUST_VERSION }}"}:
+                    raise ValueError("setup-builder must use the shared RUST_VERSION without extra inputs")
+                if java == "${{ inputs.java }}":
+                    target = f"./.github/workflows/{filename}"
+                    callers = []
+                    declared = 0
+                    for text in sources.values():
+                        declared += sum(bool(re.search(rf"uses:\s*['\"]?{re.escape(target)}(?:['\"\s,}}]|$)", line.split(" #", 1)[0]))
+                                        for line in text.splitlines() if not line.lstrip().startswith("#"))
+                        for caller in _native_jobs(text).values():
+                            use = re.search(r"(?m)^    uses:\s*(.+)$", caller)
+                            if use and _native_scalar(use[1]) == target:
+                                callers.append(caller)
+                    bindings = [re.search(r"(?m)^      java:\s*(.+)$", caller) for caller in callers]
+                    if len(callers) != declared or not bindings or any(not value or _native_scalar(value[1]) != "17" for value in bindings):
+                        raise ValueError("every reusable native caller must bind java to 17")
+                elif java == "${{ steps.resolve.outputs.java }}":
+                    resolver = [step for step in before if re.search(r"(?m)^        id: resolve\s*$", step)]
+                    options = set(re.findall(r"(?m)^          - ['\"]([\d.]+)['\"]\s*$", source))
+                    arms = dict(re.findall(r"(?m)^\s+([\d.]+)\)\s*(.+);;\s*$", resolver[0])) if len(resolver) == 1 else {}
+                    if (not options or arms.keys() != options
+                            or any(re.findall(r"(?:^|[;\s])java=([^\s;]+)", arm) != ["17"] for arm in arms.values())
+                            or set(re.findall(r"(?:^|[;\s])java=([^\s;]+)", resolver[0])) != {"17"}
+                            or 'echo "java=$java" >> "$GITHUB_OUTPUT"' not in resolver[0]):
+                        raise ValueError("writer resolver must select and output JDK 17")
+                elif java != "17":
+                    raise ValueError("native JDK must match main's JDK 17")
+            except ValueError as error:
+                failures.append(f"{where}: {error}")
+        calls = sum(bool(re.search(rf"uses:\s*['\"]?{re.escape(NATIVE_ACTION)}(?:['\"\s]|$)", line))
+                    for line in source.splitlines() if not line.lstrip().startswith("#"))
+        if calls != found_calls:
+            failures.append(f"{filename}: unsupported native caller layout; use the existing job/step indentation")
+    if ("pr_build_linux.yml", "build-native") not in producers:
+        failures.append("main's pr_build_linux.yml/build-native producer is missing")
+    return failures
+
+
+def check_native_ci_config():
+    sources = {path.name: path.read_text(encoding="utf-8") for path in WORKFLOWS.glob("*.y*ml")}
+    failures = native_ci_failures(sources)
+    for failure in failures:
+        print(f"native builder: {failure}")
+    return not failures
+
+
 if __name__ == "__main__":
     ok = check_change_filters()
     ok = check_event_policy() and ok
@@ -1446,6 +1610,7 @@ if __name__ == "__main__":
     ok = check_nightly_scope() and ok
     ok = check_nightly_base_fallback() and ok
     ok = check_cache_save_scope() and ok
+    ok = check_native_ci_config() and ok
     ok = check_local_ci_config() and ok
     if not ok:
         sys.exit(1)

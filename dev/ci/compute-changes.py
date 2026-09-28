@@ -38,6 +38,23 @@ import re
 import sys
 from pathlib import Path
 
+# Shared cache recipes affect every native producer. Their tests run in
+# Preflight and retain the existing dev/ci/** routes, without adding consumers.
+NATIVE_CACHE_RECIPES = (
+    ".github/actions/build-native-ci/**",
+    "dev/ci/native-cache-key.py",
+)
+
+# Cargo validates optional contrib manifests against native/Cargo.lock even
+# with their features disabled. Their Rust sources and standalone lockfiles
+# do not enter the default CI/debug builds.
+NATIVE_BUILD_INPUTS = (
+    "native/**", "contrib/*/native/Cargo.toml", ".cargo/**",
+    ".github/actions/setup-builder/**", *NATIVE_CACHE_RECIPES,
+    "rust-toolchain", "rust-toolchain.toml", "!**.md",
+)
+NATIVE_LIBRARY_INPUTS = (*NATIVE_BUILD_INPUTS, "!**/benches/**")
+
 FILTERS = {
     "build_linux": [
         "native/**",
@@ -54,6 +71,7 @@ FILTERS = {
         ".github/workflows/ci.yml",
         ".github/workflows/pr_build_linux.yml",
         ".github/actions/setup-builder/**",
+        ".github/actions/build-native-ci/**",
         ".github/actions/java-test/**",
         ".github/actions/maven-bootstrap/**",
         ".github/actions/rust-test/**",
@@ -403,6 +421,18 @@ FILTERS = {
         "mvnw",
     ],
 }
+# Spark and Iceberg producers share these recipes. Linux routes the action
+# above and already covers the Python helpers through dev/ci/**.
+for _native_consumer in (
+    "spark_3_4", "spark_3_5", "spark_4_0", "spark_4_1",
+    "iceberg_1_8", "iceberg_1_9", "iceberg_1_10", "iceberg_1_11",
+):
+    FILTERS[_native_consumer].extend(NATIVE_CACHE_RECIPES)
+
+# Every input that Cargo validates must run before merge, including optional
+# contrib manifests. Use the build list so shuffle benchmarks retain coverage.
+FILTERS["build_linux"].extend(NATIVE_BUILD_INPUTS)
+
 FILTERS["spark_4_1_hive"] = FILTERS["spark_4_1"]
 FILTERS["build_linux_full"] = FILTERS["build_linux"]
 FILTERS["build_linux_all_profiles"] = FILTERS["build_linux"]
@@ -642,13 +672,16 @@ def glob_to_regex(pat):
     return "^" + "".join(out) + "$"
 
 
-def matches(patterns, files):
+def compile_matcher(patterns):
+    """Compile one path predicate; exclusions apply across all includes."""
     includes = [re.compile(glob_to_regex(p)) for p in patterns if not p.startswith("!")]
     excludes = [re.compile(glob_to_regex(p[1:])) for p in patterns if p.startswith("!")]
-    for f in files:
-        if any(r.match(f) for r in includes) and not any(r.match(f) for r in excludes):
-            return True
-    return False
+    return lambda path: any(r.match(path) for r in includes) and not any(r.match(path) for r in excludes)
+
+
+def matches(patterns, files):
+    match = compile_matcher(patterns)
+    return any(match(path) for path in files)
 
 
 if __name__ == "__main__":
