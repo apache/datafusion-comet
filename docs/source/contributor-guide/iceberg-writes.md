@@ -133,8 +133,9 @@ The gate has these properties, and a new rule has to keep them:
   overlaid with `SparkWrite.writeProperties`, which is where iceberg-java resolves per-write options
   and `spark.sql.iceberg.*` session overrides. Reading table properties alone misses those.
 - **It checks instantiated state as well as properties.** A catalog or a custom `TableOperations`
-  can install a `FileIO` or an `EncryptionManager` without any property changing, so
-  `requireRecognizedTableFileIO` and `requirePlaintextEncryptionManager` look at `table.io()` and
+  can install a `LocationProvider`, `FileIO`, or `EncryptionManager` without any property changing,
+  so `requireDefaultLocationProvider`, `requireRecognizedTableFileIO`, and
+  `requirePlaintextEncryptionManager` inspect `table.locationProvider()`, `table.io()`, and
   `table.encryption()` themselves.
 - **It fails closed.** A reflection lookup that cannot answer returns a reason, not `None`, and
   `getSupportLevel` turns any non-fatal exception into `Unsupported`. `convert` does the same for
