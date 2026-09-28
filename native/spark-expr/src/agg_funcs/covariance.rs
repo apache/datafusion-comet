@@ -283,9 +283,7 @@ impl Accumulator for CovarianceAccumulator {
 
         for i in 0..counts.len() {
             let c = counts.value(i);
-            if c == 0.0 {
-                continue;
-            }
+            // Even empty partials affect Spark's NaN propagation during merge.
             let (new_count, new_mean1, new_mean2, new_c) = super::welford::covariance_merge(
                 self.count,
                 self.mean1,
@@ -428,9 +426,7 @@ impl GroupsAccumulator for CovarianceGroupsAccumulator {
 
         for (i, &group_index) in group_indices.iter().enumerate() {
             let partial_count = counts.value(i);
-            if partial_count == 0.0 {
-                continue;
-            }
+            // Even empty partials affect Spark's NaN propagation during merge.
             let (new_count, new_m1, new_m2, new_c) = super::welford::covariance_merge(
                 self.counts[group_index],
                 self.mean1s[group_index],
@@ -539,6 +535,62 @@ mod groups_tests {
             ScalarValue::Float64(Some(expected))
         );
         assert_eq!(evaluate(&mut grouped), vec![Some(expected), None]);
+    }
+
+    #[test]
+    fn covariance_merge_empty_partials() {
+        for value in [1e154, -1e154, 1e155, -1e155] {
+            for empty_first in [false, true] {
+                for stats in [StatsType::Population, StatsType::Sample] {
+                    let mut scalar = CovarianceAccumulator::try_new(stats, true).unwrap();
+                    let mut grouped = CovarianceGroupsAccumulator::new(stats, true);
+                    let counts = if empty_first { [0, 100] } else { [100, 0] };
+                    for count in counts {
+                        let xs: ArrayRef = Arc::new(Float64Array::from(
+                            (0..101)
+                                .map(|i| (i < count).then_some(value))
+                                .collect::<Vec<_>>(),
+                        ));
+                        let ys: ArrayRef = Arc::new(Float64Array::from(vec![Some(-value); 101]));
+                        // A null in just one input still produces a zero-count partial.
+                        let values = [xs, ys];
+                        let mut partial = CovarianceAccumulator::try_new(stats, true).unwrap();
+                        partial.update_batch(&values).unwrap();
+                        let state = partial
+                            .state()
+                            .unwrap()
+                            .iter()
+                            .map(|v| v.to_array_of_size(1).unwrap())
+                            .collect::<Vec<_>>();
+                        scalar.merge_batch(&state).unwrap();
+
+                        let mut partial = CovarianceGroupsAccumulator::new(stats, true);
+                        let mut group_indices = vec![0; 101];
+                        // The second group has no valid input pairs in either partial.
+                        group_indices[100] = 1;
+                        partial
+                            .update_batch(&values, &group_indices, None, 2)
+                            .unwrap();
+                        grouped
+                            .merge_batch(&partial.state(EmitTo::All).unwrap(), &[0, 1], 2)
+                            .unwrap();
+                    }
+                    let expected_nan = value.abs() == 1e155 && !empty_first;
+                    let ScalarValue::Float64(Some(actual)) = scalar.evaluate().unwrap() else {
+                        panic!("expected a non-null covariance");
+                    };
+                    let grouped = evaluate(&mut grouped);
+                    for result in [actual, grouped[0].unwrap()] {
+                        if expected_nan {
+                            assert!(result.is_nan(), "value={value}, empty_first={empty_first}");
+                        } else {
+                            assert_eq!(result, 0.0);
+                        }
+                    }
+                    assert_eq!(grouped[1], None);
+                }
+            }
+        }
     }
 
     #[test]
