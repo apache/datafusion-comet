@@ -354,12 +354,18 @@ class CometInMemoryCacheSuite extends CometTestBase {
 
   test("Spark row consumers of Comet cache preserve values across batches") {
     for {
+      adaptive <- Seq(false, true)
       mode <- Seq("CODEGEN_ONLY", "NO_CODEGEN")
       vectorized <- Seq(false, true)
     } {
+      // Comet on with native execution off, so Spark operators consume the cache scan and the
+      // generated ones among them read its vectors through the fused transition.
       withSQLConf(
-        CometConf.COMET_ENABLED.key -> "false",
-        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "false",
+        CometConf.COMET_SHUFFLE_ENABLED.key -> "false",
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString,
         SQLConf.CACHE_VECTORIZED_READER_ENABLED.key -> vectorized.toString,
         SQLConf.COLUMN_BATCH_SIZE.key -> "7",
         SQLConf.CODEGEN_FACTORY_MODE.key -> mode,
@@ -396,15 +402,20 @@ class CometInMemoryCacheSuite extends CometTestBase {
             "if(id % 3 = 0, null, map('k', array(cast(id AS STRING), null))) AS m",
             "null AS n")): _*)
 
-        def queries(df: DataFrame): Seq[DataFrame] = Seq(
-          df.select("*"),
-          df.selectExpr("s AS renamed", "key", "b", "a", "st", "m"),
-          df.orderBy($"s".desc, $"key"),
-          df.join(spark.range(41).toDF("join_key"), $"key" === $"join_key").select(df("*")),
-          df.selectExpr("count(*)"),
-          df.limit(1))
+        // Each query, and whether a generated Spark operator consumes the cache scan directly.
+        // The other consumers (the query root, exchanges and limits) read the row iterator.
+        def queries(df: DataFrame): Seq[(DataFrame, Boolean)] = Seq(
+          // The generated filter reads every column, so this covers the whole type matrix.
+          df.filter($"key" >= 0) -> true,
+          df.select("*") -> false,
+          df.selectExpr("s AS renamed", "key", "b", "a", "st", "m") -> true,
+          df.orderBy($"s".desc, $"key") -> false,
+          df.join(spark.range(41).toDF("join_key"), $"key" === $"join_key")
+            .select(df("*")) -> false,
+          df.selectExpr("count(*)") -> true,
+          df.limit(1) -> false)
 
-        val expected = queries(source).map(_.collect().toSeq)
+        val expected = queries(source).map(_._1.collect().toSeq)
         source.cache()
         try {
           assert(source.count() == 41)
@@ -413,20 +424,20 @@ class CometInMemoryCacheSuite extends CometTestBase {
           val buffers = relation.cacheBuilder.cachedColumnBuffers.collect()
           assert(buffers.length > 2)
           assert(buffers.forall(_.getClass.getSimpleName == "CometCachedBatch"))
-          queries(source).zip(expected).foreach { case (df, answer) =>
-            val scans =
-              df.queryExecution.executedPlan.collect { case scan: InMemoryTableScanExec =>
-                scan
-              }
-            assert(
-              scans.nonEmpty && scans.forall(_.supportsColumnar == vectorized),
-              df.queryExecution.executedPlan.toString)
-            if (!vectorized || mode == "NO_CODEGEN") {
-              assert(
-                !df.queryExecution.executedPlan.exists(_.isInstanceOf[ColumnarToRowExec]),
-                df.queryExecution.executedPlan.toString)
-            }
+          queries(source).zip(expected).foreach { case ((df, generatedConsumer), answer) =>
+            val plan = df.queryExecution.executedPlan
             checkAnswer(df, answer)
+            // Inspected after execution, when an adaptive plan is final.
+            val scans = collect(plan) { case scan: InMemoryTableScanExec => scan }
+            assert(scans.nonEmpty && scans.forall(_.supportsColumnar == vectorized), plan)
+            val transitions = collect(plan) {
+              case c: ColumnarToRowExec if collect(c.child) { case s: InMemoryTableScanExec =>
+                    s
+                  }.nonEmpty =>
+                c
+            }
+            val fused = generatedConsumer && vectorized && mode == "CODEGEN_ONLY"
+            assert(transitions.size == (if (fused) 1 else 0), plan)
           }
         } finally source.unpersist(blocking = true)
       }
