@@ -30,14 +30,29 @@ final class SdkCredentialExtraction {
 
   private SdkCredentialExtraction() {}
 
-  static CometS3Credentials toCometCredentials(AWSCredentials creds) {
+  static CometS3Credentials toCometCredentials(String bucket, AWSCredentials creds) {
+    String accessKeyId = creds.getAWSAccessKeyId();
+    String secretKey = creds.getAWSSecretKey();
+    if (accessKeyId == null || accessKeyId.isEmpty() || secretKey == null || secretKey.isEmpty()) {
+      // The chain resolved anonymous or empty credentials (e.g. AnonymousAWSCredentialsProvider,
+      // used for public buckets, or a provider that returns blank keys). The SPI has no way to
+      // express "anonymous", and the native reader would otherwise sign with blank keys and 403,
+      // so fail with a clear cause instead. To read this bucket anonymously, opt it out with an
+      // empty fs.s3a.bucket.<bucket>.comet.credential.provider.class.
+      throw new IllegalStateException(
+          "The credential provider chain resolved anonymous or empty credentials for bucket "
+              + bucket
+              + ". The Comet S3 credential adapters cannot serve anonymous access; opt this bucket"
+              + " out with an empty fs.s3a.bucket."
+              + bucket
+              + ".comet.credential.provider.class so the native reader accesses it unsigned.");
+    }
     String sessionToken = null;
     if (creds instanceof AWSSessionCredentials) {
       sessionToken = ((AWSSessionCredentials) creds).getSessionToken();
     }
     // The v1 base interface exposes no expiration; report 0 (unknown). Safe: the Parquet path
     // ignores expiration and the Iceberg path applies a bounded default TTL.
-    return new CometS3Credentials(
-        creds.getAWSAccessKeyId(), creds.getAWSSecretKey(), sessionToken, 0L);
+    return new CometS3Credentials(accessKeyId, secretKey, sessionToken, 0L);
   }
 }

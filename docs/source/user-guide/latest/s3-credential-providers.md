@@ -56,6 +56,12 @@ spark.hadoop.fs.s3a.aws.credentials.provider=com.amazonaws.auth.DefaultAWSCreden
 
 It needs no extra config: it reads the standard `fs.s3a.aws.credentials.provider` (and the per-bucket `fs.s3a.bucket.<bucket>.aws.credentials.provider`) itself, and Comet forwards the full `fs.s3a.*` config to it, so a provider chain (including static keys and assumed-role) resolves the same way it would under Spark.
 
+Anonymous access is the one exception. A bucket whose chain resolves to `AnonymousAWSCredentialsProvider` (common for public datasets) is not supported: the SPI has no way to express "anonymous", so the adapter fails with an error naming the bucket rather than reading it unsigned. To read such a bucket, opt it out of the adapter with an empty per-bucket class so the native reader accesses it directly:
+
+```
+spark.hadoop.fs.s3a.bucket.<public-bucket>.comet.credential.provider.class=
+```
+
 ### `AwsSdkCredentialProviderAdapter`
 
 Wraps a single raw AWS SDK credential-provider class that is not registered through S3A. Name the delegate in a separate key:

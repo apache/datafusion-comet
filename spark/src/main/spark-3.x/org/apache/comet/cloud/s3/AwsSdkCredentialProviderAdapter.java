@@ -63,7 +63,8 @@ public class AwsSdkCredentialProviderAdapter implements CometS3CredentialProvide
   public CometS3Credentials getCredentialsForPath(CometS3CredentialContext context)
       throws Exception {
     AWSCredentialsProvider provider = ensureDelegate(context.getBucket());
-    return SdkCredentialExtraction.toCometCredentials(provider.getCredentials());
+    return SdkCredentialExtraction.toCometCredentials(
+        context.getBucket(), provider.getCredentials());
   }
 
   private AWSCredentialsProvider ensureDelegate(String bucket) throws Exception {

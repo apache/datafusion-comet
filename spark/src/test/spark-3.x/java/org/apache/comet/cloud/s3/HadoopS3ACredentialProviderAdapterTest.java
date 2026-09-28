@@ -31,6 +31,7 @@ import org.apache.hadoop.security.alias.CredentialProvider;
 import org.apache.hadoop.security.alias.CredentialProviderFactory;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertThrows;
 import static org.junit.Assert.assertTrue;
 
@@ -153,10 +154,11 @@ public class HadoopS3ACredentialProviderAdapterTest {
   }
 
   @Test
-  public void usesLoaderCapturedAtInitializeOnNullContextThread() throws Exception {
-    // On Hadoop 3.3.4 the adapter sets the captured loader on the Configuration and S3AUtils loads
-    // the named provider through conf.getClasses, which honors it. Capturing at initialize() and
-    // fetching on a null-context thread must still resolve via that loader.
+  public void pinsHadoopAwsLoaderForNamedProvider() throws Exception {
+    // Mirroring S3AFileSystem.initialize (HADOOP-17372), the adapter must load the named provider
+    // through hadoop-aws's own loader, not the thread's context loader. A RecordingClassLoader set
+    // as the context loader must never be asked for the provider class, and the read must still
+    // resolve through hadoop-aws's loader.
     String target = "org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider";
     CapturingClassLoaderSupport.RecordingClassLoader recording =
         new CapturingClassLoaderSupport.RecordingClassLoader(target, getClass().getClassLoader());
@@ -166,24 +168,36 @@ public class HadoopS3ACredentialProviderAdapterTest {
     props.put("fs.s3a.access.key", "AKGLOBAL");
     props.put("fs.s3a.secret.key", "SKGLOBAL");
     try {
-      CapturingClassLoaderSupport.onThread(
-          recording,
-          () -> {
-            adapter.initialize(props);
-            return null;
-          });
       CometS3Credentials creds =
           CapturingClassLoaderSupport.onThread(
-              null,
-              () ->
-                  adapter.getCredentialsForPath(
-                      new CometS3CredentialContext("my-bucket", "/obj", CometS3AccessMode.READ)));
+              recording,
+              () -> {
+                adapter.initialize(props);
+                return adapter.getCredentialsForPath(
+                    new CometS3CredentialContext("my-bucket", "/obj", CometS3AccessMode.READ));
+              });
       assertEquals("AKGLOBAL", creds.getAccessKeyId());
-      assertTrue(
-          "the captured loader should have loaded the named provider",
+      assertFalse(
+          "the named provider must load via hadoop-aws's loader, not the context loader",
           recording.loaded.contains(target));
     } finally {
       adapter.close();
     }
+  }
+
+  @Test
+  public void refusesAnonymousCredentials() {
+    // A public-dataset bucket configured with AnonymousAWSCredentialsProvider resolves credentials
+    // with null keys. The adapter must fail with a clear cause naming the bucket, not an opaque
+    // NullPointerException, since the SPI cannot express anonymous access.
+    Map<String, String> props = new HashMap<>();
+    props.put(
+        "fs.s3a.aws.credentials.provider",
+        "org.apache.hadoop.fs.s3a.AnonymousAWSCredentialsProvider");
+
+    IllegalStateException e =
+        assertThrows(IllegalStateException.class, () -> resolve(props, "public-data"));
+    assertTrue(e.getMessage().contains("anonymous"));
+    assertTrue(e.getMessage().contains("public-data"));
   }
 }

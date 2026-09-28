@@ -108,6 +108,17 @@ public class AwsSdkCredentialProviderAdapterTest {
   }
 
   @Test
+  public void emptyCredentialsAreRejected() {
+    // A vendor provider that returns empty-string keys (not null) must not slip past into an opaque
+    // 403; the adapter fails with a clear cause naming the bucket.
+    Map<String, String> props = new HashMap<>();
+    props.put(KEY, V2EmptyCredsProvider.class.getName());
+    IllegalStateException e = assertThrows(IllegalStateException.class, () -> resolve(props));
+    assertTrue(e.getMessage().contains("anonymous or empty"));
+    assertTrue(e.getMessage().contains("bkt"));
+  }
+
+  @Test
   public void usesLoaderCapturedAtInitializeOnNullContextThread() throws Exception {
     // initialize() captures the context loader; a later fetch on a null-context thread (as native
     // worker threads are) must load the delegate with that captured loader, not the current TCCL.

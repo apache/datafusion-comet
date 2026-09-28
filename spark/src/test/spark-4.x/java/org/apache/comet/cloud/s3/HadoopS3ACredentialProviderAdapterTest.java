@@ -153,4 +153,20 @@ public class HadoopS3ACredentialProviderAdapterTest {
         assertThrows(IllegalStateException.class, () -> resolve(props, "my-bucket"));
     assertTrue(e.getMessage().contains("fs.s3a.delegation.token.binding"));
   }
+
+  @Test
+  public void refusesAnonymousCredentials() {
+    // A public-dataset bucket configured with AnonymousAWSCredentialsProvider resolves credentials
+    // with null keys. The adapter must fail with a clear cause naming the bucket, not an opaque
+    // NullPointerException, since the SPI cannot express anonymous access.
+    Map<String, String> props = new HashMap<>();
+    props.put(
+        "fs.s3a.aws.credentials.provider",
+        "org.apache.hadoop.fs.s3a.AnonymousAWSCredentialsProvider");
+
+    IllegalStateException e =
+        assertThrows(IllegalStateException.class, () -> resolve(props, "public-data"));
+    assertTrue(e.getMessage().contains("anonymous"));
+    assertTrue(e.getMessage().contains("public-data"));
+  }
 }

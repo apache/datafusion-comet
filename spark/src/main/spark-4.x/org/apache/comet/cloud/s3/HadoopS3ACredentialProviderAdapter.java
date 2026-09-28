@@ -38,8 +38,7 @@ import software.amazon.awssdk.auth.credentials.AwsCredentialsProvider;
  * S3AUtils.getInstanceFromReflection}, which uses hadoop-aws's own class loader and ignores the
  * Configuration's loader. So a provider named in {@code fs.s3a.aws.credentials.provider} must be
  * visible to the loader that loaded hadoop-aws (the same requirement as plain Spark on 3.4); Comet
- * cannot redirect it to the user-jar loader here. (The spark-3.x body can, because Hadoop 3.3.4
- * loads through {@code conf.getClasses}.)
+ * cannot redirect it to the user-jar loader here.
  *
  * <p>Enable it (leaving {@code fs.s3a.aws.credentials.provider} untouched) with:
  *
@@ -64,7 +63,8 @@ public class HadoopS3ACredentialProviderAdapter implements CometS3CredentialProv
   public CometS3Credentials getCredentialsForPath(CometS3CredentialContext context)
       throws Exception {
     AwsCredentialsProvider provider = ensureDelegate(context.getBucket());
-    return SdkCredentialExtraction.toCometCredentials(provider.resolveCredentials());
+    return SdkCredentialExtraction.toCometCredentials(
+        context.getBucket(), provider.resolveCredentials());
   }
 
   private AwsCredentialsProvider ensureDelegate(String bucket) throws Exception {

@@ -33,7 +33,7 @@ public class SdkCredentialExtractionTest {
   @Test
   public void basicCredentialsHaveNoSessionOrExpiry() {
     CometS3Credentials creds =
-        SdkCredentialExtraction.toCometCredentials(new BasicAWSCredentials("AK", "SK"));
+        SdkCredentialExtraction.toCometCredentials("bkt", new BasicAWSCredentials("AK", "SK"));
     assertEquals("AK", creds.getAccessKeyId());
     assertEquals("SK", creds.getSecretAccessKey());
     assertNull(creds.getSessionToken());
@@ -44,7 +44,7 @@ public class SdkCredentialExtractionTest {
   public void sessionCredentialsCarryTokenAndUnknownExpiry() {
     CometS3Credentials creds =
         SdkCredentialExtraction.toCometCredentials(
-            new BasicSessionCredentials("AK", "SK", "TOKEN"));
+            "bkt", new BasicSessionCredentials("AK", "SK", "TOKEN"));
     assertEquals("TOKEN", creds.getSessionToken());
     // v1 exposes no expiration; always unknown (0).
     assertEquals(0L, creds.getExpirationEpochMillis());

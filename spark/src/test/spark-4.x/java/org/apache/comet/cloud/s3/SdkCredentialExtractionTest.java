@@ -35,7 +35,7 @@ public class SdkCredentialExtractionTest {
   @Test
   public void basicCredentialsHaveNoSessionOrExpiry() {
     CometS3Credentials creds =
-        SdkCredentialExtraction.toCometCredentials(AwsBasicCredentials.create("AK", "SK"));
+        SdkCredentialExtraction.toCometCredentials("bkt", AwsBasicCredentials.create("AK", "SK"));
     assertEquals("AK", creds.getAccessKeyId());
     assertEquals("SK", creds.getSecretAccessKey());
     assertNull(creds.getSessionToken());
@@ -46,7 +46,7 @@ public class SdkCredentialExtractionTest {
   public void sessionCredentialsWithoutExpiryReportZero() {
     CometS3Credentials creds =
         SdkCredentialExtraction.toCometCredentials(
-            AwsSessionCredentials.create("AK", "SK", "TOKEN"));
+            "bkt", AwsSessionCredentials.create("AK", "SK", "TOKEN"));
     assertEquals("TOKEN", creds.getSessionToken());
     assertEquals(0L, creds.getExpirationEpochMillis());
   }
@@ -61,7 +61,7 @@ public class SdkCredentialExtractionTest {
             .sessionToken("TOKEN")
             .expirationTime(expiry)
             .build();
-    CometS3Credentials creds = SdkCredentialExtraction.toCometCredentials(session);
+    CometS3Credentials creds = SdkCredentialExtraction.toCometCredentials("bkt", session);
     assertEquals("TOKEN", creds.getSessionToken());
     assertEquals(1_700_000_000_000L, creds.getExpirationEpochMillis());
   }
