@@ -2366,48 +2366,6 @@ object CometObjectHashAggregateExec
       op.child,
       SerializedPlan(None))
   }
-
-  /**
-   * For intermediate aggregates containing TypedImperativeAggregate functions (like CollectSet or
-   * CollectList), Spark declares buffer columns as BinaryType because it serializes the JVM
-   * state. Native Comet keeps the actual state type instead: ArrayType(elementType) with
-   * containsNull true for CollectSet/CollectList. Rewrite the Spark-side output attributes for
-   * Partial, PartialMerge, and mixed {Partial, PartialMerge} stages so shuffle and downstream
-   * native aggregate stages see the schema that native execution really produces.
-   *
-   * Final aggregates output user-visible values rather than intermediate state, so their Spark
-   * result schema is left unchanged.
-   */
-  private def adjustOutputForNativeState(op: ObjectHashAggregateExec): Seq[Attribute] = {
-    val modes = op.aggregateExpressions.map(_.mode).distinct
-    if (modes.exists(mode => mode != Partial && mode != PartialMerge)) {
-      return op.output
-    }
-
-    val numGrouping = op.groupingExpressions.length
-    val output = op.output.toArray
-
-    var bufferIdx = numGrouping
-    for (aggExpr <- op.aggregateExpressions) {
-      val aggFunc = aggExpr.aggregateFunction
-      val bufferAttrs = aggFunc.aggBufferAttributes
-      aggFunc match {
-        case _: CollectSet | _: CollectList =>
-          val elementType = aggFunc.children.head.dataType
-          val nativeStateType = ArrayType(elementType, containsNull = true)
-          output(bufferIdx) = output(bufferIdx).withDataType(nativeStateType)
-        case _: Percentile =>
-          // DataFusion's percentile_cont keeps all values in a List<Float64> partial state.
-          // Comet casts the child to double, so the native state is ArrayType(DoubleType).
-          val nativeStateType = ArrayType(DoubleType, containsNull = true)
-          output(bufferIdx) = output(bufferIdx).withDataType(nativeStateType)
-        case _ =>
-      }
-      bufferIdx += bufferAttrs.length
-    }
-
-    output.toSeq
-  }
 }
 
 case class CometHashAggregateExec(
