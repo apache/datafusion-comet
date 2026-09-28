@@ -542,8 +542,7 @@ trait CometCovBase {
       nullOnDivideByZero: Boolean,
       statsType: Int,
       inputs: Seq[Attribute],
-      binding: Boolean,
-      conf: SQLConf): Option[ExprOuterClass.AggExpr] = {
+      binding: Boolean): Option[ExprOuterClass.AggExpr] = {
     val child1Expr = exprToProto(cov.left, inputs, binding)
     val child2Expr = exprToProto(cov.right, inputs, binding)
     val dataType = serializeDataType(cov.dataType)
@@ -575,14 +574,7 @@ object CometCovSample extends CometAggregateExpressionSerde[CovSample] with Come
       inputs: Seq[Attribute],
       binding: Boolean,
       conf: SQLConf): Option[ExprOuterClass.AggExpr] = {
-    convertCov(
-      aggExpr,
-      covSample,
-      covSample.nullOnDivideByZero,
-      0,
-      inputs,
-      binding,
-      conf: SQLConf)
+    convertCov(aggExpr, covSample, covSample.nullOnDivideByZero, 0, inputs, binding)
   }
 }
 
@@ -593,20 +585,12 @@ object CometCovPopulation extends CometAggregateExpressionSerde[CovPopulation] w
       inputs: Seq[Attribute],
       binding: Boolean,
       conf: SQLConf): Option[ExprOuterClass.AggExpr] = {
-    convertCov(
-      aggExpr,
-      covPopulation,
-      covPopulation.nullOnDivideByZero,
-      1,
-      inputs,
-      binding,
-      conf: SQLConf)
+    convertCov(aggExpr, covPopulation, covPopulation.nullOnDivideByZero, 1, inputs, binding)
   }
 }
 
 trait CometVariance {
   def convertVariance(
-      aggExpr: AggregateExpression,
       expr: CentralMomentAgg,
       nullOnDivideByZero: Boolean,
       statsType: Int,
@@ -641,7 +625,7 @@ object CometVarianceSamp extends CometAggregateExpressionSerde[VarianceSamp] wit
       inputs: Seq[Attribute],
       binding: Boolean,
       conf: SQLConf): Option[ExprOuterClass.AggExpr] = {
-    convertVariance(aggExpr, variance, variance.nullOnDivideByZero, 0, inputs, binding)
+    convertVariance(variance, variance.nullOnDivideByZero, 0, inputs, binding)
   }
 }
 
@@ -652,19 +636,17 @@ object CometVariancePop extends CometAggregateExpressionSerde[VariancePop] with 
       inputs: Seq[Attribute],
       binding: Boolean,
       conf: SQLConf): Option[ExprOuterClass.AggExpr] = {
-    convertVariance(aggExpr, variance, variance.nullOnDivideByZero, 1, inputs, binding)
+    convertVariance(variance, variance.nullOnDivideByZero, 1, inputs, binding)
   }
 }
 
 trait CometStddev {
   def convertStddev(
-      aggExpr: AggregateExpression,
       stddev: CentralMomentAgg,
       nullOnDivideByZero: Boolean,
       statsType: Int,
       inputs: Seq[Attribute],
-      binding: Boolean,
-      conf: SQLConf): Option[ExprOuterClass.AggExpr] = {
+      binding: Boolean): Option[ExprOuterClass.AggExpr] = {
     val child = stddev.child
     val childExpr = exprToProto(child, inputs, binding)
     val dataType = serializeDataType(stddev.dataType)
@@ -694,7 +676,7 @@ object CometStddevSamp extends CometAggregateExpressionSerde[StddevSamp] with Co
       inputs: Seq[Attribute],
       binding: Boolean,
       conf: SQLConf): Option[ExprOuterClass.AggExpr] = {
-    convertStddev(aggExpr, stddev, stddev.nullOnDivideByZero, 0, inputs, binding, conf: SQLConf)
+    convertStddev(stddev, stddev.nullOnDivideByZero, 0, inputs, binding)
   }
 }
 
@@ -705,7 +687,7 @@ object CometStddevPop extends CometAggregateExpressionSerde[StddevPop] with Come
       inputs: Seq[Attribute],
       binding: Boolean,
       conf: SQLConf): Option[ExprOuterClass.AggExpr] = {
-    convertStddev(aggExpr, stddev, stddev.nullOnDivideByZero, 1, inputs, binding, conf: SQLConf)
+    convertStddev(stddev, stddev.nullOnDivideByZero, 1, inputs, binding)
   }
 }
 

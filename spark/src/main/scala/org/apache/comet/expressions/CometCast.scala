@@ -248,7 +248,7 @@ object CometCast
       case (_: DecimalType, _: DecimalType) =>
         Compatible()
       case (DataTypes.StringType, _) =>
-        canCastFromString(toType, timeZoneId, evalMode)
+        canCastFromString(toType)
       case (_, DataTypes.StringType) =>
         canCastToString(fromType, timeZoneId, evalMode)
       case (DataTypes.TimestampType, _) =>
@@ -306,10 +306,7 @@ object CometCast
     }
   }
 
-  private def canCastFromString(
-      toType: DataType,
-      timeZoneId: Option[String],
-      evalMode: CometEvalMode.Value): SupportLevel = {
+  private def canCastFromString(toType: DataType): SupportLevel = {
     toType match {
       case DataTypes.BooleanType =>
         Compatible()
