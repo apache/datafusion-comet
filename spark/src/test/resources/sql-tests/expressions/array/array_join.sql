@@ -44,8 +44,8 @@ SELECT array_join(arr, ',') FROM test_array_join
 query
 SELECT array_join(arr, ',', 'NULL') FROM test_array_join
 
--- all three arguments as columns, including null delimiter and null replacement rows
-query
+-- A nullable column replacement stays on Spark before 4.2 (SPARK-57200).
+query spark_answer_only
 SELECT array_join(arr, delim, nullrep) FROM test_array_join
 
 -- column array with a column delimiter but a literal replacement
