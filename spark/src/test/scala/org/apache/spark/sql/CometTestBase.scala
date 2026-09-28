@@ -812,8 +812,14 @@ abstract class CometTestBase
       pageSize: Int = 1024,
       dictionaryPageSize: Int = 1024,
       pageRowCountLimit: Int = ParquetProperties.DEFAULT_PAGE_ROW_COUNT_LIMIT,
-      rowGroupSize: Long = 1024 * 1024L): ParquetWriter[Group] = {
+      rowGroupSize: Long = 1024 * 1024L,
+      sparkVersion: Option[String] = Some(SPARK_VERSION)): ParquetWriter[Group] = {
     val hadoopConf = spark.sessionState.newHadoopConf()
+    // Files stamped with a Spark version are treated as written with corrected datetimes;
+    // pass None to write a file the way non-Spark writers do.
+    val extraMetadata = sparkVersion
+      .map(v => java.util.Collections.singletonMap("org.apache.spark.version", v))
+      .getOrElse(java.util.Collections.emptyMap[String, String]())
 
     ExampleParquetWriter
       .builder(path)
@@ -825,8 +831,7 @@ abstract class CometTestBase
       .withPageSize(pageSize)
       .withDictionaryPageSize(dictionaryPageSize)
       .withPageRowCountLimit(pageRowCountLimit)
-      .withExtraMetaData(
-        java.util.Collections.singletonMap("org.apache.spark.version", SPARK_VERSION))
+      .withExtraMetaData(extraMetadata)
       .withConf(hadoopConf)
       .build()
   }

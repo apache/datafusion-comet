@@ -52,6 +52,13 @@ The following features are not supported and cause Comet to fall back to Spark:
   of legacy-calendar values can skip the check by setting
   `spark.comet.scan.parquet.checkDatetimeRebase=false`.
   See [#5010](https://github.com/apache/datafusion-comet/issues/5010).
+  Files written by engines other than Spark, such as Trino, Hive, Flink, pyarrow or DuckDB, carry
+  no `org.apache.spark.version`, so the read modes decide. On Spark 3.4 and 3.5 both default to
+  `EXCEPTION`, under which Spark raises on ancient values that Comet would return unrebased, so
+  Comet falls back whenever such a scan reads a date or timestamp. When those files use the
+  proleptic Gregorian calendar, as current writers do, set both
+  `spark.sql.parquet.datetimeRebaseModeInRead` and `spark.sql.parquet.int96RebaseModeInRead` to
+  `CORRECTED` (the Spark 4.0 default) to keep these scans native, rather than disabling the check.
 - `spark.sql.parquet.enableVectorizedReader=false`. Disabling the vectorized reader opts into
   Spark's parquet-mr semantics (silent overflow, null-on-narrowing), which Comet's native reader
   does not replicate. By default Comet falls back to Spark in this case. Set

@@ -534,16 +534,19 @@ impl ExecutionPlan for ParquetWriterExec {
         };
 
         // Configure writer properties
-        let props = WriterProperties::builder()
-            .set_compression(compression)
-            // Spark identifies corrected datetime files by its writer version and the absence of
-            // legacy markers. Comet always writes corrected values, so use the same metadata:
-            // https://github.com/apache/spark/blob/v4.2.0/sql/core/src/main/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetWriteSupport.scala#L126-L146
-            .set_key_value_metadata(Some(vec![KeyValue::new(
+        let mut props = WriterProperties::builder().set_compression(compression);
+        // Spark identifies corrected datetime files by its writer version and the absence of
+        // legacy markers. Comet always writes corrected values, so use the same metadata:
+        // https://github.com/apache/spark/blob/v4.2.0/sql/core/src/main/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetWriteSupport.scala#L126-L146
+        // Spark compares the version as a string, so an empty one would sort below "3.0.0" and
+        // mark the file as legacy. Leave the key out when the plan carries no version.
+        if !self.spark_version.is_empty() {
+            props = props.set_key_value_metadata(Some(vec![KeyValue::new(
                 "org.apache.spark.version".to_string(),
                 Some(self.spark_version.clone()),
-            )]))
-            .build();
+            )]));
+        }
+        let props = props.build();
 
         let object_store_options = self.object_store_options.clone();
         let mut writer = Self::create_arrow_writer(
@@ -714,6 +717,56 @@ mod tests {
         let reader = SerializedFileReader::new(File::open(written)?)?;
         assert_eq!(reader.metadata().file_metadata().num_rows(), 3);
 
+        Ok(())
+    }
+
+    /// The Spark version stamp marks the file as written with corrected datetimes, so it must be
+    /// omitted rather than written empty, which Spark would read as older than 3.0.0.
+    #[tokio::test]
+    async fn test_parquet_writer_spark_version_metadata() -> Result<()> {
+        for (spark_version, expected) in [("4.2.0", Some("4.2.0")), ("", None)] {
+            let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, true)]));
+            let batch = RecordBatch::try_new(
+                Arc::clone(&schema),
+                vec![Arc::new(Int32Array::from(vec![1]))],
+            )?;
+            let memory_source =
+                MemorySourceConfig::try_new(&[vec![batch]], Arc::clone(&schema), None)?;
+            let input = Arc::new(DataSourceExec::new(Arc::new(memory_source)));
+            let temp_dir = tempfile::tempdir()?;
+            let written = temp_dir.path().join("part-00000.parquet");
+            let writer = ParquetWriterExec::try_new(
+                input,
+                format!("file://{}", written.display()),
+                None,
+                None,
+                None,
+                ParquetCompression::None,
+                0,
+                vec!["id".to_string()],
+                None,
+                spark_version.to_string(),
+                HashMap::new(),
+            )?;
+            let mut stream = writer.execute(0, SessionContext::new().task_ctx())?;
+            while stream.try_next().await?.is_some() {}
+
+            let reader = SerializedFileReader::new(File::open(&written)?)?;
+            let version = reader
+                .metadata()
+                .file_metadata()
+                .key_value_metadata()
+                .and_then(|kvs| {
+                    kvs.iter()
+                        .find(|kv| kv.key == "org.apache.spark.version")
+                        .map(|kv| kv.value.clone())
+                });
+            assert_eq!(
+                version,
+                expected.map(|v| Some(v.to_string())),
+                "spark_version={spark_version:?}"
+            );
+        }
         Ok(())
     }
 

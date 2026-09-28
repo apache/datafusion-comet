@@ -2558,6 +2558,40 @@ class ParquetReadV1Suite extends ParquetReadSuite with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("files without a Spark version follow the configured datetime read mode") {
+    // Trino, Hive, Flink, pyarrow and DuckDB leave out `org.apache.spark.version`, so Spark
+    // applies the configured read mode. Under EXCEPTION (the Spark 3.x default) Spark raises on
+    // ancient values that Comet would return unrebased, so the scan must fall back; under
+    // CORRECTED (the Spark 4.0+ default) the values are read as written and the scan stays native.
+    withTempDir { dir =>
+      val path = new Path(dir.toURI.toString, "part-r-0.parquet")
+      val schema = MessageTypeParser.parseMessageType("""
+        |message root {
+        |  optional int32 d(DATE);
+        |}
+        |""".stripMargin)
+      val writer = createParquetWriter(schema, path, sparkVersion = None)
+      val row = new SimpleGroup(schema)
+      row.add(0, 10957) // 2000-01-01
+      writer.write(row)
+      writer.close()
+
+      Seq("EXCEPTION" -> false, "CORRECTED" -> true).foreach { case (mode, native) =>
+        withSQLConf(
+          SQLConf.PARQUET_REBASE_MODE_IN_READ.key -> mode,
+          SQLConf.PARQUET_INT96_REBASE_MODE_IN_READ.key -> mode) {
+          readParquetFile(path.toString) { df =>
+            val scans = collect(df.queryExecution.executedPlan) { case s: CometNativeScanExec =>
+              s
+            }
+            assert(scans.nonEmpty == native, s"$mode: ${df.queryExecution.executedPlan}")
+            checkAnswer(df, Row(java.sql.Date.valueOf("2000-01-01")))
+          }
+        }
+      }
+    }
+  }
+
   test("timestamp_ntz falls back for legacy datetime metadata on Spark 4+") {
     withTempPath { path =>
       withSQLConf(SQLConf.PARQUET_REBASE_MODE_IN_WRITE.key -> "LEGACY") {
