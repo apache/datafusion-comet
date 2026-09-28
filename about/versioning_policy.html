@@ -716,6 +716,14 @@ them; they write the fully qualified name into a config string.</p>
 <td><p><code class="docutils literal notranslate"><span class="pre">spark.sql.extendedExplainProviders</span></code></p></td>
 <td><p>Adds Comet fallback explanations to <code class="docutils literal notranslate"><span class="pre">EXPLAIN</span></code> output.</p></td>
 </tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">org.apache.comet.cloud.s3.HadoopS3ACredentialProviderAdapter</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">fs.s3a.comet.credential.provider.class</span></code></p></td>
+<td><p>Built-in adapter delegating to Hadoop S3A’s provider construction.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">org.apache.comet.cloud.s3.AwsSdkCredentialProviderAdapter</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">fs.s3a.comet.credential.provider.class</span></code></p></td>
+<td><p>Built-in adapter wrapping a raw AWS SDK provider.</p></td>
+</tr>
 </tbody>
 </table>
 </div>
@@ -737,6 +745,13 @@ differ by location.</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">CometS3Credentials</span></code>, the value a provider returns.</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">CometS3CredentialContext</span></code> and <code class="docutils literal notranslate"><span class="pre">CometS3AccessMode</span></code>, describing the request being served.</p></li>
 </ul>
+<p>Comet also ships two built-in implementations, <code class="docutils literal notranslate"><span class="pre">HadoopS3ACredentialProviderAdapter</span></code> and
+<code class="docutils literal notranslate"><span class="pre">AwsSdkCredentialProviderAdapter</span></code>. Users do not compile against them; they name them in
+<code class="docutils literal notranslate"><span class="pre">fs.s3a.comet.credential.provider.class</span></code>, so they are covered by the config-referenced class-name
+table above (name pinned, internal structure not guaranteed) rather than by the SPI’s binary
+compatibility contract. See the
+<a class="reference internal" href="../user-guide/latest/s3-credential-providers.html"><span class="std std-doc">S3 Credential Providers</span></a> guide for how to enable
+them.</p>
 <p>Additive changes are allowed in a minor release, for example a new accessor on
 <code class="docutils literal notranslate"><span class="pre">CometS3CredentialContext</span></code>, because a vendor jar compiled against an earlier <code class="docutils literal notranslate"><span class="pre">1.x</span></code> continues to
 load and run. Any change that would break such a jar, including adding an abstract method to
