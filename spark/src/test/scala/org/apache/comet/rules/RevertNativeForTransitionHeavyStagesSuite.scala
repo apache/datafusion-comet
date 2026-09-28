@@ -631,6 +631,71 @@ class RevertNativeForTransitionHeavyStagesSuite extends CometTestBase {
     }
   }
 
+  test("transition-heavy reversion rejects a stripped stage-boundary root") {
+    withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
+      withParquetTable((0 until 100).map(i => (i, i % 10)), "tbl") {
+        var cometPlan: SparkPlan = null
+        withSQLConf(CometConf.COMET_EXEC_TRANSITION_REVERT_ENABLED.key -> "false") {
+          val df = sql("SELECT _1, _2 FROM tbl DISTRIBUTE BY _2")
+          df.collect()
+          cometPlan = stripAQEPlan(df.queryExecution.executedPlan)
+        }
+        val exchange = cometPlan
+          .collectFirst { case node: CometShuffleExchangeExec => node }
+          .getOrElse(fail(s"test requires a native shuffle:\n$cometPlan"))
+        val stagePlan = CometColumnarToRowExec(exchange)
+        val rule = RevertNativeForTransitionHeavyStages(spark)
+        assert(rule.countTransitions(stagePlan) == 1)
+
+        var result: SparkPlan = null
+        withSQLConf(
+          CometConf.COMET_EXEC_TRANSITION_REVERT_ENABLED.key -> "true",
+          CometConf.COMET_EXEC_TRANSITION_REVERT_MAX_TRANSITIONS.key -> "0") {
+          result = rule(stagePlan)
+        }
+
+        assert(
+          result eq stagePlan,
+          "a transition-heavy stage whose stripped root is an exchange must stay unchanged:\n" +
+            result.treeString)
+      }
+    }
+  }
+
+  test("transition-heavy revert preserves native exchange for DISTRIBUTE BY") {
+    withSQLConf(
+      CometConf.COMET_EXEC_TRANSITION_REVERT_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_TRANSITION_REVERT_MAX_TRANSITIONS.key -> "0",
+      CometConf.COMET_SHUFFLE_MODE.key -> "native",
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
+      withParquetTable((0 until 100).map(i => (i, i % 10)), "tbl") {
+        val query = "SELECT _1, _2 FROM tbl DISTRIBUTE BY _2"
+        var sparkAnswer: Seq[Row] = Seq.empty
+        withSQLConf(
+          CometConf.COMET_ENABLED.key -> "false",
+          CometConf.COMET_EXEC_TRANSITION_REVERT_ENABLED.key -> "false") {
+          sparkAnswer = sql(query).collect().toSeq
+        }
+        val df = sql(query)
+        checkCometAnswer(df, sparkAnswer)
+        val executedPlan = stripAQEPlan(df.queryExecution.executedPlan)
+        val exchange = executedPlan
+          .collectFirst { case node: CometShuffleExchangeExec => node }
+          .getOrElse(fail(s"expected a native shuffle:\n$executedPlan"))
+
+        assert(
+          countC2RNodes(executedPlan) > 0,
+          s"the result transition above the exchange must be preserved:\n$executedPlan")
+        assert(
+          exchange.collect { case scan: CometNativeScanExec => scan }.nonEmpty,
+          s"the map stage must retain its native scan:\n$executedPlan")
+        assert(
+          exchange.collect { case scan: FileSourceScanExec => scan }.isEmpty,
+          s"fallback must not replace the scan below the exchange:\n$executedPlan")
+      }
+    }
+  }
+
   test("non-AQE apply must not produce an invalid plan when the result stage reverts") {
     withSQLConf(
       CometConf.COMET_EXEC_TRANSITION_REVERT_ENABLED.key -> "true",

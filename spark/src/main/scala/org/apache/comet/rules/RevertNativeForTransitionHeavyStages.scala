@@ -236,6 +236,10 @@ case class RevertNativeForTransitionHeavyStages(session: SparkSession, wholePlan
       case sparkToColumnar: CometSparkToColumnarExec => sparkToColumnar.child
       case RowToColumnarExec(child) => child
     }
+    if (isStageBoundary(stripped)) {
+      throw new CometExec.InvalidSparkFallbackException(
+        "Cannot revert a stage whose stripped root is a stage boundary")
+    }
     val reverted = transformStageUp(stripped) {
       // Local candidate selection was inserted by Comet. Only the outer TopK owns
       // the original Spark operator's offset and projection.
