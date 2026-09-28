@@ -1340,6 +1340,52 @@ mod tests {
         );
     }
 
+    /// Spark can park an acquire for as long as other tasks hold the memory it needs. Reading
+    /// the pool's usage, as the memory usage logger does from its own thread, must return at
+    /// once meanwhile, so no lock that `reserved` takes may be held across the Spark call.
+    #[test]
+    fn reserved_is_not_blocked_by_an_acquire_parked_in_spark() {
+        let stub = Arc::new(StubTaskMemory::new(100));
+        let pool = pool_with(&stub, 1_000_000);
+
+        let holder = MemoryConsumer::new("holder").register(&pool);
+        let grower = MemoryConsumer::new("grower").register(&pool);
+        holder.try_grow(10).unwrap();
+        // Fill the pool so Spark parks the grower below its minimum share until the holder
+        // frees, which only happens after the read below.
+        stub.other_task_holds(stub.memory_free());
+
+        let grower_thread = thread::spawn(move || {
+            grower.try_grow(10).unwrap();
+            grower.free();
+        });
+        stub.wait_parked("grower");
+
+        let (reserved_tx, reserved_rx) = channel();
+        let reader_pool = Arc::clone(&pool);
+        let reader_thread = thread::spawn(move || {
+            let _ = reserved_tx.send(reader_pool.reserved());
+        });
+        // Keep this wait well below the stub's WAIT_TIMEOUT so a blocked read shows up as a
+        // timeout. Once the stub gives up, the grower's charge rolls back and a blocked read
+        // returns 10 instead, which fails as a less telling count mismatch.
+        let reserved_during = reserved_rx.recv_timeout(Duration::from_secs(1));
+
+        // Freeing the holder wakes the grower. If the lock were held across the Spark call, the
+        // free would itself wait until the stub gives up, which still bounds the run.
+        holder.free();
+        let grower_result = grower_thread.join();
+        reader_thread.join().unwrap();
+        assert_eq!(
+            reserved_during,
+            Ok(20),
+            "reserved() must return at once and count the holder's 10 bytes plus the grower's \
+             10 bytes in flight"
+        );
+        grower_result.expect("parked acquire failed after the holder freed");
+        assert_eq!(pool.reserved(), 0);
+    }
+
     /// Two threads of one task: the pool is full and this task sits below its 1/(2N) minimum
     /// share, so Spark parks the second acquire until memory is freed. The first thread then
     /// frees everything it holds. The release must go through in full and be what wakes the
