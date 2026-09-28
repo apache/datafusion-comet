@@ -639,7 +639,7 @@ case class CometExecRule(session: SparkSession)
               case other => other
             }
             if (cometChild.isInstanceOf[CometNativeExec]) {
-              logInfo(
+              logDebug(
                 "Converting SubqueryBroadcastExec to " +
                   "CometSubqueryBroadcastExec for DPP exchange reuse")
               val cometBroadcast = CometBroadcastExchangeExec(b, b.output, b.mode, cometChild)
@@ -668,7 +668,7 @@ case class CometExecRule(session: SparkSession)
         assert(
           sab.buildKeys.nonEmpty,
           s"SubqueryAdaptiveBroadcastExec '${sab.name}' has empty buildKeys")
-        logInfo(
+        logDebug(
           s"Wrapping SubqueryAdaptiveBroadcastExec '${sab.name}' in " +
             "CometSubqueryAdaptiveBroadcastExec to preserve AQE DPP")
         val indices = getSubqueryBroadcastIndices(sab)

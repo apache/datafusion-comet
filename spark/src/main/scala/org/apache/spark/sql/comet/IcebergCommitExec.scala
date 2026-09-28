@@ -19,7 +19,6 @@
 
 package org.apache.spark.sql.comet
 
-import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.Attribute
 import org.apache.spark.sql.connector.write.{BatchWrite, Write, WriterCommitMessage}
@@ -40,8 +39,7 @@ case class IcebergCommitExec(
     @transient refreshCache: IcebergCommitExec.RefreshCache,
     child: SparkPlan)
     extends V2CommandExec
-    with UnaryExecNode
-    with Logging {
+    with UnaryExecNode {
 
   override def output: Seq[Attribute] = Nil
 

@@ -19,7 +19,6 @@
 
 package org.apache.comet.rules
 
-import org.apache.spark.internal.Logging
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.expressions.aggregate.{Final, Partial, PartialMerge}
 import org.apache.spark.sql.catalyst.rules.Rule
@@ -42,8 +41,7 @@ import org.apache.comet.serde.QueryPlanSerde
  *   Set by the plan-only preview, which holds the whole plan.
  */
 case class RevertNativeForTransitionHeavyStages(session: SparkSession, wholePlan: Boolean = false)
-    extends Rule[SparkPlan]
-    with Logging {
+    extends Rule[SparkPlan] {
 
   private def enabled = CometConf.COMET_EXEC_TRANSITION_REVERT_ENABLED.get()
   private def maxTransitions = CometConf.COMET_EXEC_TRANSITION_REVERT_MAX_TRANSITIONS.get()

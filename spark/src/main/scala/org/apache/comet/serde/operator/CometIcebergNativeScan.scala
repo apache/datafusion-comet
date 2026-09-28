@@ -397,7 +397,7 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
         val msg =
           "Iceberg reflection failure: Failed to extract deletes from FileScanTask: " +
             s"${e.getMessage}"
-        logError(msg)
+        logError(msg, e)
         throw new RuntimeException(msg, e)
     }
   }
@@ -522,7 +522,7 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
             taskBuilder.setPartitionSpecIdx(specIdx)
           } catch {
             case e: Exception =>
-              logWarning(s"Failed to serialize partition spec to JSON: ${e.getMessage}")
+              logWarning("Failed to serialize partition spec to JSON", e)
           }
         }
 
@@ -773,7 +773,7 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
       case e: Exception =>
         val msg = "Iceberg reflection failure: Failed to convert residual expression " +
           s"'$residual' from FileScanTask: ${e.getMessage}"
-        logError(msg)
+        logError(msg, e)
         throw new RuntimeException(msg, e)
     }
 

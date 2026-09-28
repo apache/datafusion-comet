@@ -294,12 +294,12 @@ case class CometNativeWriteExec(
                   // Abort the task
                   committer.abortTask(ctx)
                   val exMsg = thrownException.get.getMessage
-                  logWarning(s"Task ${ctx.getTaskAttemptID} aborted due to exception: $exMsg")
+                  logError(s"Task ${ctx.getTaskAttemptID} aborted due to exception: $exMsg")
                 }
               } catch {
                 case e: Exception =>
                   // Log the commit/abort exception but don't mask the original exception
-                  logError(s"Error during task commit/abort: ${e.getMessage}", e)
+                  logError("Error during task commit/abort", e)
                   if (thrownException.isEmpty) {
                     // If no original exception, propagate the commit/abort exception
                     throw e

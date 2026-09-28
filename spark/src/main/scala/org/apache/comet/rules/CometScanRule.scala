@@ -29,7 +29,6 @@ import scala.collection.mutable.ListBuffer
 import scala.jdk.CollectionConverters._
 
 import org.apache.hadoop.conf.Configuration
-import org.apache.spark.internal.Logging
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.expressions.{Attribute, DynamicPruningExpression, Expression, GenericInternalRow, InputFileBlockLength, InputFileBlockStart, InputFileName, PlanExpression}
 import org.apache.spark.sql.catalyst.rules.Rule
@@ -606,9 +605,7 @@ case class CometScanRule(session: SparkSession)
             result
           } catch {
             case e: Exception =>
-              logError(
-                s"Failed to extract catalog properties from Iceberg scan: ${e.getMessage}",
-                e)
+              logWarning("Failed to extract catalog properties from Iceberg scan", e)
               None
           }
         }
@@ -819,7 +816,7 @@ case class CometScanRule(session: SparkSession)
           // Fall back to Spark if reflection fails - cannot verify safety
           val msg =
             "Iceberg reflection failure: Could not verify partition types compatibility"
-          logError(msg)
+          logWarning(msg)
           fallbackReasons += msg
           false
         }
@@ -1116,7 +1113,7 @@ case class CometScanTypeChecker() extends DataTypeSupport with CometTypeShim {
     readFieldId(SQLConf.get) && DataTypeSupport.hasDuplicateFieldIds(fields)
 }
 
-object CometScanRule extends Logging {
+object CometScanRule {
 
   // Memo of `NativeBase.isObjectStoreSchemeSupported`, keyed by the probe URL rather than the
   // scheme: object_store's parser keys on (scheme, host-presence), so an authorityless URL would

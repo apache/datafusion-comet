@@ -21,7 +21,6 @@ package org.apache.comet.serde.literals
 
 import java.lang
 
-import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, CreateArray, CreateMap, Expression, KnownNullable, Literal, MapFromArrays}
 import org.apache.spark.sql.catalyst.util.{ArrayData, MapData, TypeUtils}
@@ -36,7 +35,7 @@ import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, serializeData
 import org.apache.comet.serde.Types.ListLiteral
 import org.apache.comet.shims.CometTypeShim
 
-object CometLiteral extends CometExpressionSerde[Literal] with CometTypeShim with Logging {
+object CometLiteral extends CometExpressionSerde[Literal] with CometTypeShim {
 
   override def getUnsupportedReasons(): Seq[String] = Seq(
     "Not all data types are supported for literal values")
