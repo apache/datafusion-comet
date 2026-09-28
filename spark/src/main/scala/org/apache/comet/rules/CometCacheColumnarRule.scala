@@ -54,10 +54,15 @@ import org.apache.comet.CometSparkSessionExtensions.isCometLoaded
  *                                       | Arrow vectors          |
  *                                       +------------------------+
  * }}}
+ *
+ * @param preview
+ *   true in the plan-only preview, which shows the plan Comet would execute. Otherwise the rule
+ *   leaves plans alone in plan-only mode, where Spark executes each query unchanged.
  */
-object CometCacheColumnarRule extends Rule[SparkPlan] {
+case class CometCacheColumnarRule(preview: Boolean = false) extends Rule[SparkPlan] {
   override def apply(plan: SparkPlan): SparkPlan = {
     if (!isCometLoaded(conf) || !COMET_EXEC_IN_MEMORY_CACHE_ENABLED.get(conf)) return plan
+    if (!preview && CometRule.planOnlyApplies(conf, plan)) return plan
     if (!conf.wholeStageEnabled) return plan
     if (conf.getConf(SQLConf.CODEGEN_FACTORY_MODE).toString == "NO_CODEGEN") return plan
 

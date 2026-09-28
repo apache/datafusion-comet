@@ -37,7 +37,7 @@ import org.apache.spark.sql.columnar.{CachedBatch, SimpleMetricsCachedBatch}
 import org.apache.spark.sql.comet.{CometBroadcastHashJoinExec, CometInMemoryTableScanExec, CometSortExec, CometSortMergeJoinExec}
 import org.apache.spark.sql.comet.execution.arrow.{ArrowCachedBatchSerializer, CometCachedBatchHelper}
 import org.apache.spark.sql.comet.util.Utils
-import org.apache.spark.sql.execution.{ColumnarToRowExec, RowToColumnarExec, SortExec}
+import org.apache.spark.sql.execution.{ColumnarToRowExec, FilterExec, RowToColumnarExec, SortExec}
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AQEShuffleReadExec, QueryStageExec, ShuffleQueryStageExec}
 import org.apache.spark.sql.execution.columnar.{CometInMemoryRelationHelper, InMemoryRelation, InMemoryTableScanExec}
 import org.apache.spark.sql.execution.exchange.{Exchange, ReusedExchangeExec, ShuffleExchangeLike}
@@ -434,13 +434,18 @@ class CometInMemoryCacheSuite extends CometTestBase {
   }
 
   test("Spark generated cache consumers respect runtime enable and codegen settings") {
+    val planOnly = Seq(
+      CometConf.COMET_EXPLAIN_PLAN_ONLY_ENABLED.key -> "true",
+      // Plan-only mode applies only while native execution is enabled.
+      CometConf.COMET_EXEC_ENABLED.key -> "true")
     for {
       adaptive <- Seq(false, true)
-      disabledSetting <- Seq(
-        CometConf.COMET_ENABLED.key -> "false",
-        CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> "false",
-        SQLConf.CODEGEN_FACTORY_MODE.key -> "NO_CODEGEN",
-        SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "false")
+      disabledSettings <- Seq(
+        Seq(CometConf.COMET_ENABLED.key -> "false"),
+        Seq(CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> "false"),
+        Seq(SQLConf.CODEGEN_FACTORY_MODE.key -> "NO_CODEGEN"),
+        Seq(SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "false"),
+        planOnly)
     } {
       withSQLConf(
         CometConf.COMET_ENABLED.key -> "true",
@@ -469,14 +474,16 @@ class CometInMemoryCacheSuite extends CometTestBase {
             .cacheBuilder
           // Materialize with fusion enabled, then disable and re-enable it on the same cache.
           Seq(true, false, true).zipWithIndex.foreach { case (enabled, index) =>
-            val settings = if (enabled) Seq.empty else Seq(disabledSetting)
+            val settings = if (enabled) Seq.empty else disabledSettings
             withSQLConf(settings: _*) {
               val cold = index == 0
               val df = query
               val plan = df.queryExecution.executedPlan
               // Planning must not materialize the cache or replace AQE's cache-stage metadata.
               assert(builder.isCachedColumnBuffersLoaded != cold, plan.toString)
-              checkAnswer(df, expected)
+              // checkToRDD = false keeps checkAnswer from loading the cache with a query of its
+              // own, so the cold run's table-cache stage materializes and AQE re-plans above it.
+              QueryTest.checkAnswer(df, expected, checkToRDD = false)
               assert(builder.isCachedColumnBuffersLoaded)
               val transitions = collect(plan) {
                 case c: ColumnarToRowExec if collect(c.child) { case s: InMemoryTableScanExec =>
@@ -498,8 +505,16 @@ class CometInMemoryCacheSuite extends CometTestBase {
               // A cache scan can also be the root of a columnar request or already have a
               // transition. Applying the rule again must preserve those input/output contracts.
               Seq(scan, ColumnarToRowExec(scan), RowToColumnarExec(scan)).foreach { boundary =>
-                assert(CometCacheColumnarRule(boundary).fastEquals(boundary))
+                assert(CometCacheColumnarRule()(boundary).fastEquals(boundary))
               }
+              // The plan-only preview shows the plan Comet would execute, so it still fuses a
+              // generated consumer that the executed plan leaves alone in plan-only mode.
+              val consumer = FilterExec(Literal.TrueLiteral, scan)
+              val fusedConsumer = FilterExec(Literal.TrueLiteral, ColumnarToRowExec(scan))
+              assert(CometCacheColumnarRule()(consumer).fastEquals(fusedConsumer) == enabled)
+              assert(
+                CometCacheColumnarRule(preview = true)(consumer).fastEquals(fusedConsumer) ==
+                  (enabled || disabledSettings == planOnly))
             }
           }
         } finally source.unpersist(blocking = true)
