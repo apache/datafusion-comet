@@ -1200,7 +1200,10 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
             if let Some(rx) = &mut exec_context.batch_receiver {
                 match rx.blocking_recv() {
                     Some(Ok(batch)) => {
-                        update_metrics(env, exec_context)?;
+                        // Publish on the configured interval, as the ScanExec path below does,
+                        // since each publish walks the whole metric tree and calls into the JVM.
+                        // `releasePlan` publishes the final values.
+                        update_metrics_on_interval(env, exec_context)?;
                         return prepare_output(
                             env,
                             array_addrs,

@@ -34,7 +34,7 @@ import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.catalyst.expressions.UnsafeRow
 import org.apache.spark.sql.comet.execution.shuffle.CometNativeShuffle
 import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
-import org.apache.spark.sql.execution.SparkPlan
+import org.apache.spark.sql.execution.{SparkPlan, SQLExecution}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.execution.exchange.ShuffleExchangeLike
 import org.apache.spark.sql.execution.metric.SQLMetric
@@ -1093,6 +1093,39 @@ class CometTaskMetricsSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         assert(cometRecords > 0, s"Comet recordsRead should be > 0, got $cometRecords")
 
         assertCometBytesReadInRange(cometBytes, sparkBytes)
+      }
+    }
+  }
+
+  test("native block without a JVM input publishes SQL metrics on the update interval") {
+    withTempPath { dir =>
+      spark.range(0, 10000, 1, 1).write.parquet(dir.getAbsolutePath)
+      // Ten output batches from one task, so a per-batch publish shows up after the first one.
+      // With the interval disabled, the only publish is the one in releasePlan.
+      withSQLConf(
+        CometConf.COMET_BATCH_SIZE.key -> "1000",
+        CometConf.COMET_METRICS_UPDATE_INTERVAL.key -> "-1") {
+        val plan = spark.read.parquet(dir.getAbsolutePath).queryExecution.executedPlan
+        val scan = find(plan)(_.isInstanceOf[CometNativeScanExec])
+          .getOrElse(fail(s"Expected CometNativeScanExec in plan:\n${plan.treeString}"))
+          .asInstanceOf[CometNativeScanExec]
+        // The task deserializes this metric together with the scan's metric node, so both refer
+        // to the task-side copy that native execution publishes into.
+        val outputRows = scan.metrics("output_rows")
+        val (midStream, atEnd) = SQLExecution.withSQLConfPropagated(spark) {
+          scan
+            .executeColumnar()
+            .mapPartitions { batches =>
+              batches.next()
+              val mid = outputRows.value
+              batches.foreach(_ => ())
+              Iterator((mid, outputRows.value))
+            }
+            .collect()
+            .head
+        }
+        assert(midStream == 0, s"output_rows was published mid-stream: $midStream")
+        assert(atEnd == 10000, s"releasePlan should publish the final output_rows, got $atEnd")
       }
     }
   }
